@@ -272,11 +272,12 @@ impl StoreSlots for HalfGrants {
     ) -> Step<RecordStoreResult<Vec<String>>> {
         unreachable!("the broken store's test reaches only open and reserve")
     }
-    fn purge_plane_records_before(
+    fn purge_plane_records(
         &self,
         _: &mut Op<'_>,
         _: &str,
         _: u64,
+        _: busbar_contract::records::Retention,
     ) -> Step<RecordStoreResult<u64>> {
         unreachable!("the broken store's test reaches only open and reserve")
     }

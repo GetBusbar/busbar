@@ -339,11 +339,12 @@ pub mod store {
         ) -> Step<RecordStoreResult<Vec<String>>> {
             unreachable!("the open-reason store never opens")
         }
-        fn purge_plane_records_before(
+        fn purge_plane_records(
             &self,
             _: &mut Op<'_>,
             _: &str,
             _: u64,
+            _: busbar_contract::records::Retention,
         ) -> Step<RecordStoreResult<u64>> {
             unreachable!("the open-reason store never opens")
         }

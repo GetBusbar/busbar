@@ -294,7 +294,7 @@ fn plane_request_ctx_with_key_is_governed() {
 
 // ── The plane-record defaults NOT already covered by `store_tests.rs`'s own coverage test ────────
 // (`upsert_plane_record`/`append_plane_record`/`get_plane_record`/`list_plane_records`/
-// `purge_plane_records_before` are pinned there; `list_plane_record_parents`,
+// `purge_plane_records` are pinned there; `list_plane_record_parents`,
 // `delete_plane_record`, `redeem_plane_token` were not, and are covered above.)
 
 #[test]

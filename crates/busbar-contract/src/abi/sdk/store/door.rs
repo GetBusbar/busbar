@@ -1196,11 +1196,11 @@ slot!(
     }
 );
 slot!(
-    /// `purge_plane_records_before` (slot 29).
+    /// `purge_plane_records` (slot 29).
     /// The rule rides the `in`; an older host's shorter `in` reads `0` there (the trampoline
     /// zero-fills past its stated size), the age rule that host purged by. A code that names no
     /// rule is refused, never guessed.
-    PurgePlaneRecordsBefore(KindBeforeIn, CountOut) |s, i, o, cx| {
+    PurgePlaneRecords(KindBeforeIn, CountOut) |s, i, o, cx| {
         let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         let Some(retention) = Retention::from_code(i.retention) else {
             return refused(s, o, Text::render(format_args!("retention {} is not a retention rule", i.retention)));
@@ -1588,7 +1588,7 @@ macro_rules! store_door {
                 append_plane_record: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::AppendPlaneRecord<$store>>,
                 list_plane_records: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::ListPlaneRecords<$store>>,
                 list_plane_record_parents: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::ListPlaneRecordParents<$store>>,
-                purge_plane_records_before: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::PurgePlaneRecordsBefore<$store>>,
+                purge_plane_records: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::PurgePlaneRecords<$store>>,
                 delete_plane_record: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::DeletePlaneRecord<$store>>,
                 redeem_plane_token: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::RedeemPlaneToken<$store>>,
                 plane_token_live: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::PlaneTokenLive<$store>>,

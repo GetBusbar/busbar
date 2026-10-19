@@ -108,7 +108,7 @@ pub const RETENTION_AGE: u32 = 0;
 /// go (`Retention::TerminalOnly`); an active row is kept however old.
 pub const RETENTION_TERMINAL_ONLY: u32 = 1;
 
-/// `purge_plane_records_before`' `in` (records.rs:1530-1538).
+/// `purge_plane_records`' `in` (records.rs:1530-1538).
 ///
 /// `retention` and its padding were APPENDED: the door copies the host's `in` up to its stated
 /// `head.size` into a zeroed `in` of this build's size, so an older host's shorter `in` reads

@@ -881,7 +881,11 @@ fn the_plane_record_verbs_default_to_accepting_and_keeping_nothing() {
         .list_plane_records("task_event", &PlaneSelector::Parent("t-1".into()))
         .unwrap()
         .is_empty());
-    assert_eq!(s.purge_plane_records_before("task", u64::MAX).unwrap(), 0);
+    assert_eq!(
+        s.purge_plane_records("task", u64::MAX, Retention::Age)
+            .unwrap(),
+        0
+    );
 }
 
 /// The neutral `PlaneRecord` ENVELOPE round-trips through serde unchanged — the one contract this
@@ -966,8 +970,8 @@ fn apply_model_delta_folds_usage_units_flooring_at_zero() {
     assert_eq!(ledger.models[0].usage_units.get("search"), Some(&0));
 }
 
-/// A store that implements only the old age purge, and records each call to it: the named-retention
-/// default must route [`Retention::Age`] there and purge nothing for [`Retention::TerminalOnly`].
+/// A store that implements no retention purge: the named-retention default purges nothing under
+/// either rule, and the call log it carries stays empty.
 struct AgePurgeOnly(std::sync::Mutex<Vec<(String, u64)>>);
 
 impl RecordStore for AgePurgeOnly {
@@ -995,20 +999,17 @@ impl RecordStore for AgePurgeOnly {
     fn list_metering(&self, _: u64) -> RecordStoreResult<Vec<MeteringRow>> {
         Ok(Vec::new())
     }
-    fn purge_plane_records_before(&self, kind: &str, before: u64) -> RecordStoreResult<u64> {
-        self.0.lock().unwrap().push((kind.to_string(), before));
-        Ok(7)
-    }
 }
 
 #[test]
-fn the_named_retention_default_maps_age_to_the_age_purge() {
+fn the_named_retention_default_purges_nothing_by_age() {
     let s = AgePurgeOnly(std::sync::Mutex::new(Vec::new()));
+    // Fails closed: a store that never implemented retention drops no row.
     assert_eq!(
         s.purge_plane_records("call", 42, Retention::Age).unwrap(),
-        7
+        0
     );
-    assert_eq!(*s.0.lock().unwrap(), vec![("call".to_string(), 42)]);
+    assert!(s.0.lock().unwrap().is_empty());
 }
 
 #[test]

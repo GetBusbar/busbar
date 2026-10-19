@@ -444,8 +444,8 @@ store_slots! {
         "`list_plane_records` (records.rs:1513-1522). In [`ListPlaneRecordsIn`], out [`HostListOut`] (bodies into [`HostBlobs`]). B.1 plane records.";
     28 LIST_PLANE_RECORD_PARENTS list_plane_record_parents IdIn, LeasedStrListOut, Off, Call, HostCap,
         "`list_plane_record_parents` (records.rs:1524-1528). In [`IdIn`] (kind), out [`LeasedStrListOut`]. B.1 plane records; the boot enumeration.";
-    29 PURGE_PLANE_RECORDS_BEFORE purge_plane_records_before KindBeforeIn, CountOut, Off, Call, Fixed,
-        "`purge_plane_records_before` (records.rs:1530-1538). In [`KindBeforeIn`], out [`CountOut`]. B.1 plane records; honours `disposition` under the `retention` rule the host passes.";
+    29 PURGE_PLANE_RECORDS purge_plane_records KindBeforeIn, CountOut, Off, Call, Fixed,
+        "`purge_plane_records` (records.rs:1530-1538). In [`KindBeforeIn`], out [`CountOut`]. B.1 plane records; honours `disposition` under the `retention` rule the host passes.";
     30 DELETE_PLANE_RECORD delete_plane_record KindIdIn, OutHead, Request, Call, Fixed,
         "`delete_plane_record` (records.rs:1540-1543). In [`KindIdIn`], out [`OutHead`]. B.1 plane records; absent is READY.";
     31 REDEEM_PLANE_TOKEN redeem_plane_token TokenIn, VerdictOut, Request, Call, Fixed,
@@ -578,7 +578,7 @@ super::sdk::door::slot_structs!(
     /// # ready!(AppendPlaneRecord, AppendPlaneRecordIn, OutHead);
     /// # ready!(ListPlaneRecords, ListPlaneRecordsIn, HostListOut);
     /// # ready!(ListPlaneRecordParents, IdIn, LeasedStrListOut);
-    /// # ready!(PurgePlaneRecordsBefore, KindBeforeIn, CountOut);
+    /// # ready!(PurgePlaneRecords, KindBeforeIn, CountOut);
     /// # ready!(DeletePlaneRecord, KindIdIn, OutHead);
     /// # ready!(RedeemPlaneToken, TokenIn, VerdictOut); ready!(PlaneTokenLive, TokenIn, VerdictOut);
     /// # ready!(AppendBatch, AppendBatchIn, HeadOut); ready!(Reserve, ReserveIn, ReserveOut);
@@ -610,7 +610,7 @@ super::sdk::door::slot_structs!(
     ///         upsert_plane_record: UpsertPlaneRecord, get_plane_record: GetPlaneRecord,
     ///         append_plane_record: AppendPlaneRecord, list_plane_records: ListPlaneRecords,
     ///         list_plane_record_parents: ListPlaneRecordParents,
-    ///         purge_plane_records_before: PurgePlaneRecordsBefore,
+    ///         purge_plane_records: PurgePlaneRecords,
     ///         delete_plane_record: DeletePlaneRecord, redeem_plane_token: RedeemPlaneToken,
     ///         plane_token_live: PlaneTokenLive, append_batch: AppendBatch, reserve: Reserve,
     ///         slice_release: SliceRelease, heads: Heads, session_put: SessionPut,
@@ -655,7 +655,7 @@ super::sdk::door::slot_structs!(
         slot::APPEND_PLANE_RECORD => AppendPlaneRecordIn, OutHead;
         slot::LIST_PLANE_RECORDS => ListPlaneRecordsIn, HostListOut;
         slot::LIST_PLANE_RECORD_PARENTS => IdIn, LeasedStrListOut;
-        slot::PURGE_PLANE_RECORDS_BEFORE => KindBeforeIn, CountOut;
+        slot::PURGE_PLANE_RECORDS => KindBeforeIn, CountOut;
         slot::DELETE_PLANE_RECORD => KindIdIn, OutHead;
         slot::REDEEM_PLANE_TOKEN => TokenIn, VerdictOut;
         slot::PLANE_TOKEN_LIVE => TokenIn, VerdictOut;

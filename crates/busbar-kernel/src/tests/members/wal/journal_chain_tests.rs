@@ -469,7 +469,7 @@ fn a_full_buffer_seals_a_chain_break_rather_than_dropping_silently() {
 ///
 /// The overflow's `ChainBreak` was sealed with a bare `Entry::new(...)`, which stamps `wall: 0` —
 /// 1970. Retention in this tree is everywhere the same predicate over a record's own instant
-/// (`purge_plane_records_before` drops any row with `r.ts < before`; every `compact(before)` above
+/// (`purge_plane_records` drops any row with `r.ts < before`; every `compact(before)` above
 /// it is that call), so a record dated 0 is older than EVERY positive cutoff and the FIRST sweep at
 /// any window deletes it. The evidence of loss was itself the first thing lost — the exact defect
 /// already fixed on the plane-record path, where `append_scoped` hardcoded `ts: 0`.

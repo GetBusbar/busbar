@@ -953,7 +953,7 @@ impl From<&str> for RecordStoreError {
 // removal of the named methods happen in later commits.
 
 /// Whether a plane record is in a TERMINAL (final) state or still ACTIVE. This is the sidecar column
-/// that lets [`RecordStore::purge_plane_records_before`] honor a per-kind retention contract that opaque
+/// that lets [`RecordStore::purge_plane_records`] honor a per-kind retention contract that opaque
 /// `body` bytes cannot express: the `task` kind drops only TERMINAL rows older than the cutoff (an
 /// interrupted task waiting on a human is exactly the old row that must survive), while the `call`
 /// kind drops ALL rows older than the cutoff. Encoding "terminal" in the opaque body would hide it
@@ -1015,7 +1015,7 @@ impl Retention {
 /// [`PlaneRecord::body`] is opaque (the protocol-specific row, serialized by the caller); every other
 /// field is a TYPED sidecar column so the store can index, order and retention-sweep without ever
 /// decoding the body. This is the retention-landmine fix: `{ kind, id, parent, seq, ts, disposition }`
-/// stay typed even though the body is bytes, so `purge_plane_records_before` can honor a
+/// stay typed even though the body is bytes, so `purge_plane_records` can honor a
 /// terminal-only-vs-all-older distinction per kind that the pre-collapse, per-method API encoded
 /// structurally.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1033,7 +1033,7 @@ pub struct PlaneRecord {
     /// Monotonic sequence within `parent`, oldest-first ordering for append-only kinds. `0` for
     /// upsert kinds that have no per-parent chain.
     pub seq: u64,
-    /// The record's timestamp (Unix seconds) — the axis `purge_plane_records_before` compares against.
+    /// The record's timestamp (Unix seconds) — the axis `purge_plane_records` compares against.
     pub ts: u64,
     /// Whether retention may drop this row once older than a cutoff — see [`PlaneDisposition`].
     pub disposition: PlaneDisposition,
@@ -1511,32 +1511,20 @@ pub trait RecordStore: Send + Sync + 'static {
         Ok(Vec::new())
     }
 
-    /// RETENTION: drop records of `kind` older than `before`, returning how many went. WHICH
-    /// predicate applies (terminal-only vs. all older rows) is part of the kind's own contract,
-    /// which is exactly why the `disposition` sidecar is a typed column: the backend reads it to
-    /// honor a terminal-only split without decoding the opaque body.
-    ///
-    /// DEFAULTED to `Ok(0)`.
-    fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> RecordStoreResult<u64> {
-        Ok(0)
-    }
-
     /// RETENTION, with the predicate named: drop records of `kind` older than `before` under
-    /// `retention`, returning how many went.
+    /// `retention`, returning how many went. WHICH rows go is the rule the host passes, never the
+    /// kind's name; the `disposition` sidecar is a typed column so a backend honours the
+    /// terminal-only rule without decoding the opaque body ([`Retention::drops`]).
     ///
-    /// DEFAULTED: [`Retention::Age`] is [`RecordStore::purge_plane_records_before`];
-    /// [`Retention::TerminalOnly`] answers `Ok(0)` — a store that has not implemented the
-    /// terminal-only predicate purges nothing rather than dropping an ACTIVE row.
+    /// DEFAULTED to `Ok(0)` under either rule: a store that has not implemented retention purges
+    /// nothing rather than dropping an ACTIVE row.
     fn purge_plane_records(
         &self,
-        kind: &str,
-        before: u64,
-        retention: Retention,
+        _kind: &str,
+        _before: u64,
+        _retention: Retention,
     ) -> RecordStoreResult<u64> {
-        match retention {
-            Retention::Age => self.purge_plane_records_before(kind, before),
-            Retention::TerminalOnly => Ok(0),
-        }
+        Ok(0)
     }
 
     /// DELETE the record identified by `(kind, id)`; absent is a no-op. DEFAULTED to `Ok(())`.

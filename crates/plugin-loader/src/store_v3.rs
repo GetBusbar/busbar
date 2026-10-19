@@ -1924,10 +1924,6 @@ impl RecordStore for LoadedStore {
         self.strs(slot::LIST_PLANE_RECORD_PARENTS, Self::id(kind))
     }
 
-    fn purge_plane_records_before(&self, kind: &str, before: u64) -> RecordStoreResult<u64> {
-        self.purge_plane_records(kind, before, Retention::Age)
-    }
-
     fn purge_plane_records(
         &self,
         kind: &str,
@@ -1935,7 +1931,7 @@ impl RecordStore for LoadedStore {
         retention: Retention,
     ) -> RecordStoreResult<u64> {
         self.count(
-            slot::PURGE_PLANE_RECORDS_BEFORE,
+            slot::PURGE_PLANE_RECORDS,
             owned_in(|o, head| KindBeforeIn {
                 head,
                 kind: o.text(kind),

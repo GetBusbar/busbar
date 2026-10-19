@@ -110,7 +110,7 @@ pub struct MemoryStore {
     /// "Admission bounds live work; nothing evicts it"): a real bound on live work is a refusal at
     /// admission, and retention bounds only SETTLED handles. Settledness is a sidecar the store is
     /// handed, never a body it decodes — the published path's [`PlaneDisposition`], which
-    /// `purge_plane_records_before` honours (the conformance suite's
+    /// `purge_plane_records` honours (the conformance suite's
     /// `assert_plane_purge_task_keeps_active_rows`). A record-leg row carries no such sidecar: its
     /// key is opaque bytes and its value an opaque body, so this backend can never know a row is
     /// settled, and a row it cannot prove settled is one it may not drop. Write age is not
@@ -842,10 +842,6 @@ impl Store for MemoryStore {
         parents.sort();
         parents.dedup();
         Ok(parents)
-    }
-
-    fn purge_plane_records_before(&self, kind: &str, before: u64) -> StoreResult<u64> {
-        self.purge_plane_records(kind, before, Retention::Age)
     }
 
     fn purge_plane_records(

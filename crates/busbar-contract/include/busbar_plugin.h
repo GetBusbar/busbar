@@ -140,7 +140,7 @@ extern "C" {
 #define BB_STORE_SLOT_APPEND_PLANE_RECORD UINT32_C(35)
 #define BB_STORE_SLOT_LIST_PLANE_RECORDS UINT32_C(36)
 #define BB_STORE_SLOT_LIST_PLANE_RECORD_PARENTS UINT32_C(37)
-#define BB_STORE_SLOT_PURGE_PLANE_RECORDS_BEFORE UINT32_C(38)
+#define BB_STORE_SLOT_PURGE_PLANE_RECORDS UINT32_C(38)
 #define BB_STORE_SLOT_DELETE_PLANE_RECORD UINT32_C(39)
 #define BB_STORE_SLOT_REDEEM_PLANE_TOKEN UINT32_C(40)
 #define BB_STORE_SLOT_PLANE_TOKEN_LIVE UINT32_C(41)
@@ -1694,7 +1694,7 @@ struct bb_store_Ops {
     bb_mech_Op append_plane_record;
     bb_mech_Op list_plane_records;
     bb_mech_Op list_plane_record_parents;
-    bb_mech_Op purge_plane_records_before;
+    bb_mech_Op purge_plane_records;
     bb_mech_Op delete_plane_record;
     bb_mech_Op redeem_plane_token;
     bb_mech_Op plane_token_live;
@@ -1862,7 +1862,7 @@ struct bb_store_ListPlaneRecordsIn {
     bb_store_HostBlobs out;
 };
 
-/* `purge_plane_records_before`' `in` (records.rs:1530-1538). */
+/* `purge_plane_records`' `in` (records.rs:1530-1538). */
 struct bb_store_KindBeforeIn {
     bb_mech_InHead head;
     bb_mech_AbiStr kind;
@@ -4603,7 +4603,7 @@ BB_ASSERT(offsetof(bb_store_Ops, get_plane_record) == 280, "bb_store_Ops.get_pla
 BB_ASSERT(offsetof(bb_store_Ops, append_plane_record) == 288, "bb_store_Ops.append_plane_record: offset");
 BB_ASSERT(offsetof(bb_store_Ops, list_plane_records) == 296, "bb_store_Ops.list_plane_records: offset");
 BB_ASSERT(offsetof(bb_store_Ops, list_plane_record_parents) == 304, "bb_store_Ops.list_plane_record_parents: offset");
-BB_ASSERT(offsetof(bb_store_Ops, purge_plane_records_before) == 312, "bb_store_Ops.purge_plane_records_before: offset");
+BB_ASSERT(offsetof(bb_store_Ops, purge_plane_records) == 312, "bb_store_Ops.purge_plane_records: offset");
 BB_ASSERT(offsetof(bb_store_Ops, delete_plane_record) == 320, "bb_store_Ops.delete_plane_record: offset");
 BB_ASSERT(offsetof(bb_store_Ops, redeem_plane_token) == 328, "bb_store_Ops.redeem_plane_token: offset");
 BB_ASSERT(offsetof(bb_store_Ops, plane_token_live) == 336, "bb_store_Ops.plane_token_live: offset");

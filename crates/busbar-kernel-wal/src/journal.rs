@@ -1008,7 +1008,7 @@ impl Journal {
             // Sealed with a bare `Entry`, the break carries `wall: 0` — 1970 — because
             // [`Entry::new`] stamps both clocks at zero and only [`Entry::at`] moves them. Every
             // retention pass in this tree is the same predicate over a record's own instant
-            // (`r.ts < before` in `purge_plane_records_before`, under either retention rule the
+            // (`r.ts < before` in `purge_plane_records`, under either retention rule the
             // host passes, and each `compact(before)` above it), so a record dated 0 is older than
             // EVERY positive cutoff and the FIRST sweep at any window deletes it. The one record
             // that says entries were lost here would be the first thing lost — the audit evidence a

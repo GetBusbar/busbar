@@ -2118,13 +2118,6 @@ impl crate::plane::store::PlaneStore for ParkingStore {
     ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
         Ok(Vec::new())
     }
-    fn purge_plane_records_before(
-        &self,
-        _: &str,
-        _: u64,
-    ) -> busbar_contract::records::RecordStoreResult<u64> {
-        Ok(0)
-    }
     fn delete_plane_record(
         &self,
         _: &str,

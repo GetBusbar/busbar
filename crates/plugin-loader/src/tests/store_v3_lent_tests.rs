@@ -151,7 +151,7 @@ mod wedged {
                     append_plane_record: S<d::AppendPlaneRecord<M>>,
                     list_plane_records: S<d::ListPlaneRecords<M>>,
                     list_plane_record_parents: S<d::ListPlaneRecordParents<M>>,
-                    purge_plane_records_before: S<d::PurgePlaneRecordsBefore<M>>,
+                    purge_plane_records: S<d::PurgePlaneRecords<M>>,
                     delete_plane_record: S<d::DeletePlaneRecord<M>>,
                     redeem_plane_token: S<d::RedeemPlaneToken<M>>,
                     plane_token_live: S<d::PlaneTokenLive<M>>,

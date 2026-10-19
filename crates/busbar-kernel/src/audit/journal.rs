@@ -621,7 +621,7 @@ impl<R: NeutralRecord> Journal<R> {
                 // (`busbar_kernel::store::now()`, whose body is in
                 // `crates/busbar-kernel/src/store/vocab.rs`), never `SystemTime::now()`
                 // directly. A hardcoded `ts: 0` here made every row look infinitely old to
-                // `purge_plane_records_before`'s `r.ts < before` check, so the FIRST retention sweep
+                // `purge_plane_records`'s `r.ts < before` check, so the FIRST retention sweep
                 // deleted the whole class regardless of how recently it was written — the configured
                 // retention window was not merely wrong, it was absent.
                 ts: busbar_kernel::store::now(),

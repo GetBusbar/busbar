@@ -39,8 +39,6 @@ fn plane_method_set_is_exactly_the_plane_methods() {
         <dyn PlaneStore>::list_plane_records;
     let _: fn(&dyn PlaneStore, &str) -> RecordStoreResult<Vec<String>> =
         <dyn PlaneStore>::list_plane_record_parents;
-    let _: fn(&dyn PlaneStore, &str, u64) -> RecordStoreResult<u64> =
-        <dyn PlaneStore>::purge_plane_records_before;
     let _: fn(
         &dyn PlaneStore,
         &str,

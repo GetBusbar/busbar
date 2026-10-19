@@ -364,7 +364,7 @@ impl Kind for Store {
             // A purge's rows removed, the shipping ack's stream head.
             slot::PURGE_WINDOWS_BEFORE
             | slot::PURGE_METERING_BEFORE
-            | slot::PURGE_PLANE_RECORDS_BEFORE => sc::check_count(a.outcome, a.out::<CountOut>()?),
+            | slot::PURGE_PLANE_RECORDS => sc::check_count(a.outcome, a.out::<CountOut>()?),
             slot::APPEND_BATCH => sc::check_append_batch(a.outcome, a.out::<HeadOut>()?),
             // Answered by the head only: the `out` is a bare `OutHead`, checked by the mechanism.
             slot::PUT_KEY

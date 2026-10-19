@@ -1235,12 +1235,7 @@ mod store_plugin {
         LeasedStrListOut,
         Outcome::Refused
     );
-    answers!(
-        PurgePlaneRecordsBefore,
-        KindBeforeIn,
-        CountOut,
-        Outcome::Failed
-    );
+    answers!(PurgePlaneRecords, KindBeforeIn, CountOut, Outcome::Failed);
     answers!(DeletePlaneRecord, KindIdIn, OutHead, Outcome::Ready);
     answers!(RedeemPlaneToken, TokenIn, VerdictOut, Outcome::Refused);
     answers!(PlaneTokenLive, TokenIn, VerdictOut, Outcome::Failed);
@@ -1285,7 +1280,7 @@ mod store_plugin {
             upsert_plane_record: UpsertPlaneRecord, get_plane_record: GetPlaneRecord,
             append_plane_record: AppendPlaneRecord, list_plane_records: ListPlaneRecords,
             list_plane_record_parents: ListPlaneRecordParents,
-            purge_plane_records_before: PurgePlaneRecordsBefore,
+            purge_plane_records: PurgePlaneRecords,
             delete_plane_record: DeletePlaneRecord, redeem_plane_token: RedeemPlaneToken,
             plane_token_live: PlaneTokenLive, append_batch: AppendBatch, reserve: Reserve,
             slice_release: SliceRelease, heads: Heads, session_put: SessionPut,
@@ -1359,7 +1354,7 @@ fn a_store_plugin_wires_every_kind_op() {
         t.append_plane_record,
         t.list_plane_records,
         t.list_plane_record_parents,
-        t.purge_plane_records_before,
+        t.purge_plane_records,
         t.delete_plane_record,
         t.redeem_plane_token,
         t.plane_token_live,

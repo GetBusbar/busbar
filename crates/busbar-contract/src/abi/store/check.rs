@@ -717,7 +717,7 @@ pub fn check_verdict(outcome: Outcome, out: &VerdictOut) -> Result<(), Fault> {
 }
 
 /// A purge's answer (`purge_windows_before`, `purge_metering_before`,
-/// `purge_plane_records_before`): the rows removed. The host reads `count` on READY only, where
+/// `purge_plane_records`): the rows removed. The host reads `count` on READY only, where
 /// any value is the store's to state (the host sizes no buffer for it, so there is no cap); a
 /// FAILED purge removed nothing, so a count on FAILED is FAULT. PENDING and REFUSED state nothing.
 pub fn check_count(outcome: Outcome, out: &CountOut) -> Result<(), Fault> {
@@ -727,7 +727,7 @@ pub fn check_count(outcome: Outcome, out: &CountOut) -> Result<(), Fault> {
     Ok(())
 }
 
-/// `purge_plane_records_before`' `in`: its `retention` is [`RETENTION_AGE`] or
+/// `purge_plane_records`' `in`: its `retention` is [`RETENTION_AGE`] or
 /// [`RETENTION_TERMINAL_ONLY`]. The host writes only those; a store refuses any other code rather
 /// than guess which rows it may drop.
 pub fn check_kind_before(input: &KindBeforeIn) -> Result<(), Fault> {

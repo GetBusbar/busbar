@@ -437,11 +437,12 @@ impl StoreSlots for Canned {
     ) -> Step<RecordStoreResult<Vec<String>>> {
         unreachable!("not a request-path slot")
     }
-    fn purge_plane_records_before(
+    fn purge_plane_records(
         &self,
         _: &mut StoreOp<'_>,
         _: &str,
         _: u64,
+        _: busbar_contract::records::Retention,
     ) -> Step<RecordStoreResult<u64>> {
         unreachable!("not a request-path slot")
     }

@@ -395,15 +395,6 @@ pub(crate) trait Hooks: Send + Sync + 'static {
         <MemoryStore as StoreSlots>::list_plane_record_parents(inner, cx, kind)
     }
 
-    fn purge_plane_records_before(
-        inner: &MemoryStore,
-        cx: &mut Op<'_>,
-        kind: &str,
-        before: u64,
-    ) -> Step<RecordStoreResult<u64>> {
-        <MemoryStore as StoreSlots>::purge_plane_records_before(inner, cx, kind, before)
-    }
-
     fn purge_plane_records(
         inner: &MemoryStore,
         cx: &mut Op<'_>,
@@ -797,15 +788,6 @@ impl<H: Hooks> StoreSlots for Wrapped<H> {
         kind: &str,
     ) -> Step<RecordStoreResult<Vec<String>>> {
         H::list_plane_record_parents(&self.0, cx, kind)
-    }
-
-    fn purge_plane_records_before(
-        &self,
-        cx: &mut Op<'_>,
-        kind: &str,
-        before: u64,
-    ) -> Step<RecordStoreResult<u64>> {
-        H::purge_plane_records_before(&self.0, cx, kind, before)
     }
 
     fn purge_plane_records(

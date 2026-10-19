@@ -928,7 +928,7 @@ fn compute_layout() -> String {
             append_plane_record,
             list_plane_records,
             list_plane_record_parents,
-            purge_plane_records_before,
+            purge_plane_records,
             delete_plane_record,
             redeem_plane_token,
             plane_token_live,

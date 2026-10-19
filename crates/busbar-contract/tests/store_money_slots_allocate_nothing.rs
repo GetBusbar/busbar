@@ -370,11 +370,12 @@ impl StoreSlots for Flat {
     ) -> Step<RecordStoreResult<Vec<String>>> {
         unreachable!("the money witness reaches only open, session_remove and the money slots")
     }
-    fn purge_plane_records_before(
+    fn purge_plane_records(
         &self,
         _: &mut StoreOp<'_>,
         _: &str,
         _: u64,
+        _: busbar_contract::records::Retention,
     ) -> Step<RecordStoreResult<u64>> {
         unreachable!("the money witness reaches only open, session_remove and the money slots")
     }

@@ -516,7 +516,7 @@ fn purges_route_to_the_count_check() {
     for s in [
         slot::PURGE_WINDOWS_BEFORE,
         slot::PURGE_METERING_BEFORE,
-        slot::PURGE_PLANE_RECORDS_BEFORE,
+        slot::PURGE_PLANE_RECORDS,
     ] {
         let o = CountOut {
             head: out_head(),
