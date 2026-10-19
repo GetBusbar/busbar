@@ -52,6 +52,41 @@ pub const ZERO_HELPERS: &[&str] = &[
     "with_inbound",
 ];
 
+/// THE FIXED EXEMPTIONS: plugin-built contract structs that state NO `ZERO`, as `(file under the
+/// contract's src, type, reason)`. A test holds each to its file and to having no `ZERO`.
+pub const EXEMPT: &[(&str, &str, &str)] = &[
+    (
+        "abi/mechanism/observe.rs",
+        "Envelope",
+        "generic R has no ZERO; the envelope carries no grant field",
+    ),
+    (
+        "abi/export/mod.rs",
+        "Route",
+        "auth 0 is the unauthenticated level: renumbered in step 2",
+    ),
+    (
+        "abi/hook/mod.rs",
+        "Route",
+        "auth 0 is the unauthenticated level: renumbered in step 2",
+    ),
+    (
+        "abi/hook/mod.rs",
+        "Tail",
+        "kind_class 0 is a gate: renumbered in step 2",
+    ),
+    (
+        "abi/sdk/store/mod.rs",
+        "Tail",
+        "ephemeral false claims a durable store: renumbered in step 2",
+    ),
+    (
+        "abi/mechanism/route.rs",
+        "Route",
+        "RouteAuth has no zero and its None is unauthenticated: renumbered in step 2",
+    ),
+];
+
 /// One contract struct: its named fields, and whether it states a `ZERO`.
 #[derive(Debug, Clone)]
 struct Def {

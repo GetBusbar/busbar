@@ -150,3 +150,69 @@ fn a_base_that_is_not_zero_or_a_builder_is_red() {
     .unwrap();
     assert_eq!(red.len(), 1, "{red:?}");
 }
+
+/// The struct `name` in a contract file: its field names, and whether that file gives it a `ZERO`.
+fn in_file(rel: &str, name: &str) -> (BTreeSet<String>, bool) {
+    let p = root().join(CONTRACT_SRC).join(rel);
+    let text = std::fs::read_to_string(&p).unwrap();
+    let file = syn::parse_file(&text).unwrap();
+    let mut fields = None;
+    let mut zero = false;
+    for item in &file.items {
+        match item {
+            syn::Item::Struct(s) if s.ident == name => {
+                if let syn::Fields::Named(f) = &s.fields {
+                    fields = Some(
+                        f.named
+                            .iter()
+                            .filter_map(|f| f.ident.as_ref().map(ToString::to_string))
+                            .collect(),
+                    );
+                }
+            }
+            syn::Item::Impl(i) if self_name(&i.self_ty).as_deref() == Some(name) => {
+                zero |= i
+                    .items
+                    .iter()
+                    .any(|it| matches!(it, syn::ImplItem::Const(c) if c.ident == "ZERO"));
+            }
+            _ => {}
+        }
+    }
+    (
+        fields.unwrap_or_else(|| panic!("{rel} defines no struct `{name}`")),
+        zero,
+    )
+}
+
+/// Each fixed exemption names a struct its file still defines, and that struct states no `ZERO`
+/// (an exemption that gained one, or lost its struct, is stale).
+#[test]
+fn every_exemption_names_a_struct_with_no_zero() {
+    for (rel, name, reason) in EXEMPT {
+        assert!(!reason.is_empty());
+        let (_, zero) = in_file(rel, name);
+        assert!(!zero, "{rel} `{name}` states a ZERO but is listed exempt");
+    }
+}
+
+/// The observe envelope is exempt for its generic `R` alone: it carries no field the host trusts
+/// as a grant (no auth, scope, points, flags, kind, class, role or size).
+#[test]
+fn the_observe_envelope_carries_no_grant_field() {
+    let (fields, _) = in_file("abi/mechanism/observe.rs", "Envelope");
+    let want: BTreeSet<String> = ["result", "metrics", "diagnostics"]
+        .map(String::from)
+        .into();
+    assert_eq!(
+        fields, want,
+        "the envelope's fields moved: re-judge its exemption"
+    );
+    for f in &fields {
+        for word in [
+            "auth", "scope", "point", "flag", "kind", "class", "role", "size",
+        ] {
+            assert!(!f.contains(word), "`{f}` reads as a grant field");
+        }
+    }
+}
