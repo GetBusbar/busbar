@@ -441,7 +441,7 @@ fn a_ticketed_begin_whose_auth_pends_resumes_on_the_wake_with_one_auth_call() {
         resumes: Default::default(),
     });
     let (mut f, y) =
-        Framing::begin_ticketed(door.clone(), SIDE_DIAL, "t", &Established::default(), &[])
+        Framing::begin_ticketed(door.clone(), SIDE_DIAL, "t", &Established::default(), &[], None)
             .unwrap();
     assert!(f.parked(), "the begin waits on its auth call");
     assert_eq!(y, Yielded::default(), "a parked op yields nothing");

@@ -123,6 +123,10 @@ pub struct Dial {
     /// The destination's sealed trust anchors (the transport pin, ARCHITECT 2026-10-03): the far end's key pin the
     /// handshake is held to and the client identity it presents; `None` = none sealed.
     pub anchors: Option<Arc<crate::tls::client::Sealed>>,
+    /// THE BINDING the dial's framing begins with (`BeginIn::auth`, `BeginIn::points`): the
+    /// member's auth handle, minted for the framer that presents it, and its auth points. The
+    /// framer calls that auth through the host auth handle at those points; `None` = no auth.
+    pub binding: Option<framer::DialBinding>,
 }
 
 /// A message's head words, method and target; empty = none.
@@ -202,6 +206,8 @@ pub struct Connection {
     inbox: VecDeque<Got>,
     /// The first message, sent once the framing begins.
     opening: Option<Opening>,
+    /// The dial's binding, handed to the framing's begin (`SIDE_DIAL` only).
+    binding: Option<framer::DialBinding>,
     /// Its head words.
     head_words: HeadWords,
     /// Writes the caller made before the framing began, in order: `(stream, bytes, end)`.
@@ -670,6 +676,7 @@ impl Connection {
             unflushed: false,
             inbox: VecDeque::new(),
             opening: dial.opening,
+            binding: dial.binding,
             head_words: dial.head_words,
             early: Vec::new(),
             flushed: 0,
@@ -760,6 +767,7 @@ impl Connection {
             unflushed: false,
             inbox: VecDeque::new(),
             opening: dial.opening,
+            binding: dial.binding,
             head_words: dial.head_words,
             early: Vec::new(),
             flushed: 0,
@@ -877,6 +885,7 @@ impl Connection {
             unflushed: false,
             inbox: VecDeque::new(),
             opening: None,
+            binding: None,
             head_words: HeadWords::default(),
             early: Vec::new(),
             flushed: 0,
@@ -1624,11 +1633,14 @@ impl Connection {
     /// early writes.
     fn begin(&mut self) -> Result<(), Failure> {
         // A dial hands its opening head fields to the framing's begin too, for a wire that
-        // carries them on the connection's opening (ARCHITECT Q-L5B-WS-DIAL).
+        // carries them on the connection's opening (ARCHITECT Q-L5B-WS-DIAL): the plane's own
+        // lines, never an auth line. The binding's auth handle rides beside them, and the framer
+        // calls that auth itself at its points (THE DESIGN §6, "Auth points and guest lists").
         let opening: &[(String, Vec<u8>)] = match &self.opening {
             Some((fields, _)) if self.side == SIDE_DIAL => fields,
             _ => &[],
         };
+        let binding = self.binding.filter(|_| self.side == SIDE_DIAL);
         // A carrier carried as itself has no framing to begin: it is open.
         if let Some(door) = self.door.as_ref() {
             let (framing, y) = Framing::begin_ticketed(
@@ -1637,6 +1649,7 @@ impl Connection {
                 &self.target,
                 &self.established,
                 opening,
+                binding,
             )
             .map_err(|e| Failure::Refused(e.to_string()))?;
             let parked = framing.parked();

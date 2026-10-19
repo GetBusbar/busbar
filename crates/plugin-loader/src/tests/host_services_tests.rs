@@ -2626,4 +2626,232 @@ fn a_line_id_and_a_binding_id_are_drawn_from_two_spaces() {
         .iter()
         .all(|&i| space_of(i) == Some(RefSpace::Binding)));
     assert_eq!(space_of(0), None);
+// ── the outbound half of the auth handle ─────────────────────────────────────────────────────
+
+use crate::dispatch::auth_serve::{
+    self, AuthAsk, AuthServed, OutboundServer, ServedField, Wiped, OUTBOUND_REFUSED,
+};
+
+/// An outbound binding the test server holds, and one whose auth refuses.
+const OUTBOUND: u64 = 0x4000_0000_0000_0005;
+const REFUSING: u64 = 0x4000_0000_0000_0006;
+/// The unit the test server answers.
+const OUT_UNIT: UnitRef = UnitRef { id: 77, mac: 0x77 };
+
+/// The root's outbound server, as a double: it serves [`OUTBOUND`] (one `authorization` line) and
+/// [`REFUSING`] (its auth refuses), and keeps every ask it was handed.
+#[derive(Default)]
+struct OutboundDouble {
+    asks: Mutex<Vec<AuthAsk>>,
+}
+
+impl OutboundServer for OutboundDouble {
+    fn serves(&self, _: u64, binding: u64) -> bool {
+        binding == OUTBOUND || binding == REFUSING
+    }
+
+    fn serve(&self, ask: AuthAsk, _: Option<auth_serve::Answer>) -> Option<AuthServed> {
+        let binding = ask.binding;
+        self.asks.lock().unwrap().push(ask);
+        Some(if binding == REFUSING {
+            AuthServed::Refused(OUTBOUND_REFUSED)
+        } else {
+            AuthServed::Fields {
+                unit: OUT_UNIT,
+                fields: vec![ServedField {
+                    name: b"authorization".to_vec(),
+                    value: Wiped(b"Bearer sk-out".to_vec()),
+                    flags: busbar_contract::abi::auth::FIELD_SENSITIVE,
+                }],
+            }
+        })
+    }
+}
+
+/// The armed outbound double (one per process: the loader's server slot is the process's).
+fn outbound() -> &'static Arc<OutboundDouble> {
+    static ONE: std::sync::OnceLock<Arc<OutboundDouble>> = std::sync::OnceLock::new();
+    let one = ONE.get_or_init(Arc::default);
+    auth_serve::arm(Arc::clone(one) as Arc<dyn OutboundServer>);
+    one
+}
+
+/// How many asks the server was handed for `owner`.
+fn asked(owner: u64) -> usize {
+    outbound()
+        .asks
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|a| a.owner == owner)
+        .count()
+}
+
+/// An outbound call's `in` over the caller's `buf` and `spans`, one plane line in its head.
+fn outbound_in(
+    auth: AuthRef,
+    seq: u32,
+    answer: &mut AuthAnswer,
+    buf: &mut [u8],
+    spans: &mut [FieldSpan],
+    line: &[busbar_contract::abi::mechanism::call::Field],
+) -> AuthCallIn {
+    let mut i = auth_call_in(auth, answer);
+    i.head = head(op::AUTH_CALL, TICKET, seq, size_of::<AuthCallIn>());
+    i.unit = OUT_UNIT;
+    i.request.fields = line.as_ptr();
+    i.request.fields_len = line.len();
+    (i.buf, i.cap) = (buf.as_mut_ptr(), buf.len());
+    (i.spans, i.spans_cap) = (spans.as_mut_ptr(), spans.len());
+    i
+}
+
+fn no_span() -> FieldSpan {
+    FieldSpan {
+        name: Span { offset: 0, len: 0 },
+        value: Span { offset: 0, len: 0 },
+        flags: 0,
+        _reserved: 0,
+    }
+}
+
+fn content_type() -> [busbar_contract::abi::mechanism::call::Field; 1] {
+    [busbar_contract::abi::mechanism::call::Field {
+        name: text("content-type"),
+        value: text("application/json"),
+    }]
+}
+
+/// RED (#65, #74; THE DESIGN §6 item 5): an OUTBOUND binding's ref minted for framer A and
+/// presented by framer B, one of an older generation, and one with a flipped mac bit are each
+/// REFUSED before the root's server is asked anything; A's own ref, as minted, is served.
+#[test]
+fn a_foreign_stale_or_forged_outbound_ref_is_refused_before_its_server_is_asked() {
+    let _ = outbound();
+    let (a, b) = (double(), double());
+    let r = mint_auth_ref(owner(&a), generation(), OUTBOUND).expect("minted");
+    let line = content_type();
+    let (mut buf, mut spans) = (vec![0_u8; 64], vec![no_span(); 4]);
+    let stale = mint_auth_ref(owner(&a), generation().wrapping_sub(1), OUTBOUND).expect("minted");
+    let forged = AuthRef {
+        mac: r.mac ^ (1 << 17),
+        ..r
+    };
+    for (who, presented, what) in [
+        (&b, r, "foreign"),
+        (&a, stale, "stale"),
+        (&a, forged, "forged"),
+    ] {
+        let mut slot = answer_slot();
+        let i = outbound_in(presented, 0, &mut slot, &mut buf, &mut spans, &line);
+        let (ret, o) = call_auth(who.ctx, &i);
+        assert_eq!(ret.outcome(), Outcome::Refused, "{what}");
+        assert_eq!(error(&o), REF_NOT_MINTED, "{what}");
+        assert_eq!(slot.flow, 0, "{what}: nothing answered");
+    }
+    assert_eq!(
+        asked(owner(&a)) + asked(owner(&b)),
+        0,
+        "the server was never asked"
+    );
+    let mut slot = answer_slot();
+    let i = outbound_in(r, 0, &mut slot, &mut buf, &mut spans, &line);
+    let (ret, _) = call_auth(a.ctx, &i);
+    assert_eq!(
+        ret.outcome(),
+        Outcome::Ready,
+        "the owner's own ref is served"
+    );
+    assert_eq!(asked(owner(&a)), 1);
+}
+
+/// THE OUTBOUND ANSWER: the server is handed the head the framer is about to encode (its words and
+/// its lines) and the unit it presents; the framer gets the auth's line, a field span over its
+/// bytes with the auth's flags, and the answer naming the unit and CONTINUE. Nothing else: no
+/// verdict, no credential of the caller's.
+#[test]
+fn the_owners_outbound_ref_is_served_the_auth_fields_and_the_unit() {
+    let _ = outbound();
+    let d = double();
+    let r = mint_auth_ref(owner(&d), generation(), OUTBOUND).expect("minted");
+    let line = content_type();
+    let (mut buf, mut spans) = (vec![0_u8; 64], vec![no_span(); 4]);
+    let mut slot = answer_slot();
+    let i = outbound_in(r, 0, &mut slot, &mut buf, &mut spans, &line);
+    let (ret, o) = call_auth(d.ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert_eq!((o.items, o.value), (1, 0));
+    let s = spans[0];
+    let at = |sp: Span| &buf[sp.offset as usize..(sp.offset + sp.len) as usize];
+    assert_eq!(at(s.name), b"authorization");
+    assert_eq!(at(s.value), b"Bearer sk-out");
+    assert_eq!(s.flags, busbar_contract::abi::auth::FIELD_SENSITIVE);
+    assert_eq!((slot.flow, slot.unit), (svc::FLOW_CONTINUE, OUT_UNIT));
+    let asks = outbound().asks.lock().unwrap();
+    let ask = asks
+        .iter()
+        .find(|a| a.owner == owner(&d))
+        .expect("the server was asked");
+    assert_eq!(
+        (ask.binding, ask.unit, ask.point),
+        (OUTBOUND, OUT_UNIT, POINT_HEAD)
+    );
+    assert_eq!(
+        (
+            ask.method.as_slice(),
+            ask.target.as_slice(),
+            ask.authority.as_slice()
+        ),
+        (&b"GET"[..], &b"/v1"[..], &b"a.example"[..])
+    );
+    assert_eq!(ask.query, None);
+    assert_eq!(
+        ask.fields,
+        vec![(b"content-type".to_vec(), b"application/json".to_vec())]
+    );
+    assert!(ask.body.is_none(), "no body at the head point");
+}
+
+/// An outbound binding whose auth refuses is REFUSED in the server's words; nothing is written.
+#[test]
+fn an_outbound_refusal_is_refused_in_the_servers_words() {
+    let _ = outbound();
+    let d = double();
+    let r = mint_auth_ref(owner(&d), generation(), REFUSING).expect("minted");
+    let line = content_type();
+    let (mut buf, mut spans) = (vec![0_u8; 64], vec![no_span(); 4]);
+    let mut slot = answer_slot();
+    let i = outbound_in(r, 0, &mut slot, &mut buf, &mut spans, &line);
+    let (ret, o) = call_auth(d.ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), OUTBOUND_REFUSED);
+    assert_eq!(slot.flow, 0, "no answer written");
+    assert!(buf.iter().all(|b| *b == 0));
+}
+
+/// THE SHORT-BUFFER RULE on an outbound answer: a buffer too small is FAILED with the full sizes
+/// and nothing written; the one re-call on the same handle reads the STORED answer (the auth is
+/// asked once).
+#[test]
+fn an_outbound_answer_short_once_is_read_again_on_the_same_handle() {
+    let _ = outbound();
+    let d = double();
+    let r = mint_auth_ref(owner(&d), generation(), OUTBOUND).expect("minted");
+    let line = content_type();
+    let (mut tiny, mut one) = (vec![0_u8; 4], vec![no_span(); 1]);
+    let mut slot = answer_slot();
+    let i = outbound_in(r, 3, &mut slot, &mut tiny, &mut one, &line);
+    let (ret, o) = call_auth(d.ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Failed);
+    assert_eq!(
+        (o.needed_bytes, o.needed_items),
+        (("authorization".len() + "Bearer sk-out".len()) as u64, 1)
+    );
+    assert!(tiny.iter().all(|b| *b == 0), "nothing written");
+    let (mut buf, mut spans) = (vec![0_u8; 64], vec![no_span(); 4]);
+    let i = outbound_in(r, 3, &mut slot, &mut buf, &mut spans, &line);
+    let (ret, o) = call_auth(d.ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert_eq!(o.items, 1);
+    assert_eq!(asked(owner(&d)), 1, "the auth was asked once");
 }

@@ -1240,6 +1240,7 @@ impl EgressFarEnd<'_> {
                             .unwrap_or_else(|| Secret::new(Vec::new()))
                     }),
                     waived,
+                    secret: [0, 0],
                 },
             );
         }

@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
+use busbar_contract::abi::host::service::AuthRef;
 use busbar_contract::abi::mechanism::call::{AbiStr, Field, Outcome, Span};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::transport::{check::check_final_status, StatusRow, CLOSE_NORMAL};
@@ -96,6 +97,12 @@ pub trait FramerDoor: Send + Sync {
     fn facts(&self) -> &DoorFacts;
     /// One crossing: the op, answered into its `out`.
     fn cross(&self, call: Call<'_>) -> Crossed;
+    /// THE ENTRY'S OWNER IDENTITY: the identity the host verifies the auth handles it presents
+    /// for (the instance table's), so a dial's binding handle is minted for this entry alone.
+    /// `0` = an entry the host mints no handle for (it is begun with no auth).
+    fn owner(&self) -> u64 {
+        0
+    }
     /// A new side of a carried connection: a ticket the entry's carrier ops are driven on inline
     /// (`crate::carrier`). `None` = the entry is no carrier the host can drive.
     fn side(&self) -> Option<Box<dyn crate::carrier::Side>> {
@@ -589,6 +596,8 @@ enum Ticketed<'a> {
         target: String,
         established: Established,
         opening: Vec<(String, Vec<u8>)>,
+        /// A dial's binding (`BeginIn::auth`, `BeginIn::points`); `None` = no auth.
+        binding: Option<DialBinding>,
     },
     Ingest {
         bytes: std::borrow::Cow<'a, [u8]>,
@@ -610,11 +619,13 @@ impl Ticketed<'_> {
                 target,
                 established,
                 opening,
+                binding,
             } => Ticketed::Begin {
                 side,
                 target,
                 established,
                 opening,
+                binding,
             },
             Self::Ingest { bytes, end } => Ticketed::Ingest {
                 bytes: std::borrow::Cow::Owned(bytes.into_owned()),
@@ -943,6 +954,34 @@ enum Again {
     Refuse(Option<u64>, u32, bool),
 }
 
+/// A DIAL'S BINDING as its framing begins with it (`BeginIn::auth`, `BeginIn::points`): the
+/// binding's auth handle, minted by the host for the framer that presents it at the current
+/// generation, and the auth points its auth needs. The connection's pool keys on it, so a line
+/// begun with one binding's handle is never lent to another's exchange.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DialBinding {
+    /// The binding's handle (`AuthRef`).
+    pub auth: AuthRef,
+    /// `POINT_*` bits; never `0` for a binding with an auth.
+    pub points: u32,
+}
+
+/// WHERE A DIAL'S BINDING COMES FROM: the composition root's, armed on the connector
+/// ([`crate::Connector::arm_bindings`]). It holds each member's binding and mints its handle for
+/// the entry that will present it; the connector names no auth and mints nothing.
+pub trait BindingRefs: Send + Sync {
+    /// The binding a dial by `caller` on `need` to the registration `member` begins with, its
+    /// handle minted for the entry whose owner identity is `owner` ([`FramerDoor::owner`]) at the
+    /// current generation; `None` = the member's binding holds no auth (or there is none).
+    fn binding(
+        &self,
+        owner: u64,
+        caller: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        member: &str,
+    ) -> Option<DialBinding>;
+}
+
 impl Framing {
     /// `begin`: open a framing on `side` (`SIDE_*`) for `target`, over what the handshake
     /// established.
@@ -974,7 +1013,7 @@ impl Framing {
         established: &Established,
         opening: &[(String, Vec<u8>)],
     ) -> Result<(Self, Yielded), Refused> {
-        Self::begin_on(door, None, side, target, established, opening)
+        Self::begin_on(door, None, side, target, established, opening, None)
     }
 
     /// [`Framing::begin_with`] on THE FRAMING'S OWN TICKET ([`FramerDoor::framing_side`]): its
@@ -983,19 +1022,23 @@ impl Framing {
     /// yet, and the holder re-drives it with [`Framing::poll_parked`] once the ticket's wake
     /// fires, re-issuing the same op on the same ticket, so the service answers its stored result
     /// and runs once. A parked framing takes no other ticketed op until its parked one completes.
+    /// A DIAL'S `binding` rides its begin (`BeginIn::auth`, `BeginIn::points`): the framer calls
+    /// that auth through the host auth handle at those points (THE DESIGN §6, "Auth points and
+    /// guest lists", item 5); `None` begins with no auth.
     ///
     /// # Errors
     ///
-    /// The entry refused to frame the connection.
+    /// The entry refused to frame the connection, or the host refused the binding's handle.
     pub fn begin_ticketed(
         door: Arc<dyn FramerDoor>,
         side: u32,
         target: &str,
         established: &Established,
         opening: &[(String, Vec<u8>)],
+        binding: Option<DialBinding>,
     ) -> Result<(Self, Yielded), Refused> {
         let ticket = door.framing_side();
-        Self::begin_on(door, ticket, side, target, established, opening)
+        Self::begin_on(door, ticket, side, target, established, opening, binding)
     }
 
     fn begin_on(
@@ -1005,6 +1048,7 @@ impl Framing {
         target: &str,
         established: &Established,
         opening: &[(String, Vec<u8>)],
+        binding: Option<DialBinding>,
     ) -> Result<(Self, Yielded), Refused> {
         let mut f = Self {
             door,
@@ -1018,6 +1062,7 @@ impl Framing {
             target: target.to_owned(),
             established: established.clone(),
             opening: opening.to_vec(),
+            binding: binding.filter(|b| side == SIDE_DIAL && !b.auth.is_none()),
         };
         let y = f.run(op, Yielded::default(), false, false)?;
         Ok((f, y.unwrap_or_default()))
@@ -1075,6 +1120,7 @@ impl Framing {
                 target,
                 established,
                 opening,
+                binding,
             } => {
                 let facts = established.facts();
                 let fields: Vec<Field> = opening
@@ -1091,6 +1137,12 @@ impl Framing {
                 if !fields.is_empty() {
                     i.fields = fields.as_ptr();
                     i.fields_len = fields.len();
+                }
+                // THE DIAL'S BINDING (THE DESIGN §6, "Auth points and guest lists", item 5): its
+                // handle, minted for this entry, and the points its auth needs.
+                if let Some(b) = binding {
+                    i.auth = b.auth;
+                    i.points = b.points;
                 }
                 i.sink = sink;
                 cross(Call::Begin(&mut i, &mut o))

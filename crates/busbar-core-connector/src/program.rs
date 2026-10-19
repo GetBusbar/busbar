@@ -340,6 +340,7 @@ impl Member {
                 opening: None,
                 head_words: (Vec::new(), Vec::new()),
                 anchors: None,
+                binding: None,
             };
             match Connection::spawn(
                 &self.via,

@@ -10,6 +10,7 @@ fn attempt(member: &str, handle: u64) -> AttemptAuth {
         extensions: Vec::new(),
         caller_credential: None,
         waived: false,
+        secret: [0, 0],
     }
 }
 
@@ -20,6 +21,11 @@ fn a_units_record_is_its_last_attempts_and_is_gone_once_forgotten() {
     record(unit, attempt("b", 2));
     let live = of(unit).expect("recorded");
     assert_eq!((live.member.as_str(), live.handle), ("b", 2));
+    assert_ne!(
+        live.secret,
+        [0, 0],
+        "the unit's secret is drawn, never the caller's"
+    );
     forget(unit);
     assert!(of(unit).is_none());
 }
@@ -36,4 +42,25 @@ fn a_record_debug_prints_no_credential_bytes() {
     a.caller_credential = Some(Secret::new(b"sk-caller-secret".to_vec()));
     let printed = format!("{a:?}");
     assert!(!printed.contains("sk-caller-secret"), "{printed}");
+}
+
+#[test]
+fn a_units_secret_is_kept_across_its_attempts_and_is_its_own() {
+    let (one, two) = (0x5eed_0002, 0x5eed_0003);
+    record(one, attempt("a", 1));
+    let first = of(one).expect("recorded").secret;
+    record(one, attempt("b", 2));
+    assert_eq!(
+        of(one).expect("recorded").secret,
+        first,
+        "one unit, one secret"
+    );
+    record(two, attempt("a", 1));
+    assert_ne!(
+        of(two).expect("recorded").secret,
+        first,
+        "another unit's is its own"
+    );
+    forget(one);
+    forget(two);
 }

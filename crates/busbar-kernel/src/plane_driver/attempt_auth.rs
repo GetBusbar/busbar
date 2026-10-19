@@ -34,8 +34,14 @@ pub struct AttemptAuth {
     /// A passthrough member's lent credential: the caller's verified one, or empty when the caller
     /// presented none (nothing is presented, never the operator's key). `None` = not passthrough.
     pub caller_credential: Option<Secret<Vec<u8>>>,
-    /// The plane waived its member's binding for this request: the framer is begun with no auth.
+    /// The plane waived its member's binding for this request: the host serves the framer's call
+    /// with no auth line.
     pub waived: bool,
+    /// THE UNIT'S OWN SECRET (#74): the request's kernel secret the host MACs the unit's ref
+    /// under when it hands the framer the unit, and verifies a presented one against. Drawn once
+    /// per unit by [`record`] from the OS random source and kept across its attempts; whatever a
+    /// caller states here is replaced.
+    pub secret: [u64; 2],
 }
 
 impl std::fmt::Debug for AttemptAuth {
@@ -46,7 +52,7 @@ impl std::fmt::Debug for AttemptAuth {
             .field("extensions", &self.extensions.len())
             .field("passthrough", &self.caller_credential.is_some())
             .field("waived", &self.waived)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -62,11 +68,31 @@ fn lock() -> std::sync::MutexGuard<'static, HashMap<u64, AttemptAuth>> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Record `unit`'s live attempt (replacing its last). Unit `0` names no unit and records nothing.
-pub fn record(unit: u64, attempt: AttemptAuth) {
-    if unit != 0 {
-        lock().insert(unit, attempt);
+/// Record `unit`'s live attempt (replacing its last), under the unit's own secret: the one its
+/// first attempt drew, or a fresh one. Unit `0` names no unit and records nothing; a unit whose
+/// secret cannot be drawn records nothing either, so no framer's call for it is ever served (fail
+/// closed).
+pub fn record(unit: u64, mut attempt: AttemptAuth) {
+    if unit == 0 {
+        return;
     }
+    let mut table = lock();
+    let secret = match table.get(&unit) {
+        Some(live) => live.secret,
+        None => {
+            let mut bytes = [0_u8; 16];
+            if getrandom::fill(&mut bytes).is_err() {
+                return;
+            }
+            let (a, b) = bytes.split_at(8);
+            [
+                u64::from_le_bytes(a.try_into().unwrap_or_default()),
+                u64::from_le_bytes(b.try_into().unwrap_or_default()),
+            ]
+        }
+    };
+    attempt.secret = secret;
+    table.insert(unit, attempt);
 }
 
 /// `unit`'s live attempt, as the host's server of the framer's `auth.call` reads it.

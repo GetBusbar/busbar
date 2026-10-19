@@ -230,6 +230,12 @@ impl FramerDoor for Dispatched {
         &self.facts
     }
 
+    /// The instance's identity on the host's table: the owner every auth handle it presents is
+    /// minted and verified for.
+    fn owner(&self) -> u64 {
+        self.plugin.instance().0
+    }
+
     fn side(&self) -> Option<Box<dyn Side>> {
         if self.facts.role != busbar_contract::abi::transport::ROLE_CARRIER {
             return None;

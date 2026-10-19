@@ -1430,6 +1430,10 @@ pub fn compose_egress(
                     format!("member '{entry}': its private reach could not be sealed: {e}")
                 })?;
         }
+        // THE REGISTRATION'S BINDING, held for the framer (THE DESIGN §6, "Auth points and guest
+        // lists", item 5): every dial naming the registration begins with its auth handle, and the
+        // framer's `auth.call` on it is served by the root.
+        crate::root::outbound_auth::process().register_route(caller, &route);
         let destination = busbar_contract::dest::DestinationId::new(id);
         let name = plane_lane(&facts.plane, entry);
         // The member's attempt bound is its entry's `timeout:` (ARCHITECT timeout ruling): every

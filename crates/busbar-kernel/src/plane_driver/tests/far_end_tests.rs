@@ -763,7 +763,11 @@ async fn a_529_fails_over_with_its_retry_after() {
             retry_after: Some(7)
         }
     )));
-    assert_eq!(r.auth.calls.load(Ordering::SeqCst), 0, "no kernel auth call");
+    assert_eq!(
+        r.auth.calls.load(Ordering::SeqCst),
+        0,
+        "no kernel auth call"
+    );
 }
 
 /// AT MOST ONCE (ARCHITECT round 4 Q-L3B-SURFACES (h), the walk does repeatable): a unit whose
@@ -1444,7 +1448,10 @@ async fn test_host_from_base_backslash_authority_matches_wire_host() {
             Some(p) => format!("{}:{p}", dialled.host),
             None => dialled.host.clone(),
         };
-        assert_eq!(dialled_authority, authority, "{base}: the dialled authority");
+        assert_eq!(
+            dialled_authority, authority,
+            "{base}: the dialled authority"
+        );
         assert_eq!(
             r.table.words.lock().unwrap()[0],
             (b"POST".to_vec(), head_path.as_bytes().to_vec()),

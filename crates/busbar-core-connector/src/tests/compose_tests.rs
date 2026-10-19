@@ -55,6 +55,7 @@ fn dial(target: &str) -> Dial {
         opening: None,
         head_words: Default::default(),
         anchors: None,
+        binding: None,
     }
 }
 

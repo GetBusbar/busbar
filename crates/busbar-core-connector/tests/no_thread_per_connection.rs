@@ -63,6 +63,7 @@ fn dial(target: &str, first: Vec<u8>) -> Dial {
         opening: Some((Vec::new(), first)),
         head_words: Default::default(),
         anchors: None,
+        binding: None,
     }
 }
 
