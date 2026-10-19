@@ -2632,12 +2632,40 @@ impl Drop for RestorePublished {
     }
 }
 
-/// The live readers' view: the limits slot as ANOTHER thread reads it — the running generation's
-/// traffic, which no build is on.
-fn live_key_gauge_limit() -> Option<usize> {
-    std::thread::spawn(|| crate::config::limits::installed().map(|l| l.key_gauge_limit))
-        .join()
-        .expect("reader thread must not panic")
+/// The live readers' view, read on ANOTHER thread — the running generation's traffic, which no
+/// build is on: the WHOLE published `LimitsResolved` (its `Debug` rendering, every field) and the
+/// derived caps mirrored out of it (the translate-body cap and the hook content ceiling).
+fn live_limits() -> (Option<String>, usize, usize) {
+    std::thread::spawn(|| {
+        (
+            crate::config::limits::installed().map(|l| format!("{l:?}")),
+            busbar_kernel::proxy::max_translate_body_bytes(),
+            busbar_kernel::proxy::hook_content_max_bytes(),
+        )
+    })
+    .join()
+    .expect("reader thread must not panic")
+}
+
+/// A `LimitsResolved` whose live-read fields all differ from the defaults and from each other's
+/// tag, so a reader that saw any one of them is caught. Every value is within validation's bounds.
+fn tagged_limits(tag: u64) -> crate::config::LimitsResolved {
+    let n = usize::try_from(tag).expect("small tag");
+    crate::config::LimitsResolved {
+        key_gauge_limit: 1_000 + n,
+        request_body_max_bytes: (1 + n) * 1024 * 1024,
+        hook_content_max_bytes: 1_024 * (1 + n),
+        upstream_error_body_max_bytes: 8_192 + n,
+        default_probe_interval_secs: 20 + tag,
+        default_probe_timeout_secs: 3 + tag,
+        default_policy_timeout_ms: 500 + tag,
+        hard_down_cooldown_secs: 600 + tag,
+        max_honored_retry_after_secs: 3_600 + tag,
+        tls_handshake_timeout_secs: 5 + tag,
+        request_body_read_timeout_secs: 15 + tag,
+        rate_sweep_interval: 100 + u32::try_from(tag).expect("small tag"),
+        ..crate::config::LimitsResolved::default()
+    }
 }
 
 fn build_with(
@@ -2659,67 +2687,81 @@ fn build_with(
 }
 
 /// A BUILT GENERATION'S LIMITS ARE IN FORCE ONLY ONCE IT IS LIVE (BUSBAR-1.6.0.md THE DESIGN §6
-/// item 8: a reload "swaps them in atomically ... and is refused, leaving the running generation
-/// serving, if any check fails"; §3: "A validation refusal keeps the running generation"). A build
-/// that has returned but not gone live — the window an admin apply's persist runs in — leaves the
-/// running generation's limits in force on every thread; a refused build never publishes; the swap
-/// that installs the generation publishes them before its first reader.
+/// item 8, l.980-982: a reload "swaps them in atomically ... and is refused, leaving the running
+/// generation serving, if any check fails"; §3: "A validation refusal keeps the running
+/// generation"). Judged on the WHOLE published `LimitsResolved` and the caps derived from it, read
+/// on another thread: unchanged after a refused apply; unchanged while an apply is built but not
+/// live — the window an admin apply's persist runs in; the candidate's, field for field, from the
+/// swap that installs it. Register entry GEN-LIMITS (testing/shadow-oracle/accepted-differences.json):
+/// v1.5.5 installed the candidate before validating it (main.rs:2704/2711).
 ///
 /// RED before the fix: the build installed its candidate's limits process-wide FIRST, before
-/// validation, and they stayed in force until the handle was dropped — `live_key_gauge_limit()`
-/// read the candidate's 2_468 while the generation was built but not live.
+/// validation, and they stayed in force until the handle was dropped — the live view read the
+/// candidate's limits while the generation was built but not live.
 #[test]
 fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
     crate::snapshot::init();
     let _lock = crate::config::limits::LIMITS_TEST_LOCK.blocking_lock();
     let _restore = RestorePublished(crate::config::limits::installed());
-    let running = crate::config::LimitsResolved {
-        key_gauge_limit: 1_357,
-        ..crate::config::LimitsResolved::default()
-    };
+    let running = tagged_limits(1);
     crate::config::limits::install(&running);
-    let cfg = |key_gauge_limit: usize| {
+    let before = live_limits();
+    assert_eq!(
+        before,
+        (
+            Some(format!("{running:?}")),
+            running.request_body_max_bytes,
+            running.hook_content_max_bytes
+        ),
+        "the live view reads the running generation's limits"
+    );
+    let cfg = |limits: crate::config::LimitsResolved| {
         let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(
             "BUSBAR_TEST_NO_SUCH_KEY_LIMITS_LIVE",
         ));
-        cfg.limits.key_gauge_limit = key_gauge_limit;
+        cfg.limits = limits;
         cfg
     };
 
-    // A REFUSED build (validation: a zero sticky cooldown) publishes nothing.
-    let mut refused = cfg(9_999);
-    refused.limits.hard_down_cooldown_secs = 0;
-    assert!(build_with(refused, None).is_err(), "validation refuses it");
+    // A REFUSED apply (validation: a zero sticky cooldown) changes no live limit.
+    let mut refused = tagged_limits(2);
+    refused.hard_down_cooldown_secs = 0;
+    assert!(
+        build_with(cfg(refused), None).is_err(),
+        "validation refuses it"
+    );
     assert_eq!(
-        live_key_gauge_limit(),
-        Some(1_357),
-        "a refused build changed a live limit"
+        live_limits(),
+        before,
+        "a refused apply changed a live limit"
     );
 
-    // BUILT BUT NOT LIVE: the running generation's limits stand, on every thread.
-    let (next, unkept) = build_with(cfg(2_468), None).expect("builds");
+    // BUILT BUT NOT LIVE: the running generation's limits stand, every field, on every thread.
+    let candidate = tagged_limits(3);
+    let (next, unkept) = build_with(cfg(candidate.clone()), None).expect("builds");
     assert_eq!(
-        live_key_gauge_limit(),
-        Some(1_357),
+        live_limits(),
+        before,
         "a built-but-not-live generation's limits are in force under the running generation"
     );
     assert_eq!(
-        crate::config::limits::installed().map(|l| l.key_gauge_limit),
-        Some(1_357),
+        crate::config::limits::installed().map(|l| format!("{l:?}")),
+        Some(format!("{running:?}")),
         "the build's own view of its candidate ends with the build"
     );
 
-    // LIVE: the swap that installs it publishes its limits.
+    // LIVE: the swap that installs it publishes its limits, every field.
     let handle = crate::state::AppHandle::new(crate::test_support::TestApp::new().build());
     handle.swap(std::sync::Arc::new(next));
-    assert_eq!(
-        live_key_gauge_limit(),
-        Some(2_468),
-        "the swapped-in generation's limits"
+    let after = (
+        Some(format!("{candidate:?}")),
+        candidate.request_body_max_bytes,
+        candidate.hook_content_max_bytes,
     );
+    assert_eq!(live_limits(), after, "the swapped-in generation's limits");
     // The commit after the swap republishes the same values.
     unkept.keep();
-    assert_eq!(live_key_gauge_limit(), Some(2_468));
+    assert_eq!(live_limits(), after);
 }
 
 /// THE OPERATOR'S BREAKER LIMITS REACH EVERY PLANE'S CELLS (BUSBAR-1.6.0.md THE DESIGN §1: "Any
