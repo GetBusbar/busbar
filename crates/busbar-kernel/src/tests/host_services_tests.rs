@@ -2449,40 +2449,26 @@ fn the_sweep_is_the_instances_declarations_and_names_no_protocol() {
         ]
     );
 
+    // The sweep's code, comments stripped, holds no string literal: a plane-specific branch would
+    // have to spell a kind, a dialect or a protocol to take it, so a sweep with no literal has none.
     let src = include_str!("../host_services.rs");
     let section = |from: &str, to: &str| {
         let at = src.find(from).expect(from);
         let end = at + src[at..].find(to).expect(to);
-        src[at..end].to_ascii_lowercase()
+        src[at..end]
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
     };
-    let sweep = [
+    for code in [
         section(
             "/// THE PLANE-RECORD RETENTION CEILING",
             "/// THE KERNEL'S HOST SERVICES.",
         ),
         section("/// THE RETENTION PLAN:", "/// CLAIM `(op, key)`"),
-    ]
-    .concat();
-    for noun in [
-        "llm",
-        "mcp",
-        "a2a",
-        "grpc",
-        "openai",
-        "anthropic",
-        "websocket",
-        "webrtc",
-        "http",
-        "task",
-        "tool",
-        "chat",
-        "completion",
-        "batch",
-        "voice",
-        "approval",
-        "demotion",
-        "oauth",
     ] {
-        assert!(!sweep.contains(noun), "the sweep names `{noun}`");
+        assert!(!code.is_empty());
+        assert!(!code.contains('"'), "the sweep spells a literal:\n{code}");
     }
 }
