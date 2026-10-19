@@ -837,6 +837,8 @@ struct Scripted {
     framed: bool,
     refuse: Option<ConnError>,
     opened: Mutex<Vec<Opened>>,
+    /// The request unit each open named (`OpenDesc::unit`), in open order.
+    units: Mutex<Vec<u64>>,
     /// The address set each open was stated within, in open order.
     within: Mutex<Vec<Vec<std::net::IpAddr>>>,
     writes: Mutex<Vec<Vec<u8>>>,
@@ -996,6 +998,7 @@ impl Conns for Scripted {
             desc.body.to_vec(),
         ));
         self.within.lock().unwrap().push(desc.within.to_vec());
+        self.units.lock().unwrap().push(desc.unit);
         if let Some(e) = self.refuse {
             return Err(e);
         }
@@ -1126,6 +1129,20 @@ fn call<I>(p: &Plugin<TestKind>, f: Option<ServiceFn>, input: &I) -> ServiceOut 
 
 fn opened_stream(p: &Plugin<TestKind>, seq: u32) -> ServiceOut {
     pinned_stream(p, seq, "")
+}
+
+/// `ESTABLISH` of need 0 at `127.0.0.1:9` naming the registration `m`: a request on it is a
+/// request to that member.
+fn member_stream(p: &Plugin<TestKind>, seq: u32) -> ServiceOut {
+    let i = EstablishIn {
+        head: head_of::<EstablishIn>(service::ESTABLISH, seq),
+        need: 0,
+        timeout_ms: 0,
+        target: abi_str("127.0.0.1:9"),
+        within: abi_str(""),
+        member: abi_str("m"),
+    };
+    call(p, CONN_SLOTS.establish, &i)
 }
 
 /// `ESTABLISH` of need 0 at `127.0.0.1:9`, its dial stated `within` the address set `within`.
@@ -1954,7 +1971,7 @@ impl Fielding for Polled {
 
 /// A whole framed request to a member with a binding: `ESTABLISH`, its head and its end.
 fn whole_request(p: &Plugin<TestKind>, seq: u32) -> u64 {
-    let est = opened_stream(p, seq);
+    let est = member_stream(p, seq);
     assert!(ready(&est));
     let stream = est.value;
     assert!(ready(&request(
@@ -1974,11 +1991,15 @@ fn whole_request(p: &Plugin<TestKind>, seq: u32) -> u64 {
     stream
 }
 
-/// RED (THE DESIGN §11.13 M1, "no plugin code runs under a host lock"): the member's auth call
-/// answered on the spot, and the open it leads, run with the connector's lock let go. The request
-/// still goes out once, its member's field first.
+/// THE MEMBER'S BINDING IS THE FRAMER'S TO CALL (THE DESIGN §6, "Auth points and guest lists",
+/// item 5): a plugin's whole request to a member is RECORDED host-side under its own request unit
+/// (the member and its handle now) and opened at once, outside the connector's lock (§11.13 M1),
+/// naming that unit and carrying the plugin's lines alone: no auth line, and the host makes no auth
+/// call of its own. Closing the stream forgets the unit. RED (no host-side outbound fields call
+/// remains): before, the host called the binding's `fields` and led the head with its line.
 #[test]
-fn a_members_auth_call_and_its_open_run_outside_the_connectors_lock() {
+fn a_members_request_is_recorded_and_opened_with_its_unit_and_no_auth_line() {
+    let server = crate::dispatch::auth_serve::double::armed();
     let probe = Arc::new(LockProbe {
         now: true,
         ..LockProbe::default()
@@ -1988,73 +2009,84 @@ fn a_members_auth_call_and_its_open_run_outside_the_connectors_lock() {
         auth: Some(probe.clone()),
         ..Scripted::default()
     });
-    // Adopted by a dispatcher, as every production instance is: the member's field is revealed
-    // under the seal the host lent it (#1021), and an unadopted instance has none to reveal under.
     let dispatcher = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
     let p = bound_over_by(&table, dispatcher.adopter());
-    whole_request(&p, 0);
+    let stream = whole_request(&p, 0);
     assert_eq!(
         probe.seen.calls.load(AtomicOrdering::SeqCst),
-        1,
-        "one auth call"
-    );
-    assert!(
-        !probe.seen.under_lock.load(AtomicOrdering::SeqCst),
-        "the auth plugin's fields ran under the connector's lock"
+        0,
+        "the host makes no auth call: the framer does"
     );
     assert!(
         !table.opened_under_lock.load(AtomicOrdering::SeqCst),
         "the open ran under the connector's lock"
     );
-    let opened = table.opened.lock().unwrap();
+    let opened = table.opened.lock().unwrap().clone();
     assert_eq!(opened.len(), 1, "one open");
-    assert_eq!(
-        opened[0].4[0].0, "authorization",
-        "the member's field leads"
+    assert!(
+        opened[0]
+            .4
+            .iter()
+            .all(|(n, _)| !n.eq_ignore_ascii_case("authorization")),
+        "no auth line in the head handed to the transport: {:?}",
+        opened[0].4
+    );
+    let unit = table.units.lock().unwrap()[0];
+    assert_ne!(
+        unit & crate::dispatch::auth_serve::double::OWN_UNIT,
+        0,
+        "the open names the request's own unit"
+    );
+    {
+        let recorded = server.recorded.lock().unwrap();
+        let (_, r) = recorded
+            .iter()
+            .find(|(u, _)| *u == unit)
+            .expect("the request was recorded under its unit");
+        assert_eq!((r.member.as_str(), r.handle, r.waived), ("m", 1, false));
+        assert!(
+            r.caller_credential.is_none(),
+            "an own-credential member lends none"
+        );
+    }
+    let close = busbar_contract::abi::host::conn::connector::StreamIn {
+        head: head_of::<busbar_contract::abi::host::conn::connector::StreamIn>(service::CLOSE, 3),
+        stream,
+    };
+    let _ = call(&p, CONN_SLOTS.close, &close);
+    assert!(
+        server.forgotten.lock().unwrap().contains(&unit),
+        "a closed stream forgets its request unit"
     );
 }
 
-/// RED (§11.13 M1): an auth call that could not answer on the spot is polled by the reply's read,
-/// and that poll and the open it leads run with the connector's lock let go too.
+/// A request NAMING NO MEMBER is recorded under no unit and carries no binding: the connector keys
+/// a binding by its member, and the open names no unit.
 #[test]
-fn a_members_pending_auth_call_is_polled_and_opened_outside_the_connectors_lock() {
-    let probe = Arc::new(LockProbe::default());
+fn a_request_naming_no_member_records_nothing() {
+    let _ = crate::dispatch::auth_serve::double::armed();
+    let probe = Arc::new(LockProbe {
+        now: true,
+        ..LockProbe::default()
+    });
     let table = Arc::new(Scripted {
         framed: true,
         auth: Some(probe.clone()),
         ..Scripted::default()
     });
-    table
-        .script
-        .lock()
-        .unwrap()
-        .push_back((piece(PieceKind::Fields, Some(200), None, 0), Vec::new()));
-    // Adopted by a dispatcher, so the pending auth call's read has a wake to route.
     let dispatcher = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
     let p = bound_over_by(&table, dispatcher.adopter());
-    let stream = whole_request(&p, 0);
-    assert!(
-        table.opened.lock().unwrap().is_empty(),
-        "not opened before the call answers"
-    );
-    let mut buf = [0u8; 64];
-    let (out, got) = read_reply(&p, 3, stream, &mut buf);
-    assert!(ready(&out), "{}", error_text(&out));
-    assert_eq!(got.kind, REPLY_HEAD);
-    assert_eq!(
-        probe.seen.calls.load(AtomicOrdering::SeqCst),
+    let stream = opened_stream(&p, 0).value;
+    assert!(ready(&request(&p, 1, stream, &head_piece(), HEAD_BYTES)));
+    assert!(ready(&request(
+        &p,
         2,
-        "on the spot, then polled"
-    );
-    assert!(
-        !probe.seen.under_lock.load(AtomicOrdering::SeqCst),
-        "the auth call was polled under the connector's lock"
-    );
-    assert!(
-        !table.opened_under_lock.load(AtomicOrdering::SeqCst),
-        "the open ran under the connector's lock"
-    );
-    assert_eq!(table.opened.lock().unwrap().len(), 1, "one open");
+        stream,
+        &kind_piece(REQUEST_END),
+        b""
+    )));
+    assert_eq!(*table.units.lock().unwrap(), vec![0]);
+    assert_eq!(probe.seen.calls.load(AtomicOrdering::SeqCst), 0);
 }
 
 /// RED (#74, A FORGED TICKET THROUGH A CONNECTION SLOT): a plugin hands the read slot a ticket
@@ -2364,7 +2396,7 @@ const WAIVED_HEAD: &[u8] = b"PATCH/v1/xbusbar-no-member-auth: 1\r\na: 1\r\n";
 /// One whole request on a fresh stream (`seq` onwards): its head `head` laid out over `bytes`, then
 /// its end.
 fn whole_request_with(p: &Plugin<TestKind>, seq: u32, head: &RequestPiece, bytes: &[u8]) {
-    let stream = opened_stream(p, seq).value;
+    let stream = member_stream(p, seq).value;
     assert!(ready(&request(p, seq + 1, stream, head, bytes)));
     assert!(ready(&request(
         p,
@@ -2375,12 +2407,15 @@ fn whole_request_with(p: &Plugin<TestKind>, seq: u32, head: &RequestPiece, bytes
     )));
 }
 
-/// THE PLUGIN'S OWN REQUESTS TO A MEMBER carry the member's binding re-resolved for each one (the
-/// handle its credential resolves to NOW), and THE WAIVER (`abi::auth::NO_MEMBER_AUTH_FIELD`) opens
-/// a request with NO member auth — the binding is not asked and makes no call — and is the host's:
-/// it never reaches the table. RED arm: the same request without it carries the credential.
+/// THE PLUGIN'S OWN REQUESTS TO A MEMBER are recorded with the member's binding re-resolved for
+/// each one (the handle its credential resolves to NOW), and THE WAIVER
+/// (`abi::auth::NO_MEMBER_AUTH_FIELD`) records a request WAIVED — the binding is not asked, and the
+/// framer is served no line for it — and is the host's: it never reaches the table. No request
+/// carries an auth line to the table, and the host calls no auth. RED arm: the same request without
+/// the waiver is recorded with the credential's handle.
 #[test]
 fn a_waived_request_carries_no_member_auth_and_the_waiver_never_reaches_the_table() {
+    let server = crate::dispatch::auth_serve::double::armed();
     let (table, per, auth) = resolving_table(&[Some(4), Some(6)]);
     // Adopted by a dispatcher, as every production instance is: the credential is revealed under
     // the seal the host lent it (#1021).
@@ -2404,20 +2439,36 @@ fn a_waived_request_carries_no_member_auth_and_the_waiver_never_reaches_the_tabl
         fields,
         vec![
             vec![("a".to_owned(), b"1".to_vec())],
-            vec![
-                ("authorization".to_owned(), b"Bearer h4".to_vec()),
-                ("a".to_owned(), b"1".to_vec())
-            ],
-            vec![
-                ("authorization".to_owned(), b"Bearer h6".to_vec()),
-                ("a".to_owned(), b"1".to_vec())
-            ],
+            vec![("a".to_owned(), b"1".to_vec())],
+            vec![("a".to_owned(), b"1".to_vec())],
         ],
-        "the waived request presented nothing and its waiver never reached the table; each \
-         other request the handle its credential resolved to for it"
+        "no auth line and no waiver reached the table"
+    );
+    let units = table.units.lock().unwrap().clone();
+    let recorded: Vec<(bool, u64)> = {
+        let all = server.recorded.lock().unwrap();
+        units
+            .iter()
+            .map(|u| {
+                let (_, r) = all
+                    .iter()
+                    .find(|(k, _)| k == u)
+                    .expect("each request recorded");
+                (r.waived, r.handle)
+            })
+            .collect()
+    };
+    assert_eq!(
+        recorded,
+        vec![(true, 0), (false, 4), (false, 6)],
+        "the waived request is served no line; each other its credential's handle for it"
     );
     assert_eq!(per.asked.load(std::sync::atomic::Ordering::SeqCst), 2);
-    assert_eq!(auth.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(
+        auth.calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the host calls no auth"
+    );
 }
 
 /// A MEMBER CREDENTIAL THAT NO LONGER RESOLVES refuses the plugin's own request to it: nothing is
@@ -2426,7 +2477,7 @@ fn a_waived_request_carries_no_member_auth_and_the_waiver_never_reaches_the_tabl
 fn a_request_whose_member_credential_no_longer_resolves_is_refused_and_opens_nothing() {
     let (table, per, auth) = resolving_table(&[None]);
     let p = bound_over(&table);
-    let stream = opened_stream(&p, 0).value;
+    let stream = member_stream(&p, 0).value;
     assert!(ready(&request(&p, 1, stream, &head_piece(), HEAD_BYTES)));
     assert!(ready(&request(
         &p,
@@ -2456,7 +2507,7 @@ fn a_request_refused_for_an_unavailable_credential_names_that_cause() {
     use busbar_contract::abi::host::conn::connector::CAUSE_CREDENTIAL_UNAVAILABLE;
     let (table, _, _) = resolving_table(&[None]);
     let p = bound_over(&table);
-    let stream = opened_stream(&p, 0).value;
+    let stream = member_stream(&p, 0).value;
     whole_request_on(&p, 1, stream);
     let mut buf = [0_u8; 8];
     let (o, _) = read_reply(&p, 3, stream, &mut buf);

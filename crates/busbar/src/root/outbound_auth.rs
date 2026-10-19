@@ -33,16 +33,21 @@ use busbar_contract::abi::host::service::{UnitRef, LINE_NONE};
 use busbar_contract::auth_calls::{Fields, FieldsRequest};
 use busbar_contract::conn::{InstanceId, NeedId};
 use busbar_core_connector::framer::{BindingRefs, DialBinding};
-use busbar_kernel::plane_driver::attempt_auth::{self, AuthOutcome};
+use busbar_kernel::plane_driver::attempt_auth::{self, AttemptAuth, AuthOutcome};
 use busbar_kernel::plane_driver::AuthBinding;
 
 use crate::root::loader::dispatch::auth_handle;
 use crate::root::loader::dispatch::auth_serve::{
-    self, Answer, AuthAsk, AuthServed, OutboundServer, ServedField, Wiped, OUTBOUND_REFUSED,
+    self, Answer, AuthAsk, AuthServed, OutboundServer, OwnRequest, ServedField, Wiped,
+    OUTBOUND_REFUSED,
 };
 
 /// The tag every outbound binding id carries (its top bit): an inbound line's id never does.
 pub const OUTBOUND_ID: u64 = 1 << 63;
+
+/// The tag every plugin-own request unit carries ([`OutboundServer::record_request`]): a kernel
+/// unit key never does, so a request unit never names a unit's walk.
+pub const OWN_REQUEST: u64 = 1 << 62;
 
 /// The words of a call whose unit is not one the host handed the calling framer for this binding.
 pub const UNIT_NOT_HANDED: &str =
@@ -63,6 +68,8 @@ pub struct OutboundBindings {
     by_member: Mutex<HashMap<(InstanceId, NeedId, String), u64>>,
     by_id: Mutex<HashMap<u64, Held>>,
     next: AtomicU64,
+    /// The next plugin-own request unit.
+    requests: AtomicU64,
 }
 
 impl std::fmt::Debug for OutboundBindings {
@@ -270,6 +277,31 @@ impl OutboundServer for OutboundBindings {
             later(served(unit, answer));
         });
         None
+    }
+
+    /// A plugin's own request to a member, recorded as a unit's attempt under a fresh request unit:
+    /// the framer's call on the member's binding is served from it exactly as a walk's is.
+    fn record_request(&self, request: OwnRequest) -> Option<u64> {
+        let unit = OWN_REQUEST | (self.requests.fetch_add(1, Ordering::Relaxed) + 1);
+        attempt_auth::record(
+            unit,
+            AttemptAuth {
+                member: request.member,
+                handle: request.handle,
+                extensions: request.extensions,
+                caller_credential: request.caller_credential,
+                waived: request.waived,
+                secret: [0, 0],
+                outcome: None,
+            },
+        );
+        attempt_auth::of(unit).map(|_| unit)
+    }
+
+    fn forget_request(&self, unit: u64) {
+        if unit & OWN_REQUEST != 0 {
+            attempt_auth::forget(unit);
+        }
     }
 }
 

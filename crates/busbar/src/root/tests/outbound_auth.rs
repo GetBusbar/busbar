@@ -340,3 +340,38 @@ fn a_style_that_reads_no_head_is_handed_none() {
     drop(seen);
     attempt_auth::forget(u);
 }
+
+/// A PLUGIN'S OWN REQUEST to a member is recorded under a request unit of its own (never a unit's
+/// walk key), and the framer's call on the member's binding is served from it as a walk's attempt
+/// is: its handle, its scope, its lent credential. Forgotten, it is served no more.
+#[test]
+fn a_plugins_own_request_is_served_from_its_recorded_unit_until_forgotten() {
+    let bindings = OutboundBindings::default();
+    let auth = Arc::new(ByHandle::default());
+    let id = bindings.register(PLANE, NeedId(0), "p0", &binding(&auth, AuthPoints::HEAD, 0));
+    let unit = bindings
+        .record_request(crate::root::loader::dispatch::auth_serve::OwnRequest {
+            member: "p0".to_owned(),
+            handle: 11,
+            extensions: b"own-scope".to_vec(),
+            caller_credential: Some(b"lent".to_vec().into()),
+            waived: false,
+        })
+        .expect("recorded");
+    assert_ne!(unit & OWN_REQUEST, 0, "a request unit, never a walk's");
+    let mine = bindings.unit_ref(FRAMER, unit).expect("minted");
+    assert_eq!(
+        lines(bindings.serve(ask(FRAMER, id, mine, POINT_HEAD), None)),
+        vec![(b"authorization".to_vec(), b"Bearer h11".to_vec())]
+    );
+    {
+        let seen = auth.seen.lock().unwrap();
+        assert_eq!(seen[0].1.extensions, b"own-scope");
+        assert_eq!(seen[0].2.as_deref(), Some(&b"lent"[..]));
+    }
+    bindings.forget_request(unit);
+    assert!(matches!(
+        bindings.serve(ask(FRAMER, id, mine, POINT_HEAD), None),
+        Some(AuthServed::Refused(UNIT_NOT_HANDED))
+    ));
+}

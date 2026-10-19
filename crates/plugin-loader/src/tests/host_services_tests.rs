@@ -2628,53 +2628,8 @@ fn a_line_id_and_a_binding_id_are_drawn_from_two_spaces() {
     assert_eq!(space_of(0), None);
 // ── the outbound half of the auth handle ─────────────────────────────────────────────────────
 
-use crate::dispatch::auth_serve::{
-    self, AuthAsk, AuthServed, OutboundServer, ServedField, Wiped, OUTBOUND_REFUSED,
-};
-
-/// An outbound binding the test server holds, and one whose auth refuses.
-const OUTBOUND: u64 = 0x4000_0000_0000_0005;
-const REFUSING: u64 = 0x4000_0000_0000_0006;
-/// The unit the test server answers.
-const OUT_UNIT: UnitRef = UnitRef { id: 77, mac: 0x77 };
-
-/// The root's outbound server, as a double: it serves [`OUTBOUND`] (one `authorization` line) and
-/// [`REFUSING`] (its auth refuses), and keeps every ask it was handed.
-#[derive(Default)]
-struct OutboundDouble {
-    asks: Mutex<Vec<AuthAsk>>,
-}
-
-impl OutboundServer for OutboundDouble {
-    fn serves(&self, _: u64, binding: u64) -> bool {
-        binding == OUTBOUND || binding == REFUSING
-    }
-
-    fn serve(&self, ask: AuthAsk, _: Option<auth_serve::Answer>) -> Option<AuthServed> {
-        let binding = ask.binding;
-        self.asks.lock().unwrap().push(ask);
-        Some(if binding == REFUSING {
-            AuthServed::Refused(OUTBOUND_REFUSED)
-        } else {
-            AuthServed::Fields {
-                unit: OUT_UNIT,
-                fields: vec![ServedField {
-                    name: b"authorization".to_vec(),
-                    value: Wiped(b"Bearer sk-out".to_vec()),
-                    flags: busbar_contract::abi::auth::FIELD_SENSITIVE,
-                }],
-            }
-        })
-    }
-}
-
-/// The armed outbound double (one per process: the loader's server slot is the process's).
-fn outbound() -> &'static Arc<OutboundDouble> {
-    static ONE: std::sync::OnceLock<Arc<OutboundDouble>> = std::sync::OnceLock::new();
-    let one = ONE.get_or_init(Arc::default);
-    auth_serve::arm(Arc::clone(one) as Arc<dyn OutboundServer>);
-    one
-}
+use crate::dispatch::auth_serve::double::{armed as outbound, OUTBOUND, OUT_UNIT, REFUSING};
+use crate::dispatch::auth_serve::OUTBOUND_REFUSED;
 
 /// How many asks the server was handed for `owner`.
 fn asked(owner: u64) -> usize {

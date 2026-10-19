@@ -128,6 +128,32 @@ pub enum AuthServed {
 /// Where an answer that pends is handed when it is ready.
 pub type Answer = Box<dyn FnOnce(AuthServed) + Send>;
 
+/// A PLUGIN'S OWN REQUEST to a registration member (the connection services' framed stream): what
+/// the member's binding is to be called with when the framer calls it, recorded host-side before
+/// the open, never handed to the transport.
+pub struct OwnRequest {
+    /// The registration the request names (`EstablishIn::member`).
+    pub member: String,
+    /// The binding's handle for this request (a refreshed binding's current one); `0` when waived.
+    pub handle: u64,
+    /// The plugin's stated scope, as the call's extensions blob (empty = none).
+    pub extensions: Vec<u8>,
+    /// A passthrough member's lent credential (the unit's caller's, or empty); `None` = not
+    /// passthrough.
+    pub caller_credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    /// The plugin waived the member's binding for this request: the framer is served no line.
+    pub waived: bool,
+}
+
+impl std::fmt::Debug for OwnRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OwnRequest")
+            .field("member", &self.member)
+            .field("waived", &self.waived)
+            .finish_non_exhaustive()
+    }
+}
+
 /// THE COMPOSITION ROOT'S OUTBOUND SERVER: its bindings, their auths and the units' records.
 pub trait OutboundServer: Send + Sync {
     /// Whether binding `binding` (a ref verified for `owner`) is one of this server's outbound
@@ -137,6 +163,19 @@ pub trait OutboundServer: Send + Sync {
     /// Serve `ask`: `Some` = answered now; `None` = the answer goes to `later` when it is ready
     /// (the caller's op pends meanwhile). A call with no `later` (no ticket) must answer now.
     fn serve(&self, ask: AuthAsk, later: Option<Answer>) -> Option<AuthServed>;
+
+    /// Record a plugin's own request to a member under a fresh request unit, the one its open names
+    /// (`OpenDesc::unit`) so the framer's call is served from it; `None` = nothing recorded (the
+    /// open then names no unit, and a framer begun with the member's binding is refused its call).
+    fn record_request(&self, request: OwnRequest) -> Option<u64> {
+        let _ = request;
+        None
+    }
+
+    /// Forget the request unit `unit` [`Self::record_request`] answered: its stream closed.
+    fn forget_request(&self, unit: u64) {
+        let _ = unit;
+    }
 }
 
 fn armed() -> &'static RwLock<Option<Arc<dyn OutboundServer>>> {
@@ -340,3 +379,75 @@ pub unsafe fn deliver(
 #[cfg(test)]
 #[path = "tests/auth_serve_tests.rs"]
 mod tests;
+
+/// THE ROOT'S OUTBOUND SERVER, as the loader's tests stand it in: ONE double for the process's one
+/// server slot, so every suite that arms it arms the same one.
+#[cfg(test)]
+pub(crate) mod double {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    use super::{arm, Answer, AuthAsk, AuthServed, OutboundServer, OwnRequest, ServedField, Wiped};
+    use super::{UnitRef, OUTBOUND_REFUSED};
+
+    /// An outbound binding the double holds (one `authorization` line), and one whose auth refuses.
+    pub(crate) const OUTBOUND: u64 = 0x4000_0000_0000_0005;
+    pub(crate) const REFUSING: u64 = 0x4000_0000_0000_0006;
+    /// The unit the double answers.
+    pub(crate) const OUT_UNIT: UnitRef = UnitRef { id: 77, mac: 0x77 };
+    /// The tag of every request unit the double records.
+    pub(crate) const OWN_UNIT: u64 = 0x6000_0000_0000_0000;
+
+    /// What the double was handed.
+    #[derive(Default)]
+    pub(crate) struct Double {
+        /// Every call it served.
+        pub(crate) asks: Mutex<Vec<AuthAsk>>,
+        /// Every plugin-own request it recorded, under its unit.
+        pub(crate) recorded: Mutex<Vec<(u64, OwnRequest)>>,
+        /// Every request unit forgotten.
+        pub(crate) forgotten: Mutex<Vec<u64>>,
+        next: AtomicU64,
+    }
+
+    impl OutboundServer for Double {
+        fn serves(&self, _: u64, binding: u64) -> bool {
+            binding == OUTBOUND || binding == REFUSING
+        }
+
+        fn serve(&self, ask: AuthAsk, _: Option<Answer>) -> Option<AuthServed> {
+            let binding = ask.binding;
+            self.asks.lock().unwrap().push(ask);
+            Some(if binding == REFUSING {
+                AuthServed::Refused(OUTBOUND_REFUSED)
+            } else {
+                AuthServed::Fields {
+                    unit: OUT_UNIT,
+                    fields: vec![ServedField {
+                        name: b"authorization".to_vec(),
+                        value: Wiped(b"Bearer sk-out".to_vec()),
+                        flags: busbar_contract::abi::auth::FIELD_SENSITIVE,
+                    }],
+                }
+            })
+        }
+
+        fn record_request(&self, request: OwnRequest) -> Option<u64> {
+            let unit = OWN_UNIT | (self.next.fetch_add(1, Ordering::Relaxed) + 1);
+            self.recorded.lock().unwrap().push((unit, request));
+            Some(unit)
+        }
+
+        fn forget_request(&self, unit: u64) {
+            self.forgotten.lock().unwrap().push(unit);
+        }
+    }
+
+    /// The double, armed as the process's server.
+    pub(crate) fn armed() -> &'static Arc<Double> {
+        static ONE: OnceLock<Arc<Double>> = OnceLock::new();
+        let one = ONE.get_or_init(Arc::default);
+        arm(Arc::clone(one) as Arc<dyn OutboundServer>);
+        one
+    }
+}

@@ -3203,6 +3203,9 @@ pub fn bind_member_fetches(
             if !targeted.iter().any(|(n, _)| *n == need) {
                 continue;
             }
+            // THE FRAMER'S BINDING for the plane's own requests: its dials naming the member begin
+            // with the member's auth handle, and the framer's call on it is served by the root.
+            crate::root::outbound_auth::process().register(instance, need, member, binding);
             table.bind_auth(
                 instance,
                 need,
