@@ -215,7 +215,10 @@ checks:
       cargo xtask gate --all --format=tsv
     baseline: target
     # The ledgers and ceilings are rules: a row this move arms is judged on its own.
-    rules: ["qa/*.toml"]
+    # Non-toml allow/waiver/standing lists are rules too (a loosening there must ask a person, Law 9).
+    # Generated qa/*.json inventories are not: they are measured outputs, not ceilings.
+    rules: ["qa/*.toml", "qa/dep-wall.ledger", "qa/plane-hook-isomorphism.allow", "qa/WAIVERS.md",
+            "qa/kind-isolation.standing.txt", "qa/method-coverage.missing"]
     # The ceiling ratchet reads the merge-base (XTASK_CEILING_BASE): a shallow checkout cannot
     # judge it, so only a backend with the repo's history may run this check.
     requires: [cc, git-history]
