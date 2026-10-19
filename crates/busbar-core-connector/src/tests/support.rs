@@ -506,6 +506,9 @@ impl FramerDoor for TestDoor {
                     std::ptr::copy_nonoverlapping(body.as_ptr(), i.sink.wire, body.len());
                 }
                 o.yielded.wire_len = body.len() as u64;
+                if self.knobs.spin {
+                    o.yielded.flags = YIELD_MORE;
+                }
                 ("encode", ok)
             }
             Call::Finish(i, o) => {

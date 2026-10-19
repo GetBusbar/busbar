@@ -280,3 +280,31 @@ fn a_framer_that_owes_more_forever_and_writes_nothing_faults() {
         "the framing faults within its bound"
     );
 }
+
+/// RED (Q128 arch u22 LOW 9; `busbar_contract::abi::transport`: "A framer that fills a buffer
+/// answers READY with `YIELD_MORE` and the host calls the same op again"): `encode` renders a
+/// whole message, statelessly, into one buffer sized for it, so it has no re-call to continue
+/// from. A framer answering it `YIELD_MORE` owes bytes the host cannot ask for, and the encode
+/// FAULTs. Taken as whole, the partial wire was sent as the message.
+#[test]
+fn an_encode_answered_yield_more_faults_and_is_never_sent_truncated() {
+    let door = TestDoor::new(
+        "spin",
+        &["spin"],
+        &[],
+        Knobs {
+            spin: true,
+            ..Knobs::default()
+        },
+    );
+    let refused = encode(&door, &[], b"body").expect_err("a YIELD_MORE encode is refused");
+    assert_eq!(
+        refused.outcome,
+        busbar_contract::abi::mechanism::call::Outcome::Fault
+    );
+    assert_eq!(
+        encode(&TestDoor::identity("bytes"), &[], b"body").ok(),
+        Some(b"body".to_vec()),
+        "a whole answer is the message"
+    );
+}
