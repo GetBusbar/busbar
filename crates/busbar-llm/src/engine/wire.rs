@@ -320,7 +320,6 @@ pub(crate) fn stream_translator(
         ingress,
         egress,
         is_sse,
-        std::time::Instant::now,
         max_translated_body_bytes(),
     )
 }
