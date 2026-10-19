@@ -4209,6 +4209,73 @@ fn law0_row_raised(
     Ok((dir, plant(cx, LEDGER, &out)))
 }
 
+/// THE LEDGER WITH ONE `[[law0]]` ROW ON `axis` RAISED BY ONE AND ANOTHER ROW (a different crate
+/// pair, a count of at least one) LOWERED BY ONE: a drain in one row offered as cover for a raise
+/// in another. Answers the raised row's crate directory and the planted ledger.
+fn law0_row_moved(cx: &Ctx, axis: &str) -> Result<(String, crate::ctx::Overlay), String> {
+    let crates = super::census(cx)?;
+    let reg = super::load_registry(cx)?;
+    let (raised, dir) = reg
+        .law0
+        .iter()
+        .filter(|r| r.axis == axis)
+        .find_map(|r| {
+            let c = crates
+                .iter()
+                .find(|c| c.name == r.krate && is_core_neutral(c))?;
+            cx.exists(format!("{}/Cargo.toml", c.dir))
+                .then(|| (r, c.dir.clone()))
+        })
+        .ok_or_else(|| {
+            format!("no `[[law0]]` row on `{axis}` names a core-neutral crate on this tree")
+        })?;
+    let lowered = reg
+        .law0
+        .iter()
+        .find(|r| r.count >= 1 && (r.krate != raised.krate || r.axis != raised.axis))
+        .ok_or_else(|| "no second `[[law0]]` row with a count to lower".to_string())?;
+    let text = cx.read(LEDGER)?;
+    let mut out = String::with_capacity(text.len() + 8);
+    let (mut in_law0, mut krate, mut ax) = (false, String::new(), String::new());
+    let (mut up, mut down) = (false, false);
+    for line in text.split_inclusive('\n') {
+        let t = line.trim();
+        if t.starts_with("[[") {
+            in_law0 = t == "[[law0]]";
+            krate.clear();
+            ax.clear();
+        } else if in_law0 {
+            if let Some((k, v)) = t.split_once('=') {
+                let v = v.trim().trim_matches('"');
+                match k.trim() {
+                    "crate" => krate = v.to_string(),
+                    "axis" => ax = v.to_string(),
+                    "count" if !up && krate == raised.krate && ax == raised.axis => {
+                        out.push_str(&format!("count = \"{}\"\n", raised.count + 1));
+                        up = true;
+                        continue;
+                    }
+                    "count" if !down && krate == lowered.krate && ax == lowered.axis => {
+                        out.push_str(&format!("count = \"{}\"\n", lowered.count - 1));
+                        down = true;
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        out.push_str(line);
+    }
+    if !(up && down) {
+        return Err(format!(
+            "the `[[law0]]` rows {} \u{d7} {} and {} \u{d7} {} are not in {LEDGER} in the shape \
+             this case rewrites",
+            raised.krate, raised.axis, lowered.krate, lowered.axis
+        ));
+    }
+    Ok((dir, plant(cx, LEDGER, &out)))
+}
+
 fn plant_ledger<'a>(
     cx: &'a Ctx,
     gate: &'a dyn crate::gates::Gate,
@@ -4393,6 +4460,36 @@ pub fn selftest<'a>(
         Ok((dir, mut ov)) => {
             ov.set(
                 format!("{dir}/src/planted_law0_raise.rs"),
+                "pub fn mcp_tools_listed() -> usize { 0 }\n".to_string(),
+            );
+            report.push(prove_rows_red(
+                cx,
+                gate,
+                name,
+                &[ROW_LAW0_BASE],
+                ov,
+                &naming,
+            ));
+        }
+        Err(why) => report.push(crate::gates::CasePlan::from(super::unplantable(
+            name,
+            &[ROW_LAW0_BASE],
+            &naming,
+            why,
+        ))),
+    }
+    // A DRAIN IN ONE ROW NEVER PAYS FOR A RAISE IN ANOTHER (BUSBAR-1.6.0.md Law 9; coordinator
+    // ruling on #1133: the budget is per row, per crate pair). One hit written into a neutral crate
+    // whose `[[law0]]` row this branch raises by one, while it lowers a DIFFERENT row by one: the
+    // raised row still covers nothing.
+    let name = "a `[[law0]]` row raised beside a different row lowered by as much is still \
+                refused: a drain in one row never pays for a raise in another \
+                (kind-isolation:law0-base)";
+    let naming = ["law0-row-raised", "plane"];
+    match law0_row_moved(cx, "plane") {
+        Ok((dir, mut ov)) => {
+            ov.set(
+                format!("{dir}/src/planted_law0_moved.rs"),
                 "pub fn mcp_tools_listed() -> usize { 0 }\n".to_string(),
             );
             report.push(prove_rows_red(
