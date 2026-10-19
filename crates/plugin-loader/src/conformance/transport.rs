@@ -489,12 +489,15 @@ pub(super) fn carrier_line(outcomes: &[Outcome; 8]) -> String {
         .join(" ")
 }
 
+/// One head line, its name and its value.
+type HeadLine = (Vec<u8>, Vec<u8>);
+
 /// THE FRAMER'S OWN HEAD LINES at `target` (`LocateIn::defaults_buf`), read as the connector reads
 /// them: its line, and the lines, `name: value` each, in the framer's order. A dial that states its
 /// request as fields and a body has them merged into the request's head before it is encoded, as
 /// the host's walk adds each one its request does not carry before the auth signs the head (THE
 /// DESIGN section 6, step 5).
-fn located_defaults(p: &Plugin<Transport>, target: &[u8]) -> (String, Vec<(Vec<u8>, Vec<u8>)>) {
+fn located_defaults(p: &Plugin<Transport>, target: &[u8]) -> (String, Vec<HeadLine>) {
     let (mut authority, mut name, mut alpn, mut defaults) = (
         vec![0_u8; AMPLE],
         vec![0_u8; AMPLE],
@@ -513,7 +516,7 @@ fn located_defaults(p: &Plugin<Transport>, target: &[u8]) -> (String, Vec<(Vec<u
     let mut f: Frame<LocateIn, LocateOut> = Frame::new(i, output());
     let c = p.call(slot::LOCATE, &mut f);
     let written = (f.out.defaults_written as usize).min(defaults.len());
-    let lines: Vec<(Vec<u8>, Vec<u8>)> = if c.outcome == Outcome::Ready {
+    let lines: Vec<HeadLine> = if c.outcome == Outcome::Ready {
         defaults[..written]
             .split(|b| *b == b'\n')
             .map(|l| l.strip_suffix(b"\r").unwrap_or(l))
@@ -800,7 +803,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     } else {
         let request = &dial["request"];
         let body = opt_text(&request["body"], "dial.request.body");
-        let mut named: Vec<(Vec<u8>, Vec<u8>)> = request["fields"]
+        let mut named: Vec<HeadLine> = request["fields"]
             .as_array()
             .map(|fs| {
                 fs.iter()
