@@ -890,7 +890,6 @@ mod sections_tests;
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 
-
 // Phase-C config-seam: the NEUTRAL config-seam CONTRACTS a plane's config section is read through
 // (`PlaneCfg`/`PlaneEndpointCfg`/`ContainerGateInputs`) and the parse-time bare-hook-reference rule
 // (`refuse_cross_plane_reference`). They name only `busbar_contract::secret_ref::SecretRef` + `serde_json`/`std`, so
