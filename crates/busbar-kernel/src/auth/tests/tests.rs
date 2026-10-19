@@ -3510,6 +3510,37 @@ fn the_client_token_is_read_off_the_default_inbound_styles_own_lines() {
     assert_eq!(names, ["x-other-key", "authorization"]);
 }
 
+/// LAW 7 KEEPS 1.5.5's STRIP (the coordinator's (C2)): a chain that names no `keys`, over providers
+/// that all resolve to a style no linked row serves, configures no row stating the default inbound
+/// style; the build's linked row stands in, so its lines are still the ones the host strips from a
+/// plane's request, and the credential is read off them exactly as with `keys`.
+#[test]
+fn a_chain_without_keys_over_other_styles_still_strips_the_builds_lines() {
+    let registry = std::sync::Arc::new(
+        busbar_plugin_loader::PluginRegistry::empty()
+            .link(vec![busbar_plugin_loader::LinkedPlugin::auth_door(
+                "other-style",
+                other_style::door,
+            )])
+            .expect("the fixture links"),
+    );
+    let open = AuthMiddleware::new_using(
+        &chain_cfg(&[]),
+        &["jwt-bearer", "oauth-client-credentials"],
+        &registry,
+        &crate::config::secret::SecretResolver::builtins_only(),
+    )
+    .expect("the open chain builds");
+    let names: Vec<&str> = open.carriers().iter().map(HeaderName::as_str).collect();
+    assert_eq!(names, ["x-other-key", "authorization"]);
+    let keyed = other_style_chain();
+    assert_eq!(
+        open.carriers(),
+        keyed.carriers(),
+        "the same lines with or without keys"
+    );
+}
+
 /// The host strips the default inbound style's lines from every plane's request, whichever carried
 /// the credential, and the operator credential's own lines when an admin chain is configured.
 #[test]

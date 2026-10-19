@@ -174,6 +174,138 @@ fn two_default_inbound_styles_refuse_naming_both() {
     );
 }
 
+/// A dropped-in row's own carrier mark.
+const DROPPED_MARKS: &[busbar_contract::abi::mechanism::door::MarkWord] =
+    &[busbar_contract::abi::sdk::auth_door::carrier(
+        "dropped-line",
+    )];
+
+/// The linked `default-a` beside a DROPPED-IN row, `dropped-default`, that states the default
+/// inbound style too: its signed manifest carries its Statement rendering, and its library bytes are
+/// not a library, so opening it is the only way to learn anything the rendering does not state.
+fn with_dropped_default() -> AuthRows {
+    let st = stating("dropped-default", DEFAULT_TAIL, DROPPED_MARKS);
+    // SAFETY: every list the Statement names is `'static` and of its stated count.
+    let rendering =
+        unsafe { busbar_contract::abi::mechanism::rendering::render(&st) }.expect("renders");
+    let manifest = crate::sign::Manifest {
+        statement: Some(hex::encode(rendering)),
+        ..crate::both_ways::statement(
+            "auth",
+            "dropped-default",
+            "dropped-default",
+            busbar_contract::abi::auth::ABI_VERSION,
+        )
+    };
+    let registry = crate::both_ways::dropped("law7-dropped-default", manifest, b"not a library")
+        .link(vec![crate::LinkedPlugin::auth_door(
+            "default-a",
+            default_a::door,
+        )])
+        .expect("the linked door admits");
+    let d = Arc::new(Dispatcher::new(DispatchConfig {
+        workers: 1,
+        budgets: Budgets::default(),
+        watchdog_period: Duration::from_millis(20),
+        ..DispatchConfig::default()
+    }));
+    AuthRows::new(Arc::new(registry), d)
+}
+
+/// The dropped-in libraries this thread asked the loader to open.
+fn dropped_opens() -> u64 {
+    crate::dispatch::load::DROPPED_OPENS.with(std::cell::Cell::get)
+}
+
+fn line_marks() -> Vec<String> {
+    vec![
+        "line-one".to_string(),
+        "line-two".to_string(),
+        "line-three".to_string(),
+    ]
+}
+
+/// LAW 7 ON THE AUTH AXIS (BUSBAR-1.6.0.md §2 "A plugin loads if and only if config uses it. There
+/// are no special plugins."; §4 "A store, secret, auth, hook or export plugin loads iff some entry
+/// under its kind's key names its module"): an auth row config does not use is never opened, and
+/// moves no line the host reads a caller's credential from. Every fact reader runs; none opens the
+/// dropped-in row, and its default inbound style counts for nothing. RED before: each reader bound
+/// every `kind: auth` row to read its facts, so the dropped-in library was opened (and, had it
+/// opened, its style would have refused the boot as a second default).
+#[test]
+fn an_unconfigured_dropped_in_row_is_never_opened_and_moves_no_line() {
+    let rows = with_dropped_default();
+    let before = dropped_opens();
+    assert_eq!(
+        rows.default_inbound_style(&keys_named()),
+        Ok(line_marks()),
+        "the linked default-build row's lines, as 1.5.5 read them"
+    );
+    let _ = (
+        rows.operator(),
+        rows.credential_readers(),
+        rows.carriers("default-a"),
+        rows.carriers("dropped-default"),
+        rows.answers("dropped-default"),
+    );
+    assert_eq!(dropped_opens(), before, "no dropped-in library was opened");
+}
+
+/// A CONFIGURED dropped-in row is read off its signed rendering, still unopened: config naming it
+/// makes its default inbound style the host's. RED before: its facts were read only by opening it,
+/// and a library that would not open stated nothing.
+#[test]
+fn a_configured_dropped_in_rows_style_is_read_off_its_rendering_unopened() {
+    let rows = with_dropped_default();
+    let before = dropped_opens();
+    let named = busbar_contract::auth_calls::AuthUses {
+        modules: vec!["dropped-default".to_string()],
+        keys: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        rows.default_inbound_style(&named),
+        Ok(vec!["dropped-line".to_string()])
+    );
+    assert_eq!(
+        rows.carriers("dropped-default"),
+        vec!["dropped-line".to_string()]
+    );
+    assert_eq!(
+        dropped_opens(),
+        before,
+        "read off the rendering, never opened"
+    );
+}
+
+/// TWO CONFIGURED rows stating the default inbound style refuse the boot, naming both, linked rows
+/// first; a 1.5.5 `keys` configuration whose providers all use another style still reads the build's
+/// own lines. RED before (the refusal): the dropped-in row's style was read only by opening it.
+#[test]
+fn two_configured_default_styles_refuse_and_a_keys_config_keeps_the_builds_lines() {
+    let rows = with_dropped_default();
+    let both = busbar_contract::auth_calls::AuthUses {
+        modules: vec!["default-a".to_string(), "dropped-default".to_string()],
+        ..Default::default()
+    };
+    assert_eq!(
+        rows.default_inbound_style(&both),
+        Err(super::two_default_inbound_styles(&[
+            "default-a",
+            "dropped-default"
+        ]))
+    );
+    let other_styles = busbar_contract::auth_calls::AuthUses {
+        styles: vec![
+            "jwt-bearer".to_string(),
+            "oauth-client-credentials".to_string(),
+        ],
+        keys: true,
+        ..Default::default()
+    };
+    assert_eq!(rows.default_inbound_style(&other_styles), Ok(line_marks()));
+}
+
 /// The default inbound style IS its carriers: a Statement that states the fact and no carrier is
 /// refused at load, so it states nothing here.
 #[test]

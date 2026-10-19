@@ -154,6 +154,33 @@ fn the_operator_credentials_row_is_linked_under_its_config_key() {
 /// `authorization`, then `x-api-key`, then `x-goog-api-key`). The kernel names none of them; RED
 /// before the header auth states them (no row states the style, so the walk reads nothing). And the
 /// operator credential's row states 1.5.5's two admin lines, Bearer first.
+/// LAW 7 KEEPS 1.5.5's LINES (the coordinator's (C2)): a configuration whose chains name no `keys`
+/// and whose providers all resolve to styles the header auth does not serve configures no row
+/// stating the default inbound style, so the default build's linked row stands in, as 1.5.5's fixed
+/// lines did: the host still strips `authorization`, `x-api-key` and `x-goog-api-key` before a plane
+/// sees the request. Guards the configured-only selection against dropping them.
+#[test]
+fn a_config_with_no_keys_and_no_header_style_keeps_the_1_5_5_lines() {
+    link();
+    let linked = Arc::new(busbar_kernel::preflight::linked().expect("the linked registry"));
+    let axis = crate::root::dispatch::auth_axis(linked);
+    let uses = busbar_contract::auth_calls::AuthUses {
+        styles: vec![
+            "jwt-bearer".to_string(),
+            "oauth-client-credentials".to_string(),
+        ],
+        ..Default::default()
+    };
+    assert_eq!(
+        axis.default_inbound_style(&uses),
+        Ok(vec![
+            "authorization".to_string(),
+            "x-api-key".to_string(),
+            "x-goog-api-key".to_string()
+        ])
+    );
+}
+
 #[test]
 fn the_linked_default_inbound_style_is_the_1_5_5_client_token_lines_in_order() {
     link();
