@@ -68,8 +68,8 @@ pub struct TransportFacts {
     /// `UNIT0_FIRST_LINE`): a carrier of whole lines, read off the claim rows, as the upgrade
     /// lines are.
     pub lines: Vec<&'static str>,
-    /// The claims whose row states `CLAIM_SECURE`: the SECURE forms of its wire (BUSBAR-1.6.0.md
-    /// #50, `https` / `wss`), read off the claim rows. Every other claim is plaintext.
+    /// The claims whose row states `CLAIM_SECURE`: the secure forms of its wire (BUSBAR-1.6.0.md
+    /// #50), read off the claim rows. Every other claim is plaintext.
     pub secure: Vec<&'static str>,
     /// The claims it composes over; empty = directly over the host's socket (a framer) or the
     /// bottom of its stack (a carrier).
@@ -191,7 +191,7 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
     let secure = claims
         .iter()
         .zip(rows)
-        .filter(|_| false)
+        .filter(|(_, row)| row.flags & busbar_contract::abi::transport::CLAIM_SECURE != 0)
         .map(|(name, _)| *name)
         .collect();
     // THE TWO TABLES: the status class (the fee decision's leg) and the fault reading (the
