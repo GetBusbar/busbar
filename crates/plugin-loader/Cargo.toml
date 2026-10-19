@@ -173,6 +173,9 @@ tar = { workspace = true }
 flate2 = { workspace = true }
 # Random staging-directory suffix (a pid alone is predictable to a pre-planter).
 getrandom = { workspace = true }
+# The wipe every host copy of a secret gets before it is freed (Appendix A: the call-scoped bytes
+# of a secret are zeroised); the workspace crate the contract already uses for the same rule.
+zeroize = { workspace = true }
 # ── the `pack` feature's own dependencies; see the note above [features]. OPTIONAL, never default.
 # (`hex` and `getrandom` above are this crate's own unconditional deps; `keygen` draws its ed25519
 # seed from the OS RNG through the same `getrandom`.)

@@ -37,6 +37,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use zeroize::Zeroize;
+
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, InHead, OutHead, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
@@ -540,7 +542,10 @@ impl Owned {
         }
     }
 
-    fn secret_json(&mut self, b: Vec<u8>) -> Blob {
+    /// A secret record, serialised at its exact size (no growth copy is freed holding it) and
+    /// zeroised when the request drops.
+    fn secret_json<T: serde::Serialize>(&mut self, v: &T) -> Blob {
+        let b = exact_json(v);
         let (ptr, len) = (b.as_ptr(), b.len());
         self.secrets.push(Zeroing(b));
         Blob {
@@ -710,6 +715,47 @@ fn to_json<T: serde::Serialize>(v: &T) -> Vec<u8> {
     serde_json::to_vec(v).unwrap_or_default()
 }
 
+/// `v` serialised into one allocation of exactly its size: measured first, then written, so no
+/// smaller buffer holding part of it is freed on the way (the secret records' serialiser).
+fn exact_json<T: serde::Serialize>(v: &T) -> Vec<u8> {
+    /// Counts what a serialisation writes.
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0 += b.len();
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    if serde_json::to_writer(&mut count, v).is_err() {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(count.0);
+    if serde_json::to_writer(&mut out, v).is_err() || out.len() != out.capacity() {
+        out.zeroize();
+        return Vec::new();
+    }
+    out
+}
+
+/// A leased answer's bytes, copied out of the plugin's memory: zeroised when dropped if the plugin
+/// marked them secret (`BLOB_SECRET`), as every host copy of a secret is.
+struct Copied {
+    bytes: Vec<u8>,
+    secret: bool,
+}
+
+impl Drop for Copied {
+    fn drop(&mut self) {
+        if self.secret {
+            self.bytes.zeroize();
+        }
+    }
+}
+
 fn from_json<T: serde::de::DeserializeOwned>(b: &[u8]) -> Result<T, StoreFailure> {
     serde_json::from_slice(b)
         .map_err(|e| StoreFailure::Fault(format!("a store record does not decode: {e}")))
@@ -734,19 +780,25 @@ fn items<T: Copy>(ptr: *const T, len: usize) -> Vec<T> {
 }
 
 impl LoadedStore {
-    fn read_one(&self, ran: Ran<LeasedBlobOut>) -> Result<Option<Vec<u8>>, StoreFailure> {
+    fn read_one(&self, ran: Ran<LeasedBlobOut>) -> Result<Option<Copied>, StoreFailure> {
         let r = ran.ok().map(|()| {
-            (ran.out.found == FOUND).then(|| copy(ran.out.record.ptr, ran.out.record.len))
+            (ran.out.found == FOUND).then(|| Copied {
+                bytes: copy(ran.out.record.ptr, ran.out.record.len),
+                secret: ran.out.record.flags & BLOB_SECRET != 0,
+            })
         });
         self.release(ran.lease);
         r
     }
 
-    fn read_list(&self, ran: Ran<LeasedListOut>) -> Result<Vec<Vec<u8>>, StoreFailure> {
+    fn read_list(&self, ran: Ran<LeasedListOut>) -> Result<Vec<Copied>, StoreFailure> {
         let r = ran.ok().map(|()| {
             items(ran.out.items, ran.out.items_len)
                 .iter()
-                .map(|b| copy(b.ptr, b.len))
+                .map(|b| Copied {
+                    bytes: copy(b.ptr, b.len),
+                    secret: b.flags & BLOB_SECRET != 0,
+                })
                 .collect()
         });
         self.release(ran.lease);
@@ -768,14 +820,17 @@ impl LoadedStore {
         &self,
         ran: Ran<LeasedListOut>,
     ) -> Result<Vec<T>, StoreFailure> {
-        self.read_list(ran)?.iter().map(|b| from_json(b)).collect()
+        self.read_list(ran)?
+            .iter()
+            .map(|b| from_json(&b.bytes))
+            .collect()
     }
 
     fn record<T: serde::de::DeserializeOwned>(
         &self,
         ran: Ran<LeasedBlobOut>,
     ) -> Result<Option<T>, StoreFailure> {
-        self.read_one(ran)?.map(|b| from_json(&b)).transpose()
+        self.read_one(ran)?.map(|b| from_json(&b.bytes)).transpose()
     }
 }
 
@@ -1793,7 +1848,7 @@ impl RecordStore for LoadedStore {
             slot::PUT_CREDENTIAL,
             owned_in(|o, head| BlobIn {
                 head,
-                record: o.secret_json(to_json(secret)),
+                record: o.secret_json(secret),
             }),
         )
     }
@@ -1808,7 +1863,7 @@ impl RecordStore for LoadedStore {
             owned_in(|o, head| KeyWithCredentialIn {
                 head,
                 key: o.json(to_json(key)),
-                credential: o.secret_json(to_json(secret)),
+                credential: o.secret_json(secret),
             }),
         )
     }
@@ -1971,11 +2026,11 @@ impl RecordStore for LoadedStore {
     }
 }
 
-/// Serialized secret material, zeroed when dropped.
+/// Serialized secret material, zeroised when dropped (a wipe the optimiser keeps).
 struct Zeroing(Vec<u8>);
 impl Drop for Zeroing {
     fn drop(&mut self) {
-        self.0.iter_mut().for_each(|b| *b = 0);
+        self.0.zeroize();
     }
 }
 
