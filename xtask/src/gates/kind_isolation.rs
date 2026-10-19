@@ -593,9 +593,17 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // A kernel workflow crate may depend on other kernel crates (DECISIONS #36 group structure, e.g.
     // budget -> ledger); intra-tier edges are allowed structure, not a widening.
     ("kernel", "kernel"),
-    // A kernel crate may name the author-side plugin machinery face (the dep-wall admits plugin-tooling).
-    ("kernel", "plugin-tooling"),
-    ("legacy", "contract"),
+    // `("kernel", "plugin-tooling")` WAS HERE, AND IT IS STRUCK (Q128). BUSBAR-1.6.0.md THE DESIGN
+    // l.322: "The kernel never names the loader; in `crates/busbar` the loader is named in one
+    // module, `root::loader`". The architect log rules the same edge refused and drain-only
+    // (l.4869 "kernel×plugin-loader REFUSED, drain"; l.4818 "kernel stops naming loader"). The
+    // dep-wall it cited governs plugin crates (#40(a)), not the kernel. The class reads
+    // `not-allowed`, so the ship twin refuses it and the ledger row records it as debt.
+    //
+    // `("legacy", "contract")` WAS HERE, AND IT IS STRUCK (Q128) with `("root", "legacy")` below.
+    // THE DESIGN §9 (l.1148-1150) names the 14 crates of the release, and the retiring legacy
+    // engine is not one of them; Part 1 (l.1939-1940): "The ship check admits only the classes the
+    // architecture allows". A grant for a crate the architecture deletes is no reading of it.
     // No `(plane, codec)` grant. It granted `busbar-plane-<x> -> busbar-<x>-codec`, and R7 ("Codec
     // crates fold into their planes") made that edge a module path inside one crate. A grant naming
     // a kind the table no longer has is a `dead-grant`.
@@ -622,7 +630,6 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("root", "export"),
     ("root", "hooks"),
     ("root", "kernel"),
-    ("root", "legacy"),
     ("root", "plane"),
     ("root", "plugin-tooling"),
     ("root", "secret"),
@@ -906,9 +913,6 @@ const BATTERY_KINDS: &[&str] = &[
     "hooks",
     "export",
 ];
-
-/// A crate whose name carries this is a shared battery rather than a product crate.
-const BATTERY_MARKER: &str = "testkit";
 
 /// A per-crate battery file matches this, under the crate's own `tests/`.
 const CONFORMANCE_MARKER: &str = "conformance";
@@ -2969,7 +2973,13 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
         Ok(base) => {
             for e in &measured {
                 let implied = verdict_for(&e.class);
-                if implied == "allowed" || implied == "tcb" {
+                // ONLY A GRANTED CLASS IS EXEMPT FROM ITS HISTORY. A `tcb` class is the loader's
+                // hole in the architecture's graph (`ARCHITECTURE_TCB`), never a grant: it is
+                // refused at ship, so a branch that adds a new one owes the same proof a
+                // `not-allowed` edge owes — that the merge-base already had it (Law 9, l.2081-2085;
+                // Part 1, l.1937-1938: `tcb` is never an opinion a row may grant itself). Skipping
+                // it let a new TCB edge through per push on a `tcb` row written beside it (Q128).
+                if implied == "allowed" {
                     continue;
                 }
                 if pre_existing(&renamed_from, &e.from, &e.to, |from, to| {
@@ -3009,7 +3019,7 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
                 offenders.push(format!(
                     "new-forbidden-edge\t{} -> {}\t{} -> {} is `{implied}` and it is NOT in the \
                      merge-base {}'s manifests: this branch INTRODUCED it. A `[[dep]]` row may \
-                     record a PRE-EXISTING not-allowed edge, never introduce one — the row is the \
+                     record a PRE-EXISTING not-allowed or tcb edge, never introduce one — the row is the \
                      evidence and not the judge, so no verdict, count or citation makes this edge \
                      admissible. Delete the dependency, or {MAKE_A_NEW_KIND}. {} declaration(s), \
                      in {}.",
@@ -3342,13 +3352,23 @@ fn word_ci(lower: &str, needle: &str) -> bool {
 /// `busbar-plane-streaming`, a bare `streaming::` module path) still trips the ban.
 const GRPC_LIBRARY_VOCAB: &[&str] = &["tonic::streaming", ".streaming(", "max_concurrent_streams"];
 
-/// Whether a hit on `needle` at this source line is tonic's own gRPC API surface rather than a
-/// reach into the `streaming` plane's instance vocabulary.
-fn is_grpc_library_vocab(needle: &str, lower_code: &str) -> bool {
-    (needle == "streaming" || needle == "streams")
-        && GRPC_LIBRARY_VOCAB
-            .iter()
-            .any(|pat| lower_code.contains(pat))
+/// The line `lower_code` with every tonic library spelling ([`GRPC_LIBRARY_VOCAB`]) blanked to
+/// spaces, so a `streaming`/`streams` needle is put to what is LEFT of the line rather than skipped
+/// for the whole of it (Q128). It was a line-level excuse: `streaming::Session::open().streaming(cfg)`
+/// carries `.streaming(`, so the plane's own module path on the same line was dropped too, which is
+/// the false GREEN Part 1 (l.1924-1926) forbids. Blanking span by span keeps one character per
+/// character, so a word boundary next to a blanked span is still a boundary.
+fn without_grpc_library_vocab(lower_code: &str) -> String {
+    let mut out = lower_code.to_string();
+    for pat in GRPC_LIBRARY_VOCAB {
+        out = out.replace(*pat, &" ".repeat(pat.len()));
+    }
+    out
+}
+
+/// Whether `needle` is one of the plane spellings tonic's own vocabulary collides with.
+fn collides_with_grpc_library(needle: &str) -> bool {
+    needle == "streaming" || needle == "streams"
 }
 
 /// Which crate directory a source file belongs to.
@@ -3530,16 +3550,18 @@ fn vocab_banned_hits(
     }
     let mut hits = Vec::new();
     for (at, line) in lines.iter().enumerate() {
-        let lower = &line.lower;
+        let mut library_blanked: Option<String> = None;
         for (n, (needle, _)) in banned.iter().enumerate() {
+            let lower: &str = if collides_with_grpc_library(needle) {
+                library_blanked.get_or_insert_with(|| without_grpc_library_vocab(&line.lower))
+            } else {
+                &line.lower
+            };
             let hit = if needle.contains(':') || needle.ends_with('_') || needle.ends_with('-') {
                 lower.contains(needle.as_str())
             } else {
                 word_ci(lower, needle)
             };
-            if hit && is_grpc_library_vocab(needle, lower) {
-                continue;
-            }
             if hit {
                 hits.push((at, n));
             }
@@ -4011,7 +4033,11 @@ fn rule_registry(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, ship: bool)
             for (side, k) in [("from", from), ("to", to)] {
                 if !table_kinds.contains(k) {
                     offenders.push(format!(
-                        "dead-grant	{table}	`({from}, {to})` names `{k}` in the `{side}`                          position and `{k}` is not a kind in the table. A grant for a kind that                          does not exist matches no edge, so it grants nothing and it is never                          scored dead — it is a line that reads like a decision and is not one.                          Strike it, or add the kind."
+                        "dead-grant\t{table}\t`({from}, {to})` names `{k}` in the `{side}` \
+                         position and `{k}` is not a kind in the table. A grant for a kind that \
+                         does not exist matches no edge, so it grants nothing and it is never \
+                         scored dead — it is a line that reads like a decision and is not one. \
+                         Strike it, or add the kind."
                     ));
                 }
             }
@@ -4037,7 +4063,11 @@ fn rule_registry(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, ship: bool)
                 _ => format!("`{}` is not", t.to),
             };
             offenders.push(format!(
-                "dead-transitional	{REGISTRY_FILE}	`[[transitional]] {} -> {}` ({}) exempts an                  edge that cannot be taken: {which} in the tree. The drain's own expiry runs on                  the `from` crate at the ship sha, so a row whose subject was ABSORBED rather than                  renamed reds at the tag for the wrong reason and exempts nothing until then.                  Strike it.",
+                "dead-transitional\t{REGISTRY_FILE}\t`[[transitional]] {} -> {}` ({}) exempts an \
+                 edge that cannot be taken: {which} in the tree. The drain's own expiry runs on \
+                 the `from` crate at the ship sha, so a row whose subject was ABSORBED rather than \
+                 renamed reds at the tag for the wrong reason and exempts nothing until then. \
+                 Strike it.",
                 t.from, t.to, t.reason
             ));
         }
@@ -4707,49 +4737,103 @@ fn is_test_only_cfg(attr: &str) -> bool {
 }
 
 /// WHERE `test-support` WOULD SHIP, which is never. The face rule reads a `test-support`-gated
-/// module as unshipped; that premise is checked here on every run rather than assumed (Law 10): a
-/// SHIPPED dependency declaration (`[dependencies]`, `[build-dependencies]`) that turns a crate's
-/// `test-support` on, or a `default` feature set that reaches `test-support` (its own, or a
-/// dependency's `x/test-support`), puts it in a release build, and the finding names it.
+/// module as unshipped; that premise is checked here on every run rather than assumed (Law 10,
+/// l.2116-2121: a premise is "a condition the runner evaluates against the build in front of it").
+///
+/// THE FEATURE GRAPH IS WALKED ACROSS CRATES (Q128). A feature turns on what its table lists: its
+/// own features (`x`), and a dependency's (`dep/feat`, `dep?/feat`). So the release build carries
+/// `test-support` wherever a SHIPPED switch reaches it through any chain of those: a shipped
+/// dependency declaration (`[dependencies]`, `[build-dependencies]`) whose `features` lists it or
+/// lists a feature of that crate that reaches it, the dependency's own `default` set, and a crate's
+/// own `default` set, followed into each dependency's `[features]` table. The rule read only the
+/// literal `test-support` in a declaration and the crate's own `default` closure, and never
+/// expanded a `dep/feat` item or a requested feature into the dependency's table, so either chain
+/// put a test-only module in the release build while `:faces` read it as unshipped. A crate whose
+/// table cannot be read is not walked into; `dep:` items switch a dependency on and no feature.
 fn test_support_ships(cx: &Ctx, crates: &[CrateInfo]) -> Vec<String> {
     const TS: &str = "test-support";
+    let by_name: BTreeMap<&str, &CrateInfo> = crates.iter().map(|c| (c.name.as_str(), c)).collect();
+    let tables: BTreeMap<&str, BTreeMap<String, Vec<String>>> = crates
+        .iter()
+        .filter_map(|c| {
+            let text = cx.read(&c.manifest).ok()?;
+            Some((c.name.as_str(), crate::manifest::feature_table(&text)))
+        })
+        .collect();
+    // A `dep/feat` item names the dependency by the KEY its manifest wrote; the walk follows the
+    // package that key resolves to.
+    let package_of = |krate: &str, key: &str| -> String {
+        by_name
+            .get(krate)
+            .and_then(|c| c.deps.iter().find(|d| d.key == key))
+            .map_or_else(|| key.to_string(), |d| d.pkg.clone())
+    };
+    // Every `(crate, feature)` a switch on `(krate, feature)` turns on, `test-support` included,
+    // and the first one that IS `test-support`, as the chain that reached it.
+    let reaches = |krate: &str, feature: &str| -> Option<Vec<String>> {
+        let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
+        let mut todo: Vec<(String, String, Vec<String>)> = vec![(
+            krate.to_string(),
+            feature.to_string(),
+            vec![format!("{krate}/{feature}")],
+        )];
+        while let Some((k, f, chain)) = todo.pop() {
+            if !seen.insert((k.clone(), f.clone())) {
+                continue;
+            }
+            if f == TS {
+                return Some(chain);
+            }
+            let Some(items) = tables.get(k.as_str()).and_then(|t| t.get(&f)) else {
+                continue;
+            };
+            for item in items {
+                if item.starts_with("dep:") {
+                    continue;
+                }
+                let (next_k, next_f) = match item.split_once('/') {
+                    Some((key, feat)) => (package_of(&k, key.trim_end_matches('?')), feat),
+                    None => (k.clone(), item.as_str()),
+                };
+                let mut next_chain = chain.clone();
+                next_chain.push(format!("{next_k}/{next_f}"));
+                todo.push((next_k, next_f.to_string(), next_chain));
+            }
+        }
+        None
+    };
     let mut out = Vec::new();
     for c in crates {
         for d in &c.deps {
-            if d.features.iter().any(|f| f == TS) {
-                out.push(format!(
-                    "test-support-ships\t{}\t{} turns on `{}`'s `{TS}` in its shipped \
-                     [{}]: a test-only module is in the release build, so the face rule may not \
-                     read it as unshipped",
-                    c.manifest, c.name, d.pkg, d.section
-                ));
+            // The dependency's own `default` set is its crate's finding, below, and not this one.
+            for f in d.features.iter().map(String::as_str) {
+                if let Some(chain) = reaches(&d.pkg, f) {
+                    out.push(format!(
+                        "test-support-ships\t{}\t{} turns on `{}/{f}` in its shipped [{}], which \
+                         reaches `{TS}` ({}): a test-only module is in the release build, so the \
+                         face rule may not read it as unshipped",
+                        c.manifest,
+                        c.name,
+                        d.pkg,
+                        d.section,
+                        chain.join(" -> ")
+                    ));
+                }
             }
         }
-        let Ok(text) = cx.read(&c.manifest) else {
-            continue;
-        };
-        let table = crate::manifest::feature_table(&text);
-        let mut seen: BTreeSet<String> = BTreeSet::new();
-        let mut todo: Vec<String> = table.get("default").cloned().unwrap_or_default();
-        while let Some(item) = todo.pop() {
-            if !seen.insert(item.clone()) {
-                continue;
-            }
-            let tail = item.rsplit('/').next().unwrap_or(&item);
-            if tail == TS {
-                out.push(format!(
-                    "test-support-ships\t{}\t{}'s `default` feature set reaches `{item}`: a \
-                     test-only module is in the release build, so the face rule may not read it \
-                     as unshipped",
-                    c.manifest, c.name
-                ));
-                continue;
-            }
-            if let Some(next) = table.get(&item) {
-                todo.extend(next.iter().cloned());
-            }
+        if let Some(chain) = reaches(&c.name, "default") {
+            out.push(format!(
+                "test-support-ships\t{}\t{}'s `default` feature set reaches `{TS}` ({}): a \
+                 test-only module is in the release build, so the face rule may not read it as \
+                 unshipped",
+                c.manifest,
+                c.name,
+                chain.join(" -> ")
+            ));
         }
     }
+    out.sort();
+    out.dedup();
     out
 }
 
@@ -5745,11 +5829,6 @@ fn rule_faces(
 }
 
 fn rule_testkit(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
-    let batteries: Vec<&str> = crates
-        .iter()
-        .map(|c| c.name.as_str())
-        .filter(|n| n.contains(BATTERY_MARKER))
-        .collect();
     let mut offenders: Vec<String> = Vec::new();
     let mut checked = 0usize;
 
@@ -5761,13 +5840,15 @@ fn rule_testkit(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
         // WHICH BATTERY IS THIS KIND'S? The one every member of the kind already runs. A kind whose
         // members run no shared battery at all has none, and that is the finding — named, not
         // guessed at and not silently skipped.
+        //
+        // A RUNNER IS A CRATE WITH A LIVE BATTERY ENTRY, and nothing else is (Q128). A dev-dependency
+        // whose name carries `testkit` executes nothing, and Part 2 #33 (OWNER-LOCKED) says there is
+        // "NO `testkit` (dead — not a crate and not a feature): each plugin self-tests". Counting
+        // one as a runner silenced `no-battery` and `not-run` for a crate with no battery file.
         let runners: Vec<&CrateInfo> = members
             .iter()
             .copied()
-            .filter(|c| {
-                idx.conformance.contains(&c.dir)
-                    || c.dev_deps.iter().any(|d| d.pkg.contains(BATTERY_MARKER))
-            })
+            .filter(|c| idx.conformance.contains(&c.dir))
             .collect();
         checked += members.len();
         let want_trait = entry_trait(kind);
@@ -5775,14 +5856,8 @@ fn rule_testkit(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
         if no_battery {
             offenders.push(format!(
                 "no-battery\tkind:{kind}\tno battery for kind {kind} — none of its {} crate(s) \
-                 runs a shared conformance battery (no `{BATTERY_MARKER}` dev-dependency, no \
-                 tests/*{CONFORMANCE_MARKER}*.rs). Candidates in the tree: {}",
-                members.len(),
-                if batteries.is_empty() {
-                    "none".to_string()
-                } else {
-                    batteries.join(", ")
-                }
+                 runs a conformance battery (no tests/*{CONFORMANCE_MARKER}*.rs with a live entry)",
+                members.len()
             ));
         }
         for c in members {
@@ -5848,9 +5923,8 @@ fn rule_testkit(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
             ROW_TESTKIT,
             "every crate of a kind runs its kind's shared conformance battery",
             format!(
-                "{checked} crate(s) over {} kind(s); batteries: {}",
-                BATTERY_KINDS.len(),
-                batteries.join(", ")
+                "{checked} crate(s) over {} kind(s), each with a live tests/*{CONFORMANCE_MARKER}*.rs",
+                BATTERY_KINDS.len()
             ),
         );
     }
@@ -7145,28 +7219,59 @@ fn rule_write(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry) -> Row {
     // refusal above did not save it is exact: `repins` only visits rows that ALREADY EXIST, and the
     // cell the plant grew had no row, so there was nothing to rise.
     //
+    // THE GATE IS MEASURED OVER THE REGISTRY AS IT WOULD BE WRITTEN (Q128). It was measured over the
+    // registry as it stood, and every row this flag lowers is a row the ordinary run already reds as
+    // `STALE SLACK`: the refusal fired whenever there was anything to lower, and the one path that
+    // writes could never run. So the re-pinned file is laid over the tree and the ordinary gate is
+    // asked of THAT, which is the tree the write leaves behind. Its verdict is judged by the same
+    // criterion the blocking `--posture` run applies (`gates::excused_from_all`): green, or red only
+    // on the standing debt `qa/kind-isolation.standing.txt` holds at or below its figures. A new
+    // finding of any kind refuses the write wholesale, as before.
+    //
     // The check sits AFTER the rise refusal and BEFORE the write, in that order for a reason. A
     // count that would rise is the more specific finding and the one a reader can act on, so it
     // keeps its own message; everything else that is red is reported here, wholesale, and nothing
     // is written. The twin is `check()` rather than the write build, which would ask this branch
     // again.
-    let ordinary = KindIsolationGate::check().run(cx);
+    let text = match cx.read(REGISTRY_FILE) {
+        Ok(t) => t,
+        Err(e) => {
+            return Row::fail(
+                ROW_WRITE,
+                "the registry file could not be read",
+                format!("{e} — there is nothing to re-pin."),
+            )
+        }
+    };
+    let rewritten = rewrite_counts(&text, &repins);
+    let mut after = cx.overlay().cloned().unwrap_or_default();
+    // A REGISTRY THE OVERLAY ALREADY CLAIMS IS A PLANT, and its bytes are not the file on disk: a
+    // re-pin of it is measured and reported, never written over the real ledger.
+    let planted = after
+        .paths()
+        .any(|p| p.as_path() == std::path::Path::new(REGISTRY_FILE));
+    after.set(REGISTRY_FILE, rewritten.clone());
+    let after = cx.with_overlay(after);
+    let ordinary = KindIsolationGate::check().run(&after);
     let red: Vec<String> = ordinary
         .rows
         .iter()
         .filter(|r| r.status != crate::ledger::Status::Pass)
         .map(|r| format!("{} ({})", r.id, r.title))
         .collect();
-    if !red.is_empty() {
+    let holds = red.is_empty()
+        || crate::gates::excused_from_all("kind-isolation", &after, &ordinary).is_some();
+    if !holds {
         return Row::fail(
             ROW_WRITE,
             "--write refuses: the gate is RED, and this flag does not re-pin a red tree",
             format!(
-                "{} row(s) of the ordinary run are red; NOTHING was written. A count re-pinned \
-                 while another rule is failing is a ledger that LOOKS reviewed and is not — and \
-                 the row that would be lowered is not necessarily the row that is wrong. Fix the \
-                 tree, then re-pin. Red: {}. Run `cargo xtask gate kind-isolation` for the \
-                 findings themselves.",
+                "{} row(s) of the ordinary run are red over the re-pinned registry, with findings \
+                 its standing snapshot does not hold; NOTHING was written. A count re-pinned while \
+                 another rule is failing is a ledger that LOOKS reviewed and is not — and the row \
+                 that would be lowered is not necessarily the row that is wrong. Fix the tree, then \
+                 re-pin. Red: {}. Run `cargo xtask gate kind-isolation --posture` for the findings \
+                 themselves.",
                 red.len(),
                 red.join(", ")
             ),
@@ -7179,28 +7284,29 @@ fn rule_write(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry) -> Row {
             format!("{REGISTRY_FILE} is at the measurement; nothing to re-pin"),
         );
     }
-    let text = match cx.read(REGISTRY_FILE) {
-        Ok(t) => t,
-        Err(e) => {
-            return Row::fail(
-                ROW_WRITE,
-                "the registry file could not be read",
-                format!("{e} — there is nothing to re-pin."),
-            )
-        }
-    };
-    let rewritten = rewrite_counts(&text, &repins);
+    let lowered = down
+        .iter()
+        .map(|r| format!("{} {} -> {}", r.label, r.was, r.now))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if planted {
+        return Row::pass(
+            ROW_WRITE,
+            "every count that fell is re-pinned over the planted registry, and nothing is written",
+            format!(
+                "{} row(s) lowered over the planted {REGISTRY_FILE} (the disk's file is untouched): \
+                 {lowered}",
+                down.len()
+            ),
+        );
+    }
     match cx.write_file(REGISTRY_FILE, &rewritten) {
         Ok(()) => Row::pass(
             ROW_WRITE,
             "every count that fell is re-pinned to what the tree measures",
             format!(
-                "{} row(s) lowered in {REGISTRY_FILE}: {}",
-                down.len(),
-                down.iter()
-                    .map(|r| format!("{} {} -> {}", r.label, r.was, r.now))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                "{} row(s) lowered in {REGISTRY_FILE}: {lowered}",
+                down.len()
             ),
         ),
         Err(e) => Row::fail(
@@ -7968,7 +8074,9 @@ impl Gate for KindIsolationGate {
                 );
                 ov.set(
                     "crates/busbar-transport-http/Cargo.toml",
-                    "[package]\nname = \"busbar-transport-http\"\nversion = \"0.0.0\"\n\n                     [dependencies]\nbusbar-contract = { workspace = true }\n                     busbar-kernel-ledger = { workspace = true }\n",
+                    "[package]\nname = \"busbar-transport-http\"\nversion = \"0.0.0\"\n\n\
+                     [dependencies]\nbusbar-contract = { workspace = true }\n\
+                     busbar-kernel-ledger = { workspace = true }\n",
                 );
                 ov
             },
@@ -12104,8 +12212,6 @@ fn loader_reaches_kernel(cx: &Ctx) -> Overlay {
     ov
 }
 
-/// A planted `Cargo.toml` for `dir`, declaring `name` and depending on `deps`. `set` rather than an
-/// `Edit::Create` so the same helper serves both a brand-new crate and a rewrite of a real one.
 /// Whether `from -> to` pre-dates this branch: the base declares it, or `to` is the NEW name of a
 /// crate a reviewed rename row (`renamed_from`: new name -> old name, the construction census's
 /// `[[gate.census.renamed]]`) moved, and the base declares `from -> <old name>`. A rename with no
@@ -12182,6 +12288,8 @@ mod pre_existing_tests {
     }
 }
 
+/// A planted `Cargo.toml` for `dir`, declaring `name` and depending on `deps`. `set` rather than an
+/// `Edit::Create` so the same helper serves both a brand-new crate and a rewrite of a real one.
 fn manifest_plant(dir: &str, name: &str, deps: &[&str]) -> Overlay {
     let mut body = format!("[package]\nname = \"{name}\"\nversion = \"0.0.0\"\n\n[dependencies]\n");
     for d in deps {

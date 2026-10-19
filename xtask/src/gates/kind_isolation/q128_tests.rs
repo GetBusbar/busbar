@@ -273,3 +273,93 @@ fn a_testkit_named_dev_dependency_is_not_a_battery() {
         row.detail
     );
 }
+
+// ── finding 6 (LOW): the gRPC library exemption blanks spans, not lines ──────────────────────
+
+fn streaming_hits(text: &str) -> usize {
+    let rel = "crates/busbar-transport-q128/src/lib.rs";
+    let lines = vocab_lines(rel, text);
+    let banned = vec![(
+        "streaming".to_string(),
+        "a PLANE instance named inside a transport",
+    )];
+    vocab_banned_hits(rel, text, &lines, &banned).len()
+}
+
+#[test]
+fn a_plane_path_beside_a_tonic_spelling_is_still_a_hit() {
+    assert_eq!(
+        streaming_hits("pub fn f() {\n    let s = streaming::Session::open().streaming(cfg);\n}\n"),
+        1,
+        "the `streaming::` path shares its line with `.streaming(`, and the plane is still named"
+    );
+    assert_eq!(
+        streaming_hits(
+            "pub fn f() {\n    let b = builder.streaming(true).max_concurrent_streams(8);\n}\n"
+        ),
+        0,
+        "tonic's own spellings name no plane"
+    );
+}
+
+// ── finding 7 (LOW): `test-support` reached through another crate's feature table ────────────
+
+fn ts_findings(ov: Overlay) -> Vec<String> {
+    let cx = planted(ov);
+    let crates = crates_of(&cx);
+    test_support_ships(&cx, &crates)
+}
+
+fn kit_crate(ov: &mut Overlay) {
+    ov.set(
+        "crates/busbar-store-q128kit/Cargo.toml",
+        "[package]\nname = \"busbar-store-q128kit\"\nversion = \"0.0.0\"\n\n\
+         [features]\nx = [\"test-support\"]\ntest-support = []\n",
+    );
+}
+
+#[test]
+fn a_shipped_feature_that_reaches_test_support_through_the_dependency_is_found() {
+    let mut ov = Overlay::new();
+    kit_crate(&mut ov);
+    ov.set(
+        "crates/busbar-store-q128user/Cargo.toml",
+        "[package]\nname = \"busbar-store-q128user\"\nversion = \"0.0.0\"\n\n\
+         [dependencies]\nbusbar-store-q128kit = { path = \"../busbar-store-q128kit\", features = \
+         [\"x\"] }\n",
+    );
+    let found = ts_findings(ov);
+    assert!(
+        found.iter().any(|f| f
+            .starts_with("test-support-ships\tcrates/busbar-store-q128user/Cargo.toml\t")
+            && f.contains("busbar-store-q128kit/x -> busbar-store-q128kit/test-support")),
+        "a shipped `features = [\"x\"]` whose `x` turns on `test-support` was not found: {found:?}"
+    );
+}
+
+#[test]
+fn a_default_dep_feature_that_reaches_test_support_is_found() {
+    let mut ov = Overlay::new();
+    kit_crate(&mut ov);
+    ov.set(
+        "crates/busbar-store-q128dflt/Cargo.toml",
+        "[package]\nname = \"busbar-store-q128dflt\"\nversion = \"0.0.0\"\n\n\
+         [dependencies]\nbusbar-store-q128kit = { path = \"../busbar-store-q128kit\" }\n\n\
+         [features]\ndefault = [\"busbar-store-q128kit/x\"]\n",
+    );
+    let found = ts_findings(ov);
+    assert!(
+        found.iter().any(|f| f
+            .starts_with("test-support-ships\tcrates/busbar-store-q128dflt/Cargo.toml\t")
+            && f.contains("`default` feature set reaches")),
+        "`default = [\"dep/x\"]` whose `x` turns on `test-support` was not found: {found:?}"
+    );
+}
+
+#[test]
+fn the_real_tree_ships_no_test_support() {
+    let cx = ws();
+    let crates = crates_of(&cx);
+    let found = test_support_ships(&cx, &crates);
+    assert!(found.is_empty(), "{found:?}");
+}
