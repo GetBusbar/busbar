@@ -265,3 +265,180 @@ async fn a_borrowed_unit_seals_its_verified_destination_and_its_hold_and_settle_
     assert_eq!(post.open_units(), 0, "its facts closed at its end");
     assert_sealed_with_destination_and_controls(&book);
 }
+
+/// [`ToDestination`], refused at its approve step: a session whose door says no.
+struct RefusedAtApprove;
+
+impl Units for RefusedAtApprove {
+    fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> SeatVerdict<Arrival> {
+        ToDestination.arrival(token, ctx)
+    }
+
+    fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> SeatVerdict<Decode> {
+        ToDestination.decode(token, ctx)
+    }
+
+    fn authenticate(&self, token: &Pass<Authenticate>, ctx: &UnitCtx) -> SeatVerdict<Authenticate> {
+        ToDestination.authenticate(token, ctx)
+    }
+
+    fn verify(
+        &self,
+        token: &Pass<Verify>,
+        trust: &Grant<Dial>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+    ) -> SeatVerdict<Verify> {
+        ToDestination.verify(token, trust, ctx, principal)
+    }
+
+    fn approve(
+        &self,
+        token: &Pass<Approve>,
+        _ctx: &UnitCtx,
+        _principal: &PrincipalId,
+        _destinations: &[VerifiedDestination],
+    ) -> SeatVerdict<Approve> {
+        SeatVerdict::refuse(token, Refusal::new(ReasonCode::ScopeDenied))
+    }
+
+    fn admit(
+        &self,
+        token: &Pass<Admit>,
+        admit: &Grant<Admittance>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+        destinations: &[VerifiedDestination],
+        leases: &GroupLeaseSlip,
+    ) -> SeatVerdict<Admit> {
+        ToDestination.admit(token, admit, ctx, principal, destinations, leases)
+    }
+
+    fn route(
+        &self,
+        token: &Pass<Route>,
+        ctx: &UnitCtx,
+        destinations: &[VerifiedDestination],
+    ) -> SeatVerdict<Route> {
+        ToDestination.route(token, ctx, destinations)
+    }
+
+    fn meter(
+        &self,
+        token: &Pass<Meter>,
+        usage: &Grant<Consumption>,
+        ctx: &UnitCtx,
+        provisional: &Outcome,
+        destinations: &[VerifiedDestination],
+    ) -> SeatVerdict<Meter> {
+        ToDestination.meter(token, usage, ctx, provisional, destinations)
+    }
+
+    fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> SeatVerdict<Audit> {
+        ToDestination.audit(token, ctx, outcome)
+    }
+
+    fn audit_refused(
+        &self,
+        token: &Pass<Audit>,
+        ctx: &UnitCtx,
+        refusal: &Refusal,
+    ) -> SeatVerdict<Audit> {
+        ToDestination.audit_refused(token, ctx, refusal)
+    }
+
+    fn encode(
+        &self,
+        token: &Pass<Encode>,
+        ctx: &UnitCtx,
+        outcome: &Outcome,
+    ) -> SeatVerdict<Encode> {
+        ToDestination.encode(token, ctx, outcome)
+    }
+
+    fn evidence(&self, ctx: &UnitCtx) -> Evidence {
+        ToDestination.evidence(ctx)
+    }
+}
+
+/// Open one session on `node` through `units`, end it on its own path, and hand back its key.
+fn open_and_finish<U: Units>(node: &Arc<Node>, post: &NodeEndPost, units: &U) -> (UnitKey, bool) {
+    let key = node.mint();
+    let (opened, _ctx, slot) = node
+        .open_borrowed(
+            key,
+            node.arrived(),
+            &PrincipalId::new("acct:seal"),
+            post,
+            units,
+            None,
+        )
+        .expect("the table took the session");
+    let admitted = matches!(opened, busbar_kernel::teller::SessionOpen::Admitted { .. });
+    slot.finish(post);
+    (key, admitted)
+}
+
+/// AN ADMITTED DUPLEX SESSION seals its one fixed record when it ends (audit R1#2; THE DESIGN §1
+/// "The audit step writes one fixed record, for every plane"): the session's key, how its audit step
+/// said it went, and the destination its open sealed. RED before the fix: the session's audit pass
+/// was handed back at its open and dropped at `SessionSlot::finish`, so nothing reached the chain.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_admitted_session_seals_one_record_when_it_ends() {
+    let node = Arc::new(Node::new());
+    let book = crate::root::durability::node_book();
+    node.bind_book(Arc::clone(&book.durability));
+    let post = NodeEndPost::new(Arc::clone(&node));
+    let (key, admitted) = open_and_finish(&node, &post, &ToDestination);
+    assert!(admitted, "the door passed the session");
+    assert_eq!(post.open_units(), 0, "its facts closed at its end");
+    let durability = book.durability.lock().unwrap_or_else(|p| p.into_inner());
+    let records = durability.audit_records.clone();
+    assert_eq!(
+        records.len(),
+        1,
+        "one record for the one session: {records:?}"
+    );
+    let record = &records[0];
+    assert_eq!(record.what.unit_key, key);
+    assert_eq!(record.outcome.unit_end, Outcome::Completed);
+    assert_eq!(
+        record.what.destination.as_deref(),
+        Some(DESTINATION),
+        "the record names the destination the session's open sealed"
+    );
+    assert!(durability.retained_audit_findings().is_empty());
+}
+
+/// A SESSION REFUSED AT ITS OPEN gets a record too (THE DESIGN §7 U14: "a refused unit gets a record
+/// too"): outcome refused, with the refusal's reason, and no amount. RED before audit R1#2.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_session_refused_at_its_open_seals_a_refused_record() {
+    let node = Arc::new(Node::new());
+    let book = crate::root::durability::node_book();
+    node.bind_book(Arc::clone(&book.durability));
+    let post = NodeEndPost::new(Arc::clone(&node));
+    let (key, admitted) = open_and_finish(&node, &post, &RefusedAtApprove);
+    assert!(!admitted, "the door refused the session");
+    let durability = book.durability.lock().unwrap_or_else(|p| p.into_inner());
+    let records = durability.audit_records.clone();
+    assert_eq!(
+        records.len(),
+        1,
+        "a refused session gets a record: {records:?}"
+    );
+    let record = &records[0];
+    assert_eq!(record.what.unit_key, key);
+    assert!(
+        matches!(
+            record.outcome.unit_end,
+            Outcome::Refused(_, ReasonCode::ScopeDenied)
+        ),
+        "the record says the session was refused, and why: {:?}",
+        record.outcome
+    );
+    assert!(
+        record.usage.lines.is_empty(),
+        "a refused unit has no amount"
+    );
+}

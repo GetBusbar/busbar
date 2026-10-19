@@ -870,7 +870,54 @@ impl Node {
                 meter: &meter,
             },
         );
+        // The destination set the open sealed is where the session goes: its record names it.
+        if let busbar_kernel::teller::SessionOpen::Admitted { destinations, .. } = &opened {
+            post.routed(key, destinations);
+        }
         Some((opened, ctx, SessionSlot { occupied, key }))
+    }
+
+    /// SEAL A DUPLEX SESSION'S ONE AUDIT RECORD at its end (THE DESIGN §1: "The audit step writes one
+    /// fixed record, for every plane"; §7 U14: "a refused unit gets a record too"). Its outcome is
+    /// the one its audit door was told at the open ([`NodeEndPost::stopped`] when the open's hook
+    /// stage stopped it after), its amount the session's report ([`NodeEndPost::reported`]; none
+    /// for a refused session). The session holds nothing on the book, so no hold or settlement is
+    /// named. A session whose audit door never handed its pass back has no record.
+    fn seal_session(&self, key: UnitKey, open: OpenUnit) {
+        let Some(book) = self.book.get() else {
+            return;
+        };
+        let OpenUnit {
+            principal,
+            arrived,
+            history,
+            mut sealing,
+        } = open;
+        let (said, report) = (sealing.said.take(), sealing.report.take());
+        let Some(outcome) = said else {
+            return;
+        };
+        let Some(seal) = sealing.into_seal(key, self.kernel.origin(OriginKind::Client), None)
+        else {
+            return;
+        };
+        let (lines, fee_count) = report
+            .as_ref()
+            .map_or((Vec::new(), 0), |r| (report_lines(r), r.fee_count));
+        seal.seal(
+            book,
+            &self.durability_token,
+            &principal,
+            arrived,
+            card_in_force(history.as_ref(), arrived.ms()),
+            outcome,
+            lines,
+            fee_count,
+            Line {
+                settled_at: None,
+                served: report.as_ref().map(|r| r.lane.as_str()),
+            },
+        );
     }
 
     /// Walk one handed unit through the loop and answer with what the terminal posted.
@@ -1003,11 +1050,11 @@ impl Node {
                     arrived,
                     history: history.as_ref(),
                     sealing: Mutex::new(Some(Accruing {
-                        door: None,
                         ran: Ran {
                             hold,
                             ..Ran::default()
                         },
+                        ..Accruing::default()
                     })),
                 };
                 let ended = busbar_kernel::teller::run_unit_async(
@@ -1746,9 +1793,12 @@ impl std::fmt::Debug for SessionSlot<'_> {
 }
 
 impl SessionSlot<'_> {
-    /// The session ended on its own path: its facts close on `post` and its slot is given back.
+    /// The session ended on its own path: its facts close on `post`, its one audit record is sealed
+    /// ([`Node::seal_session`]), and its slot is given back.
     pub fn finish(mut self, post: &NodeEndPost) {
-        post.close(self.key);
+        if let Some(open) = post.take(self.key) {
+            self.occupied.node.seal_session(self.key, open);
+        }
         self.occupied.reached_end = true;
     }
 }
@@ -2082,6 +2132,7 @@ impl<U: Units> Units for Borrowed<'_, U> {
         ctx: &UnitCtx,
         outcome: &Outcome,
     ) -> SeatVerdict<Encode> {
+        self.post.ended_as(ctx.key, *outcome);
         self.units.encode(token, ctx, outcome)
     }
 
@@ -2225,6 +2276,33 @@ impl NodeEndPost {
     ) {
         if let Some(open) = self.lock().get_mut(&key) {
             open.sealing.door = Some((facts, pass));
+        }
+    }
+
+    /// Unit `key`'s encode door was told how it ended: the outcome a session's record carries
+    /// ([`Node::seal_session`]).
+    fn ended_as(&self, key: UnitKey, outcome: Outcome) {
+        if let Some(open) = self.lock().get_mut(&key) {
+            open.sealing.said = Some(outcome);
+        }
+    }
+
+    /// Session `key`'s open hook stage stopped it for `reason` after its door passed: its record
+    /// says it was refused there, at the head of its route leg where the hook stage runs.
+    pub fn stopped(&self, key: UnitKey, reason: busbar_contract::caps::ReasonCode) {
+        if let Some(open) = self.lock().get_mut(&key) {
+            open.sealing.said = Some(Outcome::Refused(
+                busbar_contract::caps::StepName::Route,
+                reason,
+            ));
+        }
+    }
+
+    /// What session `key` consumed, as its plane reported it at its end: the amount its record
+    /// carries. `None` for a session whose money never opened.
+    pub fn reported(&self, key: UnitKey, report: Option<Reported>) {
+        if let Some(open) = self.lock().get_mut(&key) {
+            open.sealing.report = report.map(Report::of);
         }
     }
 
@@ -2385,6 +2463,10 @@ struct Ran {
 struct Accruing {
     door: Option<(busbar_contract::caps::AuditFacts, Pass<Audit>)>,
     ran: Ran,
+    /// How the unit's own steps said it ended, as its encode door was told: a session's outcome.
+    said: Option<Outcome>,
+    /// What a session consumed, as its plane reported it at its end.
+    report: Option<Report>,
 }
 
 impl Accruing {
