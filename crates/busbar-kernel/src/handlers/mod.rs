@@ -47,8 +47,8 @@
 // pre-extraction fixture surface reach the real MCP codec from inside core's own test binary, back
 // when a `ProtocolDecl` was a `busbar-core` type an external crate could not hand to the registry)
 // was DELETED: `ProtocolDecl` now lives in `busbar-substrate`, so core's test binary reads
-// `busbar_mcp::PROTO_DECL` directly (dev-dependency). NOTE THE SCOPE: this was MCP the PROTOCOL; the
-// `mcp/` PLANE (`crate::mcp`) never travelled with the codec and is still core's.
+// `busbar_mcp::PROTO_DECL` directly (dev-dependency). The MCP plane is its own door plane; this
+// crate holds no `mcp` module.
 
 // THE USAGE-TAP FAULT COUNT (row 155): a plane returns a usage-tap fault as data on its door's
 // answer (`abi::plane::OnPieceOut::tap_fault`), and the kernel counts it here on
@@ -217,7 +217,7 @@ impl OpDispatch {
 /// registry the composition root populated — there is no in-core const fallback to name anymore (that
 /// codec is gone from core's production build). The `expect` can only fire in a build that links no
 /// chat-serving protocol at all, which no shipped configuration is: the LLM plugin registers `openai`
-/// and its five siblings, and the sole production caller (`mcp::sampling`) asks for `openai`. The one
+/// and its five siblings, and this crate has no caller of its own. The one
 /// caller that used the old const fallback purely for a chat cell's error vocabulary (`health.rs`)
 /// now calls the neutral `protocol_error` directly (byte-identical to `ChatOperation::extract_error`).
 ///

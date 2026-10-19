@@ -3366,3 +3366,53 @@ async fn test_admin_prefix_is_boundary_safe() {
 
     handle.abort();
 }
+
+/// THE SIGNED-REQUEST VERIFIER NAMES ITS LINES ON EVERY ARM (THE DESIGN §6.3, l.925: "Every auth
+/// called names its credential lines whatever its verdict, and the transport strips the union").
+/// The gate keeps the lines the verifier's answer named, whatever its verdict, and a faulted
+/// answer is a refusal even when its verdict reads as an identity. RED: the gate read only
+/// `.verified` off the answer, so the named lines were dropped and never struck before the plane.
+#[test]
+fn a_signed_verify_keeps_the_lines_its_auth_named_whatever_its_verdict() {
+    use busbar_contract::auth_calls::{Decision, VerifiedIdentity};
+    let named = vec![
+        Strip::field("x-double-signature"),
+        Strip::query("x-double-key"),
+    ];
+    let identity = Verified::Identity(VerifiedIdentity {
+        subject: "double-id".into(),
+        ..VerifiedIdentity::default()
+    });
+    for verified in [
+        identity.clone(),
+        Verified::Pass,
+        Verified::Reject,
+        Verified::Failed,
+        Verified::Overloaded,
+    ] {
+        let answer = VerifyAnswer {
+            verified: verified.clone(),
+            decision: Decision::Continue,
+            strips: named.clone(),
+        };
+        let mut strips = vec![Strip::field("x-earlier-line")];
+        assert_eq!(signed_verdict_of(answer, false, &mut strips), verified);
+        assert_eq!(
+            strips,
+            [vec![Strip::field("x-earlier-line")], named.clone()].concat(),
+            "{verified:?}: the verifier's named lines join the union"
+        );
+    }
+    let faulted = VerifyAnswer {
+        verified: identity,
+        decision: Decision::Continue,
+        strips: named.clone(),
+    };
+    let mut strips = Vec::new();
+    assert_eq!(
+        signed_verdict_of(faulted, true, &mut strips),
+        Verified::Failed,
+        "a faulted verify never admits"
+    );
+    assert_eq!(strips, named, "a faulted verify's named lines are kept");
+}
