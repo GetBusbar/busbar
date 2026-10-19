@@ -453,9 +453,9 @@ fn later_of(completer: Option<Completer>) -> Option<Later> {
     completer.map(|c| -> Later { Box::new(move |s| c.complete(s)) })
 }
 
-/// ONE SLOT'S FRAME: the `in` and `out` are there, the head is this service's and covers its `in`,
-/// a may-pend service has a ticket, then `body`. A panic answers FAULT; the
-/// `out` is written as far as the caller stated it, and one stated below the first is REFUSED.
+/// ONE SLOT'S FRAME: the `in` and `out` are there, the head is this service's and states its `in`'s
+/// one size, a may-pend service has a ticket, then `body`. A panic answers FAULT; the whole `out`
+/// is written, and an `out` of any other size than `ServiceOut`'s is REFUSED.
 fn slot(
     ctx: HostCtx,
     input: *const c_void,
@@ -471,8 +471,8 @@ fn slot(
 }
 
 /// [`slot`]'s frame, for a service the kernel does not serve (the connection table answers it):
-/// the `in` and `out` are there, the head is this service's and covers its `in`, a may-pend
-/// service has a ticket, then `body`. A panic answers FAULT; the whole `out` is written.
+/// the `in` and `out` are there, the head is this service's and states its `in`'s one size, a
+/// may-pend service has a ticket, then `body`. A panic answers FAULT; the whole `out` is written.
 fn framed(
     input: *const c_void,
     out: *mut ServiceOut,
@@ -480,26 +480,26 @@ fn framed(
     in_size: usize,
     body: impl FnOnce(ServiceHead) -> Answered,
 ) -> RawOutcome {
-    // THE CALLER'S `out`, as it states it: one below the first `ServiceOut` is REFUSED before the
-    // service runs, and nothing of it is written (an `out` grows by appending, so an older caller's
-    // smaller one is never overrun).
-    let lent = if out.is_null() {
-        0
-    } else {
-        // SAFETY: the caller's non-NULL `out`, its leading `size` readable.
-        match unsafe { svc::lent_out(out) } {
-            Some(lent) => lent,
-            None => return RawOutcome::of(Outcome::Refused),
-        }
-    };
+    // THE CALLER'S `out`, at its ONE size (owner ruling 21): one of any other size, shorter or
+    // longer, is REFUSED before the service runs, and nothing of it is written.
+    // SAFETY: the caller's non-NULL `out`, its leading `size` readable.
+    if !out.is_null() && !unsafe { svc::lent_out(out) } {
+        return RawOutcome::of(Outcome::Refused);
+    }
     let a = catch_unwind(AssertUnwindSafe(|| {
         if input.is_null() || out.is_null() {
             return Answered::fault();
         }
         // SAFETY: a non-NULL `in` leads with its head (the call shape).
         let head = unsafe { input.cast::<ServiceHead>().read_unaligned() };
-        if check_head(&head, service, in_size).is_err() {
-            return Answered::fault();
+        // THE `in` AT ITS ONE SIZE (owner ruling 21): another op is FAULT; any other size, shorter
+        // or longer, is REFUSED before a field is read ([`NOT_EXACT`]).
+        match check_head(&head, service, in_size) {
+            Ok(()) => {}
+            Err(f) if f.rule == check::Rule::Foreign => {
+                return Answered::bare(Outcome::Refused, NOT_EXACT);
+            }
+            Err(_) => return Answered::fault(),
         }
         if may_pend(service) && head.handle.ticket.is_none() {
             return Answered::bare(Outcome::Refused, UNTICKETED);
@@ -527,8 +527,8 @@ fn framed(
                 len: a.error.len(),
             },
         };
-        // SAFETY: the caller's `out`, checked non-NULL, writable for the `lent` bytes it stated.
-        unsafe { svc::write_out(out, o, lent) };
+        // SAFETY: the caller's `out`, checked non-NULL and stating a whole `ServiceOut`.
+        unsafe { svc::write_out(out, o) };
     }
     RawOutcome::of(a.outcome)
 }
@@ -1218,7 +1218,8 @@ extern "C" fn session_emit(ctx: HostCtx, input: *const c_void, out: *mut Service
 
 // ── the host auth handle ──────────────────────────────────────────────────────────────────────
 
-/// The refusal of an `in` whose stated size is not its service's one v1 size, before it is read.
+/// The refusal of an `in` whose stated size is not its service's ONE size (owner ruling 21), shorter
+/// or longer, before it is read: every host service, connector service and io slot answers it.
 pub const NOT_EXACT: &str = "the `in` is not exactly its service's size";
 /// The refusal of a non-zero unit no kernel unit table is installed to verify: fail closed.
 pub const UNIT_UNVERIFIED: &str = "the host holds no unit to verify this one against";
@@ -1227,9 +1228,8 @@ pub const AUTH_IN_MALFORMED: &str = "the auth-handle `in` breaks its check";
 /// What every auth-handle slot answers PAST its ref checks until the kernel serves the handle.
 pub const AUTH_HANDLE_NOT_SERVED: &str = "the auth handle is not yet served";
 
-/// THE AUTH HANDLE'S SLOT FRAME: [`slot`] with only the head read, then the `in` is refused unless
-/// its stated size is EXACTLY `T`'s ([`NOT_EXACT`], before any field is read), then `body` with the
-/// `in` read whole and the calling instance's identity, the owner its refs are verified for.
+/// THE AUTH HANDLE'S SLOT FRAME: [`slot`] over `T` (the `in` is refused unless its stated size is
+/// EXACTLY `T`'s, [`NOT_EXACT`], before any field is read), then `body` with the `in` read whole and the calling instance's identity, the owner its refs are verified for.
 fn exact<T: Copy>(
     ctx: HostCtx,
     input: *const c_void,
@@ -1237,21 +1237,11 @@ fn exact<T: Copy>(
     service: u32,
     body: impl FnOnce(T, u64) -> Answered,
 ) -> RawOutcome {
-    slot(
-        ctx,
-        input,
-        out,
-        service,
-        size_of::<ServiceHead>(),
-        |_, _, head| {
-            if svc::check_head_exact(&head, service, size_of::<T>()).is_err() {
-                return Answered::bare(Outcome::Refused, NOT_EXACT);
-            }
-            // SAFETY: the caller's non-NULL `in`, stating exactly a `T`.
-            let i = unsafe { input.cast::<T>().read_unaligned() };
-            body(i, super::handle::instance_id(ctx).0)
-        },
-    )
+    slot(ctx, input, out, service, size_of::<T>(), |_, _, _| {
+        // SAFETY: the caller's non-NULL `in`, stating exactly a `T`.
+        let i = unsafe { input.cast::<T>().read_unaligned() };
+        body(i, super::handle::instance_id(ctx).0)
+    })
 }
 
 /// An auth ref, verified for `owner` at the published generation: `None` when it passes.

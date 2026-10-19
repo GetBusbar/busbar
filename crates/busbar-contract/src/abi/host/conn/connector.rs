@@ -258,17 +258,16 @@ pub struct EstablishIn {
     pub timeout_ms: u32,
     /// The target; absent = the need's `target_from`.
     pub target: AbiStr,
-    /// Appended: the address set the dial must land on, IP literals joined by
+    /// The address set the dial must land on, IP literals joined by
     /// [`WITHIN_SEPARATOR`] (the addresses `dest.judge` wrote under `DEST_RESOLVE`). The address
     /// the connector's judgement pins at dial time is held against it at the connect, before any
     /// byte is written: outside it, the stream is REFUSED (a name that resolved elsewhere since it
     /// was judged never receives the request). An entry that is not an IP literal refuses the
     /// call. Absent or empty = no pin beyond the judgement's own.
     pub within: AbiStr,
-    /// Appended (a head whose `size` ends before it names none): the REGISTRATION this stream
-    /// reaches, by its name in the plugin's declaring section; absent = none. What the host sealed
-    /// for that registration alone (its private reach, `abi::plane::TRUST_PRIVATE_REACH`) applies
-    /// to this stream and to no other.
+    /// The REGISTRATION this stream reaches, by its name in the plugin's declaring section; absent
+    /// = none. What the host sealed for that registration alone (its private reach,
+    /// `abi::plane::TRUST_PRIVATE_REACH`) applies to this stream and to no other.
     pub member: AbiStr,
 }
 
@@ -339,8 +338,7 @@ pub struct UpgradeIn {
     pub offered_name: AbiStr,
     /// The trust anchors, by the need's `trust_from` reference; absent = the need's.
     pub trust: AbiStr,
-    /// Appended: `UPGRADE_*` bits ([`UPGRADE_VERIFY_OFF`]); `0` = verify as the need's trust says.
-    /// An `in` that ends before it ([`UPGRADE_IN_V1_SIZE`]) is `0`.
+    /// `UPGRADE_*` bits ([`UPGRADE_VERIFY_OFF`]); `0` = verify as the need's trust says.
     pub flags: u32,
     /// Alignment padding.
     pub _reserved: u32,
@@ -352,9 +350,6 @@ pub struct UpgradeIn {
 /// [`EGRESS_OPERATOR_INFRASTRUCTURE`] (any other is REFUSED), and the host logs a WARN naming the
 /// instance the first time it honours it.
 pub const UPGRADE_VERIFY_OFF: u32 = 1;
-
-/// The size of an [`UpgradeIn`] from before [`UpgradeIn::flags`]: the host reads its flags as `0`.
-pub const UPGRADE_IN_V1_SIZE: usize = 64;
 
 /// [`service::FACTS`]'s `in`. The host answers the stream's facts as it observed them, a stream
 /// whose connection it refused for its trust anchors included (the refusal is the reply's; the facts
@@ -384,13 +379,13 @@ pub struct StreamFacts {
     pub agreed_protocol: AbiStr,
     /// The hash of the far end's certificate (the channel-binding input); absent = not secure.
     pub peer_cert_hash: AbiStr,
-    /// Appended (the transport pin, ARCHITECT 2026-10-03): the far end's KEY as the connector observed
+    /// The far end's KEY (the transport pin, ARCHITECT 2026-10-03) as the connector observed
     /// it, the pin of its leaf certificate's SubjectPublicKeyInfo in the one spelling
     /// (`transport::trust::key_pin`); absent = the stream carried no certificate. Where the need's
     /// trust anchors pin a key the connector refused any other before a request byte left, and
     /// this still names what the far end served.
     pub peer_key_pin: AbiStr,
-    /// Appended: `1` = busbar presented its client identity in the handshake (the far end asked
+    /// `1` = busbar presented its client identity in the handshake (the far end asked
     /// and the need's trust anchors carry one); `0` = it presented none.
     pub client_identity: u32,
     /// Alignment padding; `0`.

@@ -163,26 +163,26 @@ fn slot<I: Copy>(
     service: u32,
     body: impl FnOnce(&I, &Caller, Ticket) -> Answer,
 ) -> RawOutcome {
-    // THE CALLER'S `out`, as it states it: one below the first `ServiceOut` is REFUSED before the
-    // service runs, and nothing of it is written (an `out` grows by appending, so an older caller's
-    // smaller one is never overrun).
-    let lent = if out.is_null() {
-        0
-    } else {
-        // SAFETY: the caller's non-NULL `out`, its leading `size` readable.
-        match unsafe { lent_out(out) } {
-            Some(lent) => lent,
-            None => return RawOutcome::of(Outcome::Refused),
-        }
-    };
+    // THE CALLER'S `out`, at its ONE size (owner ruling 21): one of any other size, shorter or
+    // longer, is REFUSED before the service runs, and nothing of it is written.
+    // SAFETY: the caller's non-NULL `out`, its leading `size` readable.
+    if !out.is_null() && !unsafe { lent_out(out) } {
+        return RawOutcome::of(Outcome::Refused);
+    }
     let a = catch_unwind(AssertUnwindSafe(|| {
         if input.is_null() || out.is_null() {
             return Answer::with(Outcome::Fault, "");
         }
         // SAFETY: a non-NULL `in` leads with its head (the call shape).
         let head = unsafe { input.cast::<ServiceHead>().read_unaligned() };
-        if check_head(&head, service, size_of::<I>()).is_err() {
-            return Answer::with(Outcome::Fault, "");
+        // THE `in` AT ITS ONE SIZE (owner ruling 21): another op is FAULT; any other size is
+        // REFUSED before a field is read.
+        match check_head(&head, service, size_of::<I>()) {
+            Ok(()) => {}
+            Err(f) if f.rule == busbar_contract::abi::mechanism::check::Rule::Foreign => {
+                return Answer::with(Outcome::Refused, super::services::NOT_EXACT);
+            }
+            Err(_) => return Answer::with(Outcome::Fault, ""),
         }
         let ticket = head.handle.ticket;
         if may_pend(service) && ticket.is_none() {
@@ -191,7 +191,7 @@ fn slot<I: Copy>(
         let Some(c) = caller(ctx) else {
             return Answer::with(Outcome::Refused, NO_IO);
         };
-        // SAFETY: the head covered an `I`.
+        // SAFETY: the head stated exactly an `I`.
         let i = unsafe { input.cast::<I>().read_unaligned() };
         body(&i, &c, ticket)
     }))
@@ -216,8 +216,8 @@ fn slot<I: Copy>(
                 len: a.error.len(),
             },
         };
-        // SAFETY: the caller's `out`, checked non-NULL, writable for the `lent` bytes it stated.
-        unsafe { write_out(out, o, lent) };
+        // SAFETY: the caller's `out`, checked non-NULL and stating a whole `ServiceOut`.
+        unsafe { write_out(out, o) };
     }
     RawOutcome::of(a.outcome)
 }

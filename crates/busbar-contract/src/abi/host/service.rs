@@ -63,10 +63,10 @@ impl ServiceHead {
     };
 }
 
-/// Every service's `out`, in either table. The caller states its `size`; the host writes
-/// `min(size, its own)` bytes of it ([`write_out`]), and refuses an `out` below
-/// [`SERVICE_OUT_V1`] before the service runs ([`lent_out`]), so an `out` may grow by appending
-/// and an older caller's smaller one is never overrun.
+/// Every service's `out`, in either table, at its ONE size (owner ruling 21): the caller states
+/// `size_of::<ServiceOut>()`, and the host refuses an `out` of any other size, shorter or longer,
+/// before the service runs, writing none of it ([`lent_out`]); otherwise it writes the whole `out`
+/// ([`write_out`]).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct ServiceOut {
@@ -76,8 +76,7 @@ pub struct ServiceOut {
     pub outcome: RawOutcome,
     /// `io.ends` on a spawned program's handle: `1` once the program itself has exited (its exit
     /// code is then `value`), `0` while it runs. Every other service, and every other handle,
-    /// answers `0`. Claimed from the first padding byte, which every host has always written as
-    /// zero, so a caller on an older host reads `0`, "not exited", and falls back to its pipe.
+    /// answers `0`.
     pub exited: u8,
     /// Alignment padding.
     pub _reserved: [u8; 2],
@@ -95,38 +94,29 @@ pub struct ServiceOut {
     pub error: AbiStr,
 }
 
-/// The size of the first [`ServiceOut`]: every caller lends at least this many bytes, and an
-/// `out` stating less is REFUSED with nothing written ([`lent_out`]).
-pub const SERVICE_OUT_V1: usize = 64;
-
-/// How many bytes of the caller's `out` the host may write: its stated `size` capped at the host's
-/// own `size_of::<ServiceOut>()`, or `None` for an `out` stating less than [`SERVICE_OUT_V1`],
-/// which the host REFUSES before the service runs and never writes.
+/// Whether the caller's `out` states the host's ONE `ServiceOut` size (owner ruling 21); an `out`
+/// of any other size, shorter or longer, the host REFUSES before the service runs and never writes.
 ///
 /// # Safety
 ///
 /// `out` is non-NULL and the caller's, its leading `size` readable.
 #[must_use]
-pub unsafe fn lent_out(out: *const ServiceOut) -> Option<usize> {
+pub unsafe fn lent_out(out: *const ServiceOut) -> bool {
     // SAFETY: the caller's `out`, its leading `u32` readable (the contract above).
     let stated = unsafe { out.cast::<u32>().read_unaligned() } as usize;
-    (stated >= SERVICE_OUT_V1).then(|| stated.min(size_of::<ServiceOut>()))
+    stated == size_of::<ServiceOut>()
 }
 
-/// Write `o` into the caller's `out`, the first `lent` bytes of it ([`lent_out`]); `o.size` is set
-/// to the bytes written. Nothing past `lent` is touched.
+/// Write the whole `o` into the caller's `out`, which [`lent_out`] judged to state exactly
+/// `size_of::<ServiceOut>()`; `o.size` is set to that size.
 ///
 /// # Safety
 ///
-/// `out` is non-NULL and the caller's, writable for `lent` bytes, and `lent` is at most
-/// `size_of::<ServiceOut>()`.
-pub unsafe fn write_out(out: *mut ServiceOut, mut o: ServiceOut, lent: usize) {
-    let lent = lent.min(size_of::<ServiceOut>());
-    o.size = lent as u32;
-    // SAFETY: `o` is a whole `ServiceOut` and `out` is writable for `lent <= size_of` bytes.
-    unsafe {
-        std::ptr::copy_nonoverlapping(std::ptr::from_ref(&o).cast::<u8>(), out.cast::<u8>(), lent);
-    }
+/// `out` is non-NULL and the caller's, writable for `size_of::<ServiceOut>()` bytes.
+pub unsafe fn write_out(out: *mut ServiceOut, mut o: ServiceOut) {
+    o.size = size_of::<ServiceOut>() as u32;
+    // SAFETY: the caller's contract; unaligned, as the caller owes no alignment.
+    unsafe { out.write_unaligned(o) };
 }
 
 impl ServiceOut {
@@ -439,7 +429,7 @@ pub struct DestJudgeIn {
     pub egress_class: u32,
     /// [`DEST_RESOLVE`] | [`DEST_REFUSE_PRIVATE`] | [`DEST_EXPLAIN`].
     pub flags: u32,
-    /// Appended: where the judged addresses go under [`DEST_RESOLVE`], one span each (key = the
+    /// Where the judged addresses go under [`DEST_RESOLVE`], one span each (key = the
     /// address as text, an IP literal without port or brackets; value absent). On
     /// [`DEST_ALLOWED`]: every address the judgement admitted, in the resolver's order, the first
     /// the one a dial pins. The set a plane hands back as `EstablishIn::within`, so the judge, its
@@ -535,7 +525,7 @@ pub struct WorkOpenIn {
     pub kind: AbiStr,
     /// The handle's record.
     pub record: Blob,
-    /// Appended (ARCHITECT H3: the 128-bit reference): where the reference goes.
+    /// Where the reference goes (ARCHITECT H3: the 128-bit reference).
     pub into: ServiceBufs,
 }
 
@@ -1475,7 +1465,7 @@ pub fn check_head_view(v: &HeadView) -> Result<(), Fault> {
     Ok(())
 }
 
-/// The host's check of an `auth.call` `in`, after its exact size ([`check_head_exact`]): a handle,
+/// The host's check of an `auth.call` `in`, after its exact size ([`check_head`]): a handle,
 /// exactly one known point, a body only at the body point, no unit at the peer point, well-formed
 /// lists and an answer slot.
 ///
@@ -1619,13 +1609,13 @@ pub struct HostSlots {
     pub disk_append: Option<ServiceFn>,
     /// [`op::SNAPSHOT_READ`], in [`SnapshotReadIn`].
     pub snapshot_read: Option<ServiceFn>,
-    /// [`op::TRUST_SIGHT_ITEM`], in [`TrustSightItemIn`]. A tail addition.
+    /// [`op::TRUST_SIGHT_ITEM`], in [`TrustSightItemIn`].
     pub trust_sight_item: Option<ServiceFn>,
-    /// [`op::TRUST_SERVES`], in [`TrustServesIn`]. A tail addition.
+    /// [`op::TRUST_SERVES`], in [`TrustServesIn`].
     pub trust_serves: Option<ServiceFn>,
-    /// [`op::TRUST_DECIDE`], in [`TrustDecideIn`]. A tail addition.
+    /// [`op::TRUST_DECIDE`], in [`TrustDecideIn`].
     pub trust_decide: Option<ServiceFn>,
-    /// [`op::TRUST_STATE`], in [`TrustStateIn`]. A tail addition.
+    /// [`op::TRUST_STATE`], in [`TrustStateIn`].
     pub trust_state: Option<ServiceFn>,
     /// [`op::SESSION_EMIT`], in [`SessionEmitIn`].
     pub session_emit: Option<ServiceFn>,
@@ -1639,34 +1629,13 @@ pub struct HostSlots {
 
 // ── the host's checks of an `in` ──────────────────────────────────────────────────────────────
 
-/// The head of an `in` for `service`, whose `in` type is `in_size` bytes: the op is the slot's, and
-/// the stated size covers the type.
-///
-/// # Errors
-///
-/// [`Rule::Contradiction`] for another op; [`Rule::Foreign`] for a short `in`.
-pub const fn check_head(head: &ServiceHead, service: u32, in_size: usize) -> Result<(), Fault> {
-    if head.op != service {
-        return Err(fault(Rule::Contradiction, "service.head.op"));
-    }
-    if (head.size as usize) < in_size {
-        return Err(fault(Rule::Foreign, "service.head.size"));
-    }
-    Ok(())
-}
-
-/// The head of an `in` whose size is EXACT: the op is the slot's and the stated size is the `in`
-/// type's, neither more nor less. Every service whose `in` has one v1 size checks this, never
-/// [`check_head`]'s "at least".
+/// The head of an `in` for `service`, whose `in` type is `in_size` bytes: the op is the slot's and
+/// the stated size is the `in` type's ONE size (owner ruling 21), neither more nor less.
 ///
 /// # Errors
 ///
 /// [`Rule::Contradiction`] for another op; [`Rule::Foreign`] for any other size.
-pub const fn check_head_exact(
-    head: &ServiceHead,
-    service: u32,
-    in_size: usize,
-) -> Result<(), Fault> {
+pub const fn check_head(head: &ServiceHead, service: u32, in_size: usize) -> Result<(), Fault> {
     if head.op != service {
         return Err(fault(Rule::Contradiction, "service.head.op"));
     }
@@ -1674,6 +1643,47 @@ pub const fn check_head_exact(
         return Err(fault(Rule::Foreign, "service.head.size"));
     }
     Ok(())
+}
+
+/// EACH HOST SERVICE'S ONE `in` SIZE ([`HostSlots`], by [`op`]): `size_of` the `in` its slot
+/// names; `None` for a number no service has.
+#[must_use]
+pub const fn in_size(service: u32) -> Option<usize> {
+    Some(match service {
+        op::CLOCK_NOW => size_of::<ClockNowIn>(),
+        op::RECORDS_GET => size_of::<RecordsGetIn>(),
+        op::RECORDS_LIST => size_of::<RecordsListIn>(),
+        op::RECORDS_CLAIM => size_of::<RecordsClaimIn>(),
+        op::DEST_JUDGE => size_of::<DestJudgeIn>(),
+        op::SIGN => size_of::<SignIn>(),
+        op::UNIT_NEST => size_of::<UnitNestIn>(),
+        op::WORK_OPEN => size_of::<WorkOpenIn>(),
+        op::WORK_FIND => size_of::<WorkFindIn>(),
+        op::WORK_SETTLE => size_of::<WorkSettleIn>(),
+        op::WORK_RESUME => size_of::<WorkResumeIn>(),
+        op::TRUST_SIGHT => size_of::<TrustSightIn>(),
+        op::TRUST_DUE => size_of::<TrustDueIn>(),
+        op::VERIFY_LOOKUP => size_of::<VerifyLookupIn>(),
+        op::VERIFY_STORE => size_of::<VerifyStoreIn>(),
+        op::ENTITLEMENT_CHECK => size_of::<EntitlementCheckIn>(),
+        op::CONTENT_SCAN => size_of::<ContentScanIn>(),
+        op::HOOK_CALL => size_of::<HookCallIn>(),
+        op::RANDOM_FILL => size_of::<RandomFillIn>(),
+        op::NEED_ADMIT => size_of::<NeedAdmitIn>(),
+        op::TRUST_VERIFY => size_of::<TrustVerifyIn>(),
+        op::RECORDS_SECRET => size_of::<RecordsSecretIn>(),
+        op::DISK_APPEND => size_of::<DiskAppendIn>(),
+        op::SNAPSHOT_READ => size_of::<SnapshotReadIn>(),
+        op::TRUST_SIGHT_ITEM => size_of::<TrustSightItemIn>(),
+        op::TRUST_SERVES => size_of::<TrustServesIn>(),
+        op::TRUST_DECIDE => size_of::<TrustDecideIn>(),
+        op::TRUST_STATE => size_of::<TrustStateIn>(),
+        op::SESSION_EMIT => size_of::<SessionEmitIn>(),
+        op::AUTH_CALL => size_of::<AuthCallIn>(),
+        op::UNIT_HAND_IN => size_of::<UnitHandInIn>(),
+        op::UNIT_REFUSE => size_of::<UnitRefuseIn>(),
+        _ => return None,
+    })
 }
 
 /// The caller's buffers: a capacity never comes with a NULL pointer.

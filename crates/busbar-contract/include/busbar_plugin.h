@@ -618,7 +618,6 @@ extern "C" {
 #define BB_HCONN_CAUSE_AUTH_REFUSED UINT64_C(7) /* `ServiceOut::value` on a refusal: the request's auth refused it; nothing was sent. */
 #define BB_HCONN_CAUSE_AUTH_FAILED UINT64_C(8) /* `ServiceOut::value` on a failure: the request's auth call failed; nothing was sent. */
 #define BB_HCONN_UPGRADE_VERIFY_OFF UINT32_C(1) /* [`UpgradeIn::flags`]: run the handshake WITHOUT verifying the far end's certificate (1.5.5's */
-#define BB_HCONN_UPGRADE_IN_V1_SIZE ((size_t)64) /* The size of an [`UpgradeIn`] from before [`UpgradeIn::flags`]: the host reads its flags as `0`. */
 #define BB_HCONN_CHECKIN_REUSE UINT32_C(0) /* [`CheckinIn::disposition`]: return the stream to the pool as is. */
 #define BB_HCONN_CHECKIN_RESET UINT32_C(1) /* [`CheckinIn::disposition`]: return it after the plugin kind's reset op. */
 #define BB_HCONN_CHECKIN_DROP UINT32_C(2) /* [`CheckinIn::disposition`]: close it; it is not fit for reuse. */
@@ -631,7 +630,6 @@ extern "C" {
 #define BB_HCONN_REQUEST_END UINT32_C(3) /* [`RequestPiece::kind`]: the request is complete; nothing follows. */
 
 /* hsvc */
-#define BB_HSVC_SERVICE_OUT_V1 ((size_t)64) /* The size of the first [`ServiceOut`]: every caller lends at least this many bytes, and an */
 #define BB_HSVC_MAX_SPANS UINT64_C(1024) /* The most spans one result may carry. */
 #define BB_HSVC_OP_CLOCK_NOW UINT32_C(0) /* `clock.now`. */
 #define BB_HSVC_OP_RECORDS_GET UINT32_C(1) /* `records.get`. */
@@ -3743,7 +3741,7 @@ struct bb_hconn_ConnectorSlots {
     bb_hsvc_ServiceFn write_request;
 };
 
-/* Every service's `out`, in either table. The caller states its `size`; the host writes */
+/* Every service's `out`, in either table, at its ONE size (owner ruling 21): the caller states */
 struct bb_hsvc_ServiceOut {
     uint32_t size;
     bb_mech_RawOutcome outcome;

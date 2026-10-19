@@ -394,6 +394,21 @@ fn the_host_refuses_an_in_for_another_service_or_of_a_short_size() {
         check_head(&short, op::DEST_JUDGE, core::mem::size_of::<DestJudgeIn>()).unwrap_err(),
         fault(Rule::Foreign, "service.head.size")
     );
+    // ONE SIZE (ruling 21): a longer `in` is refused too.
+    let long = head(
+        op::DEST_JUDGE,
+        TICKET,
+        core::mem::size_of::<DestJudgeIn>() + 8,
+    );
+    assert_eq!(
+        check_head(&long, op::DEST_JUDGE, core::mem::size_of::<DestJudgeIn>()).unwrap_err(),
+        fault(Rule::Foreign, "service.head.size")
+    );
+    assert_eq!(
+        super::in_size(op::DEST_JUDGE),
+        Some(core::mem::size_of::<DestJudgeIn>()),
+        "each service's one `in` size"
+    );
 }
 
 #[test]
@@ -1145,19 +1160,19 @@ fn in_rule(r: Result<(), Fault>) -> Fault {
 fn red_an_exact_size_in_one_field_short_or_long_is_refused() {
     let exact = core::mem::size_of::<UnitRefuseIn>();
     let h = head(op::UNIT_REFUSE, Ticket::NONE, exact);
-    assert!(check_head_exact(&h, op::UNIT_REFUSE, exact).is_ok());
+    assert!(check_head(&h, op::UNIT_REFUSE, exact).is_ok());
     let short = head(op::UNIT_REFUSE, Ticket::NONE, exact - 8);
     assert_eq!(
-        in_rule(check_head_exact(&short, op::UNIT_REFUSE, exact)),
+        in_rule(check_head(&short, op::UNIT_REFUSE, exact)),
         fault(Rule::Foreign, "service.head.size")
     );
     let long = head(op::UNIT_REFUSE, Ticket::NONE, exact + 8);
     assert_eq!(
-        in_rule(check_head_exact(&long, op::UNIT_REFUSE, exact)).rule,
+        in_rule(check_head(&long, op::UNIT_REFUSE, exact)).rule,
         Rule::Foreign
     );
     assert_eq!(
-        in_rule(check_head_exact(&h, op::UNIT_HAND_IN, exact)),
+        in_rule(check_head(&h, op::UNIT_HAND_IN, exact)),
         fault(Rule::Contradiction, "service.head.op")
     );
 }

@@ -59,11 +59,14 @@ use busbar_contract::abi::host::conn::connector::{
     service, ConnectorSlots, EstablishIn, FactsIn, IdentityIn, IoIn, ProcessIdentity, ReplyIn,
     ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn, CAUSE_AUTH_FAILED,
     CAUSE_AUTH_REFUSED, CAUSE_CREDENTIAL_UNAVAILABLE, CAUSE_NONE, REPLY_ACK, REPLY_BODY, REPLY_END,
-    REPLY_HEAD, REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES, UPGRADE_IN_V1_SIZE,
-    UPGRADE_VERIFY_OFF, WITHIN_SEPARATOR,
+    REPLY_HEAD, REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES, UPGRADE_VERIFY_OFF,
+    WITHIN_SEPARATOR,
 };
-use busbar_contract::abi::host::service::{lent_out, write_out, ServiceHead, ServiceOut};
+use busbar_contract::abi::host::service::{
+    check_head, lent_out, write_out, ServiceHead, ServiceOut,
+};
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
+use busbar_contract::abi::mechanism::check::Rule;
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket};
 use busbar_contract::abi::transport::{fields, FrameSpan};
 use busbar_contract::auth_calls::{Fields, FieldsRequest};
@@ -226,9 +229,10 @@ fn lent_seal(ctx: HostCtx) -> Option<Arc<dyn busbar_contract::plugin::KernelSeal
     super::handle::resolve(ctx)?.route.get()?.upgrade()?.seal()
 }
 
-/// ONE SLOT'S FRAME: the `in` and `out` are there and the head is this service's and covers its
-/// `in`, then `body` with the caller's identity and table. A panic answers FAULT; the `out` is
-/// written as far as the caller stated it, and one stated below the first is REFUSED.
+/// ONE SLOT'S FRAME: the `in` and `out` are there and the head is this service's and states its
+/// `in`'s one size (owner ruling 21; any other size is REFUSED, [`super::services::NOT_EXACT`]),
+/// then `body` with the caller's identity and table. A panic answers FAULT; the whole `out` is
+/// written, and an `out` of any other size than `ServiceOut`'s is REFUSED.
 fn slot(
     ctx: HostCtx,
     input: *const c_void,
@@ -237,26 +241,24 @@ fn slot(
     in_size: usize,
     body: impl FnOnce(InstanceId, &Arc<dyn DeclaredConns>, ServiceHead) -> Answer,
 ) -> RawOutcome {
-    // THE CALLER'S `out`, as it states it: one below the first `ServiceOut` is REFUSED before the
-    // service runs, and nothing of it is written (an `out` grows by appending, so an older caller's
-    // smaller one is never overrun).
-    let lent = if out.is_null() {
-        0
-    } else {
-        // SAFETY: the caller's non-NULL `out`, its leading `size` readable.
-        match unsafe { lent_out(out) } {
-            Some(lent) => lent,
-            None => return RawOutcome::of(Outcome::Refused),
-        }
-    };
+    // THE CALLER'S `out`, at its ONE size (owner ruling 21): one of any other size, shorter or
+    // longer, is REFUSED before the service runs, and nothing of it is written.
+    // SAFETY: the caller's non-NULL `out`, its leading `size` readable.
+    if !out.is_null() && !unsafe { lent_out(out) } {
+        return RawOutcome::of(Outcome::Refused);
+    }
     let a = catch_unwind(AssertUnwindSafe(|| {
         if input.is_null() || out.is_null() {
             return Answer::with(Outcome::Fault, "");
         }
         // SAFETY: a non-NULL `in` leads with its head (the call shape).
         let head = unsafe { input.cast::<ServiceHead>().read_unaligned() };
-        if head.op != service || (head.size as usize) < in_size {
-            return Answer::with(Outcome::Fault, "");
+        match check_head(&head, service, in_size) {
+            Ok(()) => {}
+            Err(f) if f.rule == Rule::Foreign => {
+                return Answer::with(Outcome::Refused, super::services::NOT_EXACT);
+            }
+            Err(_) => return Answer::with(Outcome::Fault, ""),
         }
         match armed(ctx) {
             // A never-pend service that writes the caller's memory is run afresh on a replay: a
@@ -291,8 +293,8 @@ fn slot(
                 len: a.error.len(),
             },
         };
-        // SAFETY: the caller's `out`, checked non-NULL, writable for the `lent` bytes it stated.
-        unsafe { write_out(out, o, lent) };
+        // SAFETY: the caller's `out`, checked non-NULL and stating a whole `ServiceOut`.
+        unsafe { write_out(out, o) };
     }
     RawOutcome::of(a.outcome)
 }
@@ -307,45 +309,16 @@ unsafe fn bytes<'a>(ptr: *mut u8, len: usize) -> Option<&'a mut [u8]> {
     unsafe { super::validate::lent_mut(ptr, len) }
 }
 
-/// How much of an [`EstablishIn`] a caller must state: everything before the appended
-/// [`EstablishIn::member`], which a shorter one states as none.
-const ESTABLISH_IN_MEMBERLESS: usize = std::mem::offset_of!(EstablishIn, member);
-
-/// The caller's `EstablishIn`, as much of it as its head's `size` states: one that ends before the
-/// appended `member` names none.
-///
-/// # Safety
-/// `input` names an `EstablishIn` whose head was checked to state at least
-/// [`ESTABLISH_IN_MEMBERLESS`] bytes, live for the call.
-unsafe fn read_establish(input: *const c_void) -> EstablishIn {
-    // SAFETY: the head is the struct's first field, covered by the checked size.
-    let size = unsafe { input.cast::<ServiceHead>().read_unaligned() }.size as usize;
-    // SAFETY: a plain repr(C) value of integers and pointer/length pairs: all-zero is every field
-    // absent (a NULL string of length 0).
-    let mut i: EstablishIn = unsafe { std::mem::zeroed() };
-    let n = size.min(size_of::<EstablishIn>());
-    // SAFETY: `n` bytes of the caller's, into a plain repr(C) value of at least `n` bytes.
-    unsafe {
-        std::ptr::copy_nonoverlapping(
-            input.cast::<u8>(),
-            std::ptr::from_mut(&mut i).cast::<u8>(),
-            n,
-        );
-    }
-    i
-}
-
 extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     slot(
         ctx,
         input,
         out,
         service::ESTABLISH,
-        ESTABLISH_IN_MEMBERLESS,
+        size_of::<EstablishIn>(),
         |id, table, _| {
-            // SAFETY: the head covered an `EstablishIn` up to its appended `member`; one whose
-            // `size` stops there names no registration.
-            let i = unsafe { read_establish(input) };
+            // SAFETY: the head stated exactly an `EstablishIn` (the frame's check).
+            let i = unsafe { input.cast::<EstablishIn>().read_unaligned() };
             // SAFETY: a checked range of the caller's, live for the call.
             let Some(target) = (unsafe { bytes(i.target.ptr.cast_mut(), i.target.len) }) else {
                 return Answer::with(Outcome::Fault, "");
@@ -528,20 +501,10 @@ extern "C" fn upgrade_secure(
         input,
         out,
         service::UPGRADE_SECURE,
-        UPGRADE_IN_V1_SIZE,
+        size_of::<UpgradeIn>(),
         |id, table, head| {
-            // An `in` from before `flags` reads them as 0: only the bytes the head states are read.
-            // SAFETY: an all-zero `UpgradeIn` is a valid value (NULL strings, no flags).
-            let mut i: UpgradeIn = unsafe { std::mem::zeroed() };
-            let given = (head.size as usize).min(size_of::<UpgradeIn>());
-            // SAFETY: the head covered at least `UPGRADE_IN_V1_SIZE` bytes, and states `given`.
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    input.cast::<u8>(),
-                    std::ptr::from_mut(&mut i).cast::<u8>(),
-                    given,
-                );
-            }
+            // SAFETY: the head stated exactly an `UpgradeIn` (the frame's check).
+            let i = unsafe { input.cast::<UpgradeIn>().read_unaligned() };
             let verify_off = i.flags & UPGRADE_VERIFY_OFF != 0;
             // SAFETY: the caller's strings, live for the call.
             let (Ok(name), Ok(trust)) = (unsafe { optional_text(i.offered_name) }, unsafe {

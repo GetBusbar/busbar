@@ -609,9 +609,16 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
     // The room a READ service is handed, so its well-formed call can be answered whole.
     let (mut read_buf, mut read_spans) = ([0u8; 64], [NO_SPAN; 4]);
     for (service, f) in (0..SERVICES).zip(slots) {
-        // The largest `in` in the table, all zero past its head: every `in` fits it.
+        // The largest `in` in the table, all zero past its head: every `in` fits it. Each states
+        // its service's one size (owner ruling 21), but the auth handle's two, which state the
+        // buffer's and are refused for it.
         let mut raw = [0u64; 32];
-        let h = head(service, Ticket::NONE, 0, size_of_val(&raw));
+        let size = if matches!(service, op::UNIT_HAND_IN | op::UNIT_REFUSE) {
+            size_of_val(&raw)
+        } else {
+            svc::in_size(service).expect("every service has its one `in` size")
+        };
+        let h = head(service, Ticket::NONE, 0, size);
         // SAFETY: the head fits the buffer's start.
         unsafe { raw.as_mut_ptr().cast::<ServiceHead>().write_unaligned(h) };
         // A read that answers into the caller's buffers is handed a WELL-FORMED `in` (a named
@@ -936,15 +943,19 @@ fn hook_call_refuses_each_malformed_in_before_any_hook_runs() {
     assert!(d.route.provider.scoped.lock().unwrap().is_empty());
 }
 
+/// An `in` for another service is FAULT; one of any other size than its service's one size is
+/// REFUSED before it is read ([`NOT_EXACT`], owner ruling 21).
 #[test]
-fn an_in_for_another_service_or_of_a_short_size_is_fault() {
+fn an_in_for_another_service_is_fault_and_one_of_another_size_is_refused() {
     let d = double();
     let mut i = judge_in("https://a.example/", TICKET, 0, 0);
     i.head.op = op::CLOCK_NOW;
     assert_eq!(call_judge(&d, &i).0.outcome(), Outcome::Fault);
     let mut i = judge_in("https://a.example/", TICKET, 0, 0);
     i.head.size -= 1;
-    assert_eq!(call_judge(&d, &i).0.outcome(), Outcome::Fault);
+    let (ret, o) = call_judge(&d, &i);
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), NOT_EXACT);
     let i = judge_in("https://a.example/", TICKET, 0, 8);
     assert_eq!(
         call_judge(&d, &i).0.outcome(),
@@ -2068,7 +2079,12 @@ fn the_sdk_trust_state_reads_the_kernels_items_under_the_short_buffer_rule() {
 fn an_all_zero_trust_state_in_is_a_short_answer() {
     let d = double();
     let mut raw = [0u64; 32];
-    let h = head(op::TRUST_STATE, Ticket::NONE, 0, size_of_val(&raw));
+    let h = head(
+        op::TRUST_STATE,
+        Ticket::NONE,
+        0,
+        size_of::<svc::TrustStateIn>(),
+    );
     // SAFETY: the head fits the buffer's start.
     unsafe { raw.as_mut_ptr().cast::<ServiceHead>().write_unaligned(h) };
     let mut o = blank();
@@ -2329,13 +2345,13 @@ impl LentOut {
 }
 
 /// RED (Q128 kernel-scope MEDIUM, the host service frame): the host writes a caller's `out` only as far
-/// as the caller STATED it (`min(out.size, its own)`), and refuses an `out` stated below the first
-/// `ServiceOut` before the service runs, writing none of it, so a `ServiceOut` may grow by appending
-/// and an older caller's smaller one is never overrun. RED before: the frame wrote a whole
+/// as the caller STATED it, and refuses an `out` of any other size than `ServiceOut`'s one size
+/// (ruling 21), shorter or longer, before the service runs, writing none of it. RED before: the frame wrote a whole
 /// `ServiceOut` over whatever the caller lent.
 #[test]
 fn red_the_host_service_frame_writes_no_further_than_the_out_the_caller_stated() {
-    use busbar_contract::abi::host::service::SERVICE_OUT_V1;
+    const SERVICE_OUT: usize =
+        std::mem::size_of::<busbar_contract::abi::host::service::ServiceOut>();
     use busbar_contract::abi::mechanism::call::{Outcome, RawOutcome};
     let mut lent = LentOut::stating(32);
     let raw: RawOutcome = framed(std::ptr::null(), lent.out(), 0, 0, |_| {
@@ -2343,13 +2359,13 @@ fn red_the_host_service_frame_writes_no_further_than_the_out_the_caller_stated()
     });
     assert_eq!(raw.outcome(), Outcome::Refused, "a short `out` was served");
     assert!(lent.untouched_from(4), "a short `out` was written");
-    let mut lent = LentOut::stating(SERVICE_OUT_V1 as u32);
+    let mut lent = LentOut::stating(SERVICE_OUT as u32);
     let raw: RawOutcome = framed(std::ptr::null(), lent.out(), 0, 0, |_| {
         unreachable!("a NULL `in` never reaches the body")
     });
     assert_eq!(raw.outcome(), Outcome::Fault, "a NULL `in` is FAULT");
     assert!(
-        lent.untouched_from(SERVICE_OUT_V1),
+        lent.untouched_from(SERVICE_OUT),
         "the host wrote past the `out` stated"
     );
     assert_eq!(lent.0[5], 0, "`exited` is written zero by every frame");

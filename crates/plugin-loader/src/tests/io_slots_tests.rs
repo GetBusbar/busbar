@@ -48,13 +48,13 @@ impl LentOut {
 }
 
 /// RED (Q128 kernel-scope MEDIUM, the io slot frame): the host writes a caller's `out` only as far
-/// as the caller STATED it (`min(out.size, its own)`), and refuses an `out` stated below the first
-/// `ServiceOut` before the service runs, writing none of it, so a `ServiceOut` may grow by appending
-/// and an older caller's smaller one is never overrun. RED before: the frame wrote a whole
+/// as the caller STATED it, and refuses an `out` of any other size than `ServiceOut`'s one size
+/// (ruling 21), shorter or longer, before the service runs, writing none of it. RED before: the frame wrote a whole
 /// `ServiceOut` over whatever the caller lent.
 #[test]
 fn red_the_io_slot_frame_writes_no_further_than_the_out_the_caller_stated() {
-    use busbar_contract::abi::host::service::SERVICE_OUT_V1;
+    const SERVICE_OUT: usize =
+        std::mem::size_of::<busbar_contract::abi::host::service::ServiceOut>();
     use busbar_contract::abi::mechanism::call::{Outcome, RawOutcome};
     let mut lent = LentOut::stating(32);
     let raw: RawOutcome = slot::<busbar_contract::abi::host::io::AddrIn>(
@@ -66,7 +66,7 @@ fn red_the_io_slot_frame_writes_no_further_than_the_out_the_caller_stated() {
     );
     assert_eq!(raw.outcome(), Outcome::Refused, "a short `out` was served");
     assert!(lent.untouched_from(4), "a short `out` was written");
-    let mut lent = LentOut::stating(SERVICE_OUT_V1 as u32);
+    let mut lent = LentOut::stating(SERVICE_OUT as u32);
     let raw: RawOutcome = slot::<busbar_contract::abi::host::io::AddrIn>(
         busbar_contract::abi::mechanism::ticket::HostCtx::NONE,
         std::ptr::null(),
@@ -76,7 +76,7 @@ fn red_the_io_slot_frame_writes_no_further_than_the_out_the_caller_stated() {
     );
     assert_eq!(raw.outcome(), Outcome::Fault, "a NULL `in` is FAULT");
     assert!(
-        lent.untouched_from(SERVICE_OUT_V1),
+        lent.untouched_from(SERVICE_OUT),
         "the host wrote past the `out` stated"
     );
     assert_eq!(lent.0[5], 0, "`exited` is written zero by every frame");
