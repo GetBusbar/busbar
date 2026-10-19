@@ -262,7 +262,7 @@ impl AppSlots {
 
 /// `busbar_requests_total` + `busbar_request_duration_seconds` for one finished request, on ANY
 /// plane. The single emission site for the request families: the model plane calls it from
-/// `ingress::finish_inner` and every mounted plane calls it from `plane::observe`.
+/// `ingress::finish_inner` and every mounted plane calls it from `ingress::observe`.
 ///
 /// TWO SERIES, split so the model plane stays v1.5.4-identical. The MODEL plane
 /// (`crate::plane::is_fallback(plane)`) emits `busbar_requests_total` / `busbar_request_duration_seconds`
