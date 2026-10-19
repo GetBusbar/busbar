@@ -1342,6 +1342,7 @@ fn compute_layout() -> String {
         [
             head,
             side,
+            scheme,
             _reserved,
             target,
             facts,
