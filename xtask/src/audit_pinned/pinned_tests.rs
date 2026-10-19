@@ -138,7 +138,8 @@ impl Scratch {
 
     /// The busbar tree: a root crate that links the plugin's cdylib TWIN (the logic crate reaches
     /// the default distribution through the twin's lock edge), a non-plugin git dependency, a
-    /// plugin only a dev-dependency names, and a plugin behind a feature `default` does not turn on.
+    /// plugin only a dev-dependency names, and a plugin AND ITS TWIN behind a feature `default`
+    /// does not turn on.
     /// `pin` is `(url, sha)` of the pinned plugin; `in_tree` lays the logic crate on disk too.
     fn busbar_commit(&self, pin: Option<(&str, &str)>, in_tree: Option<&str>) -> String {
         let b = self.busbar();
@@ -153,16 +154,21 @@ impl Scratch {
         ws.push_str(
             "busbar-export-off = { git = \"https://example.invalid/busbar-export-off\", rev = \"3333333\" }\n",
         );
+        ws.push_str(
+            "busbar-export-off-plugin = { git = \"https://example.invalid/busbar-export-off\", rev = \"4444444\" }\n",
+        );
         let mut root_deps = String::from(
-            "left-pad = { workspace = true }\nbusbar-export-off = { workspace = true, optional = true }\n",
+            "left-pad = { workspace = true }\nbusbar-export-off = { workspace = true, optional = true }\n\
+             busbar-export-off-plugin = { workspace = true, optional = true }\n",
         );
         let mut lock = String::from(
-            "version = 4\n\n[[package]]\nname = \"busbar\"\nversion = \"0.1.0\"\ndependencies = [\n \"busbar-auth-devonly\",\n \"busbar-export-off\",\n \"left-pad\",\n]\n\n",
+            "version = 4\n\n[[package]]\nname = \"busbar\"\nversion = \"0.1.0\"\ndependencies = [\n \"busbar-auth-devonly\",\n \"busbar-export-off\",\n \"busbar-export-off-plugin\",\n \"left-pad\",\n]\n\n",
         );
         for (name, n) in [
             ("left-pad", '1'),
             ("busbar-auth-devonly", '2'),
             ("busbar-export-off", '3'),
+            ("busbar-export-off-plugin", '4'),
         ] {
             let sha = n.to_string().repeat(40);
             lock.push_str(&format!(
@@ -186,7 +192,7 @@ impl Scratch {
             "crates/busbar/Cargo.toml",
             &format!(
                 "[package]\nname = \"busbar\"\nversion = \"0.1.0\"\n\n[dependencies]\n{root_deps}\n\
-                 [features]\ndefault = [\"plane-twin\"]\nplane-twin = []\nexport-off = [\"dep:busbar-export-off\"]\n\n\
+                 [features]\ndefault = [\"plane-twin\"]\nplane-twin = []\nexport-off = [\"dep:busbar-export-off\", \"dep:busbar-export-off-plugin\"]\n\n\
                  [dev-dependencies]\nbusbar-auth-devonly = {{ workspace = true }}\n"
             ),
         );
@@ -411,4 +417,84 @@ fn a_pinned_package_still_in_the_tree_is_not_mounted() {
         Some(tracked.trim()),
         "the tree's own blob, not the pin's"
     );
+}
+
+/// RED (f): A CDYLIB TWIN THE DEFAULT DISTRIBUTION LINKS IS A PRODUCTION SCOPE (coordinator ruling:
+/// the `-plugin` twins the default build links are production scopes, audited like any other). The
+/// root links `busbar-plane-demo-plugin`, so its crate directory is mounted from the pinned
+/// checkout at `crates/<twin>` exactly as the logic crate is, and `crates/<twin>/src` is derived as a
+/// production scope carrying the pin. The off-default plugin's twin is a `git+` package of the lock
+/// too, behind a feature `default` leaves off, at a commit no repository has: it is neither mounted
+/// nor a scope.
+#[test]
+fn a_cdylib_twin_the_default_distribution_links_is_a_production_scope() {
+    let s = Scratch::new("twin-scope");
+    let v1 = s.plugin_commit(LIB_V1);
+    s.fill_cargo_db();
+    s.busbar_commit(
+        Some(("https://example.invalid/GetBusbar/busbar-plane-demo", &v1)),
+        None,
+    );
+    let twin = format!("{LOGIC}-plugin");
+    let twin_src = format!("crates/{twin}/src");
+    let off_twin_src = "crates/busbar-export-off-plugin/src".to_string();
+    let g = s.git();
+
+    let pins: Vec<String> = g
+        .pins_at("HEAD")
+        .expect("pins read")
+        .into_iter()
+        .map(|p| p.package)
+        .collect();
+    assert_eq!(
+        pins,
+        vec![LOGIC.to_string(), twin.clone()],
+        "the linked twin is pinned beside its logic crate; the off-default twin is not"
+    );
+
+    let all = g
+        .files_at("HEAD")
+        .expect("HEAD lists, with both pins mounted");
+    let pinned_blob = git(
+        &s.plugin(),
+        &["rev-parse", &format!("{v1}:plane-demo-plugin/src/lib.rs")],
+    );
+    assert_eq!(
+        all.get(&format!("{twin_src}/lib.rs")).map(String::as_str),
+        Some(pinned_blob.trim()),
+        "the twin is mounted at crates/<twin> from its git+ lock entry's commit"
+    );
+    assert!(
+        !all.keys().any(|k| k.starts_with("crates/busbar-export-off-plugin/")),
+        "a twin the default distribution does not reach is not mounted"
+    );
+
+    let mounted = g.mounted_at("HEAD").expect("the mounts read");
+    let derived = audit::derive_scopes(&s.busbar(), &mounted);
+    let kind_of = |id: &str| {
+        derived
+            .iter()
+            .find(|d| d.get("id").as_str() == Some(id))
+            .and_then(|d| d.get("kind").as_str().map(str::to_string))
+    };
+    assert_eq!(
+        kind_of(&twin_src).as_deref(),
+        Some("production"),
+        "the linked twin's src is a production scope"
+    );
+    assert_eq!(
+        kind_of(&off_twin_src),
+        None,
+        "a twin the default distribution does not reach is no scope"
+    );
+
+    let doc = audit::new_doc(derived);
+    let (status, pin, loc) = row_status(&doc, &g, &twin_src);
+    assert_eq!(status, "unaudited", "a new scope starts unaudited");
+    assert_eq!(
+        pin.as_deref(),
+        Some(format!("pinned: GetBusbar/busbar-plane-demo@{}", &v1[..10]).as_str()),
+        "the twin's row says which pinned checkout its bytes came from"
+    );
+    assert!(loc > 0, "the twin's lines are counted");
 }
