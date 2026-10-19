@@ -518,7 +518,8 @@ fn ir17_a_buffered_summary_thought_is_written_as_a_summary() {
     let ir = ResponsesReader
         .read_response(crate::codec::test_host::HOST, &resp)
         .expect("read");
-    let out = ResponsesWriter.write_response(crate::codec::test_host::HOST, &ir);
+    let w = ResponsesWriter;
+    let out = w.write_response(crate::codec::test_host::HOST, &ir);
     let items: Vec<&serde_json::Value> = out["output"]
         .as_array()
         .expect("output")
