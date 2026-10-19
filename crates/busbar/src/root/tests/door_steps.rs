@@ -8103,3 +8103,46 @@ fn an_owned_anchor_the_boot_would_refuse_is_refused_by_the_same_rule() {
         "the rule itself takes the CA"
     );
 }
+
+/// RESTART-TO-APPLY, THE ROOT'S HALF (u67 BLOCK 2 item 2; BUSBAR-1.6.0.md Law 7 l.547): the root's
+/// rules name a door plane the boot left unopened as awaiting restart exactly when a configuration
+/// writes its declaring section, and never a plane the boot opened (one it does not hold). The
+/// list is sorted, so the answer that reports it is stable. RED before the fix: the rules held no
+/// unopened plane, so an apply that first wrote one's section reported nothing.
+#[test]
+fn an_unopened_door_plane_is_awaiting_restart_once_a_configuration_writes_its_section() {
+    use busbar_kernel::appbuild::RootRules as _;
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        "store: {module: memory}\nmodels: {}\nproviders: {}\n",
+    )
+    .expect("parses");
+    let mut cfg = busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
+        .expect("resolves");
+    let rules = super::Rules::default();
+    assert!(
+        rules.planes_awaiting_restart(&cfg).is_empty(),
+        "nothing held, nothing pending"
+    );
+    rules.hold_unopened(["zz-unopened-red", "aa-unopened-red"]);
+    assert!(
+        rules.planes_awaiting_restart(&cfg).is_empty(),
+        "a configuration that writes neither section reports neither"
+    );
+    cfg.plane_sections.insert("zz-unopened-red");
+    cfg.plane_sections.insert("opened-at-boot-red");
+    assert_eq!(
+        rules.planes_awaiting_restart(&cfg),
+        vec!["zz-unopened-red"],
+        "the written section of a plane the boot left unopened, and never one it opened"
+    );
+    cfg.plane_sections.insert("aa-unopened-red");
+    assert_eq!(
+        rules.planes_awaiting_restart(&cfg),
+        vec!["aa-unopened-red", "zz-unopened-red"],
+        "sorted"
+    );
+    assert!(
+        rules.check(&cfg).is_ok(),
+        "awaiting restart is not a refusal: the configuration is accepted and stored"
+    );
+}
