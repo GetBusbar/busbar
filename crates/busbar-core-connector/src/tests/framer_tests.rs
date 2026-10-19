@@ -389,7 +389,6 @@ fn a_ticketed_begin_whose_auth_pends_resumes_on_the_wake_with_one_auth_call() {
         "t",
         &Established::default(),
         &[],
-        None,
     )
     .unwrap();
     assert!(f.parked(), "the begin waits on its auth call");
