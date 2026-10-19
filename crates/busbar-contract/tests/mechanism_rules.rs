@@ -75,24 +75,13 @@ fn the_host_zeroes_every_out_before_every_call() {
     assert!(CALL.contains("(no template)"));
 }
 
-/// THE KIND TAIL GROWTH RULE: append-only. A tail at the host's size reads whole; an OLDER tail (at
-/// least the kind's frozen size, smaller than the host's) reads its own bytes and the host
-/// zero-fills the rest; a NEWER tail reads only the host's bytes; a tail smaller than the frozen
-/// size is refused. RED: the strict "smaller than this host's" rule refused the older tail.
+/// THE KIND TAIL SIZE RULE (ruling 21): one size. A tail at the host's size is admitted; an older,
+/// shorter tail and a newer, longer one are both refused.
 #[test]
-fn a_kind_tail_grows_append_only() {
-    use busbar_contract::abi::mechanism::door::tail_read_len;
-    assert_eq!(tail_read_len(56, 40, 56), Some(56), "the host's own size");
-    assert_eq!(
-        tail_read_len(40, 40, 56),
-        Some(40),
-        "an older tail: its own bytes"
-    );
-    assert_eq!(
-        tail_read_len(72, 40, 56),
-        Some(56),
-        "a newer tail: the host's bytes"
-    );
-    assert_eq!(tail_read_len(32, 40, 56), None, "below the frozen size");
-    assert!(DOOR.contains("THE KIND TAIL GROWTH RULE"));
+fn a_kind_tail_has_one_size() {
+    use busbar_contract::abi::mechanism::door::tail_size_is;
+    assert!(tail_size_is(56, 56), "the host's own size");
+    assert!(!tail_size_is(40, 56), "an older, shorter tail");
+    assert!(!tail_size_is(72, 56), "a newer, longer tail");
+    assert!(DOOR.contains("THE KIND TAIL SIZE RULE"));
 }

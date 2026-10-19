@@ -243,12 +243,9 @@ fn issued(st: &Statement) -> Result<Option<IssuedShape>, String> {
 
 /// Read the auth tail, the carriers and the cache-flush family out of `st`.
 fn facts(st: &Statement) -> Result<AuthFacts, String> {
-    // SAFETY: `AuthTail` is a `#[repr(C)]` kind tail of integers, pointers and strings (all-zero
-    // valid: an appended field the plugin predates reads absent); a non-NULL kind tail is `'static`
-    // plugin data of its stated size.
-    let t: auth::AuthTail = unsafe {
-        crate::dispatch::plugin::kind_tail(st, "an auth plugin", auth::AUTH_TAIL_FROZEN)
-    }?;
+    // SAFETY: `AuthTail` is a `#[repr(C)]` kind tail of integers, pointers and strings; a non-NULL
+    // kind tail is `'static` plugin data of its stated size, read only at exactly this host's.
+    let t: auth::AuthTail = unsafe { crate::dispatch::plugin::kind_tail(st, "an auth plugin") }?;
     let carriers = carriers(st)?;
     let issued = issued(st)?;
     // The default inbound style IS its carriers: a tail stating it with none refuses the load.

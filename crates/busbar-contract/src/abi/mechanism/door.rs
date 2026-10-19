@@ -350,17 +350,12 @@ impl KindTailHead {
     };
 }
 
-/// THE KIND TAIL GROWTH RULE: a kind tail grows only by APPENDING fields, and its head's `size`
-/// says how much of it the plugin wrote. The host reads the plugin's first `min(size, host)` bytes
-/// and zero-fills the rest, so a field the plugin predates reads absent (`0`, NULL, an empty
-/// string); a newer plugin's bytes past the host's tail are not read. Only a tail smaller than
-/// `frozen`, the kind's size when its tail last froze, is refused (`None`). Returns how many of
-/// the plugin's bytes the host reads.
+/// THE KIND TAIL SIZE RULE (owner ruling 21, THE DESIGN's R9): a kind's tail has exactly ONE size,
+/// `size_of` that kind's tail struct, and its head's `size` states it. The host admits a tail only
+/// at that size and refuses any other, shorter or longer, naming both sizes; a field a shorter tail
+/// lacks is never read as absent. A kind with no tail struct (the secret kind) states NULL. Growing
+/// a tail is a kind ABI version bump.
 #[must_use]
-pub const fn tail_read_len(size: u32, frozen: usize, host: usize) -> Option<usize> {
-    let size = size as usize;
-    if size < frozen {
-        return None;
-    }
-    Some(if size < host { size } else { host })
+pub const fn tail_size_is(size: u32, host: usize) -> bool {
+    size as usize == host
 }

@@ -64,11 +64,6 @@ use crate::dispatch::{
     Frame, InFrame, Kind, OutFrame,
 };
 
-/// The plane tail's last frozen size (THE KIND TAIL GROWTH RULE,
-/// `abi::mechanism::door::tail_read_len`): the tail before `stream_ceiling_secs` was appended, so a
-/// tail that ends there loads and states no ceiling.
-const PLANE_TAIL_FROZEN: usize = std::mem::offset_of!(PlaneTail, stream_ceiling_secs);
-
 /// The plane kind.
 #[derive(Debug, Clone, Copy)]
 pub struct Plane;
@@ -244,8 +239,7 @@ fn over_cap() {
 fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
     // SAFETY: `PlaneTail` is a `#[repr(C)]` kind tail of integers and pointers (all-zero valid); a
     // non-NULL kind tail is `'static` plugin data of its stated size.
-    let tail: PlaneTail =
-        unsafe { crate::dispatch::plugin::kind_tail(st, "a plane", PLANE_TAIL_FROZEN) }?;
+    let tail: PlaneTail = unsafe { crate::dispatch::plugin::kind_tail(st, "a plane") }?;
     check_tail(&tail).map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     check_tail_trust_keys(&tail)
         .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
@@ -611,8 +605,7 @@ pub fn linked_cli_help(
     let st = crate::dispatch::load::statement(&door).map_err(|e| format!("{e:?}"))?;
     // SAFETY: `PlaneTail` is a `#[repr(C)]` kind tail of integers and pointers (all-zero valid); a
     // non-NULL kind tail is `'static` plugin data of its stated size.
-    let tail: PlaneTail =
-        unsafe { crate::dispatch::plugin::kind_tail(&st, "a plane", PLANE_TAIL_FROZEN) }?;
+    let tail: PlaneTail = unsafe { crate::dispatch::plugin::kind_tail(&st, "a plane") }?;
     check_tail(&tail).map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     let help = kept(tail.cli_help);
     Ok((!help.is_empty()).then_some(help))

@@ -1428,14 +1428,19 @@ fn red_every_door_refusal() {
     }));
     assert!(matches!(
         with(&|d| d.statement = short),
-        Some(LoadError::KindTail(_))
+        Some(LoadError::KindTailSize { stated: 4, .. })
     ));
-    let tail = Box::leak(Box::new(KindTailHead {
-        size: 8,
-        _reserved: 0,
-    }));
+    // THE KIND TAIL SIZE RULE: the kind's own tail, at its one size, loads.
+    let tail: &'static busbar_contract::abi::export::Tail =
+        Box::leak(Box::new(busbar_contract::abi::export::Tail {
+            head: KindTailHead {
+                size: std::mem::size_of::<busbar_contract::abi::export::Tail>() as u32,
+                _reserved: 0,
+            },
+            ..busbar_contract::abi::export::Tail::ZERO
+        }));
     let fine = Box::leak(Box::new(Statement {
-        kind_tail: tail,
+        kind_tail: &tail.head,
         ..st
     }));
     assert!(
@@ -2583,9 +2588,14 @@ fn a_transport_tail_with_a_row_per_claimed_name_is_admitted_and_no_other() {
         crate::dispatch::load::kind_tail(&st(2, KindCode::Transport)),
         Err(LoadError::KindTail(why)) if why.contains("tail.claim_rows")
     ));
-    // A kind with no tail rule at admit (a plane's states its answer layout, judged below in
-    // `a_plane_built_against_another_answer_layout_is_refused_at_load`).
-    assert!(crate::dispatch::load::kind_tail(&st(0, KindCode::Hook)).is_ok());
+    // Another kind's tail is not this kind's one size (THE KIND TAIL SIZE RULE): refused.
+    assert!(matches!(
+        crate::dispatch::load::kind_tail(&st(0, KindCode::Hook)),
+        Err(LoadError::KindTailSize {
+            kind: KindCode::Hook,
+            ..
+        })
+    ));
     // A transport naming claims with no tail at all has no rows: refused, not skipped.
     let untailed = Statement {
         kind_tail: std::ptr::null(),
@@ -2599,8 +2609,8 @@ fn a_transport_tail_with_a_row_per_claimed_name_is_admitted_and_no_other() {
 
 /// THE PIECE STRIDE AT LOAD (busbar #1032): a framer writes `FramerSink::pieces` at its own
 /// `FramePiece` size, and the host reads them at its own. RED: a transport whose tail states a
-/// piece size other than the host's (the 40-byte piece before #1032), or none (a tail that
-/// predates the word), is refused at load, naming the plugin, both sizes and the rebuild. GREEN:
+/// piece size other than the host's (the 40-byte piece before #1032), or whose tail is too short
+/// to state one, is refused at load, naming the plugin, both sizes and the rebuild. GREEN:
 /// the host's size loads.
 #[test]
 fn a_transport_built_against_another_frame_piece_is_refused_at_load() {
@@ -2671,23 +2681,25 @@ fn a_transport_built_against_another_frame_piece_is_refused_at_load() {
         "{said}"
     );
 
-    // RED: a tail that stops short of the word (built before it) states no piece: refused the same.
+    // RED: a tail that stops short of the word is not a transport tail's one size: refused, never
+    // read past its end.
     let before = std::mem::offset_of!(TransportTail, frame_piece_size);
     assert_eq!(
         load(tail(before, host)),
-        Err(LoadError::FramePieceSize {
+        Err(LoadError::KindTailSize {
             plugin: "sockets".into(),
-            stated: 0,
-            host,
+            kind: KindCode::Transport,
+            stated: before as u32,
+            host: whole as u32,
         }),
-        "a tail that predates the piece size is refused, never read past its end"
+        "a tail shorter than the transport tail is refused, never read past its end"
     );
 }
 
 /// THE PLANE'S ANSWER LAYOUT AT LOAD: a plane writes every `out` at its own layout (`OnPieceOut`
 /// grew 240 -> 248 bytes and `ArriveOut`'s padding became `refusal_flags` under plane ABI v1), and
 /// the host reads them at its own. RED: a plane whose tail states another `ANSWER_LAYOUT` than the
-/// host's, or none (a tail that predates the word), is refused at load, naming the plugin, both
+/// host's, or whose tail is too short to state one, is refused at load, naming the plugin, both
 /// layouts and the rebuild. GREEN: the host's layout loads.
 #[test]
 fn a_plane_built_against_another_answer_layout_is_refused_at_load() {
@@ -2748,17 +2760,18 @@ fn a_plane_built_against_another_answer_layout_is_refused_at_load() {
         );
     }
 
-    // RED: a tail that stops short of the word (built before it) states no layout: refused the
-    // same, never read past its end.
+    // RED: a tail that stops short of the word is not a plane tail's one size: refused, never read
+    // past its end.
     let before = std::mem::offset_of!(PlaneTail, answer_layout);
     assert_eq!(
         load(tail(before, host)),
-        Err(LoadError::PlaneLayout {
+        Err(LoadError::KindTailSize {
             plugin: "tools".into(),
-            stated: 0,
-            host,
+            kind: KindCode::Plane,
+            stated: before as u32,
+            host: whole as u32,
         }),
-        "a tail that predates the answer layout is refused, never read past its end"
+        "a tail shorter than the plane tail is refused, never read past its end"
     );
 }
 

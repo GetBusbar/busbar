@@ -1446,8 +1446,7 @@ pub struct PlaneTail {
     /// `SHAPE_*`.
     pub dispatch_shape: u32,
     /// [`ANSWER_LAYOUT`] as the plugin was built: the layout it writes its answers in. The loader
-    /// refuses a plane whose number is not the host's (a tail that predates the word states `0`,
-    /// the padding it was), naming the rebuild.
+    /// refuses a plane whose number is not the host's, naming the rebuild.
     pub answer_layout: u32,
     /// The scope label.
     pub scope: AbiStr,
@@ -1527,7 +1526,7 @@ pub struct PlaneTail {
     pub admin_routes_len: usize,
     /// THE OPENAPI PATH FRAGMENT of those admin routes: a JSON object keyed by each target relative
     /// to the admin mount (the kernel keys it under the mount when it merges the admin document);
-    /// absent = none. A tail addition.
+    /// absent = none.
     pub admin_openapi: Blob,
     /// THE PLANE'S STREAM CEILING, seconds (ARCHITECT ruling 2026-10-07, STREAM-CEILING): how long a
     /// unit whose `arrive` stated [`ROUTE_STREAM`] may run, measured from the moment its route is
@@ -1535,20 +1534,19 @@ pub struct PlaneTail {
     /// and a caller that stops reading it alike: when it passes, the unit is cut
     /// (`DeadlineExceeded`) and bills what it delivered (Part 2 #62). `0` = NO ceiling: the
     /// streamed answer runs to its own end and a stalled caller holds it until the caller goes, as
-    /// the previous release served it. A tail addition: a tail whose `size` ends before it
-    /// states `0`.
+    /// the previous release served it. A tail of any other size than this struct's is refused at
+    /// load, so no tail ever reads its ceiling as absent.
     pub stream_ceiling_secs: u64,
     /// THE LANE WORDS THE PLANE MAY STATE ON ITS ATTEMPTS' COUNTERS, declared once (beside the
     /// operator's entry names, the only other words [`OnPieceOut::metric_lane`] may carry): a
     /// closed vocabulary of its own, so a plane can never mint a time series per distinct string.
-    /// At most [`MAX_METRIC_LANES`] words, each named, none twice. NULL/0 = none. A tail addition.
+    /// At most [`MAX_METRIC_LANES`] words, each named, none twice. NULL/0 = none.
     pub metric_lanes: *const AbiStr,
     /// How many.
     pub metric_lanes_len: usize,
     /// THE RETENTION RULE OF EACH RECORD KIND THAT IS NOT PURGED BY AGE ([`RecordRetention`]): at
     /// most one entry per kind, each naming a kind of [`PlaneTail::record_kinds`]. A kind not listed
-    /// is purged by age. NULL/0 = none. A tail addition: a tail whose `size` ends before it lists
-    /// none.
+    /// is purged by age. NULL/0 = none.
     pub record_retentions: *const RecordRetention,
     /// How many.
     pub record_retentions_len: usize,

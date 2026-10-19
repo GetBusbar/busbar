@@ -82,11 +82,12 @@ fn facts(st: &Statement) -> Result<ExportFacts, String> {
         return Err("an export plugin states no kind tail".into());
     }
     // SAFETY: a non-NULL kind tail is `'static` plugin data leading with a `KindTailHead`; the
-    // whole tail is read only once its size covers this host's `Tail`.
+    // whole tail is read only when its size is exactly this host's `Tail` (THE KIND TAIL SIZE RULE).
     let size = unsafe { (*p).size };
-    if (size as usize) < std::mem::size_of::<Tail>() {
+    let host = std::mem::size_of::<Tail>();
+    if !busbar_contract::abi::mechanism::door::tail_size_is(size, host) {
         return Err(format!(
-            "the export tail is {size} bytes, smaller than this host's"
+            "the export tail is {size} bytes; this host's is {host} bytes"
         ));
     }
     // SAFETY: as above.

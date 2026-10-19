@@ -20,7 +20,7 @@ use std::ptr::addr_of;
 use busbar_contract::abi::mechanism::call::{AbiStr, Op};
 use busbar_contract::abi::mechanism::check::check_statement;
 use busbar_contract::abi::mechanism::door::{
-    Door, DoorFn, KindTailHead, MetricFamily, Statement, FAMILY_HISTOGRAM,
+    tail_size_is, Door, DoorFn, MetricFamily, Statement, FAMILY_HISTOGRAM,
 };
 use busbar_contract::abi::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 use busbar_contract::abi::mechanism::rendering::{render, RENDERING_MAGIC};
@@ -315,6 +315,18 @@ pub enum LoadError {
         /// The host's.
         host: u32,
     },
+    /// The Statement's kind tail is not its kind's one size (owner ruling 21): a tail shorter or
+    /// longer than the kind's tail struct, or any tail at all for a kind that has none (`host` 0).
+    KindTailSize {
+        /// The plugin the Statement names.
+        plugin: String,
+        /// Its kind.
+        kind: KindCode,
+        /// The tail's stated size.
+        stated: u32,
+        /// The kind's one tail size; `0` = the kind states no tail.
+        host: u32,
+    },
     /// A Statement rendering (a manifest's or a row's) is malformed.
     Rendering(String),
     /// The door's Statement is not the one the manifest (or the compiled-in row) states.
@@ -419,6 +431,27 @@ impl fmt::Display for LoadError {
                 f,
                 "plane plugin '{plugin}' writes its answers in plane layout {stated}; this host \
                  reads plane layout {host} — rebuild against this busbar-contract"
+            ),
+            Self::KindTailSize {
+                plugin,
+                kind,
+                stated,
+                host: 0,
+                ..
+            } => write!(
+                f,
+                "{kind:?} plugin '{plugin}' states a {stated}-byte kind tail; this host's {kind:?} \
+                 kind has no tail — rebuild against this busbar-contract"
+            ),
+            Self::KindTailSize {
+                plugin,
+                kind,
+                stated,
+                host,
+            } => write!(
+                f,
+                "{kind:?} plugin '{plugin}' states a {stated}-byte kind tail; this host's is \
+                 {host} bytes — rebuild against this busbar-contract"
             ),
             Self::Rendering(e) => write!(f, "the stated Statement rendering is malformed: {e}"),
             Self::StatementMismatch => f.write_str(
@@ -887,10 +920,10 @@ pub(crate) fn statement(door: &Door) -> Result<Statement, LoadError> {
     Ok(st)
 }
 
-/// A Statement's kind tail, at admit: its head states at least itself, a plane's tail states the
-/// host's [`ANSWER_LAYOUT`], and a transport's tail is a whole [`TransportTail`] whose frame piece
-/// is the host's [`FramePiece`], with exactly one claim row per scheme the Statement names (the
-/// names are the Statement's alone).
+/// A Statement's kind tail, at admit: THE KIND TAIL SIZE RULE first (owner ruling 21: exactly the
+/// kind's one tail size, or NULL; a kind with no tail struct states none), then a plane's tail
+/// states the host's [`ANSWER_LAYOUT`], and a transport's tail states the host's [`FramePiece`],
+/// with exactly one claim row per scheme the Statement names (the names are the Statement's alone).
 pub(crate) fn kind_tail(st: &Statement) -> Result<(), LoadError> {
     if st.kind_tail.is_null() {
         // A transport that names claims has a row per name, so it has a tail.
@@ -901,67 +934,68 @@ pub(crate) fn kind_tail(st: &Statement) -> Result<(), LoadError> {
         }
         return Ok(());
     }
+    let plugin = || {
+        super::plugin::str_bytes(st.name)
+            .map(|b| String::from_utf8_lossy(b).into_owned())
+            .unwrap_or_default()
+    };
     // SAFETY: a non-NULL kind tail is `'static` plugin data leading with a `KindTailHead`.
-    let tail = unsafe { st.kind_tail.read_unaligned() };
-    if (tail.size as usize) < size_of::<KindTailHead>() {
-        return Err(LoadError::KindTail(format!(
-            "its head states {} bytes, less than the head itself",
-            tail.size
-        )));
+    let stated = unsafe { st.kind_tail.read_unaligned() }.size;
+    let kind = KindCode::from_raw(st.kind).ok_or(LoadError::UnknownKind(st.kind))?;
+    let host = tail_size(kind);
+    if !tail_size_is(stated, host) {
+        return Err(LoadError::KindTailSize {
+            plugin: plugin(),
+            kind,
+            stated,
+            host: host as u32,
+        });
     }
-    if st.kind == KindCode::Plane as u32 {
-        return plane_layout(st, tail.size);
+    if kind == KindCode::Plane {
+        return plane_layout(st);
     }
-    if st.kind != KindCode::Transport as u32 {
+    if kind != KindCode::Transport {
         return Ok(());
     }
-    // THE PIECE STRIDE FIRST: a framer writes `FramerSink::pieces` at its own `FramePiece` size, so
-    // a transport built against another piece layout is refused here, never loaded and misread. A
-    // tail too short to state the word predates it and states none (`0`).
-    let word = std::mem::offset_of!(TransportTail, frame_piece_size);
-    let stated = if tail.size as usize >= word + size_of::<u32>() {
-        // SAFETY: the tail states it covers the word; a kind tail is `'static` plugin data.
-        unsafe {
-            addr_of!((*st.kind_tail.cast::<TransportTail>()).frame_piece_size).read_unaligned()
-        }
-    } else {
-        0
-    };
+    // SAFETY: the tail states exactly a `TransportTail`; a kind tail is `'static` plugin data.
+    let t = unsafe { st.kind_tail.cast::<TransportTail>().read_unaligned() };
+    // THE PIECE STRIDE: a framer writes `FramerSink::pieces` at its own `FramePiece` size, so a
+    // transport built against another piece layout is refused here, never loaded and misread.
     let host = size_of::<FramePiece>() as u32;
-    if stated != host {
-        let plugin = super::plugin::str_bytes(st.name)
-            .map(|b| String::from_utf8_lossy(b).into_owned())
-            .unwrap_or_default();
+    if t.frame_piece_size != host {
         return Err(LoadError::FramePieceSize {
-            plugin,
-            stated,
+            plugin: plugin(),
+            stated: t.frame_piece_size,
             host,
         });
     }
-    if (tail.size as usize) < size_of::<TransportTail>() {
-        return Err(LoadError::KindTail(format!(
-            "a transport tail states {} bytes, less than its claim rows",
-            tail.size
-        )));
-    }
-    // SAFETY: a transport's kind tail is a `'static` `TransportTail` of the size it states.
-    let t = unsafe { st.kind_tail.cast::<TransportTail>().read_unaligned() };
     check_claim_rows(st.claims_len, &t)
         .map_err(|f| LoadError::KindTail(format!("{} breaks {:?}", f.field, f.rule)))
 }
 
+/// Each kind's ONE tail size (THE KIND TAIL SIZE RULE): `size_of` its tail struct; `0` for a kind
+/// with none, which therefore states no tail.
+pub(crate) const fn tail_size(kind: KindCode) -> usize {
+    use busbar_contract::abi::{auth, export, hook, store};
+    match kind {
+        KindCode::Store => size_of::<store::StoreTail>(),
+        KindCode::Secret => 0,
+        KindCode::Auth => size_of::<auth::AuthTail>(),
+        KindCode::Hook => size_of::<hook::Tail>(),
+        KindCode::Export => size_of::<export::Tail>(),
+        KindCode::Plane => size_of::<PlaneTail>(),
+        KindCode::Transport => size_of::<TransportTail>(),
+    }
+}
+
 /// THE PLANE'S ANSWER LAYOUT: the host reads every `out` a plane writes at its own layout, so a
 /// plane whose tail states another [`ANSWER_LAYOUT`] (one built against another contract) is
-/// refused here, never loaded and misread. A tail too short to state the word predates it and
-/// states none (`0`); the rest of the tail is judged at bind.
-fn plane_layout(st: &Statement, size: u32) -> Result<(), LoadError> {
-    let word = std::mem::offset_of!(PlaneTail, answer_layout);
-    let stated = if size as usize >= word + size_of::<u32>() {
-        // SAFETY: the tail states it covers the word; a kind tail is `'static` plugin data.
-        unsafe { addr_of!((*st.kind_tail.cast::<PlaneTail>()).answer_layout).read_unaligned() }
-    } else {
-        0
-    };
+/// refused here, never loaded and misread. The tail is a whole [`PlaneTail`] (its size was judged
+/// first); the rest of it is judged at bind.
+fn plane_layout(st: &Statement) -> Result<(), LoadError> {
+    // SAFETY: the tail states exactly a `PlaneTail`; a kind tail is `'static` plugin data.
+    let stated =
+        unsafe { addr_of!((*st.kind_tail.cast::<PlaneTail>()).answer_layout).read_unaligned() };
     if stated == ANSWER_LAYOUT {
         return Ok(());
     }

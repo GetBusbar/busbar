@@ -40,11 +40,6 @@ use busbar_contract::abi::transport::{
 
 use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
 
-/// The transport tail's last frozen size, before the fault table was appended (THE KIND TAIL
-/// GROWTH RULE, `abi::mechanism::door::tail_read_len`): a tail that predates the fault table loads
-/// and reads it as absent, and is then judged by [`check_fault_cover`] like any other.
-const TRANSPORT_TAIL_FROZEN: usize = std::mem::offset_of!(TransportTail, fault_rows);
-
 /// WHAT A TRANSPORT STATES, read once at bind and checked by the kind's own `check_tail`,
 /// `check_claims`, `check_claim_rows` and `check_composes_over`: its role, every scheme it answers
 /// for (the Statement's `claims`, the first its own) and the claims it composes over. The host's registry view reads it through
@@ -120,8 +115,7 @@ fn owned(s: AbiStr, field: &str) -> Result<&'static str, String> {
 fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
     // SAFETY: `TransportTail` is a `#[repr(C)]` kind tail of integers and pointers (all-zero valid);
     // a non-NULL kind tail is `'static` plugin data of its stated size.
-    let tail: TransportTail =
-        unsafe { crate::dispatch::plugin::kind_tail(st, "a transport", TRANSPORT_TAIL_FROZEN) }?;
+    let tail: TransportTail = unsafe { crate::dispatch::plugin::kind_tail(st, "a transport") }?;
     let broke = |f: Fault| format!("the transport tail breaks {:?} at {}", f.rule, f.field);
     check_tail(&tail).map_err(broke)?;
     // SAFETY: `check_tail` refused a NULL list with a count; both lists are `'static` plugin data.

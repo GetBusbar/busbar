@@ -111,8 +111,14 @@ mod kind_tails {
     fn a_kind_tail_of_any_other_size_is_refused() {
         for (kind, whole) in tailed() {
             for size in [whole - 8, whole + 8] {
-                assert!(
-                    load(kind, tail(kind, size)).is_err(),
+                assert_eq!(
+                    load(kind, tail(kind, size)),
+                    Err(crate::dispatch::LoadError::KindTailSize {
+                        plugin: "sized".into(),
+                        kind,
+                        stated: size as u32,
+                        host: whole as u32,
+                    }),
                     "{kind:?}: a {size}-byte tail (its one size is {whole}) is refused"
                 );
             }
@@ -137,6 +143,16 @@ mod kind_tails {
     #[test]
     fn a_secret_tail_is_refused() {
         assert_eq!(load(KindCode::Secret, std::ptr::null()), Ok(()));
-        assert!(load(KindCode::Secret, tail(KindCode::Secret, 8)).is_err());
+        let refused = load(KindCode::Secret, tail(KindCode::Secret, 8)).unwrap_err();
+        assert_eq!(
+            refused,
+            crate::dispatch::LoadError::KindTailSize {
+                plugin: "sized".into(),
+                kind: KindCode::Secret,
+                stated: 8,
+                host: 0,
+            }
+        );
+        assert!(refused.to_string().contains("has no tail"), "{refused}");
     }
 }

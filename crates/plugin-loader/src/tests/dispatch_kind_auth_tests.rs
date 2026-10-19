@@ -869,16 +869,15 @@ fn the_carriers_are_the_statements_carrier_marks() {
     );
 }
 
-/// THE OPERATOR FACT and THE KIND TAIL GROWTH RULE on the auth tail. `FACT_OPERATOR` needs
+/// THE OPERATOR FACT and THE KIND TAIL SIZE RULE on the auth tail. `FACT_OPERATOR` needs
 /// `CAP_INBOUND` and a non-empty principal, and a principal needs the fact; each half alone refuses
-/// the load, and the agreeing tail reads its principal back. A tail of the FROZEN size (40 bytes,
-/// built before `operator_principal` was appended) still loads, its appended bytes never read: the
-/// principal reads absent even when the memory past its size holds one. A tail below the frozen
-/// size refuses. RED: the strict "smaller than this host's" rule refused the 40-byte tail.
+/// the load, and the agreeing tail reads its principal back. RED (ruling 21, one size per struct):
+/// a tail of the old 40 bytes (before `operator_principal`) is refused, never read as "no
+/// principal", and so is a tail longer than the host's.
 #[test]
-fn the_operator_fact_states_its_principal_and_a_frozen_tail_still_loads() {
+fn the_operator_fact_states_its_principal_and_an_old_tail_is_refused() {
     use busbar_contract::abi::auth::{
-        AuthTail, AUTH_TAIL_FROZEN, CAP_INBOUND, CAP_OUTBOUND, FACT_OPERATOR, LOGIN_KIND_NONE,
+        AuthTail, CAP_INBOUND, CAP_OUTBOUND, FACT_OPERATOR, LOGIN_KIND_NONE,
     };
     use busbar_contract::abi::mechanism::door::KindTailHead;
     use busbar_contract::abi::sdk::door::{abi_str, statement};
@@ -929,24 +928,23 @@ fn the_operator_fact_states_its_principal_and_a_frozen_tail_still_loads() {
         bind(host, CAP_OUTBOUND, FACT_OPERATOR, "admin").is_err(),
         "the operator fact on a plugin that does not verify"
     );
-    assert_eq!(
-        bind(AUTH_TAIL_FROZEN, CAP_INBOUND, 0, "admin"),
-        Ok(Some(None)),
-        "a frozen-size tail loads; its appended principal is never read"
+    assert!(
+        bind(40, CAP_INBOUND, 0, "admin").is_err(),
+        "the old 40-byte tail is refused"
     );
     assert!(
-        bind(AUTH_TAIL_FROZEN - 8, CAP_INBOUND, 0, "").is_err(),
-        "below the frozen size"
+        bind(host + 8, CAP_INBOUND, 0, "").is_err(),
+        "a tail longer than the host's is refused"
     );
 }
 
 /// THE CREDENTIAL-READ FACT (ARCHITECT 2026-10-01, AUTH-DOOR Q2 ruling B): `FACT_READS_CREDENTIALS`
 /// needs `CAP_INBOUND` and a non-empty list of non-empty kinds, and a list needs the fact; each half
 /// alone refuses the load, and the agreeing tail reads its kinds back, onto the instance the host
-/// serves `records.secret` to. An OLDER tail (56 bytes, before the list was appended) reads none,
-/// even when the memory past its size holds a list. RED: before the fact, no tail named a kind.
+/// serves `records.secret` to. RED (ruling 21): an older 56-byte tail, before the list, is refused,
+/// never read as "no kinds". RED: before the fact, no tail named a kind.
 #[test]
-fn the_credential_read_fact_states_its_kinds_and_an_old_tail_reads_none() {
+fn the_credential_read_fact_states_its_kinds_and_an_old_tail_is_refused() {
     use busbar_contract::abi::auth::{
         AuthTail, CAP_INBOUND, CAP_OUTBOUND, FACT_READS_CREDENTIALS, LOGIN_KIND_NONE,
     };
@@ -1003,10 +1001,9 @@ fn the_credential_read_fact_states_its_kinds_and_an_old_tail_reads_none() {
         bind(host, CAP_OUTBOUND, reads, SIGV4).is_err(),
         "a reader that does not verify"
     );
-    assert_eq!(
-        bind(host - 16, CAP_INBOUND, 0, SIGV4),
-        Ok(vec![]),
-        "a 56-byte tail reads no kinds; its appended list is never read"
+    assert!(
+        bind(host - 16, CAP_INBOUND, 0, SIGV4).is_err(),
+        "a 56-byte tail is refused, its list never read as none"
     );
 }
 

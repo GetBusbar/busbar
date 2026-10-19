@@ -10,14 +10,14 @@
 use std::mem::size_of;
 
 use busbar_contract::abi::auth::{
-    check_inbound_points, check_style_decl, AuthPoints, AuthTail, StyleDecl, AUTH_TAIL_FROZEN,
+    check_inbound_points, check_style_decl, AuthPoints, AuthTail, StyleDecl,
 };
 use busbar_contract::abi::host::conn::connector::Need;
 use busbar_contract::abi::mechanism::check::{
     check_marks, check_needs, check_rewrites, check_statement_sections,
 };
 use busbar_contract::abi::mechanism::door::{
-    tail_read_len, KindTailHead, MarkWord, Rewrite, Section,
+    tail_size_is, KindTailHead, MarkWord, Rewrite, Section,
 };
 use busbar_contract::abi::{plane, transport};
 
@@ -49,14 +49,10 @@ fn a_zero_auth_tail_declares_no_capability_and_no_point() {
 #[test]
 fn a_zero_tail_head_states_no_size_and_is_never_read() {
     assert_eq!(KindTailHead::ZERO.size, 0);
-    assert_eq!(
-        tail_read_len(
-            KindTailHead::ZERO.size,
-            AUTH_TAIL_FROZEN,
-            size_of::<AuthTail>()
-        ),
-        None
-    );
+    assert!(!tail_size_is(
+        KindTailHead::ZERO.size,
+        size_of::<AuthTail>()
+    ));
 }
 
 #[test]

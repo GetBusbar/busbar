@@ -48,10 +48,6 @@ use busbar_contract::abi::store::{
 use crate::dispatch::validate::MAX_ERROR_LEN;
 use crate::dispatch::{lifecycle_name, Answer, InFrame, Kind, OutFrame};
 
-/// The store tail's last frozen size: it has not grown, so it is this host's (THE KIND TAIL
-/// GROWTH RULE, `abi::mechanism::door::tail_read_len`).
-const STORE_TAIL_FROZEN: usize = std::mem::size_of::<store::StoreTail>();
-
 /// The store kind.
 #[derive(Debug, Clone, Copy)]
 pub struct Store;
@@ -294,8 +290,7 @@ pub struct StoreFacts {
 fn store_facts(st: &Statement) -> Result<StoreFacts, String> {
     // SAFETY: `StoreTail` is a `#[repr(C)]` kind tail of integers (all-zero valid); a non-NULL kind
     // tail is `'static` plugin data of its stated size.
-    let t: store::StoreTail =
-        unsafe { crate::dispatch::plugin::kind_tail(st, "a store", STORE_TAIL_FROZEN) }?;
+    let t: store::StoreTail = unsafe { crate::dispatch::plugin::kind_tail(st, "a store") }?;
     let flag = |v: u8, name: &str| match v {
         0 => Ok(false),
         1 => Ok(true),

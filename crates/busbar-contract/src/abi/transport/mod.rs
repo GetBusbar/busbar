@@ -719,13 +719,12 @@ pub struct TransportTail {
     pub settings: *const SettingDecl,
     /// How many.
     pub settings_len: usize,
-    /// The fault table (appended: a tail that predates it reads NULL/`0`, no fault table).
+    /// The fault table; NULL/`0` = none.
     pub fault_rows: *const FaultRow,
     /// How many.
     pub fault_rows_len: usize,
     /// [`FRAME_PIECE_SIZE`] as the plugin was built: the stride it writes [`FramerSink::pieces`]
-    /// at. The loader refuses a transport whose number is not the host's (a tail that predates the
-    /// word states `0`), naming the rebuild.
+    /// at. The loader refuses a transport whose number is not the host's, naming the rebuild.
     pub frame_piece_size: u32,
     /// Alignment padding.
     pub _reserved: u32,
