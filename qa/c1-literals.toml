@@ -119,60 +119,6 @@ count = 1
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/egress/engine/client.rs"
-item = "https"
-count = 1
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/egress/engine/client.rs"
-item = "wss"
-count = 1
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/egress/engine/deadline.rs"
-item = "tcp"
-count = 1
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/egress/engine/https.rs"
-item = "h2"
-count = 1
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/egress/engine/mod.rs"
-item = "h2"
-count = 1
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/egress/engine/mod.rs"
-item = "http"
-count = 4
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/egress/engine/mod.rs"
-item = "https"
-count = 1
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/egress/engine/observe.rs"
-item = "h2"
-count = 1
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/egress/fixtures.rs"
-item = "http"
-count = 2
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/ingress/protocol.rs"
 item = "http"
 count = 1

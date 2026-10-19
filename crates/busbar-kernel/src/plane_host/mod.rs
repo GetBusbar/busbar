@@ -1214,10 +1214,6 @@ pub mod build_input;
 // The route tables' read view and the slots a plane reads live in the plane driver
 // (`crate::plane_driver::{route_tables, slots}`); re-exported at their former paths below.
 pub use crate::plane_driver::slots::{ContainerGateSink, PlaneSlots};
-// The egress-trust primitives (client identity, extra trust anchors, the peer-SPKI pin) live on the
-// kernel's outbound surface, `crate::egress::trust`. This re-export only keeps the legacy plane crates'
-// `busbar_kernel::plane_host::{identity, spki, trust_anchor}` paths resolving; it leaves with them.
-pub use crate::egress::trust::{identity, spki, trust_anchor};
 
 pub use crate::plane_driver::route_tables::{
     set_pool_queued_depth, ConfigTables, EmptyEngineTablesView, EngineTablesView, LaneView,

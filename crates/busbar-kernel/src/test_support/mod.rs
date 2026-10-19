@@ -702,7 +702,7 @@ impl LaneSpec {
                 self.base_url.trim_end_matches('/'),
             )
             .into_owned(),
-            url_userinfo: busbar_kernel::egress::engine::UrlUserinfo::of(&self.base_url),
+            url_userinfo: busbar_kernel::bound_credential::UrlUserinfo::of(&self.base_url),
             path: self.path.clone(),
             path_base: self.path_base.clone(),
             organization: self.organization.clone(),

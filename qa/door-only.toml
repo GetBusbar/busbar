@@ -16,9 +16,9 @@ file = "crates/busbar-kernel/src/config/plane_sections.rs"
 item = "PLANE_SECTIONS"
 count = 1
 
-# judge_answer: interim for the 8 pooled-client builders; struck when D1-D6 move onto conns (Phase B).
-# (ARCHITECT ruling (C), DEST-GUARD 2026-10-02: the engine's pooled resolver asks the connector's
-# destination guard through this seam; no new static.)
+# The destinations seam: a config commit raised to the connector's one destination guard (ARCHITECT
+# ruling (C), DEST-GUARD 2026-10-02). The kernel engine's pooled resolver that also asked it through
+# this seam is deleted (u30); the static holds only the commit hand-off now. No new static.
 [[finding]]
 rule = "door-only:static-seam"
 file = "crates/busbar-kernel/src/egress/trust/mod.rs"
