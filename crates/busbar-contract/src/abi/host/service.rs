@@ -264,10 +264,12 @@ pub mod op {
     pub const UNIT_HAND_IN: u32 = 30;
     /// `unit.refuse`.
     pub const UNIT_REFUSE: u32 = 31;
+    /// `console.line`.
+    pub const CONSOLE_LINE: u32 = 32;
 }
 
 /// How many services [`HostSlots`] holds.
-pub const SERVICES: u32 = 32;
+pub const SERVICES: u32 = 33;
 
 /// Whether a service may answer PENDING, and so is callable only inside a ticketed op. `false` for
 /// an index past the table.
@@ -291,6 +293,7 @@ pub const fn may_pend(service: u32) -> bool {
             | op::SESSION_EMIT
             | op::UNIT_HAND_IN
             | op::UNIT_REFUSE
+            | op::CONSOLE_LINE
     ) && service < SERVICES
 }
 
@@ -1560,6 +1563,52 @@ pub const fn check_unit_refuse_in(i: &UnitRefuseIn) -> Result<(), Fault> {
     Ok(())
 }
 
+// ── console ───────────────────────────────────────────────────────────────────────────────────
+
+/// The longest line one `console.line` writes, in bytes.
+pub const MAX_CONSOLE_LINE: usize = 4096;
+
+/// [`op::CONSOLE_LINE`]'s `in`: one line for the operator's console. The host writes `line`'s bytes
+/// verbatim to its standard error, then one newline; nothing is added before them, nothing is
+/// parsed. Callable only inside a plane's `open` or `refresh` crossing (a generation's boot
+/// lines, written as the previous release wrote them at boot and on every applied configuration);
+/// anywhere else, a unit's serving included, it is REFUSED and nothing is written. `line` is
+/// `1..=`[`MAX_CONSOLE_LINE`] bytes. READY `value` `0`, `len` `0`. Never pends.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ConsoleLineIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// The line, without its newline.
+    pub line: AbiStr,
+}
+
+impl ConsoleLineIn {
+    /// THE EMPTY DECLARATION: no head, no line. The host refuses it (an empty line).
+    pub const ZERO: Self = Self {
+        head: ServiceHead::ZERO,
+        line: AbiStr::ZERO,
+    };
+}
+
+/// `console.line`'s `in`, before anything is written: a line of `1..=`[`MAX_CONSOLE_LINE`] bytes,
+/// never counted over NULL. The host REFUSES an `in` that breaks this.
+///
+/// # Errors
+///
+/// [`Rule::Missing`] for an empty line; [`Rule::NullWithCount`]; [`Rule::OverMax`] above
+/// [`MAX_CONSOLE_LINE`].
+pub fn check_console_line_in(i: &ConsoleLineIn) -> Result<(), Fault> {
+    if i.line.len == 0 {
+        return Err(fault(Rule::Missing, "console_line.line"));
+    }
+    check::text(i.line, "console_line.line")?;
+    if i.line.len > MAX_CONSOLE_LINE {
+        return Err(fault(Rule::OverMax, "console_line.line"));
+    }
+    Ok(())
+}
+
 // ── the table ─────────────────────────────────────────────────────────────────────────────────
 
 /// THE HOST SERVICES TABLE: one [`ServiceFn`] per [`op`], in index order. A NULL slot is a service
@@ -1635,6 +1684,8 @@ pub struct HostSlots {
     pub unit_hand_in: Option<ServiceFn>,
     /// [`op::UNIT_REFUSE`], in [`UnitRefuseIn`].
     pub unit_refuse: Option<ServiceFn>,
+    /// [`op::CONSOLE_LINE`], in [`ConsoleLineIn`].
+    pub console_line: Option<ServiceFn>,
 }
 
 // ── the host's checks of an `in` ──────────────────────────────────────────────────────────────
@@ -2223,6 +2274,19 @@ pub fn check_entitlement_check(
         out,
         bare(op::ENTITLEMENT_CHECK, (NOT_ENTITLED, ENTITLED)),
     )
+}
+
+/// `console.line`'s answer: the common rules, and nothing written back.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_console_line(
+    i: &ConsoleLineIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    answer(ret, &i.head, out, bare(op::CONSOLE_LINE, (0, 0)))
 }
 
 /// `random.fill`'s answer: the common rules, and on READY exactly the `len` bytes asked, no span.

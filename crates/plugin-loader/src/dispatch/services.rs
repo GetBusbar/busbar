@@ -47,12 +47,12 @@ use std::sync::{Arc, Mutex, Weak};
 use busbar_contract::abi::host::service::{
     self as svc, check_bufs, check_disk_append_in, check_head, check_hook_call_in,
     check_random_fill_in, check_records_claim_in, check_work_record, may_pend, op, ClockNowIn,
-    ClockReading, ContentScanIn, DestJudgeIn, DiskAppendIn, DiskWritten, EntitlementCheckIn,
-    HookCallIn, HostSlots, RandomFillIn, RecordsClaimIn, RecordsGetIn, RecordsListIn,
-    RecordsSecretIn, ServiceBufs, ServiceHead, ServiceOut, SessionEmitIn, SignIn, SnapshotReadIn,
-    TrustDecideIn, TrustDueIn, TrustServesIn, TrustSightIn, TrustSightItemIn, TrustStateIn,
-    TrustVerifyIn, UnitNestIn, VerifyLookupIn, VerifyStoreIn, WorkFindIn, WorkOpenIn, WorkResumeIn,
-    WorkSettleIn, SERVICES,
+    ClockReading, ConsoleLineIn, ContentScanIn, DestJudgeIn, DiskAppendIn, DiskWritten,
+    EntitlementCheckIn, HookCallIn, HostSlots, RandomFillIn, RecordsClaimIn, RecordsGetIn,
+    RecordsListIn, RecordsSecretIn, ServiceBufs, ServiceHead, ServiceOut, SessionEmitIn, SignIn,
+    SnapshotReadIn, TrustDecideIn, TrustDueIn, TrustServesIn, TrustSightIn, TrustSightItemIn,
+    TrustStateIn, TrustVerifyIn, UnitNestIn, VerifyLookupIn, VerifyStoreIn, WorkFindIn, WorkOpenIn,
+    WorkResumeIn, WorkSettleIn, SERVICES,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::check;
@@ -401,6 +401,7 @@ pub static HOST_SLOTS: HostSlots = HostSlots {
     auth_call: Some(auth_call),
     unit_hand_in: Some(unit_hand_in),
     unit_refuse: Some(unit_refuse),
+    console_line: Some(console_line),
 };
 
 /// The dispatcher an instance's context routes to, and what it serves.
@@ -1130,6 +1131,67 @@ extern "C" fn trust_verify(ctx: HostCtx, input: *const c_void, out: *mut Service
                 serve(&served.store, &route, &head, Some(&i.into), |_| {
                     Ran::Now(provider.trust_verify(&caller, &counterparty, &payload, &signatures))
                 })
+            }
+        },
+    )
+}
+
+thread_local! {
+    /// Whether the crossing on this thread may write to the operator's console: a plane's `open` or
+    /// `refresh`, and nothing else.
+    static CONSOLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the crossing on this thread may call `console.line`, restored to the crossing it is
+/// nested in when the guard drops.
+pub(crate) struct Console(bool);
+
+impl Drop for Console {
+    fn drop(&mut self) {
+        CONSOLE.with(|c| c.set(self.0));
+    }
+}
+
+/// State that the crossing on this thread may (`true`) or may not write console lines until the
+/// returned guard drops.
+pub(crate) fn console(allowed: bool) -> Console {
+    Console(CONSOLE.with(|c| c.replace(allowed)))
+}
+
+/// `console.line`'s refusal of an empty, over-long or NULL-counted line, before anything is written.
+pub const CONSOLE_LINE_MALFORMED: &str = "a console line is 1 to MAX_CONSOLE_LINE bytes";
+/// `console.line`'s refusal outside a plane's `open` or `refresh` crossing (a unit's serving
+/// included): nothing is written.
+pub const CONSOLE_OUTSIDE_GENERATION: &str =
+    "a console line is written only inside a plane's open or refresh";
+
+/// `console.line` (step 2b): the line's bytes, verbatim, then one newline, to the process's
+/// standard error, written whole under its lock. Served only while the crossing on this thread is a
+/// plane's `open` or `refresh` ([`console`]); REFUSED otherwise, with nothing written.
+extern "C" fn console_line(_: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    framed(
+        input,
+        out,
+        op::CONSOLE_LINE,
+        size_of::<ConsoleLineIn>(),
+        |_| {
+            // SAFETY: the head covered a `ConsoleLineIn`.
+            let i = unsafe { input.cast::<ConsoleLineIn>().read_unaligned() };
+            if svc::check_console_line_in(&i).is_err() {
+                return Answered::bare(Outcome::Refused, CONSOLE_LINE_MALFORMED);
+            }
+            if !CONSOLE.with(std::cell::Cell::get) {
+                return Answered::bare(Outcome::Refused, CONSOLE_OUTSIDE_GENERATION);
+            }
+            // SAFETY: checked non-NULL with `len` at most `MAX_CONSOLE_LINE`; the caller's bytes,
+            // live for the call.
+            let line = unsafe { std::slice::from_raw_parts(i.line.ptr, i.line.len) };
+            let mut err = std::io::stderr().lock();
+            let wrote = std::io::Write::write_all(&mut err, line)
+                .and_then(|()| std::io::Write::write_all(&mut err, b"\n"));
+            match wrote {
+                Ok(()) => Answered::bare(Outcome::Ready, ""),
+                Err(_) => Answered::bare(Outcome::Failed, "the console could not be written"),
             }
         },
     )

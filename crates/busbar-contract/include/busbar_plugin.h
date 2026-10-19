@@ -681,7 +681,8 @@ extern "C" {
 #define BB_HSVC_OP_AUTH_CALL UINT32_C(29) /* `auth.call`. */
 #define BB_HSVC_OP_UNIT_HAND_IN UINT32_C(30) /* `unit.hand_in`. */
 #define BB_HSVC_OP_UNIT_REFUSE UINT32_C(31) /* `unit.refuse`. */
-#define BB_HSVC_SERVICES UINT32_C(32) /* How many services [`HostSlots`] holds. */
+#define BB_HSVC_OP_CONSOLE_LINE UINT32_C(32) /* `console.line`. */
+#define BB_HSVC_SERVICES UINT32_C(33) /* How many services [`HostSlots`] holds. */
 #define BB_HSVC_SECRET_NOT_LIVE UINT64_C(0) /* `value` of [`op::RECORDS_SECRET`]: not live, or no such credential. */
 #define BB_HSVC_SECRET_LIVE UINT64_C(1) /* `value` of [`op::RECORDS_SECRET`]: the credential is live. */
 #define BB_HSVC_ABSENT UINT64_C(0) /* `value` of [`op::RECORDS_GET`]: no such record. */
@@ -778,6 +779,7 @@ extern "C" {
 #define BB_HSVC_REFUSE_OVER_GATE UINT32_C(3) /* [`UnitRefuseIn::cause`]: the body passed the line's `body_limit`, before any verdict. */
 #define BB_HSVC_REFUSE_STOPPED UINT32_C(4) /* [`UnitRefuseIn::cause`]: an auth call answered [`FLOW_STOP`]. */
 #define BB_HSVC_REFUSE_CHECK_FAILED UINT32_C(5) /* [`UnitRefuseIn::cause`]: [`op::UNIT_HAND_IN`] answered [`FLOW_STOP`]. */
+#define BB_HSVC_MAX_CONSOLE_LINE ((size_t)4096) /* The longest line one `console.line` writes, in bytes. */
 
 /* hio */
 #define BB_HIO_OP_OPEN UINT32_C(0) /* `io.open`. */
@@ -1180,6 +1182,7 @@ typedef struct bb_hsvc_AuthCallIn bb_hsvc_AuthCallIn;
 typedef struct bb_hsvc_UnitHandInIn bb_hsvc_UnitHandInIn;
 typedef struct bb_hsvc_RefusalAnswer bb_hsvc_RefusalAnswer;
 typedef struct bb_hsvc_UnitRefuseIn bb_hsvc_UnitRefuseIn;
+typedef struct bb_hsvc_ConsoleLineIn bb_hsvc_ConsoleLineIn;
 typedef struct bb_hsvc_HostSlots bb_hsvc_HostSlots;
 typedef struct bb_hio_IoSlots bb_hio_IoSlots;
 typedef struct bb_hio_OpenIn bb_hio_OpenIn;
@@ -4144,6 +4147,12 @@ struct bb_hsvc_UnitRefuseIn {
     bb_hsvc_RefusalAnswer *answer;
 };
 
+/* [`op::CONSOLE_LINE`]'s `in`: one line for the operator's console. The host writes `line`'s bytes */
+struct bb_hsvc_ConsoleLineIn {
+    bb_hsvc_ServiceHead head;
+    bb_mech_AbiStr line;
+};
+
 /* THE HOST SERVICES TABLE: one [`ServiceFn`] per [`op`], in index order. A NULL slot is a service */
 struct bb_hsvc_HostSlots {
     uint32_t size;
@@ -4180,6 +4189,7 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn auth_call;
     bb_hsvc_ServiceFn unit_hand_in;
     bb_hsvc_ServiceFn unit_refuse;
+    bb_hsvc_ServiceFn console_line;
 };
 
 /* THE HOST'S I/O TABLE: one [`ServiceFn`] per [`op`], in index order. A NULL slot is one this host */
@@ -6589,7 +6599,11 @@ BB_ASSERT(offsetof(bb_hsvc_UnitRefuseIn, line) == 44, "bb_hsvc_UnitRefuseIn.line
 BB_ASSERT(offsetof(bb_hsvc_UnitRefuseIn, conn) == 48, "bb_hsvc_UnitRefuseIn.conn: offset");
 BB_ASSERT(offsetof(bb_hsvc_UnitRefuseIn, stream) == 56, "bb_hsvc_UnitRefuseIn.stream: offset");
 BB_ASSERT(offsetof(bb_hsvc_UnitRefuseIn, answer) == 64, "bb_hsvc_UnitRefuseIn.answer: offset");
-BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 264, "bb_hsvc_HostSlots: size");
+BB_ASSERT(sizeof(bb_hsvc_ConsoleLineIn) == 40, "bb_hsvc_ConsoleLineIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_hsvc_ConsoleLineIn) == 8, "bb_hsvc_ConsoleLineIn: alignment");
+BB_ASSERT(offsetof(bb_hsvc_ConsoleLineIn, head) == 0, "bb_hsvc_ConsoleLineIn.head: offset");
+BB_ASSERT(offsetof(bb_hsvc_ConsoleLineIn, line) == 24, "bb_hsvc_ConsoleLineIn.line: offset");
+BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 272, "bb_hsvc_HostSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_HostSlots) == 8, "bb_hsvc_HostSlots: alignment");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, size) == 0, "bb_hsvc_HostSlots.size: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, slots) == 4, "bb_hsvc_HostSlots.slots: offset");
@@ -6625,6 +6639,7 @@ BB_ASSERT(offsetof(bb_hsvc_HostSlots, session_emit) == 232, "bb_hsvc_HostSlots.s
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, auth_call) == 240, "bb_hsvc_HostSlots.auth_call: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, unit_hand_in) == 248, "bb_hsvc_HostSlots.unit_hand_in: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, unit_refuse) == 256, "bb_hsvc_HostSlots.unit_refuse: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, console_line) == 264, "bb_hsvc_HostSlots.console_line: offset");
 BB_ASSERT(sizeof(bb_hio_IoSlots) == 88, "bb_hio_IoSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hio_IoSlots) == 8, "bb_hio_IoSlots: alignment");
 BB_ASSERT(offsetof(bb_hio_IoSlots, size) == 0, "bb_hio_IoSlots.size: offset");

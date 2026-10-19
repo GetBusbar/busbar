@@ -87,6 +87,7 @@ fn table(slot: Option<ServiceFn>) -> HostSlots {
         auth_call: None,
         unit_hand_in: None,
         unit_refuse: None,
+        console_line: None,
     }
 }
 

@@ -435,7 +435,8 @@ fn the_services_that_never_pend_are_exactly_the_stated_sixteen() {
             op::TRUST_STATE,
             op::SESSION_EMIT,
             op::UNIT_HAND_IN,
-            op::UNIT_REFUSE
+            op::UNIT_REFUSE,
+            op::CONSOLE_LINE
         ]
     );
     assert!(
@@ -513,6 +514,7 @@ fn every_service_field_sits_at_its_op_index() {
         (offset_of!(HostSlots, auth_call), op::AUTH_CALL),
         (offset_of!(HostSlots, unit_hand_in), op::UNIT_HAND_IN),
         (offset_of!(HostSlots, unit_refuse), op::UNIT_REFUSE),
+        (offset_of!(HostSlots, console_line), op::CONSOLE_LINE),
     ];
     for (i, (offset, op)) in table.iter().enumerate() {
         assert_eq!(*op as usize, i, "op constants run 0.. in table order");

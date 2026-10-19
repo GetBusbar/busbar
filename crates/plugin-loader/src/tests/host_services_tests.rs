@@ -575,6 +575,7 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
         HOST_SLOTS.auth_call,
         HOST_SLOTS.unit_hand_in,
         HOST_SLOTS.unit_refuse,
+        HOST_SLOTS.console_line,
     ];
     assert_eq!(slots.len(), SERVICES as usize);
     // The room a READ service is handed, so its well-formed call can be answered whole.
@@ -625,6 +626,10 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
             // The auth handle's `in` has one exact size; this one states the buffer's.
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
             assert_eq!(error(&o), NOT_EXACT, "service {service}");
+        } else if service == op::CONSOLE_LINE {
+            // An empty line is refused before the console is touched.
+            assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
+            assert_eq!(error(&o), CONSOLE_LINE_MALFORMED, "service {service}");
         } else if service == op::VERIFY_STORE {
             // Served: the zeroed `in` names no key, which is refused before the cache is read.
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
@@ -2637,4 +2642,55 @@ fn an_auth_call_whose_view_declares_no_scheme_is_refused_by_name() {
         AUTH_HANDLE_NOT_SERVED,
         "a declared scheme passes"
     );
+}
+
+/// Step 2b, `console.line`: REFUSED outside a plane's `open` or `refresh` crossing (no crossing,
+/// or a unit's serving, states no console), with nothing written; served inside one; an empty or
+/// over-long line is refused first, wherever it is called.
+#[test]
+fn a_console_line_is_written_only_inside_a_planes_open_or_refresh() {
+    let d = double();
+    let line_in = |line: &[u8]| svc::ConsoleLineIn {
+        head: head(
+            op::CONSOLE_LINE,
+            Ticket::NONE,
+            0,
+            size_of::<svc::ConsoleLineIn>(),
+        ),
+        line: busbar_contract::abi::mechanism::call::AbiStr {
+            ptr: line.as_ptr(),
+            len: line.len(),
+        },
+    };
+    let call = |line: &[u8]| {
+        let i = line_in(line);
+        let mut o = blank();
+        let ret = HOST_SLOTS.console_line.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+        assert!(svc::check_console_line(&i, ret, &o).is_ok());
+        (ret.outcome(), error(&o))
+    };
+    // RED: no console outside a generation's crossing (serve time).
+    {
+        let _serving = super::console(false);
+        assert_eq!(
+            call(b"  model m via p (https://a.example) max 4"),
+            (Outcome::Refused, CONSOLE_OUTSIDE_GENERATION)
+        );
+    }
+    assert_eq!(
+        call(b"x"),
+        (Outcome::Refused, CONSOLE_OUTSIDE_GENERATION),
+        "no crossing states no console"
+    );
+    // GREEN: inside a plane's open or refresh.
+    {
+        let _open = super::console(true);
+        assert_eq!(
+            call(b"  model m via p (https://a.example) max 4").0,
+            Outcome::Ready
+        );
+        assert_eq!(call(b""), (Outcome::Refused, CONSOLE_LINE_MALFORMED));
+        let long = vec![b'x'; svc::MAX_CONSOLE_LINE + 1];
+        assert_eq!(call(&long), (Outcome::Refused, CONSOLE_LINE_MALFORMED));
+    }
 }

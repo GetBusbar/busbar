@@ -2018,7 +2018,8 @@ fn compute_layout() -> String {
             session_emit,
             auth_call,
             unit_hand_in,
-            unit_refuse
+            unit_refuse,
+            console_line
         ]
     );
     record!(s, hsvc::NeedAdmitIn, [head, need, _reserved]);
@@ -2076,6 +2077,7 @@ fn compute_layout() -> String {
         hsvc::UnitRefuseIn,
         [head, unit, cause, line, conn, stream, answer]
     );
+    record!(s, hsvc::ConsoleLineIn, [head, line]);
 
     // M3-SHAPES (abi-v2-perkind.md B.2): the secret kind's `resolve`.
     record!(s, SecretOps, [head, resolve, check]);

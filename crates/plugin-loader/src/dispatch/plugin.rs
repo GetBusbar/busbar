@@ -1065,6 +1065,10 @@ impl Instance {
                 let _runtime = runtime.as_ref().map(tokio::runtime::Handle::enter);
                 let _acting = super::worker::acting_for(acting);
                 let _unit = super::services::serving(unit);
+                // A plane's `open` and `refresh` may write its generation's console lines.
+                let _console = super::services::console(
+                    self.kind == KindCode::Plane && matches!(s, slot::OPEN | slot::REFRESH),
+                );
                 with_crossing(Some(self), || {
                     enter_lifecycle((self.op_name)(s), op, instance, input, output)
                 })
@@ -1076,6 +1080,8 @@ impl Instance {
                 Err(_) => return Crossed::host(Outcome::Fault),
             }
         } else {
+            // No console line from any other crossing, a unit's serving included.
+            let _console = super::services::console(false);
             with_crossing(Some(self), || {
                 op(instance, input.cast_const().cast(), out.cast())
             })
