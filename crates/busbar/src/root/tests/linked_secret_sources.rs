@@ -8,9 +8,8 @@
 //! and `config/tests/secret_tests.rs` (ARCHITECT R-FIX3, 2026-09-26): the kernel's tests now
 //! resolve against its in-crate secret double (`busbar_kernel::test_support::secrets`), which
 //! reproduces the sources' refusal text for the refusals it makes and nothing more, so every
-//! assertion on a source's own decision (fail-closed on empty / missing, a blank value resolving
-//! and a mis-encoded one read as unset as in 1.5.5, the regular-file guard) and on its 1.5.5
-//! refusal words also lives here,
+//! assertion on a source's own decision (fail-closed on empty / blank / missing, the mis-encoding
+//! diagnosis, the regular-file and size-cap guards) and on its 1.5.5 refusal words also lives here,
 //! unchanged, against the real sources — the pin the double's copied text is held to.
 //!
 //! [`resolve_linked`] is the kernel resolver's linked branch at CONFIG TIME
@@ -141,24 +140,23 @@ fn env_whitespace_only_name_is_rejected() {
     }
 }
 
-/// AS 1.5.5 (`crates/busbar/src/config/secret.rs` `resolve_builtin`, l.255-263): a SET variable
-/// whose value is whitespace only RESOLVES, its bytes untouched; 1.5.5 refused only an EMPTY value.
-/// Refusing a blank one is a behaviour difference no owner has signed (THE DESIGN §2: the default
-/// is 1.5.5's behaviour), so this pins 1.5.5's outcome.
+/// A WHITESPACE-ONLY env value resolves to its bytes, as 1.5.5 resolved it (ruling A on #1119: the
+/// 1.6.0 blank-value refusal is dropped for parity; the linked `env` source states it in its doc).
 #[test]
-fn resolve_linked_env_whitespace_only_value_resolves_as_in_1_5_5() {
+fn resolve_linked_env_whitespace_only_value_resolves_as_1_5_5_did() {
     for blank in ["   ", "\t", "\n\n", " \t\r\n "] {
         let var = unique("ENV_BLANK");
         std::env::set_var(&var, blank);
         let got = resolve_linked(&SecretRef::env(&var)).unwrap_or_else(|e| {
-            panic!("whitespace-only value {blank:?} resolves, as in 1.5.5: {e}")
+            panic!("whitespace-only value {blank:?} resolves as in 1.5.5: {e}")
         });
-        assert_eq!(got, blank.as_bytes(), "untouched");
+        assert_eq!(got, blank.as_bytes(), "its bytes, untrimmed");
         std::env::remove_var(&var);
     }
 }
 
-/// A credential resolves with its bytes EXACTLY as stored (a trailing newline is part of a PEM chain; this is the RAW-bytes path).
+/// A legitimate credential resolves, its bytes
+/// EXACTLY as stored (a trailing newline is part of a PEM chain; this is the RAW-bytes path).
 #[test]
 fn resolve_linked_env_surrounding_whitespace_is_preserved_not_trimmed() {
     let var = unique("ENV_PADDED");
@@ -166,33 +164,32 @@ fn resolve_linked_env_surrounding_whitespace_is_preserved_not_trimmed() {
     let got = resolve_linked(&SecretRef::env(&var)).unwrap();
     assert_eq!(
         got, b"  s3cr3t-value\n",
-        "a real credential resolves byte-for-byte, never trimmed"
+        "a real credential resolves byte-for-byte; the blank guard must not trim it"
     );
     std::env::remove_var(&var);
 }
 
-/// AS 1.5.5: a variable that is SET but holds bytes that are not valid UTF-8 is refused with
-/// 1.5.5's own sentence, "is unset" (`std::env::var`'s one error covers both, and 1.5.5 rendered
-/// it so). Naming the encoding instead is a behaviour difference no owner has signed.
+/// A variable that IS SET but holds bytes that are not valid UTF-8 refuses in 1.5.5's words, which
+/// read it as unset (ruling A on #1119: 1.5.5 parity over the 1.6.0 encoding diagnosis).
 #[cfg(unix)]
 #[test]
-fn resolve_linked_env_mis_encoded_value_is_refused_as_unset_as_in_1_5_5() {
+fn resolve_linked_env_mis_encoded_value_refuses_in_1_5_5s_words() {
     use std::os::unix::ffi::OsStrExt;
     let var = unique("ENV_NOT_UNICODE");
     // Lone 0xFF: valid in an OsString, never valid UTF-8.
     std::env::set_var(&var, std::ffi::OsStr::from_bytes(&[0x73, 0xff, 0x74]));
     let err = resolve_linked(&SecretRef::env(&var))
         .expect_err("a mis-encoded variable cannot resolve to a usable secret");
-    assert!(
-        err.contains(&format!(
-            "secret env:{var} cannot resolve: environment variable '{var}' is unset"
-        )),
-        "1.5.5's sentence: {err}"
+    assert_eq!(
+        err,
+        format!("secret env:{var} cannot resolve: environment variable '{var}' is unset"),
+        "1.5.5's words"
     );
     std::env::remove_var(&var);
 }
 
-/// A genuinely absent variable reports "unset", 1.5.5's sentence.
+/// A genuinely absent variable reports
+/// "unset".
 #[test]
 fn resolve_linked_env_genuinely_unset_still_reports_unset() {
     let var = unique("ENV_STILL_UNSET");
@@ -254,18 +251,26 @@ fn resolve_linked_file_empty_file_is_fail_closed() {
     let _ = std::fs::remove_file(&path);
 }
 
-/// PARITY WITH 1.5.5 (audit pinned secret-file #2): 1.5.5 read a `file:` secret whole
-/// (`std::fs::read`), so a file of several MiB (a large PEM bundle) resolves byte for byte, never
-/// refused for its size (THE DESIGN §2: "the default is 1.5.5's behaviour").
+/// A `file:` secret is read whole, as 1.5.5 read it (`std::fs::read`): the linked file source
+/// resolves only at config time, so a large file is a boot-time read, never a request-path one.
 #[test]
-fn resolve_linked_file_larger_than_a_mebibyte_resolves_whole_as_in_1_5_5() {
-    let path = temp_path("FILE_LARGE");
-    let large: Vec<u8> = (0..3 * 1024 * 1024 + 7)
-        .map(|i| b'a' + (i % 26) as u8)
-        .collect();
-    std::fs::write(&path, &large).unwrap();
+fn resolve_linked_file_past_a_mebibyte_is_read_whole_as_1_5_5_did() {
+    let path = temp_path("FILE_OVERSIZE");
+    let oversize = vec![b'a'; 1024 * 1024 + 1];
+    std::fs::write(&path, &oversize).unwrap();
     let got = resolve_linked(&SecretRef::file(path.to_str().unwrap())).unwrap();
-    assert_eq!(got, large);
+    assert_eq!(got.len(), oversize.len());
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A file of exactly a mebibyte resolves, as every size does.
+#[test]
+fn resolve_linked_file_exactly_at_the_size_cap_still_resolves() {
+    let path = temp_path("FILE_AT_CAP");
+    let exact = vec![b'a'; 1024 * 1024];
+    std::fs::write(&path, &exact).unwrap();
+    let got = resolve_linked(&SecretRef::file(path.to_str().unwrap())).unwrap();
+    assert_eq!(got.len(), 1024 * 1024);
     let _ = std::fs::remove_file(&path);
 }
 
@@ -356,23 +361,22 @@ fn resolve_linked_file_missing_path_still_reports_cannot_resolve() {
     );
 }
 
-/// AS 1.5.5 on the `file:` side: a file holding only whitespace RESOLVES, its bytes untouched;
-/// 1.5.5 refused only an EMPTY file.
+/// A whitespace-only file resolves to its bytes, as 1.5.5 resolved it (ruling A on #1119; the
+/// linked `file` source's doc states it).
 #[test]
-fn resolve_linked_file_whitespace_only_content_resolves_as_in_1_5_5() {
+fn resolve_linked_file_whitespace_only_content_resolves_as_1_5_5_did() {
     for blank in [b"   ".to_vec(), b"\n\r\n".to_vec(), b"\t \n".to_vec()] {
         let path = temp_path("FILE_BLANK");
         std::fs::write(&path, &blank).unwrap();
-        let got = resolve_linked(&SecretRef::file(path.to_str().unwrap())).unwrap_or_else(|e| {
-            panic!("whitespace-only file content {blank:?} resolves, as in 1.5.5: {e}")
-        });
-        assert_eq!(got, blank, "untouched");
+        let got = resolve_linked(&SecretRef::file(path.to_str().unwrap()))
+            .unwrap_or_else(|e| panic!("whitespace-only file {blank:?} resolves as in 1.5.5: {e}"));
+        assert_eq!(got, blank, "its bytes, untouched");
         let _ = std::fs::remove_file(&path);
     }
 }
 
-/// A file secret keeps its surrounding whitespace byte-for-byte, and a BINARY secret that is not
-/// UTF-8 at all resolves.
+/// Surrounding whitespace is kept byte-for-byte, and a
+/// BINARY secret that is not UTF-8 at all still resolves (the guard tests all-whitespace bytes).
 #[test]
 fn resolve_linked_file_real_content_still_resolves_including_binary() {
     let padded = temp_path("FILE_PADDED");

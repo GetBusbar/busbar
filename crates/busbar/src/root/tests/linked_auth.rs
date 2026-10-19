@@ -418,7 +418,6 @@ fn cfg_with_credentials(
         signing_key: Some(busbar_kernel::config::SecretRef::file(
             key_path.to_string_lossy().to_string(),
         )),
-        operator_pub: None,
         chain: vec![],
         admin_auth: vec![admin_entry],
         role_bindings: busbar_kernel::config::RoleBindings::new(),
