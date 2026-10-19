@@ -686,7 +686,7 @@ fn a_tail_without_claims_or_with_unknown_codes_is_fault() {
     t.claim_rows_len = MAX_CLAIMS as usize + 1;
     assert_eq!(check_tail(&t), f(Rule::OverMax, "tail.claim_rows"));
     let mut t = tail();
-    t.facts = 4;
+    t.facts = 64;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.facts"));
     // RED: the retired signs-nothing-after-auth bit (1) is no fact a tail may state.
     t.facts = 1;
@@ -694,6 +694,25 @@ fn a_tail_without_claims_or_with_unknown_codes_is_fault() {
     let mut t = tail();
     t.framing = 2;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.framing"));
+}
+
+/// The ops a transport declares (accept, dial, detach, adopt) are facts its tail states; each is
+/// accepted alone and together, and a tail stating none declares no op (a zero declares nothing).
+#[test]
+fn a_tail_states_the_ops_it_declares() {
+    for op in [FACT_ACCEPTS, FACT_DIALS, FACT_DETACHES, FACT_ADOPTS] {
+        let mut t = tail();
+        t.facts = op;
+        assert_eq!(check_tail(&t), Ok(()), "op fact {op}");
+    }
+    let mut t = tail();
+    t.facts = FACT_DECODES_PAYLOAD | FACT_ACCEPTS | FACT_DIALS | FACT_DETACHES | FACT_ADOPTS;
+    assert_eq!(check_tail(&t), Ok(()));
+    assert_eq!(
+        tail().facts & (FACT_ACCEPTS | FACT_DIALS | FACT_DETACHES | FACT_ADOPTS),
+        0,
+        "a zero declares no op"
+    );
 }
 
 fn claim() -> Claim {
@@ -1308,5 +1327,25 @@ fn a_begin_binding_is_checked() {
         a.auth = AuthRef::NONE;
         a.points = POINT_HEAD;
         assert_eq!(check_binding(&a), f(Rule::Contradiction, "begin.auth"));
+    }
+}
+
+/// RED: a `begin`'s scheme, on every side: an undeclared scheme (a zeroed `in`) is refused, never
+/// read as plain; a code above `SCHEME_SECURE` is unknown; plain and secure pass.
+#[test]
+fn a_begin_scheme_is_declared() {
+    use crate::abi::host::service::{SCHEME_PLAIN, SCHEME_SECURE, SCHEME_UNDECLARED};
+    use crate::abi::transport::check::check_begin_scheme;
+    for side in [SIDE_DIAL, SIDE_ACCEPT, SIDE_ACCEPT_STREAM] {
+        let mut i: BeginIn = z();
+        i.side = side;
+        assert_eq!(i.scheme, SCHEME_UNDECLARED, "a zeroed begin declares none");
+        assert_eq!(check_begin_scheme(&i), f(Rule::Missing, "begin.scheme"));
+        i.scheme = SCHEME_SECURE + 1;
+        assert_eq!(check_begin_scheme(&i), f(Rule::UnknownCode, "begin.scheme"));
+        for scheme in [SCHEME_PLAIN, SCHEME_SECURE] {
+            i.scheme = scheme;
+            assert_eq!(check_begin_scheme(&i), Ok(()));
+        }
     }
 }
