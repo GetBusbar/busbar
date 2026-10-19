@@ -133,6 +133,34 @@
         "/v1/models"
       ],
       [
+        "POST",
+        "/*:generateContent"
+      ],
+      [
+        "POST",
+        "/*:streamGenerateContent"
+      ],
+      [
+        "POST",
+        "/*:embedContent"
+      ],
+      [
+        "POST",
+        "/*:batchEmbedContents"
+      ],
+      [
+        "POST",
+        "/*:predict"
+      ],
+      [
+        "POST",
+        "/*/converse"
+      ],
+      [
+        "POST",
+        "/*/converse-stream"
+      ],
+      [
         "GET",
         "/"
       ],
@@ -181,6 +209,34 @@
       [
         "POST",
         "/v1/models"
+      ],
+      [
+        "POST",
+        "/*:generateContent"
+      ],
+      [
+        "POST",
+        "/*:streamGenerateContent"
+      ],
+      [
+        "POST",
+        "/*:embedContent"
+      ],
+      [
+        "POST",
+        "/*:batchEmbedContents"
+      ],
+      [
+        "POST",
+        "/*:predict"
+      ],
+      [
+        "POST",
+        "/*/converse"
+      ],
+      [
+        "POST",
+        "/*/converse-stream"
       ],
       [
         "GET",

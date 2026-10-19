@@ -66,8 +66,8 @@ use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, DialectAuth, OnPieceIn, OnPieceOut, OpClass, OutField,
     PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot,
     PlaneTail, ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount,
-    ANSWER_LAYOUT, CANCEL_ABORTED, CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_PROBE, EMIT_DONE,
-    EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE,
+    ANSWER_LAYOUT, CANCEL_ABORTED, CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_PROBE, CLAIM_RAW_AFFIX,
+    EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE,
     INGRESS_RESPONSE_STREAM, PIECE_CUT, PIECE_FINAL, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE,
     PRINCIPAL_REQUIRED, REFUSAL_GATE, REFUSED_UNSUPPORTED_ACTION, ROUTE_DIRECT, ROUTE_POOL,
     SHAPE_PIECEWISE, SPAN_ABSENT, TAIL_FALLBACK, TAIL_PROBES, UNITS_FLOOR, UNITS_REPORTED,
@@ -688,27 +688,67 @@ const DIALECT_CLAIMS: [ClaimRow; 7] = [
     ("POST", "/v1/models", false, "openai"),
 ];
 
-/// THE PLANE'S CLAIMS: [`DIALECT_CLAIMS`], then the previous release's fallback, a prefix claim on
-/// `/` per verb wearing the residual default dialect. The fallback reaches every path at any depth
-/// no more specific claim or kernel route takes (CG-62); the router has no plane-shaped branch.
+/// THE PREVIOUS RELEASE'S GEMINI ENTRY SPAN (status row 173; v1.5.5 `ingress/mod.rs:788`,
+/// `docs/observability.md` l.162-174): opened at the hot-path level, with no field, around every
+/// request its protocol ladder read as Gemini (v1.5.5 `proto/detect.rs`, `ingress/dispatch.rs:342`).
+const GEMINI_INGRESS: &str = "gemini_ingress";
+
+/// THE DIALECT CLAIMS WHOSE ARRIVALS OPEN AN ENTRY SPAN: the Gemini models surfaces, every path of
+/// which the previous release's ladder read as Gemini whatever its action (its rung 2b).
+const CLAIM_SPANS: [(&str, &str); 2] = [
+    ("/v1beta/models", GEMINI_INGRESS),
+    ("/v1/models", GEMINI_INGRESS),
+];
+
+/// THE ENTRY SPANS' PATH FACTS (status row 173), in the previous release's ladder order: its Gemini
+/// action verbs (rung 2) ahead of the Bedrock Converse surfaces, whose entries it opened as
+/// `bedrock_converse` and `bedrock_converse_stream` for a Bedrock path ending in the surface (v1.5.5
+/// `ingress/mod.rs:1043`, `:1070`; `ingress/dispatch.rs:366-385`). Each is a raw affix
+/// ([`CLAIM_RAW_AFFIX`]): it mounts no route, and states the span an arrival on a raw path it matches
+/// opens, on whichever claim the arrival is routed to, where that claim states none of its own.
+/// Each wears its dialect: `(target, dialect, span)`.
+const PATH_SPANS: [(&str, &str, &str); 7] = [
+    ("/*:generateContent", "gemini", GEMINI_INGRESS),
+    ("/*:streamGenerateContent", "gemini", GEMINI_INGRESS),
+    ("/*:embedContent", "gemini", GEMINI_INGRESS),
+    ("/*:batchEmbedContents", "gemini", GEMINI_INGRESS),
+    ("/*:predict", "gemini", GEMINI_INGRESS),
+    ("/*/converse", "bedrock", "bedrock_converse"),
+    ("/*/converse-stream", "bedrock", "bedrock_converse_stream"),
+];
+
+/// THE PLANE'S CLAIMS: [`DIALECT_CLAIMS`] (with their [`CLAIM_SPANS`]), the [`PATH_SPANS`], then the
+/// previous release's fallback, a prefix claim on `/` per verb wearing the residual default dialect.
+/// The fallback reaches every path at any depth no more specific claim or kernel route takes
+/// (CG-62); the router has no plane-shaped branch.
 #[must_use]
 pub fn claims() -> Vec<ClaimSpec> {
     let fallback = crate::exchange::arrive::envelope_for("/");
-    DIALECT_CLAIMS
+    let dialect_of = |dialect: &str| u16::try_from(dialect_index(dialect)).unwrap_or(0);
+    let paths = PATH_SPANS.iter().map(|&(target, dialect, span)| {
+        let mut claim =
+            ClaimSpec::new("POST", target, TRANSPORT, CLAIM_RAW_AFFIX).with_arrival_span(span);
+        claim.refusal_dialect = dialect_of(dialect);
+        claim
+    });
+    let claimed = DIALECT_CLAIMS
         .iter()
         .copied()
-        .chain(
-            FALLBACK_VERBS
-                .iter()
-                .map(|&verb| (verb, "/", false, fallback)),
-        )
         .map(|(verb, target, exact, dialect)| {
             let flags = if exact { CLAIM_EXACT } else { 0 };
             let mut claim = ClaimSpec::new(verb, target, TRANSPORT, flags);
-            claim.refusal_dialect = u16::try_from(dialect_index(dialect)).unwrap_or(0);
-            claim
-        })
-        .collect()
+            claim.refusal_dialect = dialect_of(dialect);
+            match CLAIM_SPANS.iter().find(|(t, _)| *t == target) {
+                Some(&(_, span)) => claim.with_arrival_span(span),
+                None => claim,
+            }
+        });
+    let fallbacks = FALLBACK_VERBS.iter().map(|&verb| {
+        let mut claim = ClaimSpec::new(verb, "/", TRANSPORT, 0);
+        claim.refusal_dialect = dialect_of(fallback);
+        claim
+    });
+    claimed.chain(paths).chain(fallbacks).collect()
 }
 
 /// THE RECEIVERS' CLAIMS: each webhook receiver its `webhooks:` section switches on, an exact path
