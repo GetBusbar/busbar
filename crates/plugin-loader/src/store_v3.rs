@@ -2052,13 +2052,13 @@ pub struct DoorStoreAxis {
     pub mint: OpIdMint,
 }
 
-impl busbar_contract::store_calls::StoreAxis for DoorStoreAxis {
-    fn open(
+impl DoorStoreAxis {
+    /// Load `door` as the store instance `label`, bound with the axis's host ceiling.
+    fn load(
         &self,
         door: busbar_contract::store_calls::StoreDoor,
         label: &str,
-        settings: &[u8],
-    ) -> Result<busbar_contract::store_calls::OpenedStore, String> {
+    ) -> Result<Plugin<Store>, String> {
         use busbar_contract::abi::mechanism::KindCode;
         use busbar_contract::store_calls::StoreDoor;
         let sink = self
@@ -2071,7 +2071,7 @@ impl busbar_contract::store_calls::StoreAxis for DoorStoreAxis {
             dispatcher: self.dispatcher.adopter(),
             conns: self.conns.clone(),
         };
-        let plugin = match door {
+        match door {
             StoreDoor::Linked(door) => crate::dispatch::LinkedRow::of(door)
                 .and_then(|row| crate::dispatch::load_linked::<Store>(&row, bind)),
             StoreDoor::Dropped {
@@ -2080,7 +2080,18 @@ impl busbar_contract::store_calls::StoreAxis for DoorStoreAxis {
                 stated,
             } => crate::dispatch::load_dropped_bytes::<Store>(&bytes, &file, &stated, bind),
         }
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())
+    }
+}
+
+impl busbar_contract::store_calls::StoreAxis for DoorStoreAxis {
+    fn open(
+        &self,
+        door: busbar_contract::store_calls::StoreDoor,
+        label: &str,
+        settings: &[u8],
+    ) -> Result<busbar_contract::store_calls::OpenedStore, String> {
+        let plugin = self.load(door, label)?;
         let store = Arc::new(LoadedStore::open(
             plugin,
             Arc::clone(&self.dispatcher),

@@ -167,3 +167,37 @@ fn boot_is_handed_a_stores_door_and_a_row_with_none_is_refused() {
         .expect("it opens through the axis");
     assert!(opened.records.list_keys().is_ok());
 }
+
+/// The build's store door, its Statement stating every unit a `u32` holds in flight.
+extern "C" fn unbounded_door() -> *const busbar_contract::abi::mechanism::door::Door {
+    static AT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let at = *AT.get_or_init(|| {
+        // SAFETY: the fixture's door and its Statement are `'static` and plain data.
+        let base = unsafe { *crate::both_ways::store_fixture::door() };
+        // SAFETY: as above.
+        let mut statement = unsafe { *base.statement };
+        statement.max_inflight = u32::MAX;
+        let door = busbar_contract::abi::mechanism::door::Door {
+            statement: Box::leak(Box::new(statement)),
+            ..base
+        };
+        std::ptr::from_ref(Box::leak(Box::new(door))) as usize
+    });
+    at as *const busbar_contract::abi::mechanism::door::Door
+}
+
+/// RED (Q128 plugin-loader u72 LOW): the store axis binds every store under a host in-flight
+/// ceiling, as every sibling axis does (Appendix A: the slab capacity is the smaller of the
+/// plugin's `max_inflight` and the host's ceiling; the kernel owns ceilings). A store stating an
+/// unbounded figure is clamped.
+#[test]
+fn red_a_store_stating_an_unbounded_in_flight_figure_is_clamped_by_the_host() {
+    let plugin = axis()
+        .load(StoreDoor::Linked(unbounded_door), "store")
+        .expect("the door loads");
+    assert!(
+        plugin.max_inflight() < u32::MAX,
+        "the store's in-flight slab is the plugin's own figure: {}",
+        plugin.max_inflight()
+    );
+}
