@@ -2279,3 +2279,210 @@ fn a_purge_runs_under_the_rule_the_instance_declared_for_the_kind() {
     assert!(!held("aged", "old-terminal"));
     assert!(held("aged", "new-terminal"));
 }
+
+/// A plane record of `kind` written at `ts`, for the retention sweep's tests.
+fn aged_row(
+    kind: &str,
+    id: &str,
+    ts: u64,
+    terminal: bool,
+) -> busbar_contract::records::PlaneRecord {
+    use busbar_contract::records::PlaneDisposition;
+    busbar_contract::records::PlaneRecord {
+        kind: kind.into(),
+        id: id.into(),
+        parent: None,
+        seq: 0,
+        ts,
+        disposition: if terminal {
+            PlaneDisposition::Terminal
+        } else {
+            PlaneDisposition::Active
+        },
+        body: b"{}".to_vec(),
+    }
+}
+
+/// Admit `instance` keeping `kinds`, with `rules` (an index into `kinds`, the rule) declared.
+fn admit_retaining(
+    s: &KernelServices,
+    instance: &str,
+    kinds: &[&'static str],
+    rules: &[(u32, Retention)],
+) {
+    s.admit(
+        instance,
+        InstanceFacts {
+            record_kinds: kinds.iter().map(|&k| RecordSchemaId::new(k)).collect(),
+            record_retentions: rules
+                .iter()
+                .map(
+                    |&(kind, rule)| busbar_contract::abi::plane::RecordRetention {
+                        kind,
+                        rule: rule.code(),
+                    },
+                )
+                .collect(),
+            ..InstanceFacts::default()
+        },
+    )
+    .unwrap();
+}
+
+/// RED/GREEN, THE SWEEP KEEPS LIVE WORK: a kind its owner declared terminal-only keeps an ACTIVE
+/// row however far past the 31-day ceiling it is (BUSBAR-1.6.0.md THE DESIGN §1, "an active work
+/// handle is never evicted"), while its terminal row of the same age goes.
+#[test]
+fn the_sweep_keeps_a_terminal_only_kinds_active_row_past_the_ceiling() {
+    use busbar_contract::records::RecordStore;
+    let s = KernelServices::new();
+    admit_retaining(&s, "inst", &["held"], &[(0, Retention::TerminalOnly)]);
+    let store = MemoryStore::new();
+    store
+        .upsert_plane_record(aged_row("held", "live", 0, false).view())
+        .unwrap();
+    store
+        .upsert_plane_record(aged_row("held", "done", 0, true).view())
+        .unwrap();
+    let now = 10 * RECORD_RETENTION_SECS;
+
+    assert_eq!(s.retention_sweep(&store, now), 1);
+    assert!(
+        store.get_plane_record("held", "live").unwrap().is_some(),
+        "an active row of a terminal-only kind outlives any age"
+    );
+    assert!(store.get_plane_record("held", "done").unwrap().is_none());
+}
+
+/// RED/GREEN, THE AGE RULE AND ITS 1.5.5 CEILING: a kind declared `Age`, and a kind that declares
+/// no rule (the `Age` default), lose every row 31 days old or older, active or not; a row one
+/// second fresher than the ceiling stays (1.5.5's `ts + MAX_RETENTION_SECS > now` keep rule).
+#[test]
+fn the_sweep_purges_an_age_kind_at_the_1_5_5_ceiling_and_an_undeclared_kind_by_age() {
+    use busbar_contract::records::RecordStore;
+    let s = KernelServices::new();
+    admit_retaining(&s, "inst", &["dated", "plain"], &[(0, Retention::Age)]);
+    let store = MemoryStore::new();
+    let now = 100 * 86_400;
+    let ceiling = now - RECORD_RETENTION_SECS;
+    for kind in ["dated", "plain"] {
+        store
+            .upsert_plane_record(aged_row(kind, "at", ceiling, false).view())
+            .unwrap();
+        store
+            .upsert_plane_record(aged_row(kind, "past", 0, true).view())
+            .unwrap();
+        store
+            .upsert_plane_record(aged_row(kind, "fresher", ceiling + 1, false).view())
+            .unwrap();
+    }
+
+    assert_eq!(s.retention_sweep(&store, now), 4);
+    for kind in ["dated", "plain"] {
+        assert!(
+            store.get_plane_record(kind, "at").unwrap().is_none(),
+            "{kind}: at the ceiling goes"
+        );
+        assert!(
+            store.get_plane_record(kind, "past").unwrap().is_none(),
+            "{kind}: past it goes"
+        );
+        assert!(
+            store.get_plane_record(kind, "fresher").unwrap().is_some(),
+            "{kind}: a second fresher stays"
+        );
+    }
+}
+
+/// RED/GREEN, THE SWEEP RUNS FROM A SUBMIT: the 256th record write (1.5.5's cadence) hands one
+/// sweep to the pool, the cutoff off the services' wall clock; the 255 before it sweep nothing.
+#[test]
+fn every_256th_record_write_runs_one_retention_sweep() {
+    use busbar_contract::records::RecordStore;
+    let r = rig();
+    r.store
+        .upsert_plane_record(aged_row("approval", "old", 0, false).view())
+        .unwrap();
+    r.clock
+        .store((RECORD_RETENTION_SECS + 60) * 1000, Ordering::SeqCst);
+    let me = caller("inst");
+    let v = RecordBytes::new(b"v".to_vec()).unwrap();
+    for _ in 1..RECORD_SWEEP_EVERY {
+        r.s.record_write(&me, "approval", b"k", v.clone(), noop())
+            .unwrap();
+    }
+    assert!(
+        r.store
+            .get_plane_record("approval", "old")
+            .unwrap()
+            .is_some(),
+        "no sweep before the cadence's write"
+    );
+    r.s.record_write(&me, "approval", b"k", v, noop()).unwrap();
+    assert!(r
+        .store
+        .get_plane_record("approval", "old")
+        .unwrap()
+        .is_none());
+}
+
+/// RED/GREEN, NEUTRALITY: the sweep's plan is exactly the admitted instances' declarations (each
+/// instance's own kinds, each under its own rule, invented names carrying nothing), and the sweep's
+/// source names no protocol: it holds no plane-specific code.
+#[test]
+fn the_sweep_is_the_instances_declarations_and_names_no_protocol() {
+    let s = KernelServices::new();
+    admit_retaining(&s, "one", &["zeta", "eta"], &[(1, Retention::TerminalOnly)]);
+    admit_retaining(&s, "two", &["eta"], &[]);
+    let mut plan: Vec<(String, String, Retention)> = s
+        .retention_plan()
+        .into_iter()
+        .map(|p| (p.instance.to_string(), p.kind, p.rule))
+        .collect();
+    plan.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+    assert_eq!(
+        plan,
+        vec![
+            ("one".into(), "eta".into(), Retention::TerminalOnly),
+            ("one".into(), "zeta".into(), Retention::Age),
+            ("two".into(), "eta".into(), Retention::Age),
+        ]
+    );
+
+    let src = include_str!("../host_services.rs");
+    let section = |from: &str, to: &str| {
+        let at = src.find(from).expect(from);
+        let end = at + src[at..].find(to).expect(to);
+        src[at..end].to_ascii_lowercase()
+    };
+    let sweep = [
+        section(
+            "/// THE PLANE-RECORD RETENTION CEILING",
+            "/// THE KERNEL'S HOST SERVICES.",
+        ),
+        section("/// THE RETENTION PLAN:", "/// CLAIM `(op, key)`"),
+    ]
+    .concat();
+    for noun in [
+        "llm",
+        "mcp",
+        "a2a",
+        "grpc",
+        "openai",
+        "anthropic",
+        "websocket",
+        "webrtc",
+        "http",
+        "task",
+        "tool",
+        "chat",
+        "completion",
+        "batch",
+        "voice",
+        "approval",
+        "demotion",
+        "oauth",
+    ] {
+        assert!(!sweep.contains(noun), "the sweep names `{noun}`");
+    }
+}

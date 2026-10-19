@@ -588,6 +588,55 @@ fn system_wall_ms() -> u64 {
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
+/// THE PLANE-RECORD RETENTION CEILING, 1.5.5's: a record older than 31 days goes
+/// (`MAX_RETENTION_SECS`, `crates/store-memory/src/lib.rs:18-23` at v1.5.5; BUSBAR-1.6.0.md #79:
+/// "the memory store's 31-day in-RAM retention is the 1.5.5 behaviour and stays"). 1.5.5 named no
+/// config key for it, so none is added.
+pub const RECORD_RETENTION_SECS: u64 = 31 * 86_400;
+
+/// THE RETENTION SWEEP'S CADENCE, 1.5.5's: one sweep per this many writes (`SWEEP_INTERVAL`,
+/// `crates/store-memory/src/lib.rs:25-27` at v1.5.5, which mirrors `advanced.rate_sweep_interval`'s
+/// default).
+pub const RECORD_SWEEP_EVERY: u64 = 256;
+
+/// The purge cutoff at `now_s`: a row at or past 31 days old goes, one a second fresher stays
+/// (1.5.5's `ts + MAX_RETENTION_SECS > now` keeps it, `crates/store-memory/src/lib.rs:256`).
+#[must_use]
+pub fn retention_cutoff(now_s: u64) -> u64 {
+    now_s
+        .checked_sub(RECORD_RETENTION_SECS)
+        .map_or(0, |at| at.saturating_add(1))
+}
+
+/// One step of the retention sweep: an instance's record kind and the rule its owner declared.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetentionStep {
+    /// The owning instance's label.
+    pub instance: Arc<str>,
+    /// The record kind, as the instance declared it.
+    pub kind: String,
+    /// The rule the instance declared for the kind ([`Retention::Age`] where it declared none).
+    pub rule: Retention,
+}
+
+/// The purge itself, under the owner's rule: the one call the sweep makes into the store.
+fn purge_under(
+    store: &dyn RecordStore,
+    kind: &str,
+    before: u64,
+    rule: Retention,
+) -> RecordStoreResult<u64> {
+    store.purge_plane_records(kind, before, rule)
+}
+
+/// Run `plan` against `store` at the cutoff `before`: the rows removed. A step the store refuses
+/// removes nothing and the next one still runs; the next sweep retries it.
+fn run_retention(store: &dyn RecordStore, plan: &[RetentionStep], before: u64) -> u64 {
+    plan.iter()
+        .filter_map(|step| purge_under(store, &step.kind, before, step.rule).ok())
+        .fold(0, u64::saturating_add)
+}
+
 /// THE KERNEL'S HOST SERVICES.
 pub struct KernelServices {
     origin: Instant,
@@ -628,6 +677,8 @@ pub struct KernelServices {
     sessions: Mutex<HashMap<u64, CarrierSession>>,
     /// The verify cache behind `verify.*`.
     verify: crate::host_verify::VerifyBook,
+    /// The record writes taken, the retention sweep's cadence ([`RECORD_SWEEP_EVERY`]).
+    record_writes: std::sync::atomic::AtomicU64,
 }
 
 /// ONE OPEN CARRIER SESSION: a carrier the root holds open for one caller (a process's own
@@ -704,6 +755,7 @@ impl KernelServices {
             disk: Arc::default(),
             sessions: Mutex::default(),
             verify: crate::host_verify::VerifyBook::default(),
+            record_writes: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -1200,6 +1252,16 @@ impl KernelServices {
             Some(false) => {}
             None => return Err(QUEUE_FULL),
         }
+        // THE RETENTION SWEEP RUNS FROM A SUBMIT, never from a read or a timer (BUSBAR-1.6.0.md THE
+        // DESIGN §1): every RECORD_SWEEP_EVERY-th write hands one sweep to the pool.
+        if self
+            .record_writes
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .wrapping_add(1)
+            .is_multiple_of(RECORD_SWEEP_EVERY)
+        {
+            self.start_retention_sweep(records, pool);
+        }
         Ok(())
     }
 
@@ -1257,7 +1319,52 @@ impl KernelServices {
         kind: &str,
         before: u64,
     ) -> RecordStoreResult<u64> {
-        store.purge_plane_records(kind, before, self.record_retention(instance, kind))
+        purge_under(store, kind, before, self.record_retention(instance, kind))
+    }
+
+    /// THE RETENTION PLAN: every admitted instance's every declared record kind, each with the rule
+    /// its owner declared for it ([`Self::record_retention`]: [`Retention::Age`] where it declared
+    /// none). The plan names no kind and no rule of its own; both are the instances' declarations.
+    #[must_use]
+    pub fn retention_plan(&self) -> Vec<RetentionStep> {
+        let admitted: Vec<(Arc<str>, Arc<InstanceFacts>)> = self
+            .lock_instances()
+            .iter()
+            .map(|(label, facts)| (Arc::clone(label), Arc::clone(facts)))
+            .collect();
+        let mut plan = Vec::new();
+        for (label, facts) in admitted {
+            for kind in &facts.record_kinds {
+                plan.push(RetentionStep {
+                    rule: self.record_retention(&label, kind.as_str()),
+                    instance: Arc::clone(&label),
+                    kind: kind.as_str().to_string(),
+                });
+            }
+        }
+        plan
+    }
+
+    /// ONE RETENTION SWEEP at `now_s` (Unix seconds) over `store`: every step of
+    /// [`Self::retention_plan`] purged under its rule against [`retention_cutoff`]`(now_s)`,
+    /// answering how many rows went. It runs on the calling thread; a record write hands it to the
+    /// pool ([`Self::record_write`]), so it never runs on the request path.
+    pub fn retention_sweep(&self, store: &dyn RecordStore, now_s: u64) -> u64 {
+        run_retention(store, &self.retention_plan(), retention_cutoff(now_s))
+    }
+
+    /// Hand one retention sweep to `pool`, the cutoff read off the wall clock now. A pool that
+    /// refuses it drops it; the next RECORD_SWEEP_EVERY-th write hands another.
+    fn start_retention_sweep(&self, records: &Records, pool: &dyn Offload) {
+        let plan = self.retention_plan();
+        if plan.is_empty() {
+            return;
+        }
+        let store = Arc::clone(&records.claims);
+        let before = retention_cutoff((self.wall_ms)() / 1000);
+        pool.run(Box::new(move || {
+            let _removed = run_retention(&*store, &plan, before);
+        }));
     }
 
     /// CLAIM `(op, key)` for the instance labelled `instance` for `ttl_ms`, or, with `held`, extend
