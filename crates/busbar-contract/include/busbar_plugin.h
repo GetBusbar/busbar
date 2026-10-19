@@ -535,7 +535,7 @@ extern "C" {
 #define BB_TRANSPORT_UNIT0_FIRST_DATAGRAM UINT8_C(4) /* [`Claim::unit0_trigger`]: the first datagram. */
 #define BB_TRANSPORT_UNIT0_UPGRADE UINT8_C(5) /* [`Claim::unit0_trigger`]: an upgrade. */
 #define BB_TRANSPORT_UNIT0_HANDSHAKE UINT8_C(6) /* [`Claim::unit0_trigger`]: a handshake. */
-#define BB_TRANSPORT_CLAIM_SECURE UINT32_C(1) /* [`Claim::flags`]: the scheme is the SECURE form of its wire: the connection is secured by the */
+#define BB_TRANSPORT_CLAIM_SECURE UINT32_C(1) /* [`Claim::flags`]: the scheme is the secure form of its wire (the host secures the connection). */
 #define BB_TRANSPORT_SETTING_FLAG UINT32_C(1) /* [`SettingDecl::kind`]: `0`/`1`. */
 #define BB_TRANSPORT_SETTING_COUNT UINT32_C(2) /* [`SettingDecl::kind`]: an unsigned integer. */
 #define BB_TRANSPORT_SETTING_TEXT UINT32_C(3) /* [`SettingDecl::kind`]: text. */

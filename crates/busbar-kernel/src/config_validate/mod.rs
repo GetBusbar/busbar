@@ -2282,7 +2282,7 @@ fn validate_providers_with(
         let scheme_ok = is_env_placeholder(base_url)
             || scheme_is(base_url, "https")
             || (host_is_local && scheme_is(base_url, "http"))
-            || (claim.is_some() && false);
+            || claim.is_some_and(|c| c.secure || host_is_local);
         if !scheme_ok {
             // What an error may repeat of the base URL: a `user:pass@` the operator wrote is
             // ACCEPTED (and stripped where the base URL enters the served flow, as 1.5.5 did — row

@@ -428,8 +428,9 @@ pub const UNIT0_UPGRADE: u8 = 5;
 /// [`Claim::unit0_trigger`]: a handshake.
 pub const UNIT0_HANDSHAKE: u8 = 6;
 
-/// [`Claim::flags`]: the scheme is the SECURE form of its wire: the connection is secured by the
-/// host before the first byte (BUSBAR-1.6.0.md #50: `https`, `wss`). A claim without it is plaintext.
+/// [`Claim::flags`]: the scheme is the secure form of its wire (the host secures the connection).
+/// BUSBAR-1.6.0.md #50: a transport declares each scheme it serves, its secure form among them, and
+/// a provider's base URL selects the claim its scheme names. A claim without this bit is plaintext.
 pub const CLAIM_SECURE: u32 = 1;
 
 /// [`SettingDecl::kind`]: `0`/`1`.
