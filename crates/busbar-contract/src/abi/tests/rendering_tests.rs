@@ -259,3 +259,154 @@ fn a_truncated_padded_or_foreign_rendering_is_unreadable() {
     huge.extend_from_slice(&u32::MAX.to_le_bytes());
     assert!(read(&huge).is_err());
 }
+
+// ── a transport's claim-row flags (BUSBAR-1.6.0.md #50; Part 2 #2: linked and dropped judge alike) ──
+
+use crate::abi::transport::{Claim, TransportTail, CLAIM_SECURE};
+
+use super::TAIL_CLAIM_FLAGS;
+
+const fn row(flags: u32) -> Claim {
+    Claim {
+        selector_forms: NONE,
+        egress_selector_forms: NONE,
+        facts: core::ptr::null(),
+        facts_len: 0,
+        status_namespace: NONE,
+        session: 0,
+        session_bound: 0,
+        unit0_trigger: 0,
+        status_at: 0,
+        flags,
+    }
+}
+
+/// One row per [`CLAIMS`] entry: the first secure, the second plaintext.
+const SECURE_ROWS: &[Claim] = &[row(CLAIM_SECURE), row(0)];
+/// The same rows stating nothing: every rendering signed before the field existed.
+const PLAIN_ROWS: &[Claim] = &[row(0), row(0)];
+
+/// [`full`] as a TRANSPORT's Statement whose tail states `rows`.
+fn transport(rows: &'static [Claim]) -> Statement {
+    // SAFETY: a transport tail is plain C data (integers, raw pointers); all-zero is valid.
+    let mut tail: TransportTail = unsafe { core::mem::zeroed() };
+    tail.head = KindTailHead {
+        size: core::mem::size_of::<TransportTail>() as u32,
+        _reserved: 0,
+    };
+    tail.claim_rows = rows.as_ptr();
+    tail.claim_rows_len = rows.len();
+    let tail: &'static TransportTail = Box::leak(Box::new(tail));
+    Statement {
+        kind: crate::abi::mechanism::KindCode::Transport as u32,
+        kind_tail: core::ptr::from_ref(tail).cast::<KindTailHead>(),
+        ..full()
+    }
+}
+
+const SECURE_GOLDEN: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/golden/statement-rendering-secure.golden"
+);
+
+/// THE SECOND GOLDEN: a transport whose first claim row states `CLAIM_SECURE` renders the optional
+/// `claim_flags` after `claims`, one `u32` per claim.
+#[test]
+fn a_secure_claim_renders_its_flags_after_the_claims() {
+    let got = format!("{}\n", hex(&bytes(&transport(SECURE_ROWS))));
+    if std::env::var_os("BUSBAR_UPDATE_GOLDEN").is_some() {
+        std::fs::write(SECURE_GOLDEN, &got).expect("write the golden");
+    }
+    let want = std::fs::read_to_string(SECURE_GOLDEN).expect(
+        "the secure rendering golden exists; re-seed intentionally with BUSBAR_UPDATE_GOLDEN=1",
+    );
+    assert_eq!(
+        got, want,
+        "the secure claim rendering drifted from its golden"
+    );
+}
+
+/// A RENDERING SIGNED TODAY IS UNCHANGED: a transport whose rows state no flag renders no
+/// `claim_flags` at all (absent is the one spelling of "every flag zero"), so its bytes are exactly
+/// the secure one's less the field, and every signed manifest still matches its door.
+#[test]
+fn a_rendering_with_no_flag_is_byte_identical_to_the_one_signed_before_the_field() {
+    let plain = bytes(&transport(PLAIN_ROWS));
+    let secure = bytes(&transport(SECURE_ROWS));
+    let field: Vec<u8> = [TAIL_CLAIM_FLAGS, 2, CLAIM_SECURE, 0]
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    assert_eq!([plain.as_slice(), field.as_slice()].concat(), secure);
+    assert_eq!(read(&plain).expect("reads").claim_flags, vec![0, 0]);
+}
+
+/// THE ROUND TRIP: what renders reads back to the flags its rows state, and the read flags render
+/// the same bytes again (the reader accepts exactly the renderer's one spelling).
+#[test]
+fn claim_flags_round_trip() {
+    for rows in [SECURE_ROWS, PLAIN_ROWS] {
+        let b = bytes(&transport(rows));
+        let r = read(&b).expect("reads");
+        assert_eq!(
+            r.claim_flags,
+            rows.iter().map(|c| c.flags).collect::<Vec<_>>()
+        );
+        let again: &'static [Claim] = Box::leak(
+            r.claim_flags
+                .iter()
+                .map(|f| row(*f))
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        );
+        assert_eq!(bytes(&transport(again)), b);
+    }
+}
+
+/// THE ENCODING IS CANONICAL (REDs): the optional tail is tagged fields in strictly ascending tag
+/// order (one routine reads every optional field, the order fixed in one place). A present
+/// `claim_flags` spelling "every flag zero", on another kind, of another count, or stating a bit but
+/// `CLAIM_SECURE` is refused as `claim_flags`; an unknown tag, a tag not above the one before it,
+/// and a byte that is no tag are refused at "the end". So no Statement has two signed byte forms.
+#[test]
+fn a_non_canonical_claim_flags_is_unreadable() {
+    let field = |vals: &[u32]| -> Vec<u8> { vals.iter().flat_map(|v| v.to_le_bytes()).collect() };
+    let plain = bytes(&transport(PLAIN_ROWS));
+    let with = |vals: &[u32]| [plain.as_slice(), field(vals).as_slice()].concat();
+    let t = TAIL_CLAIM_FLAGS;
+    for vals in [
+        vec![t, 2, 0, 0],
+        vec![t, 1, CLAIM_SECURE],
+        vec![t, 3, CLAIM_SECURE, 0, 0],
+        vec![t, 2, 2, 0],
+        vec![t, 2, CLAIM_SECURE | 4, 0],
+    ] {
+        assert_eq!(
+            read(&with(&vals)).unwrap_err().what,
+            "claim_flags",
+            "{vals:?}"
+        );
+    }
+    let secure = bytes(&transport(SECURE_ROWS));
+    let mut trailing = secure.clone();
+    trailing.push(0);
+    assert_eq!(read(&trailing).unwrap_err().what, "the end");
+    let again = [
+        secure.as_slice(),
+        field(&[t, 2, CLAIM_SECURE, 0]).as_slice(),
+    ]
+    .concat();
+    assert_eq!(read(&again).unwrap_err().what, "the end", "a tag twice");
+    assert_eq!(
+        read(&with(&[99, 0])).unwrap_err().what,
+        "the end",
+        "an unknown tag"
+    );
+    // Another kind states no claim flags.
+    let other = [
+        bytes(&full()).as_slice(),
+        field(&[t, 2, CLAIM_SECURE, 0]).as_slice(),
+    ]
+    .concat();
+    assert_eq!(read(&other).unwrap_err().what, "claim_flags");
+}

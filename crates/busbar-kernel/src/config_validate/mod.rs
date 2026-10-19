@@ -359,7 +359,8 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             }
         }
     }
-    validate_providers_with(&known_protocols, cfg, unset_env_vars, &mut errors);
+    let claimed = crate::preflight::transport_schemes();
+    validate_providers_with(&known_protocols, &claimed, cfg, unset_env_vars, &mut errors);
 
     // Rule 2 & 3: Validate each pool's members
     for (pool_name, pool_cfg) in &cfg.pools {
@@ -2157,6 +2158,7 @@ pub(crate) use secret_refs::{boot_resolved_secret_refs, keyless_credential_allow
 /// the production code path, error ordering and all — against an empty set.
 fn validate_providers_with(
     known: &[&str],
+    claimed: &[crate::preflight::ClaimedScheme],
     cfg: &RootCfg,
     unset_env_vars: &[String],
     errors: &mut Vec<String>,
@@ -2258,17 +2260,29 @@ fn validate_providers_with(
             .collect();
 
         let base_url = &provider_cfg.base_url;
-        let host_for_scheme = extract_normalized_host(base_url);
+        // A scheme some LOADED transport claims (BUSBAR-1.6.0.md #50: the base_url's scheme selects
+        // the transport that declares it), when it is not one of the two this rule has always
+        // judged by name: those keep 1.5.5's rule and text exactly.
+        let web = scheme_is(base_url, "https") || scheme_is(base_url, "http");
+        let claim = (!web).then(|| claimed_scheme(claimed, base_url)).flatten();
+        let host_for_scheme = match claim {
+            Some(_) => claimed_host(base_url),
+            None => extract_normalized_host(base_url),
+        };
         let host_is_local = host_for_scheme
             .as_deref()
             .map(host_is_private_or_loopback)
             .unwrap_or(false);
         // Case-INSENSITIVE scheme check (RFC 3986 §3.1) — a raw `starts_with("https://")` rejected
         // the valid uppercase spelling reqwest would accept, and diverged from the webhook guard's
-        // `scheme_is`.
+        // `scheme_is`. A claimed scheme is judged as its claim states it: a SECURE one as `https`
+        // is, a plaintext one as `http` is (the credential would cross an off-box hop in clear, so
+        // only a private/loopback host may take it). A scheme no loaded transport claims is
+        // refused, naming the provider and the URL, in 1.5.5's words (oracle BOOT-032's family).
         let scheme_ok = is_env_placeholder(base_url)
             || scheme_is(base_url, "https")
-            || (host_is_local && scheme_is(base_url, "http"));
+            || (host_is_local && scheme_is(base_url, "http"))
+            || claim.is_some_and(|c| c.secure || host_is_local);
         if !scheme_ok {
             // What an error may repeat of the base URL: a `user:pass@` the operator wrote is
             // ACCEPTED (and stripped where the base URL enters the served flow, as 1.5.5 did — row
@@ -2287,7 +2301,7 @@ fn validate_providers_with(
                 )
             });
         } else if let Some(host) = ssrf_blocked_host(
-            base_url,
+            judged(base_url, claim.is_some()),
             &allow_overrides,
             cfg.allow_all_metadata,
             &cfg.blocked_metadata_hosts,
@@ -2327,7 +2341,7 @@ fn validate_providers_with(
             } else if scheme_ok {
                 let composed = format!("{}{}", provider_cfg.base_url, path);
                 if let Some(host) = ssrf_blocked_host(
-                    &composed,
+                    judged(&composed, claim.is_some()),
                     &allow_overrides,
                     cfg.allow_all_metadata,
                     &cfg.blocked_metadata_hosts,
@@ -2350,7 +2364,7 @@ fn validate_providers_with(
             } else if scheme_ok {
                 let composed = format!("{}{}", provider_cfg.base_url, path_base);
                 if let Some(host) = ssrf_blocked_host(
-                    &composed,
+                    judged(&composed, claim.is_some()),
                     &allow_overrides,
                     cfg.allow_all_metadata,
                     &cfg.blocked_metadata_hosts,
@@ -2539,6 +2553,35 @@ fn validate_providers_with(
                 }
             }
         }
+    }
+}
+
+/// The claim a loaded transport makes on `url`'s scheme (case-insensitive, RFC 3986 §3.1), if any.
+fn claimed_scheme<'c>(
+    claimed: &'c [crate::preflight::ClaimedScheme],
+    url: &str,
+) -> Option<&'c crate::preflight::ClaimedScheme> {
+    let (scheme, _) = url.split_once("://")?;
+    claimed
+        .iter()
+        .find(|c| c.scheme.eq_ignore_ascii_case(scheme))
+}
+
+/// The host of a URL under a CLAIMED scheme: its authority, read past the `scheme://` by the same
+/// normalization every destination check uses (the web-only extraction reads no host for any
+/// other scheme, and a destination with no host would pass every host rule unjudged).
+fn claimed_host(url: &str) -> Option<String> {
+    let (_, rest) = url.split_once("://")?;
+    busbar_contract::net::extract_normalized_authority_host(rest)
+}
+
+/// The spelling of `url` the metadata denylist judges: the URL itself under the web schemes, its
+/// authority-and-path under a claimed one (the denylist reads a host from either spelling, and
+/// from the second only when no `scheme://` precedes it).
+fn judged(url: &str, claimed: bool) -> &str {
+    match url.split_once("://") {
+        Some((_, rest)) if claimed => rest,
+        _ => url,
     }
 }
 

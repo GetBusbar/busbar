@@ -34,6 +34,10 @@
 //! trust_from       str
 //! answers          list of str
 //! claims           list of str
+//! THE OPTIONAL TAIL: each field present is `u32 tag` then its body, in strictly ascending tag
+//! order; an absent field writes nothing. The tags, in the one order they are written:
+//!   1 claim_flags  list of u32  a transport's Statement whose claim rows state a non-zero
+//!                               `flags`: claim i's row's flags
 //!
 //! str   = u32 length, then the bytes
 //! list  = u32 count, then each item
@@ -43,6 +47,18 @@
 //! The fields follow [`Statement`]'s declaration order (`size` is not rendered: it is the layout's,
 //! not the plugin's). A field appended to the Statement is appended here in the same commit, and the
 //! golden (`abi/tests/rendering_tests.rs`) is regenerated with it.
+//!
+//! THE OPTIONAL TAIL carries the kind facts a reader that must not open the plugin needs to judge
+//! it as the same plugin compiled in is judged (Part 2 #2), one tagged field each, read by ONE
+//! routine ([`read`]'s `optional_tail`) so the order is fixed in one place. Each field is canonical:
+//! absent is the ONLY spelling of "nothing stated", so a rendering signed before a field existed is
+//! byte-identical to its door's rendering today, and every Statement has exactly one signed byte
+//! form. The reader refuses an unknown tag, a tag not above the one before it and a byte that is no
+//! tag (at "the end"), and each field's own non-canonical body (at its name).
+//!
+//! `claim_flags`: a transport's claim-row `flags` (`abi::transport::CLAIM_SECURE`, BUSBAR-1.6.0.md
+//! #50). Refused present on another kind, of another count than `claims`, all zero, or stating any
+//! bit but `CLAIM_SECURE`.
 
 use super::call::{AbiStr, Blob};
 use super::door::{MarkWord, MetricFamily, Rewrite, Section, Statement};
@@ -51,6 +67,10 @@ use crate::abi::host::conn::connector::Need;
 
 /// The rendering's first eight bytes.
 pub const RENDERING_MAGIC: &[u8; 8] = b"BBSTMT01";
+
+/// THE OPTIONAL TAIL's tag of a transport's claim-row `flags` (module docs: the tagged fields after
+/// `claims`, in strictly ascending tag order).
+pub const TAIL_CLAIM_FLAGS: u32 = 1;
 
 /// One of the rendering's lengths or counts was above `u32::MAX`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,8 +232,44 @@ pub unsafe fn render(st: &Statement) -> Result<Vec<u8>, TooLong> {
         for c in claims {
             o.str(*c, "claim")?;
         }
+        let flags = claim_flags(st);
+        if flags.iter().any(|f| *f != 0) {
+            o.u32(TAIL_CLAIM_FLAGS);
+            o.len(flags.len(), "claim_flags")?;
+            for f in flags {
+                o.u32(f);
+            }
+        }
     }
     Ok(o.0)
+}
+
+/// A transport Statement's claim-row `flags`, row by row; empty for any other kind, or for a tail
+/// too short to state its rows.
+///
+/// # Safety
+///
+/// As [`render`]: a non-NULL kind tail is live data of its stated size, and its row list points at
+/// its stated count of live rows.
+unsafe fn claim_flags(st: &Statement) -> Vec<u32> {
+    use crate::abi::transport::{Claim, TransportTail};
+    if st.kind != super::KindCode::Transport as u32 || st.kind_tail.is_null() {
+        return Vec::new();
+    }
+    let covers =
+        core::mem::offset_of!(TransportTail, claim_rows_len) + core::mem::size_of::<usize>();
+    // SAFETY: the caller's contract (a non-NULL tail is live).
+    let size = unsafe { (*st.kind_tail).size } as usize;
+    if size < covers {
+        return Vec::new();
+    }
+    // SAFETY: a transport's kind tail is a `TransportTail` of at least `covers` bytes (checked), and
+    // the two fields read lie within them.
+    let tail = st.kind_tail.cast::<TransportTail>();
+    let (rows, len) = unsafe { ((*tail).claim_rows, (*tail).claim_rows_len) };
+    // SAFETY: the caller's contract.
+    let rows: &[Claim] = unsafe { items(rows, len) };
+    rows.iter().map(|r| r.flags).collect()
 }
 
 // ── reading a rendering back (every no-dlopen reader: `--validate`, `--list-plugins`, Discover) ───
@@ -310,6 +366,9 @@ pub struct Read {
     pub answers: Vec<String>,
     /// The URL schemes it claims.
     pub claims: Vec<String>,
+    /// Each claim's row `flags` (`abi::transport::CLAIM_SECURE`), parallel to `claims`; every one
+    /// `0` when the rendering states none.
+    pub claim_flags: Vec<u32>,
 }
 
 /// Why a rendering could not be read back: the byte offset and what was expected there.
@@ -376,6 +435,64 @@ impl In<'_> {
         let n = self.count(what)?;
         (0..n).map(|_| self.str(what)).collect()
     }
+}
+
+/// The optional tail's fields, read back: each `None` when absent.
+#[derive(Default)]
+struct OptionalTail {
+    claim_flags: Option<Vec<u32>>,
+}
+
+/// THE OPTIONAL TAIL (module docs), read to the end of `i`: each tagged field present, in strictly
+/// ascending tag order, each body under its own canonical rules. A byte that is no tag, an unknown
+/// tag, or a tag not above the one before it is refused at "the end"; nothing can trail the tail.
+fn optional_tail(i: &mut In<'_>, kind: u32, claims: usize) -> Result<OptionalTail, Unreadable> {
+    let mut tail = OptionalTail::default();
+    let mut last = 0;
+    while i.at < i.b.len() {
+        let at = i.at;
+        let end = Unreadable {
+            at,
+            what: "the end",
+        };
+        let tag = i.u32("the end").map_err(|_| end.clone())?;
+        if tag <= last {
+            return Err(end);
+        }
+        last = tag;
+        match tag {
+            TAIL_CLAIM_FLAGS => tail.claim_flags = Some(claim_flags_body(i, kind, claims, at)?),
+            _ => return Err(end),
+        }
+    }
+    Ok(tail)
+}
+
+/// The `claim_flags` body: a list of one `u32` per claim, on a transport's Statement only, not all
+/// zero, no bit but `CLAIM_SECURE`; refused at `at` (its tag) otherwise.
+fn claim_flags_body(
+    i: &mut In<'_>,
+    kind: u32,
+    claims: usize,
+    at: usize,
+) -> Result<Vec<u32>, Unreadable> {
+    let refused = Unreadable {
+        at,
+        what: "claim_flags",
+    };
+    let n = i.count("claim_flags")?;
+    let flags = (0..n)
+        .map(|_| i.u32("claim_flags"))
+        .collect::<Result<Vec<u32>, _>>()?;
+    let secure = crate::abi::transport::CLAIM_SECURE;
+    if kind != super::KindCode::Transport as u32
+        || n != claims
+        || flags.iter().all(|f| *f == 0)
+        || flags.iter().any(|f| f & !secure != 0)
+    {
+        return Err(refused);
+    }
+    Ok(flags)
 }
 
 /// THE RENDERING READ BACK: the inverse of [`render`], for a reader that must not open the plugin.
@@ -452,6 +569,8 @@ pub fn read(bytes: &[u8]) -> Result<Read, Unreadable> {
     let trust_from = i.str("trust_from")?;
     let answers = i.strs("answers")?;
     let claims = i.strs("claims")?;
+    let tail = optional_tail(&mut i, kind, claims.len())?;
+    let claim_flags = tail.claim_flags.unwrap_or_else(|| vec![0; claims.len()]);
     if i.at != bytes.len() {
         return Err(Unreadable {
             at: i.at,
@@ -480,6 +599,7 @@ pub fn read(bytes: &[u8]) -> Result<Read, Unreadable> {
         trust_from,
         answers,
         claims,
+        claim_flags,
     })
 }
 
