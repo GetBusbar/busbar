@@ -3693,6 +3693,8 @@ fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
         node: &node,
         slot: Arc::clone(&slot),
         arrived: Arrived::at(EPOCH * 1_000, 7),
+        op_class: busbar_contract::caps::OpClassId::new("call"),
+        hold: None,
         reached_end: false,
     });
     assert!(
@@ -3729,8 +3731,8 @@ fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
                 .iter()
                 .filter(|r| r.class == busbar_kernel_wal::RecordClass::Transaction)
                 .count(),
-            1,
-            "the swept hold's posting is on the journal"
+            2,
+            "the swept hold's posting is on the journal, and its one audit record beside it"
         );
         assert_eq!(durability.ledger.book().len(), 1, "and on the book");
     }
@@ -3760,10 +3762,194 @@ fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
         node: &node,
         slot: Arc::clone(&slot),
         arrived: Arrived::at(EPOCH * 1_000, 8),
+        op_class: busbar_contract::caps::OpClassId::new("call"),
+        hold: None,
         reached_end: true,
     });
     assert!(!slot.is_marked());
     assert!(node.inflight.get(key).is_none());
+}
+
+/// A fresh node over a memory-buffered book, and that book.
+fn swept_node() -> (
+    Node,
+    Arc<std::sync::Mutex<crate::root::durability::Durability>>,
+) {
+    let node = Node::new();
+    let book = Arc::new(Mutex::new(
+        crate::root::durability::build(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            Box::new(busbar_kernel_wal::NullShipper::new()),
+            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+        )
+        .expect("a memory-buffered journal cannot fail to open"),
+    ));
+    node.bind_book(Arc::clone(&book));
+    (node, book)
+}
+
+/// Enter unit `key` into `node`'s table with its arrival hold, then drop its guard unfinished: a
+/// unit whose task went away under operation class `op_class`, its hold at `hold` on the chain.
+fn lose_a_unit(node: &Node, key: UnitKey, op_class: &'static str, hold: Option<u64>) {
+    let slot = node
+        .inflight
+        .insert(busbar_kernel::inflight::Enter {
+            key,
+            origin: OriginKind::Client,
+            session: None,
+            admin_listener: false,
+            zero_hold_tick: false,
+            arrival: busbar_kernel::inflight::arrival_hold(
+                &node.kernel,
+                &node.door,
+                PrincipalId::new("acct:swept"),
+                node.kernel.next_call(),
+            ),
+            now: EPOCH * 1_000,
+        })
+        .expect("the uncapped table takes the unit");
+    drop(Occupied {
+        node,
+        slot,
+        arrived: Arrived::at(EPOCH * 1_000, key.get()),
+        op_class: busbar_contract::caps::OpClassId::new(op_class),
+        hold,
+        reached_end: false,
+    });
+}
+
+/// Q128 p29#5: A SWEPT UNIT SEALS EXACTLY ONE AUDIT RECORD, AND ITS AMOUNT IS ITS LEDGER LINE.
+///
+/// THE DESIGN §1 (`BUSBAR-1.6.0.md` l.190-197): "The audit step writes one fixed record, for every
+/// plane ... never optional"; §7 U14 (l.1061-1065): one audit record per unit, sealed at its one
+/// line. A unit whose task disappeared is ended by the node's sweep, never by its own exit, so the
+/// record is the sweep's to seal: outcome `Failed(at, TaskLost)`, finish `Error`, the operation class
+/// the unit's guard recorded, the hold its admission opened, and the posted line by its registered
+/// class. The swept unit's evidence went with its task, so its line is the estimated zero under the
+/// kernel's own class: a money figure no registration declares and a record may not hold (§1
+/// l.193-195, #43, #77(3)), so the record names no line and its amount, zero, is the zero the line
+/// moved. And the record reads back, as every record on the journal must at the next boot.
+///
+/// RED before the fix: the sweep posted the unit's line with `None::<Sealing>` ("A unit the sweep
+/// ends never handed back its audit pass: it has no record"), so the book had a posting and the
+/// chain no record.
+#[test]
+fn a_swept_unit_seals_exactly_one_audit_record_whose_amount_is_its_ledger_line() {
+    let (node, book) = swept_node();
+    let key = UnitKey::new(51);
+    lose_a_unit(&node, key, "widget_call", Some(3));
+    assert_eq!(node.sweep(Arrived::at(EPOCH * 1_000 + 5, 99)), 1);
+
+    let durability = book.lock().unwrap_or_else(|p| p.into_inner());
+    assert_eq!(
+        durability.ledger.book().len(),
+        1,
+        "the swept unit posted one line"
+    );
+    let records: Vec<_> = durability
+        .audit_records
+        .iter()
+        .filter(|r| r.what.unit_key == key)
+        .collect();
+    assert_eq!(
+        records.len(),
+        1,
+        "one record for the one swept unit: {:?}",
+        durability.audit_records
+    );
+    let record = records[0];
+    assert_eq!(
+        record.outcome.unit_end,
+        Outcome::Failed(
+            busbar_contract::caps::StepName::Route,
+            busbar_contract::caps::ReasonCode::TaskLost
+        )
+    );
+    assert_eq!(record.outcome.finish, RecordFinish::Error);
+    assert_eq!(record.what.op_class.as_str(), "widget_call");
+    assert_eq!(record.controls.hold_ref.as_deref(), Some("3"));
+    // The amount: the line the sweep posted was the estimated zero under the kernel's own class,
+    // which the record does not name, and the money it moved is that zero.
+    assert!(
+        record.usage.lines.is_empty(),
+        "a record names no money-class line: {:?}",
+        record.usage.lines
+    );
+    let settled: i128 = durability
+        .ledger
+        .book()
+        .iter()
+        .map(|(_, totals)| totals.settled)
+        .sum();
+    assert_eq!(
+        settled,
+        record
+            .usage
+            .lines
+            .iter()
+            .map(|l| i128::from(l.quantity))
+            .sum::<i128>(),
+        "the record's amount equals the money its line moved"
+    );
+    assert!(durability.retained_audit_findings().is_empty());
+    // It reads back off the journal, as the next boot reads it.
+    let replayed = durability
+        .journal
+        .replay()
+        .expect("reads back")
+        .expect("verifies");
+    let read_back: Vec<_> = replayed
+        .iter()
+        .filter_map(|r| crate::root::durability::decode_audit(r).expect("every record decodes"))
+        .filter(|r| r.what.unit_key == key)
+        .collect();
+    assert_eq!(
+        read_back.len(),
+        1,
+        "the swept unit's record is on the journal"
+    );
+}
+
+/// Q128 p29#5: NO UNIT SETTLES WITH ZERO AUDIT RECORDS. Every unit the sweep settles has its one
+/// record on the chain, one each, so the book's lines and the chain's records count the same units.
+///
+/// RED before the fix: the swept units posted their lines and sealed nothing.
+#[test]
+fn no_swept_unit_settles_with_zero_audit_records() {
+    let (node, book) = swept_node();
+    let keys = [UnitKey::new(61), UnitKey::new(62), UnitKey::new(63)];
+    for key in keys {
+        lose_a_unit(&node, key, "widget_call", None);
+    }
+    assert_eq!(node.sweep(Arrived::at(EPOCH * 1_000 + 5, 99)), keys.len());
+
+    let durability = book.lock().unwrap_or_else(|p| p.into_inner());
+    let replayed = durability
+        .journal
+        .replay()
+        .expect("reads back")
+        .expect("verifies");
+    assert_eq!(
+        replayed
+            .iter()
+            .filter(|r| r.class == busbar_kernel_wal::RecordClass::Transaction)
+            .count(),
+        2 * keys.len(),
+        "each swept unit has its posting on the journal and its one record beside it"
+    );
+    for key in keys {
+        assert_eq!(
+            durability
+                .audit_records
+                .iter()
+                .filter(|r| r.what.unit_key == key)
+                .count(),
+            1,
+            "unit {key:?} settled and must have exactly one record: {:?}",
+            durability.audit_records
+        );
+    }
+    assert_eq!(durability.audit_records.len(), keys.len());
 }
 
 // ---------------------------------------------------------------------------------------------

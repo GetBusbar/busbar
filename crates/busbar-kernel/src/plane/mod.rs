@@ -53,13 +53,12 @@
 //! through the engine, the registry, the catalogue cache and the audit records instead of staying
 //! contained to the reader and writer at the edge.
 
-// THE SPINE IS NOW LOAD-BEARING, which is what it was landed ahead of a caller for. FOUR
+// THE SPINE IS NOW LOAD-BEARING, which is what it was landed ahead of a caller for. Its
 // production callers, none of them written per plane:
 //
 //   * [`observe`], the plane ingress boundary — asks `PlaneDispatch::mounted_plane_of` which plane
 //     a request arrived on and labels that request's metrics with `Plane::key`. Before it, non-fallback
 //     plane traffic appeared in no Prometheus series at all.
-//   * verify-on-call (`crate::trust::verify`), which carries `Plane` as its diagnostic label.
 //   * the admin trust verb surface (`crate::admin::planeverbs`), which reads `Plane::subject_noun`
 //     for its one `404` and `Plane::audit_kind` for its audit action and resource.
 //
