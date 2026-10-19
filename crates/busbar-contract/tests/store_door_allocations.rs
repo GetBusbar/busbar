@@ -441,7 +441,6 @@ impl StoreSlots for Canned {
         _: &mut StoreOp<'_>,
         _: &str,
         _: u64,
-        _: busbar_contract::records::Retention,
     ) -> Step<RecordStoreResult<u64>> {
         unreachable!("not a request-path slot")
     }

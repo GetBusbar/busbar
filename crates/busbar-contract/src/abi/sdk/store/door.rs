@@ -1198,7 +1198,7 @@ slot!(
         let Some(retention) = Retention::from_code(i.retention) else {
             return refused(s, o, Text::render(format_args!("retention {} is not a retention rule", i.retention)));
         };
-        match step!(o, s.store.purge_plane_records_before(cx, kind, i.before, retention)) {
+        match step!(o, s.store.purge_plane_records(cx, kind, i.before, retention)) {
             Ok(n) => { o.count = n; Outcome::Ready }
             Err(e) => failed(s, o, e.0),
         }

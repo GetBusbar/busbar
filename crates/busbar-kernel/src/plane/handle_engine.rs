@@ -1033,7 +1033,7 @@ impl DurableHandleEngine {
         retention: busbar_contract::records::Retention,
     ) -> RecordStoreResult<u64> {
         let removed = match self.sink() {
-            Some(store) => store.purge_plane_records_before(kind, before, retention)?,
+            Some(store) => store.purge_plane_records(kind, before, retention)?,
             None => 0,
         };
         let mut handles = self.lock();

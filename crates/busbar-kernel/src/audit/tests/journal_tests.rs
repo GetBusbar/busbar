@@ -183,12 +183,7 @@ impl PlaneStore for MockStore {
         parents.dedup();
         Ok(parents)
     }
-    fn purge_plane_records_before(
-        &self,
-        _kind: &str,
-        _before: u64,
-        _retention: busbar_contract::records::Retention,
-    ) -> RecordStoreResult<u64> {
+    fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> RecordStoreResult<u64> {
         Ok(0)
     }
     fn delete_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<()> {
@@ -776,7 +771,7 @@ fn append_scoped_stamps_a_real_instant_so_a_fresh_row_survives_retention() {
     // A cutoff safely BEFORE "now": a record written during this test must be newer than it.
     let cutoff = busbar_kernel::store::now().saturating_sub(3600);
     let purged = store
-        .purge_plane_records_before(
+        .purge_plane_records(
             KIND_NEUTRAL,
             cutoff,
             busbar_contract::records::Retention::Age,

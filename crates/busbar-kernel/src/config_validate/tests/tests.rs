@@ -5982,6 +5982,34 @@ fn test_auth_policy_ceiling_max_ttl_rules() {
     );
 }
 
+/// A per-role ceiling's binding modes must sit inside the block-level list: a role cannot be granted
+/// a mode the deployment forbids. RED: validation checked only a role's `max_ttl` against the block,
+/// so this config passed and the role then minted the forbidden mode.
+#[test]
+fn test_auth_policy_role_modes_outside_the_block_modes_fail() {
+    let mut ceilings = std::collections::BTreeMap::new();
+    ceilings.insert(
+        "app-admin".to_string(),
+        config::MintCeilingCfg {
+            binding_modes: Some(vec![config::BindingMode::TimeBound]),
+            ..Default::default()
+        },
+    );
+    let policy = config::AuthPolicyCfg {
+        binding_modes: Some(vec![config::BindingMode::UserBound]),
+        mint_ceilings: ceilings,
+        ..Default::default()
+    };
+    let errs = policy_errors(&root_with_auth_policy(policy));
+    assert!(
+        errs.iter().any(
+            |e| e.contains("auth.policy.mint_ceilings.app-admin.binding_modes")
+                && e.contains("'time-bound'")
+        ),
+        "a role mode outside the block modes must fail validation: {errs:?}"
+    );
+}
+
 /// A well-formed policy block adds NO `auth.policy` validation error.
 #[test]
 fn test_auth_policy_valid_block_passes() {
@@ -5996,7 +6024,10 @@ fn test_auth_policy_valid_block_passes() {
     );
     let policy = config::AuthPolicyCfg {
         self_mint: Some(true),
-        binding_modes: Some(vec![config::BindingMode::Both]),
+        binding_modes: Some(vec![
+            config::BindingMode::TimeBound,
+            config::BindingMode::Both,
+        ]),
         default_ttl: Some("24h".to_string()),
         max_ttl: Some("90d".to_string()),
         mint_ceilings: ceilings,

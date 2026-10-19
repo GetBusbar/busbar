@@ -967,38 +967,34 @@ pub enum PlaneDisposition {
     Terminal,
 }
 
-/// A record kind's RETENTION RULE: which of its rows older than a cutoff
-/// [`RecordStore::purge_plane_records_before`] drops. The kind's owner declares it and the host
-/// passes it with every purge, so a store never infers the rule from the kind's name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+/// WHICH rows a plane-record purge may drop: every row older than the cutoff ([`Retention::Age`]),
+/// or only the rows whose [`PlaneDisposition`] is [`PlaneDisposition::Terminal`]
+/// ([`Retention::TerminalOnly`]). The kind's own retention contract picks it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum Retention {
-    /// Every row of the kind older than the cutoff goes, whatever its disposition. The default: a
-    /// kind that declares no rule is purged by age.
+    /// Every row older than the cutoff.
     #[default]
     Age,
-    /// Only [`PlaneDisposition::Terminal`] rows older than the cutoff go; an
-    /// [`PlaneDisposition::Active`] row is kept however old it is.
+    /// Only TERMINAL rows older than the cutoff; an ACTIVE row is kept regardless of age.
     TerminalOnly,
 }
 
 impl Retention {
-    /// The rule's code on the store and plane ABIs
-    /// ([`RETENTION_AGE`](crate::abi::store::plane::RETENTION_AGE) |
-    /// [`RETENTION_TERMINAL_ONLY`](crate::abi::store::plane::RETENTION_TERMINAL_ONLY)).
+    /// The retention as its wire code: [`Retention::Age`] `0`, [`Retention::TerminalOnly`] `1`.
     #[must_use]
     pub const fn code(self) -> u32 {
         match self {
-            Retention::Age => crate::abi::store::plane::RETENTION_AGE,
-            Retention::TerminalOnly => crate::abi::store::plane::RETENTION_TERMINAL_ONLY,
+            Retention::Age => 0,
+            Retention::TerminalOnly => 1,
         }
     }
 
-    /// The rule a code names; `None` for a code no rule has.
+    /// The retention a wire code names; an unknown code names none.
     #[must_use]
     pub const fn from_code(code: u32) -> Option<Self> {
         match code {
-            crate::abi::store::plane::RETENTION_AGE => Some(Retention::Age),
-            crate::abi::store::plane::RETENTION_TERMINAL_ONLY => Some(Retention::TerminalOnly),
+            0 => Some(Retention::Age),
+            1 => Some(Retention::TerminalOnly),
             _ => None,
         }
     }
@@ -1515,21 +1511,32 @@ pub trait RecordStore: Send + Sync + 'static {
         Ok(Vec::new())
     }
 
-    /// RETENTION: drop records of `kind` older than `before`, returning how many went. WHICH rows
-    /// go is `retention`, the rule the kind's owner declared and the host passes
-    /// ([`Retention::drops`]): [`Retention::Age`] drops every older row, [`Retention::TerminalOnly`]
-    /// only the older [`PlaneDisposition::Terminal`] ones. That is why the `disposition` sidecar is a
-    /// typed column: the backend reads it without decoding the opaque body. A store never infers
-    /// the rule from the kind's name.
+    /// RETENTION: drop records of `kind` older than `before`, returning how many went. WHICH
+    /// predicate applies (terminal-only vs. all older rows) is part of the kind's own contract,
+    /// which is exactly why the `disposition` sidecar is a typed column: the backend reads it to
+    /// honor a terminal-only split without decoding the opaque body.
     ///
     /// DEFAULTED to `Ok(0)`.
-    fn purge_plane_records_before(
-        &self,
-        _kind: &str,
-        _before: u64,
-        _retention: Retention,
-    ) -> RecordStoreResult<u64> {
+    fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> RecordStoreResult<u64> {
         Ok(0)
+    }
+
+    /// RETENTION, with the predicate named: drop records of `kind` older than `before` under
+    /// `retention`, returning how many went.
+    ///
+    /// DEFAULTED: [`Retention::Age`] is [`RecordStore::purge_plane_records_before`];
+    /// [`Retention::TerminalOnly`] answers `Ok(0)` — a store that has not implemented the
+    /// terminal-only predicate purges nothing rather than dropping an ACTIVE row.
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> RecordStoreResult<u64> {
+        match retention {
+            Retention::Age => self.purge_plane_records_before(kind, before),
+            Retention::TerminalOnly => Ok(0),
+        }
     }
 
     /// DELETE the record identified by `(kind, id)`; absent is a no-op. DEFAULTED to `Ok(())`.

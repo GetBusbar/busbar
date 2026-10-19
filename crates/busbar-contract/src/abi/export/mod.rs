@@ -852,6 +852,18 @@ pub struct Route {
     pub _reserved: u32,
 }
 
+impl Route {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `Route { …, ..Route::ZERO }` so a field appended later reads as not
+    /// declared.
+    pub const ZERO: Self = Self {
+        path: AbiStr::ZERO,
+        method: AbiStr::ZERO,
+        auth: 0,
+        _reserved: 0,
+    };
+}
+
 /// The export kind's Statement tail: the streams this instance carries and the routes it serves.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -867,6 +879,19 @@ pub struct Tail {
     pub routes: *const Route,
     /// How many.
     pub routes_len: usize,
+}
+
+impl Tail {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `Tail { …, ..Tail::ZERO }` so a field appended later reads as not
+    /// declared.
+    pub const ZERO: Self = Self {
+        head: KindTailHead::ZERO,
+        streams: std::ptr::null(),
+        streams_len: 0,
+        routes: std::ptr::null(),
+        routes_len: 0,
+    };
 }
 
 /// The export kind's [`super::mechanism::lifecycle::CancelOut::disposition`] vocabulary.

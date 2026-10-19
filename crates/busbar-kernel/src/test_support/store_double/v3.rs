@@ -906,9 +906,18 @@ impl StoreSlots for MemoryStore {
         _: &mut Op<'_>,
         kind: &str,
         before: u64,
+    ) -> Step<RecordStoreResult<u64>> {
+        Step::Ready(RecordStore::purge_plane_records_before(self, kind, before))
+    }
+
+    fn purge_plane_records(
+        &self,
+        _: &mut Op<'_>,
+        kind: &str,
+        before: u64,
         retention: Retention,
     ) -> Step<RecordStoreResult<u64>> {
-        Step::Ready(RecordStore::purge_plane_records_before(
+        Step::Ready(RecordStore::purge_plane_records(
             self, kind, before, retention,
         ))
     }

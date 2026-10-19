@@ -276,7 +276,6 @@ impl StoreSlots for HalfGrants {
         _: &mut Op<'_>,
         _: &str,
         _: u64,
-        _: busbar_contract::records::Retention,
     ) -> Step<RecordStoreResult<u64>> {
         unreachable!("the broken store's test reaches only open and reserve")
     }

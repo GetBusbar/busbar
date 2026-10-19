@@ -1924,7 +1924,11 @@ impl RecordStore for LoadedStore {
         self.strs(slot::LIST_PLANE_RECORD_PARENTS, Self::id(kind))
     }
 
-    fn purge_plane_records_before(
+    fn purge_plane_records_before(&self, kind: &str, before: u64) -> RecordStoreResult<u64> {
+        self.purge_plane_records(kind, before, Retention::Age)
+    }
+
+    fn purge_plane_records(
         &self,
         kind: &str,
         before: u64,

@@ -527,11 +527,9 @@ impl<R: ChainedRecord> Journal<R> {
         R: JournalRecord,
     {
         match self.sink() {
-            Some(store) => store.purge_plane_records_before(
-                R::KIND,
-                before,
-                busbar_contract::records::Retention::Age,
-            ),
+            Some(store) => {
+                store.purge_plane_records(R::KIND, before, busbar_contract::records::Retention::Age)
+            }
             None => Ok(0),
         }
     }
@@ -747,11 +745,9 @@ impl<R: NeutralRecord> Journal<R> {
     /// stream is purged by age (`Retention::Age`): its records carry no settledness.
     pub(crate) fn compact_scoped(&self, kind: &str, before: u64) -> RecordStoreResult<u64> {
         match self.sink() {
-            Some(store) => store.purge_plane_records_before(
-                kind,
-                before,
-                busbar_contract::records::Retention::Age,
-            ),
+            Some(store) => {
+                store.purge_plane_records(kind, before, busbar_contract::records::Retention::Age)
+            }
             None => Ok(0),
         }
     }

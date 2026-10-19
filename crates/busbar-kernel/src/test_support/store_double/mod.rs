@@ -844,7 +844,11 @@ impl Store for MemoryStore {
         Ok(parents)
     }
 
-    fn purge_plane_records_before(
+    fn purge_plane_records_before(&self, kind: &str, before: u64) -> StoreResult<u64> {
+        self.purge_plane_records(kind, before, Retention::Age)
+    }
+
+    fn purge_plane_records(
         &self,
         kind: &str,
         before: u64,

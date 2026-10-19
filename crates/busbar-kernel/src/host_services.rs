@@ -1247,7 +1247,7 @@ impl KernelServices {
         kind: &str,
         before: u64,
     ) -> RecordStoreResult<u64> {
-        store.purge_plane_records_before(kind, before, self.record_retention(instance, kind))
+        store.purge_plane_records(kind, before, self.record_retention(instance, kind))
     }
 
     /// CLAIM `(op, key)` for the instance labelled `instance` for `ttl_ms`, or, with `held`, extend
