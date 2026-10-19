@@ -1397,10 +1397,10 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 }
                 TransformOutcome::Reject { status, message } => {
                     self.lock().hooked = Some((hooks, view));
-                    return Err(veto(
-                        clamp_reject_status(status),
-                        sanitize_reject_message(&message),
-                    ));
+                    // THE DESIGN §11.7 (HOOK Q1): a load-bearing rewrite that could not answer
+                    // keeps the shared 503; only a hook's own status is clamped to the 4xx band.
+                    let (status, message) = gated::rewrite_refusal(status, &message);
+                    return Err(veto(status, message));
                 }
                 TransformOutcome::Abstain => {}
                 TransformOutcome::Failed { message } => {
@@ -1798,12 +1798,6 @@ fn fire_request_taps(hooks: &UnitHooks, view: &Projection, pool: &str) {
 
 /// The role an in-session piece of content is shown to a gate under (`content.scan`).
 pub const CONTENT_ROLE: &str = "content";
-/// The words a gate whose `on_error: reject` could not answer stops a sub-operation with (the
-/// previous release's request gate, `hooks::gate`).
-pub const GATE_UNAVAILABLE: &str =
-    "A required gate could not complete, so this request was refused.";
-/// The status that stop wears.
-pub const GATE_UNAVAILABLE_STATUS: u16 = 403;
 /// The FAILED answer of a stage whose runtime is gone.
 pub const STAGE_GONE: &str = "the unit's hook stage is no longer running";
 
@@ -1816,7 +1810,8 @@ pub const STAGE_GONE: &str = "the unit's hook stage is no longer running";
 ///
 /// A gate here is the previous release's request gate for a protocol that routes to one upstream
 /// (`hooks::gate`): the gates in priority order, the first reject stopping it (clamped to the 4xx
-/// band), a gate that cannot answer deciding by its own `on_error`, the candidate-set verbs having
+/// band), a gate that cannot answer deciding by its own `on_error` (a load-bearing one answering
+/// the shared 503 refusal every seat answers), the candidate-set verbs having
 /// nothing to act on. A rewrite is the request stage's rewrite chain, one hook at a time: the
 /// rewrite goes back to the plane, which applies it in its own dialect and resumes after it.
 pub struct SessionStage {
@@ -2022,8 +2017,9 @@ impl SessionStage {
                 tokio::time::timeout(*timeout, policy.decide(&req, &[], &ctx, *timeout)).await;
             match decided {
                 Ok(Ok(RoutingDecision::Reject { status, message })) => {
+                    // 1.5.5's one clamp rule (outside 400..=499 is 403), never a saturating one.
                     return StageAnswer::Stop {
-                        status: status.clamp(400, 499),
+                        status: clamp_reject_status(status),
                         words: sanitize_reject_message(&message),
                     };
                 }
@@ -2035,10 +2031,13 @@ impl SessionStage {
                         pool = %self.pool,
                         "in-session gate could not answer; applying its on_error"
                     );
-                    if matches!(on_error, PolicyOnError::Reject) {
+                    // THE DESIGN §11.7: `on_error` stays 1.5.5's, one disposition on every seat; a
+                    // load-bearing gate that cannot answer is 1.5.5's retryable 503 and its words
+                    // (v1.5.5 crates/busbar/src/proxy/engine/mod.rs:1012-1018).
+                    if failed_call_refuses(on_error) {
                         return StageAnswer::Stop {
-                            status: GATE_UNAVAILABLE_STATUS,
-                            words: GATE_UNAVAILABLE.to_string(),
+                            status: REQUIRED_HOOK_UNAVAILABLE_STATUS,
+                            words: REQUIRED_HOOK_UNAVAILABLE_MESSAGE.to_string(),
                         };
                     }
                 }
@@ -2075,10 +2074,10 @@ impl SessionStage {
                     };
                 }
                 TransformOutcome::Reject { status, message } => {
-                    return StageAnswer::Stop {
-                        status: clamp_reject_status(status),
-                        words: sanitize_reject_message(&message),
-                    };
+                    // THE DESIGN §11.7 (HOOK Q1): the shared 503 passes unclamped, as at the
+                    // request stage.
+                    let (status, words) = gated::rewrite_refusal(status, &message);
+                    return StageAnswer::Stop { status, words };
                 }
                 TransformOutcome::Abstain => {}
                 TransformOutcome::Failed { message } => {
