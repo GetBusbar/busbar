@@ -38,7 +38,7 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome};
 use busbar_contract::abi::mechanism::call::{InHead, OutHead};
 use busbar_contract::abi::mechanism::check::{fault, reported, Fault, Rule};
 use busbar_contract::abi::mechanism::door::{
-    Statement, SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED,
+    Statement, SECTION_CONSUMED, SECTION_DECLARING, SECTION_NAMED_MAP, SECTION_REQUIRED,
 };
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, DriveIn, OpenIn, RefreshIn};
 use busbar_contract::abi::mechanism::ticket::Ticket;
@@ -116,6 +116,8 @@ pub struct PlaneFacts {
 pub struct ServedFacts {
     /// The key of the one section the Statement declares.
     pub section: &'static str,
+    /// Whether the declaring section is a named map (`SECTION_NAMED_MAP` on it).
+    pub named_map: bool,
     /// The keys of the sections the Statement reads beside it (`SECTION_CONSUMED`), in its order:
     /// the plane opens with all of them, one `{section: value}` object (spec Part 1 §4).
     pub consumed: Vec<&'static str>,
@@ -307,6 +309,9 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
                 .iter()
                 .find(|s| s.flags & SECTION_DECLARING != 0)
                 .map_or("", |s| kept(s.name)),
+            named_map: sections
+                .iter()
+                .any(|s| s.flags & SECTION_DECLARING != 0 && s.flags & SECTION_NAMED_MAP != 0),
             consumed: sections
                 .iter()
                 .filter(|s| s.flags & SECTION_CONSUMED != 0)
@@ -673,6 +678,7 @@ pub fn registration(
     Ok(busbar_contract::plane_calls::PlaneRegistration {
         key,
         section: served.section,
+        named_map: served.named_map,
         owns: served.owns.clone(),
         consumes: served.consumes.clone(),
         requires: served.requires.clone(),

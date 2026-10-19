@@ -47,7 +47,9 @@ use crate::abi::mechanism::check::{
     bits, code, fault, first, index, listed, range, result, results, span, text, weight, Dim,
     Filled, MAX_BYTES,
 };
-use crate::abi::mechanism::door::{Section, SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED};
+use crate::abi::mechanism::door::{
+    Section, SECTION_CONSUMED, SECTION_DECLARING, SECTION_NAMED_MAP, SECTION_REQUIRED,
+};
 use crate::abi::store::plane::{RETENTION_AGE, RETENTION_TERMINAL_ONLY};
 use crate::grammar::{PathSeg, Selector};
 
@@ -1319,17 +1321,20 @@ pub fn check_tail(t: &PlaneTail) -> Result<(), Fault> {
     }
 }
 
-/// A plane's Statement sections: each named, known flags, and EXACTLY ONE is the declaring
-/// section (the plane's verb).
+/// A plane's Statement sections: each named, known flags, EXACTLY ONE is the declaring section
+/// (the plane's verb), and only the declaring section may be a named map.
 ///
 /// # Errors
 ///
 /// The rule the sections break.
 pub fn check_sections(sections: &[Section]) -> Result<(), Fault> {
-    let known = SECTION_DECLARING | SECTION_REQUIRED | SECTION_CONSUMED;
+    let known = SECTION_DECLARING | SECTION_REQUIRED | SECTION_CONSUMED | SECTION_NAMED_MAP;
     for s in sections {
         named(s.name, "section.name")?;
         bits(u64::from(s.flags), u64::from(known), "section.flags")?;
+        if s.flags & SECTION_NAMED_MAP != 0 && s.flags & SECTION_DECLARING == 0 {
+            return Err(fault(Rule::Contradiction, "section.flags"));
+        }
     }
     let declaring = sections
         .iter()

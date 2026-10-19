@@ -13,7 +13,7 @@ use super::call::{AbiStr, Blob, DeadlineClass, Outcome, RawOutcome};
 use super::door::{
     MarkWord, Rewrite, Section, Statement, MARKS_KNOWN, MARK_WORD_HOOK,
     MARK_WORD_ISSUED_SECRET_ALPHABET, REWRITE_ALIAS, REWRITE_KEY, SECTION_CONSUMED,
-    SECTION_DECLARING, SECTION_REQUIRED,
+    SECTION_DECLARING, SECTION_NAMED_MAP, SECTION_REQUIRED,
 };
 use crate::abi::host::conn::connector::{
     Need, DIRECTION_INBOUND, DIRECTION_OUTBOUND, EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED,
@@ -478,7 +478,7 @@ pub fn check_rewrites(rewrites: &[Rewrite]) -> Result<(), Fault> {
 ///
 /// The rule the sections break.
 pub fn check_statement_sections(sections: &[Section]) -> Result<(), Fault> {
-    let known = SECTION_DECLARING | SECTION_REQUIRED | SECTION_CONSUMED;
+    let known = SECTION_DECLARING | SECTION_REQUIRED | SECTION_CONSUMED | SECTION_NAMED_MAP;
     for s in sections {
         named(s.name, "section.name")?;
         bits(u64::from(s.flags), u64::from(known), "section.flags")?;

@@ -192,7 +192,7 @@ use crate::abi::mechanism::call::Blob;
 use crate::abi::mechanism::door::{
     MarkWord, Rewrite, Section, MARK_BLOCKS, MARK_CATALOG, MARK_EPHEMERAL, MARK_ONE_INSTANCE,
     MARK_WORD_CARRIER, MARK_WORD_HOOK, REWRITE_ALIAS, REWRITE_KEY, REWRITE_SUGAR, SECTION_CONSUMED,
-    SECTION_DECLARING,
+    SECTION_DECLARING, SECTION_NAMED_MAP,
 };
 use crate::abi::sdk::door::{abi_str, statement};
 
@@ -310,8 +310,12 @@ fn a_statement_has_at_most_one_declaring_section() {
         Err(fault(Rule::NotExactlyOne, "section.flags"))
     );
     assert_eq!(
-        check_statement_sections(&[section("a", 8)]),
+        check_statement_sections(&[section("a", 16)]),
         Err(fault(Rule::UnknownCode, "section.flags"))
+    );
+    assert_eq!(
+        check_statement_sections(&[section("a", SECTION_DECLARING | SECTION_NAMED_MAP)]),
+        Ok(())
     );
     assert_eq!(
         check_statement_sections(&[section("", SECTION_CONSUMED)]),

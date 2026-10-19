@@ -16,7 +16,9 @@ use crate::abi::mechanism::call::Outcome;
 use crate::abi::mechanism::call::Outcome::{Failed, Pending, Ready, Refused};
 use crate::abi::mechanism::call::{AbiStr, Blob, MAX_TEXT};
 use crate::abi::mechanism::check::{check_needs, fault};
-use crate::abi::mechanism::door::{Section, SECTION_DECLARING, SECTION_REQUIRED};
+use crate::abi::mechanism::door::{
+    Section, SECTION_DECLARING, SECTION_NAMED_MAP, SECTION_REQUIRED,
+};
 use crate::abi::plane::*;
 use crate::caps::ReasonCode;
 
@@ -1327,8 +1329,21 @@ fn exactly_one_section_is_the_declaring_one() {
         f(Rule::NotExactlyOne, "section.declaring")
     );
     assert_eq!(
-        check_sections(&[section(SECTION_DECLARING | 8)]),
+        check_sections(&[section(SECTION_DECLARING | 16)]),
         f(Rule::UnknownCode, "section.flags")
+    );
+    // A named map is the declaring section's fact (arch u28/u34): beside it, accepted; on any
+    // other section, a contradiction.
+    assert_eq!(
+        check_sections(&[section(SECTION_DECLARING | SECTION_NAMED_MAP)]),
+        Ok(())
+    );
+    assert_eq!(
+        check_sections(&[
+            section(SECTION_DECLARING),
+            section(SECTION_REQUIRED | SECTION_NAMED_MAP)
+        ]),
+        f(Rule::Contradiction, "section.flags")
     );
     let mut unnamed = section(SECTION_DECLARING);
     unnamed.name = z();
