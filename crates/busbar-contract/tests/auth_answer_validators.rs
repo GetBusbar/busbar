@@ -918,3 +918,24 @@ fn a_target_is_a_span_in_the_buffer_or_absent() {
         );
     }
 }
+
+/// RED (u10 LOW, security; THE DESIGN's identity rule "a zero TTL is refused by the validator"): an
+/// identity naming a replay key with a ZERO replay TTL is refused (its TTL is Missing), never
+/// admitted: a zero-second claim window would let the same key replay at once. A key with a TTL,
+/// and neither, pass.
+#[test]
+fn a_replay_key_with_a_zero_ttl_is_refused() {
+    let mut o = identity();
+    o.identity.replay_key = sp(4, 4);
+    o.identity.replay_ttl_secs = 0;
+    assert_eq!(
+        ready_identity(&o, &[]),
+        red(Rule::Missing, "verify.missing"),
+        "a replay key with no TTL"
+    );
+    o.identity.replay_ttl_secs = 90;
+    assert_eq!(ready_identity(&o, &[]), Ok(()), "a replay key with its TTL");
+    let mut none = identity();
+    none.identity.replay_key = ABSENT;
+    assert_eq!(ready_identity(&none, &[]), Ok(()), "no replay asked");
+}
