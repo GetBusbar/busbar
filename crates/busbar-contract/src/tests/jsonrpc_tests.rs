@@ -364,3 +364,44 @@ fn a_unitless_kernel_refusal_renders_the_v1_5_5_bytes() {
         );
     }
 }
+
+/// RED (Q128 contract u15 LOW): two integer ids that differ are never the same id, however large.
+/// Above 2^53 two distinct integers share one f64, so a comparison through f64 would serve the
+/// answer to `9007199254740992` as the answer to `9007199254740993`. The numeric looseness for `1`
+/// and `1.0` holds only where the integer side is exact in an f64.
+#[test]
+fn red_distinct_large_integer_ids_never_correlate() {
+    let big =
+        |id: serde_json::Value| serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": {} });
+    for (got, sent_id) in [
+        (
+            serde_json::json!(9_007_199_254_740_992_u64),
+            serde_json::json!(9_007_199_254_740_993_u64),
+        ),
+        (serde_json::json!(u64::MAX - 1), serde_json::json!(u64::MAX)),
+        (
+            serde_json::json!(-9_007_199_254_740_993_i64),
+            serde_json::json!(-9_007_199_254_740_992_i64),
+        ),
+        (
+            serde_json::json!(9_007_199_254_740_992.0),
+            serde_json::json!(9_007_199_254_740_993_u64),
+        ),
+    ] {
+        assert_eq!(
+            reply_err(big(got.clone()), sent(sent_id.clone())).kind,
+            NotAnAnswerKind::Uncorrelated,
+            "{got} answered {sent_id}"
+        );
+    }
+    assert!(read_response(
+        &big(serde_json::json!(u64::MAX)),
+        &serde_json::json!(u64::MAX)
+    )
+    .is_ok());
+    assert!(read_response(
+        &big(serde_json::json!(9_007_199_254_740_992.0)),
+        &serde_json::json!(9_007_199_254_740_992_u64)
+    )
+    .is_ok());
+}
