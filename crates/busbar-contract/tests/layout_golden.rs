@@ -1120,7 +1120,7 @@ fn compute_layout() -> String {
             session_bound,
             unit0_trigger,
             status_at,
-            _reserved
+            flags
         ]
     );
     record!(s, tkind::StatusRow, [claim, lo, hi, class]);

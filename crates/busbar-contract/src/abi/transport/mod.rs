@@ -428,6 +428,10 @@ pub const UNIT0_UPGRADE: u8 = 5;
 /// [`Claim::unit0_trigger`]: a handshake.
 pub const UNIT0_HANDSHAKE: u8 = 6;
 
+/// [`Claim::flags`]: the scheme is the SECURE form of its wire: the connection is secured by the
+/// host before the first byte (BUSBAR-1.6.0.md #50: `https`, `wss`). A claim without it is plaintext.
+pub const CLAIM_SECURE: u32 = 1;
+
 /// [`SettingDecl::kind`]: `0`/`1`.
 pub const SETTING_FLAG: u32 = 1;
 /// [`SettingDecl::kind`]: an unsigned integer.
@@ -539,8 +543,10 @@ pub struct Claim {
     pub unit0_trigger: u8,
     /// Which frame carries its status (`STATUS_AT_*`).
     pub status_at: u8,
-    /// Alignment padding.
-    pub _reserved: u32,
+    /// [`CLAIM_SECURE`], or `0`; any other bit refuses the load ([`check::check_claims`]). Zero is a
+    /// PLAINTEXT scheme: a claim that does not state it is never taken for a secure one (it was the
+    /// row's alignment padding, read `0` by every plugin built before it was named).
+    pub flags: u32,
 }
 
 /// One status-table row: a code range of a claim's numbering and the class it means. The breaker

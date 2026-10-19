@@ -15,12 +15,13 @@ pub use crate::abi::mechanism::check::{Fault, Rule};
 use super::{
     AcceptOut, ArrivalOut, Claim, ConnFacts, EmitIn, FaultRow, FinishIn, FramePiece, FrameSpan,
     FramerOut, HeadSlots, IoOut, ListenOut, LocateOut, SettingDecl, StatusRow, TransportTail,
-    CANCEL_COMPLETED, CANCEL_NOTHING_MOVED, FACT_DECODES_PAYLOAD, FACT_SIGNS_NOTHING_AFTER_AUTH,
-    FAULT_CALLER, FAULT_HEALTHY, FRAMING_DATAGRAM, FRAMING_STREAM, MAX_ADDR, PIECE_CONTINUED,
-    PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_DECLARED_LEN,
-    PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE, ROLE_CARRIER,
-    ROLE_FRAMER, SETTING_FLAG, SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER, STATUS_SUCCESS,
-    UNIT0_HANDSHAKE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
+    CANCEL_COMPLETED, CANCEL_NOTHING_MOVED, FACT_DECODES_PAYLOAD,
+    FACT_SIGNS_NOTHING_AFTER_AUTH, FAULT_CALLER, FAULT_HEALTHY, FRAMING_DATAGRAM, FRAMING_STREAM,
+    MAX_ADDR, PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE,
+    PIECE_HAS_DECLARED_LEN, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE,
+    ROLE_CARRIER, ROLE_FRAMER, SETTING_FLAG, SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER,
+    STATUS_SUCCESS, UNIT0_HANDSHAKE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    YIELD_STREAM_FULL,
 };
 use super::{AuthPoints, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
 use super::{
@@ -597,9 +598,9 @@ pub fn check_tail(t: &TransportTail) -> Result<(), Fault> {
     text(t.handshake_frame_kind, "tail.handshake_frame_kind")
 }
 
-/// Every claim row: no string or list counted with a NULL pointer, the session bits `0`/`1` and
-/// the trigger and status-frame codes known. (A row's scheme name is the Statement's; see
-/// [`check_claim_rows`].)
+/// Every claim row: no string or list counted with a NULL pointer, the session bits `0`/`1`, the
+/// trigger and status-frame codes known, and no flag but [`CLAIM_SECURE`]. (A row's scheme name is
+/// the Statement's; see [`check_claim_rows`].)
 ///
 /// # Errors
 ///

@@ -84,7 +84,7 @@ const CLAIMS: &[Claim] = &[Claim {
     session_bound: 0,
     unit0_trigger: UNIT0_FIRST_BYTES,
     status_at: 0,
-    _reserved: 0,
+    flags: 0,
 }];
 
 /// The claim's numbering: `0` a stream that ended whole, `1..=9` any other end.
