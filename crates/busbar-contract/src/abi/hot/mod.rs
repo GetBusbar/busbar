@@ -33,6 +33,9 @@
 
 pub mod host;
 pub mod pod;
+pub mod sized;
+
+pub use sized::{field_present, honoured_size, pointee_size};
 
 // Re-export the whole POD surface at the lane root so a plane author writes
 // `crate::abi::hot::Facts`, not `crate::abi::hot::pod::Facts`.
