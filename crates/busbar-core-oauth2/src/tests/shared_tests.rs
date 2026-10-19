@@ -217,7 +217,8 @@ fn now_secs() -> u64 {
 fn block(signing_key: bool) -> serde_yaml::Value {
     serde_yaml::to_value(OauthAsCfg {
         issuer: "https://gw.example.com".to_string(),
-        signing_key: signing_key.then(|| busbar_contract::SecretRef::env("BUSBAR_TEST_AS_KEY")),
+        signing_key: signing_key
+            .then(|| busbar_kernel::test_support::secrets::fill_ref("BUSBAR_TEST_AS_KEY")),
         key_id: None,
         default_grant: Vec::new(),
         access_token_ttl_secs: None,

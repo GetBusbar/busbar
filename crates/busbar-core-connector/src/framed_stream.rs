@@ -17,7 +17,7 @@ use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::transport::{StatusRow, SIDE_ACCEPT_STREAM};
 
 use crate::compose::HeadWords;
-use crate::framer::{Established, FramerDoor, Framing, Refused, Yielded};
+use crate::framer::{AuthBinding, Established, FramerDoor, Framing, Refused, Yielded};
 
 /// The one stream a [`SIDE_ACCEPT_STREAM`] framing carries.
 pub const STREAM: u64 = 1;
@@ -47,7 +47,7 @@ fn fault(error: impl Into<String>) -> Refused {
 
 impl FramedStream {
     /// Open the stream that arrived at `target` with `head` (its head fields, as the caller sent
-    /// them) on `claim`, a claim `door` answers.
+    /// them) on `claim`, a claim `door` answers. Its binding has no auth.
     ///
     /// # Errors
     ///
@@ -58,6 +58,26 @@ impl FramedStream {
         target: &str,
         head: &[(String, Vec<u8>)],
     ) -> Result<Self, Refused> {
+        Self::open_bound(door, claim, target, head, &AuthBinding::NONE)
+    }
+
+    /// [`FramedStream::open`] over `binding`. A stream is framed TICKET-LESS, so a binding with
+    /// auth points (guest lines whose auth needs a point) is refused before anything crosses
+    /// ([`crate::framer::TICKET_LESS_AUTH`]): its framer may call the auth service, which may
+    /// pend, and only a ticketed framing can park it.
+    ///
+    /// # Errors
+    ///
+    /// The binding has auth points, `door` does not answer `claim`, or its framer refused the
+    /// stream.
+    pub fn open_bound(
+        door: Arc<dyn FramerDoor>,
+        claim: &str,
+        target: &str,
+        head: &[(String, Vec<u8>)],
+        binding: &AuthBinding,
+    ) -> Result<Self, Refused> {
+        binding.ticket_less()?;
         let facts = door.facts();
         let index = facts
             .claims
@@ -79,8 +99,14 @@ impl FramedStream {
             claim: Some(claim.to_string()),
             ..Established::default()
         };
-        let (framing, _) =
-            Framing::begin_with(door, SIDE_ACCEPT_STREAM, target, &established, head)?;
+        let (framing, _) = Framing::begin_ticketless(
+            door,
+            SIDE_ACCEPT_STREAM,
+            target,
+            &established,
+            head,
+            binding,
+        )?;
         Ok(Self {
             framing,
             claim: index,
@@ -127,12 +153,21 @@ impl FramedStream {
     }
 
     /// End the stream refused: `bytes` and the refusal's neutral `status`; the closing field block.
+    /// `head_sent` = the host already sent the stream's response head, so the block is closing
+    /// lines only; otherwise it is the whole answer.
     ///
     /// # Errors
     ///
     /// The framer refused to render it, or its block is no field lines.
-    pub fn refuse(&mut self, bytes: &[u8], status: u32) -> Result<Vec<HeadWords>, Refused> {
-        let y = self.framing.refuse(Some(STREAM), bytes, status)?;
+    pub fn refuse(
+        &mut self,
+        bytes: &[u8],
+        status: u32,
+        head_sent: bool,
+    ) -> Result<Vec<HeadWords>, Refused> {
+        let y = self
+            .framing
+            .refuse(Some(STREAM), bytes, status, head_sent)?;
         closing(&y)
     }
 

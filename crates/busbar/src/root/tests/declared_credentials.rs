@@ -1298,7 +1298,7 @@ fn a_configured_api_key_override_presents_the_api_key_header_on_every_dialect() 
         let route = providers.get_mut("p").expect("the provider's route");
         assert_eq!(route.style.as_deref(), Some("api-key"), "{dialect}");
         route.credential =
-            busbar_contract::secret_ref::SecretRef::file(key_file.display().to_string());
+            busbar_kernel::test_support::secrets::path_ref(key_file.display().to_string());
         let section: serde_yaml::Value =
             serde_yaml::from_str("models: {m: {provider: p}}").expect("yaml");
         let dispatcher = Arc::new(crate::root::loader::dispatch::Dispatcher::new(

@@ -46,9 +46,9 @@ use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::check::{
     check_arrive, check_billable_classes, check_cancel, check_cancel_records, check_drive,
     check_fee_units, check_metric_lanes, check_on_piece, check_pin_mechanisms, check_project,
-    check_record_chains, check_refusal, check_refusal_records, check_refusal_statuses,
-    check_route_cost, check_sections, check_serve, check_serve_records, check_snapshot, check_tail,
-    check_trust_keys, Bounds, Caps, ProjectHost, MAX_SESSIONS,
+    check_record_chains, check_record_retentions, check_refusal, check_refusal_records,
+    check_refusal_statuses, check_route_cost, check_sections, check_serve, check_serve_records,
+    check_snapshot, check_tail, check_trust_keys, Bounds, Caps, ProjectHost, MAX_SESSIONS,
 };
 use busbar_contract::abi::plane::{
     self, slot, ArriveIn, ArriveOut, BillableClass, OnPieceIn, OnPieceOut, PinMechanism,
@@ -256,6 +256,13 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
     // load rather than reaching the host as a declaration it cannot keep.
     check_record_chains(
         &listed(tail.record_chains, tail.record_chains_len),
+        tail.record_kinds_len as u64,
+    )
+    .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    // Each retention rule names a kind the tail keeps, once, with a rule the host passes; a tail
+    // that ends before the list (an older plane's) reads none, so every kind is purged by age.
+    check_record_retentions(
+        &listed(tail.record_retentions, tail.record_retentions_len),
         tail.record_kinds_len as u64,
     )
     .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
@@ -514,6 +521,7 @@ fn declared(t: &PlaneTail) -> InstanceDecl {
         scope_kinds: words(t.scope_kinds, t.scope_kinds_len),
         trust_keys,
         record_chains: listed(t.record_chains, t.record_chains_len),
+        record_retentions: listed(t.record_retentions, t.record_retentions_len),
     }
 }
 
@@ -1448,6 +1456,7 @@ impl PlaneCancel {
                     records_cap: 0,
                     arena_buf: std::ptr::null_mut(),
                     arena_cap: 0,
+                    unit: 0,
                 },
                 plane::PlaneCancelOut {
                     cancel: base.out,
@@ -1692,6 +1701,8 @@ pub struct OwnedClaim {
     /// The dialect a refusal on this route wears before `arrive` has read the arrival (an index
     /// into the tail's dialects, opaque to the host): the guest-list line's dialect.
     pub refusal_dialect: u16,
+    /// The span an arrival on it opens (`PlaneSnapshot::arrival_spans`); empty = none.
+    pub arrival_span: String,
 }
 
 /// One admin route of a snapshot, owned by the host.
@@ -1788,7 +1799,9 @@ fn owned_blob(b: Blob) -> Option<Option<Vec<u8>>> {
 /// are judged here by the contract's element checks before any element string is read: a claim's
 /// refusal dialect against the `dialects` its tail declares.
 pub(crate) fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<OwnedSnapshot> {
-    use busbar_contract::abi::plane::check::{check_admin_routes, check_claims, check_listed};
+    use busbar_contract::abi::plane::check::{
+        check_admin_routes, check_arrival_spans, check_claims, check_listed,
+    };
     if p.is_null() {
         return None;
     }
@@ -1806,21 +1819,40 @@ pub(crate) fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<Ow
             lent(s.listed, s.listed_len)?,
         )
     };
+    // SAFETY: as above; a snapshot from before the list was appended reads NULL with `0`, and the
+    // check refused any length but `0` or one per claim.
+    let spans = if s.arrival_spans_len == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(s.arrival_spans, s.arrival_spans_len) }
+    };
     check_claims(claims, dialects).ok()?;
     check_admin_routes(routes).ok()?;
     check_listed(listed).ok()?;
+    check_arrival_spans(spans).ok()?;
+    // A span name is `[a-z0-9_]`: the kernel builds a callsite of it, so nothing else is a name.
+    let span_of = |i: usize| -> Option<String> {
+        let name = spans.get(i).map_or(Some(String::new()), |n| {
+            owned_str(*n).map(Option::unwrap_or_default)
+        })?;
+        name.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+            .then_some(name)
+    };
     let text = |a| owned_str(a)?.or(Some(String::new()));
     Some(OwnedSnapshot {
         generation: s.generation,
         claims: claims
             .iter()
-            .map(|c| {
+            .enumerate()
+            .map(|(i, c)| {
                 Some(OwnedClaim {
                     verb: text(c.verb)?,
                     target: text(c.target)?,
                     carrier: text(c.carrier)?,
                     flags: c.flags,
                     refusal_dialect: c.refusal_dialect,
+                    arrival_span: span_of(i)?,
                 })
             })
             .collect::<Option<_>>()?,

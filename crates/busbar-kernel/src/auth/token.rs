@@ -295,9 +295,10 @@ impl LoginMethods {
                     .map_err(|e| {
                         format!("identity-providers.{name} browser_login.client_secret: {e}")
                     })?;
+                // AUDIT POINT: the login plugin's `open` settings take the plaintext.
                 resolved.insert(
                     "client_secret".to_string(),
-                    serde_json::Value::String(secret),
+                    serde_json::Value::String(crate::config::secret::handed_on(secret)),
                 );
             }
             // Opened by the provider definition's `module:` (the plugin), REGISTERED under the
@@ -766,14 +767,14 @@ pub(crate) async fn credential_submit(
                 StatusCode::UNAUTHORIZED,
                 "Sign-in was declined",
                 "Those credentials weren't accepted. Please check them and try again.",
-            ))
+            ));
         }
         _ => {
             return clear_and(error_page(
                 StatusCode::BAD_GATEWAY,
                 "Sign-in didn't finish",
                 "This sign-in didn't complete. Please head back and try again.",
-            ))
+            ));
         }
     };
     clear_and(issue_and_render(app, handle, &cookie.method, principal, cookie.refresh).await)

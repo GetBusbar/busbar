@@ -328,13 +328,14 @@ test_plane_owned:
     let read = |name: &str| {
         String::from_utf8_lossy(&std::fs::read(dir.join(name)).unwrap_or_default()).into_owned()
     };
-    let whole = serde_json::json!({ (busbar_contract::secret_ref::SECRET_MODULE_ENV): plain_var });
+    let whole =
+        serde_json::json!({ (busbar_kernel::test_support::secrets::fill_word()): plain_var });
     let part = serde_json::to_value(busbar_contract::secret_ref::SecretRef::template(format!(
         "Bearer ${{{plain_var}}}"
     )))
     .expect("a reference");
     let written_reference =
-        serde_json::json!({ (busbar_contract::secret_ref::SECRET_MODULE_ENV): ref_var });
+        serde_json::json!({ (busbar_kernel::test_support::secrets::fill_word()): ref_var });
     for name in ["open.settings", "open.owned", "refresh.settings"] {
         let text = read(name);
         assert!(!text.is_empty(), "the plane recorded its {name}");

@@ -11,8 +11,18 @@ fn resolver_builtins_resolve_without_plugin() {
     let r = SecretResolver::builtins_only();
     let var = format!("BUSBAR_RESOLVER_TEST_{}", std::process::id());
     std::env::set_var(&var, "abc\n");
-    assert_eq!(r.resolve(&SecretRef::env(&var)).unwrap(), b"abc\n");
-    assert_eq!(r.resolve_string(&SecretRef::env(&var)).unwrap(), "abc");
+    assert_eq!(
+        r.resolve(&crate::test_support::secrets::fill_ref(&var))
+            .map(crate::test_support::revealed)
+            .unwrap(),
+        b"abc\n"
+    );
+    assert_eq!(
+        r.resolve_string(&crate::test_support::secrets::fill_ref(&var))
+            .map(crate::test_support::revealed)
+            .unwrap(),
+        "abc"
+    );
     std::env::remove_var(&var);
 }
 
@@ -40,8 +50,10 @@ fn resolver_delegates_to_plugin_and_fails_closed_on_empty_or_error() {
         if module == "vault" {
             let v: serde_json::Value = serde_json::from_str(settings).unwrap();
             match v.get("path").and_then(|p| p.as_str()) {
-                Some("kv/ok") => Ok(b"plugin-secret".to_vec()),
-                Some("kv/empty") => Ok(Vec::new()),
+                Some("kv/ok") => Ok(busbar_contract::secret::Resolved::new(
+                    b"plugin-secret".to_vec(),
+                )),
+                Some("kv/empty") => Ok(busbar_contract::secret::Resolved::new(Vec::new())),
                 _ => Err("no such path".to_string()),
             }
         } else {
@@ -59,7 +71,12 @@ fn resolver_delegates_to_plugin_and_fails_closed_on_empty_or_error() {
             settings,
         }
     };
-    assert_eq!(r.resolve(&mk("kv/ok")).unwrap(), b"plugin-secret");
+    assert_eq!(
+        r.resolve(&mk("kv/ok"))
+            .map(crate::test_support::revealed)
+            .unwrap(),
+        b"plugin-secret"
+    );
     // Empty plugin result is rejected (fail-closed), never an empty secret.
     assert!(r.resolve(&mk("kv/empty")).unwrap_err().contains("EMPTY"));
     // Plugin error is surfaced fail-closed.
@@ -70,6 +87,11 @@ fn resolver_delegates_to_plugin_and_fails_closed_on_empty_or_error() {
     // Built-ins still short-circuit past the plugin.
     let var = format!("BUSBAR_RESOLVER_PLUGIN_TEST_{}", std::process::id());
     std::env::set_var(&var, "envval");
-    assert_eq!(r.resolve_string(&SecretRef::env(&var)).unwrap(), "envval");
+    assert_eq!(
+        r.resolve_string(&crate::test_support::secrets::fill_ref(&var))
+            .map(crate::test_support::revealed)
+            .unwrap(),
+        "envval"
+    );
     std::env::remove_var(&var);
 }

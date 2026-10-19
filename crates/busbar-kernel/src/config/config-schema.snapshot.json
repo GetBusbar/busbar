@@ -2653,8 +2653,6 @@
         "u64"
       ],
       "wire_keys": [
-        "env",
-        "file",
         "module",
         "settings"
       ]

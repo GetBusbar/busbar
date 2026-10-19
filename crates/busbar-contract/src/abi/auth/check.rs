@@ -7,13 +7,13 @@
 //! any `Err` makes the answer FAULT. No host re-implements them.
 
 use super::inbound::{BeginLoginOut, IdentifyOut, IdentityBuf, StripName};
-use super::outbound::{FieldSpan, FieldsOut};
+use super::outbound::{FieldSpan, FieldsOut, TargetOut};
 use super::points::{AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
 use super::{
     BEGIN_AUTHORIZE, BEGIN_FORM, CAP_INBOUND, DECISION_CONTINUE, DECISION_STOP, FIELD_QUERY,
     FIELD_SENSITIVE, IDENTITY_HAS_TTL, LOGIN_IDENTITY, LOGIN_SECURITY_CHECK_FAILED, SPAN_ABSENT,
-    STRIP_FIELD, STRIP_QUERY, STYLE_CALLER_CREDENTIAL, STYLE_NEEDS_HEADERS, VERDICT_IDENTITY,
-    VERDICT_PASS,
+    STRIP_FIELD, STRIP_QUERY, STYLE_CALLER_CREDENTIAL, STYLE_ENDPOINT_FROM_CREDENTIAL,
+    STYLE_ENDPOINT_TOKEN_URL, STYLE_NEEDS_HEADERS, STYLE_RANK_MASK, VERDICT_IDENTITY, VERDICT_PASS,
 };
 use crate::abi::mechanism::call::{AbiStr, Outcome, Span, BLOB_OCTETS};
 use crate::abi::mechanism::check::{fault, results, Dim, Fault, Rule, MAX_BYTES};
@@ -380,17 +380,51 @@ pub fn check_fields(
     })
 }
 
-/// One [`super::StyleDecl`]'s `flags` and `points`: only [`STYLE_NEEDS_HEADERS`] |
-/// [`STYLE_CALLER_CREDENTIAL`] flag bits, nothing else, and a valid, non-empty point set
-/// ([`check_points`]). Run by the loader when it reads a plugin's declared styles, so a plugin
-/// build with a stray or future bit, or a style that needs no point, refuses the load rather than
-/// have the host silently ignore it.
+/// `target`'s answer. `buf_cap` is the capacity of the buffer the host handed in. On READY the
+/// target is absent (`SPAN_ABSENT`, `len == 0`: the style sends to no destination of its own) or a
+/// non-empty span within `buf_cap`; on REFUSED or FAILED it is absent.
 ///
 /// # Errors
-/// An unknown flag bit, or a point set [`check_points`] refuses.
+/// The answer breaks a rule [`TargetOut`] states.
+pub fn check_target(outcome: Outcome, out: &TargetOut, buf_cap: usize) -> Result<(), Fault> {
+    let t = out.target;
+    match outcome {
+        Outcome::Fault | Outcome::Pending => Ok(()),
+        Outcome::Ready if t.offset == SPAN_ABSENT => match t.len {
+            0 => Ok(()),
+            _ => Err(fault(Rule::SpanNotAbsent, "target.target.absent_with_len")),
+        },
+        Outcome::Ready if t.len == 0 => Err(fault(Rule::Missing, "target.target.empty")),
+        Outcome::Ready if u64::from(t.offset) + u64::from(t.len) > buf_cap as u64 => {
+            Err(fault(Rule::SpanOutOfBounds, "target.target.out_of_bounds"))
+        }
+        Outcome::Ready => Ok(()),
+        _ if t.offset == SPAN_ABSENT && t.len == 0 => Ok(()),
+        _ => Err(fault(Rule::Contradiction, "target.target.unexpected")),
+    }
+}
+
+/// One [`super::StyleDecl`]'s `flags` and `points`: only [`STYLE_NEEDS_HEADERS`] |
+/// [`STYLE_CALLER_CREDENTIAL`] | [`STYLE_ENDPOINT_TOKEN_URL`] | [`STYLE_ENDPOINT_FROM_CREDENTIAL`]
+/// flag bits (never both endpoint bits) and a list rank ([`STYLE_RANK_MASK`]), nothing else, and a
+/// valid, non-empty point set ([`check_points`]). Run by the loader when it reads a plugin's
+/// declared styles, so a plugin build with a stray or future bit, or a style that needs no point,
+/// refuses the load rather than have the host silently ignore it.
+///
+/// # Errors
+/// An unknown flag bit, both endpoint bits, or a point set [`check_points`] refuses.
 pub const fn check_style_decl(flags: u32, points: u32) -> Result<AuthPoints, Fault> {
-    if flags & !(STYLE_NEEDS_HEADERS | STYLE_CALLER_CREDENTIAL) != 0 {
+    const KNOWN: u32 = STYLE_NEEDS_HEADERS
+        | STYLE_CALLER_CREDENTIAL
+        | STYLE_ENDPOINT_TOKEN_URL
+        | STYLE_ENDPOINT_FROM_CREDENTIAL
+        | STYLE_RANK_MASK;
+    if flags & !KNOWN != 0 {
         return Err(fault(Rule::UnknownCode, "style.unknown_flags"));
+    }
+    let both = STYLE_ENDPOINT_TOKEN_URL | STYLE_ENDPOINT_FROM_CREDENTIAL;
+    if flags & both == both {
+        return Err(fault(Rule::Contradiction, "style.endpoints"));
     }
     check_points(points, true)
 }

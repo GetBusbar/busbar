@@ -1163,3 +1163,69 @@ fn the_issued_credential_shape_is_read_from_its_marks_and_a_malformed_one_refuse
 
 /// One refused-marks case: what it shows, the marks the row states, and the class it reads.
 type RefusedMarks = (&'static str, Vec<(u32, &'static str)>, u32);
+
+/// LINKED AND DROPPED READ ALIKE, AND THE DROPPED ONE UNOPENED (Law 7; Part 2 #2): the facts the
+/// host reads off an auth plugin's signed Statement rendering (a dropped row's, never bound) are
+/// exactly the facts the same Statement states when its door is bound (a linked row's): its
+/// capabilities, facts, operator, credential kinds and outbound styles, flags and ranks included.
+/// RED: the rendering carried no auth tail, so a dropped row listed no style without being opened.
+#[test]
+fn a_rendering_states_the_same_auth_facts_as_the_bound_statement() {
+    use busbar_contract::abi::auth::{
+        ranked, AuthTail, StyleDecl, CAP_OUTBOUND, LOGIN_KIND_NONE, POINT_HEAD,
+        STYLE_ENDPOINT_TOKEN_URL,
+    };
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+    use busbar_contract::abi::mechanism::rendering::{read, render};
+    use busbar_contract::abi::mechanism::KindCode;
+    use busbar_contract::abi::sdk::door::{abi_str, statement};
+
+    use crate::dispatch::kinds::auth::{rendered_facts, AuthFacts};
+
+    const STYLES: &[StyleDecl] = &[
+        StyleDecl {
+            name: abi_str("first"),
+            flags: ranked(1),
+            points: POINT_HEAD,
+        },
+        StyleDecl {
+            name: abi_str("second"),
+            flags: STYLE_ENDPOINT_TOKEN_URL,
+            points: POINT_HEAD,
+        },
+    ];
+    let tail = Box::leak(Box::new(AuthTail {
+        head: KindTailHead {
+            size: size_of::<AuthTail>() as u32,
+            _reserved: 0,
+        },
+        caps: CAP_OUTBOUND,
+        facts: 0,
+        login_kind: LOGIN_KIND_NONE,
+        inbound_points: 0,
+        styles: STYLES.as_ptr(),
+        styles_len: STYLES.len(),
+        operator_principal: abi_str(""),
+        credential_kinds: std::ptr::null(),
+        credential_kinds_len: 0,
+    }));
+    let st = Statement {
+        kind: KindCode::Auth as u32,
+        kind_tail: std::ptr::from_ref(tail).cast(),
+        ..statement("t", "1", 0)
+    };
+    let linked = <Auth as Kind>::context(&st)
+        .expect("the tail binds")
+        .and_then(|c| c.downcast::<AuthFacts>().ok())
+        .expect("auth facts");
+    // SAFETY: every list above is live and of its stated count.
+    let stated = unsafe { render(&st) }.expect("renders");
+    let dropped = rendered_facts(&read(&stated).expect("reads back")).expect("judged");
+    assert_eq!(dropped.caps, linked.caps);
+    assert_eq!(dropped.facts, linked.facts);
+    assert_eq!(dropped.styles, linked.styles);
+    assert_eq!(dropped.operator_principal, linked.operator_principal);
+    assert_eq!(dropped.credential_kinds, linked.credential_kinds);
+    assert_eq!(dropped.carriers, linked.carriers);
+    assert_eq!(dropped.styles.len(), 2, "both styles, unopened");
+}

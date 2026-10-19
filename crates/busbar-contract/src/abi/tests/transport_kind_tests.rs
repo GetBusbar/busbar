@@ -20,12 +20,30 @@ fn contracts_run_in_slot_order_contiguous_after_the_lifecycle() {
     );
 }
 
+/// A framer pends only on a ticketed auth call: `begin`, `ingest` and `emit` may pend (each may call
+/// the host's auth service), every other framer op never does, `encode` among them; all of them run
+/// on the request path under the stream's deadline.
 #[test]
-fn framer_ops_never_pend_and_run_on_the_request_path() {
+fn only_the_ticketed_framer_ops_may_pend_and_all_run_on_the_request_path() {
+    let ticketed = [slot::BEGIN, slot::INGEST, slot::EMIT];
     for c in &CONTRACTS[slot::LOCATE as usize - LIFECYCLE_SLOTS as usize..] {
-        assert!(!c.may_pend, "framer op {} may not pend", c.slot);
+        assert_eq!(
+            c.may_pend,
+            ticketed.contains(&c.slot),
+            "framer op {} pends exactly when it is ticketed",
+            c.slot
+        );
         assert!(c.request_path, "framer op {} is request-path", c.slot);
+        assert!(
+            matches!(
+                c.deadline,
+                crate::abi::mechanism::call::DeadlineClass::Stream
+            ),
+            "framer op {} runs under the stream's deadline",
+            c.slot
+        );
     }
+    assert!(!CONTRACTS[(slot::ENCODE - LIFECYCLE_SLOTS) as usize].may_pend);
 }
 
 #[test]

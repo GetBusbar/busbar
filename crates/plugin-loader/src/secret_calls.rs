@@ -436,7 +436,7 @@ impl std::fmt::Debug for SecretRows {
 
 /// Whether config names `c` by `word` (its name or an alias).
 fn answers(c: &Candidate, word: &str) -> bool {
-    c.name == word || c.aliases.iter().any(|a| a == word)
+    c.answers(word)
 }
 
 impl SecretRows {
@@ -522,6 +522,11 @@ impl SecretRows {
             ));
         }
         self.linked.push(c);
+        // The sugars the linked rows declare: a word or role two of them claim refuses the link.
+        if let Err(e) = crate::boot::sugars_of(&self.linked) {
+            self.linked.pop();
+            return Err(e);
+        }
         Ok(self)
     }
 
@@ -566,6 +571,7 @@ impl SecretRows {
             .chain(secrets.iter().cloned())
             .collect();
         crate::boot::one_owner(&all)?;
+        crate::boot::sugars_of(&all)?;
         for line in crate::boot::both_doors(&all) {
             tracing::info!("{line}");
         }
@@ -641,6 +647,24 @@ impl SecretRows {
 }
 
 impl SecretAxis for SecretRows {
+    fn sugars(&self) -> busbar_contract::secret_ref::Sugars {
+        let all: Vec<Candidate> = self
+            .linked
+            .iter()
+            .cloned()
+            .chain(
+                self.dropped
+                    .read()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .iter()
+                    .cloned(),
+            )
+            .collect();
+        // Every row was admitted with its sugars declared ([`Self::link`],
+        // [`Self::admit_dropped`]); a set that no longer declares answers no sugar (fail-closed).
+        crate::boot::sugars_of(&all).unwrap_or_default()
+    }
+
     fn answers(&self, module: &str) -> bool {
         self.find(module).is_some()
     }
@@ -668,7 +692,7 @@ impl SecretAxis for SecretRows {
         &self,
         module: &str,
         settings: &serde_json::Value,
-        resolve: &dyn Fn(&SecretRef) -> Result<Vec<u8>, String>,
+        resolve: &busbar_contract::secret::ResolveRef<'_, Vec<u8>>,
     ) -> Result<Arc<dyn SecretCalls>, String> {
         let c = self
             .find(module)
@@ -676,16 +700,19 @@ impl SecretAxis for SecretRows {
         let mut secrets = Vec::new();
         for key in Self::secret_refs(&c)? {
             let material = match settings.get(&key) {
-                None => Vec::new(),
+                None => SecretValue::default(),
                 Some(v) => {
                     // The decoder's own text is withheld: the value may be the secret itself.
                     let r = serde_json::from_value::<SecretRef>(v.clone()).map_err(
                         crate::boot::not_a_reference(format!("secrets.{module}.settings.{key}")),
                     )?;
-                    resolve(&r).map_err(|e| format!("secrets.{module}.settings.{key}: {e}"))?
+                    // Sealed to the kernel, read only under the seal the host lent the dispatcher.
+                    resolve(&r)
+                        .map_err(|e| format!("secrets.{module}.settings.{key}: {e}"))?
+                        .sealed()
                 }
             };
-            secrets.push(SecretValue::new(material));
+            secrets.push(material);
         }
         let bytes = if settings.is_null() {
             Vec::new()

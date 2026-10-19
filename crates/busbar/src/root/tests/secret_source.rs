@@ -25,7 +25,7 @@
 use std::sync::Arc;
 
 use axum::http::{HeaderMap, StatusCode};
-use busbar_contract::secret_ref::{SecretRef, SECRET_MODULE_FILE};
+use busbar_contract::secret_ref::SecretRef;
 
 use crate::root::door_steps::tests::tool_door::{
     send_headed, surface, three_tools, tool_digest, tool_server_listing, try_rig_tools, Rig, CALL,
@@ -61,8 +61,11 @@ fn rendered(status: StatusCode, headers: &HeaderMap, body: &[u8]) -> String {
 fn source_in(render: &str, secret: &SecretRef) -> Vec<String> {
     let lower = render.to_ascii_lowercase();
     let mut needles: Vec<String> = SOURCE_WORDS.iter().map(|w| (*w).to_string()).collect();
-    needles.push(format!("secret {SECRET_MODULE_FILE}"));
-    needles.push(secret.describe());
+    needles.push(format!(
+        "secret {}",
+        busbar_kernel::test_support::secrets::path_word()
+    ));
+    needles.push(busbar_kernel::config::secret::describe(&secret));
     needles.extend(
         secret
             .settings
@@ -268,11 +271,11 @@ async fn tool_door_a_program_members_unresolved_env_reaches_the_caller_without_i
     let cases = [
         (
             "tools-program-env",
-            SecretRef::env(unset("TOOLS_PROGRAM_ENV")),
+            busbar_kernel::test_support::secrets::fill_ref(unset("TOOLS_PROGRAM_ENV")),
         ),
         (
             "tools-program-file",
-            SecretRef::file(missing("tools-program-file")),
+            busbar_kernel::test_support::secrets::path_ref(missing("tools-program-file")),
         ),
     ];
     for (instance, secret) in cases {
@@ -302,7 +305,7 @@ async fn tool_door_a_program_members_env_gone_by_an_apply_reaches_the_caller_wit
     let _published = Published(instance);
     let var = unset("TOOLS_PROGRAM_APPLY");
     std::env::set_var(&var, "busbar-own-program-token");
-    let secret = SecretRef::env(&var);
+    let secret = busbar_kernel::test_support::secrets::fill_ref(&var);
     let rig = try_rig_tools(instance, 0, program_section(&secret)).expect("the door composes");
     let (status, _, body) = call(&rig).await;
     assert_eq!(
@@ -330,7 +333,7 @@ async fn tool_door_an_unresolved_subject_token_refuses_the_boot_naming_its_sourc
     let _one = PUBLISHING.lock().await;
     let instance = "tools-exchange-compose";
     let _published = Published(instance);
-    let secret = SecretRef::env(unset("TOOLS_EXCHANGE_COMPOSE"));
+    let secret = busbar_kernel::test_support::secrets::fill_ref(unset("TOOLS_EXCHANGE_COMPOSE"));
     refused_naming_its_source(&secret);
     let (port, _heard) = tool_server_listing(Arc::new(std::sync::Mutex::new(three_tools()))).await;
     let Err(refusal) = try_rig_tools(instance, port, exchange_section(port, &secret)) else {
@@ -353,7 +356,7 @@ async fn tool_door_a_subject_token_gone_by_an_apply_reaches_the_caller_without_i
     let _published = Published(instance);
     let var = unset("TOOLS_EXCHANGE_APPLY");
     std::env::set_var(&var, "busbar-own-subject-token");
-    let secret = SecretRef::env(&var);
+    let secret = busbar_kernel::test_support::secrets::fill_ref(&var);
     let (port, _heard) = tool_server_listing(Arc::new(std::sync::Mutex::new(three_tools()))).await;
     let rig =
         try_rig_tools(instance, port, exchange_section(port, &secret)).expect("the door composes");
@@ -386,7 +389,7 @@ async fn decisions_an_unresolved_provider_key_refuses_the_boot_naming_its_source
     let instance = "decisions-key-compose";
     let _published = Published(instance);
     let path = missing(instance);
-    let secret = SecretRef::file(path.clone());
+    let secret = busbar_kernel::test_support::secrets::path_ref(path.clone());
     refused_naming_its_source(&secret);
     let (port, _heard) = super::door_tests::far_end().await;
     let Err(refusal) = super::door_tests::serve_keyed(
@@ -417,7 +420,7 @@ async fn decisions_a_provider_key_gone_by_an_apply_reaches_the_caller_without_it
     let _published = Published(instance);
     let path = missing(instance);
     std::fs::write(&path, "sk-secret-source-test").expect("the credential file");
-    let secret = SecretRef::file(path.clone());
+    let secret = busbar_kernel::test_support::secrets::path_ref(path.clone());
     let (port, _heard) = super::door_tests::far_end().await;
     let serving = super::door_tests::serve_keyed(
         &crate::LINKED,
@@ -463,7 +466,7 @@ mod session_door_cells {
         let _one = PUBLISHING.lock().await;
         let instance = "session-key-compose";
         let path = missing(instance);
-        let secret = SecretRef::file(path.clone());
+        let secret = busbar_kernel::test_support::secrets::path_ref(path.clone());
         refused_naming_its_source(&secret);
         let composed = super::super::door_tests::session_door::session_keyed(
             instance,
@@ -491,7 +494,7 @@ mod session_door_cells {
         let instance = "session-key-apply";
         let path = missing(instance);
         std::fs::write(&path, "sk-secret-source-test").expect("the credential file");
-        let secret = SecretRef::file(path.clone());
+        let secret = busbar_kernel::test_support::secrets::path_ref(path.clone());
         let composed = super::super::door_tests::session_door::session_keyed(
             instance,
             None,
@@ -532,7 +535,7 @@ async fn pools_door_an_unresolved_provider_key_refuses_the_boot_naming_its_sourc
     let instance = "pools-key-compose";
     let _published = Published(instance);
     let path = missing(instance);
-    let secret = SecretRef::file(path.clone());
+    let secret = busbar_kernel::test_support::secrets::path_ref(path.clone());
     refused_naming_its_source(&secret);
     let far = far_end_answering(200, ANSWER).await;
     let api_key = format!("{{ file: '{path}' }}");
@@ -572,7 +575,7 @@ async fn pools_door_a_provider_key_gone_by_an_apply_reaches_the_caller_without_i
     let _published = Published(instance);
     let path = missing(instance);
     std::fs::write(&path, "sk-secret-source-test").expect("the credential file");
-    let secret = SecretRef::file(path.clone());
+    let secret = busbar_kernel::test_support::secrets::path_ref(path.clone());
     let far = far_end_answering(200, ANSWER).await;
     let api_key = format!("{{ file: '{path}' }}");
     let rig = rig(

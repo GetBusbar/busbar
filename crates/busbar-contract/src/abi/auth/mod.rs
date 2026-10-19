@@ -51,7 +51,7 @@ mod points;
 
 pub use check::{
     check_begin_login, check_complete_login, check_fields, check_identify, check_inbound_points,
-    check_points, check_style_decl, FIELDS_HARD_MAX, IDENTITY_GROUPS_HARD_MAX,
+    check_points, check_style_decl, check_target, FIELDS_HARD_MAX, IDENTITY_GROUPS_HARD_MAX,
 };
 
 pub use inbound::{
@@ -60,7 +60,7 @@ pub use inbound::{
 };
 pub use outbound::{
     FieldSpan, FieldsIn, FieldsOut, OpenOutboundIn, OpenOutboundOut, OutboundReadyIn,
-    OutboundReadyOut,
+    OutboundReadyOut, TargetIn, TargetOut,
 };
 pub use points::{AuthPoint, AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
 
@@ -81,6 +81,7 @@ pub const ABI_VERSION: u32 = 3;
 ///     (slot::OPEN_OUTBOUND, offset_of!(Ops, open_outbound)),
 ///     (slot::OUTBOUND_READY, offset_of!(Ops, outbound_ready)),
 ///     (slot::FIELDS, offset_of!(Ops, fields)),
+///     (slot::TARGET, offset_of!(Ops, target)),
 /// ];
 /// assert_eq!(order.len() as u32, KIND_SLOTS);
 /// for (k, (idx, off)) in order.into_iter().enumerate() {
@@ -106,10 +107,12 @@ pub mod slot {
     pub const OUTBOUND_READY: u32 = LIFECYCLE_SLOTS + 4;
     /// `fields`.
     pub const FIELDS: u32 = LIFECYCLE_SLOTS + 5;
+    /// `target`.
+    pub const TARGET: u32 = LIFECYCLE_SLOTS + 6;
 }
 
 /// How many kind ops follow the lifecycle.
-pub const KIND_SLOTS: u32 = 6;
+pub const KIND_SLOTS: u32 = 7;
 /// [`OpsHead::slots`] for auth v3.
 pub const SLOTS: u32 = LIFECYCLE_SLOTS + KIND_SLOTS;
 
@@ -163,6 +166,16 @@ pub struct Ops {
     /// with zero fields = no auth header, so the upstream answers 401: 1.5.5's answer before the
     /// first mint and for an un-encodable key.
     pub fields: Option<Op>,
+    /// The destination one outbound style's credential sends to, for the kernel to judge (the
+    /// need's target is the kernel's to judge, THE DESIGN's needs section): PURE (no I/O, never dials, reads
+    /// only the credential and settings it is handed), called with NO instance (the `instance`
+    /// argument is NULL) at config time and at the generation seal, never pends; `Call`. In
+    /// [`TargetIn`] (fixed 168 B), out [`TargetOut`] (fixed 104 B). READY with a present
+    /// [`TargetOut::target`]: the URL, in the host's buffer. READY with it absent: the style sends
+    /// to no destination of its own. FAILED: why, one line in `head.error` (in the host's buffer),
+    /// rendered verbatim. REFUSED: the plugin does not serve `target` (the SDK's answer for a door
+    /// that wires none): the style names no destination.
+    pub target: Option<Op>,
 }
 
 /// [`AuthTail::caps`]: the plugin serves `verify`.
@@ -223,6 +236,42 @@ pub const STYLE_NEEDS_HEADERS: u32 = 2;
 /// `caller-credential {as: X}` / `upstream_credentials: passthrough` config to style `X` in
 /// [`MODE_PASSTHROUGH`] (KERNEL<>PLUGINS step 21 seam; not built here).
 pub const STYLE_CALLER_CREDENTIAL: u32 = 4;
+/// [`StyleDecl::flags`]: the style sends the credential to the provider entry's token endpoint.
+///
+/// The binding's settings carry it as `token_url`, which the HOST judges as a destination before
+/// any binding is opened (its scheme and the cloud-metadata denylist, in the previous release's
+/// words; ARCHITECT ruling 2026-09-28 Q2 (a): a need's target is the kernel's to judge). A style
+/// that does not state it has any `token_url` left unjudged and unread, as the previous release
+/// ignored one on such a style.
+pub const STYLE_ENDPOINT_TOKEN_URL: u32 = 32;
+/// [`StyleDecl::flags`]: the style takes its token endpoint from the credential itself.
+///
+/// The credential is a document that names the endpoint (`token_uri`), and the HOST reads it out
+/// and judges it as a destination before the binding is opened (ARCHITECT ruling 2026-09-28 Q2
+/// (a)), handing the plugin its judged copy as the `token_uri` setting. A style takes its endpoint
+/// from one place: it never states this beside [`STYLE_ENDPOINT_TOKEN_URL`].
+pub const STYLE_ENDPOINT_FROM_CREDENTIAL: u32 = 64;
+/// [`StyleDecl::flags`]: the lowest bit of the style's LIST RANK ([`STYLE_RANK_MASK`]).
+pub const STYLE_RANK_SHIFT: u32 = 16;
+/// [`StyleDecl::flags`]: the style's LIST RANK, `1..=255`, or `0` (unranked).
+///
+/// Where the style stands when the host lists the outbound styles a provider's `auth:` may name
+/// (the refusal of an unknown one renders the list): ranked styles first, by rank, then the
+/// unranked ones in plugin registration order. A rank orders a list and grants nothing; two
+/// styles of one rank keep registration order. [`ranked`] spells one; [`style_rank`] reads it.
+pub const STYLE_RANK_MASK: u32 = 0x00ff_0000;
+
+/// The [`StyleDecl::flags`] bits stating list rank `rank` ([`STYLE_RANK_MASK`]).
+#[must_use]
+pub const fn ranked(rank: u8) -> u32 {
+    (rank as u32) << STYLE_RANK_SHIFT
+}
+
+/// The list rank a [`StyleDecl::flags`] states (`0` = unranked; [`STYLE_RANK_MASK`]).
+#[must_use]
+pub const fn style_rank(flags: u32) -> u32 {
+    (flags & STYLE_RANK_MASK) >> STYLE_RANK_SHIFT
+}
 
 /// One outbound style a plugin serves: an open string the provider's `auth:` resolves against.
 #[repr(C)]
@@ -230,12 +279,24 @@ pub const STYLE_CALLER_CREDENTIAL: u32 = 4;
 pub struct StyleDecl {
     /// The style name.
     pub name: AbiStr,
-    /// [`STYLE_NEEDS_HEADERS`] | [`STYLE_CALLER_CREDENTIAL`].
+    /// [`STYLE_NEEDS_HEADERS`] | [`STYLE_CALLER_CREDENTIAL`] | [`STYLE_ENDPOINT_TOKEN_URL`] |
+    /// [`STYLE_ENDPOINT_FROM_CREDENTIAL`], and a list rank ([`STYLE_RANK_MASK`]).
     pub flags: u32,
     /// The [`AuthPoints`] the style needs: a valid, non-empty set ([`check_style_decl`]). A style
     /// that signs the body needs [`POINT_HEAD_BODY`] and reads [`FieldsIn::body`]; a style over
     /// the head alone needs [`POINT_HEAD`].
     pub points: u32,
+}
+
+impl StyleDecl {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `StyleDecl { …, ..StyleDecl::ZERO }` so a field appended later reads as
+    /// not declared.
+    pub const ZERO: Self = Self {
+        name: AbiStr::ZERO,
+        flags: 0,
+        points: 0,
+    };
 }
 
 /// THE AUTH STATEMENT TAIL: `Statement.kind_tail` of an auth plugin. Plain `'static` data.
@@ -272,6 +333,24 @@ pub struct AuthTail {
     pub credential_kinds: *const AbiStr,
     /// How many.
     pub credential_kinds_len: usize,
+}
+
+impl AuthTail {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `AuthTail { …, ..AuthTail::ZERO }` so a field appended later reads as
+    /// not declared.
+    pub const ZERO: Self = Self {
+        head: KindTailHead::ZERO,
+        caps: 0,
+        facts: 0,
+        login_kind: 0,
+        inbound_points: 0,
+        styles: std::ptr::null(),
+        styles_len: 0,
+        operator_principal: AbiStr::ZERO,
+        credential_kinds: std::ptr::null(),
+        credential_kinds_len: 0,
+    };
 }
 
 /// The size [`AuthTail`] froze at before [`AuthTail::operator_principal`] was appended: the
@@ -422,11 +501,13 @@ unsafe impl super::sdk::door::AbiIn for CompleteLoginIn {}
 unsafe impl super::sdk::door::AbiIn for OpenOutboundIn {}
 unsafe impl super::sdk::door::AbiIn for OutboundReadyIn {}
 unsafe impl super::sdk::door::AbiIn for FieldsIn {}
+unsafe impl super::sdk::door::AbiIn for TargetIn {}
 unsafe impl super::sdk::door::AbiOut for IdentifyOut {}
 unsafe impl super::sdk::door::AbiOut for BeginLoginOut {}
 unsafe impl super::sdk::door::AbiOut for OpenOutboundOut {}
 unsafe impl super::sdk::door::AbiOut for OutboundReadyOut {}
 unsafe impl super::sdk::door::AbiOut for FieldsOut {}
+unsafe impl super::sdk::door::AbiOut for TargetOut {}
 
 super::sdk::door::slot_structs!(
     /// Each auth kind op's `in`/`out` for [`plugin_door!`](crate::plugin_door), per [`Ops`]' docs.
@@ -472,5 +553,6 @@ super::sdk::door::slot_structs!(
         slot::OPEN_OUTBOUND => OpenOutboundIn, OpenOutboundOut;
         slot::OUTBOUND_READY => OutboundReadyIn, OutboundReadyOut;
         slot::FIELDS => FieldsIn, FieldsOut;
+        slot::TARGET => TargetIn, TargetOut;
     }
 );

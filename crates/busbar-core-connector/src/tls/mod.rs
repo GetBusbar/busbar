@@ -102,9 +102,12 @@ fn load_cert_chain(
     resolver: &dyn busbar_contract::secret::SecretResolve,
     secret: &SecretRef,
 ) -> Result<Vec<CertificateDer<'static>>, String> {
-    let src = secret.describe();
-    let bytes = busbar_kernel::tls::read_pem(resolver, secret, "cert")?;
-    let certs = CertificateDer::pem_slice_iter(&bytes)
+    let src = busbar_kernel::config::secret::describe(&secret);
+    let pem = busbar_kernel::tls::read_pem(resolver, secret, "cert")?;
+    // Read under the kernel's seal (Part 2 #54): parsed here, never held bare.
+    let seal = busbar_kernel::seal::lend();
+    let bytes = pem.expose(&seal);
+    let certs = CertificateDer::pem_slice_iter(bytes)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("cannot parse TLS cert ({src}): {e}"))?;
     if certs.is_empty() {
@@ -123,13 +126,16 @@ fn load_private_key(
     resolver: &dyn busbar_contract::secret::SecretResolve,
     secret: &SecretRef,
 ) -> Result<PrivateKeyDer<'static>, String> {
-    let src = secret.describe();
-    let bytes = busbar_kernel::tls::read_pem(resolver, secret, "key")?;
+    let src = busbar_kernel::config::secret::describe(&secret);
+    let pem = busbar_kernel::tls::read_pem(resolver, secret, "key")?;
+    // Read under the kernel's seal (Part 2 #54): parsed here, never held bare.
+    let seal = busbar_kernel::seal::lend();
+    let bytes = pem.expose(&seal);
     // `PrivateKeyDer::from_pem_slice` accepts PKCS#8, PKCS#1, and SEC1 sections, picking the first
     // private-key section it finds. `NoItemsFound` means none was present; any other variant is a
     // genuine parse error. Neither path echoes key material - error messages name only the source.
     use rustls::pki_types::pem::Error as PemError;
-    PrivateKeyDer::from_pem_slice(&bytes).map_err(|e| match e {
+    PrivateKeyDer::from_pem_slice(bytes).map_err(|e| match e {
         PemError::NoItemsFound => {
             format!("TLS key ({src}) contains no private key (expected PKCS#8 / PKCS#1 / SEC1 PEM)")
         }
@@ -165,9 +171,12 @@ fn load_client_roots(
     resolver: &SecretResolver,
     secret: &SecretRef,
 ) -> Result<RootCertStore, String> {
-    let src = secret.describe();
-    let bytes = busbar_kernel::tls::read_pem(resolver, secret, "client_ca")?;
-    let cas = CertificateDer::pem_slice_iter(&bytes)
+    let src = busbar_kernel::config::secret::describe(&secret);
+    let pem = busbar_kernel::tls::read_pem(resolver, secret, "client_ca")?;
+    // Read under the kernel's seal (Part 2 #54): parsed here, never held bare.
+    let seal = busbar_kernel::seal::lend();
+    let bytes = pem.expose(&seal);
+    let cas = CertificateDer::pem_slice_iter(bytes)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("cannot parse TLS client_ca ({src}): {e}"))?;
     if cas.is_empty() {
@@ -298,7 +307,7 @@ pub fn build_server_config(
                 .map_err(|e| {
                     format!(
                         "cannot build client-cert verifier from TLS client_ca ({}): {e}",
-                        ca.describe()
+                        busbar_kernel::config::secret::describe(&ca)
                     )
                 })?;
             builder.with_client_cert_verifier(verifier)
@@ -309,8 +318,8 @@ pub fn build_server_config(
     let mut config = builder.with_single_cert(certs, key).map_err(|e| {
         format!(
             "TLS cert/key are not a valid pair (cert {}, key {}): {e}",
-            tls.cert.describe(),
-            tls.key.describe()
+            busbar_kernel::config::secret::describe(&tls.cert),
+            busbar_kernel::config::secret::describe(&tls.key)
         )
     })?;
 

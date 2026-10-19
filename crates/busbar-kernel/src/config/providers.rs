@@ -52,6 +52,7 @@ pub struct ProviderCfg {
     pub base_url: String,
     /// The provider credential as a SECRET REFERENCE - `{ env: VAR }`, `{ file: … }`, or a
     /// secret module. Resolved once at startup; the resolved value never appears in config or logs.
+    #[serde(deserialize_with = "crate::config::secret::declared")]
     pub api_key: SecretRef,
     /// Active health-probe settings for this provider's lanes (mode + interval + timeout).
     #[serde(default)]
@@ -236,6 +237,7 @@ pub struct ProviderDef {
 pub struct ProviderDeploy {
     /// The provider credential as a SECRET REFERENCE. Replaces the removed `api_key_env:`
     /// (`api_key_env: VAR` becomes `api_key: { env: VAR }`).
+    #[serde(deserialize_with = "crate::config::secret::declared")]
     pub api_key: SecretRef,
     #[serde(default)]
     pub protocol: Option<String>,

@@ -23,8 +23,8 @@
 //! Every blob a plane is handed — its `validate`, `open` and `refresh` settings, its owned
 //! sections, the facing probe — is built through [`plane_bound`]. At a credential position whose
 //! value still has the recorded digest, the plane gets the secret REFERENCE the operator could have
-//! written there: `{ env: VAR }` (the `env` module's sugar of
-//! [`busbar_contract::secret_ref::SecretRef`]) where `${VAR}` filled the whole value, and a TEMPLATE
+//! written there: `{ <fill>: VAR }` (the sugar of the secret plugin whose Statement declares the
+//! fill role) where `${VAR}` filled the whole value, and a TEMPLATE
 //! reference (`busbar_contract::secret_ref::SECRET_MODULE_TEMPLATE`, its text the value as written)
 //! where it filled only part of it. Never the bytes. The host resolves the reference where it reads
 //! the value itself: a member program's environment at the spawn. The kernel's own reads keep the
@@ -250,24 +250,23 @@ fn is_credential(path: &[Seg]) -> bool {
             .is_some_and(|m| CREDENTIAL_MAPS.iter().any(|c| m.eq_ignore_ascii_case(c)))
 }
 
-/// The secret reference a plane is handed at a credential position `${VAR}` filled: `{ env: VAR }`
-/// for the whole value, a template reference over the value as written for a part of it.
+/// The secret reference a plane is handed at a credential position `${VAR}` filled: the sugar
+/// `{ <fill>: VAR }` for the whole value (the operator's own spelling, through the sugar whose
+/// declared role is the fill), a template reference over the value as written for a part of it
+/// (and for the whole of it when no loaded Statement declares a fill: nothing then resolves it).
 fn reference_to(fill: &Fill) -> serde_json::Value {
-    let reference = if fill.whole {
-        busbar_contract::secret_ref::SecretRef::env(&fill.vars[0])
-    } else {
-        busbar_contract::secret_ref::SecretRef::template(&fill.written)
-    };
-    if let Some(var) = reference.env_var() {
-        // The operator's own sugar spelling, as a plane reads one written by hand.
+    let word = super::secret::sugars()
+        .with_role(busbar_contract::abi::mechanism::door::SUGAR_ROLE_FILL)
+        .map(|s| s.word.clone());
+    if let (true, Some(word)) = (fill.whole, word) {
         let mut m = serde_json::Map::new();
-        m.insert(
-            busbar_contract::secret_ref::SECRET_MODULE_ENV.to_string(),
-            serde_json::Value::String(var.to_string()),
-        );
+        m.insert(word, serde_json::Value::String(fill.vars[0].clone()));
         return serde_json::Value::Object(m);
     }
-    serde_json::to_value(&reference).unwrap_or(serde_json::Value::Null)
+    serde_json::to_value(busbar_contract::secret_ref::SecretRef::template(
+        &fill.written,
+    ))
+    .unwrap_or(serde_json::Value::Null)
 }
 
 /// THE SETTINGS A PLANE IS HANDED: `value` (rooted at the document path `prefix`, e.g. the plane's

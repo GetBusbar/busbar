@@ -102,6 +102,12 @@ version = "3"
 repos = ["busbar-plane-a2a"]
 reason = "BUILD ONLY: the protoc the a2a plane's `build.rs` drives, vendored so the build needs no system protoc (ARCHITECT ruling Q1 (C), 2026-10-04). Never in the shipped image. Moved here from busbar's root table with the plane (row 106)."
 
+[plugin-deps.httparse]
+version = "1"
+default-features = false
+repos = ["busbar-transport-ws"]
+reason = "the HTTP/1 chunked transfer-coding decoder (parse_chunk_size) a refused WebSocket upgrade's body is read with; already in the closure through tungstenite, no socket of its own (Q128 transport-ws r162)."
+
 # ── Git sources (GetBusbar forks of crates.io crates; Q128 ruling, 2026-10-18) ────────────────────
 # A plugin takes a crates.io crate from a git repository only through a row here: ONE repository, for
 # the plugin repos `repos` names and no other, at ONE pinned commit, with a reviewed `reason`. The key is

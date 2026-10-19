@@ -2,20 +2,21 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The SECRET-MODULE contract (`kind: secret` plugins). A secret module turns a config secret
-//! reference's opaque `settings` into the secret BYTES: the `env` plugin reads an environment
-//! variable (settings.key), the `file` plugin reads a file (settings.path), and a third-party module
-//! (vault, a cloud secret manager, a database) implements the same contract behind the plugin trust
-//! pipeline. The engine sees only the contract - never the implementation - and treats every
-//! failure as FAIL-CLOSED (an unresolvable secret refuses boot, never resolves empty).
+//! reference's opaque `settings` into the secret BYTES: a source reads a process variable, a file,
+//! a vault, a cloud secret manager or a database, each behind the plugin trust pipeline. The engine
+//! sees only the contract - never the implementation - and treats every failure as FAIL-CLOSED (an
+//! unresolvable secret refuses boot, never resolves empty).
 //!
 //! Moved here, module-path-only, from `busbar-api` (DECISIONS #83/#84; the per-kind trait is the
 //! contract's, #35(a)). The error is [`SecretModuleError`] here because [`crate::kinds::SecretError`]
 //! is a different type (#35 de-collision); its `Debug` keeps the historical `SecretError` label so
-//! every rendering is byte-identical. The `env`/`file` sources are ordinary secret-kind plugins in
-//! their own repos (`busbar-secret-env`, `busbar-secret-file`; THE DESIGN, "Plugins"), called through the
-//! secret kind table; the kernel reaches every loaded secret plugin through [`SecretAxis`] and
-//! [`SecretCalls`]. The [`SecretResolve`] seam followed the config secret reference it takes into
-//! this crate once that reference merged here, when `busbar-api` retired.
+//! every rendering is byte-identical. Every source is an ordinary secret-kind plugin in its own repo
+//! (THE DESIGN, "Plugins"), called through the secret kind table; the kernel reaches every loaded
+//! secret plugin through [`SecretAxis`] and [`SecretCalls`], and reads the sugar each declares off
+//! its Statement ([`SecretAxis::sugars`]). The [`SecretResolve`] seam followed the config secret
+//! reference it takes into this crate once that reference merged here, when `busbar-api` retired.
+
+use zeroize::Zeroize;
 
 use crate::secret_ref::SecretRef;
 
@@ -118,7 +119,7 @@ pub trait SecretModule: Send + Sync + 'static {
     fn resolve(
         &self,
         settings: &serde_json::Map<String, serde_json::Value>,
-    ) -> SecretResult<Vec<u8>>;
+    ) -> SecretResult<Resolved<Vec<u8>>>;
 
     /// Resolve with the caller's ADVISORY deadline, in milliseconds from now (`None` = the caller
     /// set no bound). The wire request has always carried this field and the dispatcher has always
@@ -135,7 +136,7 @@ pub trait SecretModule: Send + Sync + 'static {
         &self,
         settings: &serde_json::Map<String, serde_json::Value>,
         deadline_ms: Option<u64>,
-    ) -> SecretResult<Vec<u8>> {
+    ) -> SecretResult<Resolved<Vec<u8>>> {
         let _ = deadline_ms;
         self.resolve(settings)
     }
@@ -150,14 +151,105 @@ pub trait SecretModule: Send + Sync + 'static {
 /// FAIL-CLOSED, exactly as the underlying resolver: an unknown module, an unset source, or an empty
 /// value is an `Err(String)`, never an empty secret. The error is a neutral `String` — a plane never
 /// sees an engine-only error type across this seam.
+///
+/// NO BARE VALUE CROSSES IT (Part 2 #54, owner-locked): every answer is a [`Resolved`], which the
+/// asking owner seals to itself ([`Resolved::sealed_to`]) and then reads only through the sealed
+/// accessor, so the owner that asked reads it and no other:
+///
+/// ```
+/// use busbar_contract::secret::{Resolved, SecretResolve};
+/// use busbar_contract::secret_ref::SecretRef;
+/// struct One;
+/// impl SecretResolve for One {
+///     fn resolve(&self, _: &SecretRef) -> Result<Resolved<Vec<u8>>, String> {
+///         Ok(Resolved::new(b"sk-live".to_vec()))
+///     }
+///     fn resolve_string(&self, _: &SecretRef) -> Result<Resolved<String>, String> {
+///         Ok(Resolved::new(String::from("sk-live")))
+///     }
+/// }
+/// mod a {
+///     busbar_contract::own_seal!(Own);
+/// }
+/// let seam: &dyn SecretResolve = &One;
+/// let key: busbar_contract::Secret<Vec<u8>, a::Own> =
+///     seam.resolve(&SecretRef::none()).unwrap().sealed_to();
+/// assert_eq!(key.expose_own(&a::Own::here()), b"sk-live");
+/// ```
+///
+/// A value resolved for one owner is not exposed by another (a mismatched seal type):
+///
+/// ```compile_fail,E0308
+/// use busbar_contract::secret::{Resolved, SecretResolve};
+/// use busbar_contract::secret_ref::SecretRef;
+/// struct One;
+/// impl SecretResolve for One {
+///     fn resolve(&self, _: &SecretRef) -> Result<Resolved<Vec<u8>>, String> {
+///         Ok(Resolved::new(b"sk-live".to_vec()))
+///     }
+///     fn resolve_string(&self, _: &SecretRef) -> Result<Resolved<String>, String> {
+///         Ok(Resolved::new(String::from("sk-live")))
+///     }
+/// }
+/// mod a {
+///     busbar_contract::own_seal!(Own);
+/// }
+/// mod b {
+///     busbar_contract::own_seal!(Own);
+/// }
+/// let seam: &dyn SecretResolve = &One;
+/// let key: busbar_contract::Secret<Vec<u8>, a::Own> =
+///     seam.resolve(&SecretRef::none()).unwrap().sealed_to();
+/// let _ = key.expose_own(&b::Own::here());
+/// ```
+///
+/// and an answer offers no read of its own, sealed or not (its material is private):
+///
+/// ```compile_fail,E0616
+/// use busbar_contract::secret::{Resolved, SecretResolve};
+/// use busbar_contract::secret_ref::SecretRef;
+/// struct One;
+/// impl SecretResolve for One {
+///     fn resolve(&self, _: &SecretRef) -> Result<Resolved<Vec<u8>>, String> {
+///         Ok(Resolved::new(b"sk-live".to_vec()))
+///     }
+///     fn resolve_string(&self, _: &SecretRef) -> Result<Resolved<String>, String> {
+///         Ok(Resolved::new(String::from("sk-live")))
+///     }
+/// }
+/// let seam: &dyn SecretResolve = &One;
+/// let _ = seam.resolve(&SecretRef::none()).unwrap().0;
+/// ```
+///
+/// A kernel-owned answer is read only under a kernel seal, never under a plugin's own:
+///
+/// ```compile_fail,E0599
+/// use busbar_contract::secret::{Resolved, SecretResolve};
+/// use busbar_contract::secret_ref::SecretRef;
+/// struct One;
+/// impl SecretResolve for One {
+///     fn resolve(&self, _: &SecretRef) -> Result<Resolved<Vec<u8>>, String> {
+///         Ok(Resolved::new(b"sk-live".to_vec()))
+///     }
+///     fn resolve_string(&self, _: &SecretRef) -> Result<Resolved<String>, String> {
+///         Ok(Resolved::new(String::from("sk-live")))
+///     }
+/// }
+/// mod a {
+///     busbar_contract::own_seal!(Own);
+/// }
+/// let seam: &dyn SecretResolve = &One;
+/// let key = seam.resolve(&SecretRef::none()).unwrap().sealed();
+/// let _ = key.expose_own(&a::Own::here());
+/// ```
 pub trait SecretResolve: Send + Sync {
     /// Resolve a reference to raw bytes (fail-closed). Some consumers — a raw-file loader, for
     /// instance — need the untrimmed bytes rather than a string.
-    fn resolve(&self, secret: &SecretRef) -> Result<Vec<u8>, String>;
+    fn resolve(&self, secret: &SecretRef) -> Result<Resolved<Vec<u8>>, String>;
 
     /// Resolve a reference to a UTF-8 STRING (trailing newline trimmed; fail-closed on non-UTF-8 or
     /// empty). Some consumers — a credential-minting path, for instance — need the string form.
-    fn resolve_string(&self, secret: &SecretRef) -> Result<String, String>;
+    fn resolve_string(&self, secret: &SecretRef) -> Result<Resolved<String>, String>;
 
     /// [`Self::resolve`] at CONFIG TIME, with its proof: the one way a reference to a source that
     /// reads the disk resolves (THE DESIGN Q-DISK R4, OWNER 2026-10-13). Every other source answers
@@ -166,7 +258,7 @@ pub trait SecretResolve: Send + Sync {
         &self,
         secret: &SecretRef,
         _scope: &crate::config_time::ConfigScope,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<Resolved<Vec<u8>>, String> {
         self.resolve(secret)
     }
 
@@ -175,10 +267,114 @@ pub trait SecretResolve: Send + Sync {
         &self,
         secret: &SecretRef,
         _scope: &crate::config_time::ConfigScope,
-    ) -> Result<String, String> {
+    ) -> Result<Resolved<String>, String> {
         self.resolve_string(secret)
     }
 }
+
+/// WHAT THE SEAM ANSWERS ([`SecretResolve`], [`SecretAxis::open`]'s resolver, [`SecretModule`]): a
+/// resolved secret's material, held for the owner that asked. It offers NO read of its own: the
+/// asker seals it to itself ([`Resolved::sealed_to`] for a plugin crate's own seal,
+/// [`Resolved::sealed`] for the kernel) and reads the [`Secret`](crate::redacted::Secret) that
+/// comes back through that owner's one sealed accessor. `Debug` prints `[REDACTED]`, nothing
+/// serializes it, and its memory is zeroized on drop, exactly as a `Secret`'s.
+pub struct Resolved<T: Zeroize + Default>(pub(crate) T);
+
+impl<T: Zeroize + Default> Resolved<T> {
+    /// The material a source resolved, as the seam answers it.
+    pub fn new(material: T) -> Self {
+        Self(material)
+    }
+
+    /// A kernel-owned secret handed across the seam, under the kernel seal that may read it: its
+    /// material moves (never copied out in the clear) into the answer.
+    pub fn of_kernel<S: crate::plugin::KernelSeal + ?Sized>(
+        secret: crate::redacted::Secret<T>,
+        _seal: &S,
+    ) -> Self {
+        let mut secret = secret;
+        Self(core::mem::take(&mut secret.0))
+    }
+
+    /// SEAL the answer to the asking owner `O` (a plugin crate's own seal, [`own_seal!`](crate::own_seal)):
+    /// the one way out of it. The material moves into the `Secret`, which only `O` reads.
+    pub fn sealed_to<O>(mut self) -> crate::redacted::Secret<T, O> {
+        crate::redacted::Secret::owned(core::mem::take(&mut self.0))
+    }
+
+    /// Whether the answer holds no material at all: what a fail-closed caller refuses, read
+    /// without the material ever leaving the seal.
+    pub fn is_empty(&self) -> bool
+    where
+        T: AsRef<[u8]>,
+    {
+        self.0.as_ref().is_empty()
+    }
+
+    /// SEAL the answer to the kernel ([`Kernel`](crate::redacted::Kernel)): read only under a
+    /// kernel seal ([`Secret::expose`](crate::redacted::Secret::expose)).
+    pub fn sealed(self) -> crate::redacted::Secret<T> {
+        self.sealed_to()
+    }
+}
+
+/// Why resolved bytes are not the text a text secret is ([`Resolved::into_text`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotText {
+    /// The bytes are not UTF-8.
+    NotUtf8,
+    /// Nothing is left once the trailing newlines are trimmed.
+    Empty,
+}
+
+impl Resolved<Vec<u8>> {
+    /// The answer as the UTF-8 TEXT a text secret is: trailing `\r` / `\n` trimmed, refused when
+    /// the bytes are not UTF-8 or nothing is left. The material never leaves the seal: what is not
+    /// kept is zeroized here.
+    ///
+    /// # Errors
+    /// [`NotText`]: not UTF-8, or empty once trimmed.
+    pub fn into_text(mut self) -> Result<Resolved<String>, NotText> {
+        let bytes = core::mem::take(&mut self.0);
+        let mut text = match String::from_utf8(bytes) {
+            Ok(text) => text,
+            Err(e) => {
+                e.into_bytes().zeroize();
+                return Err(NotText::NotUtf8);
+            }
+        };
+        let kept = text.trim_end_matches(['\r', '\n']).len();
+        if kept == 0 {
+            text.zeroize();
+            return Err(NotText::Empty);
+        }
+        let mut tail = text.split_off(kept);
+        tail.zeroize();
+        Ok(Resolved(text))
+    }
+}
+
+impl Resolved<String> {
+    /// The text answer as its bytes, still sealed (the material moves; nothing is copied out).
+    pub fn into_bytes(mut self) -> Resolved<Vec<u8>> {
+        Resolved(core::mem::take(&mut self.0).into_bytes())
+    }
+}
+
+impl<T: Zeroize + Default> core::fmt::Debug for Resolved<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("[REDACTED]")
+    }
+}
+
+impl<T: Zeroize + Default> Drop for Resolved<T> {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+/// A resolution the caller lends: one reference to its sealed answer ([`Resolved`]), or why not.
+pub type ResolveRef<'a, T> = dyn Fn(&SecretRef) -> Result<Resolved<T>, String> + 'a;
 
 /// How a secret plugin refused a `resolve`: the `abi::secret::ERROR_KIND_*` code its answer carried
 /// and the operator-facing text (never secret material; the host passes it through verbatim).
@@ -224,6 +420,11 @@ pub trait SecretCalls: Send + Sync {
 /// root admitted, linked or dropped in, by the `module` a reference spells (its Statement name or an
 /// alias). Installed once, in the root's rows; the kernel names nothing behind it.
 pub trait SecretAxis: Send + Sync {
+    /// The SUGARS the admitted secret plugins' Statements declare (owner law 2026-09-27: the
+    /// kernel resolves the sugar generically, from what the plugins declare): what the host reads
+    /// its configuration's secret references against.
+    fn sugars(&self) -> crate::secret_ref::Sugars;
+
     /// Whether a secret plugin answers `module`, linked or dropped in.
     fn answers(&self, module: &str) -> bool;
 
@@ -250,6 +451,6 @@ pub trait SecretAxis: Send + Sync {
         &self,
         module: &str,
         settings: &serde_json::Value,
-        resolve: &dyn Fn(&SecretRef) -> Result<Vec<u8>, String>,
+        resolve: &ResolveRef<'_, Vec<u8>>,
     ) -> Result<std::sync::Arc<dyn SecretCalls>, String>;
 }

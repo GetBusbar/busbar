@@ -688,7 +688,7 @@ async fn a_userinfo_base_url_boots_and_its_lane_dials_the_stripped_host() {
         std::env::temp_dir().join(format!("busbar-row74-userinfo-{}", std::process::id()));
     std::fs::write(&key_file, "sk-row74").expect("the key file");
     let mut cfg = crate::test_support::cfg_with_provider_api_key(
-        busbar_contract::secret_ref::SecretRef::file(key_file.display().to_string()),
+        busbar_kernel::test_support::secrets::path_ref(key_file.display().to_string()),
     );
     let p = cfg.providers.get_mut("acme").expect("the sole provider");
     p.base_url = bare.replacen("://", "://svcuser:hunter2-P4ss@", 1);

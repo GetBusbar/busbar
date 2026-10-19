@@ -15,9 +15,9 @@
 //! - `tick` (the shared lifecycle slot) renews vault leases; it grows no new `in`/`out` for
 //!   secret, so nothing is added here beyond the lifecycle's own [`TickIn`](super::mechanism::lifecycle::TickIn)/
 //!   [`TickOut`](super::mechanism::lifecycle::TickOut).
-//! - `{env: X}` and `{file: Y}` are Statement rewrites: the kernel resolves them into a plain
-//!   settings [`Blob`](super::mechanism::call::Blob) before calling `resolve`, so they name no new
-//!   wire shape here.
+//! - A one-key sugar `{<word>: X}` is a Statement rewrite (`REWRITE_SUGAR`, its `to` the settings
+//!   key): the kernel resolves it into a plain settings [`Blob`](super::mechanism::call::Blob)
+//!   before calling `resolve`, so it names no new wire shape here.
 //!
 //! ASSUMPTION (M3-SHAPES, noted for the SLOT-LOG; not an owner question — nothing in B.2 or the
 //! spec states a secret Statement tail): secret declares no `kind_tail` fields yet. A plugin's
@@ -47,17 +47,20 @@ pub const ABI_VERSION: u32 = 2;
 /// use busbar_contract::abi::mechanism::lifecycle::LIFECYCLE_SLOTS;
 /// use busbar_contract::abi::secret::{slot, SLOTS};
 /// assert_eq!(slot::RESOLVE, LIFECYCLE_SLOTS + 0);
-/// assert_eq!(SLOTS, LIFECYCLE_SLOTS + 1);
+/// assert_eq!(slot::CHECK, LIFECYCLE_SLOTS + 1);
+/// assert_eq!(SLOTS, LIFECYCLE_SLOTS + 2);
 /// ```
 pub mod slot {
     use super::LIFECYCLE_SLOTS;
 
     /// `resolve`.
     pub const RESOLVE: u32 = LIFECYCLE_SLOTS;
+    /// `check`.
+    pub const CHECK: u32 = LIFECYCLE_SLOTS + 1;
 }
 
-/// How many slots the secret kind's whole table holds (the lifecycle plus `resolve`).
-pub const SLOTS: u32 = LIFECYCLE_SLOTS + 1;
+/// How many slots the secret kind's whole table holds (the lifecycle, `resolve` and `check`).
+pub const SLOTS: u32 = LIFECYCLE_SLOTS + 2;
 
 /// The secret kind's ops table. Leads with the shared [`OpsHead`]; kind op `k` is at slot index
 /// [`LIFECYCLE_SLOTS`]` + k` ([`slot`]).
@@ -70,6 +73,15 @@ pub struct Ops {
     /// [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call) (assumption, see the
     /// module doc). In [`ResolveIn`], out [`ResolveOut`].
     pub resolve: Option<Op>,
+    /// Judge ONE reference's settings object at config time (`--validate`, boot, an apply), before
+    /// anything resolves: PURE (no I/O, no resolve), called with NO instance (the `instance`
+    /// argument is NULL), never pends, [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call).
+    /// In [`CheckIn`], out [`OutHead`]. READY: the reference is well-formed. FAILED: why, in
+    /// `CheckIn::err_buf`, under the lifecycle `validate` refusal rule
+    /// ([`check_validate_refusal`](super::mechanism::lifecycle::check_validate_refusal)); the host
+    /// renders each line as `<config path of the reference>: <line>`. REFUSED: the plugin does not
+    /// serve `check` (the SDK's answer for a door that wires none): every reference passes.
+    pub check: Option<Op>,
 }
 
 /// `resolve`'s `in`.
@@ -78,8 +90,8 @@ pub struct Ops {
 pub struct ResolveIn {
     /// The head.
     pub head: InHead,
-    /// The settings naming what to resolve (a `{env: X}`/`{file: Y}` reference, or the plugin's
-    /// own settings shape, already rewritten by the kernel per the Statement rewrite rule).
+    /// The settings naming what to resolve (a sugar reference `{<word>: X}`, or the plugin's own
+    /// settings shape, already rewritten by the kernel per the Statement rewrite rule).
     pub settings: Blob,
 }
 
@@ -119,6 +131,24 @@ pub struct ResolveOut {
     pub _reserved: u32,
 }
 
+/// `check`'s `in`: one reference's settings object and the host's reason buffer, as
+/// [`ValidateIn`](super::mechanism::lifecycle::ValidateIn) lends one to `validate`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CheckIn {
+    /// The head.
+    pub head: InHead,
+    /// The reference's `settings` object as config wrote it (JSON; a `{<word>: X}` sugar already
+    /// rewritten per the Statement rewrite rule). Never secret material.
+    pub settings: Blob,
+    /// THE REASON BUFFER, the host's, lent for the call: a `check` that answers FAILED writes why
+    /// into it (UTF-8, at most [`CheckIn::err_cap`] bytes, cut on a char boundary) and names those
+    /// bytes in `head.error`. NULL (with `err_cap` `0`) = no buffer is lent.
+    pub err_buf: *mut u8,
+    /// How many bytes `err_buf` holds.
+    pub err_cap: usize,
+}
+
 /// The secret kind's [`super::mechanism::lifecycle::CancelOut::disposition`] vocabulary.
 ///
 /// ASSUMPTION (M3-SHAPES): B.2 states no cancel disposition vocabulary for secret. `resolve` is
@@ -137,6 +167,7 @@ pub mod cancel {
 // SAFETY (both below): `#[repr(C)]`, leading with `InHead`/`OutHead`, plain data only.
 unsafe impl super::sdk::door::AbiIn for ResolveIn {}
 unsafe impl super::sdk::door::AbiOut for ResolveOut {}
+unsafe impl super::sdk::door::AbiIn for CheckIn {}
 
 super::sdk::door::slot_structs!(
     /// `resolve`'s `in`/`out` for [`plugin_door!`](crate::plugin_door), per [`Ops`]' docs. A plugin
@@ -171,5 +202,6 @@ super::sdk::door::slot_structs!(
     /// (`abi/sdk/tests/door_tests.rs`, `a_secret_plugin_wires_every_kind_op`).
     Ops {
         slot::RESOLVE => ResolveIn, ResolveOut;
+        slot::CHECK => CheckIn, OutHead;
     }
 );

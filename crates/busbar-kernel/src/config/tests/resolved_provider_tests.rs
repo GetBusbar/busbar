@@ -52,7 +52,10 @@ fn the_resolved_provider_carries_the_plane_keys_as_one_table_merged_by_the_neutr
     // The kernel-owned keys stay typed, merged as 1.5.5 merged them.
     assert_eq!(p.base_url, "https://api.example.com");
     assert_eq!(p.path.as_deref(), Some("/v1/x"));
-    assert_eq!(p.api_key.env_var(), Some("K"));
+    assert_eq!(
+        crate::test_support::secrets::fill_var(&p.api_key),
+        Some("K")
+    );
     for key in CORE_PROVIDER_KEYS {
         assert!(
             !p.table.contains_key(*key),

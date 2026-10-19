@@ -956,7 +956,7 @@ fn a_members_base_url_userinfo_reaches_its_attempts_only_through_its_binding() {
             userinfo: crate::root::userinfo::UserinfoBasic::of(WRITTEN),
             protocol: "d".to_string(),
             error_map: Default::default(),
-            credential: busbar_contract::secret_ref::SecretRef::file(
+            credential: busbar_kernel::test_support::secrets::path_ref(
                 key_file.display().to_string(),
             ),
             style: Some(style.to_string()),
@@ -1371,7 +1371,7 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
                 userinfo: None,
                 protocol: "d".to_string(),
                 error_map: Default::default(),
-                credential: busbar_contract::secret_ref::SecretRef::file(
+                credential: busbar_kernel::test_support::secrets::path_ref(
                     key_file.display().to_string(),
                 ),
                 style: Some("oauth-client-credentials".to_string()),
@@ -1425,19 +1425,24 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
             table.declared.lock().unwrap()
         );
 
-        // The first request waits for the first mint (no empty credential), then carries it.
-        let first = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            binding
-                .auth
-                .fields(binding.handle, FieldsRequest::default(), 0),
-        )
-        .await
-        .expect("the first mint lands");
-        assert_eq!(
-            presented(Some(&first)).as_deref(),
-            Some("Bearer oracle-minted-1")
-        );
+        // Before the first mint lands a request carries no credential, as 1.5.5's bearer sent none
+        // in its boot window (v1.5.5 `egress_auth/bearer_token.rs:84-98`); once it lands, every
+        // request carries it.
+        let first = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let now = binding
+                    .auth
+                    .fields_now(binding.handle, &FieldsRequest::default());
+                match presented(now.as_ref()).as_deref() {
+                    Some("Bearer oracle-minted-1") => return,
+                    None => {}
+                    other => panic!("only the first minted bearer, or none yet: {other:?}"),
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        assert!(first.is_ok(), "the first minted bearer is presented");
         // The refresh lands ahead of the first token's expiry; the next request carries it.
         let refreshed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
@@ -1549,7 +1554,7 @@ fn jwt_bearer_routes(
             userinfo: None,
             protocol: "d".to_string(),
             error_map: Default::default(),
-            credential: busbar_contract::secret_ref::SecretRef::file(
+            credential: busbar_kernel::test_support::secrets::path_ref(
                 key_file.display().to_string(),
             ),
             style: Some("jwt-bearer".to_string()),
@@ -5225,6 +5230,11 @@ mod upstream_ask_relay {
     }
 }
 
+/// A CREDENTIAL FROM THE ENVIRONMENT FOR A STYLE THAT TAKES ITS TOKEN ENDPOINT FROM IT (Q128 ruling
+/// (a)): 1.5.5's `api_key_env: VAR`, a key file's path or the service account inline.
+#[path = "credential_endpoint.rs"]
+mod credential_endpoint;
+
 /// `subscriptions/listen` ON THE HTTP CARRIER, A K6 SESSION (ARCHITECT round 5 Q-L3B-K6-HTTP (a)).
 #[cfg(all(linked_axis_plane_door, linked_axis_node))]
 #[path = "door_listen.rs"]
@@ -7035,8 +7045,13 @@ fn per_hop_over(
     auth: std::sync::Arc<CountingOpens>,
     secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve>,
 ) -> super::PerHop {
-    let secret = busbar_contract::secret_ref::SecretRef::file(path.display().to_string());
-    let value = secrets.resolve_string(&secret).expect("it resolves");
+    let secret = busbar_kernel::test_support::secrets::path_ref(path.display().to_string());
+    let value = secrets
+        .resolve_string(&secret)
+        .expect("it resolves")
+        .sealed();
+    let seal = busbar_kernel::seal::lend();
+    let value = value.expose(&seal);
     let settings = serde_json::json!({});
     let handle = {
         use busbar_contract::auth_calls::OutboundAuth as _;
@@ -7227,7 +7242,10 @@ struct CountingResolves {
 }
 
 impl busbar_contract::secret::SecretResolve for CountingResolves {
-    fn resolve(&self, secret: &busbar_contract::secret_ref::SecretRef) -> Result<Vec<u8>, String> {
+    fn resolve(
+        &self,
+        secret: &busbar_contract::secret_ref::SecretRef,
+    ) -> Result<busbar_contract::secret::Resolved<Vec<u8>>, String> {
         self.resolved
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         busbar_contract::secret::SecretResolve::resolve(&self.inner, secret)
@@ -7236,7 +7254,7 @@ impl busbar_contract::secret::SecretResolve for CountingResolves {
     fn resolve_string(
         &self,
         secret: &busbar_contract::secret_ref::SecretRef,
-    ) -> Result<String, String> {
+    ) -> Result<busbar_contract::secret::Resolved<String>, String> {
         self.resolved
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         busbar_contract::secret::SecretResolve::resolve_string(&self.inner, secret)

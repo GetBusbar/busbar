@@ -359,7 +359,8 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             }
         }
     }
-    validate_providers_with(&known_protocols, cfg, unset_env_vars, &mut errors);
+    let claimed = crate::preflight::transport_schemes();
+    validate_providers_with(&known_protocols, &claimed, cfg, unset_env_vars, &mut errors);
 
     // Rule 2 & 3: Validate each pool's members
     for (pool_name, pool_cfg) in &cfg.pools {
@@ -1215,12 +1216,15 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                     &provider_cfg.api_key,
                     &busbar_contract::config_time::ConfigScope::config_time(),
                 )
+                .map(busbar_contract::secret::Resolved::sealed)
                 .unwrap_or_default();
-                if !resolved_key.trim().is_empty() {
+                // Read under the kernel's seal (Part 2 #54): only whether it is blank.
+                let blank = resolved_key.expose(&crate::seal::lend()).trim().is_empty();
+                if !blank {
                     diag_warn!(
                         CONFIG_PASSTHROUGH_UNUSED_APIKEY,
                         provider = %provider_name,
-                        api_key = %provider_cfg.api_key.describe(),
+                        api_key = %crate::config::secret::describe(&provider_cfg.api_key),
                         "upstream_credentials: passthrough with a NON-EMPTY configured api_key for \
                          this provider: under passthrough the upstream key is \
                          caller_token.unwrap_or(\"\"), so the configured api_key is NEVER forwarded \
@@ -1823,6 +1827,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     // the built-in `env`/`file` modules' required settings. The VALUE is never resolved here (CI
     // validates config structure without secrets present); resolution failures are boot-time
     // fail-closed errors.
+    let sugars = crate::config::secret::sugars();
     let mut check_secret = |what: String, r: &crate::config::SecretRef| {
         // `none` declares that there is NO credential here. That is meaningful for a provider
         // `api_key` (a keyless local upstream — ollama, vLLM) and meaningless everywhere else: a
@@ -1835,39 +1840,29 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                     "{what}: `none` declares that there is NO credential, which is only meaningful \
                      for a provider `api_key` (a keyless local upstream such as ollama or vLLM); \
                      {what} requires a real secret reference, e.g. \
-                     {what}: {{ env: MY_SECRET_VAR }}"
+                     {what}: {}",
+                    crate::config::secret::example_reference("MY_SECRET_VAR")
                 ));
             }
             // Nothing structural left to check: `none` names no module settings at all.
             return;
         }
-        // The built-in `env`/`file` modules need a NON-EMPTY key/path. The `{ env: "" }` /
-        // `{ file: "" }` sugar already rejects an empty value in the deserializer
-        // (contract secret_ref), but the CANONICAL `{ module: env, settings: { key: "" } }` form
-        // bypasses that arm — `env_var()`/`file_path()` return `Some("")`, not `None`. Left
-        // unchecked, such a config passes `--validate` as "ok" then fail-closes at boot
-        // (`std::env::var("")` → Err), so a clean validate would no longer imply a clean boot.
-        // Reject both the MISSING and the EMPTY cases here, mirroring the sugar check.
-        if r.module == crate::config::secret::SECRET_MODULE_ENV {
-            match r.env_var() {
+        // A module named by a declared SUGAR word needs its NON-EMPTY settings key (the key its
+        // Statement declares, `REWRITE_SUGAR`). The sugar spelling already rejects an empty value
+        // in the deserializer, but the CANONICAL `{ module: <word>, settings: { <key>: "" } }`
+        // form bypasses that arm. Left unchecked, such a config passes `--validate` as "ok" then
+        // fail-closes at boot, so a clean validate would no longer imply a clean boot. Reject both
+        // the MISSING and the EMPTY cases here, mirroring the sugar check, in what the Statement
+        // says the value names.
+        if let Some(sugar) = sugars.get(&r.module) {
+            match r.settings.get(&sugar.setting).and_then(|v| v.as_str()) {
                 None => errors.push(format!(
-                    "{what}: secret module 'env' requires settings.key (the environment variable \
-                     name)"
+                    "{what}: secret module '{}' requires settings.{} ({})",
+                    r.module, sugar.setting, sugar.names
                 )),
                 Some(v) if v.trim().is_empty() => errors.push(format!(
-                    "{what}: secret module 'env' requires a NON-EMPTY settings.key (the \
-                     environment variable name)"
-                )),
-                Some(_) => {}
-            }
-        } else if r.module == crate::config::secret::SECRET_MODULE_FILE {
-            match r.file_path() {
-                None => errors.push(format!(
-                    "{what}: secret module 'file' requires settings.path (the file to read)"
-                )),
-                Some(v) if v.trim().is_empty() => errors.push(format!(
-                    "{what}: secret module 'file' requires a NON-EMPTY settings.path (the file to \
-                     read)"
+                    "{what}: secret module '{}' requires a NON-EMPTY settings.{} ({})",
+                    r.module, sugar.setting, sugar.names
                 )),
                 Some(_) => {}
             }
@@ -2157,6 +2152,7 @@ pub(crate) use secret_refs::{boot_resolved_secret_refs, keyless_credential_allow
 /// the production code path, error ordering and all — against an empty set.
 fn validate_providers_with(
     known: &[&str],
+    claimed: &[crate::preflight::ClaimedScheme],
     cfg: &RootCfg,
     unset_env_vars: &[String],
     errors: &mut Vec<String>,
@@ -2258,17 +2254,29 @@ fn validate_providers_with(
             .collect();
 
         let base_url = &provider_cfg.base_url;
-        let host_for_scheme = extract_normalized_host(base_url);
+        // A scheme some LOADED transport claims (BUSBAR-1.6.0.md #50: the base_url's scheme selects
+        // the transport that declares it), when it is not one of the two this rule has always
+        // judged by name: those keep 1.5.5's rule and text exactly.
+        let web = scheme_is(base_url, "https") || scheme_is(base_url, "http");
+        let claim = (!web).then(|| claimed_scheme(claimed, base_url)).flatten();
+        let host_for_scheme = match claim {
+            Some(_) => claimed_host(base_url),
+            None => extract_normalized_host(base_url),
+        };
         let host_is_local = host_for_scheme
             .as_deref()
             .map(host_is_private_or_loopback)
             .unwrap_or(false);
         // Case-INSENSITIVE scheme check (RFC 3986 §3.1) — a raw `starts_with("https://")` rejected
         // the valid uppercase spelling reqwest would accept, and diverged from the webhook guard's
-        // `scheme_is`.
+        // `scheme_is`. A claimed scheme is judged as its claim states it: a SECURE one as `https`
+        // is, a plaintext one as `http` is (the credential would cross an off-box hop in clear, so
+        // only a private/loopback host may take it). A scheme no loaded transport claims is
+        // refused, naming the provider and the URL, in 1.5.5's words (oracle BOOT-032's family).
         let scheme_ok = is_env_placeholder(base_url)
             || scheme_is(base_url, "https")
-            || (host_is_local && scheme_is(base_url, "http"));
+            || (host_is_local && scheme_is(base_url, "http"))
+            || claim.is_some_and(|c| c.secure || host_is_local);
         if !scheme_ok {
             // What an error may repeat of the base URL: a `user:pass@` the operator wrote is
             // ACCEPTED (and stripped where the base URL enters the served flow, as 1.5.5 did — row
@@ -2287,7 +2295,7 @@ fn validate_providers_with(
                 )
             });
         } else if let Some(host) = ssrf_blocked_host(
-            base_url,
+            judged(base_url, claim.is_some()),
             &allow_overrides,
             cfg.allow_all_metadata,
             &cfg.blocked_metadata_hosts,
@@ -2327,7 +2335,7 @@ fn validate_providers_with(
             } else if scheme_ok {
                 let composed = format!("{}{}", provider_cfg.base_url, path);
                 if let Some(host) = ssrf_blocked_host(
-                    &composed,
+                    judged(&composed, claim.is_some()),
                     &allow_overrides,
                     cfg.allow_all_metadata,
                     &cfg.blocked_metadata_hosts,
@@ -2350,7 +2358,7 @@ fn validate_providers_with(
             } else if scheme_ok {
                 let composed = format!("{}{}", provider_cfg.base_url, path_base);
                 if let Some(host) = ssrf_blocked_host(
-                    &composed,
+                    judged(&composed, claim.is_some()),
                     &allow_overrides,
                     cfg.allow_all_metadata,
                     &cfg.blocked_metadata_hosts,
@@ -2448,7 +2456,11 @@ fn validate_providers_with(
                 &provider_cfg.api_key,
                 &busbar_contract::config_time::ConfigScope::config_time(),
             )
+            .map(busbar_contract::secret::Resolved::sealed)
             .unwrap_or_default();
+            // Read under the kernel's seal (Part 2 #54): judged by the serving plugin, never held.
+            let seal = crate::seal::lend();
+            let cred = cred.expose(&seal);
             if !cred.trim().is_empty() {
                 // The credential's shape is the serving auth plugin's to judge, in its own words,
                 // through the same `open_outbound` the build binds it with (never dialing).
@@ -2461,7 +2473,7 @@ fn validate_providers_with(
                 for e in outbound_credential_refusals("oauth-client-credentials", &cred, &params) {
                     errors.push(format!(
                         "provider '{provider_name}' oauth-client-credentials credential (from {}) is invalid: {e}",
-                        provider_cfg.api_key.describe()
+                        crate::config::secret::describe(&provider_cfg.api_key)
                     ));
                 }
             }
@@ -2484,11 +2496,27 @@ fn validate_providers_with(
                      service-account JSON or key file), so there is nothing to declare keyless"
                 ));
             }
+            let config_time = busbar_contract::config_time::ConfigScope::config_time();
             let cred = crate::config::secret::resolve_linked_string_at_config(
                 &provider_cfg.api_key,
-                &busbar_contract::config_time::ConfigScope::config_time(),
+                &config_time,
             )
+            .map(|text| text.into_bytes().sealed())
             .unwrap_or_default();
+            // A credential naming its key file is read as the build reads it, in the same words.
+            let json = match service_account_json(cred, |file| {
+                crate::config::secret::SecretResolver::builtins_only()
+                    .resolve_at_config(file, &config_time)
+            }) {
+                Ok(json) => json,
+                Err(e) => {
+                    errors.push(format!("provider '{provider_name}' (jwt-bearer auth): {e}"));
+                    busbar_contract::redacted::Secret::default()
+                }
+            };
+            // Read under the kernel's seal (Part 2 #54): judged by the serving plugin, never held.
+            let seal = crate::seal::lend();
+            let cred = std::str::from_utf8(json.expose(&seal)).unwrap_or_default();
             if !cred.trim().is_empty() {
                 // THE NEED'S TARGET IS THE KERNEL'S TO JUDGE (THE DESIGN §5; ARCHITECT ruling
                 // 2026-09-28, Q2 (a)): the service account's `token_uri`, under the SAME operator
@@ -2522,11 +2550,40 @@ fn validate_providers_with(
                 for e in refusals {
                     errors.push(format!(
                         "provider '{provider_name}' jwt-bearer credential (from {}) is invalid: {e}",
-                        provider_cfg.api_key.describe()
+                        crate::config::secret::describe(&provider_cfg.api_key)
                     ));
                 }
             }
         }
+    }
+}
+
+/// The claim a loaded transport makes on `url`'s scheme (case-insensitive, RFC 3986 §3.1), if any.
+fn claimed_scheme<'c>(
+    claimed: &'c [crate::preflight::ClaimedScheme],
+    url: &str,
+) -> Option<&'c crate::preflight::ClaimedScheme> {
+    let (scheme, _) = url.split_once("://")?;
+    claimed
+        .iter()
+        .find(|c| c.scheme.eq_ignore_ascii_case(scheme))
+}
+
+/// The host of a URL under a CLAIMED scheme: its authority, read past the `scheme://` by the same
+/// normalization every destination check uses (the web-only extraction reads no host for any
+/// other scheme, and a destination with no host would pass every host rule unjudged).
+fn claimed_host(url: &str) -> Option<String> {
+    let (_, rest) = url.split_once("://")?;
+    busbar_contract::net::extract_normalized_authority_host(rest)
+}
+
+/// The spelling of `url` the metadata denylist judges: the URL itself under the web schemes, its
+/// authority-and-path under a claimed one (the denylist reads a host from either spelling, and
+/// from the second only when no `scheme://` precedes it).
+fn judged(url: &str, claimed: bool) -> &str {
+    match url.split_once("://") {
+        Some((_, rest)) if claimed => rest,
+        _ => url,
     }
 }
 
@@ -2588,15 +2645,60 @@ fn outbound_credential_refusals(
         .unwrap_or_default()
 }
 
-/// THE SERVICE ACCOUNT'S TOKEN ENDPOINT: the `token_uri` of the service-account JSON a `jwt-bearer`
-/// credential carries inline (it starts with `{`) or names as a key file, else Google's default
-/// endpoint — 1.5.5's `ServiceAccount` (`egress_auth/jwt_bearer.rs`, v1.5.5: `token_uri` defaults to
-/// `https://oauth2.googleapis.com/token`). `Err` when the JSON cannot be read or parsed (the auth
-/// plugin serving the style names why, in its own words).
+/// THE SERVICE ACCOUNT A `jwt-bearer` CREDENTIAL CARRIES, as bytes of its JSON (Q128 audit
+/// ruling (a), restating its M4). 1.5.5 took the credential as the service-account JSON inline
+/// (it starts with `{`) or as the path of its key file, and both stay valid. A path is read HERE,
+/// at configuration time, through the secret kind's file source (`read_file`, handed the file
+/// reference), so the auth plugin is handed the JSON and never opens a file. A file that cannot be
+/// read refuses in 1.5.5's words (`egress_auth/jwt_bearer.rs`, v1.5.5), and the credential, which
+/// names the file, is never rendered.
 ///
 /// # Errors
 ///
-/// The credential cannot be read or is not the service-account JSON.
+/// The key file the credential names cannot be read.
+pub fn service_account_json(
+    credential: busbar_contract::redacted::Secret<Vec<u8>>,
+    read_file: impl FnOnce(
+        &busbar_contract::secret_ref::SecretRef,
+    ) -> Result<busbar_contract::secret::Resolved<Vec<u8>>, String>,
+) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
+    // Read under the kernel's seal (Part 2 #54): only whether it names a key file, and which.
+    let named = match std::str::from_utf8(credential.expose(&crate::seal::lend())) {
+        Ok(text) if !text.trim_start().starts_with('{') && !text.trim().is_empty() => {
+            text.trim().to_string()
+        }
+        _ => return Ok(credential),
+    };
+    // The key file reads through the source whose declared sugar role is the path (its Statement's
+    // `REWRITE_SUGAR_ROLE`); with none declared, nothing reads it (fail-closed).
+    let file = crate::config::secret::path_reference(&named).ok_or_else(|| {
+        "could not read service-account key file named by this lane's credential: no loaded \
+         secret plugin declares the key-file path sugar"
+            .to_string()
+    })?;
+    read_file(&file)
+        .map(busbar_contract::secret::Resolved::sealed)
+        .map_err(|e| {
+            // The file source's refusal names the path; only its reason is 1.5.5's to show.
+            let why = e.split_once(" cannot resolve: ").map_or_else(
+                || e.replace(&named, "<key file>"),
+                |(_, why)| why.to_string(),
+            );
+            format!(
+                "could not read service-account key file named by this lane's credential: {why}"
+            )
+        })
+}
+
+/// THE SERVICE ACCOUNT'S TOKEN ENDPOINT: the `token_uri` of the service-account JSON a `jwt-bearer`
+/// credential carries ([`service_account_json`] reads a key file the credential names into it),
+/// else Google's default endpoint — 1.5.5's `ServiceAccount` (`egress_auth/jwt_bearer.rs`, v1.5.5:
+/// `token_uri` defaults to `https://oauth2.googleapis.com/token`). `Err` when the JSON cannot be
+/// parsed (the auth plugin serving the style names why, in its own words).
+///
+/// # Errors
+///
+/// The credential is not the service-account JSON.
 pub fn service_account_token_uri(credential: &str) -> Result<String, String> {
     // The service account's shape as its auth plugin reads it, so a JSON this cannot read is one
     // the plugin refuses, in its own words. The key is required and never held.
@@ -2608,14 +2710,7 @@ pub fn service_account_token_uri(credential: &str) -> Result<String, String> {
         private_key: serde::de::IgnoredAny,
         token_uri: Option<String>,
     }
-    let parsed: TokenUri = if credential.trim_start().starts_with('{') {
-        serde_json::from_str(credential).map_err(|e| e.to_string())?
-    } else {
-        let json = zeroize::Zeroizing::new(
-            std::fs::read_to_string(credential).map_err(|e| e.to_string())?,
-        );
-        serde_json::from_str(&json).map_err(|e| e.to_string())?
-    };
+    let parsed: TokenUri = serde_json::from_str(credential).map_err(|e| e.to_string())?;
     Ok(parsed
         .token_uri
         .unwrap_or_else(|| "https://oauth2.googleapis.com/token".to_string()))

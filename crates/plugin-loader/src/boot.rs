@@ -203,6 +203,10 @@ pub struct Candidate {
     pub verbs: Vec<String>,
     /// The URL schemes it claims (its Statement's claims; a transport's).
     pub schemes: Vec<String>,
+    /// The claims among [`Candidate::schemes`] whose row states `CLAIM_SECURE`: the secure forms
+    /// of its wire (BUSBAR-1.6.0.md #50), read off the rendering's claim flags as the same plugin
+    /// compiled in is read off its rows (Part 2 #2).
+    pub secure: Vec<String>,
     /// Its connection needs, in its Statement's order (a need's index is its place here).
     pub needs: Vec<ReadNeed>,
     /// Its Statement rendering: what [`load`] admits it against.
@@ -250,6 +254,13 @@ impl Candidate {
                 .iter()
                 .filter(|(_, flags)| flags & SECTION_DECLARING != 0)
                 .map(|(name, _)| name.clone())
+                .collect(),
+            secure: r
+                .claims
+                .iter()
+                .zip(&r.claim_flags)
+                .filter(|(_, f)| *f & busbar_contract::abi::transport::CLAIM_SECURE != 0)
+                .map(|(c, _)| c.clone())
                 .collect(),
             schemes: r.claims,
             needs: r.needs,
@@ -299,9 +310,12 @@ impl Candidate {
         self
     }
 
-    /// Every word config may name this candidate by: its name, then its aliases.
+    /// Every word config may name this candidate by: its name, its aliases, then the reference
+    /// keys its sugar declares (a sugar word names its plugin as a module too).
     fn words(&self) -> impl Iterator<Item = &str> {
-        std::iter::once(self.name.as_str()).chain(self.aliases.iter().map(String::as_str))
+        std::iter::once(self.name.as_str())
+            .chain(self.aliases.iter().map(String::as_str))
+            .chain(self.sugar.iter().map(String::as_str))
     }
 
     /// A compiled-in row's candidate: its row's rendering.
@@ -314,10 +328,38 @@ impl Candidate {
         Self::from_rendering(row.statement.clone(), None, Origin::Linked(row))
     }
 
-    /// Whether config names this plugin by `word` (its name or an alias).
-    fn answers(&self, word: &str) -> bool {
-        self.name == word || self.aliases.iter().any(|a| a == word)
+    /// Whether config names this plugin by `word` (its name, an alias or a sugar word).
+    pub(crate) fn answers(&self, word: &str) -> bool {
+        self.words().any(|w| w == word)
     }
+}
+
+/// THE SUGARS `candidates` DECLARE (owner law 2026-09-27: the secret sugar is a shorthand the
+/// plugins declare; the kernel resolves it generically): each candidate's Statement rewrites, read
+/// off its rendering, declared in turn. A plugin met twice (linked and dropped in, one plugin by the
+/// one-version rule) declares once.
+///
+/// # Errors
+///
+/// A rendering that does not read back, or what [`busbar_contract::secret_ref::Sugars::declare`]
+/// refuses: two plugins claiming one sugar word or one role, a sugar that is core grammar or names
+/// no settings key.
+pub fn sugars_of(candidates: &[Candidate]) -> Result<busbar_contract::secret_ref::Sugars, String> {
+    let mut sugars = busbar_contract::secret_ref::Sugars::default();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for c in candidates {
+        if !seen.insert(c.name.as_str()) {
+            continue;
+        }
+        let r: Read = read(&c.stated).map_err(|e| {
+            format!(
+                "plugin '{}': its Statement rendering does not read back at byte {}",
+                c.name, e.at
+            )
+        })?;
+        sugars.declare(&c.name, &r.rewrites)?;
+    }
+    Ok(sugars)
 }
 
 /// THE ONE-OWNER RULE over an axis's candidates, linked and dropped in alike (Q-P4-12 (ARCHITECT, BUSBAR-1.6.0.md:106 "it refuses at boot when two plugins claim the same thing")): two DIFFERENT
@@ -875,7 +917,7 @@ fn open_ready<K: crate::dispatch::Kind>(
     let mut block = instance_settings(opening.doc, K::CODE, instance)
         .map(|(v, _)| v.clone())
         .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
-    let mut held = Secrets(resolve_secrets(
+    let held = Secrets(resolve_secrets(
         &mut block,
         &keys,
         opening.secrets,
@@ -896,7 +938,8 @@ fn open_ready<K: crate::dispatch::Kind>(
     let mut f = crate::dispatch::Frame::new(i, blank_out::<OpenOut>());
     let opened = plugin.call(slot::OPEN, &mut f);
     drop(blobs);
-    held.wipe();
+    // Each secret is zeroized as it drops (Part 2 #54: it is held only as a `Secret`).
+    drop(held);
     if opened.outcome != Outcome::Ready {
         return Err(opened.open_failure(plugin.name()));
     }
@@ -912,12 +955,12 @@ fn open_ready<K: crate::dispatch::Kind>(
 ///
 /// # Errors
 /// The key whose reference is malformed or does not resolve.
-pub fn resolve_secrets(
+pub(crate) fn resolve_secrets(
     block: &mut serde_json::Value,
     keys: &[String],
     resolver: &dyn busbar_contract::secret::SecretResolve,
     scope: &busbar_contract::config_time::ConfigScope,
-) -> Result<Vec<Vec<u8>>, String> {
+) -> Result<Vec<busbar_contract::redacted::Secret<Vec<u8>, Lent>>, String> {
     keys.iter()
         .map(|path| resolve_one(block, path, resolver, scope))
         .collect()
@@ -932,14 +975,15 @@ fn resolve_one(
     path: &str,
     resolver: &dyn busbar_contract::secret::SecretResolve,
     scope: &busbar_contract::config_time::ConfigScope,
-) -> Result<Vec<u8>, String> {
+) -> Result<busbar_contract::redacted::Secret<Vec<u8>, Lent>, String> {
     let Some(found) = take_path(block, path) else {
-        return Ok(Vec::new());
+        return Ok(busbar_contract::redacted::Secret::default());
     };
     let r: busbar_contract::secret_ref::SecretRef =
         serde_json::from_value(found).map_err(not_a_reference(format!("settings.{path}")))?;
     resolver
         .resolve_at_config(&r, scope)
+        .map(busbar_contract::secret::Resolved::sealed_to)
         .map_err(|e| format!("settings.{path}: the secret did not resolve: {e}"))
 }
 
@@ -973,40 +1017,32 @@ fn take_path(v: &mut serde_json::Value, path: &str) -> Option<serde_json::Value>
     parent.as_object_mut()?.remove(last)
 }
 
-/// Resolved secret bytes, held for one `open` and overwritten with zeroes when it returns.
-struct Secrets(Vec<Vec<u8>>);
+// THE LOADER'S OWN SEAL over the secrets it lends a plugin's `open` (Part 2 #54): the resolver
+// answers each one sealed to the loader, the asker, and only the loader reads it, to lend it.
+busbar_contract::own_seal!(Lent);
+
+/// The declared secrets a plugin's `open` is lent, held sealed to the loader ([`Lent`]) and
+/// zeroized as they drop.
+struct Secrets(Vec<busbar_contract::redacted::Secret<Vec<u8>, Lent>>);
 
 impl Secrets {
-    /// One `BLOB_SECRET` blob per secret, in order, over the bytes held here.
+    /// One `BLOB_SECRET` blob per secret, in order, over the bytes held here (read under the
+    /// loader's own seal: the one place they are lent).
     fn blobs(&self) -> Vec<busbar_contract::abi::mechanism::call::Blob> {
         use busbar_contract::abi::mechanism::call::{Blob, BLOB_OCTETS, BLOB_SECRET};
+        let seal = Lent::here();
         self.0
             .iter()
-            .map(|b| Blob {
-                ptr: b.as_ptr(),
-                len: b.len(),
-                fmt: BLOB_OCTETS,
-                flags: BLOB_SECRET,
+            .map(|s| {
+                let b = s.expose_own(&seal);
+                Blob {
+                    ptr: b.as_ptr(),
+                    len: b.len(),
+                    fmt: BLOB_OCTETS,
+                    flags: BLOB_SECRET,
+                }
             })
             .collect()
-    }
-
-    /// Overwrite every secret byte with zero.
-    #[allow(unsafe_code)] // REVIEWED: a volatile write, so the zeroing is never elided
-    fn wipe(&mut self) {
-        for b in &mut self.0 {
-            for byte in b.iter_mut() {
-                // SAFETY: `byte` is a live, exclusively borrowed `u8`; the volatile write keeps the
-                // compiler from dropping the zeroing of memory about to be freed.
-                unsafe { std::ptr::write_volatile(byte, 0) };
-            }
-        }
-    }
-}
-
-impl Drop for Secrets {
-    fn drop(&mut self) {
-        self.wipe();
     }
 }
 

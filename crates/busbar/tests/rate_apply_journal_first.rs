@@ -63,7 +63,9 @@ impl RateApply for Journal {
 
 fn cfg(per_request_fee: i64) -> busbar_kernel::config::RootCfg {
     let mut cfg = busbar_kernel::test_support::cfg_with_provider_api_key(
-        busbar_kernel::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_RATE_APPLY_JOURNAL_FIRST"),
+        busbar_kernel::test_support::secrets::fill_ref(
+            "BUSBAR_TEST_NO_SUCH_KEY_RATE_APPLY_JOURNAL_FIRST",
+        ),
     );
     cfg.per_request_fee = per_request_fee;
     cfg

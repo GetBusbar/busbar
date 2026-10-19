@@ -2578,6 +2578,88 @@ impl OutboundAuths {
         }
         Ok(Vec::new())
     }
+
+    /// THE FLAGS `style` IS DECLARED WITH by the row that serves it: the first row stating it, the
+    /// one [`Self::serving`] binds (`abi::auth::STYLE_*`). `None` when no row states it.
+    #[must_use]
+    pub fn style_flags(&self, style: &str) -> Option<u32> {
+        self.facts()
+            .iter()
+            .find_map(|row| row.styles.iter().find(|s| s.name == style).map(|s| s.flags))
+    }
+
+    /// THE OUTBOUND STYLES every auth row declares, linked first, then dropped in, in the host's
+    /// one listing order (`busbar_contract::auth_calls::listed_styles`).
+    ///
+    /// Read off each row's Statement rendering (a linked door's own, a dropped plugin's signed
+    /// one): nothing is bound or opened (Law 7). A row whose rendering does not read declares none.
+    pub fn declared(&self) -> Vec<busbar_contract::auth_calls::DeclaredStyle> {
+        use crate::root::loader::auth_axis::{door_facts, stated_facts};
+        let linked = self
+            .linked
+            .iter()
+            .filter_map(|(_, _, door)| door_facts(*door).ok());
+        let dropped = self
+            .dropped
+            .map_or(&[][..], |r| r.loadable())
+            .iter()
+            .filter(|r| r.manifest.kind == "auth")
+            .filter_map(|r| stated_facts(r).ok());
+        busbar_contract::auth_calls::listed_styles(linked.chain(dropped).flat_map(|f| {
+            f.styles
+                .into_iter()
+                .map(|s| busbar_contract::auth_calls::DeclaredStyle {
+                    name: s.name,
+                    flags: s.flags,
+                })
+        }))
+    }
+
+    /// CHECK A PROVIDER ENTRY, NEVER DIAL: as [`Self::check`], over the entry's declared
+    /// credential, answering EVERY line the plugin's refusal names, verbatim (`settings: ...` and
+    /// `credential: ...`). A keyless entry hands the plugin no credential; an unresolved one a
+    /// one-byte stand-in, and its `credential:` lines are dropped (nothing was there to judge); a
+    /// resolved one is revealed to the binding alone, under the kernel's seal (Part 2 #54).
+    ///
+    /// # Errors
+    ///
+    /// The serving plugin would not open for its outbound styles.
+    pub fn check_entry(
+        &self,
+        style: &str,
+        credential: busbar_contract::auth_calls::EntryCredential<'_>,
+        settings: &serde_json::Value,
+    ) -> Result<Vec<String>, String> {
+        use crate::root::loader::dispatch::auth_outbound::OutboundInstance;
+        use crate::root::loader::dispatch::ConnTable;
+        use busbar_contract::auth_calls::EntryCredential;
+        let seal = busbar_kernel::seal::lend();
+        let (bytes, unresolved): (&[u8], bool) = match credential {
+            EntryCredential::Keyless => (&[], false),
+            EntryCredential::Unresolved => (b"-", true),
+            EntryCredential::Resolved(secret) => (secret.expose(&seal).as_slice(), false),
+        };
+        for row in self.facts() {
+            if !row.styles.iter().any(|s| s.name == style) {
+                continue;
+            }
+            let Some(plugin) = self.load_with(&row.name, row.door, ConnTable::NoNeeds) else {
+                continue;
+            };
+            let opened = serde_json::to_vec(settings).map_err(|e| e.to_string())?;
+            let instance =
+                OutboundInstance::open_with(plugin, Arc::clone(&self.dispatcher), 0, &opened)?;
+            return Ok(match instance.open_outbound_raw(style, bytes, settings) {
+                Ok(_) => Vec::new(),
+                Err((_, why)) => why
+                    .lines()
+                    .filter(|l| !(unresolved && l.starts_with("credential: ")))
+                    .map(str::to_string)
+                    .collect(),
+            });
+        }
+        Ok(Vec::new())
+    }
 }
 
 /// AN AUTH ROW'S DECLARED DIAGNOSTICS, WRITTEN TO THE MAIN LOG IN 1.5.5'S LINE (ARCHITECT D1
@@ -2787,7 +2869,8 @@ fn token_exchange_binding(
         .resolve_at_config(&subject, scope)
         .map_err(|e| {
             format!("member '{entry}': busbar's own subject token for it cannot resolve: {e}")
-        })?;
+        })?
+        .sealed();
     let mut settings = serde_json::Map::new();
     for (key, value) in [
         ("token_url", entry_text(block, TOKEN_URL_KEY)),
@@ -2811,9 +2894,15 @@ fn token_exchange_binding(
                  '{TOKEN_EXCHANGE_STYLE}' a token-exchange registration is bound under"
             )
         })?;
+    // Revealed under the kernel's seal (Part 2 #54): to open the binding, and nowhere else.
     let handle = auth
-        .open_outbound(TOKEN_EXCHANGE_STYLE, &credential, &settings)
+        .open_outbound(
+            TOKEN_EXCHANGE_STYLE,
+            credential.expose(&busbar_kernel::seal::lend()),
+            &settings,
+        )
         .map_err(|e| format!("member '{entry}' {e}"))?;
+    drop(credential);
     Ok(Some(busbar_kernel::plane_driver::AuthBinding {
         auth,
         handle,
@@ -2928,18 +3017,17 @@ fn upstream_credential(
             )
         })?;
     let settings = placement_settings(header.as_deref());
-    let credential = busbar_contract::redacted::Secret::new(
-        reach
-            .secrets
-            .resolve_string_at_config(&secret, scope)
-            .map_err(|e| {
-                format!(
-                    "member '{member_name}': busbar's own upstream credential for it cannot \
-                     resolve: {e}"
-                )
-            })?
-            .into_bytes(),
-    );
+    let credential = reach
+        .secrets
+        .resolve_string_at_config(&secret, scope)
+        .map_err(|e| {
+            format!(
+                "member '{member_name}': busbar's own upstream credential for it cannot \
+                 resolve: {e}"
+            )
+        })?
+        .into_bytes()
+        .sealed();
     let (auth, decl) = reach.auths.serving(style, &settings)?.ok_or_else(|| {
         format!(
             "member '{member_name}': no linked or dropped-in auth plugin serves the style \
@@ -3038,7 +3126,7 @@ impl PerHop {
             self.held.store(None);
             return;
         };
-        let value = busbar_contract::redacted::Secret::new(value.into_bytes());
+        let value = value.into_bytes().sealed();
         // Revealed under the kernel's seal (Part 2 #54): for its digest, and to open a rotation.
         let seal = busbar_kernel::seal::lend();
         let digest = busbar_contract::abi::sdk::digest::sha256(value.expose(&seal));
@@ -3539,14 +3627,40 @@ pub fn member_routes(
     }
     for r in resolved {
         let credential = if r.provider.credential.is_none() {
-            Vec::new()
+            busbar_contract::redacted::Secret::default()
         } else {
             reach
                 .secrets
                 .resolve_at_config(&r.provider.credential, scope)
                 .map_err(|e| format!("provider '{}' credential: {e}", r.name))?
+                .sealed()
         };
-        let settings = sealed_params(&r.name, &r.style, r.provider, &credential)?.to_json();
+        // A style that takes its token endpoint from its credential, as its serving row declares
+        // it (`STYLE_ENDPOINT_FROM_CREDENTIAL`), is handed the document the credential carries: a
+        // credential naming its key file is read here, at configuration time, through the secret
+        // kind's file source, so the serving plugin opens no file (Q128 audit ruling (a); 1.5.5's
+        // `api_key_env`). Any other style's credential is handed on unread, whatever its name.
+        let from_credential = reach.auths.style_flags(&r.style).is_some_and(|flags| {
+            flags & busbar_contract::abi::auth::STYLE_ENDPOINT_FROM_CREDENTIAL != 0
+        });
+        let credential = if from_credential {
+            busbar_kernel::config::secret::endpoint_document(credential, |file| {
+                reach.secrets.resolve_at_config(file, scope)
+            })
+            .map_err(|e| format!("provider '{}' ({} auth): {e}", r.name, r.style))?
+        } else {
+            credential
+        };
+        // Revealed under the kernel's seal (Part 2 #54): its token endpoint, and the binding.
+        let seal = busbar_kernel::seal::lend();
+        let settings = sealed_params(
+            &r.name,
+            &r.style,
+            from_credential,
+            r.provider,
+            credential.expose(&seal),
+        )?
+        .to_json();
         let (auth, decl) = reach.auths.serving(&r.style, &settings)?.ok_or_else(|| {
             format!(
                 "member '{}': no linked or dropped-in auth plugin serves the style '{}'",
@@ -3556,7 +3670,7 @@ pub fn member_routes(
         let settings = sealed_settings(r.params, &r.provider.base_url, &settings)
             .map_err(|e| format!("member '{}': {e}", r.entry))?;
         let handle = auth
-            .open_outbound(&r.style, &credential, &settings)
+            .open_outbound(&r.style, credential.expose(&seal), &settings)
             .map_err(|e| format!("provider '{}' {e}", r.name))?;
         // EVERY need its style names is bound (ARCHITECT Q-L5B-NEEDS): the first is its own, the
         // rest ride beside it, each opened when a far request names it.
@@ -3699,15 +3813,13 @@ fn host_label<'h>(host: &'h str, after: &[&str]) -> Option<&'h str> {
     })
 }
 
-/// The `auth:` style whose credential names its own token endpoint: a service account's
-/// `token_uri` (RFC 7523; `jwt-bearer`, 1.5.5's `egress_auth/jwt_bearer.rs`).
-const SERVICE_ACCOUNT_STYLE: &str = "jwt-bearer";
-
 /// THE PARAMETERS PROVIDER `name`'s STYLE IS OPENED WITH AT THE SEAL: those it states, and, for
-/// a service-account credential, its `token_uri` — the target of the serving plugin's mint need —
-/// judged under the provider's metadata posture with 1.5.5's check and words (v1.5.5 `main.rs`:
-/// `provider '<p>' (jwt-bearer auth): <why>`). A credential that is no service account to read
-/// fills nothing: the serving plugin refuses it in its own words at `open_outbound`.
+/// a style that takes its token endpoint from its credential (`from_credential`: its serving row
+/// declares `STYLE_ENDPOINT_FROM_CREDENTIAL`), the `token_uri` the credential names — the target of
+/// the serving plugin's mint need — judged under the provider's metadata posture with 1.5.5's check
+/// and words (v1.5.5 `main.rs`: `provider '<p>' (jwt-bearer auth): <why>`). A credential that is
+/// no service account to read fills nothing: the serving plugin refuses it in its own words at
+/// `open_outbound`.
 ///
 /// # Errors
 ///
@@ -3715,11 +3827,12 @@ const SERVICE_ACCOUNT_STYLE: &str = "jwt-bearer";
 fn sealed_params(
     name: &str,
     style: &str,
+    from_credential: bool,
     provider: &ProviderRoute,
     credential: &[u8],
 ) -> Result<StyleParams, String> {
     let mut params = provider.params.clone();
-    if style != SERVICE_ACCOUNT_STYLE || credential.is_empty() {
+    if !from_credential || credential.is_empty() {
         return Ok(params);
     }
     let Ok(text) = std::str::from_utf8(credential) else {
@@ -3729,7 +3842,7 @@ fn sealed_params(
         return Ok(params);
     };
     busbar_kernel::config_validate::vet_token_uri(&token_uri, &provider.metadata)
-        .map_err(|e| format!("provider '{name}' (jwt-bearer auth): {e}"))?;
+        .map_err(|e| format!("provider '{name}' ({style} auth): {e}"))?;
     params.token_uri = Some(token_uri);
     Ok(params)
 }

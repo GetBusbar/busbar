@@ -26,10 +26,12 @@ use busbar_contract::abi::host::io::{
     check_addr_buf, check_dir, check_how, check_spawn_in, may_pend, op, AddrIn, HandleIn, IoSlots,
     ListenIn, OpenIn, ReadIn, ReadyIn, ShutIn, SpawnIn, WriteIn, SLOTS,
 };
-use busbar_contract::abi::host::service::{check_head, ServiceHead, ServiceOut};
+use busbar_contract::abi::host::service::{
+    check_head, lent_out, write_out, ServiceHead, ServiceOut,
+};
 use busbar_contract::abi::mechanism::call::{AbiStr, Field, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket};
-use busbar_contract::io_host::{IoHost, IoRefusal, Spawn};
+use busbar_contract::io_host::{Ends, IoHost, IoRefusal, IoResult, Spawn};
 
 use super::ticket::Waking;
 
@@ -61,6 +63,8 @@ struct Answer {
     outcome: Outcome,
     value: u64,
     len: u64,
+    /// `ServiceOut::exited`: `1` only for `io.ends` on a program that has exited.
+    exited: u8,
     error: &'static str,
 }
 
@@ -70,6 +74,7 @@ impl Answer {
             outcome: Outcome::Ready,
             value,
             len,
+            exited: 0,
             error: "",
         }
     }
@@ -79,6 +84,7 @@ impl Answer {
             outcome,
             value: 0,
             len: 0,
+            exited: 0,
             error,
         }
     }
@@ -157,6 +163,18 @@ fn slot<I: Copy>(
     service: u32,
     body: impl FnOnce(&I, &Caller, Ticket) -> Answer,
 ) -> RawOutcome {
+    // THE CALLER'S `out`, as it states it: one below the first `ServiceOut` is REFUSED before the
+    // service runs, and nothing of it is written (an `out` grows by appending, so an older caller's
+    // smaller one is never overrun).
+    let lent = if out.is_null() {
+        0
+    } else {
+        // SAFETY: the caller's non-NULL `out`, its leading `size` readable.
+        match unsafe { lent_out(out) } {
+            Some(lent) => lent,
+            None => return RawOutcome::of(Outcome::Refused),
+        }
+    };
     let a = catch_unwind(AssertUnwindSafe(|| {
         if input.is_null() || out.is_null() {
             return Answer::with(Outcome::Fault, "");
@@ -182,7 +200,8 @@ fn slot<I: Copy>(
         let o = ServiceOut {
             size: size_of::<ServiceOut>() as u32,
             outcome: RawOutcome::of(a.outcome),
-            _reserved: [0; 3],
+            exited: a.exited,
+            _reserved: [0; 2],
             value: a.value,
             len: a.len,
             items: 0,
@@ -197,8 +216,8 @@ fn slot<I: Copy>(
                 len: a.error.len(),
             },
         };
-        // SAFETY: the caller's `out`, checked non-NULL.
-        unsafe { out.write_unaligned(o) };
+        // SAFETY: the caller's `out`, checked non-NULL, writable for the `lent` bytes it stated.
+        unsafe { write_out(out, o, lent) };
     }
     RawOutcome::of(a.outcome)
 }
@@ -368,14 +387,31 @@ c_entry! {
             if check_addr_buf(i.addr_buf, i.addr_cap, "io.ends.addr").is_err() {
                 return Answer::with(Outcome::Refused, SHORT_ADDR);
             }
-            match c.io.ends(c.owner, i.handle) {
-                // SAFETY: the caller's buffer, checked at least `MAX_ADDR`.
-                Ok((port, peer)) => Answer::ready(u64::from(port), unsafe {
-                    put(i.addr_buf, i.addr_cap, &peer)
-                }),
-                Err(e) => Answer::of(e),
-            }
+            // SAFETY: the caller's buffer, checked at least `MAX_ADDR`.
+            unsafe { ends_answer(c.io.ends(c.owner, i.handle), i.addr_buf, i.addr_cap) }
         })
+    }
+}
+
+/// `io.ends`' answer of what the host's I/O reported: a program that has exited answers its exit
+/// code in `value` with `exited` set and writes no far address; any other handle its local port and
+/// its far end's address.
+///
+/// # Safety
+/// `buf` is the caller's, writable for `cap` bytes.
+unsafe fn ends_answer(ends: IoResult<Ends>, buf: *mut u8, cap: usize) -> Answer {
+    match ends {
+        Ok(Ends {
+            exit: Some(code), ..
+        }) => Answer {
+            exited: 1,
+            ..Answer::ready(u64::from(code), 0)
+        },
+        // SAFETY: the caller's buffer (the contract above).
+        Ok(Ends { port, peer, .. }) => {
+            Answer::ready(u64::from(port), unsafe { put(buf, cap, &peer) })
+        }
+        Err(e) => Answer::of(e),
     }
 }
 

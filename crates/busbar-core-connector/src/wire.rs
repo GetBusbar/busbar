@@ -367,6 +367,20 @@ impl HostWire {
         self
     }
 
+    /// The same wire, framing over `binding`. A wire frames every connection TICKET-LESS (its
+    /// `begin`, `adopt`, `ingest` and `emit` cross with no ticket), so a binding with auth points
+    /// is refused here, before any connection is framed ([`framer::TICKET_LESS_AUTH`]): its
+    /// framer may call the auth service, which may pend, and only a ticketed framing
+    /// ([`crate::compose::Connection`]) can park it.
+    ///
+    /// # Errors
+    ///
+    /// [`framer::TICKET_LESS_AUTH`]: the binding has auth points.
+    pub fn bound(self, binding: &framer::AuthBinding) -> Result<Self, String> {
+        binding.ticket_less().map_err(|r| r.error)?;
+        Ok(self)
+    }
+
     /// Whether this wire's entry is a carrier, carried as itself.
     fn is_carrier(&self) -> bool {
         self.door.facts().role == ROLE_CARRIER
@@ -879,7 +893,7 @@ impl HostWire {
                     .and_then(|f| {
                         // A Unit 0 refusal's bytes are the transport's whole envelope, rendered
                         // before any plane: they state no neutral status apart from themselves.
-                        f.refuse(stream.map(|s| s.0), bytes.as_slice(), 0)
+                        f.refuse(stream.map(|s| s.0), bytes.as_slice(), 0, false)
                             .map_err(|_| TransportError::Framing)
                     })
                     .map(|y| y.wire)

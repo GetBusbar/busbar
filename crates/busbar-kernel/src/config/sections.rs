@@ -28,12 +28,14 @@ use super::limits::{DEFAULT_RATE_SWEEP_INTERVAL, DEFAULT_USAGE_FLUSH_INTERVAL_MS
 #[serde(deny_unknown_fields)]
 pub struct TlsCfg {
     /// PEM certificate chain, leaf first (e.g. fullchain.pem), as a secret reference.
+    #[serde(deserialize_with = "crate::config::secret::declared")]
     pub cert: SecretRef,
     /// PEM private key matching the leaf cert (PKCS#8, PKCS#1, or SEC1), as a secret reference.
+    #[serde(deserialize_with = "crate::config::secret::declared")]
     pub key: SecretRef,
     /// PEM CA bundle to verify client certs against. `Some` ⇒ mTLS required: a client must present
     /// a cert chaining to this CA to complete the handshake at all. `None` ⇒ server-only TLS.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::secret::declared_opt")]
     pub client_ca: Option<SecretRef>,
 }
 

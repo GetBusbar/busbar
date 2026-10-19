@@ -42,8 +42,12 @@ fn valid_tls_cfg() -> (TlsCfg, String) {
     let key_file = temp_pem("key", &key_pem);
     (
         TlsCfg {
-            cert: SecretRef::file(cert_file.to_string_lossy().into_owned()),
-            key: SecretRef::file(key_file.to_string_lossy().into_owned()),
+            cert: busbar_kernel::test_support::secrets::path_ref(
+                cert_file.to_string_lossy().into_owned(),
+            ),
+            key: busbar_kernel::test_support::secrets::path_ref(
+                key_file.to_string_lossy().into_owned(),
+            ),
             client_ca: None,
         },
         cert_pem,
@@ -118,8 +122,12 @@ fn malformed_cert_errors_clearly() {
     let (_c, key_pem) = gen_self_signed();
     let key_file = temp_pem("ok-key", &key_pem);
     let tls = TlsCfg {
-        cert: SecretRef::file(cert_file.to_string_lossy().into_owned()),
-        key: SecretRef::file(key_file.to_string_lossy().into_owned()),
+        cert: busbar_kernel::test_support::secrets::path_ref(
+            cert_file.to_string_lossy().into_owned(),
+        ),
+        key: busbar_kernel::test_support::secrets::path_ref(
+            key_file.to_string_lossy().into_owned(),
+        ),
         client_ca: None,
     };
     let err = build_server_config(&tls, &SecretResolver::builtins_only())
@@ -132,8 +140,12 @@ fn malformed_cert_errors_clearly() {
 #[test]
 fn bad_cert_path_errors_clearly() {
     let tls = TlsCfg {
-        cert: SecretRef::file("/nonexistent/busbar-core-connector/does-not-exist-cert.pem"),
-        key: SecretRef::file("/nonexistent/busbar-core-connector/does-not-exist-key.pem"),
+        cert: busbar_kernel::test_support::secrets::path_ref(
+            "/nonexistent/busbar-core-connector/does-not-exist-cert.pem",
+        ),
+        key: busbar_kernel::test_support::secrets::path_ref(
+            "/nonexistent/busbar-core-connector/does-not-exist-key.pem",
+        ),
         client_ca: None,
     };
     let err = build_server_config(&tls, &SecretResolver::builtins_only())
@@ -170,8 +182,12 @@ async fn prepare_fails_closed_when_transport_is_incapable() {
 #[tokio::test]
 async fn prepare_fails_closed_on_missing_cert() {
     let tls = TlsCfg {
-        cert: SecretRef::file("/nonexistent/busbar-core-connector/does-not-exist-cert.pem"),
-        key: SecretRef::file("/nonexistent/busbar-core-connector/does-not-exist-key.pem"),
+        cert: busbar_kernel::test_support::secrets::path_ref(
+            "/nonexistent/busbar-core-connector/does-not-exist-cert.pem",
+        ),
+        key: busbar_kernel::test_support::secrets::path_ref(
+            "/nonexistent/busbar-core-connector/does-not-exist-key.pem",
+        ),
         client_ca: None,
     };
     let resolver = SecretResolver::builtins_only();
@@ -263,8 +279,11 @@ fn gen_ca_and_leaf(sans: Vec<String>) -> (String, String, String) {
 
 /// A `TlsCfg` over PEM files holding `cert_pem`, `key_pem` and (for mutual TLS) `client_ca_pem`.
 fn tls_cfg_from(cert_pem: &str, key_pem: &str, client_ca_pem: Option<&str>) -> TlsCfg {
-    let file =
-        |tag: &str, pem: &str| SecretRef::file(temp_pem(tag, pem).to_string_lossy().into_owned());
+    let file = |tag: &str, pem: &str| {
+        busbar_kernel::test_support::secrets::path_ref(
+            temp_pem(tag, pem).to_string_lossy().into_owned(),
+        )
+    };
     TlsCfg {
         cert: file("hs-cert", cert_pem),
         key: file("hs-key", key_pem),

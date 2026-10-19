@@ -31,6 +31,7 @@ fn cand(kind: KindCode, name: &str, aliases: &[&str], sugar: &[&str], verbs: &[&
         sugar: sugar.iter().map(|s| s.to_string()).collect(),
         verbs: verbs.iter().map(|s| s.to_string()).collect(),
         schemes: Vec::new(),
+        secure: Vec::new(),
         needs: Vec::new(),
         stated: Vec::new(),
         origin: Origin::Dropped {
@@ -141,7 +142,7 @@ fn a_candidate_reads_its_facts_off_its_rendering() {
             class: busbar_contract::abi::mechanism::door::REWRITE_SUGAR,
             _reserved: 0,
             from: abi_str("sug"),
-            to: abi_str(""),
+            to: abi_str("value"),
         },
     ];
     const SECTIONS: &[busbar_contract::abi::mechanism::door::Section] = &[
@@ -182,6 +183,14 @@ fn a_candidate_reads_its_facts_off_its_rendering() {
         vec!["old".to_string(), "manifest-alias".to_string()]
     );
     assert_eq!(c.sugar, vec!["sug".to_string()]);
+    // The sugar the rendering states binds its value to the settings key it names.
+    let sugars = sugars_of(std::slice::from_ref(&c)).expect("the sugar declares");
+    assert_eq!(
+        sugars
+            .get("sug")
+            .map(|s| (s.plugin.as_str(), s.setting.as_str())),
+        Some(("the-plugin", "value"))
+    );
     assert_eq!(c.verbs, vec!["verb".to_string()]);
     assert!(Candidate::from_rendering(
         b"not a rendering".to_vec(),
@@ -781,17 +790,27 @@ fn a_candidate_carries_its_statements_needs() {
 struct Resolver;
 
 impl busbar_contract::secret::SecretResolve for Resolver {
-    fn resolve(&self, r: &busbar_contract::secret_ref::SecretRef) -> Result<Vec<u8>, String> {
+    fn resolve(
+        &self,
+        r: &busbar_contract::secret_ref::SecretRef,
+    ) -> Result<busbar_contract::secret::Resolved<Vec<u8>>, String> {
         use crate::dispatch::ready::ready_plugins::auth;
-        match r.env_var() {
-            Some("OIDC_SECRET") => Ok(auth::SECRET.to_vec()),
+        // Read without a table (a plugin's settings): the sugar's value, whatever its word.
+        match r.sugar_parts().map(|(_, value)| value) {
+            Some("OIDC_SECRET") => Ok(busbar_contract::secret::Resolved::new(
+                auth::SECRET.to_vec(),
+            )),
             _ => Err(format!("{} is not set", r.describe())),
         }
     }
 
-    fn resolve_string(&self, r: &busbar_contract::secret_ref::SecretRef) -> Result<String, String> {
-        self.resolve(r)
-            .map(|b| String::from_utf8_lossy(&b).into_owned())
+    fn resolve_string(
+        &self,
+        r: &busbar_contract::secret_ref::SecretRef,
+    ) -> Result<busbar_contract::secret::Resolved<String>, String> {
+        self.resolve(r)?
+            .into_text()
+            .map_err(|_| format!("{} is not text", r.describe()))
     }
 }
 
@@ -979,4 +998,24 @@ fn one_plugin_by_both_doors_is_one_version_or_refused() {
         dropped_cand("busbar-hook-x", "1.2.4"),
     ];
     one_owner(&dropped).expect("not the one-version rule's pair");
+}
+
+/// RED (owner law 2026-09-27): two secret plugins whose Statements claim ONE sugar word are refused
+/// at load, naming both: a reference key names one plugin. The word is a word the plugin answers to
+/// as a module, too.
+#[test]
+fn two_plugins_claiming_one_sugar_word_are_refused_at_load() {
+    let a = cand(KindCode::Secret, "src-a", &[], &["shared-word"], &[]);
+    let b = cand(KindCode::Secret, "src-b", &[], &["shared-word"], &[]);
+    let refused = one_owner(&[a.clone(), b]).expect_err("one sugar word, two plugins");
+    assert!(
+        refused.contains("'shared-word'")
+            && refused.contains("'src-a'")
+            && refused.contains("'src-b'"),
+        "{refused}"
+    );
+    assert!(
+        a.answers("shared-word"),
+        "a sugar word names its plugin as a module"
+    );
 }

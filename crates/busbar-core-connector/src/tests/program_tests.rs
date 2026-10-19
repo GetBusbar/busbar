@@ -417,7 +417,7 @@ fn a_members_env_refsironment_resolves_at_the_declaration_and_is_held_for_the_sp
             env_refs: vec![
                 (
                     "WHOLE".to_owned(),
-                    busbar_contract::secret_ref::SecretRef::env(VAR),
+                    busbar_kernel::test_support::secrets::fill_ref(VAR),
                 ),
                 (
                     "TEMPLATED".to_owned(),
@@ -470,7 +470,7 @@ fn a_member_whose_env_refsironment_does_not_resolve_is_not_spawned() {
             env: Vec::new(),
             env_refs: vec![(
                 "MISSING".to_owned(),
-                busbar_contract::secret_ref::SecretRef::env("BUSBAR_CONNECTOR_SPAWN_UNSET_VAR"),
+                busbar_kernel::test_support::secrets::fill_ref("BUSBAR_CONNECTOR_SPAWN_UNSET_VAR"),
             )],
         };
         declare(&c, &[("unresolved", env)]).unwrap();
@@ -734,5 +734,57 @@ fn a_lease_that_does_not_read_holds_its_program_back() {
         );
         c.close(OWNER, reading).unwrap();
         c.close(OWNER, idle).unwrap();
+    });
+}
+
+/// RED (`DialIn::supervision_key`): a member's spawn carries its supervision key, never `0`, one per
+/// member; a member a re-declaration changed is a new member with a new key, so a carrier that
+/// supervises what it runs resets exactly when the connector's member is new.
+#[test]
+fn a_members_spawn_carries_its_supervision_key_and_a_changed_member_a_new_one() {
+    worker().block_on(async {
+        let door = Arc::new(TestDoor::identity("bytes"));
+        let view = Transports::new(vec![Entry {
+            door: Arc::clone(&door) as Arc<dyn crate::framer::FramerDoor>,
+            alpn: Vec::new(),
+        }])
+        .unwrap();
+        let c = Connector::serving(
+            view,
+            Arc::new(crate::LiteralsOnly(crate::guard::Guard::default())),
+            None,
+            Arc::new(|_, _| {}),
+        );
+        declare(
+            &c,
+            &[("kept", sh(ECHO_PID, &[])), ("changed", sh(ECHO_PID, &[]))],
+        )
+        .unwrap();
+        for name in ["kept", "changed"] {
+            let id = open(&c, name, b"").unwrap();
+            generation(&c, id).await;
+            c.close(OWNER, id).unwrap();
+        }
+        let first = door.dialled_keys.lock().unwrap().clone();
+        assert_eq!(first.len(), 2, "one spawn per member: {first:?}");
+        assert!(first.iter().all(|k| *k != 0), "a member's key is never 0");
+        assert_ne!(first[0], first[1], "each member its own key");
+        declare(
+            &c,
+            &[
+                ("kept", sh(ECHO_PID, &[])),
+                ("changed", sh(ECHO_PID, &[("NEW", "1")])),
+            ],
+        )
+        .unwrap();
+        let id = open(&c, "changed", b"").unwrap();
+        generation(&c, id).await;
+        c.close(OWNER, id).unwrap();
+        let keys = door.dialled_keys.lock().unwrap().clone();
+        let renewed = *keys.last().unwrap();
+        assert!(
+            renewed != 0 && !first.contains(&renewed),
+            "the changed member is new, with a new key: {keys:?}"
+        );
     });
 }

@@ -28,9 +28,11 @@ use busbar_contract::redacted::Secret;
 use busbar_contract::secret_ref::SecretRef;
 
 /// How a program's environment REFERENCE turns into its value: a string secret resolved through
-/// the secret plugins the build links, at config time (it takes the proof). `Err` names the
-/// reference's source, never a byte of the secret.
-pub type SpawnSecretFn = fn(&SecretRef, &ConfigScope) -> Result<String, String>;
+/// the secret plugins the build links, at config time (it takes the proof). The value comes back
+/// sealed ([`busbar_contract::secret::Resolved`]), never bare; `Err` names the reference's source,
+/// never a byte of the secret.
+pub type SpawnSecretFn =
+    fn(&SecretRef, &ConfigScope) -> Result<busbar_contract::secret::Resolved<String>, String>;
 
 /// The installed [`SpawnSecretFn`]; until one is installed no reference resolves, and a program
 /// that states one is not spawned (fail-closed).
@@ -89,7 +91,12 @@ impl std::fmt::Debug for HeldEnv {
             .0
             .refs
             .iter()
-            .map(|(name, reference)| format!("{name} = {}", reference.describe()))
+            .map(|(name, reference)| {
+                format!(
+                    "{name} = {}",
+                    busbar_kernel::config::secret::describe(&reference)
+                )
+            })
             .collect();
         f.debug_struct("HeldEnv")
             .field("refs", &refs)
@@ -115,15 +122,19 @@ fn resolve_each(
                  resolver is installed"
             )
         })?;
+        // A template's `${VAR}` names a value of the sugar whose declared role is the fill.
+        let fill = busbar_kernel::config::secret::sugars()
+            .with_role(busbar_contract::abi::mechanism::door::SUGAR_ROLE_FILL)
+            .map(|s| s.word.clone());
         let value = reference
-            .resolve_template(&|r| secret(r, scope))
+            .resolve_template(fill.as_deref(), &|r| secret(r, scope))
             .map_err(|e| {
                 format!(
                     "the program's environment `{name}` ({}) did not resolve: {e}",
-                    reference.describe()
+                    busbar_kernel::config::secret::describe(&reference)
                 )
             })?;
-        env.push((name.clone(), Secret::new(value)));
+        env.push((name.clone(), value.sealed()));
     }
     Ok(env)
 }
@@ -296,20 +307,42 @@ pub(crate) fn refresh_all() {
     refresher::refresh_all();
 }
 
-/// THE CELLS' RESOLVER: an `env` reference reads its variable (nothing else resolves), and every
-/// resolution is counted by variable, so a cell can tell a spawn resolved nothing. One function for
-/// every cell of this crate: the first install holds for the whole test binary.
+/// THE CELLS' RESOLVER: a reference to the fill sugar reads its variable (nothing else resolves),
+/// and every resolution is counted by variable, so a cell can tell a spawn resolved nothing. One
+/// function for every cell of this crate: the first install holds for the whole test binary.
 #[cfg(test)]
-pub(crate) fn counting_env(r: &SecretRef, _scope: &ConfigScope) -> Result<String, String> {
-    let var = r
-        .env_var()
-        .ok_or_else(|| format!("{} does not resolve", r.describe()))?;
+pub(crate) fn counting_env(
+    r: &SecretRef,
+    _scope: &ConfigScope,
+) -> Result<busbar_contract::secret::Resolved<String>, String> {
+    let sugars = busbar_kernel::config::secret::sugars();
+    let var = sugars
+        .value_of(r)
+        .filter(|(s, _)| {
+            sugars
+                .with_role(busbar_contract::abi::mechanism::door::SUGAR_ROLE_FILL)
+                .is_some_and(|fill| fill.word == s.word)
+        })
+        .map(|(_, v)| v.to_string())
+        .ok_or_else(|| {
+            format!(
+                "{} does not resolve",
+                busbar_kernel::config::secret::describe(r)
+            )
+        })?;
     *RESOLUTIONS
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .entry(var.to_string())
+        .entry(var.clone())
         .or_insert(0) += 1;
-    std::env::var(var).map_err(|_| format!("{} does not resolve", r.describe()))
+    std::env::var(&var)
+        .map(busbar_contract::secret::Resolved::new)
+        .map_err(|_| {
+            format!(
+                "{} does not resolve",
+                busbar_kernel::config::secret::describe(r)
+            )
+        })
 }
 
 #[cfg(test)]

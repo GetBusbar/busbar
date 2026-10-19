@@ -12,7 +12,7 @@
 use super::call::{AbiStr, Blob, DeadlineClass, Outcome, RawOutcome};
 use super::door::{
     MarkWord, Rewrite, Section, Statement, MARKS_KNOWN, MARK_WORD_HOOK,
-    MARK_WORD_ISSUED_SECRET_ALPHABET, REWRITE_ALIAS, REWRITE_KEY, SECTION_CONSUMED,
+    MARK_WORD_ISSUED_SECRET_ALPHABET, REWRITE_ALIAS, REWRITE_SUGAR_ROLE, SECTION_CONSUMED,
     SECTION_DECLARING, SECTION_REQUIRED,
 };
 use crate::abi::host::conn::connector::{
@@ -447,8 +447,9 @@ pub fn check_marks(marks: u64, words: &[MarkWord]) -> Result<(), Fault> {
     Ok(())
 }
 
-/// The rewrites: a known class and a named `from`; `to` is named for a key move and absent
-/// otherwise.
+/// The rewrites: a known class and a named `from`; `to` is absent for an alias and named for every
+/// other class (a key move's path, a sugar's settings key, its placeholder, what it names, its
+/// role).
 ///
 /// # Errors
 ///
@@ -458,14 +459,14 @@ pub fn check_rewrites(rewrites: &[Rewrite]) -> Result<(), Fault> {
         code(
             u64::from(r.class),
             u64::from(REWRITE_ALIAS),
-            u64::from(REWRITE_KEY),
+            u64::from(REWRITE_SUGAR_ROLE),
             "rewrite.class",
         )?;
         named(r.from, "rewrite.from")?;
-        if r.class == REWRITE_KEY {
-            named(r.to, "rewrite.to")?;
-        } else {
+        if r.class == REWRITE_ALIAS {
             absent(r.to, "rewrite.to")?;
+        } else {
+            named(r.to, "rewrite.to")?;
         }
     }
     Ok(())

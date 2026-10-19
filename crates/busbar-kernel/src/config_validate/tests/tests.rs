@@ -70,7 +70,7 @@ fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::P
         base_url: base_url.into(),
         // The credential is a SECRET REFERENCE now; the env-var sugar keeps the old
         // helper signature usable across every existing test.
-        api_key: config::SecretRef::env(api_key_env),
+        api_key: crate::test_support::secrets::fill_ref(api_key_env),
         health: None,
         error_map,
         path: None,
@@ -752,7 +752,7 @@ fn make_auth_chain(modules: &[&str], _upstream: crate::auth::UpstreamCreds) -> c
     // mint path that validates whether or not an auth row answers the operator credential (with none,
     // a configured admin token would itself be rejected).
     if modules.contains(&crate::config::KEYS_MODULE) {
-        auth.signing_key = Some(config::SecretRef::env("BUSBAR_SIGNING_KEY"));
+        auth.signing_key = Some(crate::test_support::secrets::fill_ref("BUSBAR_SIGNING_KEY"));
         auth.admin_auth = vec![];
     }
     auth
@@ -1784,7 +1784,7 @@ fn test_validate_rejects_admin_token_without_module() {
     let mut cfg = make_root_cfg(providers, models, pools);
     let mut auth = config::AuthCfg::default_none();
     let mut entry = config::AuthChainEntry::bare(config::operator_provider());
-    entry.token = Some(config::SecretRef::env("BUSBAR_ADMIN_TOKEN"));
+    entry.token = Some(crate::test_support::secrets::fill_ref("BUSBAR_ADMIN_TOKEN"));
     auth.admin_auth = vec![entry];
     cfg.auth = Some(auth);
     let errs = validate(&cfg).expect_err("must be a boot error");
@@ -1919,7 +1919,7 @@ fn test_1_5_2_keys_chain_without_mint_path_is_boot_error() {
     auth.chain = vec![crate::config::AuthChainEntry::bare(
         crate::config::KEYS_MODULE,
     )];
-    auth.signing_key = Some(config::SecretRef::env("BUSBAR_SIGNING_KEY"));
+    auth.signing_key = Some(crate::test_support::secrets::fill_ref("BUSBAR_SIGNING_KEY"));
     cfg.auth = Some(auth);
     let errs =
         validate(&cfg).expect_err("keys chain with no usable mint path must fail validation");
@@ -1968,7 +1968,7 @@ fn test_keys_chain_without_signing_key_is_boot_error() {
         crate::config::KEYS_MODULE,
     )];
     auth_ok.admin_auth = vec![];
-    auth_ok.signing_key = Some(config::SecretRef::env("BUSBAR_SIGNING_KEY"));
+    auth_ok.signing_key = Some(crate::test_support::secrets::fill_ref("BUSBAR_SIGNING_KEY"));
     cfg.auth = Some(auth_ok);
     assert!(
         validate(&cfg).is_ok(),
@@ -2016,7 +2016,7 @@ fn test_1_5_2_keys_chain_external_admin_needs_full_scope_to_mint() {
     auth.chain = vec![crate::config::AuthChainEntry::bare(
         crate::config::KEYS_MODULE,
     )];
-    auth.signing_key = Some(config::SecretRef::env("BUSBAR_SIGNING_KEY"));
+    auth.signing_key = Some(crate::test_support::secrets::fill_ref("BUSBAR_SIGNING_KEY"));
     // external IdP, no mint grant
     auth.admin_auth = vec![crate::config::AuthChainEntry::bare("test-external-idp")];
     cfg.auth = Some(auth);
@@ -2034,7 +2034,7 @@ fn test_1_5_2_keys_chain_external_admin_needs_full_scope_to_mint() {
     auth_ok.chain = vec![crate::config::AuthChainEntry::bare(
         crate::config::KEYS_MODULE,
     )];
-    auth_ok.signing_key = Some(config::SecretRef::env("BUSBAR_SIGNING_KEY"));
+    auth_ok.signing_key = Some(crate::test_support::secrets::fill_ref("BUSBAR_SIGNING_KEY"));
     let mut admin = crate::config::AuthChainEntry::bare("test-external-idp");
     admin.max_admin_scope = Some("full".to_string());
     auth_ok.admin_auth = vec![admin];
@@ -2055,7 +2055,7 @@ fn test_validate_token_on_non_operator_entry_rejected() {
     let mut cfg = make_root_cfg(providers, models, pools);
     let mut auth = config::AuthCfg::default_none();
     let mut entry = config::AuthChainEntry::bare("keys");
-    entry.token = Some(config::SecretRef::env("MISPLACED_SECRET"));
+    entry.token = Some(crate::test_support::secrets::fill_ref("MISPLACED_SECRET"));
     auth.chain = vec![entry];
     cfg.auth = Some(auth);
     let errs = validate(&cfg).expect_err("token on a non-operator entry must fail validation");
@@ -5099,9 +5099,11 @@ fn test_validate_secret_module_resolvability() {
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     cfg.tls = Some(config::TlsCfg {
-        cert: config::SecretRef::file("/run/secrets/tls-cert.pem"),
-        key: config::SecretRef::file("/run/secrets/tls-key.pem"),
-        client_ca: Some(config::SecretRef::env("BUSBAR_CLIENT_CA_PEM")),
+        cert: crate::test_support::secrets::path_ref("/run/secrets/tls-cert.pem"),
+        key: crate::test_support::secrets::path_ref("/run/secrets/tls-key.pem"),
+        client_ca: Some(crate::test_support::secrets::fill_ref(
+            "BUSBAR_CLIENT_CA_PEM",
+        )),
     });
     assert!(
         validate(&cfg).is_ok(),
@@ -5774,7 +5776,7 @@ fn an_empty_protocol_set_refuses_every_provider_through_the_real_sweep() {
     let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
 
     let mut errors = Vec::new();
-    super::validate_providers_with(&[], &cfg, &[], &mut errors);
+    super::validate_providers_with(&[], &[], &cfg, &[], &mut errors);
 
     // Every provider is refused, and refused ONCE, and the refusal names the BUILD as the cause —
     // not the provider for naming an "unknown" protocol against an empty must-be-one-of list. The
@@ -5803,7 +5805,7 @@ fn an_empty_protocol_set_refuses_every_provider_through_the_real_sweep() {
     // with the choices named. Without this half, a sweep that refused everything unconditionally
     // would also satisfy the assertions above.
     let mut errors = Vec::new();
-    super::validate_providers_with(&[proto_a(), proto_b()], &cfg, &[], &mut errors);
+    super::validate_providers_with(&[proto_a(), proto_b()], &[], &cfg, &[], &mut errors);
     assert!(
         !errors.iter().any(|e| e.contains("prov-a")),
         "a provider naming a compiled-in protocol validates: {errors:?}"
@@ -5848,7 +5850,7 @@ fn the_empty_set_the_validator_refuses_is_the_one_an_empty_registry_produces() {
     let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
 
     let mut errors = Vec::new();
-    super::validate_providers_with(known, &cfg, &[], &mut errors);
+    super::validate_providers_with(known, &[], &cfg, &[], &mut errors);
     assert_eq!(
         errors.len(),
         1,
@@ -6052,7 +6054,7 @@ fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
         serde_yaml::from_str("{ module: env, settings: { key: \"\" } }")
             .expect("canonical empty-key env ref deserializes (the guard is sugar-only)");
     assert_eq!(
-        empty_env.env_var(),
+        crate::test_support::secrets::fill_var(&empty_env),
         Some(""),
         "precondition: Some(\"\"), not None"
     );
@@ -6105,6 +6107,35 @@ fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
             .any(|e| e.contains("providers.acme.api_key") && e.to_lowercase().contains("non-empty")),
         "a non-empty canonical key must not raise the empty-secret error; got: {errs:?}"
     );
+}
+
+/// A reference to a declared sugar's module that leaves its settings key out is refused in 1.5.5's
+/// words, the key and what its value names read off the declaring Statement (oracle BOOT-090 /
+/// BOOT-091 pin the same sentences over the linked Statements).
+#[test]
+fn a_sugar_module_without_its_settings_key_refuses_in_1_5_5s_words() {
+    for (module, want) in [
+        (
+            crate::test_support::secrets::fill_word(),
+            "providers.acme.api_key: secret module 'env' requires settings.key (the environment \
+             variable name)",
+        ),
+        (
+            crate::test_support::secrets::path_word(),
+            "providers.acme.api_key: secret module 'file' requires settings.path (the file to read)",
+        ),
+    ] {
+        let mut providers = HashMap::new();
+        let mut p = make_provider(proto_a(), "https://api.acme.example.com", "IGNORED");
+        p.api_key = config::SecretRef {
+            module,
+            settings: serde_json::Map::new(),
+        };
+        providers.insert("acme".to_string(), p);
+        let errs = validate(&make_root_cfg(providers, HashMap::new(), HashMap::new()))
+            .expect_err("a sugar module without its settings key is refused");
+        assert!(errs.iter().any(|e| e == want), "{errs:?}");
+    }
 }
 
 /// ITEM 147 — the unbounded-numeric sweep. `limits.pool_idle_timeout_secs` at 2^63 used to pass
@@ -6577,4 +6608,204 @@ fn a_fee_unit_declared_as_a_class_is_neither_owed_nor_priced_by_the_card() {
     let want = "live.rate_card configures unit(s) per_session not declared by this plane \
                 (declared: calls); remove them or fix the name";
     assert!(errs.iter().any(|e| e == want), "{errs:?}");
+}
+
+/// Q128 audit ruling (a), restating its M4: a `jwt-bearer` credential naming its key file is
+/// read by the HOST, through the secret kind's file source, and the plugin is handed the JSON. One
+/// that is the JSON inline is handed over untouched, with no file opened.
+#[test]
+fn a_service_account_key_file_is_read_through_the_file_source_at_config_time() {
+    let json = br#"{"client_email":"a@b","private_key":"k"}"#.to_vec();
+    let mut asked = Vec::new();
+    let sealed = |bytes: Vec<u8>| busbar_contract::redacted::Secret::new(bytes);
+    let read = super::service_account_json(sealed(b"/keys/sa.json\n".to_vec()), |file| {
+        asked.push(crate::test_support::secrets::path_of(&file).map(str::to_string));
+        Ok(busbar_contract::secret::Resolved::new(json.clone()))
+    })
+    .expect("the key file reads");
+    assert_eq!(read, sealed(json.clone()));
+    assert_eq!(asked, vec![Some("/keys/sa.json".to_string())]);
+
+    let inline = super::service_account_json(sealed(json.clone()), |_| {
+        panic!("an inline service account opens no file")
+    })
+    .expect("inline");
+    assert_eq!(inline, sealed(json));
+}
+
+/// RED: a key file that cannot be read refuses in 1.5.5's words, and the credential (the path it
+/// names) is never rendered.
+#[test]
+fn an_unreadable_service_account_key_file_refuses_in_1_5_5s_words_without_the_path() {
+    let named = busbar_contract::redacted::Secret::new(b"/keys/secret-name.json".to_vec());
+    let refused = super::service_account_json(named, |_| {
+        Err("secret file:/keys/secret-name.json cannot resolve: No such file or directory (os error 2)".to_string())
+    })
+    .expect_err("an unreadable key file refuses");
+    assert_eq!(
+        refused,
+        "could not read service-account key file named by this lane's credential: No such file or directory (os error 2)"
+    );
+    assert!(!refused.contains("secret-name"), "{refused}");
+}
+
+// ── #50: a provider's base_url scheme is judged against the schemes the LOADED transports claim ──
+
+/// The claims of a build whose transports declare one secure scheme and one plaintext scheme,
+/// spelled as neutral words: the kernel judges what a claim row states, never a scheme's name.
+fn claims_secure_and_plain() -> Vec<crate::preflight::ClaimedScheme> {
+    vec![
+        crate::preflight::ClaimedScheme {
+            scheme: "sealed-wire".into(),
+            secure: true,
+        },
+        crate::preflight::ClaimedScheme {
+            scheme: "plain-wire".into(),
+            secure: false,
+        },
+    ]
+}
+
+/// The refusals the provider sweep answers for ONE provider at `base_url` under `claimed`.
+fn provider_refusals(base_url: &str, claimed: &[crate::preflight::ClaimedScheme]) -> Vec<String> {
+    let mut providers = HashMap::new();
+    providers.insert(
+        "p".to_string(),
+        make_provider(proto_a(), base_url, "U29_UNSET_KEY"),
+    );
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    let mut errors = Vec::new();
+    super::validate_providers_with(&[proto_a()], claimed, &cfg, &[], &mut errors);
+    errors
+}
+
+/// BUSBAR-1.6.0.md #50 (l.2237): "At BOOT the kernel matches every provider's base_url scheme
+/// against the registered transport plugins' declared scheme-sets ... no match => fail closed".
+/// RED (before the claims were read): a scheme a loaded transport declares SECURE was refused with
+/// "must use http or https", whatever the transports declared. Now it validates to a PUBLIC host,
+/// and the same URL with no transport claiming its scheme is refused in 1.5.5's exact words.
+#[test]
+fn a_scheme_a_loaded_transport_claims_secure_validates_to_a_public_host() {
+    let url = "sealed-wire://api.example.com/v1";
+    assert_eq!(
+        provider_refusals(url, &claims_secure_and_plain()),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        provider_refusals(url, &[]),
+        vec![format!(
+            "provider 'p' base_url must use http or https (got '{url}')"
+        )],
+        "no loaded transport claims the scheme: fail closed, in 1.5.5's words"
+    );
+}
+
+/// THE 1.5.5 PLAINTEXT RULE, GENERIC (coordinator ruling on u29 F3 Q2): a claim whose row does not
+/// state SECURE carries the credential in clear, so it is refused to a PUBLIC host — with the bytes
+/// 1.5.5 refused that very URL with — and allowed to a private/loopback one, exactly as `http` is.
+/// RED: accepted to a public host, it would put the provider key on an off-box wire in clear.
+#[test]
+fn a_plaintext_claim_is_refused_to_a_public_host_and_allowed_to_loopback() {
+    let public = "plain-wire://api.example.com/v1";
+    assert_eq!(
+        provider_refusals(public, &claims_secure_and_plain()),
+        vec![format!(
+            "provider 'p' base_url must use http or https (got '{public}')"
+        )]
+    );
+    for local in [
+        "plain-wire://127.0.0.1:9000",
+        "plain-wire://10.0.0.5:9000/v1",
+    ] {
+        assert_eq!(
+            provider_refusals(local, &claims_secure_and_plain()),
+            Vec::<String>::new(),
+            "{local}"
+        );
+    }
+    // A claim the kernel cannot read the row of (a dropped transport's, before the seal opens it)
+    // is stated plaintext by the root: the same refusal, never a secure acceptance.
+    let unread = [crate::preflight::ClaimedScheme {
+        scheme: "sealed-wire".into(),
+        secure: false,
+    }];
+    assert_eq!(
+        provider_refusals("sealed-wire://api.example.com/v1", &unread).len(),
+        1,
+        "a claim not stated SECURE is plaintext"
+    );
+}
+
+/// The two schemes this rule has always judged by name keep 1.5.5's rule and bytes whatever the
+/// transports claim: a public `https` validates, a public `http` is refused in 1.5.5's plaintext
+/// words, a loopback `http` validates.
+#[test]
+fn the_web_schemes_keep_their_1_5_5_rule_under_any_claims() {
+    for claimed in [Vec::new(), claims_secure_and_plain()] {
+        assert_eq!(
+            provider_refusals("https://api.example.com/v1", &claimed),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            provider_refusals("http://127.0.0.1:11434", &claimed),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            provider_refusals("http://api.example.com/v1", &claimed),
+            vec![
+                "provider 'p' base_url must use https for a public host (got \
+                 'http://api.example.com/v1'); plaintext http is permitted only for a \
+                 private/loopback local-model upstream"
+                    .to_string()
+            ]
+        );
+    }
+}
+
+/// A CLAIMED SCHEME IS NO WAY PAST THE METADATA DENYLIST. The web-only host reader reads no host
+/// under any other scheme, so a claimed `base_url` aimed at IMDS would have passed the guard
+/// unjudged. RED: `sealed-wire://169.254.169.254/` validated; now it is refused as the `https` spelling
+/// of the same host is, and so is a `path` that composes onto it.
+#[test]
+fn a_claimed_scheme_is_judged_by_the_metadata_denylist() {
+    let refusals = provider_refusals(
+        "sealed-wire://169.254.169.254/v1",
+        &claims_secure_and_plain(),
+    );
+    assert_eq!(refusals.len(), 1, "{refusals:?}");
+    assert!(
+        refusals[0].starts_with(
+            "provider 'p' base_url 'sealed-wire://169.254.169.254/v1' targets a blocked \
+             cloud-metadata host '169.254.169.254'"
+        ),
+        "{refusals:?}"
+    );
+}
+
+/// `token_url` STAYS http(s) ONLY (coordinator ruling on u29 F3: #50 governs base_url alone; the
+/// token endpoint is POSTed the client secret by the auth plugin's mint). RED: a token_url under a
+/// scheme a loaded transport claims SECURE is still refused, in 1.5.5's words (oracle BOOT-032).
+#[test]
+fn a_token_url_under_a_claimed_scheme_is_still_refused() {
+    let mut p = make_provider(proto_a(), "https://api.example.com", "U29_UNSET_KEY");
+    p.auth = Some(config::ProviderAuth::OAuthClientCredentials);
+    p.scope = Some("scope".into());
+    p.token_url = Some("sealed-wire://login.example.com/token".into());
+    let mut providers = HashMap::new();
+    providers.insert("p".to_string(), p);
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    let mut errors = Vec::new();
+    super::validate_providers_with(
+        &[proto_a()],
+        &claims_secure_and_plain(),
+        &cfg,
+        &[],
+        &mut errors,
+    );
+    assert_eq!(
+        errors,
+        vec!["provider 'p' token_url must use http or https (got \
+             'sealed-wire://login.example.com/token')"
+            .to_string()]
+    );
 }

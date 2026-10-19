@@ -319,6 +319,10 @@ pub struct InstanceDecl {
     /// [`InstanceDecl::record_kinds`]): the kernel frames and verifies their chain (Part 3, the plane driver, "Record
     /// writes ... A record kind the plane declares as chained keeps its declared framing").
     pub record_chains: Vec<crate::abi::plane::RecordChain>,
+    /// Its record kinds' retention rules, as its tail declares them (each `kind` an index into
+    /// [`InstanceDecl::record_kinds`]): every purge of a listed kind runs under its rule, every
+    /// other kind's by age.
+    pub record_retentions: Vec<crate::abi::plane::RecordRetention>,
 }
 
 /// The trust facts a READY `arrive` stated, owned (a counterparty, and optionally an item and
@@ -394,9 +398,10 @@ pub trait PlaneCalls: Send + Sync {
         grow: Grow<'_, ProjectIn, ProjectOut>,
     ) -> Outcome;
 
-    /// The host's own ticketless `cancel` of `ticket`: the disposition it answered and the record
-    /// writes it carried (SEAM-L(r)), or `None` when it did not answer READY.
-    fn cancel(&self, ticket: Ticket) -> Option<Cancelled>;
+    /// The host's own ticketless `cancel` of `ticket`, the ticket of the unit keyed `unit` (its
+    /// `ArriveIn::unit`; `0` for none): the disposition it answered and the record writes it
+    /// carried (SEAM-L(r)), or `None` when it did not answer READY.
+    fn cancel(&self, ticket: Ticket, unit: u64) -> Option<Cancelled>;
 
     /// A request ticket for one unit; `None` when none can be minted.
     fn mint(&self) -> Option<Ticket>;

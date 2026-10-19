@@ -2378,6 +2378,14 @@ pub fn builtins_only_secret_resolver() -> crate::config::secret::SecretResolver 
     crate::config::secret::SecretResolver::builtins_only()
 }
 
+/// A sealed answer of the secret seam ([`busbar_contract::secret::Resolved`]) revealed under the
+/// kernel's seal, for a test's assertion: the one doorway a test reads an answer through.
+pub fn revealed<T: zeroize::Zeroize + Default + Clone>(
+    answer: busbar_contract::secret::Resolved<T>,
+) -> T {
+    crate::config::secret::handed_on(answer)
+}
+
 // The shared config-build fixtures and the two neutral app seams live in `fixtures.rs` and are
 // re-exported here, so every caller still names them at `crate::test_support::…`.
 mod fixtures;
