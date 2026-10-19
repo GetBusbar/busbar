@@ -8,6 +8,12 @@
 //! * **`literal`** — a string literal in production code holding a word of [`VOCABULARY`]. A
 //!   `#[cfg(feature = "…")]` site is a literal too, so every cfg site naming one is read here.
 //! * **`feature`** — a `[features]` name in one of those crates' manifests holding such a word.
+//! * **`plane-verb`** — over the kernel crate (`busbar-kernel`) alone, a plane's config verb
+//!   ([`PLANE_VERBS`]) spelled in a production string literal, or a plane's entry field name
+//!   ([`PLANE_FIELDS`]) spelled in a literal or as an identifier. #47/#49 (BUSBAR-1.6.0.md l.2232,
+//!   l.2235): the section name is the plane's (its Statement declares it) and the routing keys are
+//!   the plane's (it answers them on its snapshot's `routing`); the kernel hardcodes none. ARMED AT
+//!   ZERO (coordinator ruling Q5 on arch u26/u28): no ledger row is ever written for it.
 //!
 //! The vocabulary is the first-party plugin instance names (planes, stores, secrets, auth plugins,
 //! hooks, exports), the planes' protocol and dialect names, the provider auth styles, and the
@@ -31,6 +37,61 @@ use crate::manifest;
 
 pub const ROW_LITERAL: &str = "c1-literals:literal";
 pub const ROW_FEATURE: &str = "c1-literals:feature";
+pub const ROW_PLANE_VERB: &str = "c1-literals:plane-verb";
+
+/// The planes' config verbs (#47: `pools`/`models` llm, `tools`/`servers` mcp, `agents` a2a,
+/// `streams` streaming, `decisions` decisions). Matched as a whole word bounded by anything but an
+/// identifier character, so a kernel-owned compound (`allowed_pools`) is not one.
+pub const PLANE_VERBS: &[&str] = &[
+    "pools",
+    "models",
+    "tools",
+    "servers",
+    "agents",
+    "streams",
+    "decisions",
+];
+
+/// A plane's entry and section field names: what the llm plane's `models:`/`pools:` entries and
+/// the global llm fallbacks state, and the per-plane fields a kernel config struct once carried.
+/// Matched as a whole identifier, in a literal or in code.
+pub const PLANE_FIELDS: &[&str] = &[
+    "upstream_model",
+    "prompt_caching",
+    "context_max",
+    "default_max_tokens",
+    "reasoning_effort_budgets",
+    "max_requests",
+    "max_concurrent",
+    "tool_pools",
+    "agent_pools",
+    "tool_defs",
+    "agent_defs",
+];
+
+/// Is `m` the crate the `plane-verb` rule reads?
+fn verb_scope(name: &str) -> bool {
+    name == "busbar-kernel"
+}
+
+/// Every plane verb a literal body spells, each once.
+pub fn verbs_in(lit: &str) -> Vec<&'static str> {
+    PLANE_VERBS
+        .iter()
+        .chain(PLANE_FIELDS)
+        .copied()
+        .filter(|w| one_abi::has_word(lit, w))
+        .collect()
+}
+
+/// Every plane field name a line's code (literals and comments blanked) spells, each once.
+pub fn fields_in(code: &str) -> Vec<&'static str> {
+    PLANE_FIELDS
+        .iter()
+        .copied()
+        .filter(|w| one_abi::has_word(code, w))
+        .collect()
+}
 
 /// The words the kernel may not spell, lower case. A word holding `-` also matches with `_`.
 pub const VOCABULARY: &[&str] = &[
@@ -114,6 +175,10 @@ pub const SPEC: Spec = Spec {
             ROW_FEATURE,
             "no kernel or loader feature names a plugin, style or protocol",
         ),
+        (
+            ROW_PLANE_VERB,
+            "the kernel spells no plane config verb or plane field name (#47/#49; armed at zero)",
+        ),
     ],
     header: "# c1-literals: DRAIN-ONLY ledger (M0 ABI-SPEC, REPORT-ONLY).\n\
              # THE RULE (ARCHITECT ruling on M0): a plane's dialect or protocol name, a plugin\n\
@@ -195,6 +260,16 @@ pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
                     for w in words_in(&lit) {
                         findings.push(Finding::new(ROW_LITERAL, &rel, w, sl.no));
                     }
+                    if verb_scope(&m.name) {
+                        for w in verbs_in(&lit) {
+                            findings.push(Finding::new(ROW_PLANE_VERB, &rel, w, sl.no));
+                        }
+                    }
+                }
+                if verb_scope(&m.name) {
+                    for w in fields_in(&sl.counted) {
+                        findings.push(Finding::new(ROW_PLANE_VERB, &rel, w, sl.no));
+                    }
                 }
             }
         }
@@ -253,6 +328,21 @@ impl Gate for C1LiteralsGate {
              pub const E: &str = \"a timestamp in unix seconds\";\n\
              pub const F: &str = \"SIGTERM on unix\";\n",
         );
+        let mut verb = Overlay::new();
+        verb.set(
+            file,
+            "pub fn planted() -> String { format!(\"pools.{}: refused\", 1) }\n",
+        );
+        let mut field = Overlay::new();
+        field.set(
+            file,
+            "pub struct Planted { pub upstream_model: Option<String> }\n",
+        );
+        let mut compound = Overlay::new();
+        compound.set(
+            file,
+            "pub const A: &str = \"allowed_pools\";\npub fn b(allowed_pools: u8) -> u8 { allowed_pools }\n",
+        );
         let mut comment = Overlay::new();
         comment.set(
             file,
@@ -293,6 +383,18 @@ impl Gate for C1LiteralsGate {
                     beside,
                     vec![file, "grpc"],
                 ),
+                (
+                    ROW_PLANE_VERB,
+                    "a kernel literal spelling a plane's config verb is RED, naming the verb",
+                    verb,
+                    vec![file, "pools"],
+                ),
+                (
+                    ROW_PLANE_VERB,
+                    "a kernel identifier spelling a plane's entry field is RED, naming the field",
+                    field,
+                    vec![file, "upstream_model"],
+                ),
             ],
         );
         report.push(crate::gates::prove_rows_green(
@@ -301,6 +403,13 @@ impl Gate for C1LiteralsGate {
             "the masked strings (identifier URIs, the 1.5.5 env var, unix time and OS) are not a scheme",
             &[ROW_LITERAL],
             masked,
+        ));
+        report.push(crate::gates::prove_rows_green(
+            cx,
+            self,
+            "a kernel-owned compound holding a verb (`allowed_pools`) is not a plane verb",
+            &[ROW_PLANE_VERB],
+            compound,
         ));
         report.push(crate::gates::prove_rows_green(
             cx,
