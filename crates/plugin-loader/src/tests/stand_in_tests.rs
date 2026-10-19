@@ -41,3 +41,42 @@ fn a_double_serves_only_the_transport_its_facts_name() {
     let default = crate::https_conns::HttpsConns::new();
     assert!(default.serves_scheme(&FramedFacts::stand_in().transport));
 }
+
+/// RED: a scheme the deployment serves beside the framed one, named unreached, passes the boot's
+/// scheme match, and a need over it is refused at declare, so no open reaches anything; a scheme
+/// not named stays unserved.
+#[test]
+fn an_unreached_scheme_is_served_at_boot_and_reaches_nothing() {
+    use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
+    use busbar_contract::conn::{ConnError, InstanceId, NeedId};
+    let framed = crate::https_conns::HttpsConns::framing(FramedFacts {
+        transport: "planted-framed".into(),
+        secure_scheme: "planted-secure".into(),
+        default_port: 1,
+    })
+    .unreached(["planted-unreached".to_string(), String::new()]);
+    assert!(framed.serves_scheme("planted-framed"));
+    assert!(framed.serves_scheme("planted-unreached"));
+    assert!(!framed.serves_scheme("planted-other"));
+    assert!(!framed.serves_scheme(""));
+    let need = ReadNeed {
+        direction: 0,
+        egress_class: 0,
+        transport: "planted-unreached".into(),
+        auth: String::new(),
+        target_from: String::new(),
+        trust_from: String::new(),
+        details: ReadBlob {
+            fmt: 0,
+            flags: 0,
+            bytes: Vec::new(),
+        },
+        timeout_ms: 0,
+    };
+    let (owner, id) = (InstanceId(7), NeedId(0));
+    assert_eq!(
+        framed.declare(owner, id, &need, None, None),
+        Err(ConnError::Refused)
+    );
+    assert_eq!(framed.declared(owner, id), Some(Err(ConnError::Refused)));
+}
