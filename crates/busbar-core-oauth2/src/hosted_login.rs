@@ -231,6 +231,11 @@ async fn callback(
     if !state_ok {
         return clear_and(security_check_failed());
     }
+    // 1.5.5 PARITY (Q128 p9#4): the callback admits any method with a button, a credential one
+    // included, and leaves the refusal of an authorization code it never asked for to the plugin,
+    // as 1.5.5's callback did (crates/busbar/src/auth/token.rs:466-470 at v1.5.5 filters on
+    // `has_button` alone). Refusing it here changes what such a request is answered, so it is the
+    // owner's to sign.
     if login_method(app, &cookie.method)
         .filter(|m| m.has_button)
         .is_none()
@@ -643,12 +648,6 @@ const COPY_ICON: &str = r##"<svg viewBox="0 0 16 16" fill="none" aria-hidden="tr
 /// The door/arrow-out glyph shown on the quiet "Sign out" link of the key-issued page.
 const LOGOUT_ICON: &str = r##"<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6.5 2.5H4A1.5 1.5 0 002.5 4v8A1.5 1.5 0 004 13.5h2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 10.5L12.5 8 10 5.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.5 8H6.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>"##;
 
-/// Render a friendly, BRANDED error page for the hosted browser-login flow: the same card chrome as
-/// the sign-in / key-issued pages (brand lockup, shared CSS, dark-mode aware), an alert glyph, a
-/// human-readable heading + message, and a "Back to sign in" link to `GET /auth/token`. EVERY
-/// browser-flow failure (chooser / begin / callback / credential POST) routes through here with an
-/// honest, secret-free message and the right HTTP status. The HEADLESS JSON `POST /auth/token` path
-/// keeps its `{"error":…}` body (see `exchange::refusal`) — this is the browser branch ONLY.
 /// 1.5.5's page for an identity provider that could not be reached: a login plugin that answered
 /// `LOGIN_OUTAGE` ([`LoginOutcome::Outage`]).
 fn provider_unreachable() -> Response {
@@ -660,6 +659,12 @@ fn provider_unreachable() -> Response {
     )
 }
 
+/// Render a friendly, BRANDED error page for the hosted browser-login flow: the same card chrome as
+/// the sign-in / key-issued pages (brand lockup, shared CSS, dark-mode aware), an alert glyph, a
+/// human-readable heading + message, and a "Back to sign in" link to `GET /auth/token`. EVERY
+/// browser-flow failure (chooser / begin / callback / credential POST) routes through here with an
+/// honest, secret-free message and the right HTTP status. The HEADLESS JSON `POST /auth/token` path
+/// keeps its `{"error":…}` body (see `exchange::refusal`) — this is the browser branch ONLY.
 fn error_page(status: StatusCode, heading: &str, message: &str) -> Response {
     let body = page(&format!(
         "<div class=\"brand\"><span class=\"glyph\">{GLYPH}</span><span class=\"wordmark\">Busbar</span></div>\
