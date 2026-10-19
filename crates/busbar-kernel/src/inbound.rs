@@ -1413,8 +1413,7 @@ impl Inbound {
             })
             .unwrap_or((None, false));
         // The unit's own head first, then the request the transport hands with the refusal.
-        // RED: the request is not read.
-        let _ = r.request;
+        let head = head.or(r.request);
         let path = head
             .as_ref()
             .map(|h| h.target.clone())
