@@ -50,6 +50,21 @@ fn builds_a_full_vtable_with_frozen_preamble() {
     assert!(vt.translate_cap.is_none());
 }
 
+/// RED (u30 / u36; BUSBAR-1.6.0.md Appendix A B.6, l.3846: `egress_*` and `auth_resolve` deleted;
+/// THE DESIGN §5: every dial is the connector's): no egress slot is reachable through the host
+/// vtable, and neither is the credential mint whose only redeemer was `egress_open`. A host that
+/// served any of them again would hand a plane an outbound path outside the connector.
+#[test]
+fn no_egress_slot_and_no_credential_mint_is_reachable() {
+    let vt = build_plane_host_vtable();
+    assert!(vt.egress_open.is_none(), "egress_open");
+    assert!(vt.egress_poll.is_none(), "egress_poll");
+    assert!(vt.egress_write.is_none(), "egress_write");
+    assert!(vt.egress_close.is_none(), "egress_close");
+    assert!(vt.egress_fault.is_none(), "egress_fault");
+    assert!(vt.auth_resolve.is_none(), "auth_resolve");
+}
+
 #[test]
 fn wired_clock_now_returns_a_nonzero_nanos_clock() {
     with_test_state(|host, vt, _scope| {
