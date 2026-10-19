@@ -181,19 +181,6 @@ impl RawPlaneSection {
     }
 }
 
-/// This plane's EMPTY registry section, via its `default_section` seam hook — the value a neutral
-/// `*Section` newtype takes when its `#[serde(default)]` field is ABSENT. A plane compiled out has no
-/// hook and falls back to an empty raw capture (never present, never refused). Byte-identical to the
-/// pre-seam typed field's `Default`.
-fn default_plane_section(config_section: &str) -> Box<dyn PlaneCfg> {
-    match crate::plane::registry::plane_decl_for_config_section(config_section)
-        .and_then(|d| d.default_section)
-    {
-        Some(f) => f(),
-        None => Box::new(RawPlaneSection::default()),
-    }
-}
-
 /// Deserialize this plane's top-level registry section through its `parse_section` seam hook, so the
 /// neutral carrier names no plane registry type. A plane compiled out has no hook and captures the
 /// section RAW (refused at `resolve` if present). The hook's `Err(String)` is surfaced through
