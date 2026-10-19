@@ -3480,12 +3480,50 @@ fn a_recovered_posting_names_the_card_in_force_at_its_arrival() {
     assert_ne!(in_force, busbar_kernel_ledger::cost::HistorySeq::OPENING);
 }
 
+/// A LIVE HOLDER: `lease` refreshed on every lease poll until the guard drops, as a running node's
+/// flush tick refreshes it.
+struct Refreshing(
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+    Option<std::thread::JoinHandle<()>>,
+);
+
+impl Refreshing {
+    fn new(
+        slots: &crate::root::store_double::RecordSlots,
+        lease: Option<&store_identity::NodeLease>,
+    ) -> Self {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let handle = lease.cloned().map(|lease| {
+            let (calls, stop) = (slots.calls(), std::sync::Arc::clone(&stop));
+            std::thread::spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = lease.refresh(calls.as_ref());
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        store_identity::LEASE_TTL_MS / 9,
+                    ));
+                }
+            })
+        });
+        Refreshing(stop, handle)
+    }
+}
+
+impl Drop for Refreshing {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(handle) = self.1.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
 /// Two LIVE nodes that share one host name — `host`, or none at all — on one store: each takes its
 /// identity, seals its own audit records and settles its own money, and each restarted book over
 /// the store reads back exactly its own (Q128 root part 12 HIGH 2).
 fn two_live_nodes_keep_their_own_records(host: &str) {
     let slots = crate::root::store_double::RecordSlots::new();
     let a = take_node(slots.calls().as_ref(), host).expect("the first node's identity");
+    let _live = Refreshing::new(&slots, a.lease.as_ref());
     let b = take_node(slots.calls().as_ref(), host).expect("the second node's identity");
     assert_ne!(
         a.id, b.id,
@@ -3557,10 +3595,11 @@ fn two_live_nameless_nodes_keep_separate_money_and_audit_records() {
     two_live_nodes_keep_their_own_records("");
 }
 
-/// **A RESTART AFTER ITS PREDECESSOR'S LEASE LAPSED RESUMES THE CHAIN AND RECOVERS ITS HOLDS**
-/// (Q128): a node with no data directory killed with a hold open (no release), restarted once its
-/// lease lapsed, takes the host's id back under a lease of its own and resumes its chain. (The
-/// in-process sweep never sees a dead process's holds; resuming the chain is what recovers them.)
+/// **A CRASH-RESTART RESUMES THE SAME CHAIN AND RECOVERS ITS HOLDS** (Q128): a node with no data
+/// directory killed with a hold open (its lease neither released nor refreshed again) restarts at
+/// once; the new boot watches the lease, sees it lapse unrefreshed, takes the host's id back under
+/// a lease of its own and resumes its chain. (The in-process sweep never sees a dead process's
+/// holds; resuming the chain is what recovers them.)
 ///
 /// RED before the fix: no lease was taken, so the restart held nothing a second process would see.
 #[test]
@@ -3593,9 +3632,6 @@ fn a_restart_after_the_lease_lapsed_resumes_the_chain_and_recovers_the_holds() {
         std::mem::forget(durability);
         std::mem::forget(first.lease);
     }
-    std::thread::sleep(std::time::Duration::from_millis(
-        store_identity::LEASE_TTL_MS + 100,
-    ));
     let again = take_node(slots.calls().as_ref(), "host-lapse").expect("an identity");
     assert_eq!(again.id, first.id, "the restart takes the host's id back");
     assert!(again.lease.is_some(), "under a lease of its own");
@@ -3616,15 +3652,16 @@ fn a_restart_after_the_lease_lapsed_resumes_the_chain_and_recovers_the_holds() {
     assert_eq!(next.id, first.id, "a released lease is taken at once");
 }
 
-/// **A RESTART WHILE ITS PREDECESSOR'S LEASE IS STILL LIVE TAKES A FRESH ID** (Q128, the crash
-/// overlap): the second process cannot tell a crashed holder from a live one inside one lease
-/// period, so it journals under an id of its own and leaves the host's chain untouched.
+/// **A BOOT WHILE ITS PREDECESSOR STILL REFRESHES THE LEASE TAKES A FRESH ID** (Q128, the
+/// overlap): the lease is refreshed while the second process watches it, so its holder is live, and
+/// the second journals under an id of its own and leaves the host's chain untouched.
 ///
 /// RED before the fix: the second process took the host's id and wrote over the first's chain.
 #[test]
 fn a_restart_while_the_old_lease_is_live_takes_a_fresh_id() {
     let slots = crate::root::store_double::RecordSlots::new();
     let first = take_node(slots.calls().as_ref(), "host-overlap").expect("an identity");
+    let live = Refreshing::new(&slots, first.lease.as_ref());
     {
         let mut durability = store_book(&slots, first.id);
         for unit in 1..=3 {
@@ -3636,6 +3673,7 @@ fn a_restart_while_the_old_lease_is_live_takes_a_fresh_id() {
         std::mem::forget(durability);
     }
     let second = take_node(slots.calls().as_ref(), "host-overlap").expect("an identity");
+    drop(live);
     assert_ne!(second.id, first.id, "a live lease is never shared");
     assert!(second.lease.is_none(), "and the second holds none");
     {
@@ -3784,6 +3822,7 @@ fn a_data_dir_node_that_adopted_the_host_id_holds_its_lease_against_a_no_data_di
         adopted.id, 77,
         "the data-dir node adopts the host name's id"
     );
+    let _live = Refreshing::new(&slots, adopted.lease.as_ref());
     let peer = take_node(slots.calls().as_ref(), "host-mix").expect("an identity");
     assert_ne!(
         peer.id, adopted.id,

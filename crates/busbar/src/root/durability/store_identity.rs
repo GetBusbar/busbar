@@ -391,6 +391,15 @@ pub struct NodeLease;
 
 #[cfg(test)]
 impl NodeLease {
+    /// Refresh the lease.
+    ///
+    /// # Errors
+    ///
+    /// None yet.
+    pub fn refresh(&self, _calls: &dyn StoreCalls) -> Result<bool, String> {
+        Ok(true)
+    }
+
     /// Release the lease.
     ///
     /// # Errors
