@@ -8098,3 +8098,114 @@ fn an_unopened_door_plane_is_awaiting_restart_once_a_configuration_writes_its_se
         "awaiting restart is not a refusal: the configuration is accepted and stored"
     );
 }
+
+/// The egress a door plane named `plane` seals over `section`, its entries `a` and `b` each routed
+/// to one far end.
+fn walk_over(plane: &str, section: &str) -> busbar_kernel::plane_driver::Egress {
+    use busbar_kernel::plane_driver::{MemberRoute, ResponseKeep};
+    let route = MemberRoute {
+        need: busbar_contract::conn::NeedId(0),
+        base_url: "https://far.example".to_string(),
+        auth: None,
+        provider: "far".to_string(),
+        keep: ResponseKeep::default(),
+        rides: Vec::new(),
+        anchors: busbar_contract::transport::trust::Anchors::default(),
+        spelled: Vec::new(),
+    };
+    let routes = std::collections::BTreeMap::from([
+        ("a".to_string(), route.clone()),
+        ("b".to_string(), route),
+    ]);
+    let section: serde_yaml::Value = serde_yaml::from_str(section).expect("yaml");
+    let facts = super::door_facts(plane, &[], &[], &[], "audit", Vec::new());
+    let node = std::sync::Arc::new(crate::root::plane_node::Node::new());
+    let post = std::sync::Arc::new(crate::root::plane_node::NodeEndPost::new(node));
+    let table = std::sync::Arc::new(Sealing::default());
+    super::compose_egress(
+        &facts,
+        &DoorPools::of(&section),
+        busbar_contract::conn::InstanceId(7),
+        table as std::sync::Arc<dyn busbar_contract::conn::PollConns>,
+        &routes,
+        post as std::sync::Arc<dyn busbar_kernel_egress::ports::Journal>,
+        1,
+    )
+    .expect("the egress composes")
+}
+
+/// ONE POOL WALK FOR EVERY PLANE (Law 1: core "treats every instance of a kind identically"; THE
+/// DESIGN §1: "A capability one plane has and a sibling plane lacks is a gap to close"): a pool's
+/// declared member weights and attempt bounds, its failover bounds and its exhaustion terminal are
+/// the pools grammar's, and the walk a door plane seals over them is the walk the kernel's pools
+/// grammar resolves for the same declaration, whichever plane declares it. RED before Q128 root-p14
+/// #2: the generic door egress sealed every member at weight 1 under the default bounds and terminal
+/// whatever the pool declared, and only the plane serving the `pools` map walked its declaration.
+#[test]
+fn two_planes_declaring_the_same_pools_get_the_same_walk() {
+    let section = "a: {url: \"https://far.example/a\"}\nb: {url: \"https://far.example/b\"}\n\
+                   pools:\n  p:\n    members:\n      - {name: a, weight: 3, attempt_timeout_ms: 250}\n      \
+                   - {name: b, weight: 1}\n    failover: {timeout_secs: 7, max_hops: 1, exclusions: [b]}\n    \
+                   on_exhausted: least_bad\n";
+    // The same pool in the kernel's pools grammar, as the plane serving the `pools` map reads it.
+    let declared: busbar_kernel::config::PoolCfg = serde_yaml::from_str(
+        "members:\n  - {model: a, weight: 3, attempt_timeout_ms: 250}\n  - {model: b, weight: 1}\n\
+         failover: {timeout_secs: 7, max_hops: 1, exclusions: [b]}\non_exhausted: least_bad\n",
+    )
+    .expect("the kernel's pools grammar reads the pool");
+    let failover = declared.failover.as_ref().expect("a failover is declared");
+    let expected_failover = busbar_kernel_egress::Failover {
+        timeout_secs: failover.timeout_secs,
+        max_hops: failover.max_hops,
+        exclusions: failover.exclusions.clone().unwrap_or_default(),
+    };
+    let expected_terminal = match declared.on_exhausted.as_ref() {
+        None | Some(busbar_kernel::config::OnExhaustedCfg::Reject) => {
+            busbar_kernel_egress::OnExhausted::Status503
+        }
+        Some(busbar_kernel::config::OnExhaustedCfg::LeastBad) => {
+            busbar_kernel_egress::OnExhausted::LeastBad
+        }
+        Some(busbar_kernel::config::OnExhaustedCfg::FallbackPool(p)) => {
+            busbar_kernel_egress::OnExhausted::FallbackPool(p.clone())
+        }
+        Some(busbar_kernel::config::OnExhaustedCfg::Queue { max_ms }) => {
+            busbar_kernel_egress::OnExhausted::Queue { max_ms: *max_ms }
+        }
+    };
+    let expected_members: Vec<(u32, Option<u64>)> = declared
+        .members
+        .iter()
+        .map(|m| (m.weight, m.attempt_timeout_ms))
+        .collect();
+    let walk = |plane: &str| {
+        let egress = walk_over(plane, section);
+        let pool = egress.pools.get("p").cloned().expect("the pool is sealed");
+        (
+            pool.members
+                .iter()
+                .map(|m| (m.weight, m.attempt_timeout_ms))
+                .collect::<Vec<_>>(),
+            pool.failover,
+            pool.on_exhausted,
+        )
+    };
+    let one = walk("plane-one");
+    let two = walk("plane-two");
+    assert_eq!(
+        one, two,
+        "two planes declaring the same pools walk them alike"
+    );
+    assert_eq!(
+        one.0, expected_members,
+        "each member walks at its declared weight and attempt bound, in its declared order"
+    );
+    assert_eq!(
+        one.1, expected_failover,
+        "the pool's declared failover bounds the walk"
+    );
+    assert_eq!(
+        one.2, expected_terminal,
+        "the pool's declared terminal ends the walk"
+    );
+}
