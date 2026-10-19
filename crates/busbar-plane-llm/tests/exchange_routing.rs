@@ -182,3 +182,47 @@ fn the_tables_carry_the_routing_the_snapshot_publishes() {
     assert_eq!(shaping.routing, routing::of(&settings()).unwrap());
     assert_eq!(shaping.routing.len(), 5, "three models, two pools");
 }
+
+// ── the boot lines (coordinator ruling (a)) ─────────────────────────────────────────────────────
+
+/// RED: a boot line's words, order, cap, upstream arrow or aggregate move from v1.5.5's
+/// (`crates/busbar/src/main.rs:2886`, `:3042`, `:3046` at v1.5.5).
+#[test]
+fn the_boot_lines_are_1_5_5s() {
+    use busbar_plane_llm::exchange::boot;
+    let routes = routing::of(&settings()).unwrap();
+    let urls = std::collections::BTreeMap::from([
+        ("oai".to_string(), "https://api.example".to_string()),
+        ("ant".to_string(), "https://anthropic.example".to_string()),
+    ]);
+    let unbounded = boot::UNBOUNDED_CAP;
+    assert_eq!(
+        unbounded, 2_305_843_009_213_693_951,
+        "tokio's MAX_PERMITS on 64-bit"
+    );
+    assert_eq!(
+        boot::lines(&routes, &urls),
+        [
+            "  model claude via ant (https://anthropic.example) max unbounded".to_string(),
+            "  model gpt via oai (https://api.example) max 4 → upstream o1-mini".to_string(),
+            "  model lonely via ant (https://anthropic.example) max unbounded".to_string(),
+            "busbar: 3 models, 2 pools".to_string(),
+            "  pool /alt = [gpt] aggregate 4".to_string(),
+            format!("  pool /main = [claude, gpt] aggregate {}", unbounded + 4),
+        ]
+    );
+}
+
+/// RED: the plane re-derives the URL it prints (it prints the kernel's display string as handed,
+/// userinfo already stripped there) or prints a provider it was handed no URL for as anything but
+/// empty.
+#[test]
+fn the_boot_line_prints_the_handed_display_url() {
+    use busbar_plane_llm::exchange::boot;
+    let routes = routing::of(&settings()).unwrap();
+    let urls =
+        std::collections::BTreeMap::from([("oai".to_string(), "https://api.example".to_string())]);
+    let lines = boot::lines(&routes, &urls);
+    assert_eq!(lines[0], "  model claude via ant () max unbounded");
+    assert!(lines.iter().all(|l| !l.contains('@')));
+}
