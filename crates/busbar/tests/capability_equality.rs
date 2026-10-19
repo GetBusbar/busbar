@@ -1201,8 +1201,8 @@ fn plane_keys_from_single_source(root: &Path) -> Vec<String> {
 }
 
 /// A plane key's ON-DISK suffix, read off the same single source's `plane_ondisk_key` (a key whose
-/// engine crate is deleted lives in its `plane-` door crate: `llm` is `plane-llm`, DEV-GREEN row
-/// 83). A key the function does not map is its own suffix, as `crates/busbar-<key>`.
+/// engine crate is deleted lives in its `plane-` door crate, DEV-GREEN row 83). A key the function
+/// does not map is its own suffix, as `crates/busbar-<key>`.
 fn plane_ondisk_suffix(root: &Path, key: &str) -> String {
     let src = std::fs::read_to_string(root.join("scripts/plane-keys.sh"))
         .expect("the single source of plane keys");

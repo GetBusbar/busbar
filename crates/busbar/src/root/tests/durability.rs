@@ -2508,8 +2508,8 @@ fn a_torn_settlement_is_cut_and_its_hold_recovers() {
 fn every_fallback_open_class_prices_at_the_card_and_replays_idempotently() {
     use busbar_kernel_ledger::cost::LaneClass;
     const RATE: u64 = 3_000;
-    // The plane rows the linked doors fold to, as the composition root folds them: the llm plane
-    // is a door row (DEV-GREEN row 83), so its declaration is its door's Statement.
+    // The plane rows the linked doors fold to, as the composition root folds them: the fallback
+    // plane is a door row (DEV-GREEN row 83), so its declaration is its door's Statement.
     let fallback = {
         use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
         let mut fallbacks: Vec<_> = crate::LINKED

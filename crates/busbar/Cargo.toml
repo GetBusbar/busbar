@@ -436,9 +436,9 @@ transport-grpc = "transport transport-door"
 transport-stdio = "transport transport-door"
 transport-webrtc = "transport transport-door"
 plane-decisions = "plane-door"
-# The llm door's row also fills the protocol axis with the plane's own dialect declarations
-# (`busbar_plane_llm::codec::DECLS`, contract data; ARCHITECT 2026-10-16 ruling 3): the kernel's
-# registry is seeded from the plane, and names none.
+# The fallback plane's door row also fills the protocol axis with the plane's own dialect
+# declarations (its entry's `PROTOCOLS`, contract data; ARCHITECT 2026-10-16 ruling 3): the
+# kernel's registry is seeded from the plane, and names none.
 plane-llm-door = "plane-door protocols"
 plane-mcp-door = "plane-door"
 plane-streaming = "plane-door"
