@@ -171,8 +171,10 @@ pub fn table(a: &Addresses) -> Vec<CensusRow> {
         // ── THE ONE BY-NAME PROTOCOL RESOLUTION. Before the registry there were THREE, each a list
         //    of protocol names core had been edited to know. The failure mode of a second is a
         //    protocol that resolves for routing and not for dispatch, discovered as a 404 on a path
-        //    that is mounted.
-        r("protocol-name-resolution", "PROTOCOL-LOOKUP-RESPELT", r"fn[[:space:]]+decl_for[[:space:]]*\(", 1, tree,
+        //    that is mounted. The resolution is the dialects' plane's own (`decl_of` over its own
+        //    declarations): the kernel's registry, which production never populated, left with the
+        //    declaration shapes (Q128 contract p11 finding 1).
+        r("protocol-name-resolution", "PROTOCOL-LOOKUP-RESPELT", r"fn[[:space:]]+decl_of[[:space:]]*\(", 1, tree,
           "there is exactly ONE by-name protocol resolution in busbar, and a second one is a second answer to which protocols exist"),
     ]
 }

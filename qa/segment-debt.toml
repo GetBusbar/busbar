@@ -229,20 +229,6 @@ dialect = "anthropic"
 owner = "kernel-neutrality lane"
 
 [[segment-debt]]
-file = "crates/busbar/src/root/tests/linked_protocols.rs"
-line = 315
-text = "fn test_residual_dialect_colon_model_id_is_openai_not_gemini() {"
-dialect = "gemini"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar/src/root/tests/linked_protocols.rs"
-line = 330
-text = "fn test_residual_dialect_names_none_rather_than_defaulting_to_openai() {"
-dialect = "openai"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
 file = "crates/busbar/src/root/tests/plane_node.rs"
 line = 25
 text = "const PROTO: &str = proto_codec::PROTO_OPENAI;"
@@ -401,13 +387,6 @@ file = "crates/busbar/tests/endpoints_cross_plane.rs"
 line = 658
 text = "busbar_kernel::proto::PROTO_OPENAI,"
 dialect = "openai"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar/tests/key_expires_at_cross_plane.rs"
-line = 91
-text = "let _ = busbar_kernel::proto::decl_for(busbar_kernel::proto::PROTO_ANTHROPIC);"
-dialect = "anthropic"
 owner = "kernel-neutrality lane"
 
 [[segment-debt]]
