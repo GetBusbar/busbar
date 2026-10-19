@@ -250,21 +250,37 @@ impl LoginMethods {
             if !axis.answers(&mc.module) {
                 return Err(refused(super::auth_refusal(registry, &mc.module)));
             }
+            // 1.5.5 PARITY (crates/busbar/src/auth/token.rs:221-227 and :244-246 at v1.5.5): the
+            // public `client_id` rides the method's settings and the `issuer` is read off them to
+            // pick the chooser button's brand, exactly as 1.5.5 read and wrote them.
             let issuer = mc
                 .settings
                 .get("issuer")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
             let has_button = mc.browser_login.is_some();
-            // The confidential-client secret is the PLUGIN's to hold (THE DESIGN 6.7): it is lent
-            // at `open` as the Statement's `client_secret` secret reference (the loader takes it
-            // out of the settings), never kept here, and the plugin makes its own token exchange
-            // with it.
+            // The confidential-client secret is the PLUGIN's to hold (THE DESIGN §6 item 7: "IdP
+            // logins hold their own client secret"): it is lent at `open` as the Statement's
+            // `client_secret` secret reference (the loader lifts each key the Statement names in
+            // `secret_refs` out of the settings and hands it over as a secret blob), never kept
+            // here, and the plugin makes its own token exchange with it.
             if let Some(sref) = mc
                 .browser_login
                 .as_ref()
                 .and_then(|bl| bl.client_secret.as_ref())
             {
+                // A plugin whose Statement names no `client_secret` slot would receive the secret
+                // inline in its plain settings text, never as a secret blob. 1.5.5 never handed
+                // the secret to a plugin at all (it held it core-side, token.rs:253-277 at
+                // v1.5.5), so such a plugin is refused at build rather than lent it in the clear.
+                if !states_secret_slot(registry, &mc.module, CLIENT_SECRET_SLOT) {
+                    return Err(format!(
+                        "identity-providers.{name} browser_login.client_secret: the login plugin \
+                         '{}' states no `{CLIENT_SECRET_SLOT}` secret reference, so it cannot be \
+                         lent the client secret as a secret",
+                        mc.module
+                    ));
+                }
                 let secret = secret_resolver
                     .resolve_string_at_config(
                         sref,
@@ -274,20 +290,20 @@ impl LoginMethods {
                         format!("identity-providers.{name} browser_login.client_secret: {e}")
                     })?;
                 resolved.insert(
-                    "client_secret".to_string(),
+                    CLIENT_SECRET_SLOT.to_string(),
                     serde_json::Value::String(secret),
                 );
             }
             // Opened by the provider definition's `module:` (the plugin), REGISTERED under the
             // provider NAME (the instance): two named providers may share one login plugin with
             // different issuers/clients.
-            let calls = axis
-                .open(
-                    &mc.module,
-                    &login_label(name),
-                    &serde_json::Value::Object(resolved),
-                )
-                .map_err(&refused)?;
+            let mut lent = serde_json::Value::Object(resolved);
+            let opened = axis.open(&mc.module, &login_label(name), &lent);
+            // The kernel's copy of the lent settings (the resolved client secret and every
+            // resolved secret reference among them) is wiped the moment `open` answers, whatever
+            // it answered (THE DESIGN §6 K2: "auth material is zeroised").
+            wipe_lent_settings(&mut lent);
+            let calls = opened.map_err(&refused)?;
             // The plugin's login kind, as its tail states it (read without a `begin_login`).
             // A plugin whose tail states no login serves only the headless method; a
             // `browser_login` button needs one that logs in.
@@ -318,6 +334,37 @@ impl LoginMethods {
             );
         }
         Ok(Self { methods })
+    }
+}
+
+/// The settings key a login plugin's Statement names in `secret_refs` to be lent the resolved
+/// `browser_login.client_secret` at `open`.
+const CLIENT_SECRET_SLOT: &str = "client_secret";
+
+/// Whether `module`'s Statement (as `registry` holds it) names `key` among its `secret_refs`: the
+/// keys the loader lifts out of the settings and lends as secret blobs. A module the registry does
+/// not resolve, or whose Statement does not read back, states none.
+fn states_secret_slot(
+    registry: &busbar_plugin_loader::PluginRegistry,
+    module: &str,
+    key: &str,
+) -> bool {
+    registry
+        .resolve(module)
+        .and_then(busbar_plugin_loader::LoadablePlugin::statement)
+        .and_then(|bytes| busbar_contract::abi::mechanism::rendering::read(&bytes).ok())
+        .is_some_and(|stated| stated.secret_refs.iter().any(|k| k == key))
+}
+
+/// Wipe every string the lent settings document holds (THE DESIGN §6 K2: auth material is
+/// zeroised): the kernel keeps no copy of what it lent a login plugin at `open`.
+fn wipe_lent_settings(lent: &mut serde_json::Value) {
+    use zeroize::Zeroize as _;
+    match lent {
+        serde_json::Value::String(s) => s.zeroize(),
+        serde_json::Value::Array(items) => items.iter_mut().for_each(wipe_lent_settings),
+        serde_json::Value::Object(map) => map.values_mut().for_each(wipe_lent_settings),
+        _ => {}
     }
 }
 
