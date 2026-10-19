@@ -410,8 +410,9 @@ impl std::fmt::Debug for ExportInstance {
     }
 }
 
-/// Dropping the instance stops its flusher: the deliveries in flight answer, the rest of the queue
-/// is shed.
+/// Dropping the instance stops its flusher (the deliveries in flight answer, the rest of the queue
+/// is shed), then CLOSES it, ticket-less, as the hook, secret and store doors close theirs: its
+/// teardown runs, whether it was let go at a reload or opened only to judge a configuration.
 impl Drop for ExportInstance {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Release);
@@ -424,6 +425,9 @@ impl Drop for ExportInstance {
         if let Some(f) = flusher {
             let _ = f.join();
         }
+        let mut f: Frame<InHead, busbar_contract::abi::mechanism::call::OutHead> =
+            Frame::new(in_head(), out_head());
+        let _ = self.shared.plugin.call(lc::CLOSE, &mut f);
     }
 }
 
