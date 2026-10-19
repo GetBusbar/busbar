@@ -117,7 +117,7 @@ fn test_probe_sends_native_user_agent_and_accept_headers() {
     let head: Vec<(&[u8], &[u8])> =
         vec![(b"content-type".as_slice(), b"application/json".as_slice())];
     let body = br#"{"model":"claude","max_tokens":5,"messages":[{"role":"user","content":"hi"}]}"#;
-    let arrived = arrive("POST", "/v1/messages", &head, body, &()).expect("arrives");
+    let arrived = arrive("POST", "/v1/messages", &head, body).expect("arrives");
     let organic = build(HOST, &arrived, &head, &s, "p", "claude").expect("built");
 
     assert_eq!(

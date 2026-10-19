@@ -542,15 +542,9 @@ impl Shaping {
         Some(own.unwrap_or(lane.reasoning))
     }
 
-    /// The configured provider serving `model`, for the ad-hoc surface's door check.
+    /// The configured provider serving `model`, for the ad-hoc surface's check at the attempt.
     #[must_use]
     pub fn provider_of(&self, model: &str) -> Option<&str> {
         self.lanes.get(model).map(|l| l.provider.as_str())
-    }
-}
-
-impl super::arrive::Catalogue for Shaping {
-    fn provider_of(&self, model: &str) -> Option<&str> {
-        Shaping::provider_of(self, model)
     }
 }

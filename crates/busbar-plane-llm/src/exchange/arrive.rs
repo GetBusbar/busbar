@@ -42,7 +42,9 @@ pub enum Decline {
     PathNotFound = 7,
     /// An InvokeModel body names no supported operation.
     InvokeBody = 8,
-    /// The ad-hoc surface names a model another provider serves.
+    /// RESERVED, never produced at arrival: the ad-hoc surface's provider mismatch is refused by the
+    /// attempt, after the caller is authenticated ([`Arrived::adhoc_provider`]). The code keeps its
+    /// number so no other decline is renumbered.
     ProviderMismatch = 9,
     /// A dialect path hit with a method other than POST.
     MethodNotAllowed = 10,
@@ -116,19 +118,13 @@ pub struct Arrived {
     pub query: Option<String>,
     /// Set when the URL names the model.
     pub path_model: Option<PathModel>,
-}
-
-/// What the plane knows of the configured catalogue, for the one surface that checks it at the door.
-pub trait Catalogue {
-    /// The provider serving `model`, when a configured model of that name exists.
-    fn provider_of(&self, model: &str) -> Option<&str>;
-}
-
-/// No catalogue: every ad-hoc route is taken as asked.
-impl Catalogue for () {
-    fn provider_of(&self, _model: &str) -> Option<&str> {
-        None
-    }
+    /// The provider the ad-hoc surface `/{provider}/{model}/v1/messages` names. Nothing here
+    /// checks it: arrival runs before the caller is authenticated, and a refusal that depends on
+    /// the configured catalogue would tell an anonymous caller which models exist. The attempt
+    /// refuses a mismatch once the caller is admitted, as 1.5.5 did (v1.5.5
+    /// crates/busbar/src/ingress/mod.rs:1323-1327 authenticates and admits through
+    /// `governance_guard`, then :1363-1375 answers the mismatch).
+    pub adhoc_provider: Option<String>,
 }
 
 fn decl(name: &str) -> Option<&'static ProtocolDecl> {
@@ -278,7 +274,6 @@ pub fn arrive(
     target: &str,
     fields: HeadFields<'_>,
     body: &[u8],
-    catalogue: &dyn Catalogue,
 ) -> Result<Arrived, Declined> {
     let (path, query) = match target.split_once('?') {
         Some((p, q)) => (p, Some(q)),
@@ -290,24 +285,13 @@ pub fn arrive(
             return Err(method_not_allowed(path));
         }
         let proto = residual("/v1/messages").unwrap_or("");
-        let hint = match c {
-            Convenience::Named(name) => name,
-            Convenience::Adhoc(provider, model) => {
-                if let Some(serving) = catalogue.provider_of(&model) {
-                    if serving != provider {
-                        return Err(declined(
-                            Decline::ProviderMismatch,
-                            400,
-                            proto,
-                            KIND_INVALID_REQUEST,
-                            super::refuse::model_not_found(&model, None),
-                        ));
-                    }
-                }
-                model
-            }
+        let (hint, adhoc_provider) = match c {
+            Convenience::Named(name) => (name, None),
+            Convenience::Adhoc(provider, model) => (model, Some(provider)),
         };
-        return body_arrival(proto, path, query, fields, body, Some(hint));
+        let mut arrived = body_arrival(proto, path, query, fields, body, Some(hint))?;
+        arrived.adhoc_provider = adhoc_provider;
+        return Ok(arrived);
     }
     let Some(proto) = detect(path, fields) else {
         return Err(no_resource(path));
@@ -419,6 +403,7 @@ fn body_arrival(
         path: path.to_string(),
         query: query.map(str::to_string),
         path_model: None,
+        adhoc_provider: None,
     })
 }
 
@@ -668,5 +653,6 @@ fn path_model_arrival(
         path: path.to_string(),
         query: query.map(str::to_string),
         path_model: Some(facts),
+        adhoc_provider: None,
     })
 }

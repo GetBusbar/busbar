@@ -21,6 +21,7 @@ fn arrived(dialect: &'static str, body: &[u8], parsed: Option<serde_json::Value>
         path: "/v1/embeddings".to_string(),
         query: None,
         path_model: None,
+        adhoc_provider: None,
     }
 }
 

@@ -69,7 +69,7 @@ fn arrived(body: &str, extra: &[(&'static [u8], &'static [u8])]) -> (Arrived, He
         (&b"anthropic-version"[..], &b"2023-06-01"[..]),
     ];
     h.extend_from_slice(extra);
-    let a = arrive("POST", "/v1/messages", &h, body.as_bytes(), &()).expect("arrives");
+    let a = arrive("POST", "/v1/messages", &h, body.as_bytes()).expect("arrives");
     (a, h)
 }
 

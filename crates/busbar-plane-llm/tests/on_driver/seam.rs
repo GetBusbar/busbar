@@ -1521,7 +1521,7 @@ async fn apply_rewrite_to_body_swaps_messages_and_is_fail_safe() {
     let head: &[(&[u8], &[u8])] = &[(b"content-type", b"application/json")];
     let rewrite = br#"{"messages":[{"role":"user","content":"compressed"}],"tools":[]}"#;
     let non_chat = br#"{"model":"m0","contents":[{"parts":[]}]}"#;
-    if let Ok(mut arrived) = arrive("POST", "/v1/chat/completions", head, non_chat, &()) {
+    if let Ok(mut arrived) = arrive("POST", "/v1/chat/completions", head, non_chat) {
         let before = arrived.body.clone();
         assert_eq!(
             apply_rewrite(&mut arrived, rewrite),
@@ -1531,7 +1531,7 @@ async fn apply_rewrite_to_body_swaps_messages_and_is_fail_safe() {
         assert_eq!(arrived.body, before);
     }
     let chat = br#"{"model":"m0","messages":[{"role":"user","content":"x"}]}"#;
-    let mut arrived = arrive("POST", "/v1/chat/completions", head, chat, &()).expect("arrives");
+    let mut arrived = arrive("POST", "/v1/chat/completions", head, chat).expect("arrives");
     let before = arrived.body.clone();
     assert_eq!(
         apply_rewrite(&mut arrived, br#"{"messages":[],"tools":[]}"#),

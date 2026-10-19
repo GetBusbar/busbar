@@ -184,8 +184,8 @@ fn one_forward(shaping: &busbar_plane_llm::exchange::shaping::Shaping, body: &[u
     use busbar_plane_llm::exchange::reply::{At, Reply, ReplyCtx};
     use busbar_plane_llm::exchange::{arrive::arrive, handler_of};
     let caller: &[(&[u8], &[u8])] = &[(b"content-type", b"application/json")];
-    let arrived = arrive("POST", "/v1/chat/completions", caller, body, shaping)
-        .expect("the caller's request arrives");
+    let arrived =
+        arrive("POST", "/v1/chat/completions", caller, body).expect("the caller's request arrives");
     let far =
         build(HOST, &arrived, caller, shaping, "p", "gpt-4o").expect("the attempt is written");
     assert!(!far.body.is_empty(), "the far end is sent a body");

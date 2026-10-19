@@ -6921,6 +6921,51 @@ mod pools_door_refusals {
         assert_eq!((first.served(), second.served()), (0, 0));
     }
 
+    /// AN ANONYMOUS PROBE OF THE AD-HOC ROUTE LEARNS NOTHING OF THE CATALOGUE (Q128 plane-llm p17,
+    /// security; coordinator ruling 2026-10-19). v1.5.5 authenticated the caller before it looked
+    /// at the model (crates/busbar/src/ingress/mod.rs:1323-1327, then the mismatch arm at
+    /// :1363-1375), so a caller with no credential got the authentication refusal whether or not
+    /// the route named a configured model under the wrong provider. Driven here with no key: the
+    /// mismatched route (`/oai1/m0`, `m0` is another provider's), and the same route under a name
+    /// that is no provider at all, both answer 401 `authentication_error`, never the 400 mismatch
+    /// refusal, and nothing is dialled. RED: the mismatched probe reads 400 (the catalogue leaks),
+    /// or the two probes answer differently.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_anonymous_ad_hoc_probe_is_refused_before_the_catalogue_is_consulted() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-gate-adhoc-anonymous-probe";
+        let _published = Withdrawn(instance);
+        let (rig, far) = keyed(instance).await;
+        let mut answers = Vec::new();
+        for provider in ["oai1", "no-such-provider"] {
+            let (status, _, body) = rig
+                .send_bare(
+                    "POST",
+                    &format!("/{provider}/m0{}", door_word("messages_path")),
+                    Some(serde_json::json!({"model": "m0", "messages": [], "max_tokens": 16})),
+                    &[],
+                )
+                .await;
+            assert_eq!(
+                status,
+                401,
+                "{provider}: {}",
+                String::from_utf8_lossy(&body)
+            );
+            let answer = json_of(&body);
+            assert_eq!(
+                answer["error"]["type"], "authentication_error",
+                "{provider}: {answer}"
+            );
+            answers.push(answer["error"].clone());
+        }
+        assert_eq!(
+            answers[0], answers[1],
+            "the two probes read the same refusal"
+        );
+        assert_eq!(far.served(), 0, "nothing is dialled");
+    }
+
     /// AN EXHAUSTED RATE ON EVERY CALLER DIALECT (F25 row 468; legacy
     /// `ingress_integration_tests::test_governance_rate_limit_429_native_envelope_all_ingress`): a
     /// key whose group allows no request a minute is refused 429 with a `Retry-After` on all six

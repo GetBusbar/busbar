@@ -712,6 +712,7 @@ fn arrival(dialect: &'static str, stream: bool) -> Arrived {
         path: "/v1/chat/completions".to_string(),
         query: None,
         path_model: None,
+        adhoc_provider: None,
     }
 }
 
@@ -1080,6 +1081,7 @@ mod rehomed_answers {
                 json_array,
                 model_not_found_message: None,
             }),
+            adhoc_provider: None,
         }
     }
 
@@ -3332,6 +3334,7 @@ mod rehomed_metering {
                 json_array,
                 model_not_found_message: None,
             }),
+            adhoc_provider: None,
         }
     }
 

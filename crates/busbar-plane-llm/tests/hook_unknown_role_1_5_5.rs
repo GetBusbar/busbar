@@ -18,7 +18,7 @@ use busbar_plane_llm::exchange::project::project;
 fn arrived(target: &str, body: &serde_json::Value) -> busbar_plane_llm::exchange::arrive::Arrived {
     let bytes = serde_json::to_vec(body).expect("body serializes");
     let fields: &[(&[u8], &[u8])] = &[(b"content-type", b"application/json")];
-    arrive("POST", target, fields, &bytes, &()).expect("the request arrives")
+    arrive("POST", target, fields, &bytes).expect("the request arrives")
 }
 
 /// RED: the reader's refusal of the unknown role made the projection fail, and the door refused

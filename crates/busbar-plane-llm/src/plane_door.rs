@@ -1520,7 +1520,7 @@ slot!(
             };
         }
         let caller = unit.caller_fields();
-        let arrival = arrive::arrive(&method, &target, &caller, body, &*unit.shaping);
+        let arrival = arrive::arrive(&method, &target, &caller, body);
         drop(caller);
         match arrival {
             Ok(arrived) => {

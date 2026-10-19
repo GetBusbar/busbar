@@ -235,7 +235,7 @@ fn arrival_refusal(
         .iter()
         .map(|(k, v)| (k.as_bytes(), v.as_bytes()))
         .collect();
-    let d = busbar_plane_llm::exchange::arrive::arrive(method, target, &h, body, &())
+    let d = busbar_plane_llm::exchange::arrive::arrive(method, target, &h, body)
         .expect_err("the arrival is refused");
     busbar_plane_llm::exchange::refuse::declined(HOST, &d)
 }
@@ -573,7 +573,7 @@ fn no_destination_status() -> u16 {
 /// The kernel's no-destination refusal for an arrival, in its dialect's words.
 fn unknown_model(target: &str, body: &[u8]) -> (String, Rendered) {
     let h: Vec<(&[u8], &[u8])> = vec![(b"content-type".as_slice(), b"application/json".as_slice())];
-    let a = busbar_plane_llm::exchange::arrive::arrive("POST", target, &h, body, &())
+    let a = busbar_plane_llm::exchange::arrive::arrive("POST", target, &h, body)
         .expect("the arrival is read");
     let message = model_not_found(
         &a.model,
@@ -822,7 +822,7 @@ fn a_non_object_body_reads_the_released_400_in_every_dialect() {
                 .iter()
                 .map(|(k, v)| (k.as_bytes(), v.as_bytes()))
                 .collect();
-            let d = busbar_plane_llm::exchange::arrive::arrive("POST", target, &h, body, &())
+            let d = busbar_plane_llm::exchange::arrive::arrive("POST", target, &h, body)
                 .expect_err("refused");
             assert_eq!(d.why, Decline::NotAnObject, "{dialect}");
             assert_native(

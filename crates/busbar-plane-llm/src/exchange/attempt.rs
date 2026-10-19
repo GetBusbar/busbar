@@ -754,6 +754,24 @@ pub fn build(
     member: &str,
 ) -> Result<FarRequest, Answer> {
     let ingress = arrived.dialect;
+    // THE AD-HOC SURFACE'S PROVIDER CHECK, AFTER THE CALLER IS ADMITTED. A configured model the
+    // route names under another provider is the 1.5.5 400 in the caller's envelope (v1.5.5
+    // crates/busbar/src/ingress/mod.rs:1363-1375), answered here rather than at arrival so an
+    // unauthenticated caller learns nothing of the catalogue: the kernel's authenticate step has
+    // refused it before any attempt runs.
+    if let Some(asked) = arrived.adhoc_provider.as_deref() {
+        if shaping
+            .provider_of(&arrived.model)
+            .is_some_and(|serving| serving != asked)
+        {
+            return Err(answer(
+                ingress,
+                400,
+                KIND_INVALID_REQUEST,
+                super::refuse::model_not_found(&arrived.model, None),
+            ));
+        }
+    }
     let lane = shaping.lane(member).ok_or_else(|| internal(ingress))?;
     let handler = decl(ingress)
         .and_then(|d| d.handler)

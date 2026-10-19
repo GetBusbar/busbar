@@ -60,7 +60,7 @@ fn far(target: &str, body: &str, caller_ua: Option<&'static str>, member: &str) 
     if let Some(ua) = caller_ua {
         h.push((b"user-agent".as_slice(), ua.as_bytes()));
     }
-    let a = arrive("POST", target, &h, body.as_bytes(), &()).expect("arrives");
+    let a = arrive("POST", target, &h, body.as_bytes()).expect("arrives");
     build(HOST, &a, &h, &shaping(), "p", member).expect("built")
 }
 
@@ -176,7 +176,7 @@ fn every_dialects_egress_user_agent_version_is_pinned_and_present() {
     // the same-dialect one included (1.5.5 sent the native fingerprint to a UA-less caller's far end).
     let head: Vec<(&[u8], &[u8])> =
         vec![(b"content-type".as_slice(), b"application/json".as_slice())];
-    let arrived = arrive("POST", "/v1/messages", &head, MESSAGES.as_bytes(), &()).expect("arrives");
+    let arrived = arrive("POST", "/v1/messages", &head, MESSAGES.as_bytes()).expect("arrives");
     for (member, want) in pinned {
         let r = build(HOST, &arrived, &head, &s, "p", member).expect("built");
         assert_eq!(

@@ -18,11 +18,11 @@ fn json() -> Vec<(&'static [u8], &'static [u8])> {
 }
 
 fn ok(target: &str, h: &[(&[u8], &[u8])], body: &[u8]) -> Arrived {
-    arrive("POST", target, h, body, &()).unwrap_or_else(|d| panic!("{target}: refused {d:?}"))
+    arrive("POST", target, h, body).unwrap_or_else(|d| panic!("{target}: refused {d:?}"))
 }
 
 fn no(target: &str, h: &[(&[u8], &[u8])], body: &[u8]) -> Declined {
-    match arrive("POST", target, h, body, &()) {
+    match arrive("POST", target, h, body) {
         Ok(a) => panic!("{target}: served as {} {}", a.dialect, a.model),
         Err(d) => d,
     }
@@ -99,22 +99,22 @@ fn the_named_surface_takes_its_model_from_the_path() {
     assert_eq!(a.model, "some/model");
 }
 
-struct One;
-impl Catalogue for One {
-    fn provider_of(&self, model: &str) -> Option<&str> {
-        (model == "m").then_some("right")
-    }
-}
-
+/// THE AD-HOC SURFACE CHECKS NOTHING AT ARRIVAL. Arrival runs before the caller is authenticated,
+/// so a refusal here that depends on the configured catalogue would tell an anonymous caller which
+/// models exist (Q128 plane-llm p17, security). The route's provider rides the arrival and the
+/// attempt refuses a mismatch once the caller is admitted (`exchange_attempt`'s
+/// `an_ad_hoc_route_naming_another_provider_is_refused_at_the_attempt`), as v1.5.5 did
+/// (crates/busbar/src/ingress/mod.rs:1323-1375). RED: the arrival refuses, or drops the provider.
 #[test]
-fn the_adhoc_surface_refuses_a_model_another_provider_serves() {
-    let d = arrive("POST", "/wrong/m/v1/messages", &json(), b"{}", &One).expect_err("refused");
-    assert_eq!((d.why, d.status), (Decline::ProviderMismatch, 400));
+fn the_adhoc_surface_carries_its_provider_and_refuses_nothing_at_arrival() {
+    let a = arrive("POST", "/wrong/m/v1/messages", &json(), b"{}").expect("arrives");
+    assert_eq!(a.model, "m");
+    assert_eq!(a.adhoc_provider.as_deref(), Some("wrong"));
+    let named = arrive("POST", "/m/v1/messages", &json(), b"{}").expect("arrives");
     assert_eq!(
-        d.message,
-        "The model 'm' does not exist or you do not have access to it."
+        named.adhoc_provider, None,
+        "a named route names no provider"
     );
-    assert!(arrive("POST", "/right/m/v1/messages", &json(), b"{}", &One).is_ok());
 }
 
 #[test]
@@ -191,7 +191,7 @@ fn every_decline_code_is_nonzero_and_distinct() {
 #[test]
 fn a_dialect_path_takes_post_only_and_an_unknown_path_is_not_found_first() {
     for target in ["/v1/chat/completions", "/my-pool/v1/messages"] {
-        let d = arrive("GET", target, &json(), b"", &()).expect_err("refused");
+        let d = arrive("GET", target, &json(), b"").expect_err("refused");
         assert_eq!(
             (d.why, d.status),
             (Decline::MethodNotAllowed, 405),
@@ -200,7 +200,7 @@ fn a_dialect_path_takes_post_only_and_an_unknown_path_is_not_found_first() {
         assert_eq!(d.message, "method not allowed for this resource");
         assert_eq!(d.kind, "invalid_request_error");
     }
-    let d = arrive("GET", "/nowhere", &json(), b"", &()).expect_err("refused");
+    let d = arrive("GET", "/nowhere", &json(), b"").expect_err("refused");
     assert_eq!(
         d.why,
         Decline::NoResource,
@@ -385,7 +385,8 @@ fn the_fallback_refusals_shape_table_is_the_released_one() {
 /// 1.5.5 behaviour pinned: the ad-hoc `/{provider}/{model}/v1/messages` route reaches configured
 /// models only: an attacker's `evil.example.com` / `../secret` names no configured model, so the
 /// answer is the not-found 404 (this plane states 404 for a model with no destination) and no far
-/// end is reached; a configured model on the wrong provider is refused 400 at the door.
+/// end is reached; a configured model on the wrong provider is refused 400 at the attempt, once
+/// the caller is admitted (1.5.5 answered it after `governance_guard`).
 /// RED if the unknown model reaches a far end or reads another status, or the mismatch is not 400.
 #[test]
 fn the_adhoc_route_reaches_configured_models_only() {
@@ -399,7 +400,6 @@ fn the_adhoc_route_reaches_configured_models_only() {
         "/evil.example.com/..%2Fsecret/v1/messages",
         &json(),
         br#"{"messages":[]}"#,
-        &catalogue,
     )
     .expect("the door takes the route as asked");
     assert_eq!(a.model, "../secret");
@@ -419,15 +419,26 @@ fn the_adhoc_route_reaches_configured_models_only() {
     );
     assert_eq!(r.status, 404);
 
-    let d = arrive(
+    // A configured model under the wrong provider arrives (nothing is checked before the caller is
+    // authenticated); the attempt refuses it 400 once the caller is admitted.
+    let crossed = arrive(
         "POST",
         "/wrong-provider/test-model/v1/messages",
         &json(),
         br#"{"messages":[]}"#,
-        &catalogue,
     )
-    .expect_err("refused at the door");
-    assert_eq!((d.why, d.status), (Decline::ProviderMismatch, 400));
+    .expect("arrives: the mismatch is the attempt's");
+    assert_eq!(crossed.adhoc_provider.as_deref(), Some("wrong-provider"));
+    let refused = busbar_plane_llm::exchange::attempt::build(
+        HOST,
+        &crossed,
+        &json(),
+        &catalogue,
+        "test-model",
+        "test-model",
+    )
+    .expect_err("refused at the attempt");
+    assert_eq!(refused.status, 400);
 }
 
 /// Rehomes `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_gemini_path_resolves_model_and_stream`.

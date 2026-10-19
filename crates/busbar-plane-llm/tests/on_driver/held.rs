@@ -642,7 +642,7 @@ fn applied(target: &str, body: &[u8], rewrite: &Value) -> Option<Value> {
     use busbar_plane_llm::exchange::arrive::arrive;
     use busbar_plane_llm::exchange::project::apply_rewrite;
     let head: &[(&[u8], &[u8])] = &[(b"content-type", b"application/json")];
-    let mut arrived = arrive("POST", target, head, body, &()).expect("the body arrives");
+    let mut arrived = arrive("POST", target, head, body).expect("the body arrives");
     let before = arrived.body.clone();
     let rewrite = serde_json::to_vec(rewrite).expect("serializes");
     match apply_rewrite(&mut arrived, &rewrite) {
