@@ -23,13 +23,23 @@
 //! plane crates listed in [`LEGACY`], and every external plugin the workspace resolves from its own
 //! repository (a `GetBusbar` git source). The closure is the NORMAL-edge closure `cargo metadata`
 //! resolves, with optional edges that nothing activates left out.
+//!
+//! THE SOURCE RULE READS EVERY ROOT'S OWN SOURCE, IN THE TREE OR PINNED (ARCHITECT ruling on
+//! #1244's question; DECISIONS #40(a) walls every plugin crate, and the gate's coverage must not
+//! shrink as crates leave the tree). A pinned plugin is read where the tree lays it
+//! (`crates/<package>`, the base layer every gate reads, with a plant's overlay on top), and a
+//! pinned plugin the base does not lay is read from the checkout `cargo metadata` resolves for its
+//! pin. A pinned root whose source reads no file is refused, never scanned as clean. A TRANSPORT
+//! is a carrier (#40(a): "the carrier plugins are the one named exception", THE DESIGN §5), so the
+//! source rule skips it, keyed on the plugin's declared kind
+//! ([`crate::gates::kind_isolation::plugin_kind`]) and on no crate name.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde_json::Value;
 
 use crate::ctx::{Ctx, Overlay, WalkSpec};
-use crate::gates::{prove_green, prove_red, Gate, Report};
+use crate::gates::{prove_green, prove_red, prove_rows_green, Gate, Report};
 use crate::ledger::{Row, Verdict};
 
 pub const ROW_SCOPE: &str = "dep-wall:scope";
@@ -335,20 +345,13 @@ pub fn measure(
                 }
             }
         }
-        if let Some(dir) = dir {
-            let files = cx
-                .walk(
-                    &WalkSpec::new([format!("{dir}/src")])
-                        .ext("rs")
-                        .allow_empty(),
-                )
-                .unwrap_or_default();
-            for f in files {
-                let rel = f.rel_str();
+        if crate::gates::kind_isolation::plugin_kind(&root_name) != Some("transport") {
+            let files = own_source(cx, &pkgs[root_id], dir.as_deref())?;
+            for (rel, text) in files {
                 if rel.contains("/tests/") || rel.ends_with("_tests.rs") {
                     continue;
                 }
-                for (_, line) in crate::scan::production_lines(&f.text) {
+                for (_, line) in crate::scan::production_lines(&text) {
                     for p in BANNED_PATHS {
                         if line.contains(p) {
                             hits.insert((*p).to_string());
@@ -363,6 +366,48 @@ pub fn measure(
     }
     let names = pkgs.values().map(|p| p.name.clone()).collect();
     Ok((out, roots.len(), names))
+}
+
+/// A root's own production-candidate source as `(path, text)`, every `.rs` file under its `src/`.
+///
+/// * IN THE TREE (`dir`): the walk of `<dir>/src`, overlay-aware.
+/// * PINNED: the walk of `crates/<package>/src`, which reads the base layer where the tree lays the
+///   crate and a plant's overlay wherever it lands; and, when the base does not lay the crate, the
+///   pinned checkout's own `src/` beneath that overlay. Nothing read is an `Err` naming the
+///   package: a pinned plugin is never scanned as clean because its source could not be found.
+fn own_source(cx: &Ctx, pkg: &Pkg, dir: Option<&str>) -> Result<Vec<(String, String)>, String> {
+    let walk = |src: &str| -> Vec<(String, String)> {
+        cx.walk(&WalkSpec::new([src]).ext("rs").allow_empty())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|f| (f.rel_str(), f.text))
+            .collect()
+    };
+    if let Some(dir) = dir {
+        return Ok(walk(&format!("{dir}/src")));
+    }
+    let mount = format!("crates/{}", pkg.name);
+    let src = format!("{mount}/src");
+    let mut files: BTreeMap<String, String> = walk(&src).into_iter().collect();
+    if !cx.is_dir(&mount) {
+        let checkout = std::path::Path::new(&pkg.manifest_path)
+            .parent()
+            .map(|d| d.join("src"))
+            .unwrap_or_default();
+        for (rel, text) in crate::gates::kind_isolation::crate_files(&checkout) {
+            if rel.ends_with(".rs") {
+                files.entry(format!("{src}/{rel}")).or_insert(text);
+            }
+        }
+    }
+    if files.is_empty() {
+        return Err(format!(
+            "the pinned plugin `{}` reads no source: neither {src} nor its checkout ({}) holds a \
+             `.rs` file, and a plugin whose source cannot be read is not a clean one",
+            pkg.name, pkg.manifest_path
+        ));
+    }
+    Ok(files.into_iter().collect())
 }
 
 pub struct DepWallGate;
@@ -510,6 +555,42 @@ impl Gate for DepWallGate {
             &[ROW_NEW],
             ov,
             &["new-offender", "busbar-plane-llm", "std::net"],
+        ));
+        // A PINNED PLUGIN IS READ TOO (ARCHITECT ruling on #1244). Two non-transport pins, one per
+        // way the gate reaches a pinned crate's source: a plane the base layer lays at
+        // `crates/<package>`, and a secret plugin the base does not lay, read from its checkout
+        // with the plant's overlay on top. Each names the crate and the path.
+        for (krate, kind) in [
+            ("busbar-plane-decisions", "plane"),
+            ("busbar-secret-env", "secret"),
+        ] {
+            let mut ov = Overlay::new();
+            ov.set(
+                format!("crates/{krate}/src/planted_socket.rs"),
+                "pub fn dial() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
+            );
+            report.push(prove_red(
+                cx,
+                self,
+                format!("a pinned {kind} plugin that names a socket path is a new offender"),
+                &[ROW_NEW],
+                ov,
+                &["new-offender", krate, "std::net"],
+            ));
+        }
+        // A PINNED TRANSPORT IS A CARRIER, by its declared kind: the same socket path in its
+        // source moves no row.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-ws/src/planted_socket.rs",
+            "pub fn dial() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
+        );
+        report.push(prove_rows_green(
+            cx,
+            self,
+            "a pinned transport that names a socket path is a carrier, not an offender",
+            &[ROW_NEW],
+            ov,
         ));
         // A DRAINED PIN: a pin for an offence the tree does not have must be struck.
         let mut ov = Overlay::new();

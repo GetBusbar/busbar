@@ -201,7 +201,7 @@ fn disk_crate_names(root: &Path) -> BTreeSet<String> {
 
 /// Every text file of a checkout's crate directory, relative to it. Build output and dot-directories
 /// are not the crate's source.
-fn crate_files(dir: &Path) -> Vec<(String, String)> {
+pub(crate) fn crate_files(dir: &Path) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
