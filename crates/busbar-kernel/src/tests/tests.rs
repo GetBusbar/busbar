@@ -2525,6 +2525,68 @@ fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
     );
 }
 
+/// THE ROOT'S PROJECTION IS HANDED IN WITH ITS RULES, PER BUILD (Q128 arch u26 #12; THE DESIGN
+/// §10 R6: no fn-pointer seam installed into the kernel beyond the two exempt ones): each build's
+/// `App::config_projection` is what the rules it was built under projected from its own
+/// configuration, and rules that project nothing leave it `None`.
+///
+/// RED before the fix: the projection was a process-wide `OnceLock` the root installed by name, so
+/// a build could not carry its own rules' projection and every build in the process carried
+/// whichever function was installed first.
+#[test]
+fn a_build_carries_the_projection_its_own_rules_take() {
+    struct Projecting;
+    impl crate::appbuild::RootRules for Projecting {
+        fn check(&self, _cfg: &crate::config::RootCfg) -> Result<(), String> {
+            Ok(())
+        }
+        fn project(
+            &self,
+            cfg: &crate::config::RootCfg,
+        ) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
+            Some(std::sync::Arc::new(cfg.public_url.clone()))
+        }
+    }
+    crate::snapshot::init();
+    let build = |rules: std::sync::Arc<dyn crate::appbuild::RootRules>, url: &str| {
+        let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(
+            "BUSBAR_TEST_NO_SUCH_KEY_PROJECTION",
+        ));
+        cfg.public_url = Some(url.to_string());
+        let (app, _, _) = crate::build_app_from_config(
+            cfg,
+            crate::config::PluginsCfg::default(),
+            None,
+            std::collections::HashSet::new(),
+            std::collections::HashSet::new(),
+            (None, None),
+            None,
+            &rules,
+        )
+        .expect("the configuration builds");
+        (app.config_projection.as_ref())
+            .and_then(|p| p.downcast_ref::<Option<String>>())
+            .cloned()
+            .flatten()
+    };
+    assert_eq!(
+        build(
+            std::sync::Arc::new(Projecting),
+            "https://one.projection.test"
+        ),
+        Some("https://one.projection.test".to_string()),
+        "the build carries its own rules' projection of its own configuration"
+    );
+    assert_eq!(
+        build(
+            std::sync::Arc::new(crate::appbuild::AcceptAll),
+            "https://two.projection.test"
+        ),
+        None,
+        "rules that project nothing leave the build without a projection"
+    );
+}
+
 // ── STEP 2.3: THE TYPE-ERASED PLANE SLOT MAP (`App::plane_slot`) ─────────────────────────────
 //
 // Additive: `App::mcp` / `App::a2a` still exist and every existing reader is untouched. These

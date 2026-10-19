@@ -557,19 +557,6 @@ impl InstalledLimits {
     }
 }
 
-/// WHAT THE COMPOSITION ROOT KEEPS OF A RESOLVED CONFIGURATION beside the generation built from it
-/// (spec Part 1 line 569: a door plane is handed one validated `{section: value}` object per
-/// `open`/`refresh`): the root projects the sections, providers and pool bounds its door planes are
-/// sealed over, and reads the projection back when the generation is swapped in.
-pub type ConfigProjection = fn(&config::RootCfg) -> std::sync::Arc<dyn std::any::Any + Send + Sync>;
-
-static CONFIG_PROJECTION: std::sync::OnceLock<ConfigProjection> = std::sync::OnceLock::new();
-
-/// Bind the composition root's [`ConfigProjection`], once, before the first build.
-pub fn set_config_projection(project: ConfigProjection) {
-    let _ = CONFIG_PROJECTION.set(project);
-}
-
 /// THE COMPOSITION ROOT'S RULES OF A RESOLVED CONFIGURATION: the rules only the root can state
 /// (ones over what the planes it composed declare, and the deployment facts it alone reads), judged
 /// by [`build_app_from_config`] before any part of a configuration is built or installed. A
@@ -584,6 +571,20 @@ pub trait RootRules: Send + Sync {
     ///
     /// The refusal, in the words the operator reads.
     fn check(&self, cfg: &config::RootCfg) -> Result<(), String>;
+
+    /// WHAT THE COMPOSITION ROOT KEEPS OF `cfg` beside the generation built from it (spec Part 1
+    /// line 569: a door plane is handed one validated `{section: value}` object per
+    /// `open`/`refresh`): the root projects the sections, providers and pool bounds its door planes
+    /// are sealed over, and reads the projection back off [`App::config_projection`] when the
+    /// generation is swapped in. Taken per build, before any part of `cfg` is consumed; handed in
+    /// with the rules, never installed into the kernel (THE DESIGN §10 R6: no new fn-pointer seam).
+    /// `None` (the default): the root keeps nothing.
+    fn project(
+        &self,
+        _cfg: &config::RootCfg,
+    ) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
+        None
+    }
 }
 
 /// The rules of a build with no composition root's rules to judge by (a tool, a test fixture): it
@@ -614,7 +615,7 @@ pub fn build_app_from_config(
     // refusal leaves the running generation as it is.
     rules.check(&cfg)?;
     // The root's projection of this configuration, taken before any part of it is consumed.
-    let config_projection = CONFIG_PROJECTION.get().map(|project| project(&cfg));
+    let config_projection = rules.project(&cfg);
     // Install the resolved operational limits process-wide BEFORE any subsystem reads them —
     // running here (not in main) so a config APPLY/RELOAD refreshes them too. The values threaded
     // explicitly (client/store/router/TLS) read `cfg.limits` directly; the deep call-stack sites

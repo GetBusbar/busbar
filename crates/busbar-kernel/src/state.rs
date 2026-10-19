@@ -87,7 +87,7 @@ pub struct App {
     /// dry run) is judged by them.
     pub root_rules: Arc<dyn crate::appbuild::RootRules>,
     /// The composition root's projection of the configuration this generation was built from
-    /// ([`crate::appbuild::ConfigProjection`]); `None` when the root bound none.
+    /// ([`crate::appbuild::RootRules::project`]); `None` when the root keeps none.
     pub config_projection: Option<Arc<dyn std::any::Any + Send + Sync>>,
     /// The kernel's own tables over the `pools:`/`models:` sections this generation resolved: the
     /// read seam's answer when no plane contributed a runtime of its own (a door-served plane walks

@@ -806,12 +806,11 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     #[cfg(feature = "root-admin")]
     let breaker_policy = root::adapters::BreakerPolicy::from_pools(&cfg.pools);
 
-    // What the door planes are sealed over, projected from every configuration as it is built
-    // (`root::door_steps::door_config`), so a config apply refreshes them onto the new generation.
-    busbar_kernel::appbuild::set_config_projection(root::door_steps::door_config);
     // THE ROOT'S RULES every configuration is judged by before a generation is built from it
     // (`busbar_kernel::appbuild::RootRules`): handed to the boot build here, kept by each generation
-    // and passed on by every apply, rebuild and dry run. They hold the owned trust anchors the door
+    // and passed on by every apply, rebuild and dry run. They also project what the door planes are
+    // sealed over (`root::door_steps::door_config`) from every configuration as it is built, so a
+    // config apply refreshes it onto the new generation. They hold the owned trust anchors the door
     // planes name once the planes are composed (below), so an apply carrying one the boot would
     // refuse is refused, its running generation untouched.
     let root_rules = Arc::new(root::door_steps::Rules::default());

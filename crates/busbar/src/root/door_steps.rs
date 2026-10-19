@@ -1507,8 +1507,8 @@ pub fn compose_egress(
 /// validated `{section: value}` object per `open`/`refresh`): the kernel-owned sections it reads
 /// ([`kernel_sections`]), the providers its members are reached through ([`provider_routes`]) and
 /// the model-serving pools' bounds ([`crate::root::model_egress::ModelPools`]). Projected from each
-/// resolved configuration as it is built (`busbar_kernel::appbuild::set_config_projection`), and
-/// read back when that generation is swapped in.
+/// resolved configuration as it is built (the root's [`Rules`]' `RootRules::project`), and read
+/// back when that generation is swapped in.
 #[derive(Debug)]
 pub struct DoorConfig {
     /// The kernel-owned sections, and beside them every plane section the configuration carries RAW
@@ -1521,7 +1521,7 @@ pub struct DoorConfig {
     pub model_pools: crate::root::model_egress::ModelPools,
 }
 
-/// The [`DoorConfig`] of `cfg` (the root's `ConfigProjection`).
+/// The [`DoorConfig`] of `cfg` (the root's `RootRules::project`).
 #[must_use]
 pub fn door_config(cfg: &busbar_kernel::config::RootCfg) -> Arc<dyn std::any::Any + Send + Sync> {
     let mut sections = kernel_sections(cfg);
@@ -1640,6 +1640,13 @@ impl busbar_kernel::appbuild::RootRules for Rules {
             return Ok(());
         }
         owned_anchors_refusal(&anchors, &raw_sections(cfg))
+    }
+
+    fn project(
+        &self,
+        cfg: &busbar_kernel::config::RootCfg,
+    ) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+        Some(door_config(cfg))
     }
 }
 
