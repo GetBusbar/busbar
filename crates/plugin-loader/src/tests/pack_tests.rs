@@ -279,9 +279,9 @@ fn pack_cli_signs_the_former_names() {
             "--lib",
             &lib_path.to_string_lossy(),
             "--name",
-            "busbar-hook-webrequest",
+            "busbar-hook-delta",
             "--alias",
-            "webrequest",
+            "delta",
             "--kind",
             "hook",
             "--version",
@@ -304,14 +304,11 @@ fn pack_cli_signs_the_former_names() {
             .map(|t| busbar_plugin_loader::tarball::unpack(&t).unwrap().manifest);
         (code, unpacked)
     };
-    let (code, packed) = pack_with(&["busbar-webrequest", "busbar-webrequest-hook"]);
+    let (code, packed) = pack_with(&["busbar-delta", "busbar-delta-hook"]);
     assert_eq!(code, ExitCode::SUCCESS);
     let m = packed.expect("the tarball was written");
-    assert_eq!(
-        m.former_names,
-        ["busbar-webrequest", "busbar-webrequest-hook"]
-    );
-    assert!(m.answers_to("busbar-webrequest") && m.answers_to("webrequest"));
+    assert_eq!(m.former_names, ["busbar-delta", "busbar-delta-hook"]);
+    assert!(m.answers_to("busbar-delta") && m.answers_to("delta"));
     // With none given the manifest carries none (and its bytes are an old manifest's).
     let (code, packed) = pack_with(&[]);
     assert_eq!(code, ExitCode::SUCCESS);
@@ -323,7 +320,7 @@ fn pack_cli_signs_the_former_names() {
             .contains("former_names")
     );
     // RED ARMS: not the alias charset; the plugin's own name.
-    for bad in ["Busbar_WebRequest", "busbar-hook-webrequest", "webrequest"] {
+    for bad in ["Busbar_Delta", "busbar-hook-delta", "delta"] {
         let (code, packed) = pack_with(&[bad]);
         assert_eq!(code, ExitCode::FAILURE, "{bad}");
         assert!(

@@ -88,6 +88,22 @@ fn is_kind_word(seg: &str, k: &str) -> bool {
     s == k || Some(s.as_str()) == k.strip_suffix('s') || s == format!("{k}s")
 }
 
+/// The axis a `plugins.yaml` `kind:` word files an alias under: `Ok(Some(axis))` for one of the
+/// five, `Ok(None)` for `plane`/`transport` (their ids are counted by the ordinary columns), and
+/// `Err` for a word that is no plugin kind at all.
+fn registry_axis(kind: &str, axes: &[&'static str]) -> Result<Option<&'static str>, ()> {
+    if let Some(k) = axes.iter().copied().find(|k| is_kind_word(kind, k)) {
+        return Ok(Some(k));
+    }
+    if super::super::truths::PLUGIN_KINDS
+        .iter()
+        .any(|k| is_kind_word(kind, k))
+    {
+        return Ok(None);
+    }
+    Err(())
+}
+
 /// One instance name, where it came from.
 #[derive(Debug, Clone)]
 pub struct Source {
@@ -295,9 +311,20 @@ pub fn vocabulary(
     // teach the census its name; `plugins.yaml` files it under its kind with the `module:` word an
     // operator writes (`alias`). Owned by its plugin crate, so it is never counted against itself.
     // An alias under [`MIN_NEEDLE_LEN`] still attributes a constant that spells it, and is no needle.
+    // The registry writes the kind the way the design does (`hook`); the axes are the kind
+    // table's spelling (`hooks`), so the word is mapped, never compared raw.
     for (kind, alias, krate) in registry_aliases(registry) {
-        let Some(k) = axes.iter().copied().find(|k| *k == kind) else {
-            continue;
+        let k = match registry_axis(&kind, &axes) {
+            Ok(Some(k)) => k,
+            Ok(None) => continue,
+            Err(()) => {
+                v.unattributed.push(format!(
+                    "unknown-registry-kind\t{REGISTRY} {krate}\t`kind: {kind}` (alias `{alias}`) \
+                     names no plugin kind, so the census cannot place the alias and would count \
+                     nothing for it. A registry entry is one of the seven kinds (DECISIONS #3)."
+                ));
+                continue;
+            }
         };
         census.entry(alias.clone()).or_default().insert(k);
         if !is_needle(&alias) {
@@ -1319,7 +1346,10 @@ pub fn selftest<'a>(
     let axis_aliases: Vec<(String, String, String)> =
         registry_aliases(&cx.read(REGISTRY).unwrap_or_default())
             .into_iter()
-            .filter(|(k, _, _)| axes().contains(&k.as_str()))
+            .filter_map(|(k, a, c)| match registry_axis(&k, &axes()) {
+                Ok(Some(axis)) => Some((axis.to_string(), a, c)),
+                _ => None,
+            })
             .collect();
     let mut short_body = String::from(
         "pub extern \"C\" fn planted_one() {}\n\
@@ -1391,7 +1421,9 @@ pub fn selftest<'a>(
             report.push(prove_rows_red(
                 cx,
                 gate,
-                format!("a `hook` registry alias (`{alias}`) in a neutral crate is a hooks instance"),
+                format!(
+                    "a `hook` registry alias (`{alias}`) in a neutral crate is a hooks instance"
+                ),
                 &[ROW_MATRIX],
                 super::fixture_files(&[("planted_hook_alias.rs", pick.as_str())]),
                 &[

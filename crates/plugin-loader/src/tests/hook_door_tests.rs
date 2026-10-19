@@ -525,13 +525,13 @@ async fn the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the
 }
 
 /// THE RULING'S HOOK CASE THROUGH THE AXIS (1.5.5 configs load unchanged): a hook config naming
-/// `module: busbar-webrequest` (the 1.5.5 release's manifest name) opens the 1.6.0 hook, DROPPED IN
+/// `module: busbar-delta` (a neutral 1.5.5-shaped manifest name) opens the 1.6.0 hook, DROPPED IN
 /// (its signed manifest's `former_names`, through the registry the root builds the axis over) and
 /// LINKED (the former names the root's legacy table gives a linked row). RED ARMS, in the same
 /// test: without the former names neither way answers the old name.
 #[test]
 fn a_1_5_5_hook_name_opens_the_1_6_0_hook_both_ways() {
-    const OLD: &str = "busbar-webrequest";
+    const OLD: &str = "busbar-delta";
     let door = hook_door_plugin::conforming::door;
     let settings = json!({"reject_over_messages": 3});
     let opens = |rows: &HookRows| rows.open(OLD, "hooks.wr", &settings, BUDGET).is_ok();
@@ -558,8 +558,7 @@ fn a_1_5_5_hook_name_opens_the_1_6_0_hook_both_ways() {
     let abi = crate::supported_abi("hook")[0];
     let stated = hex::encode(rendering_of(door).expect("the door renders its Statement"));
     let manifest = |former: &[&str]| {
-        let mut m =
-            crate::both_ways::statement("hook", "busbar-hook-webrequest", "webrequest", abi);
+        let mut m = crate::both_ways::statement("hook", "busbar-hook-delta", "delta", abi);
         m.statement = Some(stated.clone());
         m.former_names = former.iter().map(|s| s.to_string()).collect();
         m

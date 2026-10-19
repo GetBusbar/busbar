@@ -451,14 +451,23 @@ fn former_names_render_as_one_row_of_the_alias() {
 }
 
 /// The root's table answers a linked plugin's former names by its alias
-/// (`busbar_kernel::config::legacy::former_names`), from the committed plugins.yaml.
+/// (`busbar_kernel::config::legacy::former_names`), from the committed plugins.yaml: every
+/// `former_names:` entry there, read by alias off the registry (core names no plugin here).
 #[test]
 fn a_linked_plugin_reads_its_former_names_by_its_alias() {
     install();
-    assert_eq!(
-        busbar_kernel::config::legacy::former_names("webrequest"),
-        ["busbar-webrequest"]
-    );
+    let former: Vec<(String, String)> = rows(REGISTRY)
+        .into_iter()
+        .filter_map(|(k, v)| Some((k.strip_prefix("former.")?.to_string(), v)))
+        .collect();
+    assert!(!former.is_empty(), "plugins.yaml declares a former name");
+    for (alias, names) in former {
+        assert_eq!(
+            busbar_kernel::config::legacy::former_names(&alias),
+            names.split_whitespace().collect::<Vec<_>>(),
+            "{alias}"
+        );
+    }
     assert!(busbar_kernel::config::legacy::former_names("planted-never-renamed").is_empty());
 }
 

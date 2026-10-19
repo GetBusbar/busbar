@@ -951,22 +951,17 @@ fn linked_in(m: Manifest) -> PluginRegistry {
 }
 
 /// THE RULING'S CASE: a 1.5.5-shaped config names a hook and a store by the manifest names their
-/// 1.5.5-era releases carried (`busbar-webrequest`; a store's `busbar-store-<name>-plugin`, here a
-/// neutral one — the fleet's real names are swept from plugins.yaml by
+/// 1.5.5-era releases carried (a hook's `busbar-<name>` and a store's `busbar-store-<name>-plugin`, here
+/// neutral ones — the fleet's real names are swept from plugins.yaml by
 /// [`every_former_name_plugins_yaml_declares_resolves_both_ways`]); each resolves to the 1.6.0 plugin
 /// of the kind the reference needs, DROPPED IN and LINKED alike — the resolution preflight's `require_plugin`, the
 /// store door and the auth and export axes all read. RED ARM, in the same test: the same plugins
 /// without their former names leave both references unresolved, which is the boot refusal 52 oracle
-/// cells hit ("no plugin matching the hook reference 'busbar-webrequest'").
+/// cells hit ("no plugin matching the hook reference 'busbar-<name>'").
 #[test]
 fn a_1_5_5_name_resolves_to_the_1_6_0_plugin_dropped_in_and_linked() {
     let cases = [
-        (
-            "hook",
-            "busbar-hook-webrequest",
-            "webrequest",
-            "busbar-webrequest",
-        ),
+        ("hook", "busbar-hook-delta", "delta", "busbar-delta"),
         (
             "store",
             "busbar-store-alpha",
@@ -1028,31 +1023,20 @@ fn two_plugins_claiming_one_former_name_are_refused() {
     let acme = key(2);
     for (second, contested) in [
         (
-            renamed("hook", "acme-hook-x", "x", &["busbar-webrequest"]),
-            "busbar-webrequest",
+            renamed("hook", "acme-hook-x", "x", &["busbar-delta"]),
+            "busbar-delta",
         ),
+        (renamed("hook", "busbar-delta", "y", &[]), "busbar-delta"),
         (
-            renamed("hook", "busbar-webrequest", "y", &[]),
-            "busbar-webrequest",
+            renamed("hook", "acme-hook-z", "busbar-delta", &[]),
+            "busbar-delta",
         ),
-        (
-            renamed("hook", "acme-hook-z", "busbar-webrequest", &[]),
-            "busbar-webrequest",
-        ),
-        (
-            renamed("hook", "acme-hook-w", "w", &["webrequest"]),
-            "webrequest",
-        ),
+        (renamed("hook", "acme-hook-w", "w", &["delta"]), "delta"),
     ] {
         let dir = tmpdir("former-conflict");
         let first = sign(
             &release,
-            renamed(
-                "hook",
-                "busbar-hook-webrequest",
-                "webrequest",
-                &["busbar-webrequest"],
-            ),
+            renamed("hook", "busbar-hook-delta", "delta", &["busbar-delta"]),
             b"lib1",
         );
         let mut second = second;
@@ -1069,7 +1053,7 @@ fn two_plugins_claiming_one_former_name_are_refused() {
         let all = errs.join("\n");
         assert!(
             all.contains(&format!("'{contested}'"))
-                && all.contains("busbar-hook-webrequest")
+                && all.contains("busbar-hook-delta")
                 && all.contains(&other),
             "{all}"
         );
@@ -1083,61 +1067,51 @@ fn two_plugins_claiming_one_former_name_are_refused() {
 /// conflict (the one-version-per-kind rule governs it).
 #[test]
 fn a_linked_and_another_plugin_claiming_one_name_are_refused() {
-    let webrequest = || {
-        renamed(
-            "hook",
-            "busbar-hook-webrequest",
-            "webrequest",
-            &["busbar-webrequest"],
-        )
-    };
-    // RED: the 1.5.5 tarball (manifest name `busbar-webrequest`) dropped in beside a linked 1.6.0
-    // webrequest that answers that name.
-    let old = renamed("hook", "busbar-webrequest", "webrequest-1-5-5", &[]);
+    let delta = || renamed("hook", "busbar-hook-delta", "delta", &["busbar-delta"]);
+    // RED: the 1.5.5 tarball (manifest name `busbar-delta`) dropped in beside a linked 1.6.0
+    // delta that answers that name.
+    let old = renamed("hook", "busbar-delta", "delta-1-5-5", &[]);
     let refused = dropped_in("cross-old", old)
-        .link(vec![LinkedPlugin::door(webrequest(), unopened_door)])
+        .link(vec![LinkedPlugin::door(delta(), unopened_door)])
         .expect_err("a linked row and a dropped-in plugin claiming one name are refused");
     assert!(
-        refused.contains("'busbar-webrequest'")
-            && refused.contains("busbar-hook-webrequest")
+        refused.contains("'busbar-delta'")
+            && refused.contains("busbar-hook-delta")
             && refused.contains("claim conflict"),
         "{refused}"
     );
     // RED: two linked rows claiming one alias.
     let refused = PluginRegistry::empty()
         .link(vec![
-            LinkedPlugin::door(webrequest(), unopened_door),
+            LinkedPlugin::door(delta(), unopened_door),
             LinkedPlugin::door(
-                renamed("hook", "acme-hook-x", "busbar-webrequest", &[]),
+                renamed("hook", "acme-hook-x", "busbar-delta", &[]),
                 unopened_door,
             ),
         ])
         .expect_err("two linked rows claiming one word are refused");
     assert!(
-        refused.contains("'busbar-webrequest'") && refused.contains("acme-hook-x"),
+        refused.contains("'busbar-delta'") && refused.contains("acme-hook-x"),
         "{refused}"
     );
     // GREEN: the linked row and its own dropped-in copy; the linked row answers.
-    let reg = dropped_in("cross-same", stating(webrequest(), None))
-        .link(vec![LinkedPlugin::door(webrequest(), versioned_door)])
+    let reg = dropped_in("cross-same", stating(delta(), None))
+        .link(vec![LinkedPlugin::door(delta(), versioned_door)])
         .expect("the same plugin linked and dropped in is not a conflict");
-    assert!(reg.resolve("busbar-webrequest").expect("resolves").linked());
+    assert!(reg.resolve("busbar-delta").expect("resolves").linked());
     // RED (Q-P4-12): a different dropped-in plugin spelling the linked row's ALIAS, or its NAME.
     for (tag, other) in [
-        (
-            "cross-alias",
-            renamed("hook", "acme-hook-y", "webrequest", &[]),
-        ),
+        ("cross-alias", renamed("hook", "acme-hook-y", "delta", &[])),
         (
             "cross-name",
-            renamed("hook", "acme-hook-z", "busbar-hook-webrequest", &[]),
+            renamed("hook", "acme-hook-z", "busbar-hook-delta", &[]),
         ),
     ] {
         let refused = dropped_in(tag, other)
-            .link(vec![LinkedPlugin::door(webrequest(), unopened_door)])
+            .link(vec![LinkedPlugin::door(delta(), unopened_door)])
             .expect_err("no door outranks the other");
         assert!(
-            refused.contains("claim conflict") && refused.contains("busbar-hook-webrequest"),
+            refused.contains("claim conflict") && refused.contains("busbar-hook-delta"),
             "{tag}: {refused}"
         );
     }
@@ -1180,14 +1154,9 @@ fn stating(m: Manifest, version: Option<&str>) -> Manifest {
     }
 }
 
-/// `webrequest`'s 1.6.0 manifest at `version`.
-fn webrequest_at(version: &str) -> Manifest {
-    let mut m = renamed(
-        "hook",
-        "busbar-hook-webrequest",
-        "webrequest",
-        &["busbar-webrequest"],
-    );
+/// `delta`'s 1.6.0 manifest at `version`.
+fn delta_at(version: &str) -> Manifest {
+    let mut m = renamed("hook", "busbar-hook-delta", "delta", &["busbar-delta"]);
     m.version = version.into();
     m
 }
@@ -1200,14 +1169,11 @@ fn webrequest_at(version: &str) -> Manifest {
 #[test]
 fn one_plugin_by_both_doors_at_one_version_is_admitted_once() {
     let version = door_version();
-    let reg = dropped_in("copy-same", stating(webrequest_at("9.9.9"), None))
-        .link(vec![LinkedPlugin::door(
-            webrequest_at("1.5.0"),
-            versioned_door,
-        )])
+    let reg = dropped_in("copy-same", stating(delta_at("9.9.9"), None))
+        .link(vec![LinkedPlugin::door(delta_at("1.5.0"), versioned_door)])
         .expect("one plugin at one version is admitted");
     assert!(reg.loadable().is_empty(), "the copy is no row of its own");
-    for word in ["busbar-hook-webrequest", "webrequest", "busbar-webrequest"] {
+    for word in ["busbar-hook-delta", "delta", "busbar-delta"] {
         assert!(
             reg.resolve(word).expect("resolves").linked(),
             "{word}: the linked row serves"
@@ -1216,7 +1182,7 @@ fn one_plugin_by_both_doors_at_one_version_is_admitted_once() {
     assert_eq!(
         reg.linked_copies(),
         &[LinkedCopy {
-            name: "busbar-hook-webrequest".into(),
+            name: "busbar-hook-delta".into(),
             version: version.clone(),
             file: "plugin.tar.gz".into(),
         }]
@@ -1224,7 +1190,7 @@ fn one_plugin_by_both_doors_at_one_version_is_admitted_once() {
     assert_eq!(
         reg.linked_copies()[0].line(),
         format!(
-            "plugin 'busbar-hook-webrequest' v{version} is linked and also dropped in \
+            "plugin 'busbar-hook-delta' v{version} is linked and also dropped in \
              (plugin.tar.gz); the linked build serves it"
         )
     );
@@ -1235,16 +1201,13 @@ fn one_plugin_by_both_doors_at_one_version_is_admitted_once() {
 /// pair was skipped and the linked row silently won.
 #[test]
 fn one_plugin_by_both_doors_at_two_versions_refuses_the_boot() {
-    let refused = dropped_in("copy-other", stating(webrequest_at("1.5.0"), Some("1.6.1")))
-        .link(vec![LinkedPlugin::door(
-            webrequest_at("1.5.0"),
-            versioned_door,
-        )])
+    let refused = dropped_in("copy-other", stating(delta_at("1.5.0"), Some("1.6.1")))
+        .link(vec![LinkedPlugin::door(delta_at("1.5.0"), versioned_door)])
         .expect_err("two versions of one plugin");
     assert_eq!(
         refused,
         format!(
-            "plugin 'busbar-hook-webrequest' arrives by both doors at two versions: linked v{}, \
+            "plugin 'busbar-hook-delta' arrives by both doors at two versions: linked v{}, \
              dropped in v1.6.1 (plugin.tar.gz) - one version per plugin: remove one",
             door_version()
         )
@@ -1258,15 +1221,12 @@ fn one_plugin_by_both_doors_at_two_versions_refuses_the_boot() {
 fn an_untrusted_copy_is_skipped_before_its_version_is_compared() {
     let release = key(1);
     let dir = tmpdir("copy-unsigned");
-    let mut m = stating(webrequest_at("1.5.0"), Some("1.6.1"));
+    let mut m = stating(delta_at("1.5.0"), Some("1.6.1"));
     m.sha256 = crate::sign::sha256_hex(b"unsigned lib");
     write_tarball(&dir, "plugin.tar.gz", &m, b"unsigned lib");
     let reg = scan_and_validate(&dir, &policy(&release))
         .expect("scan")
-        .link(vec![LinkedPlugin::door(
-            webrequest_at("1.5.0"),
-            versioned_door,
-        )])
+        .link(vec![LinkedPlugin::door(delta_at("1.5.0"), versioned_door)])
         .expect("an untrusted tarball is skipped, not compared");
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(reg.skipped().len(), 1, "the unsigned copy is skipped");

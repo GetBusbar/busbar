@@ -1424,7 +1424,7 @@ const RELEASE_PUBKEY: &str = "b18395a332803151b9cd40a71489a86a96d8bea3ee6a37a45f
 /// testing/shadow-oracle/plugin-digests.tsv row), verified against the release key that signed it.
 #[test]
 fn an_old_manifest_with_no_former_names_parses_and_verifies_unchanged() {
-    let text = include_str!("../../tests/fixtures/manifest_1_5_5_busbar_webrequest.json");
+    let text = include_str!("../../tests/fixtures/manifest_1_5_5_busbar_delta.json");
     let m: Manifest = serde_json::from_str(text).expect("a 1.5.5 manifest parses");
     assert!(m.former_names.is_empty());
     assert_eq!(m.name, "busbar-webrequest");
@@ -1477,20 +1477,20 @@ fn former_names_are_covered_by_the_signature() {
 #[test]
 fn a_malformed_or_repeated_former_name_fails_structure() {
     let ok = |former: &[&str]| {
-        let mut m = manifest("busbar-hook-webrequest", "webrequest", "busbar");
+        let mut m = manifest("busbar-hook-delta", "delta", "busbar");
         m.former_names = former.iter().map(|s| s.to_string()).collect();
         validate_identity(&m, HOST_IDENTITY)
     };
-    ok(&["busbar-webrequest"]).expect("a well-formed former name");
+    ok(&["busbar-delta"]).expect("a well-formed former name");
     ok(&[]).expect("none");
     for bad in [
-        &["Busbar-WebRequest"][..],
-        &["busbar_webrequest"],
+        &["Busbar-Delta"][..],
+        &["busbar_delta"],
         &["-busbar"],
         &[""],
-        &["busbar-hook-webrequest"],
-        &["webrequest"],
-        &["busbar-webrequest", "busbar-webrequest"],
+        &["busbar-hook-delta"],
+        &["delta"],
+        &["busbar-delta", "busbar-delta"],
     ] {
         let e = ok(bad).expect_err("refused");
         assert!(e.contains("former name"), "{bad:?}: {e}");
