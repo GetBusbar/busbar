@@ -76,9 +76,12 @@ fn per_message_string_and_array_content_stay_lenient() {
 
 // ── Fix 2: tool_calls `id` ───────────────────────────────────────────────────
 
+/// A tool call with an absent or empty `id` is CARRIED with an empty id, as v1.5.5 carried it
+/// (crates/busbar/src/proto/cohere/reader.rs:263-267, `.unwrap_or("")`), never refused: the request
+/// is the caller's (Q128 arch u54). RED: the request refused, or the call dropped.
 #[test]
-fn tool_call_missing_id_rejects() {
-    for bad in [
+fn tool_call_missing_id_is_carried_as_1_5_5_carried_it() {
+    for body in [
         serde_json::json!({"model": "x", "messages": [{
             "role": "assistant",
             "tool_calls": [{"type": "function", "function": {"name": "f", "arguments": "{}"}}]
@@ -88,10 +91,13 @@ fn tool_call_missing_id_rejects() {
             "tool_calls": [{"id": "", "type": "function", "function": {"name": "f", "arguments": "{}"}}]
         }]}),
     ] {
-        assert_ir_parse_reject(
-            CohereReader.read_request(&bad),
-            "a tool_call with no usable id must reject",
-        );
+        let ir = CohereReader
+            .read_request(&body)
+            .expect("a tool_call with no id is read, as 1.5.5 read it");
+        let carried = ir.messages.iter().flat_map(|m| &m.content).any(|b| {
+            matches!(b, crate::codec::ir::IrBlock::ToolUse { id, name, .. } if id.is_empty() && name == "f")
+        });
+        assert!(carried, "the call is carried with an empty id: {body}");
     }
 }
 

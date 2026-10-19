@@ -3267,6 +3267,31 @@
       }
     },
     {
+      "id": "FID-COHERE translated Cohere answers report the whole prompt in tokens.input_tokens",
+      "kind": "improvement",
+      "changelog": "A translated answer to a Cohere caller reports `usage.tokens.input_tokens` as the whole prompt: the uncached, cache-read and cache-written tokens the upstream reported, summed (Cohere counts the cached share inside the prompt and has no cache-write tier).",
+      "by": "owner (Matthew Jackson), 2026-10-02: THE LLM DIALECT FIDELITY RULE (docs/design/BUSBAR-1.6.0.md:4768-4774)",
+      "cells": "^llm\\.fidelity\\|cohere\\|(prompt-tokens)$",
+      "expected_cells": 0,
+      "classes": [
+        "body"
+      ],
+      "rationale": "Pre-approved by BUSBAR-1.6.0.md:4769 (\"Every LLM dialect covers 100% of its own protocol ... Across dialects, we translate what maps and drop what doesn't\") and :4774 (\"Byte moves vs 1.5.5 that follow from this rule are pre-approved; each gets a register entry citing it. Billing never moves.\"); Q128 arch u54 MEDIUM (ruling 25: the mapping is fine once published). Cohere v2's `usage.tokens.input_tokens` is the WHOLE prompt, the cached share included (reported beside it as `cached_tokens`); the IR carries the uncached share with the cache read and cache write ADDITIVELY beside it. The writer sums the three (served crates/busbar-plane-llm/src/codec/cohere/mod.rs:836-857 `cohere_prompt_tokens`, writer.rs:865 streamed, :1093-1096 buffered; COH-10). 1.5.5 copied the IR's uncached count (v1.5.5 crates/busbar/src/proto/cohere/writer.rs:609, :719-720), so a Cohere caller of an OpenAI backend sent 10 prompt tokens, 4 cached, was told 6, and of an Anthropic backend with 10 uncached + 4 cache-read + 3 cache-written was told 10. Only the number the CALLER reads moves: busbar meters the upstream's own report by its classes and rates, unchanged (the four token tiers are read from the far end, never from this caller-facing projection). Pinned by crates/busbar-plane-llm/src/codec/cohere/tests/ir_mapping_tests.rs (the COH-10 cells: OpenAI backend, Anthropic backend, the round trip). The oracle cell prompt-tokens is OWED: `cells` names it and expected_cells is 0. The premise probes the existing Cohere-door llm cell.",
+      "premise": {
+        "cell": "llm|cohere|anthropic|request|ok",
+        "status": 200
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-02",
+        "ruling": "THE LLM DIALECT FIDELITY RULE (owner 2026-10-02, standing, no per-item sign-off), docs/design/BUSBAR-1.6.0.md:4768-4774"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
       "id": "R-22 a translated Anthropic stream's error event carries request_id",
       "kind": "improvement",
       "changelog": "A translated Anthropic stream that fails part way ends with an `error` event that carries a `request_id`, as Anthropic's published ErrorResponse requires.",

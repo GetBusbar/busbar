@@ -815,13 +815,12 @@ fn read_cohere_stop_reason(token: &str) -> crate::codec::ir::IrStopReason {
 /// EXHAUSTIVE: a reason with no Cohere analog (`refusal`, `pause_turn`, `other`) also falls back to
 /// `COMPLETE`.
 ///
-/// `S::Safety` maps to `COMPLETE` (COH-15). A safety/content-filter stop is a SERVED response — the
-/// model's answer, cut short or withheld by a filter — not an upstream failure, and v2 `/v2/chat`'s
-/// `finish_reason` enum (`COMPLETE|STOP_SEQUENCE|MAX_TOKENS|TOOL_CALL|ERROR|TIMEOUT`) has no token
-/// for it: `ERROR_TOXIC` is a v1 Generate-API value, off-spec here. It used to map to `ERROR`, which
-/// told a Cohere client its request had FAILED — an infrastructure error it might retry or alert on —
-/// when the upstream had answered. `COMPLETE` is the same projection `Refusal` (the model declining)
-/// already takes. The reader's `ERROR_TOXIC`→`S::Safety` stays for a v1-dialect upstream.
+/// `S::Safety` maps to `ERROR`, the token `S::Error` takes, as v1.5.5 wrote it
+/// (crates/busbar/src/proto/cohere/writer.rs:203-218): v2 `/v2/chat`'s `finish_reason` enum
+/// (`COMPLETE|STOP_SEQUENCE|MAX_TOKENS|TOOL_CALL|ERROR|TIMEOUT`) has no token for a safety stop
+/// (`ERROR_TOXIC` is a v1 Generate-API value), and 1.5.5 chose `ERROR`. The reader's
+/// `ERROR_TOXIC`→`S::Safety` stays for a v1-dialect upstream. (Q128 arch u54: the `COMPLETE`
+/// projection was an unsigned change and is restored.)
 fn write_cohere_stop_reason(reason: crate::codec::ir::IrStopReason) -> &'static str {
     use crate::codec::ir::IrStopReason as S;
     match reason {
@@ -829,8 +828,8 @@ fn write_cohere_stop_reason(reason: crate::codec::ir::IrStopReason) -> &'static 
         S::StopSequence => COHERE_FINISH_STOP_SEQUENCE,
         S::MaxTokens => COHERE_FINISH_MAX_TOKENS,
         S::ToolUse => COHERE_FINISH_TOOL_CALL,
-        S::Error => COHERE_FINISH_ERROR,
-        S::Safety | S::Refusal | S::PauseTurn | S::Other => COHERE_FINISH_COMPLETE,
+        S::Error | S::Safety => COHERE_FINISH_ERROR,
+        S::Refusal | S::PauseTurn | S::Other => COHERE_FINISH_COMPLETE,
     }
 }
 

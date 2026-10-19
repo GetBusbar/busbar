@@ -11,10 +11,9 @@ fn cohere_stop_reason_codec_round_trips_and_never_leaks() {
         S::Safety
     );
     // `ERROR_TOXIC` is a v1 Generate-API token, not a member of v2 `/v2/chat`'s finish_reason enum
-    // — the reader still accepts it as forward-compat, but the writer must never emit
-    // it. `S::Safety` is a served, filtered answer, not a failure: it writes `COMPLETE` (COH-15),
-    // never the `ERROR` that reads as an infrastructure fault.
-    assert_eq!(write_cohere_stop_reason(S::Safety), "COMPLETE"); // golden wire-contract literal (kept bare on purpose)
+    // — the reader still accepts it as forward-compat, but the writer never emits it. `S::Safety`
+    // writes `ERROR`, as v1.5.5 wrote it (proto/cohere/writer.rs:203-218; Q128 arch u54).
+    assert_eq!(write_cohere_stop_reason(S::Safety), "ERROR"); // golden wire-contract literal (kept bare on purpose)
                                                                  // v2 `TIMEOUT` reads as `Other`, as in 1.5.5 (v1.5.5 proto/cohere/mod.rs:179-191).
     assert_eq!(read_cohere_stop_reason("TIMEOUT"), S::Other);
     // A reason with no Cohere analog (`refusal`) or an unknown native token (`ERROR_LIMIT` →
@@ -1216,14 +1215,14 @@ fn test_auth_headers_control_byte_key_omits_header() {
     );
 }
 
-/// `ERROR_TOXIC` is a v1 Generate-API finish token, not a member of Cohere v2's
-/// `/v2/chat` `finish_reason` enum. The writer must emit the v2-legal `COMPLETE` for `IrStopReason::
-/// Safety` — a filtered answer is a served one, and `ERROR` reads as an infrastructure failure
-/// (COH-15) (the reader keeps accepting `ERROR_TOXIC` on the way IN, as v1-dialect forward-compat —
-/// that asymmetry is intentional). Covers both the non-streaming `write_response` and the
-/// streaming `message-end` paths.
+/// `ERROR_TOXIC` is a v1 Generate-API finish token, not a member of Cohere v2's `/v2/chat`
+/// `finish_reason` enum. The writer emits `ERROR` for `IrStopReason::Safety`, the token v1.5.5
+/// wrote (crates/busbar/src/proto/cohere/writer.rs:203-218; Q128 arch u54 restored it: the
+/// `COMPLETE` projection was an unsigned change). The reader keeps accepting `ERROR_TOXIC` on the
+/// way IN, as v1-dialect forward-compat. Covers both the non-streaming `write_response` and the
+/// streaming `message-end` paths. RED: a safety stop written as anything but `ERROR`.
 #[test]
-fn test_safety_finish_reason_writes_complete_non_stream() {
+fn test_safety_finish_reason_writes_error_non_stream() {
     let resp = crate::codec::ir::IrResponse {
         logprobs: Vec::new(),
         role: crate::codec::ir::IrRole::Assistant,
@@ -1255,24 +1254,13 @@ fn test_safety_finish_reason_writes_complete_non_stream() {
     let body = writer.write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         body.get("finish_reason").and_then(|v| v.as_str()),
-        Some("COMPLETE"), // golden wire-contract literal (kept bare on purpose)
-        "IR safety must write back as the v2-legal COMPLETE (a served answer, COH-15), never the \
-         v1-only ERROR_TOXIC and never the ERROR that reads as an infrastructure failure"
-    );
-
-    // Reading it back lands on `EndTurn`, not `Safety` — the v2 enum has no filter token, so the
-    // distinction is genuinely lost on this wire. This is NOT a round-trip; it is also not a fault.
-    let back = CohereReader
-        .read_response(crate::codec::test_host::HOST, &body)
-        .expect("read self-written body");
-    assert_eq!(
-        back.stop_reason,
-        Some(crate::codec::ir::IrStopReason::EndTurn)
+        Some("ERROR"), // golden wire-contract literal (kept bare on purpose)
+        "IR safety writes back as v1.5.5's ERROR, never the v1-only ERROR_TOXIC"
     );
 }
 
 #[test]
-fn test_safety_finish_reason_writes_complete_stream() {
+fn test_safety_finish_reason_writes_error_stream() {
     let ev = IrStreamEvent::MessageDelta {
         stop_reason: Some(crate::codec::ir::IrStopReason::Safety),
         stop_sequence: None,
@@ -1294,8 +1282,8 @@ fn test_safety_finish_reason_writes_complete_stream() {
             .get("delta")
             .and_then(|d| d.get("finish_reason"))
             .and_then(|v| v.as_str()),
-        Some("COMPLETE"), // golden wire-contract literal (kept bare on purpose)
-        "streamed safety stop must emit the v2-legal COMPLETE (COH-15), never ERROR_TOXIC or ERROR"
+        Some("ERROR"), // golden wire-contract literal (kept bare on purpose)
+        "a streamed safety stop emits v1.5.5's ERROR, never ERROR_TOXIC"
     );
 }
 

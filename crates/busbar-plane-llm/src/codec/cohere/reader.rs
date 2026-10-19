@@ -418,15 +418,16 @@ impl ProtocolReader for CohereReader {
                         if let Some(tc_arr) = tool_calls.as_array() {
                             for tc_val in tc_arr {
                                 if let Some(func_obj) = tc_val.get(keys::FUNCTION) {
-                                    // A present tool call MUST carry a non-empty string `id`: it is
-                                    // the correlation key an egress dialect emits to pair the eventual
-                                    // tool result. An absent/blank/wrong-typed id yields an empty IR id
-                                    // that silently breaks that pairing — reject rather than invent.
+                                    // An absent, empty or wrong-typed `id` reads as an empty id and
+                                    // the call is carried, as v1.5.5 carried it
+                                    // (crates/busbar/src/proto/cohere/reader.rs:263-267,
+                                    // `.unwrap_or("")`): the request is the caller's and is forwarded,
+                                    // never refused for a correlation key it did not send (Q128 arch
+                                    // u54; no owner ruling signs the refusal).
                                     let id = tc_val
                                         .get(keys::ID)
                                         .and_then(|v| v.as_str())
-                                        .filter(|s| !s.is_empty())
-                                        .ok_or_else(ir_parse_error)?
+                                        .unwrap_or("")
                                         .to_string();
                                     let name = func_obj
                                         .get(keys::NAME)

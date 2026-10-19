@@ -1026,6 +1026,9 @@ each dialect translates, field by field, is listed in the generated
   tool result as `functionResponse.response.error`, a `fileData.mimeType`, the caller's
   transcription prompt and temperature, and reads Vertex `createTime`, a `functionResponse.id` as
   the call id, and the image content-policy stops as safety stops.
+- A translated answer to a Cohere caller reports `usage.tokens.input_tokens` as the whole prompt:
+  the uncached, cache-read and cache-written tokens the upstream reported, summed (Cohere counts the
+  cached share inside the prompt and has no cache-write tier).
 - A buffered OpenAI chat response carries its citations as nested `url_citation` annotations, the
   shape the published Chat Completions schema defines.
 - On a same-dialect route the caller receives every upstream response header except hop-by-hop
