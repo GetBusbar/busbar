@@ -128,8 +128,64 @@ pub const ALLOWLIST_C1: &[Allow] = &[
     ),
 ];
 
-/// CHECK 3 HAS NO EXCEPTIONS (a measurement: every finding was read against source).
-pub const ALLOWLIST_C3: &[Allow] = &[];
+/// One CHECK-3 1.5.5-PARITY ROW: a message whose operator-visible text busbar v1.5.5 printed with
+/// the SAME detail, kept because customer-visible behaviour stays 1.5.5 (owner-locked), and whose
+/// interpolated value is not secret material. Not a pattern: the row names one rule, one file and
+/// one parameter, cites the 1.5.5 site it keeps and says why the value is not a secret, and it must
+/// suppress EXACTLY ONE live hit — a row that suppresses none (the message moved or is gone) or
+/// more than one (a second message joined it unread) is RED in both modes.
+#[derive(Debug, Clone, Copy)]
+pub struct Parity {
+    /// The Check-3 rule the hit is reported under.
+    pub rule: &'static str,
+    /// The file, exactly as the scan names it (a git-pinned crate under `crates/<package>/`).
+    pub path: &'static str,
+    /// The interpolated binding the hit names.
+    pub param: &'static str,
+    /// The v1.5.5 site that printed the same detail.
+    pub since: &'static str,
+    /// Why the interpolated value is not secret material.
+    pub why: &'static str,
+}
+
+impl Parity {
+    fn matches(&self, h: &Hit) -> bool {
+        h.rule == self.rule
+            && h.name == self.param
+            && h.loc
+                .rsplit_once(':')
+                .is_some_and(|(file, _)| file == self.path)
+    }
+    fn key(&self) -> String {
+        format!("{}|{}|{}", self.rule, self.path, self.param)
+    }
+}
+
+/// CHECK 3'S 1.5.5-PARITY ROWS — individually listed and counted, never a pattern (coordinator
+/// ruling on #1192). Every other Check-3 finding blocks.
+pub const PARITY_C3: &[Parity] = &[
+    Parity {
+        rule: "secret-subject-parameter",
+        path: "crates/busbar-auth-oidc/src/cache.rs",
+        param: "kid",
+        since: "auth-oidc v1.0.6 (shipped with busbar v1.5.5) auth-oidc/src/cache.rs:174",
+        why: "a JWKS kid is the public id of a signing key, read from the token header; it is escaped, so a printable kid prints byte-for-byte as in 1.5.5",
+    },
+    Parity {
+        rule: "decoder-error-on-secret-input",
+        path: "crates/busbar-secret-env/src/lib.rs",
+        param: "e",
+        since: "busbar v1.5.5 crates/busbar/src/main.rs:2579",
+        why: "the decoded bytes are the secret's SETTINGS (the variable name), never the resolved value",
+    },
+    Parity {
+        rule: "decoder-error-on-secret-input",
+        path: "crates/busbar-secret-file/src/lib.rs",
+        param: "e",
+        since: "busbar v1.5.5 crates/busbar/src/main.rs:2579",
+        why: "the decoded bytes are the secret's SETTINGS (the file path), never the file's contents",
+    },
+];
 
 /// The test-file shape (item 506): `(^|[/_])tests?\.rs$`.
 fn is_test_file(rel: &str) -> bool {
@@ -1801,7 +1857,8 @@ fn read_pinned(cx: &Ctx) -> Result<PinnedSources, String> {
 pub struct SecretHygieneGate {
     roots: &'static [&'static str],
     allow_c1: &'static [Allow],
-    allow_c3: &'static [Allow],
+    /// Check 3's 1.5.5-parity rows ([`PARITY_C3`]).
+    allow_c3: &'static [Parity],
     /// Read the git-pinned busbar plugin sources too ([`pinned_sources`]). The shipped gate does;
     /// the self-test's sandbox twins, whose roots are fixtures, do not.
     pinned: bool,
@@ -1814,7 +1871,7 @@ impl SecretHygieneGate {
         SecretHygieneGate {
             roots: &["crates"],
             allow_c1: ALLOWLIST_C1,
-            allow_c3: ALLOWLIST_C3,
+            allow_c3: PARITY_C3,
             pinned: true,
             tag: "",
         }
@@ -1836,6 +1893,8 @@ struct Scan {
     c1: Vec<Hit>,
     c2: Vec<Hit>,
     c3: Vec<Hit>,
+    /// Per [`Parity`] row, in order, the live hits it suppressed.
+    kept: Vec<Vec<Hit>>,
     warns: Vec<Hit>,
 }
 
@@ -1945,7 +2004,13 @@ impl SecretHygieneGate {
             .into_iter()
             .partition(|h| h.rule == "PARSE-WARN");
         sc.warns = warns;
-        sc.c3 = c3;
+        sc.kept = vec![Vec::new(); self.allow_c3.len()];
+        for h in c3 {
+            match self.allow_c3.iter().position(|p| p.matches(&h)) {
+                Some(i) => sc.kept[i].push(h),
+                None => sc.c3.push(h),
+            }
+        }
         sc
     }
 
@@ -1986,7 +2051,7 @@ impl SecretHygieneGate {
     /// The allowlist liveness problems: an empty prefix, or a prefix that names nothing.
     fn stale_allow(&self, cx: &Ctx) -> Vec<String> {
         let mut bad = Vec::new();
-        for a in self.allow_c1.iter().chain(self.allow_c3) {
+        for a in self.allow_c1 {
             let row = format!("{}|{}|{}", a.needle, a.prefix, a.field);
             if a.prefix.is_empty() {
                 bad.push(format!(
@@ -1996,6 +2061,40 @@ impl SecretHygieneGate {
                 bad.push(format!(
                     "allowlist row `{row}` names a path that is not in this tree: `{}` does not exist, so this row suppresses nothing and says nothing while doing it. If the file MOVED, repoint the row; if the exception is gone, DELETE the row",
                     a.prefix
+                ));
+            }
+        }
+        bad
+    }
+
+    /// The parity rows that do not suppress exactly one live hit. An unmeasured scan keeps no row,
+    /// so every row is refused then: a parity row is live only against a measured tree.
+    fn unkept(&self, sc: &Scan, measured: bool) -> Vec<String> {
+        let mut bad = Vec::new();
+        for (i, p) in self.allow_c3.iter().enumerate() {
+            let n = sc.kept.get(i).map_or(0, Vec::len);
+            if p.path.is_empty() || p.param.is_empty() || p.rule.is_empty() {
+                bad.push(format!(
+                    "parity row `{}` leaves its rule, path or parameter EMPTY — a parity row names one message, never a pattern",
+                    p.key()
+                ));
+            } else if !measured {
+                bad.push(format!(
+                    "parity row `{}` was not measured: the scan-floor row is red",
+                    p.key()
+                ));
+            } else if n != 1 {
+                bad.push(format!(
+                    "parity row `{}` suppresses {n} live hit(s){}; a parity row keeps EXACTLY ONE 1.5.5 message. If the message moved, repoint the row; if it is gone, DELETE the row; a second message is judged on its own",
+                    p.key(),
+                    if n == 0 {
+                        String::new()
+                    } else {
+                        format!(
+                            " ({})",
+                            sc.kept[i].iter().map(|h| h.loc.as_str()).collect::<Vec<_>>().join(", ")
+                        )
+                    }
                 ));
             }
         }
@@ -2130,22 +2229,32 @@ impl Gate for SecretHygieneGate {
             ),
         });
 
-        let stale = self.stale_allow(cx);
-        let allow_title = "every allowlist row names a path in this tree (fails in BOTH modes)";
+        let measured = sc.floor.is_none() && sc.broken.is_none();
+        let mut stale = self.stale_allow(cx);
+        stale.extend(self.unkept(&sc, measured));
+        let allow_title = "every allowlist row names a path in this tree, and every Check-3 1.5.5-parity row suppresses exactly one live hit (fails in BOTH modes)";
         rows.push(if stale.is_empty() {
             Row::pass(
                 ROW_ALLOW,
                 allow_title,
                 format!(
-                    "{} row(s), each path-prefix exists",
-                    self.allow_c1.len() + self.allow_c3.len()
+                    "{} Check-1 row(s), each path-prefix exists; {} Check-3 1.5.5-parity row(s), each suppressing exactly one live hit{}",
+                    self.allow_c1.len(),
+                    self.allow_c3.len(),
+                    self.allow_c3
+                        .iter()
+                        .zip(&sc.kept)
+                        .map(|(p, k)| format!(
+                            " | {} {} ({}) kept as {}: {}",
+                            k[0].loc, p.rule, p.param, p.since, p.why
+                        ))
+                        .collect::<String>()
                 ),
             )
         } else {
             Row::fail(ROW_ALLOW, allow_title, stale.join(" ; "))
         });
 
-        let measured = sc.floor.is_none() && sc.broken.is_none();
         let scan_title = "the scan completed: the Check-3 lexer kept string state in every file";
         rows.push(if let Some(why) = &sc.broken {
             Row::fail(ROW_SCAN, scan_title, why.clone())
@@ -2230,7 +2339,7 @@ static SANDBOX: SecretHygieneGate = SecretHygieneGate {
 static MISSING_ROOT: SecretHygieneGate = SecretHygieneGate {
     roots: &["selftest-missing-root"],
     allow_c1: ALLOWLIST_C1,
-    allow_c3: ALLOWLIST_C3,
+    allow_c3: PARITY_C3,
     pinned: false,
     tag: "missing-root",
 };
@@ -2238,7 +2347,7 @@ static MISSING_ROOT: SecretHygieneGate = SecretHygieneGate {
 static TESTS_ONLY: SecretHygieneGate = SecretHygieneGate {
     roots: &["crates/busbar-contract/src/tests"],
     allow_c1: ALLOWLIST_C1,
-    allow_c3: ALLOWLIST_C3,
+    allow_c3: PARITY_C3,
     pinned: false,
     tag: "tests-only",
 };
@@ -2260,6 +2369,38 @@ static EMPTY_PREFIX_ALLOW: SecretHygieneGate = SecretHygieneGate {
     allow_c3: &[],
     pinned: false,
     tag: "empty-prefix-allow",
+};
+
+const PARITY_PAIR: &str = "selftest-sandbox/src/c1_pair.rs";
+const fn sandbox_parity(rule: &'static str, param: &'static str) -> Parity {
+    Parity {
+        rule,
+        path: PARITY_PAIR,
+        param,
+        since: "the self-test's planted 1.5.5 site",
+        why: "the self-test's planted reason",
+    }
+}
+static PARITY_ONE: SecretHygieneGate = SecretHygieneGate {
+    roots: &[SANDBOX_ROOT],
+    allow_c1: SANDBOX_ALLOW,
+    allow_c3: &[sandbox_parity("secret-named-binding", "api_key")],
+    pinned: false,
+    tag: "parity-one",
+};
+static PARITY_WRONG_PARAM: SecretHygieneGate = SecretHygieneGate {
+    roots: &[SANDBOX_ROOT],
+    allow_c1: SANDBOX_ALLOW,
+    allow_c3: &[sandbox_parity("secret-named-binding", "admin_password")],
+    pinned: false,
+    tag: "parity-wrong-param",
+};
+static PARITY_EMPTY: SecretHygieneGate = SecretHygieneGate {
+    roots: &[SANDBOX_ROOT],
+    allow_c1: SANDBOX_ALLOW,
+    allow_c3: &[sandbox_parity("secret-named-binding", "")],
+    pinned: false,
+    tag: "parity-empty",
 };
 
 fn selftest_battery<'a>(gate: &'a SecretHygieneGate, cx: &'a Ctx) -> Report<'a> {
@@ -2485,6 +2626,51 @@ fn selftest_battery<'a>(gate: &'a SecretHygieneGate, cx: &'a Ctx) -> Report<'a> 
         &["EMPTY path prefix"],
     ));
 
+    // ── The Check-3 1.5.5-parity rows: listed, counted, exactly one live hit each ──
+    let pair_cx = blocking.with_overlay(plant("c1_pair", fixtures::C1_GREEN_PARAM_IS_C3_RED));
+    let two_cx = blocking.with_overlay(plant("c1_pair", fixtures::C3_PARITY_TWO));
+    report.push(prove_green(
+        &pair_cx,
+        &PARITY_ONE,
+        "GREEN parity: a row naming the one live hit's rule, file and parameter keeps it, and every row passes",
+        &[ROW_FLOOR, ROW_ALLOW, ROW_SCAN, ROW_C1, ROW_C2, ROW_C3],
+    ));
+    report.push(prove_red_by_configuration(
+        &base_cx,
+        &SANDBOX,
+        &PARITY_ONE,
+        "RED parity: a row whose message is gone (zero live hits) is REFUSED, not carried",
+        &[ROW_ALLOW],
+        &[
+            "suppresses 0 live hit(s)",
+            "secret-named-binding|selftest-sandbox/src/c1_pair.rs|api_key",
+        ],
+    ));
+    report.push(prove_red_by_configuration(
+        &two_cx,
+        &SANDBOX,
+        &PARITY_ONE,
+        "RED parity: a row that would keep TWO live hits is REFUSED (a second message is judged on its own)",
+        &[ROW_ALLOW],
+        &["suppresses 2 live hit(s)", "c1_pair.rs:2", "c1_pair.rs:5"],
+    ));
+    report.push(prove_red_by_configuration(
+        &pair_cx,
+        &PARITY_ONE,
+        &PARITY_WRONG_PARAM,
+        "RED parity: a row naming another parameter keeps nothing (the live hit stays and the row is refused)",
+        &[ROW_ALLOW, ROW_C3],
+        &["suppresses 0 live hit(s)", "api_key"],
+    ));
+    report.push(prove_red_by_configuration(
+        &pair_cx,
+        &PARITY_ONE,
+        &PARITY_EMPTY,
+        "RED parity: a row with an EMPTY parameter is a pattern, and is REFUSED",
+        &[ROW_ALLOW],
+        &["EMPTY"],
+    ));
+
     // ── The scan floor ──
     report.push(prove_red_by_configuration(
         &quiet,
@@ -2591,6 +2777,13 @@ pub struct Counter { pub token: usize }
 "#####;
     pub(super) const C1_GREEN_PARAM_IS_C3_RED: &str = r#####"fn set(api_key: String) -> Result<(), String> {
     Err(format!("api_key {api_key} was rejected by the upstream"))
+}
+"#####;
+    pub(super) const C3_PARITY_TWO: &str = r#####"fn set(api_key: String) -> Result<(), String> {
+    Err(format!("api_key {api_key} was rejected by the upstream"))
+}
+fn reset(api_key: String) -> Result<(), String> {
+    Err(format!("api_key {api_key} was refused on reset"))
 }
 "#####;
     pub(super) const C1_RED_QUALIFIED: &str = r#####"pub struct CreatedKeyView {
