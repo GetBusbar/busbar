@@ -1218,7 +1218,7 @@ fn red_auth_call_in_refuses_each_break() {
         name: none(),
         value: none(),
     };
-    i.request.fields = &f;
+    i.request.fields = core::ptr::from_ref(&f);
     i.request.fields_len = MAX_SPANS as usize + 1;
     assert_eq!(
         in_rule(check_auth_call_in(&i)),

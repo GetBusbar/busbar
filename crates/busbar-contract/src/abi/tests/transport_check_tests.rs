@@ -1193,6 +1193,7 @@ fn a_begin_line_table_is_checked() {
         f(Rule::Contradiction, "begin.lines")
     );
     let mut nul = begin_with(SIDE_ACCEPT, &[]);
+    nul.lines = null();
     nul.lines_len = 1;
     assert_eq!(check(&nul), f(Rule::NullWithCount, "begin.lines"));
     let mut many = begin_with(SIDE_ACCEPT, &good);
