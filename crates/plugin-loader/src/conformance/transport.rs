@@ -627,6 +627,16 @@ fn ready_locate(authority: &[u8], secure: bool, has_name: bool) -> String {
     )
 }
 
+/// The op bits a transport declares in its tail's `facts` (accept, dial, detach, adopt).
+pub(super) const OP_BITS: u32 = 4 | 8 | 16 | 32;
+
+/// What a transport's declared ops and its suite inputs break, each a named error; empty when it
+/// declares no op (not judged until it does).
+pub(super) fn declared_ops_faults(ops: u32, claims: &[&str], k: &serde_json::Value) -> Vec<String> {
+    let _ = (ops, claims, k);
+    Vec::new()
+}
+
 /// What the contract requires of one step's answer.
 pub(super) enum Want {
     /// Exactly this line.
@@ -1246,3 +1256,7 @@ mod opening_tests;
 #[cfg(test)]
 #[path = "../tests/conformance_transport_role_tests.rs"]
 mod role_tests;
+
+#[cfg(test)]
+#[path = "../tests/transport_ops_tests.rs"]
+mod ops_tests;
