@@ -1745,7 +1745,7 @@ impl PluginsCfg {
 // settings }` shapes). Moved to `busbar_kernel::config::sections`; re-exported at their
 // historical `config::` path.
 pub use busbar_kernel::config::sections::{
-    store_required, SecretModuleCfg, StoreCfg, MIGRATED_STORE_MODULE,
+    store_required, migrated_store_module, SecretModuleCfg, StoreCfg,
 };
 
 // The `advanced:` block (INTERNAL tuning knobs) and its nested `response_headers:` block are plain
