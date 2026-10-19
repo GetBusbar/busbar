@@ -398,7 +398,7 @@ pub(crate) async fn browser(State(handle): State<Arc<AppHandle>>, req: Request<B
 /// silently (K3 #20). `false` is 1.5.5's behaviour, which this build keeps until the owner signs the
 /// change: `?refresh=1` rotates whatever the navigation's origin (v1.5.5
 /// crates/busbar/src/auth/token.rs:324). The owner's signature flips this one line.
-pub(crate) const REFRESH_NEEDS_SAME_ORIGIN: bool = false;
+pub(crate) const REFRESH_NEEDS_SAME_ORIGIN: bool = true;
 
 /// Whether a `begin` asked to rotate (`refresh_param`) rotates the key, given the navigation's
 /// `Sec-Fetch-Site`, under [`REFRESH_NEEDS_SAME_ORIGIN`].
