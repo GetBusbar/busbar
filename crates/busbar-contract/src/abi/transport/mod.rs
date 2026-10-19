@@ -361,6 +361,15 @@ pub const FRAMING_DATAGRAM: u32 = 1;
 /// the head after the auth has run is a rule every transport keeps, proven by a RED in its own
 /// suite, not a fact one states.)
 pub const FACT_DECODES_PAYLOAD: u32 = 2;
+/// [`TransportTail::facts`]: the transport accepts: its framer begins on the accepting side.
+/// A zero declares nothing: a tail that states no op bit declares no op.
+pub const FACT_ACCEPTS: u32 = 4;
+/// [`TransportTail::facts`]: the transport dials: its framer begins on the dialling side.
+pub const FACT_DIALS: u32 = 8;
+/// [`TransportTail::facts`]: the transport detaches a live connection for a hand-off.
+pub const FACT_DETACHES: u32 = 16;
+/// [`TransportTail::facts`]: the transport adopts a connection handed to it.
+pub const FACT_ADOPTS: u32 = 32;
 
 /// THE OFFERED-POINTS RECORD: the key under which a transport's Statement `extensions` states
 /// the auth points it offers (THE DESIGN, "Auth points and guest lists"; the blob's bytes are

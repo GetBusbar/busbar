@@ -1465,6 +1465,7 @@ impl Services {
     ///
     /// [`ServiceError`]: unserved, declined, or broken (a field or the body a count behind NULL,
     /// or a field name that is not UTF-8).
+    #[allow(clippy::too_many_arguments)] // one argument per `UnitRefuseIn` field, as `auth_call`
     pub fn unit_refuse(
         &self,
         handle: CompletionHandle,
