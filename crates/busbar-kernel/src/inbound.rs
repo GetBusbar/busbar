@@ -225,9 +225,11 @@ pub struct Refuse {
     pub cause: u32,
     /// The matched line; [`LINE_NONE`](busbar_contract::abi::host::service::LINE_NONE) for no route.
     pub line: u32,
-    /// The request's target (path, `?query`), when the caller holds it. The unit's own head is read
-    /// first; with neither, the line's route path, else the listener's root.
-    pub target: Option<String>,
+    /// The request being refused, as the transport decoded it (`UnitRefuseIn::request`): its path
+    /// shapes the bytes of a refusal with no unit (no route, a method miss, an over-gate body) as
+    /// 1.5.5's router shaped them, by the path's dialect. A unit's own head, when it holds one, is
+    /// read first; with neither, the line's route path, else the listener's root.
+    pub request: Option<Head>,
 }
 
 /// A refusal's bytes: the status, the head fields in order, the body. The transport frames them
@@ -1410,20 +1412,17 @@ impl Inbound {
                     .map(|s| (s.head.clone(), s.fixed() == Some(Fixed::Overloaded)))
             })
             .unwrap_or((None, false));
+        // The unit's own head first, then the request the transport hands with the refusal.
+        // RED: the request is not read.
+        let _ = r.request;
         let path = head
             .as_ref()
             .map(|h| h.target.clone())
-            .or_else(|| {
-                r.target
-                    .as_deref()
-                    .map(|t| t.split_once('?').map_or(t, |(p, _)| p).to_string())
-            })
             .or_else(|| line.map(|l| l.route.path.clone()))
             .unwrap_or_else(|| "/".to_string());
         let target = head
             .as_ref()
             .map(Head::path_and_query)
-            .or(r.target)
             .unwrap_or_else(|| path.clone());
         let app = &table.listener.app;
         let resp = match r.cause {

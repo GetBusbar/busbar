@@ -361,6 +361,9 @@ pub struct RefuseAsk {
     pub conn: u64,
     /// The stream on it.
     pub stream: u64,
+    /// The request being refused (`UnitRefuseIn::request`): its path shapes a refusal with no unit
+    /// as 1.5.5's router shaped it.
+    pub request: HeadCopy,
 }
 
 /// The refusal the kernel owns: status, head fields and body, framed verbatim by the transport.
