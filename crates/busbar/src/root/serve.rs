@@ -49,9 +49,10 @@ use crate::root::door_steps::{egress_pool, DoorCaller, DoorSteps};
 use crate::root::loader::dispatch::{in_head, out_head, Dispatcher, Frame};
 use busbar_contract::abi::host::conn::connector::NEVER_KEPT;
 use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
-use busbar_contract::abi::plane::{CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN};
+use busbar_contract::abi::plane::{CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN, CLAIM_RAW_AFFIX};
 use busbar_contract::auth::AuthPrincipal;
 use busbar_contract::caps::{Pass, PrincipalId, Route};
+use busbar_kernel::observability::arrival::EntrySpans;
 use busbar_kernel::plane_driver::{
     Arrival, EgressFarEnd, FarEnd, FarPiece, OutboundRequest, Pick, RoutedScope, UnitRoute,
 };
@@ -511,6 +512,8 @@ pub struct ServedPlane {
     pub kernel: Arc<KernelServices>,
     /// Its tail's dialects, in order: what a unit's dialect index names.
     pub dialects: Vec<&'static str>,
+    /// Its tail's operation classes, in order: what a unit's operation class index names.
+    pub op_classes: Vec<&'static str>,
 }
 
 /// WHAT ONE GENERATION OF A DOOR PLANE IS SERVED OVER: its section as written, its refresh
@@ -1686,6 +1689,7 @@ pub(crate) fn compose_planes_over(
             live,
             kernel: Arc::clone(&kernel),
             dialects: served_facts.dialects.clone(),
+            op_classes: served_facts.op_classes.clone(),
         });
     }
     Ok(served)
@@ -2555,8 +2559,11 @@ pub fn door_mounts(
     for (p, plane) in served.planes.iter().enumerate() {
         for (i, claim) in plane.snapshot.claims.iter().enumerate() {
             // A claim over the line carrier is served on the process's own stdin/stdout
-            // ([`lines`]), never on the data listener.
-            if lines::carrier() == Some(claim.carrier.as_str()) {
+            // ([`lines`]), never on the data listener. A raw affix states a fact about paths and
+            // writes no line (ARCHITECT ruling 2026-10-17).
+            if lines::carrier() == Some(claim.carrier.as_str())
+                || claim.flags & CLAIM_RAW_AFFIX != 0
+            {
                 continue;
             }
             let rung =
@@ -2752,6 +2759,22 @@ pub fn door_mounts(
             }
         })
         .collect();
+    // THE ENTRY SPANS each plane's claims state (status row 173), their callsites built here, once.
+    let entries: Vec<Arc<EntrySpans>> = routes
+        .served
+        .planes
+        .iter()
+        .map(|p| {
+            Arc::new(EntrySpans::of(p.snapshot.claims.iter().map(|c| {
+                (
+                    c.verb.as_str(),
+                    c.target.as_str(),
+                    c.flags,
+                    c.arrival_span.as_str(),
+                )
+            })))
+        })
+        .collect();
     let routes_of = requests
         .into_iter()
         .map(|(path, method, auth, (plane, claim))| {
@@ -2776,6 +2799,7 @@ pub fn door_mounts(
                     }),
                 };
             }
+            let entry = Arc::clone(&entries[plane]);
             let routes = Arc::clone(&routes);
             PlaneRouteSpec {
                 path,
@@ -2783,9 +2807,17 @@ pub fn door_mounts(
                 auth,
                 handler: Arc::new(move |ctx: PlaneReqCtx| -> PlaneRouteFuture {
                     let routes = Arc::clone(&routes);
+                    let entry = Arc::clone(&entry);
                     Box::pin(async move {
                         match DoorRequest::of(ctx) {
-                            Some(req) => routes.answer(plane, claim, req).await,
+                            Some(req) => {
+                                // THE ENTRY SPAN the plane states for this arrival (status row
+                                // 173), opened by its claim and its raw path; the unit's request
+                                // span (`forward`) opens under it.
+                                use tracing::Instrument as _;
+                                let span = entry.open(claim, req.method.as_str(), req.uri.path());
+                                routes.answer(plane, claim, req).instrument(span).await
+                            }
                             None => stated(
                                 (refusal_status(ReasonCode::PlanePanic), Vec::new()),
                                 Body::empty(),
@@ -2822,7 +2854,9 @@ pub(crate) fn line_routes(
     let mut of_line = std::collections::HashMap::new();
     for (p, plane) in served.planes.iter().enumerate() {
         for (i, claim) in plane.snapshot.claims.iter().enumerate() {
-            if lines::carrier() == Some(claim.carrier.as_str()) {
+            if lines::carrier() == Some(claim.carrier.as_str())
+                || claim.flags & CLAIM_RAW_AFFIX != 0
+            {
                 continue;
             }
             let rung =
@@ -3590,14 +3624,15 @@ impl DataRoutes {
         let late: crate::root::linked::node::Late =
             Box::new(move || report_of(&money, unit, &facts));
         // THE UNIT'S REQUEST SPAN, as the previous release's forward opened one around the whole
-        // walk (at the hot-path level, so the OTLP export carries it): the pool and the dialect the
-        // request was read in are recorded once the plane has read it.
+        // walk (at the hot-path level, so the OTLP export carries it; v1.5.5
+        // `proxy/engine/mod.rs:120`: `pool`, `ingress`, `op`, `request_id`): the pool, the dialect
+        // the request was read in and its operation class are recorded once the plane has read it.
         let span = tracing::span!(
             busbar_kernel::observability::HOTPATH_LEVEL,
             "forward",
-            plane = %served.instance,
             pool = tracing::field::Empty,
             ingress = tracing::field::Empty,
+            op = tracing::field::Empty,
             request_id = tracing::field::Empty
         );
         let ended = {
@@ -3627,6 +3662,9 @@ impl DataRoutes {
             }
             if let Some(dialect) = served.dialects.get(decoded.dialect as usize) {
                 span.record("ingress", *dialect);
+            }
+            if let Some(op) = served.op_classes.get(decoded.op_class as usize) {
+                span.record("op", *op);
             }
         }
         drop(span);
@@ -3871,6 +3909,11 @@ impl FarEnd for DoorFar<'_, '_> {
 
     fn failure(&self, token: &Pass<Route>) -> Option<&'static str> {
         self.far().and_then(|far| far.failure(token))
+    }
+
+    fn attempt_span(&self, token: &Pass<Route>) -> tracing::Span {
+        self.far()
+            .map_or_else(tracing::Span::none, |far| far.attempt_span(token))
     }
 
     fn candidates(&self, token: &Pass<Route>) -> Option<busbar_kernel::plane_driver::Candidates> {
