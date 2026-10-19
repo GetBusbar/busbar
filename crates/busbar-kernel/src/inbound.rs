@@ -38,8 +38,6 @@
 //! This module names no loader: the composition root glues it to the plugin loader's auth handle,
 //! injecting the MAC, the unit mint, the spawner and the refusal sink.
 
-#![allow(dead_code, unused_imports, unreachable_code)]
-
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -911,17 +909,16 @@ impl Inbound {
     /// the connection side it drove). Its `Peer` verdict, at every generation and for every owner,
     /// leaves the table (its credential zeroised), and so does the connection it named.
     pub fn framing_ended(&self, framing: u64) {
-        // RED: nothing leaves.
-        let _ = framing;
+        self.peers().retain(|(_, _, f), _| *f != framing);
+        self.framing_conns
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|(_, f), _| *f != framing);
     }
 
     /// The connection a framing's calls name: the first call's, and every later call must name the
     /// same ([`CONN_MISMATCH`]).
     fn same_conn(&self, owner: u64, framing: u64, conn: u64) -> Result<(), &'static str> {
-        // RED: the connection is not checked.
-        if framing != u64::MAX {
-            return Ok(());
-        }
         let mut conns = self
             .framing_conns
             .lock()

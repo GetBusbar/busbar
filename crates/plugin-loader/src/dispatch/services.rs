@@ -1546,8 +1546,7 @@ extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                 request,
                 body,
                 deadline: op_remaining(),
-                // RED: the framing is not named.
-                framing: 0,
+                framing: super::auth_handle::framing_of(head.handle.ticket),
             };
             serve_with(
                 &store,
