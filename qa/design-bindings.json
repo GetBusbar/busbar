@@ -317,21 +317,21 @@
     },
     {
      "kind": "test",
-     "ref": "crates/busbar-kernel-egress/src/trust/tests/order_tests.rs::order_last_in_chain_wins",
+     "ref": "crates/busbar-plane-llm/tests/on_driver/seam.rs::order_last_in_chain_wins",
      "proves": "the last ordering gate wins",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "crates/busbar-kernel-egress/src/trust/tests/order_tests.rs::stale_order_filtered_against_post_restrict_set",
+     "ref": "crates/busbar-plane-llm/tests/on_driver/seam.rs::stale_order_filtered_against_post_restrict_set",
      "proves": "the order is re-validated against the post-restrict set",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "crates/busbar-kernel-egress/src/trust/tests/order_tests.rs::last_order_gate_filtered_to_empty_abstains_to_base_not_to_a_lower_gate",
+     "ref": "crates/busbar-plane-llm/tests/on_driver/seam.rs::last_order_gate_filtered_to_empty_abstains_to_base_not_to_a_lower_gate",
      "proves": "empty order abstains to the base policy",
      "source": "curated",
      "status": "mapped"
@@ -352,7 +352,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:route.failover|fo|all-up, test:crates/busbar-kernel/src/tests/members/egress/route/pick_order_tests.rs::session_affinity_never_pins_to_a_drained_member, test:session_affinity_is_offered_first, test:the_pools_door_yields_a_session_pinned_to_a_tripped_member, test:crates/busbar-kernel-egress/src/trust/tests/order_tests.rs::order_last_in_chain_wins, test:crates/busbar-kernel-egress/src/trust/tests/order_tests.rs::stale_order_filtered_against_post_restrict_set, test:crates/busbar-kernel-egress/src/trust/tests/order_tests.rs::last_order_gate_filtered_to_empty_abstains_to_base_not_to_a_lower_gate, test:a_ranking_that_covers_only_unhealthy_members_falls_through_to_the_floor, test:crates/busbar-kernel/src/tests/members/egress/route/pick_order_tests.rs::ordered_walk_empty_order_is_swrr"
+   "verdict_detail": "oracle-cell:route.failover|fo|all-up, test:crates/busbar-kernel/src/tests/members/egress/route/pick_order_tests.rs::session_affinity_never_pins_to_a_drained_member, test:session_affinity_is_offered_first, test:the_pools_door_yields_a_session_pinned_to_a_tripped_member, test:crates/busbar-plane-llm/tests/on_driver/seam.rs::order_last_in_chain_wins, test:crates/busbar-plane-llm/tests/on_driver/seam.rs::stale_order_filtered_against_post_restrict_set, test:crates/busbar-plane-llm/tests/on_driver/seam.rs::last_order_gate_filtered_to_empty_abstains_to_base_not_to_a_lower_gate, test:a_ranking_that_covers_only_unhealthy_members_falls_through_to_the_floor, test:crates/busbar-kernel/src/tests/members/egress/route/pick_order_tests.rs::ordered_walk_empty_order_is_swrr"
   },
   {
    "id": "PB-6",
@@ -1217,7 +1217,7 @@
     },
     {
      "kind": "test",
-     "ref": "a_reachable_fallback_pool_the_key_may_not_use_is_refused",
+     "ref": "crates/busbar-kernel/src/tests/door_destination_tests.rs::a_reachable_fallback_pool_outside_the_allow_list_is_not_authorized",
      "proves": "fallback_pools_authorized 403",
      "source": "curated",
      "status": "mapped"
@@ -1245,7 +1245,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:billing|key-usage|upstream-down-refunded, test:an_unconfigured_unpriced_name_has_no_rate_and_the_acl_is_asked_first, oracle-cell:http.crosscut|unknown-path|openai-suffix, test:an_openai_pool_refusal_reads_permission_error, test:a_bedrock_pool_refusal_reads_access_denied, test:a_reachable_fallback_pool_the_key_may_not_use_is_refused, test:test_flat_fee_charge_and_refund_use_charged_at_window, test:a_pre_routing_refusal_leaves_a_prior_charge_intact, test:a_bedrock_non_object_body_is_a_validation_400"
+   "verdict_detail": "oracle-cell:billing|key-usage|upstream-down-refunded, test:an_unconfigured_unpriced_name_has_no_rate_and_the_acl_is_asked_first, oracle-cell:http.crosscut|unknown-path|openai-suffix, test:an_openai_pool_refusal_reads_permission_error, test:a_bedrock_pool_refusal_reads_access_denied, test:crates/busbar-kernel/src/tests/door_destination_tests.rs::a_reachable_fallback_pool_outside_the_allow_list_is_not_authorized, test:test_flat_fee_charge_and_refund_use_charged_at_window, test:a_pre_routing_refusal_leaves_a_prior_charge_intact, test:a_bedrock_non_object_body_is_a_validation_400"
   },
   {
    "id": "PB-27",
@@ -2619,14 +2619,14 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "buffered_adapter_surfaces_a_redirect_location_like_the_transport",
+     "ref": "crates/busbar-kernel-egress/src/trust/tests/net_tests.rs::a_redirect_is_refused_and_names_its_target",
      "proves": "redirect Policy::none",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:buffered_adapter_surfaces_a_redirect_location_like_the_transport"
+   "verdict_detail": "test:crates/busbar-kernel-egress/src/trust/tests/net_tests.rs::a_redirect_is_refused_and_names_its_target"
   },
   {
    "id": "PB-57",
