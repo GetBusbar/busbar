@@ -84,10 +84,62 @@ pub const SECOND_SHORT: &str = "a second short answer on one handle";
 
 // ── the stored results ─────────────────────────────────────────────────────────────────────────
 
-#[derive(Debug)]
 enum Entry {
-    Running,
-    Done { stored: Stored, shorts: u8 },
+    /// Running; `secret` when its result will be secret-bearing.
+    Running { secret: bool },
+    Done {
+        stored: Stored,
+        shorts: u8,
+        secret: bool,
+    },
+}
+
+/// A secret-bearing result is secret on the host side (THE DESIGN: secret-bearing answers are
+/// always secret on the host side): its bytes are zeroised when the store lets it go (a forget, a
+/// recycle, a new op on its ticket), and its Debug rendering never prints them.
+impl Drop for Entry {
+    fn drop(&mut self) {
+        if let Entry::Done {
+            stored,
+            secret: true,
+            ..
+        } = self
+        {
+            zeroize::Zeroize::zeroize(&mut stored.bytes);
+        }
+    }
+}
+
+impl std::fmt::Debug for Entry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Entry::Running { secret } => f.debug_struct("Running").field("secret", secret).finish(),
+            Entry::Done {
+                stored,
+                shorts,
+                secret: true,
+            } => f
+                .debug_struct("Done")
+                .field("outcome", &stored.outcome)
+                .field("bytes", &"<secret>")
+                .field("shorts", shorts)
+                .finish_non_exhaustive(),
+            Entry::Done {
+                stored,
+                shorts,
+                secret: false,
+            } => f
+                .debug_struct("Done")
+                .field("stored", stored)
+                .field("shorts", shorts)
+                .finish(),
+        }
+    }
+}
+
+/// Whether service `op`'s result carries secret material.
+fn secret_bearing(op: u32) -> bool {
+    op == op::RECORDS_SECRET
 }
 
 /// One ticket's results, stamped with the EPOCH of the op that issued them.
@@ -124,8 +176,13 @@ impl ServiceStore {
             .filter(|held| held.epoch == epoch)
             .and_then(|held| held.entries.get_mut(&h.seq))
         {
-            Some(e @ Entry::Running) => {
-                *e = Entry::Done { stored, shorts: 0 };
+            Some(e @ Entry::Running { .. }) => {
+                let secret = matches!(e, Entry::Running { secret: true });
+                *e = Entry::Done {
+                    stored,
+                    shorts: 0,
+                    secret,
+                };
                 true
             }
             _ => false,
@@ -354,7 +411,9 @@ pub(crate) unsafe fn serve(
         match held.entries.entry(h.seq) {
             std::collections::hash_map::Entry::Occupied(_) => (epoch, false),
             std::collections::hash_map::Entry::Vacant(v) => {
-                v.insert(Entry::Running);
+                v.insert(Entry::Running {
+                    secret: secret_bearing(head.op),
+                });
                 (epoch, true)
             }
         }
@@ -379,8 +438,8 @@ pub(crate) unsafe fn serve(
         .filter(|held| held.epoch == epoch)
         .and_then(|held| held.entries.get_mut(&h.seq))
     {
-        Some(Entry::Running) => Answered::bare(Outcome::Pending, ""),
-        Some(Entry::Done { stored, shorts }) => {
+        Some(Entry::Running { .. }) => Answered::bare(Outcome::Pending, ""),
+        Some(Entry::Done { stored, shorts, .. }) => {
             if *shorts >= 2 {
                 return Answered::bare(Outcome::Fault, SECOND_SHORT);
             }
