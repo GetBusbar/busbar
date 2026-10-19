@@ -925,13 +925,14 @@ fn a_target_is_a_span_in_the_buffer_or_absent() {
 #[test]
 fn a_style_decl_states_a_rank_and_its_endpoints() {
     use busbar_contract::abi::auth::{
-        ranked, style_rank, STYLE_ENDPOINT_SA_TOKEN_URI, STYLE_ENDPOINT_TOKEN_URL, STYLE_RANK_MASK,
+        ranked, style_rank, STYLE_ENDPOINT_FROM_CREDENTIAL, STYLE_ENDPOINT_TOKEN_URL,
+        STYLE_RANK_MASK,
     };
     for flags in [
         ranked(1),
         ranked(255),
         ranked(4) | STYLE_ENDPOINT_TOKEN_URL,
-        ranked(3) | STYLE_ENDPOINT_SA_TOKEN_URI,
+        ranked(3) | STYLE_ENDPOINT_FROM_CREDENTIAL,
         STYLE_NEEDS_HEADERS | STYLE_CALLER_CREDENTIAL | STYLE_RANK_MASK,
     ] {
         assert_eq!(
@@ -1005,4 +1006,19 @@ fn outbound_styles_list_ranked_first_then_registration_order_once_each() {
     let listed = listed_styles(declared);
     assert_eq!(listed[3], d("third-b", ranked(4) | STYLE_NEEDS_HEADERS));
     assert_eq!(listed[4], d("first-c", 0));
+}
+
+/// A STYLE TAKES ITS TOKEN ENDPOINT FROM ONE PLACE (af24 review of #1233): the entry's `token_url`
+/// or the credential itself, never both, so the host never judges two endpoints for one binding.
+/// RED: both endpoint bits together loaded.
+#[test]
+fn a_style_decl_stating_both_endpoints_is_a_contradiction() {
+    use busbar_contract::abi::auth::{STYLE_ENDPOINT_FROM_CREDENTIAL, STYLE_ENDPOINT_TOKEN_URL};
+    assert_eq!(
+        check_style_decl(
+            STYLE_ENDPOINT_TOKEN_URL | STYLE_ENDPOINT_FROM_CREDENTIAL,
+            POINT_HEAD
+        ),
+        red(Rule::Contradiction, "style.endpoints")
+    );
 }
