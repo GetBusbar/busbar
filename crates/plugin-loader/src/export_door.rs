@@ -45,7 +45,7 @@ use busbar_contract::abi::mechanism::route::Route;
 use busbar_contract::export_calls::{Delivered, ExportCalls, Family, ServeRequest, Served};
 
 use crate::dispatch::kinds::export::{Export, ExportFacts};
-use crate::dispatch::{in_head, out_head, Dispatcher, Frame, Plugin, NO_BLOB};
+use crate::dispatch::{in_head, now_ns, out_head, Dispatcher, Frame, Plugin, NO_BLOB};
 
 /// The most lines one instance may hold queued; past it a line is shed.
 pub const MAX_QUEUED_LINES: usize = 4096;
@@ -318,10 +318,22 @@ impl Shared {
                     slot::DELIVER,
                     Frame::new(input, out_head()),
                     DeadlineClass::WriteBehind,
-                    0,
+                    now_ns().saturating_add(
+                        u64::try_from(self.deliver_deadline.as_nanos()).unwrap_or(u64::MAX),
+                    ),
                     batch.clone(),
                 )
                 .await;
+            if done.detached {
+                // Past its deadline the caller stops waiting; the op keeps its ticket and runs on,
+                // so it is not offered again (that would deliver it twice).
+                tracing::warn!(
+                    plugin = %self.plugin.name(),
+                    lines = lines.len(),
+                    "an export batch outlived its delivery deadline and runs on unwatched"
+                );
+                break;
+            }
             match done.outcome {
                 Outcome::Ready => break,
                 Outcome::Failed if attempt < DELIVER_ATTEMPTS => continue,
