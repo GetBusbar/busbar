@@ -721,7 +721,8 @@ fn compute_layout() -> String {
             answers,
             answers_len,
             claims,
-            claims_len
+            claims_len,
+            declares
         ]
     );
     record!(s, MechMarkWord, [class, _reserved, word]);

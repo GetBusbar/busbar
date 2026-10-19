@@ -1336,6 +1336,7 @@ struct bb_mech_Statement {
     size_t answers_len;
     const bb_mech_AbiStr *claims;
     size_t claims_len;
+    bb_mech_Blob declares;
 };
 
 /* One word mark: its class and the word. */
@@ -4299,7 +4300,7 @@ BB_ASSERT(offsetof(bb_mech_MetricFamily, label_keys) == 48, "bb_mech_MetricFamil
 BB_ASSERT(offsetof(bb_mech_MetricFamily, label_keys_len) == 56, "bb_mech_MetricFamily.label_keys_len: offset");
 BB_ASSERT(offsetof(bb_mech_MetricFamily, kind) == 64, "bb_mech_MetricFamily.kind: offset");
 BB_ASSERT(offsetof(bb_mech_MetricFamily, _reserved) == 65, "bb_mech_MetricFamily._reserved: offset");
-BB_ASSERT(sizeof(bb_mech_Statement) == 288, "bb_mech_Statement: size");
+BB_ASSERT(sizeof(bb_mech_Statement) == 312, "bb_mech_Statement: size");
 BB_ASSERT(BB_ALIGNOF(bb_mech_Statement) == 8, "bb_mech_Statement: alignment");
 BB_ASSERT(offsetof(bb_mech_Statement, size) == 0, "bb_mech_Statement.size: offset");
 BB_ASSERT(offsetof(bb_mech_Statement, kind) == 4, "bb_mech_Statement.kind: offset");
@@ -4331,6 +4332,7 @@ BB_ASSERT(offsetof(bb_mech_Statement, answers) == 256, "bb_mech_Statement.answer
 BB_ASSERT(offsetof(bb_mech_Statement, answers_len) == 264, "bb_mech_Statement.answers_len: offset");
 BB_ASSERT(offsetof(bb_mech_Statement, claims) == 272, "bb_mech_Statement.claims: offset");
 BB_ASSERT(offsetof(bb_mech_Statement, claims_len) == 280, "bb_mech_Statement.claims_len: offset");
+BB_ASSERT(offsetof(bb_mech_Statement, declares) == 288, "bb_mech_Statement.declares: offset");
 BB_ASSERT(sizeof(bb_mech_MarkWord) == 24, "bb_mech_MarkWord: size");
 BB_ASSERT(BB_ALIGNOF(bb_mech_MarkWord) == 8, "bb_mech_MarkWord: alignment");
 BB_ASSERT(offsetof(bb_mech_MarkWord, class_) == 0, "bb_mech_MarkWord.class_: offset");

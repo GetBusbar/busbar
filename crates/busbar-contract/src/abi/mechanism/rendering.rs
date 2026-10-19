@@ -38,6 +38,7 @@
 //! order; an absent field writes nothing. The tags, in the one order they are written:
 //!   1 claim_flags  list of u32  a transport's Statement whose claim rows state a non-zero
 //!                               `flags`: claim i's row's flags
+//!   3 declares     blob         a Statement whose `declares` is present: its declares document
 //!
 //! str   = u32 length, then the bytes
 //! list  = u32 count, then each item
@@ -59,8 +60,11 @@
 //! `claim_flags`: a transport's claim-row `flags` (`abi::transport::CLAIM_SECURE`, BUSBAR-1.6.0.md
 //! #50). Refused present on another kind, of another count than `claims`, all zero, or stating any
 //! bit but `CLAIM_SECURE`.
+//!
+//! `declares`: the Statement's declares document ([`Statement::declares`]). Refused present with a
+//! format other than JSON, with any flag, or empty.
 
-use super::call::{AbiStr, Blob};
+use super::call::{AbiStr, Blob, BLOB_ABSENT, BLOB_JSON};
 use super::door::{MarkWord, MetricFamily, Rewrite, Section, Statement};
 use super::MECHANISM_VERSION;
 use crate::abi::host::conn::connector::Need;
@@ -71,6 +75,9 @@ pub const RENDERING_MAGIC: &[u8; 8] = b"BBSTMT01";
 /// THE OPTIONAL TAIL's tag of a transport's claim-row `flags` (module docs: the tagged fields after
 /// `claims`, in strictly ascending tag order).
 pub const TAIL_CLAIM_FLAGS: u32 = 1;
+
+/// THE OPTIONAL TAIL's tag of the Statement's declares document ([`Statement::declares`]).
+pub const TAIL_DECLARES: u32 = 3;
 
 /// One of the rendering's lengths or counts was above `u32::MAX`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -240,6 +247,10 @@ pub unsafe fn render(st: &Statement) -> Result<Vec<u8>, TooLong> {
                 o.u32(f);
             }
         }
+        if st.declares.fmt != BLOB_ABSENT {
+            o.u32(TAIL_DECLARES);
+            o.blob(st.declares, "declares")?;
+        }
     }
     Ok(o.0)
 }
@@ -369,6 +380,8 @@ pub struct Read {
     /// Each claim's row `flags` (`abi::transport::CLAIM_SECURE`), parallel to `claims`; every one
     /// `0` when the rendering states none.
     pub claim_flags: Vec<u32>,
+    /// Its declares document (JSON); `None` when it declares nothing.
+    pub declares: Option<ReadBlob>,
 }
 
 /// Why a rendering could not be read back: the byte offset and what was expected there.
@@ -441,6 +454,7 @@ impl In<'_> {
 #[derive(Default)]
 struct OptionalTail {
     claim_flags: Option<Vec<u32>>,
+    declares: Option<ReadBlob>,
 }
 
 /// THE OPTIONAL TAIL (module docs), read to the end of `i`: each tagged field present, in strictly
@@ -462,6 +476,7 @@ fn optional_tail(i: &mut In<'_>, kind: u32, claims: usize) -> Result<OptionalTai
         last = tag;
         match tag {
             TAIL_CLAIM_FLAGS => tail.claim_flags = Some(claim_flags_body(i, kind, claims, at)?),
+            TAIL_DECLARES => tail.declares = Some(declares_body(i, at)?),
             _ => return Err(end),
         }
     }
@@ -493,6 +508,19 @@ fn claim_flags_body(
         return Err(refused);
     }
     Ok(flags)
+}
+
+/// The `declares` body: a JSON blob with no flag and at least one byte; refused at `at` (its tag)
+/// otherwise.
+fn declares_body(i: &mut In<'_>, at: usize) -> Result<ReadBlob, Unreadable> {
+    let b = i.blob("declares")?;
+    if b.fmt != BLOB_JSON || b.flags != 0 || b.bytes.is_empty() {
+        return Err(Unreadable {
+            at,
+            what: "declares",
+        });
+    }
+    Ok(b)
 }
 
 /// THE RENDERING READ BACK: the inverse of [`render`], for a reader that must not open the plugin.
@@ -600,6 +628,7 @@ pub fn read(bytes: &[u8]) -> Result<Read, Unreadable> {
         answers,
         claims,
         claim_flags,
+        declares: tail.declares,
     })
 }
 

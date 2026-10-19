@@ -166,6 +166,17 @@ pub struct Statement {
     pub claims: *const AbiStr,
     /// How many.
     pub claims_len: usize,
+    /// Its DECLARES DOCUMENT, the plugin's `declares` as JSON ([`BLOB_JSON`]),
+    /// byte for byte: the series, diagnostics, destinations and kind facts it asks the host to grant
+    /// (the host grants or refuses each at `open`, and never trusts one as is). A compiled-in and a
+    /// dropped-in copy state it here alike, so neither door needs another source for it. Absent
+    /// ([`BLOB_ABSENT`], the [`Statement::ZERO`] value) = it declares nothing, which grants nothing.
+    /// Present = JSON, non-empty, never [`BLOB_SECRET`] ([`super::check::check_declares`]).
+    ///
+    /// [`BLOB_JSON`]: super::call::BLOB_JSON
+    /// [`BLOB_ABSENT`]: super::call::BLOB_ABSENT
+    /// [`BLOB_SECRET`]: super::call::BLOB_SECRET
+    pub declares: Blob,
 }
 
 impl Statement {
@@ -203,6 +214,7 @@ impl Statement {
         answers_len: 0,
         claims: std::ptr::null(),
         claims_len: 0,
+        declares: Blob::ZERO,
     };
 }
 
