@@ -176,6 +176,38 @@ fn a_granted_shed_declaration_is_the_hosts_shed_counter() {
     assert!(shed_series("k9b-third-party").is_empty());
 }
 
+/// RED (Q128 plugin-loader u71 LOW): the first-party grant follows the plugin a name is opened as
+/// NOW. A name opened first-party and then, after a reload, opened again by a plugin that is not
+/// first-party keeps neither its first-party standing nor its granted series; a first-party plugin
+/// re-opened declaring fewer series keeps only those (THE DESIGN: one registry admits every
+/// plugin's marks, rebuilt per generation).
+#[test]
+fn red_a_name_reopened_not_first_party_loses_its_grants() {
+    use busbar_contract::abi::mechanism::observe::SeriesDecl;
+    let name = "u71-swapped";
+    let declared = [
+        SeriesDecl::new("u71_rotated_total", "counter"),
+        SeriesDecl::new("u71_dropped_total", "counter").shed(),
+    ];
+    grant_series(&testing::observing(), name, true, &declared).expect("granted");
+    assert!(first_party(name) && first_party_series(name, "u71_rotated_total", "counter"));
+    grant_series(&testing::observing(), name, true, &declared[..1]).expect("re-granted");
+    assert!(
+        !first_party_series(name, "u71_dropped_total", "counter"),
+        "a series the re-opened plugin no longer declares stays granted"
+    );
+    assert!(shed_series(name).is_empty());
+    grant_series(&testing::observing(), name, false, &declared).expect("nothing to refuse");
+    assert!(
+        !first_party(name),
+        "the swapped-in plugin is taken for first-party"
+    );
+    assert!(
+        !first_party_series(name, "u71_rotated_total", "counter"),
+        "the swapped-in plugin inherits its predecessor's series"
+    );
+}
+
 // ── ENVELOPE-ALL (ARCHITECT ruling 2026-10-03): every kind's envelope, through a bounded intake ──
 
 /// A binder's own sink, recorded: what the door's binder still receives once the host's
