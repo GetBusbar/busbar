@@ -24,8 +24,10 @@ use busbar_contract::plane::{TrustKeyDecl, TrustRole};
 
 use super::reverify::Policy;
 
-/// A registration's declared pin, as the kernel read it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A registration's declared pin, as the kernel read it. Kept with every operator decision
+/// ([`super::book::RulingRow::declared`]), so a decision replays only over the declaration it was
+/// made under.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DeclaredPin {
     /// The mechanism token, exactly as written.
     pub mechanism: String,

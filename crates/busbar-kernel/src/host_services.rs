@@ -932,16 +932,22 @@ impl KernelServices {
             || (Vec::new(), false),
             |d| (d.record.list(), *d.default_instance == *instance),
         );
+        // The kept trust decisions are READ BEFORE THE HOST LOCK, as the demotions are: the read
+        // is a call into the store, and every caller-scoped service takes that lock, so a slow
+        // store must never stall them (THE DESIGN §11.2 l.1285, no blocking on the hot path; §11.13
+        // l.1655, no plugin code under a host lock; Q128 p5#4).
+        let kept = self
+            .demotions
+            .get()
+            .map(|d| d.record.decisions())
+            .unwrap_or_default();
         let mut instances = self.lock_instances();
         // The operator's kept trust decisions replay at the instance's FIRST admit only: a re-admit
         // keeps them in its state, and one whose declared pin changed is the operator's re-approval.
         let decided = if instances.contains_key(instance) {
             Vec::new()
         } else {
-            self.demotions
-                .get()
-                .map(|d| d.record.decisions())
-                .unwrap_or_default()
+            kept
         };
         if let Some(domain) = facts.signing.as_ref().map(|s| s.domain.as_str()) {
             let holder = instances.iter().find(|(label, f)| {
@@ -1030,31 +1036,37 @@ impl KernelServices {
         ruling: Ruling,
         expected: Option<&str>,
     ) -> Result<KeyRow, TrustRefused> {
-        let (row, fact) = self
+        let refused = |why: Undecided| match why {
+            Undecided::NoSuchKey => TrustRefused::NoSuchKey,
+            Undecided::NothingSighted => TrustRefused::NothingSighted,
+            Undecided::Rootless => TrustRefused::Rootless,
+            Undecided::Stale => TrustRefused::Stale,
+        };
+        // KEPT BEFORE IT IS TAKEN: the decision is judged against the book, kept durably, and only
+        // then takes effect, so a decision the store refused is not in force in this process
+        // either (THE DESIGN §11.12 l.1617-1619, the trust record is durable; Q128 p5#2).
+        let fact = self
             .trust
-            .decide(instance, counterparty, item, ruling, expected)
-            .map_err(|why| match why {
-                Undecided::NoSuchKey => TrustRefused::NoSuchKey,
-                Undecided::NothingSighted => TrustRefused::NothingSighted,
-                Undecided::Rootless => TrustRefused::Rootless,
-                Undecided::Stale => TrustRefused::Stale,
-            })?;
+            .rule(instance, counterparty, item, ruling, expected)
+            .map_err(refused)?;
         if let Some(d) = self.demotions.get() {
             d.record
                 .keep_decision(&fact, (self.wall_ms)() / 1000)
                 .map_err(TrustRefused::Store)?;
-            if fact.item.is_none() && ruling == Ruling::Approve {
-                let cleared = |server: &str| {
-                    crate::plane::quarantine::settle(
-                        &d.record,
-                        server,
-                        crate::trust::TrustState::Approved,
-                    );
-                };
-                cleared(&demotion_key(&fact.instance, &fact.counterparty));
-                if *d.default_instance == *fact.instance {
-                    cleared(&fact.counterparty);
-                }
+        }
+        let row = self.trust.apply(&fact).map_err(refused)?;
+        let clears = fact.item.is_none() && ruling == Ruling::Approve;
+        if let Some(d) = self.demotions.get().filter(|_| clears) {
+            let cleared = |server: &str| {
+                crate::plane::quarantine::settle(
+                    &d.record,
+                    server,
+                    crate::trust::TrustState::Approved,
+                );
+            };
+            cleared(&demotion_key(&fact.instance, &fact.counterparty));
+            if *d.default_instance == *fact.instance {
+                cleared(&fact.counterparty);
             }
         }
         Ok(row)

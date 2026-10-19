@@ -45,12 +45,13 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use super::reverify::{self, Ledger};
-use super::section::TrustEntry;
+use super::section::{DeclaredPin, TrustEntry};
 
 /// What a sighting answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sight {
-    /// Never seen before, and pinned now.
+    /// Not approved: never approved, approved at nothing yet, revoked, or a declared fingerprint
+    /// the operator has not approved. A sighting pins nothing (ARCHITECT 2026-10-06).
     New,
     /// The pinned catalogue.
     Same,
@@ -143,6 +144,16 @@ impl Subject {
             pinned,
             ..Self::default()
         }
+    }
+
+    /// A REGISTRATION WITH NO AUTHENTICITY ROOT APPROVES NOTHING ([`Undecided::Rootless`]): drop
+    /// every approval it holds, the counterparty's pin and each item grant, and keep only the
+    /// operator's revocations.
+    fn unroot(&mut self) {
+        self.pinned = None;
+        self.pending = false;
+        self.confirmed = false;
+        self.granted.retain(|_, at| at.is_none());
     }
 
     /// The digest `item` is approved at: the operator's decision, else the configured approval.
@@ -289,6 +300,15 @@ pub struct RulingRow {
     pub item: Option<String>,
     /// `Some(at)` approved at it; `None` revoked.
     pub approved: Option<String>,
+    /// THE DECLARATION THE DECISION WAS MADE UNDER: the registration's whole declared pin
+    /// (mechanism, root, key and fingerprint), `None` for one that declares no pin. A kept decision
+    /// replays only over the same declaration, so an approval never rides a declaration that
+    /// changed while the process was down, exactly as an in-process re-admit starts the
+    /// counterparty afresh (THE DESIGN §11.12 l.1617-1619, the trust lifecycle is kernel state). A
+    /// row kept before this field existed reads `None` and so replays only over a pinless
+    /// registration.
+    #[serde(default)]
+    pub declared: Option<DeclaredPin>,
 }
 
 fn declared_pin(entry: &TrustEntry) -> Option<String> {
@@ -315,7 +335,9 @@ impl TrustBook {
     /// Admit (or re-admit) `instance` with its parsed trust entries. `demoted` are the durable
     /// demotions to replay, `(counterparty, recorded at, ms)`; one for a counterparty the entries do
     /// not name is ignored. On a re-admit a counterparty keeps its state unless its declared pin
-    /// changed, which starts it afresh: pending again until the operator approves it.
+    /// changed in ANY part (mechanism, root, key or fingerprint), which starts it afresh: pending
+    /// again until the operator approves it. An identity change never rides the old approval, and a
+    /// registration with no authenticity root keeps no approval at all (Q128 p8#1).
     pub fn admit<'a>(
         &self,
         instance: &Arc<str>,
@@ -330,11 +352,12 @@ impl TrustBook {
             let kept = old
                 .subjects
                 .get(name)
-                .filter(|_| old.entries.get(name).map(declared_pin) == Some(declared_pin(entry)));
-            subjects.insert(
-                name.clone(),
-                kept.cloned().unwrap_or_else(|| Subject::declared(entry)),
-            );
+                .filter(|_| old.entries.get(name).map(|e| &e.pin) == Some(&entry.pin));
+            let mut s = kept.cloned().unwrap_or_else(|| Subject::declared(entry));
+            if entry.rootless() {
+                s.unroot();
+            }
+            subjects.insert(name.clone(), s);
         }
         for (name, at_ms) in demoted {
             if let Some(s) = subjects.get_mut(name) {
@@ -486,16 +509,42 @@ impl TrustBook {
         decision: Ruling,
         expected: Option<&str>,
     ) -> Result<(KeyRow, RulingRow), Undecided> {
-        let mut map = self.lock();
-        let book = map.get_mut(instance).ok_or(Undecided::NoSuchKey)?;
+        let fact = self.rule(instance, counterparty, item, decision, expected)?;
+        let row = self.apply(&fact)?;
+        Ok((row, fact))
+    }
+
+    /// THE DECISION, JUDGED AND NOT YET TAKEN: what [`Self::decide`] would do, as the durable fact
+    /// to keep, with the book unchanged. The caller keeps the fact durably and only then takes it
+    /// ([`Self::apply`]), so a decision that could not be kept never takes effect in this process
+    /// (THE DESIGN §11.12 l.1617-1619: the trust lifecycle and its record are durable kernel state;
+    /// Q128 p5#2).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::decide`].
+    pub fn rule(
+        &self,
+        instance: &str,
+        counterparty: &str,
+        item: Option<&str>,
+        decision: Ruling,
+        expected: Option<&str>,
+    ) -> Result<RulingRow, Undecided> {
+        let map = self.lock();
+        let book = map.get(instance).ok_or(Undecided::NoSuchKey)?;
         let entry = book.entries.get(counterparty).ok_or(Undecided::NoSuchKey)?;
         if decision == Ruling::Approve && entry.rootless() {
             return Err(Undecided::Rootless);
         }
-        let s = book
-            .subjects
-            .entry(counterparty.to_string())
-            .or_insert_with(|| Subject::declared(entry));
+        let declared;
+        let s = match book.subjects.get(counterparty) {
+            Some(s) => s,
+            None => {
+                declared = Subject::declared(entry);
+                &declared
+            }
+        };
         // APPROVE WHAT YOU SAW: a stated fingerprint must be the key's current sighting.
         if let (Ruling::Approve, Some(expected)) = (decision, expected) {
             let current = match item {
@@ -509,26 +558,14 @@ impl TrustBook {
             }
         }
         let approved = match (item, decision) {
-            (None, Ruling::Approve) => {
-                let at = s
-                    .last_seen
+            (None, Ruling::Approve) => Some(
+                s.last_seen
                     .clone()
                     .or_else(|| declared_pin(entry))
                     .or_else(|| s.pinned.clone())
-                    .ok_or(Undecided::NothingSighted)?;
-                s.confirmed = s.pinned.as_ref() == Some(&at) && s.confirmed;
-                s.pinned = Some(at.clone());
-                s.pending = false;
-                s.quarantined = false;
-                s.revoked = false;
-                s.ledger.last_drift_ms = None;
-                Some(at)
-            }
-            (None, Ruling::Revoke) => {
-                s.revoked = true;
-                s.confirmed = false;
-                None
-            }
+                    .ok_or(Undecided::NothingSighted)?,
+            ),
+            (None, Ruling::Revoke) => None,
             (Some(item), decision) => {
                 let known = s.items.contains_key(item)
                     || s.granted.contains_key(item)
@@ -536,7 +573,7 @@ impl TrustBook {
                 if !known {
                     return Err(Undecided::NoSuchKey);
                 }
-                let at = match decision {
+                match decision {
                     Ruling::Approve => Some(
                         s.items
                             .get(item)
@@ -546,24 +583,79 @@ impl TrustBook {
                             .ok_or(Undecided::NothingSighted)?,
                     ),
                     Ruling::Revoke => None,
-                };
-                s.granted.insert(item.to_string(), at.clone());
-                at
+                }
             }
         };
-        let row = row_of(instance, counterparty, item, entry, s);
-        let fact = RulingRow {
+        Ok(RulingRow {
             instance: instance.to_string(),
             counterparty: counterparty.to_string(),
             item: item.map(str::to_string),
             approved,
-        };
-        Ok((row, fact))
+            declared: entry.pin.clone(),
+        })
+    }
+
+    /// TAKE a decision [`Self::rule`] judged (and the caller kept): approving a counterparty pins
+    /// what it was approved at and clears its quarantine and any revocation; revoking it refuses
+    /// everything at it; an item decision is the operator's grant, over its configured approval.
+    /// Answers the key's row after it.
+    ///
+    /// # Errors
+    ///
+    /// [`Undecided::NoSuchKey`] when the instance or counterparty left the book since the ruling;
+    /// [`Undecided::Stale`] when its declaration changed since (the kept fact then replays over
+    /// nothing either); [`Undecided::Rootless`] for an approval at a counterparty with no
+    /// authenticity root.
+    pub fn apply(&self, fact: &RulingRow) -> Result<KeyRow, Undecided> {
+        let mut map = self.lock();
+        let book = map.get_mut(fact.instance.as_str()).ok_or(Undecided::NoSuchKey)?;
+        let entry = book
+            .entries
+            .get(&fact.counterparty)
+            .ok_or(Undecided::NoSuchKey)?;
+        if entry.pin != fact.declared {
+            return Err(Undecided::Stale);
+        }
+        let approves = fact.approved.is_some();
+        if approves && entry.rootless() {
+            return Err(Undecided::Rootless);
+        }
+        let s = book
+            .subjects
+            .entry(fact.counterparty.clone())
+            .or_insert_with(|| Subject::declared(entry));
+        match (&fact.item, &fact.approved) {
+            (None, Some(at)) => {
+                s.confirmed = s.pinned.as_ref() == Some(at) && s.confirmed;
+                s.pinned = Some(at.clone());
+                s.pending = false;
+                s.quarantined = false;
+                s.revoked = false;
+                s.ledger.last_drift_ms = None;
+            }
+            (None, None) => {
+                s.revoked = true;
+                s.confirmed = false;
+            }
+            (Some(item), at) => {
+                s.granted.insert(item.clone(), at.clone());
+            }
+        }
+        Ok(row_of(
+            &fact.instance,
+            &fact.counterparty,
+            fact.item.as_deref(),
+            entry,
+            s,
+        ))
     }
 
     /// Replay the operator's durable decisions for `instance` (each [`RulingRow`] naming it), in
     /// order, onto its state: what [`Self::decide`] did before the restart. A row for a
-    /// counterparty the instance no longer declares is ignored.
+    /// counterparty the instance no longer declares is ignored, and so is one made under another
+    /// declaration than the counterparty's current one ([`RulingRow::declared`]): a restart starts
+    /// a changed declaration afresh exactly as an in-process re-admit does (Q128 p8#2). No approval
+    /// replays onto a registration with no authenticity root (Q128 p8#1).
     pub fn admit_decided<'a>(&self, instance: &str, rows: impl IntoIterator<Item = &'a RulingRow>) {
         let mut map = self.lock();
         let Some(book) = map.get_mut(instance) else {
@@ -573,6 +665,9 @@ impl TrustBook {
             let Some(entry) = book.entries.get(&row.counterparty) else {
                 continue;
             };
+            if row.declared != entry.pin || (row.approved.is_some() && entry.rootless()) {
+                continue;
+            }
             let s = book
                 .subjects
                 .entry(row.counterparty.clone())
@@ -661,9 +756,10 @@ impl TrustBook {
     }
 
     /// THE KERNEL'S APPROVE over the trust facts a plane stated for a unit of `instance`: the
-    /// counterparty is declared, approved by the operator (a declared fingerprint alone approves
-    /// nothing, for the counterparty or any item there) and not quarantined, and a named item is
-    /// approved there at exactly the digest it is offered at.
+    /// counterparty is declared, not quarantined, not revoked and not pending on a declared
+    /// fingerprint the operator never approved. Item-less facts then need the counterparty's
+    /// catalogue approved (pinned); a named item needs itself approved there at exactly the digest
+    /// it is offered at (the operator's grant, else the configured approval).
     ///
     /// # Errors
     ///
