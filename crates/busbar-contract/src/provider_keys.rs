@@ -185,7 +185,7 @@ pub fn decode(bytes: &[u8]) -> Result<ProviderKeys, String> {
         &doc,
         "the provider keys",
         &["catalog", "deployment", "entry"],
-        &[],
+        &["limits", "pool_member"],
     )?;
     Ok(ProviderKeys {
         catalog: table_of(
@@ -197,8 +197,8 @@ pub fn decode(bytes: &[u8]) -> Result<ProviderKeys, String> {
             "deployment",
         )?,
         entry: table_of(required(&doc[2], "the provider keys", "entry")?, "entry")?,
-        limits: None,
-        pool_member: None,
+        limits: doc[3].map(|t| table_of(t, "limits")).transpose()?,
+        pool_member: doc[4].map(|t| table_of(t, "pool_member")).transpose()?,
     })
 }
 
@@ -297,7 +297,7 @@ fn bool_of(v: &Value, at: &str) -> Result<bool, String> {
 }
 
 fn table_of(v: &Value, at: &str) -> Result<Table, String> {
-    let m = members(v, at, &["deny_unknown", "keys"], &[])?;
+    let m = members(v, at, &["deny_unknown", "keys"], &["expecting"])?;
     let Value::Array(list) = required(&m[1], at, "keys")? else {
         return Err(format!("`{at}.keys` is not a list"));
     };
@@ -309,7 +309,7 @@ fn table_of(v: &Value, at: &str) -> Result<Table, String> {
         }
         keys.push(key);
     }
-    let expecting = None::<&Value>
+    let expecting = m[2]
         .map(|e| {
             e.as_str()
                 .filter(|e| !e.is_empty())
@@ -328,12 +328,12 @@ fn table_of(v: &Value, at: &str) -> Result<Table, String> {
 }
 
 fn key_of(v: &Value, at: &str) -> Result<Key, String> {
-    let m = members(v, at, &["name", "shape", "required"], &[])?;
+    let m = members(v, at, &["name", "shape", "required"], &["rank"])?;
     let name = required(&m[0], at, "name")?
         .as_str()
         .filter(|n| !n.is_empty())
         .ok_or_else(|| format!("`{at}.name` is not a non-empty string"))?;
-    let rank = None::<&Value>
+    let rank = m[3]
         .map(|r| {
             r.as_u64()
                 .and_then(|r| u16::try_from(r).ok())
