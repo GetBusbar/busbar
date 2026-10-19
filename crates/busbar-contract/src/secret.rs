@@ -373,6 +373,9 @@ impl<T: Zeroize + Default> Drop for Resolved<T> {
     }
 }
 
+/// A resolution the caller lends: one reference to its sealed answer ([`Resolved`]), or why not.
+pub type ResolveRef<'a, T> = dyn Fn(&SecretRef) -> Result<Resolved<T>, String> + 'a;
+
 /// How a secret plugin refused a `resolve`: the `abi::secret::ERROR_KIND_*` code its answer carried
 /// and the operator-facing text (never secret material; the host passes it through verbatim).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -448,6 +451,6 @@ pub trait SecretAxis: Send + Sync {
         &self,
         module: &str,
         settings: &serde_json::Value,
-        resolve: &dyn Fn(&SecretRef) -> Result<Resolved<Vec<u8>>, String>,
+        resolve: &ResolveRef<'_, Vec<u8>>,
     ) -> Result<std::sync::Arc<dyn SecretCalls>, String>;
 }

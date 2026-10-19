@@ -42,11 +42,11 @@ pub struct SecretsStandIn;
 
 /// The variable source's word: its module alias and its reference sugar, as its Statement states
 /// them (the shipped source's, so a kernel test reads the operator's 1.5.5 spelling).
-const ENV: &str = "env";
+const VAR_SOURCE: &str = "env";
 /// The variable source's settings key.
 const ENV_KEY: &str = "key";
 /// The file source's word.
-const FILE: &str = "file";
+const PATH_SOURCE: &str = "file";
 /// The file source's settings key.
 const FILE_KEY: &str = "path";
 /// THE THIRD SOURCE's word (a test-only source no shipped plugin is): admitted only inside
@@ -91,20 +91,24 @@ fn statements() -> Vec<(&'static str, Vec<(u32, String, String)>)> {
         (
             "env-double",
             vec![
-                rw(REWRITE_ALIAS, ENV, ""),
-                rw(REWRITE_SUGAR, ENV, ENV_KEY),
-                rw(REWRITE_SUGAR_SHOWN, ENV, "VAR"),
-                rw(REWRITE_SUGAR_NAMES, ENV, "the environment variable name"),
-                rw(REWRITE_SUGAR_ROLE, ENV, SUGAR_ROLE_FILL),
+                rw(REWRITE_ALIAS, VAR_SOURCE, ""),
+                rw(REWRITE_SUGAR, VAR_SOURCE, ENV_KEY),
+                rw(REWRITE_SUGAR_SHOWN, VAR_SOURCE, "VAR"),
+                rw(
+                    REWRITE_SUGAR_NAMES,
+                    VAR_SOURCE,
+                    "the environment variable name",
+                ),
+                rw(REWRITE_SUGAR_ROLE, VAR_SOURCE, SUGAR_ROLE_FILL),
             ],
         ),
         (
             "file-double",
             vec![
-                rw(REWRITE_ALIAS, FILE, ""),
-                rw(REWRITE_SUGAR, FILE, FILE_KEY),
-                rw(REWRITE_SUGAR_NAMES, FILE, "the file to read"),
-                rw(REWRITE_SUGAR_ROLE, FILE, SUGAR_ROLE_PATH),
+                rw(REWRITE_ALIAS, PATH_SOURCE, ""),
+                rw(REWRITE_SUGAR, PATH_SOURCE, FILE_KEY),
+                rw(REWRITE_SUGAR_NAMES, PATH_SOURCE, "the file to read"),
+                rw(REWRITE_SUGAR_ROLE, PATH_SOURCE, SUGAR_ROLE_PATH),
             ],
         ),
     ];
@@ -124,8 +128,8 @@ enum Double {
 
 fn double(module: &str) -> Option<Double> {
     match module {
-        ENV => Some(Double::Env),
-        FILE => Some(Double::File),
+        VAR_SOURCE => Some(Double::Env),
+        PATH_SOURCE => Some(Double::File),
         THIRD if third_admitted() => Some(Double::Third),
         _ => None,
     }
@@ -171,7 +175,7 @@ fn resolve_env(settings: &[u8]) -> Result<Vec<u8>, SecretRefused> {
         return Err(refused(
             ERROR_KIND_NOT_FOUND,
             format!(
-                "secret {ENV}:{var} cannot resolve: environment variable '{var}' is \
+                "secret {VAR_SOURCE}:{var} cannot resolve: environment variable '{var}' is \
                  unset"
             ),
         ));
@@ -181,7 +185,7 @@ fn resolve_env(settings: &[u8]) -> Result<Vec<u8>, SecretRefused> {
         refused(
             ERROR_KIND_INVALID,
             format!(
-                "secret {ENV}:{var} cannot resolve: environment variable '{var}' IS \
+                "secret {VAR_SOURCE}:{var} cannot resolve: environment variable '{var}' IS \
                  SET but its \
                  value is not valid UTF-8, so it cannot be read as a secret — this is an \
                  ENCODING problem, not a missing variable; re-export it as UTF-8 (setting it \
@@ -194,7 +198,7 @@ fn resolve_env(settings: &[u8]) -> Result<Vec<u8>, SecretRefused> {
         return Err(refused(
             ERROR_KIND_INVALID,
             format!(
-                "secret {ENV}:{var} resolved to an EMPTY value; a secret must be \
+                "secret {VAR_SOURCE}:{var} resolved to an EMPTY value; a secret must be \
                  non-empty (fail-closed)"
             ),
         ));
@@ -213,14 +217,17 @@ fn resolve_file(settings: &[u8]) -> Result<Vec<u8>, SecretRefused> {
             std::io::ErrorKind::Other => ERROR_KIND_INVALID,
             _ => ERROR_KIND_UNAVAILABLE,
         };
-        refused(kind, format!("secret {FILE}:{path} cannot resolve: {e}"))
+        refused(
+            kind,
+            format!("secret {PATH_SOURCE}:{path} cannot resolve: {e}"),
+        )
     })?;
     if bytes.is_empty() {
         // file src/lib.rs:112-115 @ 479c833 (Invalid).
         return Err(refused(
             ERROR_KIND_INVALID,
             format!(
-                "secret {FILE}:{path} resolved to an EMPTY file; a secret must be \
+                "secret {PATH_SOURCE}:{path} resolved to an EMPTY file; a secret must be \
                  non-empty (fail-closed)"
             ),
         ));
@@ -284,7 +291,7 @@ impl SecretAxis for SecretsStandIn {
         &self,
         module: &str,
         _: &serde_json::Value,
-        _: &dyn Fn(&SecretRef) -> Result<busbar_contract::secret::Resolved<Vec<u8>>, String>,
+        _: &busbar_contract::secret::ResolveRef<'_, Vec<u8>>,
     ) -> Result<Arc<dyn SecretCalls>, String> {
         self.shared(module)
     }
@@ -297,7 +304,7 @@ fn by_role(role: &str) -> busbar_contract::secret_ref::Sugar {
     crate::config::secret::sugars()
         .with_role(role)
         .cloned()
-        .unwrap_or_else(|| panic!("the installed secret axis declares a `{role}` sugar"))
+        .unwrap_or_else(|| panic!("the installed axis declares a `{role}` sugar"))
 }
 
 /// The reference a config `${VAR}` names: the fill sugar's `{ <fill>: var }`, canonical.

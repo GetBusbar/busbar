@@ -1974,7 +1974,7 @@ fn test_secret_ref_sugar_desugars_to_builtin_modules() {
     let e: SecretRef =
         crate::test_support::secrets::read_ref("env: MY_KEY").expect("env sugar parses");
     assert_eq!(e, crate::test_support::secrets::fill_ref("MY_KEY"));
-    assert_eq!(e.module, "env");
+    assert_eq!(e.module, crate::test_support::secrets::fill_word());
     assert_eq!(crate::test_support::secrets::fill_var(&e), Some("MY_KEY"));
     assert_eq!(crate::test_support::secrets::path_of(&e), None);
     assert_eq!(crate::config::secret::describe(&e), "env:MY_KEY");
@@ -1985,7 +1985,7 @@ fn test_secret_ref_sugar_desugars_to_builtin_modules() {
         f,
         crate::test_support::secrets::path_ref("/run/secrets/tls.pem")
     );
-    assert_eq!(f.module, "file");
+    assert_eq!(f.module, crate::test_support::secrets::path_word());
     assert_eq!(
         crate::test_support::secrets::path_of(&f),
         Some("/run/secrets/tls.pem")

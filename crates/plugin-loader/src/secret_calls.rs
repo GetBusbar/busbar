@@ -692,7 +692,7 @@ impl SecretAxis for SecretRows {
         &self,
         module: &str,
         settings: &serde_json::Value,
-        resolve: &dyn Fn(&SecretRef) -> Result<busbar_contract::secret::Resolved<Vec<u8>>, String>,
+        resolve: &busbar_contract::secret::ResolveRef<'_, Vec<u8>>,
     ) -> Result<Arc<dyn SecretCalls>, String> {
         let c = self
             .find(module)

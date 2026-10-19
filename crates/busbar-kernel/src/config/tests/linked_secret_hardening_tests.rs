@@ -72,7 +72,7 @@ fn resolve_linked_env_unset_variable_is_an_error() {
 #[test]
 fn resolve_linked_env_malformed_settings_is_a_shape_error_not_unknown_module() {
     let malformed = SecretRef {
-        module: "env".to_string(),
+        module: crate::test_support::secrets::fill_word(),
         settings: serde_json::Map::new(), // no `key`
     };
     let err = resolve_linked(&malformed).unwrap_err();
@@ -88,7 +88,7 @@ fn resolve_linked_env_blank_key_is_also_malformed() {
     let mut settings = serde_json::Map::new();
     settings.insert("key".to_string(), serde_json::Value::String("   ".into()));
     let blank = SecretRef {
-        module: "env".to_string(),
+        module: crate::test_support::secrets::fill_word(),
         settings,
     };
     let err = resolve_linked(&blank).unwrap_err();
@@ -138,7 +138,7 @@ fn resolve_linked_file_missing_file_is_an_error() {
 #[test]
 fn resolve_linked_file_malformed_settings_is_a_shape_error_not_unknown_module() {
     let malformed = SecretRef {
-        module: "file".to_string(),
+        module: crate::test_support::secrets::path_word(),
         settings: serde_json::Map::new(), // no `path`
     };
     let err = resolve_linked(&malformed).unwrap_err();
@@ -151,7 +151,7 @@ fn resolve_linked_file_blank_path_is_also_malformed() {
     let mut settings = serde_json::Map::new();
     settings.insert("path".to_string(), serde_json::Value::String("   ".into()));
     let blank = SecretRef {
-        module: "file".to_string(),
+        module: crate::test_support::secrets::path_word(),
         settings,
     };
     let err = resolve_linked(&blank).unwrap_err();

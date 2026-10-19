@@ -89,11 +89,12 @@ fn the_declared_sugars_read_and_refuse_in_1_5_5s_words() {
     // `{ env: X }` is `{ module: env, settings: { key: X } }`, as in 1.5.5.
     let read = tls("env: TLS_CERT_PEM").expect("the fill sugar reads");
     assert_eq!(
-        serde_json::to_value(&read.cert).unwrap(),
-        serde_json::from_str::<serde_json::Value>(
-            r#"{"module": "env", "settings": {"key": "TLS_CERT_PEM"}}"#
-        )
-        .unwrap()
+        read.cert,
+        crate::test_support::secrets::fill_ref("TLS_CERT_PEM")
+    );
+    assert_eq!(
+        read.cert.settings.get("key").and_then(|v| v.as_str()),
+        Some("TLS_CERT_PEM")
     );
     let read = tls("file: /run/c.pem").expect("the path sugar reads");
     assert_eq!(
@@ -145,12 +146,16 @@ fn a_third_source_declaring_its_own_sugar_resolves_through_the_same_path() {
 #[test]
 fn the_fill_and_the_path_are_the_roles_the_statements_declare() {
     assert_eq!(
-        fill_reference("V").map(|r| serde_json::to_value(r).unwrap().to_string()),
-        Some(r#"{"module":"env","settings":{"key":"V"}}"#.to_string())
+        fill_reference("V"),
+        Some(crate::test_support::secrets::fill_ref("V"))
     );
     assert_eq!(
-        path_reference("/k.json").map(|r| serde_json::to_value(r).unwrap().to_string()),
-        Some(r#"{"module":"file","settings":{"path":"/k.json"}}"#.to_string())
+        fill_reference("V").and_then(|r| r.settings.get("key").cloned()),
+        Some(serde_json::Value::String("V".into()))
+    );
+    assert_eq!(
+        path_reference("/k.json").and_then(|r| r.settings.get("path").cloned()),
+        Some(serde_json::Value::String("/k.json".into()))
     );
     assert_eq!(example_reference("MY_SECRET_VAR"), "{ env: MY_SECRET_VAR }");
     assert_eq!(sugar_words(" | "), "`env` | `file`");

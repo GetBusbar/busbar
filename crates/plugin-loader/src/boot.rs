@@ -944,7 +944,7 @@ fn open_ready<K: crate::dispatch::Kind>(
 ///
 /// # Errors
 /// The key whose reference is malformed or does not resolve.
-pub fn resolve_secrets(
+pub(crate) fn resolve_secrets(
     block: &mut serde_json::Value,
     keys: &[String],
     resolver: &dyn busbar_contract::secret::SecretResolve,
@@ -1006,7 +1006,6 @@ fn take_path(v: &mut serde_json::Value, path: &str) -> Option<serde_json::Value>
     parent.as_object_mut()?.remove(last)
 }
 
-/// Resolved secret bytes, held for one `open` and overwritten with zeroes when it returns.
 // THE LOADER'S OWN SEAL over the secrets it lends a plugin's `open` (Part 2 #54): the resolver
 // answers each one sealed to the loader, the asker, and only the loader reads it, to lend it.
 busbar_contract::own_seal!(Lent);

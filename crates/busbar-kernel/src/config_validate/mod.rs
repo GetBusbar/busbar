@@ -1218,7 +1218,8 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                 .map(busbar_contract::secret::Resolved::sealed)
                 .unwrap_or_default();
                 // Read under the kernel's seal (Part 2 #54): only whether it is blank.
-                if !resolved_key.expose(&crate::seal::lend()).trim().is_empty() {
+                let blank = resolved_key.expose(&crate::seal::lend()).trim().is_empty();
+                if !blank {
                     diag_warn!(
                         CONFIG_PASSTHROUGH_UNUSED_APIKEY,
                         provider = %provider_name,

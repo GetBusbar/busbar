@@ -1510,8 +1510,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-contract"
 axis  = "instance:secret"
-count = "45"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 128 -> 133 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 133 there; the 128 was f830faa691's, nine hours older than the arming, so the row armed red. 133 is predev 9c0a394771's measure, at or under the arming value; LOWERED 133 -> 131 by GetBusbar/busbar#904 (row 84): the cold lane's SDK side and its suites are deleted, and two secret-instance hits went with them (the gate's measure on #904: 131) (Law 9: the ceiling ratchets down); LOWERED 131 -> 43 (-88, GetBusbar/busbar#940): plugins.yaml's secret alias `c` (busbar-secret-c, no 1.5.5 spelling) is `secret-c`, so a one-letter literal no longer reads as that plugin (measured 133 -> 45 on #940; both deltas applied); #787's 133 -> 64 (the scanner no longer counts extern ABI strings, an `extern C` ABI string read as the `c` secret plugin) removes hits the 131 -> 43 above already stopped counting (the one-letter `c` alias retired above): no further delta in the merge with FLIP-A2A; SETTLED 43 -> 45 at lane-integration-w1b (564506190a, the integration of predev 44b9451c5c with 102 PRs): the measure of the union, at or under the merge-base's own row (Law 9: the merged drains and moves, each PR's figure taken on its own tree)"
+count = "17"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 128 -> 133 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 133 there; the 128 was f830faa691's, nine hours older than the arming, so the row armed red. 133 is predev 9c0a394771's measure, at or under the arming value; LOWERED 133 -> 131 by GetBusbar/busbar#904 (row 84): the cold lane's SDK side and its suites are deleted, and two secret-instance hits went with them (the gate's measure on #904: 131) (Law 9: the ceiling ratchets down); LOWERED 131 -> 43 (-88, GetBusbar/busbar#940): plugins.yaml's secret alias `c` (busbar-secret-c, no 1.5.5 spelling) is `secret-c`, so a one-letter literal no longer reads as that plugin (measured 133 -> 45 on #940; both deltas applied); #787's 133 -> 64 (the scanner no longer counts extern ABI strings, an `extern C` ABI string read as the `c` secret plugin) removes hits the 131 -> 43 above already stopped counting (the one-letter `c` alias retired above): no further delta in the merge with FLIP-A2A; SETTLED 43 -> 45 at lane-integration-w1b (564506190a, the integration of predev 44b9451c5c with 102 PRs): the measure of the union, at or under the merge-base's own row (Law 9: the merged drains and moves, each PR's figure taken on its own tree); LOWERED 45 -> 17 by step 2c (lane-secret-seal-sugar): the contract names no secret source and no sugar word; the sugar is what the loaded Statements declare (owner law 2026-09-27, DoD item 2; the gate's measure of the branch)"
 
 [[law0]]
 crate = "busbar-contract"
@@ -1522,8 +1522,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-contract"
 axis  = "secret"
-count = "8"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "0"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 8 -> 0 by step 2c (lane-secret-seal-sugar): the contract names no secret plugin package (the gate's measure of the branch)"
 
 [[law0]]
 crate = "busbar-contract"

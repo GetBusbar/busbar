@@ -194,7 +194,7 @@ fn two_statements_claiming_one_sugar_or_one_role_are_refused() {
     assert_eq!(
         s.declare("plugin-gamma", &[rw(REWRITE_SUGAR, "alpha", "k")]),
         Err(
-            "plugin claim conflict: the secret sugar `alpha:` is declared by both \
+            "plugin claim conflict: the sugar `alpha:` is declared by both \
              'plugin-alpha' and 'plugin-gamma' - a reference key must name one plugin; remove \
              one"
             .to_string()
@@ -209,7 +209,7 @@ fn two_statements_claiming_one_sugar_or_one_role_are_refused() {
             ]
         ),
         Err(
-            "plugin claim conflict: the secret sugar role 'fill' is claimed by both \
+            "plugin claim conflict: the sugar role 'fill' is claimed by both \
              'plugin-alpha' (`alpha:`) and 'plugin-gamma' (`gamma:`) - a role names one sugar; \
              remove one"
                 .to_string()
