@@ -1159,7 +1159,11 @@ impl Gate for AbiLocationGate {
         ));
 
         // TEST DOUBLES: under tests/, and under #[cfg(test)], and in comments/strings — all GREEN.
-        let mut ov = Overlay::new();
+        // Layered over the pinned context's overlay, so the case keeps the base pinned to `HEAD`:
+        // a fresh overlay would drop the pin and leave the ledger row to derive a base from the
+        // checkout's history, which a detached battery checkout does not have (the case would then
+        // report the environment, not the rule).
+        let mut ov = cx.overlay().cloned().unwrap_or_default();
         ov.set(
             "crates/busbar-kernel/tests/planted_double.rs",
             "#[repr(C)]\npub struct Double { pub a: u32 }\n\
