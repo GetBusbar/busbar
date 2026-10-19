@@ -3026,8 +3026,7 @@ async fn named_map_app_opts(
             None => {
                 let ctx = busbar_kernel::plane::registry::BuildCtx {
                     endpoint_slot: None,
-                    agent_defs: &(),
-                    tool_defs: cfg.as_any(),
+                    section: Some(cfg.as_any()),
                     public_url: Some("https://busbar.example"),
                     prior: None,
                     providers: None,
@@ -3047,8 +3046,7 @@ async fn named_map_app_opts(
         builder.set_plane_defs_any(decl.key, cfg.clone());
         let ctx = busbar_kernel::plane::registry::BuildCtx {
             endpoint_slot: None,
-            agent_defs: cfg.as_any(),
-            tool_defs: &(),
+            section: Some(cfg.as_any()),
             public_url: Some("https://busbar.example"),
             prior: None,
             providers: None,

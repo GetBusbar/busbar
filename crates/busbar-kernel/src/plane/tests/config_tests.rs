@@ -32,13 +32,14 @@ use crate::plane::{PlaneSections, RefError};
 fn the_section_list_is_derived_from_the_config_grammar_rather_than_written() {
     // Needs a plane registered so `plane_keys()` contributes at least `pools` — the equality below
     // is self-consistent regardless of WHICH plane (both sides derive from the same registry read),
-    // but the floor assertion needs `pools` (and the fixed `NAMED_MAP_SECTIONS` literal's
-    // `tools`/`agents`/`export`/`identity-providers`) actually present.
+    // but the floor assertion needs `pools` (and the core's own named maps, `export` and
+    // `identity-providers`) actually present. A plane's named map joins only when that plane is
+    // registered (#49: the kernel spells no plane section).
     crate::test_support::register_neutral_test_plane();
     let mut expected: Vec<&'static str> = Vec::new();
     for s in crate::plane::plane_keys()
         .map(|k| crate::plane::plane_decl(k).config_section)
-        .chain(busbar_kernel::plane::config::NAMED_MAP_SECTIONS)
+        .chain(busbar_kernel::plane::config::CORE_NAMED_MAP_SECTIONS)
     {
         if !expected.contains(&s) {
             expected.push(s);
@@ -50,16 +51,16 @@ fn the_section_list_is_derived_from_the_config_grammar_rather_than_written() {
         "the section list must be the union of the two tables that DECLARE the config grammar"
     );
 
-    // A floor, so the equality above cannot hold vacuously if both sides collapse to nothing. The
-    // five are the literal this unit deleted; they must still all be there.
-    for was_hardcoded in ["pools", "tools", "agents", "export", "identity-providers"] {
+    // A floor, so the equality above cannot hold vacuously if both sides collapse to nothing: the
+    // registered plane's section and the core's two named maps must all be there.
+    for was_hardcoded in ["pools", "export", "identity-providers"] {
         assert!(
             config_sections().contains(&was_hardcoded),
             "`{was_hardcoded}:` was in the deleted literal and must still be derived"
         );
     }
     assert!(
-        config_sections().len() >= 5,
+        config_sections().len() >= 3,
         "a truncated list would make every refusal test below pass vacuously"
     );
 }

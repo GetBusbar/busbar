@@ -519,7 +519,7 @@ fn no_unjustified_single_plane_method_on_universal_engine_host() {
 /// SELF-TEST (the detector is NON-VACUOUS): the SAME detector must (1) enumerate the known slice
 /// methods, (2) classify a KNOWN single-plane method (`pool_label`) as single-plane, (3)
 /// see a method two (planted) planes call as multi-plane, and (4) a KNOWN 0-plane method
-/// (`plane_defs`) as neutral. A broken scan that "finds nothing" (all-0, or all-1) fails HERE loudly,
+/// (`subkey_sign`) as neutral. A broken scan that "finds nothing" (all-0, or all-1) fails HERE loudly,
 /// so a green real witness above is meaningful. It also proves `.plane_slot(` ≠ `plane_slot_live`
 /// (whole-token matching) via a direct `calls_method` assertion.
 #[test]
@@ -532,7 +532,7 @@ fn detector_is_non_vacuous_across_single_multi_and_zero_plane_methods() {
         "verify_token_test", // IdentityHost
         "clock_now_secs",    // ClockHost
         "breaker_settle",    // BreakerHost
-        "plane_defs",        // RegistryHost
+        "subkey_sign",       // RegistryHost
     ] {
         assert!(
             scan.methods.contains(expect),
@@ -593,14 +593,14 @@ fn detector_is_non_vacuous_across_single_multi_and_zero_plane_methods() {
          {shared:?}); a broken counter that under-counts would false-RED shared methods"
     );
 
-    // (4) A KNOWN 0-plane method: `plane_defs` (A2A's card path names it, but not via `.plane_defs(`
-    //     directly in these crates today) — proves the detector's neutral (0-plane) class is reachable,
-    //     so it is not the case that every method scans as ≥1.
-    let defs = scan.callers.get("plane_defs").expect("enumerated");
+    // (4) A KNOWN 0-plane method: `subkey_sign` (a plugin signs through the ABI's `card_sign` slot,
+    //     never via `.subkey_sign(` in these crates) — proves the detector's neutral (0-plane) class
+    //     is reachable, so it is not the case that every method scans as ≥1.
+    let defs = scan.callers.get("subkey_sign").expect("enumerated");
     assert_eq!(
         defs.len(),
         0,
-        "expected `plane_defs` to scan as 0-plane (neutral), got {defs:?}"
+        "expected `subkey_sign` to scan as 0-plane (neutral), got {defs:?}"
     );
 
     // (5) Whole-token call matching: `.plane_slot(` must NOT match the longer method `plane_slot_live`,

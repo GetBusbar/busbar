@@ -66,9 +66,8 @@ impl NamedMapSection {
     /// `[identity-providers, export, tools, agents]` — the frozen 1.5.3 order.
     ///
     /// This is a REGISTRY-DERIVED list, so it goes EMPTY of plane sections when a plane is compiled
-    /// out. It must NOT be the source the config deletion-gate reads (that would silently accept a
-    /// `tools:` block for a compiled-out plane) — the gate reads the frozen static
-    /// [`busbar_kernel::plane::config::NAMED_MAP_SECTIONS`] instead.
+    /// out; a section written for an unregistered plane is refused at parse as an unknown field
+    /// (Option A, S11b (c) / Q67), so no carrier is ever present without its plane.
     pub fn sections() -> Vec<NamedMapSection> {
         let mut out = vec![NamedMapSection::IdentityProviders, NamedMapSection::Export];
         for decl in crate::plane::registry::plane_decls() {

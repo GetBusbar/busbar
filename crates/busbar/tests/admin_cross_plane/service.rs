@@ -79,8 +79,7 @@ fn build_with_hook_makes_a_plane_attach_live() {
             None => {
                 let ctx = busbar_kernel::plane::registry::BuildCtx {
                     endpoint_slot: None,
-                    agent_defs: &(),
-                    tool_defs: cfg.as_any(),
+                    section: Some(cfg.as_any()),
                     public_url: None,
                     prior: None,
                     providers: None,

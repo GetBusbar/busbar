@@ -647,8 +647,7 @@ async fn healthz_with_model_lanes_every_cell_open_stays_unready_beside_an_opened
     );
     let slot = (door.build)(&busbar_kernel::plane::registry::BuildCtx {
         endpoint_slot: None,
-        agent_defs: &(),
-        tool_defs: &section,
+        section: Some(&section),
         public_url: None,
         prior: None,
         providers: None,

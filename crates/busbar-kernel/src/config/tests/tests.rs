@@ -57,8 +57,6 @@ fn provider_deploy(env_var: &str) -> ProviderDeploy {
 /// providers/models are required in YAML).
 pub(crate) fn base_deploy() -> DeployCfg {
     DeployCfg {
-        tools: Default::default(),
-        agents: Default::default(),
         declared: Default::default(),
         listen: DEFAULT_LISTEN_ADDR.into(),
         // Left at its type default (unset).
@@ -3617,7 +3615,7 @@ fn root_settings_doc_lists_only_fields_that_exist() {
 
 // ══ THE FAILOVER POOLS' CROSS-REFERENCES ═════════════════════════════════════════════════════════
 //
-// `tool_pools:`/`agent_pools:` are OPT-IN, so the first thing checked is that saying nothing changes
+// A named-map plane's failover pools are OPT-IN, so the first thing checked is that saying nothing changes
 // nothing; the rest is the one shared check refusing what an operator cannot have meant.
 
 /// THE DEFAULT IS UNCHANGED. A config that says nothing about failover resolves exactly as it always
@@ -3627,12 +3625,8 @@ fn failover_pools_are_absent_by_default() {
     let deploy = base_deploy();
     let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
     assert!(
-        cfg.tool_pools.is_empty(),
-        "no tool-plane failover unless asked for"
-    );
-    assert!(
-        cfg.agent_pools.is_empty(),
-        "no agent-plane failover unless asked for"
+        cfg.section_pools.values().all(|p| p.is_empty()),
+        "no named-map plane failover unless asked for"
     );
 }
 
@@ -4577,4 +4571,108 @@ fn a_section_a_plane_owns_beside_its_own_is_lifted_raw_for_it() {
     )
     .expect("the plane's own section alone parses");
     assert!(!bare.plane_raw.contains_key("beside_owned"));
+}
+
+// ══ A NAMED-MAP PLANE UNDER A NEW SECTION NAME (arch u28; #49, BUSBAR-1.6.0.md l.2235) ═══════════
+//
+// The kernel learns which sections are named maps from the plane's declaration
+// (`SECTION_NAMED_MAP` → `PlaneRegistration::named_map`), never from a section name. So a plane
+// folded under a section the kernel has never seen pools, failover-checks and hook-checks through
+// `resolve` exactly as the planes it shipped with do, with no line of `config/mod.rs` naming it.
+
+/// A door plane stating a named map under the section `u28_novel`, folded as the root folds one.
+fn novel_named_plane() -> &'static crate::plane::registry::PlaneDecl {
+    use busbar_contract::plane_calls::{DoorFacing, PlaneRegistration};
+    crate::plane::door::fold(PlaneRegistration {
+        key: "u28-novel-plane",
+        section: "u28_novel",
+        named_map: true,
+        owns: Vec::new(),
+        consumes: Vec::new(),
+        requires: Vec::new(),
+        secret_refs: Vec::new(),
+        admin_routes: Vec::new(),
+        admin_openapi: None,
+        label: "Novel",
+        subject_noun: "novel member",
+        admin_noun: "member",
+        audit_kind: "novel_member",
+        signing: None,
+        dialects: Vec::new(),
+        scope_kinds: Vec::new(),
+        billable_classes: Vec::new(),
+        fee_units: Vec::new(),
+        record_kinds: Vec::new(),
+        trust_keys: Vec::new(),
+        caller_credential_refusal: None,
+        fallback: false,
+        provider_keys: None,
+        validate: std::sync::Arc::new(|_: &[u8]| Ok(())),
+        facing: std::sync::Arc::new(
+            |_: &[u8],
+             _: &[u8],
+             _: Option<&str>,
+             _: &[busbar_contract::plane_calls::DialectFacts]| {
+                Ok(DoorFacing::default())
+            },
+        ),
+    })
+    .expect("the novel plane folds")
+}
+
+#[test]
+fn a_named_map_plane_under_a_new_section_pools_with_no_kernel_edit() {
+    let decl = novel_named_plane();
+    let _registry = crate::plane::registry::TestRegistryIsolation::seeded(&[
+        crate::test_support::neutral_fallback_plane(),
+        decl,
+    ]);
+    assert!(crate::plane::config::is_named_plane(decl));
+    let deploy = deploy_from_yaml_str(
+        "providers: {}\nmodels: {}\nu28_novel:\n  alpha: { url: \"https://a\" }\n  \
+         beta: { url: \"https://b\" }\npools:\n  together: { members: [alpha, beta] }\n",
+    )
+    .expect("the novel section parses through its plane");
+    let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
+    assert_eq!(
+        cfg.section_pools("u28_novel")
+            .get("together")
+            .map(|p| p.members.clone()),
+        Some(vec!["alpha".to_string(), "beta".to_string()]),
+        "the pool over the novel plane's members is that plane's failover pool"
+    );
+    assert!(
+        !cfg.pools.contains_key("together"),
+        "the novel plane's pool left the fallback lane"
+    );
+    assert!(cfg.declared_section("u28_novel").is_some());
+    assert!(cfg.plane_sections.contains("u28_novel"));
+}
+
+#[test]
+fn a_named_map_plane_under_a_new_section_is_failover_and_hook_checked_with_no_kernel_edit() {
+    let decl = novel_named_plane();
+    let _registry = crate::plane::registry::TestRegistryIsolation::seeded(&[
+        crate::test_support::neutral_fallback_plane(),
+        decl,
+    ]);
+    let deploy = deploy_from_yaml_str(
+        "providers: {}\nmodels: {}\nu28_novel:\n  alpha: { url: \"https://a\", hooks: [ghost-hook] }\n  \
+         beta: { url: \"https://b\" }\npools:\n  lonely: { members: [alpha, nobody] }\n",
+    )
+    .expect("the novel section parses through its plane");
+    let errors = resolve(&deploy, &HashMap::new()).expect_err("refused");
+    assert!(
+        errors.iter().any(|e| e.contains(
+            "pools.lonely: `nobody` is not defined in the top-level \
+                                          `u28_novel:` map"
+        )),
+        "a dangling member is refused against the novel plane's own section: {errors:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("u28_novel.alpha: `hooks:` names `ghost-hook`")),
+        "a dangling hook is refused in the novel plane's own words: {errors:?}"
+    );
 }

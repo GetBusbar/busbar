@@ -2648,7 +2648,7 @@ fn migrate_rewrites_a_lingering_at_key_on_a_named_hook_def() {
 // MOVED to `crates/busbar/tests/config_migrate_cross_plane.rs` (A6/HostCtx dev-dependency-cycle cleanup): the
 // fixture's `tools:`/`agents:` blocks need the REAL `busbar_mcp` and agent-engine planes registered to
 // resolve past `resolve`'s "compiled without the plane that owns it" refusal — a neutral fake plane
-// cannot stand in, since the assertions below read `cfg.tool_pools`/`cfg.agent_pools`, which only
+// cannot stand in, since the assertions below read `cfg.section_pools(..)`, which only
 // exist once the real MCP/A2A failover planes actually claimed those sections. That only
 // type-checks with ONE `busbar_kernel` in the graph, which is exactly what an integration-test
 // target gives. See that file's header.

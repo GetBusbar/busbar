@@ -252,70 +252,23 @@ where
     }
 }
 
-/// THE `tools:` REGISTRY SECTION as it lands in `DeployCfg`, type-erased behind [`PlaneCfg`] — the
-/// neutral seam the owning plane's own registry-config type deserializes through, so `DeployCfg`
-/// names no plane-local type. Absent ⇒ the plane's `Default` (an empty registry).
-#[derive(Debug)]
-pub struct ToolsSection(pub Box<dyn PlaneCfg>);
-
-impl ToolsSection {
-    /// The declaring section this carrier holds, read off the frozen named-map list.
-    pub(crate) const SECTION: &'static str = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2];
-}
-impl Default for ToolsSection {
-    fn default() -> Self {
-        ToolsSection(default_plane_section(Self::SECTION))
-    }
-}
-impl<'de> serde::Deserialize<'de> for ToolsSection {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        deserialize_plane_section(Self::SECTION, deserializer).map(ToolsSection)
-    }
-}
-
-/// THE `agents:` REGISTRY SECTION as it lands in `DeployCfg`, type-erased behind [`PlaneCfg`] — the
-/// neutral seam the owning plane's own registry-config type deserializes through. Absent ⇒ an empty
-/// registry.
-#[derive(Debug)]
-pub struct AgentsSection(pub Box<dyn PlaneCfg>);
-
-impl AgentsSection {
-    /// The declaring section this carrier holds, read off the frozen named-map list.
-    pub(crate) const SECTION: &'static str = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3];
-}
-impl Default for AgentsSection {
-    fn default() -> Self {
-        AgentsSection(default_plane_section(Self::SECTION))
-    }
-}
-impl<'de> serde::Deserialize<'de> for AgentsSection {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        deserialize_plane_section(Self::SECTION, deserializer).map(AgentsSection)
-    }
-}
-
 /// THE DECLARED SECTIONS as they land in `DeployCfg`: every declaring section a REGISTERED plane
-/// OWNS the grammar of (`PlaneDeclaration::owned_config_sections` lists its own `config_section`),
-/// keyed by that section and type-erased behind [`PlaneCfg`] — the one map carrier, so `DeployCfg`
-/// names no plane section and no plane-local type (#47/#49). Each entry is parsed by its plane's own
-/// `parse_section` hook; an absent section has no entry. `busbar-kernel` has no dependency on any
-/// plane crate (#40), which is why the plane's typed section is reached only through this seam.
+/// owns the grammar of, keyed by that section and type-erased behind [`PlaneCfg`] — the one map
+/// carrier, so `DeployCfg` names no plane section and no plane-local type (#47/#49). A plane's
+/// section lands here when its declaration lists its own `config_section` among its owned sections,
+/// or when its declaring section is a NAMED MAP ([`is_named_plane`]: the plane answers the
+/// named-definition surface, which a door plane states with `SECTION_NAMED_MAP`). Each entry is
+/// parsed by its plane's own `parse_section` hook; an absent section has no entry. `busbar-kernel`
+/// has no dependency on any plane crate (#40), which is why the plane's typed section is reached
+/// only through this seam.
 #[derive(Debug, Default)]
 pub struct DeclaredSections(pub std::collections::BTreeMap<&'static str, Box<dyn PlaneCfg>>);
 
 impl DeclaredSections {
     /// True when `decl`'s declaring section lands here: the plane owns its own declaring section's
-    /// grammar and no named carrier (`tools:`/`agents:`) holds it.
-    pub(crate) fn holds(decl: &crate::plane::registry::PlaneDeclaration) -> bool {
-        let named = [ToolsSection::SECTION, AgentsSection::SECTION];
-        decl.owned_config_sections.contains(&decl.config_section)
-            && !named.contains(&decl.config_section)
+    /// grammar, or its declaring section is a named map.
+    pub(crate) fn holds(decl: &crate::plane::registry::PlaneDecl) -> bool {
+        decl.owned_config_sections.contains(&decl.config_section) || is_named_plane(decl)
     }
 
     /// Parse one declared section through its plane's `parse_section` hook, as a one-entry carrier.
@@ -328,26 +281,59 @@ impl DeclaredSections {
     }
 }
 
-/// THE ENDPOINT BLOCK as it lands in `DeployCfg`, type-erased behind [`PlaneEndpointCfg`] — the
-/// neutral seam the owning plane's own endpoint-config type deserializes through. Absent/null ⇒
-/// `None` (endpoint not configured), byte-identical to the pre-seam typed field's `Default`.
-#[derive(Debug, Default)]
-pub struct EndpointSection(pub Option<Box<dyn PlaneEndpointCfg>>);
-
-impl EndpointSection {
-    /// The DECLARING section of the plane that owns the endpoint door. The door's own key is never
-    /// spelled: it is whatever section that plane declares beside this one
-    /// (`PlaneDeclaration::owned_config_sections`), read by the pre-pass off the registry.
-    pub(crate) const OWNER: &'static str = ToolsSection::SECTION;
+/// Whether `decl`'s declaring section is a NAMED MAP: one registration per key, addressable over the
+/// admin named-definition surface and nameable as a pool member. Decided by what the plane answers
+/// (its `named_def_list` hook, which a door plane carries when its Statement states
+/// `SECTION_NAMED_MAP`), never by the section's name (#49, BUSBAR-1.6.0.md l.2235).
+#[must_use]
+pub fn is_named_plane(decl: &crate::plane::registry::PlaneDecl) -> bool {
+    decl.named_def_list.is_some()
 }
 
-impl<'de> serde::Deserialize<'de> for EndpointSection {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        // Keyed by its owning plane's CONFIG SECTION — no plane key is named here.
-        deserialize_plane_endpoint(Self::OWNER, deserializer).map(EndpointSection)
+/// The registered planes' NAMED-MAP sections, in registry order ([`is_named_plane`]).
+#[must_use]
+pub fn named_sections() -> Vec<&'static str> {
+    crate::plane::registry::plane_decls()
+        .iter()
+        .filter(|d| is_named_plane(d))
+        .map(|d| d.config_section)
+        .collect()
+}
+
+/// THE ENDPOINT DOOR'S OWNER for a section a plane owns BESIDE its declaring section: the first
+/// registered plane that owns `key` beside its own verb and parses an endpoint door
+/// (`parse_endpoint`). The door's key and its owner are both the plane's declaration; the kernel
+/// names neither.
+#[must_use]
+pub fn endpoint_door_owner(key: &str) -> Option<&'static crate::plane::registry::PlaneDecl> {
+    crate::plane::registry::plane_decls()
+        .iter()
+        .copied()
+        .find(|d| {
+            d.config_section != key
+                && d.owned_config_sections.contains(&key)
+                && d.parse_endpoint.is_some()
+        })
+}
+
+/// THE ENDPOINT BLOCK as it lands in `DeployCfg`, type-erased behind [`PlaneEndpointCfg`] — the
+/// neutral seam the owning plane's own endpoint-config type deserializes through — with the
+/// DECLARING section of the plane that owns the door ([`endpoint_door_owner`]). Absent/null ⇒
+/// `None` (endpoint not configured), byte-identical to the pre-seam typed field's `Default`.
+#[derive(Debug, Default)]
+pub struct EndpointSection(
+    pub Option<Box<dyn PlaneEndpointCfg>>,
+    /// The declaring section of the plane that owns this door; empty when no block was lifted.
+    pub &'static str,
+);
+
+impl EndpointSection {
+    /// Parse a door block owned by the plane that declares `owner` (its declaring section).
+    pub(crate) fn parse(
+        owner: &'static str,
+        value: serde_yaml::Value,
+    ) -> Result<Self, serde_yaml::Error> {
+        deserialize_plane_endpoint(owner, value).map(|cfg| EndpointSection(cfg, owner))
     }
 }
 
@@ -379,7 +365,7 @@ pub fn config_sections_from(decls: &[&'static super::registry::PlaneDecl]) -> Ve
     for section in decls
         .iter()
         .map(|decl| decl.config_section)
-        .chain(busbar_kernel::plane::config::NAMED_MAP_SECTIONS)
+        .chain(CORE_NAMED_MAP_SECTIONS)
     {
         if !out.contains(&section) {
             out.push(section);
@@ -694,7 +680,8 @@ pub trait PlaneCfg: std::any::Any + Send + Sync + std::fmt::Debug {
 /// A PLANE SECTION'S HOOK-GATE INPUTS, in the neutral shape `appbuild::resolve_container_gates`
 /// reads — the reserved section-level `hooks:` attach list, and each registration's `(name, hooks)`
 /// in registry order. Neutral so a plane hands its gate inputs across the seam without core naming
-/// the plane's registry type.
+/// the plane's registry type. The default is a section that attaches nothing.
+#[derive(Debug, Default)]
 pub struct ContainerGateInputs {
     /// The reserved `<section>.hooks:` all-section attach list (`ToolsCfg::all_server_hooks` /
     /// `AgentsCfg::all_agent_hooks`).
@@ -852,34 +839,34 @@ pub fn plane_sections() -> Vec<&'static str> {
         .unwrap_or_default()
 }
 
-/// THE FROZEN 1.5.3 NAMED-DEFINITION-MAP SECTION KEYS, in route/mount order (additive-only since
-/// 1.5.3, guarded by the config-stability gate). `identity-providers`/`export` are core-native;
-/// `tools`/`agents` are the MCP/A2A plane sections, listed here too so a fold matches core's
-/// `NamedMapSection::sections()` tail whether or not those planes are registered.
-///
-/// This is the STATIC NOUN SOURCE the deletion-gate and every `.key()` repoint read after the
-/// `NamedMapSection::Tools`/`Agents` variants were folded into `Plane(&str)`: it does NOT go empty
-/// when a plane is compiled out, so a `tools:`/`agents:` block written for an absent plane is still
-/// recognised (and refused) rather than silently accepted. None is a plane KEY, so the
-/// neutral-purity lint's token rules do not fire on them.
-pub const NAMED_MAP_SECTIONS: [&str; 4] =
-    [Kind::Auth.root(), Kind::Export.root(), "tools", "agents"];
+/// THE CORE'S OWN 1.5.3 NAMED-DEFINITION-MAP SECTION KEYS, in route/mount order:
+/// `identity-providers` and `export`, each its kind's root key. A PLANE's named map is not here: it is
+/// the plane's declaration ([`is_named_plane`], [`named_sections`]), so the kernel spells no plane
+/// section (#49, BUSBAR-1.6.0.md l.2235). A section written for a plane this build does not register
+/// is refused at parse as an unknown field (Option A, S11b (c) / Q67).
+pub const CORE_NAMED_MAP_SECTIONS: [&str; 2] = [Kind::Auth.root(), Kind::Export.root()];
+
+/// REPIN BRIDGE (arch u34; af24 review of 492d41f885), deleted in the first PR after the planes
+/// whose sections were 1.5.3 named maps repin with `SECTION_NAMED_MAP` set (tracked: status row
+/// "named-map bridge", lane-kernel-routing-from-plane). Until then a DOOR plane whose Statement
+/// states `SECTION_NAMED_MAP` on NO section, and whose declaring section is one of these, keeps the
+/// named-definition surface it had. A plane that states the bit is never overridden or widened by
+/// this list. Read in exactly one place: [`crate::plane::door`]'s fold.
+pub(crate) const NAMED_MAP_REPIN_BRIDGE: [&str; 2] = ["tools", "agents"];
 
 /// TEST-SUPPORT SEAM — the section-list PROVIDER a plane's `testkit` binds through
 /// [`install_plane_sections`], so an extracted plane crate reaches the NEUTRAL ABI rather than back
 /// into `busbar_kernel::plane::config::config_sections`. Byte-for-byte the same fold that singleton runs:
 /// every registered plane's own `config_section` (from [`crate::plane::registry::test_registered_planes`],
-/// in registration order) followed by the frozen 1.5.3 named-definition-map sections, deduped in that
-/// order. `tools:`/`agents:` appear in BOTH halves — a plane declares them and they are also 1.5.3
-/// named-map sections — so the trailing pair guarantees they are known even when their owning plane is
-/// not registered in a given test binary, exactly as core's `NamedMapSection::sections()` tail does.
+/// in registration order) followed by the core's named-definition-map sections, deduped in that
+/// order.
 #[cfg(any(test, feature = "test-support"))]
 pub fn default_plane_sections() -> Vec<&'static str> {
     let mut out: Vec<&'static str> = Vec::new();
     for section in crate::plane::registry::test_registered_planes()
         .iter()
         .map(|d| d.config_section)
-        .chain(NAMED_MAP_SECTIONS)
+        .chain(CORE_NAMED_MAP_SECTIONS)
     {
         if !out.contains(&section) {
             out.push(section);

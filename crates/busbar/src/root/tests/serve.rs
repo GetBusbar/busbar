@@ -746,7 +746,7 @@ async fn a_framed_claims_caller_reads_the_deframed_messages() {
 /// door's pools survive the apply, and the plane is handed it with the core-owned `work:` struck.
 #[test]
 fn an_applied_door_section_carries_its_pools_and_hands_the_plane_no_work_key() {
-    let key = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2];
+    let key = "tools";
     let written: serde_yaml::Value =
         serde_yaml::from_str("fs: { url: \"http://fs\" }\nwork: { max_live: 4 }\n")
             .expect("a section");
@@ -754,10 +754,10 @@ fn an_applied_door_section_carries_its_pools_and_hands_the_plane_no_work_key() {
         members: vec!["fs".to_string()],
         ..Default::default()
     };
-    let pools = door_pools(
-        &BTreeMap::from([("files".to_string(), pool)]),
-        &BTreeMap::new(),
-    );
+    let pools = door_pools(&BTreeMap::from([(
+        key,
+        BTreeMap::from([("files".to_string(), pool)]),
+    )]));
 
     let applied = section_with_pools(key, &written, &pools);
     assert_eq!(
@@ -782,15 +782,13 @@ fn an_applied_door_section_carries_its_pools_and_hands_the_plane_no_work_key() {
 
 /// A DOOR PLANE'S APPLY READS EACH SECTION'S POOLS OFF THE SECTION-KEYED POOL MAP (step 2b, item
 /// d): the pools a generation resolved for a named-map section reach that section's door and no
-/// other, and the second section's pools are carried exactly when a registered plane owns that
-/// section, so moving the pools off a dedicated snapshot field changes no door's pools.
+/// other, so moving the pools off a dedicated snapshot field changes no door's pools.
 #[tokio::test]
 async fn the_installed_door_pools_are_each_sections_own_pools() {
-    let first = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2];
-    let second = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3];
+    let (first, second) = ("tools", "agents");
     let app = busbar_kernel::test_support::TestApp::new()
-        .tool_pool("p1", &["a", "b"], &[])
-        .agent_pool("p2", &["c", "d"])
+        .section_pool(first, "p1", &["a", "b"], &[])
+        .section_pool(second, "p2", &["c", "d"], &[])
         .build();
     let pools = installed_door_pools(&app);
     let members = |section: &str, pool: &str| -> Option<Vec<String>> {
@@ -810,8 +808,8 @@ async fn the_installed_door_pools_are_each_sections_own_pools() {
     let owned = busbar_kernel::plane::registry::plane_decl_for_config_section(second);
     assert_eq!(
         members(second, "p2"),
-        owned.map(|_| vec!["c".to_string(), "d".to_string()]),
-        "the second section's pools are carried exactly when a plane owns that section"
+        Some(vec!["c".to_string(), "d".to_string()]),
+        "the second section's door lost its pools"
     );
     // The plane-keyed read resolves to the same section's pools.
     if let Some(decl) = owned {

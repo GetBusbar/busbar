@@ -503,13 +503,16 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         &["cannot resolve"],
     ));
 
-    // Two door sections: the one door carrier cannot say which it carries. A door is a section
-    // declared beside the ENDPOINT OWNER's declaring section (`EndpointSection::OWNER`, `tools`), so
-    // the plant declares two beside that one.
+    // Two door sections: the one door carrier cannot say which it carries. A door is a section a
+    // plane DOOR's Statement declares beside its declaring one (the kernel names no owner), so the
+    // plant is a door declaring two beside its own; with the tree's own door that is three.
     let mut ov = Overlay::new();
     ov.set(
         plane_fixture,
-        declaration("\"tools\"", "\"zz_door_a\", \"zz_door_b\""),
+        "const SECTIONS: &[Section] = &[\n    Section {\n        name: abi_str(\"zz_two_doors\"),\n        \
+         flags: SECTION_DECLARING,\n        _reserved: 0,\n    },\n    Section {\n        \
+         name: abi_str(\"zz_door_a\"),\n        flags: 0,\n        _reserved: 0,\n    },\n    \
+         Section {\n        name: abi_str(\"zz_door_b\"),\n        flags: 0,\n        _reserved: 0,\n    },\n];\n",
     );
     report.push(prove_rows_red(
         cx,
@@ -520,8 +523,8 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         &["One carrier type carries one key"],
     ));
 
-    // A section any OTHER plane owns beside its declaring one is no door: the pre-pass lifts it
-    // RAW (`Dest::Raw`), into `DeployCfg::plane_raw`, which carries it.
+    // A section a `PLANE_DECLARATION` owns beside its declaring one is no door: the pre-pass lifts
+    // it RAW (`Dest::Raw`), into `DeployCfg::plane_raw`, which carries it.
     let mut ov = Overlay::new();
     ov.set(
         plane_fixture,
@@ -530,7 +533,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     report.push(prove_rows_green(
         cx,
         gate,
-        "a section a non-owner plane owns beside its declaring one is RAW, carried, never a door",
+        "a section a plane declaration owns beside its declaring one is RAW, carried, never a door",
         &[ROW_TRACKED_SOURCES],
         ov,
     ));

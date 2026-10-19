@@ -2595,10 +2595,10 @@ fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
         "an inert prior must be reused across a planeless apply"
     );
 
-    // Arm 3: plane content appears (a `tool_pools:` set here — any of the plane signals works) →
-    // upgraded to a provisioned handle AT APPLY, not on a request path.
+    // Arm 3: plane content appears (a named-map plane's failover pool here — any of the plane
+    // signals works) → upgraded to a provisioned handle AT APPLY, not on a request path.
     let mut with_pool = planeless();
-    with_pool.tool_pools.insert(
+    with_pool.section_pools.entry("tools").or_default().insert(
         "search".to_string(),
         crate::failover::CandidatePoolCfg {
             members: vec!["search-eu".to_string(), "search-us".to_string()],

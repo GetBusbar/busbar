@@ -894,8 +894,11 @@ pub struct TestApp {
     base_group_names: std::collections::HashSet<String>,
     identity_providers: crate::config::IdentityProviders,
     export_defs: crate::config::ExportDefs,
-    tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
-    agent_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
+    /// Each named-map plane's failover pools, keyed by its config section (as production keys them).
+    section_pools: std::collections::BTreeMap<
+        &'static str,
+        std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
+    >,
     overlay_path: Option<std::path::PathBuf>,
     /// 1.5.3: when `true`, build a LOCKED app (no overlay backend) — the only way to get
     /// `overlay_path: None` now that the default is durable. Without it, `build()` provides a writable
@@ -924,13 +927,6 @@ pub struct TestApp {
     /// admissions through [`TestApp::mount_plane`] / [`TestApp::admit_plane`] (neutral `&str` paths,
     /// substrate `PlaneAdmission`), so `build()` names no plane type to assemble the router surface.
     plane_dispatch: crate::plane::PlaneDispatch,
-    /// The type-erased section-defs config handles the built App carries, KEYED by the owning plane's
-    /// decl key (mirroring `plane_gates`). The agents-section plane's entry becomes
-    /// [`crate::state::App::agent_defs`]; an absent key ⇒ the neutral empty placeholder (`Arc::new(())`),
-    /// which no test-path consumer downcasts — the A2A plane reads its `AgentsCfg` off its own runtime
-    /// object, not off this handle. Each plane's test-kit sets its real erased defs here for fidelity.
-    plane_defs_any:
-        std::collections::BTreeMap<&'static str, std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     /// NEUTRAL per-container hook SPECS, KEYED by the owning plane's decl key (the `tools:` plane's
     /// server hooks, the `agents:` plane's agent hooks) — each value is `(container_name, own_hook_names)`
     /// pairs plus the section-level hook list, handed here by that plane's test-kit as plain strings off
@@ -1012,8 +1008,7 @@ impl TestApp {
             base_group_names: std::collections::HashSet::new(),
             identity_providers: Default::default(),
             export_defs: Default::default(),
-            tool_pools: Default::default(),
-            agent_pools: Default::default(),
+            section_pools: Default::default(),
             overlay_path: None,
             explicit_no_overlay: false,
             plugins_dir: None,
@@ -1024,7 +1019,6 @@ impl TestApp {
             no_plugin_routes: false,
             installed_plane_runtimes: std::collections::BTreeMap::new(),
             plane_dispatch: crate::plane::PlaneDispatch::default(),
-            plane_defs_any: std::collections::BTreeMap::new(),
             container_hooks: std::collections::BTreeMap::new(),
             plane_scratch: std::collections::HashMap::new(),
             plane_finalizers: Vec::new(),
@@ -1084,17 +1078,15 @@ impl TestApp {
         self
     }
 
-    /// NEUTRAL SECTION-DEFS SEAM — set plane `plane_key`'s type-erased named-definition config the built
-    /// App carries (the A2A plane's `agents:` defs become [`crate::state::App::agent_defs`]). The plane's
-    /// test-kit erases its own config and hands it here KEYED, so core names no plane config type. No
-    /// test-path consumer downcasts the handle (the plane reads its config off its runtime object); it
-    /// exists for production fidelity.
+    /// NEUTRAL SECTION-DEFS SEAM — accept plane `plane_key`'s type-erased named-definition config from
+    /// its test-kit. The built App carries no per-plane defs field (the plane reads its config off its
+    /// runtime object), so the handle is kept for the seam and not read.
     pub fn set_plane_defs_any(
         &mut self,
         plane_key: &'static str,
         defs: std::sync::Arc<dyn std::any::Any + Send + Sync>,
     ) -> &mut Self {
-        self.plane_defs_any.insert(plane_key, defs);
+        let _ = (plane_key, defs);
         self
     }
 
@@ -1190,25 +1182,21 @@ impl TestApp {
         self.export_defs.insert(name.into(), cfg);
         self
     }
-    /// Declare a `tool_pools:` failover pool over already-seeded `mcp_server` registrations —
-    /// exactly the operator's grammar: ordered members, optional `repeatable:` operations.
-    pub fn tool_pool(mut self, name: &str, members: &[&str], repeatable: &[&str]) -> Self {
-        self.tool_pools.insert(
+    /// Declare a failover pool of the named-map plane whose section is `section`, over that plane's
+    /// already-seeded registrations — exactly the operator's grammar: ordered members, optional
+    /// `repeatable:` operations.
+    pub fn section_pool(
+        mut self,
+        section: &'static str,
+        name: &str,
+        members: &[&str],
+        repeatable: &[&str],
+    ) -> Self {
+        self.section_pools.entry(section).or_default().insert(
             name.into(),
             crate::failover::CandidatePoolCfg {
                 members: members.iter().map(|m| (*m).to_string()).collect(),
                 repeatable: repeatable.iter().map(|o| (*o).to_string()).collect(),
-            },
-        );
-        self
-    }
-    /// The `agent_pools:` twin of [`TestApp::tool_pool`], over `agent_def` registrations.
-    pub fn agent_pool(mut self, name: &str, members: &[&str]) -> Self {
-        self.agent_pools.insert(
-            name.into(),
-            crate::failover::CandidatePoolCfg {
-                members: members.iter().map(|m| (*m).to_string()).collect(),
-                repeatable: Vec::new(),
             },
         );
         self
@@ -1621,9 +1609,10 @@ impl TestApp {
         // own `cfg(test)` binary the factory comes from the `tests/`-path helper; an EXTERNAL
         // `test-support` build seeds none (`seeded_section_plane_runtime`).
         #[cfg(any(test, feature = "test-support"))]
-        if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
-        ) {
+        for decl in crate::plane::registry::plane_decls()
+            .iter()
+            .filter(|d| crate::plane::config::is_named_plane(d) && d.build_runtime.is_some())
+        {
             if let Some(rt) = seeded_section_plane_runtime() {
                 plane_slots
                     .entry(crate::state::runtime_slot_key(decl.key))
@@ -1829,11 +1818,11 @@ impl TestApp {
         // `App` literal so it holds no borrow of `self` across the moves the literal performs.
         let plane_gates_map: crate::state::PlaneGateMap = {
             let mut m = std::collections::BTreeMap::new();
-            for section in [
-                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
-                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
-            ] {
-                if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(section) {
+            for decl in crate::plane::registry::plane_decls()
+                .iter()
+                .filter(|d| crate::plane::config::is_named_plane(d))
+            {
+                {
                     let (containers, section_hooks) = self
                         .container_hooks
                         .get(decl.key)
@@ -1856,11 +1845,11 @@ impl TestApp {
         // transform seam fires, exactly as production `appbuild` builds `plane_rewrites`.
         let plane_rewrites_map: crate::state::PlaneRewriteMap = {
             let mut m = std::collections::BTreeMap::new();
-            for section in [
-                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
-                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
-            ] {
-                if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(section) {
+            for decl in crate::plane::registry::plane_decls()
+                .iter()
+                .filter(|d| crate::plane::config::is_named_plane(d))
+            {
+                {
                     let (containers, section_hooks) = self
                         .container_hooks
                         .get(decl.key)
@@ -1888,16 +1877,6 @@ impl TestApp {
             // the production default and is what keeps every existing test's route table unchanged
             // by this plane's arrival.
             oauth_as: self.oauth_as.clone(),
-            // The type-erased `agents:` handle: the A2A test-kit erases its own `AgentsCfg` and hands
-            // it via `set_plane_defs_any` KEYED by its plane; `build()` reads it under the decl key of
-            // the plane that owns the `agents:` section (resolved from the registry, never a literal),
-            // exactly as `plane_gates` below. Absent that, a neutral empty placeholder no
-            // test-path consumer downcasts (the A2A plane reads its `AgentsCfg` off its runtime object).
-            agent_defs: crate::plane::registry::plane_decl_for_config_section(
-                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
-            )
-            .and_then(|decl| self.plane_defs_any.remove(decl.key))
-            .unwrap_or_else(|| std::sync::Arc::new(())),
             tslots,
             // THE LLM DATA-PLANE RUNTIME'S SLOT KEY (R3/R4 sub-phase B) — the bundle itself was composed
             // above into `plane_slots` under this interned key; the snapshot names only the key, and
@@ -1912,23 +1891,12 @@ impl TestApp {
             plane_breakers: std::sync::Arc::new(crate::store::PlaneBreakers::new()),
             session_store: std::sync::Arc::new(crate::session::SessionStore::new(1024, None)),
             incremental_scan: false,
-            // Keyed by config section exactly as production `appbuild` keys it: the first named-map
-            // section's set always, the second's only when a registered plane owns that section.
+            // Keyed by config section exactly as production `appbuild` keys it: every named-map
+            // plane's set, empty when it has none.
             section_pools: {
-                let mut m = std::collections::BTreeMap::new();
-                m.insert(
-                    busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
-                    self.tool_pools,
-                );
-                if crate::plane::registry::plane_decl_for_config_section(
-                    busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
-                )
-                .is_some()
-                {
-                    m.insert(
-                        busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
-                        self.agent_pools,
-                    );
+                let mut m = self.section_pools;
+                for section in crate::plane::config::named_sections() {
+                    m.entry(section).or_default();
                 }
                 m
             },

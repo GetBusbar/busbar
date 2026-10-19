@@ -55,7 +55,7 @@ pub use crate::breaker::status_class_from_str;
 use crate::diagnostics::{
     diag_warn, CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID,
 };
-use crate::plane::config::{AgentsSection, DeclaredSections, EndpointSection, ToolsSection};
+use crate::plane::config::{DeclaredSections, EndpointSection};
 use busbar_kernel_ledger::cost::compose_plane_cards;
 
 /// Reject an env-var value that could break out of the surrounding YAML scalar when substituted
@@ -448,14 +448,17 @@ pub struct RootCfg {
     /// accepted by `resolve`, so a value here is a block the owner has already validated, with the
     /// secret references the owner listed in it.
     pub oauth_as: Option<crate::oauth_as::seam::CheckedAsBlock>,
-    /// The `tools:` named-definition registry — its owning plane's config section, carried through `resolve` VERBATIM.
+    /// THE PLANES' DECLARED SECTIONS — every section a registered plane parses (its named-definition
+    /// map among them), keyed by the plane's own `config_section` and carried through `resolve`
+    /// VERBATIM.
     ///
     /// Verbatim on purpose: this is operator INTENT (owner ruling 3), and the only derivation that
-    /// happens to it is building the catalogue snapshot, which is a separate value with its own
-    /// generation. Lowering it here would give the registry two representations that could disagree
-    /// about what the operator approved — precisely the disagreement the trust lifecycle removes by
-    /// DERIVING state from intent-versus-observation instead of storing it.
-    pub tool_defs: Box<dyn busbar_kernel::plane::config::PlaneCfg>,
+    /// happens to it is what each plane builds from it, which is a separate value with its own
+    /// generation. Lowering it here would give a registry two representations that could disagree
+    /// about what the operator approved. Keyed by section, never a field per plane (#47/#49): an
+    /// absent section has no entry.
+    pub declared_sections:
+        std::collections::BTreeMap<&'static str, Box<dyn busbar_kernel::plane::config::PlaneCfg>>,
     /// Optional native inbound TLS. `None` ⇒ plain HTTP (today's path, byte-for-byte).
     pub tls: Option<TlsCfg>,
     /// Separate admin listen address — the admin API is served ONLY here, never on the data
@@ -539,22 +542,14 @@ pub struct RootCfg {
     /// the typed `export` projection above, for the same reason `identity_providers` is carried:
     /// the admin API serves DEFINITIONS, not the lowered per-module runtime shape.
     pub export_defs: ExportDefs,
-    /// The `agents:` NAMED-DEFINITION map, carried through resolve VERBATIM, for the same reason
-    /// `identity_providers` and `export_defs` are: the admin API serves DEFINITIONS, and the owning
-    /// plane derives its runtime registration state from this plus what the store has
-    /// accumulated. Nothing here is accumulation.
-    // Neutral capture when this section's owning plane is compiled out: the resolved registry type
-    // does not exist then, and a non-empty `agents:` section is refused at `resolve` (the raw capture
-    // is carried through unchanged, as `RootCfg` is for any plane section whose plane is off).
-    pub agent_defs: Box<dyn busbar_kernel::plane::config::PlaneCfg>,
-    /// The `tool_pools:` failover pools for this section's owning plane, carried through `resolve`
-    /// VERBATIM — operator intent, like `tool_defs` beside it, projected onto
-    /// `state::App::section_pools` under its section key at build. Empty ⇒ no failover on that plane.
-    pub tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
-    /// The `agent_pools:` failover pools for this section's owning plane, carried through `resolve`
-    /// VERBATIM onto `state::App::section_pools` under its section key. Empty ⇒ no failover on that
-    /// plane.
-    pub agent_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
+    /// THE FAILOVER POOLS of every named-map plane, keyed by that plane's `config_section`: each
+    /// unified `pools:` entry whose members are that plane's registrations, carried through `resolve`
+    /// VERBATIM — operator intent, projected onto `state::App::section_pools` at build. An absent key
+    /// ⇒ no failover on that plane.
+    pub section_pools: std::collections::BTreeMap<
+        &'static str,
+        std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
+    >,
     /// LAW 7 — the plane config sections this config writes content into (the deletion gate's
     /// `is_present()`). A linked plane whose section is absent hydrates, starts, builds and serves
     /// nothing; see `state::App::plane_configured`.
@@ -566,12 +561,31 @@ impl RootCfg {
     /// when this deployment configures no such endpoint (or the owning plane was compiled out). The
     /// resource is type-erased as `Arc<dyn Any>` — the owning plane's own module downcasts it back to
     /// its concrete resource. This is the NEUTRAL, section-keyed read the composition root uses in
-    /// place of a per-plane field, mirroring `tool_defs`/`agent_defs` beside it.
+    /// place of a per-plane field, mirroring `declared_sections` beside it.
     pub fn endpoint_resource(
         &self,
         section: &str,
     ) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
         self.endpoint_resources.get(section).cloned()
+    }
+
+    /// The parsed declared section a registered plane owns at `section`, or `None` when this
+    /// configuration carries none.
+    #[must_use]
+    pub fn declared_section(
+        &self,
+        section: &str,
+    ) -> Option<&dyn busbar_kernel::plane::config::PlaneCfg> {
+        self.declared_sections.get(section).map(AsRef::as_ref)
+    }
+
+    /// The failover pools of the named-map plane whose section is `section`; empty when it has none.
+    #[must_use]
+    pub fn section_pools(
+        &self,
+        section: &str,
+    ) -> std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg> {
+        self.section_pools.get(section).cloned().unwrap_or_default()
     }
 }
 
@@ -918,25 +932,24 @@ pub use busbar_kernel::config::auth::{default_admin_auth, default_admin_auth_nam
 // moved there): `tools:` and `agents:` reserve the same two words by reading that ONE slice, not by
 // restating it. Pinned by `pools_reserved_section_keys_are_frozen` in the config tests.
 
-/// THE ONE CHECK BOTH FAILOVER SECTIONS GET, parameterised by which registry a bare name resolves
-/// against rather than written once per plane. `tool_pools:` and `agent_pools:` are the same grammar
-/// over two registries, so a second copy of this would be the shape the `structure-lint` gate's plane
-/// ledger calls DEBT: the copy that is hardened and the copy that is not look identical from outside.
+/// THE ONE CHECK EVERY NAMED-MAP PLANE'S FAILOVER POOLS GET, parameterised by which registry a bare
+/// name resolves against rather than written once per plane: the pools of every such plane are the
+/// same grammar over that plane's registry, so a copy per plane would be the shape the
+/// `structure-lint` gate's plane ledger calls DEBT.
 ///
 /// Three refusals, in the order an operator can act on them: a pool with fewer than two members is a
 /// pool that cannot fail over (a typo, or a leftover), a member on the WRONG PLANE is named as the
 /// thing it actually is, and a member that exists nowhere is a plain dangling reference.
-#[allow(clippy::too_many_arguments)] // eight small, positional facts about ONE check; bundling them
-                                     // into a struct would move the same arguments one line up.
-fn check_failover_pool(
+/// `on_other_plane` answers the section of ANOTHER named-map plane that defines a name, if any;
+/// `this_registry` is this plane's own section.
+fn check_failover_pool<'s>(
     errors: &mut Vec<String>,
     section: &str,
     pool: &str,
     def: &pools::CandidatePoolCfg,
     on_this_plane: impl Fn(&str) -> bool,
-    on_other_plane: impl Fn(&str) -> bool,
+    on_other_plane: impl Fn(&str) -> Option<&'s str>,
     this_registry: &str,
-    other_registry: &str,
 ) {
     if def.members.len() < 2 {
         errors.push(format!(
@@ -979,7 +992,7 @@ fn check_failover_pool(
         if on_this_plane(member) {
             continue;
         }
-        if on_other_plane(member) {
+        if let Some(other_registry) = on_other_plane(member) {
             errors.push(format!(
                 "{section}.{pool}: `{member}` is an entry in the top-level `{other_registry}:` \
                  section, not `{this_registry}:`. A failover pool may not straddle two planes — the \
@@ -1205,24 +1218,6 @@ pub struct DeployCfg {
     /// A lifted CARRIER, exactly as `mcp:` above is.
     #[serde(skip)]
     pub oauth_as: Option<serde_yaml::Value>,
-    /// The top-level `tools:` NAMED-DEFINITION map (1.6.0) — its owning plane's registry: entry name →
-    /// `{url, pin, tools_allow, …}`. Sibling of `pools:` and `agents:` with the same shape and the
-    /// same two reserved section keys; there is no `plane:`/`bind:`/`target:` selector, because the
-    /// section an entry is written in IS which plane it is on: a `tools:` entry belongs to the plane
-    /// that owns that section, and an `agents:` entry belongs to a different plane, so there is no
-    /// second declaration that could disagree with the first.
-    ///
-    /// Distinct from `mcp:` above and the pair is not redundant: `mcp:` is that plane's OWN endpoint
-    /// as a resource server (the door), `tools:` is the set of upstreams whose capabilities that door
-    /// exposes (the rooms). A deployment may configure either without the other.
-    // Type-erased through the neutral `ToolsSection` seam: the `tools:` registry deserializes into
-    // its owning plane's own config type behind `dyn PlaneCfg`, so `DeployCfg` names no plane-specific
-    // registry type. The plane compiled out captures it raw and refuses a present section at
-    // `resolve`.
-    ///
-    /// A lifted CARRIER, exactly as `mcp:` above is.
-    #[serde(skip)]
-    pub tools: ToolsSection,
     /// TLS/mTLS for the management-surface listener (only meaningful with `admin_listen`). Its own
     /// cert + optional `client_ca_file`, so the management surface can require client certificates
     /// without forcing them on data-plane clients. A network-exposed `admin_listen` REQUIRES
@@ -1320,18 +1315,6 @@ pub struct DeployCfg {
     /// `observability:` LOUD-FAILS with the `--migrate-config` breadcrumb.
     #[serde(default)]
     pub export: ExportDefs,
-    /// The top-level `agents:` NAMED-DEFINITION map (1.6.0): entry NAME → its owning plane's
-    /// definition type. Sibling in shape to `pools:` and `tools:`, carrying the same two reserved
-    /// section words, and no entry on it may reference an entry on another plane. Absent ⇒ no
-    /// registration exists and nothing can be delegated to.
-    // Type-erased through the neutral `AgentsSection` seam: the `agents:` registry deserializes into
-    // its owning plane's own config type behind `dyn PlaneCfg`, so `DeployCfg` names no plane-specific
-    // registry type. The plane compiled out captures it raw and refuses a present section at
-    // `resolve`.
-    ///
-    /// A lifted CARRIER, exactly as `mcp:` above is.
-    #[serde(skip)]
-    pub agents: AgentsSection,
     /// THE DECLARED SECTIONS (1.6.0): every top-level section a registered plane declares AND owns
     /// the grammar of, keyed by that section and parsed by that plane (#47/#49) — see
     /// [`DeclaredSections`]. Its mere EXISTENCE in the document declares that plane (LAW 7). A build
@@ -1374,10 +1357,12 @@ impl DeployCfg {
     /// through its door opens with its own (LAW 7: a section absent here opens nothing).
     #[must_use]
     pub fn door_sections(&self) -> std::collections::BTreeMap<&'static str, serde_yaml::Value> {
-        // A named-definition carrier (`tools:`/`agents:`) holds a door plane's section as the door
-        // judged it ([`busbar_kernel::plane::door::DoorSection`], DECL-FOLD): handed as written.
-        let named = [&*self.tools.0, &*self.agents.0]
-            .into_iter()
+        // A declared-section carrier holds a door plane's section as the door judged it
+        // ([`busbar_kernel::plane::door::DoorSection`], DECL-FOLD): handed as written.
+        let named = self
+            .declared
+            .0
+            .values()
             .filter_map(|c| c.as_any().downcast_ref::<crate::plane::door::DoorSection>())
             .map(|d| (d.section, d.value.clone()));
         self.plane_raw
@@ -1396,43 +1381,34 @@ impl DeployCfg {
         self.providers_file.as_deref()
     }
 
-    /// This plane-owned named-map section's always-present type-erased carrier, resolved by its
-    /// config-section KEY — the seam the generic named-map machinery reaches a `tools:`/`agents:`
-    /// registry through without naming a plane field. `None` for a key that is not a plane section
-    /// (the two core sections, or an unknown key). The two plane fields exist unconditionally (they
-    /// hold a `RawPlaneSection` when their plane is compiled out), so a present key always answers
-    /// `Some`; the section KEYS are read off the frozen static
-    /// [`busbar_kernel::plane::config::NAMED_MAP_SECTIONS`] mirror so this accessor spells no
-    /// plane noun.
+    /// A registered plane's parsed declared section, resolved by its config-section KEY — the seam
+    /// the generic named-map machinery reaches a plane's registry through without naming a plane
+    /// field. `None` when the document carries no such section, or the key is no registered plane's.
     pub fn plane_section(
         &self,
         section: &str,
     ) -> Option<&dyn busbar_kernel::plane::config::PlaneCfg> {
-        let mirror = busbar_kernel::plane::config::NAMED_MAP_SECTIONS;
-        if section == mirror[2] {
-            Some(&*self.tools.0)
-        } else if section == mirror[3] {
-            Some(&*self.agents.0)
-        } else {
-            None
-        }
+        self.declared.0.get(section).map(AsRef::as_ref)
     }
 
     /// The mutable twin of [`DeployCfg::plane_section`] — the seam the named-map WRITE path installs a
-    /// parsed `tools:`/`agents:` definition through, again resolved by config-section key so core
-    /// names no plane field.
+    /// parsed definition through. A registered plane's section the document does not carry yet is
+    /// opened at that plane's empty section first, so a write can create its first registration.
+    /// `None` for a key no registered plane parses into the map carrier.
     pub fn plane_section_mut(
         &mut self,
         section: &str,
     ) -> Option<&mut dyn busbar_kernel::plane::config::PlaneCfg> {
-        let mirror = busbar_kernel::plane::config::NAMED_MAP_SECTIONS;
-        if section == mirror[2] {
-            Some(&mut *self.tools.0)
-        } else if section == mirror[3] {
-            Some(&mut *self.agents.0)
-        } else {
-            None
-        }
+        let decl = crate::plane::registry::plane_decl_for_config_section(section)
+            .filter(|d| DeclaredSections::holds(d))?;
+        let empty = decl.default_section?;
+        Some(
+            self.declared
+                .0
+                .entry(decl.config_section)
+                .or_insert_with(empty)
+                .as_mut(),
+        )
     }
 }
 
@@ -2117,40 +2093,31 @@ pub fn resolve(
     // An UNRESOLVABLE member is deliberately NOT refused here — see the `None` arm below for the
     // two checks that own it and why the refusal stays where 1.5.5 put it. This is the ONLY place a
     // pool's plane is decided.
-    let mut tool_pools_derived = std::collections::BTreeMap::new();
-    let mut agent_pools_derived = std::collections::BTreeMap::new();
+    // THE NAMED-MAP PLANES' SECTIONS, in registry order: every registered plane whose declaring
+    // section is a named-definition map (`plane::config::is_named_plane`, the plane's own
+    // declaration). Every per-plane rule below is ONE loop over these, so a plane under any section
+    // name pools, failover-checks and hook-checks with no kernel edit (#49, BUSBAR-1.6.0.md l.2235).
+    let named_sections = crate::plane::config::named_sections();
+    let mut section_pools_derived: std::collections::BTreeMap<
+        &'static str,
+        std::collections::BTreeMap<String, pools::CandidatePoolCfg>,
+    > = std::collections::BTreeMap::new();
     {
         // A pool's KIND discriminant is its members' shared CONFIG SECTION — the plane-declared
-        // grammar key, used as OPAQUE DATA. The router never names a plane: `tools:` routes to the
-        // tool-pool projection, `agents:` to the agent-pool one, and the residual `models:` section
-        // stays on the fallback lane. Reading the discriminant off the frozen named-map mirror (rather
-        // than a hard-coded plane key) is what lets a registered plane's pools route with nothing
-        // about that plane written here.
-        let tools_section = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2];
-        let agents_section = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3];
+        // grammar key, used as OPAQUE DATA. The router never names a plane: a named-map plane's
+        // members route to that section's pool projection, and the residual `models:` section stays
+        // on the fallback lane.
         let member_kind = |name: &str| -> Option<&'static str> {
             // Global-unique noun names make this a name-only lookup — the router never asks "which
             // kind of `x`?". A name defined in two nouns is a collision the validator rejects.
             if deploy.models.contains_key(name) {
                 return Some(crate::plane::fallback_key());
             }
-            // The plane registry sections read through the always-present type-erased seam, resolved
-            // by config section. With the owning plane compiled out the seam holds a
-            // `RawPlaneSection`, whose `contains_def` is empty (a present section is refused earlier),
-            // so no name resolves there.
-            if deploy
-                .plane_section(tools_section)
-                .is_some_and(|cfg| cfg.contains_def(name))
-            {
-                return Some(tools_section);
-            }
-            if deploy
-                .plane_section(agents_section)
-                .is_some_and(|cfg| cfg.contains_def(name))
-            {
-                return Some(agents_section);
-            }
-            None
+            named_sections.iter().copied().find(|section| {
+                deploy
+                    .plane_section(section)
+                    .is_some_and(|cfg| cfg.contains_def(name))
+            })
         };
         let mut non_fallback: Vec<String> = Vec::new();
         for (pool_name, pool) in pools.iter() {
@@ -2176,9 +2143,9 @@ pub fn resolve(
                     //     fallback lane in `pools` — where `config_validate`'s pool loop refuses the member
                     //     by name, in 1.5.5's words (`pool '<p>' references unknown model '<m>'`);
                     //   * or the other members DO name a plane, the pool is projected to
-                    //     `tool_pools_derived` / `agent_pools_derived`, and `check_failover_pool`
-                    //     below refuses this same member against that plane's registry with the
-                    //     message that names the section it looked in.
+                    //     `section_pools_derived` under that plane's section, and
+                    //     `check_failover_pool` below refuses this same member against that plane's
+                    //     registry with the message that names the section it looked in.
                     // There is no third road: `non_fallback` is only ever pushed on the two projected
                     // arms, so a pool leaves `pools` only by entering a map that is checked.
                     None => {}
@@ -2191,19 +2158,18 @@ pub fn resolve(
             }
             if !homogeneous {
                 errors.push(format!(
-                    "pools.{pool_name}: members resolve to more than one plane (a mix of \
-                     `models:`/`tools:`/`agents:`). A pool's kind is INFERRED from its members, so \
-                     every member of a pool must be the same kind. Split the pool by plane."
+                    "pools.{pool_name}: members resolve to more than one plane. A pool's kind is \
+                     INFERRED from its members, so every member of a pool must be the same kind. \
+                     Split the pool by plane."
                 ));
                 continue;
             }
             // Fallback-lane pools — and an all-unresolvable pool, which `config_validate` refuses
             // member by member once it is resolved — stay in `pools`.
-            let derived = match kind {
-                Some(k) if k == tools_section => &mut tool_pools_derived,
-                Some(k) if k == agents_section => &mut agent_pools_derived,
-                _ => continue,
+            let Some(section) = kind.filter(|k| named_sections.contains(k)) else {
+                continue;
             };
+            let derived = section_pools_derived.entry(section).or_default();
             let members = pool.members.iter().map(|m| m.model.clone()).collect();
             let repeatable = pool.repeatable.clone();
             let candidates = pools::CandidatePoolCfg {
@@ -2244,34 +2210,34 @@ pub fn resolve(
             }
         }
     }
-    // THE `agents:` PLANE'S SECTION-LEVEL ATTACH, judged by the same rule its per-agent lists are. The
-    // per-agent lists are checked at parse by that plane's own validator; the section list has no
-    // per-entry parse to hang off, so it is checked here, where every other cross-reference is.
-    // `` `agents.hooks` `` is this plane's own WORDING for the site; the rule and the sentence are
-    // `plane::config`'s, shared with the `tools:` plane below.
+    // EACH NAMED-MAP PLANE'S SECTION-LEVEL ATTACH, judged by the same rule its per-registration
+    // lists are. The per-registration lists are checked at parse by that plane's own validator; the
+    // section list has no per-entry parse to hang off, so it is checked here, where every other
+    // cross-reference is. `` `<section>.hooks` `` is the site's wording, the section the plane's.
     //
-    // The whole block reads the `agents:` registry through its always-present type-erased seam.
-    // With the owning plane compiled out the seam holds a `RawPlaneSection` whose `container_gates`
-    // is empty (a present `agents:` section is refused earlier as naming an absent plane), so the
-    // loops below do nothing — the same as the per-plane feature gate compiling this out entirely.
-    // A hook an `agents:` entry names must EXIST in the one top-level `hooks:` map. A dangling
+    // A hook a registration names must EXIST in the one top-level `hooks:` map. A dangling
     // reference is an operator believing a control is attached that is not, so it is an error and
     // not a warning, exactly as it is for `auth.chain`. Both the section-level attach and each
-    // agent's own list are read through the neutral `container_gates` seam, in registry order.
-    {
-        let g = deploy.agents.0.container_gates();
+    // registration's own list are read through the neutral `container_gates` seam, in registry
+    // order.
+    for &section in &named_sections {
+        let Some(cfg) = deploy.plane_section(section) else {
+            continue;
+        };
+        let g = cfg.container_gates();
         if let Err(e) = crate::plane::config::validate_section_hooks(
-            "`agents.hooks`",
+            &format!("`{section}.hooks`"),
             &g.section_hooks,
             &crate::plane::config::config_sections(),
         ) {
             errors.push(e);
         }
-        for (agent, hooks) in &g.containers {
+        for (entry, hooks) in &g.containers {
             for hook in g.section_hooks.iter().chain(hooks.iter()) {
                 if !deploy.hooks.contains_key(hook) {
                     errors.push(format!(
-                        "agents.{agent}: `hooks:` names `{hook}`, which is not defined in the                      top-level `hooks:` map. Define it there, or remove the reference."
+                        "{section}.{entry}: `hooks:` names `{hook}`, which is not defined in the \
+                         top-level `hooks:` map. Define it there, or remove the reference."
                     ));
                 }
             }
@@ -2285,46 +2251,37 @@ pub fn resolve(
     // agent named in a tool pool fails here rather than at dispatch — and the message says which
     // section the name actually lives in, because "not found" would send an operator looking for a
     // typo they did not make.
-    // Whether `m` names a `tools:` entry. Always false when that entry's owning plane is compiled
-    // out: there is no `tools:` registry then, and no pool is inferred onto that plane, so
-    // `tool_pools_derived` is empty and the first loop below never iterates.
-    let is_tool_member = |m: &str| -> bool { deploy.tools.0.contains_def(m) };
-    // Whether `m` names an `agents:` registration. Always false when that entry's owning plane is
-    // compiled out: there is no `agents:` registry then, and no pool is inferred onto that plane, so
-    // `agent_pools_derived` is empty and the second loop below never iterates.
-    let is_agent_member = |m: &str| -> bool { deploy.agents.0.contains_def(m) };
-    for (pool, def) in &tool_pools_derived {
-        check_failover_pool(
-            &mut errors,
-            "pools",
-            pool,
-            def,
-            is_tool_member,
-            is_agent_member,
-            "tools",
-            "agents",
-        );
-    }
-    for (pool, def) in &agent_pools_derived {
-        check_failover_pool(
-            &mut errors,
-            "pools",
-            pool,
-            def,
-            is_agent_member,
-            is_tool_member,
-            "agents",
-            "tools",
-        );
+    // Whether `m` names a registration of the named-map plane at `section`; `None` for a section the
+    // configuration does not carry (no pool is inferred onto it, so it is never asked).
+    let member_of = |section: &str, m: &str| -> bool {
+        deploy
+            .plane_section(section)
+            .is_some_and(|cfg| cfg.contains_def(m))
+    };
+    for (&section, pools) in &section_pools_derived {
+        for (pool, def) in pools {
+            check_failover_pool(
+                &mut errors,
+                "pools",
+                pool,
+                def,
+                |m| member_of(section, m),
+                |m| {
+                    named_sections
+                        .iter()
+                        .copied()
+                        .find(|other| *other != section && member_of(other, m))
+                },
+                section,
+            );
+        }
     }
     // ONE POOL PER MEMBER, per plane. The dispatch route resolves a registration to ITS pool and
     // records health into that pool's cells; a registration in two pools would be two cell
     // histories for one upstream with the winner chosen by map iteration order — a nondeterminism
     // an operator cannot see. Refused as config, where the ambiguity was written.
-    for (section, pools) in [
-        ("pools", &tool_pools_derived),
-        ("pools", &agent_pools_derived),
-    ] {
+    for pools in section_pools_derived.values() {
+        let section = "pools";
         let mut owner: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
         for (pool, def) in pools {
             for member in &def.members {
@@ -2362,39 +2319,9 @@ pub fn resolve(
     // mechanism (fires on every pool, filtered per hook by `groups`/`phase`/`kind`).
     let global_hook_names: Vec<String> = deploy.pools.all_pool_hooks.clone();
 
-    // THE `tools:` PLANE's hook references, held to the SAME rules as the pool plane's: bare names
-    // only, into the ONE top-level `hooks:` map, and a dangling one is a boot error rather than a
-    // silently dropped attachment. A dropped reference leaves an operator believing a control is
-    // attached that is not, which is worse than the typo it came from.
-    //
-    // The whole block reads the `tools:` registry through its always-present type-erased seam. With
-    // the owning plane compiled out the seam holds a `RawPlaneSection` whose `container_gates` is
-    // empty (a present `tools:` section is refused earlier as naming an absent plane), so the loops
-    // below do nothing — the same as the per-plane feature gate compiling this out entirely.
-    {
-        let g = deploy.tools.0.container_gates();
-        if let Err(e) = crate::plane::config::validate_section_hooks(
-            "`tools.hooks`",
-            &g.section_hooks,
-            &crate::plane::config::config_sections(),
-        ) {
-            errors.push(e);
-        }
-        for (server, hooks) in &g.containers {
-            for hook in g.section_hooks.iter().chain(hooks.iter()) {
-                if !deploy.hooks.contains_key(hook) {
-                    errors.push(format!(
-                        "tools.{server}: `hooks:` names `{hook}`, which is not defined in the top-level \
-                         `hooks:` map. Define it there, or remove the reference."
-                    ));
-                }
-            }
-        }
-    }
-
     // EACH DECLARED SECTION's OWN reserved-attach hook reference (P2-243/P2-decvalidate — such a
     // section carries no per-registration containers, only its section-wide `<section>.hooks:`
-    // list, read through the SAME `container_gates` seam the `tools:` block above reads). An entry
+    // list, read through the SAME `container_gates` seam the named-map block above reads). An entry
     // naming an undefined hook booted silently before this.
     //
     // A RAW-carried section ([`DeployCfg::plane_raw`]) whose registered plane parses its section
@@ -2421,6 +2348,7 @@ pub fn resolve(
         .declared
         .0
         .iter()
+        .filter(|(s, _)| !named_sections.contains(s))
         .map(|(s, c)| (*s, c))
         .chain(raw_judged.iter().map(|(s, c)| (*s, c)));
     for (section, cfg) in judged {
@@ -2449,10 +2377,7 @@ pub fn resolve(
         .values()
         .chain(raw_judged.iter().map(|(_, c)| c))
         .map(AsRef::as_ref);
-    for section in [deploy.tools.0.as_ref(), deploy.agents.0.as_ref()]
-        .into_iter()
-        .chain(declared)
-    {
+    for section in declared {
         for (path, provider_name) in section.model_provider_refs() {
             match resolved_providers.get(&provider_name) {
                 None => {
@@ -2495,10 +2420,12 @@ pub fn resolve(
     // boot, `--validate`, the management-surface config-apply rebuild and the management-surface
     // dry-run validate endpoint all pass through, so a config that boots is exactly the config that
     // validates.
-    // `validate_registry` runs through the always-present seam; a compiled-out `RawPlaneSection`
-    // answers `Ok(())`, so this is a no-op when the plane is absent.
-    if let Err(e) = deploy.tools.0.validate_registry() {
-        errors.push(e);
+    // `validate_registry` is every declared section's own whole-registry rule; a plane with none
+    // answers `Ok(())`.
+    for cfg in deploy.declared.0.values() {
+        if let Err(e) = cfg.validate_registry() {
+            errors.push(e);
+        }
     }
     // LAW 7 (BUSBAR-1.6.0.md: "Core loads a plugin **iff** its configuration section is present"):
     // the plane sections this config writes, carried on `RootCfg`. A section whose owning plane is
@@ -2506,14 +2433,7 @@ pub fn resolve(
     // so an undeclared one is refused at parse as an unknown field (Option A, S11b (c) / Q67) and no
     // carrier can be present without its plane.
     let mut plane_sections = std::collections::BTreeSet::new();
-    let declared = deploy.declared.0.iter().map(|(s, c)| (*s, c.is_present()));
-    for (section, present) in [
-        (ToolsSection::SECTION, deploy.tools.0.is_present()),
-        (AgentsSection::SECTION, deploy.agents.0.is_present()),
-    ]
-    .into_iter()
-    .chain(declared)
-    {
+    for (section, present) in deploy.declared.0.iter().map(|(s, c)| (*s, c.is_present())) {
         if present {
             plane_sections.insert(section);
         }
@@ -2570,9 +2490,9 @@ pub fn resolve(
     // collected verbatim. With that plane compiled out nothing declares the block, so the pre-pass
     // never lifts it: it is refused at parse as an unknown field (Option A, S11b (c) / Q67).
     let endpoint_block = deploy.endpoint.0.as_ref();
-    // The endpoint's owning plane is looked up by its CONFIG SECTION (the `tools:` plane owns the
-    // `mcp:` door), so no plane key is named here.
-    let endpoint_section = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2];
+    // The endpoint's owning plane is the one the door block was lifted for (its declaring section,
+    // carried beside the block), so no plane and no section is named here.
+    let endpoint_section = deploy.endpoint.1;
     let lower = crate::plane::registry::plane_decl_for_config_section(endpoint_section)
         .and_then(|d| d.lower_endpoint);
     // The endpoint door belongs to the plane that owns `endpoint_section`: a present block configures it.
@@ -2585,8 +2505,7 @@ pub fn resolve(
 
     // The lowered endpoint resource, if any, keyed by its owning plane's config SECTION — the
     // neutral, section-keyed shape `RootCfg` carries in place of a per-plane field (mirroring
-    // `tool_defs`/`agent_defs` beside it). The `tools:` plane owns the endpoint door, so its section
-    // key is the map key; a build compiled without that plane produced no resource and inserts none.
+    // `declared_sections` beside it). The plane that owns the endpoint door keys it by its section; a build compiled without that plane produced no resource and inserts none.
     let mut endpoint_resources: std::collections::HashMap<_, _> = lowered_endpoint
         .map(|resource| (endpoint_section, resource))
         .into_iter()
@@ -2634,9 +2553,13 @@ pub fn resolve(
             public_url: deploy.public_url.clone(),
             endpoint_resources,
             oauth_as,
-            tool_defs: deploy.tools.0.clone_box(),
-            tool_pools: tool_pools_derived,
-            agent_pools: agent_pools_derived,
+            declared_sections: deploy
+                .declared
+                .0
+                .iter()
+                .map(|(section, cfg)| (*section, cfg.clone_box()))
+                .collect(),
+            section_pools: section_pools_derived,
             tls: deploy.tls.clone(),
             admin_listen: deploy.admin_listen.clone(),
             admin_tls: deploy.admin_tls.clone(),
@@ -2681,7 +2604,6 @@ pub fn resolve(
             export,
             identity_providers: deploy.identity_providers.clone(),
             export_defs: deploy.export.clone(),
-            agent_defs: deploy.agents.0.clone_box(),
             plane_sections,
         })
     } else {

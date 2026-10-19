@@ -4277,8 +4277,7 @@ pub(crate) mod door_boundary {
         let tools = busbar_kernel::plane::door::DoorSection::new(row.config_section, value);
         (row.build)(&BuildCtx {
             endpoint_slot: None,
-            agent_defs: &(),
-            tool_defs: &tools,
+            section: Some(&tools),
             public_url: Some(PUBLIC_URL),
             prior: None,
             providers: None,

@@ -641,15 +641,12 @@ pub struct BuildCtx<'a> {
     /// that plane's `build` hands its plugin over the ABI. `None` for a plane whose section carries
     /// no resource.
     pub endpoint_slot: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
-    // The A2A registry the A2A plane's `build` lowers, TYPE-ERASED so this seam names no `crate::a2a`
-    // config type — reached through `RootCfg::agent_defs`'s neutral `PlaneCfg::as_any` (`AgentsCfg`
-    // with the plane compiled in, the raw capture without it). The A2A `build` closure downcasts it
-    // back inside its own module; no other plane reads it, and it is built and consumed synchronously
-    // here, so the erased `&dyn Any` needs no `Send + Sync` bound.
-    pub agent_defs: &'a dyn std::any::Any,
-    /// The `tools:` registry section, erased as `agent_defs` is (`RootCfg::tool_defs`): a door
-    /// plane whose verb it is reads the section its door judged off it.
-    pub tool_defs: &'a dyn std::any::Any,
+    /// THIS plane's own parsed DECLARED section (`RootCfg::declared_section` at the plane's
+    /// `config_section`), TYPE-ERASED through the neutral `PlaneCfg::as_any` so this seam names no
+    /// plane config type: a door plane reads the section its door judged off it. `None` when the
+    /// configuration carries no such section. Built and consumed synchronously here, so the erased
+    /// `&dyn Any` needs no `Send + Sync` bound.
+    pub section: Option<&'a dyn std::any::Any>,
     pub public_url: Option<&'a str>,
     /// THE PRIOR GENERATION'S SLOT MAP, or `None` on a fresh boot — the same neutral
     /// [`crate::plane_host::PlaneSlots`] seam `build_runtime` receives, so a plane's `build` can CARRY

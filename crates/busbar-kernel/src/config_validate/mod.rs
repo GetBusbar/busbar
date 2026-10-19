@@ -1105,17 +1105,17 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // the neutral SECTION-KEYED accessor and name the plane from its REGISTERED decl (`subject_noun`),
     // so this neutral rule carries no plane token: the concrete noun is registry-supplied at
     // runtime, never a literal here.
-    let endpoint_section = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2];
-    if cfg.endpoint_resource(endpoint_section).is_some()
-        && cfg.auth.as_ref().is_none_or(|a| a.chain.is_empty())
+    let open_door = cfg.auth.as_ref().is_none_or(|a| a.chain.is_empty());
+    for decl in crate::plane::registry::plane_decls()
+        .iter()
+        .filter(|d| d.lower_endpoint.is_some())
+        .filter(|d| open_door && cfg.endpoint_resource(d.config_section).is_some())
     {
         // The config KEY and the noun are BOTH registry-supplied at runtime (`PlaneDecl.key` /
         // `.subject_noun`) — the endpoint plane's own vocabulary — so this neutral rule carries no
         // plane token literal while the error still names the exact `<key>:` block and `auth.chain`
-        // the operator must fix.
-        let decl = crate::plane::registry::plane_decl_for_config_section(endpoint_section);
-        let key = decl.map(|d| d.key).unwrap_or("endpoint");
-        let noun = decl.map(|d| d.subject_noun).unwrap_or("endpoint");
+        // the operator must fix. The endpoint plane is whichever registered plane lowers a door.
+        let (key, noun) = (decl.key, decl.subject_noun);
         errors.push(format!(
             "`{key}:` is configured but auth.chain is empty, which serves the {noun} endpoint to \
              ANONYMOUS callers — and a request that carries no key is never narrowed by one, so it \
@@ -1721,7 +1721,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     //
     // [`PlaneCfg::ledger_lanes`]: crate::plane::config::PlaneCfg::ledger_lanes
     if let Some(card) = &cfg.rate_card {
-        for defs in [cfg.tool_defs.as_ref(), cfg.agent_defs.as_ref()] {
+        for defs in cfg.declared_sections.values() {
             let lanes = defs.ledger_lanes();
             let missing: Vec<&str> = (lanes.iter().map(String::as_str))
                 .filter(|l| {
@@ -1974,25 +1974,32 @@ fn reserved_legacy_admin_name(name: &str) -> bool {
 pub fn validate_unified_pool_names(cfg: &RootCfg, errors: &mut Vec<String>) {
     use std::collections::BTreeSet;
     let models: BTreeSet<&str> = cfg.models.keys().map(|s| s.as_str()).collect();
-    // The plane registry nouns read through their always-present type-erased seam. With the owning
-    // plane compiled out the seam holds a `RawPlaneSection`, whose `def_names` is empty (a present
-    // section is refused at resolve), so no name resolves there — the same answer the per-plane
-    // feature gate gave, without naming a plane.
-    let tool_names: BTreeSet<&str> = cfg.tool_defs.def_names().into_iter().collect();
-    let agent_names: BTreeSet<&str> = cfg.agent_defs.def_names().into_iter().collect();
+    // Every named-map plane's registration names, keyed by its section, read through the declared
+    // sections: a plane under any section name joins with nothing written here (#49).
+    let named: Vec<(&str, BTreeSet<&str>)> = crate::plane::config::named_sections()
+        .into_iter()
+        .map(|section| {
+            let names = cfg
+                .declared_section(section)
+                .map(|c| c.def_names().into_iter().collect())
+                .unwrap_or_default();
+            (section, names)
+        })
+        .collect();
 
     // (1) No name may be defined in two nouns — the kind of a bare member must be decidable by name.
-    for (a, b, name_a, name_b) in [
-        (&models, &tool_names, "models", "tools"),
-        (&models, &agent_names, "models", "agents"),
-        (&tool_names, &agent_names, "tools", "agents"),
-    ] {
-        for dup in a.intersection(b) {
-            errors.push(format!(
-                "`{dup}` is defined in both the top-level `{name_a}:` and `{name_b}:` maps. Pool \
-                 member names are resolved by name alone (a pool's kind is inferred from its \
-                 members), so a name may live in at most ONE noun. Rename one of them."
-            ));
+    let nouns: Vec<(&str, &BTreeSet<&str>)> = std::iter::once(("models", &models))
+        .chain(named.iter().map(|(s, n)| (*s, n)))
+        .collect();
+    for (i, (name_a, a)) in nouns.iter().enumerate() {
+        for (name_b, b) in &nouns[i + 1..] {
+            for dup in a.intersection(b) {
+                errors.push(format!(
+                    "`{dup}` is defined in both the top-level `{name_a}:` and `{name_b}:` maps. \
+                     Pool member names are resolved by name alone (a pool's kind is inferred from \
+                     its members), so a name may live in at most ONE noun. Rename one of them."
+                ));
+            }
         }
     }
 
@@ -2002,10 +2009,9 @@ pub fn validate_unified_pool_names(cfg: &RootCfg, errors: &mut Vec<String>) {
     for pool_name in cfg
         .pools
         .keys()
-        .chain(cfg.tool_pools.keys())
-        .chain(cfg.agent_pools.keys())
+        .chain(cfg.section_pools.values().flat_map(|p| p.keys()))
     {
-        for (set, noun) in [(&tool_names, "tools"), (&agent_names, "agents")] {
+        for (noun, set) in &named {
             if set.contains(pool_name.as_str()) {
                 errors.push(format!(
                     "pool name '{pool_name}' conflicts with a `{noun}:` registration of the same \

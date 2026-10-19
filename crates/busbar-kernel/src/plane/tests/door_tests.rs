@@ -13,7 +13,7 @@ use busbar_contract::plane_calls::PlaneRegistration;
 use super::*;
 
 /// A 1.5.3 named-definition section, read off the frozen list (no literal here).
-const NAMED: &str = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3];
+const NAMED: &str = "agents";
 
 /// A registration as a door states one: a named-definition section `fleet`, a pin and a cadence,
 /// and a `validate` that refuses an entry without `url` in its own value-rule words and anything
@@ -390,8 +390,7 @@ fn a_doors_owned_section_is_carried_and_handed_to_its_facing() {
     );
     let ctx = BuildCtx {
         endpoint_slot: Some(lowered),
-        agent_defs: &(),
-        tool_defs: &section,
+        section: Some(&section),
         public_url: None,
         prior: None,
         providers: None,
@@ -428,8 +427,7 @@ fn lane_less_healthz(
         );
         let slot = (decl.build)(&BuildCtx {
             endpoint_slot: None,
-            agent_defs: &(),
-            tool_defs: &section,
+            section: Some(&section),
             public_url: None,
             prior: None,
             providers: None,
@@ -609,8 +607,7 @@ fn a_doors_probe_is_handed_its_referenced_providers_dialect_facts() {
     );
     let ctx = |providers| BuildCtx {
         endpoint_slot: None,
-        agent_defs: &(),
-        tool_defs: &section,
+        section: Some(&section),
         public_url: None,
         prior: None,
         providers,

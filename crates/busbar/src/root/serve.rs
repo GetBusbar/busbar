@@ -1183,42 +1183,32 @@ pub fn with_pools(
 }
 
 /// The unified pools each door section carries at its reserved `pools` key, by section key.
-pub type DoorPoolsByKey = [(
+pub type DoorPoolsByKey = Vec<(
     &'static str,
     BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
-); 2];
+)>;
 
-/// The door sections' unified pools as the generation `tools`/`agents` resolved them, by section
-/// key: the one table boot ([`with_pools`]) and a config apply ([`applied_section`]) both inject
-/// from, so a door plane's section is built the same way on both paths (audit root-R1 leftover C1).
+/// The door sections' unified pools as the generation resolved them, by section key (each
+/// named-map plane's own): the one table boot ([`with_pools`]) and a config apply
+/// ([`applied_section`]) both inject from, so a door plane's section is built the same way on both
+/// paths (audit root-R1 leftover C1). No section is named here.
 #[must_use]
 pub fn door_pools(
-    tools: &BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
-    agents: &BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+    by_section: &BTreeMap<
+        &'static str,
+        BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+    >,
 ) -> DoorPoolsByKey {
-    [
-        (
-            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
-            tools.clone(),
-        ),
-        (
-            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
-            agents.clone(),
-        ),
-    ]
+    by_section
+        .iter()
+        .map(|(section, pools)| (*section, pools.clone()))
+        .collect()
 }
 
 /// [`door_pools`] read off an installed generation: the pools a config apply resolved.
 #[must_use]
 pub fn installed_door_pools(app: &busbar_kernel::state::App) -> DoorPoolsByKey {
-    let none = BTreeMap::new();
-    let tools = app
-        .section_pools(busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2])
-        .unwrap_or(&none);
-    let agents = app
-        .section_pools(busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3])
-        .unwrap_or(&none);
-    door_pools(tools, agents)
+    door_pools(&app.section_pools)
 }
 
 /// The section a config apply refreshes the door plane serving `key` onto: the section as

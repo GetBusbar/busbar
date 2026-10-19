@@ -665,12 +665,6 @@ impl busbar_kernel::plane_host::RegistryHost for EngineHostImpl {
         // when no card-signing key is held (or, in a build without `plane-a2a`, the slot is unwired).
         card_sign_over(&self.app, signing_input)
     }
-
-    fn plane_defs(&self) -> Arc<dyn std::any::Any + Send + Sync> {
-        // Pure snapshot read: the type-erased per-plane config the owning plane downcasts, cloned so it
-        // outlives the call. Already an `Arc<dyn Any + Send + Sync>` on `App`, so the clone is the whole seam.
-        self.app.agent_defs.clone()
-    }
 }
 
 impl busbar_kernel::plane_host::HookConfigHost for EngineHostImpl {
@@ -2431,12 +2425,6 @@ pub trait RegistryHost: Send + Sync {
     /// plane. Mints its transient HostCtx internally over a fresh per-call DispatchScope, drives the
     /// slot synchronously, returns owned bytes — no HostCtx crosses an `.await`.
     fn subkey_sign(&self, signing_input: &[u8]) -> Option<[u8; 64]>;
-
-    /// The deployment's type-erased plane definitions (`Arc<dyn Any + Send + Sync>` holding the
-    /// per-plane config object the owning plane downcasts), off the BOUND snapshot — the
-    /// `App::agent_defs` field that is NOT a `plane_slots` entry. Owned (an `Arc` clone) so it
-    /// outlives the call; a pure snapshot read, no `HostCtx` (mirrors [`secret_resolver`](Self::secret_resolver)).
-    fn plane_defs(&self) -> Arc<dyn std::any::Any + Send + Sync>;
 }
 
 /// The HOOK/CONFIG-FACADE slice (App-retype WEDGE 2d): the residual `busbar-llm` request-path reads off
@@ -2885,7 +2873,7 @@ const _: () = {
 /// the callback fn-pointer signature naming a core type. Core `impl`s it for `App` as a thin delegate
 /// to the inherent `App::plane_slot`; an EXTRACTED plane reaches only [`Self::plane_slot`] and
 /// stays neutral. [`Self::as_any`] is the recovery hatch an in-core plane twin uses to downcast back
-/// to its concrete snapshot for a field that does not live in `plane_slots` (`agent_defs`); an
+/// to its concrete snapshot for a field that does not live in `plane_slots`; an
 /// extracted plane never calls it.
 pub trait PlaneSlots {
     /// The plane's type-erased runtime object for THIS generation, keyed by the plane's decl key —

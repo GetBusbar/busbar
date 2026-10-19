@@ -16,8 +16,8 @@
 //! What the row DOES:
 //! * its section parses through the door's own `validate` and is carried as written
 //!   ([`DoorSection`]), so a section the door refuses fails `--validate` and boot in the door's words;
-//! * when the section is one of the 1.5.3 named-definition maps (the kernel's frozen
-//!   `NAMED_MAP_SECTIONS`: a registration per key beside the reserved section words), the admin
+//! * when the section is a named-definition map (the door's Statement states `SECTION_NAMED_MAP` on
+//!   its declaring section: a registration per key beside the reserved section words), the admin
 //!   named-map CRUD (`/<section>/{name}`) is generated from the row: the reads
 //!   ([`PlaneDecl::named_def_list`], `named_def_get`, `registry_contains`) project each registration
 //!   onto the shared view (its trust keys read by the kernel, which owns them), and a write is
@@ -95,9 +95,11 @@ pub fn fold(reg: PlaneRegistration) -> Result<&'static PlaneDecl, String> {
         ));
     }
     let declaration = declaration_of(&reg);
-    // The named-map surface is the 1.5.3 named-definition maps' (the frozen section list), so a
-    // door plane whose verb is one of them answers its CRUD and any other answers none.
-    let named = busbar_kernel::plane::config::NAMED_MAP_SECTIONS.contains(&reg.section);
+    // The named-map surface is the door's to state (`SECTION_NAMED_MAP` on its declaring section):
+    // a door plane that states it answers the named-definition CRUD and any other answers none. The
+    // repin bridge covers only a door that states the bit on NO section (see its doc).
+    let named =
+        reg.named_map || crate::plane::config::NAMED_MAP_REPIN_BRIDGE.contains(&reg.section);
     let decl = PlaneDecl::assemble(
         declaration,
         HOOK_TABLE[index].clone_hooks(named, !reg.owns.is_empty(), !reg.admin_routes.is_empty()),
@@ -512,10 +514,10 @@ fn build<const I: usize>(
 ) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
     let d = door(I)?;
     let mine = |s: &DoorSection| s.section == d.reg.section && s.is_present();
-    let section = match [ctx.agent_defs, ctx.tool_defs]
-        .into_iter()
-        .filter_map(|defs| defs.downcast_ref::<DoorSection>())
-        .find(|s| mine(s))
+    let section = match ctx
+        .section
+        .and_then(|defs| defs.downcast_ref::<DoorSection>())
+        .filter(|s| mine(s))
     {
         Some(s) => s.clone(),
         // ITS ENDPOINT BLOCK ALONE CONFIGURES IT (LAW 7): an owned block carried as written, with no

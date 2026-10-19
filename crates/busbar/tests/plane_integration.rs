@@ -95,8 +95,9 @@ fn built_planes(cfg: &RootCfg) -> Vec<(&'static PlaneDecl, Arc<dyn std::any::Any
         .filter_map(|decl| {
             let ctx = BuildCtx {
                 endpoint_slot: cfg.endpoint_resources.get(decl.config_section).cloned(),
-                agent_defs: cfg.agent_defs.as_any(),
-                tool_defs: cfg.tool_defs.as_any(),
+                section: cfg
+                    .declared_section(decl.config_section)
+                    .map(busbar_kernel::plane::config::PlaneCfg::as_any),
                 public_url: cfg.public_url.as_deref(),
                 prior: None,
                 providers: None,
@@ -327,8 +328,8 @@ fn plane_slot_is_none_when_the_plane_is_not_configured() {
         "fixture control: no endpoint door configured"
     );
     assert!(
-        cfg.agent_defs.def_names().is_empty(),
-        "fixture control: no agents: entries"
+        cfg.declared_sections.is_empty(),
+        "fixture control: no plane section entries"
     );
     assert!(
         cfg.plane_sections.is_empty(),

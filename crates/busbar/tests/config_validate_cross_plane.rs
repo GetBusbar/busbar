@@ -3,7 +3,7 @@
 
 //! CROSS-PLANE `config_validate::validate_unified_pool_names` AGREEMENT TESTS, relocated here from
 //! `src/config_validate/tests/tests.rs`: each hands core's own validator a REAL `tools:` registry
-//! (`RootCfg::tool_defs`, `Box<dyn PlaneCfg>`) lifted by whichever test-linked plane declares that
+//! (`RootCfg::declared_sections`, `Box<dyn PlaneCfg>`) lifted by whichever test-linked plane declares that
 //! section (`tests/linked/mod.rs`), which only type-checks with ONE `busbar_kernel` in the graph —
 //! see `plane_integration.rs`'s header. This file names no plane crate and no plane type.
 //!
@@ -27,10 +27,8 @@ fn make_root_cfg(
     pools: HashMap<String, config::PoolCfg>,
 ) -> RootCfg {
     config::RootCfg {
-        tool_defs: busbar_kernel::plane::config::ToolsSection::default().0,
-        agent_defs: busbar_kernel::plane::config::AgentsSection::default().0,
-        tool_pools: Default::default(),
-        agent_pools: Default::default(),
+        declared_sections: Default::default(),
+        section_pools: Default::default(),
         plane_sections: Default::default(),
         listen: config::DEFAULT_LISTEN_ADDR.into(),
         endpoint_resources: Default::default(),
@@ -93,8 +91,9 @@ fn tools_with(id: &str) -> Box<dyn busbar_kernel::plane::config::PlaneCfg> {
     );
     config::deploy_from_yaml_str(&text)
         .unwrap_or_else(|e| panic!("a minimal server parses: {e}\n{text}"))
-        .tools
-        .0
+        .plane_section("tools")
+        .expect("the declaring plane parses its section")
+        .clone_box()
 }
 
 /// A name defined in TWO nouns makes a bare member ambiguous — the router could not tell which plane
@@ -104,7 +103,7 @@ fn a_name_defined_in_two_nouns_is_refused() {
     let mut models = HashMap::new();
     models.insert("shared".to_string(), make_model_unbounded("prov"));
     let mut cfg = make_root_cfg(HashMap::new(), models, HashMap::new());
-    cfg.tool_defs = tools_with("shared");
+    cfg.declared_sections.insert("tools", tools_with("shared"));
 
     let mut errors = Vec::new();
     validate_unified_pool_names(&cfg, &mut errors);
@@ -122,8 +121,8 @@ fn a_name_defined_in_two_nouns_is_refused() {
 #[test]
 fn a_pool_named_like_a_tools_registration_is_refused() {
     let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
-    cfg.tool_defs = tools_with("search");
-    cfg.tool_pools.insert(
+    cfg.declared_sections.insert("tools", tools_with("search"));
+    cfg.section_pools.entry("tools").or_default().insert(
         "search".to_string(),
         CandidatePoolCfg {
             members: vec!["search-eu".into(), "search-us".into()],
@@ -147,7 +146,8 @@ fn distinct_names_across_nouns_and_pools_pass() {
     let mut models = HashMap::new();
     models.insert("gpt".to_string(), make_model_unbounded("prov"));
     let mut cfg = make_root_cfg(HashMap::new(), models, HashMap::new());
-    cfg.tool_defs = tools_with("fs-server");
+    cfg.declared_sections
+        .insert("tools", tools_with("fs-server"));
 
     let mut errors = Vec::new();
     validate_unified_pool_names(&cfg, &mut errors);

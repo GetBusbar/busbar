@@ -581,8 +581,9 @@ fn built_slots(cfg: &RootCfg) -> BTreeMap<&'static str, Arc<dyn Any + Send + Syn
         .filter_map(|decl| {
             let ctx = BuildCtx {
                 endpoint_slot: cfg.endpoint_resources.get(decl.config_section).cloned(),
-                agent_defs: cfg.agent_defs.as_any(),
-                tool_defs: cfg.tool_defs.as_any(),
+                section: cfg
+                    .declared_section(decl.config_section)
+                    .map(busbar_kernel::plane::config::PlaneCfg::as_any),
                 public_url: cfg.public_url.as_deref(),
                 prior: None,
                 providers: None,
