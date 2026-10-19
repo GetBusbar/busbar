@@ -423,3 +423,7 @@ mod settings_resolution_tests;
 #[cfg(test)]
 #[path = "tests/linked_secret_hardening_tests.rs"]
 mod linked_secret_hardening_tests;
+
+#[cfg(test)]
+#[path = "tests/sugar_tests.rs"]
+mod sugar_tests;

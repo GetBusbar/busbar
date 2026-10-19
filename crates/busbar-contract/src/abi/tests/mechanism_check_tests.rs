@@ -191,8 +191,9 @@ use crate::abi::host::conn::connector::{Need, DIRECTION_INBOUND, KEEP_NAMED};
 use crate::abi::mechanism::call::Blob;
 use crate::abi::mechanism::door::{
     MarkWord, Rewrite, Section, MARK_BLOCKS, MARK_CATALOG, MARK_EPHEMERAL, MARK_ONE_INSTANCE,
-    MARK_WORD_CARRIER, MARK_WORD_HOOK, REWRITE_ALIAS, REWRITE_KEY, REWRITE_SUGAR, SECTION_CONSUMED,
-    SECTION_DECLARING,
+    MARK_WORD_CARRIER, MARK_WORD_HOOK, REWRITE_ALIAS, REWRITE_KEY, REWRITE_SUGAR,
+    REWRITE_SUGAR_NAMES, REWRITE_SUGAR_ROLE, REWRITE_SUGAR_SHOWN, SECTION_CONSUMED,
+    SECTION_DECLARING, SUGAR_ROLE_FILL,
 };
 use crate::abi::sdk::door::{abi_str, statement};
 
@@ -267,15 +268,18 @@ fn a_word_mark_has_a_known_class_and_a_word() {
 }
 
 #[test]
-fn a_rewrite_moves_a_key_to_a_path_and_an_alias_or_sugar_names_nothing_else() {
+fn a_rewrite_moves_a_key_to_a_path_and_an_alias_names_nothing_else() {
     let ok = [
         rewrite(REWRITE_ALIAS, "tokens", NONE),
-        rewrite(REWRITE_SUGAR, "sugar", NONE),
+        rewrite(REWRITE_SUGAR, "sugar", abi_str("ref")),
+        rewrite(REWRITE_SUGAR_SHOWN, "sugar", abi_str("REF")),
+        rewrite(REWRITE_SUGAR_NAMES, "sugar", abi_str("the thing it names")),
+        rewrite(REWRITE_SUGAR_ROLE, "sugar", abi_str(SUGAR_ROLE_FILL)),
         rewrite(REWRITE_KEY, "key_ref", abi_str("key.ref")),
     ];
     assert_eq!(check_rewrites(&ok), Ok(()));
     assert_eq!(
-        check_rewrites(&[rewrite(4, "x", NONE)]),
+        check_rewrites(&[rewrite(7, "x", abi_str("y"))]),
         Err(fault(Rule::UnknownCode, "rewrite.class"))
     );
     assert_eq!(
@@ -290,6 +294,25 @@ fn a_rewrite_moves_a_key_to_a_path_and_an_alias_or_sugar_names_nothing_else() {
         check_rewrites(&[rewrite(REWRITE_ALIAS, "tokens", abi_str("x"))]),
         Err(fault(Rule::Contradiction, "rewrite.to"))
     );
+}
+
+/// RED (owner law 2026-09-27: the secret sugar is a shorthand the plugin declares): a sugar names
+/// the settings key its value lands under, so a Statement that declares a reference key without one
+/// is refused, as is any sugar fact that names nothing.
+#[test]
+fn a_sugar_names_the_settings_key_its_value_lands_under() {
+    for class in [
+        REWRITE_SUGAR,
+        REWRITE_SUGAR_SHOWN,
+        REWRITE_SUGAR_NAMES,
+        REWRITE_SUGAR_ROLE,
+    ] {
+        assert_eq!(
+            check_rewrites(&[rewrite(class, "sugar", NONE)]),
+            Err(fault(Rule::Missing, "rewrite.to")),
+            "class {class}"
+        );
+    }
 }
 
 #[test]
