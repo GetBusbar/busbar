@@ -3774,7 +3774,7 @@ fn the_first_boot_adopts_the_host_names_registry_id_and_the_chain_keeps_reading(
 ///
 /// RED before the fix: both took the host name's registry id.
 #[test]
-fn a_data_dir_node_that_adopted_the_host_id_holds_its_lease_against_a_nameless_dir_peer() {
+fn a_data_dir_node_that_adopted_the_host_id_holds_its_lease_against_a_no_data_dir_peer() {
     use store_identity::NODE_SCHEMA;
     let slots = crate::root::store_double::RecordSlots::new();
     let dir = ScratchDir::new("node-id-mixed");
