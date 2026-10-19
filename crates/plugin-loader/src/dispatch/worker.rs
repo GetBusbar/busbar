@@ -858,6 +858,10 @@ impl WakeRoute for Pool {
         })
     }
 
+    fn service_store(&self) -> Option<Arc<super::services::ServiceStore>> {
+        Some(Arc::clone(&self.env.services))
+    }
+
     fn io(&self) -> Option<Arc<dyn busbar_contract::io_host::IoHost>> {
         self.env.io.get().cloned()
     }

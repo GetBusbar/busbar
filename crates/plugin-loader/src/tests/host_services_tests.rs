@@ -2855,3 +2855,61 @@ fn an_outbound_answer_short_once_is_read_again_on_the_same_handle() {
     assert_eq!(o.items, 1);
     assert_eq!(asked(owner(&d)), 1, "the auth was asked once");
 }
+
+/// A TRANSPORT'S ROUTE: it serves no kernel host service (no provider), only the auth handle from
+/// its service store.
+struct TransportRoute {
+    store: Arc<ServiceStore>,
+}
+
+impl WakeRoute for TransportRoute {
+    fn wake(&self, _: Ticket, _: Option<&'static InstanceWake>) {}
+
+    fn service_store(&self) -> Option<Arc<ServiceStore>> {
+        Some(Arc::clone(&self.store))
+    }
+}
+
+/// RED (the transport's route, THE DESIGN l.291: a transport reaches `io.*`, the clock and the host
+/// auth handle): an instance on a route that serves NO kernel host service has its outbound
+/// `auth.call` served all the same, from the route's store; any other service there is refused as
+/// before. Before, the slot read the route's whole services and answered every framer's call
+/// "no host services are bound".
+#[test]
+fn a_transports_outbound_auth_call_is_served_on_a_route_with_no_other_service() {
+    let _ = outbound();
+    let route: Arc<dyn WakeRoute> = Arc::new(TransportRoute {
+        store: Arc::default(),
+    });
+    let wake: &'static InstanceWake = Box::leak(Box::default());
+    assert!(wake.route.set(Arc::downgrade(&route)).is_ok());
+    let ctx = crate::dispatch::handle::mint(wake).expect("the host mints a handle");
+    let owner = crate::dispatch::handle::instance_id(ctx).0;
+    let r = mint_auth_ref(owner, generation(), OUTBOUND).expect("minted");
+    let line = content_type();
+    let (mut buf, mut spans) = (vec![0_u8; 64], vec![no_span(); 4]);
+    let mut slot = answer_slot();
+    let i = outbound_in(r, 0, &mut slot, &mut buf, &mut spans, &line);
+    let (ret, o) = call_auth(ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Ready, "{}", error(&o));
+    assert_eq!(slot.unit, OUT_UNIT);
+    // The route still serves no other service.
+    let mut reading = ClockReading {
+        size: 0,
+        _reserved: 0,
+        wall_ns: 0,
+        mono_ns: 0,
+    };
+    let mut out = blank();
+    let i = svc::ClockNowIn {
+        head: head(op::CLOCK_NOW, Ticket::NONE, 0, size_of::<svc::ClockNowIn>()),
+        reading: &mut reading,
+    };
+    let ret = HOST_SLOTS.clock_now.unwrap()(ctx, std::ptr::from_ref(&i).cast(), &mut out);
+    assert_ne!(
+        ret.outcome(),
+        Outcome::Ready,
+        "no kernel service on a transport's route"
+    );
+    drop(route);
+}

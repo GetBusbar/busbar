@@ -445,6 +445,15 @@ pub(crate) fn new_op(ctx: HostCtx, ticket: Ticket) {
     }
 }
 
+/// The service store an instance's context routes to, and its waking: the store whether or not the
+/// route serves the kernel's services.
+fn stored(ctx: HostCtx) -> Option<(Arc<ServiceStore>, Waking)> {
+    let wake = super::handle::resolve(ctx)?;
+    let waking = Waking::of(wake)?;
+    let store = waking.route.upgrade()?.service_store()?;
+    Some((store, waking))
+}
+
 /// The caller an instance's context names; `None` before bind stated one.
 fn caller(ctx: HostCtx) -> Option<Caller> {
     super::handle::resolve(ctx)?.caller.get().cloned()
@@ -1299,13 +1308,17 @@ fn refused_unit(u: &svc::UnitRef) -> Option<Answered> {
 /// (an inbound line's) is held to the unit and the contract check, then answered
 /// [`AUTH_HANDLE_NOT_SERVED`]: the handle's inbound side is another lane's.
 extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    slot(
-        ctx,
+    // The auth handle answers from the route's service store alone: a transport's route serves
+    // no other host service, and its `auth.call` is served all the same.
+    framed(
         input,
         out,
         op::AUTH_CALL,
         size_of::<ServiceHead>(),
-        |served, route, head| {
+        |head| {
+            let Some((store, route)) = stored(ctx) else {
+                return Answered::bare(Outcome::Refused, "no host services are bound");
+            };
             if svc::check_head_exact(&head, op::AUTH_CALL, size_of::<svc::AuthCallIn>()).is_err() {
                 return Answered::bare(Outcome::Refused, NOT_EXACT);
             }
@@ -1351,7 +1364,7 @@ extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             };
             // SAFETY: `put` writes only the caller's own buffers, within their capacities.
             unsafe {
-                serve_with(&served.store, &route, &head, put, |completer| {
+                serve_with(&store, &route, &head, put, |completer| {
                     let later = completer.map(|c| -> super::auth_serve::Answer {
                         Box::new(move |a| c.complete(super::auth_serve::stored(&a)))
                     });

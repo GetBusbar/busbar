@@ -290,3 +290,7 @@ pub fn arm(connector: &busbar_core_connector::Connector) {
 #[cfg(test)]
 #[path = "tests/outbound_auth.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/outbound_auth_wire.rs"]
+mod wire_tests;

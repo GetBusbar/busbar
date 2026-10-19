@@ -48,6 +48,13 @@ pub(crate) trait WakeRoute: Send + Sync {
         None
     }
 
+    /// The store this route's instances' ticketed service results are held in, whether or not
+    /// the route serves the kernel's services: the host auth handle (`auth.call`) answers from it
+    /// on a route that serves no other (a transport's). `None` = none.
+    fn service_store(&self) -> Option<std::sync::Arc<super::services::ServiceStore>> {
+        self.services().map(|s| s.store)
+    }
+
     /// The host's I/O this route's instances are served from; `None` = none.
     fn io(&self) -> Option<std::sync::Arc<dyn busbar_contract::io_host::IoHost>> {
         None
