@@ -215,17 +215,10 @@ pub mod diagnostics;
 // so every existing `crate::durable::*` call site in this binary resolves unchanged.
 pub use busbar_plugin_loader::durable;
 // The host-owned outbound surface: the neutral SSRF-pinned client (re-exported wholesale from
-// busbar-substrate) plus the host-mediated `seam` adapter that drives egress through the
-// `plane_host` FFI vtable, gated behind the neutral `egress-seam` capability feature rather than
-// any one plane. Always compiled, because the host owns every outbound byte
-// whether or not a plane needing the seam is built. See the module header.
+// busbar-substrate). See the module header.
 /// A lane's credential, bound by the auth plugin that serves its style (P2 D1, the auth split).
 pub mod bound_credential;
 pub mod egress;
-/// THE EGRESS GRANT GATE: may busbar spend its own outbound credential on a subject for this
-/// caller? Authorization, so it lives in `busbar-kernel-scope` (Part 2 #36); re-exported here for
-/// the planes that already reach the kernel.
-pub use busbar_kernel_scope::egress as egress_grant;
 pub mod endpoints;
 pub mod export;
 pub mod failover;
@@ -341,7 +334,7 @@ pub mod timing;
 pub mod test_support;
 pub mod tls;
 pub mod topology;
-/// The wire-selection axis (`Transport`, `UpstreamWireKind`), the contract's.
+/// The channel axis (`Transport`), the contract's.
 pub use busbar_contract::transport::transport;
 
 #[cfg(test)]

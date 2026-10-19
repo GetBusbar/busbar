@@ -904,13 +904,20 @@ slot!(
     }
 );
 slot!(
-    /// `release`: the host is done with a lease.
+    /// `release`: the host is done with a lease. READY when the door held it; REFUSED when it did
+    /// not (never handed out, or already released): a host bug, named rather than accepted (THE
+    /// DESIGN, the one kind-neutral SDK lifecycle: "releasing an unknown lease is REFUSED").
     Release(ReleaseIn, OutHead) |s, i, o, cx| {
-        s.leases
+        let held = s
+            .leases
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(&i.lease);
-        Outcome::Ready
+        if held.is_some() {
+            Outcome::Ready
+        } else {
+            Outcome::Refused
+        }
     }
 );
 slot!(
