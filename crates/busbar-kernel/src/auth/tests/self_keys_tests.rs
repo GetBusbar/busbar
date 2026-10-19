@@ -749,6 +749,8 @@ fn row(gov: &GovState, id: &str) -> crate::governance::VirtualKey {
 #[tokio::test]
 async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
     let gov = gov();
+    // The signable rule, held for this test (`SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE`).
+    gov.hold_self_mint_state();
     let keys = keys_via(&gov, "corp");
     let alice = principal("oidc:alice", &["eng"]);
     let ttl = Duration::from_secs(3600);
@@ -788,6 +790,55 @@ async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
     assert!(
         self_rows(&gov, "oidc:alice").is_empty(),
         "no fresh key was minted beside the disabled one"
+    );
+}
+
+/// 1.5.5 PARITY CELL (Q128 u31 (b)): with the hold unsigned, a login after an admin DISABLE mints as
+/// 1.5.5 minted (v1.5.5 crates/busbar/src/governance/state.rs:431 skips only tombstoned rows, :560
+/// mints): the subject's derived row is written back enabled at its id, the login answers a key,
+/// never 403, and a refresh mints too. RED against the hold (K3 #17), which refuses both 403.
+#[tokio::test]
+async fn a_login_after_an_admin_disable_mints_as_1_5_5_minted() {
+    let gov = gov();
+    let keys = keys_via(&gov, "corp");
+    let alice = principal("oidc:alice", &["eng"]);
+    let ttl = Duration::from_secs(3600);
+
+    let t0 = issue_key(&keys, &alice, ttl, false)
+        .await
+        .expect("first login issues");
+    gov.update_key(&t0.key_id, Some(false), None)
+        .unwrap()
+        .expect("the key exists");
+
+    let again = issue_key(&keys, &alice, ttl, false)
+        .await
+        .expect("1.5.5 minted a key on the next login");
+    assert_eq!(again.key_id, t0.key_id, "1.5.5 wrote the derived row back");
+    assert!(row(&gov, &t0.key_id).enabled, "and wrote it enabled");
+    issue_key(&keys, &alice, ttl, true)
+        .await
+        .expect("1.5.5 minted on a refresh too");
+}
+
+/// 1.5.5 PARITY CELL (Q128 u31 (b)): with the hold unsigned, a second identity provider asserting the
+/// same subject is handed the subject's one self-serve key, as 1.5.5 handed it (1.5.5 keyed the
+/// binding by subject alone and recorded no provider), never 403. RED against the hold (K3 #21).
+#[tokio::test]
+async fn a_second_provider_asserting_the_same_subject_is_handed_its_key_as_1_5_5_did() {
+    let gov = gov();
+    let alice = principal("oidc:alice", &["eng"]);
+    let ttl = Duration::from_secs(3600);
+
+    let corp = issue_key(&keys_via(&gov, "corp"), &alice, ttl, false)
+        .await
+        .expect("corp issues");
+    let partner = issue_key(&keys_via(&gov, "partner"), &alice, ttl, false)
+        .await
+        .expect("1.5.5 minted for the second provider");
+    assert_eq!(
+        partner.key_id, corp.key_id,
+        "the subject's one key, as in 1.5.5"
     );
 }
 
@@ -832,6 +883,8 @@ async fn a_self_serve_key_carries_empty_labels_as_1_5_5_wrote_it() {
 #[tokio::test]
 async fn a_second_provider_asserting_the_same_subject_is_refused() {
     let gov = gov();
+    // The signable rule, held for this test (`SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE`).
+    gov.hold_self_mint_state();
     let corp = keys_via(&gov, "corp");
     let partner = keys_via(&gov, "partner");
     let alice = principal("oidc:alice", &["eng"]);
@@ -879,6 +932,8 @@ async fn a_second_provider_asserting_the_same_subject_is_refused() {
 #[tokio::test]
 async fn a_legacy_self_serve_binding_adopts_the_first_provider_that_logs_in() {
     let gov = gov();
+    // The signable rule, held for this test (`SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE`).
+    gov.hold_self_mint_state();
     let alice = principal("oidc:alice", &["eng"]);
     let ttl = Duration::from_secs(3600);
 

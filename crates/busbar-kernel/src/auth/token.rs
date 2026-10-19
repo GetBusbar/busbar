@@ -658,8 +658,9 @@ async fn issue_and_render(
     let issued =
         match issue_key(&keys, principal, ttl, refresh).await {
             Ok(k) => k,
-            // The subject's key is disabled, or another identity provider minted it: the same
-            // refusal page as an identity with no grant.
+            // The subject's key is disabled, or another identity provider minted it (only with the
+            // unsigned `SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE` on): the same refusal page as an
+            // identity with no grant.
             Err(ExchangeError::Unbound) => return error_page(
                 StatusCode::FORBIDDEN,
                 "No access yet",
