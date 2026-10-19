@@ -3430,7 +3430,8 @@ struct bb_hsvc_AuthRef {
 struct bb_transport_BeginIn {
     bb_mech_InHead head;
     uint32_t side;
-    uint32_t _reserved;
+    uint8_t scheme;
+    uint8_t _reserved[3];
     bb_mech_AbiStr target;
     const bb_transport_ConnFacts *facts;
     bb_transport_FramerSink sink;
@@ -5993,7 +5994,8 @@ BB_ASSERT(sizeof(bb_transport_BeginIn) == 264, "bb_transport_BeginIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_BeginIn) == 8, "bb_transport_BeginIn: alignment");
 BB_ASSERT(offsetof(bb_transport_BeginIn, head) == 0, "bb_transport_BeginIn.head: offset");
 BB_ASSERT(offsetof(bb_transport_BeginIn, side) == 88, "bb_transport_BeginIn.side: offset");
-BB_ASSERT(offsetof(bb_transport_BeginIn, _reserved) == 92, "bb_transport_BeginIn._reserved: offset");
+BB_ASSERT(offsetof(bb_transport_BeginIn, scheme) == 92, "bb_transport_BeginIn.scheme: offset");
+BB_ASSERT(offsetof(bb_transport_BeginIn, _reserved) == 93, "bb_transport_BeginIn._reserved: offset");
 BB_ASSERT(offsetof(bb_transport_BeginIn, target) == 96, "bb_transport_BeginIn.target: offset");
 BB_ASSERT(offsetof(bb_transport_BeginIn, facts) == 112, "bb_transport_BeginIn.facts: offset");
 BB_ASSERT(offsetof(bb_transport_BeginIn, sink) == 120, "bb_transport_BeginIn.sink: offset");
