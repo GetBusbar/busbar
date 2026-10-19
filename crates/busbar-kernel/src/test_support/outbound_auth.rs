@@ -37,6 +37,32 @@ pub fn double_operator_carriers() -> Vec<String> {
         .to_vec()
 }
 
+/// THE DOUBLE'S DECLARED OUTBOUND STYLES (arch-audit u29 F1: a provider's `auth:` names a style
+/// some loaded auth plugin declares): neutral words a test build's stand-in axis lists after the
+/// linked rows' own, one per endpoint the host judges, so a kernel test drives each declared-bit
+/// branch without naming any plugin's style. Test data, never shipped.
+pub const DOUBLE_STYLE_HEADER: &str = "double-header";
+/// See [`DOUBLE_STYLE_HEADER`]: a style that sends the credential to the entry's `token_url`.
+pub const DOUBLE_STYLE_TOKEN_URL: &str = "double-token-url";
+/// See [`DOUBLE_STYLE_HEADER`]: a style that takes its endpoint from the credential itself.
+pub const DOUBLE_STYLE_FROM_CREDENTIAL: &str = "double-from-credential";
+
+/// [`DOUBLE_STYLE_HEADER`] and its siblings, as the stand-in axis declares them.
+#[must_use]
+pub fn double_styles() -> Vec<busbar_contract::auth_calls::DeclaredStyle> {
+    use busbar_contract::abi::auth::{STYLE_ENDPOINT_FROM_CREDENTIAL, STYLE_ENDPOINT_TOKEN_URL};
+    [
+        (DOUBLE_STYLE_HEADER, 0),
+        (DOUBLE_STYLE_TOKEN_URL, STYLE_ENDPOINT_TOKEN_URL),
+        (DOUBLE_STYLE_FROM_CREDENTIAL, STYLE_ENDPOINT_FROM_CREDENTIAL),
+    ]
+    .map(|(name, flags)| busbar_contract::auth_calls::DeclaredStyle {
+        name: name.to_string(),
+        flags,
+    })
+    .to_vec()
+}
+
 /// The double's axis: answers no inbound module, serves every outbound style.
 #[must_use]
 pub fn axis() -> Arc<dyn AuthAxis> {
@@ -109,6 +135,13 @@ impl AuthAxis for StandIn {
         settings: &serde_json::Value,
     ) -> Result<Option<OutboundServing>, String> {
         DoubleAxis.serving(style, settings)
+    }
+
+    /// The rows' own, then the double's ([`double_styles`]), in the host's one listing order.
+    fn outbound_styles(&self) -> Vec<busbar_contract::auth_calls::DeclaredStyle> {
+        busbar_contract::auth_calls::listed_styles(
+            self.0.outbound_styles().into_iter().chain(double_styles()),
+        )
     }
 }
 

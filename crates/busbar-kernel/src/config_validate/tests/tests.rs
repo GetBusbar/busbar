@@ -168,23 +168,43 @@ fn make_member(model: &str) -> config::PoolMember {
     }
 }
 
+/// THE AUTH STYLE IS A DECLARED WORD (BUSBAR-1.6.0.md #50; arch-audit u29 F1): a provider's
+/// `auth:` parses when some loaded auth plugin declares it, and an undeclared word is refused at
+/// deserialize with serde's own unknown-variant text over the declared styles, in the host's
+/// listing order. RED: the words were a closed kernel enum, so a declared style the enum lacked was
+/// refused.
 #[test]
-fn test_provider_auth_style_is_a_closed_enum() {
-    // The per-provider auth-style override is a `ProviderAuth` enum, so an unrecognized spelling
-    // is rejected at DESERIALIZE time (no hand-check in validate()). The two accepted wire strings
-    // ('bearer' / 'api-key') are unchanged from the pre-enum `Option<String>` field.
-    assert_eq!(
-        serde_yaml::from_str::<config::ProviderAuth>("bearer").unwrap(),
-        config::ProviderAuth::Bearer
-    );
-    assert_eq!(
-        serde_yaml::from_str::<config::ProviderAuth>("api-key").unwrap(),
-        config::ProviderAuth::ApiKey
-    );
+fn test_provider_auth_style_is_a_declared_word() {
+    use crate::test_support::outbound_auth::{
+        double_styles, DOUBLE_STYLE_FROM_CREDENTIAL, DOUBLE_STYLE_HEADER, DOUBLE_STYLE_TOKEN_URL,
+    };
+    for word in [
+        DOUBLE_STYLE_HEADER,
+        DOUBLE_STYLE_TOKEN_URL,
+        DOUBLE_STYLE_FROM_CREDENTIAL,
+    ] {
+        let parsed = serde_yaml::from_str::<config::ProviderAuth>(word)
+            .unwrap_or_else(|e| panic!("the declared style `{word}` parses: {e}"));
+        assert_eq!(
+            serde_json::to_value(&parsed).ok(),
+            Some(serde_json::Value::String(word.to_string()))
+        );
+    }
+    let refused = serde_yaml::from_str::<config::ProviderAuth>("oauth2")
+        .expect_err("an undeclared style is refused")
+        .to_string();
+    let listed: Vec<String> = crate::preflight::declared_styles()
+        .into_iter()
+        .map(|s| format!("`{}`", s.name))
+        .collect();
     assert!(
-        serde_yaml::from_str::<config::ProviderAuth>("oauth2").is_err(),
-        "'oauth2' is not a recognized provider auth style and must fail to deserialize"
+        refused.starts_with(&format!(
+            "unknown variant `oauth2`, expected one of {}",
+            listed.join(", ")
+        )),
+        "{refused}"
     );
+    assert!(listed.len() >= double_styles().len());
 }
 
 #[test]
@@ -461,7 +481,8 @@ fn test_validate_token_url_ssrf_and_scheme() {
         );
         entra.token_url = Some(token_url.to_string());
         entra.scope = Some("api://x/.default".into());
-        entra.auth = Some(config::ProviderAuth::OAuthClientCredentials);
+        entra.auth =
+            serde_yaml::from_str(crate::test_support::outbound_auth::DOUBLE_STYLE_TOKEN_URL).ok();
         providers.insert("entra".to_string(), entra);
         let mut models = HashMap::new();
         models.insert("m".to_string(), make_model("entra", 10));
@@ -6755,7 +6776,7 @@ fn a_claimed_scheme_is_judged_by_the_metadata_denylist() {
 #[test]
 fn a_token_url_under_a_claimed_scheme_is_still_refused() {
     let mut p = make_provider(proto_a(), "https://api.example.com", "U29_UNSET_KEY");
-    p.auth = Some(config::ProviderAuth::OAuthClientCredentials);
+    p.auth = serde_yaml::from_str(crate::test_support::outbound_auth::DOUBLE_STYLE_TOKEN_URL).ok();
     p.scope = Some("scope".into());
     p.token_url = Some("sealed-wire://login.example.com/token".into());
     let mut providers = HashMap::new();
@@ -6775,4 +6796,105 @@ fn a_token_url_under_a_claimed_scheme_is_still_refused() {
              'sealed-wire://login.example.com/token')"
             .to_string()]
     );
+}
+
+// ── arch-audit u29 F1: the auth style's endpoint is judged by what the style DECLARES ────────────
+
+/// The refusals the sweep answers for one provider under `style` with `token_url`, keyed by the
+/// credential `api_key`.
+fn style_refusals(style: &str, token_url: &str, api_key: config::SecretRef) -> Vec<String> {
+    let mut p = make_provider(proto_a(), "https://api.example.com", "U29_UNSET_KEY");
+    p.auth = serde_yaml::from_str(style).ok();
+    p.token_url = Some(token_url.into());
+    p.scope = Some("scope".into());
+    p.api_key = api_key;
+    let mut providers = HashMap::new();
+    providers.insert("p".to_string(), p);
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    let mut errors = Vec::new();
+    super::validate_providers_with(&[proto_a()], &[], &cfg, &[], &mut errors);
+    errors
+}
+
+/// A STYLE THAT STATES NO TOKEN ENDPOINT HAS NONE JUDGED (1.5.5 judged `token_url` for one style
+/// only, and ignored it on every other): the same metadata-host `token_url` that is refused under
+/// a style declaring `STYLE_ENDPOINT_TOKEN_URL` passes unjudged under a header style. RED (the
+/// parity half): judging every `token_url` would refuse configurations 1.5.5 accepted.
+#[test]
+fn a_token_url_is_judged_only_for_a_style_declaring_it() {
+    use crate::test_support::outbound_auth::{DOUBLE_STYLE_HEADER, DOUBLE_STYLE_TOKEN_URL};
+    let imds = "https://169.254.169.254/token";
+    let refused = style_refusals(
+        DOUBLE_STYLE_TOKEN_URL,
+        imds,
+        config::SecretRef::env("U29_UNSET_KEY"),
+    );
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert!(
+        refused[0].starts_with(&format!(
+            "provider 'p' token_url '{imds}' targets a blocked cloud-metadata host '169.254.169.254'"
+        )),
+        "{refused:?}"
+    );
+    assert_eq!(
+        style_refusals(
+            DOUBLE_STYLE_HEADER,
+            imds,
+            config::SecretRef::env("U29_UNSET_KEY")
+        ),
+        Vec::<String>::new()
+    );
+    let plain = style_refusals(
+        DOUBLE_STYLE_TOKEN_URL,
+        "http://token.example.com/oauth",
+        config::SecretRef::env("U29_UNSET_KEY"),
+    );
+    assert_eq!(
+        plain,
+        vec![
+            "provider 'p' token_url must use https for a public host (got \
+             'http://token.example.com/oauth'); it carries the client secret, so plaintext http \
+             is permitted only for a private/loopback token endpoint"
+                .to_string()
+        ]
+    );
+}
+
+/// A CREDENTIAL THAT NAMES ITS OWN ENDPOINT HAS IT JUDGED (`STYLE_ENDPOINT_FROM_CREDENTIAL`;
+/// ARCHITECT ruling 2026-09-28 Q2 (a)): an inline credential document whose `token_uri` is a
+/// blocked metadata host is refused, in 1.5.5's sentence, before its own shape is judged; the same
+/// document under a style stating no such bit is not read. No file is read for it (R4).
+#[test]
+fn a_credential_endpoint_is_judged_for_a_style_declaring_it() {
+    use crate::test_support::outbound_auth::{DOUBLE_STYLE_FROM_CREDENTIAL, DOUBLE_STYLE_HEADER};
+    let document = serde_json::json!({
+        "client_email": "svc@example.test",
+        "private_key": "unused",
+        "token_uri": "https://169.254.169.254/token",
+    })
+    .to_string();
+    let credential = config::SecretRef::template(document.clone());
+    let refused = style_refusals(
+        DOUBLE_STYLE_FROM_CREDENTIAL,
+        "https://unused.example.com/token",
+        credential.clone(),
+    );
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert!(
+        refused[0].starts_with(&format!(
+            "provider 'p' {DOUBLE_STYLE_FROM_CREDENTIAL} credential (from {}) is invalid: ",
+            credential.describe()
+        )) && refused[0].contains("169.254.169.254"),
+        "{refused:?}"
+    );
+    assert_eq!(
+        style_refusals(
+            DOUBLE_STYLE_HEADER,
+            "https://unused.example.com/token",
+            credential
+        ),
+        Vec::<String>::new()
+    );
+    // A credential that is no inline document is the plugin's to refuse: the kernel reads no file.
+    assert!(super::service_account_token_uri("/no/such/key.json").is_err());
 }

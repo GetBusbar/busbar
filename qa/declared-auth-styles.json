@@ -1,0 +1,12 @@
+{
+  "ProviderAuth": [
+    "bearer",
+    "api-key",
+    "jwt-bearer",
+    "oauth-client-credentials",
+    "x-goog-api-key",
+    "query-key",
+    "sigv4",
+    "oauth-token-exchange"
+  ]
+}
