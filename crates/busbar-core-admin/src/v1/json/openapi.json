@@ -13893,6 +13893,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "A rate-card history sequence number to price against (default: the history as it stands). Each row is priced at the card in force at the row's own instant UNDER THIS SNAPSHOT, so an invoice cut at a snapshot is re-derived by asking for it again. A seq above the head is refused, never clamped to it. Distinct from the `as_of` FIELD in the response, which is the instant the read was taken",
+            "in": "query",
+            "name": "as_of",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {

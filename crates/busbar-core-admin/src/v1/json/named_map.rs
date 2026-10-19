@@ -921,3 +921,7 @@ pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
     }
     out
 }
+
+#[cfg(test)]
+#[path = "tests/named_map_tests.rs"]
+mod tests;
