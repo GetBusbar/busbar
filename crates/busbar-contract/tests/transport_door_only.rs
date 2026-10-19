@@ -47,31 +47,17 @@ fn offenders(file: &str, needles: &[&str]) -> Vec<String> {
         .collect()
 }
 
-/// No second inbound seam and no second route-match vocabulary: the Rust-trait arrival hand-off
-/// (`driver`) and the path-template matcher with its own credential bar (`surface`) are not in the
-/// module tree. Arrivals go through a transport's guest list and the `abi/transport` route
-/// vocabulary.
+/// No second inbound seam: the Rust-trait arrival hand-off (`driver`, `UnitDriver`) is not in the
+/// module tree. An arrival reaches the kernel from a transport's guest list, through its door (THE
+/// DESIGN §6 step 4), and nothing constructs or implements the trait.
 #[test]
 fn the_transport_module_carries_no_second_inbound_seam() {
     let dir = transport_dir();
-    let present: Vec<String> = ["driver.rs", "surface.rs"]
-        .iter()
-        .filter(|f| dir.join(f).exists())
-        .map(|f| format!("transport/{f}"))
-        .collect();
     assert!(
-        present.is_empty(),
-        "a second inbound seam is still in the tree: {present:#?}"
+        !dir.join("driver.rs").exists(),
+        "a second inbound seam is still in the tree: transport/driver.rs"
     );
-    let declared = offenders(
-        "mod.rs",
-        &[
-            "pub mod driver",
-            "pub mod surface",
-            "UnitDriver",
-            "WireSurface",
-        ],
-    );
+    let declared = offenders("mod.rs", &["pub mod driver", "UnitDriver"]);
     assert!(
         declared.is_empty(),
         "the transport module still declares or re-exports the second inbound seam: {declared:#?}"
@@ -81,14 +67,11 @@ fn the_transport_module_carries_no_second_inbound_seam() {
 /// The superseded role derivation is gone: a framer states an EMPTY `composes_over` too (THE
 /// DESIGN §2: "A framer states an EMPTY `composes_over`"; the 2026-10-14 ruling: "the role is the
 /// export"), so a role computed from that list calls every conforming framer a carrier. Nothing
-/// above the ABI derives a role, and the row that carried it has no reader.
+/// above the ABI derives a role.
 #[test]
 fn no_role_is_derived_from_composes_over() {
-    let found = offenders(
-        "stack.rs",
-        &["fn role_of", "pub enum Role", "pub struct TransportRow"],
-    );
-    let exported = offenders("mod.rs", &["role_of", " Role,", "TransportRow"]);
+    let found = offenders("stack.rs", &["fn role_of", "pub enum Role", "fn role("]);
+    let exported = offenders("mod.rs", &["role_of", " Role,"]);
     let all: Vec<_> = found.into_iter().chain(exported).collect();
     assert!(
         all.is_empty(),
