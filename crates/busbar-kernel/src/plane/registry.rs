@@ -257,6 +257,29 @@ static PLANES: std::sync::OnceLock<Vec<&'static PlaneDecl>> = std::sync::OnceLoc
 /// Declarations the COMPOSITION ROOT installed before the plane list was first read.
 static INSTALLED: std::sync::OnceLock<&'static [&'static PlaneDecl]> = std::sync::OnceLock::new();
 
+/// THE DEFAULT BUILD'S REQUIRED SECTIONS (Law 7 and 1.5.5's bytes): every section a plane door
+/// LINKED into this build marks required (`SECTION_REQUIRED`), read by the composition root off
+/// each door's rendered Statement whether or not config uses the plane, so nothing is opened. A
+/// plane config does not use is never loaded or registered, yet a document missing a section the
+/// build's own planes require is still refused with 1.5.5's missing-field text. A dropped-in
+/// plane's requirement is read off its registered row, so it holds only when config uses it.
+static LINKED_REQUIRED: std::sync::RwLock<&'static [&'static str]> = std::sync::RwLock::new(&[]);
+
+/// Install [`LINKED_REQUIRED`]: the composition root's, once, before any configuration is read.
+pub fn install_linked_required_sections(sections: &'static [&'static str]) {
+    *LINKED_REQUIRED
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = sections;
+}
+
+/// The default build's required sections ([`install_linked_required_sections`]), in the linked
+/// doors' order; none before the root installs them.
+pub fn linked_required_sections() -> &'static [&'static str] {
+    *LINKED_REQUIRED
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// INSTALL PLANE DECLARATIONS — the composition root's one write into the plane axis, and the seam
 /// an extracted plane crate registers through. Exactly `crate::proto::registry::install_protocols`'
 /// shape and contract, on the plane axis. `pub`, not `pub`: the `busbar` binary crate is the

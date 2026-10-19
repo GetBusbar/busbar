@@ -30,6 +30,7 @@ fn cand(kind: KindCode, name: &str, aliases: &[&str], sugar: &[&str], verbs: &[&
         aliases: aliases.iter().map(|s| s.to_string()).collect(),
         sugar: sugar.iter().map(|s| s.to_string()).collect(),
         verbs: verbs.iter().map(|s| s.to_string()).collect(),
+        selecting: Vec::new(),
         schemes: Vec::new(),
         needs: Vec::new(),
         stated: Vec::new(),
@@ -39,6 +40,11 @@ fn cand(kind: KindCode, name: &str, aliases: &[&str], sugar: &[&str], verbs: &[&
         },
         disk: false,
     }
+}
+
+/// A document using the fixture plane door's verb (`door`), so the plane is selected.
+fn uses_door() -> Uses {
+    Uses::of(&doc(r#"{"door": {}}"#))
 }
 
 fn picked(sel: &[Selected], cands: &[Candidate]) -> Vec<(String, String)> {
@@ -430,6 +436,7 @@ fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
     let bind = |set: crate::boot::PlaneSet| {
         let stated: Vec<Vec<u8>> = set.doors.iter().map(|c| c.stated.clone()).collect();
         let bound = load_planes(
+            &uses_door(),
             &set.doors,
             &logs,
             Arc::new(NoSink),
@@ -508,6 +515,7 @@ fn a_door_plane_declaring_a_pin_with_no_mechanism_is_refused_at_boot() {
         .open_planes(&[bad_door])
         .expect("the plane states itself");
     let err = load_planes(
+        &uses_door(),
         &set.doors,
         &logs,
         Arc::new(NoSink),
@@ -522,6 +530,7 @@ fn a_door_plane_declaring_a_pin_with_no_mechanism_is_refused_at_boot() {
         .open_planes(&[plug::door])
         .unwrap();
     load_planes(
+        &uses_door(),
         &ok.doors,
         &logs,
         Arc::new(NoSink),

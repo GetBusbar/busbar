@@ -569,6 +569,7 @@ fn door_rows() -> Result<Vec<&'static PlaneDecl>, String> {
             let bind: crate::root::loader::dispatch::kinds::plane::ProbeBind =
                 Arc::new(move || {
                     crate::root::loader::boot::load_planes(
+                        crate::root::boot::plane_uses(),
                         std::slice::from_ref(&candidate),
                         crate::root::boot::plugin_logs(),
                         Arc::new(crate::root::loader::dispatch::NoSink),

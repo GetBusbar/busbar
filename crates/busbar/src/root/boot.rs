@@ -585,12 +585,27 @@ pub fn discover_planes(linked: &Linked, dropped: Option<&crate::root::loader::Pl
         eprintln!("busbar: {refusal}");
         std::process::exit(2);
     });
+    // STAGE 0, PLAN: what the boot's configuration uses, read off its raw document. A plane loads
+    // iff config uses it (Law 7), so the planes are selected against it.
+    let path =
+        crate::root::cli::resolve_config_path(crate::root::cli::config_path_flag().as_deref());
+    let _ = PLANE_USES.set(plan(std::path::Path::new(&path)));
     let _ = DOOR_CANDIDATES.set(set.doors);
 }
 
-/// The door planes [`discover_planes`] discovered, waiting for the dispatcher.
+/// The door planes [`discover_planes`] discovered, waiting for the dispatcher: every one, used or
+/// not (discovery reads the rendering only; nothing is opened).
 pub(crate) static DOOR_CANDIDATES: std::sync::OnceLock<Vec<crate::root::loader::boot::Candidate>> =
     std::sync::OnceLock::new();
+
+/// What the boot's configuration uses ([`plan`]), read by [`discover_planes`]: the planes are
+/// selected against it.
+static PLANE_USES: std::sync::OnceLock<Uses> = std::sync::OnceLock::new();
+
+/// What the boot's configuration uses, as [`discover_planes`] read it; nothing before it runs.
+pub(crate) fn plane_uses() -> &'static Uses {
+    PLANE_USES.get_or_init(Uses::default)
+}
 
 /// The door planes [`load_door_planes`] bound, held for the process.
 static DOOR_PLANES: std::sync::OnceLock<Vec<(String, DoorPlane)>> = std::sync::OnceLock::new();
@@ -612,6 +627,7 @@ pub fn load_door_planes() {
     let conns: std::sync::Arc<dyn busbar_contract::conn::DeclaredConns> =
         crate::root::connector::the().clone();
     let bound = crate::root::loader::boot::load_planes(
+        plane_uses(),
         doors,
         plugin_logs(),
         std::sync::Arc::new(crate::root::loader::dispatch::NoSink),

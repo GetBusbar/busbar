@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
 use busbar_contract::abi::mechanism::door::{
-    DoorFn, REWRITE_ALIAS, REWRITE_SUGAR, SECTION_DECLARING,
+    DoorFn, REWRITE_ALIAS, REWRITE_SUGAR, SECTION_DECLARING, SECTION_REQUIRED, SECTION_SELECTS,
 };
 use busbar_contract::abi::mechanism::rendering::{read, Read, ReadNeed};
 use busbar_contract::abi::mechanism::KindCode;
@@ -201,6 +201,9 @@ pub struct Candidate {
     pub sugar: Vec<String>,
     /// Its declaring sections (a plane's verbs).
     pub verbs: Vec<String>,
+    /// The other sections whose presence uses it (a plane's `SECTION_SELECTS` sections): config
+    /// carrying one selects the plane as its verb does (Law 7).
+    pub selecting: Vec<String>,
     /// The URL schemes it claims (its Statement's claims; a transport's).
     pub schemes: Vec<String>,
     /// Its connection needs, in its Statement's order (a need's index is its place here).
@@ -249,6 +252,12 @@ impl Candidate {
                 .sections
                 .iter()
                 .filter(|(_, flags)| flags & SECTION_DECLARING != 0)
+                .map(|(name, _)| name.clone())
+                .collect(),
+            selecting: r
+                .sections
+                .iter()
+                .filter(|(_, flags)| flags & SECTION_DECLARING == 0 && flags & SECTION_SELECTS != 0)
                 .map(|(name, _)| name.clone())
                 .collect(),
             schemes: r.claims,
@@ -312,6 +321,22 @@ impl Candidate {
     pub fn linked(door: DoorFn) -> Result<Self, String> {
         let row = LinkedRow::of(door).map_err(|e| e.to_string())?;
         Self::from_rendering(row.statement.clone(), None, Origin::Linked(row))
+    }
+
+    /// The sections its Statement marks required (`SECTION_REQUIRED`), in Statement order, read
+    /// off its rendering: nothing is opened. None when the rendering does not read back (its load
+    /// refuses it).
+    #[must_use]
+    pub fn required_sections(&self) -> Vec<String> {
+        read(&self.stated)
+            .map(|r| {
+                r.sections
+                    .into_iter()
+                    .filter(|(_, flags)| flags & SECTION_REQUIRED != 0)
+                    .map(|(name, _)| name)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Whether config names this plugin by `word` (its name or an alias).
@@ -449,6 +474,23 @@ pub fn select(uses: &Uses, candidates: &[Candidate]) -> Vec<Selected> {
     out
 }
 
+/// WHETHER THE CONFIGURATION USES THE PLANE `plane` (Law 7, BUSBAR-1.6.0.md §4 "Selection
+/// follows the classes"; pure): the section of `uses` that uses it — the first of its verbs that is
+/// a root key — or `None`, and the plane is not loaded. Read off the candidate's rendered facts only,
+/// so nothing is opened: what the boot selects planes by, and what a config apply asks of a plane
+/// that is not loaded now. A candidate of another kind is used by no section here.
+#[must_use]
+pub fn plane_use<'c>(uses: &Uses, plane: &'c Candidate) -> Option<&'c str> {
+    if plane.kind != KindCode::Plane {
+        return None;
+    }
+    plane
+        .verbs
+        .iter()
+        .find(|v| uses.roots.contains(*v))
+        .map(String::as_str)
+}
+
 // ── THE REGISTRY: the linked rows, then the plugins directory's, through one admission ─────────────
 
 /// What [`registry`] reads to build THE plugin registry: the rows this build LINKS (registered
@@ -539,15 +581,17 @@ pub struct PlaneSet {
     pub doors: Vec<Candidate>,
 }
 
-/// THE PLANES' ONE LOAD: every door plane of a [`PlaneSet`] selected under its own name and bound
-/// through [`load`] — a linked row by `load_linked`, a dropped one by `load_dropped` over its
-/// verified bytes, each against its stated Statement and tail, on `dispatcher`, to its own log
-/// sink.
+/// THE PLANES' ONE LOAD: every door plane of a [`PlaneSet`] the configuration `uses`
+/// ([`plane_use`]), selected under its own name and bound through [`load`] — a linked row by
+/// `load_linked`, a dropped one by `load_dropped` over its verified bytes, each against its stated
+/// Statement and tail, on `dispatcher`, to its own log sink. A plane config does not use is never
+/// opened, whichever door it came in by (Law 7).
 ///
 /// # Errors
 ///
 /// The first plane that will not bind, named.
 pub fn load_planes(
+    uses: &Uses,
     doors: &[Candidate],
     logs: &PluginLogConfig,
     metrics: Arc<dyn EnvelopeSink>,
@@ -555,6 +599,7 @@ pub fn load_planes(
     max_inflight_cap: u32,
     conns: ConnTable,
 ) -> Result<Vec<(String, Plugin<Plane>)>, String> {
+    let _ = uses;
     let selected: Vec<Selected> = doors
         .iter()
         .enumerate()
