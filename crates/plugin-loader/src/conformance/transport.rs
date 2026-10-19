@@ -86,6 +86,13 @@
 //! above; a framer whose tail states `FRAMING_DATAGRAM` runs the datagram script
 //! (`super::datagram`: its every call carries the host's lane); a CARRIER runs the carrier script (`super::carrier`: listen/accept, dial, read, write, flush,
 //! shut and arrival over the suite's host I/O). An unknown role fails the suite.
+//!
+//! THE OPS IT DECLARES ([`declared_ops_faults`]). A transport states in its tail's `facts` every op
+//! it serves (`FACT_ACCEPTS`, `FACT_DIALS`, `FACT_DETACHES`, `FACT_ADOPTS`; a zero declares
+//! nothing). Once it declares any, the suite fails, naming each, a declared op its inputs state
+//! refused or leave out, an undeclared op its inputs exercise, and a claim whose scheme the
+//! [`SPEC_REQUIRED`] table holds to an op it does not declare; every undeclared op is then asserted
+//! to answer REFUSED. A transport that declares none is not judged on its ops yet.
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Field, OutHead, Outcome};
 use busbar_contract::abi::transport::{
@@ -100,7 +107,9 @@ use super::{
     close, crossings, dispatcher, input, load, open, output, ready_step, refresh, tick, validate,
     Fold, Leg, Recorder, Subject,
 };
-use busbar_contract::abi::transport::ROLE_CARRIER;
+use busbar_contract::abi::transport::{
+    FACT_ACCEPTS, FACT_ADOPTS, FACT_DETACHES, FACT_DIALS, ROLE_CARRIER,
+};
 
 /// The script a transport's declared role runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -627,14 +636,81 @@ fn ready_locate(authority: &[u8], secure: bool, has_name: bool) -> String {
     )
 }
 
-/// The op bits a transport declares in its tail's `facts` (accept, dial, detach, adopt).
-pub(super) const OP_BITS: u32 = 4 | 8 | 16 | 32;
+/// The op bits a transport declares in its tail's `facts`: transport is one bidirectional kind,
+/// and each transport states every op it serves (THE DESIGN, the inbound section: the listener's
+/// transport decodes the head and matches the route; ruling 22: the accept side is required).
+pub(super) const OP_BITS: u32 = FACT_ACCEPTS | FACT_DIALS | FACT_DETACHES | FACT_ADOPTS;
+
+/// The ops each op bit names, for the suite's errors.
+const OPS: [(u32, &str); 4] = [
+    (FACT_ACCEPTS, "accept"),
+    (FACT_DIALS, "dial"),
+    (FACT_DETACHES, "detach"),
+    (FACT_ADOPTS, "adopt"),
+];
+
+/// THE SPEC-REQUIRED TABLE: the ops a scheme's own specification requires of the transport that
+/// claims it. A claim of a scheme here whose transport does not declare every op it names is RED.
+/// A scheme served inbound by its spec requires the accept side (ruling 22: `http` and `https`).
+/// A row is added only with a cite of the scheme's spec, never inferred.
+pub(super) const SPEC_REQUIRED: &[(&str, u32)] = &[("http", FACT_ACCEPTS), ("https", FACT_ACCEPTS)];
 
 /// What a transport's declared ops and its suite inputs break, each a named error; empty when it
-/// declares no op (not judged until it does).
+/// declares no op (not judged until it does; the transports declare theirs in their repins).
+///
+/// * a declared op the inputs state `"refused"` (or leave out): a framer never passes by refusing
+///   an op it declared;
+/// * an undeclared op the inputs exercise: an undeclared op must refuse (the script then asserts
+///   it answers REFUSED);
+/// * a claim in [`SPEC_REQUIRED`] whose required op is not declared.
 pub(super) fn declared_ops_faults(ops: u32, claims: &[&str], k: &serde_json::Value) -> Vec<String> {
-    let _ = (ops, claims, k);
-    Vec::new()
+    let mut faults = Vec::new();
+    if ops & OP_BITS == 0 {
+        return faults;
+    }
+    let refused =
+        |v: &serde_json::Value| matches!(v, serde_json::Value::String(s) if s == "refused");
+    let served = |v: &serde_json::Value| !v.is_null() && !refused(v);
+    let (detaches, adopts) = if k["handoff"].is_null() {
+        (served(&k["detach"]), served(&k["adopt"]))
+    } else {
+        (served(&k["handoff"]), served(&k["handoff"]))
+    };
+    let exercised = [
+        (FACT_ACCEPTS, served(&k["refuse"])),
+        (FACT_DIALS, !k["dial"].is_null()),
+        (FACT_DETACHES, detaches),
+        (FACT_ADOPTS, adopts),
+    ];
+    for ((bit, name), (_, run)) in OPS.iter().zip(exercised) {
+        match (ops & bit != 0, run) {
+            (true, false) => faults.push(format!(
+                "it declares the {name} op and its inputs state {name} refused or absent: a \
+                 framer never passes by refusing an op it declared"
+            )),
+            (false, true) => faults.push(format!(
+                "it does not declare the {name} op and its inputs exercise {name}: an undeclared \
+                 op must refuse"
+            )),
+            _ => {}
+        }
+    }
+    for claim in claims {
+        for (scheme, required) in SPEC_REQUIRED {
+            if claim != scheme {
+                continue;
+            }
+            for (bit, name) in OPS {
+                if required & bit != 0 && ops & bit == 0 {
+                    faults.push(format!(
+                        "claim `{claim}` requires the {name} op by its spec, and the transport \
+                         does not declare it"
+                    ));
+                }
+            }
+        }
+    }
+    faults
 }
 
 /// What the contract requires of one step's answer.
@@ -678,6 +754,15 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         }
         Err(why) => panic!("{why}"),
     }
+    // ── the ops it declares: judged once it declares any ──
+    let ops = facts.ops;
+    let faults = declared_ops_faults(ops, &facts.claims, k);
+    assert!(
+        faults.is_empty(),
+        "conformance.json: transport `{}` declares ops {ops:#x}: {}",
+        p.name(),
+        faults.join("; ")
+    );
     let mut want: Vec<(String, Want)> = Vec::new();
     let mut r = Recorder::new(crossings(&p));
 
@@ -771,155 +856,163 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     }
 
     // ── a dialled framing: out through a tight wire, in through a tight frame, the far end ──
-    let dial = &k["dial"];
-    let wire = text(&dial["wire"], "dial.wire");
-    let (ingest, frames) = (
-        text(&dial["ingest"], "dial.ingest"),
-        texts(&dial["frames"], "dial.frames"),
-    );
-    let target = opt_text(&dial["target"], "dial.target");
-    let opening = opt_text(&dial["opening"], "dial.opening");
     let mut tight = Sink::tight();
-    // A wire whose dialled framing holds a deadline (http: the attempt's one clock; grpc: the
-    // call's) states which answers carry YIELD_HAS_DEADLINE: `"deadline": ["begin", "emit",
-    // "ingest"]` (any of them), or `true` for the emit's alone.
-    let armed = |step: &str| -> u32 {
-        let on = match &dial["deadline"] {
-            serde_json::Value::Bool(b) => *b && step == "emit",
-            serde_json::Value::Array(a) => a.iter().any(|v| v.as_str() == Some(step)),
-            _ => false,
-        };
-        if on {
-            YIELD_HAS_DEADLINE
-        } else {
-            0
-        }
-    };
-    // A wire that opens with bytes of its own writes them at begin, re-driven by `timer`.
-    let token = r.step("begin dial", sinkfuls(opening.len(), TIGHT_WIRE), || {
-        let y = pump(&p, 0, Op::Begin(SIDE_DIAL, &target), &mut tight);
-        (y.line(), y.framing)
-    });
-    want.push(("begin dial".into(), begin_dial_want(dial, armed("begin"))));
-    // The far side's opening answer, read before the first frame: it writes nothing, and yields
-    // exactly the frames `answer_frames` states (a wire that hands its answer's head up, HEAD-FIELDS:
-    // ws's switching response), none where it states none.
-    if !dial["answer"].is_null() {
-        let answer = text(&dial["answer"], "dial.answer");
-        let heard = if dial["answer_frames"].is_null() {
-            Vec::new()
-        } else {
-            texts(&dial["answer_frames"], "dial.answer_frames")
-        };
-        r.line("dial answer", frame_sinkfuls(&heard), || {
-            pump(&p, token, Op::Ingest(&answer, false), &mut tight).line()
+    if ops != 0 && ops & FACT_DIALS == 0 {
+        // An undeclared dial refuses.
+        r.line("begin dial", 1, || {
+            once(&p, 0, Op::Begin(SIDE_DIAL, b""), &mut tight).line()
         });
-        want.push((
-            "dial answer".into(),
-            Want::Is(yielded_line(&[], &heard, &[], 0, false)),
-        ));
-    }
-    // THE REQUEST THE DIAL SENDS: `dial.emit` as the message bytes, or `dial.request` (`fields` and
-    // `body`) encoded by the framer itself with its own head lines merged in, as the host's walk
-    // merges them: the request's fields, then each line the framer states whose name the request
-    // does not carry, then the body's length where the framer states it (THE DESIGN section 6,
-    // step 5).
-    let emit = if dial["request"].is_null() {
-        text(&dial["emit"], "dial.emit")
+        want.push(("begin dial".into(), Want::Starts("Refused ")));
     } else {
-        let request = &dial["request"];
-        let body = opt_text(&request["body"], "dial.request.body");
-        let mut named: Vec<HeadLine> = request["fields"]
-            .as_array()
-            .map(|fs| {
-                fs.iter()
-                    .map(|f| {
-                        (
-                            text(&f[0], "dial.request.fields name"),
-                            text(&f[1], "dial.request.fields value"),
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let (defaults, states_length) =
-            r.step("dial defaults", 1, || located_defaults(&p, &target));
-        for (name, value) in defaults {
-            if !named.iter().any(|(n, _)| n.eq_ignore_ascii_case(&name)) {
-                named.push((name, value));
+        let dial = &k["dial"];
+        let wire = text(&dial["wire"], "dial.wire");
+        let (ingest, frames) = (
+            text(&dial["ingest"], "dial.ingest"),
+            texts(&dial["frames"], "dial.frames"),
+        );
+        let target = opt_text(&dial["target"], "dial.target");
+        let opening = opt_text(&dial["opening"], "dial.opening");
+        // A wire whose dialled framing holds a deadline (http: the attempt's one clock; grpc: the
+        // call's) states which answers carry YIELD_HAS_DEADLINE: `"deadline": ["begin", "emit",
+        // "ingest"]` (any of them), or `true` for the emit's alone.
+        let armed = |step: &str| -> u32 {
+            let on = match &dial["deadline"] {
+                serde_json::Value::Bool(b) => *b && step == "emit",
+                serde_json::Value::Array(a) => a.iter().any(|v| v.as_str() == Some(step)),
+                _ => false,
+            };
+            if on {
+                YIELD_HAS_DEADLINE
+            } else {
+                0
             }
-        }
-        // Where the framer states its body's length, the body's `content-length` LAST, for a
-        // non-empty body whose head carries none, as the host's walk adds it.
-        if states_length
-            && !body.is_empty()
-            && !named
-                .iter()
-                .any(|(n, _)| n.eq_ignore_ascii_case(b"content-length"))
-        {
-            named.push((
-                b"content-length".to_vec(),
-                body.len().to_string().into_bytes(),
+        };
+        // A wire that opens with bytes of its own writes them at begin, re-driven by `timer`.
+        let token = r.step("begin dial", sinkfuls(opening.len(), TIGHT_WIRE), || {
+            let y = pump(&p, 0, Op::Begin(SIDE_DIAL, &target), &mut tight);
+            (y.line(), y.framing)
+        });
+        want.push(("begin dial".into(), begin_dial_want(dial, armed("begin"))));
+        // The far side's opening answer, read before the first frame: it writes nothing, and yields
+        // exactly the frames `answer_frames` states (a wire that hands its answer's head up, HEAD-FIELDS:
+        // ws's switching response), none where it states none.
+        if !dial["answer"].is_null() {
+            let answer = text(&dial["answer"], "dial.answer");
+            let heard = if dial["answer_frames"].is_null() {
+                Vec::new()
+            } else {
+                texts(&dial["answer_frames"], "dial.answer_frames")
+            };
+            r.line("dial answer", frame_sinkfuls(&heard), || {
+                pump(&p, token, Op::Ingest(&answer, false), &mut tight).line()
+            });
+            want.push((
+                "dial answer".into(),
+                Want::Is(yielded_line(&[], &heard, &[], 0, false)),
             ));
         }
-        let fields: Vec<Field> = named
-            .iter()
-            .map(|(n, v)| Field {
-                name: AbiStr {
-                    ptr: n.as_ptr(),
-                    len: n.len(),
-                },
-                value: AbiStr {
-                    ptr: v.as_ptr(),
-                    len: v.len(),
-                },
+        // THE REQUEST THE DIAL SENDS: `dial.emit` as the message bytes, or `dial.request` (`fields` and
+        // `body`) encoded by the framer itself with its own head lines merged in, as the host's walk
+        // merges them: the request's fields, then each line the framer states whose name the request
+        // does not carry, then the body's length where the framer states it (THE DESIGN section 6,
+        // step 5).
+        let emit = if dial["request"].is_null() {
+            text(&dial["emit"], "dial.emit")
+        } else {
+            let request = &dial["request"];
+            let body = opt_text(&request["body"], "dial.request.body");
+            let mut named: Vec<HeadLine> = request["fields"]
+                .as_array()
+                .map(|fs| {
+                    fs.iter()
+                        .map(|f| {
+                            (
+                                text(&f[0], "dial.request.fields name"),
+                                text(&f[1], "dial.request.fields value"),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let (defaults, states_length) =
+                r.step("dial defaults", 1, || located_defaults(&p, &target));
+            for (name, value) in defaults {
+                if !named.iter().any(|(n, _)| n.eq_ignore_ascii_case(&name)) {
+                    named.push((name, value));
+                }
+            }
+            // Where the framer states its body's length, the body's `content-length` LAST, for a
+            // non-empty body whose head carries none, as the host's walk adds it.
+            if states_length
+                && !body.is_empty()
+                && !named
+                    .iter()
+                    .any(|(n, _)| n.eq_ignore_ascii_case(b"content-length"))
+            {
+                named.push((
+                    b"content-length".to_vec(),
+                    body.len().to_string().into_bytes(),
+                ));
+            }
+            let fields: Vec<Field> = named
+                .iter()
+                .map(|(n, v)| Field {
+                    name: AbiStr {
+                        ptr: n.as_ptr(),
+                        len: n.len(),
+                    },
+                    value: AbiStr {
+                        ptr: v.as_ptr(),
+                        len: v.len(),
+                    },
+                })
+                .collect();
+            r.step("dial encode", 1, || {
+                let y = once(&p, 0, Op::Encode(&body, &fields), &mut Sink::ample());
+                (y.line(), y.wire)
             })
-            .collect();
-        r.step("dial encode", 1, || {
-            let y = once(&p, 0, Op::Encode(&body, &fields), &mut Sink::ample());
-            (y.line(), y.wire)
-        })
-    };
-    r.line("emit", sinkfuls(wire.len(), TIGHT_WIRE), || {
-        pump(&p, token, Op::Emit(&emit, true), &mut tight).line()
-    });
-    want.push((
-        "emit".into(),
-        Want::Is(yielded_line(&wire, &[], &[], armed("emit"), false)),
-    ));
-    // What reading them writes back (a ws close answered), absent = nothing.
-    let answered = opt_text(&dial["ingest_wire"], "dial.ingest_wire");
-    let ingest_calls = sinkfuls(answered.len(), TIGHT_WIRE).max(frame_sinkfuls(&frames));
-    r.line("ingest", ingest_calls, || {
-        pump(&p, token, Op::Ingest(&ingest, false), &mut tight).line()
-    });
-    // What reading them writes ends the connection (a ws close answered) unless the wire states
-    // `"ingest_ends": false` (h2: the settings acknowledged, the connection carries on).
-    let ends = !dial["ingest_wire"].is_null() && dial["ingest_ends"].as_bool().unwrap_or(true);
-    let ingest_flags = armed("ingest") | if ends { YIELD_ENDED } else { 0 };
-    want.push((
-        "ingest".into(),
-        Want::Is(yielded_line(&answered, &frames, &[], ingest_flags, false)),
-    ));
-    r.line("ingest end", 1, || {
-        pump(&p, token, Op::Ingest(&[], true), &mut tight).line()
-    });
-    want.push((
-        "ingest end".into(),
-        Want::Is(yielded_line(&[], &[], &[], YIELD_ENDED, false)),
-    ));
-    let finish = opt_text(&dial["finish"], "dial.finish");
-    r.line("finish", sinkfuls(finish.len(), TIGHT_WIRE), || {
-        pump(&p, token, Op::Finish, &mut tight).line()
-    });
-    want.push((
-        "finish".into(),
-        Want::Is(yielded_line(&finish, &[], &[], YIELD_ENDED, false)),
-    ));
-    r.line("finish again", 1, || {
-        once(&p, token, Op::Finish, &mut tight).line()
-    });
-    want.push(("finish again".into(), Want::Starts("Failed ")));
+        };
+        r.line("emit", sinkfuls(wire.len(), TIGHT_WIRE), || {
+            pump(&p, token, Op::Emit(&emit, true), &mut tight).line()
+        });
+        want.push((
+            "emit".into(),
+            Want::Is(yielded_line(&wire, &[], &[], armed("emit"), false)),
+        ));
+        // What reading them writes back (a ws close answered), absent = nothing.
+        let answered = opt_text(&dial["ingest_wire"], "dial.ingest_wire");
+        let ingest_calls = sinkfuls(answered.len(), TIGHT_WIRE).max(frame_sinkfuls(&frames));
+        r.line("ingest", ingest_calls, || {
+            pump(&p, token, Op::Ingest(&ingest, false), &mut tight).line()
+        });
+        // What reading them writes ends the connection (a ws close answered) unless the wire states
+        // `"ingest_ends": false` (h2: the settings acknowledged, the connection carries on).
+        let ends = !dial["ingest_wire"].is_null() && dial["ingest_ends"].as_bool().unwrap_or(true);
+        let ingest_flags = armed("ingest") | if ends { YIELD_ENDED } else { 0 };
+        want.push((
+            "ingest".into(),
+            Want::Is(yielded_line(&answered, &frames, &[], ingest_flags, false)),
+        ));
+        r.line("ingest end", 1, || {
+            pump(&p, token, Op::Ingest(&[], true), &mut tight).line()
+        });
+        want.push((
+            "ingest end".into(),
+            Want::Is(yielded_line(&[], &[], &[], YIELD_ENDED, false)),
+        ));
+        let finish = opt_text(&dial["finish"], "dial.finish");
+        r.line("finish", sinkfuls(finish.len(), TIGHT_WIRE), || {
+            pump(&p, token, Op::Finish, &mut tight).line()
+        });
+        want.push((
+            "finish".into(),
+            Want::Is(yielded_line(&finish, &[], &[], YIELD_ENDED, false)),
+        ));
+        r.line("finish again", 1, || {
+            once(&p, token, Op::Finish, &mut tight).line()
+        });
+        want.push(("finish again".into(), Want::Starts("Failed ")));
+    }
 
     // ── encode: one rendering per case, in a sink with room for it ──
     let cases = k["encode"]

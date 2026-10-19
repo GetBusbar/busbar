@@ -86,6 +86,9 @@ pub struct TransportFacts {
     /// The auth points it offers, its Statement's `extensions` record
     /// (`abi::transport::EXT_OFFERED_POINTS`): `{Head, HeadBody}` when it states none.
     pub offered: busbar_contract::abi::transport::AuthPoints,
+    /// The ops it declares it serves, its tail's `FACT_ACCEPTS` | `FACT_DIALS` | `FACT_DETACHES` |
+    /// `FACT_ADOPTS` bits; `0` declares nothing.
+    pub ops: u32,
 }
 
 /// WHAT A COMPILED-IN TRANSPORT DOOR STATES, read off its Statement without binding it (no
@@ -203,6 +206,11 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
     check_fault_rows(faults, tail.claim_rows_len as u64).map_err(broke)?;
     check_fault_cover(status, faults).map_err(broke)?;
     Ok(TransportFacts {
+        ops: tail.facts
+            & (busbar_contract::abi::transport::FACT_ACCEPTS
+                | busbar_contract::abi::transport::FACT_DIALS
+                | busbar_contract::abi::transport::FACT_DETACHES
+                | busbar_contract::abi::transport::FACT_ADOPTS),
         datagram: tail.framing == busbar_contract::abi::transport::FRAMING_DATAGRAM,
         status_rows: status.iter().map(|r| (r.claim, r.lo, r.hi)).collect(),
         offered,
