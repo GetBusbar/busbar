@@ -119,9 +119,9 @@ pub fn names_loopback(host: &str) -> bool {
 /// the default class alone. Never `provider`: a provider dial is refused a private address unless
 /// allowlisted whether or not its config names the target (ARCHITECT ruling CRATES-14). Never
 /// `open-web`: THE DESIGN §5 egress-class table holds it to "public https only", and 1.5.5 refused a
-/// configured webhook target on a loopback, private, CGNAT or link-local host and left that sink
-/// disabled (v1.5.5 `crates/busbar/src/observability.rs:214-240` `validate_webhook_url`,
-/// `crates/busbar/src/export/webhook.rs:89-97`); the allowlist stays its escape hatch.
+/// configured open-web target on a loopback, private, CGNAT or link-local host and left that
+/// instance disabled (v1.5.5 `crates/busbar/src/observability.rs:214-240`); the allowlist stays its
+/// escape hatch.
 const LIFTED_WHEN_CONFIGURED: &[u32] = &[connector::EGRESS_DEFAULT];
 
 /// The class a dial's address is judged under: a need's own, or (its target named by its config,

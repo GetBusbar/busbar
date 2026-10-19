@@ -540,11 +540,11 @@ fn a_lookup_past_the_cap_is_refused_at_once_and_starts_no_thread() {
     assert_eq!(rest, [(0, true), (1, true)], "the two in flight answer");
 }
 
-/// RED (THE DESIGN §5 egress-class table: `open-web` is "public https only"; v1.5.5
-/// `crates/busbar/src/observability.rs:214-240` `validate_webhook_url` refused a loopback, private,
-/// CGNAT or link-local webhook target and `crates/busbar/src/export/webhook.rs:89-97` left that sink
-/// disabled): an open-web need keeps its class when its config names its target. Only the default
-/// class is judged as operator infrastructure then; open-web and provider are never lifted.
+/// RED (THE DESIGN §5 egress-class table: `open-web` is "public https only"; v1.5.5 refused a
+/// loopback, private, CGNAT or link-local open-web target and left that instance disabled,
+/// `crates/busbar/src/observability.rs:214-240`): an open-web need keeps its class when its config
+/// names its target. Only the default class is judged as operator infrastructure then; open-web
+/// and provider are never lifted.
 #[test]
 fn a_configured_open_web_target_keeps_the_open_web_class() {
     assert_eq!(judged_class(EGRESS_OPEN_WEB, true), EGRESS_OPEN_WEB);

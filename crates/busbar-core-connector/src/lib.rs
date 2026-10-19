@@ -2180,7 +2180,7 @@ impl Connector {
         // table, owner-signed 2026-09-27): in the default class its address is judged as
         // operator infrastructure. A provider need keeps its class: it is refused a private
         // address unless allowlisted (ARCHITECT ruling CRATES-14, `guard::judged_class`); an
-        // open-web need keeps its class too (public https only, as 1.5.5 held a webhook).
+        // open-web need keeps its class too (public https only, as 1.5.5 held one).
         let judged_class = guard::judged_class(egress_class, declared_target.is_some());
         // THE DECLARED TARGET (1.5.5's per-module target guarantee, on every need): a need whose
         // config names its target dials that target and no other.

@@ -2333,8 +2333,9 @@ fn a_pinned_target_every_dial_would_admit_is_admitted_at_declare() {
     assert_eq!(DeclaredConns::declared(&c, OWNER, NeedId(2)), Some(Ok(())));
 }
 
-/// RED (THE DESIGN §5: `open-web` is "public https only"; v1.5.5 `validate_webhook_url` refused a
-/// private webhook target and disabled the sink): an open-web need whose config pins it to a
+/// RED (THE DESIGN §5: `open-web` is "public https only"; v1.5.5 refused a private open-web target
+/// and disabled the instance, `crates/busbar/src/observability.rs:214-240`): an open-web need whose
+/// config pins it to a
 /// private literal the allowlist does not name is REFUSED at declare, over a secure connection too.
 /// Its configured target does not make it operator infrastructure.
 #[test]
