@@ -334,16 +334,20 @@ fn failed(e: impl std::fmt::Display) -> Failure {
 }
 
 impl Connection {
-    /// Dial `dial.target` through `door`: the endpoint check, the entry's `locate`, a second
-    /// endpoint check on the authority it named, then a non-blocking connect registered on the
-    /// calling worker's reactor. The connection comes back at once, its open in flight.
+    /// Dial `dial.target` through `door`, an IP literal dialled as written and judged by no
+    /// destination judge: the whole endpoint check ([`endpoint::check`]: no cloud metadata or
+    /// link-local host), the entry's `locate`, the whole endpoint check on the authority it named,
+    /// then a non-blocking connect registered on the calling worker's reactor. The connection comes
+    /// back at once, its open in flight.
     ///
     /// # Errors
     ///
     /// [`Failure::Refused`] before any socket exists; [`Failure::Failed`] off a worker or when the
     /// socket cannot be made.
     pub fn dial(door: Arc<dyn FramerDoor>, via: &Via, dial: Dial) -> Result<Self, Failure> {
+        endpoint::check(&dial.target).map_err(|e| Failure::Refused(e.to_string()))?;
         let planned = Planned::locate(door, via.clone(), dial)?;
+        endpoint::check(planned.authority()).map_err(|e| Failure::Refused(e.to_string()))?;
         let addr = crate::socket::address_of(planned.authority()).ok_or_else(|| {
             Failure::Refused(format!(
                 "`{}` is not an address the connector dials without resolving a name",
@@ -377,8 +381,9 @@ pub fn carried_at(claim: &str, target: &str) -> Result<framer::Located, Failure>
     })
 }
 
-/// A dial located but not yet dialled: the target and the authority the entry named passed the
-/// endpoint check, and the address to dial is still to be judged.
+/// A dial located but not yet dialled: the target and the authority the entry named each name a
+/// host ([`endpoint::named`]), and the address to dial is still to be judged: cloud metadata and
+/// link-local are the destination guard's to refuse, or its carve-outs and allowlist to admit.
 pub struct Planned {
     /// The framer; `None` = the carrier carried as itself.
     door: Option<Arc<dyn FramerDoor>>,
@@ -397,17 +402,17 @@ impl std::fmt::Debug for Planned {
 }
 
 impl Planned {
-    /// The endpoint check, the entry's `locate`, and a second endpoint check on the authority it
-    /// named.
+    /// The target names a host, the entry's `locate`, and the authority it named names one too.
     ///
     /// # Errors
     ///
-    /// [`Failure::Refused`]: the target or the authority is refused, or the entry locates nothing.
+    /// [`Failure::Refused`]: the target or the authority names no host, or the entry locates
+    /// nothing.
     pub fn locate(door: Arc<dyn FramerDoor>, via: Via, dial: Dial) -> Result<Self, Failure> {
-        endpoint::check(&dial.target).map_err(|e| Failure::Refused(e.to_string()))?;
+        endpoint::named(&dial.target).map_err(|e| Failure::Refused(e.to_string()))?;
         let located = framer::locate(door.as_ref(), &dial.target)
             .map_err(|e| Failure::Refused(e.to_string()))?;
-        endpoint::check(&located.authority).map_err(|e| Failure::Refused(e.to_string()))?;
+        endpoint::named(&located.authority).map_err(|e| Failure::Refused(e.to_string()))?;
         Ok(Self {
             door: Some(door),
             via,
@@ -418,16 +423,18 @@ impl Planned {
 
     /// A dial over a carrier CARRIED AS ITSELF (a need over the carrier's own claim, `claim`): its
     /// target is an authority, `host:port`, or `<claim>://host:port`; nothing is offered, and no
-    /// connection security is asked for at the dial. The endpoint check, then the authority's.
+    /// connection security is asked for at the dial. The target names a host, then the authority
+    /// does.
     ///
     /// # Errors
     ///
-    /// [`Failure::Refused`]: the target or the authority is refused, or the target is no authority.
+    /// [`Failure::Refused`]: the target or the authority names no host, or the target is no
+    /// authority.
     pub fn carried(via: Via, dial: Dial) -> Result<Self, Failure> {
-        endpoint::check(&dial.target).map_err(|e| Failure::Refused(e.to_string()))?;
+        endpoint::named(&dial.target).map_err(|e| Failure::Refused(e.to_string()))?;
         let claim = via.door.facts().claims.first().copied().unwrap_or_default();
         let located = carried_at(claim, &dial.target)?;
-        endpoint::check(&located.authority).map_err(|e| Failure::Refused(e.to_string()))?;
+        endpoint::named(&located.authority).map_err(|e| Failure::Refused(e.to_string()))?;
         Ok(Self {
             door: None,
             via,

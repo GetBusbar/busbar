@@ -11,10 +11,12 @@
 //!   then writes, reads, waits and closes it. Ownership is the shared book
 //!   ([`busbar_contract::conn::ConnSlab`]): a connection another instance owns, a closed one and a
 //!   need nobody declared are refused.
-//! * [`endpoint`] is the pure check an open's target passes before any dial: a cloud metadata host,
-//!   in any spelling, is refused by name.
-//! * [`guard`] is THE DESTINATION GUARD, the one check deciding which addresses any outbound
-//!   connection may be dialled at (private refused unless allowlisted, metadata always).
+//! * [`endpoint`] is the pure check an open's target passes before any dial: it names a host. A
+//!   dial no judge judges also refuses a cloud metadata or link-local host there, by name.
+//! * [`guard`] is THE DESTINATION GUARD, the one check deciding which addresses any judged
+//!   outbound connection may be dialled at (private refused unless allowlisted; cloud metadata and
+//!   link-local refused unless an IP or CIDR allowlist entry, or a provider's 1.5.5 carve-out,
+//!   names them).
 //! * [`tls`] is connection security — core-only, never a plugin, never crossing the ABI.
 //! * [`dtls`] is its datagram sibling — the DTLS engine a media association runs on (the RFC 7983
 //!   demux, the ICE-gated bind, the SRTP exporter), on ring like [`tls`].
@@ -942,9 +944,9 @@ impl Connector {
             .get(&(owner, need))
             .map(|n| Arc::clone(&n.door))
             .ok_or(ConnError::Refused)?;
-        endpoint::check(target).map_err(|_| ConnError::Refused)?;
+        endpoint::named(target).map_err(|_| ConnError::Refused)?;
         let located = framer::locate(door.as_ref(), target).map_err(|_| ConnError::Refused)?;
-        endpoint::check(&located.authority).map_err(|_| ConnError::Refused)?;
+        endpoint::named(&located.authority).map_err(|_| ConnError::Refused)?;
         if !scheme_admits(egress_class, located.secure) {
             return Err(ConnError::Refused);
         }
@@ -2114,7 +2116,7 @@ impl Connector {
         ),
         poolable: bool,
     ) -> Result<Held, ConnError> {
-        endpoint::check(target).map_err(|_| ConnError::Refused)?;
+        endpoint::named(target).map_err(|_| ConnError::Refused)?;
         let dial = Dial {
             target: target.to_owned(),
             tls: tls.or_else(|| self.tls.clone()),

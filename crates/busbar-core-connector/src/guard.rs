@@ -32,6 +32,11 @@
 //! `token_url`), `security.allow_metadata_hosts` and `security.allow_all_metadata` for any provider
 //! dial. No other class (the default class, open-web, loopback-allowed, operator infrastructure)
 //! admits metadata through any carve-out; operator infrastructure refuses it whatever they say.
+//! IPv6 link-local (fe80::/10) is refused in every class as metadata is (ARCHITECT PB-100, the
+//! same `DEST_METADATA` verdict the endpoint check gave it), and admitted only by an IP or CIDR entry naming it (the allowlist's, or a provider carve-out's).
+//! This guard is the ONLY metadata and link-local refusal a judged dial meets: the endpoint check
+//! ahead of it reads only that the target names a host (`crate::endpoint::named`), so the
+//! carve-outs and the allowlist reach every dial.
 //! The carve-outs and the extra refusals are re-read at every config commit
 //! ([`Guard::publish`]); the allowlist and `block_private_addresses` are fixed at boot.
 //!
@@ -47,7 +52,7 @@ use busbar_contract::abi::host::service::{
 };
 use busbar_contract::net::{
     embedded_ipv4, host_ip, ip_is_cloud_metadata, ip_is_internal, is_alternate_ipv4_encoding,
-    METADATA_HOSTS,
+    is_link_local_v6, METADATA_HOSTS,
 };
 use busbar_kernel::config::Destinations;
 
@@ -378,6 +383,15 @@ impl Metadata {
                 .chain(own)
                 .any(|e| e.names(name) || addr.is_some_and(|a| e.covers(a)))
     }
+
+    /// Whether a carve-out ENTRY names `addr` itself for a dial of `name` under `class`: the
+    /// provider class only, an IP entry of the everywhere list or of the providers that name
+    /// `name`. Neither `allow_all_metadata` nor a host entry lifts an address that is not a
+    /// metadata address (IPv6 link-local).
+    fn carves_address(&self, name: &str, addr: IpAddr, class: u32) -> bool {
+        let own = self.by_host.get(name).map_or(&[][..], Vec::as_slice);
+        class == CARVE_OUT_CLASS && self.everywhere.iter().chain(own).any(|e| e.covers(addr))
+    }
 }
 
 /// THE GUARD, built at boot from a deployment's [`Destinations`]; its metadata lists are
@@ -600,15 +614,24 @@ impl Guard {
         let name = norm(host);
         let m = self.metadata();
         let metadata = ip_is_cloud_metadata(&addr);
+        // IPv6 LINK-LOCAL (fe80::/10, ARCHITECT PB-100: metadata and link-local are refused on
+        // every need, whatever its egress class): refused in every class, and admitted only by an
+        // IP or CIDR allowlist entry, or a provider's carve-out entry, that names the address.
+        let link_local = matches!(canonical(addr), IpAddr::V6(v6) if is_link_local_v6(&v6));
         let listed = |l: &[Entry]| l.iter().any(|e| e.covers(addr));
         let named = |l: &[Entry]| l.iter().any(|e| e.names(&name));
         // The 1.5.5 carve-outs, a provider dial's only (`Metadata::lifts`): a NAME there admits
         // its metadata answer, as 1.5.5's did; `allow_all_metadata` admits every metadata address
         // and every extra blocked one. A need's private reach to the destination admits as a HOST
-        // entry naming it would: never a metadata address.
+        // entry naming it would: never a metadata or link-local address.
+        let carved = if link_local {
+            m.carves_address(&name, addr, class)
+        } else {
+            m.lifts(&name, Some(addr), class)
+        };
         let admitted = listed(&self.allow)
-            || m.lifts(&name, Some(addr), class)
-            || (!metadata && (named(&self.allow) || reach));
+            || carved
+            || (!metadata && !link_local && (named(&self.allow) || reach));
         if admitted {
             return Ok(());
         }
@@ -619,7 +642,7 @@ impl Guard {
                 addr: Some(addr),
             })
         };
-        if metadata || listed(&m.blocked) {
+        if metadata || link_local || listed(&m.blocked) {
             return refuse(DEST_METADATA);
         }
         let refused = self.refuses_private(class, strict) || self.refuses_off_loopback(class, addr);
