@@ -96,6 +96,12 @@ impl HookBinder for HostGatedHooks {
         HookOrder::Gated
     }
 
+    fn pool_member(&self, pool: &str, member: &str) -> bool {
+        (self.host)()
+            .plane_pool_members(&self.plane_key, member)
+            .is_some_and(|(name, _)| name == pool)
+    }
+
     fn bind_gated(&self, container: &str, principal: Option<&str>) -> Option<GatedHooks> {
         let host = (self.host)();
         let gates = host.plane_gates_of(&self.plane_key, container);
@@ -130,7 +136,8 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         };
         // THE ENTRY THE KERNEL RECORDED at decode, never the plane's later word: a projection naming
         // another entry is refused before any entry's gates are bound.
-        let Some(entry) = bound_entry(recorded.as_deref(), route, &view)? else {
+        let member_of = |pool: &str, member: &str| binder.pool_member(pool, member);
+        let Some(entry) = bound_entry(recorded.as_deref(), route, &view, &member_of)? else {
             return Ok(());
         };
         let entry = entry.to_string();
@@ -227,7 +234,10 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
 ///
 /// - a unit routed over a POOL (`ROUTE_POOL`, a pool named) recorded the pool, and hooks are
 ///   attached to its members: the entry is the member the plane's projection names, as 1.5.5
-///   bound its hooks;
+///   bound its hooks, and only a member of THAT pool as the kernel resolved it (`member_of`): an
+///   empty member, or one outside the recorded pool, refuses the unit, so the plane cannot pick an
+///   entry whose gates are other or none (arch u34 LOW; THE DESIGN §1: the gate step is the
+///   kernel's, the same for every plane);
 /// - a projection that names no entry and states no body (a task's continuation, whose call was
 ///   screened at the unit that created the task) has nothing for a gate to screen: `None`, nothing
 ///   is bound.
@@ -235,12 +245,17 @@ fn bound_entry<'v>(
     recorded: Option<&'v [u8]>,
     route: u8,
     view: &'v Projection,
+    member_of: &dyn Fn(&str, &str) -> bool,
 ) -> Result<Option<&'v str>, Stopped> {
     if view.pool.is_empty() && view.projected.is_none() {
         return Ok(None);
     }
     let recorded = recorded.unwrap_or_default();
     if route == busbar_contract::abi::plane::ROUTE_POOL && !recorded.is_empty() {
+        let pool = std::str::from_utf8(recorded).map_err(|_| Stopped::Unreadable)?;
+        if view.pool.is_empty() || !member_of(pool, &view.pool) {
+            return Err(Stopped::Unreadable);
+        }
         return Ok(Some(&view.pool));
     }
     if recorded != view.pool.as_bytes() {

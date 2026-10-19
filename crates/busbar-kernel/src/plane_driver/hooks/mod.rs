@@ -88,6 +88,14 @@ pub trait HookBinder: Send + Sync {
         None
     }
 
+    /// GATE-FIRST: is `member` a member of the pool `pool`, as the kernel resolved this generation's
+    /// pools? A pool-routed unit binds only a member of its recorded pool. `false` unless the binder
+    /// answers (fail-closed: a binder that knows no pools binds no pool member's gates).
+    fn pool_member(&self, pool: &str, member: &str) -> bool {
+        let _ = (pool, member);
+        false
+    }
+
     /// A unit refused at authentication: the `response` stage taps see the previous release's
     /// synthetic `rejected_by_auth` completion, under the status the caller was answered with, in
     /// the zeroed shape (no body was read), labelled with the dialect (the index into the plane's
