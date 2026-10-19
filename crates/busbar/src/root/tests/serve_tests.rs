@@ -7318,6 +7318,82 @@ mod pools_door_money {
         busbar_kernel::store::now()
     }
 
+    /// AN IMAGE ANSWER'S REPORTED TOKENS MOVE NOTHING A 1.5.5 CONFIG SHOWS (Q128 arch u55, PENDING
+    /// OWNER; coordinator 2026-10-19). Two deployments on a 1.5.5 card that names no image class,
+    /// one far end answering an image generation WITH usage (gpt-image-1's `usage`), the other the
+    /// same answer with none: the key's usage (requests, derived spend, tokens, billable), its
+    /// governance usage read and every `/metrics` series are the same, and no series names an image
+    /// class. What moves is internal: the counts are the book's ledger line under the image classes.
+    /// RED: any figure or series differing, an image class on the scrape, or the counts missing from
+    /// the line.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_image_answers_tokens_move_nothing_a_1_5_5_config_shows() {
+        let _one = ONE_PUBLISHER.lock().await;
+        const WITH: &str = r#"{"created":1,"data":[{"b64_json":"aGk="}],"usage":{"input_tokens":11,"output_tokens":272,"total_tokens":283}}"#;
+        const WITHOUT: &str = r#"{"created":1,"data":[{"b64_json":"aGk="}]}"#;
+        let card = "m0: { input_utok: 3, output_utok: 9 }\n";
+        let mut seen = Vec::new();
+        for (instance, answer) in [
+            ("rehome-money-image-with-usage", WITH),
+            ("rehome-money-image-without-usage", WITHOUT),
+        ] {
+            let _published = Withdrawn(instance);
+            let far = seat_far_end(200, answer).await;
+            let rig = rig(
+                instance,
+                RigOpts {
+                    members: &[(far.port, 1)],
+                    rate_card: Some(card),
+                    ..RigOpts::default()
+                },
+            )
+            .await;
+            let (status, _, body) = rig
+                .send(
+                    "POST",
+                    "/v1/images/generations",
+                    Some(serde_json::json!({"model": "p", "prompt": "a cat"})),
+                )
+                .await;
+            assert_eq!(status, 200, "{instance}: {}", String::from_utf8_lossy(&body));
+            let ledger = rig.ledger_after(1).await;
+            let usage = rig
+                .gov
+                .usage_for(&rig.app.cost, &rig.key_id, now())
+                .expect("a read")
+                .expect("the key exists");
+            let scrape = busbar_kernel::snapshot::render();
+            assert!(
+                !scrape.contains("image_input_tokens") && !scrape.contains("image_output_tokens"),
+                "{instance}: no series names an image class"
+            );
+            let line: std::collections::BTreeMap<String, u64> = rig
+                .book
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .read_back()
+                .iter()
+                .filter_map(|p| p.counts.as_ref())
+                .filter(|c| c.lane == "m0")
+                .flat_map(|c| c.classes.clone())
+                .filter(|(class, _)| class.starts_with("image_"))
+                .collect();
+            seen.push((ledger, usage, line));
+        }
+        let (with, without) = (&seen[0], &seen[1]);
+        assert_eq!(with.0, without.0, "the key's usage is unchanged");
+        assert_eq!(with.1, without.1, "the governance usage read is unchanged");
+        assert_eq!(
+            with.2,
+            std::collections::BTreeMap::from([
+                ("image_input_tokens".to_string(), 11),
+                ("image_output_tokens".to_string(), 272),
+            ]),
+            "the reported counts are the book's line"
+        );
+        assert!(without.2.is_empty(), "no usage, no image line");
+    }
+
     /// A recording far end answering its requests with `replies`, in order.
     async fn mock(replies: Vec<MockResponse>) -> (Arc<MockServerState>, MockServer) {
         let state = Arc::new(MockServerState::new());

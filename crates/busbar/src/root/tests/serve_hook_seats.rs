@@ -512,6 +512,9 @@ pub(super) struct RigOpts<'a> {
     /// The deployment's `limits.request_body_max_bytes` (`None`: the default): the translation cap
     /// the kernel hands the door in its settings, which the plane enforces (row 155).
     pub request_body_max_bytes: Option<usize>,
+    /// The deployment's flat `rate_card:`, as written (YAML: `m0: { input_utok: 3 }`); `None`: no
+    /// card (billing off).
+    pub rate_card: Option<&'a str>,
 }
 
 /// `text`, each line indented by `by` spaces (empty lines dropped).
@@ -920,10 +923,13 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         .into_iter()
         .chain(configured)
         .collect();
-    let cost = if groups.is_empty() {
+    let card: Option<BTreeMap<String, busbar_kernel::config::RateEntryCfg>> = opts
+        .rate_card
+        .map(|y| serde_yaml::from_str(y).expect("the rig's rate card parses"));
+    let cost = if groups.is_empty() && card.is_none() {
         CostModel::flat(1)
     } else {
-        CostModel::resolve_parts(None, 1, &groups)
+        CostModel::resolve_parts(card.as_ref(), 1, &groups)
     };
     let (key, token) = gov
         .mint_signed(

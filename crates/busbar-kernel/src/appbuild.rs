@@ -774,6 +774,18 @@ pub fn build_app_from_config(
         for (class, rate) in &e.units {
             units.push((lane.clone(), class.clone(), rate.nanos_per_unit()));
         }
+        // The absent-is-zero open classes an entry is silent about price at 0 on every card the
+        // root holds too (the dated history, the journal's kept card), as on the live card
+        // (`CostModel::resolve_parts`): a usage read of an image answer never refuses (PENDING
+        // OWNER, Q128 arch u55).
+        for class in busbar_contract::records::ABSENT_RATE_IS_ZERO
+            .iter()
+            .copied()
+            .filter(|c| !busbar_contract::records::RESERVED_UNITS.contains(c))
+            .filter(|c| !e.units.contains_key(*c))
+        {
+            units.push((lane.clone(), class.to_string(), 0));
+        }
     }
     let resolved_rates = ResolvedRates {
         lanes,
