@@ -2708,7 +2708,10 @@ fn test_resolve_builds_registry_from_named_defs() {
 
     // Per-pool bare names land in gates in config order; base policy survives; all-pools → global.
     assert_eq!(cfg.pools["a"].gates, ["pii-eng"]);
-    assert_eq!(cfg.pools["a"].policy, PoolPolicy::Declared("cheapest".to_string()));
+    assert_eq!(
+        cfg.pools["a"].policy,
+        PoolPolicy::Declared("cheapest".to_string())
+    );
     assert_eq!(cfg.pools["b"].gates, ["pii-all"]);
     assert_eq!(cfg.global_hooks, ["audit"]);
 }

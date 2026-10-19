@@ -547,7 +547,10 @@ pub fn card_signing_decl() -> Option<&'static PlaneDecl> {
 /// [`card_signing_decl`] over an injected decl list, so the one-signer rule is drivable without the
 /// process plane list.
 pub fn card_signing_decl_of(decls: &[&'static PlaneDecl]) -> Option<&'static PlaneDecl> {
-    let mut signers = decls.iter().copied().filter(|d| d.card_signing_domain.is_some());
+    let mut signers = decls
+        .iter()
+        .copied()
+        .filter(|d| d.card_signing_domain.is_some());
     let first = signers.next()?;
     signers.next().is_none().then_some(first)
 }

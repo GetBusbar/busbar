@@ -42,14 +42,20 @@ fn the_gates_bind_over_the_recorded_entry_and_a_projection_naming_another_is_ref
     let (files, shell, none) = (named("files"), named("shell"), named(""));
     // `pair` holds `files`; nothing else is a member of anything.
     let member_of = |pool: &str, member: &str| pool == "pair" && member == "files";
-    let bound_entry = |r: Option<&[u8]>, route: u8, v: &super::Projection| -> Result<Option<String>, super::Stopped> {
+    let bound_entry = |r: Option<&[u8]>,
+                       route: u8,
+                       v: &super::Projection|
+     -> Result<Option<String>, super::Stopped> {
         bound_entry(r, route, v, &member_of).map(|e| e.map(str::to_string))
     };
     assert_eq!(
         bound_entry(Some(b"files"), ROUTE_DIRECT, &files).ok(),
         Some(Some("files".to_string()))
     );
-    assert_eq!(bound_entry(None, ROUTE_LOCAL, &none).ok(), Some(Some(String::new())));
+    assert_eq!(
+        bound_entry(None, ROUTE_LOCAL, &none).ok(),
+        Some(Some(String::new()))
+    );
     assert!(
         bound_entry(Some(b"files"), ROUTE_DIRECT, &shell).is_err(),
         "a projection naming another entry bound that entry's gates"
@@ -72,10 +78,14 @@ fn the_gates_bind_over_the_recorded_entry_and_a_projection_naming_another_is_ref
         "a pool's unit bound a member outside its recorded pool"
     );
     assert!(
-        bound_entry(Some(b"pair"), ROUTE_POOL, &super::Projection {
-            projected: Some(b"{}".to_vec()),
-            ..super::Projection::default()
-        })
+        bound_entry(
+            Some(b"pair"),
+            ROUTE_POOL,
+            &super::Projection {
+                projected: Some(b"{}".to_vec()),
+                ..super::Projection::default()
+            }
+        )
         .is_err(),
         "a pool's unit bound an empty member"
     );

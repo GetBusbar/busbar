@@ -370,13 +370,8 @@ pub fn is_reserved_hook_name(name: &str) -> bool {
 // Consumed by the freeze test (`reserved_hook_names_are_frozen`) rather than by runtime code — that
 // is the POINT: it is the declared, reviewable VALUE of the freeze, and the test proves it equals
 // the runtime union.
-pub const FROZEN_HOOK_NAME_WORD_SPACE: &[&str] = &[
-    "first",
-    "nothing",
-    "reject",
-    "tokens",
-    "weighted",
-];
+pub const FROZEN_HOOK_NAME_WORD_SPACE: &[&str] =
+    &["first", "nothing", "reject", "tokens", "weighted"];
 
 /// A named entry in the top-level `hooks:` registry — a single hook (tap or gate) and the `kind: hook`
 /// PLUGIN that backs it. A hook is now a dlopen plugin under the hybrid ABI (the 1.5.0 retirement of

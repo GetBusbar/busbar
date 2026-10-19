@@ -873,6 +873,9 @@ pub use busbar_kernel::config::providers::{
 // `busbar_kernel::config::{hooks, pools}`; re-exported here at their historical `config::` path
 // so no caller (this module's own definition-to-registry lowering, validation, `config_validate`,
 // `store`) moves.
+pub use busbar_kernel::config::hook_words::{
+    declared_hook_words, install_declared_hook_words, is_declared_hook_word,
+};
 pub use busbar_kernel::config::hooks::{
     caller_in_hook_groups, default_on_error, default_policy_timeout_ms, is_reserved_hook_name,
     on_error_terminal, HookCfg, HookDefCfg, HookDefs, HookKind, HookStage, OnErrorCfg,
@@ -888,9 +891,6 @@ pub use busbar_kernel::config::pools::{
     PoolMember, PoolPolicy, DEFAULT_BREAKER_BASE_COOLDOWN_SECS, DEFAULT_BREAKER_CONSECUTIVE_N,
     DEFAULT_BREAKER_MAX_COOLDOWN_SECS, DEFAULT_BREAKER_MIN_REQUESTS, DEFAULT_BREAKER_THRESHOLD,
     DEFAULT_BREAKER_WINDOW_SECS,
-};
-pub use busbar_kernel::config::hook_words::{
-    declared_hook_words, install_declared_hook_words, is_declared_hook_word,
 };
 
 // The FAILOVER BUDGET numeric defaults/bounds live beside the `FailoverCfg` shape in `pools`;
