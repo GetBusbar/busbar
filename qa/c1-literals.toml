@@ -18,12 +18,6 @@ count = 1
 [[finding]]
 rule = "c1-literals:feature"
 file = "crates/busbar-kernel/Cargo.toml"
-item = "jsonrpc (jsonrpc-ingress)"
-count = 1
-
-[[finding]]
-rule = "c1-literals:feature"
-file = "crates/busbar-kernel/Cargo.toml"
 item = "mcp (plane-mcp)"
 count = 1
 
@@ -80,18 +74,6 @@ rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/diagnostics/mod.rs"
 item = "streaming"
 count = 5
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/governance/state.rs"
-item = "sigv4"
-count = 1
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/ingress/protocol.rs"
-item = "jsonrpc"
-count = 1
 
 [[finding]]
 rule = "c1-literals:literal"

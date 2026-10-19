@@ -2252,6 +2252,39 @@ pub mod tokens;
 pub mod export_axis;
 /// The kind-neutral outbound auth double a test build binds lane credentials on.
 pub mod outbound_auth;
+
+/// THE ISSUED-CREDENTIAL DOUBLE: the kind and shape a test binary's governance issues a key's
+/// second credential under, standing for the linked signed-request verifier's Statement marks (a
+/// test binary links no auth plugin). Test data, never shipped.
+pub mod issued {
+    /// The persisted kind of the row-looked-up credential, as 1.5.5 stored it: frozen stored data,
+    /// read off the kernel's frozen-text fixture (the kind every test reads the row back under)
+    /// rather than spelled here.
+    fn frozen_kind() -> String {
+        const FROZEN: &str = include_str!("../../tests/fixtures/frozen_customer_text.yaml");
+        FROZEN
+            .lines()
+            .find_map(|l| l.strip_prefix("signed_credential_kind:"))
+            .map(|v| v.trim().to_string())
+            .expect("the frozen fixture names the signed credential kind")
+    }
+
+    /// `(kind, shape)` as the linked signed-request verifier states them.
+    #[must_use]
+    pub fn double() -> (String, busbar_contract::auth_calls::IssuedShape) {
+        (
+            frozen_kind(),
+            busbar_contract::auth_calls::IssuedShape {
+                id_prefix: "AKIA".to_string(),
+                id_len: 20,
+                id_alphabet: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".to_string(),
+                secret_len: 40,
+                secret_alphabet: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+                    .to_string(),
+            },
+        )
+    }
+}
 /// The stand-in secret axis a test build installs in place of the root's.
 pub mod secrets;
 pub use secrets::SecretsStandIn;
@@ -2331,6 +2364,16 @@ pub fn install_operator_auth_row(door: AuthDoor) {
 pub use busbar_kernel_identity::operator::{
     install_row as install_operator_auth_row_as, AuthDoor, OperatorWords,
 };
+
+/// THE ROOT'S HOOK NAMES in a test binary of the composition root: `names` is the root's own
+/// generated list (`$OUT_DIR/linked_hook_names.rs`, the manifest's `linked-name` rows for the hook
+/// rows that build links), and the install record ([`crate::preflight::root_rows`]) reports them as
+/// the root's install record does, so the admin surface that binary serves, its `openapi.json`
+/// included, lists the hooks the shipped binary lists. A test build with no root hands in nothing
+/// and lists none. The first hand-in stands.
+pub fn install_root_hook_names(names: &'static [&'static str]) {
+    let _ = crate::preflight::TEST_ROOT_HOOK_NAMES.set(names);
+}
 
 /// The builtin-only `SecretResolver` (env/file sugar, no plugin modules) for a dependent crate's
 /// tests — `SecretResolver::builtins_only` itself stays crate-private; this is the one doorway.

@@ -75,7 +75,7 @@ pub struct MintPolicy {
     /// BELOW it, never above it.
     pub block_max_ttl_secs: Option<u64>,
     /// Deployment-wide allowed binding modes (`auth.policy.binding_modes`, wire spellings). `None` =
-    /// all modes allowed. Applies when the caller holds no role that restricts modes further.
+    /// all modes allowed. Applies to every mint; a held role's list narrows it further.
     pub block_binding_modes: Option<Vec<String>>,
     /// Per-role ceilings (`auth.policy.mint_ceilings.<role>`).
     pub ceilings: std::collections::BTreeMap<String, RoleCeiling>,
@@ -197,8 +197,8 @@ impl MintPolicy {
     /// - Pools: if the effective allowed set is a finite list, the request must be a subset —
     ///   requesting ALL pools (`None`) under a finite ceiling is refused, an explicit subset is
     ///   allowed, and the empty set is always allowed.
-    /// - Mode: if a mode is requested and the effective allowed set is a finite list, it must be a
-    ///   member.
+    /// - Mode: if a mode is requested, it must be a member of the block list (when set) AND of the
+    ///   role list (when set).
     pub fn check_mint(&self, req: &MintRequest<'_>) -> Result<u64, String> {
         let role = self.effective_role_ceiling(req.roles);
 
@@ -238,17 +238,20 @@ impl MintPolicy {
             }
         }
 
-        // Mode ceiling: role restriction if present, else the block-level allowed set.
-        let allowed_modes = role
-            .as_ref()
-            .and_then(|c| c.binding_modes.as_ref())
-            .or(self.block_binding_modes.as_ref());
-        if let (Some(mode), Some(allowed)) = (req.requested_mode, allowed_modes) {
-            if !allowed.iter().any(|m| m == mode) {
-                return Err(format!(
-                    "binding mode '{mode}' is not permitted by policy (allowed: [{}])",
-                    allowed.join(", ")
-                ));
+        // Mode ceiling: the block-level allowed set AND the role's, each where set. A role's list
+        // narrows the deployment-wide list and never widens it (the composition rule above).
+        let role_modes = role.as_ref().and_then(|c| c.binding_modes.as_ref());
+        if let Some(mode) = req.requested_mode {
+            for allowed in [self.block_binding_modes.as_ref(), role_modes]
+                .into_iter()
+                .flatten()
+            {
+                if !allowed.iter().any(|m| m == mode) {
+                    return Err(format!(
+                        "binding mode '{mode}' is not permitted by policy (allowed: [{}])",
+                        allowed.join(", ")
+                    ));
+                }
             }
         }
 
