@@ -172,6 +172,10 @@ impl PlaneStore for FrozenStore {
 /// a neutral word keeps this kernel golden free of any stream's name.
 const KIND_SCOPED: &str = "scoped_golden";
 
+/// The scope the frozen chain was sealed under. The scope is IN this framing's digest, so it is part
+/// of the frozen evidence: a different scope recomputes a different digest.
+const FROZEN_SCOPE: &str = "vk_alice";
+
 /// The decode a registered scoped stream supplies: the journal's own neutral body, scope in the
 /// digest, `LengthPrefixed` (the registry re-stamps the framing it registered).
 fn scoped_reframe(
@@ -200,10 +204,10 @@ fn scoped_chain_boot_verifies_from_frozen_bytes() {
     use crate::audit::stream_registry;
 
     let mut store = FrozenStore::new();
-    store.put(KIND_SCOPED, Some("scope-1"), SCOPED_1);
-    store.put(KIND_SCOPED, Some("scope-1"), SCOPED_2);
+    store.put(KIND_SCOPED, Some(FROZEN_SCOPE), SCOPED_1);
+    store.put(KIND_SCOPED, Some(FROZEN_SCOPE), SCOPED_2);
     let bodies = store
-        .list_plane_records(KIND_SCOPED, &PlaneSelector::Parent("scope-1".into()))
+        .list_plane_records(KIND_SCOPED, &PlaneSelector::Parent(FROZEN_SCOPE.into()))
         .expect("store read");
 
     let kind_id = crate::audit::auditlog::fresh_test_kind_id();
@@ -216,7 +220,7 @@ fn scoped_chain_boot_verifies_from_frozen_bytes() {
         usize::MAX,
         None,
     );
-    let broke = stream_registry::seed(kind_id, "scope-1", &bodies).expect("the bodies decode");
+    let broke = stream_registry::seed(kind_id, FROZEN_SCOPE, &bodies).expect("the bodies decode");
     assert!(
         !broke,
         "a persisted length-prefixed scoped chain reported TAMPERED means the digest drifted"
@@ -227,7 +231,7 @@ fn scoped_chain_boot_verifies_from_frozen_bytes() {
     let tail: FrozenTailDigest = decode(SCOPED_2).unwrap();
     assert_eq!(tail.hash, SCOPED_TAIL_HASH);
     let (seq, prev_hash, _hash) =
-        stream_registry::append_full(kind_id, "scope-1", b"next").expect("append");
+        stream_registry::append_full(kind_id, FROZEN_SCOPE, b"next").expect("append");
     assert_eq!(
         (seq, prev_hash.as_str()),
         (3, SCOPED_TAIL_HASH),
