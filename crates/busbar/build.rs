@@ -378,7 +378,7 @@ fn test_linked_source(manifest: &str) -> String {
     // shipped binary's.
     let axes = metadata_map(manifest, "package.metadata.busbar.linked-axes");
     out.push_str(
-        "];\nstatic TEST_LINKED_PROTOCOLS: &[&[&'static ::busbar_contract::protocol::ProtocolDecl]] = &[\n",
+        "];\nstatic TEST_LINKED_PROTOCOLS: &[&[&::busbar_contract::protocol::ProtocolDecl]] = &[\n",
     );
     for id in &doors {
         let row = entries
