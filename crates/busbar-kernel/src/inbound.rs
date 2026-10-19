@@ -38,8 +38,6 @@
 //! This module names no loader: the composition root glues it to the plugin loader's auth handle,
 //! injecting the MAC, the unit mint, the spawner and the refusal sink.
 
-#![allow(dead_code, unused_imports)]
-
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -897,8 +895,8 @@ impl Inbound {
     /// THE HOST'S END NOTIFICATION: `owner`'s connection `conn` ended. Its `Peer` verdict, at every
     /// generation, leaves the table (its credential zeroised); nothing else is held by connection.
     pub fn connection_ended(&self, owner: u64, conn: u64) {
-        // RED: nothing leaves.
-        let _ = (owner, conn);
+        self.peers()
+            .retain(|(o, _, c), _| *o != owner || *c != conn);
     }
 
     /// How many connections hold a `Peer` verdict.
@@ -1024,10 +1022,6 @@ impl Inbound {
         // THE PEER POINT (l.973-978; the Peer rule): once per connection, before any head; no unit,
         // and its answer is continue or stop alone, with no name beside it.
         let peer = point == AuthPoint::Peer;
-        // RED: the peer point is not served.
-        if peer {
-            return Err(PEER_BYTES);
-        }
         if peer && (!call.unit.is_none() || call.body.is_some() || !call.head.is_empty()) {
             return Err(PEER_BYTES);
         }
@@ -1106,8 +1100,7 @@ impl Inbound {
                     Some(Some(_)) => continue,
                     Some(None) => {}
                 }
-                // RED: the op's deadline is not read.
-                if deadline.is_some_and(|_| false) {
+                if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
                     // The op the call was made for is past its deadline: no verify runs, and the
                     // position answers no verdict (a deny, fail closed).
                     me.record(target, p.index, &p.provider, Judging::Nothing, &table);
@@ -1152,11 +1145,7 @@ impl Inbound {
                             target,
                             p.index,
                             &p.provider,
-                            {
-                                // RED: the `keys` arm answers no verdict.
-                                let _ = signed;
-                                Judging::Nothing
-                            },
+                            Judging::Keys(&head, signed),
                             &table,
                         );
                         continue;

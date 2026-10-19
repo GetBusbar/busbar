@@ -1479,13 +1479,37 @@ pub(crate) fn serving_unit() -> Option<u64> {
     SERVING.with(std::cell::Cell::get)
 }
 
-/// RED: the op deadline a crossing states (not yet stated).
-pub(crate) struct OpDeadline;
+thread_local! {
+    /// The deadline (the loader's clock, nanoseconds) of the op whose crossing is on this thread.
+    static OP_DEADLINE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
 
-/// RED: the op's deadline is not read.
+/// The op deadline a crossing states, restored to the one it is nested in when it drops.
+pub(crate) struct OpDeadline(Option<u64>);
+
+impl Drop for OpDeadline {
+    fn drop(&mut self) {
+        OP_DEADLINE.with(|d| d.set(self.0));
+    }
+}
+
+/// State the deadline of the op `head` leads, for the host services its crossing calls: its
+/// `deadline_ns` for a call, stream or connection op; none for a write-behind op (never
+/// cancelled) or an op with no deadline.
 pub(crate) fn op_deadline(head: &busbar_contract::abi::mechanism::call::InHead) -> OpDeadline {
-    let _ = head;
-    OpDeadline
+    use busbar_contract::abi::mechanism::call::DeadlineClass;
+    let deadline = (head.deadline_ns != 0
+        && DeadlineClass::from_raw(head.deadline_class) != Some(DeadlineClass::WriteBehind))
+    .then_some(head.deadline_ns);
+    OpDeadline(OP_DEADLINE.with(|d| d.replace(deadline)))
+}
+
+/// What remains of the deadline of the op whose crossing is on this thread; `None` outside one,
+/// or for an op with none.
+fn op_remaining() -> Option<std::time::Duration> {
+    OP_DEADLINE
+        .with(std::cell::Cell::get)
+        .map(|d| std::time::Duration::from_nanos(d.saturating_sub(super::now_ns())))
 }
 
 extern "C" fn entitlement_check(
@@ -1554,8 +1578,8 @@ pub const NOT_EXACT: &str = "the `in` is not exactly its service's size";
 pub const UNIT_UNVERIFIED: &str = "the host holds no unit to verify this one against";
 /// The refusal of an auth-handle `in` that breaks its contract check.
 pub const AUTH_IN_MALFORMED: &str = "the auth-handle `in` breaks its check";
-/// The refusal of a peer-point `auth.call` whose kernel answer named a line, a byte or a unit
-/// (RED: not yet applied).
+/// The refusal of a peer-point `auth.call` whose kernel answer named a line, a byte or a unit:
+/// the peer point answers continue or stop alone (the Peer rule).
 pub const PEER_ANSWER_NAMES: &str =
     "a peer-point answer is continue or stop, with nothing beside it";
 /// What every auth-handle slot answers PAST its checks while no kernel side is installed
@@ -1709,6 +1733,13 @@ unsafe fn put_auth(stored: &Stored, i: &svc::AuthCallIn) -> Result<Answered, Ans
         return Ok(Answered::bare(stored.outcome, stored.error));
     }
     let (unit, names) = stored.bytes.split_at(UNIT_PREFIX.min(stored.bytes.len()));
+    // THE PEER RULE: a peer-point answer is continue or stop alone; one that names anything, or a
+    // unit, is refused and writes nothing.
+    if i.point == busbar_contract::abi::auth::POINT_PEER
+        && (!names.is_empty() || !stored.spans.is_empty() || unit.iter().any(|b| *b != 0))
+    {
+        return Ok(Answered::bare(Outcome::Refused, PEER_ANSWER_NAMES));
+    }
     let word = |at: usize| {
         unit.get(at..at + 8)
             .and_then(|b| b.try_into().ok())
@@ -1786,12 +1817,9 @@ extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             let Some(host) = host else {
                 return Answered::bare(Outcome::Refused, AUTH_HANDLE_NOT_SERVED);
             };
-            let request = if i.point == busbar_contract::abi::auth::POINT_PEER {
-                Some(HeadCopy::default())
-            } else {
-                head_copy(&i.request)
-            };
-            let Some(request) = request else {
+            // At the peer point the view is copied as presented: the kernel refuses any byte in it
+            // (the Peer rule).
+            let Some(request) = head_copy(&i.request) else {
                 return Answered::bare(Outcome::Refused, AUTH_IN_MALFORMED);
             };
             let body = if i.point == busbar_contract::abi::auth::POINT_HEAD_BODY {
@@ -1812,8 +1840,7 @@ extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                 stream: i.stream,
                 request,
                 body,
-                // RED: the op's deadline is not handed on.
-                deadline: None,
+                deadline: op_remaining(),
             };
             serve_with(
                 &store,
@@ -1892,35 +1919,30 @@ extern "C" fn unit_hand_in(ctx: HostCtx, input: *const c_void, out: *mut Service
     )
 }
 
-/// One refusal the kernel answered, held for the transport until its connection's next
-/// `unit.refuse` ([`svc::RefusalAnswer`]: kernel-owned, valid until the next call on that
-/// connection): the bytes, and the field list naming them.
+/// One refusal the kernel answered, lent to the caller for the call alone: the bytes, and the
+/// field list naming them.
 struct HeldRefusal {
     bytes: RefusalBytes,
     fields: Vec<busbar_contract::abi::mechanism::call::Field>,
 }
 
-// SAFETY: the raw pointers in `fields` name `bytes`' own heap buffers, which move with it and are
-// never written while held.
-unsafe impl Send for HeldRefusal {}
-
-/// The refusals held per (owner, connection): one each, replaced by the connection's next.
-fn held_refusals() -> std::sync::MutexGuard<'static, HashMap<(u64, u64), Box<HeldRefusal>>> {
-    static HELD: std::sync::OnceLock<Mutex<HashMap<(u64, u64), Box<HeldRefusal>>>> =
-        std::sync::OnceLock::new();
-    HELD.get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+thread_local! {
+    /// THE ONE REFUSAL LENT ON THIS THREAD: the caller copies it out before its `unit.refuse`
+    /// returns (the SDK's `Services::unit_refuse`), and the next refusal answered on this thread
+    /// replaces it. Nothing is kept per connection, so N refusals hold one.
+    static LENT_REFUSAL: std::cell::RefCell<Option<Box<HeldRefusal>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
-/// How many refusals are held (RED: one per connection).
+/// How many refusals this thread holds lent (at most one).
 #[cfg(test)]
 pub(crate) fn refusals_held() -> usize {
-    held_refusals().len()
+    LENT_REFUSAL.with(|l| usize::from(l.borrow().is_some()))
 }
 
 /// `unit.refuse`: the exact size, the unit, the `in`'s contract check; then the installed kernel
-/// side answers the refusal it owns, held for the transport until its connection's next refusal.
+/// side answers the refusal it owns, lent to the caller until the next refusal on its thread (it
+/// copies it out before the call returns).
 /// Never pends. With no kernel side installed: [`AUTH_HANDLE_NOT_SERVED`].
 extern "C" fn unit_refuse(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     exact::<svc::UnitRefuseIn>(ctx, input, out, op::UNIT_REFUSE, |i, owner, _, route, _| {
@@ -1986,9 +2008,9 @@ extern "C" fn unit_refuse(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
                 flags: 0,
             },
         };
-        held_refusals().insert((owner, i.conn), held);
+        LENT_REFUSAL.with(|l| *l.borrow_mut() = Some(held));
         // SAFETY: the caller's answer slot, checked non-NULL by `check_unit_refuse_in`; what it
-        // names is held above until the connection's next refusal.
+        // names is lent above until the next refusal on this thread.
         unsafe { i.answer.write_unaligned(answer) };
         Answered::bare(Outcome::Ready, "")
     })
