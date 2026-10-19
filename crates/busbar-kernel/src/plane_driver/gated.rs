@@ -85,6 +85,9 @@ pub struct HostGatedHooks {
     pub plane_key: String,
     /// The caller's governance key, by the principal the kernel verified.
     pub keys: PrincipalKeys,
+    /// The plane's dialect names, in its tail's order: the label an in-session hook of the unit is
+    /// told (its `ingress_protocol`) and the op its access amendment records, as at the screen.
+    pub dialects: Vec<String>,
 }
 
 impl HookBinder for HostGatedHooks {
@@ -94,6 +97,13 @@ impl HookBinder for HostGatedHooks {
 
     fn order(&self) -> HookOrder {
         HookOrder::Gated
+    }
+
+    fn dialect(&self, dialect: u32) -> String {
+        self.dialects
+            .get(dialect as usize)
+            .cloned()
+            .unwrap_or_default()
     }
 
     fn bind_gated(&self, container: &str, principal: Option<&str>) -> Option<GatedHooks> {

@@ -120,3 +120,25 @@ fn the_refusal_literal_is_the_shared_constant() {
         "the gate-first stage serves the shared refusal unchanged"
     );
 }
+
+/// RED (Q128 p21#4; THE DESIGN §11.7, the hook view's `ingress_protocol`): the gate-first binder
+/// names the plane's dialects, so a gate-first unit's in-session hooks are told the dialect it
+/// arrived in and its access amendments record it as the op, as its screen does. Before the fix
+/// the binder took the trait default and every in-session hook was told an empty dialect.
+#[test]
+fn the_gate_first_binder_names_the_dialect_a_unit_arrived_in() {
+    use super::super::HookBinder;
+    let host: super::GenerationHost =
+        std::sync::Arc::new(|| -> std::sync::Arc<dyn crate::plane_host::EngineHost> {
+            unreachable!("naming a dialect reads no generation")
+        });
+    let binder = super::HostGatedHooks {
+        host,
+        plane_key: "plane-a".to_string(),
+        keys: std::sync::Arc::new(|_: &str| None),
+        dialects: vec!["dialect-0".to_string(), "dialect-1".to_string()],
+    };
+    assert_eq!(binder.dialect(1), "dialect-1");
+    assert_eq!(binder.dialect(0), "dialect-0");
+    assert_eq!(binder.dialect(9), "", "an index past the plane's dialects names none");
+}
