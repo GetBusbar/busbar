@@ -866,7 +866,7 @@ pub enum SelfMintOp {
 /// so a login re-enables an admin-disabled binding at its derived id (v1.5.5
 /// crates/busbar/src/governance/state.rs:431 skips only tombstones; :560 mints). The owner's
 /// signature flips this one line.
-pub const SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE: bool = false;
+pub const SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE: bool = true;
 
 /// Why the self-serve mint refused to issue. Each one is an admin's or another provider's hold on the
 /// subject, never a store failure; the token exchange maps every one to `Unbound` (403).
