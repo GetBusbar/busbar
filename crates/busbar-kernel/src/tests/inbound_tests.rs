@@ -139,6 +139,37 @@ fn line(path: &str, methods: u32, auth: LineAuth) -> Line {
 fn kit(auths: &[(&str, Arc<Script>)]) -> Kit {
     let names: Vec<String> = auths.iter().map(|(n, _)| (*n).to_string()).collect();
     let points = AuthPoints(auths.iter().fold(0, |p, (_, s)| p | s.points.bits()));
+    kit_over(
+        crate::test_support::TestApp::new().build(),
+        names,
+        points,
+        auths,
+    )
+}
+
+/// [`kit`] over `app`, its lines' chain `names` at `points`, the opened `auths` among them.
+fn kit_over(
+    app: Arc<App>,
+    names: Vec<String>,
+    points: AuthPoints,
+    auths: &[(&str, Arc<Script>)],
+) -> Kit {
+    kit_signed(app, names, points, auths, kin_unsigned())
+}
+
+/// No path is answered by a dialect that signs.
+fn kin_unsigned() -> SignedIngress {
+    Arc::new(|_: &App, _: &str| false)
+}
+
+/// [`kit_over`], its paths' signing answered by `signed`.
+fn kit_signed(
+    app: Arc<App>,
+    names: Vec<String>,
+    points: AuthPoints,
+    auths: &[(&str, Arc<Script>)],
+    signed: SignedIngress,
+) -> Kit {
     let chain = LineAuth::Chain(names, points);
     let guests = GuestList::seal(vec![
         line(MESSAGES, METHOD_POST, chain.clone()),
@@ -146,7 +177,6 @@ fn kit(auths: &[(&str, Arc<Script>)]) -> Kit {
         line(HEALTHZ, METHOD_GET, LineAuth::None),
     ])
     .expect("the list seals");
-    let app = crate::test_support::TestApp::new().build();
     let next = Arc::new(AtomicU64::new(100));
     let refused: Arc<Mutex<Vec<RefusedUnit>>> = Arc::default();
     let sink = Arc::clone(&refused);
@@ -170,6 +200,7 @@ fn kit(auths: &[(&str, Arc<Script>)]) -> Kit {
         app: Arc::clone(&app),
         door_refusals: Vec::new(),
         ids: line_ids(3),
+        signed_ingress: signed.clone(),
     };
     inbound.install(OWNER, GEN, listener()).expect("installed");
     // The same list under another owner: a unit minted for one is not the other's.
@@ -237,12 +268,58 @@ impl Kit {
                     conn: 1,
                     head,
                     body,
+                    deadline: None,
                 },
                 Box::new(|_: Result<Answer, &'static str>| {
                     panic!("every scripted verify answers at once")
                 }),
             )
             .expect("answered at once")
+    }
+
+    /// `auth.call` on connection `conn`, with the op's `deadline`.
+    fn call_on(
+        &self,
+        conn: u64,
+        path: &str,
+        unit: UnitRef,
+        point: u32,
+        head: Head,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<Answer, &'static str> {
+        self.inbound
+            .auth_call(
+                Call {
+                    owner: OWNER,
+                    generation: GEN,
+                    auth: self.id(path),
+                    unit,
+                    point,
+                    conn,
+                    head,
+                    body: None,
+                    deadline,
+                },
+                Box::new(|_: Result<Answer, &'static str>| {
+                    panic!("every scripted verify answers at once")
+                }),
+            )
+            .expect("answered at once")
+    }
+
+    /// `unit.hand_in` on connection `conn`.
+    fn hand_in_on(&self, conn: u64, path: &str, unit: UnitRef, head: Head) -> (u32, UnitRef) {
+        self.inbound
+            .hand_in(HandIn {
+                owner: OWNER,
+                generation: GEN,
+                auth: self.id(path),
+                unit,
+                line: self.line(path),
+                conn,
+                head,
+            })
+            .expect("handed in")
     }
 
     fn hand_in(&self, path: &str, line_path: &str, unit: UnitRef, head: Head) -> (u32, UnitRef) {
@@ -253,6 +330,7 @@ impl Kit {
                 auth: self.id(path),
                 unit,
                 line: self.line(line_path),
+                conn: 1,
                 head,
             })
             .expect("handed in")
@@ -777,6 +855,7 @@ fn red_a_line_id_never_carries_the_binding_bit() {
         app: Arc::clone(&k.app),
         door_refusals: Vec::new(),
         ids,
+        signed_ingress: kin_unsigned(),
     };
     for ids in [
         vec![1, 2, BINDING_BIT | 3],
@@ -798,4 +877,585 @@ fn red_a_line_id_never_carries_the_binding_bit() {
         k.inbound.install(OWNER + 9, GEN, with(vec![1, 2, 3])),
         Ok(())
     );
+}
+
+// ── the peer point, the op's deadline, and the `keys` arm ────────────────────────────────────
+
+/// RED (l.973-978, the Peer rule): a peer-point call answers ONLY continue or stop, with no unit
+/// and no name, even when the auth named lines; its verdict is the connection's, applied to the
+/// unit handed in on that connection, and to no unit on another connection.
+#[test]
+fn red_the_peer_point_answers_flow_alone_and_its_verdict_is_the_connections() {
+    let a = Script::new(AuthPoints::PEER, identity("peer", "cert"), names());
+    let k = kit(&[("a", Arc::clone(&a))]);
+    let ans = k
+        .call_on(
+            7,
+            MESSAGES,
+            UnitRef::NONE,
+            POINT_PEER,
+            Head::default(),
+            None,
+        )
+        .expect("answered");
+    assert_eq!(ans.flow, FLOW_CONTINUE);
+    assert_eq!(ans.unit, UnitRef::NONE, "a peer answer named a unit");
+    assert!(
+        ans.strips.is_empty(),
+        "a peer answer named lines: {:?}",
+        ans.strips
+    );
+    let (flow, unit) = k.hand_in_on(7, MESSAGES, UnitRef::NONE, post(MESSAGES, &[], None));
+    assert_eq!(
+        flow, FLOW_CONTINUE,
+        "the connection's verdict did not reach its unit"
+    );
+    assert_eq!(k.inbound.admitted(unit.id).expect("admitted").provider, "a");
+    let (flow, _) = k.hand_in_on(8, MESSAGES, UnitRef::NONE, post(MESSAGES, &[], None));
+    assert_eq!(
+        flow, FLOW_STOP,
+        "another connection's unit took this connection's verdict"
+    );
+    assert_eq!(a.calls(), 1);
+    // A peer refusal stops, and still names nothing.
+    let r = Script::new(AuthPoints::PEER, Verified::Reject, names());
+    let k = kit(&[("r", r)]);
+    let ans = k
+        .call_on(
+            7,
+            MESSAGES,
+            UnitRef::NONE,
+            POINT_PEER,
+            Head::default(),
+            None,
+        )
+        .expect("answered");
+    assert_eq!(
+        (ans.flow, ans.unit, ans.strips.len()),
+        (FLOW_STOP, UnitRef::NONE, 0)
+    );
+}
+
+/// RED (the Peer rule, the call's side): a peer-point call that presents any byte of a request, or
+/// a unit, is refused before any auth runs.
+#[test]
+fn red_a_peer_call_presenting_bytes_is_refused() {
+    let a = Script::new(AuthPoints::PEER, identity("peer", "cert"), Vec::new());
+    let k = kit(&[("a", Arc::clone(&a))]);
+    assert_eq!(
+        k.call_on(
+            7,
+            MESSAGES,
+            UnitRef::NONE,
+            POINT_PEER,
+            post(MESSAGES, &[], None),
+            None
+        ),
+        Err(PEER_BYTES)
+    );
+    assert_eq!(
+        k.call_on(
+            7,
+            MESSAGES,
+            UnitRef { id: 9, mac: 9 },
+            POINT_PEER,
+            Head::default(),
+            None
+        ),
+        Err(PEER_BYTES)
+    );
+    assert_eq!(a.calls(), 0);
+}
+
+/// RED (deadline classes: the ticket the call pends on was minted for the framer op with its
+/// class): past the op's deadline no verify runs, and the call answers stop.
+#[test]
+fn red_a_call_past_its_ops_deadline_runs_no_verify_and_stops() {
+    let a = Script::new(AuthPoints::HEAD, identity("alice", "k"), Vec::new());
+    let k = kit(&[("a", Arc::clone(&a))]);
+    let past = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_millis(5))
+        .expect("a past instant");
+    let ans = k
+        .call_on(
+            1,
+            MESSAGES,
+            UnitRef::NONE,
+            POINT_HEAD,
+            post(MESSAGES, &[], None),
+            Some(past),
+        )
+        .expect("answered");
+    assert_eq!(ans.flow, FLOW_STOP);
+    assert_eq!(a.calls(), 0, "a verify ran past the op's deadline");
+    let future = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let ans = k
+        .call_on(
+            1,
+            MESSAGES,
+            UnitRef::NONE,
+            POINT_HEAD,
+            post(MESSAGES, &[], None),
+            Some(future),
+        )
+        .expect("answered");
+    assert_eq!(ans.flow, FLOW_CONTINUE);
+    assert_eq!(a.calls(), 1);
+}
+
+/// A governance with a signer, as the `keys` arm verifies against.
+fn signing_gov() -> Arc<crate::governance::GovState> {
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    Arc::new(
+        crate::governance::GovState::new_with_signer(
+            Arc::new(crate::governance::MemoryStore::new()),
+            Some("admintok".to_string()),
+            Some(signer),
+        )
+        .expect("a governance"),
+    )
+}
+
+/// A signed key minted on `gov` at `now`, standing until `exp`: (its id, its token).
+fn minted(gov: &crate::governance::GovState, exp: u64, now: u64) -> (String, String) {
+    let (key, secret) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "vk".to_string(),
+                allowed_pools: Some(vec!["pa".to_string()]),
+                ..Default::default()
+            },
+            exp,
+            now,
+        )
+        .expect("minted");
+    (key.id.clone(), secret.expose(&crate::seal::lend()).clone())
+}
+
+/// A kit whose chain is the `keys` arm alone, over `gov`.
+fn keys_kit(gov: &Arc<crate::governance::GovState>) -> Kit {
+    kit_over(
+        crate::test_support::TestApp::new()
+            .keys_chain()
+            .governance(Arc::clone(gov))
+            .build(),
+        vec![crate::config::KEYS_MODULE.to_string()],
+        AuthPoints::HEAD,
+        &[],
+    )
+}
+
+fn bearer(token: &str) -> Head {
+    post(
+        MESSAGES,
+        &[("Authorization", &format!("Bearer {token}"))],
+        None,
+    )
+}
+
+/// The kernel's `keys` arm through the inbound handle over `head`: (flow, unit).
+fn spend(k: &Kit, head: Head) -> (u32, UnitRef) {
+    let ans = k
+        .call(MESSAGES, UnitRef::NONE, POINT_HEAD, head)
+        .expect("answered");
+    (ans.flow, ans.unit)
+}
+
+/// RED (oracle `auth.lifecycle__key-revoke`): a live signed key is admitted first-hand with the
+/// governance key it resolves; once revoked, the same token is a stop, refused with the 401 the
+/// auth gate answers on the path. The answer names the carriers, never the token.
+#[test]
+fn red_keys_a_revoked_key_is_refused() {
+    let gov = signing_gov();
+    let now = crate::store::now();
+    let (id, token) = minted(&gov, now + 3_600, now);
+    let k = keys_kit(&gov);
+    let ans = k
+        .call(MESSAGES, UnitRef::NONE, POINT_HEAD, bearer(&token))
+        .expect("answered");
+    assert_eq!(ans.flow, FLOW_CONTINUE);
+    let admitted = k.inbound.admitted(ans.unit.id).expect("admitted");
+    assert_eq!(admitted.provider, crate::config::KEYS_MODULE);
+    assert_eq!(
+        admitted.resolved.as_ref().map(|key| key.id.clone()),
+        Some(id.clone())
+    );
+    assert!(ans.strips.contains(&Strip::field("authorization")));
+    assert!(
+        !format!("{ans:?}").contains(&token),
+        "the token reached the transport"
+    );
+    gov.revoke(&id, "oracle key-revoke").expect("revoked");
+    let (flow, unit) = spend(&k, bearer(&token));
+    assert_eq!(flow, FLOW_STOP);
+    let refusal = k.refuse(REFUSE_STOPPED, k.line(MESSAGES), unit, MESSAGES);
+    assert_eq!(
+        refusal,
+        Refusal::of(crate::auth::unauthorized_with_completion_taps(
+            &k.app, MESSAGES, None
+        ))
+    );
+}
+
+/// RED (oracle `auth.lifecycle__key-rotate`): after a rotation the old token is a stop and the
+/// rotated one is admitted.
+#[test]
+fn red_keys_a_rotated_keys_old_token_is_refused() {
+    let gov = signing_gov();
+    let now = crate::store::now();
+    let (id, old) = minted(&gov, now + 3_600, now);
+    let k = keys_kit(&gov);
+    assert_eq!(spend(&k, bearer(&old)).0, FLOW_CONTINUE);
+    let rotated = gov
+        .rotate_key(&id, now + 3_600)
+        .expect("rotated")
+        .expect("a key to rotate");
+    let new = rotated.token.expose(&crate::seal::lend()).clone();
+    assert_eq!(
+        spend(&k, bearer(&old)).0,
+        FLOW_STOP,
+        "the old token still spends"
+    );
+    assert_eq!(
+        spend(&k, bearer(&new)).0,
+        FLOW_CONTINUE,
+        "the rotated token does not"
+    );
+}
+
+/// RED (oracle `auth.lifecycle__key-expiry`): a key past its expiry is a stop.
+#[test]
+fn red_keys_an_expired_key_is_refused() {
+    let gov = signing_gov();
+    let now = crate::store::now();
+    let (_, token) = minted(&gov, now - 60, now - 3_600);
+    let k = keys_kit(&gov);
+    assert_eq!(spend(&k, bearer(&token)).0, FLOW_STOP);
+}
+
+/// RED (oracle `http.crosscut__x-api-key-only__bad`): a bad credential on the second carrier
+/// alone is a stop, refused with the gate's 401; no credential at all is a stop too.
+#[test]
+fn red_keys_a_bad_x_api_key_alone_is_refused() {
+    let gov = signing_gov();
+    let k = keys_kit(&gov);
+    let (flow, unit) = spend(&k, post(MESSAGES, &[("x-api-key", "not-a-key")], None));
+    assert_eq!(flow, FLOW_STOP);
+    let refusal = k.refuse(REFUSE_STOPPED, k.line(MESSAGES), unit, MESSAGES);
+    assert_eq!(refusal.status, 401);
+    assert_eq!(spend(&k, post(MESSAGES, &[], None)).0, FLOW_STOP);
+}
+
+/// RED (oracle `http.crosscut__bearer-and-x-api-key`): with both carriers presented the carriers'
+/// order decides, as 1.5.5's gate read them: a valid bearer admits beside a stray `x-api-key`,
+/// and both carriers are named to strip.
+#[test]
+fn red_keys_the_bearer_decides_beside_an_x_api_key() {
+    let gov = signing_gov();
+    let now = crate::store::now();
+    let (_, token) = minted(&gov, now + 3_600, now);
+    let k = keys_kit(&gov);
+    let ans = k
+        .call(
+            MESSAGES,
+            UnitRef::NONE,
+            POINT_HEAD,
+            post(
+                MESSAGES,
+                &[
+                    ("Authorization", &format!("Bearer {token}")),
+                    ("x-api-key", "stray"),
+                ],
+                None,
+            ),
+        )
+        .expect("answered");
+    assert_eq!(ans.flow, FLOW_CONTINUE);
+    assert!(ans.strips.contains(&Strip::field("authorization")));
+    assert!(ans.strips.contains(&Strip::field("x-api-key")));
+    // Handed in with the carriers still on it: stopped (c); stripped: admitted.
+    assert_eq!(
+        k.hand_in(
+            MESSAGES,
+            MESSAGES,
+            ans.unit,
+            post(MESSAGES, &[("x-api-key", "stray")], None)
+        )
+        .0,
+        FLOW_STOP
+    );
+    assert_eq!(
+        k.hand_in(MESSAGES, MESSAGES, ans.unit, post(MESSAGES, &[], None))
+            .0,
+        FLOW_CONTINUE
+    );
+}
+
+// ── the host-held credentials' verifier ahead of the `keys` arm (1.5.5's signed-ingress step) ──
+//
+// The 1.5.5 oracle exercises it in the signed-ingress dialect's request cells (`llm__<signing
+// dialect>__*__request__*`, admitted, unauthenticated) and, over the size gate, in
+// `http.crosscut__413__*`. The dialect is the registry's declared fact, so these cells answer it
+// through the listener's `signed_ingress`.
+
+/// The carrier a test verifier's credential sits on.
+const SIGNED_LINE: &str = "x-signed-credential";
+
+/// A kit whose chain is `keys` with `reader` as its host-held credentials' verifier reading the
+/// issued kind, over `gov`; every path is answered by a dialect that signs when `signs`.
+fn reader_kit(gov: &Arc<crate::governance::GovState>, reader: Arc<Script>, signs: bool) -> Kit {
+    let (kind, _) = crate::test_support::issued::double();
+    let cfg = crate::config::AuthCfg {
+        chain: vec![crate::config::AuthChainEntry::bare(
+            crate::config::KEYS_MODULE,
+        )],
+        ..crate::config::AuthCfg::default_none()
+    };
+    let auth = crate::auth::AuthMiddleware::new_builtin(&cfg).with_reader_for_test(
+        reader,
+        vec![kind],
+        &[SIGNED_LINE],
+    );
+    kit_signed(
+        crate::test_support::TestApp::new()
+            .auth(Arc::new(auth))
+            .governance(Arc::clone(gov))
+            .build(),
+        vec![crate::config::KEYS_MODULE.to_string()],
+        AuthPoints::HEAD_BODY,
+        &[],
+        Arc::new(move |_: &App, _: &str| signs),
+    )
+}
+
+/// A key minted with the issued credential: (its id, the credential's public id).
+fn minted_with_credential(gov: &crate::governance::GovState) -> (String, String) {
+    let (kind, shape) = crate::test_support::issued::double();
+    let now = crate::store::now();
+    let (key, _token, public_id, _secret) = gov
+        .mint_signed_with_credential(
+            crate::governance::NewKeySpec {
+                name: "signed".to_string(),
+                allowed_pools: Some(vec!["pa".to_string()]),
+                ..Default::default()
+            },
+            now + 3_600,
+            now,
+            &kind,
+            &shape,
+        )
+        .expect("minted");
+    (key.id.clone(), public_id)
+}
+
+fn signed_head() -> Head {
+    post(MESSAGES, &[(SIGNED_LINE, "signature")], None)
+}
+
+fn signed_call(k: &Kit, head: Head) -> Answer {
+    k.call(MESSAGES, UnitRef::NONE, POINT_HEAD_BODY, head)
+        .expect("answered")
+}
+
+/// RED (signed ingress, admitted): a verifier's identity is the governance key holding that
+/// credential, held first-hand; the verifier's named lines and the carriers are named to strip.
+#[test]
+fn red_signed_a_verified_signature_is_its_credentials_key() {
+    let gov = signing_gov();
+    let (key_id, public_id) = minted_with_credential(&gov);
+    let reader = Script::new(
+        AuthPoints::HEAD_BODY,
+        Verified::Identity(VerifiedIdentity {
+            subject: public_id,
+            ..VerifiedIdentity::default()
+        }),
+        vec![Strip::field(SIGNED_LINE)],
+    );
+    let k = reader_kit(&gov, Arc::clone(&reader), true);
+    let ans = signed_call(&k, signed_head());
+    assert_eq!(ans.flow, FLOW_CONTINUE);
+    assert_eq!(reader.calls(), 1);
+    let admitted = k.inbound.admitted(ans.unit.id).expect("admitted");
+    assert_eq!(
+        admitted.resolved.as_ref().map(|key| key.id.clone()),
+        Some(key_id)
+    );
+    assert!(ans.strips.contains(&Strip::field(SIGNED_LINE)));
+}
+
+/// RED (signed ingress, unauthenticated): a signature the verifier rejects is a stop, refused with
+/// the gate's 401; so is a verified credential whose key was revoked.
+#[test]
+fn red_signed_a_rejected_or_revoked_signature_is_refused() {
+    let gov = signing_gov();
+    let (key_id, public_id) = minted_with_credential(&gov);
+    let reject = Script::new(AuthPoints::HEAD_BODY, Verified::Reject, Vec::new());
+    let k = reader_kit(&gov, reject, true);
+    let ans = signed_call(&k, signed_head());
+    assert_eq!(ans.flow, FLOW_STOP);
+    assert_eq!(
+        k.refuse(REFUSE_STOPPED, k.line(MESSAGES), ans.unit, MESSAGES)
+            .status,
+        401
+    );
+    gov.revoke(&key_id, "signed revoke").expect("revoked");
+    let identity = Script::new(
+        AuthPoints::HEAD_BODY,
+        Verified::Identity(VerifiedIdentity {
+            subject: public_id,
+            ..VerifiedIdentity::default()
+        }),
+        Vec::new(),
+    );
+    let k = reader_kit(&gov, identity, true);
+    assert_eq!(signed_call(&k, signed_head()).flow, FLOW_STOP);
+}
+
+/// RED (1.5.5's order): a verifier that passes leaves the token path to decide: a valid bearer
+/// admits, none stops; on a dialect that does not sign the verifier is never asked.
+#[test]
+fn red_signed_a_pass_falls_to_the_token_path_and_an_unsigned_dialect_asks_no_verifier() {
+    let gov = signing_gov();
+    let now = crate::store::now();
+    let (_, token) = minted(&gov, now + 3_600, now);
+    let pass = Script::new(AuthPoints::HEAD_BODY, Verified::Pass, Vec::new());
+    let k = reader_kit(&gov, Arc::clone(&pass), true);
+    let both = post(
+        MESSAGES,
+        &[
+            (SIGNED_LINE, "signature"),
+            ("Authorization", &format!("Bearer {token}")),
+        ],
+        None,
+    );
+    assert_eq!(signed_call(&k, both).flow, FLOW_CONTINUE);
+    assert_eq!(signed_call(&k, signed_head()).flow, FLOW_STOP);
+    assert_eq!(pass.calls(), 2);
+    let unasked = Script::new(AuthPoints::HEAD_BODY, Verified::Reject, Vec::new());
+    let k = reader_kit(&gov, Arc::clone(&unasked), false);
+    let _ = signed_call(&k, signed_head());
+    assert_eq!(
+        unasked.calls(),
+        0,
+        "a dialect that does not sign asked the verifier"
+    );
+}
+
+/// RED (`http.crosscut__413__*`): a signed body past the line's size gate is refused before any
+/// verdict, with the 413 the data router answers on the path.
+#[test]
+fn red_signed_a_body_over_the_gate_is_the_413_before_any_verdict() {
+    let gov = signing_gov();
+    let reader = Script::new(AuthPoints::HEAD_BODY, Verified::Reject, Vec::new());
+    let k = reader_kit(&gov, Arc::clone(&reader), true);
+    let over = k.inbound.auth_call(
+        Call {
+            owner: OWNER,
+            generation: GEN,
+            auth: k.id(MESSAGES),
+            unit: UnitRef::NONE,
+            point: POINT_HEAD_BODY,
+            conn: 1,
+            head: signed_head(),
+            body: Some(vec![b'x'; 64]),
+            deadline: None,
+        },
+        Box::new(|_: Result<Answer, &'static str>| {}),
+    );
+    assert_eq!(over, Some(Err(OVER_GATE)));
+    assert_eq!(reader.calls(), 0);
+    let refusal = k.refuse(REFUSE_OVER_GATE, k.line(MESSAGES), UnitRef::NONE, MESSAGES);
+    assert_eq!(refusal.status, 413);
+}
+
+// ── the connection's end ─────────────────────────────────────────────────────────────────────
+
+/// RED (the host's end notification): N connections that each end leave no peer verdict held,
+/// and a live connection's verdict survives any number of others ending (and still admits).
+#[test]
+fn red_ended_connections_leave_no_peer_verdict_and_a_live_one_survives() {
+    let a = Script::new(AuthPoints::PEER, identity("peer", "cert"), Vec::new());
+    let k = kit(&[("a", a)]);
+    for conn in 100..140 {
+        let ans = k
+            .call_on(
+                conn,
+                MESSAGES,
+                UnitRef::NONE,
+                POINT_PEER,
+                Head::default(),
+                None,
+            )
+            .expect("answered");
+        assert_eq!(ans.flow, FLOW_CONTINUE);
+        k.inbound.connection_ended(OWNER, conn);
+    }
+    assert_eq!(
+        k.inbound.peer_verdicts(),
+        0,
+        "an ended connection's verdict is held"
+    );
+    k.call_on(
+        7,
+        MESSAGES,
+        UnitRef::NONE,
+        POINT_PEER,
+        Head::default(),
+        None,
+    )
+    .expect("answered");
+    for conn in 200..260 {
+        k.call_on(
+            conn,
+            MESSAGES,
+            UnitRef::NONE,
+            POINT_PEER,
+            Head::default(),
+            None,
+        )
+        .expect("answered");
+        k.inbound.connection_ended(OWNER, conn);
+    }
+    assert_eq!(k.inbound.peer_verdicts(), 1);
+    let (flow, _) = k.hand_in_on(7, MESSAGES, UnitRef::NONE, post(MESSAGES, &[], None));
+    assert_eq!(flow, FLOW_CONTINUE, "the live connection lost its verdict");
+    k.inbound.connection_ended(OWNER, 7);
+    let (flow, _) = k.hand_in_on(7, MESSAGES, UnitRef::NONE, post(MESSAGES, &[], None));
+    assert_eq!(flow, FLOW_STOP);
+}
+
+/// RED (the bound, LOUD): at [`PEER_CONNECTIONS_MAX`] held verdicts a NEW connection's peer call
+/// is refused by name, and no held verdict is evicted for it.
+#[test]
+fn red_a_full_peer_table_refuses_a_new_connection_by_name_and_evicts_none() {
+    let a = Script::new(AuthPoints::PEER, identity("peer", "cert"), Vec::new());
+    let k = kit(&[("a", a)]);
+    for conn in 0..PEER_CONNECTIONS_MAX as u64 {
+        k.call_on(
+            conn,
+            MESSAGES,
+            UnitRef::NONE,
+            POINT_PEER,
+            Head::default(),
+            None,
+        )
+        .expect("answered");
+    }
+    assert_eq!(
+        k.call_on(
+            u64::MAX,
+            MESSAGES,
+            UnitRef::NONE,
+            POINT_PEER,
+            Head::default(),
+            None
+        ),
+        Err(PEER_TABLE_FULL)
+    );
+    assert_eq!(k.inbound.peer_verdicts(), PEER_CONNECTIONS_MAX);
+    let (flow, _) = k.hand_in_on(0, MESSAGES, UnitRef::NONE, post(MESSAGES, &[], None));
+    assert_eq!(flow, FLOW_CONTINUE, "a held verdict was evicted");
 }

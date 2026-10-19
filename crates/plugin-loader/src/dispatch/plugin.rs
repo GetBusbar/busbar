@@ -1040,6 +1040,9 @@ impl Instance {
         // The unit this crossing serves, for the host services it calls.
         let unit = (self.unit_of)(s, input.cast_const(), in_size);
         let _unit = super::services::serving(unit);
+        // The deadline of the op this crossing is, for the host services it calls (`auth.call`).
+        // SAFETY: the host's own `in`, led by its head, live for the crossing.
+        let _deadline = super::services::op_deadline(unsafe { &*input });
         // From here an `open` that does not end READY or PENDING, FAULT included, leaves no
         // instance published: the SDK frees a half-open box on any answer but READY/PENDING, so a
         // pointer kept to it would hand a later crossing freed memory; a box the plugin still

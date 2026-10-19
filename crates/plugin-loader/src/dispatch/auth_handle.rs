@@ -285,6 +285,9 @@ pub struct AuthCallAsk {
     pub request: HeadCopy,
     /// The whole body, at the body point only.
     pub body: Option<Vec<u8>>,
+    /// What remains of the deadline of the framer op the call was made in (its ticket was minted
+    /// for that op with its deadline class): `None` = none (a write-behind op, or no deadline).
+    pub deadline: Option<std::time::Duration>,
 }
 
 /// What `auth.call` answers a transport: continue or stop, the request's unit, and the NAMES the

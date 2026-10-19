@@ -38,12 +38,14 @@
 //! This module names no loader: the composition root glues it to the plugin loader's auth handle,
 //! injecting the MAC, the unit mint, the spawner and the refusal sink.
 
+#![allow(dead_code, unused_imports)]
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
-use busbar_contract::abi::auth::{AuthPoint, POINT_HEAD_BODY, POINT_PEER};
+use busbar_contract::abi::auth::{AuthPoint, POINT_HEAD_BODY};
 use busbar_contract::abi::host::service::{
     UnitRef, FLOW_CONTINUE, FLOW_STOP, REFUSE_CHECK_FAILED, REFUSE_METHOD_MISS, REFUSE_NO_ROUTE,
     REFUSE_OVER_GATE, REFUSE_STOPPED,
@@ -64,9 +66,18 @@ pub const NO_LINE: &str = "the handle names no line of this listener's list";
 pub const LINE_OPEN: &str = "the line's auth is none: it has no auth to call";
 /// The refusal text of an `auth.call` at a point the line's auth does not need.
 pub const POINT_UNNEEDED: &str = "the line's auth needs no call at this point";
-/// The refusal text of an `auth.call` at the peer point: a connection's `Peer` verdict is not
-/// served by this handle yet, and is refused rather than admitted.
-pub const PEER_UNSERVED: &str = "the peer point is not served by the inbound handle";
+/// The refusal text of a peer-point `auth.call` that presents a unit, a body or any byte of a
+/// request: the peer point is before any head, and carries nothing (the Peer rule).
+pub const PEER_BYTES: &str = "a peer-point call presents no unit, no request and no body";
+/// The most connections whose `Peer` verdict the kernel holds at once. A verdict leaves when its
+/// connection ends ([`Inbound::connection_ended`]); a NEW connection's peer call at the bound is
+/// refused LOUDLY ([`PEER_TABLE_FULL`], an error event), and no live connection's verdict is ever
+/// evicted for it.
+pub const PEER_CONNECTIONS_MAX: usize = 65_536;
+/// The refusal text of a new connection's peer call while [`PEER_CONNECTIONS_MAX`] connections
+/// hold a verdict.
+pub const PEER_TABLE_FULL: &str =
+    "the kernel holds the most connection verdicts it may; this connection's peer call is refused";
 /// The refusal text of a body past the line's size gate presented at the body point.
 pub const OVER_GATE: &str = "the body passes the line's size gate";
 /// The refusal text of a unit the kernel did not mint for this owner, generation and line.
@@ -116,6 +127,15 @@ impl std::fmt::Debug for Head {
 }
 
 impl Head {
+    /// Whether the head carries nothing: the peer point's view.
+    fn is_empty(&self) -> bool {
+        self.method.is_empty()
+            && self.target.is_empty()
+            && self.authority.is_empty()
+            && self.query.is_none()
+            && self.fields.is_empty()
+    }
+
     /// The target with its query, as a door route's refusal renders for it.
     fn path_and_query(&self) -> String {
         match &self.query {
@@ -144,6 +164,10 @@ pub struct Call {
     pub head: Head,
     /// The whole body, at the body point only.
     pub body: Option<Vec<u8>>,
+    /// The deadline of the op the call was made for (the framer op's ticket, minted with its
+    /// deadline class): past it no verify runs and none is awaited, and the walk stops; `None` =
+    /// none (a write-behind op, or no deadline).
+    pub deadline: Option<std::time::Instant>,
 }
 
 /// What `auth.call` answers the transport: continue or stop, the unit, and the names to strip.
@@ -174,6 +198,8 @@ pub struct HandIn {
     pub unit: UnitRef,
     /// The line the transport matched.
     pub line: u32,
+    /// The connection: a `Peer` line's verdict is its connection's.
+    pub conn: u64,
     /// The request, after the transport stripped what the auths named.
     pub head: Head,
 }
@@ -318,6 +344,8 @@ pub struct Listener {
     /// Each line's handle id, in the list's order, as the root minted it from the ref-id space's
     /// line half ([`is_line_id`]).
     pub ids: Vec<u64>,
+    /// Whether a request's path is answered by a dialect that signs ([`signed_by_dialect`]).
+    pub signed_ingress: SignedIngress,
 }
 
 impl std::fmt::Debug for Listener {
@@ -384,12 +412,15 @@ enum Fixed {
 
 /// THE IDENTITY a unit was admitted under, first-hand: the provider (the line's auth name) and
 /// who it identified, without its credential (held apart, [`Inbound::with_credential`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Admitted {
     /// The provider name.
     pub provider: String,
     /// The identity, its credential taken out.
     pub identity: VerifiedIdentity,
+    /// The governance key the `keys` arm resolved (the one verdict that carries one, as 1.5.5's
+    /// chain did); `None` for every plugin position.
+    pub resolved: Option<Arc<crate::governance::VirtualKey>>,
 }
 
 /// One unit, as the kernel holds it.
@@ -408,9 +439,66 @@ struct UnitState {
     admitted: Option<Admitted>,
     /// The verified credential, zeroised when the unit leaves the table (its drop).
     credential: Option<Secret<String>>,
+    /// The governance key the `keys` arm resolved, held until the verdict is fixed.
+    resolved: Option<Arc<crate::governance::VirtualKey>>,
 }
 
 impl UnitState {
+    /// A state with no answer yet, over the line's ordered `providers`.
+    fn open(
+        owner: u64,
+        generation: u64,
+        line: u32,
+        secret: [u64; 2],
+        providers: &[String],
+    ) -> Self {
+        Self {
+            owner,
+            generation,
+            line,
+            secret,
+            head: None,
+            answers: vec![None; providers.len()],
+            providers: providers.to_vec(),
+            identities: vec![None; providers.len()],
+            strips: Vec::new(),
+            admitted: None,
+            credential: None,
+            resolved: None,
+        }
+    }
+
+    /// Once the verdict is fixed: on an identity, it and its credential (taken out of it) and the
+    /// key the `keys` arm resolved are held first-hand; on a refusal, every identity a following
+    /// position answered is dropped.
+    fn settle(&mut self) {
+        match self.fixed() {
+            Some(Fixed::Admitted(i)) if self.admitted.is_none() => {
+                if let Some(mut id) = self.identities.get_mut(i).and_then(Option::take) {
+                    self.credential = id.credential.take();
+                    let provider = self.providers.get(i).cloned().unwrap_or_default();
+                    let resolved = if provider == crate::config::KEYS_MODULE {
+                        self.resolved.take()
+                    } else {
+                        None
+                    };
+                    self.admitted = Some(Admitted {
+                        provider,
+                        identity: id,
+                        resolved,
+                    });
+                }
+                self.identities.clear();
+                self.resolved = None;
+            }
+            Some(Fixed::Denied | Fixed::Overloaded) => {
+                self.identities.clear();
+                self.resolved = None;
+            }
+            _ => {}
+        }
+    }
+
     /// The verdict in list order: `None` while an earlier position is still undecided.
     fn fixed(&self) -> Option<Fixed> {
         for (i, a) in self.answers.iter().enumerate() {
@@ -446,6 +534,9 @@ impl Table {
 pub struct Inbound {
     tables: RwLock<HashMap<(u64, u64), Arc<Table>>>,
     units: Mutex<HashMap<u64, UnitState>>,
+    /// Each connection's `Peer` verdict, by (owner, generation, connection), at most
+    /// [`PEER_CONNECTIONS_MAX`].
+    peers: Mutex<HashMap<(u64, u64, u64), UnitState>>,
     seals: Seals,
     spawn: Spawn,
     refused: RefusedSink,
@@ -517,11 +608,189 @@ fn verify_request(
     }
 }
 
+/// What a walk records into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Target {
+    /// A request's unit.
+    Unit(u64),
+    /// A connection's `Peer` verdict: (owner, generation, connection).
+    Peer((u64, u64, u64)),
+}
+
+/// Who answers a position.
+enum PositionKind {
+    /// An opened auth instance; `None` when the generation opened none for the name.
+    Plugin(Option<Arc<dyn AuthCalls>>),
+    /// The kernel's own `keys` arm: a busbar-minted signed key verified against governance.
+    Keys,
+}
+
 /// One position the walk may call.
 struct Position {
     index: usize,
     provider: String,
-    calls: Option<Arc<dyn AuthCalls>>,
+    kind: PositionKind,
+}
+
+/// What a position answered, as [`Inbound::record`] judges it.
+enum Judging<'a> {
+    /// No verdict: no auth opened for it, or the op's deadline passed (a deny).
+    Nothing,
+    /// The `keys` arm, over the request's head, after the signed-request reader's answer when one
+    /// was asked.
+    Keys(&'a Head, Option<SignedAnswer>),
+    /// An auth's `verify` answer.
+    Answer(VerifyAnswer),
+}
+
+/// A host-held credential verifier's answer to a signed request (1.5.5's signed-ingress pre-step),
+/// with the credential kinds it reads.
+struct SignedAnswer {
+    answer: VerifyAnswer,
+    faulted: bool,
+    kinds: Vec<String>,
+}
+
+/// Whether a request on `path` is answered by a dialect that signs its requests (the dialect's
+/// declared ingress auth, never a name), so the `keys` arm asks the host-held credentials'
+/// verifier first, as 1.5.5's gate did. Answered by the listener's [`Listener::signed_ingress`].
+pub type SignedIngress = Arc<dyn Fn(&App, &str) -> bool + Send + Sync>;
+
+/// THE DECLARED ANSWER ([`SignedIngress`]): the path's residual dialect declares a signed ingress,
+/// on the residual plane only (an audience-bound plane admits bearer tokens alone).
+#[must_use]
+pub fn signed_by_dialect() -> SignedIngress {
+    Arc::new(|app: &App, path: &str| {
+        let ingress = app.planes.ingress_of(path);
+        matches!(ingress, crate::plane::Ingress::Fallback(_))
+            && crate::proto::decl_for(crate::ingress::native::envelope_dialect(ingress))
+                .is_some_and(|d| d.uses_sigv4_ingress_auth())
+    })
+}
+
+/// The request's field lines as a header map (a value that is no header value is left out).
+fn header_map(head: &Head) -> axum::http::HeaderMap {
+    let mut headers = axum::http::HeaderMap::new();
+    for (n, v) in &head.fields {
+        if let (Ok(n), Ok(v)) = (
+            axum::http::HeaderName::from_bytes(n.as_bytes()),
+            axum::http::HeaderValue::from_bytes(v),
+        ) {
+            headers.append(n, v);
+        }
+    }
+    headers
+}
+
+/// A line's auth names in the order the chain walks them (1.5.5's `walk`): every plugin position
+/// in list order, then the `keys` arm, which runs after them whatever its place in the list.
+fn ordered(names: &[String]) -> Vec<String> {
+    let keys = crate::config::KEYS_MODULE;
+    names
+        .iter()
+        .filter(|n| *n != keys)
+        .chain(names.iter().filter(|n| *n == keys).take(1))
+        .cloned()
+        .collect()
+}
+
+/// THE `keys` ARM with the signed-request pre-step ahead of it, as 1.5.5's gate ran them: a
+/// verifier's identity is the governance key holding that credential (enabled, live, not revoked)
+/// or a deny; its pass falls through to the token path; a reject or no verdict denies; an
+/// overloaded verifier is the 503. The lines both named are named.
+fn signed_then_keys(
+    app: &App,
+    gov: Option<&crate::governance::GovState>,
+    head: &Head,
+    signed: Option<SignedAnswer>,
+    now: u64,
+) -> (
+    Judged,
+    Option<VerifiedIdentity>,
+    Vec<Strip>,
+    Option<Arc<crate::governance::VirtualKey>>,
+) {
+    let mut named = Vec::new();
+    if let Some(s) = signed {
+        named.extend(s.answer.strips);
+        let verified = if s.faulted {
+            Verified::Failed
+        } else {
+            s.answer.verified
+        };
+        match verified {
+            Verified::Identity(id) => {
+                let key = gov.and_then(|g| {
+                    s.kinds.iter().find_map(|kind| {
+                        let (key, cred) = g.lookup_credential(kind, &id.subject)?;
+                        (key.enabled && cred.meta.is_live(now) && !g.is_revoked(&key.id))
+                            .then_some(key)
+                    })
+                });
+                return match key {
+                    Some(key) => (
+                        Judged::Identity,
+                        Some(VerifiedIdentity {
+                            subject: key.id.clone(),
+                            key_id: Some(key.id.clone()),
+                            key_name: Some(key.name.clone()),
+                            ..VerifiedIdentity::default()
+                        }),
+                        named,
+                        Some(key),
+                    ),
+                    None => (Judged::Denied, None, named, None),
+                };
+            }
+            Verified::Pass => {}
+            Verified::Reject | Verified::Failed => return (Judged::Denied, None, named, None),
+            Verified::Overloaded => return (Judged::Overloaded, None, named, None),
+        }
+    }
+    let (judged, identity, strips, resolved) = keys_judged(app, gov, head, now);
+    named.extend(strips);
+    (judged, identity, named, resolved)
+}
+
+/// THE `keys` ARM over one head (1.5.5's `keys_arm_verdict`, the data plane's engine arm): the
+/// candidate the default inbound style's carriers carry, verified against governance. Its
+/// carriers are every line the gate consumed in 1.5.5, named whatever its verdict (names only).
+fn keys_judged(
+    app: &App,
+    gov: Option<&crate::governance::GovState>,
+    head: &Head,
+    now: u64,
+) -> (
+    Judged,
+    Option<VerifiedIdentity>,
+    Vec<Strip>,
+    Option<Arc<crate::governance::VirtualKey>>,
+) {
+    let carriers = app.auth.carriers();
+    let headers = header_map(head);
+    let candidate = crate::auth::carried_credential(carriers, &headers);
+    let strips = carriers
+        .iter()
+        .map(|c| Strip::field(c.as_str().to_string()))
+        .collect();
+    match crate::auth::keys_arm_verdict(gov, candidate.as_deref(), now, None) {
+        crate::auth::ChainVerdict::Identified {
+            principal,
+            resolved,
+            ..
+        } => (
+            Judged::Identity,
+            Some(VerifiedIdentity {
+                subject: principal.id.clone(),
+                key_id: resolved.as_ref().map(|k| k.id.clone()),
+                key_name: principal.name.clone(),
+                ..VerifiedIdentity::default()
+            }),
+            strips,
+            resolved,
+        ),
+        _ => (Judged::Denied, None, strips, None),
+    }
 }
 
 impl Inbound {
@@ -531,6 +800,7 @@ impl Inbound {
         Arc::new(Self {
             tables: RwLock::default(),
             units: Mutex::default(),
+            peers: Mutex::default(),
             seals,
             spawn,
             refused,
@@ -591,6 +861,10 @@ impl Inbound {
         self.units.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    fn peers(&self) -> std::sync::MutexGuard<'_, HashMap<(u64, u64, u64), UnitState>> {
+        self.peers.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// The secret, generation and line `owner`'s live unit `unit` was minted under.
     #[must_use]
     pub fn unit_secret(&self, owner: u64, unit: u64) -> Option<([u64; 2], u64, u32)> {
@@ -620,15 +894,30 @@ impl Inbound {
         drop(self.units().remove(&unit));
     }
 
-    /// Mint a unit for `owner`'s `line` at `generation`: its key, its fresh secret, its MAC.
+    /// THE HOST'S END NOTIFICATION: `owner`'s connection `conn` ended. Its `Peer` verdict, at every
+    /// generation, leaves the table (its credential zeroised); nothing else is held by connection.
+    pub fn connection_ended(&self, owner: u64, conn: u64) {
+        // RED: nothing leaves.
+        let _ = (owner, conn);
+    }
+
+    /// How many connections hold a `Peer` verdict.
+    #[must_use]
+    pub fn peer_verdicts(&self) -> usize {
+        self.peers().len()
+    }
+
+    /// Mint a unit for `owner`'s `line` at `generation` on connection `conn`: its key, its fresh
+    /// secret, its MAC. A connection's `Peer` verdict, held for the same ordered auths, is the
+    /// unit's from the start (l.975-976: a `{Peer}`-only verdict is applied to every unit on it).
     fn mint(
         &self,
         owner: u64,
         generation: u64,
         line: u32,
         providers: &[String],
+        conn: u64,
     ) -> Result<UnitRef, &'static str> {
-        let positions = providers.len();
         let secret = fresh_secret().ok_or(UNIT_UNMINTED)?;
         let unit = (self.seals.mint)();
         if unit == 0 {
@@ -642,22 +931,17 @@ impl Inbound {
             unit,
         })
         .ok_or(UNIT_UNMINTED)?;
-        self.units().insert(
-            unit,
-            UnitState {
-                owner,
-                generation,
-                line,
-                secret,
-                head: None,
-                answers: vec![None; positions],
-                providers: providers.to_vec(),
-                identities: vec![None; positions],
-                strips: Vec::new(),
-                admitted: None,
-                credential: None,
-            },
-        );
+        let mut state = UnitState::open(owner, generation, line, secret, providers);
+        if let Some(peer) = self
+            .peers()
+            .get(&(owner, generation, conn))
+            .filter(|p| p.providers == providers)
+        {
+            state.answers.clone_from(&peer.answers);
+            state.admitted.clone_from(&peer.admitted);
+            state.credential.clone_from(&peer.credential);
+        }
+        self.units().insert(unit, state);
         Ok(UnitRef { id: unit, mac })
     }
 
@@ -684,7 +968,8 @@ impl Inbound {
     }
 
     /// `auth.call` on an inbound line: `Some` with the answer when it finished at once; `None` when
-    /// a verify must be awaited, and `done` answers it (the call pends on its own ticket, l.973-974).
+    /// a verify must be awaited, and `done` answers it (the call pends on its own ticket, l.973-974;
+    /// past the call's deadline the walk stops, [`Call::deadline`]).
     pub fn auth_call(
         self: &Arc<Self>,
         call: Call,
@@ -706,7 +991,16 @@ impl Inbound {
         }
     }
 
-    /// The checks before any auth is called, the unit minted or verified, then the walk.
+    /// The state a walk records into: a request's unit, or a connection's `Peer` verdict.
+    fn with_state<R>(&self, target: Target, f: impl FnOnce(&mut UnitState) -> R) -> Option<R> {
+        match target {
+            Target::Unit(unit) => self.units().get_mut(&unit).map(f),
+            Target::Peer(key) => self.peers().get_mut(&key).map(f),
+        }
+    }
+
+    /// The checks before any auth is called, the unit minted or verified (or, at the peer point,
+    /// the connection's verdict opened), then the walk.
     fn prepare(
         self: &Arc<Self>,
         call: Call,
@@ -723,12 +1017,20 @@ impl Inbound {
         let LineAuth::Chain(names, points) = &line.auth else {
             return Err(LINE_OPEN);
         };
-        if call.point == POINT_PEER {
-            return Err(PEER_UNSERVED);
-        }
         let point = AuthPoint::from_bit(call.point)
             .filter(|p| points.has(*p))
             .ok_or(POINT_UNNEEDED)?;
+        let providers = ordered(names);
+        // THE PEER POINT (l.973-978; the Peer rule): once per connection, before any head; no unit,
+        // and its answer is continue or stop alone, with no name beside it.
+        let peer = point == AuthPoint::Peer;
+        // RED: the peer point is not served.
+        if peer {
+            return Err(PEER_BYTES);
+        }
+        if peer && (!call.unit.is_none() || call.body.is_some() || !call.head.is_empty()) {
+            return Err(PEER_BYTES);
+        }
         if call
             .body
             .as_ref()
@@ -736,111 +1038,204 @@ impl Inbound {
         {
             return Err(OVER_GATE);
         }
-        let unit = if call.unit.is_none() {
-            self.mint(call.owner, call.generation, line_ix, names)?
-        } else if self.verified(call.owner, Some(call.generation), Some(line_ix), call.unit) {
-            call.unit
-        } else {
-            return Err(UNIT_FOREIGN);
-        };
-        if let Some(u) = self.units().get_mut(&unit.id) {
-            if u.head.is_none() {
-                u.head = Some(call.head.clone());
+        let (target, unit) = if peer {
+            let key = (call.owner, call.generation, call.conn);
+            let mut peers = self.peers();
+            if !peers.contains_key(&key) && peers.len() >= PEER_CONNECTIONS_MAX {
+                // Bounded, and LOUD: no live connection's verdict is evicted for a new one.
+                tracing::error!(
+                    owner = call.owner,
+                    conn = call.conn,
+                    held = peers.len(),
+                    "{PEER_TABLE_FULL}"
+                );
+                return Err(PEER_TABLE_FULL);
             }
-        }
-        let positions: Vec<Position> = names
+            peers.entry(key).or_insert_with(|| {
+                UnitState::open(call.owner, call.generation, line_ix, [0; 2], &providers)
+            });
+            (Target::Peer(key), UnitRef::NONE)
+        } else {
+            let unit = if call.unit.is_none() {
+                self.mint(call.owner, call.generation, line_ix, &providers, call.conn)?
+            } else if self.verified(call.owner, Some(call.generation), Some(line_ix), call.unit) {
+                call.unit
+            } else {
+                return Err(UNIT_FOREIGN);
+            };
+            if let Some(u) = self.units().get_mut(&unit.id) {
+                if u.head.is_none() {
+                    u.head = Some(call.head.clone());
+                }
+            }
+            (Target::Unit(unit.id), unit)
+        };
+        let positions: Vec<Position> = providers
             .iter()
             .enumerate()
             .map(|(index, name)| Position {
                 index,
                 provider: name.clone(),
-                calls: table.listener.auths.get(name).cloned(),
+                kind: if name == crate::config::KEYS_MODULE {
+                    PositionKind::Keys
+                } else {
+                    PositionKind::Plugin(table.listener.auths.get(name).cloned())
+                },
             })
             .collect();
-        let gov = table.listener.app.governance.clone();
+        // The `keys` arm answers at the line's last per-request point: with the body when a
+        // host-held credential's verifier needs it, else at the head.
+        let keys_point = if points.has(AuthPoint::HeadBody) {
+            AuthPoint::HeadBody
+        } else {
+            AuthPoint::Head
+        };
         let me = Arc::clone(self);
+        let deadline = call.deadline;
         let (head, body, conn) = (call.head, call.body, call.conn);
         Ok(async move {
             for p in positions {
-                {
-                    let units = me.units();
-                    let u = units.get(&unit.id).ok_or(UNIT_FOREIGN)?;
-                    if u.fixed().is_some() {
-                        break;
-                    }
-                    if u.answers.get(p.index).copied().flatten().is_some() {
+                let undecided = me
+                    .with_state(target, |u| {
+                        (u.fixed().is_none()).then(|| u.answers.get(p.index).copied().flatten())
+                    })
+                    .ok_or(UNIT_FOREIGN)?;
+                match undecided {
+                    // The verdict is fixed: nothing after it is called.
+                    None => break,
+                    Some(Some(_)) => continue,
+                    Some(None) => {}
+                }
+                // RED: the op's deadline is not read.
+                if deadline.is_some_and(|_| false) {
+                    // The op the call was made for is past its deadline: no verify runs, and the
+                    // position answers no verdict (a deny, fail closed).
+                    me.record(target, p.index, &p.provider, Judging::Nothing, &table);
+                    break;
+                }
+                let calls = match &p.kind {
+                    PositionKind::Keys => {
+                        if point != keys_point {
+                            continue;
+                        }
+                        // THE SIGNED-REQUEST PRE-STEP (1.5.5's gate): on a dialect that signs, a
+                        // request carrying a host-held credential verifier's lines is verified by
+                        // it over the whole body, before the token path.
+                        let app = &table.listener.app;
+                        let reader = (table.listener.signed_ingress)(app, &head.target)
+                            .then(|| app.auth.signed_reader(&header_map(&head)))
+                            .flatten();
+                        let signed = match reader {
+                            None => None,
+                            Some((calls, kinds)) => {
+                                let unit_id = match target {
+                                    Target::Unit(u) => u,
+                                    Target::Peer(_) => 0,
+                                };
+                                let req = verify_request(
+                                    &head,
+                                    AuthPoint::HeadBody,
+                                    conn,
+                                    unit_id,
+                                    Some(body.as_deref().unwrap_or_default()),
+                                );
+                                let mut verifying = calls.verify(req);
+                                let answer = (&mut verifying).await;
+                                Some(SignedAnswer {
+                                    faulted: verifying.faulted(),
+                                    answer,
+                                    kinds,
+                                })
+                            }
+                        };
+                        me.record(
+                            target,
+                            p.index,
+                            &p.provider,
+                            {
+                                // RED: the `keys` arm answers no verdict.
+                                let _ = signed;
+                                Judging::Nothing
+                            },
+                            &table,
+                        );
                         continue;
                     }
-                }
-                let Some(calls) = p.calls else {
-                    // A line naming an auth the generation did not open: fail closed.
-                    me.record(unit.id, p.index, &p.provider, None, gov.as_deref());
-                    continue;
+                    PositionKind::Plugin(None) => {
+                        // A line naming an auth the generation did not open: fail closed.
+                        me.record(target, p.index, &p.provider, Judging::Nothing, &table);
+                        continue;
+                    }
+                    PositionKind::Plugin(Some(calls)) => Arc::clone(calls),
                 };
                 if !calls.inbound_points().has(point) {
                     continue;
                 }
-                let req = verify_request(&head, point, conn, unit.id, body.as_deref());
-                let mut verifying = calls.verify(req);
-                let answer = (&mut verifying).await;
-                let answered = if verifying.faulted() {
-                    VerifyAnswer {
-                        verified: Verified::Failed,
-                        ..answer
-                    }
-                } else {
-                    answer
+                let unit_id = match target {
+                    Target::Unit(u) => u,
+                    Target::Peer(_) => 0,
                 };
-                me.record(
-                    unit.id,
-                    p.index,
-                    &p.provider,
-                    Some(answered),
-                    gov.as_deref(),
-                );
+                let req = verify_request(&head, point, conn, unit_id, body.as_deref());
+                let mut verifying = calls.verify(req);
+                let answer = match (deadline, tokio::runtime::Handle::try_current()) {
+                    (Some(d), Ok(_)) => {
+                        tokio::time::timeout_at(tokio::time::Instant::from_std(d), &mut verifying)
+                            .await
+                            .ok()
+                    }
+                    _ => Some((&mut verifying).await),
+                };
+                let judging = match answer {
+                    Some(a) if verifying.faulted() => Judging::Answer(VerifyAnswer {
+                        verified: Verified::Failed,
+                        ..a
+                    }),
+                    Some(a) => Judging::Answer(a),
+                    None => Judging::Nothing,
+                };
+                me.record(target, p.index, &p.provider, judging, &table);
             }
-            let units = me.units();
-            let u = units.get(&unit.id).ok_or(UNIT_FOREIGN)?;
-            let flow = match u.fixed() {
-                Some(Fixed::Denied | Fixed::Overloaded) => FLOW_STOP,
-                Some(Fixed::Admitted(_)) | None => FLOW_CONTINUE,
-            };
-            Ok(Answer {
-                flow,
-                unit,
-                strips: u.strips.clone(),
-            })
+            let (flow, strips) = me
+                .with_state(target, |u| {
+                    let flow = match u.fixed() {
+                        Some(Fixed::Denied | Fixed::Overloaded) => FLOW_STOP,
+                        Some(Fixed::Admitted(_)) | None => FLOW_CONTINUE,
+                    };
+                    (flow, u.strips.clone())
+                })
+                .ok_or(UNIT_FOREIGN)?;
+            // The Peer rule: a peer answer names nothing.
+            let strips = if peer { Vec::new() } else { strips };
+            Ok(Answer { flow, unit, strips })
         })
     }
 
-    /// Record position `index`'s answer on `unit` FIRST-HAND (`None`: no auth to call, a deny):
-    /// its verdict by the data-plane chain rule, the lines it named, and on an identity that
-    /// fixes the verdict its credential, taken out of the identity.
+    /// Record position `index`'s answer on `target` FIRST-HAND: its verdict by the data-plane chain
+    /// rule, the lines it named, and, once the verdict is fixed in list order on an identity, that
+    /// identity, its credential taken out of it, and for the `keys` arm the governance key it
+    /// resolved.
     fn record(
         &self,
-        unit: u64,
+        target: Target,
         index: usize,
         provider: &str,
-        answer: Option<VerifyAnswer>,
-        gov: Option<&crate::governance::GovState>,
+        judging: Judging<'_>,
+        table: &Table,
     ) {
-        let mut units = self.units();
-        let Some(u) = units.get_mut(&unit) else {
-            return;
-        };
-        let (judged, identity) = match answer {
-            None => (Judged::Denied, None),
-            Some(a) => {
-                for s in a.strips {
-                    if !u.strips.contains(&s) {
-                        u.strips.push(s);
-                    }
-                }
-                match a.verified {
+        let gov = table.listener.app.governance.as_deref();
+        let now = crate::store::now();
+        let (judged, identity, strips, resolved) = match judging {
+            Judging::Nothing => (Judged::Denied, None, Vec::new(), None),
+            Judging::Keys(head, signed) => {
+                signed_then_keys(&table.listener.app, gov, head, signed, now)
+            }
+            Judging::Answer(a) => {
+                let (judged, identity) = match a.verified {
                     Verified::Identity(id) => {
-                        let claimed = id.replay.as_deref().is_none_or(|r| {
-                            crate::auth::replay_claimed(gov, provider, r, crate::store::now())
-                        });
+                        let claimed = id
+                            .replay
+                            .as_deref()
+                            .is_none_or(|r| crate::auth::replay_claimed(gov, provider, r, now));
                         if claimed {
                             (Judged::Identity, Some(id))
                         } else {
@@ -850,30 +1245,27 @@ impl Inbound {
                     Verified::Pass => (Judged::Pass, None),
                     Verified::Reject | Verified::Failed => (Judged::Denied, None),
                     Verified::Overloaded => (Judged::Overloaded, None),
-                }
+                };
+                (judged, identity, a.strips, None)
             }
         };
-        if let Some(slot) = u.answers.get_mut(index) {
-            *slot = Some(judged);
-        }
-        if let Some(slot) = u.identities.get_mut(index) {
-            *slot = identity;
-        }
-        match u.fixed() {
-            Some(Fixed::Admitted(i)) if u.admitted.is_none() => {
-                if let Some(mut id) = u.identities.get_mut(i).and_then(Option::take) {
-                    u.credential = id.credential.take();
-                    u.admitted = Some(Admitted {
-                        provider: u.providers.get(i).cloned().unwrap_or_default(),
-                        identity: id,
-                    });
+        self.with_state(target, |u| {
+            for s in strips {
+                if !u.strips.contains(&s) {
+                    u.strips.push(s);
                 }
-                u.identities.clear();
             }
-            // A refusal admits no one: the identities a following position answered are dropped.
-            Some(Fixed::Denied | Fixed::Overloaded) => u.identities.clear(),
-            _ => {}
-        }
+            if let Some(slot) = u.answers.get_mut(index) {
+                *slot = Some(judged);
+            }
+            if let Some(slot) = u.identities.get_mut(index) {
+                *slot = identity;
+            }
+            if resolved.is_some() {
+                u.resolved = resolved;
+            }
+            u.settle();
+        });
     }
 
     /// `unit.hand_in`: `(flow, unit)`. A `none` line's request (and any request handed in with no
@@ -891,7 +1283,7 @@ impl Inbound {
                 Some(LineAuth::Chain(names, _)) => names,
                 _ => &[],
             };
-            self.mint(h.owner, h.generation, h.line, names)?
+            self.mint(h.owner, h.generation, h.line, &ordered(names), h.conn)?
         } else if self.verified(h.owner, None, None, h.unit) {
             h.unit
         } else {
