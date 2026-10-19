@@ -4,13 +4,14 @@
 //! THE ONE WIPED HMAC-SHA256 (coordinator ruling 2026-10-18, Q128 auth-sigv4 round 2 (a)): the HMAC
 //! an auth plugin keys over secret material ([`hmac_sha256`]). Every key-derived value — the padded
 //! key, the inner and outer pad blocks, the SHA-256 chaining states and the inner digest — lives in
-//! a buffer wiped on drop, and so does the answer (THE DESIGN §6: "auth material is zeroised").
+//! a buffer wiped on drop, and so does the answer (THE DESIGN section 6: "auth material is
+//! zeroised").
 //!
 //! WHY IT IS NOT `ring`. A library HMAC keeps its key's inner and outer pad states in a value it
 //! frees unwiped (`ring::hmac::Key`), and a library digest context does not wipe its chaining state
 //! either, so keying `ring` here would move the leak, not close it. This one primitive is the
-//! ledgered exception to THE DESIGN §2's single crypto backend: §6's zeroisation over §2's rule,
-//! for HMAC-SHA256 over key material only; every other primitive stays on `ring`. Moved unchanged
+//! ledgered exception to THE DESIGN section 2's single crypto backend: section 6's zeroisation
+//! over section 2's rule, for HMAC-SHA256 over key material only; every other primitive stays on `ring`. Moved unchanged
 //! in substance from `busbar-auth-sigv4` (`sigv4.rs`), whose copy is deleted; any other auth plugin
 //! with an HMAC over secret keys moves to it in its next sync.
 

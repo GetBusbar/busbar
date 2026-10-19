@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The one wiped HMAC-SHA256: RFC 4231's known answers, its SHA-256 against the contract's at every
-//! padding boundary, and THE DESIGN §6 rule it exists for, read off the SDK's own sources.
+//! padding boundary, and THE DESIGN section 6 rule it exists for, read off the SDK's own sources.
 
 use super::*;
 
@@ -54,8 +54,8 @@ fn the_wiped_sha256_matches_sha256_at_every_padding_boundary() {
     }
 }
 
-/// THE DESIGN §6 ("auth material is zeroised"), the rule this primitive is the ledgered exception
-/// for: every buffer the HMAC fills from the key (the padded key, the pads, the chaining state, the
+/// THE DESIGN section 6 ("auth material is zeroised"), the rule this primitive is the ledgered
+/// exception for: every buffer the HMAC fills from the key (the padded key, the pads, the chaining state, the
 /// final blocks, the digests) is born a `Zeroizing` one, and nothing in the SDK keys an HMAC on a
 /// library value it frees unwiped (`ring`'s `hmac::Key`, a RustCrypto `Hmac`).
 #[test]
