@@ -1082,7 +1082,7 @@ fn the_mcp_rig_pins_a_node_its_toolchain_accepts_on_every_runner_platform() {
 }
 
 /// THE ATTESTED BUILD THE RIG FETCHES (ARCHITECT ruling 2026-10-17, A1): busbar's own Actions run on
-/// each push to dev publishes, on busbar-release's dev-bin, the binary and its in-toto provenance
+/// each push to dev publishes, on busbar's own dev-bin release, the binary and its in-toto provenance
 /// under these names; the rig asks for exactly HEAD's pair on its own architecture, and verifies
 /// it against busbar's repository and branch.
 #[test]
@@ -1100,4 +1100,6 @@ fn the_slsa_rig_fetches_heads_attested_pair_from_dev_bin() {
         "github.com/GetBusbar/busbar"
     );
     assert_eq!(xtask::conformance_record::SOURCE_BRANCH, "dev");
+    // the pair lives on busbar's own release: the busbar-release engine is retired (row 163)
+    assert_eq!(xtask::conformance_record::DEV_BIN_REPO, "GetBusbar/busbar");
 }

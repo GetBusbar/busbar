@@ -12,7 +12,7 @@
 //! builder (keyless, OIDC), never on a developer box and never under a key of our own. The trusted
 //! builder is GetBusbar/busbar's own GitHub Actions run on each push to `dev` (ARCHITECT ruling
 //! 2026-10-17, option A1): slsa-github-generator's generic generator over the `busbar` it builds
-//! at that commit, published to busbar-release's `dev-bin` release as
+//! at that commit, published to GetBusbar/busbar's own `dev-bin` release as
 //! `busbar-linux-<arch>-<sha>` and `busbar-linux-<arch>-<sha>.intoto.jsonl` ([`dev_bin_assets`]).
 //! The rig fetches the pair for HEAD (the release token, `BUSBAR_RELEASE_TOKEN`) unless the
 //! caller hands both files in with `--slsa-artifact` and `--slsa-provenance`. When `dev-bin` holds
@@ -27,8 +27,8 @@ use super::Outcome;
 pub const SOURCE_URI: &str = "github.com/GetBusbar/busbar";
 /// The branch whose builds are attested: the generator runs on each push to it.
 pub const SOURCE_BRANCH: &str = "dev";
-/// Where the attested builds are published: busbar-release's `dev-bin` release.
-pub const DEV_BIN_REPO: &str = "GetBusbar/busbar-release";
+/// Where the attested builds are published: this repository's own `dev-bin` release.
+pub const DEV_BIN_REPO: &str = "GetBusbar/busbar";
 pub const DEV_BIN_TAG: &str = "dev-bin";
 
 /// THE PAIR `dev-bin` holds for the build of `head` on `arch` (`x86_64`, `aarch64`): the binary
