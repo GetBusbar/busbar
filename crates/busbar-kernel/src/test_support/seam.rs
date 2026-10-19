@@ -165,9 +165,11 @@ pub type ErrorSurfaceDriver = fn() -> std::pin::Pin<Box<dyn std::future::Future<
 pub type ServedCallFramer =
     fn(&str, serde_json::Value) -> (axum::http::HeaderMap, serde_json::Value);
 
-/// A test plane's CARRIED VERIFY-GATE reader: the verify-on-call gate its runtime object holds on
-/// a built App's plane slots (`None` when the plane is not configured there).
-pub type VerifyGateReader = fn(&dyn PlaneSlots) -> Option<Arc<crate::trust::VerifyGate>>;
+/// A test plane's CARRIED-STATE reader over a built App's plane slots (`None` when the plane is not
+/// configured there). The kernel's verify-on-call gate it once read is deleted (Q128 p8#3: never
+/// constructed in production); no plane installs one, and the field stays only while a linked test
+/// kit still spells it `None`.
+pub type VerifyGateReader = fn(&dyn PlaneSlots) -> Option<Arc<dyn std::any::Any + Send + Sync>>;
 
 /// ONE LINKED TEST PLANE'S SEAM ENTRY — plain data a plane's own test kit exports (as its
 /// `testkit::TEST_SEAM` const), so a reader that needs every linked plane in its test binary loops
