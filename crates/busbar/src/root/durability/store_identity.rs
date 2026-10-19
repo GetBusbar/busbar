@@ -372,3 +372,68 @@ pub fn walk_stored_chains(calls: &dyn StoreCalls, own: u64, keys: &AuditKeySet) 
         walk
     })
 }
+
+// THE Q128 RED's SURFACE (test-only; the fix replaces it): what the cells call, answering as the
+// host-name-keyed identity does today.
+
+/// How long a node's lease on its host name holds without a refresh, in milliseconds.
+#[cfg(test)]
+pub const LEASE_TTL_MS: u64 = 300;
+
+/// The file in a node's data directory its identity is kept in.
+#[cfg(test)]
+pub const NODE_ID_FILE: &str = "node_id";
+
+/// A process's lease on its host name.
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeLease;
+
+#[cfg(test)]
+impl NodeLease {
+    /// Release the lease.
+    ///
+    /// # Errors
+    ///
+    /// None yet.
+    pub fn release(&self, _calls: &dyn StoreCalls) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// The identity a node with no data directory journals under, and the lease it holds for it.
+#[cfg(test)]
+#[derive(Debug)]
+pub struct TakenNode {
+    /// The node id its journal is keyed by.
+    pub id: u64,
+    /// The lease on its host name.
+    pub lease: Option<NodeLease>,
+}
+
+/// The identity of a node with no data directory: today, the host name's.
+///
+/// # Errors
+///
+/// As [`node_id`].
+#[cfg(test)]
+pub fn take_node(calls: &dyn StoreCalls, host: &str) -> Result<TakenNode, String> {
+    Ok(TakenNode {
+        id: node_id(calls, host)?,
+        lease: None,
+    })
+}
+
+/// The identity of a node with a data directory: today, the host name's.
+///
+/// # Errors
+///
+/// As [`node_id`].
+#[cfg(test)]
+pub fn persisted_node(
+    calls: &dyn StoreCalls,
+    _dir: &std::path::Path,
+    host: &str,
+) -> Result<u64, String> {
+    node_id(calls, host)
+}

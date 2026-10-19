@@ -142,6 +142,8 @@ pub use store_chain::{part_key, JOURNAL_SCHEMA};
 /// deployment keyset, and the walk `/admin/verify` makes of every stored chain.
 mod store_identity;
 pub use store_identity::{host_identity, keep_keyset, node_id, stored_keyset};
+#[cfg(test)]
+pub use store_identity::{persisted_node, take_node};
 // Its callers are the admin verify (`units_admin`, `root-admin`) and the tests.
 #[cfg(any(test, feature = "root-admin"))]
 pub use store_identity::walk_stored_chains;
