@@ -5502,7 +5502,7 @@ mod q128_tests {
             .iter()
             .chain(["busbar-kernel"].iter())
             .chain(extra.iter())
-            .map(|n| core_kernel(*n))
+            .map(|n| core_kernel(n))
             .collect()
     }
 
