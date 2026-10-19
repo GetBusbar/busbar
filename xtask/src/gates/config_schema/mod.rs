@@ -499,11 +499,13 @@ impl Gate for ConfigSchemaGate {
                 Err(why) => return refuse(ROW_TRACKED_SOURCES, why),
             }
         }
-        let fresh =
-            match declared::read(cx).and_then(|declared| schema::extract_with(&read, &declared)) {
-                Ok(v) => v,
-                Err(why) => return refuse(ROW_TRACKED_SOURCES, why),
-            };
+        let fresh = match declared::read(cx)
+            .and_then(|declared| schema::extract_with(&read, &declared))
+            .and_then(|doc| schema::with_declared_types(cx, doc))
+        {
+            Ok(v) => v,
+            Err(why) => return refuse(ROW_TRACKED_SOURCES, why),
+        };
         let fresh_text = schema::canonical(&fresh);
         let n_types = type_count(&fresh);
 

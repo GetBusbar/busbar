@@ -232,15 +232,18 @@ fn binding_for(
             m.insert(k.to_string(), Value::String(v.clone()));
         }
     };
-    match lane.auth_style {
-        AuthStyleInput::JwtBearer => {
+    use busbar_contract::abi::auth::{STYLE_ENDPOINT_FROM_CREDENTIAL, STYLE_ENDPOINT_TOKEN_URL};
+    // The style a provider names, branched on what its plugin DECLARES (its endpoint bits), never on
+    // a name: the kernel carries it opaque (BUSBAR-1.6.0.md #50; arch-audit u29 F1).
+    match &lane.auth_style {
+        AuthStyleInput::Named { style, flags } if flags & STYLE_ENDPOINT_FROM_CREDENTIAL != 0 => {
             let mut m = Map::new();
             text(&mut m, "scope", &lane.scope);
             text(&mut m, "subject", &lane.subject);
             text(&mut m, "token_uri", &token_uri(api_key));
             CredentialBinding::Style(
                 StyleBinding {
-                    style: "jwt-bearer".to_string(),
+                    style: style.clone(),
                     params: mint_params(m),
                     uses_key: false,
                     statics: &[],
@@ -249,13 +252,13 @@ fn binding_for(
                 None,
             )
         }
-        AuthStyleInput::OAuthClientCredentials => {
+        AuthStyleInput::Named { style, flags } if flags & STYLE_ENDPOINT_TOKEN_URL != 0 => {
             let mut m = Map::new();
             text(&mut m, "token_url", &lane.token_url);
             text(&mut m, "scope", &lane.scope);
             CredentialBinding::Style(
                 StyleBinding {
-                    style: "oauth-client-credentials".to_string(),
+                    style: style.clone(),
                     params: mint_params(m),
                     uses_key: false,
                     statics: &[],
@@ -264,9 +267,17 @@ fn binding_for(
                 None,
             )
         }
-        AuthStyleInput::ApiKey => CredentialBinding::Style(api_key_override_binding(), None),
+        // `auth: bearer` is the dialect's own declared scheme, as the previous release read it (its
+        // default). TRANSITIONAL: deleted with busbar-llm (row 155 C).
+        AuthStyleInput::Named { style, .. } if style != "bearer" => CredentialBinding::Style(
+            StyleBinding {
+                style: style.clone(),
+                ..api_key_override_binding()
+            },
+            None,
+        ),
         // No override, or `auth: bearer`: the dialect's own declared scheme.
-        AuthStyleInput::Default | AuthStyleInput::Bearer => {
+        AuthStyleInput::Default | AuthStyleInput::Named { .. } => {
             match busbar_kernel::proto::decl_for(protocol) {
                 Some(decl) => match (decl.egress_scheme, decl.egress_auth_headers) {
                     (Some(scheme), _) => {
@@ -308,8 +319,12 @@ pub(crate) fn credential_for(
             // TRANSITIONAL: deleted with busbar-llm (row 155 C).
             // The token endpoint's userinfo (row 74, F25): stripped from `lane.token_url` before
             // this plane saw it, and handed back opaque for the host to present on the mint.
-            let endpoint = match lane.auth_style {
-                AuthStyleInput::OAuthClientCredentials => lane.token_userinfo.as_ref(),
+            let endpoint = match &lane.auth_style {
+                AuthStyleInput::Named { flags, .. }
+                    if flags & busbar_contract::abi::auth::STYLE_ENDPOINT_TOKEN_URL != 0 =>
+                {
+                    lane.token_userinfo.as_ref()
+                }
                 _ => None,
             };
             match bind_presenting(&*reach.0, &binding, api_key.as_bytes(), endpoint) {

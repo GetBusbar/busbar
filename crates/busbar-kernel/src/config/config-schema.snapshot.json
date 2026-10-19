@@ -1627,14 +1627,17 @@
       "transparent": false
     },
     "ProviderAuth": {
-      "deny_unknown_fields": false,
-      "kind": "enum",
-      "transparent": false,
+      "kind": "declared",
+      "source": "qa/declared-auth-styles.json",
       "variants": [
         "api-key",
         "bearer",
         "jwt-bearer",
-        "oauth-client-credentials"
+        "oauth-client-credentials",
+        "oauth-token-exchange",
+        "query-key",
+        "sigv4",
+        "x-goog-api-key"
       ]
     },
     "ProviderCfg": {
@@ -2628,6 +2631,12 @@
       "wire_keys": []
     },
     "manual-de PoolsCfg": {
+      "fields": {},
+      "kind": "manual",
+      "refused": [],
+      "wire_keys": []
+    },
+    "manual-de ProviderAuth": {
       "fields": {},
       "kind": "manual",
       "refused": [],

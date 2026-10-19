@@ -1831,17 +1831,6 @@ impl StyleParams {
     }
 }
 
-/// The `auth:` spelling of a provider's style override, as config writes it.
-fn style_word(auth: busbar_kernel::config::ProviderAuth) -> &'static str {
-    use busbar_kernel::config::ProviderAuth as Style;
-    match auth {
-        Style::Bearer => "bearer",
-        Style::ApiKey => "api-key",
-        Style::JwtBearer => "jwt-bearer",
-        Style::OAuthClientCredentials => "oauth-client-credentials",
-    }
-}
-
 /// TRANSITIONAL (row 155 B1b; drains at B1c, where the plane states the default auth style its
 /// dialect implies per provider and the root reads that style, never the dialect): one resolved
 /// provider as [`provider_routes`] reads it, its kernel-owned keys through the provider itself and
@@ -1897,7 +1886,7 @@ pub fn provider_routes(
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect(),
                     credential: p.api_key.clone(),
-                    style: p.auth.map(|a| style_word(a).to_string()),
+                    style: p.auth.as_ref().map(|a| a.as_str().to_string()),
                     params: StyleParams {
                         token_url: p.token_url.clone(),
                         token_uri: None,
