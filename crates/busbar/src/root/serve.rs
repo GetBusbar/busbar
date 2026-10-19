@@ -3666,6 +3666,9 @@ impl DataRoutes {
                 live.facts.audit_kind,
             )
             .await;
+        // A budget downgrade re-pooled the unit: its request count below names the pool the charge
+        // landed on (1.5.5 `ingress::dispatch`).
+        let downgraded = steps.downgraded();
         // The caller hears how the unit ended (a framed stream closes a cut or failed unit with a
         // refusal, never as whole).
         caller.ended(ended);
