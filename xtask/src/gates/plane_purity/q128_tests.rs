@@ -10,12 +10,16 @@
 //! * MEDIUM — the file-count guards refused only zero (Law 8 shape 2, "the absent floor").
 //! * MEDIUM — a strict ceiling raised in the change under judgement hid the rise (Law 9: "refuses
 //!   every rise from that moment").
+//! * MEDIUM (part 22) — a frozen-wire claim was checked for existence at its tag, not tied to what
+//!   the pragma exempts (Law 10: a premise "written as a condition the runner evaluates").
+//! * MEDIUM (part 22) — the IR freeze witness read a hand-typed list holding about half the LLM IR
+//!   family (Law 8: a roster "derived from the instances' own declarations").
 
 use crate::ctx::{Ctx, Overlay, WalkSpec};
 use crate::gates::construction::ceilings::BASE_PIN_KEY;
 use crate::gates::plane_purity::{
     strict, strict_category_row, strict_reach_row, PlanePurityGate, PlanePurityStrictGate,
-    ROW_BACKWARDS, ROW_DENOMINATOR, ROW_FREEZE, ROW_SYMBOL,
+    ROW_BACKWARDS, ROW_DENOMINATOR, ROW_FREEZE, ROW_FROZEN_WIRE_CLAIM, ROW_SYMBOL,
 };
 use crate::gates::Gate;
 use crate::ledger::{Status, Verdict};
@@ -180,4 +184,32 @@ fn a_strict_ceiling_raised_over_the_base_is_refused() {
     );
     let v = PlanePurityStrictGate.run(&cx.with_overlay(ov));
     assert_red_naming(&v, &strict_category_row("DIALECT"), "raised");
+}
+
+/// MEDIUM (part 22). A pragma whose claim names a real 1.5.5 key (`providers:`) does not excuse a
+/// type the claim never names: the exemption is tied to what the line carries.
+#[test]
+fn a_frozen_wire_claim_does_not_cover_a_name_it_does_not_name() {
+    let cx = Ctx::workspace().expect("workspace");
+    let mut ov = Overlay::new();
+    ov.set(
+        "crates/busbar-kernel/src/planted_q128_claim.rs",
+        "pub struct S { pub mcp_v2: McpV2Cfg, } // plane-purity: frozen-wire the `providers:` key (frozen since 1.5.5)\n",
+    );
+    let v = PlanePurityGate.run(&cx.with_overlay(ov));
+    assert_red_naming(&v, ROW_FROZEN_WIRE_CLAIM, "McpV2Cfg");
+}
+
+/// MEDIUM (part 22). An LLM IR type the plane declares but the hand list never named is a freeze
+/// hit when a neutral crate names it.
+#[test]
+fn an_llm_ir_type_off_the_hand_list_holds_the_freeze_open() {
+    let cx = Ctx::workspace().expect("workspace");
+    let mut ov = Overlay::new();
+    ov.set(
+        "crates/busbar-contract/src/planted_q128_freeze.rs",
+        "pub fn f(_: IrWebSearch) {}\n",
+    );
+    let v = PlanePurityGate.run(&cx.with_overlay(ov));
+    assert_red_naming(&v, ROW_FREEZE, "count=1");
 }
