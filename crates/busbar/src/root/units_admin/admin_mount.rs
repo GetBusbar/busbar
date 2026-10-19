@@ -735,7 +735,7 @@ pub fn mount(
                 // for, and the whole point of the seam is that it never does that.
                 let declared =
                     busbar_core_admin::admin_codec::verbs::resolve(req.method().as_str(), &path)
-                        .is_some_and(|resolved| served_here(&node.units.admin, &resolved));
+                        .is_some_and(|resolved| served_here(&resolved));
                 if !claimed || !declared {
                     return inner.oneshot(req).await.unwrap_or_else(|e| match e {});
                 }
@@ -810,7 +810,7 @@ pub fn mount(
 
 /// THE NODE'S ADMIN SURFACE, AS BOOT MOUNTS IT: [`mount`] over `admin_router`, its units the
 /// admin-only composition sharing the node's one `book`, bound to this node's live snapshot
-/// (`app`): the sealed operator posture (`operator_key`), the configured pools an `adjust` may
+/// (`app`): the configured pools an `adjust` may
 /// name, the planes and their record sink, the kernel's trust book the three trust verbs read and
 /// decide over (ARCHITECT 2026-10-06, through `late`), the kernel's own breaker (`breaker`), and
 /// the governance directory the authenticate step gates an identification with.
@@ -825,7 +825,6 @@ pub fn mount_node(
     request_body_max_bytes: usize,
     app: &Arc<busbar_kernel::state::AppHandle>,
     book: &crate::root::durability::NodeBook,
-    operator_key: Option<[u8; 32]>,
     late: &Arc<crate::root::serve::LateServices>,
     breaker: crate::root::adapters::BreakerPolicy,
 ) -> axum::Router {
@@ -845,15 +844,6 @@ pub fn mount_node(
                 live_admin_door(Arc::clone(app)),
                 book,
             );
-            // D38 PRODUCTION SEALING (composition-root, binding-only). Replace the assembly's
-            // `UnsealedPosture` default with the posture THIS fleet sealed: `SealedPosture` carries
-            // the boot-resolved operator key, so `operator.pub` present ⇒ `OperatorState::Set` (a
-            // valid-signed `amend_rate_history` is now performable + ed25519-verified) and absent ⇒
-            // `OperatorState::Unset` (amend refused at the ceremony gate, byte-identical to before).
-            // Bound over the SAME public `posture` seam `AdminBinding::with_posture_view` sets — and
-            // the same one the ledger view beside it is bound through — so this is a binding, not a
-            // structural change to the units.
-            units.admin.posture = Arc::new(SealedPosture::new(operator_key));
             // Q64/Q67: an `adjust` names the pool its unit was dispatched through, checked against
             // the pools this node has CONFIGURED — read off the live snapshot on every call, so a
             // config apply that adds or removes a pool is what the check sees.
@@ -891,31 +881,14 @@ pub fn mount_node(
 /// Whether THIS node serves the row `resolved` names, beyond the table declaring it.
 ///
 /// A row whose verb this build binds no effect to (`busbar_core_admin::verb::effect_bound`) is
-/// served nowhere. One further row is conditional: `amend_rate_history` verifies an operator signature against the key the
-/// fleet sealed (`auth.operator_pub`), so a node with no sealed key has nothing to verify against
-/// and the operation does not exist there. Such a node is exactly a 1.5.5-shaped deployment, and it
-/// answers the path as 1.5.5 does — the surface's own `404 not_found`, no audit row — rather than
-/// running the unit to a `403` naming a scope the caller already holds (oracle cells
-/// `ledger|amend|adjusting-entries`, `|refused-unsigned`). With a key sealed, the row is the
-/// verb's and every refusal is the verb's own. A posture this node cannot read stays claimed, so
-/// the verbs unit refuses it rather than this seam guessing.
+/// served nowhere; every other row is served. No row is conditional on an operator key: every verb
+/// is a plain scoped verb (#77(9), OWNER-LOCKED, `docs/design/BUSBAR-1.6.0.md` l.2279), so
+/// `amend_rate_history` is the verb's on every node and every refusal is the verb's own.
 #[cfg(feature = "root-admin")]
-pub(crate) fn served_here(binding: &AdminBinding, resolved: &ResolvedVerb) -> bool {
-    let verb = kernel_verb(resolved);
+pub(crate) fn served_here(resolved: &ResolvedVerb) -> bool {
     // A verb this build binds no effect to is not served at all (architect ruling 2026-09-24): the
     // surface's own fallback answers it — the unmounted `404`, byte for byte, no audit row.
-    if !verb.is_none_or(busbar_core_admin::verb::effect_bound) {
-        return false;
-    }
-    if verb != Some(KernelVerb::AmendRateHistory) {
-        return true;
-    }
-    binding
-        .posture
-        .resolve(KernelVerb::AmendRateHistory, "")
-        .is_none_or(|(posture, _)| {
-            matches!(posture.operator, busbar_core_admin::OperatorState::Set(_))
-        })
+    kernel_verb(resolved).is_none_or(busbar_core_admin::verb::effect_bound)
 }
 
 /// Cells for THE ADMIN REQUEST CHAIN as a whole, end to end over this mount.

@@ -16,7 +16,7 @@
 //! coherent to resolve against in the closed-loop tests below. `verify` and `plane_facts` are bound
 //! `GET` and read-only, as BUSBAR-1.6.0.md binds them in its HTTP-binding paragraph (CG-56), so
 //! the (method, path) gate agrees with the row without a carve-out; every other 1.6.0 verb is
-//! marked `full`, matching the design's statement that the irreducible/dual-controlled set is entirely mutating.
+//! marked `full`, because every one of them mutates.
 //! If the real HTTP binding differs, only this table's literals need to change — the match logic
 //! (`find_verb`, path-pattern matching) does not know these are synthetic.
 
@@ -73,7 +73,7 @@ const NEW_VERBS_1_6_0: &[VerbEntry] = &[
     // `amend_rate_history`: unlike the eight above, its path is NOT a judgment call. The
     // dated rate-card-history design binds it at `POST /api/v1/admin/ledger/amend-rate-history` —
     // under the `/ledger/` prefix the five views share, because it is the one write among them — and
-    // `full` + irreducible, because it corrects what the past cost.
+    // `full`, because it corrects what the past cost.
     post_row(
         "/api/v1/admin/ledger/amend-rate-history",
         "amend_rate_history",

@@ -52,7 +52,6 @@ pub mod idempotency;
 // THE PLANE TRUST VERB ENVELOPE (moved from the kernel's `admin::planeverbs`, P2 D4): the core-admin
 // backing [`install`] binds into the kernel's `admin_verbs` seam.
 pub mod planeverbs;
-pub mod posture;
 pub mod rate;
 pub mod refusal;
 /// The handles the composition root's admin tests drive this crate through: `cfg(test)` or
@@ -68,12 +67,11 @@ pub mod witness;
 
 pub use admin_state::{AdminState, AppAdmin};
 pub use governance::{Governance, GovernanceError};
-pub use posture::{ApprovalState, DualControl, OperatorState, PostureCtx};
 pub use rate::ConfigClassRule;
 pub use refusal::{ReasonCode, Refusal, RefusalStep};
 pub use verb::{
-    verb_name, KernelVerb, VerbScope, AUDIT_VERBS, IRREDUCIBLE_VERBS, LEDGER_VERBS, LEGACY_VERBS,
-    NAMED_SURFACES, NEW_VERBS, READ_ONLY_NEW_VERBS,
+    verb_name, KernelVerb, VerbScope, AUDIT_VERBS, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES,
+    NEW_VERBS, READ_ONLY_NEW_VERBS,
 };
 pub use verbs::{required_scope, Verbs};
 
