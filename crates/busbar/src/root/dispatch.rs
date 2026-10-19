@@ -43,6 +43,7 @@ pub fn boot(workers: usize, services: Arc<dyn HostServices>) -> Arc<Dispatcher> 
 pub fn build(workers: usize, services: Arc<dyn HostServices>) -> Dispatcher {
     let dispatcher = Dispatcher::with_services(config(workers), services);
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
+    crate::root::outbound_auth::arm_dispatcher(&dispatcher);
     dispatcher
 }
 

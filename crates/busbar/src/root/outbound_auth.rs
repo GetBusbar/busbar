@@ -32,14 +32,13 @@ use busbar_contract::abi::auth::{AuthPoint, FIELD_SENSITIVE, STYLE_NEEDS_HEADERS
 use busbar_contract::abi::host::service::{UnitRef, LINE_NONE};
 use busbar_contract::auth_calls::{Fields, FieldsRequest};
 use busbar_contract::conn::{InstanceId, NeedId};
-use busbar_core_connector::framer::{BindingRefs, DialBinding};
+use busbar_core_connector::framer::{AuthBinding as FramerBinding, BindingRefs};
 use busbar_kernel::plane_driver::attempt_auth::{self, AttemptAuth, AuthOutcome};
 use busbar_kernel::plane_driver::AuthBinding;
 
 use crate::root::loader::dispatch::auth_handle;
 use crate::root::loader::dispatch::auth_serve::{
-    self, Answer, AuthAsk, AuthServed, OutboundServer, OwnRequest, ServedField, Wiped,
-    OUTBOUND_REFUSED,
+    Answer, AuthAsk, AuthServed, OutboundServer, OwnRequest, ServedField, Wiped, OUTBOUND_REFUSED,
 };
 
 /// The tag every outbound binding id carries (its top bit: the loader's `RefSpace::Binding`, one
@@ -133,7 +132,7 @@ impl BindingRefs for OutboundBindings {
         caller: InstanceId,
         need: NeedId,
         member: &str,
-    ) -> Option<DialBinding> {
+    ) -> Option<FramerBinding> {
         let id =
             *self
                 .by_member
@@ -146,7 +145,11 @@ impl BindingRefs for OutboundBindings {
             return None;
         }
         let auth = auth_handle::mint_auth_ref(owner, auth_handle::generation(), id)?;
-        Some(DialBinding { auth, points })
+        Some(FramerBinding {
+            auth,
+            points,
+            line_points: 0,
+        })
     }
 
     /// The unit `unit`'s ref, minted for the framer `owner` (what the host hands the framer with
@@ -311,12 +314,17 @@ pub fn process() -> &'static Arc<OutboundBindings> {
     ONE.get_or_init(|| Arc::new(OutboundBindings::default()))
 }
 
-/// Arm `connector` and the loader's auth handle with the process's bindings: every dial naming a
-/// registration begins with its binding, and every framer's `auth.call` on one is served here.
+/// Arm `connector` with the process's bindings: every dial naming a registration begins with its
+/// binding. The framers' `auth.call` on one is served by the dispatcher they load on, armed as it is
+/// built ([`arm_dispatcher`]).
 pub fn arm(connector: &busbar_core_connector::Connector) {
-    let bindings = Arc::clone(process());
-    connector.arm_bindings(Arc::clone(&bindings) as Arc<dyn BindingRefs>);
-    auth_serve::arm(bindings as Arc<dyn OutboundServer>);
+    connector.arm_bindings(Arc::clone(process()) as Arc<dyn BindingRefs>);
+}
+
+/// Arm `dispatcher` with the process's bindings: its instances' `auth.call` on an outbound
+/// binding's ref is served here. Held by that dispatcher alone (no process-wide seam).
+pub fn arm_dispatcher(dispatcher: &crate::root::loader::dispatch::Dispatcher) {
+    dispatcher.arm_outbound(Arc::clone(process()) as Arc<dyn OutboundServer>);
 }
 
 #[cfg(test)]

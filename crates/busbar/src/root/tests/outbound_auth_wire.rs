@@ -47,7 +47,7 @@ use busbar_kernel::plane_driver::AuthBinding;
 
 use crate::root::doors::{row_bind, Dispatched};
 use crate::root::loader::dispatch::kinds::transport::Transport as TransportKind;
-use crate::root::loader::dispatch::{auth_serve, load_linked, LinkedRow};
+use crate::root::loader::dispatch::{load_linked, LinkedRow};
 
 // ── the linked test framer ──────────────────────────────────────────────────────────────────────
 
@@ -236,8 +236,8 @@ slot!(Finish, FinishIn, FramerOut, |p, i, o| {
     Outcome::Ready
 });
 
-/// `encode`: the envelope as this wire's message: `METHOD TARGET`, a `name: value` line per field,
-/// a blank line, the body (LF-separated; the wire form is `emit`'s).
+// `encode`: the envelope as this wire's message: `METHOD TARGET`, a `name: value` line per field,
+// a blank line, the body (LF-separated; the wire form is `emit`'s).
 slot!(Encode, EncodeIn, FramerOut, |_, i, o| {
     let mut m = Vec::new();
     m.extend_from_slice(i.field(|x| &x.method).bytes());
@@ -280,10 +280,10 @@ fn parse(m: &[u8]) -> Option<Message> {
     Some((method.to_owned(), target.to_owned(), fields, body.to_vec()))
 }
 
-/// `emit`: THE OUTBOUND HEAD, as every transport builds it (THE DESIGN §6 item 5): the framer's own
-/// line first finalises the head (the body's length), then the binding's auth is called at its
-/// point with that head, its lines go out FIRST replacing any line of the same name, and nothing is
-/// added after.
+// `emit`: THE OUTBOUND HEAD, as every transport builds it (THE DESIGN §6 item 5): the framer's own
+// line first finalises the head (the body's length), then the binding's auth is called at its
+// point with that head, its lines go out FIRST replacing any line of the same name, and nothing is
+// added after.
 slot!(Emit, EmitIn, FramerOut, |p, i, o| {
     let Some(inst) = p.get() else {
         return Outcome::Failed;
@@ -335,6 +335,8 @@ slot!(Emit, EmitIn, FramerOut, |p, i, o| {
                 authority: &authority,
                 query: None,
                 fields: &view,
+                // The dial is in the clear (this framer offers no connection security).
+                scheme: busbar_contract::abi::host::service::SCHEME_PLAIN,
             },
             None,
         );
@@ -449,11 +451,15 @@ fn canonical(
     c
 }
 
+/// One head a signing style signed: the handle it was called on, the method, the path, the
+/// authority and the head's lines.
+type SignedHead = (u64, Vec<u8>, Vec<u8>, String, Vec<(Vec<u8>, Vec<u8>)>);
+
 /// A signing style: answers `authorization: Sig <digest of the head it was handed>`, keeping the
 /// head it signed.
 #[derive(Default)]
 struct Signer {
-    signed: Mutex<Vec<(u64, Vec<u8>, Vec<u8>, String, Vec<(Vec<u8>, Vec<u8>)>)>>,
+    signed: Mutex<Vec<SignedHead>>,
 }
 
 struct Done(Fields);
@@ -493,8 +499,11 @@ impl OutboundAuth for Signer {
     }
 }
 
+/// A request as the wire carried it: its request line, its head lines in order, and its body.
+type WireRequest = (String, Vec<(String, Vec<u8>)>, Vec<u8>);
+
 /// The wire's request line, its head lines in order, and its body.
-fn read_wire(w: &[u8]) -> (String, Vec<(String, Vec<u8>)>, Vec<u8>) {
+fn read_wire(w: &[u8]) -> WireRequest {
     let at = w.windows(4).position(|x| x == b"\r\n\r\n").expect("a head");
     let head = std::str::from_utf8(&w[..at]).expect("text");
     let mut lines = head.split("\r\n");
@@ -532,7 +541,7 @@ fn the_auth_signs_the_exact_head_that_goes_on_the_wire() {
 
     // The root's outbound half, as the boot arms it.
     let bindings = Arc::clone(crate::root::outbound_auth::process());
-    auth_serve::arm(Arc::clone(&bindings) as Arc<dyn auth_serve::OutboundServer>);
+    crate::root::outbound_auth::arm_dispatcher(crate::root::doors::dispatcher());
     let signer = Arc::new(Signer::default());
     bindings.register(
         PLANE,
@@ -566,13 +575,13 @@ fn the_auth_signs_the_exact_head_that_goes_on_the_wire() {
         .expect("the member's binding");
     let unit_ref: UnitRef = bindings.unit_ref(owner, unit).expect("the unit's ref");
 
-    let (mut framing, _) = Framing::begin_ticketed(
+    let (mut framing, _) = Framing::begin_bound(
         Arc::clone(&door),
         SIDE_DIAL,
         "tst://api.example:443/v1",
         &Established::default(),
         &[],
-        Some(binding),
+        &binding,
     )
     .expect("the dial's framing begins with its binding");
     assert!(!framing.parked());
@@ -588,7 +597,7 @@ fn the_auth_signs_the_exact_head_that_goes_on_the_wire() {
     )
     .expect("the framer encodes the message");
     let y = framing
-        .emit_as(1, unit_ref, &message, true, false)
+        .emit_unit(1, &message, true, false, None, unit_ref)
         .expect("the framer emits");
     assert!(!framing.parked(), "the auth answered at once");
 
@@ -635,54 +644,85 @@ fn the_auth_signs_the_exact_head_that_goes_on_the_wire() {
 
 // ── the composed open: the media session's signalling request (coordinator ruling) ─────────────────────────
 
-/// A dialling datagram framer, as small as the composed open needs: its `begin` answers its own
-/// session description as the stream-0 piece the connector sends as the signalling body.
-struct Datagram {
-    facts: busbar_core_connector::framer::DoorFacts,
-}
+/// A LINKED dialling DATAGRAM framer, as small as the composed open needs: its `begin` answers its
+/// own session description as the stream-0 piece the connector sends as the signalling body.
+mod media {
+    use super::*;
+    use busbar_contract::abi::transport::{FramePiece, FRAMING_DATAGRAM, PIECE_END_OF_FRAME};
 
-/// The description the datagram framer offers.
-const OFFER: &[u8] = b"v=0 offer";
+    /// The description the datagram framer offers.
+    pub(super) const OFFER: &[u8] = b"v=0 offer";
 
-impl FramerDoor for Datagram {
-    fn facts(&self) -> &busbar_core_connector::framer::DoorFacts {
-        &self.facts
-    }
-    fn cross(
-        &self,
-        call: busbar_core_connector::framer::Call<'_>,
-    ) -> busbar_core_connector::framer::Crossed {
-        use busbar_contract::abi::transport::{FramePiece, PIECE_END_OF_FRAME};
-        use busbar_core_connector::framer::{Call, Crossed};
-        let ok = Crossed {
-            outcome: Outcome::Ready,
-            error: None,
-        };
-        match call {
-            Call::Begin(i, o) => {
-                assert!(OFFER.len() <= i.sink.frame_cap && i.sink.pieces_cap > 0);
-                // SAFETY: the host's frame and piece buffers, bounded above.
-                unsafe {
-                    std::ptr::copy_nonoverlapping(OFFER.as_ptr(), i.sink.frame, OFFER.len());
-                    i.sink.pieces.write(FramePiece {
-                        stream: 0,
-                        offset: 0,
-                        len: OFFER.len() as u64,
-                        flags: PIECE_END_OF_FRAME,
-                        ..std::mem::zeroed()
-                    });
-                }
-                o.framing = 7;
-                o.yielded.frame_len = OFFER.len() as u64;
-                o.yielded.pieces_len = 1;
-                ok
-            }
-            Call::Timer(..) | Call::Finish(..) => ok,
-            _ => Crossed {
-                outcome: Outcome::Refused,
-                error: None,
-            },
-        }
+    const MEDIA_NAMES: &[AbiStr] = &[abi_str("dg")];
+
+    const MEDIA_TAIL: TransportTail = TransportTail {
+        framing: FRAMING_DATAGRAM,
+        ..TAIL
+    };
+
+    const MEDIA_STATEMENT: Statement = Statement {
+        kind_tail: (&MEDIA_TAIL as *const TransportTail).cast::<KindTailHead>(),
+        claims: MEDIA_NAMES.as_ptr(),
+        claims_len: MEDIA_NAMES.len(),
+        ..statement("dg", "0", 8)
+    };
+
+    slot!(Begin, BeginIn, FramerOut, |_, i, o| {
+        let mut frame = i.field(|x| &x.sink).frame();
+        frame.extend(OFFER);
+        let mut pieces = i.field(|x| &x.sink).pieces();
+        pieces.push(FramePiece {
+            stream: 0,
+            offset: 0,
+            len: OFFER.len() as u64,
+            code: 0,
+            status_class: 0,
+            fault: 0,
+            flags: PIECE_END_OF_FRAME,
+            retry_after_secs: 0,
+            declared_len: 0,
+        });
+        o.set(|x| &x.framing, 7);
+        o.set(|x| &x.yielded.frame_len, OFFER.len() as u64);
+        o.set(|x| &x.yielded.pieces_len, 1);
+        Outcome::Ready
+    });
+    answer!(MediaEmit, EmitIn, FramerOut, Outcome::Ready);
+
+    busbar_contract::plugin_door! {
+        ops: Ops,
+        statement: MEDIA_STATEMENT,
+        lifecycle: {
+            validate: Safe<Validate>,
+            open: Safe<Open>,
+            refresh: Safe<Refresh>,
+            retire: Safe<Retire>,
+            tick: Safe<Tick>,
+            drive: Safe<Drive>,
+            cancel: Safe<Cancel>,
+            release: Safe<Release>,
+            close: Safe<Close>,
+        },
+        kind_ops: {
+            listen: Safe<Listen>,
+            accept: Safe<Accept>,
+            dial: Safe<Dial>,
+            read: Safe<Read>,
+            write: Safe<Write>,
+            flush: Safe<Flush>,
+            shut: Safe<Shut>,
+            arrival: Safe<Arrival>,
+            locate: Safe<Locate>,
+            begin: Safe<Begin>,
+            ingest: Safe<Ingest>,
+            emit: Safe<MediaEmit>,
+            encode: Safe<Encode>,
+            refuse: Safe<Refuse>,
+            finish: Safe<Finish>,
+            detach: Safe<Detach>,
+            adopt: Safe<Adopt>,
+            timer: Safe<Timer>,
+        },
     }
 }
 
@@ -740,7 +780,6 @@ async fn a_composed_signalling_request_carries_the_auth_line_over_the_head_it_si
         )
         .expect("the test framer opens"),
     );
-    let owner = tst.owner();
     let settings = busbar_contract::transport::TransportSettings::default();
     let mut entries = crate::root::connector::entries(crate::LINKED_TRANSPORT_DOORS, &settings)
         .expect("the linked doors open");
@@ -748,19 +787,17 @@ async fn a_composed_signalling_request_carries_the_auth_line_over_the_head_it_si
         door: Arc::clone(&tst),
         alpn: Vec::new(),
     });
+    let media_row = LinkedRow::of(media::door).expect("the media framer's door is a door");
+    let media = load_linked::<TransportKind>(&media_row, row_bind("dg-signal"))
+        .expect("the media framer loads");
     entries.push(Entry {
-        door: Arc::new(Datagram {
-            facts: busbar_core_connector::framer::DoorFacts {
-                name: "dg".into(),
-                claims: vec!["dg"],
-                role: ROLE_FRAMER,
-                composes_over: Vec::new(),
-                ported: false,
-                status_rows: Vec::new(),
-                duplex: Vec::new(),
-                datagram: true,
-            },
-        }),
+        door: Arc::new(
+            Dispatched::open(
+                media,
+                &busbar_contract::transport::TransportSettings::default(),
+            )
+            .expect("the media framer opens"),
+        ),
         alpn: Vec::new(),
     });
     let dest = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
@@ -835,7 +872,7 @@ async fn a_composed_signalling_request_carries_the_auth_line_over_the_head_it_si
     let whole = |w: &[u8]| {
         w.windows(4)
             .position(|x| x == b"\r\n\r\n")
-            .is_some_and(|at| w.len() >= at + 4 + OFFER.len())
+            .is_some_and(|at| w.len() >= at + 4 + media::OFFER.len())
     };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let mut buf = vec![0_u8; 4096];
@@ -856,7 +893,8 @@ async fn a_composed_signalling_request_carries_the_auth_line_over_the_head_it_si
     let (first, wire_fields, body) = read_wire(&wire);
     assert_eq!(first, "POST /v1/offer TST/1");
     assert_eq!(
-        body, OFFER,
+        body,
+        media::OFFER,
         "the signalling body is the datagram framer's description"
     );
     let signed = signer.signed.lock().unwrap().clone();

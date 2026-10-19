@@ -62,7 +62,7 @@ use busbar_contract::abi::mechanism::call::{Outcome, Span};
 use busbar_contract::caps::IdempotencyKey;
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::RecordBytes;
-use busbar_contract::records::RecordStore;
+use busbar_contract::records::{RecordStore, RecordStoreResult, Retention};
 use busbar_contract::services::{
     merge_list, Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList,
     Stored,
@@ -495,6 +495,11 @@ pub struct InstanceFacts {
     /// chain, framed and sealed by the host and verified when read (`crate::host_chains`), never
     /// put.
     pub record_chains: Vec<busbar_contract::abi::plane::RecordChain>,
+    /// Its record kinds' retention rules, as its tail declares them
+    /// (`PlaneTail::record_retentions`, each `kind` an index into [`InstanceFacts::record_kinds`]):
+    /// every purge of a listed kind passes its rule ([`KernelServices::record_retention`]); every
+    /// other kind is purged by age.
+    pub record_retentions: Vec<busbar_contract::abi::plane::RecordRetention>,
 }
 
 /// Why an instance was not admitted.
@@ -932,16 +937,26 @@ impl KernelServices {
             || (Vec::new(), false),
             |d| (d.record.list(), *d.default_instance == *instance),
         );
-        let mut instances = self.lock_instances();
         // The operator's kept trust decisions replay at the instance's FIRST admit only: a re-admit
         // keeps them in its state, and one whose declared pin changed is the operator's re-approval.
-        let decided = if instances.contains_key(instance) {
-            Vec::new()
-        } else {
+        // NO PLUGIN CODE RUNS UNDER A HOST LOCK (§11.13 M1; audit K4 #6): the read is a store-plugin
+        // crossing, so it runs with the instance map released. An instance once admitted is never
+        // removed, so a label seen admitted here is still admitted under the lock below; one seen
+        // absent is judged again there, and a racing first admit that won keeps its own replay.
+        let first = !self.lock_instances().contains_key(instance);
+        let decided = if first {
             self.demotions
                 .get()
                 .map(|d| d.record.decisions())
                 .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let mut instances = self.lock_instances();
+        let decided = if instances.contains_key(instance) {
+            Vec::new()
+        } else {
+            decided
         };
         if let Some(domain) = facts.signing.as_ref().map(|s| s.domain.as_str()) {
             let holder = instances.iter().find(|(label, f)| {
@@ -1206,6 +1221,43 @@ impl KernelServices {
     pub fn record_kind(&self, caller: &Caller, index: u32) -> Option<RecordSchemaId> {
         let facts = self.facts(caller)?;
         facts.record_kinds.get(index as usize).copied()
+    }
+
+    /// The retention rule the instance labelled `instance` declared for its record kind `kind`
+    /// (`PlaneTail::record_retentions`): [`Retention::Age`] for a kind it lists no rule for, a kind
+    /// it does not keep, or an instance never admitted.
+    #[must_use]
+    pub fn record_retention(&self, instance: &str, kind: &str) -> Retention {
+        let Some(facts) = self.lock_instances().get(instance).cloned() else {
+            return Retention::Age;
+        };
+        let Some(index) = facts.record_kinds.iter().position(|k| k.as_str() == kind) else {
+            return Retention::Age;
+        };
+        facts
+            .record_retentions
+            .iter()
+            .find(|r| r.kind as usize == index)
+            .and_then(|r| Retention::from_code(r.rule))
+            .unwrap_or_default()
+    }
+
+    /// THE RETENTION PURGE of one instance's record kind: drop the `kind` rows older than `before`
+    /// from `store` under the rule the instance declared for the kind ([`Self::record_retention`]),
+    /// answering how many went. The rule is the owner's declaration, never read off the kind's
+    /// name. It runs on the calling thread, so a sweep calls it off the request path.
+    ///
+    /// # Errors
+    ///
+    /// The store's refusal.
+    pub fn purge_records_before(
+        &self,
+        store: &dyn RecordStore,
+        instance: &str,
+        kind: &str,
+        before: u64,
+    ) -> RecordStoreResult<u64> {
+        store.purge_plane_records(kind, before, self.record_retention(instance, kind))
     }
 
     /// CLAIM `(op, key)` for the instance labelled `instance` for `ttl_ms`, or, with `held`, extend

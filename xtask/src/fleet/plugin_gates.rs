@@ -43,6 +43,9 @@ usage:
   (--tree: `cargo tree -e normal,build --target all --prefix none -f '{p}|{f}'` per workspace member,
    concatenated; the closure and features are then the shipped build's, not the dev-unified resolve's)
   cargo xtask plugin-gates imports <undefined-symbols.txt> <needed-libs.txt> <deps.toml> <repo>
+  cargo xtask plugin-gates gitsources <deps.toml>
+  (every [git-sources] row admits one repository under https://github.com/GetBusbar/, at a 40-hex rev,
+   for named plugin repos, with a reason)
   cargo xtask plugin-gates parity <plugin Cargo.lock> <busbar Cargo.lock> [<deps.toml> <repo>] [--advisories <cargo-deny json lines>]
   cargo xtask plugin-gates bothways <conformance --list output>
   cargo xtask plugin-gates declares <busbar-root> <kind> <declares.json>
@@ -52,6 +55,8 @@ usage:
   cargo xtask plugin-gates plane <busbar-root> <plugin repo dir> <logic package>
   (a plane repo's change, judged at its busbar pin by busbar's plane gates: no row that passes over
    busbar's pinned plane may fail with the change laid in its place)
+  cargo xtask plugin-gates zero-spread <busbar-root> <plugin repo dir>
+  (every non-test literal of a contract struct that states a `ZERO` carries a base: `T { .., ..T::ZERO }`)
   cargo xtask plugin-gates selftest";
 
 type Res<T> = Result<T, String>;
@@ -981,6 +986,79 @@ pub fn former_names(
     Ok(out)
 }
 
+// -- gitsources: the [git-sources] rows ----------------------------------------------------------
+
+/// `deps.toml [git-sources]`: one finding per row that admits anything but ONE repository under
+/// https://github.com/GetBusbar/ at a full 40-hex commit, for named plugin repos, with a reason.
+pub fn gitsources(deps: &Json) -> Res<Vec<String>> {
+    let rows = match deps.get("git-sources") {
+        Json::Null => return Ok(Vec::new()),
+        Json::Object(o) => o,
+        _ => return Err("plugin-gates: deps.toml [git-sources] is not a table".to_string()),
+    };
+    let mut out = Vec::new();
+    for (name, row) in rows.iter() {
+        let Some(fields) = row.as_object() else {
+            out.push(format!(
+                "GITSRC {name}: not a table (`git`, `rev`, `repos`, `reason`)"
+            ));
+            continue;
+        };
+        let s = |k: &str| row.get(k).as_str().unwrap_or("");
+        let git = s("git");
+        if !getbusbar_repo(git) {
+            out.push(format!(
+                "GITSRC {name}: `{git}` is not one repository under {GETBUSBAR}"
+            ));
+        }
+        let rev = s("rev");
+        if !full_sha(rev) {
+            out.push(format!(
+                "GITSRC {name}: rev `{rev}` is not a full 40-hex commit"
+            ));
+        }
+        let repos = row.get("repos").as_array().unwrap_or(&[]);
+        if repos.is_empty()
+            || repos
+                .iter()
+                .any(|r| r.as_str().is_none_or(|r| r.trim().is_empty()))
+        {
+            out.push(format!("GITSRC {name}: names no plugin repo"));
+        }
+        if s("reason").trim().is_empty() {
+            out.push(format!("GITSRC {name}: has no reason"));
+        }
+        for k in fields.keys() {
+            if !matches!(k, "git" | "rev" | "repos" | "reason") {
+                out.push(format!(
+                    "GITSRC {name}: `{k}` is not a [git-sources] key (git, rev, repos, reason)"
+                ));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The one GitHub organisation a `[git-sources]` row may name.
+const GETBUSBAR: &str = "https://github.com/GetBusbar/";
+
+/// `https://github.com/GetBusbar/<repo>`: one path segment of letters, digits, `-`, `_` and `.`,
+/// and not `.` or `..`.
+fn getbusbar_repo(git: &str) -> bool {
+    git.strip_prefix(GETBUSBAR).is_some_and(|r| {
+        !r.is_empty()
+            && r != "."
+            && r != ".."
+            && r.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    })
+}
+
+/// A full commit sha: 40 lowercase hex digits.
+fn full_sha(rev: &str) -> bool {
+    rev.len() == 40 && rev.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 // -- the deps.toml reader ------------------------------------------------------------------------
 
 struct Toml {
@@ -1725,7 +1803,90 @@ fn cases() -> Vec<(&'static str, Res<Vec<String>>, bool)> {
         declares(d, "auth", r#"{"contract_abi": {"min": 3, "max": 3}}"#),
         false,
     ));
+    let src = |git: &str, rev: &str| -> Res<Vec<String>> {
+        gitsources(&parse_toml(&format!(
+            "[git-sources.x]\ngit = \"{git}\"\nrev = \"{rev}\"\nrepos = [\"busbar-transport-x\"]\nreason = \"r\"\n"
+        ))?)
+    };
+    v.push((
+        "gitsources outside GetBusbar",
+        src("https://github.com/algesten/str0m", FORTY_HEX),
+        true,
+    ));
+    v.push((
+        "gitsources a branch, not a rev",
+        src("https://github.com/GetBusbar/str0m", "main"),
+        true,
+    ));
+    v.push(("gitsources committed", gitsources(&committed), false));
+    for (name, src, red) in ZERO_SPREAD_PLANTS {
+        v.push((name, zero_spread_plant(src), *red));
+    }
     v
+}
+
+/// A full commit sha, for the `[git-sources]` plants.
+const FORTY_HEX: &str = "a142c64e1fafc5cca029adda1507a51064f81902";
+
+/// The contract the zero-spread plants are judged against: `Tail` states a `ZERO`; `Route` has two
+/// structs of its name, only one of which does.
+const ZERO_CONTRACT: &str = "\
+pub struct Tail { pub size: u32, pub flags: u32 }
+impl Tail { pub const ZERO: Self = Self { size: 0, flags: 0 }; }
+pub mod a { pub struct Route { pub path: u32, pub auth: u32, pub _reserved: u32 }
+impl Route { pub const ZERO: Self = Self { path: 0, auth: 0, _reserved: 0 }; } }
+pub mod b { pub struct Route { pub path: u32, pub auth: u32 } }
+";
+
+/// `(case, plugin src/lib.rs, RED)`.
+const ZERO_SPREAD_PLANTS: &[(&str, &str, bool)] = &[
+    (
+        "zero-spread spread",
+        "const T: Tail = Tail { size: 8, ..Tail::ZERO };",
+        false,
+    ),
+    (
+        "zero-spread every field named",
+        "const T: Tail = Tail { size: 8, flags: 0 };",
+        true,
+    ),
+    ("zero-spread a module's literal", "mod m;", true),
+    (
+        "zero-spread test-only literal",
+        "#[cfg(test)] mod t { const T: Tail = Tail { size: 8, flags: 0 }; }",
+        false,
+    ),
+    (
+        "zero-spread shared name, one without ZERO",
+        "const R: Route = Route { path: 1, auth: 2 };",
+        false,
+    ),
+    (
+        "zero-spread shared name, only the ZERO one fits",
+        "const R: Route = Route { path: 1, auth: 2, _reserved: 0 };",
+        true,
+    ),
+];
+
+/// One zero-spread plant: a busbar checkout holding [`ZERO_CONTRACT`] and a plugin repo whose one
+/// crate's `src/lib.rs` is `lib` (and whose `src/m.rs` names every field of a `Tail`).
+fn zero_spread_plant(lib: &str) -> Res<Vec<String>> {
+    let tmp = TempDir::new();
+    let contract = tmp.0.join("busbar").join(super::zero_spread::CONTRACT_SRC);
+    let krate = tmp.0.join("plugin").join("p");
+    let w = |p: PathBuf, s: &str| -> Res<()> {
+        std::fs::create_dir_all(p.parent().expect("a parent"))
+            .and_then(|()| std::fs::write(&p, s))
+            .map_err(|e| format!("{}: {e}", p.display()))
+    };
+    w(contract.join("lib.rs"), ZERO_CONTRACT)?;
+    w(krate.join("Cargo.toml"), "[package]\nname = \"p\"\n")?;
+    w(krate.join("src/lib.rs"), lib)?;
+    w(
+        krate.join("src/m.rs"),
+        "pub const T: Tail = Tail { size: 8, flags: 0 };",
+    )?;
+    super::zero_spread::zero_spread(&tmp.0.join("busbar"), &tmp.0.join("plugin"))
 }
 
 /// The selftest's failure lines (without the `SELFTEST ` prefix).
@@ -1916,8 +2077,10 @@ fn run(cmd: &str, args: &[String]) -> Res<Vec<String>> {
             )
         }
         "bothways" => Ok(bothways(&splitlines(&read(a(0)?)?))),
+        "gitsources" => gitsources(&load_toml(a(0)?)?),
         "plane" => plane(Path::new(a(0)?), Path::new(a(1)?), a(2)?),
         "declares" => declares(Path::new(a(0)?), a(1)?, &read(a(2)?)?),
+        "zero-spread" => super::zero_spread::zero_spread(Path::new(a(0)?), Path::new(a(1)?)),
         "former-names" => {
             let mut rest = args[1..].iter();
             let (mut repo, mut declared) = (None, None);
@@ -2020,6 +2183,12 @@ mod tests {
         former_names_release_signs_it => "former-names release signs it",
         former_names_release_drops_it => "former-names release drops it",
         former_names_stray_frozen_row => "former-names stray frozen row",
+        zero_spread_spread => "zero-spread spread",
+        zero_spread_every_field_named => "zero-spread every field named",
+        zero_spread_a_modules_literal => "zero-spread a module's literal",
+        zero_spread_test_only_literal => "zero-spread test-only literal",
+        zero_spread_shared_name => "zero-spread shared name, one without ZERO",
+        zero_spread_shared_name_only_zero_fits => "zero-spread shared name, only the ZERO one fits",
     }
 
     /// The committed plugins.yaml: every entry declares its repo's frozen 1.5.5 manifest name (the
@@ -2044,6 +2213,81 @@ mod tests {
         assert!(
             red[0].contains("busbar-hook-webrequest") && red[0].contains("'busbar-webrequest'")
         );
+    }
+
+    /// Q128 ruling (2026-10-18): a `[git-sources]` row admits ONE repository under GetBusbar, at a
+    /// 40-hex rev, for the plugin repos it names, with a reason. Anything else is RED, by name.
+    #[test]
+    fn gitsources_refuses_a_row_outside_getbusbar_or_off_a_pinned_rev() {
+        let row = |body: &str| {
+            gitsources(&parse_toml(&format!("[git-sources.str0m]\n{body}")).unwrap()).unwrap()
+        };
+        let good = format!(
+            "git = \"https://github.com/GetBusbar/str0m\"\nrev = \"{FORTY_HEX}\"\nrepos = [\"busbar-transport-webrtc\"]\nreason = \"H2\"\n"
+        );
+        assert_eq!(row(&good), Vec::<String>::new());
+        for (from, to, needle) in [
+            (
+                "https://github.com/GetBusbar/str0m",
+                "https://github.com/algesten/str0m",
+                "is not one repository under https://github.com/GetBusbar/",
+            ),
+            (
+                "https://github.com/GetBusbar/str0m",
+                "https://github.com/GetBusbar/str0m/../../algesten/str0m",
+                "is not one repository under https://github.com/GetBusbar/",
+            ),
+            (
+                "https://github.com/GetBusbar/str0m",
+                "http://github.com/GetBusbar/str0m",
+                "is not one repository under https://github.com/GetBusbar/",
+            ),
+            (FORTY_HEX, "a142c64e1f", "is not a full 40-hex commit"),
+            (FORTY_HEX, "main", "is not a full 40-hex commit"),
+            (
+                FORTY_HEX,
+                "A142C64E1FAFC5CCA029ADDA1507A51064F81902",
+                "is not a full 40-hex commit",
+            ),
+            (
+                "[\"busbar-transport-webrtc\"]",
+                "[]",
+                "names no plugin repo",
+            ),
+            ("\"H2\"", "\" \"", "has no reason"),
+        ] {
+            let got = row(&good.replace(from, to));
+            assert!(
+                got.len() == 1 && got[0].starts_with("GITSRC str0m:") && got[0].contains(needle),
+                "{from} -> {to}: {got:?}"
+            );
+        }
+        let got = row(&good.replace(&format!("rev = \"{FORTY_HEX}\"\n"), ""));
+        assert!(
+            got.len() == 1 && got[0].contains("is not a full 40-hex commit"),
+            "no rev: {got:?}"
+        );
+        let got = row(&format!("{good}branch = \"main\"\n"));
+        assert!(
+            got.len() == 1 && got[0].contains("`branch`"),
+            "an unknown key: {got:?}"
+        );
+        assert!(gitsources(&parse_toml("[git-sources]\nx = 1\n").unwrap())
+            .unwrap()
+            .iter()
+            .any(|f| f.starts_with("GITSRC x:")));
+    }
+
+    /// The committed rows are the H2 forks, each admitted for busbar-transport-webrtc only.
+    #[test]
+    fn the_committed_git_sources_are_the_h2_forks_for_webrtc_only() {
+        let committed = parse_toml(COMMITTED_POLICY).unwrap();
+        assert_eq!(gitsources(&committed).unwrap(), Vec::<String>::new());
+        let rows = committed.get("git-sources").as_object().unwrap();
+        assert_eq!(rows.keys().collect::<Vec<_>>(), ["str0m", "dimpl"]);
+        for (_, row) in rows.iter() {
+            assert_eq!(str_list(row.get("repos")), ["busbar-transport-webrtc"]);
+        }
     }
 
     #[test]

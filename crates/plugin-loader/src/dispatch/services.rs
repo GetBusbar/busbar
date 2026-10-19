@@ -1320,18 +1320,19 @@ extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             if let Some(r) = refused_ref(owner, &i.auth) {
                 return r;
             }
-            let Some(server) = super::auth_serve::server().filter(|s| s.serves(owner, i.auth.id))
+            let Some(server) =
+                super::auth_serve::server_of(ctx).filter(|s| s.serves(owner, i.auth.id))
             else {
                 if let Some(r) = refused_unit(&i.unit) {
                     return r;
                 }
-                if svc::check_auth_call_in(&i).is_err() {
-                    return Answered::bare(Outcome::Refused, AUTH_IN_MALFORMED);
+                if let Some(r) = auth_call_in_refused(&i) {
+                    return r;
                 }
                 return Answered::bare(Outcome::Refused, AUTH_HANDLE_NOT_SERVED);
             };
-            if svc::check_auth_call_in(&i).is_err() {
-                return Answered::bare(Outcome::Refused, AUTH_IN_MALFORMED);
+            if let Some(r) = auth_call_in_refused(&i) {
+                return r;
             }
             // SAFETY: the contract check held every range non-NULL for its count and within the
             // caps; the caller's, live for the call; copied before any pend.
@@ -1368,6 +1369,19 @@ extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             }
         },
     )
+}
+
+/// An `auth.call` `in` its contract check refuses: a request view that declares no scheme never
+/// grants and is refused by name ([`svc::SCHEME_UNDECLARED_REFUSED`]); any other break is
+/// [`AUTH_IN_MALFORMED`]. `None` = it passes.
+fn auth_call_in_refused(i: &svc::AuthCallIn) -> Option<Answered> {
+    match svc::check_auth_call_in(i) {
+        Err(f) if f.field == "head_view.scheme" && f.rule == check::Rule::Missing => Some(
+            Answered::bare(Outcome::Refused, svc::SCHEME_UNDECLARED_REFUSED),
+        ),
+        Err(_) => Some(Answered::bare(Outcome::Refused, AUTH_IN_MALFORMED)),
+        Ok(()) => None,
+    }
 }
 
 /// An outbound `auth.call`'s request, copied out of the caller's `in`: its head words, its field

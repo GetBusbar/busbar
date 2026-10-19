@@ -20,7 +20,7 @@
 //! flags. [`deliver`] writes it into the caller's `buf`, `spans` and `answer`, or answers the short
 //! FAILED with the field bytes' and the fields' full sizes.
 
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::Arc;
 
 use busbar_contract::abi::auth::FieldSpan;
 use busbar_contract::abi::host::service::{
@@ -178,24 +178,28 @@ pub trait OutboundServer: Send + Sync {
     }
 }
 
-fn armed() -> &'static RwLock<Option<Arc<dyn OutboundServer>>> {
-    static ARMED: OnceLock<RwLock<Option<Arc<dyn OutboundServer>>>> = OnceLock::new();
-    ARMED.get_or_init(|| RwLock::new(None))
+/// The outbound server the connection table's caller `owner` (an instance identity) is served by:
+/// its dispatcher's; `None` = none armed, or no such instance.
+pub(crate) fn server_for(
+    owner: busbar_contract::conn::InstanceId,
+) -> Option<Arc<dyn OutboundServer>> {
+    super::handle::supplier_of(owner)?
+        .route
+        .get()?
+        .upgrade()?
+        .outbound()
 }
 
-/// Arm the process's outbound server (the composition root's, at boot). Re-arming replaces it.
-pub fn arm(server: Arc<dyn OutboundServer>) {
-    *armed()
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(server);
-}
-
-/// The armed server, if any.
-pub(crate) fn server() -> Option<Arc<dyn OutboundServer>> {
-    armed()
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
+/// The outbound server the instance `ctx` names is served by: its dispatcher's, armed there by the
+/// composition root ([`super::Dispatcher::arm_outbound`]); `None` = none armed.
+pub(crate) fn server_of(
+    ctx: busbar_contract::abi::mechanism::ticket::HostCtx,
+) -> Option<Arc<dyn OutboundServer>> {
+    super::handle::resolve(ctx)?
+        .route
+        .get()?
+        .upgrade()?
+        .outbound()
 }
 
 /// The error text of an outbound call the server answered no fields for.
@@ -387,7 +391,7 @@ pub(crate) mod double {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex, OnceLock};
 
-    use super::{arm, Answer, AuthAsk, AuthServed, OutboundServer, OwnRequest, ServedField, Wiped};
+    use super::{Answer, AuthAsk, AuthServed, OutboundServer, OwnRequest, ServedField, Wiped};
     use super::{UnitRef, OUTBOUND_REFUSED};
 
     /// An outbound binding the double holds (one `authorization` line), and one whose auth refuses.
@@ -443,11 +447,10 @@ pub(crate) mod double {
         }
     }
 
-    /// The double, armed as the process's server.
+    /// The one double every loader suite serves its outbound calls from (each arms it on its own
+    /// route or dispatcher).
     pub(crate) fn armed() -> &'static Arc<Double> {
         static ONE: OnceLock<Arc<Double>> = OnceLock::new();
-        let one = ONE.get_or_init(Arc::default);
-        arm(Arc::clone(one) as Arc<dyn OutboundServer>);
-        one
+        ONE.get_or_init(Arc::default)
     }
 }

@@ -776,7 +776,7 @@ pub(crate) fn purge(id: InstanceId, table: &Arc<dyn DeclaredConns>) {
         let keys: Vec<(InstanceId, u64)> = own.keys().filter(|(i, _)| *i == id).copied().collect();
         keys.iter().filter_map(|k| own.remove(k)).collect()
     };
-    if let Some(server) = super::auth_serve::server() {
+    if let Some(server) = super::auth_serve::server_for(id) {
         for unit in units {
             server.forget_request(unit);
         }
@@ -1126,7 +1126,7 @@ extern "C" fn write_request(
                         Err(e) => Conn::Failed(e),
                         Ok(request) => {
                             let unit = request
-                                .and_then(|r| super::auth_serve::server()?.record_request(r))
+                                .and_then(|r| super::auth_serve::server_for(id)?.record_request(r))
                                 .unwrap_or(0);
                             if unit != 0 {
                                 own_units().insert((id, i.stream), unit);
@@ -1226,7 +1226,7 @@ fn own_units() -> MutexGuard<'static, HashMap<(InstanceId, u64), u64>> {
 /// Forget the request unit of `stream`, if the host recorded one.
 fn forget_own(id: InstanceId, stream: u64) {
     let unit = own_units().remove(&(id, stream));
-    if let (Some(unit), Some(server)) = (unit, super::auth_serve::server()) {
+    if let (Some(unit), Some(server)) = (unit, super::auth_serve::server_for(id)) {
         server.forget_request(unit);
     }
 }

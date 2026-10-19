@@ -47,6 +47,7 @@ pub fn dispatcher() -> &'static Dispatcher {
     ONE.get_or_init(|| {
         let d = Dispatcher::new(DispatchConfig::default());
         let _ = d.lend_seal(busbar_kernel::seal::lend());
+        crate::root::outbound_auth::arm_dispatcher(&d);
         Arc::new(d)
     })
 }
@@ -277,9 +278,10 @@ impl FramerDoor for Dispatched {
         }
     }
 
-    /// A framer's framing holds one inline ticket of the process's one dispatcher, as a carrier's
-    /// side does: its ticketed ops (`begin`, `ingest`, `emit`) may call the auth service, which
-    /// may pend, and their wakes route there.
+    /// A framer's framing runs its ticketed ops (`begin`, `ingest`, `emit`) on inline tickets of
+    /// the process's one dispatcher, as a carrier's side does: each may call the auth service,
+    /// which may pend, and its wake routes there. A new one each time the framing asks, so an op
+    /// parked on one stream's ticket holds that stream alone.
     fn framing_side(&self) -> Option<Box<dyn Side>> {
         if self.facts.role != busbar_contract::abi::transport::ROLE_FRAMER {
             return None;

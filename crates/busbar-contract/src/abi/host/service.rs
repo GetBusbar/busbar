@@ -52,6 +52,17 @@ pub struct ServiceHead {
     pub handle: CompletionHandle,
 }
 
+impl ServiceHead {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `ServiceHead { …, ..ServiceHead::ZERO }` so a field appended later reads
+    /// as not declared.
+    pub const ZERO: Self = Self {
+        size: 0,
+        op: 0,
+        handle: CompletionHandle::ZERO,
+    };
+}
+
 /// Every service's `out`, in either table. The caller states its `size`; the host writes
 /// `min(size, its own)` bytes of it ([`write_out`]), and refuses an `out` below
 /// [`SERVICE_OUT_V1`] before the service runs ([`lent_out`]), so an `out` may grow by appending
@@ -118,6 +129,24 @@ pub unsafe fn write_out(out: *mut ServiceOut, mut o: ServiceOut, lent: usize) {
     }
 }
 
+impl ServiceOut {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `ServiceOut { …, ..ServiceOut::ZERO }` so a field appended later reads
+    /// as not declared.
+    pub const ZERO: Self = Self {
+        size: 0,
+        outcome: RawOutcome(0),
+        exited: 0,
+        _reserved: [0; 2],
+        value: 0,
+        len: 0,
+        items: 0,
+        needed_bytes: 0,
+        needed_items: 0,
+        error: AbiStr::ZERO,
+    };
+}
+
 /// One named range of a result's bytes: a key and a value, each a [`Span`] into the bytes
 /// written, or absent (`offset` = [`check::SPAN_ABSENT`], `len` = `0`).
 #[repr(C)]
@@ -127,6 +156,16 @@ pub struct ItemSpan {
     pub key: Span,
     /// The value.
     pub value: Span,
+}
+
+impl ItemSpan {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `ItemSpan { …, ..ItemSpan::ZERO }` so a field appended later reads as
+    /// not declared.
+    pub const ZERO: Self = Self {
+        key: Span::ZERO,
+        value: Span::ZERO,
+    };
 }
 
 /// The plugin's buffers a service writes its result into, preallocated at the sizes the plugin
@@ -142,6 +181,18 @@ pub struct ServiceBufs {
     pub spans: *mut ItemSpan,
     /// Their capacity, in spans.
     pub spans_cap: usize,
+}
+
+impl ServiceBufs {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `ServiceBufs { …, ..ServiceBufs::ZERO }` so a field appended later reads
+    /// as not declared.
+    pub const ZERO: Self = Self {
+        buf: std::ptr::null_mut(),
+        cap: 0,
+        spans: std::ptr::null_mut(),
+        spans_cap: 0,
+    };
 }
 
 /// The most spans one result may carry.
@@ -343,6 +394,18 @@ pub struct RecordsSecretIn {
     pub id: AbiStr,
     /// Where the secret goes.
     pub into: ServiceBufs,
+}
+
+impl RecordsSecretIn {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `RecordsSecretIn { …, ..RecordsSecretIn::ZERO }` so a field appended
+    /// later reads as not declared.
+    pub const ZERO: Self = Self {
+        head: ServiceHead::ZERO,
+        kind: AbiStr::ZERO,
+        id: AbiStr::ZERO,
+        into: ServiceBufs::ZERO,
+    };
 }
 
 /// `value` of [`op::RECORDS_SECRET`]: not live, or no such credential.
@@ -1032,6 +1095,19 @@ pub struct DiskWritten {
     pub written: u64,
 }
 
+impl DiskWritten {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `DiskWritten { …, ..DiskWritten::ZERO }` so a field appended later reads
+    /// as not declared.
+    pub const ZERO: Self = Self {
+        size: 0,
+        rotated: 0,
+        faults: 0,
+        _reserved: [0; 2],
+        written: 0,
+    };
+}
+
 /// [`DiskWritten::rotated`]: the host rotated the file before appending.
 pub const DISK_ROTATED: u8 = 1;
 /// [`DiskWritten::faults`]: dropping the oldest archive failed (the archive series may exceed the
@@ -1169,7 +1245,28 @@ pub struct HeadView {
     pub fields: *const Field,
     /// How many, at most [`MAX_SPANS`].
     pub fields_len: usize,
+    /// THE UPSTREAM'S SCHEME, as a code (`SCHEME_*`): [`SCHEME_SECURE`] when the stream rides the
+    /// connector's connection security, [`SCHEME_PLAIN`] when it rides in the clear. The HOST
+    /// declares it, from the route's upstream URL; a transport never derives it from its own dial
+    /// (connection security is the connector's alone).
+    /// [`SCHEME_UNDECLARED`] (`0`, a zeroed view) is REFUSED off the peer point
+    /// ([`SCHEME_UNDECLARED_REFUSED`]): a zero never grants, and is never read as plain. A tail
+    /// addition (pre-tag v1).
+    pub scheme: u8,
+    /// Alignment padding; zero.
+    pub _scheme_reserved: [u8; 7],
 }
+
+/// [`HeadView::scheme`]: not declared. Refused off the peer point; never read as plain.
+pub const SCHEME_UNDECLARED: u8 = 0;
+/// [`HeadView::scheme`]: the upstream is reached in the clear.
+pub const SCHEME_PLAIN: u8 = 1;
+/// [`HeadView::scheme`]: the upstream is reached over the connector's connection security.
+pub const SCHEME_SECURE: u8 = 2;
+
+/// THE REFUSAL of an `auth.call` whose request view declares no scheme ([`SCHEME_UNDECLARED`]):
+/// the host's answer text, REFUSED, before the auth runs.
+pub const SCHEME_UNDECLARED_REFUSED: &str = "the request view declares no scheme";
 
 /// [`AuthAnswer::flow`]: the transport carries on with the request.
 pub const FLOW_CONTINUE: u32 = 0;
@@ -1365,6 +1462,12 @@ pub fn check_head_view(v: &HeadView) -> Result<(), Fault> {
     check::text(v.target, "head_view.target")?;
     check::text(v.authority, "head_view.authority")?;
     check::text(v.query, "head_view.query")?;
+    if v.scheme > SCHEME_SECURE {
+        return Err(fault(Rule::UnknownCode, "head_view.scheme"));
+    }
+    if v._scheme_reserved != [0; 7] {
+        return Err(fault(Rule::UnknownCode, "head_view._scheme_reserved"));
+    }
     check::listed(v.fields, v.fields_len, "head_view.fields")?;
     if v.fields_len as u64 > MAX_SPANS {
         return Err(fault(Rule::OverMax, "head_view.fields"));
@@ -1378,7 +1481,8 @@ pub fn check_head_view(v: &HeadView) -> Result<(), Fault> {
 ///
 /// # Errors
 ///
-/// [`Rule::Missing`] for no handle or no answer slot; [`Rule::UnknownCode`] for a point that is not
+/// [`Rule::Missing`] for no handle, no answer slot, or a request view that declares no scheme
+/// ([`SCHEME_UNDECLARED`]) off the peer point; [`Rule::UnknownCode`] for a point that is not
 /// exactly one of the three; [`Rule::Contradiction`] for a body off the body point or a unit at
 /// the peer point; [`Rule::NullWithCount`] for a count behind NULL.
 pub fn check_auth_call_in(i: &AuthCallIn) -> Result<(), Fault> {
@@ -1397,6 +1501,10 @@ pub fn check_auth_call_in(i: &AuthCallIn) -> Result<(), Fault> {
         return Err(fault(Rule::Contradiction, "auth_call.unit"));
     }
     check_head_view(&i.request)?;
+    // A request's scheme is the host's to declare; an undeclared one (a zeroed view) never grants.
+    if i.point != POINT_PEER && i.request.scheme == SCHEME_UNDECLARED {
+        return Err(fault(Rule::Missing, "head_view.scheme"));
+    }
     check::listed(i.buf.cast_const(), i.cap, "auth_call.buf")?;
     check::listed(i.spans.cast_const(), i.spans_cap, "auth_call.spans")?;
     if i.answer.is_null() {

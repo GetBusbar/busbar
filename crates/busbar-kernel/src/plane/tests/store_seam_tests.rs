@@ -41,6 +41,12 @@ fn plane_method_set_is_exactly_the_plane_methods() {
         <dyn PlaneStore>::list_plane_record_parents;
     let _: fn(&dyn PlaneStore, &str, u64) -> RecordStoreResult<u64> =
         <dyn PlaneStore>::purge_plane_records_before;
+    let _: fn(
+        &dyn PlaneStore,
+        &str,
+        u64,
+        busbar_contract::records::Retention,
+    ) -> RecordStoreResult<u64> = <dyn PlaneStore>::purge_plane_records;
     let _: fn(&dyn PlaneStore, &str, &str) -> RecordStoreResult<()> =
         <dyn PlaneStore>::delete_plane_record;
     let _: fn(&dyn PlaneStore, &str, &str, u64, u64) -> RecordStoreResult<bool> =

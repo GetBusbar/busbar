@@ -239,6 +239,9 @@ pub struct HeadViewArgs<'a> {
     pub query: Option<&'a str>,
     /// The head's field lines, in order, as `(name, value)`.
     pub fields: &'a [(&'a str, &'a [u8])],
+    /// The upstream's scheme as the host declared it for the stream (`SCHEME_*`); the default,
+    /// `SCHEME_UNDECLARED`, is refused off the peer point.
+    pub scheme: u8,
 }
 
 /// Where a name the auth handle answers for stripping sits.
@@ -315,6 +318,8 @@ fn view(args: &HeadViewArgs<'_>, fields: &[Field]) -> HeadView {
         query: args.query.map_or(NO_TEXT, text),
         fields: fields.as_ptr(),
         fields_len: fields.len(),
+        scheme: args.scheme,
+        _scheme_reserved: [0; 7],
     }
 }
 
@@ -463,8 +468,7 @@ impl Services {
             into: ServiceBufs {
                 buf: buf.as_mut_ptr(),
                 cap: buf.len(),
-                spans: std::ptr::null_mut(),
-                spans_cap: 0,
+                ..ServiceBufs::ZERO
             },
         };
         if check_random_fill_in(&input).is_err() {
@@ -861,10 +865,7 @@ impl Services {
         key: &[u8],
         buf: &'b mut [u8],
     ) -> Pend<Option<&'b [u8]>> {
-        let mut span = [ItemSpan {
-            key: Span { offset: 0, len: 0 },
-            value: Span { offset: 0, len: 0 },
-        }];
+        let mut span = [ItemSpan::ZERO];
         let input = RecordsGetIn {
             head: head::<RecordsGetIn>(op::RECORDS_GET, handle),
             kind: text(kind),
@@ -1139,10 +1140,7 @@ impl Services {
         key: &[u8],
         buf: &'b mut [u8],
     ) -> Pend<Verified<'b>> {
-        let mut span = [ItemSpan {
-            key: Span { offset: 0, len: 0 },
-            value: Span { offset: 0, len: 0 },
-        }];
+        let mut span = [ItemSpan::ZERO];
         let input = VerifyLookupIn {
             head: head::<VerifyLookupIn>(op::VERIFY_LOOKUP, handle),
             key: raw(key),
@@ -1319,8 +1317,7 @@ impl Services {
             into: ServiceBufs {
                 buf: at,
                 cap: bytes,
-                spans: std::ptr::null_mut(),
-                spans_cap: 0,
+                ..ServiceBufs::ZERO
             },
         };
         let crossed = self.cross(
@@ -1660,7 +1657,7 @@ const fn blob(b: &[u8], fmt: u32) -> Blob {
         ptr: b.as_ptr(),
         len: b.len(),
         fmt,
-        flags: 0,
+        ..Blob::ZERO
     }
 }
 
@@ -1826,10 +1823,7 @@ const fn raw(b: &[u8]) -> AbiStr {
 }
 
 /// An absent text: NULL, no length.
-const NO_TEXT: AbiStr = AbiStr {
-    ptr: std::ptr::null(),
-    len: 0,
-};
+const NO_TEXT: AbiStr = AbiStr::ZERO;
 
 /// A verdict service's answer: Ready its `value`, PENDING held on the ticket, else declined.
 fn verdict(crossed: Result<(Outcome, ServiceOut, Filled), ServiceError>) -> Pend<u64> {
@@ -1846,17 +1840,7 @@ fn blank_out() -> ServiceOut {
     ServiceOut {
         size: size_of::<ServiceOut>() as u32,
         outcome: RawOutcome::of(Outcome::Fault),
-        exited: 0,
-        _reserved: [0; 2],
-        value: 0,
-        len: 0,
-        items: 0,
-        needed_bytes: 0,
-        needed_items: 0,
-        error: AbiStr {
-            ptr: std::ptr::null(),
-            len: 0,
-        },
+        ..ServiceOut::ZERO
     }
 }
 

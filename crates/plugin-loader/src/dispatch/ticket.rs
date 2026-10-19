@@ -55,6 +55,12 @@ pub(crate) trait WakeRoute: Send + Sync {
         self.services().map(|s| s.store)
     }
 
+    /// The outbound server this route's instances' `auth.call` on an outbound binding's ref is
+    /// served by; `None` = none armed.
+    fn outbound(&self) -> Option<std::sync::Arc<dyn super::auth_serve::OutboundServer>> {
+        None
+    }
+
     /// The host's I/O this route's instances are served from; `None` = none.
     fn io(&self) -> Option<std::sync::Arc<dyn busbar_contract::io_host::IoHost>> {
         None

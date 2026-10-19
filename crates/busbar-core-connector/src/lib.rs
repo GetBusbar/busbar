@@ -2004,7 +2004,7 @@ impl Connector {
         caller: InstanceId,
         need: NeedId,
         member: &str,
-    ) -> Option<framer::DialBinding> {
+    ) -> Option<framer::AuthBinding> {
         let owner = door.owner();
         if member.is_empty() || owner == 0 {
             return None;
@@ -2182,7 +2182,7 @@ impl Connector {
             )),
             head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             anchors: None,
-            binding,
+            binding: binding.unwrap_or(framer::AuthBinding::NONE),
             unit,
         };
         let planned = self.plan(&door, dial).map_err(|f| map(&f))?;
@@ -2377,7 +2377,7 @@ impl Conns for Connector {
             }
             let dial = Dial {
                 anchors: None,
-                binding: None,
+                binding: crate::framer::AuthBinding::NONE,
                 unit: busbar_contract::abi::host::service::UnitRef::NONE,
                 target: program.command.clone(),
                 tls: None,
@@ -2446,7 +2446,7 @@ impl Conns for Connector {
             }
             let dial = Dial {
                 anchors: None,
-                binding: None,
+                binding: crate::framer::AuthBinding::NONE,
                 unit: busbar_contract::abi::host::service::UnitRef::NONE,
                 target: target.to_owned(),
                 tls: None,

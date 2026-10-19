@@ -45,7 +45,6 @@
 
 use std::borrow::Cow;
 use std::marker::PhantomData;
-use std::ptr;
 use std::task::Poll;
 
 use zeroize::Zeroizing;
@@ -360,7 +359,7 @@ impl<'a> FieldsWriter<'a> {
                 name,
                 value,
                 flags: f.flags,
-                _reserved: 0,
+                ..FieldSpan::ZERO
             });
         }
         out.set(
@@ -1024,17 +1023,15 @@ pub const fn outbound_tail(facts: u32, styles: &'static [StyleDecl]) -> AuthTail
     AuthTail {
         head: KindTailHead {
             size: std::mem::size_of::<AuthTail>() as u32,
-            _reserved: 0,
+            ..KindTailHead::ZERO
         },
         caps: crate::abi::auth::CAP_OUTBOUND,
         facts,
         login_kind: crate::abi::auth::LOGIN_KIND_NONE,
-        inbound_points: 0,
         styles: styles.as_ptr(),
         styles_len: styles.len(),
         operator_principal: crate::abi::sdk::door::abi_str(""),
-        credential_kinds: ptr::null(),
-        credential_kinds_len: 0,
+        ..AuthTail::ZERO
     }
 }
 

@@ -2010,6 +2010,7 @@ fn a_members_request_is_recorded_and_opened_with_its_unit_and_no_auth_line() {
         ..Scripted::default()
     });
     let dispatcher = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    dispatcher.arm_outbound(Arc::clone(crate::dispatch::auth_serve::double::armed()) as _);
     let p = bound_over_by(&table, dispatcher.adopter());
     let stream = whole_request(&p, 0);
     assert_eq!(
@@ -2075,6 +2076,7 @@ fn a_request_naming_no_member_records_nothing() {
         ..Scripted::default()
     });
     let dispatcher = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    dispatcher.arm_outbound(Arc::clone(crate::dispatch::auth_serve::double::armed()) as _);
     let p = bound_over_by(&table, dispatcher.adopter());
     let stream = opened_stream(&p, 0).value;
     assert!(ready(&request(&p, 1, stream, &head_piece(), HEAD_BYTES)));
@@ -2420,6 +2422,7 @@ fn a_waived_request_carries_no_member_auth_and_the_waiver_never_reaches_the_tabl
     // Adopted by a dispatcher, as every production instance is: the credential is revealed under
     // the seal the host lent it (#1021).
     let dispatcher = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    dispatcher.arm_outbound(Arc::clone(crate::dispatch::auth_serve::double::armed()) as _);
     let p = bound_over_by(&table, dispatcher.adopter());
     let waived = RequestPiece {
         fields: span(10, WAIVED_HEAD.len() - 10),

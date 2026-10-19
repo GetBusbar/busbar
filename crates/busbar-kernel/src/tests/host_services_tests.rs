@@ -175,6 +175,7 @@ fn rig() -> Rig {
             )],
             scope_kinds: vec!["group".into(), "item".into()],
             record_chains: Vec::new(),
+            record_retentions: Vec::new(),
         },
     )
     .unwrap();
@@ -727,6 +728,7 @@ fn two_instances_of_one_plugin_have_distinct_registries() {
             trust: Vec::new(),
             scope_kinds: Vec::new(),
             record_chains: Vec::new(),
+            record_retentions: Vec::new(),
         },
     )
     .unwrap();
@@ -2065,4 +2067,215 @@ fn a_declared_chain_the_host_cannot_keep_refuses_the_admit() {
         let s = r.s.sign(&caller("chained"), b"x");
         assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_ADMITTED));
     }
+}
+
+/// A plane store whose read of the operator's kept trust rulings parks, once armed, until the test releases it: the
+/// store-plugin crossing an admit makes (audit K4 #6).
+struct ParkingStore {
+    armed: std::sync::atomic::AtomicBool,
+    entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+}
+
+impl crate::plane::store::PlaneStore for ParkingStore {
+    fn upsert_plane_record(
+        &self,
+        _: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Ok(())
+    }
+    fn get_plane_record(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    fn append_plane_record(
+        &self,
+        _: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_plane_records(
+        &self,
+        kind: &str,
+        _: &busbar_contract::records::PlaneSelector,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
+        if kind != crate::plane::store::KIND_DEMOTION && self.armed.load(Ordering::SeqCst) {
+            if let Some(entered) = self.entered.lock().unwrap().take() {
+                entered.send(()).unwrap();
+            }
+            if let Some(release) = self.release.lock().unwrap().take() {
+                let _ = release.recv();
+            }
+        }
+        Ok(Vec::new())
+    }
+    fn list_plane_record_parents(
+        &self,
+        _: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn purge_plane_records_before(
+        &self,
+        _: &str,
+        _: u64,
+    ) -> busbar_contract::records::RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn delete_plane_record(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Ok(())
+    }
+    fn redeem_plane_token(
+        &self,
+        _: &str,
+        _: &str,
+        _: u64,
+        _: u64,
+    ) -> busbar_contract::records::RecordStoreResult<bool> {
+        Ok(false)
+    }
+    fn plane_token_live(
+        &self,
+        _: &str,
+        _: &str,
+        _: u64,
+        _: u64,
+    ) -> busbar_contract::records::RecordStoreResult<bool> {
+        Ok(false)
+    }
+}
+
+/// NO PLUGIN CODE RUNS UNDER A HOST LOCK (§11.13 M1; audit K4 #6): while an instance's first admit
+/// is parked in the store plugin reading the operator's kept trust rulings, a caller-scoped host
+/// service of another instance, on another thread, still answers.
+#[test]
+fn an_admit_parked_in_the_store_never_stalls_another_instances_host_service() {
+    use std::sync::mpsc::channel;
+    use std::time::Duration;
+    let (entered_tx, entered_rx) = channel();
+    let (release_tx, release_rx) = channel();
+    let store = Arc::new(ParkingStore {
+        armed: std::sync::atomic::AtomicBool::new(false),
+        entered: Mutex::new(Some(entered_tx)),
+        release: Mutex::new(Some(release_rx)),
+    });
+    let record = DemotionRecord::default();
+    record.set_sink(store.clone());
+    let s = Arc::new(
+        KernelServices::new()
+            .with_signer(Arc::new(FixedKey))
+            .with_demotions(Arc::new(record), SECTION_KEY),
+    );
+    s.admit(
+        "inst",
+        InstanceFacts {
+            signing: Some(Signing {
+                domain: "dom".into(),
+                kid_prefix: "p-".into(),
+            }),
+            ..InstanceFacts::default()
+        },
+    )
+    .unwrap();
+    store.armed.store(true, Ordering::SeqCst);
+    let admitting = {
+        let s = Arc::clone(&s);
+        std::thread::spawn(move || s.admit("other", InstanceFacts::default()))
+    };
+    entered_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the second admit reached the store's read of the kept trust rulings");
+    let (answer_tx, answer_rx) = channel();
+    {
+        let s = Arc::clone(&s);
+        std::thread::spawn(move || {
+            let _ = answer_tx.send(s.sign(&caller("inst"), b"data").outcome);
+        });
+    }
+    let answered = answer_rx.recv_timeout(Duration::from_secs(5));
+    release_tx.send(()).unwrap();
+    admitting.join().unwrap().unwrap();
+    assert_eq!(
+        answered,
+        Ok(Outcome::Ready),
+        "a host service of another instance answers while an admit is parked in the store plugin"
+    );
+}
+
+/// RED/GREEN, THE DECLARED RETENTION RULE: a purge of a record kind the instance declared
+/// terminal-only keeps its active rows past the cutoff and drops its terminal ones; a kind it
+/// declared no rule for is purged by age, every older row gone. The kinds' names carry nothing: the
+/// rule is the declaration's.
+#[test]
+fn a_purge_runs_under_the_rule_the_instance_declared_for_the_kind() {
+    use busbar_contract::abi::plane::RecordRetention;
+    use busbar_contract::ids::RecordSchemaId;
+    use busbar_contract::records::{PlaneDisposition, PlaneRecord, RecordStore, Retention};
+    let s = KernelServices::new();
+    s.admit(
+        "inst",
+        InstanceFacts {
+            record_kinds: vec![RecordSchemaId::new("kept"), RecordSchemaId::new("aged")],
+            record_retentions: vec![RecordRetention {
+                kind: 0,
+                rule: Retention::TerminalOnly.code(),
+            }],
+            ..InstanceFacts::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(s.record_retention("inst", "kept"), Retention::TerminalOnly);
+    assert_eq!(s.record_retention("inst", "aged"), Retention::Age);
+    assert_eq!(s.record_retention("other", "kept"), Retention::Age);
+
+    let store = MemoryStore::new();
+    let rows = [
+        ("old-active", 10, PlaneDisposition::Active),
+        ("old-terminal", 10, PlaneDisposition::Terminal),
+        ("new-terminal", 200, PlaneDisposition::Terminal),
+    ];
+    for kind in ["kept", "aged"] {
+        for (id, ts, disposition) in rows {
+            let row = PlaneRecord {
+                kind: kind.into(),
+                id: id.into(),
+                parent: None,
+                seq: 0,
+                ts,
+                disposition,
+                body: b"{}".to_vec(),
+            };
+            store.upsert_plane_record(row.view()).unwrap();
+        }
+    }
+    let held = |kind: &str, id: &str| store.get_plane_record(kind, id).unwrap().is_some();
+
+    assert_eq!(
+        s.purge_records_before(&store, "inst", "kept", 100).unwrap(),
+        1
+    );
+    assert!(
+        held("kept", "old-active"),
+        "an active row outlives the cutoff"
+    );
+    assert!(!held("kept", "old-terminal"), "an older terminal row goes");
+    assert!(held("kept", "new-terminal"), "a row after the cutoff stays");
+
+    assert_eq!(
+        s.purge_records_before(&store, "inst", "aged", 100).unwrap(),
+        2
+    );
+    assert!(
+        !held("aged", "old-active"),
+        "by age, an older active row goes"
+    );
+    assert!(!held("aged", "old-terminal"));
+    assert!(held("aged", "new-terminal"));
 }

@@ -1519,13 +1519,14 @@ impl crate::framer::BindingRefs for Refs {
         caller: busbar_contract::conn::InstanceId,
         need: busbar_contract::conn::NeedId,
         member: &str,
-    ) -> Option<crate::framer::DialBinding> {
-        (caller.0 == 1 && need.0 == 0 && member == "m").then_some(crate::framer::DialBinding {
+    ) -> Option<crate::framer::AuthBinding> {
+        (caller.0 == 1 && need.0 == 0 && member == "m").then_some(crate::framer::AuthBinding {
             auth: busbar_contract::abi::host::service::AuthRef {
                 id: 1 << 63 | 9,
                 mac: owner,
             },
             points: busbar_contract::abi::auth::POINT_HEAD,
+            line_points: 0,
         })
     }
     fn unit_ref(

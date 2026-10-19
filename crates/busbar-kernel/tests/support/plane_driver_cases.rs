@@ -405,6 +405,17 @@ pub(crate) struct Book {
     pub(crate) sessions_ended: AtomicU64,
 }
 
+impl Book {
+    /// A book that also hands every call to `money` (the production money steps).
+    #[allow(dead_code)] // built by the kernel's driver suite only
+    pub(crate) fn forwarding(money: Arc<dyn MoneySeam>) -> Self {
+        Book {
+            forward: Some(money),
+            ..Book::default()
+        }
+    }
+}
+
 impl MoneySeam for Book {
     fn checkpoint(&self, ctx: &UnitCtx, units: &[UnitCount]) -> Checkpoint {
         if let Some(f) = &self.forward {
@@ -1069,7 +1080,7 @@ async fn a_served_unit_writes_exactly_one_metering_row() {
                 &std::collections::BTreeMap::new(),
             )),
             pool: String::new(),
-            model: "opened".into(),
+            lane: "opened".into(),
             classes: Arc::from(vec!["input".to_string()]),
             arrived: at,
             mode: busbar_kernel::config::groups::ExhaustionMode::FinishUnit,

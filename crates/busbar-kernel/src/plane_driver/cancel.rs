@@ -58,11 +58,11 @@ pub trait MoneySeam: Send + Sync {
     }
 
     /// The member whose attempt answered the unit, once it commits (failover happens only before
-    /// the first byte, so this is final): its CONFIG model name and its provider. The money steps
+    /// the first byte, so this is final): its member name and its provider. The money steps
     /// ledger and meter the unit under it, as 1.5.5's `ledger_and_meter` did under the serving
     /// lane. The driver calls it once per unit, before any piece of that answer is relayed.
-    fn served(&self, ctx: &UnitCtx, model: &str, provider: &str) {
-        let _ = (ctx, model, provider);
+    fn served(&self, ctx: &UnitCtx, member: &str, provider: &str) {
+        let _ = (ctx, member, provider);
     }
 
     /// THE UNIT'S LEDGER LANE, as the plane's answer named it (`OnPieceOut::lane`): the billing

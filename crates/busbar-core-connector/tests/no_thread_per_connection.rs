@@ -63,7 +63,7 @@ fn dial(target: &str, first: Vec<u8>) -> Dial {
         opening: Some((Vec::new(), first)),
         head_words: Default::default(),
         anchors: None,
-        binding: None,
+        binding: busbar_core_connector::framer::AuthBinding::NONE,
         unit: busbar_contract::abi::host::service::UnitRef::NONE,
     }
 }
