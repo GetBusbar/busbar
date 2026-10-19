@@ -874,11 +874,13 @@ impl Route {
     };
 }
 
+/// [`Tail::kind_class`]: undeclared; refused at load, never read as a gate (a zero never grants).
+pub const CLASS_UNDECLARED: u32 = 0;
 /// [`Tail::kind_class`]: a GATE (fire-and-wait; `decide`/`transform` may block the chain) — OLD
 /// `HookKind::Gate`.
-pub const CLASS_GATE: u32 = 0;
+pub const CLASS_GATE: u32 = 1;
 /// [`Tail::kind_class`]: a TAP (fire-and-forget; `notify` only) — OLD `HookKind::Tap`.
-pub const CLASS_TAP: u32 = 1;
+pub const CLASS_TAP: u32 = 2;
 
 /// [`Tail::prompt_access`]: no prompt view/body — OLD `PromptAccess::No` (the default).
 pub const PROMPT_NO: u32 = 0;
@@ -901,7 +903,7 @@ pub const USER_RO: u32 = 1;
 pub struct Tail {
     /// The head.
     pub head: KindTailHead,
-    /// [`CLASS_GATE`] | [`CLASS_TAP`].
+    /// [`CLASS_GATE`] | [`CLASS_TAP`]; [`CLASS_UNDECLARED`] is refused at load.
     pub kind_class: u32,
     /// [`PROMPT_NO`] | [`PROMPT_RO`] | [`PROMPT_RW`].
     pub prompt_access: u32,
@@ -921,6 +923,24 @@ pub struct Tail {
     pub routes: *const Route,
     /// How many.
     pub routes_len: usize,
+}
+
+impl Tail {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, [`CLASS_UNDECLARED`], no grants). A
+    /// plugin builds its value as `Tail { …, ..Tail::ZERO }`; a tail left at its zero class
+    /// declared no class and is refused at load.
+    pub const ZERO: Self = Self {
+        head: KindTailHead::ZERO,
+        kind_class: CLASS_UNDECLARED,
+        prompt_access: PROMPT_NO,
+        user_access: USER_NO,
+        infallible: 0,
+        _reserved: [0; 3],
+        requested_signals: std::ptr::null(),
+        requested_signals_len: 0,
+        routes: std::ptr::null(),
+        routes_len: 0,
+    };
 }
 
 /// The hook kind's [`super::mechanism::lifecycle::CancelOut::disposition`] vocabulary.

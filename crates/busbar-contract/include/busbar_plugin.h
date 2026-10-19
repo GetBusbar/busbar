@@ -310,8 +310,9 @@ extern "C" {
 #define BB_HOOK_ROUTE_AUTH_KEY UINT32_C(1) /* [`Route::auth`]: a data-plane key required before `serve` — OLD `RouteAuth::Key`. */
 #define BB_HOOK_ROUTE_AUTH_ADMIN UINT32_C(2) /* [`Route::auth`]: admin auth required, reachable only on the admin listener — OLD */
 #define BB_HOOK_ROUTE_AUTH_NONE UINT32_C(3) /* [`Route::auth`]: no auth required before `serve` — OLD `RouteAuth::None`; never zero. */
-#define BB_HOOK_CLASS_GATE UINT32_C(0) /* [`Tail::kind_class`]: a GATE (fire-and-wait; `decide`/`transform` may block the chain) — OLD */
-#define BB_HOOK_CLASS_TAP UINT32_C(1) /* [`Tail::kind_class`]: a TAP (fire-and-forget; `notify` only) — OLD `HookKind::Tap`. */
+#define BB_HOOK_CLASS_UNDECLARED UINT32_C(0) /* [`Tail::kind_class`]: undeclared; refused at load, never read as a gate (a zero never grants). */
+#define BB_HOOK_CLASS_GATE UINT32_C(1) /* [`Tail::kind_class`]: a GATE (fire-and-wait; `decide`/`transform` may block the chain) — OLD */
+#define BB_HOOK_CLASS_TAP UINT32_C(2) /* [`Tail::kind_class`]: a TAP (fire-and-forget; `notify` only) — OLD `HookKind::Tap`. */
 #define BB_HOOK_PROMPT_NO UINT32_C(0) /* [`Tail::prompt_access`]: no prompt view/body — OLD `PromptAccess::No` (the default). */
 #define BB_HOOK_PROMPT_RO UINT32_C(1) /* [`Tail::prompt_access`]: read-only prompt view/body — OLD `PromptAccess::Ro`. */
 #define BB_HOOK_PROMPT_RW UINT32_C(2) /* [`Tail::prompt_access`]: read-write — the same view/body as `ro`, PLUS the `transform` rewrite */

@@ -10,7 +10,7 @@
 
 use busbar_contract::abi::hook::{
     self, slot, validate, ConfigureIn, ConfigureOut, DecideIn, DecideOut, DescribeOut, NotifyIn,
-    ServeIn, ServeOut, StatusOut, Tail, TransformOut, CLASS_GATE, CLASS_TAP, PROMPT_RW, USER_RO,
+    ServeIn, ServeOut, StatusOut, Tail, TransformOut, PROMPT_RW, USER_RO,
 };
 use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::check::Fault;
@@ -51,9 +51,6 @@ fn facts(st: &Statement) -> Result<HookFacts, String> {
     }
     // SAFETY: as above.
     let t = unsafe { p.cast::<Tail>().read_unaligned() };
-    if t.kind_class != CLASS_GATE && t.kind_class != CLASS_TAP {
-        return Err(format!("the hook tail states class {}", t.kind_class));
-    }
     if t.prompt_access > PROMPT_RW {
         return Err(format!(
             "the hook tail states prompt access {}",

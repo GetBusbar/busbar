@@ -24,8 +24,9 @@ pub use crate::abi::mechanism::check::{Fault, Rule};
 
 use super::{
     ConfigureOut, DecideOut, DescribeOut, NotifyIn, PromptView, Route, ServeOut, StatusOut, Tail,
-    TransformOut, ROUTE_AUTH_KEY, ROUTE_AUTH_NONE, ROUTE_AUTH_UNDECLARED, VERB_ABSTAIN,
-    VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_REJECT, VERB_RESTRICT, VERB_REWRITE, VIEW_HAS_PROMPT,
+    TransformOut, CLASS_GATE, CLASS_TAP, CLASS_UNDECLARED, ROUTE_AUTH_KEY, ROUTE_AUTH_NONE,
+    ROUTE_AUTH_UNDECLARED, VERB_ABSTAIN, VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_REJECT,
+    VERB_RESTRICT, VERB_REWRITE, VIEW_HAS_PROMPT,
 };
 use crate::abi::mechanism::call::{OutHead, Outcome};
 use crate::abi::mechanism::check::{
@@ -313,13 +314,23 @@ pub fn check_notify_in(input: &NotifyIn) -> Result<(), Fault> {
 /// The most routes one hook instance may declare (the export kind's bound).
 const TAIL_MAX_ROUTES: u64 = 64;
 
-/// Validates the hook Statement tail's lists, before any entry is read: a count never comes with
-/// a NULL pointer, and `routes` holds at most 64 entries. The loader checks the routes with
+/// Validates the hook Statement tail, before any entry is read: a declared class
+/// ([`CLASS_UNDECLARED`] is refused: a zero never grants), a count never with a NULL pointer, and
+/// at most 64 `routes`. The loader checks the routes with
 /// [`check_tail_routes`].
 ///
 /// # Errors
 /// The rule the tail breaks.
 pub fn check_tail(t: &Tail) -> Result<(), Fault> {
+    if t.kind_class == CLASS_UNDECLARED {
+        return Err(fault(Rule::Missing, "tail.kind_class.undeclared"));
+    }
+    code(
+        u64::from(t.kind_class),
+        u64::from(CLASS_GATE),
+        u64::from(CLASS_TAP),
+        "tail.kind_class",
+    )?;
     listed(
         t.requested_signals,
         t.requested_signals_len,

@@ -61,11 +61,6 @@ pub const EXEMPT: &[(&str, &str, &str)] = &[
         "generic R has no ZERO; the envelope carries no grant field",
     ),
     (
-        "abi/hook/mod.rs",
-        "Tail",
-        "kind_class 0 is a gate: renumbered in step 2",
-    ),
-    (
         "abi/sdk/store/mod.rs",
         "Tail",
         "ephemeral false claims a durable store: renumbered in step 2",
