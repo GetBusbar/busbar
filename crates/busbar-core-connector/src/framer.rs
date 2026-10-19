@@ -746,7 +746,7 @@ pub fn encode(
 ///
 /// # Errors
 ///
-/// The entry refused to render it.
+/// The entry refused to render it; a FAULT when it answered `YIELD_MORE` (an encode answers whole).
 pub fn encode_head(
     door: &dyn FramerDoor,
     method: &[u8],
@@ -779,7 +779,18 @@ pub fn encode_head(
     let mut o: FramerOut = blank_out();
     ready(door.cross(Call::Encode(&mut i, &mut o)))?;
     let mut y = Yielded::default();
-    bufs.take(&o, &mut y)?;
+    // `encode` has no framing to continue: a re-call would render the message again from its
+    // start. So it answers whole into the buffer sized for it, and a framer that answers it
+    // `YIELD_MORE` owes bytes no re-call can ask for: a FAULT, never a truncated message sent as
+    // the whole one.
+    if !bufs.take(&o, &mut y)? {
+        return Err(Refused {
+            outcome: Outcome::Fault,
+            error: "the framer answered `encode` with YIELD_MORE: an encode renders the whole \
+                    message into one buffer sized for it"
+                .to_owned(),
+        });
+    }
     Ok(y.wire)
 }
 
