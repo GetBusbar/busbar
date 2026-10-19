@@ -17,9 +17,9 @@
 //! the verbatim `serde_json` bodies a store holds on disk — captured from the code at the moment the
 //! cleave began and FROZEN as literals. Each carries its own `hash`, computed by that past build.
 //! The test hands these frozen bytes to the SAME boot-verify runtime path a real restart runs
-//! (the generic scope-keyed journal's `restore_scoped`, which a plane's declared chained record
-//! kind resumes through, `TaskRegistry::restore_from_store`, and the shared `verify_chain` the admin
-//! ring restore walks), which decodes each body and RECOMPUTES the digest
+//! (a registered durable stream's boot seed, [`crate::audit::stream_registry::seed`], which every
+//! registered stream's restore drives, and the admin audit log's own restore over it), which decodes
+//! each body and RECOMPUTES the digest
 //! from the record's own fields. If the recompute no longer equals the frozen `hash`, the chain
 //! fails to verify and this test goes RED — before a single deployed store does. The expected hash is
 //! a constant produced by a past build, not a value this build recomputes, so it cannot drift with
@@ -27,28 +27,28 @@
 //!
 //! ## Coverage — two framings, plus the genesis landmine
 //!
-//! - **Per-call** (`LengthPrefixed`, scope in the digest) — the chained record kind a plane
-//!   declares in its tail, appended and resumed by the host's generic journal.
+//! - **A scoped stream** (`LengthPrefixed`, scope in the digest) — the framing a registered stream
+//!   with `digests_scope = true` is sealed under, seeded and resumed by the host's generic journal.
 //! - **Admin audit** (`PipeSeparated`, NO scope in the digest) — the `digests_scope = false` shape,
 //!   proving the generic prelude framing omits the scope for exactly the streams that omit it. This
 //!   fixture also carries the PipeSeparated GENESIS LANDMINE: the first record's `prev_hash` is
 //!   empty, and the leading `|` before the next field that the empty-but-present `prev_hash`
 //!   produces is load-bearing. A cleave that dropped it would shift every digest by one separator.
 //!
-//! A third stream's task-provenance golden (`PipeSeparated`, scope in the digest) used to live here
-//! too; it RELOCATED to that stream's own crate when its plugin was extracted — see the note near
-//! the admin-audit test below.
+//! A stream's own field layout is that stream's business, and its own crate keeps the golden for
+//! it; the kernel's golden pins only what the kernel frames — the prelude in each framing, with
+//! and without the scope — over bodies whose content suffix is opaque here.
 //!
 //! Every fixture is a two-record chain: record 1 is GENESIS (empty `prev_hash`), record 2 LINKS it,
 //! so both the genesis anchor and the inter-record linkage are exercised. DO NOT REGENERATE these
 //! bytes to make a failing test pass: a change here is a change to a persisted digest, and the test
 //! failing is the tripwire working.
 
-use crate::plane::store::{decode, PlaneStore, KIND_AUDIT, KIND_CALL};
+use crate::plane::store::{decode, PlaneStore, KIND_AUDIT};
 use busbar_contract::records::{AuditRecord, PlaneRecordRef, PlaneSelector, RecordStoreResult};
 
-/// The one field this golden reads back off a frozen `call`-stream body — the tail digest. Decoded
-/// through a NEUTRAL local shape (matching the on-disk field name) so this core test names no plane
+/// The one field this golden reads back off a frozen scoped-stream body — the tail digest. Decoded
+/// through a NEUTRAL local shape (matching the on-disk field name) so this core test names no stream
 /// record type: the frozen bytes are opaque persisted evidence, and all the golden asserts of them is
 /// that the digest the past build sealed is still the one they carry.
 #[derive(serde::Deserialize)]
@@ -62,21 +62,21 @@ struct FrozenTailDigest {
 // the `hash` the pre-cleave engine computed. They are treated as opaque here: the test decodes and
 // verifies them through the real boot path and NEVER recomputes them to compare against itself.
 
-// The MCP `call` chain migrated to the NEUTRAL journal body a store holds POST-cleave —
-// `{seq, prev_hash, hash, content}`, where `content` is the LengthPrefixed field suffix the record's
+// A scoped LengthPrefixed stream's chain in the NEUTRAL journal body a store holds —
+// `{seq, prev_hash, hash, content}`, where `content` is the opaque LengthPrefixed suffix the record's
 // digest was sealed over. The embedded `hash` is UNCHANGED from the pre-cleave build (the byte-lock),
 // and the frozen `content` is the exact suffix that digest feeds on, so restoring these through core's
 // neutral seam RECOMPUTES the same `hash` byte-identically. A drift in either the framing or the digest
 // breaks the recompute and this test goes RED.
-const CALL_1: &[u8] = br#"{"seq":1,"prev_hash":"","hash":"f1e8c2ec47e8199499663f3e08272d67b96ed4d56bddc8fa9e9371352e5ba718","content":[0,0,0,0,0,0,0,8,0,0,0,0,101,83,241,0,0,0,0,0,0,0,0,3,115,114,118,0,0,0,0,0,0,0,8,115,114,118,95,116,111,111,108,0,0,0,0,0,0,0,10,100,105,115,112,97,116,99,104,101,100,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,97,98,99,49,50,51,0,0,0,0,0,0,0,8,0,0,0,0,0,0,0,7]}"#;
-const CALL_2: &[u8] = br#"{"seq":2,"prev_hash":"f1e8c2ec47e8199499663f3e08272d67b96ed4d56bddc8fa9e9371352e5ba718","hash":"721c70456695c90b0085e3ef0170d413a6fa3a1e0ebb65eb02730ab6597ef47a","content":[0,0,0,0,0,0,0,8,0,0,0,0,101,83,241,60,0,0,0,0,0,0,0,3,115,114,118,0,0,0,0,0,0,0,9,115,114,118,95,111,116,104,101,114,0,0,0,0,0,0,0,7,114,101,102,117,115,101,100,0,0,0,0,0,0,0,11,110,111,116,95,103,114,97,110,116,101,100,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,0,0,0,0,0,0,0,7]}"#;
+const SCOPED_1: &[u8] = br#"{"seq":1,"prev_hash":"","hash":"f1e8c2ec47e8199499663f3e08272d67b96ed4d56bddc8fa9e9371352e5ba718","content":[0,0,0,0,0,0,0,8,0,0,0,0,101,83,241,0,0,0,0,0,0,0,0,3,115,114,118,0,0,0,0,0,0,0,8,115,114,118,95,116,111,111,108,0,0,0,0,0,0,0,10,100,105,115,112,97,116,99,104,101,100,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,97,98,99,49,50,51,0,0,0,0,0,0,0,8,0,0,0,0,0,0,0,7]}"#;
+const SCOPED_2: &[u8] = br#"{"seq":2,"prev_hash":"f1e8c2ec47e8199499663f3e08272d67b96ed4d56bddc8fa9e9371352e5ba718","hash":"721c70456695c90b0085e3ef0170d413a6fa3a1e0ebb65eb02730ab6597ef47a","content":[0,0,0,0,0,0,0,8,0,0,0,0,101,83,241,60,0,0,0,0,0,0,0,3,115,114,118,0,0,0,0,0,0,0,9,115,114,118,95,111,116,104,101,114,0,0,0,0,0,0,0,7,114,101,102,117,115,101,100,0,0,0,0,0,0,0,11,110,111,116,95,103,114,97,110,116,101,100,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,0,0,0,0,0,0,0,7]}"#;
 
 const AD_1: &[u8] = br#"{"seq":1,"ts":1700000000,"action":"hook.register","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"","hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa"}"#;
 const AD_2: &[u8] = br#"{"seq":2,"ts":1700000060,"action":"hook.delete","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa","hash":"33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264"}"#;
 
 // The frozen hashes named explicitly, so a diff of this file shows WHICH digest a change perturbed
 // rather than only "some bytes moved". They are the tail links of each two-record chain.
-const CALL_TAIL_HASH: &str = "721c70456695c90b0085e3ef0170d413a6fa3a1e0ebb65eb02730ab6597ef47a";
+const SCOPED_TAIL_HASH: &str = "721c70456695c90b0085e3ef0170d413a6fa3a1e0ebb65eb02730ab6597ef47a";
 const AD_TAIL_HASH: &str = "33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264";
 
 // ── A FROZEN-BYTES PLANE STORE ──────────────────────────────────────────────────────────────────
@@ -168,62 +168,76 @@ impl PlaneStore for FrozenStore {
     }
 }
 
-/// The frozen per-call chain, handed to the generic journal's boot rehydrate under the framing the
-/// call kind is declared with (`LengthPrefixed`, scope in the digest), must verify
-/// byte-identically — zero chain breaks — with the tail hash intact. This is the path a plane's
-/// chained record kind resumes through (`host_chains::ChainedKind`), so a drift in the generic
-/// prelude framing goes RED here before a deployed chain reports TAMPERED.
-#[test]
-fn per_call_chain_boot_verifies_from_frozen_bytes() {
-    use crate::audit::journal::{Journal, NeutralBody};
-    use crate::audit::stream_registry::StreamRecord;
-    use crate::audit::Framing;
+/// The neutral kind the frozen scoped chain is registered and stored under. The kind is not digested;
+/// a neutral word keeps this kernel golden free of any stream's name.
+const KIND_SCOPED: &str = "scoped_golden";
 
-    let mut store = FrozenStore::new();
-    store.put(KIND_CALL, Some("vk_alice"), CALL_1);
-    store.put(KIND_CALL, Some("vk_alice"), CALL_2);
-
-    let journal: Journal<StreamRecord> = Journal::new(16);
-    let reframe = |scope: &str, body: &[u8]| -> RecordStoreResult<StreamRecord> {
-        let b: NeutralBody = decode(body)?;
-        Ok(StreamRecord::from_parts(
-            scope.to_string(),
-            b.seq,
-            b.prev_hash,
-            b.hash,
-            b.content,
-            Framing::LengthPrefixed,
-            true,
-        ))
-    };
-    let restored = journal
-        .restore_scoped(KIND_CALL, &store, &reframe)
-        .expect("store read");
-    assert!(
-        restored.chain_breaks.is_empty(),
-        "a persisted length-prefixed per-call chain reported TAMPERED means the digest drifted: {:?}",
-        restored.chain_breaks
-    );
-    assert_eq!(restored.scopes, 1);
-    assert_eq!(restored.records, 2, "both frozen records restored");
-    assert!(restored.empty_scopes.is_empty());
-    assert_eq!(restored.unreadable, 0);
-    assert_eq!(
-        journal.next_seq("vk_alice"),
-        3,
-        "the chain resumes after its frozen tail"
-    );
-
-    // And the tail hash the pre-cleave build wrote is exactly what the frozen bytes still carry.
-    let tail: FrozenTailDigest = decode(CALL_2).unwrap();
-    assert_eq!(tail.hash, CALL_TAIL_HASH);
+/// The decode a registered scoped stream supplies: the journal's own neutral body, scope in the
+/// digest, `LengthPrefixed` (the registry re-stamps the framing it registered).
+fn scoped_reframe(
+    scope: &str,
+    body: &[u8],
+) -> RecordStoreResult<crate::audit::stream_registry::StreamRecord> {
+    let b: crate::audit::journal::NeutralBody = decode(body)?;
+    Ok(crate::audit::stream_registry::StreamRecord::from_parts(
+        scope.to_string(),
+        b.seq,
+        b.prev_hash,
+        b.hash,
+        b.content,
+        crate::audit::Framing::LengthPrefixed,
+        true,
+    ))
 }
 
-// The A2A per-task provenance chain's frozen byte-layout golden RELOCATED to the retired agent engine with the
-// task subsystem (1.7.0 plane extraction): the plane owns its `TaskRow`/`TaskEventRow` and computes the
-// chain plane-side now, so the digest-drift tripwire lives beside the code that produces it — see
-// its task store's golden test. Core keeps the neutral admin-audit golden below (its generic
-// hash-chain mechanism stays in core) and the MCP call golden above.
+/// The frozen scoped chain, seeded through the boot path every registered stream restores through
+/// ([`crate::audit::stream_registry::seed`]) under `LengthPrefixed` framing with the scope in the
+/// digest, must verify byte-identically — no chain break — with the tail hash intact, and the next
+/// append must continue it. A drift in the generic prelude framing goes RED here before a deployed
+/// chain reports TAMPERED.
+#[test]
+fn scoped_chain_boot_verifies_from_frozen_bytes() {
+    use crate::audit::stream_registry;
+
+    let mut store = FrozenStore::new();
+    store.put(KIND_SCOPED, Some("scope-1"), SCOPED_1);
+    store.put(KIND_SCOPED, Some("scope-1"), SCOPED_2);
+    let bodies = store
+        .list_plane_records(KIND_SCOPED, &PlaneSelector::Parent("scope-1".into()))
+        .expect("store read");
+
+    let kind_id = crate::audit::auditlog::fresh_test_kind_id();
+    stream_registry::register(
+        kind_id,
+        KIND_SCOPED.to_string(),
+        crate::audit::Framing::LengthPrefixed,
+        true,
+        stream_registry::Decode::Native(scoped_reframe),
+        usize::MAX,
+        None,
+    );
+    let broke = stream_registry::seed(kind_id, "scope-1", &bodies).expect("the bodies decode");
+    assert!(
+        !broke,
+        "a persisted length-prefixed scoped chain reported TAMPERED means the digest drifted"
+    );
+
+    // And the tail hash the past build wrote is exactly what the frozen bytes still carry, and the
+    // chain resumes after it.
+    let tail: FrozenTailDigest = decode(SCOPED_2).unwrap();
+    assert_eq!(tail.hash, SCOPED_TAIL_HASH);
+    let (seq, prev_hash, _hash) =
+        stream_registry::append_full(kind_id, "scope-1", b"next").expect("append");
+    assert_eq!(
+        (seq, prev_hash.as_str()),
+        (3, SCOPED_TAIL_HASH),
+        "the chain resumes after its frozen tail"
+    );
+}
+
+// A stream's own field layout (which fields its content suffix carries, in which order) is that
+// stream's, and its golden lives in its own crate beside the code that produces it. Core keeps the
+// admin-audit golden below (the admin chain is core's) and the scoped-framing golden above.
 
 /// Admin audit chain (PipeSeparated, NO scope in the digest): the frozen opaque records restore
 /// through the REAL boot path — the NEUTRAL journal seam the admin audit stream is registered on, with
