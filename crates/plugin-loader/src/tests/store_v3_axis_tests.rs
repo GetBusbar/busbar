@@ -195,6 +195,7 @@ fn red_a_store_stating_an_unbounded_in_flight_figure_is_clamped_by_the_host() {
     let plugin = axis()
         .load(StoreDoor::Linked(unbounded_door), "store")
         .expect("the door loads");
+    assert_eq!(plugin.max_inflight(), crate::store_v3::MAX_INFLIGHT_CAP);
     assert!(
         plugin.max_inflight() < u32::MAX,
         "the store's in-flight slab is the plugin's own figure: {}",

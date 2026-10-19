@@ -71,6 +71,12 @@ use crate::dispatch::{
     in_head, now_ns, out_head, Dispatcher, Frame, InFrame, Lent, OutFrame, Plugin,
 };
 
+/// The host's clamp on a store Statement's `max_inflight` (Appendix A: the slab capacity is the
+/// smaller of the plugin's figure and the host's ceiling). A store's crossings are bounded by the
+/// callers the kernel runs at once; this is well above that and bounds only a flood, as every
+/// sibling axis bounds its own.
+pub(crate) const MAX_INFLIGHT_CAP: u32 = 1024;
+
 /// The first byte buffer a request-path read is handed; a longer answer is re-asked once at the
 /// size it named.
 const FIRST_BYTES: usize = 16 * 1024;
@@ -2066,7 +2072,7 @@ impl DoorStoreAxis {
             .sink(label, KindCode::Store, Arc::new(crate::dispatch::NoSink))?;
         let bind = crate::dispatch::Bind {
             instance: Arc::from(label),
-            max_inflight_cap: u32::MAX,
+            max_inflight_cap: MAX_INFLIGHT_CAP,
             sink: Arc::new(sink),
             dispatcher: self.dispatcher.adopter(),
             conns: self.conns.clone(),
