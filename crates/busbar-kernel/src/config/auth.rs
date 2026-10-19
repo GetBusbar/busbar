@@ -210,7 +210,9 @@ pub struct MintCeilingCfg {
     /// OMITTED (`None`) = ALL pools; explicit `[]` = NO pools; `[list]` = exactly those. The ceiling
     /// is an upper bound: an enforced mint must request a subset.
     pub allowed_pools: Option<Vec<String>>,
-    /// The binding modes this role may mint. Absent ⇒ the block-level `binding_modes` applies.
+    /// The binding modes this role may mint. Absent ⇒ the block-level `binding_modes` applies. Present,
+    /// it narrows the block-level list: every entry must be one the block-level list allows (refused
+    /// at validation), and a mint must satisfy both.
     pub binding_modes: Option<Vec<BindingMode>>,
 }
 
