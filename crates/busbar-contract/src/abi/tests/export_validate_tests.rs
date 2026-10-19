@@ -421,7 +421,7 @@ fn a_tail_with_more_streams_than_exist_faults() {
 
 #[test]
 fn a_tail_with_too_many_routes_faults() {
-    let routes: Vec<Route> = (0..65).map(|_| route("/metrics", "GET", 0)).collect();
+    let routes: Vec<Route> = (0..65).map(|_| route("/metrics", "GET", super::super::ROUTE_AUTH_KEY)).collect();
     assert_eq!(
         check_tail(&tail(&[], &routes)),
         red(Rule::OverMax, "tail.routes_len")
@@ -446,13 +446,13 @@ fn a_repeated_stream_faults() {
 
 #[test]
 fn a_route_text_counted_behind_null_faults() {
-    let mut r = route("/metrics", "GET", 0);
+    let mut r = route("/metrics", "GET", super::super::ROUTE_AUTH_KEY);
     r.path.ptr = std::ptr::null();
     assert_eq!(
         check_tail_entries(&[], &[r]),
         red(Rule::NullWithCount, "tail.routes.path")
     );
-    let mut r = route("/metrics", "GET", 0);
+    let mut r = route("/metrics", "GET", super::super::ROUTE_AUTH_KEY);
     r.method.ptr = std::ptr::null();
     assert_eq!(
         check_tail_entries(&[], &[r]),
@@ -463,7 +463,7 @@ fn a_route_text_counted_behind_null_faults() {
 #[test]
 fn a_route_path_not_rooted_faults() {
     assert_eq!(
-        check_tail_entries(&[], &[route("metrics", "GET", 0)]),
+        check_tail_entries(&[], &[route("metrics", "GET", super::super::ROUTE_AUTH_KEY)]),
         red(Rule::Missing, "tail.routes.path.root")
     );
 }
@@ -471,7 +471,7 @@ fn a_route_path_not_rooted_faults() {
 #[test]
 fn a_route_without_a_method_faults() {
     assert_eq!(
-        check_tail_entries(&[], &[route("/metrics", "", 0)]),
+        check_tail_entries(&[], &[route("/metrics", "", super::super::ROUTE_AUTH_KEY)]),
         red(Rule::Missing, "tail.routes.method.empty")
     );
 }
@@ -479,7 +479,31 @@ fn a_route_without_a_method_faults() {
 #[test]
 fn a_route_auth_outside_its_vocabulary_faults() {
     assert_eq!(
-        check_tail_entries(&[], &[route("/metrics", "GET", 3)]),
+        check_tail_entries(&[], &[route("/metrics", "GET", 4)]),
         red(Rule::UnknownCode, "tail.routes.auth")
     );
+}
+
+/// RED (a zero never grants): a route that leaves its auth zero has declared no bar, and is
+/// refused at load by name; it is never read as the unauthenticated level. A wholly zeroed route
+/// is refused too, and every declared level passes.
+#[test]
+fn a_zeroed_export_route_is_refused_at_load() {
+    use super::super::{ROUTE_AUTH_ADMIN, ROUTE_AUTH_KEY, ROUTE_AUTH_NONE, ROUTE_AUTH_UNDECLARED};
+    assert_eq!(ROUTE_AUTH_UNDECLARED, 0, "zero is the undeclared code");
+    assert_ne!(ROUTE_AUTH_NONE, 0, "the unauthenticated level is never zero");
+    assert_eq!(
+        check_tail_entries(&[], &[route("/metrics", "GET", ROUTE_AUTH_UNDECLARED)]),
+        red(Rule::Missing, "tail.routes.auth.undeclared")
+    );
+    // SAFETY: `Route` is plain old data; all-zero bytes are a valid (empty) value.
+    let zeroed: Route = unsafe { std::mem::zeroed() };
+    assert!(check_tail_entries(&[], &[zeroed]).is_err());
+    for auth in [ROUTE_AUTH_NONE, ROUTE_AUTH_KEY, ROUTE_AUTH_ADMIN] {
+        assert_eq!(
+            check_tail_entries(&[], &[route("/metrics", "GET", auth)]),
+            Ok(()),
+            "auth {auth}"
+        );
+    }
 }

@@ -918,3 +918,46 @@ fn notify_in_judges_a_present_prompt() {
         red(Rule::Contradiction, "prompt.message_count")
     );
 }
+
+fn hook_route(path: &'static str, auth: u32) -> super::super::Route {
+    super::super::Route {
+        path: AbiStr {
+            ptr: path.as_ptr(),
+            len: path.len(),
+        },
+        method: AbiStr {
+            ptr: "GET".as_ptr(),
+            len: 3,
+        },
+        auth,
+        _reserved: 0,
+    }
+}
+
+/// RED (a zero never grants): a hook route that leaves its auth zero has declared no bar, and is
+/// refused at load by name; it is never read as the unauthenticated level. `Route::ZERO` is
+/// refused, a code past the last is refused, and every declared level passes.
+#[test]
+fn a_zeroed_hook_route_is_refused_at_load() {
+    use super::super::{
+        Route, ROUTE_AUTH_ADMIN, ROUTE_AUTH_KEY, ROUTE_AUTH_NONE, ROUTE_AUTH_UNDECLARED,
+    };
+    assert_eq!(ROUTE_AUTH_UNDECLARED, 0, "zero is the undeclared code");
+    assert_ne!(ROUTE_AUTH_NONE, 0, "the unauthenticated level is never zero");
+    assert_eq!(
+        check_tail_routes(&[hook_route("/hooks/h/x", ROUTE_AUTH_UNDECLARED)]),
+        red(Rule::Missing, "tail.routes.auth.undeclared")
+    );
+    assert!(check_tail_routes(&[Route::ZERO]).is_err());
+    assert_eq!(
+        check_tail_routes(&[hook_route("/hooks/h/x", 4)]),
+        red(Rule::UnknownCode, "tail.routes.auth")
+    );
+    for auth in [ROUTE_AUTH_NONE, ROUTE_AUTH_KEY, ROUTE_AUTH_ADMIN] {
+        assert_eq!(
+            check_tail_routes(&[hook_route("/hooks/h/x", auth)]),
+            Ok(()),
+            "auth {auth}"
+        );
+    }
+}
