@@ -932,22 +932,26 @@ impl KernelServices {
             || (Vec::new(), false),
             |d| (d.record.list(), *d.default_instance == *instance),
         );
-        // The kept trust decisions are READ BEFORE THE HOST LOCK, as the demotions are: the read
-        // is a call into the store, and every caller-scoped service takes that lock, so a slow
-        // store must never stall them (THE DESIGN §11.2 l.1285, no blocking on the hot path; §11.13
-        // l.1655, no plugin code under a host lock; Q128 p5#4).
-        let kept = self
-            .demotions
-            .get()
-            .map(|d| d.record.decisions())
-            .unwrap_or_default();
-        let mut instances = self.lock_instances();
         // The operator's kept trust decisions replay at the instance's FIRST admit only: a re-admit
         // keeps them in its state, and one whose declared pin changed is the operator's re-approval.
+        // NO PLUGIN CODE RUNS UNDER A HOST LOCK (§11.13 M1; audit K4 #6): the read is a store-plugin
+        // crossing, so it runs with the instance map released. An instance once admitted is never
+        // removed, so a label seen admitted here is still admitted under the lock below; one seen
+        // absent is judged again there, and a racing first admit that won keeps its own replay.
+        let first = !self.lock_instances().contains_key(instance);
+        let decided = if first {
+            self.demotions
+                .get()
+                .map(|d| d.record.decisions())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let mut instances = self.lock_instances();
         let decided = if instances.contains_key(instance) {
             Vec::new()
         } else {
-            kept
+            decided
         };
         if let Some(domain) = facts.signing.as_ref().map(|s| s.domain.as_str()) {
             let holder = instances.iter().find(|(label, f)| {
@@ -1022,7 +1026,7 @@ impl KernelServices {
 
     /// THE ONE DECIDE PATH, the core-admin verbs' ([`Self::trust_rule`]) and a plane's own
     /// administrative verb's (`trust.decide`) alike: the trust book's decision
-    /// ([`TrustBook::decide`]), kept durably before it answers; approving a counterparty also
+    /// ([`TrustBook::rule`], kept durably, then [`TrustBook::apply`]); approving a counterparty also
     /// clears its durable demotion.
     ///
     /// # Errors
