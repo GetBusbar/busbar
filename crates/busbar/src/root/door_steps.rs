@@ -3546,6 +3546,17 @@ pub fn member_routes(
                 .resolve_at_config(&r.provider.credential, scope)
                 .map_err(|e| format!("provider '{}' credential: {e}", r.name))?
         };
+        // A service-account credential naming its key file is read here, at configuration time,
+        // through the secret kind's file source: the serving plugin is handed the JSON and opens no
+        // file (Q128 audit ruling (a)).
+        let credential = if r.style == SERVICE_ACCOUNT_STYLE {
+            busbar_kernel::config_validate::service_account_json(credential, |file| {
+                reach.secrets.resolve_at_config(file, scope)
+            })
+            .map_err(|e| format!("provider '{}' (jwt-bearer auth): {e}", r.name))?
+        } else {
+            credential
+        };
         let settings = sealed_params(&r.name, &r.style, r.provider, &credential)?.to_json();
         let (auth, decl) = reach.auths.serving(&r.style, &settings)?.ok_or_else(|| {
             format!(

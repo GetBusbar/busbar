@@ -766,8 +766,9 @@ busbar-transport-webrtc = ["str0m", "ring", "aes", "zeroize"]
 busbar-transport-http = ["futures", "http", "http-body-util", "hyper", "hyper-util", "memchr", "tokio", "tokio-util"]
 # The pinned grpc framer: hyper's http and http-body types for the gRPC framing over HTTP/2.
 busbar-transport-grpc = ["http", "http-body", "hyper"]
-# The pinned ws framer: tokio-tungstenite's frame codec (handshake feature only).
-busbar-transport-ws = ["tokio-tungstenite"]
+# The pinned ws framer: tungstenite's frame codec and handshake machines, driven over the host's
+# bytes with no runtime (handshake feature only; ws #21 dropped the tokio wrapper).
+busbar-transport-ws = ["tungstenite"]
 # The MCP plane's outbound wire (fold A5, ARCHITECT 2026-09-29 under the PLUGIN LIBRARIES ruling):
 # the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry.
 busbar-plane-mcp = ["base64", "indexmap"]
