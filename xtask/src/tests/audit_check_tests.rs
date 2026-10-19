@@ -377,3 +377,44 @@ fn a_scope_shape_the_tree_does_not_derive_is_red() {
         vec!["crates/plane/src  kind is 'test', the tree derives 'production'".to_string()]
     );
 }
+
+/// THE REAL TREE: the committed register is the scope list xtask's own rules derive. `ledger
+/// --check` runs over this repository's HEAD (the tracked files plus every pinned plugin crate of
+/// the default distribution, the reach rule of `crate::audit_pinned`), and every block of it that
+/// judges the register's ADDRESSING is empty: no derived scope missing from it, no scope it carries
+/// that the tree does not derive or whose shape differs, no path owning no file, no file in no
+/// scope, no hand-edited excuse, no unreadable entry. So a lane that moves the reach rule, a pin
+/// or a crate without moving the register is red in its own `test`, not first at dev -> qa.
+///
+/// The floor (every production scope `clean`) and the records' own findings are the Q128 judge's
+/// (`cargo xtask q128 audit`), not this test's: they measure the audit's progress, which no lane
+/// can be held to.
+#[test]
+fn the_real_tree_register_is_the_derived_one() {
+    let root = crate::ctx::workspace_root().expect("the workspace root resolves");
+    let git = Git::new(&root);
+    let f = check(&git, &root.join(audit::REGISTER_REL))
+        .unwrap_or_else(|e| panic!("`ledger --check` over the real tree did not run: {e}"));
+    let blocks: [(&str, &Vec<String>); 8] = [
+        ("missing (derived, not in the register)", &f.missing),
+        ("phantom (a scope path owning no file)", &f.phantom),
+        ("shapes (not a derived scope, or another shape)", &f.shapes),
+        ("gaps (a file in no scope)", &f.gaps),
+        ("unscoped top-level directories", &f.unscoped),
+        ("excuses (not the source's list)", &f.excuses),
+        ("problems", &f.problems),
+        ("invalid", &f.invalid),
+    ];
+    let red: Vec<String> = blocks
+        .iter()
+        .filter(|(_, v)| !v.is_empty())
+        .map(|(name, v)| format!("{name}:\n  {}", v.join("\n  ")))
+        .collect();
+    assert!(
+        red.is_empty(),
+        "qa/audit-ledger.json is not the scope list this tree derives ({} production scopes \
+         in the register); `cargo xtask ledger sync --write` regenerates it:\n{}",
+        f.production,
+        red.join("\n")
+    );
+}
