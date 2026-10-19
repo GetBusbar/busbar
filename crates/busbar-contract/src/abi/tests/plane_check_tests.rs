@@ -3428,3 +3428,53 @@ fn a_raw_affix_matches_the_previous_releases_paths_byte_for_byte() {
         "not a raw affix"
     );
 }
+
+/// AN ENTRY FACT (status row 173, `CLAIM_ENTRY`): its target is one or more predicates, `field:`
+/// (present, or its value's prefix) and at most one `path:` pattern, in which `*` is any run of
+/// bytes and a whole segment `{}` or `{<field>}` one non-empty segment, a named one captured. A
+/// malformed target, or the flag beside another, is refused at bind.
+#[test]
+fn an_entry_facts_target_is_its_predicates_and_its_path_captures_named_segments() {
+    use crate::abi::plane::check::EntryPredicate::{Field, Path};
+    use crate::abi::plane::check::{check_claim_target, entry_fact, entry_path_matches};
+    assert_eq!(entry_fact("field:x-key"), Some(vec![Field("x-key", None)]));
+    assert_eq!(
+        entry_fact("field:authorization=SCHEME path:*/end"),
+        Some(vec![Field("authorization", Some("SCHEME")), Path("*/end")])
+    );
+    for bad in [
+        "",
+        "field:",
+        "field:X",
+        "field:a=",
+        "path:x",
+        "path:/a path:/b",
+        "path:/a{b}",
+        "path:/{a/b}",
+        "path:/{A}",
+        "other:x",
+    ] {
+        assert_eq!(entry_fact(bad), None, "RED: `{bad}` is no entry fact");
+    }
+    let mut caps = Vec::new();
+    assert!(entry_path_matches("/{pool}/v1/x", "/p%20q/v1/x", &mut caps));
+    assert_eq!(caps, vec![("pool", &b"p%20q"[..])]);
+    caps.clear();
+    assert!(!entry_path_matches("/{pool}/v1/x", "/a/b/v1/x", &mut caps));
+    assert!(caps.is_empty(), "a failed match captures nothing");
+    assert!(entry_path_matches("/{}/{model}/x", "/a/b/x", &mut caps));
+    assert_eq!(caps, vec![("model", &b"b"[..])]);
+    caps.clear();
+    assert!(entry_path_matches("*:act*", "/m/n:act", &mut caps));
+    assert!(entry_path_matches("/m/*", "/m/", &mut caps));
+    assert!(!entry_path_matches("/m/*", "/m", &mut caps));
+    assert_eq!(check_claim_target("path:/m/*", CLAIM_ENTRY), Ok(()));
+    assert_eq!(
+        check_claim_target("path:/m/*", CLAIM_ENTRY | CLAIM_OPEN),
+        f(Rule::Contradiction, "claim.flags")
+    );
+    assert_eq!(
+        check_claim_target("nope", CLAIM_ENTRY),
+        f(Rule::Contradiction, "claim.entry")
+    );
+}

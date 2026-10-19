@@ -26,8 +26,8 @@ use super::{
     AdminRoute, ArriveOut, BillableClass, Claim, DialectAuth, OnPieceOut, OutField, PinMechanism,
     PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain, RecordWrite, RefusalOut,
     RefusalStatus, RouteCost, ServeOut, TrustKey, UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL,
-    CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED, CLAIM_EXACT, CLAIM_OPEN,
-    CLAIM_PATTERN, CLAIM_RAW_AFFIX, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END,
+    CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED, CLAIM_ENTRY, CLAIM_EXACT,
+    CLAIM_OPEN, CLAIM_PATTERN, CLAIM_RAW_AFFIX, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END,
     EMIT_TO_FAR_END, EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP,
     INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
     INGRESS_SUBSCRIPTION, MAX_METRIC_LANES, MAX_REFUSAL_TEXT, MECHANISM_PEER_KEY, MECHANISM_ROOT,
@@ -1063,7 +1063,7 @@ pub fn check_claims(claims: &[Claim], dialects_len: u64) -> Result<(), Fault> {
         named(c.carrier, "claim.carrier")?;
         bits(
             u64::from(c.flags),
-            u64::from(CLAIM_OPEN | CLAIM_EXACT | CLAIM_PATTERN | CLAIM_RAW_AFFIX),
+            u64::from(CLAIM_OPEN | CLAIM_EXACT | CLAIM_PATTERN | CLAIM_RAW_AFFIX | CLAIM_ENTRY),
             "claim.flags",
         )?;
         if dialects_len > 0 || c.refusal_dialect != 0 {
@@ -1119,10 +1119,143 @@ pub fn check_claim_target(target: &str, flags: u32) -> Result<(), Fault> {
         }
         raw_affix(target).ok_or_else(|| fault(Rule::Contradiction, "claim.affix"))?;
     }
+    if flags & CLAIM_ENTRY != 0 {
+        if flags != CLAIM_ENTRY {
+            return Err(fault(Rule::Contradiction, "claim.flags"));
+        }
+        entry_fact(target).ok_or_else(|| fault(Rule::Contradiction, "claim.entry"))?;
+    }
     if flags & CLAIM_PATTERN != 0 {
         pattern_shape(target)?;
     }
     Ok(())
+}
+
+/// One predicate of a [`CLAIM_ENTRY`] target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryPredicate<'a> {
+    /// A head field is present (`None`), or present with a value that starts with the prefix.
+    Field(&'a str, Option<&'a str>),
+    /// The raw path matches the pattern ([`entry_path_matches`]).
+    Path(&'a str),
+}
+
+/// A [`CLAIM_ENTRY`] target's predicates, in order, or `None` when it is not one: at least one
+/// predicate, each `field:<name>` (`[a-z0-9-]`, non-empty) or `field:<name>=<prefix>` (a non-empty
+/// prefix), or `path:<pattern>`, at most one, starting with `/` or `*`, each `{` closing on the same
+/// segment as a whole segment `{}` or `{<field>}` (`[a-z0-9_]`).
+#[must_use]
+pub fn entry_fact(target: &str) -> Option<Vec<EntryPredicate<'_>>> {
+    let mut out = Vec::new();
+    let mut paths = 0;
+    for token in target.split(' ') {
+        if let Some(field) = token.strip_prefix("field:") {
+            let (name, prefix) = match field.split_once('=') {
+                Some((name, prefix)) if !prefix.is_empty() => (name, Some(prefix)),
+                Some(_) => return None,
+                None => (field, None),
+            };
+            let named = !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+            if !named {
+                return None;
+            }
+            out.push(EntryPredicate::Field(name, prefix));
+        } else if let Some(pattern) = token.strip_prefix("path:") {
+            paths += 1;
+            if paths > 1 || !entry_pattern_shape(pattern) {
+                return None;
+            }
+            out.push(EntryPredicate::Path(pattern));
+        } else {
+            return None;
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// An entry path pattern's shape: it starts with `/` or `*`, and each `{` opens a whole segment
+/// `{}` or `{<field>}` closed before the next `/`.
+fn entry_pattern_shape(pattern: &str) -> bool {
+    let b = pattern.as_bytes();
+    if !matches!(b.first(), Some(b'/' | b'*')) {
+        return false;
+    }
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'{' => {
+                let Some(close) = b[i..].iter().position(|&c| c == b'}').map(|j| i + j) else {
+                    return false;
+                };
+                let name = &b[i + 1..close];
+                let whole = b[i - 1] == b'/' && matches!(b.get(close + 1), None | Some(b'/'));
+                let named = name
+                    .iter()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'_');
+                if !whole || !named {
+                    return false;
+                }
+                i = close + 1;
+            }
+            b'}' => return false,
+            _ => i += 1,
+        }
+    }
+    true
+}
+
+/// Whether the raw, undecoded request `path` matches the entry path `pattern`: its bytes, `*` any
+/// run of bytes, a segment `{}` or `{<field>}` one non-empty run with no `/`. Each `{<field>}` it
+/// matched is pushed onto `captures` as its name and the segment's raw bytes, in order; a failed
+/// match leaves `captures` as it found it. A pattern of the wrong shape matches nothing.
+#[must_use]
+pub fn entry_path_matches<'p, 'q>(
+    pattern: &'p str,
+    path: &'q str,
+    captures: &mut Vec<(&'p str, &'q [u8])>,
+) -> bool {
+    fn walk<'p, 'q>(pat: &'p [u8], path: &'q [u8], caps: &mut Vec<(&'p [u8], &'q [u8])>) -> bool {
+        match pat.first() {
+            None => path.is_empty(),
+            Some(b'*') => (0..=path.len()).any(|i| walk(&pat[1..], &path[i..], caps)),
+            Some(b'{') => {
+                let Some(close) = pat.iter().position(|&c| c == b'}') else {
+                    return false;
+                };
+                let end = path.iter().position(|&c| c == b'/').unwrap_or(path.len());
+                if end == 0 {
+                    return false;
+                }
+                let name = &pat[1..close];
+                let at = caps.len();
+                if !name.is_empty() {
+                    caps.push((name, &path[..end]));
+                }
+                if walk(&pat[close + 1..], &path[end..], caps) {
+                    return true;
+                }
+                caps.truncate(at);
+                false
+            }
+            Some(c) => path.first() == Some(c) && walk(&pat[1..], &path[1..], caps),
+        }
+    }
+    if !entry_pattern_shape(pattern) {
+        return false;
+    }
+    let mut caps = Vec::new();
+    if !walk(pattern.as_bytes(), path.as_bytes(), &mut caps) {
+        return false;
+    }
+    // The names are ASCII, cut from the pattern at its brace bytes: whole UTF-8.
+    captures.extend(
+        caps.into_iter()
+            .map(|(name, seg)| (std::str::from_utf8(name).unwrap_or_default(), seg)),
+    );
+    true
 }
 
 /// A [`CLAIM_RAW_AFFIX`] target's two affixes, `(prefix, suffix)`, or `None` when it is not one:
