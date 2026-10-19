@@ -5,10 +5,9 @@
 
 use super::*;
 use busbar_contract::abi::hot::{
-    AdmissionId, AuthQuery, AuthResolved, Decision, Facts, MeterOutcome, MetricSample,
-    RawUsageComponent, StatusClass, Usage, UsageComponent, POD_VERSION,
+    AdmissionId, Decision, Facts, MeterOutcome, MetricSample, RawUsageComponent, StatusClass,
+    Usage, UsageComponent, POD_VERSION,
 };
-use core::mem::MaybeUninit;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -31,14 +30,12 @@ fn builds_a_full_vtable_with_frozen_preamble() {
     let vt = build_plane_host_vtable();
     assert_eq!(busbar_contract::abi::check_preamble(&vt.abi), Ok(()));
     assert_eq!(vt.size as usize, core::mem::size_of::<PlaneHostVtable>());
-    // Every slot is populated and wired after the Phase-1 fan-out: no slot is a `None`.
+    // Every slot the kernel still serves is populated and wired.
     assert!(vt.govern_admit.is_some());
     assert!(vt.breaker_admit.is_some());
     assert!(vt.breaker_admit_reason.is_some());
     assert!(vt.clock_now.is_some());
     assert!(vt.metrics_emit.is_some());
-    assert!(vt.egress_open.is_some());
-    assert!(vt.auth_resolve.is_some());
     assert!(vt.gate_scan.is_some());
     // The minor-30 HOST SERVICES are granted, served by the kernel itself (the contract holds no
     // entropy source and no clock): a dropped-in plane gets the host's services a linked one does.
@@ -192,79 +189,6 @@ fn wired_meter_charge_charges_a_usage_pod() {
         assert_eq!(
             (vt.meter_charge.unwrap())(host, core::ptr::null()),
             MeterOutcome::Rejected
-        );
-    });
-}
-
-/// The GOVERNANCE `auth_resolve` slot resolves a credential REF to a host-side reference, writing
-/// the out-param ONLY on `Ok`. A query naming no credential (or a null query) is `Refused` and
-/// leaves the out-slot untouched.
-#[test]
-fn wired_auth_resolve_writes_pod_only_on_ok() {
-    with_test_state(|host, vt, _scope| {
-        let audience = b"aud:example";
-        let query = AuthQuery {
-            size: core::mem::size_of::<AuthQuery>() as u32,
-            version: POD_VERSION,
-            _reserved: 0,
-            credential_ref: 0x9abc,
-            audience_ptr: audience.as_ptr(),
-            audience_len: audience.len(),
-        };
-        let mut out = MaybeUninit::<AuthResolved>::uninit();
-        assert_eq!(
-            (vt.auth_resolve.unwrap())(
-                host,
-                &query as *const AuthQuery,
-                &mut out as *mut MaybeUninit<AuthResolved>
-            ),
-            StatusClass::Ok
-        );
-        // SAFETY: the Ok status published the slot (init-only-on-Ok).
-        let resolved = unsafe { out.assume_init() };
-        // The host MINTS a fresh, opaque, host-owned ref — distinct from the input `credential_ref`
-        // (the CLUSTER-3 (d) decision), never the echoed input.
-        assert_ne!(resolved.resolved_ref, 0, "a live host-side ref is minted");
-        assert_ne!(
-            resolved.resolved_ref, 0x9abc,
-            "the mint is a NEW ref, not the input echoed"
-        );
-        assert!(resolved.expires_unix > 0, "a bounded expiry is stamped");
-        // The PLAINTEXT lives host-side behind the ref; the plane received only the opaque ref. The
-        // mint is bound to the query's audience (FFI-F5), so it resolves for THAT destination.
-        let secret = super::creds::resolve(
-            resolved.resolved_ref,
-            resolved.expires_unix - 1,
-            "aud:example",
-        )
-        .expect("the minted ref resolves host-side for its bound destination");
-        assert!(
-            secret.starts_with(b"hostcred:"),
-            "the host owns the resolved credential; it never crossed to the plane"
-        );
-
-        // A query naming no credential is refused; the out-slot is NOT written.
-        let none = AuthQuery {
-            credential_ref: 0,
-            ..query
-        };
-        let mut out2 = MaybeUninit::<AuthResolved>::uninit();
-        assert_eq!(
-            (vt.auth_resolve.unwrap())(
-                host,
-                &none as *const AuthQuery,
-                &mut out2 as *mut MaybeUninit<AuthResolved>
-            ),
-            StatusClass::Refused
-        );
-        // Fail-closed on a null query.
-        assert_eq!(
-            (vt.auth_resolve.unwrap())(
-                host,
-                core::ptr::null(),
-                &mut out2 as *mut MaybeUninit<AuthResolved>
-            ),
-            StatusClass::Refused
         );
     });
 }

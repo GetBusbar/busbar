@@ -166,19 +166,12 @@ pub fn guard_for(d: &Destinations) -> Result<Arc<process::GuardJudge>, String> {
     process::dest_judge(d)
 }
 
-/// Install the deployment's one destination guard behind the egress-trust capability (ARCHITECT
-/// ruling (C), DEST-GUARD), once, at boot, before any kernel pooled client dials and before the boot
-/// build commits: every config commit is raised to it there. The same capability carries the one
-/// TLS wrap every kernel outbound connection is secured with — the connector's
-/// (`busbar_core_connector::tls::engine::Layer`; THE DESIGN: TLS stays in the connector, and the
-/// kernel names no TLS library), and the one name lookup every kernel resolve-then-pin asks
-/// (`busbar_core_connector::hostio::SystemNames`; row 130 E2: the kernel resolves no name itself).
+/// Install the deployment's one destination guard behind the kernel's destinations seam (ARCHITECT
+/// ruling (C), DEST-GUARD), once, at boot, before the boot build commits: every config commit is
+/// raised to it there. The kernel dials nothing, so the seam carries no TLS wrap and no resolver
+/// (THE DESIGN §5 and §8: TLS, the pools and every dial are the connector's; status row 130).
 pub fn install_egress_trust(dest: Arc<dyn DestJudge>) {
-    install_egress_trust_host(Arc::new(GuardedEgressTrust(
-        dest,
-        Arc::new(busbar_core_connector::tls::engine::Layer),
-        Arc::new(busbar_core_connector::hostio::SystemNames),
-    )));
+    install_egress_trust_host(Arc::new(GuardedEgressTrust(dest)));
 }
 
 /// The connector's pool posture off the deployment's transport settings: 1.5.5's
@@ -233,14 +226,12 @@ pub fn boot(
         eprintln!("busbar: the connector did not build: {refusal}");
         std::process::exit(2);
     });
-    let one = install(connector).unwrap_or_else(|_| {
+    // THE ONE PROXY CHOICE (status row 130 E5a) is the connector's own: it read the process
+    // environment and every framed dial it makes honours it. The kernel dials nothing to hand it.
+    install(connector).unwrap_or_else(|_| {
         eprintln!("busbar: a second connector was built; the process has one");
         std::process::exit(2);
-    });
-    // THE ONE PROXY CHOICE (status row 130 E5a): the connector read the process environment; the
-    // kernel's remaining egress engine takes the same value and reads none of its own.
-    busbar_kernel::egress::engine::install_proxy(one.proxy());
-    one
+    })
 }
 
 /// THE REACTOR A SOCKET A PLUGIN OPENS FROM A DISPATCHER WORKER REGISTERS ON

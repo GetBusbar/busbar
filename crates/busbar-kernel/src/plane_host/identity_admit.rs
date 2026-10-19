@@ -13,7 +13,7 @@
 //! the SENSITIVE enforcement key (its material, its group chain, its budget buckets). Neither is a
 //! fixed-size POD, and the admission runs ONCE (the auth chain consults its plugins — re-running it
 //! to re-marshal a field would be a second admission). So the
-//! host STASHES the pair behind an opaque [`IdentityId`] (the `super::creds` / durable-scope
+//! host STASHES the pair behind an opaque [`IdentityId`] (the durable-scope
 //! opaque-handle discipline) and the plane consumes it ONCE ([`take`]) to recover the EXACT objects —
 //! byte-identical to the in-process resolution, with the gov key never crossing as bytes, only the
 //! bare `u64` handle. A refusal stashes nothing and names [`IdentityId::NONE`].

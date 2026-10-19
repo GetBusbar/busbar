@@ -3,12 +3,14 @@
 
 //! The HOST side of the [`PlaneHostVtable`]: the construction point that fills every slot with a
 //! host-side `extern "C-unwind"` fn wired over a real core primitive. After the Phase-1 capability
-//! fan-out (breaker, govern, journal, egress, dispatch) every slot is wired — ZERO `unimplemented!()`
-//! stubs remain — except the trust family and `guard_url`, which are absent: no plane calls them, the
-//! host services a plane calls are the `HostSlots` families (BUSBAR-1.6.0.md Part 3 §4, SUPERSEDED
-//! 2026-09-28), and `trust.*` is served there. The three PROOF-OF-LIFE impls (`clock_now`,
-//! `metrics_emit`, `govern_admit`) live here; the rest forward into their capability modules
-//! ([`super::breaker`], [`super::govern`], [`super::journal`], [`super::egress`], [`super::dispatch`]).
+//! fan-out (breaker, govern, journal, dispatch) every slot is wired — ZERO `unimplemented!()`
+//! stubs remain — except the trust family, `guard_url` and the egress family, which are absent: no
+//! plane calls them, the host services a plane calls are the `HostSlots` families (BUSBAR-1.6.0.md
+//! Part 3 §4, SUPERSEDED 2026-09-28), `trust.*` is served there, and every dial is the connector's
+//! (THE DESIGN §5; Appendix A B.6, l.3846: `egress_*` deleted). The three PROOF-OF-LIFE impls
+//! (`clock_now`, `metrics_emit`, `govern_admit`) live here; the rest forward into their capability
+//! modules
+//! ([`super::breaker`], [`super::govern`], [`super::journal`], [`super::dispatch`]).
 //!
 //! ## Boundary discipline (reused from `busbar-contract/src/abi/sdk/boundary.rs`)
 //!
@@ -23,8 +25,7 @@
 use super::recover;
 use busbar_contract::abi::hot::host::{HostCtx, PlaneHostVtable};
 use busbar_contract::abi::hot::{
-    AuthQuery, AuthResolved, Decision, Facts, GovRefusal, MeterOutcome, MetricSample, StatusClass,
-    Usage,
+    Decision, Facts, GovRefusal, MeterOutcome, MetricSample, StatusClass, Usage,
 };
 use busbar_contract::abi::shared::DeclStr;
 use busbar_contract::abi::AbiPreamble;
@@ -49,22 +50,26 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         clock_now: Some(clock_now),
 
         // ── WIRED capability slots — each forwards into its capability module (breaker / trust /
-        //    egress / journal / dispatch), or a wired local fn (meter_charge, auth_resolve) ────────
+        //    journal / dispatch), or a wired local fn (meter_charge) ────────
         meter_charge: Some(meter_charge),
         breaker_admit: Some(super::breaker::breaker_admit),
         breaker_admit_reason: Some(super::breaker::breaker_admit_reason),
         breaker_settle: Some(super::breaker::breaker_settle),
-        egress_open: Some(super::egress::egress_open),
-        egress_poll: Some(super::egress::egress_poll),
-        egress_write: Some(super::egress::egress_write),
-        egress_close: Some(super::egress::egress_close),
-        egress_fault: Some(super::egress::egress_fault),
+        // The EGRESS family is gone (BUSBAR-1.6.0.md Appendix A B.6, l.3846: `egress_*` deleted;
+        // THE DESIGN §5: every dial is the connector's). Absent until `abi::hot` itself goes.
+        egress_open: None,
+        egress_poll: None,
+        egress_write: None,
+        egress_close: None,
+        egress_fault: None,
         journal_append: Some(super::journal::journal_append),
         journal_read: Some(super::journal::journal_read),
         nested_dispatch: Some(super::dispatch::nested_dispatch),
         workhandle_open: Some(super::dispatch::workhandle_open),
         workhandle_resume: Some(super::dispatch::workhandle_resume),
-        auth_resolve: Some(auth_resolve),
+        // `auth_resolve` minted a credential ref only `egress_open` redeemed; both are gone
+        // (Appendix A B.6, l.3846: `auth_resolve` deleted).
+        auth_resolve: None,
         entitlement_check: Some(super::dispatch::entitlement_check),
         gate_scan: Some(super::dispatch::gate_scan),
         // ── The byte-duplex PIPE tier (CLUSTER-3 egress): raw-connection / subprocess byte channels,
@@ -501,40 +506,7 @@ extern "C-unwind" fn meter_charge(host: HostCtx, usage: *const Usage) -> MeterOu
 }
 // `breaker_admit` / `breaker_settle` are WIRED over the real breaker in `super::breaker` (the BREAKER
 // family fan-out); its vtable slots reference that module directly.
-// The EGRESS family (`egress_open`/`_poll`/`_write`/`_close`/`_fault`) is WIRED in `super::egress`;
-// its vtable slots reference that module directly.
 // journal_append / journal_read are WIRED in `super::journal` (the JOURNAL family, over the real
 // `crate::audit` hash chain). The builder references them directly; no stub lives here.
 // `nested_dispatch` / `workhandle_open` / `workhandle_resume` / `entitlement_check` / `gate_scan`
 // are WIRED in `super::dispatch` (the DISPATCH family); their vtable slots reference that module.
-/// WIRED `auth_resolve` → the REAL principal resolution over `crate::auth` (see
-/// [`super::govern::resolve_auth`]): resolve a credential REF to an OPAQUE host-side reference (NEVER
-/// plaintext), writing the [`AuthResolved`] out-param ONLY on `Ok`. Fail-closed (`Refused`) on a null
-/// query or a query naming no credential; `Fault` on any panic.
-extern "C-unwind" fn auth_resolve(
-    host: HostCtx,
-    query: *const AuthQuery,
-    out: *mut MaybeUninit<AuthResolved>,
-) -> StatusClass {
-    catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: recovery invariant (see `recover`).
-        let Some(state) = (unsafe { recover(host) }) else {
-            return StatusClass::Refused;
-        };
-        if query.is_null() {
-            return StatusClass::Refused;
-        }
-        // SAFETY: a non-null `query` is a live, initialized `AuthQuery` for the call (ABI discipline).
-        let q = unsafe { &*query };
-        match super::govern::resolve_auth(state, q) {
-            Some(resolved) => {
-                // SAFETY: `out` is a writable, aligned `MaybeUninit<AuthResolved>` for the call; the
-                // write publishes ONLY on the Ok path (init-only-on-Ok), tolerating a null slot.
-                unsafe { busbar_contract::abi::write_out(out, resolved) };
-                StatusClass::Ok
-            }
-            None => StatusClass::Refused, // nothing to resolve → out-param left uninitialized.
-        }
-    }))
-    .unwrap_or(StatusClass::Fault) // caught panic → the distinct fault class, never `Ok`.
-}

@@ -490,7 +490,7 @@ fn operator_infrastructure_is_allowed_private_and_refused_metadata_whatever_is_c
 }
 
 /// RED (THE DESIGN §5 "no blocking thread exists"; resource bounds): the dial guard's name
-/// lookups are CAPPED as the kernel's are (`hostio::SystemNames`, `MAX_PENDING_LOOKUPS`): with
+/// lookups are CAPPED (`compose::MAX_PENDING_LOOKUPS`, `hostio::LookupPlace`): with
 /// the cap's lookups in flight one more is answered at once as a resolution failure and starts no
 /// thread. Uncapped, one thread was started per lookup, so a burst of dials while names were slow
 /// grew threads without limit.

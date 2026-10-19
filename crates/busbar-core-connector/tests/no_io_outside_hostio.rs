@@ -12,9 +12,10 @@
 //! * `hostio.rs` — `io.*` itself: streams, listeners, a program's pipes;
 //! * `io.rs`, `socket.rs` — its tools: readiness on the worker's reactor, and the OS sockets;
 //! * `udp.rs`, `dtls/` — the DATAGRAM carrier, which is the host's by ruling (THE DESIGN §5,
-//!   Datagram media: "the udp carrier is the host's (in the connector, no carrier plugin)");
-//! * `tls/engine.rs` — the kernel's own outbound engine's TLS, over a stream the KERNEL dialled
-//!   and hands it (the kernel's legacy egress engine); the connector dials nothing there.
+//!   Datagram media: "the udp carrier is the host's (in the connector, no carrier plugin)").
+//!
+//! (`tls/engine.rs`, the kernel's legacy outbound engine's TLS, left the list with that engine,
+//! u30: the kernel dials nothing.)
 
 use std::path::{Path, PathBuf};
 
@@ -44,14 +45,7 @@ const FORBIDDEN: &[&str] = &[
 ];
 
 /// The host's I/O implementation (module docs).
-const HOST_IO: &[&str] = &[
-    "hostio.rs",
-    "io.rs",
-    "socket.rs",
-    "udp.rs",
-    "dtls/",
-    "tls/engine.rs",
-];
+const HOST_IO: &[&str] = &["hostio.rs", "io.rs", "socket.rs", "udp.rs", "dtls/"];
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for e in std::fs::read_dir(dir).expect("read src").flatten() {

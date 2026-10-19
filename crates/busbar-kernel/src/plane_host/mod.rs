@@ -5,7 +5,7 @@
 //! capability fan-out fills in.
 //!
 //! The HOT-lane ABI ([`busbar_contract::abi::hot`]) defines the `#[repr(C)] PlaneHostVtable` — the inbound
-//! seam a plane calls BACK into core (`govern_admit`, `meter_charge`, `egress_open`, `clock_now`, …).
+//! seam a plane calls BACK into core (`govern_admit`, `meter_charge`, `clock_now`, …).
 //! This module is core's HOST-SIDE implementation of that seam: it builds the vtable, recovers core's
 //! own state from the opaque [`HostCtx`] the ABI threads through every call, and owns the per-dispatch
 //! [`DispatchScope`] arena that reclaims every host handle a plane acquired when the dispatch ends.
@@ -27,9 +27,7 @@
 //!   rest forwarding into the capability modules), zero stubs remaining.
 
 pub mod breaker;
-mod creds;
 pub mod dispatch;
-pub mod egress;
 mod govern;
 pub(crate) mod identity_admit;
 pub mod journal;
@@ -79,9 +77,6 @@ pub struct HostState<'a> {
     /// open route, or a mint with no request behind it) admits and bills the named synthetic keys
     /// (`govern::SYNTH_TENANT_KEY`, `govern::SYNTH_ADMISSION_KEY`).
     caller: Option<HostCaller>,
-    /// The operator's destinations for the plane this handle was minted for (DEC-SERVE G3): the only
-    /// source of the privilege scope the `egress_open` slot judges a hop against. `None` ⇒ scope `0`.
-    destinations: Option<&'a egress::OperatorDestinations>,
 }
 
 /// The middleware-resolved caller behind a plane mint (DEC-SERVE G1): an OPAQUE, kernel-only handle.
@@ -175,7 +170,7 @@ pub fn with_borrowed_host<R>(
     f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R,
 ) -> R {
     // A host-internal mint: nobody's plane. See `HostState::emitter`.
-    mint(None, None, None, app, scope, f)
+    mint(None, None, app, scope, f)
 }
 
 /// Run `f` with a [`HostCtx`] ATTRIBUTED to `plane` — the mint site a real plane dispatch uses.
@@ -195,30 +190,21 @@ pub fn with_borrowed_host_as<R>(
     scope: &DispatchScope,
     f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R,
 ) -> R {
-    mint(Some(plane), None, None, app, scope, f)
+    mint(Some(plane), None, app, scope, f)
 }
 
-/// THE HOT DOOR'S MINT (DEC-SERVE G1 + G3): [`with_borrowed_host_as`], plus the two facts only the
-/// host knows about this request — the `caller` the auth middleware resolved (the request's
+/// THE HOT DOOR'S MINT (DEC-SERVE G1): [`with_borrowed_host_as`], plus the one fact only the host
+/// knows about this request — the `caller` the auth middleware resolved (the request's
 /// [`PlaneRequestCtx`](busbar_contract::records::PlaneRequestCtx), `None` on an open route), which
-/// `meter_charge` bills; and the operator's `destinations` for `plane`, which `egress_open` derives a
-/// hop's privilege scope from. Neither is a word the plane can supply.
+/// `meter_charge` bills. It is not a word the plane can supply.
 pub fn with_plane_door<R>(
     plane: &'static str,
     caller: Option<&busbar_contract::records::PlaneRequestCtx>,
-    destinations: &egress::OperatorDestinations,
     app: &App,
     scope: &DispatchScope,
     f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R,
 ) -> R {
-    mint(
-        Some(plane),
-        HostCaller::of(caller),
-        Some(destinations),
-        app,
-        scope,
-        f,
-    )
+    mint(Some(plane), HostCaller::of(caller), app, scope, f)
 }
 
 /// THE ONE MINT: run `f` with a [`HostCtx`] over a [`HostState`] of `app` + `scope` (attributed to
@@ -230,7 +216,6 @@ pub fn with_plane_door<R>(
 fn mint<R>(
     emitter: Option<&'static str>,
     caller: Option<HostCaller>,
-    destinations: Option<&egress::OperatorDestinations>,
     app: &App,
     scope: &DispatchScope,
     f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R,
@@ -240,7 +225,6 @@ fn mint<R>(
         scope,
         emitter,
         caller,
-        destinations,
     };
     let vtable = build_plane_host_vtable();
     let generation = HostGeneration::open();
@@ -301,7 +285,6 @@ pub fn govern_admit_reason_over(
     let decision = mint(
         None,
         HostCaller::of(Some(caller)),
-        None,
         app,
         scope,
         |hctx, vt| {
@@ -787,7 +770,7 @@ impl busbar_kernel::plane_host::BudgetHost for EngineHostImpl {
         // `caller` (DEC-SERVE G1b — the host bills that key, never the `Usage` tail's), fire the
         // `meter_charge` slot, and drop the host pointer without letting it escape. Fire-and-forget.
         let caller = HostCaller::of(Some(caller));
-        mint(None, caller, None, &self.app, scope, |host, vt| {
+        mint(None, caller, &self.app, scope, |host, vt| {
             let _ = (vt.meter_charge.expect("meter_charge is a wired slot"))(
                 host,
                 usage as *const busbar_contract::abi::hot::Usage,
@@ -1571,7 +1554,7 @@ impl<'a> HostDispatch<'a> {
     /// fresh [`HostGeneration`] opens for exactly this call and drops when it returns, so a `HostCtx`
     /// that escapes `f` anyway is refused (its generation is no longer live) rather than dereferenced.
     pub fn with_host<R>(&self, f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R) -> R {
-        mint(None, None, None, self.app, &self.scope, f)
+        mint(None, None, self.app, &self.scope, f)
     }
 }
 
@@ -1618,7 +1601,7 @@ impl SendHostDispatch {
     /// [`new`](Self::new) would mint a stamp that is never live on the thread that checks it) and
     /// drops when this call returns.
     pub fn with_host<R>(&self, f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R) -> R {
-        mint(None, None, None, &self.app, &self.scope, f)
+        mint(None, None, &self.app, &self.scope, f)
     }
 }
 
@@ -1641,10 +1624,6 @@ pub mod engine_view;
 // `PlaneSlots` through any pointer to a slot holder (`Arc`, load guard, borrow), so a plane's slot
 // readers can take `&impl PlaneSlots` instead of a concrete snapshot type without touching callers.
 pub mod slots_through;
-// The egress-trust primitives (client identity, extra trust anchors, the peer-SPKI pin) live on the
-// kernel's outbound surface, `crate::egress::trust`. This re-export only keeps the legacy plane crates'
-// `busbar_kernel::plane_host::{identity, spki, trust_anchor}` paths resolving; it leaves with them.
-pub use crate::egress::trust::{identity, spki, trust_anchor};
 
 pub use crate::plane_host::build_input::{
     AffinityInput, AuthReach, AuthStyleInput, BreakerInput, ClientSettingsInput, FailoverInput,

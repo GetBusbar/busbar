@@ -1272,11 +1272,11 @@ known_sites = [
   "crates/busbar-kernel/src/vocabulary.rs::key",
   # boot/reload-time route-literal interning, deduplicated, never a money hold
   "crates/busbar-contract/src/abi/transport/route.rs::intern",
-  # was crates/busbar-core/src/plane_host/ (a whole directory) — the eight files of it that carry a
-  # reviewed escape, so the seven substrate-origin files the merge added stay uncovered.
+  # was crates/busbar-core/src/plane_host/ (a whole directory) — the files of it that carry a
+  # reviewed escape, so the seven substrate-origin files the merge added stay uncovered. (egress.rs
+  # is struck: the file is deleted with the egress slots, u30.)
   "crates/busbar-kernel/src/plane_host/breaker.rs",
   "crates/busbar-kernel/src/plane_host/dispatch.rs",
-  "crates/busbar-kernel/src/plane_host/egress.rs",
   "crates/busbar-kernel/src/plane_host/identity_admit.rs",
   "crates/busbar-kernel/src/plane_host/journal.rs",
   "crates/busbar-kernel/src/plane_host/pipe.rs",

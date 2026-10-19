@@ -4,9 +4,9 @@
 //! The PIPE tier of the egress family: the two vtable slots a byte-DUPLEX channel is driven
 //! through ([`pipe_read`] / [`pipe_write`], keyed by a [`PipeId`]).
 //!
-//! NO TIER OPENS A PIPE. The raw-connection tier answers `Unsupported` and the subprocess tier
-//! answers `Refused` at the seam ([`super::egress`]): no operator configuration wires a subprocess
-//! program allowlist over the FFI seam, so the host authorizes no plane-driven program (FFI-F3). The
+//! NO TIER OPENS A PIPE. The `egress_*` slots that opened one are deleted (BUSBAR-1.6.0.md
+//! Appendix A B.6, l.3846; u30): no operator configuration wires a subprocess program allowlist
+//! over the FFI seam, so the host authorizes no plane-driven program (FFI-F3). The
 //! spawning machinery this module held — the command decode, the host-side environment resolution
 //! (a secret reference resolved at the spawn, on the request it served) and the child's lifecycle
 //! — ran in no served path and is struck (F11; row 166). A member program a plane needs is spawned
