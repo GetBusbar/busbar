@@ -253,6 +253,26 @@ pub unsafe fn render(st: &Statement) -> Result<Vec<u8>, TooLong> {
                 o.u32(f);
             }
         }
+        if let Some(t) = auth_tail(st) {
+            o.u32(TAIL_AUTH);
+            o.u32(t.caps);
+            o.u32(t.facts);
+            o.u32(t.login_kind);
+            o.u32(t.inbound_points);
+            o.str(t.operator_principal, "auth.operator_principal")?;
+            let kinds = items(t.credential_kinds, t.credential_kinds_len);
+            o.len(kinds.len(), "auth.credential_kinds")?;
+            for k in kinds {
+                o.str(*k, "auth.credential_kind")?;
+            }
+            let styles = items(t.styles, t.styles_len);
+            o.len(styles.len(), "auth.styles")?;
+            for s in styles {
+                o.str(s.name, "auth.style.name")?;
+                o.u32(s.flags);
+                o.u32(s.points);
+            }
+        }
     }
     Ok(o.0)
 }
@@ -283,6 +303,43 @@ unsafe fn claim_flags(st: &Statement) -> Vec<u32> {
     // SAFETY: the caller's contract.
     let rows: &[Claim] = unsafe { items(rows, len) };
     rows.iter().map(|r| r.flags).collect()
+}
+
+/// An auth Statement's tail, as far as its stated size covers it (a field appended after the tail
+/// froze reads empty on an older tail), when it states anything; `None` for any other kind, no
+/// tail, or a tail stating nothing.
+///
+/// # Safety
+///
+/// As [`render`]: a non-NULL kind tail is live data of its stated size.
+unsafe fn auth_tail(st: &Statement) -> Option<crate::abi::auth::AuthTail> {
+    use crate::abi::auth::AuthTail;
+    if st.kind != super::KindCode::Auth as u32 || st.kind_tail.is_null() {
+        return None;
+    }
+    // SAFETY: the caller's contract (a non-NULL tail is live).
+    let size = (unsafe { (*st.kind_tail).size } as usize).min(core::mem::size_of::<AuthTail>());
+    if size < crate::abi::auth::AUTH_TAIL_FROZEN {
+        return None;
+    }
+    // SAFETY: an all-zero `AuthTail` is valid (integers, NULL pointers, empty strings); the first
+    // `size` bytes are the plugin's own tail, live and of at least that size.
+    let mut t: AuthTail = unsafe { core::mem::zeroed() };
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            st.kind_tail.cast::<u8>(),
+            core::ptr::from_mut(&mut t).cast::<u8>(),
+            size,
+        );
+    }
+    let states = t.caps != 0
+        || t.facts != 0
+        || t.login_kind != 0
+        || t.inbound_points != 0
+        || t.operator_principal.len != 0
+        || t.credential_kinds_len != 0
+        || t.styles_len != 0;
+    states.then_some(t)
 }
 
 // ── reading a rendering back (every no-dlopen reader: `--validate`, `--list-plugins`, Discover) ───
@@ -508,6 +565,7 @@ fn optional_tail(i: &mut In<'_>, kind: u32, claims: usize) -> Result<OptionalTai
         last = tag;
         match tag {
             TAIL_CLAIM_FLAGS => tail.claim_flags = Some(claim_flags_body(i, kind, claims, at)?),
+            TAIL_AUTH => tail.auth = Some(auth_body(i, kind, at)?),
             _ => return Err(end),
         }
     }
@@ -539,6 +597,60 @@ fn claim_flags_body(
         return Err(refused);
     }
     Ok(flags)
+}
+
+/// The `auth` body: an auth Statement's tail facts, not all empty, every capability, fact, login
+/// kind and style one the contract knows; refused at `at` (its tag) otherwise.
+fn auth_body(i: &mut In<'_>, kind: u32, at: usize) -> Result<ReadAuth, Unreadable> {
+    use crate::abi::auth::{
+        check_style_decl, CAP_INBOUND, CAP_LOGIN, CAP_OUTBOUND, FACT_CACHEABLE,
+        FACT_DEFAULT_INBOUND_STYLE, FACT_INBOUND_ALL_HEADERS, FACT_INBOUND_NEEDS_BODY_HASH,
+        FACT_OPERATOR, FACT_READS_CREDENTIALS, LOGIN_KIND_CREDENTIAL,
+    };
+    let refused = Unreadable { at, what: "auth" };
+    let caps = i.u32("auth")?;
+    let facts = i.u32("auth")?;
+    let login_kind = i.u32("auth")?;
+    let inbound_points = i.u32("auth")?;
+    let operator_principal = i.str("auth")?;
+    let credential_kinds = i.strs("auth")?;
+    let n = i.count("auth")?;
+    let mut styles = Vec::with_capacity(n);
+    for _ in 0..n {
+        styles.push(ReadStyle {
+            name: i.str("auth")?,
+            flags: i.u32("auth")?,
+            points: i.u32("auth")?,
+        });
+    }
+    let known_facts = FACT_CACHEABLE
+        | FACT_INBOUND_NEEDS_BODY_HASH
+        | FACT_INBOUND_ALL_HEADERS
+        | FACT_OPERATOR
+        | FACT_READS_CREDENTIALS
+        | FACT_DEFAULT_INBOUND_STYLE;
+    let read = ReadAuth {
+        caps,
+        facts,
+        login_kind,
+        inbound_points,
+        operator_principal,
+        credential_kinds,
+        styles,
+    };
+    if kind != super::KindCode::Auth as u32
+        || read == ReadAuth::default()
+        || caps & !(CAP_INBOUND | CAP_LOGIN | CAP_OUTBOUND) != 0
+        || facts & !known_facts != 0
+        || login_kind > LOGIN_KIND_CREDENTIAL
+        || read
+            .styles
+            .iter()
+            .any(|s| check_style_decl(s.flags, s.points).is_err())
+    {
+        return Err(refused);
+    }
+    Ok(read)
 }
 
 /// THE RENDERING READ BACK: the inverse of [`render`], for a reader that must not open the plugin.
