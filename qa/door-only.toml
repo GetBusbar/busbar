@@ -89,15 +89,5 @@ item = "EGRESS_TRUST"
 
 [[finding]]
 rule = "door-only:static-seam"
-file = "crates/busbar-kernel/src/rate_apply.rs"
-item = "APPLY"
-
-[[finding]]
-rule = "door-only:static-seam"
-file = "crates/busbar-kernel/src/rate_apply.rs"
-item = "EPOCH"
-
-[[finding]]
-rule = "door-only:static-seam"
 file = "crates/busbar-llm/src/unit/node.rs"
 item = "NATIVE_SEATS"

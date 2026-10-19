@@ -1687,6 +1687,14 @@ impl busbar_kernel::appbuild::RootRules for Rules {
     ) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
         Some(door_config(cfg))
     }
+
+    fn rate_apply(&self) -> Option<&'static dyn busbar_kernel::rate_apply::RateApply> {
+        Some(&crate::root::kernel::CardRepricer)
+    }
+
+    fn rate_epoch(&self) -> Option<&'static dyn busbar_kernel::rate_apply::RateEpoch> {
+        Some(&crate::root::kernel::CardRepricer)
+    }
 }
 
 // ── the kernel-owned sections a door plane reads ────────────────────────────────────────────────

@@ -1590,24 +1590,22 @@ impl busbar_kernel::rate_apply::RateEpoch for CardRepricer {
     }
 }
 
-/// Install the root as the process's rate holder. Boot only, once.
+/// Arm the root's rate holder for the boot. Boot only, once.
 ///
 /// THREE HALVES OF ONE FACT — the deployment's rates live here, and all three readings of that
 /// fact go up together or none does. The APPLY half hears the engine resolve a configuration and
 /// appends a dated entry. The DATE half answers the metering accrual asking when the entry it is
 /// serving under started, which is what gives a UTC-day cell an instant finer than the day. The
 /// READ half hands the history to the ledger reads that price against it — the budget book's and
-/// `GET /api/v1/admin/usage`'s alike, both through the kernel's
-/// `rate_apply::dated_history` — and rides the DATE half's install (`RateEpoch::history`), so
-/// the admin crate holds no seam of its own (R6). Any two without the third is a node that dates
-/// its prices and then reports them off the newest card anyway — exactly the defect this seam
-/// exists to rule out.
+/// `GET /api/v1/admin/usage`'s alike, both through the governance's `dated_history` — and rides
+/// the DATE half (`RateEpoch::history`). All three reach the kernel the one way: the root's rules
+/// name [`CardRepricer`] for both halves (`RootRules::rate_apply`, `RootRules::rate_epoch`, in
+/// `door_steps::Rules`), handed to every build; nothing is installed into the kernel by name (THE
+/// DESIGN §10 R6).
 pub fn install_card_repricer() {
     // Armed BEFORE the boot resolution, so the opening entry is held for the book to journal: the
     // boot's book rebuilds the dated history from its chain (#79) before it prices a posting.
     ROOT_CARD.arm_journal();
-    busbar_kernel::rate_apply::install_rate_apply(&CardRepricer);
-    busbar_kernel::rate_apply::install_rate_epoch(&CardRepricer);
 }
 
 /// The admission unit, standing at the in-flight table's arrival door.

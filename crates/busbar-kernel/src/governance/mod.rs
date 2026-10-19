@@ -286,17 +286,17 @@ impl BudgetCell {
 
     /// THE CELL, PRICED, each era at the card in force when it was earned: every (model, era)
     /// segment and — with `include_fee` — the fee base per era, each at the card its era resolves to
-    /// in the installed dated history (none: the live card), through the one function. A present
+    /// in the governance's dated history (`history`; none: the live card), through the one function. A present
     /// card silent about a held class, or an overflow, REFUSES — never a silent 0.
     fn spend(
         &self,
         cost: &crate::cost::CostModel,
         include_fee: bool,
+        history: Option<&busbar_kernel_ledger::cost::History>,
     ) -> Result<busbar_kernel_ledger::cost::Money, busbar_kernel_ledger::cost::MoneyError> {
         use busbar_kernel_ledger::usage::{price_dated, DatedHistory};
-        let history = crate::rate_apply::dated_history();
         let now_ms = crate::store::now_ms();
-        let dated = history.as_deref().map(|h| DatedHistory::of(h, now_ms));
+        let dated = history.map(|h| DatedHistory::of(h, now_ms));
         let fees = (self.fee_eras.split(self.billable_requests)).filter(|_| include_fee);
         let rows = self.models.iter().map(|m| (&*m.model, m.era, &m.cur));
         let start_ms = self.window_start.saturating_mul(1_000);
@@ -799,6 +799,11 @@ pub struct GovState {
     /// through a door ([`busbar_contract::store_calls::OpenedStore::calls`]): what the kernel's host
     /// services serve plane records over ([`Self::attach_store_calls`]).
     store_calls: std::sync::OnceLock<Arc<dyn busbar_contract::store_calls::StoreCalls>>,
+    /// The deployment's rate dater ([`crate::rate_apply::RateEpoch`]), handed to this governance by
+    /// the build that constructs it from its root's rules ([`Self::set_rate_epoch`]): what dates
+    /// every accrual ([`Self::effective_from_at`]) and prices every read ([`Self::dated_history`]).
+    /// Unset: every era is `0` and every read prices at the live card.
+    rate_epoch: std::sync::OnceLock<&'static dyn crate::rate_apply::RateEpoch>,
     /// THE CALLER-REFERENCE KEY a verified principal's units are lent their reference under, live
     /// ([`crate::plane_driver::CallerRefs`]): derived from the signing material when the node has
     /// one, else from the deployment keyset the book binds (row 159 H2), so every verified principal

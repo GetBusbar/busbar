@@ -618,7 +618,7 @@ fn the_holder_hands_a_reader_the_whole_history_and_an_unresolved_node_none() {
 }
 
 /// The read the usage view asks through answers with the PROCESS history and nothing of its own:
-/// the date half's `history` (what `busbar_kernel::rate_apply::dated_history` hands the admin
+/// the date half's `history` (what `GovState::dated_history` hands the admin
 /// usage read and the budget book) is the holder's.
 ///
 /// A delegation is the whole implementation, so the assertion is that the two readings agree —
@@ -639,36 +639,39 @@ fn the_usage_read_answers_with_the_process_history() {
     );
 }
 
-/// **THE WIRING WITNESS.** The boot install raises BOTH halves of the rate seam, and the binary
-/// calls it.
+/// **THE WIRING WITNESS.** The root's rules hand every build BOTH halves of the rate seam, the
+/// boot arms the holder, and the binary calls the arming.
 ///
 /// The apply half without the read half is precisely the defect this seam rules out: a node that dates its
 /// prices and then reports them off the newest card anyway. The date half without the other two
-/// stamps an instant nothing reads. And any of them without a caller is dead code that looks live.
-/// So the body of `install_card_repricer` is read for all three names, and the root unit, `main.rs`
-/// and the manifest's root-unit table are read for the call — four facts that have to hold together for the seam to be reachable in the shipped
-/// binary, and no one of which implies the others.
+/// stamps an instant nothing reads. Both halves reach the kernel through the root's rules
+/// (`RootRules::rate_apply`, `RootRules::rate_epoch`), never a kernel `OnceLock` (Q128 arch u37
+/// #25; THE DESIGN §10 R6), and the boot arming must still be called: the root unit, `main.rs` and
+/// the manifest's root-unit table are read for the call.
 #[test]
 fn the_boot_install_raises_both_halves_of_the_rate_seam_and_main_calls_it() {
+    use busbar_kernel::appbuild::RootRules as _;
     let kernel = include_str!("../kernel.rs");
-    let body = kernel
-        .split("pub fn install_card_repricer() {")
-        .nth(1)
-        .expect("install_card_repricer is declared")
-        .split("\n}")
-        .next()
-        .expect("its body closes");
+    let rules = crate::root::door_steps::Rules::default();
     assert!(
-        body.contains("install_rate_apply"),
-        "the boot install stopped raising the APPLY half: {body}"
+        rules.rate_apply().is_some(),
+        "the root's rules stopped handing the APPLY half to the build"
     );
     assert!(
-        body.contains("install_rate_epoch"),
-        "the boot install stopped raising the DATE half — a metering cell would carry no instant \
-         finer than its UTC day and a mid-day card edit would reprice the whole day (#79): {body}"
+        rules.rate_epoch().is_some(),
+        "the root's rules stopped handing the DATE half — a metering cell would carry no instant \
+         finer than its UTC day and a mid-day card edit would reprice the whole day (#79)"
+    );
+    let door_steps = include_str!("../door_steps.rs");
+    assert_eq!(
+        door_steps
+            .matches("Some(&crate::root::kernel::CardRepricer)")
+            .count(),
+        2,
+        "both halves the rules hand over are the root's card repricer"
     );
     // The READ half rides the date half: the dater's `history` is what the usage read and the
-    // budget book price through (`rate_apply::dated_history`).
+    // budget book price through (`GovState::dated_history`).
     let dater = kernel
         .split("impl busbar_kernel::rate_apply::RateEpoch for CardRepricer {")
         .nth(1)

@@ -71,8 +71,9 @@ impl Inputs {
         period: &str,
         include_fee: bool,
         cell: &BudgetCell,
+        history: Option<std::sync::Arc<busbar_kernel_ledger::cost::History>>,
     ) -> Self {
-        let history = crate::rate_apply::dated_history().map(|h| {
+        let history = history.map(|h| {
             let now_ms = wall_ms();
             let view = h.current();
             let (len, in_force) = (view.entries().len(), view.card_at(now_ms).map(|(s, _)| s.0));

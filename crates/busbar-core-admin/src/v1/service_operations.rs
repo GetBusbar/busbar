@@ -1399,7 +1399,7 @@ impl AdminService {
         // DECISION #79 — THE DATED RATE-CARD HISTORY, taken ONCE for the whole read so every row of
         // one response is answered at one snapshot. A card appended while this read is in flight
         // must not price half its rows against one history and half against another.
-        let history = self.rate_history.clone().or_else(dated_rate_history);
+        let history = (self.rate_history.clone()).or_else(|| dated_rate_history(&self.app));
         // The snapshot the caller named, VALIDATED BEFORE ANY BOOK IS READ, so a request for a
         // state that does not exist is refused rather than quietly answered at some other state —
         // including when governance is off and the read would otherwise return early.

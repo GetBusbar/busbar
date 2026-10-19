@@ -2,13 +2,13 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! `GET /api/v1/admin/usage` PRICES THROUGH THE PROCESS'S DATED HISTORY, the one the kernel's rate
-//! dater holds (`busbar_kernel::rate_apply`), and through no seam of the admin crate's own.
+//! dater holds (`GovState::dated_history`), and through no seam of the admin crate's own.
 //!
 //! R6 (BUSBAR-1.6.0.md, l.1472-1476): the cleanliness crates keep EXACTLY their two `OnceLock`
 //! seams; l.1558: "add no new kernel `OnceLock` seam beyond the two R6 exempts". The usage read
 //! used to reach the history through a static of its own that the composition root filled by name;
 //! the history it needs is the one the kernel's rate dater already hands the budget book. So the
-//! only install this test makes is the kernel's: if the read priced off anything else, a row earned
+//! only dater this test hands over is the governance's: if the read priced off anything else, a row earned
 //! under the opening card would read back at the current one.
 //!
 //! A test BINARY of its own: the rate dater is process-wide, and the crate's unit tests read usage
@@ -20,7 +20,7 @@ use std::sync::Arc;
 use busbar_contract::records::{MeteringDelta, RecordStore};
 use busbar_kernel::cost::{CostModel, History, RateCard, TierRates};
 use busbar_kernel::governance::{GovState, MemoryStore, METERING_BUCKET_SECS};
-use busbar_kernel::rate_apply::{install_rate_epoch, RateEpoch};
+use busbar_kernel::rate_apply::RateEpoch;
 
 /// The one priced lane: a metering row's `model` and the card's lane, spelled once.
 const LANE: &str = "m-dated-read";
@@ -100,7 +100,6 @@ fn governance(bucket: u64) -> Arc<GovState> {
 async fn the_usage_read_prices_through_the_kernels_rate_dater() {
     let holder: &'static Holder =
         Box::leak(Box::new(Holder(Arc::new(History::opening(card(10), 0)))));
-    install_rate_epoch(holder);
 
     busbar_kernel::snapshot::init();
     busbar_core_admin::install();
@@ -108,7 +107,12 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
         - METERING_BUCKET_SECS;
     // An OPEN admin posture: the read reaches its handler rather than an authentication refusal.
     let app = busbar_kernel::test_support::TestApp::new()
-        .governance(governance(bucket))
+        .governance({
+            // The dater the root's rules hand the governance the boot build constructs.
+            let gov = governance(bucket);
+            gov.set_rate_epoch(Some(holder));
+            gov
+        })
         .cost(current_cost())
         .admin_chain(vec![])
         .build();

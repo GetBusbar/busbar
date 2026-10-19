@@ -484,7 +484,7 @@ pub type GovCredentialRotation = Box<dyn FnOnce() + Send>;
 /// previous limits are restored.
 ///
 /// **THE RATE APPLY RIDES THE SAME COMMIT.** The build resolves this configuration's rates, but the
-/// rate-apply seam ([`crate::rate_apply::rates_applied`]) is raised HERE, at `keep`, and not
+/// rules' rate holder ([`RootRules::rate_apply`]) is told HERE, at `keep`, and not
 /// during the build: its holder appends the rates to the dated rate-card history and journals them
 /// (#79), and neither is a thing a rejected apply may leave behind. Raised during the build, an
 /// apply whose persist then failed kept serving the old `App` while the history and the journal
@@ -503,16 +503,19 @@ pub struct InstalledLimits {
     destinations: config::Destinations,
 }
 
-/// The rates one build staged ([`crate::rate_apply::rates_staged`]). Dropped while still armed —
-/// the config change never committed — the holder is told to withdraw them.
+/// The rates one build staged with its rules' holder ([`RootRules::rate_apply`]). Dropped while
+/// still armed — the config change never committed — the holder is told to withdraw them.
 struct StagedRates {
     armed: bool,
+    holder: Option<&'static dyn crate::rate_apply::RateApply>,
 }
 
 impl Drop for StagedRates {
     fn drop(&mut self) {
         if self.armed {
-            crate::rate_apply::rates_withdrawn();
+            if let Some(holder) = self.holder {
+                holder.rates_withdrawn();
+            }
         }
     }
 }
@@ -553,7 +556,9 @@ impl InstalledLimits {
         guard.commit();
         crate::egress::trust::destinations_applied(&destinations);
         staged.armed = false;
-        crate::rate_apply::rates_applied(&rates.raw());
+        if let Some(holder) = staged.holder {
+            holder.rates_applied(&rates.raw());
+        }
     }
 }
 
@@ -595,6 +600,22 @@ pub trait RootRules: Send + Sync {
     /// the apply's answer names its section. Sorted. Default: none.
     fn planes_awaiting_restart(&self, _cfg: &config::RootCfg) -> Vec<&'static str> {
         Vec::new()
+    }
+
+    /// THE HOLDER OF THIS DEPLOYMENT'S RATES ([`crate::rate_apply::RateApply`]): staged by every
+    /// build before the caller persists, withdrawn when the build is dropped unkept, applied at
+    /// [`InstalledLimits::keep`]. Handed in with the rules, never installed into the kernel (THE
+    /// DESIGN §10 R6). `None` (the default): a build with no root ledger, which stages and applies
+    /// nothing.
+    fn rate_apply(&self) -> Option<&'static dyn crate::rate_apply::RateApply> {
+        None
+    }
+
+    /// THE DATER OF THIS DEPLOYMENT'S RATES ([`crate::rate_apply::RateEpoch`]): handed to the
+    /// governance the boot build constructs, which dates every accrual and prices every read
+    /// through it. `None` (the default): every era is `0` and every read prices at the live card.
+    fn rate_epoch(&self) -> Option<&'static dyn crate::rate_apply::RateEpoch> {
+        None
     }
 }
 
@@ -1400,6 +1421,9 @@ pub fn build_app_from_config(
         ) {
             Ok(gs) => {
                 let gs = Arc::new(gs);
+                // The rules' rate dater dates every accrual and prices every read of this
+                // governance (`RootRules::rate_epoch`), before the boot hydration reads a cell.
+                gs.set_rate_epoch(rules.rate_epoch());
                 // The store's typed records, kept for the kernel's host services (plane records
                 // persist in the configured store: ARCHITECT Q-L3B-RECORDS).
                 if let Some(calls) = store_calls {
@@ -2198,13 +2222,19 @@ pub fn build_app_from_config(
     // nothing is persisted, nothing is swapped, the old configuration and the old card both stay.
     // From here the handle is armed: dropped unkept (a persist or swap that failed), the holder
     // withdraws the staged card.
-    crate::rate_apply::rates_staged(&resolved_rates.raw()).map_err(|why| {
-        format!(
-            "the rate card could not be made durable, so the configuration change was refused \
-             and nothing was changed: {why}"
-        )
-    })?;
-    let staged = StagedRates { armed: true };
+    let holder = rules.rate_apply();
+    if let Some(holder) = holder {
+        holder.rates_staged(&resolved_rates.raw()).map_err(|why| {
+            format!(
+                "the rate card could not be made durable, so the configuration change was refused \
+                 and nothing was changed: {why}"
+            )
+        })?;
+    }
+    let staged = StagedRates {
+        armed: true,
+        holder,
+    };
     // The build reached its end without a single fallible step refusing — but the build is not the
     // whole apply. The guard travels OUT, uncommitted, so the limits survive only if the caller's
     // own persist-and-swap lands (see `InstalledLimits`). Every earlier `return Err` / `?` drops it

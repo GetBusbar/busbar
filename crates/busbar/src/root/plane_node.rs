@@ -2809,7 +2809,7 @@ pub fn bind_book(book: Arc<Mutex<crate::root::durability::Durability>>) {
 ///
 /// * the node itself ([`drive`]) is handed to every entry on the linked table's `node` axis, whose
 ///   arrivals hand it their units;
-/// * the card repricer is installed once the limits resolve and BEFORE the first app build, so the
+/// * the card repricer is armed once the limits resolve and BEFORE the first app build, so the
 ///   boot's own rate resolution is the history's opening entry (see
 ///   [`crate::root::kernel::install_card_repricer`]);
 /// * the node's book is opened for it, and its exit arm is bound to that book ([`bind_book`]) before

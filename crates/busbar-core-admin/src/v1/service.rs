@@ -230,12 +230,13 @@ pub(crate) fn usage_refusal(
 /// rate-card history, PINNED for the length of one read: a card appended while the read is in
 /// flight must not price half of one response's rows against one history and half against another.
 ///
-/// The history is the kernel's rate dater's ([`busbar_kernel::rate_apply::dated_history`]) — the
-/// one the composition root installs at boot and the budget ledger's reads price by — so this crate
-/// holds no seam of its own (R6). `None` for a build that installed no dater, or a node that has
-/// resolved no configuration yet: the read then derives exactly as the previous release did.
-fn dated_rate_history() -> Option<Arc<busbar_kernel::cost::History>> {
-    busbar_kernel::rate_apply::dated_history()
+/// The history is the governance's rate dater's ([`busbar_kernel::governance::GovState::dated_history`])
+/// — the one the composition root's rules hand the boot build and the budget ledger's reads price
+/// by — so this crate holds no seam of its own (R6). `None` for a build whose rules name no dater,
+/// or a node that has resolved no configuration yet: the read then derives exactly as the previous
+/// release did.
+fn dated_rate_history(app: &App) -> Option<Arc<busbar_kernel::cost::History>> {
+    app.governance.as_ref().and_then(|gov| gov.dated_history())
 }
 
 /// **THE INSTANT A METERING ROW RESOLVES AT**: its own FIRST instant — the later of the bucket's
