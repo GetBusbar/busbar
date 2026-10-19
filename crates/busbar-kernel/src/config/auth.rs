@@ -305,9 +305,6 @@ pub struct AuthDeployCfg {
     /// See [`AuthCfg::signing_key`].
     #[serde(default)]
     pub signing_key: Option<SecretRef>,
-    /// See [`AuthCfg::operator_pub`].
-    #[serde(default)]
-    pub operator_pub: Option<SecretRef>,
     /// The DATA-PLANE authentication chain, as ordered PROVIDER NAMES. Empty (the default) is the
     /// open front door. `keys` is the built-in signed-key verifier, referenced bare.
     #[serde(default)]
@@ -338,7 +335,6 @@ impl Default for AuthDeployCfg {
     fn default() -> Self {
         Self {
             signing_key: None,
-            operator_pub: None,
             chain: Vec::new(),
             admin_auth: default_admin_auth_names(),
             role_bindings: RoleBindings::new(),
@@ -361,16 +357,6 @@ pub struct AuthCfg {
     /// behavior boot-looped a read-only config mount) - generate one with
     /// `busbar --generate-signing-key`. Rotating it revokes every outstanding key.
     pub signing_key: Option<SecretRef>,
-    /// The POLICY-SEALED operator public key: a SECRET REFERENCE resolving to the raw 32-byte
-    /// ed25519 VERIFYING key the fleet's operator ceremony sealed (`operator.pub` — 32 raw bytes or
-    /// 64 hex chars). This is the key D38's `amend_rate_history` verifies a back-dated rate
-    /// correction's detached signature against. Fleet-shared, like `signing_key`. ABSENT (the
-    /// default) ⇒ the operator ceremony has not run: the verb-execution unit's `OperatorState::Unset`, so
-    /// every irreducible money-governance verb (amend included) is refused at the ceremony gate,
-    /// byte-for-byte as the release without this field. Present ⇒
-    /// the verb-execution unit's `OperatorState::Set`, which lifts that gate for the sealed key and makes
-    /// a valid-signed amend performable + verified.
-    pub operator_pub: Option<SecretRef>,
     /// The DATA-PLANE authentication CHAIN — resolved provider entries in config order. Empty is the
     /// open front door.
     pub chain: Vec<AuthChainEntry>,
@@ -398,7 +384,6 @@ impl AuthCfg {
     pub fn default_none() -> Self {
         Self {
             signing_key: None,
-            operator_pub: None,
             chain: vec![],
             admin_auth: default_admin_auth(),
             role_bindings: RoleBindings::new(),

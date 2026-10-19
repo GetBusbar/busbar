@@ -1493,45 +1493,6 @@
       }
     },
     {
-      "id": "#64 the auth: unknown-key list names operator_pub",
-      "kind": "additive",
-      "text_list_growth": true,
-      "transform": {
-        "candidate": [
-          [
-            "^(\\[error\\]|\\[warn\\]|warning:) BUSBAR-\\d{4}: ",
-            "\\1 "
-          ]
-        ]
-      },
-      "changelog": "Validation messages know the new keys.",
-      "by": "owner (Matthew Jackson), 2026-09-20 decision #64 (parity packet #3, NEUT-U-auth)",
-      "signoff": {
-        "who": "owner (Matthew Jackson)",
-        "when": "2026-09-20",
-        "ruling": "decision #64, OWNER-LOCKED 2026-09-20: parity packet #3 (NEUT-U-auth) APPROVED",
-        "resigned": {
-          "who": "owner (Matthew Jackson)",
-          "when": "2026-09-30",
-          "ruling": "DEV-GREEN re-signoff, group 3 (Admin/config/CLI), all 45 re-signed as they stand"
-        }
-      },
-      "expires": {
-        "baseline": "1.5.5",
-        "by": "2026-12-31"
-      },
-      "cells": "^neutrality\\|NEUT-U-auth\\|validate$",
-      "expected_cells": 1,
-      "classes": [
-        "effects.stderr"
-      ],
-      "premise": {
-        "cell": "neutrality|NEUT-U-auth|validate",
-        "status": 1
-      },
-      "rationale": "Decision #64, quoted: \"#3: the `auth:` unknown-key error's 'expected one of' list gains `operator_pub` (a real new 1.6.0 auth field, D38 operator-sealing); exit code + main error unchanged — approved, oracle re-blesses `neutrality|NEUT-U-auth|validate`.\" MEASURED (measured 2026-09-24 by P3A-register against a fresh local ./bin/oracle record of HEAD 05c826a66): after D-1's diagnostic-code rewrite the only stderr difference is `operator_pub` inserted into the backtick list after `signing_key`. kind=additive with text_list_growth, so the runner proves the list only GREW (a removed, reordered or respelled key stays red) rather than blanketing the stream; it carries D-1's own diagnostic-code rewrite (an additive entry's list proof reads its OWN transform, not D-1's). PREMISE (evaluated): the exit code is unchanged (1), which is the other half of what #64 approved. (#64's BOOT-135 half needs no entry: boot.refusal|BOOT-135|boot is byte-identical to 1.5.5 again, bd51e2cab.)"
-    },
-    {
       "id": "#64-class build.auth_modules lists the webhook-signature module",
       "kind": "additive",
       "changelog": "1.6.0 Added: `GET /api/v1/admin/info` `build.auth_modules` lists `busbar-auth-webhook-signature`, the linked inbound auth module that verifies Twilio and Standard Webhooks signatures.",
