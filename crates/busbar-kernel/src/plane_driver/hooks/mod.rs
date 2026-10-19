@@ -1095,6 +1095,23 @@ fn rewrite_bytes(rw: &busbar_contract::hooks::RewriteReply) -> Vec<u8> {
     .unwrap_or_default()
 }
 
+/// THE UNIT'S CORRELATION ID on its request span (v1.5.5 `proxy/engine/mod.rs:120` recorded it on
+/// `forward` as a native `u64`): on the `forward` its host opened around the unit when the current
+/// span is that one (status row 173: never a second span of the same name beneath it), else on a
+/// `forward` of the kernel's own, as before a host opened one.
+pub(crate) fn record_request_id(request_id: u64) {
+    let current = tracing::Span::current();
+    let hosts = current
+        .metadata()
+        .is_some_and(|m| m.name() == "forward" && m.fields().field("request_id").is_some());
+    if hosts {
+        current.record("request_id", request_id);
+    } else {
+        let span = tracing::debug_span!("forward", request_id = tracing::field::Empty);
+        span.record("request_id", request_id);
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/rewrite_crossing_tests.rs"]
 mod rewrite_crossing_tests;
@@ -1334,11 +1351,9 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             return Ok(());
         };
         self.lock().hooked_pool.clone_from(&walk_pool);
-        // The unit's correlation id, a native `u64` on the unit's own request span (`forward`,
-        // opened around the unit by its host; v1.5.5 `proxy/engine/mod.rs:120` recorded it there),
-        // never a formatted string and never a second span of the same name: the same value every
-        // hook payload and tap of the unit carries.
-        tracing::Span::current().record("request_id", hooks.request_id);
+        // The unit's correlation id, a native `u64` on the unit's request span (never a formatted
+        // string): the same value every hook payload and tap of the unit carries.
+        record_request_id(hooks.request_id);
         let mut view = match self.project(None) {
             Ok(view) => view,
             // A request the plane cannot read is the request's failure where a hook must judge
