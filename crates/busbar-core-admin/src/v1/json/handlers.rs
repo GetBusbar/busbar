@@ -2311,13 +2311,16 @@ pub(crate) async fn reload_config(
                 &actor,
             );
             installed.record_version(&actor, "config.reload (from disk)");
-            with_config_etag(
-                ok_json(
-                    StatusCode::OK,
-                    &json!({ "reloaded": true, "config_version": installed.config_version }),
-                ),
-                installed.config_version,
-            )
+            let mut body = json!({ "reloaded": true, "config_version": installed.config_version });
+            // RESTART-TO-APPLY: the plane sections the reloaded config writes whose plane the
+            // process did not open at boot. Omitted when none, so the ordinary body is unchanged.
+            if let Some(note) =
+                super::named_map::restart_note(&[], &installed.planes_awaiting_restart)
+            {
+                body["reload_to_apply"] = json!(installed.planes_awaiting_restart);
+                body["note"] = json!(note);
+            }
+            with_config_etag(ok_json(StatusCode::OK, &body), installed.config_version)
         }
         Err(e) => {
             audit::AUDIT.record_by(
@@ -2559,18 +2562,25 @@ pub(crate) async fn apply_config(
                 &actor,
             );
             installed.record_version(&actor, "config.apply (request body)");
-            with_config_etag(
-                ok_json(
-                    StatusCode::OK,
-                    &json!({
-                        "applied": true,
-                        "config_version": installed.config_version,
-                        "note": "live until the next reload/restart returns to disk truth; persist \
-                                 by updating config.yaml",
-                    }),
-                ),
-                installed.config_version,
-            )
+            let mut body = json!({
+                "applied": true,
+                "config_version": installed.config_version,
+                "note": "live until the next reload/restart returns to disk truth; persist \
+                         by updating config.yaml",
+            });
+            // RESTART-TO-APPLY: the plane sections the applied config writes whose plane the
+            // process did not open at boot, named and appended to the note. Omitted when none, so
+            // the ordinary body is unchanged.
+            if let Some(pending) =
+                super::named_map::restart_note(&[], &installed.planes_awaiting_restart)
+            {
+                body["reload_to_apply"] = json!(installed.planes_awaiting_restart);
+                body["note"] = json!(format!(
+                    "live until the next reload/restart returns to disk truth; persist by \
+                     updating config.yaml; {pending}"
+                ));
+            }
+            with_config_etag(ok_json(StatusCode::OK, &body), installed.config_version)
         }
         Err(e) => {
             audit::AUDIT.record_by(
