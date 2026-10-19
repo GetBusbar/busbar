@@ -146,13 +146,14 @@ fn the_boot_seal_and_the_contract_agree_on_every_transport_pair() {
     }
 }
 
-/// THE GENERATION STORY SAYS WHAT DRIVES IT, AND NOTHING DOES (item 559).
+/// THE GENERATION STORY SAYS WHAT DRIVES IT, AND NOTHING DOES (item 559; Q128 arch u37 #44).
 ///
 /// The module doc and `UnitCtx.generation` presented generation pinning as the live reload-safety
 /// story ("even while a replacement is being installed underneath it"). Nothing in production
 /// installs one: the registry is built once at boot and the configuration reload never touches it.
-/// The prose may describe the mechanism; it may not state as a fact a reload that does not happen,
-/// and it must own the retention debt `replace` carries.
+/// The prose may not state as a fact a reload that does not happen, and the never-driven
+/// `replace`/`retire` machinery does not ship (Part 1 l.1925-1928). RED before the u37 fix: both
+/// were built and exercised by the battery alone.
 #[test]
 fn the_generation_story_does_not_claim_a_reload_that_never_runs() {
     let registry = include_str!("../registry.rs");
@@ -177,9 +178,8 @@ fn the_generation_story_does_not_claim_a_reload_that_never_runs() {
         }
     }
     assert!(
-        registry.contains("NOTHING in production installs one")
-            && registry.contains("push-only"),
-        "registry.rs must say the generation mechanism is undriven and its entries are never released"
+        !registry.contains("pub fn replace(") && !registry.contains("pub fn retire("),
+        "registry.rs builds no replace or retire that nothing drives"
     );
     // The behaviour the prose now describes: a registry nobody replaces stays at the first
     // generation, which is what every production unit pins.
