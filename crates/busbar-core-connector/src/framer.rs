@@ -1199,8 +1199,8 @@ impl Framing {
         }
         let mut waiting = std::mem::take(&mut self.parked).into_iter();
         let mut out = Yielded::default();
-        let mut completed = false;
-        while let Some(p) = waiting.next() {
+        let (mut completed, mut failed) = (false, None);
+        for p in waiting.by_ref() {
             p.ticket.register(cx.waker());
             match self.run(p.op, p.yielded, p.recall, true, Some(p.ticket)) {
                 Ok(Some(y)) => {
@@ -1209,10 +1209,15 @@ impl Framing {
                 }
                 Ok(None) => {}
                 Err(e) => {
-                    self.parked.extend(waiting);
-                    return std::task::Poll::Ready(Err(e));
+                    failed = Some(e);
+                    break;
                 }
             }
+        }
+        if let Some(e) = failed {
+            // The ops not re-driven stay parked, for the close to cancel.
+            self.parked.extend(waiting);
+            return std::task::Poll::Ready(Err(e));
         }
         if completed {
             std::task::Poll::Ready(Ok(out))

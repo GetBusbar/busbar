@@ -544,29 +544,6 @@ impl MuxDoor {
     }
 }
 
-/// One piece per byte of `heads`, on the stream it names, each ending its frame.
-fn mux_heads(sink: &FramerSink, o: &mut FramerOut, heads: &[u8]) {
-    for (n, &b) in heads.iter().enumerate() {
-        // SAFETY: the host's buffers; the test's heads fit them.
-        unsafe {
-            sink.frame.add(n).write(b);
-            sink.pieces.add(n).write(FramePiece {
-                stream: u64::from(b - b'0'),
-                offset: n as u64,
-                len: 1,
-                code: 0,
-                status_class: 0,
-                flags: PIECE_END_OF_FRAME,
-                fault: 0,
-                retry_after_secs: 0,
-                declared_len: 0,
-            });
-        }
-    }
-    o.yielded.frame_len = heads.len() as u64;
-    o.yielded.pieces_len = heads.len() as u32;
-}
-
 impl FramerDoor for MuxDoor {
     fn facts(&self) -> &DoorFacts {
         &self.facts
@@ -612,21 +589,16 @@ impl FramerDoor for MuxDoor {
                 return pending;
             }
             let held = self.held.lock().unwrap().remove(&t).unwrap_or_default();
-            mux_heads(&i.sink, o, &held);
+            crate::support::pieces_on_streams(&i.sink, o, &held);
             return ready;
         }
         self.host.new_op(t);
-        let bytes = if i.bytes.is_null() {
-            Vec::new()
-        } else {
-            // SAFETY: the host's bytes, `len` of them, lent for the call.
-            unsafe { std::slice::from_raw_parts(i.bytes, i.len) }.to_vec()
-        };
+        let bytes = crate::support::lent(i.bytes, i.len);
         if bytes.contains(&b'1') && self.host.call(t, 0).is_none() {
             self.held.lock().unwrap().insert(t, bytes);
             return pending;
         }
-        mux_heads(&i.sink, o, &bytes);
+        crate::support::pieces_on_streams(&i.sink, o, &bytes);
         ready
     }
 }
