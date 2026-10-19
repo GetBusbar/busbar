@@ -222,7 +222,7 @@ fn section(name: &'static str, flags: u32) -> Section {
     Section {
         name: abi_str(name),
         flags,
-        _reserved: 0,
+        ..Section::ZERO
     }
 }
 

@@ -387,27 +387,28 @@ fn open_green_and_red_on_its_snapshot() {
     );
 }
 
-/// RED, THE APPEND RULE AT THE HOST: a plugin built before `PlaneSnapshot::listed` was appended
-/// publishes a snapshot whose `size` ends before it. The host accepts it and reads its list as none,
-/// never the bytes past that `size` (here garbage: a count over a dangling pointer).
+/// R9, ONE SIZE AT THE HOST (step 2b): a snapshot whose `size` ends before `listed`, before
+/// `arrival_spans` or before `routing` is refused, never read as one that lists none; the host's own
+/// size is copied with its list.
 #[test]
-fn a_snapshot_from_before_listed_reads_as_listing_none() {
+fn a_snapshot_of_another_size_is_refused_at_the_host() {
     let mut i: PlaneOpenIn = z();
     i.open.generation = 7;
-    let mut older = snap(7);
-    older.size = std::mem::offset_of!(PlaneSnapshot, listed) as u32;
-    older.listed = NonNull::<AbiStr>::dangling().as_ptr();
-    older.listed_len = 5;
-    let mut o: PlaneOpenOut = z();
-    o.snapshot = &older;
-    assert_eq!(
-        Plane::check(&answer(life::OPEN, Outcome::Ready, &i, &o)),
-        Ok(()),
-        "a snapshot of the size before the append is this host's to read"
-    );
-    let copied = crate::dispatch::kinds::plane::copy_snapshot(&older, 4)
-        .expect("the older snapshot is copied");
-    assert!(copied.listed.is_empty(), "{:?}", copied.listed);
+    for size in [
+        std::mem::offset_of!(PlaneSnapshot, listed),
+        std::mem::offset_of!(PlaneSnapshot, arrival_spans),
+        std::mem::offset_of!(PlaneSnapshot, routing),
+    ] {
+        let mut older = snap(7);
+        older.size = size as u32;
+        let mut o: PlaneOpenOut = z();
+        o.snapshot = &older;
+        assert_eq!(
+            Plane::check(&answer(life::OPEN, Outcome::Ready, &i, &o)),
+            f(Rule::Foreign, "snapshot.size"),
+            "{size}"
+        );
+    }
     let names = [AbiStr {
         ptr: b"listed-one".as_ptr(),
         len: 10,
@@ -417,6 +418,18 @@ fn a_snapshot_from_before_listed_reads_as_listing_none() {
     newer.listed_len = 1;
     let copied = crate::dispatch::kinds::plane::copy_snapshot(&newer, 4).expect("copied");
     assert_eq!(copied.listed, vec!["listed-one".to_string()]);
+}
+
+/// RULE 1 AT THE HOST (step 2b): a snapshot whose routing holds a zeroed entry is never copied (the
+/// open answers no snapshot), whatever its other lists.
+#[test]
+fn a_snapshot_with_a_zeroed_routing_entry_is_not_copied() {
+    use busbar_contract::abi::plane::RouteEntry;
+    let entries = [RouteEntry::ZERO];
+    let mut sn = snap(7);
+    sn.routing = entries.as_ptr();
+    sn.routing_len = 1;
+    assert!(crate::dispatch::kinds::plane::copy_snapshot(&sn, 4).is_none());
 }
 
 #[test]
@@ -751,7 +764,7 @@ fn red_a_tail_trust_key_that_breaks_its_element_rule_does_not_bind() {
         let sections = [busbar_contract::abi::mechanism::door::Section {
             name: abi("door"),
             flags: busbar_contract::abi::mechanism::door::SECTION_DECLARING,
-            _reserved: 0,
+            ..busbar_contract::abi::mechanism::door::Section::ZERO
         }];
         let mut st: Statement = z();
         st.kind_tail = std::ptr::from_ref(&t).cast();
@@ -826,7 +839,7 @@ fn red_a_tail_whose_refusal_statuses_break_a_rule_does_not_bind() {
                     len: 4,
                 },
                 flags: busbar_contract::abi::mechanism::door::SECTION_DECLARING,
-                _reserved: 0,
+                ..busbar_contract::abi::mechanism::door::Section::ZERO
             }]));
         let mut st: Statement = z();
         st.kind_tail = &tail.head;
@@ -874,7 +887,7 @@ fn red_a_tail_whose_fee_unit_is_no_billable_class_does_not_bind() {
         let sections: &'static [Section] = Box::leak(Box::new([Section {
             name: s("door"),
             flags: SECTION_DECLARING,
-            _reserved: 0,
+            ..Section::ZERO
         }]));
         let mut st: Statement = z();
         st.kind_tail = &tail.head;
@@ -942,7 +955,7 @@ fn red_a_tail_whose_record_chains_break_a_rule_does_not_bind() {
         let sections: &'static [Section] = Box::leak(Box::new([Section {
             name: s("door"),
             flags: SECTION_DECLARING,
-            _reserved: 0,
+            ..Section::ZERO
         }]));
         let mut st: Statement = z();
         st.kind_tail = &tail.head;
@@ -1011,7 +1024,7 @@ fn a_tail_declares_its_record_retentions_and_a_bad_one_does_not_bind() {
         let sections: &'static [Section] = Box::leak(Box::new([Section {
             name: s("door"),
             flags: SECTION_DECLARING,
-            _reserved: 0,
+            ..Section::ZERO
         }]));
         let mut st: Statement = z();
         st.kind_tail = &tail.head;
@@ -1079,7 +1092,7 @@ fn a_tail_states_its_stream_ceiling_and_a_tail_ending_before_it_states_none() {
                 len: 4,
             },
             flags: SECTION_DECLARING,
-            _reserved: 0,
+            ..Section::ZERO
         }]));
         let mut st: Statement = z();
         st.kind_tail = &tail.head;

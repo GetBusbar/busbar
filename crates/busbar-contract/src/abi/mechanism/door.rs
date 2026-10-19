@@ -317,6 +317,11 @@ pub struct Section {
     pub flags: u32,
     /// Alignment padding.
     pub _reserved: u32,
+    /// THE NOUN FOR ONE ENTRY of this section, singular, as the operator reads it in a refusal (for
+    /// example the section's routing entries): the kernel's generic validation names an entry by
+    /// it, so its text is the plugin's and never a kernel literal. Empty = the section has no
+    /// named entries, or the plugin states none.
+    pub entry_noun: AbiStr,
 }
 
 impl Section {
@@ -327,6 +332,7 @@ impl Section {
         name: AbiStr::ZERO,
         flags: 0,
         _reserved: 0,
+        entry_noun: AbiStr::ZERO,
     };
 }
 

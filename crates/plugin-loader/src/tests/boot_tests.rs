@@ -148,12 +148,12 @@ fn a_candidate_reads_its_facts_off_its_rendering() {
         busbar_contract::abi::mechanism::door::Section {
             name: abi_str("verb"),
             flags: SECTION_DECLARING,
-            _reserved: 0,
+            ..busbar_contract::abi::mechanism::door::Section::ZERO
         },
         busbar_contract::abi::mechanism::door::Section {
             name: abi_str("read-only"),
             flags: SECTION_CONSUMED,
-            _reserved: 0,
+            ..busbar_contract::abi::mechanism::door::Section::ZERO
         },
     ];
     let st = busbar_contract::abi::mechanism::door::Statement {

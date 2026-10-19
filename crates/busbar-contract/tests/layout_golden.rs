@@ -726,7 +726,7 @@ fn compute_layout() -> String {
     );
     record!(s, MechMarkWord, [class, _reserved, word]);
     record!(s, MechRewrite, [class, _reserved, from, to]);
-    record!(s, MechSection, [name, flags, _reserved]);
+    record!(s, MechSection, [name, flags, _reserved, entry_noun]);
     record!(s, MechKindTailHead, [size, _reserved]);
     record!(s, MechTicket, [slot, generation]);
     record!(s, MechCompletionHandle, [ticket, seq, _reserved]);
@@ -1505,6 +1505,29 @@ fn compute_layout() -> String {
         pkind::AdminRoute,
         [verb, target, flags, _reserved, audit_verb]
     );
+    record!(s, pkind::MemberFact, [fact, _reserved, value]);
+    record!(
+        s,
+        pkind::RouteMember,
+        [lane, provider, upstream, weight, _reserved, tier, tags, tags_len, facts, facts_len]
+    );
+    record!(
+        s,
+        pkind::RouteEntry,
+        [
+            section,
+            entry,
+            path,
+            path_len,
+            fallback,
+            exclude,
+            exclude_len,
+            facts,
+            facts_len,
+            members,
+            members_len
+        ]
+    );
     record!(
         s,
         pkind::PlaneSnapshot,
@@ -1523,7 +1546,9 @@ fn compute_layout() -> String {
             listed,
             listed_len,
             arrival_spans,
-            arrival_spans_len
+            arrival_spans_len,
+            routing,
+            routing_len
         ]
     );
     record!(s, pkind::ProviderFacts, [name, protocol, error_map]);

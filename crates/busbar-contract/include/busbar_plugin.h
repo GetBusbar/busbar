@@ -457,6 +457,23 @@ extern "C" {
 #define BB_PLANE_MECHANISM_PEER_KEY UINT32_C(2) /* [`PinMechanism::flags`], on a root only: the mechanism's key material is the FAR END'S KEY, a pin */
 #define BB_PLANE_MAX_METRIC_LANES ((size_t)16) /* The most lane words a plane's tail may declare ([`PlaneTail::metric_lanes`]). */
 #define BB_PLANE_EXT_OWNED "owned" /* A plane `refresh`'s EXTENSIONS KEY ([`crate::abi::mechanism::extensions`], carried in */
+#define BB_PLANE_FACT_CONCURRENCY_CAP UINT16_C(1) /* [`MemberFact::fact`], on a member: the most units the member serves at once (its concurrency */
+#define BB_PLANE_FACT_CONTEXT_WINDOW UINT16_C(2) /* [`MemberFact::fact`], on a member: the largest request the member accepts, in the plane's own */
+#define BB_PLANE_FACT_PROBE_INTERVAL UINT16_C(3) /* [`MemberFact::fact`], on a member: the seconds between two health probes of it. Read today at */
+#define BB_PLANE_FACT_PROBE_TIMEOUT UINT16_C(4) /* [`MemberFact::fact`], on a member: the seconds one health probe of it may take (the same read */
+#define BB_PLANE_FACT_PROBE_MODE UINT16_C(5) /* [`MemberFact::fact`], on a member: how it is probed, [`PROBE_MODE_NONE`], */
+#define BB_PLANE_FACT_ATTEMPT_TIMEOUT_MS UINT16_C(6) /* [`MemberFact::fact`], on a member or an entry: the milliseconds one attempt may take; a */
+#define BB_PLANE_FACT_MAX_REQUESTS UINT16_C(7) /* [`MemberFact::fact`], on a member: the most requests the member serves in its life; not stated */
+#define BB_PLANE_FACT_FAILOVER_TIMEOUT_SECS UINT16_C(8) /* [`MemberFact::fact`], on an entry: the failover budget, seconds of wall clock across one unit's */
+#define BB_PLANE_FACT_FAILOVER_MAX_HOPS UINT16_C(9) /* [`MemberFact::fact`], on an entry: the most failover hops one unit takes on the entry. */
+#define BB_PLANE_PROBE_MODE_NONE UINT64_C(1) /* [`FACT_PROBE_MODE`]'s value: the member is never probed. */
+#define BB_PLANE_PROBE_MODE_DEAD UINT64_C(2) /* [`FACT_PROBE_MODE`]'s value: the member is probed only while its breaker holds it down. */
+#define BB_PLANE_PROBE_MODE_ACTIVE UINT64_C(3) /* [`FACT_PROBE_MODE`]'s value: the member is probed on its interval, up or down. */
+#define BB_PLANE_MAX_ROUTE_ENTRIES ((size_t)1024) /* The most routing entries one snapshot may state ([`PlaneSnapshot::routing`]). */
+#define BB_PLANE_MAX_ROUTE_MEMBERS ((size_t)1024) /* The most members (and the most excluded lanes) one routing entry may state. */
+#define BB_PLANE_MAX_ROUTE_PATH ((size_t)8) /* The most segments one entry's config path may have ([`RouteEntry::path`]). */
+#define BB_PLANE_MAX_ROUTE_FACTS ((size_t)32) /* The most facts one member or one entry may state. */
+#define BB_PLANE_MAX_MEMBER_TAGS ((size_t)64) /* The most tags one member may state ([`RouteMember::tags`]). */
 #define BB_PLANE_MAX_ARRIVAL_SPAN ((size_t)64) /* The longest arrival span name a snapshot may state ([`PlaneSnapshot::arrival_spans`]). */
 
 /* transport */
@@ -1034,6 +1051,9 @@ typedef struct bb_plane_TrustKey bb_plane_TrustKey;
 typedef struct bb_plane_PlaneTail bb_plane_PlaneTail;
 typedef struct bb_plane_Claim bb_plane_Claim;
 typedef struct bb_plane_AdminRoute bb_plane_AdminRoute;
+typedef struct bb_plane_MemberFact bb_plane_MemberFact;
+typedef struct bb_plane_RouteMember bb_plane_RouteMember;
+typedef struct bb_plane_RouteEntry bb_plane_RouteEntry;
 typedef struct bb_plane_PlaneSnapshot bb_plane_PlaneSnapshot;
 typedef struct bb_plane_ProviderFacts bb_plane_ProviderFacts;
 typedef struct bb_plane_PlaneOpenIn bb_plane_PlaneOpenIn;
@@ -1357,6 +1377,7 @@ struct bb_mech_Section {
     bb_mech_AbiStr name;
     uint32_t flags;
     uint32_t _reserved;
+    bb_mech_AbiStr entry_noun;
 };
 
 /* The head every kind's Statement tail leads with. */
@@ -2739,6 +2760,42 @@ struct bb_plane_AdminRoute {
     bb_mech_AbiStr audit_verb;
 };
 
+/* ONE FACT the kernel consumes for a member or an entry (its walk, breaker, prober or */
+struct bb_plane_MemberFact {
+    uint16_t fact;
+    uint16_t _reserved[3];
+    uint64_t value;
+};
+
+/* ONE MEMBER OF A ROUTING ENTRY, as the plane resolved it from its own sections for this */
+struct bb_plane_RouteMember {
+    bb_mech_AbiStr lane;
+    bb_mech_AbiStr provider;
+    bb_mech_AbiStr upstream;
+    uint32_t weight;
+    uint32_t _reserved;
+    bb_mech_AbiStr tier;
+    const bb_mech_AbiStr *tags;
+    size_t tags_len;
+    const bb_plane_MemberFact *facts;
+    size_t facts_len;
+};
+
+/* ONE ROUTING ENTRY of this generation, as the plane resolved it from its own sections: the */
+struct bb_plane_RouteEntry {
+    bb_mech_AbiStr section;
+    bb_mech_AbiStr entry;
+    const bb_mech_AbiStr *path;
+    size_t path_len;
+    bb_mech_AbiStr fallback;
+    const bb_mech_AbiStr *exclude;
+    size_t exclude_len;
+    const bb_plane_MemberFact *facts;
+    size_t facts_len;
+    const bb_plane_RouteMember *members;
+    size_t members_len;
+};
+
 /* THE GENERATION SNAPSHOT: what the plane answers for THIS generation's settings. Valid until */
 struct bb_plane_PlaneSnapshot {
     uint32_t size;
@@ -2756,6 +2813,8 @@ struct bb_plane_PlaneSnapshot {
     size_t listed_len;
     const bb_mech_AbiStr *arrival_spans;
     size_t arrival_spans_len;
+    const bb_plane_RouteEntry *routing;
+    size_t routing_len;
 };
 
 /* ONE PROVIDER'S DIALECT FACTS, as a plane receives them at `open` (THE DESIGN section 4: a */
@@ -4339,11 +4398,12 @@ BB_ASSERT(offsetof(bb_mech_Rewrite, class_) == 0, "bb_mech_Rewrite.class_: offse
 BB_ASSERT(offsetof(bb_mech_Rewrite, _reserved) == 4, "bb_mech_Rewrite._reserved: offset");
 BB_ASSERT(offsetof(bb_mech_Rewrite, from) == 8, "bb_mech_Rewrite.from: offset");
 BB_ASSERT(offsetof(bb_mech_Rewrite, to) == 24, "bb_mech_Rewrite.to: offset");
-BB_ASSERT(sizeof(bb_mech_Section) == 24, "bb_mech_Section: size");
+BB_ASSERT(sizeof(bb_mech_Section) == 40, "bb_mech_Section: size");
 BB_ASSERT(BB_ALIGNOF(bb_mech_Section) == 8, "bb_mech_Section: alignment");
 BB_ASSERT(offsetof(bb_mech_Section, name) == 0, "bb_mech_Section.name: offset");
 BB_ASSERT(offsetof(bb_mech_Section, flags) == 16, "bb_mech_Section.flags: offset");
 BB_ASSERT(offsetof(bb_mech_Section, _reserved) == 20, "bb_mech_Section._reserved: offset");
+BB_ASSERT(offsetof(bb_mech_Section, entry_noun) == 24, "bb_mech_Section.entry_noun: offset");
 BB_ASSERT(sizeof(bb_mech_KindTailHead) == 8, "bb_mech_KindTailHead: size");
 BB_ASSERT(BB_ALIGNOF(bb_mech_KindTailHead) == 4, "bb_mech_KindTailHead: alignment");
 BB_ASSERT(offsetof(bb_mech_KindTailHead, size) == 0, "bb_mech_KindTailHead.size: offset");
@@ -5429,7 +5489,37 @@ BB_ASSERT(offsetof(bb_plane_AdminRoute, target) == 16, "bb_plane_AdminRoute.targ
 BB_ASSERT(offsetof(bb_plane_AdminRoute, flags) == 32, "bb_plane_AdminRoute.flags: offset");
 BB_ASSERT(offsetof(bb_plane_AdminRoute, _reserved) == 36, "bb_plane_AdminRoute._reserved: offset");
 BB_ASSERT(offsetof(bb_plane_AdminRoute, audit_verb) == 40, "bb_plane_AdminRoute.audit_verb: offset");
-BB_ASSERT(sizeof(bb_plane_PlaneSnapshot) == 160, "bb_plane_PlaneSnapshot: size");
+BB_ASSERT(sizeof(bb_plane_MemberFact) == 16, "bb_plane_MemberFact: size");
+BB_ASSERT(BB_ALIGNOF(bb_plane_MemberFact) == 8, "bb_plane_MemberFact: alignment");
+BB_ASSERT(offsetof(bb_plane_MemberFact, fact) == 0, "bb_plane_MemberFact.fact: offset");
+BB_ASSERT(offsetof(bb_plane_MemberFact, _reserved) == 2, "bb_plane_MemberFact._reserved: offset");
+BB_ASSERT(offsetof(bb_plane_MemberFact, value) == 8, "bb_plane_MemberFact.value: offset");
+BB_ASSERT(sizeof(bb_plane_RouteMember) == 104, "bb_plane_RouteMember: size");
+BB_ASSERT(BB_ALIGNOF(bb_plane_RouteMember) == 8, "bb_plane_RouteMember: alignment");
+BB_ASSERT(offsetof(bb_plane_RouteMember, lane) == 0, "bb_plane_RouteMember.lane: offset");
+BB_ASSERT(offsetof(bb_plane_RouteMember, provider) == 16, "bb_plane_RouteMember.provider: offset");
+BB_ASSERT(offsetof(bb_plane_RouteMember, upstream) == 32, "bb_plane_RouteMember.upstream: offset");
+BB_ASSERT(offsetof(bb_plane_RouteMember, weight) == 48, "bb_plane_RouteMember.weight: offset");
+BB_ASSERT(offsetof(bb_plane_RouteMember, _reserved) == 52, "bb_plane_RouteMember._reserved: offset");
+BB_ASSERT(offsetof(bb_plane_RouteMember, tier) == 56, "bb_plane_RouteMember.tier: offset");
+BB_ASSERT(offsetof(bb_plane_RouteMember, tags) == 72, "bb_plane_RouteMember.tags: offset");
+BB_ASSERT(offsetof(bb_plane_RouteMember, tags_len) == 80, "bb_plane_RouteMember.tags_len: offset");
+BB_ASSERT(offsetof(bb_plane_RouteMember, facts) == 88, "bb_plane_RouteMember.facts: offset");
+BB_ASSERT(offsetof(bb_plane_RouteMember, facts_len) == 96, "bb_plane_RouteMember.facts_len: offset");
+BB_ASSERT(sizeof(bb_plane_RouteEntry) == 112, "bb_plane_RouteEntry: size");
+BB_ASSERT(BB_ALIGNOF(bb_plane_RouteEntry) == 8, "bb_plane_RouteEntry: alignment");
+BB_ASSERT(offsetof(bb_plane_RouteEntry, section) == 0, "bb_plane_RouteEntry.section: offset");
+BB_ASSERT(offsetof(bb_plane_RouteEntry, entry) == 16, "bb_plane_RouteEntry.entry: offset");
+BB_ASSERT(offsetof(bb_plane_RouteEntry, path) == 32, "bb_plane_RouteEntry.path: offset");
+BB_ASSERT(offsetof(bb_plane_RouteEntry, path_len) == 40, "bb_plane_RouteEntry.path_len: offset");
+BB_ASSERT(offsetof(bb_plane_RouteEntry, fallback) == 48, "bb_plane_RouteEntry.fallback: offset");
+BB_ASSERT(offsetof(bb_plane_RouteEntry, exclude) == 64, "bb_plane_RouteEntry.exclude: offset");
+BB_ASSERT(offsetof(bb_plane_RouteEntry, exclude_len) == 72, "bb_plane_RouteEntry.exclude_len: offset");
+BB_ASSERT(offsetof(bb_plane_RouteEntry, facts) == 80, "bb_plane_RouteEntry.facts: offset");
+BB_ASSERT(offsetof(bb_plane_RouteEntry, facts_len) == 88, "bb_plane_RouteEntry.facts_len: offset");
+BB_ASSERT(offsetof(bb_plane_RouteEntry, members) == 96, "bb_plane_RouteEntry.members: offset");
+BB_ASSERT(offsetof(bb_plane_RouteEntry, members_len) == 104, "bb_plane_RouteEntry.members_len: offset");
+BB_ASSERT(sizeof(bb_plane_PlaneSnapshot) == 176, "bb_plane_PlaneSnapshot: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneSnapshot) == 8, "bb_plane_PlaneSnapshot: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, size) == 0, "bb_plane_PlaneSnapshot.size: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, _reserved) == 4, "bb_plane_PlaneSnapshot._reserved: offset");
@@ -5446,6 +5536,8 @@ BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, listed) == 128, "bb_plane_PlaneSnapsh
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, listed_len) == 136, "bb_plane_PlaneSnapshot.listed_len: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, arrival_spans) == 144, "bb_plane_PlaneSnapshot.arrival_spans: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, arrival_spans_len) == 152, "bb_plane_PlaneSnapshot.arrival_spans_len: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, routing) == 160, "bb_plane_PlaneSnapshot.routing: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, routing_len) == 168, "bb_plane_PlaneSnapshot.routing_len: offset");
 BB_ASSERT(sizeof(bb_plane_ProviderFacts) == 56, "bb_plane_ProviderFacts: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_ProviderFacts) == 8, "bb_plane_ProviderFacts: alignment");
 BB_ASSERT(offsetof(bb_plane_ProviderFacts, name) == 0, "bb_plane_ProviderFacts.name: offset");

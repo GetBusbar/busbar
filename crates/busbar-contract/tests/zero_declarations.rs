@@ -137,3 +137,40 @@ fn zero_statement_entries_are_refused() {
     let got = refused(check_statement_sections(&[Section::ZERO]));
     assert!(got.contains("section.name"), "{got}");
 }
+
+/// Step 2b: a zero routing entry, member or fact never grants: each is refused.
+#[test]
+fn zero_routing_declarations_are_refused() {
+    let got = refused(plane::check::check_routing(&[plane::RouteEntry::ZERO]));
+    assert!(got.contains("route_entry.section"), "{got}");
+    let members = [plane::RouteMember::ZERO];
+    let path = [busbar_contract::abi::mechanism::call::AbiStr {
+        ptr: b"p".as_ptr(),
+        len: 1,
+    }];
+    let named = |s: &'static str| busbar_contract::abi::mechanism::call::AbiStr {
+        ptr: s.as_ptr(),
+        len: s.len(),
+    };
+    let entry = plane::RouteEntry {
+        section: named("s"),
+        entry: named("e"),
+        path: path.as_ptr(),
+        path_len: 1,
+        members: members.as_ptr(),
+        members_len: 1,
+        ..plane::RouteEntry::ZERO
+    };
+    let got = refused(plane::check::check_routing(&[entry]));
+    assert!(got.contains("route_member.lane"), "{got}");
+    let facts = [plane::MemberFact::ZERO];
+    let entry = plane::RouteEntry {
+        members: std::ptr::null(),
+        members_len: 0,
+        facts: facts.as_ptr(),
+        facts_len: 1,
+        ..entry
+    };
+    let got = refused(plane::check::check_routing(&[entry]));
+    assert!(got.contains("member_fact.fact"), "{got}");
+}

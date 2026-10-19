@@ -1033,8 +1033,8 @@ fn a_snapshot_from_before_listed_is_read_and_its_list_is_judged() {
     sn.size = std::mem::offset_of!(PlaneSnapshot, listed) as u32;
     assert_eq!(
         check_snapshot(&sn, 7),
-        Ok(()),
-        "the pre-append size is accepted"
+        f(Rule::Foreign, "snapshot.size"),
+        "R9, one size: the pre-append size is refused"
     );
     sn.size += 8;
     assert_eq!(check_snapshot(&sn, 7), f(Rule::Foreign, "snapshot.size"));
@@ -1065,8 +1065,8 @@ fn a_snapshots_arrival_spans_are_none_or_one_per_claim() {
     sn.size = std::mem::offset_of!(PlaneSnapshot, arrival_spans) as u32;
     assert_eq!(
         check_snapshot(&sn, 7),
-        Ok(()),
-        "the pre-append size is accepted"
+        f(Rule::Foreign, "snapshot.size"),
+        "R9, one size: the pre-append size is refused"
     );
     let claims = [
         claim("POST", "/a", CLAIM_EXACT),
@@ -1308,7 +1308,7 @@ fn section(flags: u32) -> Section {
     Section {
         name: s("sec"),
         flags,
-        _reserved: 0,
+        ..Section::ZERO
     }
 }
 
@@ -3567,5 +3567,384 @@ fn a_raw_affix_matches_the_previous_releases_paths_byte_for_byte() {
     assert!(
         !raw_affix_matches("/model/converse", "/model/converse"),
         "not a raw affix"
+    );
+}
+
+// ── step 2b: the generation's routing ──
+
+fn mf(fact: u16, value: u64) -> MemberFact {
+    MemberFact {
+        fact,
+        value,
+        ..MemberFact::ZERO
+    }
+}
+
+fn member(lane: &'static str, facts: &'static [MemberFact]) -> RouteMember {
+    RouteMember {
+        lane: s(lane),
+        provider: s("prov"),
+        weight: 1,
+        facts: facts.as_ptr(),
+        facts_len: facts.len(),
+        ..RouteMember::ZERO
+    }
+}
+
+fn entry(name: &'static str, members: &'static [RouteMember]) -> RouteEntry {
+    let path: &'static [AbiStr] = Box::leak(Box::new([s("sec"), s("e")]));
+    RouteEntry {
+        section: s("sec"),
+        entry: s(name),
+        path: path.as_ptr(),
+        path_len: path.len(),
+        members: members.as_ptr(),
+        members_len: members.len(),
+        ..RouteEntry::ZERO
+    }
+}
+
+/// R9, ONE SIZE: the snapshot loads at exactly its v1 size; the routing types have theirs.
+#[test]
+fn the_routing_shapes_have_one_size() {
+    assert_eq!(size_of::<MemberFact>(), 16);
+    assert_eq!(size_of::<RouteMember>(), 104);
+    assert_eq!(size_of::<RouteEntry>(), 112);
+    assert_eq!(size_of::<PlaneSnapshot>(), 176);
+    let mut sn = snapshot();
+    sn.size = core::mem::offset_of!(PlaneSnapshot, routing) as u32;
+    assert_eq!(check_snapshot(&sn, 7), f(Rule::Foreign, "snapshot.size"));
+}
+
+/// A SNAPSHOT'S ROUTING LIST: never counted over NULL, at most `MAX_ROUTE_ENTRIES`.
+#[test]
+fn a_snapshots_routing_list_is_bounded_and_never_counted_over_null() {
+    let mut sn = snapshot();
+    sn.routing_len = 1;
+    assert_eq!(
+        check_snapshot(&sn, 7),
+        f(Rule::NullWithCount, "snapshot.routing")
+    );
+    let none: &'static [RouteEntry] = Box::leak(Box::new([RouteEntry::ZERO]));
+    sn.routing = none.as_ptr();
+    sn.routing_len = MAX_ROUTE_ENTRIES + 1;
+    assert_eq!(check_snapshot(&sn, 7), f(Rule::OverMax, "snapshot.routing"));
+}
+
+/// GREEN: a full entry, every fact the kernel consumes, a tier and tags, a fallback and an
+/// exclusion.
+#[test]
+fn a_routing_entry_with_known_facts_passes() {
+    static MEMBER_FACTS: [MemberFact; 7] = [
+        MemberFact {
+            fact: FACT_CONCURRENCY_CAP,
+            _reserved: [0; 3],
+            value: 4,
+        },
+        MemberFact {
+            fact: FACT_CONTEXT_WINDOW,
+            _reserved: [0; 3],
+            value: 128_000,
+        },
+        MemberFact {
+            fact: FACT_PROBE_INTERVAL,
+            _reserved: [0; 3],
+            value: 30,
+        },
+        MemberFact {
+            fact: FACT_PROBE_TIMEOUT,
+            _reserved: [0; 3],
+            value: 5,
+        },
+        MemberFact {
+            fact: FACT_PROBE_MODE,
+            _reserved: [0; 3],
+            value: PROBE_MODE_ACTIVE,
+        },
+        MemberFact {
+            fact: FACT_ATTEMPT_TIMEOUT_MS,
+            _reserved: [0; 3],
+            value: 9_000,
+        },
+        MemberFact {
+            fact: FACT_MAX_REQUESTS,
+            _reserved: [0; 3],
+            value: 100,
+        },
+    ];
+    static ENTRY_FACTS: [MemberFact; 3] = [
+        MemberFact {
+            fact: FACT_ATTEMPT_TIMEOUT_MS,
+            _reserved: [0; 3],
+            value: 10_000,
+        },
+        MemberFact {
+            fact: FACT_FAILOVER_TIMEOUT_SECS,
+            _reserved: [0; 3],
+            value: 120,
+        },
+        MemberFact {
+            fact: FACT_FAILOVER_MAX_HOPS,
+            _reserved: [0; 3],
+            value: 3,
+        },
+    ];
+    let tags = Box::leak(Box::new([s("fast"), s("cheap")]));
+    let members: &'static [RouteMember] = Box::leak(Box::new([
+        RouteMember {
+            upstream: s("wire-name"),
+            tier: s("gold"),
+            tags: tags.as_ptr(),
+            tags_len: tags.len(),
+            weight: 3,
+            ..member("a", &MEMBER_FACTS)
+        },
+        member("b", &[]),
+    ]));
+    let exclude = Box::leak(Box::new([s("b")]));
+    let e = RouteEntry {
+        fallback: s("other"),
+        exclude: exclude.as_ptr(),
+        exclude_len: exclude.len(),
+        facts: ENTRY_FACTS.as_ptr(),
+        facts_len: ENTRY_FACTS.len(),
+        ..entry("e", members)
+    };
+    assert_eq!(check_routing(&[e, entry("e2", members)]), Ok(()));
+    let mut sn = snapshot();
+    let list = [e];
+    sn.routing = list.as_ptr();
+    sn.routing_len = 1;
+    assert_eq!(check_snapshot(&sn, 7), Ok(()));
+}
+
+/// REDS, EACH WITH ITS DECLARED RULE: fact 0, an unknown fact, a probe mode outside its codes, a
+/// fact on the wrong side (a failover fact on a member, a member fact on an entry), a fact twice,
+/// non-zero padding, weight 0, an unnamed lane or provider, an empty section, entry or path, an
+/// unnamed path segment, tag or exclusion, a NULL list with a count, a list over its cap, and one
+/// `(section, entry)` twice.
+#[test]
+fn routing_reds_each_refuse_with_a_declared_rule() {
+    fn one(m: RouteMember) -> Result<(), Fault> {
+        let members: &'static [RouteMember] = Box::leak(Box::new([m]));
+        check_routing(&[entry("e", members)])
+    }
+    fn facts(f: &[MemberFact]) -> Result<(), Fault> {
+        let f: &'static [MemberFact] = Box::leak(f.to_vec().into_boxed_slice());
+        one(member("a", f))
+    }
+    assert_eq!(facts(&[mf(0, 1)]), f(Rule::Missing, "member_fact.fact"));
+    assert_eq!(
+        facts(&[mf(FACT_FAILOVER_MAX_HOPS + 1, 1)]),
+        f(Rule::UnknownCode, "member_fact.fact")
+    );
+    assert_eq!(
+        facts(&[mf(u16::MAX, 1)]),
+        f(Rule::UnknownCode, "member_fact.fact")
+    );
+    for bad in [0, PROBE_MODE_ACTIVE + 1] {
+        assert_eq!(
+            facts(&[mf(FACT_PROBE_MODE, bad)]),
+            f(Rule::UnknownCode, "member_fact.value"),
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        facts(&[mf(FACT_FAILOVER_TIMEOUT_SECS, 1)]),
+        f(Rule::Contradiction, "route_member.facts")
+    );
+    assert_eq!(
+        facts(&[mf(FACT_CONCURRENCY_CAP, 1), mf(FACT_CONCURRENCY_CAP, 2)]),
+        f(Rule::Contradiction, "member_fact.fact")
+    );
+    assert_eq!(
+        facts(&[MemberFact {
+            _reserved: [0, 1, 0],
+            ..mf(FACT_CONCURRENCY_CAP, 1)
+        }]),
+        f(Rule::UnknownCode, "member_fact._reserved")
+    );
+    let over: Vec<MemberFact> = (0..=MAX_ROUTE_FACTS)
+        .map(|_| mf(FACT_CONCURRENCY_CAP, 1))
+        .collect();
+    assert_eq!(facts(&over), f(Rule::OverMax, "route_member.facts"));
+    assert_eq!(
+        one(RouteMember {
+            weight: 0,
+            ..member("a", &[])
+        }),
+        f(Rule::Missing, "route_member.weight")
+    );
+    assert_eq!(one(member("", &[])), f(Rule::Missing, "route_member.lane"));
+    assert_eq!(
+        one(RouteMember {
+            provider: s(""),
+            ..member("a", &[])
+        }),
+        f(Rule::Missing, "route_member.provider")
+    );
+    let blank = Box::leak(Box::new([s("")]));
+    assert_eq!(
+        one(RouteMember {
+            tags: blank.as_ptr(),
+            tags_len: 1,
+            ..member("a", &[])
+        }),
+        f(Rule::Missing, "route_member.tags")
+    );
+    assert_eq!(
+        one(RouteMember {
+            tags_len: 1,
+            ..member("a", &[])
+        }),
+        f(Rule::NullWithCount, "route_member.tags")
+    );
+    assert_eq!(
+        one(RouteMember {
+            tags: blank.as_ptr(),
+            tags_len: MAX_MEMBER_TAGS + 1,
+            ..member("a", &[])
+        }),
+        f(Rule::OverMax, "route_member.tags")
+    );
+    assert_eq!(
+        one(RouteMember {
+            facts_len: 1,
+            ..member("a", &[])
+        }),
+        f(Rule::NullWithCount, "route_member.facts")
+    );
+    // The entry.
+    let ok: &'static [RouteMember] = Box::leak(Box::new([member("a", &[])]));
+    let check = |e: RouteEntry| check_routing(&[e]);
+    assert_eq!(
+        check(RouteEntry {
+            section: s(""),
+            ..entry("e", ok)
+        }),
+        f(Rule::Missing, "route_entry.section")
+    );
+    assert_eq!(check(entry("", ok)), f(Rule::Missing, "route_entry.entry"));
+    assert_eq!(
+        check(RouteEntry {
+            path: std::ptr::null(),
+            path_len: 0,
+            ..entry("e", ok)
+        }),
+        f(Rule::Missing, "route_entry.path")
+    );
+    assert_eq!(
+        check(RouteEntry {
+            path: blank.as_ptr(),
+            path_len: 1,
+            ..entry("e", ok)
+        }),
+        f(Rule::Missing, "route_entry.path")
+    );
+    assert_eq!(
+        check(RouteEntry {
+            path: blank.as_ptr(),
+            path_len: MAX_ROUTE_PATH + 1,
+            ..entry("e", ok)
+        }),
+        f(Rule::OverMax, "route_entry.path")
+    );
+    assert_eq!(
+        check(RouteEntry {
+            exclude: blank.as_ptr(),
+            exclude_len: 1,
+            ..entry("e", ok)
+        }),
+        f(Rule::Missing, "route_entry.exclude")
+    );
+    assert_eq!(
+        check(RouteEntry {
+            members_len: 1,
+            members: std::ptr::null(),
+            ..entry("e", ok)
+        }),
+        f(Rule::NullWithCount, "route_entry.members")
+    );
+    assert_eq!(
+        check(RouteEntry {
+            members_len: MAX_ROUTE_MEMBERS + 1,
+            ..entry("e", ok)
+        }),
+        f(Rule::OverMax, "route_entry.members")
+    );
+    let member_only: &'static [MemberFact] = Box::leak(Box::new([mf(FACT_CONCURRENCY_CAP, 1)]));
+    assert_eq!(
+        check(RouteEntry {
+            facts: member_only.as_ptr(),
+            facts_len: 1,
+            ..entry("e", ok)
+        }),
+        f(Rule::Contradiction, "route_entry.facts")
+    );
+    let zero_fact: &'static [MemberFact] = Box::leak(Box::new([MemberFact::ZERO]));
+    assert_eq!(
+        check(RouteEntry {
+            facts: zero_fact.as_ptr(),
+            facts_len: 1,
+            ..entry("e", ok)
+        }),
+        f(Rule::Missing, "member_fact.fact")
+    );
+    assert_eq!(
+        check_routing(&[entry("e", ok), entry("e", ok)]),
+        f(Rule::Contradiction, "route_entry.entry")
+    );
+    let many: Vec<RouteEntry> = (0..=MAX_ROUTE_ENTRIES).map(|_| entry("e", ok)).collect();
+    assert_eq!(check_routing(&many), f(Rule::OverMax, "snapshot.routing"));
+}
+
+/// RULE 1: a zeroed fact, member or entry never grants: each is refused.
+#[test]
+fn a_zeroed_routing_declaration_never_grants() {
+    let z_fact: MemberFact = z();
+    assert_eq!(z_fact, MemberFact::ZERO);
+    let zf: &'static [MemberFact] = Box::leak(Box::new([MemberFact::ZERO]));
+    assert_eq!(
+        check_routing(&[entry("e", Box::leak(Box::new([member("a", zf)])))]),
+        f(Rule::Missing, "member_fact.fact")
+    );
+    assert_eq!(
+        check_routing(&[entry("e", Box::leak(Box::new([RouteMember::ZERO])))]),
+        f(Rule::Missing, "route_member.lane")
+    );
+    let zm: RouteMember = z();
+    assert_eq!(zm.weight, 0);
+    assert_eq!(
+        check_routing(&[RouteEntry::ZERO]),
+        f(Rule::Missing, "route_entry.section")
+    );
+    let ze: RouteEntry = z();
+    assert_eq!(
+        check_routing(&[ze]),
+        f(Rule::Missing, "route_entry.section")
+    );
+}
+
+/// A SECTION'S ENTRY NOUN is text: empty is none; a count over NULL is refused.
+#[test]
+fn a_sections_entry_noun_is_text() {
+    let mut sec = Section {
+        name: s("sec"),
+        flags: SECTION_DECLARING,
+        entry_noun: s("entry"),
+        ..Section::ZERO
+    };
+    assert_eq!(check_sections(&[sec]), Ok(()));
+    sec.entry_noun = AbiStr {
+        ptr: std::ptr::null(),
+        len: 3,
+    };
+    assert_eq!(
+        check_sections(&[sec]),
+        f(Rule::NullWithCount, "section.entry_noun")
+    );
+    assert_eq!(
+        crate::abi::mechanism::check::check_statement_sections(&[sec]),
+        f(Rule::NullWithCount, "section.entry_noun")
     );
 }

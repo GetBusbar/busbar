@@ -1673,12 +1673,189 @@ pub struct AdminRoute {
     pub audit_verb: AbiStr,
 }
 
+// ── the generation's routing ─────────────────────────────────────────────────────────────────────
+
+/// [`MemberFact::fact`], on a member: the most units the member serves at once (its concurrency
+/// cap). Read today by the root at `crates/busbar/src/root/model_egress.rs:91` and `:668-669`.
+pub const FACT_CONCURRENCY_CAP: u16 = 1;
+/// [`MemberFact::fact`], on a member: the largest request the member accepts, in the plane's own
+/// units (its context window). Read today at `model_egress.rs:101-102` and `:674`.
+pub const FACT_CONTEXT_WINDOW: u16 = 2;
+/// [`MemberFact::fact`], on a member: the seconds between two health probes of it. Read today at
+/// `model_egress.rs:156-180`, `:224-246` and `serve.rs:1638`, `:1859-1881`.
+pub const FACT_PROBE_INTERVAL: u16 = 3;
+/// [`MemberFact::fact`], on a member: the seconds one health probe of it may take (the same read
+/// sites as [`FACT_PROBE_INTERVAL`]).
+pub const FACT_PROBE_TIMEOUT: u16 = 4;
+/// [`MemberFact::fact`], on a member: how it is probed, [`PROBE_MODE_NONE`],
+/// [`PROBE_MODE_DEAD`] or [`PROBE_MODE_ACTIVE`]; any other value refuses the snapshot (the same
+/// read sites as [`FACT_PROBE_INTERVAL`]).
+pub const FACT_PROBE_MODE: u16 = 5;
+/// [`MemberFact::fact`], on a member or an entry: the milliseconds one attempt may take; a
+/// member's own value overrides its entry's. Read today at `model_egress.rs:92` and `:673`.
+pub const FACT_ATTEMPT_TIMEOUT_MS: u16 = 6;
+/// [`MemberFact::fact`], on a member: the most requests the member serves in its life; not stated
+/// = no bound. Read today by the kernel at `crates/busbar-kernel/src/appbuild.rs:829`.
+pub const FACT_MAX_REQUESTS: u16 = 7;
+/// [`MemberFact::fact`], on an entry: the failover budget, seconds of wall clock across one unit's
+/// attempts on the entry.
+pub const FACT_FAILOVER_TIMEOUT_SECS: u16 = 8;
+/// [`MemberFact::fact`], on an entry: the most failover hops one unit takes on the entry.
+pub const FACT_FAILOVER_MAX_HOPS: u16 = 9;
+/// The last fact id. A new fact is the next number, appended above, and this moves to it; `0` is
+/// never a fact, and an id past this one is unknown and refuses the snapshot.
+pub(crate) const FACT_LAST: u16 = FACT_FAILOVER_MAX_HOPS;
+
+/// [`FACT_PROBE_MODE`]'s value: the member is never probed.
+pub const PROBE_MODE_NONE: u64 = 1;
+/// [`FACT_PROBE_MODE`]'s value: the member is probed only while its breaker holds it down.
+pub const PROBE_MODE_DEAD: u64 = 2;
+/// [`FACT_PROBE_MODE`]'s value: the member is probed on its interval, up or down.
+pub const PROBE_MODE_ACTIVE: u64 = 3;
+
+/// The most routing entries one snapshot may state ([`PlaneSnapshot::routing`]).
+pub const MAX_ROUTE_ENTRIES: usize = 1024;
+/// The most members (and the most excluded lanes) one routing entry may state.
+pub const MAX_ROUTE_MEMBERS: usize = 1024;
+/// The most segments one entry's config path may have ([`RouteEntry::path`]).
+pub const MAX_ROUTE_PATH: usize = 8;
+/// The most facts one member or one entry may state.
+pub const MAX_ROUTE_FACTS: usize = 32;
+/// The most tags one member may state ([`RouteMember::tags`]).
+pub const MAX_MEMBER_TAGS: usize = 64;
+
+/// ONE FACT the kernel consumes for a member or an entry (its walk, breaker, prober or
+/// admission): a `FACT_*` id and its value. Fact `0` refuses the snapshot, and so does a fact
+/// stated twice on one member or one entry. A zeroed fact ([`MemberFact::ZERO`]) declares nothing
+/// and is refused.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemberFact {
+    /// The fact: a `FACT_*` id. `0` is not a fact.
+    pub fact: u16,
+    /// Alignment padding; zero.
+    pub _reserved: [u16; 3],
+    /// Its value, in the fact's own unit.
+    pub value: u64,
+}
+
+impl MemberFact {
+    /// THE EMPTY DECLARATION: fact `0`, value `0`. The snapshot check refuses it: a zero never
+    /// grants. A plane builds its value as `MemberFact { …, ..MemberFact::ZERO }`.
+    pub const ZERO: Self = Self {
+        fact: 0,
+        _reserved: [0; 3],
+        value: 0,
+    };
+}
+
+/// ONE MEMBER OF A ROUTING ENTRY, as the plane resolved it from its own sections for this
+/// generation: the lane the kernel's walk, breaker cells and counters key it by, the provider it
+/// is reached through, the name the far end knows it by, its weight and the facts the kernel
+/// consumes. A zeroed member ([`RouteMember::ZERO`]) names no lane and is refused.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RouteMember {
+    /// The lane identity: the member's key in the plane's member map. Never empty.
+    pub lane: AbiStr,
+    /// The provider it is reached through: a key of the root `providers:` map. Never empty.
+    pub provider: AbiStr,
+    /// The name the far end knows it by; empty = its lane name.
+    pub upstream: AbiStr,
+    /// Its weight in the entry's pick; `0` refuses the snapshot.
+    pub weight: u32,
+    /// Alignment padding; zero.
+    pub _reserved: u32,
+    /// Its tier, shown to the ranking hooks; empty = none. Read today at
+    /// `crates/busbar/src/root/model_egress.rs:186-212`.
+    pub tier: AbiStr,
+    /// Its tags, shown to the ranking hooks (the same read site); each non-empty. NULL/0 = none.
+    pub tags: *const AbiStr,
+    /// How many: at most [`MAX_MEMBER_TAGS`].
+    pub tags_len: usize,
+    /// Its facts; each fact at most once. NULL/0 = none.
+    pub facts: *const MemberFact,
+    /// How many: at most [`MAX_ROUTE_FACTS`].
+    pub facts_len: usize,
+}
+
+impl RouteMember {
+    /// THE EMPTY DECLARATION: no lane, no provider, weight `0`, no tier, tags or facts. The
+    /// snapshot check refuses it. A plane builds its value as `RouteMember { …, ..RouteMember::ZERO }`.
+    pub const ZERO: Self = Self {
+        lane: AbiStr::ZERO,
+        provider: AbiStr::ZERO,
+        upstream: AbiStr::ZERO,
+        weight: 0,
+        _reserved: 0,
+        tier: AbiStr::ZERO,
+        tags: std::ptr::null(),
+        tags_len: 0,
+        facts: std::ptr::null(),
+        facts_len: 0,
+    };
+}
+
+/// ONE ROUTING ENTRY of this generation, as the plane resolved it from its own sections: the
+/// declared section it lives in, its name and config path, its members, the lanes it excludes, the
+/// entry it falls back to and the facts the kernel consumes for it. The kernel walks it, breaks on
+/// it and validates it by these facts alone and never parses the plane's sections for them; the
+/// entry's reserved sub-keys (its breaker ladder, affinity and policy) stay the kernel's to read
+/// at `path`. A zeroed entry ([`RouteEntry::ZERO`]) names nothing and is refused.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RouteEntry {
+    /// The plane's declared config section it lives in (what the plane calls its routing key).
+    /// Never empty.
+    pub section: AbiStr,
+    /// The entry's name. Never empty; one `(section, entry)` at most once per snapshot.
+    pub entry: AbiStr,
+    /// Its config path, segment by segment, from the document's root to the entry (for example
+    /// the section, the entry map's key and the entry's name). Never empty, each segment named.
+    pub path: *const AbiStr,
+    /// How many: 1 to [`MAX_ROUTE_PATH`].
+    pub path_len: usize,
+    /// The entry its units fall back to when every member is exhausted; empty = none.
+    pub fallback: AbiStr,
+    /// The lanes it never picks, each named. NULL/0 = none.
+    pub exclude: *const AbiStr,
+    /// How many: at most [`MAX_ROUTE_MEMBERS`].
+    pub exclude_len: usize,
+    /// Its entry-level facts ([`FACT_ATTEMPT_TIMEOUT_MS`], [`FACT_FAILOVER_TIMEOUT_SECS`],
+    /// [`FACT_FAILOVER_MAX_HOPS`]); each at most once. NULL/0 = none.
+    pub facts: *const MemberFact,
+    /// How many: at most [`MAX_ROUTE_FACTS`].
+    pub facts_len: usize,
+    /// Its members. NULL/0 = none.
+    pub members: *const RouteMember,
+    /// How many: at most [`MAX_ROUTE_MEMBERS`].
+    pub members_len: usize,
+}
+
+impl RouteEntry {
+    /// THE EMPTY DECLARATION: no section, no name, no path, no member. The snapshot check refuses
+    /// it. A plane builds its value as `RouteEntry { …, ..RouteEntry::ZERO }`.
+    pub const ZERO: Self = Self {
+        section: AbiStr::ZERO,
+        entry: AbiStr::ZERO,
+        path: std::ptr::null(),
+        path_len: 0,
+        fallback: AbiStr::ZERO,
+        exclude: std::ptr::null(),
+        exclude_len: 0,
+        facts: std::ptr::null(),
+        facts_len: 0,
+        members: std::ptr::null(),
+        members_len: 0,
+    };
+}
+
 /// THE GENERATION SNAPSHOT: what the plane answers for THIS generation's settings. Valid until
 /// `retire` of `generation`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct PlaneSnapshot {
-    /// `size_of::<PlaneSnapshot>()`.
+    /// `size_of::<PlaneSnapshot>()`, exactly: one size per contract (R9).
     pub size: u32,
     /// Alignment padding.
     pub _reserved: u32,
@@ -1705,8 +1882,7 @@ pub struct PlaneSnapshot {
     pub resource_facts: Blob,
     /// THE NAMES IT LISTS for this generation (THE DESIGN section 2: `/v1/models` appends each
     /// plane generation's listed names, filtered by the caller's grant of the plane's scope kind),
-    /// each non-empty UTF-8; NULL/0 = none. A tail addition: a snapshot whose `size` ends before it
-    /// lists none, and the host reads nothing past that `size`.
+    /// each non-empty UTF-8; NULL/0 = none.
     pub listed: *const AbiStr,
     /// How many.
     pub listed_len: usize,
@@ -1715,11 +1891,17 @@ pub struct PlaneSnapshot {
     /// entry `i` names the span an arrival on `claims[i]` opens, empty = that claim opens none. Each
     /// name is DATA the kernel builds one tracing callsite for when it binds the snapshot, never per
     /// request; a non-empty name is `[a-z0-9_]`, at most [`MAX_ARRIVAL_SPAN`] bytes. NULL/0 = no
-    /// claim opens one; any other length than `claims_len` refuses the snapshot. A tail addition: a
-    /// snapshot whose `size` ends before it opens none, and the host reads nothing past that `size`.
+    /// claim opens one; any other length than `claims_len` refuses the snapshot.
     pub arrival_spans: *const AbiStr,
     /// How many: `0` or `claims_len`.
     pub arrival_spans_len: usize,
+    /// THE GENERATION'S ROUTING (step 2b): every routing entry the plane resolved from its own
+    /// sections, with its members and the facts the kernel consumes ([`RouteEntry`]). The kernel
+    /// reads a plane's routing here and nowhere else. NULL/0 = the plane routes nothing this
+    /// generation. At most [`MAX_ROUTE_ENTRIES`].
+    pub routing: *const RouteEntry,
+    /// How many.
+    pub routing_len: usize,
 }
 
 /// The longest arrival span name a snapshot may state ([`PlaneSnapshot::arrival_spans`]).
