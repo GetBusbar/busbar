@@ -51,7 +51,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::abi::mechanism::call::{AbiStr, Blob, BLOB_ABSENT, BLOB_JSON};
 use crate::abi::plane::{
-    AdminRoute, Claim, PlaneSnapshot, RecordRetention, CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN,
+    AdminRoute, Claim, MemberFact, PlaneSnapshot, RecordRetention, RouteEntry, RouteMember,
+    CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN,
 };
 use crate::abi::sdk::door::abi_str;
 use crate::ids::OpClassId;
@@ -149,6 +150,34 @@ impl Backing {
         (p, names.len())
     }
 
+    /// Each `(fact, value)` held as one list of [`MemberFact`]s; its pointer (NULL when empty) and
+    /// length.
+    fn facts(&mut self, facts: &[(u16, u64)]) -> (*const MemberFact, usize) {
+        if facts.is_empty() {
+            return (std::ptr::null(), 0);
+        }
+        let items: Box<[MemberFact]> = facts
+            .iter()
+            .map(|&(fact, value)| MemberFact {
+                fact,
+                value,
+                ..MemberFact::ZERO
+            })
+            .collect();
+        let p = items.as_ptr();
+        self.lists.push(Box::new(List { _items: items }));
+        (p, facts.len())
+    }
+
+    /// `s` copied, or absent for an empty string (the routing's optional texts).
+    fn str_or_absent(&mut self, s: &str) -> AbiStr {
+        if s.is_empty() {
+            AbiStr::ZERO
+        } else {
+            self.str(s)
+        }
+    }
+
     /// Each of `specs` lowered and held as one list; its pointer (NULL when empty) and length.
     fn list<T: Publish>(&mut self, specs: &[T::Spec]) -> (*const T, usize) {
         if specs.is_empty() {
@@ -166,6 +195,8 @@ mod sealed {
     impl Sealed for crate::abi::plane::PlaneSnapshot {}
     impl Sealed for crate::abi::plane::Claim {}
     impl Sealed for crate::abi::plane::AdminRoute {}
+    impl Sealed for crate::abi::plane::RouteEntry {}
+    impl Sealed for crate::abi::plane::RouteMember {}
 }
 
 /// An ABI value a plugin publishes, and the owned description it publishes it from. Only the SDK
@@ -296,6 +327,46 @@ pub struct SnapshotSpec {
     pub resource_facts: Option<Vec<u8>>,
     /// The names it lists ([`PlaneSnapshot::listed`]), each non-empty; empty = none.
     pub listed: Vec<String>,
+    /// The generation's routing ([`PlaneSnapshot::routing`]); empty = it routes nothing.
+    pub routing: Vec<RouteEntrySpec>,
+}
+
+/// One routing entry, owned: see [`RouteEntry`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RouteEntrySpec {
+    /// The plane's declared config section it lives in.
+    pub section: String,
+    /// The entry's name.
+    pub entry: String,
+    /// Its config path, segment by segment.
+    pub path: Vec<String>,
+    /// The entry its units fall back to; empty = none.
+    pub fallback: String,
+    /// The lanes it never picks.
+    pub exclude: Vec<String>,
+    /// Its entry-level facts, `(FACT_*, value)`.
+    pub facts: Vec<(u16, u64)>,
+    /// Its members.
+    pub members: Vec<RouteMemberSpec>,
+}
+
+/// One routing member, owned: see [`RouteMember`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RouteMemberSpec {
+    /// The lane identity.
+    pub lane: String,
+    /// The provider it is reached through.
+    pub provider: String,
+    /// The name the far end knows it by; empty = its lane name.
+    pub upstream: String,
+    /// Its weight.
+    pub weight: u32,
+    /// Its tier; empty = none.
+    pub tier: String,
+    /// Its tags.
+    pub tags: Vec<String>,
+    /// Its facts, `(FACT_*, value)`.
+    pub facts: Vec<(u16, u64)>,
 }
 
 impl Publish for PlaneSnapshot {
@@ -311,6 +382,7 @@ impl Publish for PlaneSnapshot {
             Vec::new()
         };
         let (arrival_spans, arrival_spans_len) = backing.strs(&spans);
+        let (routing, routing_len) = backing.list::<RouteEntry>(&spec.routing);
         Self {
             size: std::mem::size_of::<Self>() as u32,
             _reserved: 0,
@@ -327,9 +399,8 @@ impl Publish for PlaneSnapshot {
             listed_len,
             arrival_spans,
             arrival_spans_len,
-            // The SDK's spec states no routing yet: an explicit empty list (step 2b).
-            routing: std::ptr::null(),
-            routing_len: 0,
+            routing,
+            routing_len,
         }
     }
 }
@@ -623,6 +694,56 @@ pub fn class_index(classes: &[OpClassId], op: OpClassId) -> Option<u32> {
         .iter()
         .position(|c| *c == op)
         .and_then(|i| u32::try_from(i).ok())
+}
+
+impl Publish for RouteMember {
+    type Spec = RouteMemberSpec;
+    fn lower(spec: &RouteMemberSpec, _: u64, backing: &mut Backing) -> Self {
+        let lane = backing.str(&spec.lane);
+        let provider = backing.str(&spec.provider);
+        let upstream = backing.str_or_absent(&spec.upstream);
+        let tier = backing.str_or_absent(&spec.tier);
+        let (tags, tags_len) = backing.strs(&spec.tags);
+        let (facts, facts_len) = backing.facts(&spec.facts);
+        Self {
+            lane,
+            provider,
+            upstream,
+            weight: spec.weight,
+            tier,
+            tags,
+            tags_len,
+            facts,
+            facts_len,
+            ..Self::ZERO
+        }
+    }
+}
+
+impl Publish for RouteEntry {
+    type Spec = RouteEntrySpec;
+    fn lower(spec: &RouteEntrySpec, _: u64, backing: &mut Backing) -> Self {
+        let section = backing.str(&spec.section);
+        let entry = backing.str(&spec.entry);
+        let (path, path_len) = backing.strs(&spec.path);
+        let fallback = backing.str_or_absent(&spec.fallback);
+        let (exclude, exclude_len) = backing.strs(&spec.exclude);
+        let (facts, facts_len) = backing.facts(&spec.facts);
+        let (members, members_len) = backing.list::<RouteMember>(&spec.members);
+        Self {
+            section,
+            entry,
+            path,
+            path_len,
+            fallback,
+            exclude,
+            exclude_len,
+            facts,
+            facts_len,
+            members,
+            members_len,
+        }
+    }
 }
 
 #[cfg(test)]
