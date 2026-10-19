@@ -504,8 +504,7 @@ extern "C" {
 #define BB_TRANSPORT_ROLE_FRAMER UINT32_C(2) /* [`TransportTail::role`]: a framer. */
 #define BB_TRANSPORT_FRAMING_STREAM UINT32_C(0) /* [`TransportTail::framing`]: an ordered byte stream. */
 #define BB_TRANSPORT_FRAMING_DATAGRAM UINT32_C(1) /* [`TransportTail::framing`]: datagrams. */
-#define BB_TRANSPORT_FACT_SIGNS_NOTHING_AFTER_AUTH UINT32_C(1) /* [`TransportTail::facts`]: the framer adds no signed field after the kernel's auth call */
-#define BB_TRANSPORT_FACT_DECODES_PAYLOAD UINT32_C(2) /* [`TransportTail::facts`]: the framer decodes the payload. */
+#define BB_TRANSPORT_FACT_DECODES_PAYLOAD UINT32_C(2) /* [`TransportTail::facts`]: the framer decodes the payload. (Bit 1 is retired: nothing is added to */
 #define BB_TRANSPORT_EXT_OFFERED_POINTS "offered-points" /* THE OFFERED-POINTS RECORD: the key under which a transport's Statement `extensions` states */
 #define BB_TRANSPORT_SIDE_ACCEPT UINT32_C(0) /* `side`: the accepting end. */
 #define BB_TRANSPORT_SIDE_DIAL UINT32_C(1) /* `side`: the dialing end. */

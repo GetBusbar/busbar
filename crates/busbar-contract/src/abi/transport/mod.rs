@@ -328,10 +328,9 @@ pub const FRAMING_STREAM: u32 = 0;
 /// [`TransportTail::framing`]: datagrams.
 pub const FRAMING_DATAGRAM: u32 = 1;
 
-/// [`TransportTail::facts`]: the framer adds no signed field after the kernel's auth call
-/// (RED-tested at the kernel).
-pub const FACT_SIGNS_NOTHING_AFTER_AUTH: u32 = 1;
-/// [`TransportTail::facts`]: the framer decodes the payload.
+/// [`TransportTail::facts`]: the framer decodes the payload. (Bit 1 is retired: nothing is added to
+/// the head after the auth has run is a rule every transport keeps, proven by a RED in its own
+/// suite, not a fact one states.)
 pub const FACT_DECODES_PAYLOAD: u32 = 2;
 
 /// THE OFFERED-POINTS RECORD: the key under which a transport's Statement `extensions` states
