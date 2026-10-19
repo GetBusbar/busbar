@@ -3031,7 +3031,6 @@ async fn named_map_app_opts(
                     public_url: Some("https://busbar.example"),
                     prior: None,
                     providers: None,
-                    hostless: busbar_kernel::plane::registry::EgressDriver::core(),
                 };
                 if let Some(slot) = (decl.build)(&ctx) {
                     builder.install_plane_runtime(decl.key, slot);
@@ -3053,7 +3052,6 @@ async fn named_map_app_opts(
             public_url: Some("https://busbar.example"),
             prior: None,
             providers: None,
-            hostless: busbar_kernel::plane::registry::EgressDriver::core(),
         };
         if let Some(plane) = (decl.build)(&ctx) {
             builder.install_plane_runtime(decl.key, plane);

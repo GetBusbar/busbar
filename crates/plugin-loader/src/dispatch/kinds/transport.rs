@@ -220,7 +220,7 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
             .map(|s| owned(s.path, "settings"))
             .collect::<Result<_, _>>()?,
         ported: rows.first().is_some_and(|row| {
-            let port = busbar_contract::abi::hot::transport::code::selector_form(
+            let port = busbar_contract::abi::shared::code::selector_form(
                 busbar_contract::SelectorForm::Port,
             );
             row.selector_forms.len > 0

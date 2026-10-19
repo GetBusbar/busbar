@@ -3,10 +3,10 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-//! # busbar-unit-egress — the egress unit
+//! # busbar-kernel-egress — the egress unit
 //!
 //! The design gives this unit the fifth step of the loop and one sentence's worth of job: take the
-//! plane's route plan, walk the verified set the trust unit sealed, and send. Everything under
+//! plane's route plan, walk the verified set the verify step sealed, and send. Everything under
 //! that sentence is here and nothing else is.
 //!
 //! ## The four parts
@@ -54,9 +54,7 @@
 //! [`wire`] so they cannot drift. What goes on the wire is the plane's rendering of them; what is
 //! fixed here is the status, the kind, the words and the wait.
 
-pub mod arity;
 pub mod attempt;
-// Folded from the former `busbar-unit-trust` crate (#36: trust folds into egress).
 pub mod exhaustion;
 pub mod pool;
 pub mod ports;
@@ -64,12 +62,12 @@ pub mod ports;
 pub mod query_auth;
 pub mod race;
 pub mod select;
+// The network readers of the folded trust unit (`trust::net`).
 pub mod trust;
 pub mod upstream;
 pub mod walk;
 pub mod wire;
 
-pub use arity::{on_primary_unavailable, Arity, PinnedRefusal, Reroute};
 pub use pool::{
     Failover, Member, OnExhausted, Pool, DEFAULT_FAILOVER_CAP, DEFAULT_FAILOVER_DEADLINE_SECS,
 };
