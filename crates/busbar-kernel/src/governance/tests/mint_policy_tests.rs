@@ -151,6 +151,45 @@ fn mint_ceiling_role_mode_membership_is_enforced() {
     );
 }
 
+/// A ROLE'S MODES NARROW THE BLOCK'S, NEVER WIDEN THEM: with the deployment allowing only
+/// `user-bound`, a role listing `time-bound` cannot mint `time-bound`, and a mode both lists allow
+/// passes. RED: the role list REPLACED the block list, so the role's `time-bound` mint passed though
+/// the deployment forbids it.
+#[test]
+fn mint_ceiling_role_modes_cannot_widen_the_block_modes() {
+    let mut policy = role_policy(
+        "app-admin",
+        RoleCeiling {
+            binding_modes: Some(vec!["time-bound".to_string(), "user-bound".to_string()]),
+            ..Default::default()
+        },
+        None,
+    );
+    policy.block_binding_modes = Some(vec!["user-bound".to_string()]);
+    let roles = vec!["app-admin".to_string()];
+
+    let widened = MintRequest {
+        requested_mode: Some("time-bound"),
+        ..req(&roles, None, DAY, true)
+    };
+    let err = policy
+        .check_mint(&widened)
+        .expect_err("a mode the block forbids is refused whatever the role allows");
+    assert!(
+        err.contains("time-bound"),
+        "the offending mode is named: {err}"
+    );
+
+    let within = MintRequest {
+        requested_mode: Some("user-bound"),
+        ..req(&roles, None, DAY, true)
+    };
+    assert!(
+        policy.check_mint(&within).is_ok(),
+        "a mode both lists allow passes"
+    );
+}
+
 /// A caller whose roles carry NO `mint_ceilings` entry falls back to the BLOCK caps alone: the block
 /// TTL still clamps, and there is no pool restriction (the block level carries none).
 #[test]

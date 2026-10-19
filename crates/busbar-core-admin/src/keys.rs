@@ -792,7 +792,11 @@ pub(crate) async fn create_key(
         minted_by: Some(actor.clone()),
         binding_mode: Some(requested_binding_mode.to_string()),
     };
-    let issue_aws = req.issue_aws_credential;
+    // The second credential (1.5.5's `issue_aws_credential`) is the one the linked host-held
+    // credentials' verifier states the shape of: its kind and shape, never a format of this crate's.
+    let issued = req
+        .issue_aws_credential
+        .then(|| app.auth.issued_credential());
     let want_group = req.group.clone();
     let want_parent = req.parent.clone();
     let gov = gov.clone();
@@ -865,9 +869,17 @@ pub(crate) async fn create_key(
                 if let Some((group, n)) = check_key_cap(&gov, cap, cap_group.as_deref(), None)? {
                     return Ok(MintOutcome::AtCap { group, n, cap });
                 }
-                if issue_aws {
-                    // Issues the AccessKeyId + secret access key alongside the bearer secret.
-                    gov.mint_signed_with_aws(spec, exp, now)
+                if let Some(issued) = &issued {
+                    // Issues the verifier's public id + secret alongside the signed token. A build
+                    // whose verifiers state no shape issues none: fail closed, as a mint that
+                    // cannot draw its credential.
+                    let Some((kind, shape)) = issued else {
+                        return Err(busbar_kernel::governance::RecordStoreError(
+                            "no linked auth plugin states the shape of the credential to issue"
+                                .to_string(),
+                        ));
+                    };
+                    gov.mint_signed_with_credential(spec, exp, now, kind, shape)
                         .map(|m| MintOutcome::Aws(Box::new(m)))
                 } else {
                     gov.mint_signed(spec, exp, now)
@@ -961,7 +973,7 @@ pub(crate) async fn create_key(
     );
     let mut body = key_meta(&key);
     // A freshly minted key is deterministically "active" — `mint_signed`/
-    // `mint_signed_with_aws` always set `enabled: true` and `deleted_at: None`, and the id is a fresh
+    // `mint_signed_with_credential` always set `enabled: true` and `deleted_at: None`, and the id is a fresh
     // CSPRNG draw that cannot already be on the revocation denylist. No `gov.is_revoked` round-trip
     // needed (and `gov` is not in scope here — moved into the mint closure above).
     body["state"] = json!("active");
