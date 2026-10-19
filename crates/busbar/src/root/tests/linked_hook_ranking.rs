@@ -20,9 +20,7 @@ use busbar_contract::abi::mechanism::door::{DoorFn, MARK_WORD_HOOK};
 use busbar_contract::abi::mechanism::rendering;
 use busbar_contract::hook_calls::{Answered, HookAxis, HookFacts};
 use busbar_contract::hooks::{Candidate, RoutingContext, RoutingDecision, RoutingRequest};
-use busbar_kernel::config::{
-    parse_strategy, PoolPolicy, DEFAULT_POLICY_TIMEOUT_MS, ON_ERROR_WEIGHTED, RESERVED_HOOK_NAMES,
-};
+use busbar_kernel::config::{DEFAULT_POLICY_TIMEOUT_MS, ON_ERROR_WEIGHTED};
 use busbar_kernel::test_support::ranking_double;
 
 use crate::root::loader::hook_door::HookRows;
@@ -219,13 +217,10 @@ async fn decide(
     }
 }
 
-/// The built-in strategy words (every reserved hook name but `weighted`, the inline floor).
+/// The built-in strategy words: 1.5.3's four, in its order, which the linked ranking door declares
+/// (the kernel's reserved list no longer spells them, arch u29).
 fn strategy_words() -> Vec<&'static str> {
-    RESERVED_HOOK_NAMES
-        .iter()
-        .copied()
-        .filter(|n| parse_strategy(n) != PoolPolicy::Weighted)
-        .collect()
+    vec!["cheapest", "fastest", "least_busy", "usage"]
 }
 
 /// The twin of the kernel's test of the same name, on the REAL door: the built-in ranking

@@ -63,30 +63,23 @@ pub struct PoolCfg {
     pub repeatable: Vec<String>,
 }
 
-/// Whether `name` is one of the native ordering strategies (usable BARE in a pool `hooks:` list).
-/// The strategy set is fixed + known at parse time; any OTHER bare name is a hook-NAME reference
-/// (1.5.3: no inline instances — a hook is defined in the top-level `hooks:` map and referenced by
-/// bare name here).
+/// Whether `name` is a pool ordering-strategy word (usable BARE in a pool `hooks:` list): the
+/// `weighted` floor, or a hook word a `kind: hook` row of this build DECLARES (its Statement's
+/// `MARK_WORD_HOOK` marks, folded in before the configuration is parsed:
+/// [`super::hook_words::install_declared_hook_words`]). The kernel names no strategy: the words are
+/// the ranking plugin's data (OWNER LAW 2026-09-27, BUSBAR-1.6.0.md l.4215). Any OTHER bare name is
+/// a hook-NAME reference (1.5.3: no inline instances).
 pub fn is_strategy_name(name: &str) -> bool {
-    matches!(
-        name,
-        ON_ERROR_WEIGHTED
-            | STRATEGY_CHEAPEST
-            | STRATEGY_FASTEST
-            | STRATEGY_LEAST_BUSY
-            | STRATEGY_USAGE
-    )
+    name == ON_ERROR_WEIGHTED || super::hook_words::is_declared_hook_word(name)
 }
 
-/// The strategy a bare `hooks:` keyword selects (`weighted` for anything that is not one of the
-/// four native policies — see [`is_strategy_name`]).
+/// The strategy a bare `hooks:` keyword selects: the `weighted` floor for `weighted` (and for any
+/// word that is not a strategy, see [`is_strategy_name`]), else the declared word itself.
 pub fn parse_strategy(name: &str) -> PoolPolicy {
-    match name {
-        STRATEGY_CHEAPEST => PoolPolicy::Cheapest,
-        STRATEGY_FASTEST => PoolPolicy::Fastest,
-        STRATEGY_LEAST_BUSY => PoolPolicy::LeastBusy,
-        STRATEGY_USAGE => PoolPolicy::Usage,
-        _ => PoolPolicy::Weighted,
+    if name != ON_ERROR_WEIGHTED && super::hook_words::is_declared_hook_word(name) {
+        PoolPolicy::Declared(name.to_string())
+    } else {
+        PoolPolicy::Weighted
     }
 }
 
@@ -181,47 +174,31 @@ impl<'de> Deserialize<'de> for PoolCfg {
     }
 }
 
-/// A pool's native ranking STRATEGY — the base ordering strategy named in a pool's `hooks:` list
-/// (the retired `policy:` key). `weighted` (default / absent) is today's smooth-weighted-round-robin:
-/// ZERO added cost, no policy object constructed, the byte-identical hot path. The others resolve a
-/// Busbar-native ordering policy that runs once before the failover loop. This is the pool's ranking
-/// FLOOR; a gate named in the pool's `hooks:` list can override it per-request.
-#[derive(Debug, Deserialize, Clone, Default, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+/// A pool's ranking STRATEGY — the base ordering strategy named in a pool's `hooks:` list (the
+/// retired `policy:` key). `weighted` (default / absent) is today's smooth-weighted-round-robin:
+/// ZERO added cost, no policy object constructed, the byte-identical hot path. Any other strategy is
+/// a word a hook row DECLARES, resolved on the hook axis to the row that claims it and run once
+/// before the failover loop. This is the pool's ranking FLOOR; a gate named in the pool's `hooks:`
+/// list can override it per-request.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum PoolPolicy {
     /// Smooth-weighted-round-robin (SWRR). Default and also the absent case. Zero added cost.
     #[default]
     Weighted,
-    Cheapest,
-    Fastest,
-    LeastBusy,
-    Usage,
+    /// A strategy word a hook row declares.
+    Declared(String),
 }
 
 impl PoolPolicy {
-    /// The ranking-registry name for this strategy (`plugins::hooks::ranking::native_policy`).
-    /// `weighted` returns `None` — it IS the zero-cost inline-SWRR default and constructs no policy
-    /// object. Engine-level `STRATEGY_*` consts (not the ranking plugin's constants) so this
-    /// compiles when the `hooks-ranking` plugin is removed; the plugin matches the same names.
-    pub fn native_name(&self) -> Option<&'static str> {
+    /// The hook word this strategy names on the hook axis. `weighted` returns `None` — it IS the
+    /// zero-cost inline-SWRR default and constructs no policy object.
+    pub fn native_name(&self) -> Option<&str> {
         match self {
             PoolPolicy::Weighted => None,
-            PoolPolicy::Cheapest => Some(STRATEGY_CHEAPEST),
-            PoolPolicy::Fastest => Some(STRATEGY_FASTEST),
-            PoolPolicy::LeastBusy => Some(STRATEGY_LEAST_BUSY),
-            PoolPolicy::Usage => Some(STRATEGY_USAGE),
+            PoolPolicy::Declared(word) => Some(word),
         }
     }
 }
-
-/// The native ranking-strategy names — shared by the pool `hooks:` classifier/parser,
-/// `PoolPolicy::native_name`, `RESERVED_HOOK_NAMES`, and the config validator's built-in-strategy
-/// check, so the vocabulary cannot drift. `weighted` is NOT listed here: it is the zero-cost
-/// inline-SWRR floor and its name is owned by `ON_ERROR_WEIGHTED` in the hooks shapes.
-pub const STRATEGY_CHEAPEST: &str = "cheapest";
-pub const STRATEGY_FASTEST: &str = "fastest";
-pub const STRATEGY_LEAST_BUSY: &str = "least_busy";
-pub const STRATEGY_USAGE: &str = "usage";
 
 #[derive(Debug, Clone)]
 pub struct PoolMember {

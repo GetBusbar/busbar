@@ -273,12 +273,9 @@ fn the_linked_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
         !(crate::LINKED.stores[0].2)().is_null(),
         "the linked store states its door"
     );
-    let strategies = [
-        busbar_kernel::config::STRATEGY_CHEAPEST,
-        busbar_kernel::config::STRATEGY_FASTEST,
-        busbar_kernel::config::STRATEGY_LEAST_BUSY,
-        busbar_kernel::config::STRATEGY_USAGE,
-    ];
+    // 1.5.3's four ranking strategies, in its order: the words the linked ranking door declares
+    // (the kernel names none of them, arch u29).
+    let strategies = ["cheapest", "fastest", "least_busy", "usage"];
     // Each linked hook door's claimed hook words (its Statement's `MARK_WORD_HOOK` marks).
     let words: Vec<Vec<String>> = crate::LINKED
         .hook_doors

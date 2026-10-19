@@ -887,8 +887,10 @@ pub use busbar_kernel::config::pools::{
     BreakerTripConfig, BreakerTripMode, FailoverCfg, OnExhausted, OnExhaustedCfg, PoolCfg,
     PoolMember, PoolPolicy, DEFAULT_BREAKER_BASE_COOLDOWN_SECS, DEFAULT_BREAKER_CONSECUTIVE_N,
     DEFAULT_BREAKER_MAX_COOLDOWN_SECS, DEFAULT_BREAKER_MIN_REQUESTS, DEFAULT_BREAKER_THRESHOLD,
-    DEFAULT_BREAKER_WINDOW_SECS, STRATEGY_CHEAPEST, STRATEGY_FASTEST, STRATEGY_LEAST_BUSY,
-    STRATEGY_USAGE,
+    DEFAULT_BREAKER_WINDOW_SECS,
+};
+pub use busbar_kernel::config::hook_words::{
+    declared_hook_words, install_declared_hook_words, is_declared_hook_word,
 };
 
 // The FAILOVER BUDGET numeric defaults/bounds live beside the `FailoverCfg` shape in `pools`;
@@ -2722,6 +2724,7 @@ mod resolved_provider_tests;
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 
 pub mod auth;
+pub mod hook_words;
 pub mod hooks;
 pub mod limits;
 pub mod pools;

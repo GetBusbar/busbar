@@ -11,7 +11,6 @@
 use serde::{Deserialize, Serialize};
 
 use super::groups::GroupCfg;
-use super::pools::{STRATEGY_CHEAPEST, STRATEGY_FASTEST, STRATEGY_LEAST_BUSY, STRATEGY_USAGE};
 use super::PolicyOnError;
 
 /// One entry in the top-level `hooks:` NAMED-DEFINITION map (1.5.3). The map KEY is the hook
@@ -329,6 +328,11 @@ pub fn on_error_terminal(name: &str) -> Option<PolicyOnError> {
 /// Pinned by `reserved_hook_names_are_frozen` in the config tests, which asserts the EXACT contents
 /// (not a subset) so that adding a word here fails a test that points back at this comment.
 ///
+/// THE RANKING STRATEGY WORDS ARE NOT HERE: they are the hook words this build's hook rows declare
+/// ([`super::hook_words`]), reserved by [`is_reserved_hook_name`] as data, never spelled by the
+/// kernel (arch u29; BUSBAR-1.6.0.md l.4215). In the shipped build the linked ranking row declares
+/// 1.5.3's four, so the reserved space is 1.5.3's.
+///
 /// ONE FROZEN WORD IS NOT HERE: the operator credential's provider, the built-in auth module the
 /// 1.5.3 word space reserves. It is the root legacy table's word, handed in with the linked auth
 /// rows (ARCHITECT 2026-09-30, KERNEL-AUTH-ZERO Q2), so the kernel reserves it through
@@ -339,20 +343,18 @@ pub const RESERVED_HOOK_NAMES: &[&str] = &[
     ON_ERROR_REJECT,
     ON_ERROR_FIRST,
     ON_ERROR_NOTHING,
-    // native ranking strategies (PoolPolicy::native_name)
-    STRATEGY_CHEAPEST,
-    STRATEGY_FASTEST,
-    STRATEGY_LEAST_BUSY,
-    STRATEGY_USAGE,
     // built-in auth modules (AuthModule::name); the operator credential's provider is reserved by
     // `is_reserved_hook_name`
     "tokens",
 ];
 
 /// Whether `name` is a reserved hook name on every hook-write path: a word of
-/// [`RESERVED_HOOK_NAMES`], or the operator credential's provider the root handed in.
+/// [`RESERVED_HOOK_NAMES`], a hook word a hook row of this build declares (a ranking strategy), or
+/// the operator credential's provider the root handed in.
 pub fn is_reserved_hook_name(name: &str) -> bool {
-    RESERVED_HOOK_NAMES.contains(&name) || (!name.is_empty() && name == super::operator_provider())
+    RESERVED_HOOK_NAMES.contains(&name)
+        || super::hook_words::is_declared_hook_word(name)
+        || (!name.is_empty() && name == super::operator_provider())
 }
 
 /// The FROZEN 1.5.3 hook-name word space (freeze blocker) — the UNION of [`RESERVED_HOOK_NAMES`]
@@ -362,20 +364,17 @@ pub fn is_reserved_hook_name(name: &str) -> bool {
 ///
 /// Kept as its own constant, rather than derived, so the freeze is a VALUE a test can pin literally:
 /// `hook_name_word_space_is_frozen` asserts both that this equals the runtime union AND that its
-/// contents are exactly these words. The operator credential's provider completes the space; it is
-/// the root legacy table's word, and the root's tests pin the whole space with it.
+/// contents are exactly these words. The declared ranking words and the operator credential's
+/// provider complete the space; they are the linked rows' words, and the root's tests pin the whole
+/// space with them.
 // Consumed by the freeze test (`reserved_hook_names_are_frozen`) rather than by runtime code — that
 // is the POINT: it is the declared, reviewable VALUE of the freeze, and the test proves it equals
 // the runtime union.
 pub const FROZEN_HOOK_NAME_WORD_SPACE: &[&str] = &[
-    "cheapest",
-    "fastest",
     "first",
-    "least_busy",
     "nothing",
     "reject",
     "tokens",
-    "usage",
     "weighted",
 ];
 

@@ -814,15 +814,15 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             if crate::config::on_error_terminal(current).is_some() {
                 break;
             }
-            // A built-in ranking strategy is infallible (sync, no I/O) — it terminates the chain.
-            // Compiled out (`--no-default-features`), naming one is a boot error, never a silent
-            // degrade (the same compliance-by-compilation stance as the pool strategy rule).
+            // A ranking strategy (a hook word a hook row declares) is infallible (sync, no I/O) —
+            // it terminates the chain. One no LINKED row serves is a boot error, never a silent
+            // degrade (the same stance as the pool strategy rule below).
             if crate::config::is_strategy_name(current) {
                 if !crate::preflight::builtin_ranking_known(current) {
                     errors.push(format!(
-                        "hook '{hook_name}' on_error names the built-in ranking strategy \
-                         '{current}' but this binary was built WITHOUT the `hooks-ranking` \
-                         feature. Rebuild with default features or use nothing|weighted|reject|first."
+                        "hook '{hook_name}' on_error names the ranking strategy '{current}', which \
+                         no hook plugin linked into this binary serves. Link the plugin that \
+                         declares it or use nothing|weighted|reject|first."
                     ));
                 }
                 break;
@@ -1058,19 +1058,18 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         }
     }
 
-    // Rule (compliance-by-compilation): the non-weighted ranking strategies are the `hooks-ranking`
-    // plugin. When it's compiled OUT (`--no-default-features`), a pool `policy: <non-weighted>` is a
-    // BOOT ERROR — never a silent degrade to weighted. (Inert in the default build; `weighted` always
-    // works — it's the engine's inline SWRR floor, not a plugin.)
+    // Rule: a non-weighted ranking strategy is a hook word a hook row declares, run by the LINKED
+    // row that claims it. One no linked row serves (declared only by a dropped-in row) is a BOOT
+    // ERROR — never a silent degrade to weighted. The words are the plugin's data; the kernel names
+    // no strategy and no plugin (arch u29; BUSBAR-1.6.0.md l.4215). `weighted` always works — it is
+    // the engine's inline SWRR floor, not a plugin.
     for (pool_name, pool_cfg) in &cfg.pools {
         let name = pool_cfg.policy.native_name();
-        if name.is_some_and(|n| !crate::preflight::builtin_ranking_known(n)) {
+        if let Some(word) = name.filter(|n| !crate::preflight::builtin_ranking_known(n)) {
             errors.push(format!(
-                "pool '{pool_name}' names the {:?} ranking strategy but this binary was built \
-                 WITHOUT the `hooks-ranking` feature — the built-in ranking strategies are absent. \
-                 Rebuild with default features, use `hooks: [weighted]` (or name no strategy), or \
-                 reference an external ranking hook.",
-                pool_cfg.policy
+                "pool '{pool_name}' names the ranking strategy '{word}', which no hook plugin \
+                 linked into this binary serves. Link the plugin that declares it, use \
+                 `hooks: [weighted]` (or name no strategy), or reference an external ranking hook."
             ));
         }
     }

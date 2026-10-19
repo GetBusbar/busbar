@@ -1190,10 +1190,13 @@ fn linked_hook_name() -> &'static str {
 #[cfg(feature = "hooks-ranking")]
 #[test]
 fn the_built_in_ranking_strategies_are_hook_words_of_one_linked_door_on_the_hook_axis() {
-    for name in crate::config::RESERVED_HOOK_NAMES
-        .iter()
-        .filter(|n| crate::config::parse_strategy(n) != crate::config::PoolPolicy::Weighted)
-    {
+    let words = crate::config::declared_hook_words();
+    assert_eq!(
+        words,
+        ["cheapest", "fastest", "least_busy", "usage"],
+        "the linked ranking row declares 1.5.3's four strategy words"
+    );
+    for name in &words {
         assert!(
             crate::preflight::builtin_ranking_known(name),
             "a built-in ranking strategy is a hook word of the linked ranking door: {name}"

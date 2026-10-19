@@ -3615,7 +3615,7 @@ fn test_hook_on_error_terminating_chain_ok() {
         let errs = result.expect_err("a strategy fallback without the plugin must be rejected");
         assert!(
             errs.iter()
-                .any(|e| e.contains("WITHOUT the `hooks-ranking` feature")),
+                .any(|e| e.contains("which no hook plugin linked into this binary serves")),
             "{errs:?}"
         );
     }

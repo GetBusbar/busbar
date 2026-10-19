@@ -195,10 +195,10 @@ fn registry(name: &str, hook: HookCfg) -> HashMap<String, HookCfg> {
 #[test]
 fn native_policy_resolves_constructed_policy() {
     for (policy, name) in [
-        (PoolPolicy::Cheapest, "cheapest"),
-        (PoolPolicy::Fastest, "fastest"),
-        (PoolPolicy::LeastBusy, "least_busy"),
-        (PoolPolicy::Usage, "usage"),
+        (PoolPolicy::Declared("cheapest".to_string()), "cheapest"),
+        (PoolPolicy::Declared("fastest".to_string()), "fastest"),
+        (PoolPolicy::Declared("least_busy".to_string()), "least_busy"),
+        (PoolPolicy::Declared("usage".to_string()), "usage"),
     ] {
         let cfg = pool_policy(policy);
         match resolve_policy(&cfg) {
@@ -1137,7 +1137,7 @@ fn from_ranked_empty_is_abstain() {
 #[cfg(feature = "hooks-ranking")]
 #[test]
 fn native_resolve_forces_opt_in_flags_off() {
-    match resolve_policy(&pool_policy(PoolPolicy::Cheapest)) {
+    match resolve_policy(&pool_policy(PoolPolicy::Declared("cheapest".to_string()))) {
         Some(ResolvedPolicy::Policy {
             send_prompt,
             send_user,

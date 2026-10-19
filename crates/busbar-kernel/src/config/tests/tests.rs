@@ -674,10 +674,10 @@ fn test_client_token_env_lock_serializes_set_interpolate_remove() {
 #[test]
 fn test_pool_policy_strategies_parse() {
     for (name, expected) in [
-        ("cheapest", PoolPolicy::Cheapest),
-        ("fastest", PoolPolicy::Fastest),
-        ("least_busy", PoolPolicy::LeastBusy),
-        ("usage", PoolPolicy::Usage),
+        ("cheapest", PoolPolicy::Declared("cheapest".to_string())),
+        ("fastest", PoolPolicy::Declared("fastest".to_string())),
+        ("least_busy", PoolPolicy::Declared("least_busy".to_string())),
+        ("usage", PoolPolicy::Declared("usage".to_string())),
         ("weighted", PoolPolicy::Weighted),
     ] {
         let yaml = format!("hooks: [{name}]\nmembers: []\n");
@@ -729,7 +729,7 @@ fn test_pool_hooks_list_desugars() {
     // strategy + hook name: base explicitly named, the name captured in gates.
     let pool: PoolCfg = serde_yaml::from_str("hooks: [cheapest, pii]\nmembers: []\n")
         .expect("hooks list must parse");
-    assert_eq!(pool.policy, PoolPolicy::Cheapest);
+    assert_eq!(pool.policy, PoolPolicy::Declared("cheapest".to_string()));
     assert!(pool.base_named, "a named strategy sets base_named");
     assert_eq!(pool.gates, vec!["pii".to_string()]);
 
@@ -746,7 +746,7 @@ fn test_pool_hooks_list_desugars() {
     // Several names: config order is preserved (the phase-2 chain tie-break).
     let multi: PoolCfg = serde_yaml::from_str("hooks: [cheapest, pii, dlp]\nmembers: []\n")
         .expect("multi-name list parses");
-    assert_eq!(multi.policy, PoolPolicy::Cheapest);
+    assert_eq!(multi.policy, PoolPolicy::Declared("cheapest".to_string()));
     assert_eq!(multi.gates, vec!["pii".to_string(), "dlp".to_string()]);
 }
 
@@ -2708,7 +2708,7 @@ fn test_resolve_builds_registry_from_named_defs() {
 
     // Per-pool bare names land in gates in config order; base policy survives; all-pools → global.
     assert_eq!(cfg.pools["a"].gates, ["pii-eng"]);
-    assert_eq!(cfg.pools["a"].policy, PoolPolicy::Cheapest);
+    assert_eq!(cfg.pools["a"].policy, PoolPolicy::Declared("cheapest".to_string()));
     assert_eq!(cfg.pools["b"].gates, ["pii-all"]);
     assert_eq!(cfg.global_hooks, ["audit"]);
 }
@@ -3149,17 +3149,7 @@ fn reserved_hook_names_are_frozen() {
     //     the root pins the whole space with it (`root::tests::legacy_table`).
     assert_eq!(
         frozen,
-        [
-            "cheapest",
-            "fastest",
-            "first",
-            "least_busy",
-            "nothing",
-            "reject",
-            "tokens",
-            "usage",
-            "weighted",
-        ],
+        ["first", "nothing", "reject", "tokens", "weighted"],
         "the 1.5.3 hook-name word space is FROZEN: a new bare terminal would retroactively \
          invalidate a legal 1.5.3 config. Add the new behavior as a STRUCTURED value instead \
          (e.g. `{{ hook: x }}`) — see RESERVED_HOOK_NAMES' doc comment."
@@ -3181,6 +3171,36 @@ fn reserved_hook_names_are_frozen() {
         runtime, frozen,
         "RESERVED_HOOK_NAMES and FROZEN_HOOK_NAME_WORD_SPACE must not drift"
     );
+    // (b') The ranking words complete the 1.5.3 space as DATA: the words the linked ranking row
+    //      declares, never a kernel literal (arch u29). In this test build that row is the ranking
+    //      double, which states the shipped door's words.
+    #[cfg(feature = "hooks-ranking")]
+    {
+        let mut space: Vec<String> = frozen.iter().map(|w| (*w).to_string()).collect();
+        space.extend(crate::config::declared_hook_words());
+        space.sort_unstable();
+        assert_eq!(
+            space,
+            [
+                "cheapest",
+                "fastest",
+                "first",
+                "least_busy",
+                "nothing",
+                "reject",
+                "tokens",
+                "usage",
+                "weighted",
+            ],
+            "the 1.5.3 hook-name word space is the kernel's terminals and the declared ranking words"
+        );
+        for word in crate::config::declared_hook_words() {
+            assert!(
+                crate::config::is_reserved_hook_name(&word),
+                "a declared ranking word is a reserved hook name: {word}"
+            );
+        }
+    }
 
     // (c) And the reservation is ENFORCED: a hook definition named with a frozen word fails boot.
     let mut deploy = base_deploy();

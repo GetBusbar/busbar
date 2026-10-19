@@ -1295,7 +1295,7 @@ global_hooks:
         "named hooks: definition map present"
     );
     let fast = &deploy.pools.pools["fast"];
-    assert_eq!(fast.policy, crate::config::PoolPolicy::Cheapest);
+    assert_eq!(fast.policy, crate::config::PoolPolicy::Declared("cheapest".to_string()));
     assert_eq!(
         fast.gates.len(),
         1,

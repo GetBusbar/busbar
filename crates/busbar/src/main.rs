@@ -293,6 +293,12 @@ fn register_planes() {
     // The configured `plugins.dir`, scanned once: its planes join the plane axis here and its export
     // modules the export axis just below — the same entries a linked plugin registers through.
     let dropped = root::boot::dropped_from_config(&LINKED);
+    // The hook words those rows declare (a pool strategy word is the ranking plugin's data, arch
+    // u29), folded into the kernel's parse vocabulary before the first configuration is read, as
+    // the planes below are.
+    busbar_kernel::config::install_declared_hook_words(
+        crate::root::loader::hook_door::declared_words(LINKED.hook_doors, dropped),
+    );
     root::boot::discover_planes(&LINKED, dropped);
     root::linked::register_planes(&LINKED);
     root::linked::register_exports(dropped);

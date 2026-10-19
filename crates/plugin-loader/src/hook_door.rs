@@ -823,6 +823,45 @@ pub fn dropped_answers(registry: &PluginRegistry, module: &str) -> bool {
     })
 }
 
+/// THE HOOK WORDS this build's hook rows DECLARE (each Statement's `MARK_WORD_HOOK` marks), in
+/// order: the linked doors `linked` first, then every dropped-in `kind: hook` row of `registry`
+/// whose signed manifest states a Statement, each word once. Read off the Statements only, nothing
+/// loaded: the composition root folds these into the kernel's parse vocabulary before the first
+/// configuration is read (arch u29), so a pool strategy word is the plugin's data. A row that will
+/// not state itself declares nothing here; the hook axis refuses it where it is built.
+#[must_use]
+pub fn declared_words(linked: &[DoorFn], registry: Option<&PluginRegistry>) -> Vec<String> {
+    fn words_of(c: &Candidate, out: &mut Vec<String>) {
+        let Ok(r) = busbar_contract::abi::mechanism::rendering::read(&c.stated) else {
+            return;
+        };
+        for (class, w) in &r.mark_words {
+            if *class == MARK_WORD_HOOK && !out.iter().any(|o| o == w) {
+                out.push(w.clone());
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for door in linked {
+        if let Ok(c) = Candidate::linked(*door) {
+            words_of(&c, &mut out);
+        }
+    }
+    for p in registry.into_iter().flat_map(PluginRegistry::dropped_hooks) {
+        let Ok(Some(stated)) = p.manifest.stated_rendering() else {
+            continue;
+        };
+        let origin = Origin::Dropped {
+            file: p.file.clone(),
+            bytes: Arc::new(Vec::new()),
+        };
+        if let Ok(c) = Candidate::from_manifest(stated, &p.manifest, origin) {
+            words_of(&c, &mut out);
+        }
+    }
+    out
+}
+
 // ── THE HOOK ROWS: the axis the composition root installs ─────────────────────────────────────
 
 /// THE PROCESS'S HOOK PLUGINS, by Statement name and alias: the compiled-in doors and the
