@@ -2232,3 +2232,38 @@ fn a_forged_context_is_refused_before_it_names_an_instance() {
     crate::dispatch::ticket::host_wake(d.ctx, woken);
     assert_eq!(*d.route.wakes.lock().unwrap(), vec![woken]);
 }
+
+/// RED (THE DESIGN §11.13 M1, "Every slice built from a plugin-reported length is capped and
+/// validated before it is formed"; audit PL1 #1): a service's `in` string or blob stated over the
+/// hard byte maximum (`u32::MAX`) is refused before any slice is formed or copied, as NULL with a
+/// length is. Run in a child: a copy past the caller's eight bytes kills the process.
+#[test]
+fn red_a_service_length_over_the_byte_cap_is_refused_before_any_copy() {
+    crate::dispatch_tests::assert_child_passes(
+        "oversize_service_lengths_child",
+        "a service length over the byte cap was copied",
+    );
+}
+
+#[test]
+#[ignore = "child process of red_a_service_length_over_the_byte_cap_is_refused_before_any_copy"]
+fn oversize_service_lengths_child() {
+    assert!(
+        std::env::var_os(crate::dispatch_tests::CHILD_ENV).is_some(),
+        "the child half of red_a_service_length_over_the_byte_cap_is_refused_before_any_copy"
+    );
+    let b = [7_u8; 8];
+    let past = u32::MAX as usize + 1;
+    let s = AbiStr {
+        ptr: b.as_ptr(),
+        len: past,
+    };
+    assert!(bytes_of(s, "test.bytes").is_none(), "a string over the cap");
+    assert!(text_of(s, "test.text").is_none(), "a text over the cap");
+    let blob = Blob {
+        len: past,
+        ..blob_over(&b)
+    };
+    assert!(blob_of(blob, "test.blob").is_none(), "a blob over the cap");
+    assert_eq!(bytes_of(over(&b), "test.bytes"), Some(b.to_vec()));
+}

@@ -353,6 +353,7 @@ pub fn register_stores(linked: &Linked) {
             registry_build: Some(crate::root::boot::registry),
             plugins_fetch: Some(crate::root::boot::plugins_fetch),
             hook_axis: Some(crate::root::hooks::axis),
+            hook_names: crate::LINKED_HOOK_NAMES,
             store_axis: Some(store_axis),
             secret_axis: Some(secrets),
             export_axis: Some(&crate::root::exports::EXPORTS),
@@ -905,9 +906,8 @@ fn catalogue_entries(
 /// THE ROOT-BOUND SEAMS an enabled entry drives, each bound once and only when some entry drives it
 /// (the manifest's `plane-sections` axis, emitted by the build script as a `linked_*` cfg): the
 /// parse-time section list a cross-plane hook refusal reads. The `egress` axis binds nothing here:
-/// the hostless-egress driver is the App's, handed to each plane on its build context
-/// (`BuildCtx::hostless`). The egress-trust host is installed by `run` once the configuration
-/// loads, over the destination guard.
+/// a plane dials through the one connector. The egress-trust host is installed by `run` once the
+/// configuration loads, over the destination guard.
 pub fn register_seams() {
     #[cfg(linked_plane_sections)]
     busbar_kernel::plane::config::install_plane_sections(

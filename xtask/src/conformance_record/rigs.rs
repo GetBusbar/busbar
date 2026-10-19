@@ -33,6 +33,31 @@ const VOICE_SUITES: &[(&str, &str)] = &[
     ("gemini", "voice-gemini-live"),
 ];
 
+/// The streaming plane's crate, as this workspace's lock names it.
+pub const VOICE_PLANE: &str = "busbar-plane-streaming";
+
+/// THE VOICE BOOT-VALIDATE CONFIG LEG'S COMMAND: the `streams:` grammar's own tests (`config::` in
+/// the streaming plane), in the pinned workspace `manifest` names (its committed lock held), built
+/// into this checkout's `target` (test-gated's `plugin()` shape, as the jev battery runs).
+pub fn voice_config_command(manifest: &Path, target: &Path) -> Vec<String> {
+    [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        &manifest.to_string_lossy(),
+        "-p",
+        VOICE_PLANE,
+        "--lib",
+        "config::",
+        "--target-dir",
+        &target.to_string_lossy(),
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
+}
+
 /// The llm rig's own bookkeeping row (testing/llm-conformance/run.sh `GAP_ID`): it reconciles the
 /// named gaps of the WHOLE battery, so a red there is every dialect's.
 const LLM_GAPS_ROW: &str = "gate|llm-conformance|named-gaps";
@@ -1105,6 +1130,19 @@ impl Runner {
         if selftest == Some(0) {
             // CI's boot-validate job, as it ran: the owned `streams:` section parses at boot.
             boot_validate = Some(0);
+            // The `streams:` section's grammar, the streaming plane's own (`config::` in
+            // busbar-plane-streaming; the legacy busbar-voice crate is deleted). The plane lives in
+            // its own repo (#68: the MUST set covers every plane wherever its crate lives): its
+            // tests run in the workspace this checkout's lock pins it at, never as `-p` of this
+            // workspace, which holds no such member.
+            let config = match super::oidf::pinned_repo_manifest(&self.root, VOICE_PLANE) {
+                Ok(manifest) => voice_config_command(&manifest, &self.target),
+                Err(e) => {
+                    eprintln!("  {}: boot-validate-config: {e}", rig.name());
+                    Vec::new()
+                }
+            };
+            let config: Vec<&str> = config.iter().map(String::as_str).collect();
             for (leg, cmd) in [
                 (
                     "boot-validate-build",
@@ -1117,19 +1155,7 @@ impl Runner {
                         "plane-streaming",
                     ][..],
                 ),
-                (
-                    // The `streams:` section's grammar, now the streaming plane's own (`config::`
-                    // in busbar-plane-streaming; the legacy busbar-voice crate is deleted).
-                    "boot-validate-config",
-                    &[
-                        "cargo",
-                        "test",
-                        "-p",
-                        "busbar-plane-streaming",
-                        "--lib",
-                        "config::",
-                    ][..],
-                ),
+                ("boot-validate-config", &config[..]),
                 (
                     "boot-validate-owned-sections",
                     &[
@@ -1146,7 +1172,12 @@ impl Runner {
                     ][..],
                 ),
             ] {
-                let c = self.leg(rig, leg, cmd, None, &[]);
+                // A plane the lock does not pin has no command: the leg did not run.
+                let c = if cmd.is_empty() {
+                    None
+                } else {
+                    self.leg(rig, leg, cmd, None, &[])
+                };
                 if c != Some(0) {
                     boot_validate = c;
                     break;
