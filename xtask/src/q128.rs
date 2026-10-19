@@ -828,3 +828,7 @@ mod tests {
 #[cfg(test)]
 #[path = "tests/q128_floor_tests.rs"]
 mod floor_tests;
+
+#[cfg(test)]
+#[path = "tests/q128_closure_tests.rs"]
+mod closure_tests;
