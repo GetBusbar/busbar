@@ -42,6 +42,7 @@
 //!                    operator_principal str, credential_kinds list of str,
 //!                    styles list of { name str, flags u32, points u32 } }
 //!                               an auth Statement whose tail states anything: its tail's facts
+//!   3 declares     blob         a Statement whose `declares` is present: its declares document
 //!
 //! str   = u32 length, then the bytes
 //! list  = u32 count, then each item
@@ -69,8 +70,11 @@
 //! judges a dropped auth plugin from its signed rendering without opening it (Law 7, as a linked one
 //! is read off its door's Statement). Refused present on another kind, all empty, or stating an
 //! unknown capability, fact or login kind, or a style `abi::auth::check_style_decl` refuses.
+//!
+//! `declares`: the Statement's declares document ([`Statement::declares`]). Refused present with a
+//! format other than JSON, with any flag, or empty.
 
-use super::call::{AbiStr, Blob};
+use super::call::{AbiStr, Blob, BLOB_ABSENT, BLOB_JSON};
 use super::door::{MarkWord, MetricFamily, Rewrite, Section, Statement};
 use super::MECHANISM_VERSION;
 use crate::abi::host::conn::connector::Need;
@@ -84,6 +88,9 @@ pub const TAIL_CLAIM_FLAGS: u32 = 1;
 
 /// THE OPTIONAL TAIL's tag of an auth plugin's tail facts ([`ReadAuth`]).
 pub const TAIL_AUTH: u32 = 2;
+
+/// THE OPTIONAL TAIL's tag of the Statement's declares document ([`Statement::declares`]).
+pub const TAIL_DECLARES: u32 = 3;
 
 /// One of the rendering's lengths or counts was above `u32::MAX`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -273,6 +280,10 @@ pub unsafe fn render(st: &Statement) -> Result<Vec<u8>, TooLong> {
                 o.u32(s.points);
             }
         }
+        if st.declares.fmt != BLOB_ABSENT {
+            o.u32(TAIL_DECLARES);
+            o.blob(st.declares, "declares")?;
+        }
     }
     Ok(o.0)
 }
@@ -441,6 +452,8 @@ pub struct Read {
     pub claim_flags: Vec<u32>,
     /// An auth plugin's tail facts; `None` when the rendering states none.
     pub auth: Option<ReadAuth>,
+    /// Its declares document (JSON); `None` when it declares nothing.
+    pub declares: Option<ReadBlob>,
 }
 
 /// AN AUTH PLUGIN'S TAIL, read back ([`TAIL_AUTH`]): every fact `abi::auth::AuthTail` states.
@@ -544,6 +557,7 @@ impl In<'_> {
 struct OptionalTail {
     claim_flags: Option<Vec<u32>>,
     auth: Option<ReadAuth>,
+    declares: Option<ReadBlob>,
 }
 
 /// THE OPTIONAL TAIL (module docs), read to the end of `i`: each tagged field present, in strictly
@@ -566,6 +580,7 @@ fn optional_tail(i: &mut In<'_>, kind: u32, claims: usize) -> Result<OptionalTai
         match tag {
             TAIL_CLAIM_FLAGS => tail.claim_flags = Some(claim_flags_body(i, kind, claims, at)?),
             TAIL_AUTH => tail.auth = Some(auth_body(i, kind, at)?),
+            TAIL_DECLARES => tail.declares = Some(declares_body(i, at)?),
             _ => return Err(end),
         }
     }
@@ -651,6 +666,19 @@ fn auth_body(i: &mut In<'_>, kind: u32, at: usize) -> Result<ReadAuth, Unreadabl
         return Err(refused);
     }
     Ok(read)
+}
+
+/// The `declares` body: a JSON blob with no flag and at least one byte; refused at `at` (its tag)
+/// otherwise.
+fn declares_body(i: &mut In<'_>, at: usize) -> Result<ReadBlob, Unreadable> {
+    let b = i.blob("declares")?;
+    if b.fmt != BLOB_JSON || b.flags != 0 || b.bytes.is_empty() {
+        return Err(Unreadable {
+            at,
+            what: "declares",
+        });
+    }
+    Ok(b)
 }
 
 /// THE RENDERING READ BACK: the inverse of [`render`], for a reader that must not open the plugin.
@@ -760,6 +788,7 @@ pub fn read(bytes: &[u8]) -> Result<Read, Unreadable> {
         claims,
         claim_flags,
         auth,
+        declares: tail.declares,
     })
 }
 

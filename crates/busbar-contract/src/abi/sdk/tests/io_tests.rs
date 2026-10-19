@@ -72,8 +72,20 @@ c_abi! {
         }
     }
 
-    fn ends(_ctx: HostCtx, _input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-        answer(out, Outcome::Ready, 8080, 3, "")
+    fn ends(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+        // SAFETY: the SDK's `in`, an `AddrIn`.
+        let i = unsafe { input.cast::<AddrIn>().read() };
+        match i.handle {
+            // A program that exited with code 3; its pipe may still be held open.
+            7 => {
+                // SAFETY: the SDK's `out`, live for the call.
+                unsafe { (*out).exited = 1 };
+                answer(out, Outcome::Ready, 3, 0, "")
+            }
+            // A program still running: no far end, not exited.
+            8 => answer(out, Outcome::Ready, 0, 0, ""),
+            _ => answer(out, Outcome::Ready, 8080, 3, ""),
+        }
     }
 }
 
@@ -138,4 +150,13 @@ fn a_slot_that_may_pend_is_not_made_on_no_ticket_and_an_absent_slot_is_unarmed()
 fn ends_answers_the_local_port_and_the_peer_bytes() {
     let mut peer = [0_u8; MAX_ADDR];
     assert_eq!(io(Ticket::NONE).ends(9, &mut peer), Ok((8080, 3)));
+}
+
+/// `io.ends` on a program's handle reads the program's own exit from `exited`: the code once it
+/// exited, `None` while it runs (a host that predates the byte wrote it zero, so it reads `None`).
+#[test]
+fn program_exit_reads_the_exited_byte_and_the_code() {
+    assert_eq!(io(Ticket::NONE).program_exit(7), Ok(Some(3)));
+    assert_eq!(io(Ticket::NONE).program_exit(8), Ok(None));
+    assert_eq!(io(Ticket::NONE).program_exit(9), Ok(None));
 }

@@ -572,3 +572,59 @@ fn the_issued_credential_shape_marks_are_known_distinct_classes() {
     ];
     assert_eq!(check_marks(0, &shape), Ok(()));
 }
+
+/// THE DECLARES DOCUMENT (REDs): absent is the empty declaration, present is one non-empty JSON
+/// document and never secret; every other spelling is refused, so a door states it one way.
+#[test]
+fn a_declares_document_is_absent_or_one_non_empty_json_document() {
+    use crate::abi::mechanism::call::{BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET};
+    const DOC: &[u8] = br#"{"disk":true}"#;
+    let doc = |fmt: u32, flags: u32| Blob {
+        ptr: DOC.as_ptr(),
+        len: DOC.len(),
+        fmt,
+        flags,
+    };
+    assert_eq!(check_declares(&Blob::ZERO), Ok(()));
+    assert_eq!(check_declares(&Blob::ABSENT), Ok(()));
+    assert_eq!(check_declares(&doc(BLOB_JSON, 0)), Ok(()));
+    assert_eq!(
+        check_declares(&doc(BLOB_ABSENT, 0)),
+        Err(fault(Rule::Contradiction, "statement.declares"))
+    );
+    assert_eq!(
+        check_declares(&doc(BLOB_JSON, BLOB_SECRET)),
+        Err(fault(Rule::Contradiction, "statement.declares.flags"))
+    );
+    assert_eq!(
+        check_declares(&doc(BLOB_OCTETS, 0)),
+        Err(fault(Rule::UnknownCode, "statement.declares.fmt"))
+    );
+    assert_eq!(
+        check_declares(&Blob {
+            len: 0,
+            ..doc(BLOB_JSON, 0)
+        }),
+        Err(fault(Rule::Missing, "statement.declares"))
+    );
+    assert_eq!(
+        check_declares(&Blob {
+            ptr: core::ptr::null(),
+            ..doc(BLOB_JSON, 0)
+        }),
+        Err(fault(Rule::NullWithCount, "statement.declares"))
+    );
+    // The Statement check runs it: the empty declaration loads, a present empty one does not.
+    let mut st = statement("p", "1.0.0", 1);
+    // SAFETY: every list is NULL with a zero count.
+    assert_eq!(unsafe { check_statement(&st) }, Ok(()));
+    st.declares = Blob {
+        len: 0,
+        ..doc(BLOB_JSON, 0)
+    };
+    // SAFETY: as above.
+    assert_eq!(
+        unsafe { check_statement(&st) },
+        Err(fault(Rule::Missing, "statement.declares"))
+    );
+}

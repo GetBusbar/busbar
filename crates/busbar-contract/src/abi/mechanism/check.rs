@@ -9,7 +9,7 @@
 //! [`OutHead`](super::call::OutHead); [`result`] and [`results`] enforce it, and [`within`] is the
 //! check for an op with no short path.
 
-use super::call::{AbiStr, Blob, DeadlineClass, Outcome, RawOutcome};
+use super::call::{AbiStr, Blob, DeadlineClass, Outcome, RawOutcome, BLOB_ABSENT, BLOB_JSON};
 use super::door::{
     MarkWord, Rewrite, Section, Statement, MARKS_KNOWN, MARK_WORD_HOOK,
     MARK_WORD_ISSUED_SECRET_ALPHABET, REWRITE_ALIAS, REWRITE_KEY, SECTION_CONSUMED,
@@ -600,6 +600,36 @@ fn header_names(
     Ok(())
 }
 
+/// THE DECLARES DOCUMENT ([`Statement::declares`]): absent ([`BLOB_ABSENT`], no pointer, no length,
+/// no flag), or one JSON document ([`BLOB_JSON`]) of at least one byte, never flagged secret, within
+/// [`blob`]'s bounds. Any other format is refused, so the rendering has one spelling of each.
+///
+/// # Errors
+///
+/// [`Rule::Contradiction`] (absent with bytes or a flag; present with a flag), [`Rule::Missing`]
+/// (present and empty), [`Rule::UnknownCode`] (another format), [`Rule::NullWithCount`],
+/// [`Rule::OverMax`].
+pub fn check_declares(b: &Blob) -> Result<(), Fault> {
+    match b.fmt {
+        BLOB_ABSENT => {
+            if !b.ptr.is_null() || b.len != 0 || b.flags != 0 {
+                return Err(fault(Rule::Contradiction, "statement.declares"));
+            }
+            Ok(())
+        }
+        BLOB_JSON => {
+            if b.flags != 0 {
+                return Err(fault(Rule::Contradiction, "statement.declares.flags"));
+            }
+            if b.len == 0 {
+                return Err(fault(Rule::Missing, "statement.declares"));
+            }
+            blob(b, "statement.declares", "statement.declares")
+        }
+        _ => Err(fault(Rule::UnknownCode, "statement.declares.fmt")),
+    }
+}
+
 /// A `'static` Statement list as a slice, after [`listed`] and [`bounded`].
 ///
 /// # Safety
@@ -619,7 +649,7 @@ unsafe fn list<'a, T>(ptr: *const T, len: usize, field: &'static str) -> Result<
 /// [`STATEMENT_LIST_MAX`] and never misaligned (the metric families, each family's label keys,
 /// the diagnostic ids and the secret references included), then
 /// [`check_marks`], [`check_rewrites`], [`check_statement_sections`], [`check_needs`], the settings
-/// paths and the declared answers. The same check runs for a compiled-in row and a dropped-in door.
+/// paths, the declared answers and [`check_declares`]. The same check runs for a compiled-in row and a dropped-in door.
 ///
 /// # Errors
 ///
@@ -659,7 +689,7 @@ pub unsafe fn check_statement(st: &Statement) -> Result<(), Fault> {
     for c in unsafe { list(st.claims, st.claims_len, "statement.claims") }? {
         named(*c, "statement.claim")?;
     }
-    Ok(())
+    check_declares(&st.declares)
 }
 
 /// One op's contract: where it runs, whether it may pend, its largest `in`/`out`, its deadline

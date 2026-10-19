@@ -454,6 +454,20 @@ fn auth(styles: &'static [StyleDecl]) -> Statement {
     }
 }
 
+// ── the declares document (Part 2 #2: a compiled-in and a dropped-in copy state it alike) ──────────
+
+use super::TAIL_DECLARES;
+
+const DECLARES: &[u8] = br#"{"destinations":["path"]}"#;
+
+/// `full()` with its declares document present.
+fn declaring() -> Statement {
+    Statement {
+        declares: blob(DECLARES, BLOB_JSON),
+        ..full()
+    }
+}
+
 /// The `auth` field's bytes, tag first.
 fn auth_field(caps: u32, facts: u32, login: u32, styles: &[(&str, u32, u32)]) -> Vec<u8> {
     let mut b = Vec::new();
@@ -565,4 +579,118 @@ fn a_non_canonical_auth_field_is_unreadable() {
     ]
     .concat();
     assert_eq!(read(&out_of_order).unwrap_err().what, "the end");
+}
+
+/// `words` as the little-endian bytes the rendering writes them in.
+fn le(words: &[u32]) -> Vec<u8> {
+    words.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+/// THE FIELD'S BYTES: a present declares document is its tag, then the blob (format, flags, length,
+/// bytes), after everything else; an absent one writes nothing, so every rendering signed before the
+/// field existed is byte-identical to its door's today (`full()`'s golden is unchanged).
+#[test]
+fn a_declares_document_renders_tagged_after_the_claims_and_absent_writes_nothing() {
+    assert_eq!(
+        full().declares.fmt,
+        crate::abi::mechanism::call::BLOB_ABSENT
+    );
+    let want = [
+        bytes(&full()).as_slice(),
+        le(&[TAIL_DECLARES, BLOB_JSON, 0, DECLARES.len() as u32]).as_slice(),
+        DECLARES,
+    ]
+    .concat();
+    assert_eq!(bytes(&declaring()), want);
+    assert_eq!(read(&bytes(&full())).expect("reads").declares, None);
+}
+
+/// THE ROUND TRIP: what renders reads back to the document, and the document read back renders the
+/// same bytes again.
+#[test]
+fn declares_round_trip() {
+    let b = bytes(&declaring());
+    let r = read(&b).expect("reads");
+    let d = r.declares.expect("present");
+    assert_eq!(
+        (d.fmt, d.flags, d.bytes.as_slice()),
+        (BLOB_JSON, 0, DECLARES)
+    );
+    let again: &'static [u8] = Box::leak(d.bytes.into_boxed_slice());
+    let st = Statement {
+        declares: blob(again, BLOB_JSON),
+        ..full()
+    };
+    assert_eq!(bytes(&st), b);
+}
+
+/// After the claim flags (tag 1): both present read back, in the one order.
+#[test]
+fn declares_follows_the_claim_flags() {
+    let st = Statement {
+        declares: blob(DECLARES, BLOB_JSON),
+        ..transport(SECURE_ROWS)
+    };
+    let b = bytes(&st);
+    let r = read(&b).expect("reads");
+    assert_eq!(r.claim_flags, vec![CLAIM_SECURE, 0]);
+    assert_eq!(r.declares.expect("present").bytes, DECLARES);
+    let tail = [
+        le(&[TAIL_CLAIM_FLAGS, 2, CLAIM_SECURE, 0]),
+        le(&[TAIL_DECLARES, BLOB_JSON, 0, DECLARES.len() as u32]),
+        DECLARES.to_vec(),
+    ]
+    .concat();
+    assert!(b.ends_with(&tail));
+}
+
+/// THE ENCODING IS CANONICAL (REDs): a present declares document that is empty, of a format other
+/// than JSON, or flagged is refused as `declares`; a second one, one written before the claim flags,
+/// and a byte after it are refused at "the end".
+#[test]
+fn a_non_canonical_declares_is_unreadable() {
+    let base = bytes(&full());
+    let with = |words: &[u32], doc: &[u8]| [base.as_slice(), le(words).as_slice(), doc].concat();
+    let n = DECLARES.len() as u32;
+    for (words, doc) in [
+        (vec![TAIL_DECLARES, BLOB_JSON, 0, 0], &b""[..]),
+        (vec![TAIL_DECLARES, BLOB_OCTETS, 0, n], DECLARES),
+        (vec![TAIL_DECLARES, 0, 0, n], DECLARES),
+        (vec![TAIL_DECLARES, BLOB_JSON, 1, n], DECLARES),
+    ] {
+        assert_eq!(
+            read(&with(&words, doc)).unwrap_err().what,
+            "declares",
+            "{words:?}"
+        );
+    }
+    let present = bytes(&declaring());
+    let mut trailing = present.clone();
+    trailing.push(0);
+    assert_eq!(read(&trailing).unwrap_err().what, "the end");
+    let twice = [
+        present.as_slice(),
+        le(&[TAIL_DECLARES, BLOB_JSON, 0, n]).as_slice(),
+        DECLARES,
+    ]
+    .concat();
+    assert_eq!(read(&twice).unwrap_err().what, "the end", "a tag twice");
+    let st = Statement {
+        declares: blob(DECLARES, BLOB_JSON),
+        ..transport(SECURE_ROWS)
+    };
+    let in_order = bytes(&st);
+    let flags = le(&[TAIL_CLAIM_FLAGS, 2, CLAIM_SECURE, 0]);
+    let at = in_order.len() - flags.len() - 16 - DECLARES.len();
+    let declares_first = [
+        &in_order[..at],
+        &in_order[at + flags.len()..],
+        flags.as_slice(),
+    ]
+    .concat();
+    assert_eq!(
+        read(&declares_first).unwrap_err().what,
+        "the end",
+        "declares before the claim flags"
+    );
 }

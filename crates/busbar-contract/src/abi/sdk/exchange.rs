@@ -50,6 +50,21 @@ pub struct Request {
     pub timeout_ms: u64,
 }
 
+/// A request handed to [`Exchange::request`] is WIPED once the exchange has copied what it sends:
+/// its body (a token exchange's form carries a client secret, a code, a verifier), fields, method
+/// and target are zeroized, not freed as they were. (No `Drop`, so a request still builds with
+/// `..Request::default()`.)
+fn wipe(request: &mut Request) {
+    use zeroize::Zeroize;
+    request.method.zeroize();
+    request.target.zeroize();
+    for (name, value) in &mut request.fields {
+        name.zeroize();
+        value.zeroize();
+    }
+    request.body.zeroize();
+}
+
 /// The far end's reply to an [`exchange`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExchangeResponse {
@@ -88,6 +103,21 @@ enum Sending {
     Raw(Box<[u8]>),
 }
 
+/// What an exchange sends is WIPED when the exchange is dropped: the head (it may carry a
+/// credential field) and the body (it may carry a secret form).
+impl Drop for Sending {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        match self {
+            Sending::Framed { head, body, .. } => {
+                head.zeroize();
+                body.zeroize();
+            }
+            Sending::Raw(bytes) => bytes.zeroize(),
+        }
+    }
+}
+
 /// An [`exchange`]'s (or a [`send_and_ack`]'s) state across its op's PENDING entries: what it sends
 /// (a pending write reads it), the read buffer and the descriptor slot (a pending read writes
 /// them) and the reply so far. Parked on the ticket.
@@ -110,6 +140,8 @@ pub struct Exchange {
     observe: bool,
     /// What they said, once read: kept across replays, which answer without writing them again.
     observed: Option<Observed>,
+    /// The reply's head ends the reads; its body is never read ([`Exchange::head_only`]).
+    head_only: bool,
     /// The stream the exchange established, once it has: what a caller that gives the exchange up
     /// closes on the host ([`Exchange::stream`]).
     stream: Option<u64>,
@@ -143,6 +175,7 @@ impl Exchange {
             member: None,
             observe: false,
             observed: None,
+            head_only: false,
             stream: None,
         }
     }
@@ -161,6 +194,18 @@ impl Exchange {
     #[must_use]
     pub fn observing(mut self) -> Self {
         self.observe = true;
+        self
+    }
+
+    /// Judge the reply on its HEAD alone: the first head (or ack) piece ends the reads and the
+    /// stream is closed, its facts read first where [`Exchange::observing`] asks. The body is never
+    /// read or buffered, so a slow or huge body after the head neither runs the op into its
+    /// deadline nor passes [`REPLY_MAX`]; the reply answers an empty body. 1.5.5 judged a sink's
+    /// delivery on the response head and dropped the body unread (THE DESIGN: a port keeps
+    /// 1.5.5's surface).
+    #[must_use]
+    pub fn head_only(mut self) -> Self {
+        self.head_only = true;
         self
     }
 
@@ -194,8 +239,24 @@ impl Exchange {
     /// # Errors
     /// A field is a pseudo-field (its name starts with `:`), or a name or value carries a line
     /// break: REFUSED, nothing sent.
-    pub fn request(request: Request) -> Result<Self, ConnFailure> {
-        let mut head = Vec::new();
+    pub fn request(mut request: Request) -> Result<Self, ConnFailure> {
+        let built = Self::build(&request);
+        wipe(&mut request);
+        built
+    }
+
+    /// [`Exchange::request`]'s build, over a request it wipes after.
+    fn build(request: &Request) -> Result<Self, ConnFailure> {
+        // Sized whole up front, so building it never leaves a grown-out copy behind unwiped; the
+        // working buffer is wiped once the sent copy is taken.
+        let whole = request.method.len()
+            + request.target.len()
+            + request
+                .fields
+                .iter()
+                .map(|(n, v)| n.len() + fields::SEPARATOR.len() + v.len() + fields::LINE_END.len())
+                .sum::<usize>();
+        let mut head = zeroize::Zeroizing::new(Vec::with_capacity(whole));
         head.extend_from_slice(&request.method);
         head.extend_from_slice(&request.target);
         let block_at = head.len();
@@ -220,16 +281,16 @@ impl Exchange {
         let (m, t) = (request.method.len(), request.target.len());
         let head_piece = Box::new(RequestPiece {
             kind: REQUEST_HEAD,
-            _reserved: 0,
             method: span(0, m),
             target: span(m, t),
             fields: span(block_at, head.len() - block_at),
             timeout_ms: request.timeout_ms,
+            ..RequestPiece::ZERO
         });
         Ok(Self::over(Sending::Framed {
-            head: head.into_boxed_slice(),
+            head: head.as_slice().into(),
             head_piece,
-            body: request.body.into_boxed_slice(),
+            body: request.body.as_slice().into(),
             body_piece: piece(REQUEST_BODY),
             end_piece: piece(REQUEST_END),
             timeout_ms: request.timeout_ms,
@@ -239,7 +300,8 @@ impl Exchange {
     /// An exchange sending `bytes` as they are, over any transport ([`send_and_ack`]).
     #[must_use]
     pub fn send(bytes: Vec<u8>) -> Self {
-        Self::over(Sending::Raw(bytes.into_boxed_slice()))
+        let bytes = zeroize::Zeroizing::new(bytes);
+        Self::over(Sending::Raw(bytes.as_slice().into()))
     }
 
     /// THE FIELDS THIS EXCHANGE FRAMES, read back off the head it sends: `(name, value)`, in
@@ -321,8 +383,37 @@ fn send(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answer<()> 
     }
 }
 
-/// Send, then read the reply to its terminal piece into `state`.
+/// Send, then read the reply to its terminal piece into `state` (for a head-only exchange, its
+/// head or ack).
 fn send_and_read(
+    c: &mut Connector<'_>,
+    state: &mut Exchange,
+    need: u32,
+    target: Option<&str>,
+) -> Answer<()> {
+    // A FAILED EXCHANGE CLOSES ITS STREAM before it answers, as a whole one does: a caller that
+    // sends once and moves on never leaves a held stream (and its connection) behind per failure.
+    match exchange_once(c, state, need, target) {
+        Poll::Ready(Err(e)) => match state.stream {
+            Some(stream) => match c.close(stream) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(_) => {
+                    state.stream = None;
+                    Poll::Ready(Err(e))
+                }
+            },
+            None => Poll::Ready(Err(e)),
+        },
+        Poll::Ready(Ok(())) => {
+            state.stream = None;
+            Poll::Ready(Ok(()))
+        }
+        Poll::Pending => Poll::Pending,
+    }
+}
+
+/// One pass of [`send_and_read`]: establish, send, read to the terminal piece, close a whole one.
+fn exchange_once(
     c: &mut Connector<'_>,
     state: &mut Exchange,
     need: u32,
@@ -372,8 +463,14 @@ fn send_and_read(
         }
         // The terminal piece ends the reads, on the entry that first saw it and on every replay
         // of that read. A replayed earlier read never does: the piece descriptor is the op's one
-        // parked slot, rewritten by each replayed read: only `ended` marks the terminal one.
-        if fresh && matches!(p.kind, REPLY_ACK | REPLY_END) {
+        // parked slot, rewritten by each replayed read: only `ended` marks the terminal one. A
+        // head-only exchange's head is its terminal piece, by the same bookkeeping.
+        let terminal = match p.kind {
+            REPLY_ACK | REPLY_END => true,
+            REPLY_HEAD => state.head_only,
+            _ => false,
+        };
+        if fresh && terminal {
             state.ended = Some(this);
         }
         if state.ended == Some(this) {
@@ -408,7 +505,8 @@ fn observe(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Poll<()>
 /// ONE REQUEST, ONE REPLY over the declared framed need `need` to `target` (`None` = the need's
 /// `target_from`): establish, send the [`Exchange::request`] (head, body, end), read the reply to
 /// its terminal piece, close. PENDING until it completes; READY with the reply's code, reason,
-/// fields and body, or why it failed. Bounded by the op's deadline and by [`REPLY_MAX`].
+/// fields and body, or why it failed. Bounded by the op's deadline and by [`REPLY_MAX`]. A
+/// [`Exchange::head_only`] exchange ends at the head and answers an empty body.
 pub fn exchange(
     c: &mut Connector<'_>,
     state: &mut Exchange,

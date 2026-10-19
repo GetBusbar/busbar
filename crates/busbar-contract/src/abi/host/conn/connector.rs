@@ -123,6 +123,28 @@ pub struct Need {
     pub deny_response_headers_len: usize,
 }
 
+impl Need {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `Need { …, ..Need::ZERO }` so a field appended later reads as not
+    /// declared.
+    pub const ZERO: Self = Self {
+        direction: 0,
+        egress_class: 0,
+        transport: AbiStr::ZERO,
+        auth: AbiStr::ZERO,
+        target_from: AbiStr::ZERO,
+        trust_from: AbiStr::ZERO,
+        details: Blob::ZERO,
+        keep_response_headers: std::ptr::null(),
+        keep_response_headers_len: 0,
+        timeout_ms: 0,
+        keep_mode: 0,
+        _reserved: 0,
+        deny_response_headers: std::ptr::null(),
+        deny_response_headers_len: 0,
+    };
+}
+
 /// [`Need::keep_mode`]: only the fields [`Need::keep_response_headers`] names cross.
 pub const KEEP_NAMED: u32 = 0;
 
@@ -267,6 +289,15 @@ pub const CAUSE_DEADLINE: u64 = 4;
 pub const CAUSE_FRAMER: u64 = 5;
 /// `ServiceOut::value` on a refusal: the request's credential is unavailable; nothing was sent.
 pub const CAUSE_CREDENTIAL_UNAVAILABLE: u64 = 6;
+/// `ServiceOut::value` on a refusal: the request's auth refused it; nothing was sent.
+///
+/// An auth outcome, never the destination failing: the host records nothing against the
+/// destination for it.
+pub const CAUSE_AUTH_REFUSED: u64 = 7;
+/// `ServiceOut::value` on a failure: the request's auth call failed; nothing was sent.
+///
+/// An auth outcome, never the destination failing, as [`CAUSE_AUTH_REFUSED`].
+pub const CAUSE_AUTH_FAILED: u64 = 8;
 
 /// The `in` of [`service::REJECT_ENDPOINT`], [`service::SIDE_STREAM`] and [`service::CLOSE`].
 /// `REJECT_ENDPOINT` answers the stream on the next endpoint, or FAILED when none is left.
@@ -513,6 +544,20 @@ pub struct RequestPiece {
     /// How long the request may take, milliseconds; `0` = the op's deadline. The host clamps a
     /// larger value to the op's deadline class. On [`REQUEST_HEAD`].
     pub timeout_ms: u64,
+}
+
+impl RequestPiece {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `RequestPiece { …, ..RequestPiece::ZERO }` so a field appended later
+    /// reads as not declared.
+    pub const ZERO: Self = Self {
+        kind: 0,
+        _reserved: 0,
+        method: crate::abi::transport::FrameSpan::ZERO,
+        target: crate::abi::transport::FrameSpan::ZERO,
+        fields: crate::abi::transport::FrameSpan::ZERO,
+        timeout_ms: 0,
+    };
 }
 
 /// [`service::WRITE_REQUEST`]'s `in`. The buffer and the descriptor are the plugin's and stay

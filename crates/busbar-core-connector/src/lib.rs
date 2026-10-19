@@ -99,8 +99,8 @@ use busbar_contract::abi::host::service::{DEST_NO_ADDRESSES, DEST_PLAINTEXT, DES
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::transport::{ROLE_CARRIER, ROLE_FRAMER};
 use busbar_contract::conn::{
-    ConnCause, ConnError, ConnId, ConnSlab, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc,
-    Piece, PieceKind, PollConns, Ticket, NO_TICKET,
+    ConnCause, ConnError, ConnId, ConnSlab, Conns, DeclaredConns, HeadDefaults, InstanceId, NeedId,
+    OpenDesc, Piece, PieceKind, PollConns, Ticket, NO_TICKET,
 };
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::{WireFault, WireStatusClass};
@@ -2338,7 +2338,8 @@ impl Conns for Connector {
                 door,
                 io: Arc::clone(&self.io),
             };
-            let conn = Connection::spawn(&via, &program, &env, dial).map_err(|f| map(&f))?;
+            // A one-shot line is no member: it carries no supervision key.
+            let conn = Connection::spawn(&via, &program, &env, dial, 0).map_err(|f| map(&f))?;
             // A program is a dialled, single-use line (no pool, no judgement): its one exchange
             // rides EXCHANGE_STREAM, as a freshly dialled connection's does.
             let line = Line::new(conn);
@@ -2565,6 +2566,24 @@ impl Conns for Connector {
 }
 
 impl PollConns for Connector {
+    /// The framer the need rides, located at `target`: its own head lines, and whether its head
+    /// states the body's length. A carrier carried as itself, a need nobody declared, or a target
+    /// the framer refuses states neither.
+    fn head_defaults(&self, owner: InstanceId, need: NeedId, target: &str) -> HeadDefaults {
+        let door = self
+            .over
+            .lock()
+            .expect("needs")
+            .get(&(owner, need))
+            .map(|n| Arc::clone(&n.door));
+        door.and_then(|door| self.located(&door, target))
+            .map(|located| HeadDefaults {
+                lines: located.defaults,
+                states_length: located.states_length,
+            })
+            .unwrap_or_default()
+    }
+
     fn poll_read(
         &self,
         caller: InstanceId,

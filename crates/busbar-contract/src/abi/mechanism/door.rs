@@ -72,6 +72,21 @@ pub struct MetricFamily {
     pub _reserved: [u8; 7],
 }
 
+impl MetricFamily {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `MetricFamily { …, ..MetricFamily::ZERO }` so a field appended later
+    /// reads as not declared.
+    pub const ZERO: Self = Self {
+        name: AbiStr::ZERO,
+        help: AbiStr::ZERO,
+        unit: AbiStr::ZERO,
+        label_keys: std::ptr::null(),
+        label_keys_len: 0,
+        kind: 0,
+        _reserved: [0; 7],
+    };
+}
+
 /// THE STATEMENT: what a plugin states about itself, as plain `'static` data. Leads with `size`.
 ///
 /// The same Statement is embedded in the object section, answered by the door and signed in the
@@ -87,7 +102,9 @@ pub struct Statement {
     pub kind_abi: u32,
     /// The most calls one instance holds in flight; the host clamps it.
     pub max_inflight: u32,
-    /// The plugin's name.
+    /// The plugin's name: the key its kind's registry holds it under, whichever door it arrives
+    /// by. A transport's registry key is its name, never one of its [`Statement::claims`]. The
+    /// other words config may call the plugin by are its [`REWRITE_ALIAS`] rewrites, never this.
     pub name: AbiStr,
     /// The plugin's version.
     pub version: AbiStr,
@@ -143,10 +160,62 @@ pub struct Statement {
     /// How many.
     pub answers_len: usize,
     /// The URL schemes it claims (a transport's claims; every other kind states none). Select reads
-    /// them off the signed rendering, so a dropped transport is chosen without being opened.
+    /// them off the signed rendering, so a dropped transport is chosen without being opened. Their
+    /// order states nothing, and no claim names the plugin (its key is [`Statement::name`]),
+    /// so a reader never keys a transport on its first claim.
     pub claims: *const AbiStr,
     /// How many.
     pub claims_len: usize,
+    /// Its DECLARES DOCUMENT, the plugin's `declares` as JSON ([`BLOB_JSON`]),
+    /// byte for byte: the series, diagnostics, destinations and kind facts it asks the host to grant
+    /// (the host grants or refuses each at `open`, and never trusts one as is). A compiled-in and a
+    /// dropped-in copy state it here alike, so neither door needs another source for it. Absent
+    /// ([`BLOB_ABSENT`], the [`Statement::ZERO`] value) = it declares nothing, which grants nothing.
+    /// Present = JSON, non-empty, never [`BLOB_SECRET`] ([`super::check::check_declares`]).
+    ///
+    /// [`BLOB_JSON`]: super::call::BLOB_JSON
+    /// [`BLOB_ABSENT`]: super::call::BLOB_ABSENT
+    /// [`BLOB_SECRET`]: super::call::BLOB_SECRET
+    pub declares: Blob,
+}
+
+impl Statement {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `Statement { …, ..Statement::ZERO }` so a field appended later reads as
+    /// not declared.
+    pub const ZERO: Self = Self {
+        size: 0,
+        kind: 0,
+        kind_abi: 0,
+        max_inflight: 0,
+        name: AbiStr::ZERO,
+        version: AbiStr::ZERO,
+        families: std::ptr::null(),
+        families_len: 0,
+        diag_ids: std::ptr::null(),
+        diag_ids_len: 0,
+        kind_tail: std::ptr::null(),
+        extensions: Blob::ZERO,
+        secret_refs: std::ptr::null(),
+        secret_refs_len: 0,
+        settings_schema: Blob::ZERO,
+        marks: 0,
+        mark_words: std::ptr::null(),
+        mark_words_len: 0,
+        rewrites: std::ptr::null(),
+        rewrites_len: 0,
+        sections: std::ptr::null(),
+        sections_len: 0,
+        needs: std::ptr::null(),
+        needs_len: 0,
+        target_from: AbiStr::ZERO,
+        trust_from: AbiStr::ZERO,
+        answers: std::ptr::null(),
+        answers_len: 0,
+        claims: std::ptr::null(),
+        claims_len: 0,
+        declares: Blob::ZERO,
+    };
 }
 
 // ── THE MARKS, REWRITES AND SECTIONS a Statement carries ────────────────────────────────────────
@@ -200,6 +269,17 @@ pub struct MarkWord {
     pub word: AbiStr,
 }
 
+impl MarkWord {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `MarkWord { …, ..MarkWord::ZERO }` so a field appended later reads as
+    /// not declared.
+    pub const ZERO: Self = Self {
+        class: 0,
+        _reserved: 0,
+        word: AbiStr::ZERO,
+    };
+}
+
 /// [`Rewrite::class`]: `from` is another name config may give the plugin (a module alias). The
 /// registry holds it exclusive, beside the plugin's own name. `to` is absent.
 pub const REWRITE_ALIAS: u32 = 1;
@@ -224,6 +304,18 @@ pub struct Rewrite {
     pub to: AbiStr,
 }
 
+impl Rewrite {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `Rewrite { …, ..Rewrite::ZERO }` so a field appended later reads as not
+    /// declared.
+    pub const ZERO: Self = Self {
+        class: 0,
+        _reserved: 0,
+        from: AbiStr::ZERO,
+        to: AbiStr::ZERO,
+    };
+}
+
 /// [`Section::flags`]: the plugin's declaring section (a plane's verb).
 pub const SECTION_DECLARING: u32 = 1;
 /// [`Section::flags`]: a document must carry the section when the plugin is linked.
@@ -243,6 +335,17 @@ pub struct Section {
     pub _reserved: u32,
 }
 
+impl Section {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `Section { …, ..Section::ZERO }` so a field appended later reads as not
+    /// declared.
+    pub const ZERO: Self = Self {
+        name: AbiStr::ZERO,
+        flags: 0,
+        _reserved: 0,
+    };
+}
+
 /// The head every kind's Statement tail leads with.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -251,6 +354,16 @@ pub struct KindTailHead {
     pub size: u32,
     /// Alignment padding.
     pub _reserved: u32,
+}
+
+impl KindTailHead {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `KindTailHead { …, ..KindTailHead::ZERO }` so a field appended later
+    /// reads as not declared.
+    pub const ZERO: Self = Self {
+        size: 0,
+        _reserved: 0,
+    };
 }
 
 /// THE KIND TAIL GROWTH RULE: a kind tail grows only by APPENDING fields, and its head's `size`

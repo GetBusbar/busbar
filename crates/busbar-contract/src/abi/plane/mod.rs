@@ -133,7 +133,12 @@
 //!    [`ROUTE_POOL`] or [`ROUTE_DIRECT`] [`ArriveOut::route`], and its operation class and
 //!    dialect) is held: the kernel judges the caller's identity and its grant over that entry
 //!    first (a refusal there wins), then renders this refusal before admission, so nothing is
-//!    charged. Its status may be 400 to 599 (the entry, not the caller, may be at fault).
+//!    charged. Its status may be 400 to 599 (the entry, not the caller, may be at fault). With
+//!    [`REFUSED_AFTER_ADMISSION`] in [`ArriveOut::refusal_flags`] the refusal is held one step
+//!    further: after the caller's identity and its grant over the entry, the kernel runs the
+//!    entry's ADMISSION (its group limits and budget; a refusal there wins, in admission's own
+//!    status and words), and only then renders this refusal. That rendering refunds or releases
+//!    whatever admission held and runs no walk, no hook and no tap, so nothing is net-charged.
 //!
 //! [`RefusalOut::status`] lets the rendering name the status its dialect answers with; `0` keeps
 //! the one the kernel chose. The gate-rejected audit marker is the kernel's: it sets it from
@@ -169,6 +174,7 @@
 //! | `served_op_classes` | tail [`PlaneTail::op_classes`]; [`ArriveOut::op_class`] indexes it |
 //! | `record_kinds` | tail [`PlaneTail::record_kinds`]; [`RecordWrite::kind`] indexes it |
 //! | (new) chained record framing | tail [`PlaneTail::record_chains`] |
+//! | (new) record retention rules (terminal-only vs by age) | tail [`PlaneTail::record_retentions`]; a kind not listed is purged by age |
 //! | (new) refusal statuses per dialect and reason | tail [`PlaneTail::refusal_statuses`]; [`RefusalIn::reason`] |
 //! | `dispatch_flags` / `DISPATCH_BLOCKS` | DROPPED — a plane never blocks (the design's plugin-ABI section: no blocking on the hot path). Replaced by [`PlaneTail::dispatch_shape`] |
 //! | `required_sections` | Statement: [`SECTION_REQUIRED`](crate::abi::mechanism::door::SECTION_REQUIRED) on a `sections` entry |
@@ -519,6 +525,16 @@ pub const ROUTE_COUNTED: u8 = 8;
 /// the kernel and the root count the outcome and never read the plane's code or status to tell one
 /// refusal from another.
 pub const REFUSED_UNSUPPORTED_ACTION: u32 = 1;
+
+/// [`ArriveOut::refusal_flags`]: the refusal about an entry is rendered AFTER ADMISSION, not before
+/// it (see "A refused arrival", rule 6). Only on a REFUSED `arrive` that names its entry
+/// ([`ArriveOut::pool`] with a [`ROUTE_POOL`] or [`ROUTE_DIRECT`] [`ArriveOut::route`]): the kernel
+/// judges the caller's identity, then its grant over the entry, then the entry's admission (group
+/// limits and budget), a refusal at any of them winning; only then does it render this refusal,
+/// refunding or releasing what admission held, with no walk, no hook and no tap, so nothing is
+/// net-charged. On an answer that names no entry, or on any other outcome, it is a FAULT. Unset,
+/// the refusal is rendered before admission and nothing is charged.
+pub const REFUSED_AFTER_ADMISSION: u32 = 2;
 
 /// [`OnPieceIn::from`]: the piece is the caller's.
 pub const FROM_CALLER: u32 = 0;
@@ -1170,6 +1186,18 @@ pub struct DialectAuth {
     pub params: Blob,
 }
 
+impl DialectAuth {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `DialectAuth { …, ..DialectAuth::ZERO }` so a field appended later reads
+    /// as not declared.
+    pub const ZERO: Self = Self {
+        dialect: 0,
+        _reserved: 0,
+        style: AbiStr::ZERO,
+        params: Blob::ZERO,
+    };
+}
+
 /// One operation class the plane serves one level down, and the display name a refusal naming the
 /// plane reads.
 #[repr(C)]
@@ -1181,6 +1209,16 @@ pub struct OpClass {
     pub name: AbiStr,
 }
 
+impl OpClass {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `OpClass { …, ..OpClass::ZERO }` so a field appended later reads as not
+    /// declared.
+    pub const ZERO: Self = Self {
+        op: AbiStr::ZERO,
+        name: AbiStr::ZERO,
+    };
+}
+
 /// One billable class and the unit family it counts in. Classes are disjoint.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -1189,6 +1227,16 @@ pub struct BillableClass {
     pub class: AbiStr,
     /// Its unit family.
     pub family: AbiStr,
+}
+
+impl BillableClass {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `BillableClass { …, ..BillableClass::ZERO }` so a field appended later
+    /// reads as not declared.
+    pub const ZERO: Self = Self {
+        class: AbiStr::ZERO,
+        family: AbiStr::ZERO,
+    };
 }
 
 /// One term of the plane's route cost: `cheapest` = Σ price(class) × weight.
@@ -1234,6 +1282,39 @@ pub struct RecordChain {
     pub flags: u32,
     /// Alignment padding.
     pub _reserved: u32,
+}
+
+impl RecordChain {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `RecordChain { …, ..RecordChain::ZERO }` so a field appended later reads
+    /// as not declared.
+    pub const ZERO: Self = Self {
+        kind: 0,
+        framing: 0,
+        flags: 0,
+        _reserved: 0,
+    };
+}
+
+/// One record kind's RETENTION RULE, as the plane declares it: which of the kind's rows older than
+/// a purge's cutoff the host's purge drops. The host passes the rule with every purge of the kind
+/// (the store ABI's `KindBeforeIn::retention`), so no store infers it from the kind's name. A kind
+/// the plane lists no rule for is purged by age ([`RETENTION_AGE`](crate::abi::store::plane::RETENTION_AGE)).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecordRetention {
+    /// Index into [`PlaneTail::record_kinds`].
+    pub kind: u32,
+    /// [`RETENTION_AGE`](crate::abi::store::plane::RETENTION_AGE) |
+    /// [`RETENTION_TERMINAL_ONLY`](crate::abi::store::plane::RETENTION_TERMINAL_ONLY).
+    pub rule: u32,
+}
+
+impl RecordRetention {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `RecordRetention { …, ..RecordRetention::ZERO }` so a field appended
+    /// later reads as not declared.
+    pub const ZERO: Self = Self { kind: 0, rule: 0 };
 }
 
 /// [`TrustKey::role`]: the key holds the registration's pin object, `{mechanism, key?,
@@ -1287,6 +1368,17 @@ pub struct PinMechanism {
     pub _reserved: u32,
 }
 
+impl PinMechanism {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `PinMechanism { …, ..PinMechanism::ZERO }` so a field appended later
+    /// reads as not declared.
+    pub const ZERO: Self = Self {
+        token: AbiStr::ZERO,
+        flags: 0,
+        _reserved: 0,
+    };
+}
+
 /// The status one refusal reason wears in one dialect (or in every dialect, with
 /// [`REFUSAL_ANY_DIALECT`]). The kernel chooses a refusal's status from the plane's rows: the row
 /// for the unit's dialect, else the [`REFUSAL_ANY_DIALECT`] row, else its own default. A protocol
@@ -1324,6 +1416,20 @@ pub struct TrustKey {
     pub mechanisms: *const PinMechanism,
     /// How many.
     pub mechanisms_len: usize,
+}
+
+impl TrustKey {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `TrustKey { …, ..TrustKey::ZERO }` so a field appended later reads as
+    /// not declared.
+    pub const ZERO: Self = Self {
+        key: AbiStr::ZERO,
+        role: 0,
+        flags: 0,
+        default: AbiStr::ZERO,
+        mechanisms: std::ptr::null(),
+        mechanisms_len: 0,
+    };
 }
 
 /// THE PLANE'S STATEMENT TAIL: static facts, `'static` data.
@@ -1439,6 +1545,67 @@ pub struct PlaneTail {
     pub metric_lanes: *const AbiStr,
     /// How many.
     pub metric_lanes_len: usize,
+    /// THE RETENTION RULE OF EACH RECORD KIND THAT IS NOT PURGED BY AGE ([`RecordRetention`]): at
+    /// most one entry per kind, each naming a kind of [`PlaneTail::record_kinds`]. A kind not listed
+    /// is purged by age. NULL/0 = none. A tail addition: a tail whose `size` ends before it lists
+    /// none.
+    pub record_retentions: *const RecordRetention,
+    /// How many.
+    pub record_retentions_len: usize,
+}
+
+impl PlaneTail {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `PlaneTail { …, ..PlaneTail::ZERO }` so a field appended later reads as
+    /// not declared.
+    pub const ZERO: Self = Self {
+        head: KindTailHead::ZERO,
+        flags: 0,
+        ingress: 0,
+        dispatch_shape: 0,
+        answer_layout: 0,
+        scope: AbiStr::ZERO,
+        label: AbiStr::ZERO,
+        subject_noun: AbiStr::ZERO,
+        admin_noun: AbiStr::ZERO,
+        audit_kind: AbiStr::ZERO,
+        signing_domain: AbiStr::ZERO,
+        signing_kid_prefix: AbiStr::ZERO,
+        cli_help: AbiStr::ZERO,
+        dialects: std::ptr::null(),
+        dialects_len: 0,
+        dialect_auth: std::ptr::null(),
+        dialect_auth_len: 0,
+        scope_kinds: std::ptr::null(),
+        scope_kinds_len: 0,
+        op_classes: std::ptr::null(),
+        op_classes_len: 0,
+        billable_classes: std::ptr::null(),
+        billable_classes_len: 0,
+        route_cost: std::ptr::null(),
+        route_cost_len: 0,
+        fee_units: std::ptr::null(),
+        fee_units_len: 0,
+        record_kinds: std::ptr::null(),
+        record_kinds_len: 0,
+        egress_targets: std::ptr::null(),
+        egress_targets_len: 0,
+        record_chains: std::ptr::null(),
+        record_chains_len: 0,
+        trust_keys: std::ptr::null(),
+        trust_keys_len: 0,
+        refusal_statuses: std::ptr::null(),
+        refusal_statuses_len: 0,
+        caller_credential_refusal: AbiStr::ZERO,
+        admin_routes: std::ptr::null(),
+        admin_routes_len: 0,
+        admin_openapi: Blob::ZERO,
+        stream_ceiling_secs: 0,
+        metric_lanes: std::ptr::null(),
+        metric_lanes_len: 0,
+        record_retentions: std::ptr::null(),
+        record_retentions_len: 0,
+    };
 }
 
 /// The most lane words a plane's tail may declare ([`PlaneTail::metric_lanes`]).
@@ -1474,6 +1641,20 @@ pub struct Claim {
     pub refusal_dialect: u16,
     /// Alignment padding.
     pub _pad: u16,
+}
+
+impl Claim {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `Claim { …, ..Claim::ZERO }` so a field appended later reads as not
+    /// declared.
+    pub const ZERO: Self = Self {
+        verb: AbiStr::ZERO,
+        target: AbiStr::ZERO,
+        carrier: AbiStr::ZERO,
+        flags: 0,
+        refusal_dialect: 0,
+        _pad: 0,
+    };
 }
 
 /// One admin route the built plane serves through [`slot::SERVE`].
@@ -1529,7 +1710,20 @@ pub struct PlaneSnapshot {
     pub listed: *const AbiStr,
     /// How many.
     pub listed_len: usize,
+    /// THE ARRIVAL SPANS of its claims (status row 173: the request span a route's arrival opens,
+    /// as the previous release's ingress entry spans did), PARALLEL to [`PlaneSnapshot::claims`]:
+    /// entry `i` names the span an arrival on `claims[i]` opens, empty = that claim opens none. Each
+    /// name is DATA the kernel builds one tracing callsite for when it binds the snapshot, never per
+    /// request; a non-empty name is `[a-z0-9_]`, at most [`MAX_ARRIVAL_SPAN`] bytes. NULL/0 = no
+    /// claim opens one; any other length than `claims_len` refuses the snapshot. A tail addition: a
+    /// snapshot whose `size` ends before it opens none, and the host reads nothing past that `size`.
+    pub arrival_spans: *const AbiStr,
+    /// How many: `0` or `claims_len`.
+    pub arrival_spans_len: usize,
 }
+
+/// The longest arrival span name a snapshot may state ([`PlaneSnapshot::arrival_spans`]).
+pub const MAX_ARRIVAL_SPAN: usize = 64;
 
 /// ONE PROVIDER'S DIALECT FACTS, as a plane receives them at `open` (THE DESIGN section 4: a
 /// plane receives, at open, the dialect fields of the providers it references and resolves model
@@ -1663,6 +1857,16 @@ pub struct OutField {
     pub value: Span,
 }
 
+impl OutField {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `OutField { …, ..OutField::ZERO }` so a field appended later reads as
+    /// not declared.
+    pub const ZERO: Self = Self {
+        name: Span::ZERO,
+        value: Span::ZERO,
+    };
+}
+
 /// One cumulative unit count, in a HOST buffer.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -1673,6 +1877,17 @@ pub struct UnitCount {
     pub source: u32,
     /// The cumulative count.
     pub amount: u64,
+}
+
+impl UnitCount {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `UnitCount { …, ..UnitCount::ZERO }` so a field appended later reads as
+    /// not declared.
+    pub const ZERO: Self = Self {
+        class: 0,
+        source: 0,
+        amount: 0,
+    };
 }
 
 /// One record write, a destination fact the kernel applies on the record seam; its key and value
@@ -1693,6 +1908,18 @@ pub struct RecordWrite {
     pub key: Span,
     /// The value.
     pub value: Span,
+}
+
+impl RecordWrite {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `RecordWrite { …, ..RecordWrite::ZERO }` so a field appended later reads
+    /// as not declared.
+    pub const ZERO: Self = Self {
+        kind: 0,
+        op: 0,
+        key: Span::ZERO,
+        value: Span::ZERO,
+    };
 }
 
 /// `arrive`'s `in`.
@@ -1750,8 +1977,9 @@ pub struct ArriveOut {
     /// fault by definition; 400 to 599 for a refusal about an entry (see "A refused arrival",
     /// rule 6). `0` on every other outcome.
     pub refusal_status: u32,
-    /// On REFUSED: `REFUSED_*` bits, the refusal's neutral outcome ([`REFUSED_UNSUPPORTED_ACTION`]);
-    /// `0` on every other outcome. In what was padding.
+    /// On REFUSED: `REFUSED_*` bits, the refusal's neutral outcome ([`REFUSED_UNSUPPORTED_ACTION`])
+    /// and, on a refusal about an entry, its order ([`REFUSED_AFTER_ADMISSION`]); `0` on every
+    /// other outcome. In what was padding.
     pub refusal_flags: u32,
     /// This unit's CORRELATION KEY: a non-zero value the plane derives from the arrival (for
     /// example from its request identifier), naming the unit for a subsequent
@@ -2191,6 +2419,11 @@ pub struct PlaneCancelIn {
     pub arena_buf: *mut u8,
     /// Its capacity.
     pub arena_cap: usize,
+    /// THE CANCELLED UNIT, as the kernel minted it (the key its [`ArriveIn::unit`] carried), on the
+    /// host's own cancel of a unit, so a plane that keys its units from `arrive` finds one whose
+    /// ticket no piece ever carried (audit P-M7). `0` for the instance's driver ticket and for
+    /// a cancel of an op in flight, whose own `in` names its unit.
+    pub unit: u64,
 }
 
 /// The plane's `cancel` `out`: the lifecycle's, embedded first, and what the plane wrote.

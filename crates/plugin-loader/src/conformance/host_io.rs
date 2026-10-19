@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use busbar_contract::abi::host::io::{DIR_READ, DIR_WRITE};
 use busbar_contract::abi::mechanism::ticket::Ticket;
-use busbar_contract::io_host::{IoHost, IoRefusal, IoResult, Spawn};
+use busbar_contract::io_host::{Ends, IoHost, IoRefusal, IoResult, Spawn};
 
 /// The refusal of what the script did not admit.
 pub const NOT_ADMITTED: &str = "the host did not admit this for the dial that asked";
@@ -377,14 +377,23 @@ impl IoHost for SuiteIo {
         ))
     }
 
-    fn ends(&self, owner: u64, id: u64) -> IoResult<(u16, String)> {
+    fn ends(&self, owner: u64, id: u64) -> IoResult<Ends> {
         self.on(owner, id, |h| match h {
-            Handle::Stream(s) => {
-                let local = s.local_addr().map_err(|e| failed(&e))?.port();
-                let peer = s.peer_addr().map_err(|e| failed(&e))?.to_string();
-                Ok((local, peer))
-            }
-            _ => Ok((0, String::new())),
+            Handle::Stream(s) => Ok(Ends {
+                port: s.local_addr().map_err(|e| failed(&e))?.port(),
+                peer: s.peer_addr().map_err(|e| failed(&e))?.to_string(),
+                exit: None,
+            }),
+            // The program itself, without waiting: a descendant holding its output hides nothing.
+            Handle::Program { child, .. } => Ok(Ends {
+                exit: child.try_wait().map_err(|e| failed(&e))?.map(|s| {
+                    use std::os::unix::process::ExitStatusExt;
+                    s.code()
+                        .map_or_else(|| 128 + s.signal().unwrap_or(0) as u32, |c| c as u32)
+                }),
+                ..Ends::default()
+            }),
+            Handle::Listener(_) => Ok(Ends::default()),
         })
     }
 }

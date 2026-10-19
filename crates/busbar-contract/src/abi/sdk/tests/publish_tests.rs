@@ -168,3 +168,49 @@ fn generations_belong_to_their_instance() {
     assert_eq!(first.at(1).as_deref().map(String::as_str), Some("first"));
     assert_eq!((first.live(), second.live()), (1, 0));
 }
+
+/// A claim's arrival span is published as the snapshot's parallel list, one per claim, empty where
+/// a claim names none; a snapshot whose claims name none publishes no list at all.
+#[test]
+fn a_claims_arrival_span_is_published_one_per_claim() {
+    let gens: Generations<PlaneSnapshot> = Generations::new();
+    let spec = SnapshotSpec {
+        claims: vec![
+            ClaimSpec::new("POST", "/a", "door", CLAIM_EXACT).with_arrival_span("named"),
+            ClaimSpec::new("POST", "/b", "door", CLAIM_EXACT),
+        ],
+        ..SnapshotSpec::default()
+    };
+    // SAFETY: the SDK holds the snapshot until `retire(1)`.
+    let snap = unsafe { &*gens.publish(1, &spec) };
+    assert_eq!(snap.arrival_spans_len, 2);
+    // SAFETY: as above; the list holds two entries.
+    let spans = unsafe { std::slice::from_raw_parts(snap.arrival_spans, 2) };
+    assert_eq!(read(spans[0]), b"named");
+    assert_eq!(read(spans[1]), b"");
+    let none = SnapshotSpec {
+        claims: vec![ClaimSpec::new("POST", "/a", "door", CLAIM_EXACT)],
+        ..SnapshotSpec::default()
+    };
+    // SAFETY: as above, until `retire(2)`.
+    let snap = unsafe { &*gens.publish(2, &none) };
+    assert_eq!(snap.arrival_spans_len, 0);
+    assert!(snap.arrival_spans.is_null());
+}
+
+/// A plane's `const` retention table lowers each rule to its ABI code, and the table passes the
+/// tail's element check.
+#[test]
+fn a_record_retention_table_lowers_to_the_tail_codes() {
+    use crate::abi::plane::check::check_record_retentions;
+    use crate::abi::store::plane::{RETENTION_AGE, RETENTION_TERMINAL_ONLY};
+    use crate::records::Retention;
+    const TABLE: [crate::abi::plane::RecordRetention; 2] = [
+        record_retention(1, Retention::TerminalOnly),
+        record_retention(0, Retention::Age),
+    ];
+    assert_eq!(TABLE[0].kind, 1);
+    assert_eq!(TABLE[0].rule, RETENTION_TERMINAL_ONLY);
+    assert_eq!(TABLE[1].rule, RETENTION_AGE);
+    assert_eq!(check_record_retentions(&TABLE, 2), Ok(()));
+}

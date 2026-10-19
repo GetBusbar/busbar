@@ -6579,6 +6579,43 @@ fn a_fee_unit_declared_as_a_class_is_neither_owed_nor_priced_by_the_card() {
     assert!(errs.iter().any(|e| e == want), "{errs:?}");
 }
 
+/// Q128 audit ruling (a), restating its M4: a `jwt-bearer` credential naming its key file is
+/// read by the HOST, through the secret kind's file source, and the plugin is handed the JSON. One
+/// that is the JSON inline is handed over untouched, with no file opened.
+#[test]
+fn a_service_account_key_file_is_read_through_the_file_source_at_config_time() {
+    let json = br#"{"client_email":"a@b","private_key":"k"}"#.to_vec();
+    let mut asked = Vec::new();
+    let read = super::service_account_json(b"/keys/sa.json\n".to_vec(), |file| {
+        asked.push(file.file_path().map(str::to_string));
+        Ok(json.clone())
+    })
+    .expect("the key file reads");
+    assert_eq!(read, json);
+    assert_eq!(asked, vec![Some("/keys/sa.json".to_string())]);
+
+    let inline = super::service_account_json(json.clone(), |_| {
+        panic!("an inline service account opens no file")
+    })
+    .expect("inline");
+    assert_eq!(inline, json);
+}
+
+/// RED: a key file that cannot be read refuses in 1.5.5's words, and the credential (the path it
+/// names) is never rendered.
+#[test]
+fn an_unreadable_service_account_key_file_refuses_in_1_5_5s_words_without_the_path() {
+    let refused = super::service_account_json(b"/keys/secret-name.json".to_vec(), |_| {
+        Err("secret file:/keys/secret-name.json cannot resolve: No such file or directory (os error 2)".to_string())
+    })
+    .expect_err("an unreadable key file refuses");
+    assert_eq!(
+        refused,
+        "could not read service-account key file named by this lane's credential: No such file or directory (os error 2)"
+    );
+    assert!(!refused.contains("secret-name"), "{refused}");
+}
+
 // ── #50: a provider's base_url scheme is judged against the schemes the LOADED transports claim ──
 
 /// The claims of a build whose transports declare one secure scheme and one plaintext scheme,
