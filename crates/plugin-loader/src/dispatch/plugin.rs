@@ -337,7 +337,7 @@ pub(crate) fn with_crossing<R>(inst: Option<&Instance>, f: impl FnOnce() -> R) -
     }
     let mark = inst.map_or(std::ptr::null(), std::ptr::from_ref);
     let _restore = Restore(CROSSING.with(|c| c.replace(mark)));
-    f()
+    super::services::ticketless_scope(f)
 }
 
 /// `f` run with the mark nulled, so nothing it hands the host is taken for the crossing it happens

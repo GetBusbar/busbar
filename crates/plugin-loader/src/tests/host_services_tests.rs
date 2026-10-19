@@ -1171,6 +1171,54 @@ fn a_second_short_call_on_one_handle_is_fault() {
     assert_eq!(runs.load(Ordering::SeqCst), 1);
 }
 
+/// RED (Q128 plugin-loader u70 LOW): a TICKETLESS service that answers short earns its one
+/// re-call within the crossing: the re-call reads the result the first call made (the service does
+/// not act again), and a second short answer is FAULT (THE DESIGN: the re-call reads the stored
+/// result without acting again; a second short answer on that handle is FAULT). A later crossing
+/// starts afresh.
+#[test]
+fn red_a_ticketless_short_answer_earns_one_recall_and_a_second_short_is_fault() {
+    let store = Arc::new(ServiceStore::default());
+    let runs = AtomicUsize::new(0);
+    let h = head(op::SIGN, Ticket::NONE, 0, 0);
+    let (mut b, mut s) = ([0u8; 4], [SPAN; 1]);
+    let into = bufs(&mut b, &mut s);
+    let (mut wide, mut wide_spans) = ([0u8; 8], [SPAN; 1]);
+    let wide = bufs(&mut wide, &mut wide_spans);
+    crate::dispatch::services::ticketless_scope(|| {
+        // SAFETY: the test's own buffers.
+        let first = unsafe { serve(&store, &nowhere(), &h, Some(&into), eight(&runs)) };
+        assert_eq!(first.outcome, Outcome::Failed);
+        assert_eq!((first.needed_bytes, first.needed_items), (8, 1));
+        // SAFETY: as above.
+        let second = unsafe { serve(&store, &nowhere(), &h, Some(&into), eight(&runs)) };
+        assert_eq!(second.outcome, Outcome::Fault);
+        assert_eq!(second.error, SECOND_SHORT);
+        assert_eq!(runs.load(Ordering::SeqCst), 1, "the service acted once");
+    });
+    crate::dispatch::services::ticketless_scope(|| {
+        // SAFETY: the test's own buffers.
+        let short = unsafe { serve(&store, &nowhere(), &h, Some(&into), eight(&runs)) };
+        assert_eq!(short.outcome, Outcome::Failed);
+        // SAFETY: as above.
+        let recall = unsafe { serve(&store, &nowhere(), &h, Some(&wide), eight(&runs)) };
+        assert_eq!(recall.outcome, Outcome::Ready);
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            2,
+            "the re-call read the stored result"
+        );
+        // SAFETY: as above.
+        let next = unsafe { serve(&store, &nowhere(), &h, Some(&wide), eight(&runs)) };
+        assert_eq!(next.outcome, Outcome::Ready);
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            3,
+            "a whole answer is never held"
+        );
+    });
+}
+
 /// The re-call a short answer earns reads the STORED result: the service does not run again, and a
 /// re-issued handle after it reads the same result.
 #[test]

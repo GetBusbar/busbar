@@ -274,6 +274,27 @@ unsafe fn deliver(stored: &Stored, into: Option<&ServiceBufs>) -> Result<Answere
     })
 }
 
+thread_local! {
+    /// The ticketless results that answered short, one list per crossing on this thread
+    /// (innermost last): each is held for the one re-call its short answer earned.
+    static SHORTED: std::cell::RefCell<Vec<Vec<(u32, Stored)>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// `f` run as one crossing for the ticketless services it calls: a short answer's result is held
+/// until the crossing returns, and no longer.
+pub(crate) fn ticketless_scope<R>(f: impl FnOnce() -> R) -> R {
+    struct Pop;
+    impl Drop for Pop {
+        fn drop(&mut self) {
+            let _ = SHORTED.try_with(|s| s.borrow_mut().pop());
+        }
+    }
+    SHORTED.with(|s| s.borrow_mut().push(Vec::new()));
+    let _pop = Pop;
+    f()
+}
+
 /// THE MECHANISM every service runs through, kind-neutral: `body` is the service itself, run at
 /// most once per handle.
 ///
