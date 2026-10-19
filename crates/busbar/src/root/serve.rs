@@ -903,6 +903,21 @@ impl Served {
             .flat_map(|p| p.live.served_facts.need_trust.iter().copied())
             .collect()
     }
+
+    /// The declaring sections of the planes among `doors` this composition did not open (what the
+    /// root's rules hold as restart-to-apply, `door_steps::Rules::hold_unopened`). The fallback
+    /// plane is never one: its generation is built at every apply, as the previous release built
+    /// it.
+    #[must_use]
+    pub fn unopened(&self, doors: &[(String, DoorPlane)]) -> Vec<&'static str> {
+        doors
+            .iter()
+            .filter(|(instance, _)| !self.planes.iter().any(|p| p.instance == *instance))
+            .map(|(_, plugin)| plugin.served())
+            .filter(|served| !served.fallback)
+            .map(|served| served.section)
+            .collect()
+    }
 }
 
 impl Served {
@@ -942,6 +957,9 @@ impl Checkpoints {
     /// One tick: bump the epoch, then hand each running unit's checkpoint to the node's book
     /// ([`PlaneMoney::flush_checkpoints`]). Answers how many were journaled.
     fn tick(&self) -> usize {
+        // THE NODE'S LEASE ON ITS HOST NAME, refreshed on this same tick (Q128): a node with no data
+        // directory keeps journaling under its host's id only while it holds it.
+        crate::root::durability::refresh_held_lease();
         self.epoch.bump();
         self.money
             .iter()
@@ -3089,6 +3107,7 @@ impl DataRoutes {
             &self.post,
             &units,
             (self.pin)(),
+            served.facts.audit_kind,
         ) else {
             let _ = verdict.send(Err(None));
             return;
@@ -3579,6 +3598,7 @@ impl DataRoutes {
                 late,
                 (self.pin)(),
                 nesting.as_ref().map(|n| &n.parent),
+                live.facts.audit_kind,
             )
             .instrument(span.clone())
             .await
