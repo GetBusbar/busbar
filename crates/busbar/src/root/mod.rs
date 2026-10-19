@@ -76,6 +76,9 @@ pub mod durability;
 pub mod egress_ports;
 pub mod exports;
 pub mod hooks;
+#[cfg(all(test, linked_every_plane))]
+#[path = "tests/inbound.rs"]
+mod inbound_tests;
 pub mod kernel;
 pub mod keyset;
 pub mod linked;

@@ -131,6 +131,7 @@ mod alloc_gate_instrument {
 pub mod door;
 pub mod grammar;
 pub mod guest;
+pub mod inbound;
 pub mod inflight;
 pub mod plane_driver;
 pub mod probe;

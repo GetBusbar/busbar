@@ -234,3 +234,171 @@ pub fn verify_unit_ref(
     }
     Ok(r.id)
 }
+
+// ── the kernel's side of the handle, as the loader calls it ─────────────────────────────────
+
+/// One request's head as a transport lent it ([`HeadView`](busbar_contract::abi::host::service::HeadView)),
+/// copied out of the caller's memory before anything else runs: neutral fields only.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct HeadCopy {
+    /// The method.
+    pub method: String,
+    /// The target's path, as received.
+    pub target: String,
+    /// The authority.
+    pub authority: String,
+    /// The query without `?`; `None` = absent.
+    pub query: Option<String>,
+    /// The field lines, in order, as received: (name, value). A value may be a credential.
+    pub fields: Vec<(String, Vec<u8>)>,
+}
+
+impl std::fmt::Debug for HeadCopy {
+    // Never a field value: a field line may carry the credential.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HeadCopy")
+            .field("method", &self.method)
+            .field("target", &self.target)
+            .finish_non_exhaustive()
+    }
+}
+
+/// `auth.call`, as the loader hands it to the kernel once the refs, the unit and the `in` passed
+/// their checks.
+#[derive(Debug)]
+pub struct AuthCallAsk {
+    /// The calling instance's identity: the owner its refs verified for.
+    pub owner: u64,
+    /// The generation its ref verified at.
+    pub generation: u64,
+    /// The verified ref's id: the line or binding the kernel minted it for.
+    pub auth: u64,
+    /// The presented unit, verified by the loader when not [`UnitRef::NONE`].
+    pub unit: UnitRef,
+    /// The point bit.
+    pub point: u32,
+    /// The connection.
+    pub conn: u64,
+    /// The stream on it.
+    pub stream: u64,
+    /// The request; empty at the peer point.
+    pub request: HeadCopy,
+    /// The whole body, at the body point only.
+    pub body: Option<Vec<u8>>,
+}
+
+/// What `auth.call` answers a transport: continue or stop, the request's unit, and the NAMES the
+/// auths named for stripping, each with its `FIELD_SENSITIVE` / `FIELD_QUERY` flag. Never a value
+/// and never the verdict (THE DESIGN §6 "Auth points and guest lists", step 4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthCallAnswer {
+    /// `FLOW_CONTINUE` | `FLOW_STOP`.
+    pub flow: u32,
+    /// The request's unit.
+    pub unit: UnitRef,
+    /// The names to strip and their flags.
+    pub strips: Vec<(String, u32)>,
+}
+
+/// Where a pended `auth.call`'s answer goes: called once, from any thread. `Err` is REFUSED with
+/// that text.
+pub type AuthDone = Box<dyn FnOnce(Result<AuthCallAnswer, &'static str>) + Send>;
+
+/// How the kernel ran an `auth.call`.
+#[derive(Debug)]
+pub enum AuthRan {
+    /// Finished: the answer, or REFUSED with the text.
+    Now(Result<AuthCallAnswer, &'static str>),
+    /// The kernel kept the [`AuthDone`] and answers through it; the call pends on its ticket.
+    Pending,
+}
+
+/// `unit.hand_in`, as the loader hands it to the kernel.
+#[derive(Debug)]
+pub struct HandInAsk {
+    /// The calling instance's identity.
+    pub owner: u64,
+    /// The generation its ref verified at.
+    pub generation: u64,
+    /// The verified ref's id.
+    pub auth: u64,
+    /// The presented unit (verified when not [`UnitRef::NONE`]).
+    pub unit: UnitRef,
+    /// The line the transport matched.
+    pub line: u32,
+    /// The connection.
+    pub conn: u64,
+    /// The stream on it.
+    pub stream: u64,
+    /// The request, after the transport stripped what the auth named.
+    pub request: HeadCopy,
+}
+
+/// `unit.refuse`, as the loader hands it to the kernel.
+#[derive(Debug)]
+pub struct RefuseAsk {
+    /// The calling instance's identity.
+    pub owner: u64,
+    /// The published generation.
+    pub generation: u64,
+    /// The presented unit (verified when not [`UnitRef::NONE`]).
+    pub unit: UnitRef,
+    /// `REFUSE_*`.
+    pub cause: u32,
+    /// The matched line; `LINE_NONE` for no route.
+    pub line: u32,
+    /// The connection.
+    pub conn: u64,
+    /// The stream on it.
+    pub stream: u64,
+}
+
+/// The refusal the kernel owns: status, head fields and body, framed verbatim by the transport.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusalBytes {
+    /// The status.
+    pub status: u16,
+    /// The head fields, in order.
+    pub fields: Vec<(String, Vec<u8>)>,
+    /// The body.
+    pub body: Vec<u8>,
+}
+
+/// The secret a live unit's ref was minted under, and what else its MAC covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnitSecret {
+    /// The request's own kernel secret.
+    pub secret: [u64; 2],
+    /// The generation it was minted at.
+    pub generation: u64,
+    /// The line it was minted for.
+    pub line: u32,
+}
+
+/// THE KERNEL'S SIDE OF THE HOST AUTH HANDLE (THE DESIGN §6, "Auth points and guest lists", step 4;
+/// Part 2 #65, #74), as the loader calls it. The composition root installs one on the dispatcher
+/// ([`Dispatcher::install_auth_handle`](super::Dispatcher::install_auth_handle)) over the kernel's
+/// inbound module; the loader names no kernel crate. Every call reaches it only after the loader
+/// verified the call's refs, its unit (against [`AuthHandleHost::unit_secret`]) and its `in`.
+pub trait AuthHandleHost: Send + Sync {
+    /// The secret, generation and line `owner`'s live unit `unit` was minted under; `None` for a
+    /// unit the kernel holds no record of for that owner (the loader then refuses it).
+    fn unit_secret(&self, owner: u64, unit: u64) -> Option<UnitSecret>;
+
+    /// `auth.call`: answer at once, or keep `done` and answer [`AuthRan::Pending`] (the call pends).
+    fn auth_call(&self, ask: AuthCallAsk, done: AuthDone) -> AuthRan;
+
+    /// `unit.hand_in`: `(flow, unit)`, or REFUSED with the text. Never pends.
+    ///
+    /// # Errors
+    ///
+    /// The kernel serves no list for the caller, or holds no record of its unit.
+    fn hand_in(&self, ask: HandInAsk) -> Result<(u32, UnitRef), &'static str>;
+
+    /// `unit.refuse`: the refusal's bytes, or REFUSED with the text. Never pends.
+    ///
+    /// # Errors
+    ///
+    /// The kernel serves no list for the caller, or the cause names no line it holds.
+    fn refuse(&self, ask: RefuseAsk) -> Result<RefusalBytes, &'static str>;
+}

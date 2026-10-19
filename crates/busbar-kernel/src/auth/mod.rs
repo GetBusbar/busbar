@@ -193,7 +193,7 @@ const AUTH_REPLAY: &str = "auth-replay";
 /// cannot answer, and no governance store to claim in each refuse — a ledger that cannot say
 /// whether the message was seen must not be read as saying it was not. A sender's retry inside the
 /// window is a replay, refused alike.
-async fn replay_claimed(
+pub(crate) async fn replay_claimed(
     gov: Option<&crate::governance::GovState>,
     provider: &str,
     replay: &Replay,
@@ -2010,7 +2010,7 @@ fn rate_limited_response() -> Response {
 /// writer may override it to match that protocol's own genuine failure status (see
 /// `auth_failure_status_and_kind`). Hardcoding 401 made a tap watching an ingress denial on one of
 /// those overriding protocols contradict the response the client actually got.
-fn unauthorized_with_completion_taps(
+pub(crate) fn unauthorized_with_completion_taps(
     app: &std::sync::Arc<crate::state::App>,
     path: &str,
     door: Option<&(busbar_kernel::plane_routes::PlaneRefuseFn, String)>,
@@ -2067,7 +2067,7 @@ fn unauthorized_with_completion_taps(
 /// answered as the gateway answers any arrival it has no capacity for, the at-capacity 503 with
 /// `Retry-After: 1` the inbound cap sheds with, byte for byte. No new customer string, and never a
 /// bad credential's 401. The admin plane keeps its own answer.
-fn verifier_overloaded_response() -> Response {
+pub(crate) fn verifier_overloaded_response() -> Response {
     crate::limits::admission::inbound_overloaded_response()
 }
 
