@@ -473,8 +473,19 @@ impl DeclaredConns for HttpsConns {
                 .unwrap_or_else(PoisonError::into_inner)
                 .insert((owner, need), spec.transport.clone());
         }
-        let unresolved = (!spec.target_from.is_empty() && target.is_none())
-            || (!spec.trust_from.is_empty() && trust.is_none());
+        // As the connector declares (busbar-core-connector `declare`): a member-target need
+        // (`settings.*.<key>`) is pinned by no one target, each member's route being sealed at its
+        // own, and dials what the plane names per open; a member-scoped or OWNED trust path is
+        // optional, absent leaving the public roots alone. Any other path that resolved to nothing
+        // refuses the need.
+        let per_member = |path: &str| busbar_contract::section::member_target(path).is_some();
+        let optional_trust = busbar_contract::section::owned_path(&spec.trust_from).is_some();
+        let unresolved =
+            (!spec.target_from.is_empty() && !per_member(&spec.target_from) && target.is_none())
+                || (!spec.trust_from.is_empty()
+                    && !per_member(&spec.trust_from)
+                    && !optional_trust
+                    && trust.is_none());
         let answer =
             if spec.transport.is_empty() || spec.transport != self.facts.transport || unresolved {
                 Err(ConnError::Refused)
