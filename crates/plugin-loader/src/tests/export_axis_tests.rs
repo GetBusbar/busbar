@@ -233,48 +233,47 @@ fn an_export_door_stating_ready_is_awaited_when_it_opens_to_deliver() {
     assert_eq!(READIES.load(Ordering::SeqCst), before + 2);
 }
 
-/// THE PER-INSTANCE IN-FLIGHT BOUND IS 1.5.5'S, PINNED (Q128 export-webhook, ruled parity
+/// THE PER-INSTANCE IN-FLIGHT BOUND IS 1.5.5'S, PINNED (Q128 export audit, ruled parity
 /// 2026-10-18): an instance opened to deliver is bound by the `max_inflight_deliveries` ITS OWN
-/// settings state, clamped to at least one permit, through either door. 1.5.5 built each webhook
-/// target's gate as `max_inflight.clamp(1, Semaphore::MAX_PERMITS)` (v1.5.5
-/// crates/busbar/src/export/webhook.rs:97-104) and validated only the largest instance's bound
+/// settings state, clamped to at least one permit, within the door's declared concurrency. 1.5.5
+/// built each delivery target's gate as `max_inflight.clamp(1, Semaphore::MAX_PERMITS)` (v1.5.5
+/// crates/busbar/src/export/, the target gate) and validated only the largest instance's bound
 /// (v1.5.5 config/mod.rs:4003-4008, config_validate/mod.rs:1406-1420), so an instance stating `0`
 /// beside a larger sibling validated and ran at one permit; a per-instance refusal is an
-/// owner-signable difference, not a fix. The webhook sink's own test pins the fold to the largest.
+/// owner-signable difference, not a fix. Proven on the loader's own export witness (its Statement
+/// declares a concurrency of 4).
 #[test]
 fn an_export_instance_is_bound_by_its_own_inflight_clamped_to_one() {
-    let doors = both(
-        "busbar-export-webhook",
-        busbar_export_webhook::door,
-        "busbar_export_webhook_plugin",
+    use crate::dispatch::ready::ready_plugins::export::{door, NAME};
+    const DECLARED: u32 = 4;
+    let registry = PluginRegistry::empty()
+        .link(vec![crate::LinkedPlugin::door(manifest(NAME), door)])
+        .expect("the linked witness admits");
+    let rows =
+        ExportRows::new(&registry, dispatcher()).with_conns(Arc::new(crate::needs_restated::Inert));
+    let row = rows.row(NAME).expect("an export row");
+    let bound = |stated: Option<u64>| {
+        let mut settings = serde_json::json!({ "ready": "fine" });
+        if let Some(n) = stated {
+            settings["max_inflight_deliveries"] = n.into();
+        }
+        rows.load(row, "export.audit", Some(&settings))
+            .expect("the sink binds")
+            .max_inflight()
+    };
+    assert_eq!(
+        bound(Some(0)),
+        1,
+        "a stated 0 runs at one permit, as 1.5.5 clamped it"
     );
-    for registry in doors {
-        let rows = ExportRows::new(&registry, dispatcher())
-            .with_conns(Arc::new(crate::needs_restated::Inert));
-        let row = rows.row("busbar-export-webhook").expect("an export row");
-        let bound = |stated: Option<u64>| {
-            let mut settings = serde_json::json!({ "url": "https://collector.example.com/in" });
-            if let Some(n) = stated {
-                settings["max_inflight_deliveries"] = n.into();
-            }
-            rows.load(row, "export.audit", Some(&settings))
-                .expect("the sink binds")
-                .max_inflight()
-        };
-        assert_eq!(
-            bound(Some(0)),
-            1,
-            "a stated 0 runs at one permit, as 1.5.5 clamped it"
-        );
-        assert_eq!(
-            bound(Some(8)),
-            8,
-            "each instance is bound by its own figure"
-        );
-        assert_eq!(
-            bound(None),
-            busbar_contract::export_calls::DEFAULT_INFLIGHT,
-            "none stated: the default"
-        );
-    }
+    assert_eq!(
+        bound(Some(3)),
+        3,
+        "each instance is bound by its own figure"
+    );
+    assert_eq!(
+        bound(None),
+        busbar_contract::export_calls::DEFAULT_INFLIGHT.min(DECLARED),
+        "none stated: the default, within the declared concurrency"
+    );
 }
