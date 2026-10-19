@@ -96,3 +96,54 @@ fn a_carrier_the_base_ledger_does_not_carry_is_refused() {
         "a carrier exemption written in this change was accepted: {scope}"
     );
 }
+
+#[test]
+fn a_renamed_tokio_or_a_net_feature_the_plugin_forwards_is_an_offence() {
+    let renamed = Pkg {
+        name: "x".into(),
+        source: None,
+        manifest_path: String::new(),
+        deps: vec![("tk".into(), vec!["net".into()], false, true)],
+        features: BTreeMap::new(),
+        packages: BTreeMap::from([("tk".into(), "tokio".into())]),
+    };
+    assert_eq!(asks(&renamed), ["tokio (net)"]);
+    let forwarded = Pkg {
+        name: "x".into(),
+        source: None,
+        manifest_path: String::new(),
+        deps: vec![
+            ("tk".into(), Vec::new(), true, true),
+            ("redis".into(), Vec::new(), false, true),
+        ],
+        features: BTreeMap::from([
+            ("sock".into(), vec!["dep:tk".into(), "tk?/net".into()]),
+            ("cache".into(), vec!["redis/tokio-comp".into()]),
+        ]),
+        packages: BTreeMap::from([("tk".into(), "tokio".into())]),
+    };
+    assert!(asks(&forwarded).is_empty());
+    let mut got = forwards(&forwarded);
+    got.sort();
+    assert_eq!(got, ["redis (aio)", "tokio (net)"]);
+}
+
+#[test]
+fn a_carrier_outside_the_transport_kind_is_refused_whatever_its_name_says() {
+    let cx = Ctx::workspace().expect("workspace context");
+    let mut ov = based(&cx);
+    // The kind table no longer names the transport directory: no carrier is a transport crate.
+    let config = cx.read(CONFIG).expect("the kind table reads");
+    ov.set(
+        CONFIG,
+        config.replace(
+            "transport = [\"crates/busbar-transport-*\"]",
+            "transport = [\"crates/zz-no-transport-*\"]",
+        ),
+    );
+    let (red, scope) = row(&cx, ov, ROW_SCOPE);
+    assert!(
+        red && scope.contains("busbar-transport-stdio") && scope.contains("not a transport crate"),
+        "a carrier whose name says `transport` was admitted outside the transport kind: {scope}"
+    );
+}

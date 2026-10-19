@@ -23,6 +23,7 @@ fn asking_tokio_for_net_or_redis_for_aio_is_an_offence() {
             ("tokio".into(), vec!["net".into()], false, false),
         ],
         features: BTreeMap::new(),
+        packages: BTreeMap::new(),
     };
     assert_eq!(asks(&p), ["tokio (net)", "redis (aio)"]);
 }
