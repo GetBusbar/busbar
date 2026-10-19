@@ -10194,3 +10194,75 @@ fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
          {leaked:?}"
     );
 }
+
+// ── A KEY ROW'S `expires_at` ON THE DOOR: UNENFORCED, AS 1.5.5 ──────────────────────────────────────
+//
+// MOVED HERE from `crates/busbar/tests/key_expires_at_cross_plane.rs`, assertions unchanged
+// (DEV-GREEN row 83, ARCHITECT option (a) on #1161): the request is served by the door serving the
+// `pools` map, through the data router built with its claims.
+
+/// LEGACY `crates/busbar/tests/key_expires_at_cross_plane.rs::a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane`.
+/// End to end on the data plane through the `keys` chain: the request is admitted (200 from the far
+/// end) with the key row's `expires_at` stamped 30 days in the past (the token's own `exp` still in
+/// the future), while a wrong token is still refused (401) on the same app — so the admission is a
+/// real gate, not an open chain. Measured on the published 1.5.5 AND on HEAD's release binary
+/// (shadow-oracle script cell key-expired-out-of-band.sh): both answer 200.
+/// RED: a stored `expires_at` enforced on the data plane (the request refused).
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-key-row-expired";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, door_word("messages_answer")).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            dialect: Some(door_word("messages_dialect")),
+            allowed_pools: Some(&["p"]),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    // Stamp the minted key's row with an `expires_at` in the past, as an operator (or a migrated
+    // 1.5.5 database) would, and reload the caches. Mint never stamps it.
+    let store = rig.gov.store();
+    let mut row = store
+        .get_key(&rig.key_id)
+        .expect("store read")
+        .expect("the minted row");
+    assert_eq!(
+        row.expires_at, None,
+        "mint never stamps expires_at; it is a stored field nothing in the engine writes"
+    );
+    row.expires_at = Some(busbar_kernel::store::now() - 30 * 86_400);
+    store.put_key(&row).expect("rewrite the row");
+    rig.gov.refresh().expect("reload caches");
+
+    let ask = serde_json::json!({
+        "model": "p",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 8
+    });
+    let path = door_word("messages_path");
+    let (admitted, _, body) = rig.send("POST", path, Some(ask.clone())).await;
+    assert_eq!(
+        admitted,
+        200,
+        "a key row with a past expires_at is still admitted (1.5.5 never enforced it; measured): {}",
+        String::from_utf8_lossy(&body)
+    );
+    let (refused, _, _) = rig
+        .send_bare(
+            "POST",
+            path,
+            Some(ask),
+            &[("authorization", "Bearer bbk_not_a_real_token")],
+        )
+        .await;
+    assert_eq!(
+        refused, 401,
+        "the keys chain is a real gate on this app: a bad token is refused"
+    );
+}
