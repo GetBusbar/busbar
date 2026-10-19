@@ -248,6 +248,16 @@ async fn callback(
              options.",
         ));
     }
+    // RED ARM ONLY, never merged: the method-kind check the ruling refuses.
+    if login_method(app, &cookie.method)
+        .is_some_and(|m| m.login_kind != busbar_contract::auth::LoginKind::Redirect)
+    {
+        return clear_and(error_page(
+            StatusCode::BAD_REQUEST,
+            "Sign-in unavailable",
+            "This sign-in method can't be completed here. Please head back and start again.",
+        ));
+    }
     let redirect_uri = format!("{}/auth/token", app.public_url.as_deref().unwrap_or(""));
 
     // ON THE DOOR: ONE `complete_login`. The plugin redeems the code at its token endpoint itself
