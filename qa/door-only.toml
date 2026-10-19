@@ -84,12 +84,6 @@ count = 1
 
 [[finding]]
 rule = "door-only:static-seam"
-file = "crates/busbar-core-admin/src/v1/service.rs"
-item = "USAGE_RATE_HISTORY"
-count = 1
-
-[[finding]]
-rule = "door-only:static-seam"
 file = "crates/busbar-kernel-audit/src/amend.rs"
 item = "SINK"
 count = 1

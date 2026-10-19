@@ -45,9 +45,9 @@ trust model.
 Busbar carries five planes of traffic, and the point of the architecture is that they are
 five *ingresses onto one core* rather than five products sharing a process. By crate, they
 are `busbar-plane-llm`, `busbar-plane-mcp`, `busbar-plane-a2a`, `busbar-plane-streaming`
-and `busbar-plane-decisions`. Two are in this repository (`crates/busbar-plane-llm`,
-`crates/busbar-plane-streaming`); the MCP, A2A and decisions planes live in their own
-repositories (GetBusbar/busbar-plane-mcp, GetBusbar/busbar-plane-a2a,
+and `busbar-plane-decisions`. One is in this repository (`crates/busbar-plane-llm`); the
+MCP, A2A, streaming and decisions planes live in their own repositories
+(GetBusbar/busbar-plane-mcp, GetBusbar/busbar-plane-a2a, GetBusbar/busbar-plane-streaming,
 GetBusbar/busbar-plane-decisions) and are pinned into the build as git dependencies in the
 root `Cargo.toml`. Each is a plugin
 of kind `plane`, compiled in or dropped into the plugins directory on the same contract, and
@@ -334,7 +334,7 @@ For a pool target, the LLM plane's engine (`crates/busbar-llm/src/engine/pipelin
    usable, use it; otherwise fall through.
 2. **Exclusions**: configured `failover.exclusions` and already-tried lanes (across
    failover hops) are removed from the candidate set.
-3. **SWRR**: `select_weighted` (`crates/busbar-kernel-egress/src/trust/swrr.rs`) runs Nginx-style smooth weighted
+3. **SWRR**: `select_weighted_in` (`crates/busbar-kernel/src/store/in_memory/availability.rs`) runs Nginx-style smooth weighted
    round-robin over the *usable* candidates, using per-pool `current_weight` state.
    A lane is usable only if it isn't dead, isn't out of lifetime budget, and its
    breaker cell admits it.

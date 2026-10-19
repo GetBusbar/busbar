@@ -155,24 +155,6 @@ count = 1
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/egress/duplex_ws.rs"
-item = "websocket"
-count = 1
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/egress/duplex_ws.rs"
-item = "ws"
-count = 2
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/egress/duplex_ws.rs"
-item = "wss"
-count = 1
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/egress/engine/client.rs"
 item = "https"
 count = 1

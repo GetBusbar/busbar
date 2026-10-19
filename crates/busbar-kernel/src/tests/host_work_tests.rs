@@ -321,8 +321,12 @@ fn a_handle_is_found_and_resumed_after_a_restart() {
     });
     assert_eq!((resumed.outcome, resumed.value), (Outcome::Ready, 0));
     assert_eq!(state_and_record(&resumed), (WORK_LIVE, b"park".to_vec()));
-    // The earlier process's live handles count against the bound.
-    let refused = run(|l| after.s.work_open(&caller("inst"), Some(1), "job", b"z", l));
+    // THE EARLIER PROCESS'S LIVE HANDLES HOLD NO SLOT (audit P-M8): their work died with the
+    // process that opened it, so the instance admits up to its full bound again; the bound still
+    // refuses past it.
+    let _ = open(&after, 1, b"y");
+    let _ = open(&after, 1, b"z");
+    let refused = run(|l| after.s.work_open(&caller("inst"), Some(1), "job", b"!", l));
     assert_eq!(
         (refused.outcome, refused.error),
         (Outcome::Refused, refusal::AT_BOUND)
