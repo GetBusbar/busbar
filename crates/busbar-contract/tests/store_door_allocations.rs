@@ -52,6 +52,31 @@ use busbar_contract::records::{
 thread_local! {
     static ARMED: Cell<bool> = const { Cell::new(false) };
     static COUNT: Cell<u64> = const { Cell::new(0) };
+    // The secret scan: while armed, every buffer freed (or moved by a realloc) is read just
+    // before it goes, and one still holding `MARKER` is counted.
+    static SCANNING: Cell<bool> = const { Cell::new(false) };
+    static UNWIPED: Cell<u64> = const { Cell::new(0) };
+}
+
+/// The secret a credential carries in the scan's test: freed memory holding it was not wiped.
+const MARKER: &[u8] = b"MARKER-0f1e2d3c4b5a69788796a5b4c3d2e1f0";
+
+/// Whether the `len` bytes at `p` hold `MARKER`, read while the buffer is still live.
+fn holds_marker(p: *const u8, len: usize) -> bool {
+    if p.is_null() || len < MARKER.len() {
+        return false;
+    }
+    // SAFETY: the allocator hands `p` and its layout's size before the memory is released.
+    let bytes = unsafe { std::slice::from_raw_parts(p, len) };
+    bytes.windows(MARKER.len()).any(|w| w == MARKER)
+}
+
+fn scanning() -> bool {
+    SCANNING.try_with(Cell::get).unwrap_or(false)
+}
+
+fn unwiped() {
+    let _ = UNWIPED.try_with(|c| c.set(c.get() + 1));
 }
 
 fn note() {
@@ -80,10 +105,18 @@ unsafe impl GlobalAlloc for Witness {
     }
     unsafe fn realloc(&self, p: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         note();
+        let held = scanning() && holds_marker(p, layout.size());
         // SAFETY: forwarded verbatim; the caller's obligations on `p`/`layout` are unchanged.
-        unsafe { System.realloc(p, layout, new_size) }
+        let moved = unsafe { System.realloc(p, layout, new_size) };
+        if held && moved != p {
+            unwiped();
+        }
+        moved
     }
     unsafe fn dealloc(&self, p: *mut u8, layout: Layout) {
+        if scanning() && holds_marker(p, layout.size()) {
+            unwiped();
+        }
         // SAFETY: forwarded verbatim.
         unsafe { System.dealloc(p, layout) }
     }
@@ -115,6 +148,30 @@ fn unwitnessed<T>(f: impl FnOnce() -> T) -> T {
 const DOWN: &str = "down";
 /// The store's failure text.
 const DOWN_TEXT: &str = "the backend is down";
+
+/// A credential whose secret is `MARKER`, its text built at its exact size (no growth copy).
+fn marked() -> CredentialSecret {
+    let mut secret = String::with_capacity(9 + MARKER.len());
+    secret.push_str("v1:plain:");
+    secret.push_str(std::str::from_utf8(MARKER).expect("ascii"));
+    CredentialSecret {
+        meta: CredentialMeta {
+            id: "c1".to_string(),
+            key_id: "k1".to_string(),
+            kind: "sigv4".to_string(),
+            slot: 0,
+            public_id: "AKIDEXAMPLE".to_string(),
+            secret_form: busbar_contract::records::SecretForm::Recoverable,
+            created_at: 1,
+            updated_at: 2,
+            expires_at: None,
+            revoked_at: None,
+            revoke_reason: None,
+            revision: 3,
+        },
+        secret,
+    }
+}
 
 fn down<T>() -> RecordStoreResult<T> {
     Err(RecordStoreError(DOWN_TEXT.to_string()))
@@ -365,7 +422,7 @@ impl StoreSlots for Canned {
         _: &str,
         _: &str,
     ) -> Step<RecordStoreResult<Option<CredentialSecret>>> {
-        unreachable!("not a request-path slot")
+        Step::Ready(Ok(Some(marked())))
     }
     fn revoke_credential(
         &self,
@@ -380,7 +437,7 @@ impl StoreSlots for Canned {
         _: &mut StoreOp<'_>,
         _: u64,
     ) -> Step<RecordStoreResult<Vec<CredentialSecret>>> {
-        unreachable!("not a request-path slot")
+        Step::Ready(Ok(vec![marked(), marked()]))
     }
     fn list_audit(&self, _: &mut StoreOp<'_>) -> Step<RecordStoreResult<Vec<AuditRecord>>> {
         unreachable!("not a request-path slot")
@@ -1014,5 +1071,76 @@ fn the_store_door_refuses_a_release_of_a_lease_it_does_not_hold() {
         release(instance, lease),
         Outcome::Refused,
         "a lease already released is refused"
+    );
+}
+
+/// RED (Q128 contract u13 MEDIUM): a secret the store door hands the host is wiped before every
+/// buffer that held it is freed: the decoded credential, the serialised answer (no growth or
+/// shrink copy left behind) and the lease's bytes at release. Appendix A's memory classes: the
+/// call-scoped bytes of a secret are zeroised.
+#[test]
+fn red_a_secret_answer_frees_no_buffer_holding_the_secret() {
+    let t = ops();
+    let inst = open();
+    let scanned = |f: &mut dyn FnMut()| {
+        UNWIPED.with(|c| c.set(0));
+        SCANNING.with(|a| a.set(true));
+        f();
+        SCANNING.with(|a| a.set(false));
+        UNWIPED.with(Cell::get)
+    };
+    let one = KindIdIn {
+        head: in_head::<KindIdIn>(slot::LOOKUP_CREDENTIAL_SECRET),
+        kind: s(b"sigv4"),
+        id: s(b"c1"),
+    };
+    let mut out = LeasedBlobOut {
+        head: out_head::<LeasedBlobOut>(),
+        ..zeroed()
+    };
+    let mut lease = 0;
+    let freed = scanned(&mut || {
+        assert_eq!(
+            call(t.lookup_credential_secret, inst, &one, &mut out),
+            Outcome::Ready
+        );
+        lease = out.head.lease;
+    });
+    assert!(
+        holds_marker(out.record.ptr, out.record.len),
+        "the answer carries the secret"
+    );
+    assert_eq!(
+        freed, 0,
+        "answering a secret freed {freed} buffer(s) still holding it"
+    );
+    assert_eq!(
+        scanned(&mut || assert_eq!(release(inst, lease), Outcome::Ready)),
+        0
+    );
+
+    let since = busbar_contract::abi::store::U64In {
+        head: in_head::<busbar_contract::abi::store::U64In>(slot::LIST_CREDENTIALS_SINCE),
+        value: 0,
+    };
+    let mut list = busbar_contract::abi::store::LeasedListOut {
+        head: out_head::<busbar_contract::abi::store::LeasedListOut>(),
+        ..zeroed()
+    };
+    let freed = scanned(&mut || {
+        assert_eq!(
+            call(t.list_credentials_since, inst, &since, &mut list),
+            Outcome::Ready
+        );
+        lease = list.head.lease;
+    });
+    assert_eq!(list.items_len, 2);
+    assert_eq!(
+        freed, 0,
+        "listing secrets freed {freed} buffer(s) still holding one"
+    );
+    assert_eq!(
+        scanned(&mut || assert_eq!(release(inst, lease), Outcome::Ready)),
+        0
     );
 }
