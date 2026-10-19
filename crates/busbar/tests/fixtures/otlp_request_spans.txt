@@ -1,0 +1,9 @@
+# THE REQUEST PATH'S SPANS, as 1.5.5 named them (status row 173; v1.5.5 docs/observability.md
+# l.162-174), read by tests/otlp_request_spans.rs. One request per row, tab-separated:
+#   entry span the arrival opens ("-": none) | the `ingress` its `forward` carries ("-": not asserted) | path | body
+# 1.5.5 opened gemini_ingress (ingress/mod.rs:788), bedrock_converse (:1043) and
+# bedrock_converse_stream (:1070) with no field, and no entry span for a messages request.
+gemini_ingress	gemini	/v1beta/models/test-model:generateContent	{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}
+bedrock_converse	-	/model/test-model/converse	{"messages":[{"role":"user","content":[{"text":"hi"}]}]}
+bedrock_converse_stream	-	/model/test-model/converse-stream	{"messages":[{"role":"user","content":[{"text":"hi"}]}]}
+-	anthropic	/v1/messages	{"model":"test-model","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}

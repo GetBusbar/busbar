@@ -195,19 +195,30 @@ documents: **every `#[tracing::instrument]` must carry an explicit `level =` (a
 "rogue" instrument with no level silently defaults to INFO, which is always-on on the hot path) and
 that level is set in one spot, not re-picked ad hoc at each call site.**
 
-**The one spot: `observability::HOTPATH_LEVEL`.** `crates/busbar/src/observability.rs` defines:
+**The one spot: `observability::HOTPATH_LEVEL`.** `crates/busbar-kernel/src/observability/mod.rs`
+defines:
 
 ```rust
-pub(crate) const HOTPATH_LEVEL: tracing::Level = tracing::Level::DEBUG;
+pub const HOTPATH_LEVEL: tracing::Level = tracing::Level::DEBUG;
 ```
 
-Every hot, per-request `#[tracing::instrument]` (the `forward` span in `proxy/engine/mod.rs`, the
-`forward_once` span in `proxy/engine/walk.rs`, and the `ingress/mod.rs` entry spans `gemini_ingress`,
-`bedrock_converse`, `bedrock_converse_stream`, `named` and `adhoc`) references
-this constant (or, where the macro's parser requires a bare identifier rather than a `crate::`-
-prefixed path, imports it with `use crate::observability::HOTPATH_LEVEL;` and writes
-`level = HOTPATH_LEVEL`). Raising or lowering hot-path verbosity for the whole request path is a
-one-line change to that constant, never a per-call-site literal.
+Every hot, per-request span references this constant (or, where the macro's parser requires a
+bare identifier rather than a path, imports it and writes `level = HOTPATH_LEVEL`). Raising or
+lowering hot-path verbosity for the whole request path is a one-line change to that constant, never
+a per-call-site literal. The request path's spans, with 1.5.5's names and fields:
+
+| Span | Fields | Opened by |
+|---|---|---|
+| `gemini_ingress` | none | an arrival the llm plane reads as Gemini (its models surfaces, and a path ending in a Gemini action verb such as `:generateContent`) |
+| `bedrock_converse`, `bedrock_converse_stream` | none | an arrival on a path ending in `/converse` or `/converse-stream` |
+| `named`, `adhoc` | `pool`; `provider`, `model` | the `/{name}/v1/messages` and `/{provider}/{model}/v1/messages` conveniences |
+| `forward` | `pool`, `ingress`, `op`, `request_id` | every unit, beneath its entry span where it has one |
+| `forward_once` | `lane` | each dispatch of an exhaustion terminal (a fallback pool's member, the least-bad bypass, a queued slot), beneath `forward` |
+
+The kernel names no dialect: an entry span's name is data the plane states on its claims
+(`PlaneSnapshot::arrival_spans`), either on a routed claim or on a raw-affix claim that states which
+span an arrival on a path it matches opens. The kernel builds one callsite per name when it binds
+the routes and opens the span around the arrival; `forward` and `forward_once` are the kernel's own.
 
 `HOTPATH_LEVEL` is `DEBUG`, not the `tracing::Level::TRACE` variant, because it pairs with the
 OTHER half of the one-spot policy: `observability::log_levels()`, which builds the stderr and OTLP
