@@ -41,6 +41,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::mem::size_of;
+use std::ptr;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use busbar_contract::abi::hook::{REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM};

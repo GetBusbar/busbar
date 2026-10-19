@@ -26,6 +26,7 @@
 //! directory read) writes its own slots over [`crate::plugin_door!`].
 
 use std::marker::PhantomData;
+use std::ptr;
 
 use crate::abi::auth::{
     AuthPoint, AuthPoints, AuthTail, IdentifyOut, IdentityBuf, StripName, VerifyIn,

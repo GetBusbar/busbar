@@ -24,6 +24,7 @@
 #![forbid(unsafe_code)]
 
 use std::mem::size_of;
+use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use busbar_contract::abi::hook::signal;
