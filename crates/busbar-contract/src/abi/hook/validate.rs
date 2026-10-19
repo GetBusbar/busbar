@@ -23,12 +23,14 @@
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
 use super::{
-    ConfigureOut, DecideOut, DescribeOut, NotifyIn, PromptView, ServeOut, StatusOut, TransformOut,
-    VERB_ABSTAIN, VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_REJECT, VERB_RESTRICT, VERB_REWRITE,
-    VIEW_HAS_PROMPT,
+    ConfigureOut, DecideOut, DescribeOut, NotifyIn, PromptView, Route, ServeOut, StatusOut, Tail,
+    TransformOut, ROUTE_AUTH_KEY, ROUTE_AUTH_NONE, ROUTE_AUTH_UNDECLARED, VERB_ABSTAIN,
+    VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_REJECT, VERB_RESTRICT, VERB_REWRITE, VIEW_HAS_PROMPT,
 };
 use crate::abi::mechanism::call::{OutHead, Outcome};
-use crate::abi::mechanism::check::{blob, fault, lease, results, Dim, HARD_MAX_BYTES};
+use crate::abi::mechanism::check::{
+    blob, code, fault, lease, listed, results, text, Dim, HARD_MAX_BYTES,
+};
 
 /// The most `order_buf` slots (`u32` entries, not bytes) one answer may state.
 pub const HARD_MAX_ORDER_SLOTS: u64 = 65536;
@@ -304,6 +306,58 @@ pub fn check_notify_in(input: &NotifyIn) -> Result<(), Fault> {
     }
     if input.present & VIEW_HAS_PROMPT != 0 {
         check_prompt_view(&input.prompt)?;
+    }
+    Ok(())
+}
+
+/// The most routes one hook instance may declare (the export kind's bound).
+const TAIL_MAX_ROUTES: u64 = 64;
+
+/// Validates the hook Statement tail's lists, before any entry is read: a count never comes with
+/// a NULL pointer, and `routes` holds at most 64 entries. The loader checks the routes with
+/// [`check_tail_routes`].
+///
+/// # Errors
+/// The rule the tail breaks.
+pub fn check_tail(t: &Tail) -> Result<(), Fault> {
+    listed(
+        t.requested_signals,
+        t.requested_signals_len,
+        "tail.requested_signals",
+    )?;
+    listed(t.routes, t.routes_len, "tail.routes")?;
+    if t.routes_len as u64 > TAIL_MAX_ROUTES {
+        return Err(fault(Rule::OverMax, "tail.routes_len"));
+    }
+    Ok(())
+}
+
+/// Validates the hook tail's routes, once [`check_tail`] passed: every route names a path
+/// starting with `/`, a method, and a declared `ROUTE_AUTH_*` code ([`ROUTE_AUTH_UNDECLARED`] is
+/// refused: a zero never grants).
+///
+/// # Errors
+/// The rule a route breaks.
+pub fn check_tail_routes(routes: &[Route]) -> Result<(), Fault> {
+    for r in routes {
+        text(r.path, "tail.routes.path")?;
+        text(r.method, "tail.routes.method")?;
+        // SAFETY: `text` checked a non-empty path is not NULL; one byte is read.
+        if r.path.len == 0 || unsafe { *r.path.ptr } != b'/' {
+            return Err(fault(Rule::Missing, "tail.routes.path.root"));
+        }
+        if r.method.len == 0 {
+            return Err(fault(Rule::Missing, "tail.routes.method.empty"));
+        }
+        if r.auth == ROUTE_AUTH_UNDECLARED {
+            return Err(fault(Rule::Missing, "tail.routes.auth.undeclared"));
+        }
+        code(
+            u64::from(r.auth),
+            u64::from(ROUTE_AUTH_KEY),
+            u64::from(ROUTE_AUTH_NONE),
+            "tail.routes.auth",
+        )?;
     }
     Ok(())
 }

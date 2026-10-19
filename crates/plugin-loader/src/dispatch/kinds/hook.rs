@@ -66,6 +66,16 @@ fn facts(st: &Statement) -> Result<HookFacts, String> {
             t.user_access
         ));
     }
+    let why = |f: Fault| format!("the hook tail breaks {:?} at {}", f.rule, f.field);
+    validate::check_tail(&t).map_err(why)?;
+    let routes: &[hook::Route] = if t.routes_len == 0 {
+        &[]
+    } else {
+        // SAFETY: `check_tail` refused a count behind NULL and bounded it; the list is `'static`
+        // plugin data.
+        unsafe { std::slice::from_raw_parts(t.routes, t.routes_len) }
+    };
+    validate::check_tail_routes(routes).map_err(why)?;
     let mut facts = HookFacts {
         name,
         class: t.kind_class,

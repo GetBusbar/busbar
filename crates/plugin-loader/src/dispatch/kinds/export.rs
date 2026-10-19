@@ -68,9 +68,10 @@ fn route(r: &export::Route) -> Result<Route, String> {
         .find(|m| m.as_str() == method)
         .ok_or_else(|| format!("the export route {path} names the method `{method}`"))?;
     let auth = match r.auth {
-        export::ROUTE_AUTH_NONE => RouteAuth::None,
         export::ROUTE_AUTH_KEY => RouteAuth::Key,
-        _ => RouteAuth::Admin,
+        export::ROUTE_AUTH_ADMIN => RouteAuth::Admin,
+        export::ROUTE_AUTH_NONE => RouteAuth::None,
+        other => return Err(format!("the export route {path} states auth {other}")),
     };
     Ok(Route { path, method, auth })
 }

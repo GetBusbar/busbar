@@ -834,13 +834,15 @@ pub struct ServeOut {
 
 // ── Statement tail ───────────────────────────────────────────────────────────────────────────
 
-/// [`Route::auth`]: no auth required before `serve` — OLD `RouteAuth::None`.
-pub const ROUTE_AUTH_NONE: u32 = 0;
+/// [`Route::auth`]: undeclared; refused at load, never read as no auth (a zero never grants).
+pub const ROUTE_AUTH_UNDECLARED: u32 = 0;
 /// [`Route::auth`]: a data-plane key required before `serve` — OLD `RouteAuth::Key`.
 pub const ROUTE_AUTH_KEY: u32 = 1;
 /// [`Route::auth`]: admin auth required, reachable only on the admin listener — OLD
 /// `RouteAuth::Admin`.
 pub const ROUTE_AUTH_ADMIN: u32 = 2;
+/// [`Route::auth`]: no auth required before `serve` — OLD `RouteAuth::None`; never zero.
+pub const ROUTE_AUTH_NONE: u32 = 3;
 
 /// One HTTP route this instance serves via `serve` (ARCHITECT review ruling, fresh-Opus M3-SHAPES
 /// review, parity item): `{path, method}` is the collision key the kernel checks at load;
@@ -853,10 +855,23 @@ pub struct Route {
     pub path: AbiStr,
     /// The HTTP method.
     pub method: AbiStr,
-    /// [`ROUTE_AUTH_NONE`] | [`ROUTE_AUTH_KEY`] | [`ROUTE_AUTH_ADMIN`].
+    /// [`ROUTE_AUTH_KEY`] | [`ROUTE_AUTH_ADMIN`] | [`ROUTE_AUTH_NONE`];
+    /// [`ROUTE_AUTH_UNDECLARED`] is refused at load.
     pub auth: u32,
     /// Alignment padding.
     pub _reserved: u32,
+}
+
+impl Route {
+    /// THE EMPTY DECLARATION: every field zero (empty strings, [`ROUTE_AUTH_UNDECLARED`]). A
+    /// plugin builds its value as `Route { …, ..Route::ZERO }`; a route left at its zero auth
+    /// declared no bar and is refused at load.
+    pub const ZERO: Self = Self {
+        path: AbiStr::ZERO,
+        method: AbiStr::ZERO,
+        auth: ROUTE_AUTH_UNDECLARED,
+        _reserved: 0,
+    };
 }
 
 /// [`Tail::kind_class`]: a GATE (fire-and-wait; `decide`/`transform` may block the chain) — OLD

@@ -306,9 +306,10 @@ extern "C" {
 #define BB_HOOK_STAGE_AT_CANDIDATE UINT32_C(0) /* [`StageView::at`]: the OLD `HookStageProjection::at == "candidate"`. */
 #define BB_HOOK_STAGE_AT_ROUTING UINT32_C(1) /* [`StageView::at`]: the OLD `HookStageProjection::at == "routing"`. */
 #define BB_HOOK_STAGE_AT_RESPONSE UINT32_C(2) /* [`StageView::at`]: the OLD `HookStageProjection::at == "response"`. */
-#define BB_HOOK_ROUTE_AUTH_NONE UINT32_C(0) /* [`Route::auth`]: no auth required before `serve` — OLD `RouteAuth::None`. */
+#define BB_HOOK_ROUTE_AUTH_UNDECLARED UINT32_C(0) /* [`Route::auth`]: undeclared; refused at load, never read as no auth (a zero never grants). */
 #define BB_HOOK_ROUTE_AUTH_KEY UINT32_C(1) /* [`Route::auth`]: a data-plane key required before `serve` — OLD `RouteAuth::Key`. */
 #define BB_HOOK_ROUTE_AUTH_ADMIN UINT32_C(2) /* [`Route::auth`]: admin auth required, reachable only on the admin listener — OLD */
+#define BB_HOOK_ROUTE_AUTH_NONE UINT32_C(3) /* [`Route::auth`]: no auth required before `serve` — OLD `RouteAuth::None`; never zero. */
 #define BB_HOOK_CLASS_GATE UINT32_C(0) /* [`Tail::kind_class`]: a GATE (fire-and-wait; `decide`/`transform` may block the chain) — OLD */
 #define BB_HOOK_CLASS_TAP UINT32_C(1) /* [`Tail::kind_class`]: a TAP (fire-and-forget; `notify` only) — OLD `HookKind::Tap`. */
 #define BB_HOOK_PROMPT_NO UINT32_C(0) /* [`Tail::prompt_access`]: no prompt view/body — OLD `PromptAccess::No` (the default). */
@@ -339,9 +340,10 @@ extern "C" {
 #define BB_EXPORT_SCRAPE_FLAG_HOOK_FAMILIES UINT32_C(2) /* [`super::mechanism::call::InHead::flags`] on `scrape`: the families are the HOOK families. */
 #define BB_EXPORT_CHECK_PHASE_LIMITS UINT32_C(0) /* [`CheckIn::phase`]: among the operational limits' checks (a bound this sink's instances */
 #define BB_EXPORT_CHECK_PHASE_INSTANCES UINT32_C(1) /* [`CheckIn::phase`]: after the limits, each instance's own settings — the OLD */
-#define BB_EXPORT_ROUTE_AUTH_NONE UINT32_C(0) /* [`Route::auth`]: no auth required before `serve` — OLD `RouteAuth::None`. */
+#define BB_EXPORT_ROUTE_AUTH_UNDECLARED UINT32_C(0) /* [`Route::auth`]: undeclared; refused at load, never read as no auth (a zero never grants). */
 #define BB_EXPORT_ROUTE_AUTH_KEY UINT32_C(1) /* [`Route::auth`]: a data-plane key required before `serve` — OLD `RouteAuth::Key`. */
 #define BB_EXPORT_ROUTE_AUTH_ADMIN UINT32_C(2) /* [`Route::auth`]: admin auth required, reachable only on the admin listener — OLD */
+#define BB_EXPORT_ROUTE_AUTH_NONE UINT32_C(3) /* [`Route::auth`]: no auth required before `serve` — OLD `RouteAuth::None`; never zero. */
 #define BB_EXPORT_CANCEL_ABORTED UINT32_C(0) /* The pending op was aborted before it produced anything (deliver: the batch was not */
 #define BB_EXPORT_CANCEL_RACED_TO_COMPLETION UINT32_C(1) /* The op had already completed when the cancel arrived (a race with the deadline); its */
 #define BB_EXPORT_HARD_MAX_HEADERS_OUT_LEN UINT64_C(128) /* The most entries `serve`'s `headers_out` may carry: 64 headers, as (name, value) pairs. */

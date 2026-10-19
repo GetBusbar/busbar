@@ -61,16 +61,6 @@ pub const EXEMPT: &[(&str, &str, &str)] = &[
         "generic R has no ZERO; the envelope carries no grant field",
     ),
     (
-        "abi/export/mod.rs",
-        "Route",
-        "auth 0 is the unauthenticated level: renumbered in step 2",
-    ),
-    (
-        "abi/hook/mod.rs",
-        "Route",
-        "auth 0 is the unauthenticated level: renumbered in step 2",
-    ),
-    (
         "abi/hook/mod.rs",
         "Tail",
         "kind_class 0 is a gate: renumbered in step 2",

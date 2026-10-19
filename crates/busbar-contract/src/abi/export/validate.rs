@@ -15,7 +15,7 @@
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
 use super::{CheckOut, ExportStream, Route, ScrapeOut, ServeOut, StatusOut, Tail};
-use super::{ROUTE_AUTH_ADMIN, ROUTE_AUTH_NONE};
+use super::{ROUTE_AUTH_KEY, ROUTE_AUTH_NONE, ROUTE_AUTH_UNDECLARED};
 use crate::abi::mechanism::call::{OutHead, Outcome};
 use crate::abi::mechanism::check::{
     blob, code, fault, lease, listed, result, text, HARD_MAX_BYTES,
@@ -126,7 +126,7 @@ pub fn check_tail(t: &Tail) -> Result<(), Fault> {
 
 /// Validates the export tail's ENTRIES, once [`check_tail`] passed: every stream byte is an
 /// [`ExportStream`] and none repeats; every route names a path starting with `/`, a method, and a
-/// `ROUTE_AUTH_*` code.
+/// declared `ROUTE_AUTH_*` code ([`ROUTE_AUTH_UNDECLARED`] is refused: a zero never grants).
 ///
 /// # Errors
 /// The rule an entry breaks.
@@ -152,10 +152,13 @@ pub fn check_tail_entries(streams: &[u8], routes: &[Route]) -> Result<(), Fault>
         if r.method.len == 0 {
             return Err(fault(Rule::Missing, "tail.routes.method.empty"));
         }
+        if r.auth == ROUTE_AUTH_UNDECLARED {
+            return Err(fault(Rule::Missing, "tail.routes.auth.undeclared"));
+        }
         code(
             u64::from(r.auth),
+            u64::from(ROUTE_AUTH_KEY),
             u64::from(ROUTE_AUTH_NONE),
-            u64::from(ROUTE_AUTH_ADMIN),
             "tail.routes.auth",
         )?;
     }

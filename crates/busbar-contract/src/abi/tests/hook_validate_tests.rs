@@ -943,7 +943,10 @@ fn a_zeroed_hook_route_is_refused_at_load() {
         Route, ROUTE_AUTH_ADMIN, ROUTE_AUTH_KEY, ROUTE_AUTH_NONE, ROUTE_AUTH_UNDECLARED,
     };
     assert_eq!(ROUTE_AUTH_UNDECLARED, 0, "zero is the undeclared code");
-    assert_ne!(ROUTE_AUTH_NONE, 0, "the unauthenticated level is never zero");
+    assert_ne!(
+        ROUTE_AUTH_NONE, 0,
+        "the unauthenticated level is never zero"
+    );
     assert_eq!(
         check_tail_routes(&[hook_route("/hooks/h/x", ROUTE_AUTH_UNDECLARED)]),
         red(Rule::Missing, "tail.routes.auth.undeclared")

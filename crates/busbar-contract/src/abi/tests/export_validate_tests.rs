@@ -421,7 +421,9 @@ fn a_tail_with_more_streams_than_exist_faults() {
 
 #[test]
 fn a_tail_with_too_many_routes_faults() {
-    let routes: Vec<Route> = (0..65).map(|_| route("/metrics", "GET", super::super::ROUTE_AUTH_KEY)).collect();
+    let routes: Vec<Route> = (0..65)
+        .map(|_| route("/metrics", "GET", super::super::ROUTE_AUTH_KEY))
+        .collect();
     assert_eq!(
         check_tail(&tail(&[], &routes)),
         red(Rule::OverMax, "tail.routes_len")
@@ -463,7 +465,10 @@ fn a_route_text_counted_behind_null_faults() {
 #[test]
 fn a_route_path_not_rooted_faults() {
     assert_eq!(
-        check_tail_entries(&[], &[route("metrics", "GET", super::super::ROUTE_AUTH_KEY)]),
+        check_tail_entries(
+            &[],
+            &[route("metrics", "GET", super::super::ROUTE_AUTH_KEY)]
+        ),
         red(Rule::Missing, "tail.routes.path.root")
     );
 }
@@ -491,7 +496,10 @@ fn a_route_auth_outside_its_vocabulary_faults() {
 fn a_zeroed_export_route_is_refused_at_load() {
     use super::super::{ROUTE_AUTH_ADMIN, ROUTE_AUTH_KEY, ROUTE_AUTH_NONE, ROUTE_AUTH_UNDECLARED};
     assert_eq!(ROUTE_AUTH_UNDECLARED, 0, "zero is the undeclared code");
-    assert_ne!(ROUTE_AUTH_NONE, 0, "the unauthenticated level is never zero");
+    assert_ne!(
+        ROUTE_AUTH_NONE, 0,
+        "the unauthenticated level is never zero"
+    );
     assert_eq!(
         check_tail_entries(&[], &[route("/metrics", "GET", ROUTE_AUTH_UNDECLARED)]),
         red(Rule::Missing, "tail.routes.auth.undeclared")
