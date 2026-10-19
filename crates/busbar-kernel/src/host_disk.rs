@@ -144,7 +144,7 @@ pub fn append(dest: &DiskDest, bytes: &[u8]) -> DiskReport {
         .is_some_and(|limit| std::fs::metadata(&dest.path).is_ok_and(|m| m.len() >= limit));
     // TRUNCATE (1.5.5): a due file is opened truncated and the append lands from empty; RENAME:
     // the live file is renamed into its archives first.
-    let truncate = due && dest.rotate == DiskRotate::Truncate && false;
+    let truncate = due && dest.rotate == DiskRotate::Truncate;
     let (renamed, faults) = match dest.rotate {
         DiskRotate::Rename { keep } if due => rotate(&dest.path, keep),
         _ => (false, 0),

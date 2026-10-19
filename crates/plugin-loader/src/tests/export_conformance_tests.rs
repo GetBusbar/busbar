@@ -246,7 +246,7 @@ impl DiskHost {
         let due = dest
             .rotate_at
             .is_some_and(|limit| std::fs::metadata(&dest.path).is_ok_and(|m| m.len() >= limit));
-        let truncate = due && dest.rotate == DiskRotate::Truncate && false;
+        let truncate = due && dest.rotate == DiskRotate::Truncate;
         let (renamed, failed) = match dest.rotate {
             DiskRotate::Rename { keep } if due => {
                 crate::host::rotate(std::path::Path::new(&dest.path), keep)
