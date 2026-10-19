@@ -2621,6 +2621,177 @@ fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
     );
 }
 
+// ── A GENERATION'S LIMITS GO LIVE WITH IT, AND REACH EVERY PLANE (Q128 p1#6, p12#4, p6#1) ──────
+
+/// Puts the process-wide limits back exactly as a test found them, failure path included.
+struct RestorePublished(Option<crate::config::LimitsResolved>);
+
+impl Drop for RestorePublished {
+    fn drop(&mut self) {
+        crate::config::limits::set_installed(self.0.take());
+    }
+}
+
+/// The live readers' view: the limits slot as ANOTHER thread reads it — the running generation's
+/// traffic, which no build is on.
+fn live_key_gauge_limit() -> Option<usize> {
+    std::thread::spawn(|| crate::config::limits::installed().map(|l| l.key_gauge_limit))
+        .join()
+        .expect("reader thread must not panic")
+}
+
+fn build_with(
+    cfg: crate::config::RootCfg,
+    prior: Option<&crate::state::App>,
+) -> Result<(crate::state::App, crate::appbuild::InstalledLimits), String> {
+    crate::build_app_from_config(
+        cfg,
+        crate::config::PluginsCfg::default(),
+        None,
+        std::collections::HashSet::new(),
+        std::collections::HashSet::new(),
+        (None, None),
+        prior,
+        &(std::sync::Arc::new(crate::appbuild::AcceptAll)
+            as std::sync::Arc<dyn crate::appbuild::RootRules>),
+    )
+    .map(|(app, _, limits)| (app, limits))
+}
+
+/// A BUILT GENERATION'S LIMITS ARE IN FORCE ONLY ONCE IT IS LIVE (BUSBAR-1.6.0.md THE DESIGN §6
+/// item 8: a reload "swaps them in atomically ... and is refused, leaving the running generation
+/// serving, if any check fails"; §3: "A validation refusal keeps the running generation"). A build
+/// that has returned but not gone live — the window an admin apply's persist runs in — leaves the
+/// running generation's limits in force on every thread; a refused build never publishes; the swap
+/// that installs the generation publishes them before its first reader.
+///
+/// RED before the fix: the build installed its candidate's limits process-wide FIRST, before
+/// validation, and they stayed in force until the handle was dropped — `live_key_gauge_limit()`
+/// read the candidate's 2_468 while the generation was built but not live.
+#[test]
+fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
+    crate::snapshot::init();
+    let _lock = crate::config::limits::LIMITS_TEST_LOCK.blocking_lock();
+    let _restore = RestorePublished(crate::config::limits::installed());
+    let running = crate::config::LimitsResolved {
+        key_gauge_limit: 1_357,
+        ..crate::config::LimitsResolved::default()
+    };
+    crate::config::limits::install(&running);
+    let cfg = |key_gauge_limit: usize| {
+        let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(
+            "BUSBAR_TEST_NO_SUCH_KEY_LIMITS_LIVE",
+        ));
+        cfg.limits.key_gauge_limit = key_gauge_limit;
+        cfg
+    };
+
+    // A REFUSED build (validation: a zero sticky cooldown) publishes nothing.
+    let mut refused = cfg(9_999);
+    refused.limits.hard_down_cooldown_secs = 0;
+    assert!(build_with(refused, None).is_err(), "validation refuses it");
+    assert_eq!(
+        live_key_gauge_limit(),
+        Some(1_357),
+        "a refused build changed a live limit"
+    );
+
+    // BUILT BUT NOT LIVE: the running generation's limits stand, on every thread.
+    let (next, unkept) = build_with(cfg(2_468), None).expect("builds");
+    assert_eq!(
+        live_key_gauge_limit(),
+        Some(1_357),
+        "a built-but-not-live generation's limits are in force under the running generation"
+    );
+    assert_eq!(
+        crate::config::limits::installed().map(|l| l.key_gauge_limit),
+        Some(1_357),
+        "the build's own view of its candidate ends with the build"
+    );
+
+    // LIVE: the swap that installs it publishes its limits.
+    let handle = crate::state::AppHandle::new(crate::test_support::TestApp::new().build());
+    handle.swap(std::sync::Arc::new(next));
+    assert_eq!(
+        live_key_gauge_limit(),
+        Some(2_468),
+        "the swapped-in generation's limits"
+    );
+    // The commit after the swap republishes the same values.
+    unkept.keep();
+    assert_eq!(live_key_gauge_limit(), Some(2_468));
+}
+
+/// THE OPERATOR'S BREAKER LIMITS REACH EVERY PLANE'S CELLS (BUSBAR-1.6.0.md THE DESIGN §1: "Any
+/// plugin gets all functionality ... A capability one plane has and a sibling plane lacks is a gap
+/// to close"). The first plane's store has always been built under `limits.hard_down_cooldown_secs`
+/// / `limits.max_honored_retry_after_secs`; the store every other plane's cells live in now is too,
+/// and — being process-lifetime — takes a subsequent generation's values at the swap that puts that
+/// generation live, not during its build. Under the default config nothing changes: the defaults
+/// the config layer resolves are the values the store was hard-wired to.
+///
+/// RED before the fix: the plane store was built with the hard-wired 1800s sticky cooldown and
+/// never refreshed, so the first hard-down below read ~1800, not <= 60.
+#[test]
+fn the_operator_breaker_limits_reach_every_planes_cells() {
+    crate::snapshot::init();
+    let _lock = crate::config::limits::LIMITS_TEST_LOCK.blocking_lock();
+    let _restore = RestorePublished(crate::config::limits::installed());
+    let hard_down = crate::breaker::CanonicalSignal {
+        class: crate::breaker::StatusClass::Auth,
+        provider_signal: None,
+        retry_after: None,
+    };
+    let cfg = |hard_down_cooldown_secs: u64| {
+        let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(
+            "BUSBAR_TEST_NO_SUCH_KEY_PLANE_LIMITS",
+        ));
+        // Any plane content provisions the plane store; a pool of opaque members is the smallest.
+        cfg.tool_pools.insert(
+            "p".to_string(),
+            crate::failover::CandidatePoolCfg {
+                members: vec!["m1".to_string(), "m2".to_string()],
+                ..Default::default()
+            },
+        );
+        cfg.limits.hard_down_cooldown_secs = hard_down_cooldown_secs;
+        cfg
+    };
+
+    let (first, _) = build_with(cfg(60), None).expect("builds");
+    assert!(first.plane_breakers.is_provisioned());
+    first.plane_breakers.record_signal("k:a", 0, &hard_down);
+    let ra = first.plane_breakers.retry_after_secs("k:a", 0);
+    assert!(
+        (1..=60).contains(&ra),
+        "the operator's 60s sticky cooldown on a plane cell, got {ra}"
+    );
+
+    // A subsequent generation REUSES the process-lifetime store; its build does not touch the live cells.
+    let (second, _) = build_with(cfg(120), Some(&first)).expect("builds");
+    assert!(std::sync::Arc::ptr_eq(
+        &first.plane_breakers,
+        &second.plane_breakers
+    ));
+    second.plane_breakers.record_signal("k:b", 0, &hard_down);
+    let ra = second.plane_breakers.retry_after_secs("k:b", 0);
+    assert!(
+        (1..=60).contains(&ra),
+        "a generation not yet live must not change the live cells' limits, got {ra}"
+    );
+
+    // Swapped in: the next hard-down arms the new generation's value.
+    let handle = crate::state::AppHandle::new(std::sync::Arc::new(first));
+    handle.swap(std::sync::Arc::new(second));
+    let live = handle.load();
+    live.plane_breakers.record_signal("k:c", 0, &hard_down);
+    let ra = live.plane_breakers.retry_after_secs("k:c", 0);
+    assert!(
+        (61..=120).contains(&ra),
+        "the swapped-in generation's 120s sticky cooldown, got {ra}"
+    );
+}
+
 // ── THE REQUEST-PANIC BOUNDARY (1.6.0 item 148) ──────────────────────────────────────────────────
 
 /// A PANIC FAILS ITS OWN REQUEST, NOT THE CONNECTION. Drives the REAL common layer stack over a

@@ -3632,6 +3632,7 @@ fn nothing_is_repeatable_unless_the_operator_names_it() {
     let pool = crate::failover::CandidatePoolCfg {
         members: vec!["a".into(), "b".into()],
         repeatable: vec!["search_code".into()],
+        breaker: None,
     };
     assert_eq!(
         pool.repeatability("search_code"),

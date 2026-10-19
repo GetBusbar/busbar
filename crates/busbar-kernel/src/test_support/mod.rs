@@ -1202,6 +1202,7 @@ impl TestApp {
             crate::failover::CandidatePoolCfg {
                 members: members.iter().map(|m| (*m).to_string()).collect(),
                 repeatable: repeatable.iter().map(|o| (*o).to_string()).collect(),
+                breaker: None,
             },
         );
         self
@@ -1213,6 +1214,7 @@ impl TestApp {
             crate::failover::CandidatePoolCfg {
                 members: members.iter().map(|m| (*m).to_string()).collect(),
                 repeatable: Vec::new(),
+                breaker: None,
             },
         );
         self
@@ -1914,6 +1916,8 @@ impl TestApp {
             config_projection: None,
             store: store.clone(),
             plane_breakers: std::sync::Arc::new(crate::store::PlaneBreakers::new()),
+            // A hand-built generation publishes no limits: a test's own posture stays in force.
+            limits: None,
             session_store: std::sync::Arc::new(crate::session::SessionStore::new(1024, None)),
             incremental_scan: false,
             tool_pools: self.tool_pools,

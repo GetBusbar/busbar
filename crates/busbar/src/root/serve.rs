@@ -1329,14 +1329,25 @@ pub fn pools_into(
             POOL_MEMBER_GRANTED_KEY.into(),
             serde_yaml::Value::Bool(true),
         );
+        // The pool's `breaker:` block, where it states one: core-owned, read by the door's egress
+        // (`DoorPools::breaker`) and struck before the plane is handed its section
+        // ([`plane_settings`]). A pool with none writes nothing here.
+        if let Some(block) = pool
+            .breaker
+            .as_ref()
+            .and_then(|b| serde_yaml::to_value(b).ok())
+        {
+            entry.insert(crate::root::door_steps::POOL_BREAKER_KEY.into(), block);
+        }
         map.insert(name.as_str().into(), serde_yaml::Value::Mapping(entry));
     }
     section.insert(RESERVED_POOLS_KEY.into(), serde_yaml::Value::Mapping(map));
 }
 
 /// THE SETTINGS A DOOR PLANE IS HANDED for `section`: the section with each pool member written
-/// `{name, tier}` handed as its bare name (the tier is core-owned, [`pools_into`]); every other key
-/// as written.
+/// `{name, tier}` handed as its bare name (the tier is core-owned, [`pools_into`]) and each pool's
+/// core-owned `breaker:` block struck (the breaker is the host's valve, THE DESIGN §5); every other
+/// key as written.
 #[must_use]
 pub fn plane_settings(section: &serde_yaml::Value) -> serde_yaml::Value {
     use busbar_contract::section::{POOL_MEMBERS_KEY, POOL_MEMBER_NAME_KEY, RESERVED_POOLS_KEY};
@@ -1346,6 +1357,9 @@ pub fn plane_settings(section: &serde_yaml::Value) -> serde_yaml::Value {
         .and_then(|m| m.get_mut(RESERVED_POOLS_KEY))
         .and_then(serde_yaml::Value::as_mapping_mut);
     for (_, pool) in pools.into_iter().flat_map(|p| p.iter_mut()) {
+        if let Some(pool) = pool.as_mapping_mut() {
+            pool.remove(crate::root::door_steps::POOL_BREAKER_KEY);
+        }
         let members = pool
             .as_mapping_mut()
             .and_then(|p| p.get_mut(POOL_MEMBERS_KEY))

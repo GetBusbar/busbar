@@ -25,9 +25,9 @@ use crate::store::{HealthState, LaneData};
 #[allow(unused_imports)]
 use crate::{
     admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
-    durable, endpoints, export, failover, governance, handlers, hooks, ingress, ir, json, limits,
-    oauth_as, observability, operation, plane, plugin_routes, profile, proto, proxy, ratelimit,
-    snapshot, state, store, telemetry, tls, transport, trust,
+    durable, endpoints, export, failover, governance, handlers, hooks, ingress, ir, json, oauth_as,
+    observability, operation, plane, plugin_routes, profile, proto, proxy, ratelimit, snapshot,
+    state, store, telemetry, tls, transport, trust,
 };
 use busbar_kernel::plane_host::{
     AffinityInput, AuthStyleInput, ClientSettingsInput, FailoverInput, HealthInput,
@@ -466,22 +466,22 @@ pub fn load_config_from_disk(
 /// `spawn_blocking` boundary the admin transaction (`txn.rs`) applies it on.
 pub type GovCredentialRotation = Box<dyn FnOnce() + Send>;
 
-/// The process-wide operational limits a build installed, still PROVISIONAL.
+/// The operational limits a build resolved, still PROVISIONAL: nothing has published them.
 ///
-/// `build_app_from_config` has to install the candidate limits before it starts (the build reads
-/// them through the deep-call-stack accessors), and every step of the build itself is fallible — the
-/// `InstallGuard` inside covers that, rolling them back on any `return Err`/`?`. What it did NOT
-/// cover is everything the CALLER still has to do: an admin apply persists the desired state to the
-/// overlay AFTER the build returns, and a persist failure aborts the transaction with "nothing was
-/// changed (the running engine is unaffected)". Committing the guard at the end of the build made
-/// that message false for exactly the values a rejected config should never get to set — the old
-/// `App` keeps serving, but under the rejected config's body caps.
+/// `build_app_from_config` reads its candidate's limits through a build-scoped view
+/// (`config::limits::BuildScope`) that no other thread sees, so the build itself never puts them in
+/// force. What remains is everything the CALLER still has to do: an admin apply persists the
+/// desired state to the overlay AFTER the build returns, and a persist failure aborts the
+/// transaction with "nothing was changed (the running engine is unaffected)" — which holds only if
+/// the limits are published no earlier than the generation goes live.
 ///
-/// So the commit is now the CALLER's, and it is the same shape as the governance-credential
-/// rotation beside it: the build hands back an uncommitted handle, and the one place that knows the
-/// transaction actually landed (persist AND swap both `Ok`) calls [`InstalledLimits::keep`]. Dropped
-/// unkept — a persist failure, an early return, a caller that simply lets it fall out of scope — the
-/// previous limits are restored.
+/// So the publication is the CALLER's, and it is the same shape as the governance-credential
+/// rotation beside it: the build hands back an unpublished handle, the swap that installs the
+/// generation publishes its limits (`AppHandle::swap`, so the generation's first reader already
+/// sees them), and the one place that knows the transaction landed calls [`InstalledLimits::keep`]
+/// (the boot generation, which no swap installs, is published there). Dropped unkept — a persist
+/// failure, an early return, a caller that simply lets it drop — nothing was published
+/// and the running generation's limits stand.
 ///
 /// **THE RATE APPLY RIDES THE SAME COMMIT.** The build resolves this configuration's rates, but the
 /// rate-apply seam ([`crate::rate_apply::rates_applied`]) is raised HERE, at `keep`, and not
@@ -490,9 +490,11 @@ pub type GovCredentialRotation = Box<dyn FnOnce() + Send>;
 /// apply whose persist then failed kept serving the old `App` while the history and the journal
 /// said its rates were in force — a price the operator was told was never applied, dated as if it
 /// had been. Dropped unkept, the resolved rates are dropped with it and nothing was raised.
-#[must_use = "an unkept InstalledLimits rolls the process-wide limits back when dropped"]
+#[must_use = "an unkept InstalledLimits never publishes the generation's limits"]
 pub struct InstalledLimits {
-    guard: limits::InstallGuard,
+    /// This generation's operational limits, published process-wide at [`InstalledLimits::keep`]
+    /// (and by the swap that puts the generation live); never published by a build that is refused.
+    limits: config::LimitsResolved,
     rates: ResolvedRates,
     /// The rates this build STAGED with the holder (made durable before the caller persists):
     /// withdrawn if this handle is dropped unkept, published by [`InstalledLimits::keep`].
@@ -545,12 +547,12 @@ impl InstalledLimits {
     /// configuration they came from is the one in force.
     pub fn keep(self) {
         let InstalledLimits {
-            guard,
+            limits,
             rates,
             mut staged,
             destinations,
         } = self;
-        guard.commit();
+        busbar_kernel::config::limits::publish(&limits);
         crate::egress::trust::destinations_applied(&destinations);
         staged.armed = false;
         crate::rate_apply::rates_applied(&rates.raw());
@@ -615,34 +617,32 @@ pub fn build_app_from_config(
     rules.check(&cfg)?;
     // The root's projection of this configuration, taken before any part of it is consumed.
     let config_projection = CONFIG_PROJECTION.get().map(|project| project(&cfg));
-    // Install the resolved operational limits process-wide BEFORE any subsystem reads them —
-    // running here (not in main) so a config APPLY/RELOAD refreshes them too. The values threaded
-    // explicitly (client/store/router/TLS) read `cfg.limits` directly; the deep call-stack sites
-    // (translate-body cap, metrics gauge limit, webhook timeout, governance sqlite/sweep, health
-    // probe fallbacks, routing policy timeout) read the installed values.
-    //
-    // …THROUGH A GUARD, because everything below this line is fallible. The install has to come
-    // first (the build itself reads these values), but a build that goes on to FAIL must not leave
-    // the rejected config's limits installed under the old `App` that keeps serving. The guard
-    // restores the previous values on drop unless it is COMMITTED — and the commit is the CALLER's
-    // (see `InstalledLimits`), not this function's, because the apply is not over when the build
-    // returns: the admin paths still have to persist. So "an invalid apply changes nothing" holds
-    // for process-wide limits the same way it holds for everything else, including when it is the
-    // PERSIST that refused.
-    let limits_guard = limits::InstallGuard::install(&cfg.limits);
     let destinations = cfg.destinations();
     // The config version this App will carry — computed ONCE up front because hook-transport
     // resolution stamps it into every socket configure preamble (the preamble's
     // settings_version must be the REAL version of the settings it delivers, not a hardcoded 0).
     let app_config_version = prior.map_or(0, |p| p.config_version.wrapping_add(1));
     // Semantic validation — the same gate boot has always had, now on the ONE construction path
-    // so an apply/reload validates identically and an invalid config changes nothing.
+    // so an apply/reload validates identically and an invalid config changes nothing. It runs
+    // BEFORE this configuration's limits are visible to anything (BUSBAR-1.6.0.md §3: "A validation
+    // refusal keeps the running generation").
     if let Err(validation_errors) = config_validate::validate(&cfg) {
         return Err(format!(
             "config validation failed:\n  - {}",
             validation_errors.join("\n  - ")
         ));
     }
+    // THE CANDIDATE'S OPERATIONAL LIMITS, VISIBLE TO THIS BUILD ONLY. The values threaded
+    // explicitly (client/store/router/TLS) read `cfg.limits` directly; the deep call-stack sites the
+    // build reaches (the routing policy timeout, the probe fallbacks, the upstream body cap a binding
+    // is sealed with) read them through `config::limits::installed()`, which answers the candidate on
+    // this thread for as long as the scope is held. Every other thread — the live traffic the running
+    // generation serves — keeps the published limits until this generation goes live
+    // (`AppHandle::swap` / `InstalledLimits::keep` publish them). BUSBAR-1.6.0.md THE DESIGN §6 item
+    // 8: a reload "swaps them in atomically ... and is refused, leaving the running generation
+    // serving, if any check fails" — so a build refused at ANY subsequent step (plugin fetch, pre-flight,
+    // secret refs, store open, the root's persist) never had its limits in force anywhere.
+    let _limits_scope = busbar_kernel::config::limits::BuildScope::enter(&cfg.limits);
     // The resolved `export:` block drives the built-in exporters' plugin-route table below. Captured
     // before `cfg`'s fields are consumed by the `App` struct literal.
     let cfg_export = cfg.export.clone();
@@ -1864,11 +1864,15 @@ pub fn build_app_from_config(
         }
     };
 
-    // The generation's hook CONTENT ceiling rides the limits guard installed above
-    // (`limits::mirror_derived_caps`): live for this build, put back if the build is refused, and
-    // read on the hook seam with a single relaxed load.
+    // The generation's hook CONTENT ceiling rides the limits this generation publishes when it goes
+    // live (`config::limits::publish` mirrors it), read on the hook seam with a single relaxed load.
+    // A refused build never publishes it.
+    let limits_resolved = cfg.limits.clone();
 
     let app = App {
+        // The limits this generation goes live with: `AppHandle::swap` publishes them before any
+        // reader of the new generation runs, and carries them onto the plane breaker store.
+        limits: Some(limits_resolved.clone()),
         root_rules: std::sync::Arc::clone(rules),
         config_projection,
         plane_sections: Some(cfg.plane_sections.clone()),
@@ -1910,7 +1914,13 @@ pub fn build_app_from_config(
                 Some(p) if p.plane_breakers.is_provisioned() || !planes_configured => {
                     Arc::clone(&p.plane_breakers)
                 }
-                _ if planes_configured => Arc::new(crate::store::PlaneBreakers::new()),
+                // Built under THIS generation's limits (THE DESIGN §1: every plane honours the
+                // operator's `limits.*`); a reused prior takes them at the swap
+                // (`App::publish_limits`), never during the build.
+                _ if planes_configured => Arc::new(crate::store::PlaneBreakers::new_with_limits(
+                    cfg.limits.hard_down_cooldown_secs,
+                    cfg.limits.max_honored_retry_after_secs,
+                )),
                 _ => Arc::new(crate::store::PlaneBreakers::new_inert()),
             }
         },
@@ -2186,7 +2196,7 @@ pub fn build_app_from_config(
         app,
         rotate_gov_credentials,
         InstalledLimits {
-            guard: limits_guard,
+            limits: limits_resolved,
             rates: resolved_rates,
             staged,
             destinations,

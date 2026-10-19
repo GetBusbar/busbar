@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Process-wide operational limits ("NEVER CODED CAPS"), installed from the resolved config
-//! (`config::LimitsResolved`) at startup AND on every config apply/reload (the config plane
-//! refreshes them live), read by the use sites that live too deep in a call stack to thread
-//! `App`/`&self` through.
+//! Process-wide operational limits ("NEVER CODED CAPS"), published from the resolved config
+//! (`config::LimitsResolved`) when a generation goes live — the boot generation's commit and every
+//! subsequent swap (`config::limits::publish`) — and read by the use sites that live too deep in a call
+//! stack to thread `App`/`&self` through. A configuration build reads its own candidate's values
+//! through a build-scoped view no other thread sees (`config::limits::BuildScope`).
 //!
-//! Each accessor returns the operator-configured value when `install` has run, and otherwise the
-//! HISTORICAL hardcoded default (the same `config::DEFAULT_*` const the serde defaults use). So a
-//! unit test that never calls `install` sees byte-for-byte today's behavior, and a double-`install`
-//! (only `main` calls it) is a no-op rather than a panic.
+//! Each accessor returns the published value, and otherwise the HISTORICAL hardcoded default (the
+//! same `config::DEFAULT_*` const the serde defaults use), so a unit test that publishes nothing
+//! sees byte-for-byte the default behaviour. Publishing again replaces the values.
 //!
 //! Values threaded explicitly (the upstream client timeout/pool-idle, the axum `DefaultBodyLimit`,
 //! the inbound concurrency layer, the TLS handshake bound, and the store's hard-down /
@@ -28,14 +28,10 @@ use crate::config::{
 #[cfg(test)]
 use crate::config::DEFAULT_REQUEST_BODY_MAX_BYTES;
 
-// THE INSTALL SIDE lives with the shape it installs, in `busbar_kernel::config::limits`: the
-// process-global slot, the build-scoped rollback guard, and the test-only unconditional installer
-// with the lock that serializes it. Re-exported here BY IDENTITY at their historical
-// `busbar_kernel::limits::` paths — same statics, same guard type, same lock — so this crate's
-// composition root, its accessors below and its tests are untouched, and a plane crate's tests
-// install the same posture against the same slot without naming this crate.
-// `pub(crate)`: the canonical public spelling is the substrate's own, and nothing outside
-// busbar-core reaches this path.
+// THE PUBLISH SIDE lives with the shape it publishes, in `busbar_kernel::config::limits`: the
+// process-global slot, the build scope, the publication, and the test-only installers with the
+// lock that serializes them. The test guard is re-exported here for this module's own tests.
+#[cfg(test)]
 pub(crate) use busbar_kernel::config::limits::InstallGuard;
 // `install` is dropped: nothing in the workspace names `busbar_kernel::limits::install` -- every real
 // caller spells `busbar_kernel::config::limits::install`, its home. `LIMITS_TEST_LOCK` stays,
@@ -83,11 +79,11 @@ pub(crate) fn upstream_error_body_max_bytes() -> usize {
         .unwrap_or(crate::config::DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES)
 }
 
-// There is deliberately NO process-global webhook-delivery accessor here, for concurrency or for
-// the deadline: the request-log webhook is an export PLUGIN (`busbar-export-webhook`), and each
-// NAMED instance states its own in-flight bound when started and carries its own
-// `delivery_timeout_secs` on each request — so one saturated sink can never consume another's
-// budget, and no accessor has to pick one instance's value for the others.
+// There is deliberately NO process-global delivery accessor here for an export sink, for
+// concurrency or for the deadline: an export sink is a plugin, and each NAMED instance states its
+// own in-flight bound when started and carries its own delivery timeout on each request — so one
+// saturated sink can never consume another's budget, and no accessor has to pick one instance's
+// value for the others.
 
 /// Max per-key gauge series emitted per `/metrics` scrape.
 pub(crate) fn key_gauge_limit() -> usize {

@@ -2206,6 +2206,9 @@ pub fn resolve(
             let candidates = pools::CandidatePoolCfg {
                 members,
                 repeatable,
+                // The pool's `breaker:` block goes with it to its plane (THE DESIGN §1), held to
+                // the same Rule 6 as the first plane's pools (`config_validate`).
+                breaker: pool.breaker.clone(),
             };
             derived.insert(pool_name.clone(), candidates);
             non_fallback.push(pool_name.clone());

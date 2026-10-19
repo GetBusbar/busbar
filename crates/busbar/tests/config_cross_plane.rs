@@ -277,3 +277,51 @@ pools:
         "{errs:?}"
     );
 }
+
+/// A POOL'S `breaker:` BLOCK IS EVERY PLANE'S (BUSBAR-1.6.0.md THE DESIGN §1: "Any plugin gets all
+/// functionality ... A capability one plane has and a sibling plane lacks is a gap to close"). The
+/// first plane's pools have always carried a `breaker:` block held to Rule 6; a pool whose members
+/// belong to another plane is written in the same `pools:` map with the same key, so it is held to
+/// the same rule in the same words, and the block it states goes with it to its plane.
+///
+/// RED before the fix: the projection to the plane's pools dropped the block unread, so a
+/// zero-cooldown block on such a pool passed validation and was never applied.
+#[test]
+fn a_planes_pool_breaker_block_is_held_to_the_same_rule_and_carried() {
+    let pool = |base: u64| {
+        let deploy = deploy_yaml(&format!(
+            r#"
+tools:
+  search-eu: {{ url: "https://eu.example/t", pin: {{ mechanism: unpinned }} }}
+  search-us: {{ url: "https://us.example/t", pin: {{ mechanism: unpinned }} }}
+pools:
+  search:
+    members: [search-eu, search-us]
+    breaker: {{ base_cooldown_secs: {base}, max_cooldown_secs: 300 }}
+"#
+        ));
+        resolve(&deploy, &HashMap::new()).expect("the pool resolves")
+    };
+    let refused = busbar_kernel::config_validate::validate(&pool(0)).expect_err("refused");
+    assert!(
+        refused.iter().any(|e| e
+            == "pool 'search' breaker base_cooldown_secs must be >= 1 (got 0); a zero cooldown \
+                re-admits a tripped backend immediately, defeating the breaker's back-off"),
+        "the first plane's Rule 6, in its own words: {refused:?}"
+    );
+    let carried = pool(30);
+    let block = carried.tool_pools["search"]
+        .breaker
+        .as_ref()
+        .expect("the block goes with the pool to its plane");
+    assert_eq!(
+        (block.base_cooldown_secs, block.max_cooldown_secs),
+        (30, 300)
+    );
+    if let Err(errors) = busbar_kernel::config_validate::validate(&carried) {
+        assert!(
+            !errors.iter().any(|e| e.contains("breaker")),
+            "a sound block is not refused: {errors:?}"
+        );
+    }
+}

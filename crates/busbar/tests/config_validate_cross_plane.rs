@@ -128,6 +128,7 @@ fn a_pool_named_like_a_tools_registration_is_refused() {
         CandidatePoolCfg {
             members: vec!["search-eu".into(), "search-us".into()],
             repeatable: Vec::new(),
+            breaker: None,
         },
     );
 

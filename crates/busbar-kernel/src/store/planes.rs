@@ -69,8 +69,9 @@ pub struct PlaneBreakers {
     /// lane-global gates index it, and every entry is the same inert placeholder.
     health: HealthState,
     /// The core defaults (ADR-0002): error-rate trip over a 30s window, 15s→120s cooldown backoff.
-    /// Deliberately NOT operator-tunable per plane consumer's own config section — that absence
-    /// stays until someone asks, as `docs/circuit-breaker.md` already discloses.
+    /// The process-wide `limits.*` (hard-down cooldown, honoured-wait ceiling) reach these cells
+    /// through [`Self::set_limits`]; a pool's `breaker:` block is applied where the pool's cells are
+    /// walked (the root's door egress), as it is for the first plane's pools.
     cfg: BreakerCfg,
     /// FALSE for the [`Self::new_inert`] handle a planeless config gets: the lane table is EMPTY
     /// (none of the [`MAX_POOL_MEMBERS`] placeholder cells — their preallocated outcome windows
@@ -127,10 +128,28 @@ impl PlaneBreakers {
         Self::new()
     }
 
+    /// [`Self::new_with_limits`] under the historical limit defaults (the defaults the config layer
+    /// resolves an absent `limits:` block to, so a default deployment's handle is the same either way).
     pub(crate) fn new() -> Self {
+        Self::new_with_limits(
+            crate::config::DEFAULT_HARD_DOWN_COOLDOWN_SECS,
+            crate::config::DEFAULT_MAX_HONORED_RETRY_AFTER_SECS,
+        )
+    }
+
+    /// A PROVISIONED handle under the operator's `limits.hard_down_cooldown_secs` /
+    /// `limits.max_honored_retry_after_secs` — the same two limits the first plane's store is built
+    /// with (`appbuild`'s `HealthState::new_with_limits`). THE DESIGN §1 (BUSBAR-1.6.0.md): "Any
+    /// plugin gets all functionality" — a limit an operator sets reaches every plane's cells, not
+    /// one plane's. The handle is process-lifetime, so each subsequent generation's limits arrive through
+    /// [`Self::set_limits`] (`App::publish_limits`, at the swap) rather than a rebuild.
+    pub(crate) fn new_with_limits(
+        hard_down_cooldown_secs: u64,
+        max_honored_retry_after_secs: u64,
+    ) -> Self {
         Self {
             provisioned: true,
-            health: HealthState::new(
+            health: HealthState::new_with_limits(
                 (0..MAX_POOL_MEMBERS)
                     .map(|_| LaneData {
                         model: "plane-target".to_string(),
@@ -152,6 +171,8 @@ impl PlaneBreakers {
                         prompt_caching: false,
                     })
                     .collect(),
+                hard_down_cooldown_secs,
+                max_honored_retry_after_secs,
             ),
             cfg: BreakerCfg {
                 // THE ONE FIELD THIS PLANE DOES NOT TAKE FROM THE PRIMARY PLANE'S DEFAULTS, and the
@@ -161,8 +182,8 @@ impl PlaneBreakers {
                 // "prefer a sibling" half of a rule whose other half is "fail over to the next
                 // candidate"; with no sibling declared there is nothing to prefer, and benching
                 // the only member is not a preference, it is a 15-120s outage for every caller of
-                // that server, minted by ONE transient blip and rendered as `-32030
-                // upstream_unavailable` ... "open after repeated failures".
+                // that server, minted by ONE transient blip and rendered as the plane's own
+                // upstream-unavailable refusal ... "open after repeated failures".
                 //
                 // This is a per-BREAKER setting, not a per-cell one, so it is set for the
                 // conservative case and a pooled cell inherits it: a pooled member is deprioritised
@@ -174,6 +195,21 @@ impl PlaneBreakers {
                 bench_below_trip_threshold: false,
                 ..BreakerCfg::default()
             },
+        }
+    }
+
+    /// Carry a new generation's `limits.hard_down_cooldown_secs` / `limits.max_honored_retry_after_secs`
+    /// onto the cells: the next hard-down arms the new sticky cooldown, the next honoured upstream
+    /// wait is clamped to the new ceiling. Learned state is kept (the handle is process-lifetime).
+    /// The inert handle has no cells and takes nothing.
+    pub(crate) fn set_limits(
+        &self,
+        hard_down_cooldown_secs: u64,
+        max_honored_retry_after_secs: u64,
+    ) {
+        if self.provisioned {
+            self.health
+                .set_limits(hard_down_cooldown_secs, max_honored_retry_after_secs);
         }
     }
 
