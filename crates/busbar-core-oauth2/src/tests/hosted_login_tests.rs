@@ -845,6 +845,58 @@ async fn credential_submit_wrong_password_401() {
     assert_eq!(resp.status().as_u16(), 401);
 }
 
+/// 1.5.5 PARITY (Q128 p9#4, coordinator ruling 2026-10-19): a CREDENTIAL method's cookie arriving
+/// on the redirect callback (`?code=&state=`) is handled exactly as 1.5.5's callback handled it
+/// (crates/busbar/src/auth/token.rs:466-470 at v1.5.5 admits any method with a button): the plugin
+/// is handed the code, answers Reject (no credentials were submitted), and the caller gets 1.5.5's
+/// 401 "Sign-in was declined" page with the cookie cleared. RED against a method-kind check on the
+/// callback, which answers 400 "Sign-in unavailable" before the plugin is asked.
+#[tokio::test]
+async fn a_credential_method_on_the_redirect_callback_is_answered_as_1_5_5_answered_it() {
+    let door = cred_login();
+    let app = busbar_kernel::test_support::TestApp::new()
+        .public_url("https://busbar.example.com")
+        .login_method_door(
+            "test-login-double",
+            door.clone(),
+            LoginKind::Credential,
+            true,
+        )
+        .build();
+    let resp = callback(
+        &app,
+        &cred_handle(&app),
+        Some(cred_cookie("csrf-1", false)),
+        "code123".into(),
+        Some("csrf-1".into()),
+    )
+    .await;
+    assert_eq!(
+        resp.status().as_u16(),
+        401,
+        "1.5.5 answered the plugin's Reject"
+    );
+    let cleared = resp
+        .headers()
+        .get_all(axum::http::header::SET_COOKIE)
+        .iter()
+        .any(|v| v.to_str().unwrap_or("").contains("Max-Age=0"));
+    assert!(cleared, "the single-use cookie is cleared");
+    let body = body_of(resp);
+    assert_branded_error_page(&body, "Sign-in was declined");
+    assert!(
+        body.contains("Your identity provider declined this sign-in."),
+        "1.5.5's callback copy: {body}"
+    );
+    let seen = door.seen.lock().unwrap();
+    assert_eq!(seen.len(), 1, "the plugin is asked, as 1.5.5 asked it");
+    assert_eq!(seen[0].login.code.as_deref(), Some("code123"));
+    assert!(
+        seen[0].login.submitted.is_empty(),
+        "no credentials ride a callback"
+    );
+}
+
 /// CSRF: a form `__state` that does not match the cookie is a clean 400 (no complete_login).
 #[tokio::test]
 async fn credential_submit_state_mismatch_400() {

@@ -231,11 +231,12 @@ async fn callback(
     if !state_ok {
         return clear_and(security_check_failed());
     }
-    // 1.5.5 PARITY (Q128 p9#4): the callback admits any method with a button, a credential one
-    // included, and leaves the refusal of an authorization code it never asked for to the plugin,
-    // as 1.5.5's callback did (crates/busbar/src/auth/token.rs:466-470 at v1.5.5 filters on
-    // `has_button` alone). Refusing it here changes what such a request is answered, so it is the
-    // owner's to sign.
+    // 1.5.5 PARITY (Q128 p9#4, coordinator ruling 2026-10-19): the callback admits any method with
+    // a button, a credential one included, and leaves the refusal of an authorization code it never
+    // asked for to the plugin, exactly as 1.5.5's callback did (crates/busbar/src/auth/token.rs
+    // :466-470 at v1.5.5 filters on `has_button` alone). A method-kind check here would answer 400
+    // where 1.5.5 answered the plugin's verdict; pinned by
+    // `a_credential_method_on_the_redirect_callback_is_answered_as_1_5_5_answered_it`.
     if login_method(app, &cookie.method)
         .filter(|m| m.has_button)
         .is_none()
