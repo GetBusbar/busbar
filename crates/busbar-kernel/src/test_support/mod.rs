@@ -2257,11 +2257,23 @@ pub mod outbound_auth;
 /// second credential under, standing for the linked signed-request verifier's Statement marks (a
 /// test binary links no auth plugin). Test data, never shipped.
 pub mod issued {
+    /// The persisted kind of the row-looked-up credential, as 1.5.5 stored it: frozen stored data,
+    /// read off the kernel's frozen-text fixture (the kind every test reads the row back under)
+    /// rather than spelled here.
+    fn frozen_kind() -> String {
+        const FROZEN: &str = include_str!("../../tests/fixtures/frozen_customer_text.yaml");
+        FROZEN
+            .lines()
+            .find_map(|l| l.strip_prefix("signed_credential_kind:"))
+            .map(|v| v.trim().to_string())
+            .expect("the frozen fixture names the signed credential kind")
+    }
+
     /// `(kind, shape)` as the linked signed-request verifier states them.
     #[must_use]
     pub fn double() -> (String, busbar_contract::auth_calls::IssuedShape) {
         (
-            "issued-double".to_string(),
+            frozen_kind(),
             busbar_contract::auth_calls::IssuedShape {
                 id_prefix: "AKIA".to_string(),
                 id_len: 20,

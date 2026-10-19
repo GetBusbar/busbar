@@ -899,7 +899,9 @@ impl AuthMiddleware {
         if mw.carriers.is_empty() {
             mw.carriers = test_inbound_style();
         }
-        if mw.issued.is_none() && crate::preflight::linked_auth_names().is_empty() {
+        // An empty registry opens no host-held credentials' verifier, so none states the issued
+        // shape: the double stands for it, whatever rows the test binary links.
+        if mw.issued.is_none() {
             mw.issued = Some(crate::test_support::issued::double());
         }
         mw

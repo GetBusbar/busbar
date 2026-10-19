@@ -2220,11 +2220,14 @@ fn external_door_app(
             calls: std::sync::Arc::new(LentCredentialDoor(otherwise)),
         },
     );
+    // The operator credential's row still states the admin lines the candidate is read from: the
+    // carriers the build opened it with, kept across the swap of the chain's modules.
+    let carriers = app.admin_modules.operator.carriers().to_vec();
     std::sync::Arc::get_mut(&mut app)
         .expect("freshly built App Arc is unshared")
         .admin_modules = std::sync::Arc::new(AdminAuthChain {
         modules,
-        operator: Operator::new(crate::config::operator_provider()),
+        operator: Operator::new(crate::config::operator_provider()).with_carriers(carriers),
     });
     app
 }

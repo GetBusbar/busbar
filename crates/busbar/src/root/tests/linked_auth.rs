@@ -717,8 +717,11 @@ async fn a_provider_named_like_the_operator_but_backed_by_another_module_is_that
         let base = app(&[op], Vec::new());
         let defs = [(op, AnyCredential.name())].into_iter();
         let is_op = |m: &str| config::names_operator(m);
-        let operator =
-            Operator::open(op, defs, &is_op, false, None, |_| unreachable!()).expect("opens");
+        // The operator row's carriers, as the build opened them: the admin lines the candidate
+        // the configured module is lent is read from.
+        let operator = Operator::open(op, defs, &is_op, false, None, |_| unreachable!())
+            .expect("opens")
+            .with_carriers(base.admin_modules.operator.carriers().to_vec());
         assert!(
             !operator.is(op),
             "a definition under the name, backed elsewhere"
