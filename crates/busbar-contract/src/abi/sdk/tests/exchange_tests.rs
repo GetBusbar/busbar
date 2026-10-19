@@ -55,6 +55,8 @@ struct Script {
     unframed: bool,
     /// The registration each ESTABLISH named, in order (`None` = an absent member).
     members: Vec<Option<Vec<u8>>>,
+    /// Streams established and not closed: the host's held streams.
+    held: i64,
 }
 
 static SCRIPT: Mutex<Option<Script>> = Mutex::new(None);
@@ -140,6 +142,7 @@ fn serve(op: u32, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
         service::ESTABLISH => {
             // SAFETY: an `EstablishIn` (the SDK states its whole size).
             let i = unsafe { *input.cast::<crate::abi::host::conn::connector::EstablishIn>() };
+            s.held += 1;
             s.members.push((!i.member.ptr.is_null()).then(|| {
                 // SAFETY: the SDK's own string, live for the call.
                 unsafe { std::slice::from_raw_parts(i.member.ptr, i.member.len) }.to_vec()
@@ -166,6 +169,10 @@ fn serve(op: u32, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
             let piece = s.reply[s.reads.min(s.reply.len() - 1)];
             s.reads += 1;
             (0, play(io, piece))
+        }
+        service::CLOSE => {
+            s.held -= 1;
+            (0, 0)
         }
         _ => (0, 0),
     };
@@ -289,6 +296,8 @@ struct Run<T> {
     members: Vec<Option<Vec<u8>>>,
     /// The exchange's state once it completed.
     state: Exchange,
+    /// Streams the host still holds when the op answered.
+    held: i64,
 }
 
 /// Run the op to completion under `reply`: a fresh connector each entry, the same parked state.
@@ -326,6 +335,7 @@ fn run<T>(
         framed: s.framed,
         members: s.members,
         state,
+        held: s.held,
     }
 }
 
@@ -618,4 +628,44 @@ fn the_framed_fields_are_the_head_the_exchange_sends() {
         ]
     );
     assert!(Exchange::send(b"raw".to_vec()).framed_fields().is_empty());
+}
+
+/// RED (Q128, a send-once caller's leak): an exchange that FAILS after it established its stream
+/// closes the stream before it answers, as a whole one does, so a caller that sends once and moves
+/// on holds nothing per failed delivery. The far end answers no reply piece; a stream that is not
+/// framed refuses the request. Each answers its failure with the host holding no stream. RED
+/// before: the failed exchange answered with its stream still held.
+#[test]
+fn a_failed_exchange_closes_its_stream_before_it_answers() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let no_piece = run(
+        vec![piece(0, 0, b"", b"", b"")],
+        false,
+        Exchange::send(b"ping".to_vec()),
+        None,
+        |c, st| send_and_ack(c, st, 0, None),
+    );
+    assert!(no_piece.answered.is_err(), "{:?}", no_piece.answered);
+    assert_eq!(no_piece.held, 0, "a failed exchange left its stream held");
+    let refused = run(
+        http_reply(),
+        true,
+        Exchange::request(post()).unwrap(),
+        None,
+        |c, st| exchange(c, st, 0, None),
+    );
+    assert!(refused.answered.is_err(), "{:?}", refused.answered);
+    assert_eq!(refused.held, 0, "a refused request left its stream held");
+    // A whole exchange closes its stream too.
+    let whole = run(
+        http_reply(),
+        false,
+        Exchange::request(post()).unwrap(),
+        None,
+        |c, st| exchange(c, st, 0, None),
+    );
+    assert!(whole.answered.is_ok(), "{:?}", whole.answered);
+    assert_eq!(whole.held, 0);
 }

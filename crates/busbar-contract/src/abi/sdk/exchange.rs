@@ -368,6 +368,34 @@ fn send_and_read(
     need: u32,
     target: Option<&str>,
 ) -> Answer<()> {
+    // A FAILED EXCHANGE CLOSES ITS STREAM before it answers, as a whole one does: a caller that
+    // sends once and moves on never leaves a held stream (and its connection) behind per failure.
+    match exchange_once(c, state, need, target) {
+        Poll::Ready(Err(e)) => match state.stream {
+            Some(stream) => match c.close(stream) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(_) => {
+                    state.stream = None;
+                    Poll::Ready(Err(e))
+                }
+            },
+            None => Poll::Ready(Err(e)),
+        },
+        Poll::Ready(Ok(())) => {
+            state.stream = None;
+            Poll::Ready(Ok(()))
+        }
+        Poll::Pending => Poll::Pending,
+    }
+}
+
+/// One pass of [`send_and_read`]: establish, send, read to the terminal piece, close a whole one.
+fn exchange_once(
+    c: &mut Connector<'_>,
+    state: &mut Exchange,
+    need: u32,
+    target: Option<&str>,
+) -> Answer<()> {
     let stream = ready!(c.establish_as(need, target, &state.within, 0, state.member.as_deref()));
     state.stream = Some(stream);
     ready!(send(c, state, stream));
