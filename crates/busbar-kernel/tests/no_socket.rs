@@ -59,9 +59,6 @@ const TOKIO_NET: &str = "tokio:net";
 /// TODAY'S OFFENDERS, measured on predev after row 130 E1 (the hyper serve loop moved to the root).
 /// Each line is struck in the commit that drains it.
 const PINNED: &[(&str, &str)] = &[
-    // E3: the duplex_ws dial (`TcpStream::connect` + the tungstenite client handshake).
-    ("src/egress/duplex_ws.rs", "TcpStream"),
-    ("src/egress/duplex_ws.rs", "tokio_tungstenite"),
     // E5: the engine pool (the owned hyper-util client, its https connector and resolver).
     ("src/egress/engine/client.rs", "hyper::client"),
     ("src/egress/engine/https.rs", "TcpStream"),
@@ -76,7 +73,7 @@ const PINNED: &[(&str, &str)] = &[
 ];
 
 /// TODAY'S MANIFEST OFFENDERS, struck as the code that needs each one leaves.
-const PINNED_MANIFEST: &[&str] = &["hyper-util", "tokio-tungstenite", "reqwest", TOKIO_NET];
+const PINNED_MANIFEST: &[&str] = &["hyper-util", "reqwest", TOKIO_NET];
 
 fn crate_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
