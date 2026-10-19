@@ -141,6 +141,9 @@ fn declare_class(c: &Connector, trust_from: &str, pem: Option<&str>, class: u32)
             bytes: Vec::new(),
         },
         timeout_ms: 0,
+        keep_mode: 0,
+        keep_response_headers: Vec::new(),
+        deny_response_headers: Vec::new(),
     };
     assert_eq!(
         DeclaredConns::declare(c, OWNER, NeedId(0), &need, None, pem),

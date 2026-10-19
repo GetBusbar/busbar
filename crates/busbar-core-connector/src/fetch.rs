@@ -96,6 +96,9 @@ fn need(scheme: &str) -> ReadNeed {
             bytes: Vec::new(),
         },
         timeout_ms: 0,
+        keep_mode: 0,
+        keep_response_headers: Vec::new(),
+        deny_response_headers: Vec::new(),
     }
 }
 

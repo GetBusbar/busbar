@@ -366,6 +366,9 @@ fn a_program_need_is_dialled_through_the_linked_line_framing_door() {
                     bytes: Vec::new(),
                 },
                 timeout_ms: 0,
+                keep_mode: 0,
+                keep_response_headers: Vec::new(),
+                deny_response_headers: Vec::new(),
             };
             let (owner, id) = (InstanceId(7), NeedId(n));
             // A door that frames over another layer carries no program: refused at declare.

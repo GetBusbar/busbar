@@ -183,6 +183,9 @@ pub(crate) fn document_need() -> ReadNeed {
             bytes: Vec::new(),
         },
         timeout_ms: u64::try_from(FETCH_TIMEOUT.as_millis()).unwrap_or(u64::MAX),
+        keep_mode: 0,
+        keep_response_headers: Vec::new(),
+        deny_response_headers: Vec::new(),
     }
 }
 

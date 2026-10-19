@@ -236,6 +236,9 @@ fn a_rendering_reads_back_to_every_fact_it_carries() {
     assert_eq!(r.needs[0].target_from, "settings.url");
     assert_eq!(r.needs[0].details.bytes, b"{}");
     assert_eq!(r.needs[0].timeout_ms, 30_000);
+    assert_eq!(r.needs[0].keep_mode, KEEP_NAMED);
+    assert!(r.needs[0].keep_response_headers.is_empty());
+    assert!(r.needs[0].deny_response_headers.is_empty());
     assert_eq!(r.target_from, "settings.url");
     assert_eq!(r.trust_from, "settings.ca");
     assert_eq!(r.answers, vec!["status".to_string()]);
@@ -294,6 +297,17 @@ fn a_needs_keep_rule_changes_the_rendering() {
         };
         assert_ne!(bytes(&st), base, "the rendering ignores the need's {what}");
     }
+    // The keep rule reads back, for every no-dlopen reader.
+    let st = Statement {
+        needs: denied.as_ptr(),
+        ..full()
+    };
+    let r = read(&bytes(&st)).expect("reads back");
+    assert_eq!(r.needs[0].keep_mode, KEEP_ALL_EXCEPT_DENIED);
+    assert_eq!(
+        r.needs[0].deny_response_headers,
+        vec!["x-request-id".to_string()]
+    );
     let st = Statement {
         needs: denied.as_ptr(),
         ..full()

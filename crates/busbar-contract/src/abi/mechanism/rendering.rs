@@ -29,7 +29,9 @@
 //! rewrites         list of { class u32, from str, to str }
 //! sections         list of { name str, flags u32 }
 //! needs            list of { direction u32, egress_class u32, transport str, auth str,
-//!                            target_from str, trust_from str, details blob, timeout_ms u64 }
+//!                            target_from str, trust_from str, details blob, timeout_ms u64,
+//!                            keep_mode u32, keep_response_headers list of str,
+//!                            deny_response_headers list of str }
 //! target_from      str
 //! trust_from       str
 //! answers          list of str
@@ -199,6 +201,19 @@ pub unsafe fn render(st: &Statement) -> Result<Vec<u8>, TooLong> {
             o.str(n.trust_from, "need.trust_from")?;
             o.blob(n.details, "need.details")?;
             o.u64(n.timeout_ms);
+            // THE NEED'S RESPONSE-HEADER KEEP RULE (u11 LOW): its mode and both name lists are
+            // signed and compared at load like every other fact of the need.
+            o.u32(n.keep_mode);
+            let kept = items(n.keep_response_headers, n.keep_response_headers_len);
+            o.len(kept.len(), "need.keep_response_headers")?;
+            for k in kept {
+                o.str(*k, "need.keep_response_header")?;
+            }
+            let denied = items(n.deny_response_headers, n.deny_response_headers_len);
+            o.len(denied.len(), "need.deny_response_headers")?;
+            for d in denied {
+                o.str(*d, "need.deny_response_header")?;
+            }
         }
         o.str(st.target_from, "target_from")?;
         o.str(st.trust_from, "trust_from")?;
@@ -263,6 +278,12 @@ pub struct ReadNeed {
     pub details: ReadBlob,
     /// Its establish and reply-wait bound, milliseconds; `0` = the host's default.
     pub timeout_ms: u64,
+    /// How the far end's response head reaches it (`KEEP_*`).
+    pub keep_mode: u32,
+    /// The response head fields it reads, under `KEEP_NAMED`.
+    pub keep_response_headers: Vec<String>,
+    /// The response head fields it never reads, under `KEEP_ALL_EXCEPT_DENIED`.
+    pub deny_response_headers: Vec<String>,
 }
 
 /// A Statement read back from its rendering: every fact the rendering carries, owned.
@@ -446,6 +467,9 @@ pub fn read(bytes: &[u8]) -> Result<Read, Unreadable> {
             trust_from: i.str("need.trust_from")?,
             details: i.blob("need.details")?,
             timeout_ms: i.u64("need.timeout_ms")?,
+            keep_mode: i.u32("need.keep_mode")?,
+            keep_response_headers: i.strs("need.keep_response_headers")?,
+            deny_response_headers: i.strs("need.deny_response_headers")?,
         });
     }
     let target_from = i.str("target_from")?;

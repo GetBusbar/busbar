@@ -26,6 +26,9 @@ fn need_over(direction: u32, transport: &str, auth: &str) -> ReadNeed {
             bytes: Vec::new(),
         },
         timeout_ms: 0,
+        keep_mode: 0,
+        keep_response_headers: Vec::new(),
+        deny_response_headers: Vec::new(),
     }
 }
 
