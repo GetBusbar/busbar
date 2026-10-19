@@ -216,9 +216,6 @@ pub mod diagnostics;
 pub use busbar_plugin_loader::durable;
 /// A lane's credential, bound by the auth plugin that serves its style (P2 D1, the auth split).
 pub mod bound_credential;
-// The kernel's outbound vocabulary and the destinations seam; the kernel dials nothing. See the
-// module header.
-pub mod egress;
 pub mod endpoints;
 pub mod export;
 pub mod failover;

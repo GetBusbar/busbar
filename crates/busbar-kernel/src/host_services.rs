@@ -123,52 +123,15 @@ pub trait DestJudge: Send + Sync {
     ) -> Option<Admitted> {
         self.judge(dest, class, false, done)
     }
-    /// An answer the kernel's own client resolved for `host`, judged whole under `class`.
-    ///
-    /// # Errors
-    ///
-    /// The refusal of the first refused address.
-    fn judge_answer(&self, host: &str, addrs: &[IpAddr], class: u32) -> Result<(), DestRefusal>;
-    /// The name arm for a `host` the kernel's own client is about to dial under `class`, before any
-    /// resolution: an IP literal judged as its own answer, a metadata, blocked or `localhost` name
-    /// decided here ([`Self::judge_name`]'s judgement, with the guard's sentence when it has one).
-    ///
-    /// # Errors
-    ///
-    /// The refusal.
-    fn judge_host(&self, host: &str, class: u32) -> Result<(), DestRefusal> {
-        self.judge_name(host, class, false)
-            .map_err(|verdict| DestRefusal {
-                verdict,
-                reason: format!("host `{host}` was refused by the destination guard"),
-            })
-    }
     /// A config commit: the deployment's destinations are now `d`. A judge that re-reads its
     /// metadata lists at every commit (as 1.5.5 did) takes them from here; the default keeps what
-    /// it was built with. Raised through the egress-trust capability the root installs the
-    /// deployment's one guard behind (`egress::trust::destinations_applied`), no static
-    /// of its own (door-only:static-seam).
+    /// it was built with. Raised by the root's rules at the commit
+    /// (`appbuild::RootRules::destinations_applied`), no static of its own
+    /// (door-only:static-seam).
     fn destinations_applied(&self, d: &crate::config::Destinations) {
         let _ = d;
     }
 }
-
-/// A destination judge's refusal of an answer: the `DEST_*` verdict and the guard's sentence.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DestRefusal {
-    /// The `DEST_*` verdict.
-    pub verdict: u64,
-    /// The guard's sentence.
-    pub reason: String,
-}
-
-impl std::fmt::Display for DestRefusal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.reason)
-    }
-}
-
-impl std::error::Error for DestRefusal {}
 
 /// THE ROOT'S NESTED-DISPATCH SEAM (THE DESIGN §11.12 unit row; ARCHITECT H3 "NestRoute root
 /// seam"): `unit.nest` hands the composition root the child to run, and the root runs it on

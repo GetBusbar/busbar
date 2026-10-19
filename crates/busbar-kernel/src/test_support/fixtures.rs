@@ -184,6 +184,21 @@ pub fn build_once(
     cfg: crate::config::RootCfg,
     prior: Option<&crate::state::App>,
 ) -> Result<crate::state::App, String> {
+    build_once_under(
+        cfg,
+        prior,
+        &(std::sync::Arc::new(crate::appbuild::AcceptAll)
+            as std::sync::Arc<dyn crate::appbuild::RootRules>),
+    )
+}
+
+/// [`build_once`] under the composition root's `rules`: the build is judged by them, and its
+/// commit is raised to them (`RootRules::destinations_applied`), as the boot build's is.
+pub fn build_once_under(
+    cfg: crate::config::RootCfg,
+    prior: Option<&crate::state::App>,
+    rules: &std::sync::Arc<dyn crate::appbuild::RootRules>,
+) -> Result<crate::state::App, String> {
     // The build installs `cfg.limits` process-wide and KEEPS them (below), so it is a writer of the
     // slot `LIMITS_TEST_LOCK` serializes: without the lock, a build in a sibling test lands mid-way
     // through a test that holds it (e.g. the root listener's total-deadline test, which installs a
@@ -206,8 +221,7 @@ pub fn build_once(
         std::collections::HashSet::new(),
         (None, None),
         prior,
-        &(std::sync::Arc::new(crate::appbuild::AcceptAll)
-            as std::sync::Arc<dyn crate::appbuild::RootRules>),
+        rules,
     )?;
     // Same reasoning for the limits: no persist step follows, so this build IS the live generation
     // and its limits stay installed — the behaviour every caller of this helper has always had.
@@ -233,45 +247,41 @@ pub fn closed_auth_chain(module: &str) -> crate::config::AuthCfg {
     auth
 }
 
-/// Drive a REAL oversized POST to `path` through the REAL layer stack and return the 413 body.
-/// Asserts only the status and JSON-ness; the SHAPE is each caller's assertion.
+/// Drive an oversized POST to `path` through the REAL layer stack (the router `build_router_with_limits`
+/// builds, every layer it stacks) and return the 413 body. Asserts only the status and JSON-ness;
+/// the SHAPE is each caller's assertion.
+///
+/// In process, through `tower::ServiceExt::oneshot`, with the `content-type` and `content-length`
+/// a client sends: the kernel serves no socket (THE DESIGN §5; the listener is the root's), so its
+/// test kit drives the stack without one and needs no HTTP client.
 pub async fn oversized_413_body(
     app: std::sync::Arc<crate::state::App>,
     path: &str,
 ) -> serde_json::Value {
+    use http_body_util::BodyExt as _;
+    use tower::ServiceExt as _;
     // A tiny body cap so an ordinary request trips `DefaultBodyLimit`.
     let (router, _handle) = crate::build_router_with_limits(app, 64, 1024, false);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    // Cooperative shutdown rather than `JoinHandle::abort`: `axum::serve`'s own graceful-shutdown
-    // future is raced INSIDE its accept loop, so telling it to stop is a signal the server notices at
-    // its own next poll, never a forced mid-flight interruption.
-    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
-    let server = tokio::spawn(async move {
-        axum::serve(listener, router)
-            .with_graceful_shutdown(async move {
-                let _ = stop_rx.await;
-            })
-            .await
-            .unwrap()
-    });
-
     let oversized = "x".repeat(4096);
-    let r = reqwest::Client::new()
-        .post(format!("http://{addr}{path}"))
+    let body = serde_json::json!({ "pad": oversized }).to_string();
+    let request = http::Request::post(path)
         .header("content-type", "application/json")
-        .body(serde_json::json!({ "pad": oversized }).to_string())
-        .send()
-        .await
-        .unwrap();
+        .header("content-length", body.len())
+        .body(axum::body::Body::from(body))
+        .expect("the oversized request");
+    let response = router.oneshot(request).await.expect("the stack answers");
     assert_eq!(
-        r.status().as_u16(),
+        response.status().as_u16(),
         413,
         "the body cap must reject the oversized POST to {path}"
     );
-    let body = r.text().await.unwrap();
-    let _ = stop_tx.send(());
-    let _ = server.await;
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("the 413 body")
+        .to_bytes();
+    let body = String::from_utf8_lossy(&bytes).into_owned();
     serde_json::from_str(&body)
         .unwrap_or_else(|e| panic!("the 413 body must be JSON ({e}): {body}"))
 }

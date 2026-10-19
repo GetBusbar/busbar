@@ -17,7 +17,7 @@
 //! * a pinned pair the tree no longer has is RED too: the drain happened, so the pair is struck in
 //!   the SAME commit (the pin only goes down).
 //!
-//! Row 130 is done when [`PINNED`] and [`PINNED_MANIFEST`] are empty.
+//! Row 130's kernel half is done: [`PINNED`] and [`PINNED_MANIFEST`] are empty (u30).
 //!
 //! SCOPE. Every `.rs` under `src/` except test scaffolding: a file under a `tests/` directory, a
 //! `*_tests.rs` or `tests.rs` file, `src/test_support/**`, and `src/egress/fixtures.rs` (compiled
@@ -63,10 +63,10 @@ const TOKIO_NET: &str = "tokio:net";
 /// `TcpStream` (`secure.rs`) are deleted; every dial is the connector's (THE DESIGN §5).
 const PINNED: &[(&str, &str)] = &[];
 
-/// TODAY'S MANIFEST OFFENDERS, struck as the code that needs each one leaves. `hyper-util` and
-/// tokio's `net` left with the engine (u30). `reqwest` is the `test-support` kit's optional edge
-/// (`test_support`'s mock-driving helpers), never on in a shipped build.
-const PINNED_MANIFEST: &[&str] = &["reqwest"];
+/// TODAY'S MANIFEST OFFENDERS, struck as the code that needs each one leaves. EMPTY: `hyper-util`
+/// and tokio's `net` left with the engine (u30), and `reqwest` with the test kit's last HTTP client
+/// (`test_support::oversized_413_body` drives the router in process).
+const PINNED_MANIFEST: &[&str] = &[];
 
 fn crate_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

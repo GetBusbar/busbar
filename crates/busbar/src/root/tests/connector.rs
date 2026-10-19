@@ -97,8 +97,9 @@ fn imds() -> Vec<std::net::IpAddr> {
 }
 
 /// The verdict `judge` answers for `host` answering the IMDS address under `class`.
-fn metadata_verdict(judge: &dyn DestJudge, host: &str, class: u32) -> Option<u64> {
+fn metadata_verdict(judge: &process::GuardJudge, host: &str, class: u32) -> Option<u64> {
     judge
+        .guard()
         .judge_answer(host, &imds(), class)
         .err()
         .map(|r| r.verdict)
@@ -200,15 +201,17 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
          advanced:\n  allow_destinations: [\"127.0.0.1\", \"::1\"]\n",
     );
     let judge = dest_judge(&boot);
-    // The boot path's own step: the guard goes behind the egress-trust capability, which is what
-    // hears a commit (no other test in this binary installs one).
-    crate::root::connector::install_egress_trust(judge.clone());
+    // The boot path's own step: the root's rules hold the guard, and a configuration built under
+    // them raises its commit to it (`RootRules::destinations_applied`).
+    let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
+        Arc::new(crate::root::door_steps::Rules::judging(judge.clone()));
     assert_eq!(
         metadata_verdict(judge.as_ref(), "imds-proxy.test", EGRESS_PROVIDER),
         None,
         "the boot config carves it out"
     );
-    busbar_kernel::test_support::build_once(deployment(&[], ""), None).expect("the reload builds");
+    busbar_kernel::test_support::build_once_under(deployment(&[], ""), None, &rules)
+        .expect("the reload builds");
     assert_eq!(
         metadata_verdict(judge.as_ref(), "imds-proxy.test", EGRESS_PROVIDER),
         Some(DEST_METADATA),
@@ -229,6 +232,7 @@ fn a_provider_without_an_allowlist_entry_is_refused_a_private_address() {
     let judge = guard_for(&bare.destinations()).expect("a guard");
     assert_eq!(
         judge
+            .guard()
             .judge_answer("model.internal", &private, EGRESS_PROVIDER)
             .err()
             .map(|r| r.verdict),
@@ -236,7 +240,9 @@ fn a_provider_without_an_allowlist_entry_is_refused_a_private_address() {
         "the provider's own host, no allowlist entry"
     );
     assert_eq!(
-        judge.judge_answer("model.internal", &private, EGRESS_OPERATOR_INFRASTRUCTURE),
+        judge
+            .guard()
+            .judge_answer("model.internal", &private, EGRESS_OPERATOR_INFRASTRUCTURE),
         Ok(()),
         "operator infrastructure needs no entry"
     );
@@ -246,7 +252,9 @@ fn a_provider_without_an_allowlist_entry_is_refused_a_private_address() {
     );
     let judge = guard_for(&listed.destinations()).expect("a guard");
     assert_eq!(
-        judge.judge_answer("model.internal", &private, EGRESS_PROVIDER),
+        judge
+            .guard()
+            .judge_answer("model.internal", &private, EGRESS_PROVIDER),
         Ok(()),
         "the allowlist admits it"
     );

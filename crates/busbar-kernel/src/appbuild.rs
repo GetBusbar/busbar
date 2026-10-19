@@ -501,6 +501,10 @@ pub struct InstalledLimits {
     /// for the same reason the rates are: its metadata lists are re-read at every commit, and a
     /// rejected apply must not leave them in force.
     destinations: config::Destinations,
+    /// The root's rules this configuration was built under: the commit is raised to them
+    /// ([`RootRules::destinations_applied`]), the root's one destination guard behind them. No
+    /// static of the kernel's own carries it (door-only:static-seam).
+    rules: std::sync::Arc<dyn RootRules>,
 }
 
 /// The rates one build staged ([`crate::rate_apply::rates_staged`]). Dropped while still armed —
@@ -549,9 +553,10 @@ impl InstalledLimits {
             rates,
             mut staged,
             destinations,
+            rules,
         } = self;
         guard.commit();
-        crate::egress::trust::destinations_applied(&destinations);
+        rules.destinations_applied(&destinations);
         staged.armed = false;
         crate::rate_apply::rates_applied(&rates.raw());
     }
@@ -584,6 +589,12 @@ pub trait RootRules: Send + Sync {
     ///
     /// The refusal, in the words the operator reads.
     fn check(&self, cfg: &config::RootCfg) -> Result<(), String>;
+
+    /// A configuration built under these rules is COMMITTED ([`InstalledLimits::keep`]): its
+    /// `destinations`, for the root to raise to the deployment's one destination guard (the
+    /// connector's; THE DESIGN §5), whose metadata lists are re-read at every commit. A rejected
+    /// apply never reaches here. The default hears nothing (a tool, a test fixture: no guard).
+    fn destinations_applied(&self, _destinations: &config::Destinations) {}
 }
 
 /// The rules of a build with no composition root's rules to judge by (a tool, a test fixture): it
@@ -2199,6 +2210,7 @@ pub fn build_app_from_config(
             rates: resolved_rates,
             staged,
             destinations,
+            rules: std::sync::Arc::clone(rules),
         },
     ))
 }

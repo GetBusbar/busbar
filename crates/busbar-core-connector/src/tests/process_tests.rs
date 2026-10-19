@@ -218,10 +218,11 @@ fn the_kernel_asks_the_same_judge() {
         Err(DEST_INTERNAL)
     );
     let r = j
+        .guard()
         .judge_answer("api.test", &["10.9.9.9".parse().unwrap()], EGRESS_DEFAULT)
         .unwrap_err();
     assert_eq!(r.verdict, DEST_INTERNAL);
-    assert!(r.reason.contains("advanced.allow_destinations"), "{r}");
+    assert!(r.to_string().contains("advanced.allow_destinations"), "{r}");
 }
 
 #[test]

@@ -667,11 +667,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     let mut cfg = config::resolve(&deploy, &defs)
         .unwrap_or_else(|errs| die(format!("config errors:\n  - {}", errs.join("\n  - "))));
     // THE DESTINATION GUARD (OWNER ruling DESTINATION GUARD): ONE judge for every outbound
-    // connection, built once here, before anything dials: the kernel's `dest.judge` and its own
-    // clients ask it (installed below), and the connector dials by it. Its metadata lists are
-    // re-published at every config commit, this boot's own build included.
+    // connection, built once here, before anything dials: the kernel's `dest.judge` asks it, and
+    // the connector dials by it. Its metadata lists are re-published at every config commit, this
+    // boot's own build included, through the root's rules (`root_rules`, below).
     let dest = root::connector::dest_judge(&cfg);
-    root::connector::install_egress_trust(dest.clone());
     // THE SERVE PATH'S ONE COMPOSITION: the kernel's host services go into the dispatcher built at
     // boot, before any plugin is bound (`root::serve`).
     // `records.secret` reads the App's governance through its swap handle, which exists once the App
@@ -740,7 +739,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     let _connector = root::connector::boot(
         LINKED_TRANSPORT_DOORS,
         &root::policy::client_settings(&cfg.limits),
-        dest,
+        dest.clone(),
         &[cfg.listen.as_str(), cfg.admin_listen.as_str()],
     );
     // The planes that state themselves through a door bind on the process's one dispatcher (built
@@ -813,8 +812,9 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // (`busbar_kernel::appbuild::RootRules`): handed to the boot build here, kept by each generation
     // and passed on by every apply, rebuild and dry run. They hold the owned trust anchors the door
     // planes name once the planes are composed (below), so an apply carrying one the boot would
-    // refuse is refused, its running generation untouched.
-    let root_rules = Arc::new(root::door_steps::Rules::default());
+    // refuse is refused, its running generation untouched; and they raise every commit's
+    // destinations to the guard.
+    let root_rules = Arc::new(root::door_steps::Rules::judging(dest.clone()));
 
     // The configured store's name, captured before `cfg` is consumed: the boot book's journal is
     // kept in that store, and a store that cannot keep it is refused by name.

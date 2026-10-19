@@ -1608,14 +1608,37 @@ pub fn owned_anchors_refusal<P: AsRef<str>>(
 /// trust anchors the composed door planes name (`owned.<section>.<key>`): each, as a
 /// configuration writes it, judged by [`owned_anchor_refusal`], the rule the boot judges it by, so a
 /// configuration whose anchor the boot would refuse never goes live through an apply, and the
-/// running generation (its declared trust among it) is untouched.
-#[derive(Debug, Default)]
+/// running generation (its declared trust among it) is untouched. And the deployment's one
+/// destination guard (the connector's), which hears every committed configuration's destinations
+/// (`RootRules::destinations_applied`): its metadata lists are re-read at every commit.
+#[derive(Default)]
 pub struct Rules {
     /// The owned trust anchors the composed door planes name, held as each plane is composed.
     owned_anchors: Mutex<Vec<&'static str>>,
+    /// The deployment's one destination guard, when the root built one ([`Rules::judging`]).
+    dest: Option<Arc<dyn busbar_kernel::host_services::DestJudge>>,
+}
+
+impl std::fmt::Debug for Rules {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Rules")
+            .field("owned_anchors", &self.owned_anchors)
+            .field("dest", &self.dest.is_some())
+            .finish()
+    }
 }
 
 impl Rules {
+    /// The root's rules, raising every committed configuration's destinations to `dest`, the
+    /// deployment's one destination guard.
+    #[must_use]
+    pub fn judging(dest: Arc<dyn busbar_kernel::host_services::DestJudge>) -> Self {
+        Self {
+            owned_anchors: Mutex::default(),
+            dest: Some(dest),
+        }
+    }
+
     /// Hold the owned trust anchors among a door plane's need `trust_from` paths (`paths`).
     pub fn hold_owned_anchors(&self, paths: &[&'static str]) {
         let mut held = self
@@ -1644,6 +1667,12 @@ impl busbar_kernel::appbuild::RootRules for Rules {
             return Ok(());
         }
         owned_anchors_refusal(&anchors, &raw_sections(cfg))
+    }
+
+    fn destinations_applied(&self, destinations: &busbar_kernel::config::Destinations) {
+        if let Some(dest) = &self.dest {
+            dest.destinations_applied(destinations);
+        }
     }
 }
 

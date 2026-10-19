@@ -19,7 +19,7 @@ use busbar_contract::abi::host::service::{
 };
 use busbar_contract::transport::trust::EgressTrust;
 use busbar_kernel::config::Destinations;
-use busbar_kernel::host_services::{Admitted, DestJudge, DestRefusal, Refused};
+use busbar_kernel::host_services::{Admitted, DestJudge, Refused};
 
 use crate::guard::{is_loopback, names_loopback, Guard, Resolve, SystemResolver};
 use crate::pool::PoolPosture;
@@ -191,26 +191,6 @@ impl DestJudge for GuardJudge {
         done: Box<dyn FnOnce(Admitted) + Send>,
     ) -> Option<Admitted> {
         self.judged(dest, class, false, true, done)
-    }
-
-    fn judge_answer(&self, host: &str, addrs: &[IpAddr], class: u32) -> Result<(), DestRefusal> {
-        self.guard
-            .judge_answer(host, addrs, class)
-            .map_err(|r| DestRefusal {
-                verdict: r.verdict,
-                reason: r.to_string(),
-            })
-    }
-
-    /// The guard's name arm over a bare host, with the guard's own sentence ([`Guard::judge_name`]).
-    fn judge_host(&self, host: &str, class: u32) -> Result<(), DestRefusal> {
-        self.guard
-            .judge_name(host, class)
-            .map(|_| ())
-            .map_err(|r| DestRefusal {
-                verdict: r.verdict,
-                reason: r.to_string(),
-            })
     }
 
     /// A config commit re-publishes the guard's metadata lists ([`Guard::publish`]).

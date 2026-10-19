@@ -1940,9 +1940,6 @@ impl DestJudge for FakeGuard {
                 }),
         )
     }
-    fn judge_answer(&self, _: &str, _: &[IpAddr], _: u32) -> Result<(), DestRefusal> {
-        Ok(())
-    }
 }
 
 /// RED: with a judge installed, `dest.judge` answers the judge's refusal; the kernel's own
