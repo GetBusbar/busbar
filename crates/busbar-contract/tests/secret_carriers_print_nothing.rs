@@ -5,10 +5,6 @@
 //!
 //! Every one of these is handed across the plugin ABI, so the code that might format it is code
 //! this tree cannot see. The guarantee has to be the type's, not the caller's discipline.
-//!
-//! The one-time placeholder (`SecretOnce`) is minted by the verbs unit and nowhere else
-//! (construction `token-sealed:secret-once-mint`), so what it prints is proved beside that unit, in
-//! its `secret_once_tests`.
 
 use busbar_contract::UpstreamAddress;
 

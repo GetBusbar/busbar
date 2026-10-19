@@ -195,28 +195,6 @@ fn every_token_names_itself_as_the_contract_seal_it_satisfies() {
 }
 
 #[test]
-fn a_secret_slot_says_where_the_substitution_happens_and_nothing_about_the_secret() {
-    // The slot names a LOCATION and a width; the secret never enters it. There is one `SecretSlot`
-    // (the destination module's, #73 X-1802), and its rendering says where and nothing else.
-    let slot = busbar_contract::SecretSlot {
-        target: "header:authorization",
-        len: 32,
-    };
-    let printed = format!("{slot:?}");
-    assert!(printed.contains("SecretSlot"), "{printed}");
-    assert!(printed.contains("header:authorization"), "{printed}");
-
-    // Two slots at two locations are two different renderings; one that had stopped reading the
-    // field would print the same thing for both.
-    let other = busbar_contract::SecretSlot {
-        target: "body:/auth/token",
-        len: 32,
-    };
-    assert_ne!(format!("{slot:?}"), format!("{other:?}"));
-    assert_ne!(slot, other);
-}
-
-#[test]
 fn a_durability_loss_names_the_step_the_write_was_attempted_at() {
     // A unit that reaches the exit with one of these delivered value it cannot prove it recorded.
     // Which step it happened at is what decides whether the posting is retained or the unit is

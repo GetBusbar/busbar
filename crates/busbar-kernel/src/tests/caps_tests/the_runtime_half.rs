@@ -521,9 +521,7 @@ fn the_kernels_own_types_are_sealed_and_readable() {
     assert_eq!(IdempotencyKey::mint(&k.seal, [7; 32]).bytes()[0], 7);
 }
 
-/// The transport-key half of what the egress capabilities may print. The one-shot secret's half is
-/// minted by the verbs unit and nowhere else (construction `token-sealed:secret-once-mint`), so it
-/// is proved beside that unit: `busbar-core-admin/src/tests/secret_once_tests.rs`.
+/// What the transport-key capability may print: where its material lives, never the material.
 #[test]
 fn the_egress_capabilities_never_print_what_they_carry() {
     let k = Kernel::new();

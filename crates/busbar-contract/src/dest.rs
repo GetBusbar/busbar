@@ -6,7 +6,7 @@
 //! connection and never names a lane outside the set its claim's configuration declares.
 
 use crate::bounded::{BoundedVec, ScratchBytes, MAX_LEGS};
-use crate::ids::{LaneId, OpClassId, RecordSchemaId, SchemeKey, StreamId, UnitKey, UpstreamIdx};
+use crate::ids::{LaneId, OpClassId, RecordSchemaId, SchemeKey, StreamId, UpstreamIdx};
 use crate::plugin::KernelSeal;
 use crate::wire::TransportEnvelope;
 use core::fmt;
@@ -273,59 +273,6 @@ impl fmt::Display for DestinationId {
     }
 }
 
-/// A candidate's position in the verified set.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
-pub struct CandidateIdx(pub u16);
-
-/// An order over the verified set.
-///
-/// A ranking hook returns one of these and the failover walk takes it as-is. Candidate sets are
-/// unbounded because the deployment's configured candidate space is unbounded, so this is one of
-/// the few places the contract does not impose a ceiling — imposing one would refuse a
-/// configuration the previous release accepted.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Permutation {
-    /// The candidates, in the order they should be walked.
-    pub order: Vec<CandidateIdx>,
-}
-
-/// A narrowing of the verified set.
-///
-/// Restrictions from several hooks at one seat intersect. What happens when the intersection is
-/// empty is the hook's own declaration, and the default is to reject.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct CandidateSet {
-    /// Which candidates survive.
-    pub members: Vec<CandidateIdx>,
-    /// What to do when nothing survives.
-    pub on_empty: OnEmpty,
-}
-
-/// What a gate does when its restriction leaves nothing.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize)]
-pub enum OnEmpty {
-    /// Refuse the unit. The default, and the previous release's default.
-    #[default]
-    Reject,
-    /// Skip this gate's restriction and leave the candidate set unchanged.
-    Weighted,
-    /// Order only, as the terminal of an on-error chain; an empty restriction still refuses.
-    First,
-}
-
-/// The closed code a gate hook vetoes with.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
-pub enum VetoCode {
-    /// The principal may not perform this operation.
-    NotPermitted,
-    /// The content is not admissible.
-    ContentRefused,
-    /// An external policy said no.
-    PolicyRefused,
-    /// The rate this principal is asking at is not admissible.
-    RateRefused,
-}
-
 /// The wire request a plane encoded for one verified destination.
 ///
 /// The envelope is the transport's shape, the body is arena bytes, and the scheme names which
@@ -338,108 +285,6 @@ pub struct EgressBody<'u> {
     pub body: ScratchBytes<'u>,
     /// Which egress-auth scheme decorates it.
     pub auth: SchemeKey,
-}
-
-/// A placeholder the egress-auth unit substitutes a secret into.
-///
-/// The plugin that asks for a slot never sees what goes in it. Substitution happens in the
-/// egress-auth unit, after the envelope has been checked against the verified destination.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct SecretSlot {
-    /// The envelope field or body span the secret goes into.
-    pub target: &'static str,
-    /// How many bytes the substituted value will occupy.
-    pub len: u16,
-}
-
-/// A one-time minted secret's placeholder.
-///
-/// Minted by the verbs unit under an admin token. It is bound to the unit that minted it and to the
-/// one target location it may appear at: it must appear exactly once there, and if it does not, the
-/// encode step fails and the mint is reversed. It never appears in content facts.
-///
-/// The nonce IS the minted secret: it is the value the encoded bytes must contain exactly once, so
-/// a reader who has printed it has what the verb minted. The `Debug` is hand-written and says the
-/// unit and the target only.
-///
-/// This is the ONE `SecretOnce` (#73, X-1802): the capability module's differently-shaped copy (a
-/// `String` target and a unit binding) folded into this one, which now carries the unit too.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct SecretOnce {
-    nonce: u128,
-    unit: UnitKey,
-    target: &'static str,
-}
-
-impl fmt::Debug for SecretOnce {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SecretOnce")
-            .field("unit", &self.unit)
-            .field("target", &self.target)
-            .finish_non_exhaustive()
-    }
-}
-
-impl SecretOnce {
-    /// Mint a placeholder for `unit`, to appear once at `target`. Verbs-unit-only; the seal is what
-    /// says so.
-    #[must_use]
-    pub fn mint(_seal: &dyn KernelSeal, nonce: u128, unit: UnitKey, target: &'static str) -> Self {
-        Self {
-            nonce,
-            unit,
-            target,
-        }
-    }
-
-    /// The nonce that must appear exactly once.
-    #[must_use]
-    pub fn nonce(&self) -> u128 {
-        self.nonce
-    }
-
-    /// The unit the placeholder is bound to.
-    #[must_use]
-    pub fn unit(&self) -> UnitKey {
-        self.unit
-    }
-
-    /// Where it must appear.
-    #[must_use]
-    pub fn target(&self) -> &'static str {
-        self.target
-    }
-
-    /// Whether a nonce seen in the encoded bytes is this one.
-    #[must_use]
-    pub fn matches(&self, nonce: u128) -> bool {
-        self.nonce == nonce
-    }
-}
-
-/// What an egress-auth scheme adds to an outbound request.
-///
-/// Either a decoration applied in one pass, or a declaration that this upstream needs a
-/// multi-round exchange, in which case the upstream's challenge comes back through the scheme's
-/// continue call.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AuthDecoration<'u> {
-    /// Fields, a body signature and slots, applied in one pass.
-    Decorate {
-        /// Envelope fields to set, from the closed allow-list; never a lane-locator field.
-        envelope_fields: crate::kinds::EnvelopeFields<'u>,
-        /// A signature over the body, where the scheme signs one.
-        body_signature: Option<ScratchBytes<'u>>,
-        /// Placeholders the egress-auth unit substitutes secrets into.
-        slots: BoundedVec<SecretSlot, { crate::bounded::MAX_KEYS }>,
-    },
-    /// This upstream needs a multi-round exchange first.
-    Handshake {
-        /// The most frames the exchange may take.
-        max_frames: u16,
-        /// The most bytes the exchange may take.
-        max_bytes: u32,
-    },
 }
 
 /// An opaque handle to transport key material.

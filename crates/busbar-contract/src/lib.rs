@@ -171,9 +171,8 @@ pub use count::{
     MAX_ACROSS_A_64_BIT_COLUMN, MIN_ACROSS_A_64_BIT_COLUMN, SCALE_MICRO_UNITS, SCALE_WHOLE_UNITS,
 };
 pub use dest::{
-    AuthDecoration, CandidateIdx, CandidateSet, ClientMode, DestinationFacts, DestinationId,
-    EgressBody, Leg, OnEmpty, Permutation, RoutePlan, SecretOnce, SecretSlot, TransportKeyHandle,
-    UpstreamAddress, VerifiedDestination, VetoCode,
+    ClientMode, DestinationFacts, DestinationId, EgressBody, Leg, RoutePlan, TransportKeyHandle,
+    UpstreamAddress, VerifiedDestination,
 };
 pub use grammar::{
     ArrivalLocation, Claim, Idempotency, Location, MaskKind, PathSeg, ReplayMatch, Selector,

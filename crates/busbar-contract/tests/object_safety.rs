@@ -12,9 +12,7 @@
 use busbar_contract::bounded::{
     Facts, Ir, Labels, PlaneAlloc, PlaneAllocBudget, ScratchBytes, Span,
 };
-use busbar_contract::dest::{
-    AuthDecoration, DestinationFacts, EgressBody, RoutePlan, VerifiedDestination,
-};
+use busbar_contract::dest::{DestinationFacts, EgressBody, RoutePlan, VerifiedDestination};
 use busbar_contract::ids::{
     AdminVerbId, LaneId, MeterClassDecl, OpClassId, RecordSchemaId, SchemeKey,
 };
@@ -404,5 +402,4 @@ fn the_remaining_kinds_shapes_are_constructible() {
     let _ = SecretRef::file("fixture://key");
     let _: Result<Head, StoreError> = Err(StoreError::Unavailable);
     let _ = Ack::Durable;
-    let _: Option<AuthDecoration<'static>> = None;
 }
