@@ -96,6 +96,26 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Producer {
             .insert(Opened(Instant::now(), epoch, fields, own));
     }
 
+    /// A value the span records after it opened (status row 173: `forward`'s `pool`, `ingress`
+    /// and `op` are known once the plane has read the request): it joins the span's facts, a
+    /// field recorded again keeping its last value.
+    fn on_record(&self, id: &Id, values: &tracing::span::Record<'_>, ctx: Context<'_, S>) {
+        let Some(span) = ctx.span(id) else { return };
+        let mut recorded = Fields(Vec::new());
+        values.record(&mut recorded);
+        if recorded.0.is_empty() {
+            return;
+        }
+        let mut extensions = span.extensions_mut();
+        let Some(Opened(_, _, Fields(facts), _)) = extensions.get_mut::<Opened>() else {
+            return;
+        };
+        for (field, value) in recorded.0 {
+            facts.retain(|(f, _)| *f != field);
+            facts.push((field, value));
+        }
+    }
+
     /// The span's record: its facts, its parent's id, its ROOT's id as the trace id (a root is its
     /// own trace), its own id and name, when it opened and how long it stayed open.
     fn on_close(&self, id: Id, ctx: Context<'_, S>) {

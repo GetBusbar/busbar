@@ -1334,10 +1334,11 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             return Ok(());
         };
         self.lock().hooked_pool.clone_from(&walk_pool);
-        // The unit's correlation id, a native `u64` on its span (never a formatted string), the
-        // same value every hook payload and tap of the unit carries.
-        let span = tracing::debug_span!("forward", request_id = tracing::field::Empty);
-        span.record("request_id", hooks.request_id);
+        // The unit's correlation id, a native `u64` on the unit's own request span (`forward`,
+        // opened around the unit by its host; v1.5.5 `proxy/engine/mod.rs:120` recorded it there),
+        // never a formatted string and never a second span of the same name: the same value every
+        // hook payload and tap of the unit carries.
+        tracing::Span::current().record("request_id", hooks.request_id);
         let mut view = match self.project(None) {
             Ok(view) => view,
             // A request the plane cannot read is the request's failure where a hook must judge
