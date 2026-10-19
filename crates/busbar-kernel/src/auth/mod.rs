@@ -2025,6 +2025,11 @@ pub(crate) async fn auth_middleware(
     // check as any other route. Operators scraping from a localhost sidecar use a configured token
     // (or run under `none`/`passthrough` mode, where `validate_token` admits unconditionally).
     let mut declared_admin = false;
+    // A ROUTE THIS ROUTER DECLARED AT THE DATA-PLANE BAR, AT EXACTLY THIS PATH: a plane's exact claim
+    // (a door route is recorded in this table at the bar it declares). It wins over the `/api/`
+    // admin prefix below: the prefix fails closed for the admin surface's own routes, never over a
+    // path a plane claimed by name.
+    let mut claimed_at_key = false;
     if let Some(auth) = core_routes.declared_auth(&path, req.method()) {
         match auth {
             busbar_contract::abi::mechanism::route::RouteAuth::None => {
@@ -2032,7 +2037,7 @@ pub(crate) async fn auth_middleware(
                 return Ok(next.run(req).await);
             }
             busbar_contract::abi::mechanism::route::RouteAuth::Admin => declared_admin = true,
-            busbar_contract::abi::mechanism::route::RouteAuth::Key => {}
+            busbar_contract::abi::mechanism::route::RouteAuth::Key => claimed_at_key = true,
         }
     }
 
@@ -2061,7 +2066,8 @@ pub(crate) async fn auth_middleware(
     // `CallerToken` extension a non-admin handler requires — yielding a 500 MissingExtension and
     // leaking that the path was treated as admin-protected. Require either the exact `/api` segment
     // or an `/api/` delimiter so only the native-API root (`/api/<version>/<area>/…`) matches.
-    let is_admin = path == ADMIN_PATH || path.starts_with(ADMIN_PATH_PREFIX) || declared_admin;
+    let is_admin = declared_admin
+        || (!claimed_at_key && (path == ADMIN_PATH || path.starts_with(ADMIN_PATH_PREFIX)));
     // The busbar client token, taken from whichever carrier the SDK used (Authorization: Bearer,
     // then x-api-key, then x-goog-api-key). This single value drives BOTH the static-allowlist
     // check and the governance virtual-key lookup, so every scheme is validated identically and in

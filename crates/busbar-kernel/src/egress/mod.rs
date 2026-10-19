@@ -7,6 +7,9 @@
 //! protocol-blind return vocabulary (`Response`, `StreamHead`, `ChunkFlow`) of one buffered/streamed
 //! hop — now lives in `busbar_kernel::egress` so a plane crate names it without reaching into
 //! busbar-core; it is re-exported here unchanged for core's own `crate::egress::*` call sites.
+//!
+//! A plane's governed hop does not run here: a plane is served through its door and dials through
+//! the one connector (`busbar-core-connector`), row 130 E4.
 
 // THE EGRESS-TRUST SEAM and its three primitives (client identity, extra trust anchors, the
 // peer-SPKI pin): kernel-owned outbound trust, read by the engine below, the secure layer and the
@@ -20,14 +23,6 @@ pub mod trust;
 // `proxy::egress_client` per the one-egress-stack ruling. Core re-exports every name from its old
 // `crate::proxy::` paths.
 pub mod engine;
-
-// THE NEUTRAL FULL-DUPLEX WS EGRESS DIALER — dial an upstream `wss://` THROUGH the egress unit's guard
-// (resolve→pin→guard, then TCP to the pinned address, then TLS with the URL host for SNI, then the WS
-// handshake) and hand back the `Stream`/`Sink<Vec<u8>>` pair `byte_duplex::serve_messages` consumes.
-// The outbound half of the WS transport `Transport::WebSocket` selects; armed under `runtime`. This is
-// the neutral home for any plane's outbound duplex socket — no plane opens a WS itself.
-#[cfg(feature = "runtime")]
-pub mod duplex_ws;
 
 // The differential-harness FIXTURE SERVERS (the plaintext recording server and redirect canary,
 // the throw-away CA material, resolver doubles; the recording TLS/mTLS servers are the connector's,

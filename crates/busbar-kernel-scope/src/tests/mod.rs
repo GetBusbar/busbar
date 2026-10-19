@@ -3,8 +3,6 @@
 
 use super::*;
 
-mod egress;
-
 /// The authorization matrix, ported from 1.5.5's `required_scope_matrix` test: reads (+ the two
 /// dry-run POSTs) are read-only, every mutation is full, unknown methods fail closed to full.
 #[test]
