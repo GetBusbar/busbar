@@ -470,7 +470,6 @@ pub(crate) struct AmendRateHistoryView {
     effective_until: Option<u64>,
     /// When the correction was appended, in milliseconds.
     amended_at: u64,
-    operator_fingerprint: String,
     /// The SHA-256 of the reason, as hex.
     reason_sha256: String,
 }
@@ -769,7 +768,7 @@ fn doc_for(
     Some(match verb {
         // ── the three disaster-recovery verbs: their effect lands on the store ──
         KernelVerb::ChainBreak => VerbDoc {
-            summary: "Deliberately break the journal chain (disaster recovery; irreducible)",
+            summary: "Deliberately break the journal chain (disaster recovery)",
             description: "Admitted through the same gates as every other new verb, then handed to \
                           the store. The request body is not read."
                 .to_string(),
@@ -786,7 +785,7 @@ fn doc_for(
             ],
         },
         KernelVerb::StoreRestore => VerbDoc {
-            summary: "Restore the store from a named backup (disaster recovery; irreducible)",
+            summary: "Restore the store from a named backup (disaster recovery)",
             description: "The body names the backup; there is no default. A body that names none \
                           is refused before it reaches the store. Otherwise admitted through the \
                           same gates as every other new verb, then handed to the store."
@@ -811,7 +810,7 @@ fn doc_for(
             ],
         },
         KernelVerb::ResealEpochFloor => VerbDoc {
-            summary: "Reseal the epoch floor after a chain break or restore (irreducible)",
+            summary: "Reseal the epoch floor after a chain break or restore",
             description: "Admitted through the same gates as every other new verb, then handed to \
                           the store. The request body is not read."
                 .to_string(),
@@ -1005,7 +1004,7 @@ fn doc_for(
             ],
         },
         KernelVerb::CommitUpgrade => VerbDoc {
-            summary: "Commit the fleet to the release this node runs (irreducible)",
+            summary: "Commit the fleet to the release this node runs",
             description: "The body names the release; one this node does not run is refused and \
                           seals nothing. The committed release is sealed on the node journal \
                           before the answer names its position and chain hash. Honors an \
@@ -1041,8 +1040,7 @@ fn doc_for(
         },
         // ── the two money verbs whose effect is the node's amendment journal ──
         KernelVerb::Adjust => VerbDoc {
-            summary: "Correct a recorded unit's COUNTS, never a money figure (irreducible above \
-                      `adjust_threshold`)",
+            summary: "Correct a recorded unit's COUNTS, never a money figure",
             description: "Takes counts, never a money figure: what a recorded unit costs stays a \
                           read-time view of its counts at its own card epoch. The principal, lane, \
                           card epoch and what the counts WERE are read from the book by the digest \
@@ -1079,8 +1077,7 @@ fn doc_for(
             ],
         },
         KernelVerb::AmendRateHistory => VerbDoc {
-            summary: "Append a back-dated correction to the dated rate-card history \
-                      (irreducible)",
+            summary: "Append a back-dated correction to the dated rate-card history",
             description: "The correction out-ranks the entry it corrects and rewrites nothing; \
                           recompute reprices the corrected window against the new entry. A body \
                           carrying `currency` is refused. The durable record is written ahead of \

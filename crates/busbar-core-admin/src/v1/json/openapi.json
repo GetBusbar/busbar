@@ -285,9 +285,6 @@
             "minimum": 0,
             "type": "integer"
           },
-          "operator_fingerprint": {
-            "type": "string"
-          },
           "reason_sha256": {
             "description": "The SHA-256 of the reason, as hex.",
             "type": "string"
@@ -298,7 +295,6 @@
           "effective_from",
           "effective_until",
           "amended_at",
-          "operator_fingerprint",
           "reason_sha256"
         ],
         "type": "object"
@@ -4483,7 +4479,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Correct a recorded unit's COUNTS, never a money figure (irreducible above `adjust_threshold`)",
+        "summary": "Correct a recorded unit's COUNTS, never a money figure",
         "x-busbar-required-scope": "full",
         "x-busbar-since": "1.6.0"
       }
@@ -5900,7 +5896,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Deliberately break the journal chain (disaster recovery; irreducible)",
+        "summary": "Deliberately break the journal chain (disaster recovery)",
         "x-busbar-required-scope": "full",
         "x-busbar-since": "1.6.0"
       }
@@ -5989,7 +5985,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Commit the fleet to the release this node runs (irreducible)",
+        "summary": "Commit the fleet to the release this node runs",
         "x-busbar-required-scope": "full",
         "x-busbar-since": "1.6.0"
       }
@@ -10929,7 +10925,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Append a back-dated correction to the dated rate-card history (irreducible)",
+        "summary": "Append a back-dated correction to the dated rate-card history",
         "x-busbar-required-scope": "full",
         "x-busbar-since": "1.6.0"
       }
@@ -12611,7 +12607,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Reseal the epoch floor after a chain break or restore (irreducible)",
+        "summary": "Reseal the epoch floor after a chain break or restore",
         "x-busbar-required-scope": "full",
         "x-busbar-since": "1.6.0"
       }
@@ -12887,7 +12883,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Restore the store from a named backup (disaster recovery; irreducible)",
+        "summary": "Restore the store from a named backup (disaster recovery)",
         "x-busbar-required-scope": "full",
         "x-busbar-since": "1.6.0"
       }
