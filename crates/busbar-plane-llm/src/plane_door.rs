@@ -66,7 +66,7 @@ use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, DialectAuth, OnPieceIn, OnPieceOut, OpClass, OutField,
     PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot,
     PlaneTail, ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount,
-    ANSWER_LAYOUT, CANCEL_ABORTED, CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_PROBE, CLAIM_RAW_AFFIX,
+    ANSWER_LAYOUT, CANCEL_ABORTED, CANCEL_OK_PARTIAL, CLAIM_ENTRY, CLAIM_EXACT, CLAIM_PROBE,
     EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE,
     INGRESS_RESPONSE_STREAM, PIECE_CUT, PIECE_FINAL, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE,
     PRINCIPAL_REQUIRED, REFUSAL_GATE, REFUSED_UNSUPPORTED_ACTION, ROUTE_DIRECT, ROUTE_POOL,
@@ -688,49 +688,66 @@ const DIALECT_CLAIMS: [ClaimRow; 7] = [
     ("POST", "/v1/models", false, "openai"),
 ];
 
-/// THE PREVIOUS RELEASE'S GEMINI ENTRY SPAN (status row 173; v1.5.5 `ingress/mod.rs:788`,
-/// `docs/observability.md` l.162-174): opened at the hot-path level, with no field, around every
-/// request its protocol ladder read as Gemini (v1.5.5 `proto/detect.rs`, `ingress/dispatch.rs:342`).
+/// The previous release's Gemini entry span (v1.5.5 `ingress/mod.rs:788`).
 const GEMINI_INGRESS: &str = "gemini_ingress";
+/// The previous release's Bedrock Converse entry span (v1.5.5 `ingress/mod.rs:1043`).
+const BEDROCK_CONVERSE: &str = "bedrock_converse";
+/// The previous release's Bedrock Converse stream entry span (v1.5.5 `ingress/mod.rs:1070`).
+const BEDROCK_CONVERSE_STREAM: &str = "bedrock_converse_stream";
+/// No entry span: the request's entry is read here, and it opens none.
+const NO_ENTRY: &str = "";
 
-/// THE DIALECT CLAIMS WHOSE ARRIVALS OPEN AN ENTRY SPAN: the Gemini models surfaces, every path of
-/// which the previous release's ladder read as Gemini whatever its action (its rung 2b).
-const CLAIM_SPANS: [(&str, &str); 2] = [
-    ("/v1beta/models", GEMINI_INGRESS),
-    ("/v1/models", GEMINI_INGRESS),
+/// THE ENTRY FACTS (status row 173; `docs/observability.md`, Tracing): which entry span an arrival
+/// opens, read by the host in this order ahead of any claim's own, each an entry fact
+/// ([`CLAIM_ENTRY`]) that mounts no route, `(target, span)`. They are the previous release's choice
+/// of entry, rung for rung:
+///
+/// 1. its named and ad-hoc routes, matched before anything else (v1.5.5 `main.rs:3835-3836`):
+///    `named` records `pool`, `adhoc` records `provider` and `model` (v1.5.5 `ingress/mod.rs:1161`,
+///    `:1292`);
+/// 2. its protocol ladder (v1.5.5 `proto/detect.rs` `protocol_id`), head fields first: a SigV4
+///    `authorization` is Bedrock, whose entry is Converse or Converse stream by the path's end
+///    (v1.5.5 `ingress/dispatch.rs:362-385`) and none otherwise; `anthropic-version`,
+///    `anthropic-beta` and `x-api-key` are Anthropic (no entry span); `x-goog-api-key` is Gemini;
+/// 3. then the path: a Gemini action verb anywhere in it, the Gemini models surfaces under
+///    `/v1/models/` and `/v1beta/models/` (never the bare surface), a path holding `/v1/messages`
+///    (Anthropic), then a Converse path (Bedrock).
+const ENTRY_FACTS: [(&str, &str); 19] = [
+    ("path:/{pool}/v1/messages", "named"),
+    ("path:/{provider}/{model}/v1/messages", "adhoc"),
+    (
+        "field:authorization=AWS4-HMAC-SHA256 path:*/converse",
+        BEDROCK_CONVERSE,
+    ),
+    (
+        "field:authorization=AWS4-HMAC-SHA256 path:*/converse-stream",
+        BEDROCK_CONVERSE_STREAM,
+    ),
+    ("field:authorization=AWS4-HMAC-SHA256", NO_ENTRY),
+    ("field:anthropic-version", NO_ENTRY),
+    ("field:anthropic-beta", NO_ENTRY),
+    ("field:x-goog-api-key", GEMINI_INGRESS),
+    ("field:x-api-key", NO_ENTRY),
+    ("path:*:generateContent*", GEMINI_INGRESS),
+    ("path:*:streamGenerateContent*", GEMINI_INGRESS),
+    ("path:*:embedContent*", GEMINI_INGRESS),
+    ("path:*:batchEmbedContents*", GEMINI_INGRESS),
+    ("path:*:predict*", GEMINI_INGRESS),
+    ("path:/v1/models/*", GEMINI_INGRESS),
+    ("path:/v1beta/models/*", GEMINI_INGRESS),
+    ("path:*/v1/messages*", NO_ENTRY),
+    ("path:*/converse", BEDROCK_CONVERSE),
+    ("path:*/converse-stream", BEDROCK_CONVERSE_STREAM),
 ];
 
-/// THE ENTRY SPANS' PATH FACTS (status row 173), in the previous release's ladder order: its Gemini
-/// action verbs (rung 2) ahead of the Bedrock Converse surfaces, whose entries it opened as
-/// `bedrock_converse` and `bedrock_converse_stream` for a Bedrock path ending in the surface (v1.5.5
-/// `ingress/mod.rs:1043`, `:1070`; `ingress/dispatch.rs:366-385`). Each is a raw affix
-/// ([`CLAIM_RAW_AFFIX`]): it mounts no route, and states the span an arrival on a raw path it matches
-/// opens, on whichever claim the arrival is routed to, where that claim states none of its own.
-/// Each wears its dialect: `(target, dialect, span)`.
-const PATH_SPANS: [(&str, &str, &str); 7] = [
-    ("/*:generateContent", "gemini", GEMINI_INGRESS),
-    ("/*:streamGenerateContent", "gemini", GEMINI_INGRESS),
-    ("/*:embedContent", "gemini", GEMINI_INGRESS),
-    ("/*:batchEmbedContents", "gemini", GEMINI_INGRESS),
-    ("/*:predict", "gemini", GEMINI_INGRESS),
-    ("/*/converse", "bedrock", "bedrock_converse"),
-    ("/*/converse-stream", "bedrock", "bedrock_converse_stream"),
-];
-
-/// THE PLANE'S CLAIMS: [`DIALECT_CLAIMS`] (with their [`CLAIM_SPANS`]), the [`PATH_SPANS`], then the
-/// previous release's fallback, a prefix claim on `/` per verb wearing the residual default dialect.
-/// The fallback reaches every path at any depth no more specific claim or kernel route takes
-/// (CG-62); the router has no plane-shaped branch.
+/// THE PLANE'S CLAIMS: [`DIALECT_CLAIMS`], the [`ENTRY_FACTS`], then the previous release's
+/// fallback, a prefix claim on `/` per verb wearing the residual default dialect. The fallback
+/// reaches every path at any depth no more specific claim or kernel route takes (CG-62); the router
+/// has no plane-shaped branch.
 #[must_use]
 pub fn claims() -> Vec<ClaimSpec> {
     let fallback = crate::exchange::arrive::envelope_for("/");
     let dialect_of = |dialect: &str| u16::try_from(dialect_index(dialect)).unwrap_or(0);
-    let paths = PATH_SPANS.iter().map(|&(target, dialect, span)| {
-        let mut claim =
-            ClaimSpec::new("POST", target, TRANSPORT, CLAIM_RAW_AFFIX).with_arrival_span(span);
-        claim.refusal_dialect = dialect_of(dialect);
-        claim
-    });
     let claimed = DIALECT_CLAIMS
         .iter()
         .copied()
@@ -738,17 +755,17 @@ pub fn claims() -> Vec<ClaimSpec> {
             let flags = if exact { CLAIM_EXACT } else { 0 };
             let mut claim = ClaimSpec::new(verb, target, TRANSPORT, flags);
             claim.refusal_dialect = dialect_of(dialect);
-            match CLAIM_SPANS.iter().find(|(t, _)| *t == target) {
-                Some(&(_, span)) => claim.with_arrival_span(span),
-                None => claim,
-            }
+            claim
         });
+    let entries = ENTRY_FACTS.iter().map(|&(target, span)| {
+        ClaimSpec::new("POST", target, TRANSPORT, CLAIM_ENTRY).with_arrival_span(span)
+    });
     let fallbacks = FALLBACK_VERBS.iter().map(|&verb| {
         let mut claim = ClaimSpec::new(verb, "/", TRANSPORT, 0);
         claim.refusal_dialect = dialect_of(fallback);
         claim
     });
-    claimed.chain(paths).chain(fallbacks).collect()
+    claimed.chain(entries).chain(fallbacks).collect()
 }
 
 /// THE RECEIVERS' CLAIMS: each webhook receiver its `webhooks:` section switches on, an exact path
