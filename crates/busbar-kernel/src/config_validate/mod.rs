@@ -1108,7 +1108,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     let open_door = cfg.auth.as_ref().is_none_or(|a| a.chain.is_empty());
     for decl in crate::plane::registry::plane_decls()
         .iter()
-        .filter(|d| d.lower_endpoint.is_some())
+        .filter(|d| crate::plane::config::owns_endpoint_door(d))
         .filter(|d| open_door && cfg.endpoint_resource(d.config_section).is_some())
     {
         // The config KEY and the noun are BOTH registry-supplied at runtime (`PlaneDecl.key` /

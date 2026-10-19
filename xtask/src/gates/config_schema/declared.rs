@@ -9,8 +9,8 @@
 //! of what the planes' `PLANE_DECLARATION` items say, minus the sections core still owns concretely
 //! (`CORE_OWNED_CONCRETE_SECTIONS` — a frozen field, never lifted).
 //!
-//! A section a plane DOOR's Statement declares BESIDE its own declaring section is that plane's
-//! endpoint DOOR (the kernel parses it through the door's own endpoint hook, `endpoint_door_owner`):
+//! A section a plane DOOR's Statement declares BESIDE its own declaring section and flags
+//! `SECTION_ENDPOINT_DOOR` is that plane's endpoint DOOR (the kernel's `owns_endpoint_door`):
 //! the pre-pass carrier written `Declared::Door` is tied to it here. A section a `PLANE_DECLARATION`
 //! owns beside its declaring one is lifted RAW (`Dest::for_declared`), carried by
 //! `DeployCfg::plane_raw`. The kernel names no owner: both are the plane's declaration (#49).
@@ -33,6 +33,10 @@ const ITEM: &str = "const PLANE_DECLARATION";
 
 /// A plane door's Statement sections: `const SECTIONS: &[Section] = &[ Section { … }, … ];`.
 const DOOR_SECTIONS: &str = ": &[Section] =";
+/// THE ENDPOINT-DOOR REPIN BRIDGE: the declaring section whose door's owned rows are its endpoint
+/// door until that plane states `SECTION_ENDPOINT_DOOR` (the kernel's `NAMED_MAP_REPIN_BRIDGE[0]`;
+/// deleted with it, status row 175).
+const ENDPOINT_DOOR_BRIDGE: &str = "tools";
 /// The kernel's reserved list: sections core still declares as concrete `DeployCfg` fields.
 const CORE_OWNED: &str = "CORE_OWNED_CONCRETE_SECTIONS";
 
@@ -72,9 +76,10 @@ struct Facts {
     /// String constants written as another constant's path (`const A: &str = config::SECTION;`),
     /// resolved through the same reader once every file's literals are known.
     aliases: Vec<(String, String)>,
-    /// Each declaration: its declaring section, its owned sections, and whether it is a plane
-    /// DOOR's Statement (whose beside sections are endpoint doors) rather than a `PLANE_DECLARATION`.
-    decls: Vec<Result<(String, Vec<String>, bool), String>>,
+    /// Each declaration: its declaring section, its owned sections, and — for a plane DOOR's
+    /// Statement rather than a `PLANE_DECLARATION` — the owned rows it flags
+    /// `SECTION_ENDPOINT_DOOR`.
+    decls: Vec<Result<(String, Vec<String>, Option<Vec<String>>), String>>,
     core_owned: Option<Vec<String>>,
 }
 
@@ -132,7 +137,7 @@ fn facts(path: &str, raw: &str) -> Facts {
         let Some(close) = text[open..].find("];").map(|i| open + i) else {
             continue;
         };
-        let (mut declaring, mut owned) = (None, Vec::new());
+        let (mut declaring, mut owned, mut doors) = (None, Vec::new(), Vec::new());
         let mut rows = &text[open..close];
         let mut readable = true;
         while let Some(row) = rows.find("Section {") {
@@ -158,12 +163,15 @@ fn facts(path: &str, raw: &str) -> Facts {
             if flags.contains("SECTION_DECLARING") {
                 declaring = Some(name);
             } else {
+                if flags.contains("SECTION_ENDPOINT_DOOR") {
+                    doors.push(name.clone());
+                }
                 owned.push(name);
             }
         }
         if let (true, Some(declaring)) = (readable, declaring) {
             owned.insert(0, declaring.clone());
-            out.decls.push(Ok((declaring, owned, true)));
+            out.decls.push(Ok((declaring, owned, Some(doors))));
         }
     }
     let mut from = 0;
@@ -193,7 +201,7 @@ fn facts(path: &str, raw: &str) -> Facts {
                         .map(|e| e.trim().to_string())
                         .filter(|e| !e.is_empty())
                         .collect();
-                    Ok((d.trim().to_string(), owned, false))
+                    Ok((d.trim().to_string(), owned, None))
                 }),
         );
     }
@@ -394,8 +402,20 @@ pub fn read(cx: &Ctx) -> Result<Declarations, String> {
     for (path, f) in &files {
         for decl in &f.decls {
             seen += 1;
-            let (declaring, owned, from_door) = decl.clone()?;
+            let (declaring, owned, flagged) = decl.clone()?;
             let declaring = resolve(&declaring, path, &consts)?;
+            // THE DOOR ROWS: a door Statement's owned rows flagged `SECTION_ENDPOINT_DOOR`, or —
+            // until the endpoint plane repins with the flag — every owned row of the door
+            // declaring the repin bridge's first section (the kernel's `owns_endpoint_door`,
+            // status row 175).
+            let flagged: Option<Vec<String>> = flagged
+                .map(|rows| {
+                    rows.iter()
+                        .map(|e| resolve(e, path, &consts))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?;
+            let bridged = declaring == ENDPOINT_DOOR_BRIDGE;
             let mut declared = vec![(declaring.clone(), false)];
             for e in owned {
                 let section = resolve(&e, path, &consts)?;
@@ -409,7 +429,10 @@ pub fn read(cx: &Ctx) -> Result<Declarations, String> {
                 if core_owned.contains(&section) {
                     continue;
                 }
-                if door && from_door {
+                let is_door = flagged
+                    .as_ref()
+                    .is_some_and(|rows| bridged || rows.contains(&section));
+                if door && is_door {
                     out.doors.insert(section.clone());
                 } else if door {
                     out.raw.insert(section.clone());

@@ -1826,7 +1826,7 @@ pub fn build_app_from_config(
             // deployment protects no such audience).
             let protected_resources: Vec<String> = crate::plane::registry::plane_decls()
                 .iter()
-                .filter(|d| d.lower_endpoint.is_some())
+                .filter(|d| crate::plane::config::owns_endpoint_door(d))
                 .filter_map(|d| {
                     let slot = cfg.endpoint_resources.get(d.config_section)?;
                     (d.admission)(slot.as_ref())

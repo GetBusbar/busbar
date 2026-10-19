@@ -504,15 +504,15 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     ));
 
     // Two door sections: the one door carrier cannot say which it carries. A door is a section a
-    // plane DOOR's Statement declares beside its declaring one (the kernel names no owner), so the
-    // plant is a door declaring two beside its own; with the tree's own door that is three.
+    // plane DOOR's Statement declares beside its declaring one and flags `SECTION_ENDPOINT_DOOR`
+    // (the kernel names no owner), so the plant is a door flagging two beside its own.
     let mut ov = Overlay::new();
     ov.set(
         plane_fixture,
         "const SECTIONS: &[Section] = &[\n    Section {\n        name: abi_str(\"zz_two_doors\"),\n        \
          flags: SECTION_DECLARING,\n        _reserved: 0,\n    },\n    Section {\n        \
-         name: abi_str(\"zz_door_a\"),\n        flags: 0,\n        _reserved: 0,\n    },\n    \
-         Section {\n        name: abi_str(\"zz_door_b\"),\n        flags: 0,\n        _reserved: 0,\n    },\n];\n",
+         name: abi_str(\"zz_door_a\"),\n        flags: SECTION_ENDPOINT_DOOR,\n        _reserved: 0,\n    },\n    \
+         Section {\n        name: abi_str(\"zz_door_b\"),\n        flags: SECTION_ENDPOINT_DOOR,\n        _reserved: 0,\n    },\n];\n",
     );
     report.push(prove_rows_red(
         cx,
@@ -521,6 +521,23 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         &[ROW_TRACKED_SOURCES],
         ov,
         &["One carrier type carries one key"],
+    ));
+
+    // A section a plane DOOR owns beside its verb WITHOUT flagging it `SECTION_ENDPOINT_DOOR` (a push
+    // block) is no door either: the pre-pass lifts it RAW, which carries it.
+    let mut ov = Overlay::new();
+    ov.set(
+        plane_fixture,
+        "const SECTIONS: &[Section] = &[\n    Section {\n        name: abi_str(\"zz_push_owner\"),\n        \
+         flags: SECTION_DECLARING,\n        _reserved: 0,\n    },\n    Section {\n        \
+         name: abi_str(\"zz_push\"),\n        flags: 0,\n        _reserved: 0,\n    },\n];\n",
+    );
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a section a door owns beside its verb without the door flag is RAW, carried, never a door",
+        &[ROW_TRACKED_SOURCES],
+        ov,
     ));
 
     // A section a `PLANE_DECLARATION` owns beside its declaring one is no door: the pre-pass lifts

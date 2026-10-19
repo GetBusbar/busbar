@@ -139,13 +139,15 @@ enum Dest {
 
 impl Dest {
     /// The carrier `key` lands in when `decl` declares it. A section owned BESIDE the declaring one
-    /// is the plane's endpoint door when the plane parses one (`parse_endpoint`), else RAW; a
+    /// is the plane's endpoint door when the plane states one
+    /// ([`crate::plane::config::owns_endpoint_door`]), else RAW; a
     /// declaring section lands in the map carrier ([`DeclaredSections::holds`]) or RAW
     /// ([`DeployCfg::plane_raw`]), whichever door. No section and no plane is named here (#49).
     fn for_declared(decl: &PlaneDecl, key: &'static str) -> Option<Dest> {
         if key != decl.config_section {
-            let door = (EndpointSection::KEY == Declared::Door && decl.parse_endpoint.is_some())
-                .then_some(Dest::Endpoint(decl.config_section));
+            let door = (EndpointSection::KEY == Declared::Door
+                && crate::plane::config::owns_endpoint_door(decl))
+            .then_some(Dest::Endpoint(decl.config_section));
             return door.or(Some(Dest::Raw));
         }
         DeclaredSections::holds(decl)

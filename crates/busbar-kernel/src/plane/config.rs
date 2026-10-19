@@ -300,10 +300,21 @@ pub fn named_sections() -> Vec<&'static str> {
         .collect()
 }
 
+/// Whether `decl`'s sections owned BESIDE its verb are its ENDPOINT DOOR: the door that configures
+/// the plane's receiving side on its own (Law 7), whose canonical URI is the audience the kernel
+/// binds and whose open front door is refused. A plane that owns a beside section it does not state
+/// a door (another plane's push block) has it carried RAW. The plane parses the door
+/// (`parse_endpoint`) and states it (`SECTION_ENDPOINT_DOOR`); until the endpoint plane repins with
+/// that statement, the repin bridge's first section's plane keeps the door it had
+/// ([`NAMED_MAP_REPIN_BRIDGE`], status row 175).
+#[must_use]
+pub fn owns_endpoint_door(decl: &crate::plane::registry::PlaneDecl) -> bool {
+    decl.parse_endpoint.is_some() && NAMED_MAP_REPIN_BRIDGE[0] == decl.config_section
+}
+
 /// THE ENDPOINT DOOR'S OWNER for a section a plane owns BESIDE its declaring section: the first
-/// registered plane that owns `key` beside its own verb and parses an endpoint door
-/// (`parse_endpoint`). The door's key and its owner are both the plane's declaration; the kernel
-/// names neither.
+/// registered plane that owns `key` beside its own verb as its endpoint door
+/// ([`owns_endpoint_door`]). The kernel names neither the door's key nor its owner.
 #[must_use]
 pub fn endpoint_door_owner(key: &str) -> Option<&'static crate::plane::registry::PlaneDecl> {
     crate::plane::registry::plane_decls()
@@ -312,7 +323,7 @@ pub fn endpoint_door_owner(key: &str) -> Option<&'static crate::plane::registry:
         .find(|d| {
             d.config_section != key
                 && d.owned_config_sections.contains(&key)
-                && d.parse_endpoint.is_some()
+                && owns_endpoint_door(d)
         })
 }
 
@@ -851,7 +862,8 @@ pub const CORE_NAMED_MAP_SECTIONS: [&str; 2] = [Kind::Auth.root(), Kind::Export.
 /// 175, ✅ when this bridge is absent from the kernel on dev). Until then a DOOR plane whose Statement
 /// states `SECTION_NAMED_MAP` on NO section, and whose declaring section is one of these, keeps the
 /// named-definition surface it had. A plane that states the bit is never overridden or widened by
-/// this list. Read in exactly one place: [`crate::plane::door`]'s fold.
+/// this list. Read by [`crate::plane::door`]'s fold, and its first section by [`owns_endpoint_door`]
+/// (the endpoint door the same plane keeps until it states `SECTION_ENDPOINT_DOOR`).
 pub(crate) const NAMED_MAP_REPIN_BRIDGE: [&str; 2] = ["tools", "agents"];
 
 /// TEST-SUPPORT SEAM — the section-list PROVIDER a plane's `testkit` binds through
