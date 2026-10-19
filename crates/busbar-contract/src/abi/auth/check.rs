@@ -382,13 +382,13 @@ pub fn check_fields(
 
 /// One [`super::StyleDecl`]'s `flags` and `points`: only [`STYLE_NEEDS_HEADERS`] |
 /// [`STYLE_CALLER_CREDENTIAL`] | [`STYLE_ENDPOINT_TOKEN_URL`] | [`STYLE_ENDPOINT_FROM_CREDENTIAL`]
-/// flag bits and a list rank ([`STYLE_RANK_MASK`]), nothing else, and a valid, non-empty point set
-/// ([`check_points`]). Run by the loader when it reads a plugin's declared styles, so a plugin
-/// build with a stray or future bit, or a style that needs no point, refuses the load rather than
-/// have the host silently ignore it.
+/// flag bits (never both endpoint bits) and a list rank ([`STYLE_RANK_MASK`]), nothing else, and a
+/// valid, non-empty point set ([`check_points`]). Run by the loader when it reads a plugin's
+/// declared styles, so a plugin build with a stray or future bit, or a style that needs no point,
+/// refuses the load rather than have the host silently ignore it.
 ///
 /// # Errors
-/// An unknown flag bit, or a point set [`check_points`] refuses.
+/// An unknown flag bit, both endpoint bits, or a point set [`check_points`] refuses.
 pub const fn check_style_decl(flags: u32, points: u32) -> Result<AuthPoints, Fault> {
     const KNOWN: u32 = STYLE_NEEDS_HEADERS
         | STYLE_CALLER_CREDENTIAL
@@ -397,6 +397,10 @@ pub const fn check_style_decl(flags: u32, points: u32) -> Result<AuthPoints, Fau
         | STYLE_RANK_MASK;
     if flags & !KNOWN != 0 {
         return Err(fault(Rule::UnknownCode, "style.unknown_flags"));
+    }
+    let both = STYLE_ENDPOINT_TOKEN_URL | STYLE_ENDPOINT_FROM_CREDENTIAL;
+    if flags & both == both {
+        return Err(fault(Rule::Contradiction, "style.endpoints"));
     }
     check_points(points, true)
 }
