@@ -235,7 +235,7 @@ pub enum LoadError {
         /// The host's.
         host: u32,
     },
-    /// The door does not reach its table (`host` is the least size: up to `ops`).
+    /// The door is not the host's one size (owner ruling 21): shorter or longer.
     DoorSize {
         /// The door's.
         door: u32,
@@ -280,7 +280,7 @@ pub enum LoadError {
     NullSlot(u32),
     /// The door's Statement is NULL.
     NullStatement,
-    /// The Statement is smaller than the host's.
+    /// The Statement is not the host's one size (owner ruling 21): shorter or longer.
     StatementSize {
         /// The Statement's.
         stated: u32,
@@ -387,7 +387,7 @@ impl fmt::Display for LoadError {
                 "the door's mechanism version {door} is not this host's {host} — {REBUILD}"
             ),
             Self::DoorSize { door, host } => {
-                write!(f, "the door is {door} bytes; this host reads at least {host}")
+                write!(f, "the door is {door} bytes; this host's is {host} — {REBUILD}")
             }
             Self::UnknownKind(k) => write!(f, "the door names kind {k}, which no kind has"),
             Self::WrongKind { door, want } => {
@@ -715,12 +715,9 @@ pub(crate) fn validate<K: Kind>(door_fn: DoorFn) -> Result<Validated, LoadError>
     validate_door::<K>(enter_door(door_fn))
 }
 
-/// Where the door's append-only `ready` tail starts: the least size a door states.
-const READY_AT: usize = std::mem::offset_of!(Door, ready);
-
-/// The door's head checks, in the mechanism's order: not NULL, the magic, the mechanism version, a
-/// size that reaches `ops` (the append-only `ready` tail is optional), a kind the host has, the kind `want` asks for (any, for `None`), and
-/// that kind's ABI version.
+/// The door's head checks, in the mechanism's order: not NULL, the magic, the mechanism version, the
+/// door's one size (`size_of::<Door>()`, owner ruling 21: shorter or longer is refused), a kind the
+/// host has, the kind `want` asks for (any, for `None`), and that kind's ABI version.
 pub(crate) fn read_door(
     p: *const Door,
     want: Option<KindCode>,
@@ -729,7 +726,7 @@ pub(crate) fn read_door(
         return Err(LoadError::NullDoor);
     }
     // SAFETY: a non-NULL door is `'static` plugin data; the leading fields are read one at a time,
-    // and the whole door only after its stated size covers the host's.
+    // and the whole door only after its stated size is the host's.
     let (magic, mechanism, size) = unsafe {
         (
             addr_of!((*p).magic).read_unaligned(),
@@ -746,32 +743,15 @@ pub(crate) fn read_door(
             host: MECHANISM_VERSION,
         });
     }
-    // APPEND-ONLY: a door must reach `ops`; the `ready` tail is read only when `size` covers it.
-    if (size as usize) < READY_AT {
+    // ONE SIZE (ruling 21): a door ending before `ready` never reads as "no ready".
+    if size as usize != size_of::<Door>() {
         return Err(LoadError::DoorSize {
             door: size,
-            host: READY_AT as u32,
+            host: size_of::<Door>() as u32,
         });
     }
-    let has_ready = size as usize >= READY_AT + size_of::<Option<Op>>();
-    // SAFETY: as above; the door covers every field up to `ready`, and `ready` itself only when
-    // `has_ready` (an absent tail reads as `None`).
-    let door = unsafe {
-        Door {
-            magic,
-            mechanism_version: mechanism,
-            size,
-            kind: addr_of!((*p).kind).read_unaligned(),
-            kind_abi: addr_of!((*p).kind_abi).read_unaligned(),
-            statement: addr_of!((*p).statement).read_unaligned(),
-            ops: addr_of!((*p).ops).read_unaligned(),
-            ready: if has_ready {
-                addr_of!((*p).ready).read_unaligned()
-            } else {
-                None
-            },
-        }
-    };
+    // SAFETY: as above; the door states exactly a whole `Door`.
+    let door = unsafe { p.read_unaligned() };
     let kind = KindCode::from_raw(door.kind).ok_or(LoadError::UnknownKind(door.kind))?;
     if let Some(want) = want.filter(|w| *w != kind) {
         return Err(LoadError::WrongKind { door: kind, want });
@@ -869,13 +849,13 @@ pub(crate) fn statement(door: &Door) -> Result<Statement, LoadError> {
     }
     // SAFETY: a non-NULL Statement is `'static` plugin data leading with `size`.
     let size = unsafe { addr_of!((*p).size).read_unaligned() };
-    if (size as usize) < size_of::<Statement>() {
+    if size as usize != size_of::<Statement>() {
         return Err(LoadError::StatementSize {
             stated: size,
             host: size_of::<Statement>() as u32,
         });
     }
-    // SAFETY: its stated size covers the host's.
+    // SAFETY: its stated size is the host's.
     let st = unsafe { p.read_unaligned() };
     if st.kind != door.kind {
         return Err(LoadError::StatementDisagrees("kind"));

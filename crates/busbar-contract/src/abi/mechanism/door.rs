@@ -16,7 +16,8 @@ use crate::abi::host::conn::connector::Need;
 ///
 /// The loader checks, in order: the manifest's mechanism version (before `dlopen`), that the symbol
 /// exists, then `magic == DOOR_MAGIC`, `mechanism_version == MECHANISM_VERSION` and `kind_abi ==`
-/// the host's version for `kind`. Older and newer are both refused.
+/// the host's version for `kind`. Older and newer are both refused, and so is a door whose `size`
+/// is not `size_of::<Door>()` (one size per struct, owner ruling 21).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Door {
@@ -34,10 +35,10 @@ pub struct Door {
     pub statement: *const Statement,
     /// The kind's ops table; every kind's table begins with [`OpsHead`].
     pub ops: *const OpsHead,
-    /// APPEND-ONLY TAIL: `ready` (`abi::mechanism::lifecycle`, READY), in [`super::lifecycle::ReadyIn`],
-    /// out [`super::call::OutHead`]; `None` = the plugin has none and is opened exactly as before.
-    /// A door whose `size` ends before this field has none: the host reads it only when `size`
-    /// covers it.
+    /// `ready` (`abi::mechanism::lifecycle`, READY), in [`super::lifecycle::ReadyIn`], out
+    /// [`super::call::OutHead`]; `None` = the plugin has none and is opened exactly as before. The
+    /// door has ONE size, `size_of::<Door>()` (owner ruling 21): a door of any other size is refused,
+    /// so a short door never reads as "no ready".
     pub ready: Option<Op>,
 }
 

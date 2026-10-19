@@ -17,13 +17,13 @@
 //! the host's values for that kind's ABI version, or the load is refused.
 //!
 //! READY, THE ONE OPTIONAL LIFECYCLE OP (ARCHITECT 2026-10-02, "discovery at boot"). It is not a
-//! table slot: it rides the door's append-only tail ([`super::door::Door::ready`]), so no kind's
+//! table slot: it rides the door ([`super::door::Door::ready`]), so no kind's
 //! table and no kind op's index moves. A plugin that must reach the network before it serves (a
 //! discovery exchange through its declared need) states it; the host calls it after `open` answered
 //! READY, on a REAL ticket (it may pend, and is resumed after the wake like any op), with the host
 //! tables in [`ReadyIn::host`], before any listener binds, and boot awaits it. READY = the
 //! instance serves; FAILED or REFUSED refuses the boot with the plugin's `OutHead.error` text. A
-//! door without it (NULL, or a door whose `size` ends before it) is opened exactly as before.
+//! door without it (NULL) is opened exactly as before.
 //! `ready` is a lifecycle op: it never overlaps `open`, `refresh`, `retire` or `close`.
 
 use super::call::{Blob, InHead, Op, OutHead};

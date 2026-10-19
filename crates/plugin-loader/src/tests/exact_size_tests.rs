@@ -202,8 +202,12 @@ mod door_and_statement {
         let st = std::mem::size_of::<Statement>();
         assert!(crate::dispatch::load::read_door(door(whole, st), None).is_ok());
         for size in [std::mem::offset_of!(Door, ready), whole + 8] {
-            assert!(
-                crate::dispatch::load::read_door(door(size, st), None).is_err(),
+            assert_eq!(
+                crate::dispatch::load::read_door(door(size, st), None).map(|_| ()),
+                Err(crate::dispatch::LoadError::DoorSize {
+                    door: size as u32,
+                    host: whole as u32,
+                }),
                 "a {size}-byte door (its one size is {whole}) is refused"
             );
         }
@@ -221,7 +225,14 @@ mod door_and_statement {
         };
         assert_eq!(read(st), Ok(()));
         for size in [st - 8, st + 8] {
-            assert!(read(size).is_err(), "a {size}-byte Statement is refused");
+            assert_eq!(
+                read(size),
+                Err(crate::dispatch::LoadError::StatementSize {
+                    stated: size as u32,
+                    host: st as u32,
+                }),
+                "a {size}-byte Statement is refused"
+            );
         }
     }
 }

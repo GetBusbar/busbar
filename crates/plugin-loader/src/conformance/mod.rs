@@ -1526,25 +1526,9 @@ extern "C" fn ready_fails(
 fn real_door(s: &Subject) -> Door {
     let p = (s.door)();
     assert!(!p.is_null(), "the door function answered NULL");
-    // SAFETY: a door function answers a `'static` door at least its stated size; the whole
-    // struct is read only when its size covers it (a door ending before `ready` reads `None`).
-    unsafe {
-        let size = std::ptr::addr_of!((*p).size).read_unaligned() as usize;
-        if size >= std::mem::size_of::<Door>() {
-            p.read_unaligned()
-        } else {
-            Door {
-                magic: std::ptr::addr_of!((*p).magic).read_unaligned(),
-                mechanism_version: std::ptr::addr_of!((*p).mechanism_version).read_unaligned(),
-                size: std::mem::size_of::<Door>() as u32,
-                kind: std::ptr::addr_of!((*p).kind).read_unaligned(),
-                kind_abi: std::ptr::addr_of!((*p).kind_abi).read_unaligned(),
-                statement: std::ptr::addr_of!((*p).statement).read_unaligned(),
-                ops: std::ptr::addr_of!((*p).ops).read_unaligned(),
-                ready: None,
-            }
-        }
-    }
+    // SAFETY: a door function answers a `'static` door; the loader refuses one of any size but
+    // `size_of::<Door>()` (one size per struct), and the conformance subject's door is that size.
+    unsafe { p.read_unaligned() }
 }
 
 /// `rendering` with its kind ABI word set to `abi`.
