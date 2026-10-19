@@ -3374,7 +3374,7 @@ async fn test_admin_prefix_is_boundary_safe() {
 /// `.verified` off the answer, so the named lines were dropped and never struck before the plane.
 #[test]
 fn a_signed_verify_keeps_the_lines_its_auth_named_whatever_its_verdict() {
-    use busbar_contract::auth_calls::{Decision, VerifiedIdentity};
+    use busbar_contract::auth_calls::VerifiedIdentity;
     let named = vec![
         Strip::field("x-double-signature"),
         Strip::query("x-double-key"),
@@ -3391,9 +3391,8 @@ fn a_signed_verify_keeps_the_lines_its_auth_named_whatever_its_verdict() {
         Verified::Overloaded,
     ] {
         let answer = VerifyAnswer {
-            verified: verified.clone(),
-            decision: Decision::Continue,
             strips: named.clone(),
+            ..VerifyAnswer::from(verified.clone())
         };
         let mut strips = vec![Strip::field("x-earlier-line")];
         assert_eq!(signed_verdict_of(answer, false, &mut strips), verified);
@@ -3404,9 +3403,8 @@ fn a_signed_verify_keeps_the_lines_its_auth_named_whatever_its_verdict() {
         );
     }
     let faulted = VerifyAnswer {
-        verified: identity,
-        decision: Decision::Continue,
         strips: named.clone(),
+        ..VerifyAnswer::from(identity)
     };
     let mut strips = Vec::new();
     assert_eq!(

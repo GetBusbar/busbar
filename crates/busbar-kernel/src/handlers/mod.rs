@@ -47,8 +47,8 @@
 // pre-extraction fixture surface reach the real MCP codec from inside core's own test binary, back
 // when a `ProtocolDecl` was a `busbar-core` type an external crate could not hand to the registry)
 // was DELETED: `ProtocolDecl` now lives in `busbar-substrate`, so core's test binary reads
-// `busbar_mcp::PROTO_DECL` directly (dev-dependency). The MCP plane is its own door plane; this
-// crate holds no `mcp` module.
+// `busbar_mcp::PROTO_DECL` directly (dev-dependency). That protocol's plane is its own door
+// plane, outside this crate.
 
 // THE USAGE-TAP FAULT COUNT (row 155): a plane returns a usage-tap fault as data on its door's
 // answer (`abi::plane::OnPieceOut::tap_fault`), and the kernel counts it here on
