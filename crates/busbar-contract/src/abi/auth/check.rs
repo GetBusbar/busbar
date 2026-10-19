@@ -12,7 +12,7 @@ use super::points::{AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY, POINT_
 use super::{
     BEGIN_AUTHORIZE, BEGIN_FORM, CAP_INBOUND, DECISION_CONTINUE, DECISION_STOP, FIELD_QUERY,
     FIELD_SENSITIVE, IDENTITY_HAS_TTL, LOGIN_IDENTITY, LOGIN_SECURITY_CHECK_FAILED, SPAN_ABSENT,
-    STRIP_FIELD, STRIP_QUERY, STYLE_CALLER_CREDENTIAL, STYLE_ENDPOINT_SA_TOKEN_URI,
+    STRIP_FIELD, STRIP_QUERY, STYLE_CALLER_CREDENTIAL, STYLE_ENDPOINT_FROM_CREDENTIAL,
     STYLE_ENDPOINT_TOKEN_URL, STYLE_NEEDS_HEADERS, STYLE_RANK_MASK, VERDICT_IDENTITY, VERDICT_PASS,
 };
 use crate::abi::mechanism::call::{AbiStr, Outcome, Span, BLOB_OCTETS};
@@ -381,7 +381,7 @@ pub fn check_fields(
 }
 
 /// One [`super::StyleDecl`]'s `flags` and `points`: only [`STYLE_NEEDS_HEADERS`] |
-/// [`STYLE_CALLER_CREDENTIAL`] | [`STYLE_ENDPOINT_TOKEN_URL`] | [`STYLE_ENDPOINT_SA_TOKEN_URI`]
+/// [`STYLE_CALLER_CREDENTIAL`] | [`STYLE_ENDPOINT_TOKEN_URL`] | [`STYLE_ENDPOINT_FROM_CREDENTIAL`]
 /// flag bits and a list rank ([`STYLE_RANK_MASK`]), nothing else, and a valid, non-empty point set
 /// ([`check_points`]). Run by the loader when it reads a plugin's declared styles, so a plugin
 /// build with a stray or future bit, or a style that needs no point, refuses the load rather than
@@ -393,7 +393,7 @@ pub const fn check_style_decl(flags: u32, points: u32) -> Result<AuthPoints, Fau
     const KNOWN: u32 = STYLE_NEEDS_HEADERS
         | STYLE_CALLER_CREDENTIAL
         | STYLE_ENDPOINT_TOKEN_URL
-        | STYLE_ENDPOINT_SA_TOKEN_URI
+        | STYLE_ENDPOINT_FROM_CREDENTIAL
         | STYLE_RANK_MASK;
     if flags & !KNOWN != 0 {
         return Err(fault(Rule::UnknownCode, "style.unknown_flags"));

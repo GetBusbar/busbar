@@ -231,12 +231,13 @@ pub const STYLE_CALLER_CREDENTIAL: u32 = 4;
 /// that does not state it has any `token_url` left unjudged and unread, as the previous release
 /// ignored one on such a style.
 pub const STYLE_ENDPOINT_TOKEN_URL: u32 = 32;
-/// [`StyleDecl::flags`]: the style's credential names its own token endpoint (`token_uri`).
+/// [`StyleDecl::flags`]: the style takes its token endpoint from the credential itself.
 ///
-/// The credential is a service-account document, and the HOST reads that endpoint out of it and
-/// judges it as a destination before the binding is opened (ARCHITECT ruling 2026-09-28 Q2 (a)),
-/// handing the plugin its judged copy as the `token_uri` setting.
-pub const STYLE_ENDPOINT_SA_TOKEN_URI: u32 = 64;
+/// The credential is a document that names the endpoint (`token_uri`), and the HOST reads it out
+/// and judges it as a destination before the binding is opened (ARCHITECT ruling 2026-09-28 Q2
+/// (a)), handing the plugin its judged copy as the `token_uri` setting. A style takes its endpoint
+/// from one place: it never states this beside [`STYLE_ENDPOINT_TOKEN_URL`].
+pub const STYLE_ENDPOINT_FROM_CREDENTIAL: u32 = 64;
 /// [`StyleDecl::flags`]: the lowest bit of the style's LIST RANK ([`STYLE_RANK_MASK`]).
 pub const STYLE_RANK_SHIFT: u32 = 16;
 /// [`StyleDecl::flags`]: the style's LIST RANK, `1..=255`, or `0` (unranked).
@@ -266,7 +267,7 @@ pub struct StyleDecl {
     /// The style name.
     pub name: AbiStr,
     /// [`STYLE_NEEDS_HEADERS`] | [`STYLE_CALLER_CREDENTIAL`] | [`STYLE_ENDPOINT_TOKEN_URL`] |
-    /// [`STYLE_ENDPOINT_SA_TOKEN_URI`], and a list rank ([`STYLE_RANK_MASK`]).
+    /// [`STYLE_ENDPOINT_FROM_CREDENTIAL`], and a list rank ([`STYLE_RANK_MASK`]).
     pub flags: u32,
     /// The [`AuthPoints`] the style needs: a valid, non-empty set ([`check_style_decl`]). A style
     /// that signs the body needs [`POINT_HEAD_BODY`] and reads [`FieldsIn::body`]; a style over
