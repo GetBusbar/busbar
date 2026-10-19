@@ -710,8 +710,8 @@ fn test_unauthorized_body_carries_no_busbar_vocabulary() {
         "/v1/responses", // F25 row 65: the legacy sweep's dialect this list had dropped
         "/v2/chat",
         "/model/vendor.model/converse", // F25 row 65: the legacy sweep's converse path shape
-        "/api/v1/admin/keys",               // admin path → inferred-proto fallback
-        "/totally/unknown/path",            // unknown → fallback
+        "/api/v1/admin/keys",           // admin path → inferred-proto fallback
+        "/totally/unknown/path",        // unknown → fallback
     ];
     for path in paths {
         let body = decode_body(unauthorized_response(&residual_app(), path, None));
@@ -2805,7 +2805,7 @@ fn door_app() -> crate::test_support::TestApp {
     crate::test_support::TestApp::new()
         .lane(
             crate::test_support::LaneSpec::new("test-model", LANE_PROTOCOL, "http://127.0.0.1:1")
-            .api_key("busbar-upstream-key"),
+                .api_key("busbar-upstream-key"),
         )
         .pool("pa", &[(0, 1)])
 }
@@ -3322,7 +3322,7 @@ async fn test_admin_prefix_is_boundary_safe() {
     let app = crate::test_support::TestApp::new()
         .lane(
             crate::test_support::LaneSpec::new("test-model", LANE_PROTOCOL, "http://127.0.0.1:1")
-            .api_key("busbar-upstream-key"),
+                .api_key("busbar-upstream-key"),
         )
         .pool("apix", &[(0, 1)])
         .auth(std::sync::Arc::new(AuthMiddleware::new_builtin(

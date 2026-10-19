@@ -138,11 +138,10 @@ impl busbar_contract::auth_calls::AuthAxis for Recording {
         label: &str,
         settings: &serde_json::Value,
     ) -> Result<std::sync::Arc<dyn AuthCalls>, String> {
-        self.opened.lock().unwrap().push((
-            module.to_string(),
-            label.to_string(),
-            settings.clone(),
-        ));
+        self.opened
+            .lock()
+            .unwrap()
+            .push((module.to_string(), label.to_string(), settings.clone()));
         Ok(self.door.clone())
     }
 }
