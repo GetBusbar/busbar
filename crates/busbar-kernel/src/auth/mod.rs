@@ -2079,7 +2079,12 @@ pub(crate) async fn auth_middleware(
                 drop(_mw.take());
                 return Ok(next.run(req).await);
             }
-            busbar_contract::abi::mechanism::route::RouteAuth::Admin => declared_admin = true,
+            // An undeclared bar never reaches a table (refused at load); were it here, it fails
+            // closed to the operator chain.
+            busbar_contract::abi::mechanism::route::RouteAuth::Admin
+            | busbar_contract::abi::mechanism::route::RouteAuth::Undeclared => {
+                declared_admin = true;
+            }
             busbar_contract::abi::mechanism::route::RouteAuth::Key => claimed_at_key = true,
         }
     }
@@ -2095,7 +2100,11 @@ pub(crate) async fn auth_middleware(
                 drop(_mw.take());
                 return Ok(next.run(req).await);
             }
-            busbar_contract::abi::mechanism::route::RouteAuth::Admin => declared_admin = true,
+            // An undeclared bar is refused at load; were it here, it fails closed (as above).
+            busbar_contract::abi::mechanism::route::RouteAuth::Admin
+            | busbar_contract::abi::mechanism::route::RouteAuth::Undeclared => {
+                declared_admin = true;
+            }
             busbar_contract::abi::mechanism::route::RouteAuth::Key => {}
         }
     }

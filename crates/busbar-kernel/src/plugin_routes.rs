@@ -282,6 +282,15 @@ pub fn build_route_table(decls: Vec<RouteDecl>) -> Result<PluginRouteTable, Stri
     let mut by_path: HashMap<String, Vec<(RouteMethod, Registered)>> = HashMap::new();
     for decl in decls {
         confine(decl.kind, &decl.owner, &decl.route.path, decl.scrape)?;
+        // A zero never grants: a route that declared no bar is refused, never served open.
+        if decl.route.auth == RouteAuth::Undeclared {
+            return Err(format!(
+                "plugin {:?} cannot register {} {} — its auth bar is undeclared",
+                decl.owner,
+                decl.route.method.as_str(),
+                decl.route.path
+            ));
+        }
         let entries = by_path.entry(decl.route.path.clone()).or_default();
         if let Some((_, existing)) = entries.iter().find(|(m, _)| *m == decl.route.method) {
             return Err(format!(

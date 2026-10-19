@@ -65,11 +65,6 @@ pub const EXEMPT: &[(&str, &str, &str)] = &[
         "Tail",
         "ephemeral false claims a durable store: renumbered in step 2",
     ),
-    (
-        "abi/mechanism/route.rs",
-        "Route",
-        "RouteAuth has no zero and its None is unauthenticated: renumbered in step 2",
-    ),
 ];
 
 /// One contract struct: its named fields, and whether it states a `ZERO`.

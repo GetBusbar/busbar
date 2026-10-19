@@ -46,19 +46,46 @@ impl RouteMethod {
 /// to the plugin route. `#[serde(rename_all = "snake_case")]` pins the wire spelling
 /// (`"none"`/`"key"`/`"admin"`).
 ///
-/// - `None`: unauthenticated — busbar bypasses the auth chain for this exact route (like `/healthz`).
+/// - `Undeclared`: the zero; no bar was declared, and the registrar refuses the route at load (a
+///   zero never grants: it is never read as unauthenticated). It has no wire spelling.
 /// - `Key`: a valid busbar client token, the same bar every data-plane route enforces.
 /// - `Admin`: the operator admin chain, and the route is confined to the ADMIN listener exactly like
 ///   `/api/v1/admin/*` (physically absent from the data listener).
+/// - `None`: unauthenticated — busbar bypasses the auth chain for this exact route (like `/healthz`).
+///
+/// Each bar's [`code`](Self::code) is the export and hook kinds' `ROUTE_AUTH_*` code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RouteAuth {
-    /// Unauthenticated — the auth chain is bypassed for this exact route.
-    None,
+    /// Undeclared: refused at load; no wire spelling.
+    #[serde(skip)]
+    Undeclared = 0,
     /// A valid busbar client token (the data-plane bar).
-    Key,
+    Key = 1,
     /// The operator admin chain; the route is confined to the admin listener.
-    Admin,
+    Admin = 2,
+    /// Unauthenticated — the auth chain is bypassed for this exact route; never zero.
+    None = 3,
+}
+
+impl RouteAuth {
+    /// This bar's `ROUTE_AUTH_*` code.
+    #[must_use]
+    pub const fn code(self) -> u32 {
+        self as u32
+    }
+
+    /// The bar a `ROUTE_AUTH_*` code names (`0` is [`RouteAuth::Undeclared`]); `None` past the last.
+    #[must_use]
+    pub const fn from_code(code: u32) -> Option<Self> {
+        match code {
+            0 => Some(Self::Undeclared),
+            1 => Some(Self::Key),
+            2 => Some(Self::Admin),
+            3 => Some(Self::None),
+            _ => Option::None,
+        }
+    }
 }
 
 /// One HTTP route a plugin DECLARES it will serve. Collected once at load (an export sink via its
@@ -74,6 +101,16 @@ pub struct Route {
     pub method: RouteMethod,
     /// The auth level busbar enforces before forwarding a matched request to the plugin.
     pub auth: RouteAuth,
+}
+
+impl Route {
+    /// THE EMPTY DECLARATION: no path, `GET`, and the undeclared bar. A route built as
+    /// `Route { …, ..Route::ZERO }` that never states its bar is refused at load.
+    pub const ZERO: Self = Self {
+        path: String::new(),
+        method: RouteMethod::Get,
+        auth: RouteAuth::Undeclared,
+    };
 }
 
 #[cfg(test)]
