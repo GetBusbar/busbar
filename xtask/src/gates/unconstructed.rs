@@ -417,6 +417,40 @@ fn needle_hits(f: &Scanned, needles: &[String]) -> Arc<Vec<usize>> {
         .clone()
 }
 
+/// A file under a `tests/` directory, or named `tests.rs` / `*_tests.rs`, is test code. This is the
+/// PATH half of the answer; [`test_scope`] is the CONTENTS half, and both are applied.
+fn path_is_test(rel: &str) -> bool {
+    rel.contains("/tests/")
+        || rel.ends_with("/tests.rs")
+        || rel.ends_with("_tests.rs")
+        || rel.contains("/benches/")
+        || rel.contains("/fuzz/")
+}
+
+/// Walk one scope root. Cached by the caller: two capabilities naming the same scope read it once.
+fn scan_root(cx: &Ctx, root: &str) -> Result<Vec<Scanned>, String> {
+    let spec = WalkSpec::new([root.to_string()])
+        .ext("rs")
+        .exclude([".claude/".to_string(), "/target/".to_string()])
+        .min_files(1);
+    let files = cx
+        .walk(&spec)
+        .map_err(|e| format!("{root} could not be walked: {e}"))?;
+    Ok(files
+        .into_iter()
+        .map(|f| {
+            let rel = f.rel_str();
+            let (key, lines) = scope_lines(&rel, &f.text);
+            Scanned {
+                key,
+                lines,
+                test_path: path_is_test(&rel),
+                rel,
+            }
+        })
+        .collect())
+}
+
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // WHAT COUNTS, AND WHAT WAS REJECTED AND WHY
 // ─────────────────────────────────────────────────────────────────────────────────────────────
