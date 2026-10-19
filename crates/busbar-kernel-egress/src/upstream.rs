@@ -96,11 +96,9 @@ pub enum ReadEnd {
 /// translation) can distinguish "too large to translate" from "genuinely unparseable" instead of
 /// silently mis-reporting a truncated success as an untranslatable error.
 ///
-/// GENERIC over the chunk source: the LLM hot path reads a hyper `Incoming`, the
-/// substrate/preflight callers read a reqwest response — one capped loop serves both, so the cap
-/// semantics (bounded reserve, truncate-on-overrun, transport-error flag) cannot drift between
-/// clients. `futures::Stream<Item = Result<Bytes, E>>` is the meeting point both convert to for
-/// free (`bytes_stream()` / `BodyStream` + data frames).
+/// GENERIC over the chunk source: a caller hands its body as a `futures::Stream` of byte chunks,
+/// and one capped loop serves every caller, so the cap semantics (bounded reserve,
+/// truncate-on-overrun, transport-error flag) cannot drift between them.
 pub async fn read_capped<E>(
     mut chunks: impl futures::Stream<Item = Result<Bytes, E>> + Unpin,
     cap: usize,
