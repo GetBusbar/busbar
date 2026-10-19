@@ -343,14 +343,18 @@ fn resolving_every_dialect_by_name_allocates_nothing() {
     }
 
     let body = serde_json::json!({ "model": "m", "messages": [] });
-    resolution_costs_what_the_writer_costs(p::PROTO_ANTHROPIC, &anthropic::AnthropicWriter, &body);
-    resolution_costs_what_the_writer_costs(p::PROTO_BEDROCK, &bedrock::BedrockWriter, &body);
-    resolution_costs_what_the_writer_costs(p::PROTO_COHERE, &cohere::CohereWriter, &body);
-    resolution_costs_what_the_writer_costs(p::PROTO_GEMINI, &gemini::GeminiWriter, &body);
-    resolution_costs_what_the_writer_costs(p::PROTO_OPENAI, &openai_chat::OpenAiWriter, &body);
-    resolution_costs_what_the_writer_costs(
-        p::PROTO_RESPONSES,
-        &openai_responses::ResponsesWriter,
-        &body,
-    );
+    // Each writer is bound to a local before it is borrowed: the writers are constants with
+    // interior mutability, and a borrow of the constant itself would be a fresh copy per use.
+    let anthropic = anthropic::AnthropicWriter;
+    let bedrock = bedrock::BedrockWriter;
+    let cohere = cohere::CohereWriter;
+    let gemini = gemini::GeminiWriter;
+    let openai = openai_chat::OpenAiWriter;
+    let responses = openai_responses::ResponsesWriter;
+    resolution_costs_what_the_writer_costs(p::PROTO_ANTHROPIC, &anthropic, &body);
+    resolution_costs_what_the_writer_costs(p::PROTO_BEDROCK, &bedrock, &body);
+    resolution_costs_what_the_writer_costs(p::PROTO_COHERE, &cohere, &body);
+    resolution_costs_what_the_writer_costs(p::PROTO_GEMINI, &gemini, &body);
+    resolution_costs_what_the_writer_costs(p::PROTO_OPENAI, &openai, &body);
+    resolution_costs_what_the_writer_costs(p::PROTO_RESPONSES, &responses, &body);
 }
