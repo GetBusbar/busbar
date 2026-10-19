@@ -747,10 +747,8 @@ impl LaneSpec {
     }
     fn to_lane_data(&self) -> crate::store::LaneData {
         crate::store::LaneData {
-            reasoning: false,
-            prompt_caching: false,
-            model: self.model.clone(),
-            provider: self.provider.clone(),
+            member: self.model.clone(),
+            route: self.provider.clone(),
             max: self.max,
             sem: self
                 .sem
@@ -765,8 +763,6 @@ impl LaneSpec {
             ok: self.ok,
             err: self.err,
             client_fault: self.client_fault,
-            upstream_model: self.upstream_model.clone(),
-            attempt_timeout_ms: None,
         }
     }
 }
@@ -967,8 +963,7 @@ impl Default for TestApp {
 /// THE ROOT'S `register_seams`, IN A TEST BINARY: the parse-time section list (the test fold,
 /// [`crate::plane::config::default_plane_sections`]), first-wins. A plane's test-kit calls this where
 /// the composition root would have bound it, so a plane test that drives a wire leg without building
-/// a [`TestApp`] runs on the same binding a shipped binary does. The hostless-egress driver is no
-/// longer a binding: a plane is handed its App's on the build context (`BuildCtx::hostless`).
+/// a [`TestApp`] runs on the same binding a shipped binary does.
 pub fn install_root_seams() {
     crate::plane::config::install_plane_sections(crate::plane::config::default_plane_sections);
 }
@@ -2041,6 +2036,7 @@ impl TestApp {
             // exercise. Recorder not installed ⇒ empty table (no `/metrics`), as when metrics are off.
             plugin_routes,
             boot_route_paths,
+            planes_awaiting_restart: Vec::new(),
         });
         // Mirror main's boot-version floor so rollback tests have a v0 to restore.
         crate::admin::seam::record_boot(&app);
@@ -2253,6 +2249,39 @@ pub mod tokens;
 pub mod export_axis;
 /// The kind-neutral outbound auth double a test build binds lane credentials on.
 pub mod outbound_auth;
+
+/// THE ISSUED-CREDENTIAL DOUBLE: the kind and shape a test binary's governance issues a key's
+/// second credential under, standing for the linked signed-request verifier's Statement marks (a
+/// test binary links no auth plugin). Test data, never shipped.
+pub mod issued {
+    /// The persisted kind of the row-looked-up credential, as 1.5.5 stored it: frozen stored data,
+    /// read off the kernel's frozen-text fixture (the kind every test reads the row back under)
+    /// rather than spelled here.
+    fn frozen_kind() -> String {
+        const FROZEN: &str = include_str!("../../tests/fixtures/frozen_customer_text.yaml");
+        FROZEN
+            .lines()
+            .find_map(|l| l.strip_prefix("signed_credential_kind:"))
+            .map(|v| v.trim().to_string())
+            .expect("the frozen fixture names the signed credential kind")
+    }
+
+    /// `(kind, shape)` as the linked signed-request verifier states them.
+    #[must_use]
+    pub fn double() -> (String, busbar_contract::auth_calls::IssuedShape) {
+        (
+            frozen_kind(),
+            busbar_contract::auth_calls::IssuedShape {
+                id_prefix: "AKIA".to_string(),
+                id_len: 20,
+                id_alphabet: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".to_string(),
+                secret_len: 40,
+                secret_alphabet: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+                    .to_string(),
+            },
+        )
+    }
+}
 /// The stand-in secret axis a test build installs in place of the root's.
 pub mod secrets;
 pub use secrets::SecretsStandIn;
@@ -2332,6 +2361,16 @@ pub fn install_operator_auth_row(door: AuthDoor) {
 pub use busbar_kernel_identity::operator::{
     install_row as install_operator_auth_row_as, AuthDoor, OperatorWords,
 };
+
+/// THE ROOT'S HOOK NAMES in a test binary of the composition root: `names` is the root's own
+/// generated list (`$OUT_DIR/linked_hook_names.rs`, the manifest's `linked-name` rows for the hook
+/// rows that build links), and the install record ([`crate::preflight::root_rows`]) reports them as
+/// the root's install record does, so the admin surface that binary serves, its `openapi.json`
+/// included, lists the hooks the shipped binary lists. A test build with no root hands in nothing
+/// and lists none. The first hand-in stands.
+pub fn install_root_hook_names(names: &'static [&'static str]) {
+    let _ = crate::preflight::TEST_ROOT_HOOK_NAMES.set(names);
+}
 
 /// The builtin-only `SecretResolver` (env/file sugar, no plugin modules) for a dependent crate's
 /// tests — `SecretResolver::builtins_only` itself stays crate-private; this is the one doorway.

@@ -1009,3 +1009,157 @@ fn the_credential_read_fact_states_its_kinds_and_an_old_tail_reads_none() {
         "a 56-byte tail reads no kinds; its appended list is never read"
     );
 }
+
+/// THE ISSUED-CREDENTIAL SHAPE (row 159, K3#4): a row that reads host-held credentials states the
+/// shape of the credential the host issues for it in kind-neutral `MARK_WORD_ISSUED_*` word marks,
+/// read back whole; a malformed shape refuses the load, each way named below. RED before the loader
+/// reads the marks (no shape was ever read, and none refused).
+#[test]
+fn the_issued_credential_shape_is_read_from_its_marks_and_a_malformed_one_refuses() {
+    use busbar_contract::abi::auth::{
+        AuthTail, CAP_INBOUND, FACT_READS_CREDENTIALS, LOGIN_KIND_NONE,
+    };
+    use busbar_contract::abi::mechanism::door::{
+        KindTailHead, MarkWord, MARK_WORD_ISSUED_ID_ALPHABET, MARK_WORD_ISSUED_ID_LENGTH,
+        MARK_WORD_ISSUED_ID_PREFIX, MARK_WORD_ISSUED_SECRET_ALPHABET,
+        MARK_WORD_ISSUED_SECRET_LENGTH,
+    };
+    use busbar_contract::abi::sdk::door::{abi_str, statement};
+    use busbar_contract::auth_calls::IssuedShape;
+    const KINDS: &[AbiStr] = &[abi_str("kind-a")];
+    let bind = |facts: u32, marks: Vec<(u32, &'static str)>| {
+        let tail = Box::leak(Box::new(AuthTail {
+            head: KindTailHead {
+                size: size_of::<AuthTail>() as u32,
+                _reserved: 0,
+            },
+            caps: CAP_INBOUND,
+            facts,
+            login_kind: LOGIN_KIND_NONE,
+            inbound_points: POINT_HEAD,
+            styles: std::ptr::null(),
+            styles_len: 0,
+            operator_principal: abi_str(""),
+            credential_kinds: if facts & FACT_READS_CREDENTIALS != 0 {
+                KINDS.as_ptr()
+            } else {
+                std::ptr::null()
+            },
+            credential_kinds_len: if facts & FACT_READS_CREDENTIALS != 0 {
+                KINDS.len()
+            } else {
+                0
+            },
+        }));
+        let words: &'static [MarkWord] = Box::leak(
+            marks
+                .into_iter()
+                .map(|(class, word)| MarkWord {
+                    class,
+                    _reserved: 0,
+                    word: abi_str(word),
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        );
+        let st = busbar_contract::abi::mechanism::door::Statement {
+            kind_tail: std::ptr::from_ref(tail).cast(),
+            mark_words: words.as_ptr(),
+            mark_words_len: words.len(),
+            ..statement("t", "1", 0)
+        };
+        <Auth as Kind>::context(&st).map(|c| {
+            c.and_then(|c| c.downcast::<crate::dispatch::kinds::auth::AuthFacts>().ok())
+                .and_then(|f| f.issued)
+        })
+    };
+    let reads = FACT_READS_CREDENTIALS;
+    let whole = || {
+        vec![
+            (MARK_WORD_ISSUED_ID_PREFIX, "PFX"),
+            (MARK_WORD_ISSUED_ID_LENGTH, "20"),
+            (
+                MARK_WORD_ISSUED_ID_ALPHABET,
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+            ),
+            (MARK_WORD_ISSUED_SECRET_LENGTH, "40"),
+            (MARK_WORD_ISSUED_SECRET_ALPHABET, "abc+/"),
+        ]
+    };
+    assert_eq!(
+        bind(reads, whole()),
+        Ok(Some(IssuedShape {
+            id_prefix: "PFX".into(),
+            id_len: 20,
+            id_alphabet: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".into(),
+            secret_len: 40,
+            secret_alphabet: "abc+/".into(),
+        }))
+    );
+    assert_eq!(bind(reads, vec![]), Ok(None), "no marks, no shape");
+    let without = |class: u32| {
+        whole()
+            .into_iter()
+            .filter(|(c, _)| *c != class)
+            .collect::<Vec<_>>()
+    };
+    let replaced = |class: u32, word: &'static str| {
+        whole()
+            .into_iter()
+            .map(|(c, w)| (c, if c == class { word } else { w }))
+            .collect::<Vec<_>>()
+    };
+    let refused: Vec<RefusedMarks> = vec![
+        ("on a row reading no host-held credential", whole(), 0),
+        ("no id length", without(MARK_WORD_ISSUED_ID_LENGTH), reads),
+        (
+            "no secret alphabet",
+            without(MARK_WORD_ISSUED_SECRET_ALPHABET),
+            reads,
+        ),
+        (
+            "a length that is no decimal",
+            replaced(MARK_WORD_ISSUED_ID_LENGTH, "2O"),
+            reads,
+        ),
+        (
+            "a signed length",
+            replaced(MARK_WORD_ISSUED_SECRET_LENGTH, "+40"),
+            reads,
+        ),
+        (
+            "a zero length",
+            replaced(MARK_WORD_ISSUED_SECRET_LENGTH, "0"),
+            reads,
+        ),
+        (
+            "an over-long length",
+            replaced(MARK_WORD_ISSUED_ID_LENGTH, "257"),
+            reads,
+        ),
+        (
+            "a repeated symbol",
+            replaced(MARK_WORD_ISSUED_ID_ALPHABET, "ABCA"),
+            reads,
+        ),
+        (
+            "a space in an alphabet",
+            replaced(MARK_WORD_ISSUED_SECRET_ALPHABET, "a b"),
+            reads,
+        ),
+        (
+            "a prefix filling the id",
+            replaced(MARK_WORD_ISSUED_ID_LENGTH, "3"),
+            reads,
+        ),
+    ];
+    for (why, marks, facts) in refused {
+        assert!(bind(facts, marks).is_err(), "{why}");
+    }
+    let mut twice = whole();
+    twice.push((MARK_WORD_ISSUED_ID_LENGTH, "21"));
+    assert!(bind(reads, twice).is_err(), "a class stated twice");
+}
+
+/// One refused-marks case: what it shows, the marks the row states, and the class it reads.
+type RefusedMarks = (&'static str, Vec<(u32, &'static str)>, u32);

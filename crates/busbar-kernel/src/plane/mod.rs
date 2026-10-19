@@ -53,13 +53,12 @@
 //! through the engine, the registry, the catalogue cache and the audit records instead of staying
 //! contained to the reader and writer at the edge.
 
-// THE SPINE IS NOW LOAD-BEARING, which is what it was landed ahead of a caller for. FOUR
+// THE SPINE IS NOW LOAD-BEARING, which is what it was landed ahead of a caller for. Its
 // production callers, none of them written per plane:
 //
 //   * [`observe`], the plane ingress boundary — asks `PlaneDispatch::mounted_plane_of` which plane
 //     a request arrived on and labels that request's metrics with `Plane::key`. Before it, non-fallback
 //     plane traffic appeared in no Prometheus series at all.
-//   * verify-on-call (`crate::trust::verify`), which carries `Plane` as its diagnostic label.
 //   * the admin trust verb surface (`crate::admin::planeverbs`), which reads `Plane::subject_noun`
 //     for its one `404` and `Plane::audit_kind` for its audit action and resource.
 //
@@ -93,7 +92,6 @@
 pub mod approvals;
 pub mod config;
 pub mod door;
-pub mod observe;
 pub(crate) mod quarantine;
 /// The durable demotion record, which the root attaches to the kernel's host services.
 pub use quarantine::DemotionRecord;
@@ -900,10 +898,6 @@ pub(crate) fn isolated_three_plane_test_registry() -> registry::TestRegistryIsol
 mod sections_tests;
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
-
-// The NEUTRAL plane-observe response marker `Counted` — the one type a plane's handler and core's
-// `plane::observe` boundary both name. It carries nothing and names no engine type, so it lives
-// here; core re-exports it from `busbar_kernel::plane::observe` so its middleware reads the same type.
 
 // The plane store seam's narrowing adapter: the `PlaneStore` trait a plane persists through and the
 // `PlaneStoreView` that narrows a real `busbar_contract::records::RecordStore` to it. Both name only `busbar_contract` leaf

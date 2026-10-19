@@ -149,6 +149,30 @@ fn the_operator_credentials_row_is_linked_under_its_config_key() {
     );
 }
 
+/// THE SHIPPED DEFAULT INBOUND STYLE (row 159, K3#1): the linked rows state exactly one, and its
+/// carrier marks are 1.5.5's client-token lines in 1.5.5's precedence order (the Bearer on
+/// `authorization`, then `x-api-key`, then `x-goog-api-key`). The kernel names none of them; RED
+/// before the header auth states them (no row states the style, so the walk reads nothing). And the
+/// operator credential's row states 1.5.5's two admin lines, Bearer first.
+#[test]
+fn the_linked_default_inbound_style_is_the_1_5_5_client_token_lines_in_order() {
+    link();
+    let linked = Arc::new(busbar_kernel::preflight::linked().expect("the linked registry"));
+    let axis = crate::root::dispatch::auth_axis(linked);
+    assert_eq!(
+        axis.default_inbound_style(),
+        Ok(vec![
+            "authorization".to_string(),
+            "x-api-key".to_string(),
+            "x-goog-api-key".to_string()
+        ])
+    );
+    assert_eq!(
+        axis.carriers(config::operator_provider()),
+        vec!["authorization".to_string(), "x-admin-token".to_string()]
+    );
+}
+
 /// `GET /api/v1/admin/info` `build.auth_modules` in the shipped build is 1.5.5's answer, `keys` and
 /// the operator credential's word (oracle cell `admin.ops|GetInfo|ok`): the build also links
 /// OUTBOUND-ONLY auth plugins on the auth axis (ARCHITECT Q-L1-AUTH (A)), and a row that declares no
@@ -691,8 +715,11 @@ async fn a_provider_named_like_the_operator_but_backed_by_another_module_is_that
         let base = app(&[op], Vec::new());
         let defs = [(op, AnyCredential.name())].into_iter();
         let is_op = |m: &str| config::names_operator(m);
-        let operator =
-            Operator::open(op, defs, &is_op, false, None, |_| unreachable!()).expect("opens");
+        // The operator row's carriers, as the build opened them: the admin lines the candidate
+        // the configured module is lent is read from.
+        let operator = Operator::open(op, defs, &is_op, false, None, |_| unreachable!())
+            .expect("opens")
+            .with_carriers(base.admin_modules.operator.carriers().to_vec());
         assert!(
             !operator.is(op),
             "a definition under the name, backed elsewhere"
@@ -1109,3 +1136,105 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
         "unbound roles grant nothing"
     );
 }
+
+/// THE CLIENT-TOKEN LINES ON THE DATA LISTENER, end to end through the linked default inbound style
+/// (row 159, K3#1): a key minted by `keys` is admitted on each of 1.5.5's three lines alone (the
+/// Bearer on `authorization`, raw on `x-api-key` and on `x-goog-api-key`), the Bearer wins when it
+/// and `x-api-key` are both present (oracle cell `http.crosscut|bearer-and-x-api-key`), and a bad
+/// credential on any line is 1.5.5's 401. A present non-Bearer `authorization` (a SigV4 signature
+/// header) falls through to `x-api-key`, as a signed-request SDK's key-carrying shape needs. RED before
+/// the header auth states its lines: no line yields a credential, so every request is 401.
+#[tokio::test]
+async fn the_data_listener_reads_the_three_1_5_5_lines_in_1_5_5_order() {
+    use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
+    use busbar_kernel::governance::NewKeySpec;
+    link();
+    let store = Arc::new(MemoryStore::new());
+    let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some(TOKEN.to_string()), Some(signer)).expect("gov"),
+    );
+    let now = busbar_kernel::store::now();
+    let (_, token) = gov
+        .mint_signed(
+            NewKeySpec {
+                name: "carriers".into(),
+                ..Default::default()
+            },
+            now + 3_600,
+            now,
+        )
+        .expect("mint");
+    let token = token.expose(&busbar_kernel::seal::lend()).clone();
+    let app = busbar_kernel::test_support::TestApp::new()
+        .keys_chain()
+        .governance(gov)
+        .build();
+    let router = busbar_kernel::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let status = |lines: Vec<(&'static str, String)>| {
+        let mut req = client.get(format!("http://{addr}/stats"));
+        for (name, value) in lines {
+            req = req.header(name, value);
+        }
+        async move { req.send().await.unwrap().status().as_u16() }
+    };
+    let bearer = |t: &str| format!("Bearer {t}");
+    let sigv4 = "AWS4-HMAC-SHA256 Credential=AKIA0000000000000000/20240101/us-east-1/svc/\
+                 aws4_request, SignedHeaders=host, Signature=00"
+        .to_string();
+    let cases: Vec<CarrierCase> = vec![
+        ("bearer alone", vec![("authorization", bearer(&token))], 200),
+        ("x-api-key alone", vec![("x-api-key", token.clone())], 200),
+        (
+            "x-goog-api-key alone",
+            vec![("x-goog-api-key", token.clone())],
+            200,
+        ),
+        (
+            "bearer wins over a bad x-api-key",
+            vec![
+                ("authorization", bearer(&token)),
+                ("x-api-key", "not-a-key".into()),
+            ],
+            200,
+        ),
+        (
+            "a bad bearer wins over a good x-api-key",
+            vec![
+                ("authorization", bearer("not-a-key")),
+                ("x-api-key", token.clone()),
+            ],
+            401,
+        ),
+        (
+            "x-api-key wins over a bad x-goog-api-key",
+            vec![
+                ("x-api-key", token.clone()),
+                ("x-goog-api-key", "not-a-key".into()),
+            ],
+            200,
+        ),
+        (
+            "a signature authorization falls through to x-api-key",
+            vec![("authorization", sigv4), ("x-api-key", token.clone())],
+            200,
+        ),
+        (
+            "a bad x-goog-api-key",
+            vec![("x-goog-api-key", "nope".into())],
+            401,
+        ),
+        ("no line", vec![], 401),
+    ];
+    for (case, lines, want) in cases {
+        assert_eq!(status(lines).await, want, "{case}");
+    }
+    server.abort();
+}
+
+/// One carrier case: what it shows, the request lines it carries, and the status it is answered.
+type CarrierCase = (&'static str, Vec<(&'static str, String)>, u16);

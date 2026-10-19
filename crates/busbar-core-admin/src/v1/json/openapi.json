@@ -841,6 +841,13 @@
           },
           "note": {
             "type": "string"
+          },
+          "reload_to_apply": {
+            "description": "The plane sections this configuration writes whose plane the process did not open at boot:\na plane is opened once, at process start, when its section is configured, so each is stored\nand validated but serves nothing until the next RESTART. Omitted when none.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -942,6 +949,20 @@
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
+          },
+          "note": {
+            "description": "A human note naming the plane sections awaiting restart (omitted with them).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reload_to_apply": {
+            "description": "The plane sections this configuration writes whose plane the process did not open at boot:\na plane is opened once, at process start, when its section is configured, so each is stored\nand validated but serves nothing until the next RESTART. Omitted when none.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "reloaded": {
             "type": "boolean"
@@ -1316,6 +1337,13 @@
           "providers": {
             "items": {
               "$ref": "#/components/schemas/ProviderView"
+            },
+            "type": "array"
+          },
+          "reload_to_apply": {
+            "description": "The plane sections the running configuration writes whose plane the process did not open at\nboot: a plane is opened once, at process start, when its section is configured, so each is\nstored and validated but serves nothing until the next RESTART. Omitted when none.",
+            "items": {
+              "type": "string"
             },
             "type": "array"
           },
@@ -4270,6 +4298,7 @@
           "window",
           "as_of",
           "currency",
+          "rate_card_version",
           "total",
           "by_model",
           "by_key",

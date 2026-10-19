@@ -31,6 +31,14 @@ Each plane is inert until its section is written. An `mcp:` block with an empty 
 refuses to start, because an anonymous MCP request is never narrowed by a key and would run with
 wildcard grants over every registered server: close the data-plane chain, or drop the block.
 
+A plane is opened once, at start, when its section is configured. A config apply, reload or named
+definition write that first writes the section of a plane this process started without is accepted,
+validated and stored, but that plane serves nothing until the next restart. The answer says so the
+way 1.5.5 named a newly declared plugin route: `reload_to_apply` lists the section and `note`
+explains, on `POST /config/apply`, `POST /config/reload` and the named-definition write. `GET
+/config` lists the same sections under `reload_to_apply`. Every field is omitted when nothing is
+pending, so a 1.5.5 configuration's answers are unchanged.
+
 ### Behaviour identical to 1.5.5
 
 Measured by the shadow oracle over 780 cells — boot refusals and warnings, `--validate`,
@@ -159,10 +167,16 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
   can influence; the full detail still goes to the operator's journal, where it was always meant to
   be. Refusal status codes are unchanged.
 
-- **A `file:` secret that is not a regular file is refused by name.** A `file:` source that is not
-  a regular file — a directory, a socket, a fifo that would otherwise block until a writer appeared
-  — is refused by name instead of surfacing a bare errno. A `file:` secret mounted as a symlink (how
-  Kubernetes projects one) still resolves.
+- **A mis-encoded secret was reported as unset.** `std::env::var` reports an absent variable and a
+  variable whose value is not valid UTF-8 through the same error, and the `env:` resolver rendered
+  both "is unset": an operator chasing that message would set a variable that was already set. A
+  set-but-mis-encoded variable is now named as an encoding problem rather than a missing one. A
+  `file:` source that is not a regular file (a directory, a device node, or a fifo that would
+  otherwise block until a writer appeared) is refused by name instead of surfacing a bare errno.
+  Credentials resolve byte-for-byte as before and are never trimmed: surrounding whitespace,
+  trailing newlines, a whitespace-only value and non-UTF-8 binary secrets resolve as they did, an
+  empty one is still refused, and a `file:` secret mounted as a symlink (how Kubernetes projects
+  one) still resolves.
 
 - **A plugin's settings schema could hang the packaging tool.** `busbar-plugin-pack`'s `$ref`/`allOf`
   resolver had a cycle guard and no depth bound, and the walk that calls it advances its own depth

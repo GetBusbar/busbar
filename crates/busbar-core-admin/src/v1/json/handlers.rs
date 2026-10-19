@@ -2311,13 +2311,16 @@ pub(crate) async fn reload_config(
                 &actor,
             );
             installed.record_version(&actor, "config.reload (from disk)");
-            with_config_etag(
-                ok_json(
-                    StatusCode::OK,
-                    &json!({ "reloaded": true, "config_version": installed.config_version }),
-                ),
-                installed.config_version,
-            )
+            let mut body = json!({ "reloaded": true, "config_version": installed.config_version });
+            // RESTART-TO-APPLY: the plane sections the reloaded config writes whose plane the
+            // process did not open at boot. Omitted when none, so the ordinary body is unchanged.
+            if let Some(note) =
+                super::named_map::restart_note(&[], &installed.planes_awaiting_restart)
+            {
+                body["reload_to_apply"] = json!(installed.planes_awaiting_restart);
+                body["note"] = json!(note);
+            }
+            with_config_etag(ok_json(StatusCode::OK, &body), installed.config_version)
         }
         Err(e) => {
             audit::AUDIT.record_by(
@@ -2559,18 +2562,25 @@ pub(crate) async fn apply_config(
                 &actor,
             );
             installed.record_version(&actor, "config.apply (request body)");
-            with_config_etag(
-                ok_json(
-                    StatusCode::OK,
-                    &json!({
-                        "applied": true,
-                        "config_version": installed.config_version,
-                        "note": "live until the next reload/restart returns to disk truth; persist \
-                                 by updating config.yaml",
-                    }),
-                ),
-                installed.config_version,
-            )
+            let mut body = json!({
+                "applied": true,
+                "config_version": installed.config_version,
+                "note": "live until the next reload/restart returns to disk truth; persist \
+                         by updating config.yaml",
+            });
+            // RESTART-TO-APPLY: the plane sections the applied config writes whose plane the
+            // process did not open at boot, named and appended to the note. Omitted when none, so
+            // the ordinary body is unchanged.
+            if let Some(pending) =
+                super::named_map::restart_note(&[], &installed.planes_awaiting_restart)
+            {
+                body["reload_to_apply"] = json!(installed.planes_awaiting_restart);
+                body["note"] = json!(format!(
+                    "live until the next reload/restart returns to disk truth; persist by \
+                     updating config.yaml; {pending}"
+                ));
+            }
+            with_config_etag(ok_json(StatusCode::OK, &body), installed.config_version)
         }
         Err(e) => {
             audit::AUDIT.record_by(
@@ -3640,6 +3650,13 @@ pub(crate) const V1_GET_PATHS: &[(&str, &str)] = &[
 // `set_request_body` (the write verb's request-body schema attach) relocated to the neutral
 // `busbar_kernel::api::set_request_body` beside `set_response_schema` — its one caller is a
 // plane's `openapi_schemas` contributor, which names the substrate twin directly.
+
+/// The second operator-credential line the 1.5.5 OpenAPI document names in its `adminToken`
+/// security scheme: descriptive bytes of the published document, not a line any door reads (the
+/// operator credential's plugin states where it reads).
+#[cfg(feature = "openapi-schema")]
+#[cfg_attr(not(test), allow(dead_code))]
+const OPENAPI_ADMIN_TOKEN_HEADER: &str = "x-admin-token";
 
 #[cfg(feature = "openapi-schema")]
 // Invoked from the openapi tests + the CI artifact/drift jobs (all test targets); a non-test
@@ -5073,7 +5090,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         },
         "components": {
             "securitySchemes": {
-                "adminToken": {"type": "apiKey", "in": "header", "name": busbar_kernel::auth::X_ADMIN_TOKEN},
+                "adminToken": {"type": "apiKey", "in": "header", "name": OPENAPI_ADMIN_TOKEN_HEADER},
                 "bearerAuth": {"type": "http", "scheme": "bearer",
                                "description": "The same operator credential via Authorization: Bearer"}
             },
