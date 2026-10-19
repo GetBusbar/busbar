@@ -64,10 +64,9 @@ use crate::dispatch::{
     Frame, InFrame, Kind, OutFrame,
 };
 
-/// The plane tail's last frozen size (THE KIND TAIL GROWTH RULE,
-/// `abi::mechanism::door::tail_read_len`): the tail before `stream_ceiling_secs` was appended, so a
-/// tail that ends there loads and states no ceiling.
-const PLANE_TAIL_FROZEN: usize = std::mem::offset_of!(PlaneTail, stream_ceiling_secs);
+/// The plane tail's one size (R9, step 2b): a tail shorter than the whole `PlaneTail` is refused
+/// before it is read, and `check_tail` refuses a longer one.
+const PLANE_TAIL_FROZEN: usize = std::mem::size_of::<PlaneTail>();
 
 /// The plane kind.
 #[derive(Debug, Clone, Copy)]

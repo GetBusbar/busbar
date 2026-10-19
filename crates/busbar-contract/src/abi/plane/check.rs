@@ -27,17 +27,17 @@ use super::{
     PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain, RecordRetention, RecordWrite,
     RefusalOut, RefusalStatus, RouteCost, RouteEntry, ServeOut, TrustKey, UnitCount,
     CANCEL_ABORTED, CANCEL_OK_PARTIAL, CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED,
-    CHAIN_PIPE_SEPARATED, CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN, CLAIM_RAW_AFFIX, EMIT_DONE,
-    EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, EMIT_UNWATCH_CATALOGUE,
-    EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE,
-    INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION, MAX_METRIC_LANES, MAX_REFUSAL_TEXT,
-    MECHANISM_PEER_KEY, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL,
-    RECORD_AUDIT, RECORD_PUT, REFUSAL_ANY_DIALECT, REFUSED_AFTER_ADMISSION,
+    CHAIN_PIPE_SEPARATED, CLAIM_ANON_ON_OPEN_CHAIN, CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN,
+    CLAIM_RAW_AFFIX, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
+    EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION,
+    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION, MAX_METRIC_LANES,
+    MAX_REFUSAL_TEXT, MECHANISM_PEER_KEY, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT,
+    PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT, REFUSAL_ANY_DIALECT, REFUSED_AFTER_ADMISSION,
     REFUSED_UNSUPPORTED_ACTION, ROUTE_CARRIES_OWN_TOKEN, ROUTE_COUNTED, ROUTE_DIRECT, ROUTE_LOCAL,
     ROUTE_ONCE, ROUTE_POOL, ROUTE_PUBLIC, ROUTE_SCOPE, ROUTE_SCOPE_LOCAL, ROUTE_SESSION,
-    ROUTE_STREAM, SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED, TAIL_PROBES,
-    TAIL_REFUSED_PIECE, TAP_FAULT_NONE, TRUST_ITEM_APPROVALS, TRUST_PIN, TRUST_PRIVATE_REACH,
-    UNITS_ESTIMATED, VERDICT_HARD,
+    ROUTE_STREAM, SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED,
+    TAIL_KEYED_ROOT_MAP, TAIL_PROBES, TAIL_REFUSED_PIECE, TAP_FAULT_NONE, TRUST_ITEM_APPROVALS,
+    TRUST_PIN, TRUST_PRIVATE_REACH, UNITS_ESTIMATED, VERDICT_HARD,
 };
 use crate::abi::hook::{
     signal, MessageView, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
@@ -1072,7 +1072,13 @@ pub fn check_claims(claims: &[Claim], dialects_len: u64) -> Result<(), Fault> {
         named(c.carrier, "claim.carrier")?;
         bits(
             u64::from(c.flags),
-            u64::from(CLAIM_OPEN | CLAIM_EXACT | CLAIM_PATTERN | CLAIM_RAW_AFFIX),
+            u64::from(
+                CLAIM_OPEN
+                    | CLAIM_EXACT
+                    | CLAIM_PATTERN
+                    | CLAIM_RAW_AFFIX
+                    | CLAIM_ANON_ON_OPEN_CHAIN,
+            ),
             "claim.flags",
         )?;
         if dialects_len > 0 || c.refusal_dialect != 0 {
@@ -1083,6 +1089,10 @@ pub fn check_claims(claims: &[Claim], dialects_len: u64) -> Result<(), Fault> {
             )?;
         }
         if c.flags & CLAIM_EXACT != 0 && c.flags & CLAIM_PATTERN != 0 {
+            return Err(fault(Rule::Contradiction, "claim.flags"));
+        }
+        // A raw affix takes no arrival, so it admits no one.
+        if c.flags & CLAIM_RAW_AFFIX != 0 && c.flags & CLAIM_ANON_ON_OPEN_CHAIN != 0 {
             return Err(fault(Rule::Contradiction, "claim.flags"));
         }
     }
@@ -1123,7 +1133,7 @@ pub fn check_claim_target(target: &str, flags: u32) -> Result<(), Fault> {
         return Err(fault(Rule::Contradiction, "claim.flags"));
     }
     if flags & CLAIM_RAW_AFFIX != 0 {
-        if flags & (CLAIM_OPEN | CLAIM_EXACT | CLAIM_PATTERN) != 0 {
+        if flags & (CLAIM_OPEN | CLAIM_EXACT | CLAIM_PATTERN | CLAIM_ANON_ON_OPEN_CHAIN) != 0 {
             return Err(fault(Rule::Contradiction, "claim.flags"));
         }
         raw_affix(target).ok_or_else(|| fault(Rule::Contradiction, "claim.affix"))?;
@@ -1232,9 +1242,19 @@ pub fn check_admin_routes(routes: &[AdminRoute]) -> Result<(), Fault> {
 ///
 /// The rule the tail breaks.
 pub fn check_tail(t: &PlaneTail) -> Result<(), Fault> {
+    // R9, one size: exactly this build's tail, never a shorter or a longer one.
+    if t.head.size as usize != core::mem::size_of::<PlaneTail>() {
+        return Err(fault(Rule::Foreign, "tail.size"));
+    }
     bits(
         u64::from(t.flags),
-        u64::from(TAIL_FALLBACK | TAIL_PROBES | TAIL_HOOKS_GATED | TAIL_REFUSED_PIECE),
+        u64::from(
+            TAIL_FALLBACK
+                | TAIL_PROBES
+                | TAIL_HOOKS_GATED
+                | TAIL_REFUSED_PIECE
+                | TAIL_KEYED_ROOT_MAP,
+        ),
         "tail.flags",
     )?;
     let ingress = INGRESS_REQUEST_RESPONSE
