@@ -4,9 +4,8 @@
 //! # busbar-kernel-scope — the APPROVE step's scope half
 //!
 //! The kernel loop's approve step asks one question: does the principal hold enough scope for what
-//! this operation needs? This crate is that question for the admin API, and the egress grant gate:
-//! a small, pure data model with no I/O, no wire format and no store, so it can be proven correct
-//! on its own.
+//! this operation needs? This crate is that question for the admin API: a small, pure data model
+//! with no I/O, no wire format and no store, so it can be proven correct on its own.
 //!
 //! ## What is in here
 //!
@@ -19,8 +18,6 @@
 //!   oracle corpus's DATA (`testing/shadow-oracle/fixtures/openapi-1.5.5.json`, each operation's
 //!   `x-busbar-required-scope`): the rule above is proven against every one of them, read from the
 //!   1.5.5 document itself, instead of a hand-picked sample or a second copy here.
-//! - [`egress`] — the egress gate: a virtual-key grant check before busbar spends its own outbound
-//!   credential.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]

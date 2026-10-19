@@ -32,7 +32,7 @@
 //!   counts to its [`Checkpointer`], at most once per epoch. Nothing is journaled, and the root's
 //!   book is never locked, on the piece path.
 //!
-//! The kernel names no plane here: a unit's class names, model, pool and key are handed in by the
+//! The kernel names no plane here: a unit's class names, lane, pool and key are handed in by the
 //! composition root when it opens the unit ([`PlaneMoney::open`]).
 
 use std::collections::{BTreeMap, HashMap};
@@ -92,8 +92,10 @@ pub struct UnitMoney {
     pub cost: Arc<CostModel>,
     /// The pool the unit routes over (a pool-scoped budget applies only to it).
     pub pool: String,
-    /// The model the unit's counts are priced under.
-    pub model: String,
+    /// The lane the unit's counts are priced, ledgered and metered under: the serving member's
+    /// name, or the ledger lane the plane named ([`MoneySeam::laned`]). An opaque key to the
+    /// kernel; the card and the metering row are keyed by it.
+    pub lane: String,
     /// The plane's billable class names, in its tail's order: a [`UnitCount::class`] indexes them.
     pub classes: Arc<[String]>,
     /// The unit's arrival epoch, seconds: the window every figure of the unit files under.
@@ -158,10 +160,10 @@ struct Open {
     /// session end's, never a side's cancel bill.
     session: bool,
     /// The provider of the member that served the unit, once its answering attempt committed
-    /// ([`MoneySeam::served`]); `None` while no member has answered. The served model replaces
-    /// [`UnitMoney::model`] in `money` at the same moment, unless the plane named the unit's lane.
+    /// ([`MoneySeam::served`]); `None` while no member has answered. The served member replaces
+    /// [`UnitMoney::lane`] in `money` at the same moment, unless the plane named the unit's lane.
     provider: Option<String>,
-    /// The plane named the unit's ledger lane ([`MoneySeam::laned`]): it is [`UnitMoney::model`]
+    /// The plane named the unit's ledger lane ([`MoneySeam::laned`]): it is [`UnitMoney::lane`]
     /// in `money` from then on, and a serving member no longer replaces it.
     laned: bool,
     /// The plane reported counts since the unit's last checkpoint was handed to the root.
@@ -321,7 +323,7 @@ impl PlaneMoney {
     /// open for it.
     #[must_use]
     pub fn serving(&self, key: UnitKey) -> Option<String> {
-        self.lock().get(&key).map(|o| o.money.model.clone())
+        self.lock().get(&key).map(|o| o.money.lane.clone())
     }
 
     /// How many units' money facts are open (a witness: every end closes its unit).
@@ -330,7 +332,7 @@ impl PlaneMoney {
         self.lock().len()
     }
 
-    /// Ledger `counts` (class index, amount) under the unit's model, pool and arrival window. A sum
+    /// Ledger `counts` (class index, amount) under the unit's lane, pool and arrival window. A sum
     /// that would overflow bills the saturated figure, never a wrapped or zero one (fail closed);
     /// the plane check refuses a class counted twice, so a validated report never gets here.
     fn ledger(&self, m: &UnitMoney, counts: &[(u32, u64)]) {
@@ -339,38 +341,23 @@ impl PlaneMoney {
             .or_else(|| named(&m.classes, counts, |a, b| Some(a.saturating_add(b))))
             .unwrap_or_default();
         self.gov
-            .record_usage(&m.cost, &m.key, &m.pool, &m.model, &units, m.arrived);
+            .record_usage(&m.cost, &m.key, &m.pool, &m.lane, &units, m.arrived);
     }
 
     /// THE METERING ROW for a delivered (or reported-billed) unit: one request against the serving
-    /// member, with the reported token tiers when the plane reported any — v1.5.5
-    /// `crates/busbar/src/proxy/usage.rs` `ledger_and_meter` (:99-106: "even a zero-token delivered
-    /// response counts its request") and `record_resp_usage` (:31-40: "A delivered response with NO
-    /// token usage ... still METERS as one request against the serving model").
+    /// member, with the unit's counts by class name — v1.5.5 `crates/busbar/src/proxy/usage.rs`
+    /// `ledger_and_meter` (:99-106: "even a zero-token delivered response counts its request") and
+    /// `record_resp_usage` (:31-40: "A delivered response with NO token usage ... still METERS as
+    /// one request against the serving model").
     ///
-    /// The row is the one `GovState::record_usage`'s class mirror keys the same lane by, so nothing
-    /// splits across two rows: an unqualified (pools) lane is `(model, served provider)` with the
-    /// token split (no serving member, no row: 1.5.5's unresolvable lane metered nothing); a
-    /// plane-qualified lane `"<plane>\u{1f}<subject>"` is `(subject, plane)` with no token split,
-    /// its classes carried by the mirror.
+    /// The kernel hands the counts over as opaque class names; which of them the row's own columns
+    /// hold is the metering row's fact ([`GovState::record_lane_metering`]), never this step's. The
+    /// row is the one `GovState::record_usage`'s class mirror keys the same lane by, so nothing
+    /// splits across two rows.
     fn meter(&self, m: &UnitMoney, provider: Option<&str>, counts: &[(u32, u64)]) {
-        use busbar_contract::records::{
-            UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
-        };
         let units = named(&m.classes, &usage_only(m, counts), u64::checked_add).unwrap_or_default();
-        let tier = |unit: &str| units.get(unit).copied();
-        let tokens = [UNIT_INPUT, UNIT_OUTPUT, UNIT_CACHE_READ, UNIT_CACHE_WRITE]
-            .iter()
-            .any(|u| units.contains_key(*u))
-            .then(|| crate::billing::TokenUsage {
-                input: tier(UNIT_INPUT).unwrap_or(0),
-                output: tier(UNIT_OUTPUT).unwrap_or(0),
-                cache_read: tier(UNIT_CACHE_READ),
-                cache_creation: tier(UNIT_CACHE_WRITE),
-                ..Default::default()
-            });
         self.gov
-            .record_lane_metering(&m.key.id, &m.model, provider, tokens.as_ref(), m.arrived);
+            .record_lane_metering(&m.key.id, &m.lane, provider, &units, m.arrived);
     }
 
     /// Whether `counts`, priced at the card in force, reach what the unit's tightest applicable
@@ -390,7 +377,7 @@ impl PlaneMoney {
             return true; // a report that does not add up is a plane fault: fail closed
         };
         let usage = busbar_contract::billing::Usage { usage_units };
-        match m.cost.price_usage_nanos(&m.model, &usage) {
+        match m.cost.price_usage_nanos(&m.lane, &usage) {
             Some(nanos) => {
                 let micros = nanos.div_ceil(NANOS_PER_MICRO);
                 micros >= u128::try_from(remaining.max(0)).unwrap_or(0)
@@ -414,7 +401,7 @@ fn accrued(m: &UnitMoney, last: &[UnitCount]) -> Accrued {
         .iter()
         .any(|(class, amount)| *amount > 0 && m.fee.is_fee(*class));
     Accrued {
-        lane: m.model.clone(),
+        lane: m.lane.clone(),
         fee_count: u64::from(fee),
         classes,
     }
@@ -609,13 +596,13 @@ impl MoneySeam for PlaneMoney {
     }
 
     /// The member that served the unit: from here every ledgering, metering and cut-stream pricing
-    /// of the unit is under ITS config model and provider, as 1.5.5 attributed a delivered response
+    /// of the unit is under ITS member name and provider, as 1.5.5 attributed a delivered response
     /// to the serving lane after failover (`proxy/usage.rs` `ledger_and_meter`: "THE ONE PLACE a
     /// delivered response is attributed to a model ... `lane` is the SERVING lane").
-    fn served(&self, ctx: &UnitCtx, model: &str, provider: &str) {
+    fn served(&self, ctx: &UnitCtx, member: &str, provider: &str) {
         if let Some(open) = self.lock().get_mut(&ctx.key) {
             if !open.laned {
-                open.money.model = model.to_string();
+                open.money.lane = member.to_string();
             }
             open.provider = Some(provider.to_string());
         }
@@ -631,8 +618,8 @@ impl MoneySeam for PlaneMoney {
             return;
         }
         if let Some(open) = self.lock().get_mut(&ctx.key) {
-            let (plane, _) = busbar_kernel_ledger::cost::split_plane_lane(&open.money.model);
-            open.money.model = if plane.is_empty() {
+            let (plane, _) = busbar_kernel_ledger::cost::split_plane_lane(&open.money.lane);
+            open.money.lane = if plane.is_empty() {
                 lane.to_string()
             } else {
                 format!("{plane}{}{lane}", crate::governance::PLANE_LANE_SEP)
