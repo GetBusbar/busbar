@@ -119,14 +119,6 @@ pub(crate) fn generate_binding_generation() -> Result<String, getrandom::Error> 
     Ok(hex::encode(raw))
 }
 
-// ── AWS-key formats ───────────────────────────────────────────────────────────────────────────────
-/// The literal `"AKIA"` prefix required by AWS SDK validators for long-term AccessKeyIds.
-const AWS_ACCESS_KEY_PREFIX: &str = "AKIA";
-/// Fixed total length (in characters) of a busbar-issued AWS AccessKeyId (`"AKIA"` + 16 random).
-const AWS_ACCESS_KEY_ID_LEN: usize = 20;
-/// Fixed length (in characters) of a busbar-issued AWS secret access key (base64-ish, 40 chars).
-const AWS_SECRET_ACCESS_KEY_LEN: usize = 40;
-
 /// One model's in-cell token counters: the CURRENT tier tokens plus the last durably-ACKNOWLEDGED
 /// (flushed) tier tokens - the additive-flush baseline, per model. The model name is an
 /// `Arc<str>` interned ONCE per (bucket, model) on first sight (allocate-on-miss); the per-request
@@ -1144,61 +1136,32 @@ fn generate_secret() -> Result<String, getrandom::Error> {
     Ok(format!("{SK_SECRET_PREFIX}{}", hex::encode(buf)))
 }
 
-/// Generate an AWS-style AccessKeyId: the literal `AKIA` prefix (matching the real long-term-key
-/// shape an AWS SDK expects and validates) followed by 16 chars from a 36-symbol uppercase
-/// alphanumeric alphabet (A-Z + 0-9), for a fixed total length of 20 — the exact AKID shape AWS
-/// SDK client-side validators accept. The AccessKeyId is NOT secret — it travels in plaintext in
-/// the SigV4 `Authorization` header and is the public lookup handle — but it is minted from the OS
-/// CSPRNG so it is unguessable and collision-resistant. Fails closed (returns the error so the
-/// caller surfaces a 500, never panics the server) if the OS exposes no entropy.
-fn generate_aws_access_key_id() -> Result<String, getrandom::Error> {
-    // 36-symbol uppercase-alphanumeric alphabet (A-Z, 0-9). The AKID format is a FIXED 20 chars
-    // (AKIA + 16 random), so we emit 16 symbols over 36 symbols → 16*log2(36) ≈ 82.7 bits. That is
-    // the maximum entropy attainable inside the fixed 20-char AWS shape; the old code masked each
-    // byte to its low 5 bits (`& 0x1f`) over a 32-symbol set for only 80 bits AND discarded 3 bits
-    // per byte. Dropping the mask and widening the alphabet recovers that headroom without changing
-    // the wire length AWS SDKs validate. (A full ≥100-bit handle is incompatible with the fixed
-    // 20-char format; the secret access key, not the public AKID, carries the real signing entropy.)
-    const ALPHABET: &[u8; 36] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    let mut buf = [0u8; 16];
-    getrandom::fill(&mut buf)?;
-    let mut s = String::with_capacity(AWS_ACCESS_KEY_ID_LEN);
-    s.push_str(AWS_ACCESS_KEY_PREFIX);
-    for &b in &buf {
-        // Map each FULL byte into the alphabet via modulo. 256 is not a multiple of 36 so the
-        // lowest 4 symbols are marginally favored (a ~0.02-bit bias, negligible for an unguessable
-        // public lookup handle), but no byte bits are discarded. Index is always in 0..36 (no
-        // out-of-bounds, no panic on the mint path).
-        s.push(ALPHABET[(b as usize) % ALPHABET.len()] as char);
+/// `n` symbols of `alphabet`, each picked by one byte of the OS CSPRNG (`byte % len`, the alphabet
+/// at most 256 symbols long, as the loader admits it). Fails closed (the error surfaces as a 500,
+/// never a panic) when the OS exposes no entropy.
+fn draw(alphabet: &str, n: usize) -> Result<String, getrandom::Error> {
+    let symbols = alphabet.as_bytes();
+    if symbols.is_empty() {
+        return Ok(String::new());
     }
-    Ok(s)
+    let mut buf = vec![0u8; n];
+    getrandom::fill(&mut buf)?;
+    Ok(buf
+        .iter()
+        .map(|&b| char::from(symbols[usize::from(b) % symbols.len()]))
+        .collect())
 }
 
-/// Generate an AWS-style secret access key: 40 chars from a base64-like alphabet (matching the shape
-/// real AWS secret keys take), sourced from 30 bytes of the OS CSPRNG (240 bits, encoded). This is
-/// the SYMMETRIC SigV4 signing secret — stored in plaintext (HMAC verification needs the same value
-/// the client signs with) and shown to the operator exactly once at mint. Fails closed on no entropy.
-fn generate_aws_secret_access_key() -> Result<String, getrandom::Error> {
-    // Base64-url-safe-ish alphabet without padding: A-Z a-z 0-9 + /. 64 symbols → 6 bits each.
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    // 40 chars * 6 bits = 240 bits = 30 bytes of entropy; draw the 30 bytes and emit 40 symbols.
-    let mut buf = [0u8; 30];
-    getrandom::fill(&mut buf)?;
-    // Pack the 240 bits and slice them into 40 six-bit groups. A running bit accumulator avoids any
-    // dependency on a base64 crate and keeps the mapping panic-free (every index is `& 0x3f`).
-    let mut out = String::with_capacity(AWS_SECRET_ACCESS_KEY_LEN);
-    let mut acc: u32 = 0;
-    let mut bits = 0u32;
-    for &b in &buf {
-        acc = (acc << 8) | b as u32;
-        bits += 8;
-        while bits >= 6 {
-            bits -= 6;
-            let idx = ((acc >> bits) & 0x3f) as usize;
-            out.push(ALPHABET[idx] as char);
-        }
-    }
-    Ok(out)
+/// THE ISSUED CREDENTIAL over `shape` (the verifier's Statement's issued-shape marks): the public
+/// id, its prefix then symbols of its alphabet up to its length, and the secret, symbols of its
+/// alphabet. The host names no format of its own; every symbol is a CSPRNG draw. The public id is
+/// the lookup handle and travels in the clear; the secret is shown once.
+pub(crate) fn issue_credential(
+    shape: &busbar_contract::auth_calls::IssuedShape,
+) -> Result<(String, String), getrandom::Error> {
+    let tail = shape.id_len.saturating_sub(shape.id_prefix.len());
+    let id = format!("{}{}", shape.id_prefix, draw(&shape.id_alphabet, tail)?);
+    Ok((id, draw(&shape.secret_alphabet, shape.secret_len)?))
 }
 
 /// Whether `key` may target `pool` (an OMITTED grant = all pools; an explicit list is

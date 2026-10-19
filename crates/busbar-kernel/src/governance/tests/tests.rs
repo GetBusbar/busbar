@@ -602,27 +602,29 @@ fn test_credential_generators_contract() {
         "bearer body is lowercase hex: {hex_part}"
     );
 
-    // AWS AccessKeyId: `AKIA` prefix + uppercase-alphanumeric body, fixed total length 20.
-    let akid = generate_aws_access_key_id().expect("OS entropy available");
-    assert_eq!(akid.len(), AWS_ACCESS_KEY_ID_LEN);
-    assert!(
-        akid.starts_with(AWS_ACCESS_KEY_PREFIX),
-        "akid prefix: {akid}"
-    );
+    // The issued credential over the linked verifier's stated shape (the test double's): the
+    // public id is its prefix then 16 symbols of its alphabet, 20 in all; the secret 40 symbols of
+    // its alphabet. 1.5.5's AccessKeyId and secret access key formats, byte for byte.
+    let (_, shape) = crate::test_support::issued::double();
+    let (akid, sak) = issue_credential(&shape).expect("OS entropy available");
+    assert_eq!(akid.len(), 20);
+    assert!(akid.starts_with("AKIA"), "akid prefix: {akid}");
     assert!(
         akid.bytes()
             .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()),
         "akid is uppercase-alphanumeric: {akid}"
     );
-
-    // AWS secret access key: fixed 40 chars (240 bits over a base64-ish alphabet).
-    let sak = generate_aws_secret_access_key().expect("OS entropy available");
-    assert_eq!(sak.len(), AWS_SECRET_ACCESS_KEY_LEN);
+    assert_eq!(sak.len(), 40);
+    assert!(
+        sak.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/'),
+        "the secret is over the stated alphabet: {sak}"
+    );
 
     // Each draw differs — proves the CSPRNG is actually read, not returning a constant.
     assert_ne!(generate_secret().unwrap(), s, "secrets must not repeat");
     assert_ne!(
-        generate_aws_access_key_id().unwrap(),
+        issue_credential(&shape).unwrap().0,
         akid,
         "akids must not repeat"
     );
@@ -697,7 +699,7 @@ fn test_refresh_updates_both_indices_atomically() {
     );
     let gov = GovState::new_with_signer(store, None, Some(signer)).unwrap();
     let (key, _token, akid, _secret) = gov
-        .mint_signed_with_aws(
+        .mint_signed_with_credential(
             NewKeySpec {
                 name: "dual-index-key".to_string(),
                 allowed_pools: None,
@@ -707,6 +709,8 @@ fn test_refresh_updates_both_indices_atomically() {
             },
             2_000_000_000,
             1_700_000_000,
+            &crate::test_support::issued::double().0,
+            &crate::test_support::issued::double().1,
         )
         .unwrap();
 
@@ -743,7 +747,7 @@ fn test_aws_credential_debug_redacts_secret() {
     // is the generalized successor to the old AWS-specific `AwsCredential`/`AwsKeyEntry` pair (its
     // own redaction test lives in `busbar_contract::records::tests::debug_redacts_secret_equivalents`) —
     // this regression stays at the governance-crate level too since it's the type actually flowing
-    // through `create_key_with_aws`/`mint_signed_with_aws`.
+    // through `create_key_with_aws`/`mint_signed_with_credential`.
     let cred = CredentialSecret {
         meta: CredentialMeta {
             id: "cred_x".to_string(),
@@ -3228,12 +3232,18 @@ mod signed_token {
         );
     }
 
-    /// mint_signed_with_aws issues both a token and an AWS credential for the same subject.
+    /// mint_signed_with_credential issues both a token and an AWS credential for the same subject.
     #[test]
     fn mint_with_aws_issues_token_and_credential() {
         let g = gov();
         let (binding, token, akid, secret) = g
-            .mint_signed_with_aws(spec("bob", None, None), 2_000, 1_000)
+            .mint_signed_with_credential(
+                spec("bob", None, None),
+                2_000,
+                1_000,
+                &crate::test_support::issued::double().0,
+                &crate::test_support::issued::double().1,
+            )
             .expect("mint+aws");
         assert!(token.expose(&crate::seal::lend()).starts_with("bbk_"));
         assert!(akid.starts_with("AKIA"));
@@ -3245,7 +3255,7 @@ mod signed_token {
         assert_eq!(resolved_key.id, binding.id);
     }
 
-    /// The two one-time secrets `mint_signed_with_aws` hands back (the bearer token and the AWS
+    /// The two one-time secrets `mint_signed_with_credential` hands back (the bearer token and the AWS
     /// secret access key) are sealed: a `{:?}` or `{}` of either, or a `{:?}` of the whole returned
     /// tuple, never carries the plaintext (DESIGN #54: secret material Debug/Display => REDACTED).
     /// The stored credential row still holds the exact plaintext, so SigV4 verification and the
@@ -3254,7 +3264,13 @@ mod signed_token {
     fn mint_with_aws_secrets_never_print() {
         let g = gov();
         let minted = g
-            .mint_signed_with_aws(spec("bob", None, None), 2_000, 1_000)
+            .mint_signed_with_credential(
+                spec("bob", None, None),
+                2_000,
+                1_000,
+                &crate::test_support::issued::double().0,
+                &crate::test_support::issued::double().1,
+            )
             .expect("mint+aws");
         let token = minted.1.expose(&crate::seal::lend()).clone();
         let aws_secret = minted.3.expose(&crate::seal::lend()).clone();
