@@ -26,10 +26,10 @@ struct DemoRow {
 // ── THE POSITIVE HALF: every plane method is present, at its `Store`-mirrored signature ──────────
 //
 // Each binding coerces the trait method to a concrete function pointer. It fails to COMPILE if the
-// method is missing or its signature drifts from the one the store plugin ABI froze, so the set
-// below is the authoritative statement of what `PlaneStore` carries. Eight neutral kind-tagged
-// verbs, and the exact eight a plane needs to persist its own trust state — the 14→8 consolidation
-// of the 1.6.0 store genericization, over the `PlaneRecord` envelope.
+// method is missing or its signature drifts from the one the store plugin ABI froze. Nine neutral
+// kind-tagged verbs: the 14→8 consolidation of the 1.6.0 store genericization, over the
+// `PlaneRecord` envelope, and the multi-use capability check (`plane_token_live`) beside the
+// single-use one. PRESENCE is what this half proves; EXACTNESS is the next two proofs'.
 #[allow(clippy::type_complexity)]
 fn plane_method_set_is_exactly_the_plane_methods() {
     let _: fn(&dyn PlaneStore, PlaneRecordRef<'_>) -> RecordStoreResult<()> =
@@ -48,6 +48,111 @@ fn plane_method_set_is_exactly_the_plane_methods() {
         <dyn PlaneStore>::delete_plane_record;
     let _: fn(&dyn PlaneStore, &str, &str, u64, u64) -> RecordStoreResult<bool> =
         <dyn PlaneStore>::redeem_plane_token;
+    let _: fn(&dyn PlaneStore, &str, &str, u64, u64) -> RecordStoreResult<bool> =
+        <dyn PlaneStore>::plane_token_live;
+}
+
+// ── THE EXACT HALF: nothing outside the set ──────────────────────────────────────────────────────
+//
+// Law 8 (`BUSBAR-1.6.0.md` l.2043-2044): a count is a measurement only when nothing fell outside
+// it. The bindings above prove each named verb is there; they cannot see a tenth. Two proofs can.
+
+/// The verbs `PlaneStore` carries, by name: what the trait is held to, both ways.
+const PLANE_METHODS: [&str; 9] = [
+    "upsert_plane_record",
+    "get_plane_record",
+    "append_plane_record",
+    "list_plane_records",
+    "list_plane_record_parents",
+    "purge_plane_records_before",
+    "delete_plane_record",
+    "redeem_plane_token",
+    "plane_token_live",
+];
+
+/// AT COMPILE TIME: an implementor that writes exactly the nine and nothing else. A tenth REQUIRED
+/// method is a missing item here (E0046), and a verb dropped from the trait is an item that is not a
+/// member of it (E0407), so this file stops compiling either way.
+struct EveryVerb;
+
+impl PlaneStore for EveryVerb {
+    fn upsert_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn get_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    fn append_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_plane_records(
+        &self,
+        _kind: &str,
+        _selector: &PlaneSelector,
+    ) -> RecordStoreResult<Vec<Vec<u8>>> {
+        Ok(Vec::new())
+    }
+    fn list_plane_record_parents(&self, _kind: &str) -> RecordStoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn delete_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn redeem_plane_token(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> RecordStoreResult<bool> {
+        Ok(false)
+    }
+    fn plane_token_live(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> RecordStoreResult<bool> {
+        Ok(false)
+    }
+}
+
+/// AT TEST TIME, AND DEFAULTED METHODS TOO: the trait's own declaration, read from its source, names
+/// exactly [`PLANE_METHODS`]. A tenth method WITH a default body compiles past [`EveryVerb`]; it does
+/// not get past this. RED before Q128 p29#8: the set named eight and the trait declared nine
+/// (`plane_token_live` had widened it unseen).
+#[test]
+fn plane_store_declares_exactly_the_plane_methods() {
+    let src = include_str!("../store.rs");
+    let start = src
+        .find("pub trait PlaneStore")
+        .expect("store.rs declares the PlaneStore trait");
+    let trait_src = &src[start..];
+    let end = trait_src
+        .find("\n}\n")
+        .expect("the PlaneStore declaration closes");
+    let mut declared: Vec<&str> = trait_src[..end]
+        .lines()
+        .map(str::trim_start)
+        .filter_map(|line| line.strip_prefix("fn "))
+        .filter_map(|line| line.split(['(', '<']).next())
+        .collect();
+    declared.sort_unstable();
+    let mut named = PLANE_METHODS.to_vec();
+    named.sort_unstable();
+    assert_eq!(
+        declared, named,
+        "PlaneStore must declare exactly the named plane verbs, no more and no fewer"
+    );
+    // The implementor above is the compile-time half; naming it keeps it compiled and live.
+    let every: &dyn PlaneStore = &EveryVerb;
+    assert!(every
+        .list_plane_record_parents("kind")
+        .is_ok_and(|parents| parents.is_empty()));
 }
 
 // ── THE NEGATIVE HALF: the audit chain is NOT reachable through `PlaneStore` ──────────────────────

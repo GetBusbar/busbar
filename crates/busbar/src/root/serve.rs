@@ -3117,6 +3117,7 @@ impl DataRoutes {
             &self.post,
             &units,
             (self.pin)(),
+            served.facts.audit_kind,
         ) else {
             let _ = verdict.send(Err(None));
             return;
@@ -3607,6 +3608,7 @@ impl DataRoutes {
                 late,
                 (self.pin)(),
                 nesting.as_ref().map(|n| &n.parent),
+                live.facts.audit_kind,
             )
             .instrument(span.clone())
             .await

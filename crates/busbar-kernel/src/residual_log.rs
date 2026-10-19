@@ -10,7 +10,7 @@
 //! boot rehydrate and verifier the call log and the admin audit log use), under the store kind
 //! [`KIND_RESIDUAL`]. It does NOT ride the admin audit ring: that ring is operator-rate and holds
 //! [`crate::audit::MAX_AUDIT_ENTRIES`] rows in RAM, and a residual is request-rate (one per request
-//! on a deployment that runs a Bedrock guardrail on every call), so sharing it would evict both the
+//! on a deployment whose guardrail reports units on every call), so sharing it would evict both the
 //! residuals and every admin mutation behind them ([`crate::audit`]'s stream table: "one chain per
 //! PRINCIPAL | request-rate").
 //!
