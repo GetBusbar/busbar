@@ -443,26 +443,31 @@ static GRANTS: std::sync::RwLock<
 /// emits (the predicate the composition root installed on `observing`, the one place that names
 /// the host's metric catalog: two writers of one series is a merge nobody could read back apart),
 /// or on one another plugin was already granted, is refused naming both; a plugin that is not
-/// first-party is granted nothing (and refused nothing — it keeps today's rule).
+/// first-party is granted nothing (and refused nothing — it keeps today's rule). Each open states
+/// the name's standing afresh: a name opened again by a plugin that is not first-party (a reload
+/// that swapped the plugin behind it) loses whatever its predecessor was granted, and a first-party
+/// plugin re-opened holds exactly what it declares now.
 pub fn grant_series(
     observing: &Observing,
     plugin: &str,
     first_party: bool,
     declared: &[busbar_contract::abi::mechanism::observe::SeriesDecl],
 ) -> Result<(), String> {
-    if !first_party {
-        return Ok(());
+    let mut guard = GRANTS.write().unwrap_or_else(|e| e.into_inner());
+    let grants = guard.get_or_insert_with(Default::default);
+    grants.remove(plugin);
+    {
+        let mut standing = FIRST_PARTY.write().unwrap_or_else(|e| e.into_inner());
+        let standing = standing.get_or_insert_with(Default::default);
+        if !first_party {
+            standing.remove(plugin);
+            return Ok(());
+        }
+        standing.insert(plugin.to_string());
     }
-    FIRST_PARTY
-        .write()
-        .unwrap_or_else(|e| e.into_inner())
-        .get_or_insert_with(Default::default)
-        .insert(plugin.to_string());
     if declared.is_empty() {
         return Ok(());
     }
-    let mut guard = GRANTS.write().unwrap_or_else(|e| e.into_inner());
-    let grants = guard.get_or_insert_with(Default::default);
     for d in declared {
         if observing.is_host_series(&d.name) {
             return Err(format!(
