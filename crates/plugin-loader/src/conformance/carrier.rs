@@ -124,9 +124,12 @@ fn text(v: &serde_json::Value, what: &str) -> String {
 
 /// The ops of the role a carrier does not play, in slot order: each REFUSED, one crossing each.
 fn framer_ops(p: &Plugin<Transport>, side: &Side) -> String {
+    // A declared scheme, so the begin reaches the carrier, which refuses it as its own.
+    let mut begin: BeginIn = input();
+    begin.scheme = busbar_contract::abi::host::service::SCHEME_PLAIN;
     let outcomes = [
         go::<_, LocateOut>(p, side, false, slot::LOCATE, input::<LocateIn>()).0,
-        go::<_, FramerOut>(p, side, false, slot::BEGIN, input::<BeginIn>()).0,
+        go::<_, FramerOut>(p, side, false, slot::BEGIN, begin).0,
         go::<_, FramerOut>(p, side, false, slot::INGEST, input::<IngestIn>()).0,
         go::<_, FramerOut>(p, side, false, slot::EMIT, input::<EmitIn>()).0,
         go::<_, FramerOut>(p, side, false, slot::ENCODE, input::<EncodeIn>()).0,

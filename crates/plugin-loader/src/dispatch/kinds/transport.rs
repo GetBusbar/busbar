@@ -26,10 +26,10 @@ use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::transport::check::{
-    check_accept, check_arrival, check_binding, check_cancel, check_claims, check_composes_over,
-    check_emit_body_len, check_fault_cover, check_fault_rows, check_framer, check_framer_fields,
-    check_head_slots, check_io, check_listen, check_locate, check_offered_points, check_settings,
-    check_status_rows, check_tail,
+    check_accept, check_arrival, check_begin_scheme, check_binding, check_cancel, check_claims,
+    check_composes_over, check_emit_body_len, check_fault_cover, check_fault_rows, check_framer,
+    check_framer_fields, check_head_slots, check_io, check_listen, check_locate,
+    check_offered_points, check_settings, check_status_rows, check_tail,
 };
 use busbar_contract::abi::transport::{
     self, slot, AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn,
@@ -322,7 +322,8 @@ impl Kind for Transport {
         }
     }
 
-    /// A `begin` is admitted only with a well-formed binding ([`check_binding`]) and, on the dial
+    /// A `begin` is admitted only with a declared scheme ([`check_begin_scheme`]: a zero never
+    /// grants), a well-formed binding ([`check_binding`]) and, on the dial
     /// side, the binding's auth handle verified for THIS framer at the published generation
     /// (`super::super::auth_handle`): a handle of another owner, of another generation or forged
     /// is REFUSED before the crossing. An `emit` whose opening body length breaks
@@ -345,7 +346,7 @@ impl Kind for Transport {
         // SAFETY: the host's own frame of `in_size >= size_of::<BeginIn>()` bytes, leading with
         // its head.
         let i = unsafe { input.cast::<BeginIn>().read_unaligned() };
-        if check_binding(&i).is_err() {
+        if check_begin_scheme(&i).is_err() || check_binding(&i).is_err() {
             return Some(Outcome::Refused);
         }
         if i.auth.is_none() {

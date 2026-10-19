@@ -1262,8 +1262,20 @@ pub struct BeginIn {
     pub head: InHead,
     /// [`SIDE_ACCEPT`] | [`SIDE_DIAL`] | [`SIDE_ACCEPT_STREAM`].
     pub side: u32,
+    /// THE CONNECTION'S SCHEME, as a code
+    /// ([`SCHEME_*`](crate::abi::host::service::SCHEME_PLAIN)), set by the HOST on every side:
+    /// on [`SIDE_DIAL`] from the route's upstream (whether the dial runs the connector's
+    /// connection security), on [`SIDE_ACCEPT`] and [`SIDE_ACCEPT_STREAM`] from the listener
+    /// (whether the connector terminated connection security on it). The framer copies it into
+    /// every request view it builds for its auth call
+    /// ([`HeadView::scheme`](crate::abi::host::service::HeadView::scheme)); the host does not fill
+    /// that view's scheme itself. [`SCHEME_UNDECLARED`](crate::abi::host::service::SCHEME_UNDECLARED)
+    /// (`0`, a zeroed `in`) or an unknown code is REFUSED at `begin`
+    /// ([`check::check_begin_scheme`]): a zero never grants, and is never read as plain. Carved
+    /// from what was alignment padding; every other offset is unchanged.
+    pub scheme: u8,
     /// Alignment padding.
-    pub _reserved: u32,
+    pub _reserved: [u8; 3],
     /// The target ([`SIDE_ACCEPT_STREAM`]: the stream's path and query).
     pub target: AbiStr,
     /// What connection security established.

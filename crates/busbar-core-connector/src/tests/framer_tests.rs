@@ -14,7 +14,8 @@ use crate::support::{Knobs, TestDoor};
 #[test]
 fn a_full_sink_is_re_called_until_every_byte_is_out() {
     let door = Arc::new(TestDoor::identity("bytes"));
-    let (mut f, _) = Framing::begin(door.clone(), SIDE_DIAL, "t", &Established::default()).unwrap();
+    let (mut f, _) =
+        Framing::begin(door.clone(), SIDE_DIAL, "t", &Established::plain_for_test()).unwrap();
     f.bufs = Buffers::new(7, 5, 1);
     let sent: Vec<u8> = (0..200).collect();
     let y = f.emit(1, &sent, true, false).unwrap();
@@ -40,11 +41,11 @@ fn a_dial_hands_its_opening_head_fields_to_begin() {
         door.clone(),
         SIDE_DIAL,
         "t",
-        &Established::default(),
+        &Established::plain_for_test(),
         &opening,
     )
     .unwrap();
-    let _ = Framing::begin(door.clone(), SIDE_DIAL, "t", &Established::default()).unwrap();
+    let _ = Framing::begin(door.clone(), SIDE_DIAL, "t", &Established::plain_for_test()).unwrap();
     let begun = door.begun_fields.lock().unwrap();
     assert_eq!(
         *begun,
@@ -72,7 +73,8 @@ fn a_text_piece_is_read_as_text() {
                 ..Knobs::default()
             },
         ));
-        let (mut f, _) = Framing::begin(door, SIDE_DIAL, "t", &Established::default()).unwrap();
+        let (mut f, _) =
+            Framing::begin(door, SIDE_DIAL, "t", &Established::plain_for_test()).unwrap();
         let y = f.ingest(b"{}", false).unwrap();
         assert_eq!(y.pieces.len(), 1);
         assert_eq!(y.pieces[0].text, text, "stated text={text}");
@@ -82,7 +84,8 @@ fn a_text_piece_is_read_as_text() {
 #[test]
 fn a_refusals_neutral_status_reaches_the_framer_on_every_re_call() {
     let door = Arc::new(TestDoor::identity("bytes"));
-    let (mut f, _) = Framing::begin(door.clone(), SIDE_DIAL, "t", &Established::default()).unwrap();
+    let (mut f, _) =
+        Framing::begin(door.clone(), SIDE_DIAL, "t", &Established::plain_for_test()).unwrap();
     f.bufs = Buffers::new(7, 5, 1);
     let sent: Vec<u8> = (0..200).collect();
     let y = f.refuse(Some(1), &sent, 401, false).unwrap();
@@ -103,7 +106,7 @@ fn a_stated_deadline_is_carried() {
             ..Knobs::default()
         },
     ));
-    let (_, y) = Framing::begin(door, SIDE_DIAL, "t", &Established::default()).unwrap();
+    let (_, y) = Framing::begin(door, SIDE_DIAL, "t", &Established::plain_for_test()).unwrap();
     let at = y.deadline_ns.expect("a deadline");
     assert!(at > now_ns());
 }
@@ -155,7 +158,13 @@ fn an_accepted_framing_yields_its_request_head_typed() {
         ..Knobs::default()
     };
     let door = Arc::new(TestDoor::new("bytes", &["bytes"], &[], knobs));
-    let (_, y) = Framing::begin(door.clone(), SIDE_ACCEPT, "", &Established::default()).unwrap();
+    let (_, y) = Framing::begin(
+        door.clone(),
+        SIDE_ACCEPT,
+        "",
+        &Established::plain_for_test(),
+    )
+    .unwrap();
     assert_eq!(
         y.heads,
         [Head {
@@ -165,7 +174,7 @@ fn an_accepted_framing_yields_its_request_head_typed() {
             ..Head::default()
         }]
     );
-    let dialled = Framing::begin(door, SIDE_DIAL, "t", &Established::default());
+    let dialled = Framing::begin(door, SIDE_DIAL, "t", &Established::plain_for_test());
     assert!(
         dialled.is_err(),
         "a dialled framing carries no request slots"
@@ -269,7 +278,7 @@ fn a_framer_that_owes_more_forever_and_writes_nothing_faults() {
     ));
     let (answer, answered) = mpsc::channel();
     std::thread::spawn(move || {
-        let begun = Framing::begin(door, SIDE_DIAL, "t", &Established::default())
+        let begun = Framing::begin(door, SIDE_DIAL, "t", &Established::plain_for_test())
             .map(|_| ())
             .map_err(|r| r.outcome);
         let _ = answer.send(begun);
@@ -383,9 +392,14 @@ fn a_ticketed_begin_whose_auth_pends_resumes_on_the_wake_with_one_auth_call() {
         begins: Default::default(),
         resumes: Default::default(),
     });
-    let (mut f, y) =
-        Framing::begin_ticketed(door.clone(), SIDE_DIAL, "t", &Established::default(), &[])
-            .unwrap();
+    let (mut f, y) = Framing::begin_ticketed(
+        door.clone(),
+        SIDE_DIAL,
+        "t",
+        &Established::plain_for_test(),
+        &[],
+    )
+    .unwrap();
     assert!(f.parked(), "the begin waits on its auth call");
     assert_eq!(y, Yielded::default(), "a parked op yields nothing");
     assert!(
@@ -435,11 +449,16 @@ fn noop_cx() -> std::task::Context<'static> {
 /// the first waits; then the first resumes on its ticket, carrying no new bytes, and goes out with
 /// exactly one auth call.
 #[test]
-fn one_streams_pending_auth_parks_only_that_stream_and_resumes_with_one_auth_call() {
+fn one_stream_pending_auth_parks_only_that_stream_and_resumes_with_one_auth_call() {
     let door = Arc::new(PendingDoor::new(TestDoor::identity("bytes"), 1));
-    let (mut f, _) =
-        Framing::begin_ticketed(door.clone(), SIDE_DIAL, "t", &Established::default(), &[])
-            .unwrap();
+    let (mut f, _) = Framing::begin_ticketed(
+        door.clone(),
+        SIDE_DIAL,
+        "t",
+        &Established::plain_for_test(),
+        &[],
+    )
+    .unwrap();
     let y = f.emit_opening(1, b"first ", true, false, Some(0)).unwrap();
     assert_eq!(
         y,
@@ -589,7 +608,7 @@ impl FramerDoor for MuxDoor {
                 return pending;
             }
             let held = self.held.lock().unwrap().remove(&t).unwrap_or_default();
-            crate::support::pieces_on_streams(&i.sink, o, &held);
+            crate::support::pieces_on_lanes(&i.sink, o, &held);
             return ready;
         }
         self.host.new_op(t);
@@ -598,7 +617,7 @@ impl FramerDoor for MuxDoor {
             self.held.lock().unwrap().insert(t, bytes);
             return pending;
         }
-        crate::support::pieces_on_streams(&i.sink, o, &bytes);
+        crate::support::pieces_on_lanes(&i.sink, o, &bytes);
         ready
     }
 }
@@ -609,11 +628,16 @@ impl FramerDoor for MuxDoor {
 /// first resumes; then the first resumes (carrying no bytes: the framer took them) and its head is
 /// handed up, with exactly one auth call.
 #[test]
-fn a_pending_ingest_holds_only_its_stream_and_the_next_streams_head_is_handed_up_first() {
+fn a_pending_ingest_holds_only_its_stream_and_the_next_stream_head_is_handed_up_first() {
     let door = Arc::new(MuxDoor::new());
-    let (mut f, _) =
-        Framing::begin_ticketed(door.clone(), SIDE_ACCEPT, "", &Established::default(), &[])
-            .unwrap();
+    let (mut f, _) = Framing::begin_ticketed(
+        door.clone(),
+        SIDE_ACCEPT,
+        "",
+        &Established::plain_for_test(),
+        &[],
+    )
+    .unwrap();
     let y = f.ingest(b"1", false).unwrap();
     assert!(
         y.pieces.is_empty() && f.parked(),
@@ -654,15 +678,25 @@ fn a_pending_ingest_holds_only_its_stream_and_the_next_streams_head_is_handed_up
 #[test]
 fn a_dialled_head_emit_states_its_body_length_and_nothing_else_does() {
     let door = Arc::new(PendingDoor::new(TestDoor::identity("bytes"), 99));
-    let (mut f, _) =
-        Framing::begin_ticketed(door.clone(), SIDE_DIAL, "t", &Established::default(), &[])
-            .unwrap();
+    let (mut f, _) = Framing::begin_ticketed(
+        door.clone(),
+        SIDE_DIAL,
+        "t",
+        &Established::plain_for_test(),
+        &[],
+    )
+    .unwrap();
     f.emit_opening(1, b"head", true, false, Some(4096)).unwrap();
     f.emit(1, b"body", true, false).unwrap();
     f.emit_opening(3, b"head", true, false, None).unwrap();
-    let (mut accepted, _) =
-        Framing::begin_ticketed(door.clone(), SIDE_ACCEPT, "", &Established::default(), &[])
-            .unwrap();
+    let (mut accepted, _) = Framing::begin_ticketed(
+        door.clone(),
+        SIDE_ACCEPT,
+        "",
+        &Established::plain_for_test(),
+        &[],
+    )
+    .unwrap();
     accepted
         .emit_opening(1, b"answer", true, false, Some(10))
         .unwrap();
@@ -697,7 +731,7 @@ fn a_binding_with_auth_points_is_refused_ticket_less() {
         Ok(_) => panic!("an auth-calling binding was begun ticket-less"),
     };
     let door = Arc::new(TestDoor::identity("bytes"));
-    let est = Established::default();
+    let est = Established::plain_for_test();
     refused(Framing::begin_ticketless(
         door.clone(),
         SIDE_DIAL,
@@ -724,7 +758,14 @@ fn a_binding_with_auth_points_is_refused_ticket_less() {
         &dial,
     ));
     assert_eq!(door.count("begin"), 0, "nothing crossed");
-    match crate::framed_stream::FramedStream::open_bound(door.clone(), "bytes", "/s", &[], &lines) {
+    match crate::framed_stream::FramedStream::open_bound(
+        door.clone(),
+        "bytes",
+        "/s",
+        &[],
+        &lines,
+        busbar_contract::abi::host::service::SCHEME_PLAIN,
+    ) {
         Err(e) => assert_eq!(e.error, TICKET_LESS_AUTH),
         Ok(_) => panic!("a stream with auth lines was framed ticket-less"),
     }

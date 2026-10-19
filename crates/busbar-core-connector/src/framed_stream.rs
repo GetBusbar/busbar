@@ -47,7 +47,9 @@ fn fault(error: impl Into<String>) -> Refused {
 
 impl FramedStream {
     /// Open the stream that arrived at `target` with `head` (its head fields, as the caller sent
-    /// them) on `claim`, a claim `door` answers. Its binding has no auth.
+    /// them) on `claim`, a claim `door` answers. Its binding has no auth. `scheme` is the
+    /// listener's (`SCHEME_*`, `BeginIn::scheme`): secure when the connector terminated connection
+    /// security on the listener the stream arrived at, plain when it did not.
     ///
     /// # Errors
     ///
@@ -57,8 +59,9 @@ impl FramedStream {
         claim: &str,
         target: &str,
         head: &[(String, Vec<u8>)],
+        scheme: u8,
     ) -> Result<Self, Refused> {
-        Self::open_bound(door, claim, target, head, &AuthBinding::NONE)
+        Self::open_bound(door, claim, target, head, &AuthBinding::NONE, scheme)
     }
 
     /// [`FramedStream::open`] over `binding`. A stream is framed TICKET-LESS, so a binding with
@@ -76,6 +79,7 @@ impl FramedStream {
         target: &str,
         head: &[(String, Vec<u8>)],
         binding: &AuthBinding,
+        scheme: u8,
     ) -> Result<Self, Refused> {
         binding.ticket_less()?;
         let facts = door.facts();
@@ -97,6 +101,7 @@ impl FramedStream {
             .collect();
         let established = Established {
             claim: Some(claim.to_string()),
+            scheme,
             ..Established::default()
         };
         let (framing, _) = Framing::begin_ticketless(
