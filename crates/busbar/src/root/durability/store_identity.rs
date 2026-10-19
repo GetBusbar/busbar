@@ -434,6 +434,6 @@ pub fn persisted_node(
     calls: &dyn StoreCalls,
     _dir: &std::path::Path,
     host: &str,
-) -> Result<u64, String> {
-    node_id(calls, host)
+) -> Result<TakenNode, String> {
+    take_node(calls, host)
 }

@@ -3688,7 +3688,9 @@ fn a_restart_over_the_same_data_dir_keeps_its_id() {
     let slots = crate::root::store_double::RecordSlots::new();
     let one = ScratchDir::new("node-id-one");
     let two = ScratchDir::new("node-id-two");
-    let id = persisted_node(slots.calls().as_ref(), &one.path, "host-dir").expect("an id");
+    let id = persisted_node(slots.calls().as_ref(), &one.path, "host-dir")
+        .expect("an id")
+        .id;
     assert!(
         one.entries()
             .contains(&store_identity::NODE_ID_FILE.to_string()),
@@ -3696,12 +3698,16 @@ fn a_restart_over_the_same_data_dir_keeps_its_id() {
         one.entries()
     );
     assert_eq!(
-        persisted_node(slots.calls().as_ref(), &one.path, "host-dir").expect("again"),
+        persisted_node(slots.calls().as_ref(), &one.path, "host-dir")
+            .expect("again")
+            .id,
         id,
         "a restart reads the same id back"
     );
     assert_ne!(
-        persisted_node(slots.calls().as_ref(), &two.path, "host-dir").expect("another"),
+        persisted_node(slots.calls().as_ref(), &two.path, "host-dir")
+            .expect("another")
+            .id,
         id,
         "another directory on the same host name is another node"
     );
@@ -3731,7 +3737,8 @@ fn the_first_boot_adopts_the_host_names_registry_id_and_the_chain_keeps_reading(
         }
         drained(&durability);
     }
-    let id = persisted_node(slots.calls().as_ref(), &dir.path, "host-old").expect("adopted");
+    let taken = persisted_node(slots.calls().as_ref(), &dir.path, "host-old").expect("adopted");
+    let id = taken.id;
     assert_eq!(id, 77, "the registry's id is adopted");
     let full = std::fs::read_to_string(dir.path.join(store_identity::NODE_ID_FILE))
         .expect("the adopted id is kept in the directory");
@@ -3748,9 +3755,43 @@ fn the_first_boot_adopts_the_host_names_registry_id_and_the_chain_keeps_reading(
         "{:?}",
         restarted.restart_findings
     );
+    // A clean shutdown releases the adopted id's lease; a later boot reads the kept id back.
+    if let Some(lease) = &taken.lease {
+        lease.release(slots.calls().as_ref()).expect("released");
+    }
     assert_eq!(
-        persisted_node(slots.calls().as_ref(), &dir.path, "host-old").expect("again"),
+        persisted_node(slots.calls().as_ref(), &dir.path, "host-old")
+            .expect("again")
+            .id,
         77,
         "later boots read the kept id"
     );
+}
+
+/// **A DATA-DIRECTORY NODE THAT ADOPTED ITS HOST NAME'S ID HOLDS THAT NAME'S LEASE** (Q128, the
+/// mixed pair): a live node with no data directory and the same name then takes a fresh id, so the
+/// two never journal under one identity.
+///
+/// RED before the fix: both took the host name's registry id.
+#[test]
+fn a_data_dir_node_that_adopted_the_host_id_holds_its_lease_against_a_no_data_dir_peer() {
+    use store_identity::NODE_SCHEMA;
+    let slots = crate::root::store_double::RecordSlots::new();
+    let dir = ScratchDir::new("node-id-mixed");
+    slots.put_row(NODE_SCHEMA, b"host:host-mix", &77u64.to_be_bytes());
+    let adopted = persisted_node(slots.calls().as_ref(), &dir.path, "host-mix").expect("adopted");
+    assert_eq!(
+        adopted.id, 77,
+        "the data-dir node adopts the host name's id"
+    );
+    let peer = take_node(slots.calls().as_ref(), "host-mix").expect("an identity");
+    assert_ne!(
+        peer.id, adopted.id,
+        "a live no-data-dir node with the same name takes the adopted id"
+    );
+    assert!(
+        adopted.lease.is_some(),
+        "the adopted id is held under the lease"
+    );
+    assert!(peer.lease.is_none(), "and the peer holds none");
 }
