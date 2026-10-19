@@ -375,6 +375,9 @@ impl Drop for InlineTicket {
     fn drop(&mut self) {
         let (_, index) = decode(self.ticket.slot);
         self.owner.recycle(index, &self.slot);
-        // RED: the kernel side is not told.
+        // The connection side this ticket drove is gone: so is what the kernel held for it.
+        if let Some(host) = self.owner.ended.get() {
+            host.framing_ended(super::auth_handle::framing_of(self.ticket));
+        }
     }
 }
