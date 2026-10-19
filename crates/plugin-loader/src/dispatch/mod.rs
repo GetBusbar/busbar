@@ -44,6 +44,7 @@ macro_rules! c_entry {
 }
 
 pub mod answer;
+pub mod auth_handle;
 pub mod auth_outbound;
 pub mod auth_ticks;
 pub mod conn_services;
@@ -135,6 +136,19 @@ pub trait Kind: Send + Sync + 'static {
     fn credential_kinds(context: Option<&Context>) -> Vec<String> {
         let _ = context;
         Vec::new()
+    }
+
+    /// THE KIND'S ADMISSION OF AN `in`, before the crossing: `Some(outcome)` refuses the call
+    /// with that outcome and never crosses. `owner` is the called instance's identity on the
+    /// instance table, the owner its kernel-MAC'd refs are verified for. The default admits all.
+    fn admit(
+        slot: u32,
+        input: *const busbar_contract::abi::mechanism::call::InHead,
+        in_size: usize,
+        owner: u64,
+    ) -> Option<Outcome> {
+        let _ = (slot, input, in_size, owner);
+        None
     }
 
     /// THE KIND'S ANSWER VALIDATION: the kind's pure `check_<op>` in `abi/<kind>/`, run after every

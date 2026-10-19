@@ -150,6 +150,9 @@ pub mod datagram;
 pub mod fields;
 pub mod route;
 
+/// A guest-list line an accepting transport is lent ([`BeginIn::lines`]).
+pub use route::LineEntry;
+
 pub use datagram::{
     DatagramLane, DatagramPath, DatagramRoute, DatagramYield, KeyingMaterial, RendezvousTerms,
     FINGERPRINT_BYTES, HANDSHAKE_ANSWERS, HANDSHAKE_INITIATES, HANDSHAKE_NONE, LANE_CLEAR,
@@ -1114,16 +1117,38 @@ pub struct BeginIn {
     pub facts: *const ConnFacts,
     /// The sink.
     pub sink: FramerSink,
-    /// [`SIDE_DIAL`]: the dial's OPENING head fields (the bound auth's fields and the request's
-    /// own, in order), for a framer whose wire carries them on its connection's opening (an
-    /// upgrade request) rather than on a message; a framer that renders them per message takes them
-    /// in `encode` too and ignores these (ARCHITECT Q-L5B-WS-DIAL 2026-10-03). A tail addition.
+    /// [`SIDE_DIAL`]: the dial's OPENING head fields, the request's own lines from the plane and
+    /// nothing else, for a framer whose wire carries them on its connection's opening (an upgrade
+    /// request) rather than on a message; a framer that renders them per message takes them in
+    /// `encode` too and ignores these (ARCHITECT Q-L5B-WS-DIAL 2026-10-03). The binding's auth
+    /// fields are never here: the framer adds its own lines, then calls the auth with
+    /// [`auth`](Self::auth) at [`points`](Self::points)
+    /// ([`op::AUTH_CALL`](crate::abi::host::service::op::AUTH_CALL)), then appends what the auth
+    /// answers, replacing any line of the same name, and adds nothing after. A tail addition.
     /// [`SIDE_ACCEPT_STREAM`]: the stream's head fields, as the caller sent them.
     pub fields: *const Field,
     /// How many.
     pub fields_len: usize,
     /// The datagram lane ([`datagram`]): NULL for a stream framer. A tail addition (pre-tag v1).
     pub lane: *const DatagramLane,
+    /// [`SIDE_ACCEPT`] | [`SIDE_ACCEPT_STREAM`]: the listener's guest list, in match order, lent
+    /// for the framing's life ([`check::check_lines`]); NULL on [`SIDE_DIAL`]. A tail addition
+    /// (pre-tag v1).
+    pub lines: *const route::LineEntry,
+    /// How many, at most [`check::MAX_LINES`].
+    pub lines_len: usize,
+    /// [`SIDE_DIAL`]: the auth points the BINDING's auth needs (`POINT_*`, the line table's
+    /// vocabulary), `0` for a binding with no auth; `0` on an accepting side
+    /// ([`check::check_binding`]). A tail addition (pre-tag v1).
+    pub points: u32,
+    /// Alignment padding.
+    pub _points_reserved: u32,
+    /// [`SIDE_DIAL`]: the binding's auth handle (THE DESIGN, Auth points and guest lists, item 5:
+    /// each outbound need's binding holds its auth handle and its pool, so every connection of the
+    /// pool begins with it), owner-scoped to this framer; the host refuses a `begin` whose handle
+    /// is not this framer's at the current generation. NONE exactly when `points` is `0`. A tail
+    /// addition (pre-tag v1).
+    pub auth: crate::abi::host::service::AuthRef,
 }
 
 /// `ingest`'s `in`.
