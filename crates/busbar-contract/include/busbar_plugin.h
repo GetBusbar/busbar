@@ -73,6 +73,7 @@ extern "C" {
 #define BB_MECH_SECTION_DECLARING UINT32_C(1) /* [`Section::flags`]: the plugin's declaring section (a plane's verb). */
 #define BB_MECH_SECTION_REQUIRED UINT32_C(2) /* [`Section::flags`]: a document must carry the section when the plugin is linked. */
 #define BB_MECH_SECTION_CONSUMED UINT32_C(4) /* [`Section::flags`]: the plugin reads the section but does not own its grammar. */
+#define BB_MECH_SECTION_NAMED_MAP UINT32_C(8) /* [`Section::flags`]: the declaring section is a map of named definitions, one per key. */
 #define BB_MECH_SLOT_VALIDATE UINT32_C(0) /* `validate`. */
 #define BB_MECH_SLOT_OPEN UINT32_C(1) /* `open`. */
 #define BB_MECH_SLOT_REFRESH UINT32_C(2) /* `refresh`. */

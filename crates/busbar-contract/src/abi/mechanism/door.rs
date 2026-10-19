@@ -306,6 +306,13 @@ pub const SECTION_DECLARING: u32 = 1;
 pub const SECTION_REQUIRED: u32 = 1 << 1;
 /// [`Section::flags`]: the plugin reads the section but does not own its grammar.
 pub const SECTION_CONSUMED: u32 = 1 << 2;
+/// [`Section::flags`]: the declaring section is a map of named definitions, one per key.
+///
+/// Set only beside [`SECTION_DECLARING`]: the plane's verb holds one registration per key, each
+/// addressable by name over the admin named-definition surface and nameable as a pool member
+/// (arch u28/u29/u34; #49, BUSBAR-1.6.0.md l.2235: the kernel learns which sections are named maps
+/// from the plane's Statement, never from a list of section names).
+pub const SECTION_NAMED_MAP: u32 = 1 << 3;
 
 /// One top-level config section the plugin owns or reads.
 #[repr(C)]

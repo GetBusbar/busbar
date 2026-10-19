@@ -236,6 +236,9 @@ pub struct PlaneRegistration {
     /// A plane that consumes the transport kind's root restricts the members its section names
     /// there to the dialects it states.
     pub consumes: Vec<&'static str>,
+    /// Whether the declaring section is a NAMED MAP (`SECTION_NAMED_MAP`): one registration per key,
+    /// each addressable over the admin named-definition surface and nameable as a pool member.
+    pub named_map: bool,
     /// The sections the Statement marks REQUIRED (`SECTION_REQUIRED`), in Statement order: a
     /// document must carry each while the plane is linked (CONFIG-REQ, Law 7), and the kernel's
     /// config pre-pass refuses one that omits it with the frozen missing-field text.

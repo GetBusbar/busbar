@@ -6,7 +6,9 @@
 use std::mem::size_of;
 
 use super::*;
-use crate::abi::mechanism::door::{SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED};
+use crate::abi::mechanism::door::{
+    SECTION_CONSUMED, SECTION_DECLARING, SECTION_NAMED_MAP, SECTION_REQUIRED,
+};
 use crate::abi::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 
 #[test]
@@ -64,7 +66,12 @@ fn the_cancel_dispositions_are_distinct_and_nonzero() {
 
 #[test]
 fn the_section_and_ingress_flags_are_single_distinct_bits() {
-    let s = [SECTION_DECLARING, SECTION_REQUIRED, SECTION_CONSUMED];
+    let s = [
+        SECTION_DECLARING,
+        SECTION_REQUIRED,
+        SECTION_CONSUMED,
+        SECTION_NAMED_MAP,
+    ];
     let i = [
         INGRESS_REQUEST_RESPONSE,
         INGRESS_RESPONSE_STREAM,

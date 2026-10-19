@@ -461,6 +461,7 @@ fn with_listing_door(
     let reg = PlaneRegistration {
         key,
         section,
+        named_map: false,
         owns: Vec::new(),
         consumes: Vec::new(),
         requires: Vec::new(),
@@ -596,6 +597,7 @@ fn opening_door() -> &'static busbar_kernel::plane::registry::PlaneDecl {
     busbar_kernel::plane::door::fold(busbar_contract::plane_calls::PlaneRegistration {
         key: "healthz-lanes-door",
         section: "healthz_lanes_door",
+        named_map: false,
         owns: Vec::new(),
         consumes: Vec::new(),
         requires: Vec::new(),
