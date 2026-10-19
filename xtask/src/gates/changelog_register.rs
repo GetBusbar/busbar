@@ -43,10 +43,19 @@
 //!
 //! THE REGISTER'S OWN SCHEMA (1.6.0 items 52 and 119, Law 10) is judged here too, three rows:
 //!
-//! * `entry-signed` — every entry carries `signoff: {who, when, ruling}`: WHO accepted it (the
-//!   owner; an agent cannot sign), WHEN (`YYYY-MM-DD`), and WHICH ruling. A flat `by:` string could
-//!   not tell "the owner signed this scope" from "an agent widened a scope the owner signed for
-//!   something narrower"; a sign-off that names its ruling can be checked against that ruling.
+//! * `entry-signed` — every entry carries `signoff: {who, when, ruling}`: WHO accepted it, WHEN
+//!   (`YYYY-MM-DD`), and WHICH ruling. A flat `by:` string could not tell "the owner signed this
+//!   scope" from "an agent widened a scope the owner signed for something narrower"; a sign-off that
+//!   names its ruling can be checked against that ruling. WHO takes exactly two forms, because
+//!   OWNER-LOCKED #59 says an agent may NEVER register a gap under the owner's name: either
+//!   `owner (Matthew Jackson)` with a `signed` field naming where the owner signed it, or
+//!   `ruling:<id>`, an entry registered by an agent or the architect under the standing owner
+//!   ruling `<id>` names, which claims no owner signature.
+//!   Both `signed` and `<id>` must RESOLVE in this tree: `#N` is a Part 2 decision row of
+//!   BUSBAR-1.6.0.md, `§<text>` is the one line of BUSBAR-1.6.0.md or 1.6.0-QUESTIONS.md that
+//!   contains `<text>`, and anything else is a 1.6.0-QUESTIONS.md row id (`Q61`, `LEDGER-100`).
+//!   Once, any `who` that began with "owner" passed, so a ruling-applied entry and an owner
+//!   signature read the same, and an agent spelling `owner-agent` was certified as the owner.
 //! * `entry-expires` — every entry carries `expires: {baseline, by}`: the golden baseline it
 //!   forgives against (which must exist in the golden history) and the date after which it lapses
 //!   and must be re-signed or retired. An acceptance with no end is a permanent blindfold.
@@ -92,6 +101,14 @@ const ACCEPTED_KEY: &str = "accepted";
 pub const DEFAULT_CELLS: &str = "testing/shadow-oracle/cells.json";
 /// The golden history root: an entry's `expires.baseline` must be a version recorded under it.
 pub const GOLDEN_ROOT: &str = "testing/shadow-oracle/golden";
+/// The spec: its Part 2 decision rows and its named lines are what a sign-off may cite.
+pub const SPEC: &str = "docs/design/BUSBAR-1.6.0.md";
+/// The owner-question queue: its row ids are what a sign-off may cite.
+pub const QUESTIONS: &str = "docs/design/1.6.0-QUESTIONS.md";
+/// The one spelling of the owner's signature. Anything that merely starts with "owner" is not it.
+pub const OWNER: &str = "owner (Matthew Jackson)";
+/// The prefix of an entry registered under a standing ruling rather than signed by the owner.
+pub const RULING_PREFIX: &str = "ruling:";
 
 pub struct ChangelogRegisterGate {
     pub register: String,
@@ -230,7 +247,7 @@ impl Gate for ChangelogRegisterGate {
             rule_declared(&entries),
             rule_breaking(&entries),
             rule_present(&entries, &section),
-            rule_signed(&entries),
+            rule_signed(&entries, &Rulings::read(cx)),
             rule_expires(&entries, cx, &today()),
             rule_premise(&entries, cx),
         ];
@@ -281,8 +298,151 @@ impl Gate for ChangelogRegisterGate {
         ));
 
         // -- THE REGISTER'S OWN SCHEMA: sign-off, expiry, premise --------------------------------
+        //
+        // THE SIGN-OFF CASES ARE MEASURED FROM A PLANTED GREEN TWIN, whose citations resolve in the
+        // fixture spec and queue that `plant` writes, so each case is about its own plant and not
+        // about whatever the real register holds today.
+        let signed_green = || {
+            plant(
+                &register(&[&full(
+                    r#""id":"G-1","kind":"improvement","changelog":"the grass is now greener""#,
+                )]),
+                GOOD_CHANGELOG,
+            )
+        };
+        report.push(prove_green(
+            &cx.with_overlay(plant(
+                &register(&[
+                    &signed_as(
+                        r#""id":"V-1","kind":"improvement","changelog":"the grass is now greener""#,
+                        r##""who":"owner (Matthew Jackson)","signed":"#59""##,
+                    ),
+                    &signed_as(
+                        r#""id":"V-2","kind":"improvement","changelog":"the grass is now greener""#,
+                        r#""who":"owner (Matthew Jackson)","signed":"Q1""#,
+                    ),
+                    &signed_as(
+                        r#""id":"V-3","kind":"improvement","changelog":"the grass is now greener""#,
+                        r#""who":"owner (Matthew Jackson)","signed":"§OWNER fixture ruling""#,
+                    ),
+                    &signed_as(
+                        r#""id":"V-4","kind":"improvement","changelog":"the grass is now greener""#,
+                        r##""who":"ruling:#59""##,
+                    ),
+                    &signed_as(
+                        r#""id":"V-5","kind":"improvement","changelog":"the grass is now greener""#,
+                        r#""who":"ruling:LEDGER-1""#,
+                    ),
+                    &signed_as(
+                        r#""id":"V-6","kind":"improvement","changelog":"the grass is now greener""#,
+                        r#""who":"ruling:§OWNER fixture ruling""#,
+                    ),
+                ]),
+                GOOD_CHANGELOG,
+            )),
+            &gate,
+            "the owner with resolvable evidence, and rulings that resolve, each of the three ways",
+            &[ROW_SIGNED],
+        ));
+
         report.push(prove_red(
-            cx,
+            &cx.with_overlay(signed_green()),
+            &gate,
+            "signers that only begin with \"owner\", and an owner signature with no evidence",
+            &[ROW_SIGNED],
+            plant(
+                &register(&[
+                    &signed_as(
+                        r#""id":"O-1","kind":"improvement","changelog":"the grass is now greener""#,
+                        r##""who":"owner-agent","signed":"#59""##,
+                    ),
+                    &signed_as(
+                        r#""id":"O-2","kind":"improvement","changelog":"the grass is now greener""#,
+                        r##""who":"owner (bot)","signed":"#59""##,
+                    ),
+                    &signed_as(
+                        r#""id":"O-3","kind":"improvement","changelog":"the grass is now greener""#,
+                        r#""who":"owner (Matthew Jackson)""#,
+                    ),
+                    &signed_as(
+                        r#""id":"O-4","kind":"improvement","changelog":"the grass is now greener""#,
+                        r##""who":"owner (Matthew Jackson)","signed":"#4040""##,
+                    ),
+                ]),
+                GOOD_CHANGELOG,
+            ),
+            &[
+                ROW_SIGNED,
+                "O-1",
+                "`owner-agent`",
+                "O-2",
+                "`owner (bot)`",
+                "O-3",
+                "no `signoff.signed`",
+                "O-4",
+                "no decision row #4040",
+            ],
+        ));
+
+        report.push(prove_red(
+            &cx.with_overlay(signed_green()),
+            &gate,
+            "rulings that do not resolve: missing, outside Part 2, ambiguous, blank, or doubled",
+            &[ROW_SIGNED],
+            plant(
+                &register(&[
+                    &signed_as(
+                        r#""id":"R-1","kind":"improvement","changelog":"the grass is now greener""#,
+                        r##""who":"ruling:#4040""##,
+                    ),
+                    &signed_as(
+                        r#""id":"R-2","kind":"improvement","changelog":"the grass is now greener""#,
+                        r##""who":"ruling:#7""##,
+                    ),
+                    &signed_as(
+                        r#""id":"R-3","kind":"improvement","changelog":"the grass is now greener""#,
+                        r#""who":"ruling:Q-NOPE""#,
+                    ),
+                    &signed_as(
+                        r#""id":"R-4","kind":"improvement","changelog":"the grass is now greener""#,
+                        r#""who":"ruling:§no line says this""#,
+                    ),
+                    &signed_as(
+                        r#""id":"R-5","kind":"improvement","changelog":"the grass is now greener""#,
+                        r#""who":"ruling:§the fixture word appears here""#,
+                    ),
+                    &signed_as(
+                        r#""id":"R-6","kind":"improvement","changelog":"the grass is now greener""#,
+                        r#""who":"ruling:""#,
+                    ),
+                    &signed_as(
+                        r#""id":"R-7","kind":"improvement","changelog":"the grass is now greener""#,
+                        r##""who":"ruling:#59","signed":"Q1""##,
+                    ),
+                ]),
+                GOOD_CHANGELOG,
+            ),
+            &[
+                ROW_SIGNED,
+                "R-1",
+                "no decision row #4040",
+                "R-2",
+                "no decision row #7",
+                "R-3",
+                "no row `Q-NOPE`",
+                "R-4",
+                "no line of",
+                "R-5",
+                "ambiguous",
+                "R-6",
+                "blank",
+                "R-7",
+                "never both",
+            ],
+        ));
+
+        report.push(prove_red(
+            &cx.with_overlay(signed_green()),
             &gate,
             "entries unsigned, signed by an agent, undated, or naming no ruling",
             &[ROW_SIGNED],
@@ -292,7 +452,7 @@ impl Gate for ChangelogRegisterGate {
                     &full(
                         r#""id":"S-2","kind":"improvement","changelog":"the grass is now greener""#,
                     )
-                    .replace("\"who\":\"owner (fixture)\"", "\"who\":\"agent P9\""),
+                    .replace(FIXTURE_SIGNER, r#""who":"agent P9""#),
                     &full(
                         r#""id":"S-3","kind":"improvement","changelog":"the grass is now greener""#,
                     )
@@ -1040,8 +1200,91 @@ fn str_field<'a>(v: &'a Value, k: &str) -> Option<&'a str> {
         .filter(|s| !s.trim().is_empty())
 }
 
-fn rule_signed(entries: &[Entry]) -> Row {
+/// The two documents a sign-off may cite, read from the tree under judgement.
+struct Rulings {
+    spec: String,
+    questions: String,
+}
+
+impl Rulings {
+    fn read(cx: &Ctx) -> Result<Rulings, String> {
+        let spec = cx
+            .read(SPEC)
+            .map_err(|e| format!("{SPEC} could not be read: {e}"))?;
+        let questions = cx
+            .read(QUESTIONS)
+            .map_err(|e| format!("{QUESTIONS} could not be read: {e}"))?;
+        Ok(Rulings { spec, questions })
+    }
+
+    /// Where `id` resolves, or why it does not. `#N` is a decision row of the spec's Part 2 (a
+    /// `| N |` row anywhere else in the spec is some other table's); `§<text>` is the ONE line of
+    /// either document containing `<text>` (two lines would make the citation ambiguous); anything
+    /// else is the id in the first cell of a QUESTIONS.md row.
+    fn resolve(&self, id: &str) -> Result<String, String> {
+        let id = id.trim();
+        if id.is_empty() {
+            return Err("the id is blank".to_string());
+        }
+        if let Some(n) = id.strip_prefix('#') {
+            if n.is_empty() || !n.chars().all(|c| c.is_ascii_digit()) {
+                return Err(format!("`{id}` is not `#<number>`"));
+            }
+            let head = format!("| {n} |");
+            let mut in_part2 = false;
+            for (i, line) in self.spec.lines().enumerate() {
+                if line.starts_with("# PART 2") {
+                    in_part2 = true;
+                } else if line.starts_with("# PART ") || line.starts_with("# APPENDIX") {
+                    in_part2 = false;
+                } else if in_part2 && line.starts_with(&head) {
+                    return Ok(format!("{SPEC}:{} (Part 2 decision #{n})", i + 1));
+                }
+            }
+            return Err(format!("{SPEC} Part 2 has no decision row #{n}"));
+        }
+        if let Some(text) = id.strip_prefix('§') {
+            let text = text.trim();
+            if text.is_empty() {
+                return Err("`§` names no line".to_string());
+            }
+            let hits: Vec<String> = [(SPEC, &self.spec), (QUESTIONS, &self.questions)]
+                .into_iter()
+                .flat_map(|(path, doc)| {
+                    doc.lines()
+                        .enumerate()
+                        .filter(move |(_, l)| l.contains(text))
+                        .map(move |(i, _)| format!("{path}:{}", i + 1))
+                })
+                .collect();
+            return match hits.len() {
+                1 => Ok(hits[0].clone()),
+                0 => Err(format!(
+                    "no line of {SPEC} or {QUESTIONS} contains `{text}`"
+                )),
+                n => Err(format!(
+                    "`{text}` is ambiguous: {n} lines contain it ({}); cite a longer phrase",
+                    hits.join(", ")
+                )),
+            };
+        }
+        let head = format!("| {id} |");
+        match self.questions.lines().position(|l| l.starts_with(&head)) {
+            Some(i) => Ok(format!("{QUESTIONS}:{} (row {id})", i + 1)),
+            None => Err(format!(
+                "{QUESTIONS} has no row `{id}` (and it is neither `#N` nor `§<text>`)"
+            )),
+        }
+    }
+}
+
+fn rule_signed(entries: &[Entry], rulings: &Result<Rulings, String>) -> Row {
+    let resolve = |id: &str| match rulings {
+        Ok(r) => r.resolve(id),
+        Err(why) => Err(format!("nothing can be resolved: {why}")),
+    };
     let mut offenders = Vec::new();
+    let (mut by_owner, mut by_ruling) = (0usize, 0usize);
     for e in entries {
         let Some(so) = e.raw.get("signoff").filter(|v| v.is_object()) else {
             offenders.push(format!(
@@ -1052,10 +1295,44 @@ fn rule_signed(entries: &[Entry]) -> Row {
             continue;
         };
         match str_field(so, "who") {
-            Some(w) if w.trim_start().starts_with("owner") => {}
+            Some(w) if w == OWNER => match str_field(so, "signed") {
+                Some(ev) => match resolve(ev) {
+                    Ok(_) => by_owner += 1,
+                    Err(why) => offenders.push(format!(
+                        "{}: `signoff.signed` is `{ev}`, which does not resolve: {why}",
+                        e.id
+                    )),
+                },
+                None => offenders.push(format!(
+                    "{}: `signoff.who` is the owner but no `signoff.signed` names where the owner \
+                     signed it (a QUESTIONS.md row id, a Part 2 decision `#N`, or a `§` spec \
+                     line) — an agent may never register a gap under the owner's name (#59)",
+                    e.id
+                )),
+            },
+            Some(w) if w.strip_prefix(RULING_PREFIX).is_some() => {
+                let id = w.strip_prefix(RULING_PREFIX).unwrap_or_default();
+                if so.get("signed").is_some() {
+                    offenders.push(format!(
+                        "{}: `signoff.who` is `{w}` but the entry also carries `signoff.signed` — \
+                         an entry is either the owner's signature or registered under a ruling, \
+                         never both",
+                        e.id
+                    ));
+                } else {
+                    match resolve(id) {
+                        Ok(_) => by_ruling += 1,
+                        Err(why) => offenders.push(format!(
+                            "{}: `signoff.who` is `{w}`, a ruling that does not resolve: {why}",
+                            e.id
+                        )),
+                    }
+                }
+            }
             Some(w) => offenders.push(format!(
-                "{}: `signoff.who` is `{w}` — only the owner accepts a difference (#59), so the \
-                 signer names the owner",
+                "{}: `signoff.who` is `{w}` — the signer is exactly `{OWNER}` (with `signed` \
+                 evidence) or `{RULING_PREFIX}<id>` naming a standing ruling; anything else is \
+                 an agent signing under a name it does not hold (#59)",
                 e.id
             )),
             None => offenders.push(format!("{}: `signoff.who` is missing or blank", e.id)),
@@ -1080,7 +1357,11 @@ fn rule_signed(entries: &[Entry]) -> Row {
         Row::pass(
             ROW_SIGNED,
             "every accepted difference is signed: who, when, which ruling",
-            format!("{} entr(ies) signed by the owner", entries.len()),
+            format!(
+                "{} entr(ies): {by_owner} signed by the owner with evidence that resolves, \
+                 {by_ruling} registered under a standing ruling that resolves",
+                entries.len()
+            ),
         )
     } else {
         Row::fail(
@@ -1287,12 +1568,33 @@ const GOOD_CHANGELOG: &str = "## [1.6.0], unreleased\n\n- the grass is now green
 /// against the real `cells.json` without a 1 MB overlay.
 const FIXTURE_CELL: &str = "cli|--version";
 
+/// The fixture's signer: the owner, with evidence citing the fixture spec's decision row #59.
+const FIXTURE_SIGNER: &str = r##""who":"owner (Matthew Jackson)","signed":"#59""##;
+
+/// The spec `plant` writes: one Part 2 decision row (#59), a `| 7 |` row OUTSIDE Part 2 that a
+/// `#7` citation must not resolve to, and named lines, one of them shared with the queue so that
+/// citing it is ambiguous.
+const FIXTURE_SPEC: &str = "# PART 1 — fixture\n\n| 7 | a table row that is not a decision |\n\n\
+     # PART 2 — fixture decisions\n\n| 59 | **a fixture decision. OWNER-LOCKED.** |\n\n\
+     # PART 3 — fixture\n\n### OWNER fixture ruling: the grass is greener by decree\n\n\
+     the fixture word appears here\n";
+
+/// The queue `plant` writes: two row ids a sign-off may cite.
+const FIXTURE_QUESTIONS: &str = "| # | slot | answer |\n|---|---|---|\n\
+     | Q1 | owner (answered in session) | a fixture answer |\n\
+     | LEDGER-1 | OWNER fixture standing rule | — |\n\nthe fixture word appears here too\n";
+
 /// A COMPLETE entry around the given head fields: signed, expiring against the real 1.5.5
 /// baseline, and carrying a well-formed premise over a real cell. The green twins use it, and each
 /// schema RED case breaks exactly one part of it.
 fn full(head: &str) -> String {
+    signed_as(head, FIXTURE_SIGNER)
+}
+
+/// [`full`] with the given `who` (and `signed`, if any) in place of the fixture's signer.
+fn signed_as(head: &str, signer: &str) -> String {
     format!(
-        r#"{{{head},"signoff":{{"who":"owner (fixture)","when":"2026-09-24","ruling":"Q0 fixture"}},"expires":{{"baseline":"1.5.5","by":"2999-12-31"}},"premise":{{"cell":"{FIXTURE_CELL}","status_not":404}}}}"#
+        r#"{{{head},"signoff":{{{signer},"when":"2026-09-24","ruling":"Q0 fixture"}},"expires":{{"baseline":"1.5.5","by":"2999-12-31"}},"premise":{{"cell":"{FIXTURE_CELL}","status_not":404}}}}"#
     )
 }
 
@@ -1305,6 +1607,8 @@ fn plant(register_json: &str, changelog: &str) -> Overlay {
     let mut ov = Overlay::new();
     ov.set(DEFAULT_REGISTER, register_json);
     ov.set("CHANGELOG.md", changelog);
+    ov.set(SPEC, FIXTURE_SPEC);
+    ov.set(QUESTIONS, FIXTURE_QUESTIONS);
     ov
 }
 
@@ -1396,6 +1700,30 @@ mod tests {
         );
         let verdict = execute(&ChangelogRegisterGate::new(), &cx().with_overlay(ok));
         assert!(!verdict.red, "{:?}", verdict.rows);
+    }
+
+    #[test]
+    fn a_citation_resolves_only_to_a_decision_row_a_queue_row_or_one_named_line() {
+        let r = Rulings {
+            spec: FIXTURE_SPEC.to_string(),
+            questions: FIXTURE_QUESTIONS.to_string(),
+        };
+        assert!(r.resolve("#59").is_ok());
+        assert!(
+            r.resolve("#7").is_err(),
+            "a `| 7 |` row outside Part 2 is no decision"
+        );
+        assert!(r.resolve("#").is_err());
+        assert!(r.resolve("Q1").is_ok());
+        assert!(r.resolve("LEDGER-1").is_ok());
+        assert!(r.resolve("Q2").is_err());
+        assert!(r.resolve("§OWNER fixture ruling").is_ok());
+        assert!(
+            r.resolve("§the fixture word appears here").is_err(),
+            "ambiguous"
+        );
+        assert!(r.resolve("§").is_err());
+        assert!(r.resolve(" ").is_err());
     }
 
     #[test]
