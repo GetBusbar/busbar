@@ -386,17 +386,15 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   on the existing ledger reads. Money stays unitless, exactly as in 1.5.5: a rate card is plain
   numbers and busbar attaches no currency. No 1.5.5 path or field is changed; the new operations are
   described in the one administrative OpenAPI document served at `GET /api/v1/admin/openapi.json`.
-- **A stream that dies mid-flight is no longer served, and billed, as a completed one.** Two
-  upstream failure shapes reached the client as a clean success in 1.5.5. An OpenAI-compatible
-  backend (OpenAI, Azure, vLLM, OpenRouter) that fails after its 200 headers are on the wire sends
-  the failure inline as a `data: {"error":{…}}` chunk carrying no `choices`; that chunk decoded to
-  nothing, so the truncated answer ended with an ordinary terminator, the breaker recorded no
-  fault, and the partial completion was billed in full. A Cohere stream ending on the generic infra
-  `finish_reason: "ERROR"` had the same outcome by a different route: the reason had no native
-  token in any other dialect's writer, so a cross-protocol client read it as `stop`/`end_turn`.
-  Both now surface a real error to the client, record the upstream fault on the breaker, and are
-  not billed as completions. The content-moderation `ERROR_TOXIC` stop is untouched: a safety
-  refusal is a correctly-served response and must not fault a lane. No successful stream changes.
+- **A Cohere stream that dies mid-flight is no longer served, and billed, as a completed one.** A
+  Cohere stream ending on the generic infra `finish_reason: "ERROR"` reached the client as a clean
+  success in 1.5.5: the reason had no native token in any other dialect's writer, so a
+  cross-protocol client read it as `stop`/`end_turn`. It now surfaces a real error to the client,
+  records the upstream fault on the breaker, and is not billed as a completion. The
+  content-moderation `ERROR_TOXIC` stop is untouched: a safety refusal is a correctly-served
+  response and must not fault a lane. No successful stream changes. (An OpenAI-compatible
+  backend's inline `data: {"error":{…}}` chunk on an already-200 stream is served exactly as in
+  1.5.5.)
 - **An admin-auth provider is judged by its module, not by its name.** A provider defined under another name with `module: admin-tokens` (e.g. `ops: { module: admin-tokens, token: ... }`) admitted nobody in 1.5.5 — every admin request was a 401 — and now authenticates the operator token; a provider named `admin-tokens` that is backed by another module was never asked in 1.5.5 and is now consulted, under its own `max_admin_scope`. A config that names the operator credential as `admin-tokens: { module: admin-tokens }`, or leaves `admin_auth` at its default, is unchanged.
 - **/metrics families are emitted in a stable sorted order.** 1.5.5 printed the exposition's
   families, and the series inside each family, in its recorder's hash order, so the same metrics

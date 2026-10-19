@@ -8208,6 +8208,59 @@ mod pools_door_money {
         );
     }
 
+    /// AN INLINE ERROR CHUNK ON A 200 STREAM ENDS IT AS 1.5.5 ENDED IT (Q128 plane-llm p6;
+    /// coordinator ruling 2026-10-19: parity on money, breaker and the client's bytes). An
+    /// OpenAI-compatible far end that fails after its 200 head sends `data: {"error":{...}}` with no
+    /// `choices`. v1.5.5's chat stream reader read `[DONE]` and `choices` only
+    /// (crates/busbar/src/proto/openai_chat/reader.rs:434-774), so that chunk decoded to no event and
+    /// the stream ended as served. Pinned on all three: the same-dialect caller receives the
+    /// error chunk itself under its 200, the unit keeps its fee (billable 1), and the member's
+    /// breaker cell records no fault. RED: the chunk read as a failed stream (fee reversed, the
+    /// member's cell charged with a fault), or withheld from the caller.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_ends_a_stream_with_an_inline_error_chunk_as_1_5_5_did() {
+        const INLINE_ERROR: &str =
+            r#"{"error":{"message":"upstream exploded","type":"server_error","code":null}}"#;
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-money-inline-stream-error";
+        let _published = Withdrawn(instance);
+        let far = far_end_scripted(SeatScript {
+            head: STREAM_HEAD.to_string(),
+            pieces: vec![(0, frame(FRAMES[0])), (0, frame(INLINE_ERROR))],
+            finish: Some(b"0\r\n\r\n".to_vec()),
+        })
+        .await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(far.port, 1)],
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, _, body) = rig
+            .send("POST", "/v1/chat/completions", Some(streamed_chat()))
+            .await;
+        let body = String::from_utf8_lossy(&body);
+        assert_eq!(status, 200, "the stream had begun: {body}");
+        assert!(
+            body.contains("upstream exploded"),
+            "the same-dialect caller receives the chunk itself: {body}"
+        );
+        let (_, _, _, billable) = rig.ledger_after(1).await;
+        assert_eq!(billable, 1, "the fee is kept, as 1.5.5 kept it");
+        let rate = busbar_kernel::store::LaneRuntime::error_rate_in(
+            &*rig.app.store,
+            "p",
+            0,
+            busbar_kernel::store::now(),
+        );
+        assert!(
+            rate.is_none_or(|r| r == 0.0),
+            "no fault is charged to the member's cell: error rate {rate:?}"
+        );
+    }
+
     /// A 2XX STREAM IS SEALED WITH THE END ITS TAP SAW, NOT THE END ITS STATUS LINE CLAIMS (legacy
     /// `chain::a_stream_audited_at_its_end_seals_the_class_the_tap_reported`): both answers go out
     /// under a 200 status line, yet a stream cut after its first frame is sealed `Partial` and a

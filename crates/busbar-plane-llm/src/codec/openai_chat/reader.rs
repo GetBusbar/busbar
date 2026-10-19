@@ -711,42 +711,12 @@ impl ProtocolReader for OpenAiReader {
             return out;
         }
 
-        // 0. Inline error envelope. An OpenAI-compatible upstream (OpenAI, Azure, vLLM, OpenRouter)
-        //    that fails AFTER the 200 headers are on the wire delivers the failure as a data chunk
-        //    carrying `{"error":{"message","type","code"}}` and NO `choices`. Every guard below keys
-        //    off `choices`, so without this arm the chunk decodes to nothing at all and the stream
-        //    ends as a clean success: no `IrStreamEvent::Error`, so `terminal_error()` stays None,
-        //    the breaker records no fault, the partial completion is BILLED as a finished one, and a
-        //    cross-protocol client receives balanced block-stops plus a normal terminator with no
-        //    hint that the answer was truncated by an upstream failure. The proxy engine only
-        //    converts HTTP-status-level errors, so a 200-status inline error bypasses that path
-        //    entirely. Mirror the gemini/bedrock/anthropic/openai_responses readers: map the
-        //    envelope's own vocabulary to a canonical `StatusClass` and push a single
-        //    `IrStreamEvent::Error` so the downstream writer terminates with a native error frame.
-        //
-        //    Handled BEFORE the MessageStart block so an error-only chunk never emits a stray start
-        //    frame (matching the gemini sibling); on a stream that already started, MessageStart has
-        //    long since been emitted and the Error simply terminates it.
-        if let Some(error_obj) = data.get(keys::ERROR_WORD).and_then(|e| e.as_object()) {
-            let error_type = error_obj.get(keys::TYPE).and_then(|t| t.as_str());
-            let code = error_obj.get(keys::CODE).and_then(|c| c.as_str());
-            // Carry the most specific upstream token through as the provider signal (`code` when
-            // present, else `type`, else the prose `message`), so a same-protocol egress can round
-            // trip it and the breaker's observability names the real fault. `None` only when the
-            // envelope carries none of the three.
-            let provider_signal = code
-                .filter(|c| !c.is_empty())
-                .or(error_type)
-                .or_else(|| error_obj.get(keys::MESSAGE).and_then(|m| m.as_str()))
-                .map(String::from);
-            out.push(IrStreamEvent::Error(busbar_contract::protocol::IrError {
-                class: stream_inline_error_class(error_type, code),
-                provider_signal,
-                retry_after: None,
-            }));
-            return out;
-        }
-
+        // An inline `{"error":{...}}` chunk on an already-200 stream carries no `choices`, so it
+        // decodes to no answer event: the stream ends as v1.5.5 ended it, billed as served and
+        // recorded as no breaker fault, with a same-dialect client receiving the chunk itself
+        // (v1.5.5 crates/busbar/src/proto/openai_chat/reader.rs:434-774 reads `[DONE]` and
+        // `choices` only; coordinator ruling 2026-10-19, Q128 plane-llm p6: restore 1.5.5 on
+        // money, breaker and the client's bytes).
         // 1. MessageStart exactly once (on the first chunk, regardless of delta.role). Capture the
         //    chunk's top-level identity (`id` = "chatcmpl-...", `created` = unix secs, `model`) so a
         //    same-protocol passthrough stream re-emits it verbatim. Every OpenAI chunk carries these;

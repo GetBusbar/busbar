@@ -6064,20 +6064,24 @@ fn write_response_tool_call_only_turn_still_carries_refusal_and_logprobs() {
     assert_eq!(out["choices"][0]["logprobs"], serde_json::Value::Null);
 }
 
-/// An OpenAI-compatible upstream (OpenAI, Azure, vLLM, OpenRouter) that fails MID-STREAM emits an
-/// inline `data: {"error":{...}}` SSE chunk on an already-200 response. The chunk carries no
-/// `choices`, so a reader whose only guards are the `[DONE]` sentinel and `choices` decodes it into
-/// nothing at all — the stream then ends as a clean success: no `IrStreamEvent::Error`, so
-/// `terminal_error()` stays `None`, the breaker records no fault, and the partial completion is
-/// BILLED as if it had finished. Surface the frame as a single `Error` event, mirroring the
-/// gemini/bedrock/anthropic/openai_responses readers.
+/// AN INLINE `{"error":{...}}` CHUNK ON A 200 STREAM DECODES TO NO EVENT, AS IN v1.5.5 (Q128 plane-llm
+/// p6; coordinator ruling 2026-10-19: restore 1.5.5 on money, breaker and the client's bytes).
+/// v1.5.5's reader read `[DONE]` and `choices` only (crates/busbar/src/proto/openai_chat/reader.rs
+/// :434-774): the chunk after a content chunk yields nothing, and an error-only FIRST chunk yields
+/// just the `MessageStart` every first chunk opens. RED: the chunk surfaces an `Error` event (the
+/// stream then reads as failed: its fee reversed and the member's cell charged a fault).
 #[test]
-fn test_stream_inline_error_chunk_surfaces_ir_error() {
+fn an_inline_error_chunk_decodes_to_no_event_as_in_1_5_5() {
     let reader = OpenAiReader;
-    let mut state = crate::codec::ir::StreamDecodeState::default();
+    let error_chunk = serde_json::json!({
+        "error": {
+            "message": "The server had an error while processing your request.",
+            "type": ERR_TYPE_SERVER_ERROR,
+            "code": serde_json::Value::Null
+        }
+    });
 
-    // A normal content chunk first: the stream is well underway and has already been partially
-    // served (and, before the fix, partially billed) when the failure lands.
+    let mut state = crate::codec::ir::StreamDecodeState::default();
     let content = reader.read_response_events(
         crate::codec::test_host::HOST,
         "",
@@ -6092,91 +6096,26 @@ fn test_stream_inline_error_chunk_surfaces_ir_error() {
     );
     assert!(
         !content.is_empty(),
-        "the content chunk must decode normally: {content:?}"
+        "the content chunk decodes: {content:?}"
     );
+    let after =
+        reader.read_response_events(crate::codec::test_host::HOST, "", &error_chunk, &mut state);
+    assert!(after.is_empty(), "no event for the error chunk: {after:?}");
 
-    let err_evs = reader.read_response_events(
-        crate::codec::test_host::HOST,
-        "",
-        &serde_json::json!({
-            "error": {
-                "message": "The server had an error while processing your request.",
-                "type": ERR_TYPE_SERVER_ERROR,
-                "code": serde_json::Value::Null
-            }
-        }),
-        &mut state,
+    let mut fresh = crate::codec::ir::StreamDecodeState::default();
+    let first =
+        reader.read_response_events(crate::codec::test_host::HOST, "", &error_chunk, &mut fresh);
+    assert!(
+        matches!(first.as_slice(), [IrStreamEvent::MessageStart { .. }]),
+        "an error-only first chunk opens the message and carries nothing else: {first:?}"
     );
-    match err_evs.as_slice() {
-        [IrStreamEvent::Error(err)] => {
-            assert_eq!(
-                err.class,
-                StatusClass::ServerError,
-                "an upstream server_error must classify as a TRANSIENT server fault so the breaker \
-                 records it: {err_evs:?}"
-            );
-            assert_eq!(
-                err.provider_signal.as_deref(),
-                Some(ERR_TYPE_SERVER_ERROR),
-                "the upstream error type must ride through as the provider signal: {err_evs:?}"
-            );
-        }
-        other => panic!("expected exactly one IrStreamEvent::Error, got {other:?}"),
-    }
 }
 
-/// The inline error's class is derived from the upstream `type`/`code`, not hardcoded: a
-/// rate-limit reads as `RateLimit`, an auth failure as `Auth`, a context-length `code` as
-/// `ContextLength`, and an unrecognized/absent signal falls back to the transient `ServerError`
-/// bucket (the lane recovers via cooldown rather than being permanently penalized).
+/// Cross-dialect, the same chunk ends an Anthropic caller's stream as v1.5.5 ended it: no
+/// terminal error (so the stream is billed as served and charges no fault) and no error frame,
+/// the translator closing the message normally. RED: `terminal_error()` set, or an `event: error`.
 #[test]
-fn test_stream_inline_error_class_derivation() {
-    let cases: [(serde_json::Value, StatusClass); 4] = [
-        (
-            serde_json::json!({"error": {"type": ERR_TYPE_RATE_LIMIT, "message": "slow down"}}),
-            StatusClass::RateLimit,
-        ),
-        (
-            serde_json::json!({"error": {"type": ERR_TYPE_AUTHENTICATION, "message": "bad key"}}),
-            StatusClass::Auth,
-        ),
-        (
-            serde_json::json!({"error": {
-                "type": ERR_TYPE_INVALID_REQUEST,
-                "code": busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH,
-                "message": "too long"
-            }}),
-            StatusClass::ContextLength,
-        ),
-        (
-            serde_json::json!({"error": {"message": "something went wrong"}}),
-            StatusClass::ServerError,
-        ),
-    ];
-    for (chunk, expect) in cases {
-        let mut state = crate::codec::ir::StreamDecodeState::default();
-        let evs = OpenAiReader.read_response_events(
-            crate::codec::test_host::HOST,
-            "",
-            &chunk,
-            &mut state,
-        );
-        match evs.as_slice() {
-            [IrStreamEvent::Error(err)] => {
-                assert_eq!(err.class, expect, "wrong class for {chunk}: {evs:?}")
-            }
-            other => panic!("expected one Error for {chunk}, got {other:?}"),
-        }
-    }
-}
-
-/// End-to-end money path: an Anthropic client relayed onto an OpenAI upstream that dies mid-stream
-/// must NOT receive a clean `message_stop` terminator, and the translator must report a
-/// `terminal_error()` so the stream-end billing/breaker arms treat the stream as failed. Before the
-/// fix this stream ended with balanced block-stops plus a normal terminator and billed as a
-/// completion.
-#[test]
-fn test_inline_error_chunk_reaches_anthropic_ingress_as_an_error_frame() {
+fn an_inline_error_chunk_ends_an_anthropic_callers_stream_as_in_1_5_5() {
     let mut t = crate::codec::proto_stream::StreamTranslate::new("anthropic", "openai")
         .expect("anthropic-ingress / openai-egress translator");
 
@@ -6195,13 +6134,12 @@ fn test_inline_error_chunk_reaches_anthropic_ingress_as_an_error_frame() {
     let wire = String::from_utf8_lossy(&out).to_string();
 
     assert!(
-        t.terminal_error().is_some(),
-        "a mid-stream upstream error must set terminal_error so the stream is NOT billed as a \
-         completed request: {wire}"
+        t.terminal_error().is_none(),
+        "the stream ends as served, as in 1.5.5: {wire}"
     );
     assert!(
-        wire.contains("event: error"),
-        "the Anthropic client must receive a native error frame, not a silent success: {wire}"
+        !wire.contains("event: error"),
+        "no error frame reaches the caller: {wire}"
     );
 }
 
