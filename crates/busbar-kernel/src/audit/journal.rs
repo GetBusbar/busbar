@@ -4,48 +4,41 @@
 //! THE GENERIC SCOPE-KEYED JOURNAL — the durable seq-authority state machine, in core, naming no
 //! plane.
 //!
-//! ## What this is, and why it is here and not in a plugin
+//! ## What this is
 //!
-//! Two of busbar's evidence streams — a per-call log and a per-task provenance chain, each owned by
-//! a separate downstream plugin — each grew their OWN copy of the same durable-log machinery around
-//! [`crate::audit::Chain`]: an in-RAM per-scope POSITION CACHE, a bounded LRU over it, a store-resume
-//! of an evicted tail, a write-through SINK, and the WRITE-ORDERING invariant that a position is
-//! committed only after the durable append succeeds. That machinery belongs to neither plugin — it
-//! is the same answer to "make a hash-chained stream survive a restart" that [`crate::audit_ring`]
-//! gives for admin mutations, and by the owner's ruling (see [`crate::audit`]) auditing is CORE. So
-//! it lives here, once, generic over the record type, and a plugin supplies only its RECORD (which
-//! fields, which framing — [`crate::audit::ChainedRecord`]) plus the neutral store envelope its rows
-//! cross the seam in ([`JournalRecord::to_plane_record`]).
+//! Every registered durable stream ([`crate::audit::stream_registry`]: the admin audit log, the
+//! usage residual log, and each stream a plane registers over the host seam) keeps its chain
+//! positions here: an in-RAM per-scope POSITION CACHE, a bounded LRU over it, a store-resume of an
+//! evicted or forgotten tail, a write-through SINK, and the WRITE-ORDERING invariant that a position
+//! is committed only after the durable append succeeds. By the owner's ruling (see [`crate::audit`])
+//! auditing is CORE, so this lives here, once, generic over the record type: a stream supplies its
+//! RECORD (which fields, which framing — [`crate::audit::ChainedRecord`]) and the journal persists
+//! the neutral `{seq, prev_hash, hash, content}` body ([`NeutralBody`]).
 //!
-//! It names no plane noun: the type parameter is `R`, the scope is a `&str`, and the store is the
-//! narrow [`PlaneStore`] seam. A plane's record type implements [`JournalRecord`] plane-side, so the
-//! coupling points AT core, never out of it.
+//! It names no plane noun: the type parameter is `R`, the scope is a `&str`, the kind is runtime
+//! data, and the store is the narrow [`PlaneStore`] seam.
 //!
 //! ## The write-ordering invariant, stated once
 //!
-//! [`Journal::record`] appends to the in-RAM chain to MINT the sequence and link, writes the sealed
-//! row through the durable sink, and only THEN commits the advanced position. Committing first and
-//! writing after would leave the process believing a record exists that a restart will un-happen and
-//! — worse for a hash chain — burn a sequence number nothing occupies, so the next successful write
-//! lands on a `seq` the verifier reports as a gap forever. On a failed write the position is left
-//! exactly where it was, so the next call reuses the sequence and the chain stays contiguous. This is
-//! the one ordering every caller inherits by delegating here instead of re-deriving it.
+//! [`Journal::append_scoped`] appends to the in-RAM chain to MINT the sequence and link, writes the
+//! sealed row through the durable sink, and only THEN commits the advanced position. Committing first
+//! and writing after would leave the process believing a record exists that a restart will un-happen
+//! and — worse for a hash chain — burn a sequence number nothing occupies, so the next successful
+//! write lands on a `seq` the verifier reports as a gap forever. On a failed write the position is
+//! left exactly where it was, so the next call reuses the sequence and the chain stays contiguous.
 //!
-//! ## Restore reports, it does not judge
+//! ## A broken tail is reported, never refused
 //!
-//! [`Journal::restore_from_store`] resumes every scope's position from its persisted tail and returns
-//! a [`Restored`] naming what it found — the empty scopes and the chain breaks — WITHOUT logging.
-//! The plane-facing wrapper owns the operator-facing words (its own diagnostic codes name which log
-//! to go and look at), so the generic core stays free of any plane's vocabulary. A broken chain is
-//! REPORTED and still resumed from its tail (via [`Chain::from_persisted_unverified`]): refusing to
-//! restore a tamper-detected chain would convert a detection control into a deletion primitive.
+//! A boot seed ([`Journal::seed_position`]) verifies the records its caller read back and returns
+//! the break for the caller to report in its own words; a broken chain still resumes from its tail
+//! (via [`Chain::from_persisted_unverified`]): refusing to restore a tamper-detected chain would
+//! convert a detection control into a deletion primitive.
 //!
-//! The RUNTIME resume path holds to the same rule. A scope evicted from the LRU and then written to
-//! again reads its persisted tail back to resume ([`Journal::resume_missing`] /
-//! [`Journal::resume_scoped`]); if that tail no longer verifies it is the same tamper evidence, found
-//! after boot rather than at it. There is no [`Restored`] to return it on, so the break is RECORDED on
-//! the journal ([`Journal::take_resume_breaks`] drains it) instead of discarded — the resume still
-//! proceeds from the tail, but the evidence is never silently dropped.
+//! The RUNTIME resume path holds to the same rule. A scope evicted from the LRU (or forgotten) and
+//! then written to again reads its persisted tail back to resume ([`Journal::resume_scoped`]); if
+//! that tail no longer verifies it is the same tamper evidence, found after boot rather than at it.
+//! The break is RECORDED on the journal ([`Journal::take_resume_breaks`] drains it) instead of
+//! discarded — the resume still proceeds from the tail, but the evidence is never silently dropped.
 //!
 //! ## No store call under the position map
 //!
@@ -54,18 +47,7 @@
 //! an append CLAIMS its scope ([`Journal::claim`]), reads the cached position, crosses the store
 //! with the map released, then commits. The claim orders writers of ONE scope (two appends to a
 //! scope cannot both build on the same position); appends to OTHER scopes of the kind never wait
-//! on it, and a store that appends to another scope from inside its own write cannot deadlock. A
-//! restore claims each scope the same way while it reads that scope back, so an append and a
-//! restore of one scope never interleave and a restore never commits a position older than an
-//! append already made durable.
-
-// Two downstream plugins each wire this in production for their own evidence stream. But with both
-// of those plugins compiled out (`--no-default-features`) nothing instantiates a `Journal`, so every
-// method here is dead on that configuration — exactly as the plugin modules themselves are, which
-// carry the same blanket. Hence the module-wide allow rather than per-item: the "dead" set is the
-// whole module under one cfg and fully live under another, so a per-item list would be noise that
-// says nothing a reader can act on.
-#![cfg_attr(not(test), allow(dead_code))]
+//! on it, and a store that appends to another scope from inside its own write cannot deadlock.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -74,29 +56,11 @@ use std::thread::ThreadId;
 
 use indexmap::IndexMap;
 
-use crate::audit::{verify_chain, Chain, ChainBreak, ChainedRecord};
-use crate::plane::store::{decode, encode, PlaneStore};
+use crate::audit::{Chain, ChainBreak, ChainedRecord};
+use crate::plane::store::{encode, PlaneStore};
 use busbar_contract::records::{
     PlaneDisposition, PlaneRecord, PlaneSelector, RecordStoreError, RecordStoreResult,
 };
-
-/// A RECORD A JOURNAL CAN PERSIST. A plane's chained record type implements this to say TWO things
-/// the generic journal cannot know: which neutral store `kind` its rows are tagged with, and how one
-/// sealed record becomes the neutral [`PlaneRecord`] envelope it crosses the store seam in.
-///
-/// Implemented PLUGIN-SIDE (each downstream plugin's own chained record type implements this for
-/// its own row), so the plugin→core coupling points at core and the journal names no plugin.
-pub(crate) trait JournalRecord: ChainedRecord + Clone + serde::de::DeserializeOwned {
-    /// The neutral store kind these rows are tagged with (`call`, `task_event`, …) — the tag
-    /// [`PlaneStore::list_plane_records`] and friends branch on. Its VALUE is a plane's business;
-    /// the journal only threads it through.
-    const KIND: &'static str;
-
-    /// Build the neutral durable envelope for one sealed record — the exact bytes and sidecar columns
-    /// the store persists. Delegates to the plane's own `*_record` helper, so the journal never
-    /// encodes a plane row itself.
-    fn to_plane_record(&self) -> RecordStoreResult<PlaneRecord>;
-}
 
 /// Why a journal write could not be made durable. ONE variant today: the durable append failed. It is
 /// SURFACED rather than swallowed — an evidence record that is not durable is one a restart will lose,
@@ -115,9 +79,12 @@ impl std::fmt::Display for JournalError {
     }
 }
 
-/// WHAT A BOOT REHYDRATE FOUND, reported rather than summed. Neutral field names: a plane wrapper
+/// TEST ONLY: WHAT A WHOLE-STORE REHYDRATE ([`Journal::restore_scoped`]) FOUND, reported rather
+/// than summed. Production seeds each scope through [`Journal::seed_position`]; the tests read a
+/// stream back through this to check what a store holds. Neutral field names: a plane wrapper
 /// renames these into its own operator vocabulary (`principals`, `active`, …) and emits its own
 /// diagnostics from the two that are bad news.
+#[cfg(test)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Restored {
     /// Scopes whose chain position was resumed.
@@ -167,15 +134,15 @@ pub(crate) struct Journal<R> {
     cap: usize,
     /// Chain breaks the RUNTIME resume path detected and RECORDED rather than discarded. A scope
     /// evicted from the LRU then written to again reads its persisted tail back; if that tail fails to
-    /// verify it is TAMPER EVIDENCE, exactly the kind [`Restored::chain_breaks`] carries for the boot
-    /// rehydrate. The runtime path has no [`Restored`] to return the break on, so it is accumulated
-    /// here instead of dropped — the resume STILL proceeds from the tail (refusing would convert a
+    /// verify it is TAMPER EVIDENCE, exactly the kind [`Journal::seed_position`] returns for the boot
+    /// seed. The runtime path has no caller waiting on a return value, so it is accumulated here
+    /// instead of dropped — the resume STILL proceeds from the tail (refusing would convert a
     /// detection control into a deletion primitive), but the break is never silently lost. A wrapper
-    /// drains it via [`Journal::take_resume_breaks`] and reports it in its own vocabulary, the same way
-    /// it drains `Restored::chain_breaks` from a boot rehydrate; the journal itself does not judge.
+    /// drains it via [`Journal::take_resume_breaks`] and reports it in its own vocabulary; the
+    /// journal itself does not judge.
     resume_breaks: Mutex<Vec<ChainBreak>>,
     /// The scopes whose store crossing is running right now, each with the thread running it. An
-    /// append or a restore holds its scope here (never the position map) while the store answers,
+    /// append holds its scope here (never the position map) while the store answers,
     /// so a second writer of the SAME scope waits on [`Journal::released`] and every other scope
     /// proceeds. The thread is kept so a store that re-enters its own scope on the same thread is
     /// refused instead of waiting on itself forever.
@@ -257,7 +224,7 @@ impl<R: ChainedRecord> Journal<R> {
     }
 
     /// Drain the chain breaks the RUNTIME resume path recorded since the last drain — the runtime
-    /// analogue of reading [`Restored::chain_breaks`] off a boot rehydrate. A wrapper calls this to
+    /// analogue of the break [`Journal::seed_position`] returns at boot. A wrapper calls this to
     /// report resume-time tamper evidence in its own vocabulary; the breaks are TAKEN, so each is
     /// reported once. Empty when no evicted scope's persisted tail failed to verify on resume.
     pub(crate) fn take_resume_breaks(&self) -> Vec<ChainBreak> {
@@ -271,10 +238,7 @@ impl<R: ChainedRecord> Journal<R> {
         self.positions.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The attached durable sink, if any. `pub(crate)` because a stream may persist OTHER durable
-    /// state beside its journaled chain (a downstream task table upserts its own status row next to
-    /// its event chain) and must reach the same backend — the journal owns the one sink handle so
-    /// there is not a second to keep in sync.
+    /// The attached durable sink, if any.
     pub(crate) fn sink(&self) -> Option<Arc<dyn PlaneStore>> {
         self.sink.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
@@ -286,7 +250,7 @@ impl<R: ChainedRecord> Journal<R> {
 
     /// Commit `chain` as `scope`'s current position and record it as the MOST-recently-used, evicting
     /// the coldest scope(s) from the front while the map exceeds [`Journal::cap`]. Shared by the write
-    /// hot path and the boot rehydrate so both keep the same bound and the same recency discipline. An
+    /// hot path and the boot seed so both keep the same bound and the same recency discipline. An
     /// eviction latches `overflowed`, which is what tells a later miss to consult the store instead of
     /// assuming the scope is new.
     fn commit_position(
@@ -317,32 +281,14 @@ impl<R: ChainedRecord> Journal<R> {
         }
     }
 
-    /// Resolve the chain position for a scope NOT currently cached.
-    ///
-    /// Before any eviction has ever occurred a miss is unambiguously a first-seen scope, so this opens
-    /// a fresh chain at seq 1 with NO store round-trip — byte-identical to an unbounded cache, and the
-    /// whole reason a small deployment (working set under the cap) pays nothing for the bound.
-    ///
-    /// Once the cache HAS evicted, a miss might instead be a scope evicted while its records still sit
-    /// in the store. Reopening at seq 1 would FORK the durable log, so with a sink attached the resume
-    /// READS THE TAIL BACK and continues from it, exactly as a boot rehydrate does. A store that cannot
-    /// answer is surfaced as an error rather than papered over with a seq-1 chain that might fork. With
-    /// no sink there is no durable log to fork, so a fresh chain is the honest answer.
-    fn resume_missing(&self, scope: &str) -> Result<Chain<R>, JournalError>
-    where
-        R: JournalRecord,
-    {
-        self.resume_from_store(R::KIND, scope, decode)
-    }
-
-    /// THE ONE RESUME of a NOT-cached scope, typed and neutral alike: before any eviction a miss is
+    /// THE ONE RESUME of a NOT-cached scope: before any eviction a miss is
     /// a first-seen scope (fresh chain, no store read); after one, with a sink attached, it reads the
     /// scope's `kind` tail back (each body turned into a record by `read`) and resumes from it.
     ///
     /// A break here is TAMPER EVIDENCE surfaced at RUNTIME: this scope was evicted from the LRU and
     /// its persisted tail, read back to resume, no longer verifies. Resume from the tail regardless,
-    /// never re-based onto a fresh chain — the same judgement `restore_from_store` /
-    /// `restore_scoped` make — but RECORD the break rather than discard it, so it is never silently
+    /// never re-based onto a fresh chain — the same judgement [`Journal::seed_position`] makes —
+    /// but RECORD the break rather than discard it, so it is never silently
     /// dropped (an evict-then-resume can happen long after boot).
     fn resume_from_store(
         &self,
@@ -379,54 +325,11 @@ impl<R: ChainedRecord> Journal<R> {
         })
     }
 
-    /// BOOT REHYDRATE. Enumerate the scopes the store holds records for, resume each chain from its
-    /// persisted tail, and REPORT what was found — without logging (the wrapper owns the words).
-    ///
-    /// This is the ONLY place durability is learned. A write's `Ok(())` proves nothing (the store
-    /// trait default accepts and keeps nothing), so the engine finds out what its backend actually
-    /// kept by reading it back.
-    pub(crate) fn restore_from_store(&self, store: &dyn PlaneStore) -> RecordStoreResult<Restored>
-    where
-        R: JournalRecord,
-    {
-        let scopes = store.list_plane_record_parents(R::KIND)?;
-        let mut out = Restored::default();
-        for scope in &scopes {
-            // The scope is claimed, not the position map, while the store answers.
-            let _claim = self.claim(scope)?;
-            let records: Vec<R> = store
-                .list_plane_records(R::KIND, &PlaneSelector::Parent(scope.as_str().into()))?
-                .iter()
-                .map(|body| decode(body))
-                .collect::<RecordStoreResult<_>>()?;
-            if records.is_empty() {
-                out.empty_scopes.push(scope.clone());
-                self.commit(scope, Chain::new());
-                out.scopes += 1;
-                continue;
-            }
-            let chain = match Chain::from_persisted(&records) {
-                Ok(c) => c,
-                Err(brk) => {
-                    out.chain_breaks.push(brk);
-                    Chain::from_persisted_unverified(&records)
-                }
-            };
-            out.records += records.len();
-            self.commit(scope, chain);
-            out.scopes += 1;
-        }
-        Ok(out)
-    }
-
-    /// SEED one scope's position from records the CALLER already read. For a rehydrate that drives its
-    /// own row loop rather than the whole-store enumeration [`Journal::restore_from_store`] does — a
-    /// downstream task table walks its own status rows and loads only the ACTIVE ones' event chains,
-    /// so it hands each active scope's events here instead of letting the journal enumerate (and
-    /// cache) every terminal task's chain too. Verifies and REPORTS a break exactly as
-    /// `restore_from_store` does (the broken
-    /// chain still resumes from its tail via [`Chain::from_persisted_unverified`]); returns the break
-    /// for the caller to log in its own vocabulary, or `None` when the chain verifies.
+    /// SEED one scope's position from records the CALLER already read — the boot restore every
+    /// registered stream runs ([`crate::audit::stream_registry::seed`]). Verifies and REPORTS a break
+    /// (the broken chain still resumes from its tail via [`Chain::from_persisted_unverified`]);
+    /// returns the break for the caller to log in its own vocabulary, or `None` when the chain
+    /// verifies.
     pub(crate) fn seed_position(&self, scope: &str, records: &[R]) -> Option<ChainBreak> {
         let (chain, brk) = match Chain::from_persisted(records) {
             Ok(c) => (c, None),
@@ -436,35 +339,19 @@ impl<R: ChainedRecord> Journal<R> {
         brk
     }
 
-    /// DROP one scope's cached position. For a stream whose scopes have a lifecycle the journal does
-    /// not (a task reaches a terminal state and is evicted from the working set, or a retention sweep
-    /// collects it): the durable records stay in the store, but the RAM position is released so the
-    /// cache does not grow one entry per scope ever seen. A forget IS an eviction, so it latches
-    /// `overflowed` exactly as the LRU in [`Journal::commit_position`] does: a later write to the scope
-    /// resumes from the store tail (with a sink) instead of reopening at seq 1 and forking the durable
-    /// chain. That latch is the ONLY one a `usize::MAX` stream (every ABI-registered one) ever gets,
+    /// DROP one scope's cached position, so its next append reads the persisted tail back. The admin
+    /// audit log calls it when its boot restore could not read the store, so its first append
+    /// continues the persisted chain instead of opening a second one at seq 1 (Q128 p12#2). A forget
+    /// IS an eviction, so it latches `overflowed` exactly as the LRU in [`Journal::commit_position`]
+    /// does: the next write to the scope resumes from the store tail (with a sink) instead of
+    /// reopening at seq 1 and forking the durable chain. That latch is the ONLY one a `usize::MAX` stream (every ABI-registered one) ever gets,
     /// since its LRU never evicts. Without a sink there is no durable log, so a fresh chain is honest.
     pub(crate) fn forget(&self, scope: &str) {
         self.positions().shift_remove(scope);
         self.overflowed.store(true, Ordering::Relaxed);
     }
 
-    /// RECORD one entry: chain it to MINT the sequence and link, write it through, and advance the
-    /// position only once the durable write has succeeded. See the module header for why the order is
-    /// load-bearing. A cache MISS is resolved by [`Journal::resume_missing`].
-    pub(crate) fn record(&self, scope: &str, input: R::Input) -> Result<R, JournalError>
-    where
-        R: JournalRecord,
-    {
-        self.append_with(
-            scope,
-            input,
-            || self.resume_missing(scope),
-            R::to_plane_record,
-        )
-    }
-
-    /// THE ONE APPEND, typed and neutral alike: chain `input` onto `scope`'s position (a cache miss
+    /// THE ONE APPEND: chain `input` onto `scope`'s position (a cache miss
     /// resolved by `resume`), write the record's `envelope` through when a sink is attached, and
     /// advance the position only once that durable write has succeeded.
     ///
@@ -498,8 +385,9 @@ impl<R: ChainedRecord> Journal<R> {
         Ok(record)
     }
 
-    /// The sequence the next record for `scope` will carry. 1 for a scope with no cached position.
-    /// A diagnostic on the position — the one piece of state the store does not own.
+    /// TEST ONLY: the sequence the next record for `scope` will carry. 1 for a scope with no cached
+    /// position.
+    #[cfg(test)]
     pub(crate) fn next_seq(&self, scope: &str) -> u64 {
         self.positions()
             .get(scope)
@@ -507,49 +395,26 @@ impl<R: ChainedRecord> Journal<R> {
             .unwrap_or(1)
     }
 
-    /// How many scope positions this process is holding.
+    /// TEST ONLY: how many scope positions this process is holding.
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.positions().len()
-    }
-
-    /// RETENTION: ask the durable sink to drop records of this journal's kind older than `before`,
-    /// returning how many durable rows went. The policy (the window) lives at the call site; this owns
-    /// only the mechanism. Positions are NOT reset — reopening a scope at seq 1 after a purge would
-    /// collide with a sequence the store may still hold, the one thing the append contract forbids.
-    ///
-    /// RETAINED but no longer reached: the shipped chain streams route retention through the neutral
-    /// [`Journal::compact_scoped`] now (their record shape is `StreamRecord`, which is a
-    /// `NeutralRecord`, not a `JournalRecord`), so this typed twin has no caller until a typed stream
-    /// wants it. Kept as the typed mirror of `compact_scoped`, alongside the other typed-path methods.
-    #[allow(dead_code)]
-    pub(crate) fn compact(&self, before: u64) -> RecordStoreResult<u64>
-    where
-        R: JournalRecord,
-    {
-        match self.sink() {
-            Some(store) => {
-                store.purge_plane_records(R::KIND, before, busbar_contract::records::Retention::Age)
-            }
-            None => Ok(0),
-        }
     }
 }
 
 // ── THE NEUTRAL DURABLE PATH — kind/framing/digests_scope as DATA, record shape as a REFRAME ──────
 //
-// The three shipped streams cross here as a TYPED `R: JournalRecord` whose `const KIND` and
-// `to_plane_record` name the plane's own row. The DURABLE SEAM a plane reaches over the host vtable
-// cannot: the host serves many streams at once, learns each stream's `kind` at REGISTER time (runtime
-// DATA, never a const), and must NAME NO PLANE TYPE. So this parallel surface takes the `kind` as a
-// `&str`, persists a NEUTRAL `{seq, prev_hash, hash, content}` body (the plane's `content` is an opaque
-// pre-framed suffix carried verbatim), and turns a stored body back into a record through a plane-side
-// REFRAME callback rather than `serde`-decoding it into a type core would have to name. The chain
-// authority, the position cache, the LRU and the write-ordering are the SAME `Journal` machinery above.
+// The host serves many streams at once, learns each stream's `kind` at REGISTER time (runtime DATA,
+// never a const), and must NAME NO PLANE TYPE. So this surface takes the `kind` as a `&str`, persists
+// a NEUTRAL `{seq, prev_hash, hash, content}` body (the stream's `content` is an opaque pre-framed
+// suffix carried verbatim), and turns a stored body back into a record through the stream's REFRAME
+// callback rather than `serde`-decoding it into a type core would have to name. The chain authority,
+// the position cache, the LRU and the write-ordering are the `Journal` machinery above.
 
 /// The NEUTRAL durable body the store-backed journal persists per record — `{seq, prev_hash, hash,
-/// content}`, naming no plane type. A TYPED stream persists its own serde row; this neutral journal
-/// persists THIS, and a plane's reframe callback is the decode bridge that turns EITHER shape back
-/// into a record on restore (so a store still holding old serde rows verifies unchanged). ADDITIVE.
+/// content}`, naming no plane type. The journal persists THIS, and a stream's reframe callback is
+/// the decode bridge that turns EITHER this shape or a legacy serde row back into a record on
+/// restore (so a store still holding old serde rows verifies unchanged).
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct NeutralBody {
     /// The chain sequence the host minted for this record.
@@ -578,10 +443,10 @@ pub(crate) trait NeutralRecord: ChainedRecord + Clone {
 pub(crate) type Reframe<'a, R> = dyn Fn(&str, &[u8]) -> RecordStoreResult<R> + 'a;
 
 impl<R: NeutralRecord> Journal<R> {
-    /// Resolve a NOT-cached scope's position on the neutral path (the [`Journal::resume_missing`]
-    /// analogue): before any eviction a miss is a first-seen scope (fresh chain, no store read); after
-    /// one, a miss might be an evicted scope whose tail lives in the store, so it reads the tail back
-    /// (reframing each body) and resumes from it rather than forking at seq 1.
+    /// Resolve a NOT-cached scope's position: before any eviction a miss is a first-seen scope
+    /// (fresh chain, no store read); after one, a miss might be an evicted scope whose tail lives in
+    /// the store, so it reads the tail back (reframing each body) and resumes from it rather than
+    /// forking at seq 1.
     fn resume_scoped(
         &self,
         kind: &str,
@@ -593,8 +458,8 @@ impl<R: NeutralRecord> Journal<R> {
 
     /// APPEND one neutral record: chain it to MINT the sequence and link (the SOLE chain authority),
     /// persist the neutral `{seq, prev_hash, hash, content}` envelope under `kind`/`scope`, and advance
-    /// the position only once the durable write succeeded — the SAME write-ordering the typed
-    /// [`Journal::record`] holds, so a failed write does not burn a sequence.
+    /// the position only once the durable write succeeded, so a failed write does not burn a
+    /// sequence.
     pub(crate) fn append_scoped(
         &self,
         kind: &str,
@@ -637,13 +502,14 @@ impl<R: NeutralRecord> Journal<R> {
         )
     }
 
-    /// BOOT REHYDRATE on the neutral path (the [`Journal::restore_from_store`] analogue): enumerate the
+    /// TEST ONLY: a WHOLE-STORE REHYDRATE: enumerate the
     /// scopes the store holds `kind` records for, reframe each scope's bodies, resume its chain from the
     /// persisted tail, and REPORT what was found (empty scopes + chain breaks) back on [`Restored`]. A
     /// broken chain is reported and STILL resumed from its tail, never re-based onto a fresh chain. The
     /// ONE thing this method logs directly is an UNDECODABLE row, at the skip site with a coded
     /// diagnostic: a silently lost evidence row must never be invisible, so it is surfaced loudly here
     /// rather than left to ride only on the `unreadable` aggregate a wrapper might not log.
+    #[cfg(test)]
     pub(crate) fn restore_scoped(
         &self,
         kind: &str,
@@ -710,8 +576,8 @@ impl<R: NeutralRecord> Journal<R> {
         Ok(out)
     }
 
-    /// Read one scope's rows back from the store (reframed), oldest-first — the cold read the neutral
-    /// `journal_read` window scans. Returns every stored row for the scope; the caller windows it.
+    /// TEST ONLY: read one scope's rows back from the store (reframed), oldest-first.
+    #[cfg(test)]
     pub(crate) fn read_scoped(
         &self,
         kind: &str,
@@ -726,8 +592,9 @@ impl<R: NeutralRecord> Journal<R> {
             .collect()
     }
 
-    /// VERIFY one scope's persisted chain (reframed), returning the break if any and `None` when it
-    /// verifies — the neutral analogue of the boot-verify walk, for a `verify_task_chain`-style seam.
+    /// TEST ONLY: verify one scope's persisted chain (reframed), returning the break if any and
+    /// `None` when it verifies.
+    #[cfg(test)]
     pub(crate) fn verify_scoped(
         &self,
         kind: &str,
@@ -736,13 +603,14 @@ impl<R: NeutralRecord> Journal<R> {
         reframe: &Reframe<'_, R>,
     ) -> RecordStoreResult<Option<ChainBreak>> {
         let records = self.read_scoped(kind, scope, store, reframe)?;
-        Ok(verify_chain(&records).err())
+        Ok(crate::audit::verify_chain(&records).err())
     }
 
-    /// RETENTION on the neutral path (the [`Journal::compact`] analogue): ask the sink to drop `kind`
-    /// records older than `before`. Positions are NOT reset, exactly as the typed path — reopening a
-    /// scope at seq 1 after a purge would collide with a sequence the store may still hold. A chain
-    /// stream is purged by age (`Retention::Age`): its records carry no settledness.
+    /// RETENTION (the host seam's `journal_compact`): ask the sink to drop `kind` records older than
+    /// `before`. The policy (the window) lives at the call site; this owns only the mechanism.
+    /// Positions are NOT reset — reopening a scope at seq 1 after a purge would collide with a
+    /// sequence the store may still hold. A chain stream is purged by age (`Retention::Age`): its
+    /// records carry no settledness.
     pub(crate) fn compact_scoped(&self, kind: &str, before: u64) -> RecordStoreResult<u64> {
         match self.sink() {
             Some(store) => {

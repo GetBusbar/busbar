@@ -267,12 +267,21 @@ impl MarkWord {
 /// [`Rewrite::class`]: `from` is another name config may give the plugin (a module alias). The
 /// registry holds it exclusive, beside the plugin's own name. `to` is absent.
 pub const REWRITE_ALIAS: u32 = 1;
-/// [`Rewrite::class`]: `from` is a reference key naming the plugin (the `k` in `{k: X}`). `to` is
-/// absent.
+/// [`Rewrite::class`]: `from` is a reference key naming the plugin (the `k` in `{k: X}`). `to`, if
+/// stated, is the settings key the value lands under; this contract does not read it yet.
 pub const REWRITE_SUGAR: u32 = 2;
 /// [`Rewrite::class`]: the setting key `from` is rewritten to the path `to` before the plugin's
 /// section reaches it (a flat key to a nested path).
 pub const REWRITE_KEY: u32 = 3;
+/// [`Rewrite::class`]: `from` is a sugar word the same Statement declares; `to` is the placeholder
+/// a refusal text shows for its value. Accepted and not yet read: a later contract reads it.
+pub const REWRITE_SUGAR_SHOWN: u32 = 4;
+/// [`Rewrite::class`]: `from` is a sugar word the same Statement declares; `to` is what its value
+/// names in a missing-setting refusal. Accepted and not yet read: a later contract reads it.
+pub const REWRITE_SUGAR_NAMES: u32 = 5;
+/// [`Rewrite::class`]: `from` is a sugar word the same Statement declares; `to` is the core role
+/// word its value plays. Accepted and not yet read: a later contract reads it.
+pub const REWRITE_SUGAR_ROLE: u32 = 6;
 
 /// One live rewrite.
 #[repr(C)]
@@ -284,7 +293,8 @@ pub struct Rewrite {
     pub _reserved: u32,
     /// What config says.
     pub from: AbiStr,
-    /// What it becomes; absent unless [`REWRITE_KEY`].
+    /// What it becomes: named for [`REWRITE_KEY`] and the sugar classes after it, optional for
+    /// [`REWRITE_SUGAR`], absent for [`REWRITE_ALIAS`].
     pub to: AbiStr,
 }
 

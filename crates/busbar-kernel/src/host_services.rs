@@ -1031,7 +1031,7 @@ impl KernelServices {
 
     /// THE ONE DECIDE PATH, the core-admin verbs' ([`Self::trust_rule`]) and a plane's own
     /// administrative verb's (`trust.decide`) alike: the trust book's decision
-    /// ([`TrustBook::decide`]), kept durably before it answers; approving a counterparty also
+    /// ([`TrustBook::rule`], kept durably, then [`TrustBook::apply`]); approving a counterparty also
     /// clears its durable demotion.
     ///
     /// # Errors
@@ -1045,31 +1045,37 @@ impl KernelServices {
         ruling: Ruling,
         expected: Option<&str>,
     ) -> Result<KeyRow, TrustRefused> {
-        let (row, fact) = self
+        let refused = |why: Undecided| match why {
+            Undecided::NoSuchKey => TrustRefused::NoSuchKey,
+            Undecided::NothingSighted => TrustRefused::NothingSighted,
+            Undecided::Rootless => TrustRefused::Rootless,
+            Undecided::Stale => TrustRefused::Stale,
+        };
+        // KEPT BEFORE IT IS TAKEN: the decision is judged against the book, kept durably, and only
+        // then takes effect, so a decision the store refused is not in force in this process
+        // either (THE DESIGN §11.12 l.1617-1619, the trust record is durable; Q128 p5#2).
+        let fact = self
             .trust
-            .decide(instance, counterparty, item, ruling, expected)
-            .map_err(|why| match why {
-                Undecided::NoSuchKey => TrustRefused::NoSuchKey,
-                Undecided::NothingSighted => TrustRefused::NothingSighted,
-                Undecided::Rootless => TrustRefused::Rootless,
-                Undecided::Stale => TrustRefused::Stale,
-            })?;
+            .rule(instance, counterparty, item, ruling, expected)
+            .map_err(refused)?;
         if let Some(d) = self.demotions.get() {
             d.record
                 .keep_decision(&fact, (self.wall_ms)() / 1000)
                 .map_err(TrustRefused::Store)?;
-            if fact.item.is_none() && ruling == Ruling::Approve {
-                let cleared = |server: &str| {
-                    crate::plane::quarantine::settle(
-                        &d.record,
-                        server,
-                        crate::trust::TrustState::Approved,
-                    );
-                };
-                cleared(&demotion_key(&fact.instance, &fact.counterparty));
-                if *d.default_instance == *fact.instance {
-                    cleared(&fact.counterparty);
-                }
+        }
+        let row = self.trust.apply(&fact).map_err(refused)?;
+        let clears = fact.item.is_none() && ruling == Ruling::Approve;
+        if let Some(d) = self.demotions.get().filter(|_| clears) {
+            let cleared = |server: &str| {
+                crate::plane::quarantine::settle(
+                    &d.record,
+                    server,
+                    crate::trust::TrustState::Approved,
+                );
+            };
+            cleared(&demotion_key(&fact.instance, &fact.counterparty));
+            if *d.default_instance == *fact.instance {
+                cleared(&fact.counterparty);
             }
         }
         Ok(row)
