@@ -44,7 +44,7 @@ const EXTRACTIONS: &[Extraction] = &[Extraction {
     repo: "https://github.com/GetBusbar/busbar-plane-streaming",
     repo_dir: "plane-streaming",
     base: "faa7d5bc8f5d01ca9ebfb4bef3fa6debd4f44a78",
-    rev: "dae26dc2d7dda553cae0621f038dbc24bedcb4a9",
+    rev: "253b5b2791122f07e74647a9f21efe51aa00ab7d",
     edited: &[
         (
             "Cargo.toml",
@@ -55,7 +55,7 @@ const EXTRACTIONS: &[Extraction] = &[Extraction {
             "src/door.rs",
             "the module doc names the cdylib twin (`busbar-plane-streaming-plugin`) that now \
              exports the door, not the deleted `examples/streaming_door.rs`; and DialectAuth's \
-             reserved word is its `flags` field (busbar #1161, repinned at dae26dc2d7)",
+             reserved word is its `flags` field (busbar #1161, repinned at 253b5b2791, busbar-plane-streaming#25)",
         ),
         (
             "src/codec/ir/codec/tests.rs",
