@@ -1098,6 +1098,13 @@ impl EgressFarEnd<'_> {
         }
     }
 
+    /// Whether the live attempt ended on its AUTH (the framer's `auth.call` was refused, could not
+    /// be answered, or is still waiting), as the host's server marked the unit's record: then the
+    /// attempt's failure is never the destination's.
+    fn auth_ended(&self) -> bool {
+        super::attempt_auth::of(self.route.unit.get()).is_some_and(|r| r.outcome.is_some())
+    }
+
     /// Whether the live attempt's member relays the caller's own credential.
     fn live_passthrough(&self) -> bool {
         self.lock().live.as_ref().is_some_and(|l| l.passthrough)
@@ -1241,6 +1248,7 @@ impl EgressFarEnd<'_> {
                     }),
                     waived,
                     secret: [0, 0],
+                    outcome: None,
                 },
             );
         }
@@ -1324,7 +1332,7 @@ impl EgressFarEnd<'_> {
             // An AUTH outcome (the auth refused the request, or its call failed): nothing was sent
             // and the destination did not fail. Nothing is recorded against it; the next member,
             // as for an auth that answers no fields.
-            Err(err) if err.is_auth() => {
+            Err(err) if err.is_auth() || self.auth_ended() => {
                 let mut w = self.lock();
                 self.settle(&mut w);
                 false
@@ -1418,12 +1426,20 @@ impl EgressFarEnd<'_> {
         )
         .await;
         let piece = match read {
+            // The auth's own wait ran the attempt out (its call still pending), or its auth refused
+            // or failed before any answer: nothing recorded against the destination; the next
+            // member, as 1.5.5's bounded auth wait and its refusal did.
+            Err(_elapsed) if !answered && self.auth_ended() => {
+                let mut w = self.lock();
+                self.settle(&mut w);
+                return Some(fail_over());
+            }
             Err(_elapsed) if !answered => {
                 return Some(self.no_answer(token, NoAnswer::Timeout));
             }
             // An auth outcome before any answer: nothing recorded against the destination; the
             // next member (as at the open).
-            Ok(Err(err)) if !answered && err.is_auth() => {
+            Ok(Err(err)) if !answered && (err.is_auth() || self.auth_ended()) => {
                 let mut w = self.lock();
                 self.settle(&mut w);
                 return Some(fail_over());

@@ -109,6 +109,7 @@ fn attempt(member: &str, handle: u64) -> AttemptAuth {
         caller_credential: None,
         waived: false,
         secret: [0, 0],
+        outcome: None,
     }
 }
 

@@ -33,7 +33,8 @@ use busbar_contract::abi::host::service::{UnitRef, LINE_NONE};
 use busbar_contract::auth_calls::{Fields, FieldsRequest};
 use busbar_contract::conn::{InstanceId, NeedId};
 use busbar_core_connector::framer::{BindingRefs, DialBinding};
-use busbar_kernel::plane_driver::{attempt_auth, AuthBinding};
+use busbar_kernel::plane_driver::attempt_auth::{self, AuthOutcome};
+use busbar_kernel::plane_driver::AuthBinding;
 
 use crate::root::loader::dispatch::auth_handle;
 use crate::root::loader::dispatch::auth_serve::{
@@ -116,21 +117,6 @@ impl OutboundBindings {
     fn held(&self, id: u64) -> Option<Held> {
         self.by_id.lock().expect("bindings").get(&id).cloned()
     }
-
-    /// The unit `unit`'s ref, minted for the framer `owner` (what the host hands the framer with
-    /// the unit's request, for it to present on its `auth.call`); `None` for a unit with no live
-    /// attempt record.
-    #[must_use]
-    pub fn unit_ref(&self, owner: u64, unit: u64) -> Option<UnitRef> {
-        let record = attempt_auth::of(unit)?;
-        auth_handle::mint_unit_ref(
-            record.secret,
-            auth_handle::generation(),
-            owner,
-            LINE_NONE,
-            unit,
-        )
-    }
 }
 
 impl BindingRefs for OutboundBindings {
@@ -155,6 +141,20 @@ impl BindingRefs for OutboundBindings {
         let auth = auth_handle::mint_auth_ref(owner, auth_handle::generation(), id)?;
         Some(DialBinding { auth, points })
     }
+
+    /// The unit `unit`'s ref, minted for the framer `owner` (what the host hands the framer with
+    /// the unit's request, for it to present on its `auth.call`); `None` for a unit with no live
+    /// attempt record.
+    fn unit_ref(&self, owner: u64, unit: u64) -> Option<UnitRef> {
+        let record = attempt_auth::of(unit)?;
+        auth_handle::mint_unit_ref(
+            record.secret,
+            auth_handle::generation(),
+            owner,
+            LINE_NONE,
+            unit,
+        )
+    }
 }
 
 /// The auth's answer, as the framer is handed it.
@@ -173,6 +173,16 @@ fn served(unit: UnitRef, answer: Fields) -> AuthServed {
         },
         Fields::Refused => AuthServed::Refused(OUTBOUND_REFUSED),
         Fields::Failed => AuthServed::Failed(AUTH_COULD_NOT_ANSWER),
+    }
+}
+
+/// Book the auth's `answer` on `unit`'s record: a refusal or a failure is the attempt's auth
+/// outcome (never the destination's failure); lines clear a wait.
+fn book(unit: u64, answer: &Fields) {
+    match answer {
+        Fields::Ready(_) => attempt_auth::clear(unit),
+        Fields::Refused => attempt_auth::mark(unit, AuthOutcome::Refused),
+        Fields::Failed => attempt_auth::mark(unit, AuthOutcome::Failed),
     }
 }
 
@@ -241,19 +251,22 @@ impl OutboundServer for OutboundBindings {
         };
         let unit = ask.unit;
         if let Some(answer) = binding.auth.fields_now(record.handle, &request) {
+            book(unit.id, &answer);
             return Some(served(unit, answer));
         }
         // An auth that must wait (a token refreshing) answers when it is ready; the framer's op
-        // pends meanwhile, and only its own stream is parked.
-        let Some(later) = later else {
+        // pends meanwhile, and only its own stream is parked. Until it answers, the attempt is
+        // waiting on its auth, never on the destination.
+        let runtime = tokio::runtime::Handle::try_current().ok();
+        let (Some(later), Some(runtime)) = (later, runtime) else {
+            attempt_auth::mark(unit.id, AuthOutcome::Failed);
             return Some(AuthServed::Failed(AUTH_COULD_NOT_ANSWER));
         };
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            return Some(AuthServed::Failed(AUTH_COULD_NOT_ANSWER));
-        };
+        attempt_auth::mark(unit.id, AuthOutcome::Waiting);
         let waiting = binding.auth.fields(record.handle, request, 0);
         runtime.spawn(async move {
             let answer = waiting.await;
+            book(unit.id, &answer);
             later(served(unit, answer));
         });
         None

@@ -64,6 +64,7 @@ fn dial(target: &str, first: Vec<u8>) -> Dial {
         head_words: Default::default(),
         anchors: None,
         binding: None,
+        unit: busbar_contract::abi::host::service::UnitRef::NONE,
     }
 }
 

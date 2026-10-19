@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use busbar_contract::abi::host::service::AuthRef;
+use busbar_contract::abi::host::service::{AuthRef, UnitRef};
 use busbar_contract::abi::mechanism::call::{AbiStr, Field, Outcome, Span};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::transport::{check::check_final_status, StatusRow, CLOSE_NORMAL};
@@ -608,6 +608,8 @@ enum Ticketed<'a> {
         bytes: std::borrow::Cow<'a, [u8]>,
         end_of_frame: bool,
         text: bool,
+        /// The stream's unit (`EmitIn::unit`); NONE where it carries none.
+        unit: UnitRef,
     },
 }
 
@@ -636,11 +638,13 @@ impl Ticketed<'_> {
                 bytes,
                 end_of_frame,
                 text,
+                unit,
             } => Ticketed::Emit {
                 stream,
                 bytes: std::borrow::Cow::Owned(bytes.into_owned()),
                 end_of_frame,
                 text,
+                unit,
             },
         }
     }
@@ -980,6 +984,11 @@ pub trait BindingRefs: Send + Sync {
         need: busbar_contract::conn::NeedId,
         member: &str,
     ) -> Option<DialBinding>;
+
+    /// The ref of the request unit `unit` (`OpenDesc::unit`) for the entry whose owner identity
+    /// is `owner`: what the dialled stream's emit names (`EmitIn::unit`). `None` = no unit, or
+    /// none the host holds a live attempt for.
+    fn unit_ref(&self, owner: u64, unit: u64) -> Option<UnitRef>;
 }
 
 impl Framing {
@@ -1163,10 +1172,13 @@ impl Framing {
                 bytes,
                 end_of_frame,
                 text,
+                unit,
             } => {
                 let mut i: EmitIn = blank_in();
                 i.framing = self.token;
                 i.stream = *stream;
+                // The stream's unit, for a framer that calls its binding's auth at emit.
+                i.unit = *unit;
                 if !recall {
                     i.bytes = bytes.as_ptr();
                     i.len = bytes.len();
@@ -1343,12 +1355,32 @@ impl Framing {
         end_of_frame: bool,
         text: bool,
     ) -> Result<Yielded, Refused> {
+        self.emit_as(stream, UnitRef::NONE, bytes, end_of_frame, text)
+    }
+
+    /// [`Framing::emit`] naming the stream's `unit` (`EmitIn::unit`): a dialled stream's request
+    /// unit, minted by the host for this entry, which the framer presents on its `auth.call` at
+    /// emit so the host resolves the request's auth context from it (THE DESIGN §6, "Auth points
+    /// and guest lists", items 5 and 7).
+    ///
+    /// # Errors
+    ///
+    /// The framer refused them.
+    pub fn emit_as(
+        &mut self,
+        stream: u64,
+        unit: UnitRef,
+        bytes: &[u8],
+        end_of_frame: bool,
+        text: bool,
+    ) -> Result<Yielded, Refused> {
         self.idle()?;
         let op = Ticketed::Emit {
             stream,
             bytes: std::borrow::Cow::Borrowed(bytes),
             end_of_frame,
             text,
+            unit,
         };
         Ok(self
             .run(op, Yielded::default(), false, false)?

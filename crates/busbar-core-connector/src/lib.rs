@@ -2014,6 +2014,23 @@ impl Connector {
             .filter(|b| !b.auth.is_none() && b.points != 0)
     }
 
+    /// The ref of request unit `unit` for `door`'s entry: none for no unit, a dial with no binding
+    /// (the framer calls no auth), an entry the host mints nothing for, or no armed source.
+    fn unit_of(
+        &self,
+        door: &Arc<dyn FramerDoor>,
+        unit: u64,
+        bound: bool,
+    ) -> busbar_contract::abi::host::service::UnitRef {
+        let none = busbar_contract::abi::host::service::UnitRef::NONE;
+        let owner = door.owner();
+        if unit == 0 || owner == 0 || !bound {
+            return none;
+        }
+        let refs = self.bindings.read().expect("bindings").clone();
+        refs.and_then(|r| r.unit_ref(owner, unit)).unwrap_or(none)
+    }
+
     /// Register a held session's `pairing` under its kernel-minted `unit` key, before the session
     /// runs: the upstream leg its walk opens for that unit is bridged with its caller leg.
     ///
@@ -2148,6 +2165,9 @@ impl Connector {
         // naming a registration begins its framing with that registration's auth handle, minted
         // for this entry; the framer calls the auth itself at the binding's points.
         let binding = self.binding_of(&door, caller, need, desc.member);
+        // THE EXCHANGE'S REQUEST UNIT, minted for this entry: what the framer presents on its
+        // `auth.call` at the opening's emit (`EmitIn::unit`).
+        let unit = self.unit_of(&door, desc.unit, binding.is_some());
         let dial = Dial {
             target: target.to_owned(),
             tls: tls.or_else(|| self.tls.clone()),
@@ -2163,6 +2183,7 @@ impl Connector {
             head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             anchors: None,
             binding,
+            unit,
         };
         let planned = self.plan(&door, dial).map_err(|f| map(&f))?;
         // THE DESTINATION'S TRUST ANCHORS (the transport pin, ARCHITECT 2026-10-03): every connection to a sealed
@@ -2262,7 +2283,7 @@ impl Connector {
                     mark: line.flushed(),
                 };
                 let (opening, words) = planned.into_opening();
-                match line.attach(opening, words) {
+                match line.attach(opening, words, unit) {
                     Ok(stream) => {
                         let held =
                             Held::over(Some((line, stream)), None, pooled).bounded(desc.timeout_ms);
@@ -2357,6 +2378,7 @@ impl Conns for Connector {
             let dial = Dial {
                 anchors: None,
                 binding: None,
+                unit: busbar_contract::abi::host::service::UnitRef::NONE,
                 target: program.command.clone(),
                 tls: None,
                 alpn,
@@ -2425,6 +2447,7 @@ impl Conns for Connector {
             let dial = Dial {
                 anchors: None,
                 binding: None,
+                unit: busbar_contract::abi::host::service::UnitRef::NONE,
                 target: target.to_owned(),
                 tls: None,
                 alpn,

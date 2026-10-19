@@ -42,6 +42,24 @@ pub struct AttemptAuth {
     /// per unit by [`record`] from the OS random source and kept across its attempts; whatever a
     /// caller states here is replaced.
     pub secret: [u64; 2],
+    /// What the binding's auth answered this attempt, when it refused the request or could not
+    /// answer ([`mark`]): the attempt's failure is then the auth's, never the destination's. `None`
+    /// on every new attempt; whatever a caller states here is replaced.
+    pub outcome: Option<AuthOutcome>,
+}
+
+/// An auth outcome of one attempt: not the destination failing (THE DESIGN §6; 1.5.5's failover
+/// parity: an auth that refuses or cannot answer moves the walk on and records nothing).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthOutcome {
+    /// The binding's auth refused the request.
+    Refused,
+    /// The binding's auth could not answer (its credential unavailable, its call failed).
+    Failed,
+    /// The binding's auth is still waiting (a token refreshing): an attempt whose first answer
+    /// does not come meanwhile ends on the auth's wait, as 1.5.5's bounded auth wait did, never
+    /// on the destination.
+    Waiting,
 }
 
 impl std::fmt::Debug for AttemptAuth {
@@ -52,6 +70,7 @@ impl std::fmt::Debug for AttemptAuth {
             .field("extensions", &self.extensions.len())
             .field("passthrough", &self.caller_credential.is_some())
             .field("waived", &self.waived)
+            .field("outcome", &self.outcome)
             .finish_non_exhaustive()
     }
 }
@@ -92,7 +111,24 @@ pub fn record(unit: u64, mut attempt: AttemptAuth) {
         }
     };
     attempt.secret = secret;
+    attempt.outcome = None;
     table.insert(unit, attempt);
+}
+
+/// Clear `unit`'s live attempt's auth outcome: its auth answered lines after a wait.
+pub fn clear(unit: u64) {
+    if let Some(live) = lock().get_mut(&unit) {
+        live.outcome = None;
+    }
+}
+
+/// Mark `unit`'s live attempt with its auth's `outcome` (the host's server of the framer's
+/// `auth.call`, once the unit verified): the attempt's failure is the auth's. A unit with no live
+/// attempt marks nothing.
+pub fn mark(unit: u64, outcome: AuthOutcome) {
+    if let Some(live) = lock().get_mut(&unit) {
+        live.outcome = Some(outcome);
+    }
 }
 
 /// `unit`'s live attempt, as the host's server of the framer's `auth.call` reads it.

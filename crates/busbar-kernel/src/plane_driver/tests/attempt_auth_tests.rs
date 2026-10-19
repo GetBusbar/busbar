@@ -11,6 +11,7 @@ fn attempt(member: &str, handle: u64) -> AttemptAuth {
         caller_credential: None,
         waived: false,
         secret: [0, 0],
+        outcome: None,
     }
 }
 
@@ -63,4 +64,24 @@ fn a_units_secret_is_kept_across_its_attempts_and_is_its_own() {
     );
     forget(one);
     forget(two);
+}
+
+#[test]
+fn an_auth_outcome_is_the_live_attempts_and_a_new_attempt_clears_it() {
+    let unit = 0x5eed_0004;
+    record(unit, attempt("a", 1));
+    mark(unit, AuthOutcome::Refused);
+    assert_eq!(
+        of(unit).expect("recorded").outcome,
+        Some(AuthOutcome::Refused)
+    );
+    record(unit, attempt("b", 2));
+    assert_eq!(
+        of(unit).expect("recorded").outcome,
+        None,
+        "a new attempt starts clean"
+    );
+    mark(0x5eed_0005, AuthOutcome::Failed);
+    assert!(of(0x5eed_0005).is_none(), "no live attempt, nothing marked");
+    forget(unit);
 }

@@ -127,6 +127,23 @@ pub struct Dial {
     /// member's auth handle, minted for the framer that presents it, and its auth points. The
     /// framer calls that auth through the host auth handle at those points; `None` = no auth.
     pub binding: Option<framer::DialBinding>,
+    /// THE OPENING EXCHANGE'S REQUEST UNIT, minted for the entry (`EmitIn::unit`): what the
+    /// framer presents on its `auth.call` at the opening's emit. NONE = no unit.
+    pub unit: busbar_contract::abi::host::service::UnitRef,
+}
+
+/// `stream`'s unit as the connection keeps it: none for [`UnitRef::NONE`].
+///
+/// [`UnitRef::NONE`]: busbar_contract::abi::host::service::UnitRef::NONE
+fn unit_on(
+    stream: u64,
+    unit: busbar_contract::abi::host::service::UnitRef,
+) -> std::collections::HashMap<u64, busbar_contract::abi::host::service::UnitRef> {
+    let mut units = std::collections::HashMap::new();
+    if !unit.is_none() {
+        units.insert(stream, unit);
+    }
+    units
 }
 
 /// A message's head words, method and target; empty = none.
@@ -208,6 +225,9 @@ pub struct Connection {
     opening: Option<Opening>,
     /// The dial's binding, handed to the framing's begin (`SIDE_DIAL` only).
     binding: Option<framer::DialBinding>,
+    /// Each dialled stream's request unit (`EmitIn::unit`), by stream: the opening's and each
+    /// exchange opened on the connection since.
+    units: std::collections::HashMap<u64, busbar_contract::abi::host::service::UnitRef>,
     /// Its head words.
     head_words: HeadWords,
     /// Writes the caller made before the framing began, in order: `(stream, bytes, end)`.
@@ -677,6 +697,7 @@ impl Connection {
             inbox: VecDeque::new(),
             opening: dial.opening,
             binding: dial.binding,
+            units: unit_on(EXCHANGE_STREAM, dial.unit),
             head_words: dial.head_words,
             early: Vec::new(),
             flushed: 0,
@@ -768,6 +789,7 @@ impl Connection {
             inbox: VecDeque::new(),
             opening: dial.opening,
             binding: dial.binding,
+            units: unit_on(EXCHANGE_STREAM, dial.unit),
             head_words: dial.head_words,
             early: Vec::new(),
             flushed: 0,
@@ -886,6 +908,7 @@ impl Connection {
             inbox: VecDeque::new(),
             opening: None,
             binding: None,
+            units: std::collections::HashMap::new(),
             head_words: HeadWords::default(),
             early: Vec::new(),
             flushed: 0,
@@ -993,6 +1016,7 @@ impl Connection {
         stream: u64,
         opening: Option<Opening>,
         head_words: HeadWords,
+        unit: busbar_contract::abi::host::service::UnitRef,
         cx: &mut Context<'_>,
     ) -> Result<(), Failure> {
         match &self.phase {
@@ -1000,6 +1024,8 @@ impl Connection {
             Phase::Ended => return Err(Failure::Closed),
             _ => {}
         }
+        // The exchange's request unit, named by every emit on its stream.
+        self.units.extend(unit_on(stream, unit));
         let Some(message) = self.encode_opening(opening, head_words)? else {
             return Ok(());
         };
@@ -1056,7 +1082,14 @@ impl Connection {
             return Ok(());
         }
         if let Some(framing) = self.framing.as_mut() {
-            let y = framing.emit(stream, bytes, end, text).map_err(failed)?;
+            let unit = self
+                .units
+                .get(&stream)
+                .copied()
+                .unwrap_or(busbar_contract::abi::host::service::UnitRef::NONE);
+            let y = framing
+                .emit_as(stream, unit, bytes, end, text)
+                .map_err(failed)?;
             return self.absorb(y);
         }
         if self.door.is_some() {

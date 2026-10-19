@@ -56,6 +56,7 @@ fn dial(target: &str) -> Dial {
         head_words: Default::default(),
         anchors: None,
         binding: None,
+        unit: busbar_contract::abi::host::service::UnitRef::NONE,
     }
 }
 

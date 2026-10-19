@@ -341,6 +341,7 @@ impl Member {
                 head_words: (Vec::new(), Vec::new()),
                 anchors: None,
                 binding: None,
+                unit: busbar_contract::abi::host::service::UnitRef::NONE,
             };
             match Connection::spawn(
                 &self.via,
