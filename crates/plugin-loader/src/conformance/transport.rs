@@ -29,6 +29,11 @@
 //!                                                       answer yields (ws: the switching
 //!                                                       response's head, HEAD-FIELDS) */
 //!         "emit":   "<one frame the host emits>",   "wire":   "<the wire bytes it becomes>",
+//!         "request": { "fields": [["<name>", "<value>"], ...], "body": "<body>" },
+//!                                                    /* optional, in place of emit: the request
+//!                                                       the host encodes, its head merged with
+//!                                                       the framer's own head lines (locate's
+//!                                                       defaults) whose names it lacks */
 //!         "ingest": "<bytes from the far side>",    "frames": ["<the frames they are>", ...],
 //!         "ingest_wire": "<what reading them writes>", /* optional: the far side closed in them
 //!                                                       and the close is answered (ws); the
@@ -331,8 +336,6 @@ impl Yielded {
 #[derive(Clone, Copy)]
 enum Op<'a> {
     Begin(u32, &'a [u8]),
-    /// A dial's `begin` with the head fields the host hands it.
-    BeginHead(u32, &'a [u8], &'a [Field]),
     Ingest(&'a [u8], bool),
     Emit(&'a [u8], bool),
     Refuse(&'a [u8]),
@@ -352,7 +355,7 @@ impl Op<'_> {
             // The host's re-call carries no bytes and completes no frame (as the connector's does).
             Op::Emit(..) => Op::Emit(&[], false),
             Op::Refuse(_) => Op::Refuse(&[]),
-            Op::Adopt(_) | Op::Begin(..) | Op::BeginHead(..) => Op::Timer,
+            Op::Adopt(_) | Op::Begin(..) => Op::Timer,
             other => other,
         }
     }
@@ -368,15 +371,13 @@ fn go<I: InFrame, O: OutFrame>(p: &Plugin<Transport>, s: u32, i: I) -> (Called, 
 fn cross(p: &Plugin<Transport>, framing: u64, op: Op<'_>, sink: &mut Sink) -> (Called, FramerOut) {
     let raw = sink.raw();
     match op {
-        Op::Begin(side, target) => cross(p, framing, Op::BeginHead(side, target, &[]), sink),
-        Op::BeginHead(side, target, fields) => {
+        Op::Begin(side, target) => {
             let mut i: BeginIn = input();
             (i.side, i.sink) = (side, raw);
             i.target = AbiStr {
                 ptr: target.as_ptr(),
                 len: target.len(),
             };
-            (i.fields, i.fields_len) = (fields.as_ptr(), fields.len());
             go(p, slot::BEGIN, i)
         }
         Op::Ingest(bytes, end) => {
@@ -489,9 +490,10 @@ pub(super) fn carrier_line(outcomes: &[Outcome; 8]) -> String {
 }
 
 /// THE FRAMER'S OWN HEAD LINES at `target` (`LocateIn::defaults_buf`), read as the connector reads
-/// them: its line, and the lines, `name: value` each, in the framer's order. The dial's head is
-/// begun with them, as the host's walk adds each one its request does not carry before the auth
-/// signs the head (THE DESIGN section 6, step 5).
+/// them: its line, and the lines, `name: value` each, in the framer's order. A dial that states its
+/// request as fields and a body has them merged into the request's head before it is encoded, as
+/// the host's walk adds each one its request does not carry before the auth signs the head (THE
+/// DESIGN section 6, step 5).
 fn located_defaults(p: &Plugin<Transport>, target: &[u8]) -> (String, Vec<(Vec<u8>, Vec<u8>)>) {
     let (mut authority, mut name, mut alpn, mut defaults) = (
         vec![0_u8; AMPLE],
@@ -742,10 +744,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
 
     // ── a dialled framing: out through a tight wire, in through a tight frame, the far end ──
     let dial = &k["dial"];
-    let (emit, wire) = (
-        text(&dial["emit"], "dial.emit"),
-        text(&dial["wire"], "dial.wire"),
-    );
+    let wire = text(&dial["wire"], "dial.wire");
     let (ingest, frames) = (
         text(&dial["ingest"], "dial.ingest"),
         texts(&dial["frames"], "dial.frames"),
@@ -768,25 +767,9 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             0
         }
     };
-    // The framer's own head lines at the dial's target begin the dial's head, as the host's walk
-    // hands them (the suite's head states no field of its own, so each of them is added).
-    let defaults = r.step("dial defaults", 1, || located_defaults(&p, &target));
-    let head: Vec<Field> = defaults
-        .iter()
-        .map(|(n, v)| Field {
-            name: AbiStr {
-                ptr: n.as_ptr(),
-                len: n.len(),
-            },
-            value: AbiStr {
-                ptr: v.as_ptr(),
-                len: v.len(),
-            },
-        })
-        .collect();
     // A wire that opens with bytes of its own writes them at begin, re-driven by `timer`.
     let token = r.step("begin dial", sinkfuls(opening.len(), TIGHT_WIRE), || {
-        let y = pump(&p, 0, Op::BeginHead(SIDE_DIAL, &target, &head), &mut tight);
+        let y = pump(&p, 0, Op::Begin(SIDE_DIAL, &target), &mut tight);
         (y.line(), y.framing)
     });
     want.push(("begin dial".into(), begin_dial_want(dial, armed("begin"))));
@@ -808,6 +791,52 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             Want::Is(yielded_line(&[], &heard, &[], 0, false)),
         ));
     }
+    // THE REQUEST THE DIAL SENDS: `dial.emit` as the message bytes, or `dial.request` (`fields` and
+    // `body`) encoded by the framer itself with its own head lines merged in, as the host's walk
+    // merges them: the request's fields, then each line the framer states whose name the request
+    // does not carry (THE DESIGN section 6, step 5).
+    let emit = if dial["request"].is_null() {
+        text(&dial["emit"], "dial.emit")
+    } else {
+        let request = &dial["request"];
+        let body = opt_text(&request["body"], "dial.request.body");
+        let mut named: Vec<(Vec<u8>, Vec<u8>)> = request["fields"]
+            .as_array()
+            .map(|fs| {
+                fs.iter()
+                    .map(|f| {
+                        (
+                            text(&f[0], "dial.request.fields name"),
+                            text(&f[1], "dial.request.fields value"),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let defaults = r.step("dial defaults", 1, || located_defaults(&p, &target));
+        for (name, value) in defaults {
+            if !named.iter().any(|(n, _)| n.eq_ignore_ascii_case(&name)) {
+                named.push((name, value));
+            }
+        }
+        let fields: Vec<Field> = named
+            .iter()
+            .map(|(n, v)| Field {
+                name: AbiStr {
+                    ptr: n.as_ptr(),
+                    len: n.len(),
+                },
+                value: AbiStr {
+                    ptr: v.as_ptr(),
+                    len: v.len(),
+                },
+            })
+            .collect();
+        r.step("dial encode", 1, || {
+            let y = once(&p, 0, Op::Encode(&body, &fields), &mut Sink::ample());
+            (y.line(), y.wire)
+        })
+    };
     r.line("emit", sinkfuls(wire.len(), TIGHT_WIRE), || {
         pump(&p, token, Op::Emit(&emit, true), &mut tight).line()
     });
