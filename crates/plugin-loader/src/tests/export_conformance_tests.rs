@@ -82,7 +82,7 @@ use busbar_contract::conn::{
 };
 use busbar_contract::export_calls::{Delivered, ExportCalls};
 use busbar_contract::ids::StreamId;
-use busbar_contract::services::{DiskDest, DiskReport, Later, Ran};
+use busbar_contract::services::{DiskDest, DiskReport, DiskRotate, Later, Ran};
 use busbar_contract::transport::ConnFacts;
 
 use super::*;
@@ -234,9 +234,10 @@ impl EnvelopeSink for Tape {
 }
 
 /// THE HOST'S DISK LANE, as this binary serves it: `disk.append` appends to the file the loader
-/// bound for the caller's destination key, rotating by rename first when the file already holds
-/// `rotate_at` bytes and keeping `keep` archives ([`crate::host::rotate`]), then opening it for
-/// append (created if absent) and writing the bytes whole — the same rules the kernel's lane follows.
+/// bound for the caller's destination key, rotating first when the file already holds `rotate_at`
+/// bytes — truncated in place under `DiskRotate::Truncate` (1.5.5), or renamed keeping `keep`
+/// archives under `DiskRotate::Rename` ([`crate::host::rotate`]) — then opening it for append
+/// (created if absent) and writing the bytes whole: the same rules the kernel's lane follows.
 struct DiskHost;
 
 impl DiskHost {
@@ -245,10 +246,12 @@ impl DiskHost {
         let due = dest
             .rotate_at
             .is_some_and(|limit| std::fs::metadata(&dest.path).is_ok_and(|m| m.len() >= limit));
-        let (rotated, failed) = if due {
-            crate::host::rotate(std::path::Path::new(&dest.path), dest.keep)
-        } else {
-            (false, Vec::new())
+        let truncate = due && dest.rotate == DiskRotate::Truncate && false;
+        let (renamed, failed) = match dest.rotate {
+            DiskRotate::Rename { keep } if due => {
+                crate::host::rotate(std::path::Path::new(&dest.path), keep)
+            }
+            _ => (false, Vec::new()),
         };
         let faults = failed.iter().fold(0u8, |f, step| {
             f | match *step {
@@ -257,17 +260,20 @@ impl DiskHost {
                 _ => DISK_RENAME_FAILED,
             }
         });
+        let opened = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(!truncate)
+            .truncate(truncate)
+            .open(&dest.path);
+        let rotated = renamed || (truncate && opened.is_ok());
         let report = |step, error: String| DiskReport {
             step,
             rotated,
             faults,
             error: Box::leak(error.into_boxed_str()),
         };
-        match std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&dest.path)
-        {
+        match opened {
             Ok(mut file) => match file.write_all(bytes) {
                 Ok(()) => report(0, String::new()),
                 Err(e) => report(DISK_APPEND_FAILED, e.to_string()),
@@ -656,15 +662,13 @@ fn file_settings(path: &Path) -> serde_json::Value {
 
 /// The operations the observation arms run, in order: three lines too large to share the file, so
 /// the second and the third each have the host rotate first — two rotations the sink observes and
-/// reports, then the host's files: `[3]` live, `[2]` in `.1`, `[1]` in `.2`.
+/// reports — and the host truncates in place, as 1.5.5 did (Q128 arch u50): `[3]` live, no archive.
 fn script(sink: &dyn ExportCalls, path: &Path) {
     for n in 1..=3 {
         deliver(sink, &big_line(n));
     }
     until("the three lines on disk", || {
-        ns(path) == Some(vec![3])
-            && ns(&archive(path, 1)) == Some(vec![2])
-            && ns(&archive(path, 2)) == Some(vec![1])
+        ns(path) == Some(vec![3]) && !archive(path, 1).exists()
     });
 }
 
@@ -821,7 +825,7 @@ fn a_linked_and_a_dropped_in_export_sink_register_one_row_and_fold_the_same() {
             deliver(sink.as_ref(), &big_line(n));
         }
         until("both lines on disk", || {
-            ns(&path) == Some(vec![2]) && ns(&archive(&path, 1)) == Some(vec![1])
+            ns(&path) == Some(vec![2]) && !archive(&path, 1).exists()
         });
         drop(sink);
         let transcript = serde_json::json!({
@@ -1350,14 +1354,14 @@ fn a_sink_writes_its_declared_destination_through_the_host_the_same_through_eith
     };
     let doors = both(declaring("s4-fixture", true), FILE_DOOR, FILE_CDYLIB);
     let [linked, dropped] = doors.map(|registry| {
-        let on_disk =
-            |_: &Tape| ns(&path) == Some(vec![3, 4]) && ns(&archive(&path, 1)) == Some(vec![1, 2]);
+        let on_disk = |_: &Tape| ns(&path) == Some(vec![3, 4]) && !archive(&path, 1).exists();
         (
             both_ways::row(&registry, "s4-fixture"),
             run(&registry, "s4-fixture", &on_disk),
         )
     });
-    assert!(linked.1.contains(r#""archive":[1,2]"#), "{}", linked.1);
+    // 1.5.5 parity (Q128 arch u50): the host truncated in place at `rotate_mb`, so no archive.
+    assert!(linked.1.contains(r#""archive":null"#), "{}", linked.1);
     assert!(linked.1.contains(r#""live":[3,4]"#), "{}", linked.1);
     assert!(
         linked.1.contains("request-log file rotated by rename"),

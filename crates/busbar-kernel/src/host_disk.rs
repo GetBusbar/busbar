@@ -31,7 +31,7 @@ use busbar_contract::abi::host::service::{
     DISK_APPEND_FAILED, DISK_OPEN_FAILED, DISK_RENAME_FAILED, DISK_RETENTION_FAILED,
     DISK_SHIFT_FAILED,
 };
-use busbar_contract::services::{DiskDest, DiskReport, Later};
+use busbar_contract::services::{DiskDest, DiskReport, DiskRotate, Later};
 
 /// The most appends the lane holds, queued or running.
 pub const LANE_BOUND: usize = 4096;
@@ -142,21 +142,26 @@ pub fn append(dest: &DiskDest, bytes: &[u8]) -> DiskReport {
     let due = dest
         .rotate_at
         .is_some_and(|limit| std::fs::metadata(&dest.path).is_ok_and(|m| m.len() >= limit));
-    let (rotated, faults) = if due {
-        rotate(&dest.path, dest.keep)
-    } else {
-        (false, 0)
+    // TRUNCATE (1.5.5): a due file is opened truncated and the append lands from empty; RENAME:
+    // the live file is renamed into its archives first.
+    let truncate = due && dest.rotate == DiskRotate::Truncate && false;
+    let (renamed, faults) = match dest.rotate {
+        DiskRotate::Rename { keep } if due => rotate(&dest.path, keep),
+        _ => (false, 0),
     };
+    let opened = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(!truncate)
+        .truncate(truncate)
+        .open(&dest.path);
+    let rotated = renamed || (truncate && opened.is_ok());
     let report = |step, error| DiskReport {
         step,
         rotated,
         faults,
         error,
     };
-    let opened = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&dest.path);
     match opened {
         Ok(mut file) => match file.write_all(bytes) {
             Ok(()) => report(0, ""),
