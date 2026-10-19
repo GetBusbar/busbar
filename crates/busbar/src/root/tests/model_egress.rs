@@ -146,9 +146,19 @@ fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
         app.store.cooldown_remaining_in("", 0, now) > 0,
         "the direct route's fault arms the lane-default cell"
     );
+    // NO OUTCOME IS RECORDED UNDER THE MODEL'S OWN NAME. Read through the cell's outcome window,
+    // not its cooldown: any read of a pool cell creates it on first touch, and a created cell
+    // INHERITS the lane's current health (the store's `pool_cell`: state, cooldown and streak,
+    // never the window), so its cooldown reads the lane's whatever the route recorded. The window
+    // is the cell's own record: empty unless the fault was observed into that cell.
     assert_eq!(
-        app.store.cooldown_remaining_in("m0", 0, now),
-        0,
+        app.store.error_rate_in("", 0, now),
+        Some(1.0),
+        "the lane-default cell's window holds the direct route's one fault"
+    );
+    assert_eq!(
+        app.store.error_rate_in("m0", 0, now),
+        None,
         "no cell is kept under the model's own name"
     );
 }
