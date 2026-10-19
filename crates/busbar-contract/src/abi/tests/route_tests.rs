@@ -45,3 +45,38 @@ fn route_json_roundtrip() {
     let back: Route = serde_json::from_slice(&j).unwrap();
     assert_eq!(back, r);
 }
+
+/// RED (a zero never grants): the route vocabulary's zero is the undeclared bar, the
+/// unauthenticated bar is never zero, and each declared bar carries the export and hook kinds'
+/// `ROUTE_AUTH_*` code. A zeroed route states the undeclared bar.
+#[test]
+fn a_zeroed_route_declares_no_auth_bar() {
+    use crate::abi::{export, hook};
+    assert_eq!(Route::ZERO.auth, RouteAuth::Undeclared);
+    assert_eq!(RouteAuth::Undeclared.code(), 0);
+    assert_ne!(RouteAuth::None.code(), 0, "unauthenticated is never zero");
+    for (a, e, h) in [
+        (
+            RouteAuth::Undeclared,
+            export::ROUTE_AUTH_UNDECLARED,
+            hook::ROUTE_AUTH_UNDECLARED,
+        ),
+        (RouteAuth::Key, export::ROUTE_AUTH_KEY, hook::ROUTE_AUTH_KEY),
+        (
+            RouteAuth::Admin,
+            export::ROUTE_AUTH_ADMIN,
+            hook::ROUTE_AUTH_ADMIN,
+        ),
+        (
+            RouteAuth::None,
+            export::ROUTE_AUTH_NONE,
+            hook::ROUTE_AUTH_NONE,
+        ),
+    ] {
+        assert_eq!((a.code(), a.code()), (e, h), "{a:?}");
+        assert_eq!(RouteAuth::from_code(e), Some(a), "{a:?}");
+    }
+    assert_eq!(RouteAuth::from_code(4), None);
+    // The undeclared bar has no wire spelling: a declaration cannot name it.
+    assert!(serde_json::from_value::<RouteAuth>(serde_json::json!("undeclared")).is_err());
+}

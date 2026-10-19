@@ -673,3 +673,34 @@ fn paths_awaiting_restart_flags_only_newly_declared_unmounted_paths() {
     // later edit does not re-flag it.
     assert!(paths_awaiting_restart(&metrics, &metrics, &boot(&[])).is_empty());
 }
+
+/// RED (a zero never grants): a route built from `Route::ZERO` declared no auth bar, and the
+/// registrar refuses it at load by name; it is never served, and never read as unauthenticated.
+/// The same route at each declared bar registers.
+#[test]
+fn a_zeroed_route_is_refused_at_load() {
+    let zeroed = RouteDecl {
+        owner: "sink".to_string(),
+        kind: RouteKind::Export,
+        route: Route {
+            path: "/exports/sink/feed".to_string(),
+            ..Route::ZERO
+        },
+        scrape: false,
+        dispatch: Arc::new(FakeDispatch { label: "sink" }),
+    };
+    assert_eq!(zeroed.route.auth, RouteAuth::Undeclared);
+    let why = expect_err(build_route_table(vec![zeroed]));
+    assert!(why.contains("undeclared"), "{why}");
+    for auth in [RouteAuth::Key, RouteAuth::Admin, RouteAuth::None] {
+        let ok = build_route_table(vec![decl(
+            "sink",
+            RouteKind::Export,
+            "/exports/sink/feed",
+            RouteMethod::Get,
+            auth,
+            "sink",
+        )]);
+        assert!(ok.is_ok(), "{auth:?}");
+    }
+}
