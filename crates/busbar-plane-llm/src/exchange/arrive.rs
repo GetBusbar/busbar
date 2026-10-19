@@ -42,9 +42,9 @@ pub enum Decline {
     PathNotFound = 7,
     /// An InvokeModel body names no supported operation.
     InvokeBody = 8,
-    /// RESERVED, never produced at arrival: the ad-hoc surface's provider mismatch is refused by the
-    /// attempt, after the caller is authenticated ([`Arrived::adhoc_provider`]). The code keeps its
-    /// number so no other decline is renumbered.
+    /// The ad-hoc surface names a model another provider serves. Never produced by [`arrive`]
+    /// itself (which reads no catalogue): the door refuses it as a refusal about an entry, so the
+    /// caller is authenticated first ([`Arrived::adhoc_provider`]).
     ProviderMismatch = 9,
     /// A dialect path hit with a method other than POST.
     MethodNotAllowed = 10,
@@ -120,10 +120,10 @@ pub struct Arrived {
     pub path_model: Option<PathModel>,
     /// The provider the ad-hoc surface `/{provider}/{model}/v1/messages` names. Nothing here
     /// checks it: arrival runs before the caller is authenticated, and a refusal that depends on
-    /// the configured catalogue would tell an anonymous caller which models exist. The attempt
-    /// refuses a mismatch once the caller is admitted, as 1.5.5 did (v1.5.5
-    /// crates/busbar/src/ingress/mod.rs:1323-1327 authenticates and admits through
-    /// `governance_guard`, then :1363-1375 answers the mismatch).
+    /// the configured catalogue must not tell an anonymous caller which models exist. The door
+    /// refuses a mismatch as a refusal about an entry, which the kernel renders only after it has
+    /// judged the caller's identity and grant, as 1.5.5 answered it only after authenticating
+    /// (v1.5.5 crates/busbar/src/ingress/mod.rs:1323-1327, then :1363-1375).
     pub adhoc_provider: Option<String>,
 }
 

@@ -1968,36 +1968,3 @@ fn an_omitted_max_tokens_is_filled_and_an_explicit_one_is_kept() {
     );
     assert_eq!(explicit["max_tokens"], 7, "{explicit}");
 }
-
-/// THE AD-HOC SURFACE'S PROVIDER MISMATCH IS REFUSED AT THE ATTEMPT (Q128 plane-llm p17, security;
-/// coordinator ruling 2026-10-19). v1.5.5 authenticated and admitted the caller first
-/// (crates/busbar/src/ingress/mod.rs:1323-1327) and only then answered a configured model named
-/// under another provider with a 400 in the caller's envelope (:1363-1375, `invalid_request_error`,
-/// the model-not-found copy). The arrival carries the route's provider and checks nothing, so the
-/// kernel's authenticate step refuses an anonymous caller before this runs. The model's own
-/// provider is served. RED: the mismatch reaches the far end, or reads another status, kind or
-/// message.
-#[test]
-fn an_ad_hoc_route_naming_another_provider_is_refused_at_the_attempt() {
-    let h = head(&[("content-type", "application/json")]);
-    let body = r#"{"max_tokens":5,"messages":[]}"#;
-    let crossed = arrived("/oai/claude/v1/messages", &h, body);
-    assert_eq!(crossed.adhoc_provider.as_deref(), Some("oai"));
-    let refused = build(HOST, &crossed, &h, &shaping(), "claude", "claude")
-        .expect_err("another provider's model is refused");
-    assert_eq!(refused.status, 400);
-    assert_eq!(
-        refused.kind,
-        busbar_contract::protocol::KIND_INVALID_REQUEST
-    );
-    assert_eq!(
-        refused.message,
-        "The model 'claude' does not exist or you do not have access to it."
-    );
-
-    let own = arrived("/ant/claude/v1/messages", &h, body);
-    assert!(
-        build(HOST, &own, &h, &shaping(), "claude", "claude").is_ok(),
-        "the model's own provider is served"
-    );
-}

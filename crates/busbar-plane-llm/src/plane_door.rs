@@ -1529,6 +1529,37 @@ slot!(
                 out.set(|o| &o.principal_need, PRINCIPAL_REQUIRED);
                 let (class, entry) = route_of(&unit.shaping, &arrived.model);
                 out.route(class, entry);
+                // THE AD-HOC SURFACE'S PROVIDER MISMATCH, a REFUSAL ABOUT AN ENTRY (abi/plane "A
+                // refused arrival", rule 6): refused here naming the entry it concerns, so the
+                // kernel judges the caller's identity and grant over that entry FIRST and only then
+                // renders this 400, before admission, with no walk, no hook and nothing charged. An
+                // anonymous caller therefore reads the same 401 whether or not the model is
+                // configured (Q128 p17), and an authenticated one reads v1.5.5's 400 model-not-found
+                // in its own envelope (v1.5.5 crates/busbar/src/ingress/mod.rs:1363-1375).
+                // KNOWN DIFFERENCE until the step-2 ABI flag (coordinator ruling 2026-10-19): v1.5.5
+                // judged the caller's group limits before the mismatch, so a rate-limited caller read
+                // 429 there and reads 400 here.
+                if let Some(asked) = arrived.adhoc_provider.as_deref() {
+                    if unit
+                        .shaping
+                        .provider_of(&arrived.model)
+                        .is_some_and(|serving| serving != asked)
+                    {
+                        let declined = Declined {
+                            why: arrive::Decline::ProviderMismatch,
+                            status: 400,
+                            envelope: arrived.dialect,
+                            kind: busbar_contract::protocol::KIND_INVALID_REQUEST,
+                            message: crate::exchange::refuse::model_not_found(&arrived.model, None)
+                                .into(),
+                        };
+                        out.set(|o| &o.refusal, declined.why.code());
+                        out.set(|o| &o.refusal_status, u32::from(declined.status));
+                        unit.declined = Some(declined);
+                        guard(&door.units).insert(given.unit, unit);
+                        return out.fail(Refusal::bare());
+                    }
+                }
                 let handler = handler_of(&arrived);
                 if handler.is_some_and(|h| stream_intent(h, arrived.parsed.as_ref()).wants_stream) {
                     out.stream();

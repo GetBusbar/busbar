@@ -6921,6 +6921,37 @@ mod pools_door_refusals {
         assert_eq!((first.served(), second.served()), (0, 0));
     }
 
+    /// v1.5.5'S ORDER FOR A RATE-LIMITED CALLER NAMING THE WRONG PROVIDER, PINNED AS AN EXPECTED
+    /// FAILURE until the step-2 ABI flag (coordinator ruling 2026-10-19). v1.5.5 judged the caller's
+    /// group limits before the ad-hoc mismatch (crates/busbar/src/ingress/mod.rs:1323-1327, then
+    /// :1363-1375), so a key with no requests left that named `m0` under `oai1` read 429. The door
+    /// refuses the mismatch as a refusal about an entry, which the kernel renders before admission
+    /// (abi/plane "A refused arrival", rule 6), so today it reads 400. Step 2 adds the arrive
+    /// answer's after-admission flag, the plane sets it, and this cell drops its `should_panic`
+    /// and passes as written. RED (after step 2): any answer but the 429.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[should_panic(expected = "the v1.5.5 order")]
+    async fn a_rate_limited_ad_hoc_mismatch_reads_the_429_as_1_5_5_did() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-gate-adhoc-mismatch-over-rpm";
+        let _published = Withdrawn(instance);
+        let (rig, far) = over_rpm(instance).await;
+        let (status, _, body) = rig
+            .send(
+                "POST",
+                &format!("/oai1/m0{}", door_word("messages_path")),
+                Some(serde_json::json!({"model": "m0", "messages": [], "max_tokens": 16})),
+            )
+            .await;
+        assert_eq!(far.served(), 0, "nothing is dialled");
+        assert_eq!(
+            status,
+            429,
+            "the v1.5.5 order: limits before the mismatch: {}",
+            String::from_utf8_lossy(&body)
+        );
+    }
+
     /// AN ANONYMOUS PROBE OF THE AD-HOC ROUTE LEARNS NOTHING OF THE CATALOGUE (Q128 plane-llm p17,
     /// security; coordinator ruling 2026-10-19). v1.5.5 authenticated the caller before it looked
     /// at the model (crates/busbar/src/ingress/mod.rs:1323-1327, then the mismatch arm at
