@@ -393,6 +393,36 @@ fn a_statement_of_another_kind_stating_claims_is_refused() {
     assert_eq!(unsafe { check_statement(&st) }, Ok(()));
 }
 
+/// AN ENDPOINT DOOR IS A PLANE'S FACT (step 2b, SECTION_ENDPOINT_DOOR): a Statement of any other kind
+/// stating it on any section is refused at admit; the same section on a plane Statement passes.
+#[test]
+fn a_statement_of_another_kind_stating_an_endpoint_door_is_refused() {
+    const SECTIONS: &[Section] = &[
+        Section {
+            name: abi_str("things"),
+            flags: SECTION_DECLARING,
+            ..Section::ZERO
+        },
+        Section {
+            name: abi_str("door"),
+            flags: crate::abi::mechanism::door::SECTION_ENDPOINT_DOOR,
+            ..Section::ZERO
+        },
+    ];
+    let mut st = statement("p", "1.0.0", 1);
+    st.sections = SECTIONS.as_ptr();
+    st.sections_len = SECTIONS.len();
+    st.kind = crate::abi::mechanism::KindCode::Store as u32;
+    // SAFETY: the sections list is a `'static` array of its stated count.
+    assert_eq!(
+        unsafe { check_statement(&st) },
+        Err(fault(Rule::Contradiction, "statement.sections"))
+    );
+    st.kind = crate::abi::mechanism::KindCode::Plane as u32;
+    // SAFETY: as above.
+    assert_eq!(unsafe { check_statement(&st) }, Ok(()));
+}
+
 /// A NAMED MAP IS A PLANE'S FACT: a Statement of any other kind whose declaring section states
 /// `SECTION_NAMED_MAP` is refused at admit, never silently ignored. RED: a store Statement stating it
 /// is refused; the same section on a plane Statement passes.
@@ -401,7 +431,7 @@ fn a_statement_of_another_kind_stating_a_named_map_is_refused() {
     const SECTIONS: &[Section] = &[Section {
         name: abi_str("things"),
         flags: SECTION_DECLARING | SECTION_NAMED_MAP,
-        _reserved: 0,
+        ..Section::ZERO
     }];
     let mut st = statement("p", "1.0.0", 1);
     st.sections = SECTIONS.as_ptr();

@@ -38,7 +38,8 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome};
 use busbar_contract::abi::mechanism::call::{InHead, OutHead};
 use busbar_contract::abi::mechanism::check::{fault, reported, Fault, Rule};
 use busbar_contract::abi::mechanism::door::{
-    Statement, SECTION_CONSUMED, SECTION_DECLARING, SECTION_NAMED_MAP, SECTION_REQUIRED,
+    Statement, SECTION_CONSUMED, SECTION_DECLARING, SECTION_ENDPOINT_DOOR, SECTION_NAMED_MAP,
+    SECTION_REQUIRED,
 };
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, DriveIn, OpenIn, RefreshIn};
 use busbar_contract::abi::mechanism::ticket::Ticket;
@@ -120,6 +121,9 @@ pub struct ServedFacts {
     /// Each Statement section's entry noun, `(section, noun)`, for every section stating one
     /// (`Section::entry_noun`), in Statement order.
     pub entry_nouns: Vec<(&'static str, &'static str)>,
+    /// The section flagged `SECTION_ENDPOINT_DOOR` (an owned section beside the verb); `None` =
+    /// none.
+    pub endpoint_door: Option<&'static str>,
     /// The keys of the sections the Statement reads beside it (`SECTION_CONSUMED`), in its order:
     /// the plane opens with all of them, one `{section: value}` object (spec Part 1 §4).
     pub consumed: Vec<&'static str>,
@@ -311,6 +315,10 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
                 .iter()
                 .find(|s| s.flags & SECTION_DECLARING != 0)
                 .map_or("", |s| kept(s.name)),
+            endpoint_door: sections
+                .iter()
+                .find(|s| s.flags & SECTION_ENDPOINT_DOOR != 0)
+                .map(|s| kept(s.name)),
             entry_nouns: sections
                 .iter()
                 .filter(|s| s.entry_noun.len != 0)
@@ -687,6 +695,7 @@ pub fn registration(
         section: served.section,
         named_map: served.named_map,
         entry_nouns: served.entry_nouns.clone(),
+        endpoint_door: served.endpoint_door,
         owns: served.owns.clone(),
         consumes: served.consumes.clone(),
         requires: served.requires.clone(),

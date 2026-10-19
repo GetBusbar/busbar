@@ -293,6 +293,9 @@ pub struct PlaneRegistration {
     /// step 2b), as `(section, noun)` in Statement order: the kernel's generic refusals name an
     /// entry by it, never by a literal of their own.
     pub entry_nouns: Vec<(&'static str, &'static str)>,
+    /// THE PLANE'S ENDPOINT DOOR (`SECTION_ENDPOINT_DOOR`, step 2b): the owned section beside its
+    /// verb that configures its receiving side; `None` = it has none. At most one.
+    pub endpoint_door: Option<&'static str>,
     /// The sections the Statement marks REQUIRED (`SECTION_REQUIRED`), in Statement order: a
     /// document must carry each while the plane is linked (CONFIG-REQ, Law 7), and the kernel's
     /// config pre-pass refuses one that omits it with the frozen missing-field text.

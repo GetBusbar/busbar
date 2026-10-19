@@ -13,7 +13,7 @@ use super::call::{AbiStr, Blob, DeadlineClass, Outcome, RawOutcome};
 use super::door::{
     MarkWord, Rewrite, Section, Statement, MARKS_KNOWN, MARK_WORD_HOOK,
     MARK_WORD_ISSUED_SECRET_ALPHABET, REWRITE_ALIAS, REWRITE_KEY, SECTION_CONSUMED,
-    SECTION_DECLARING, SECTION_NAMED_MAP, SECTION_REQUIRED,
+    SECTION_DECLARING, SECTION_ENDPOINT_DOOR, SECTION_NAMED_MAP, SECTION_REQUIRED,
 };
 use crate::abi::host::conn::connector::{
     Need, DIRECTION_INBOUND, DIRECTION_OUTBOUND, EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED,
@@ -478,7 +478,11 @@ pub fn check_rewrites(rewrites: &[Rewrite]) -> Result<(), Fault> {
 ///
 /// The rule the sections break.
 pub fn check_statement_sections(sections: &[Section]) -> Result<(), Fault> {
-    let known = SECTION_DECLARING | SECTION_REQUIRED | SECTION_CONSUMED | SECTION_NAMED_MAP;
+    let known = SECTION_DECLARING
+        | SECTION_REQUIRED
+        | SECTION_CONSUMED
+        | SECTION_NAMED_MAP
+        | SECTION_ENDPOINT_DOOR;
     for s in sections {
         named(s.name, "section.name")?;
         bits(u64::from(s.flags), u64::from(known), "section.flags")?;
@@ -649,9 +653,11 @@ pub unsafe fn check_statement(st: &Statement) -> Result<(), Fault> {
     check_rewrites(unsafe { list(st.rewrites, st.rewrites_len, "statement.rewrites") }?)?;
     let sections = unsafe { list(st.sections, st.sections_len, "statement.sections") }?;
     check_statement_sections(sections)?;
-    // A NAMED MAP IS A PLANE'S FACT (its verb's registrations): any other kind stating it is
-    // refused, never silently ignored.
-    if sections.iter().any(|s| s.flags & SECTION_NAMED_MAP != 0)
+    // A NAMED MAP AND AN ENDPOINT DOOR ARE A PLANE'S FACTS (its verb's registrations, its
+    // receiving side): any other kind stating either is refused, never silently ignored.
+    if sections
+        .iter()
+        .any(|s| s.flags & (SECTION_NAMED_MAP | SECTION_ENDPOINT_DOOR) != 0)
         && st.kind != super::KindCode::Plane as u32
     {
         return Err(fault(Rule::Contradiction, "statement.sections"));
