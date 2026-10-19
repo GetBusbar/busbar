@@ -1841,6 +1841,8 @@ extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                 request,
                 body,
                 deadline: op_remaining(),
+                // RED: the framing is not named.
+                framing: 0,
             };
             serve_with(
                 &store,
@@ -1871,7 +1873,7 @@ extern "C" fn unit_hand_in(ctx: HostCtx, input: *const c_void, out: *mut Service
         input,
         out,
         op::UNIT_HAND_IN,
-        |i, owner, _, route, _| {
+        |i, owner, _, route, head| {
             let host = auth_host(&route);
             if let Some(r) =
                 refused_ref(owner, &i.auth).or_else(|| refused_unit(owner, host.as_ref(), &i.unit))
@@ -1900,6 +1902,8 @@ extern "C" fn unit_hand_in(ctx: HostCtx, input: *const c_void, out: *mut Service
                 conn: i.conn,
                 stream: i.stream,
                 request,
+                framing: (!head.handle.ticket.is_none())
+                    .then(|| super::auth_handle::framing_of(head.handle.ticket)),
             };
             match host.hand_in(ask) {
                 Ok((flow, unit)) => {

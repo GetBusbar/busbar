@@ -2096,6 +2096,8 @@ impl Dispatcher {
     /// step 4) from `host`; the first install stands. `false` when one was installed already. With
     /// none installed each of the three answers REFUSED past its checks.
     pub fn install_auth_handle(&self, host: Arc<dyn super::auth_handle::AuthHandleHost>) -> bool {
+        // The inline tickets (one per side of a carried connection) tell it when a framing ends.
+        self.pool.env.inline.tell_ended(Arc::clone(&host));
         self.pool.env.auth.set(host).is_ok()
     }
 

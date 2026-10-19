@@ -3043,6 +3043,8 @@ struct KernelSide {
     units: Mutex<Vec<(u64, u64, UnitSecret)>>,
     /// At the peer point, answer the flow alone (else the names and a unit, as at the head).
     peer_clean: std::sync::atomic::AtomicBool,
+    /// Every framing the loader told it ended.
+    ended: Mutex<Vec<u64>>,
 }
 
 const SIDE_SECRET: [u64; 2] = [0x5eed, 0xc0de];
@@ -3109,6 +3111,10 @@ impl AuthHandleHost for KernelSide {
         };
         self.hands.lock().unwrap().push(ask);
         Ok((svc::FLOW_STOP, unit))
+    }
+
+    fn framing_ended(&self, framing: u64) {
+        self.ended.lock().unwrap().push(framing);
     }
 
     fn refuse(&self, ask: RefuseAsk) -> Result<RefusalBytes, &'static str> {
@@ -3510,4 +3516,49 @@ fn refuse_in() -> UnitRefuseIn {
         answer: std::ptr::null_mut(),
         request: get_view(),
     }
+}
+
+// ── the framing: the host's identity of a connection side ─────────────────────────────────────
+
+/// RED (the framing is the host's): an `auth.call` hands the kernel the framing of the ticket its
+/// framer op was made on, never the transport's word for it.
+#[test]
+fn red_an_auth_call_names_its_tickets_framing() {
+    let (d, side) = served_double();
+    let r = mint_auth_ref(owner(&d), generation(), 3).expect("minted");
+    let mut slot = answer_slot();
+    let (mut buf, mut spans) = ([0u8; 64], [NO_FIELD_SPAN; 4]);
+    let i = auth_call_into(r, &mut slot, &mut buf, &mut spans);
+    let (ret, o) = call_auth(d.ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Ready, "{}", error(&o));
+    assert_eq!(
+        side.calls.lock().unwrap()[0].framing,
+        crate::dispatch::auth_handle::framing_of(TICKET)
+    );
+}
+
+/// RED (the host's end notification): the loader tells the installed kernel side when it retires
+/// a connection side's ticket, naming that framing; a live ticket's framing is never named.
+#[test]
+fn red_retiring_a_connection_sides_ticket_ends_its_framing() {
+    let dispatcher = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let side = Arc::new(KernelSide::default());
+    let host: Arc<dyn AuthHandleHost> = side.clone();
+    assert!(dispatcher.install_auth_handle(host));
+    let live = dispatcher.inline_ticket().expect("a ticket");
+    let mut ended = Vec::new();
+    for _ in 0..8 {
+        let t = dispatcher.inline_ticket().expect("a ticket");
+        ended.push(crate::dispatch::auth_handle::framing_of(t.ticket()));
+        drop(t);
+    }
+    assert_eq!(*side.ended.lock().unwrap(), ended);
+    assert!(!side
+        .ended
+        .lock()
+        .unwrap()
+        .contains(&crate::dispatch::auth_handle::framing_of(live.ticket())));
+    let held = crate::dispatch::auth_handle::framing_of(live.ticket());
+    drop(live);
+    assert_eq!(side.ended.lock().unwrap().last(), Some(&held));
 }

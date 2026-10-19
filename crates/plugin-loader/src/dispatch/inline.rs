@@ -136,6 +136,9 @@ pub struct InlineTickets {
     slots: Mutex<(Vec<Arc<Slot>>, Vec<u32>)>,
     /// The dispatcher's service results, which keep what an op on an inline ticket was answered.
     services: Weak<ServiceStore>,
+    /// Told when a ticket is retired: the kernel's side of the auth handle, whose per-framing
+    /// state ends with the connection side the ticket drove.
+    ended: std::sync::OnceLock<Arc<dyn super::auth_handle::AuthHandleHost>>,
 }
 
 impl std::fmt::Debug for InlineTickets {
@@ -152,6 +155,7 @@ impl InlineTickets {
             key,
             slots: Mutex::default(),
             services: Arc::downgrade(services),
+            ended: std::sync::OnceLock::new(),
         }
     }
 
@@ -189,6 +193,11 @@ impl InlineTickets {
         if held.generation != 0 && held.generation == t.generation {
             held.short = short.then_some(s);
         }
+    }
+
+    /// Tell `host` of every ticket retired from here on; the first install stands.
+    pub(crate) fn tell_ended(&self, host: Arc<dyn super::auth_handle::AuthHandleHost>) {
+        let _ = self.ended.set(host);
     }
 
     /// Mint a ticket; `None` when every slot is held.
@@ -366,5 +375,6 @@ impl Drop for InlineTicket {
     fn drop(&mut self) {
         let (_, index) = decode(self.ticket.slot);
         self.owner.recycle(index, &self.slot);
+        // RED: the kernel side is not told.
     }
 }
