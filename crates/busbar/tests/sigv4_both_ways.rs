@@ -100,6 +100,25 @@ fn sigv4_is_verified_inbound_and_signed_outbound() {
         .as_str()
         .unwrap_or_else(|| node.fail(&format!("the mint carried no AWS secret: {minted}")))
         .to_string();
+    // 1.5.5's POST /keys credential bytes (row 159, K3#4): the AccessKeyId is `AKIA` then 16 of
+    // [A-Z0-9], 20 in all, and the secret access key 40 of [A-Za-z0-9+/]. The shape is the linked
+    // signed-request row's own Statement marks; the host draws over it and names no format (RED before the
+    // row states it: the mint has no shape to draw and fails closed).
+    if !(vk_akid.len() == 20
+        && vk_akid.starts_with("AKIA")
+        && vk_akid[4..]
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()))
+    {
+        node.fail(&format!("the AccessKeyId is not 1.5.5's shape: {vk_akid}"));
+    }
+    if !(vk_secret.len() == 40
+        && vk_secret
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/'))
+    {
+        node.fail("the secret access key is not 1.5.5's shape");
+    }
     let vk_token = minted["token"]
         .as_str()
         .unwrap_or_else(|| node.fail(&format!("the mint carried no token: {minted}")))
