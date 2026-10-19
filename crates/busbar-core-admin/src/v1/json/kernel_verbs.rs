@@ -668,15 +668,6 @@ pub(crate) struct CommitUpgradeView {
     hash: String,
 }
 
-/// `POST /store-restore`: the backup to restore. There is no default and no empty one.
-#[cfg(feature = "openapi-schema")]
-#[derive(Deserialize, JsonSchema)]
-#[allow(dead_code)]
-pub(crate) struct StoreRestoreReq {
-    /// The backup the operator names. A request that names none is refused before the ceremony.
-    backup_ref: String,
-}
-
 // ── one verb's contract ──────────────────────────────────────────────────────────────────────────
 
 /// What a kernel verb answers when it succeeds.
@@ -773,67 +764,6 @@ fn doc_for(
         ],
     };
     Some(match verb {
-        // ── the three disaster-recovery verbs: their effect lands on the store ──
-        KernelVerb::ChainBreak => VerbDoc {
-            summary: "Deliberately break the journal chain (disaster recovery; irreducible)",
-            description: "Admitted through the same gates as every other new verb, then handed to \
-                          the store. The request body is not read."
-                .to_string(),
-            success: Success::NoContent("Applied: the chain is broken. No body"),
-            request: None,
-            query: Vec::new(),
-            errors: vec![
-                gated_403(),
-                (
-                    "404",
-                    "`not_found`: the store names no such resource".to_string(),
-                ),
-                unavailable_503("the node could not take the unit, or the store failed"),
-            ],
-        },
-        KernelVerb::StoreRestore => VerbDoc {
-            summary: "Restore the store from a named backup (disaster recovery; irreducible)",
-            description: "The body names the backup; there is no default. A body that names none \
-                          is refused before the ceremony runs. Otherwise admitted through the same \
-                          gates as every other new verb, then handed to the store."
-                .to_string(),
-            success: Success::NoContent("Applied: the store is restored. No body"),
-            request: Some(schema_of(req_gen.subschema_for::<StoreRestoreReq>())),
-            query: Vec::new(),
-            errors: vec![
-                (
-                    "400",
-                    format!(
-                        "`invalid_request`: the body names no `backup_ref` string, or \
-                         {BODY_UNREADABLE}"
-                    ),
-                ),
-                gated_403(),
-                (
-                    "404",
-                    "`not_found`: the store holds no backup under `backup_ref`".to_string(),
-                ),
-                unavailable_503("the node could not take the unit, or the store failed"),
-            ],
-        },
-        KernelVerb::ResealEpochFloor => VerbDoc {
-            summary: "Reseal the epoch floor after a chain break or restore (irreducible)",
-            description: "Admitted through the same gates as every other new verb, then handed to \
-                          the store. The request body is not read."
-                .to_string(),
-            success: Success::NoContent("Applied: the floor is resealed. No body"),
-            request: None,
-            query: Vec::new(),
-            errors: vec![
-                gated_403(),
-                (
-                    "404",
-                    "`not_found`: the store names no such resource".to_string(),
-                ),
-                unavailable_503("the node could not take the unit, or the store failed"),
-            ],
-        },
-
         // ── the four verbs owner answer Q71(2) binds ──
         KernelVerb::Verify => VerbDoc {
             summary: "Verify this node's ledger: checkpoints, sequences, the book and the identity",

@@ -282,20 +282,13 @@ pub enum KernelVerb {
     /// `POST /api/v1/admin/signing-key/rotate`
     PostSigningKeyRotate,
 
-    // ---- 1.6.0 new verbs (12) ----
+    // ---- 1.6.0 new verbs (9) ----
     /// Verify a claim/signature outside the normal request path.
     Verify,
     /// Read plane facts (a plane's own declared facts surface).
     PlaneFacts,
     /// Write a `PlaneRecord` entry.
     PlaneRecordWrite,
-    /// Deliberately break the journal chain (disaster recovery; irreducible; off-node CLI also
-    /// exists on a stopped node).
-    ChainBreak,
-    /// Restore the store from backup (disaster recovery; irreducible; off-node CLI also exists).
-    StoreRestore,
-    /// Reseal the epoch floor after a chain break/restore (irreducible; off-node CLI also exists).
-    ResealEpochFloor,
     /// Commit the schema/version upgrade (irreducible).
     CommitUpgrade,
     /// Manually adjust a ledger figure (irreducible above `adjust_threshold`).
@@ -671,20 +664,20 @@ pub const LEGACY_VERBS: &[LegacyVerbRow] = &[
     ),
 ];
 
-/// The 12 new 1.6.0 verbs: the eight money-governance verbs, plus `amend_rate_history` — the
+/// The 9 new 1.6.0 verbs: the five money-governance verbs, plus `amend_rate_history` — the
 /// signed, back-dated rate-card correction the dated-history design adds to the irreducible set —
 /// and the three trust verbs over the kernel's trust book (ARCHITECT 2026-10-06).
 /// `set_operator_key`, `set_escrow`, `set_dual_control`, `export_keyset` and `approve` left 1.6.0
 /// by the owner's 2026-09-08 ruling (ARCHITECTURE section 4.7), and `set_overdraft_ceiling`,
 /// `set_dispute_max_age`, `resolve_dispute` and `resolve_slice` by #77(9) (owner answer Q71(1)):
-/// they are not verbs, and their paths are the unmounted `404`.
+/// they are not verbs, and their paths are the unmounted `404`. So are `chain_break`,
+/// `store_restore` and `reseal_epoch_floor`: named by neither BUSBAR-1.6.0.md nor 1.5.5, and
+/// answered `applied` by a store adapter that did nothing (Q128 arch u71), they are deleted end to
+/// end for 1.5.5 parity (coordinator ruling).
 pub const NEW_VERBS: &[KernelVerb] = &[
     KernelVerb::Verify,
     KernelVerb::PlaneFacts,
     KernelVerb::PlaneRecordWrite,
-    KernelVerb::ChainBreak,
-    KernelVerb::StoreRestore,
-    KernelVerb::ResealEpochFloor,
     KernelVerb::CommitUpgrade,
     KernelVerb::Adjust,
     KernelVerb::AmendRateHistory,
@@ -707,9 +700,6 @@ pub const NEW_VERBS: &[KernelVerb] = &[
 #[must_use]
 pub const fn effect_bound(verb: KernelVerb) -> bool {
     match verb {
-        // Their effect lands on the store (`Verbs::chain_break` / `store_restore` /
-        // `reseal_epoch_floor`).
-        KernelVerb::ChainBreak | KernelVerb::StoreRestore | KernelVerb::ResealEpochFloor => true,
         // Their effect lands on the node's amendment journal (the composition root's
         // `execute_new_verb`).
         KernelVerb::Adjust | KernelVerb::AmendRateHistory => true,
@@ -810,10 +800,7 @@ pub const NAMED_SURFACES: &[KernelVerb] = &[
 /// here so the closed set names every verb the document calls irreducible, with the caveat carried
 /// in this doc comment rather than silently dropped.
 pub const IRREDUCIBLE_VERBS: &[KernelVerb] = &[
-    KernelVerb::ChainBreak,
-    KernelVerb::StoreRestore,
     KernelVerb::CommitUpgrade,
-    KernelVerb::ResealEpochFloor,
     KernelVerb::Adjust,
     // `amend_rate_history` rewrites what the past cost, so D38 seals it irreducible.
     KernelVerb::AmendRateHistory,
@@ -845,13 +832,10 @@ pub const IRREDUCIBLE_VERBS: &[KernelVerb] = &[
 #[must_use]
 pub const fn verb_name(verb: KernelVerb) -> Option<&'static str> {
     Some(match verb {
-        // The 9 money-governance verbs.
+        // The 6 money-governance verbs.
         KernelVerb::Verify => "verify",
         KernelVerb::PlaneFacts => "plane_facts",
         KernelVerb::PlaneRecordWrite => "plane_record_write",
-        KernelVerb::ChainBreak => "chain_break",
-        KernelVerb::StoreRestore => "store_restore",
-        KernelVerb::ResealEpochFloor => "reseal_epoch_floor",
         KernelVerb::CommitUpgrade => "commit_upgrade",
         KernelVerb::Adjust => "adjust",
         KernelVerb::AmendRateHistory => "amend_rate_history",

@@ -9,12 +9,13 @@
 //! #40): the execution unit implements the verb over a `dyn Store`, the loaded store's adapter
 //! answers it, and neither depends on the other.
 //!
-//! The store seam here is the disaster-recovery primitives named in the architecture document's
-//! irreducible set (`chain_break`, `store_restore`, `reseal_epoch_floor`), plus the store-backed
-//! sealed idempotency cache the new credential-minting verbs use. Every method is a `// contract:`
-//! seam: the actual durable operation is always the integrator's.
-
-use crate::caps::{AdminVerb, Grant};
+//! The store seam here is the store-backed sealed idempotency cache the new credential-minting
+//! verbs use. Every method is a `// contract:` seam: the actual durable operation is always the
+//! integrator's.
+//!
+//! It carries no disaster-recovery verb. `chain_break`, `store_restore` and `reseal_epoch_floor`
+//! were named by neither BUSBAR-1.6.0.md nor 1.5.5, and the one adapter that answered them did so
+//! with an `Ok` and no effect (Q128 arch u71); they are deleted end to end (1.5.5 parity).
 
 /// Replay window (seconds) — 600 s, exactly `IDEMPOTENCY_TTL_SECS` in 1.5.5/1.6.0-legacy admin.
 ///
@@ -35,17 +36,6 @@ pub enum StoreError {
 
 /// The store seam.
 pub trait Store {
-    /// `// contract:` deliberately break the journal chain (disaster recovery). Off-node CLI also
-    /// exists on a stopped node; this is the ADMIN-VERB path, admitted only under the
-    /// irreducible-set posture rules.
-    fn chain_break(&self, admin: &Grant<AdminVerb>) -> Result<(), StoreError>;
-
-    /// `// contract:` restore the store from a named backup.
-    fn store_restore(&self, admin: &Grant<AdminVerb>, backup_ref: &str) -> Result<(), StoreError>;
-
-    /// `// contract:` reseal the epoch floor after a chain break or restore.
-    fn reseal_epoch_floor(&self, admin: &Grant<AdminVerb>) -> Result<(), StoreError>;
-
     /// `// contract:` the store-backed sealed idempotency cache for the NEW credential-minting
     /// verbs (`set_operator_key`, `export_keyset`'s recipient-sealed export, and any future
     /// credential-minting new verb) — TTL `min(dispute_max_age, max(600s, longest finite cap

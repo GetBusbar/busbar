@@ -3323,7 +3323,6 @@ pub(crate) fn admit(
 /// the unit's decision, from its own closed table, and not this step's.
 pub(crate) fn route(
     binding: &AdminBinding,
-    store: crate::root::kernel::VerbStoreHandle,
     admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
     token: &Pass<Route>,
     ctx: &UnitCtx,
@@ -3394,56 +3393,9 @@ pub(crate) fn route(
                     None => bound::ReplayCache::new(),
                 })
             }))),
-            store,
             CONFIG_CLASS_RULES,
             Arc::clone(&binding.mutations),
         );
-
-    // THE THREE DISASTER-RECOVERY VERBS REACH THE STORE, not the governance seam. They are new
-    // verbs and are admitted exactly as every other new verb is — scope, rate class, then the
-    // operator ceremony and dual control — but their effect lands on `Store` rather than on a
-    // handler, and the unit gives each of them its own entry point for precisely that reason.
-    // Sending them through `execute` sent them to `execute_new_verb`, which asks the mounted router
-    // for a path that release never had: the ceremony ran, the gates passed, and the caller got a
-    // 404 from the surface underneath. Breaking a journal chain is not an operation that should be
-    // able to look like it happened when it did not, nor to look like it did not when it had.
-    if let Some(recovery) = recovery_verb(verb) {
-        let ran = match recovery {
-            RecoveryVerb::ChainBreak => {
-                verbs.chain_break(admin, &actor, granted, request.at, posture, approval)
-            }
-            RecoveryVerb::StoreRestore => {
-                // The backup the operator named. There is no default and no empty one: restoring
-                // "whatever the store thinks" is the single most destructive thing this surface can
-                // be asked to do by accident, so a request that names none is refused before the
-                // ceremony rather than resolved to something.
-                match backup_ref_of(&request.body) {
-                    Some(backup_ref) => verbs.store_restore(
-                        admin,
-                        &actor,
-                        granted,
-                        request.at,
-                        posture,
-                        approval,
-                        &backup_ref,
-                    ),
-                    None => {
-                        return SeatVerdict::refuse(token, Refusal::new(ReasonCode::DecodeFailed));
-                    }
-                }
-            }
-            RecoveryVerb::ResealEpochFloor => {
-                verbs.reseal_epoch_floor(admin, &actor, granted, request.at, posture, approval)
-            }
-        };
-        return match ran {
-            Ok(()) => {
-                binding.units.set_answer(ctx.key, applied_answer());
-                SeatVerdict::proceed(token, busbar_contract::RoutePlan::default())
-            }
-            Err(refusal) => SeatVerdict::refuse(token, Refusal::new(verbs_reason(refusal.reason))),
-        };
-    }
 
     match verbs.execute(
         verb,
@@ -3466,88 +3418,6 @@ pub(crate) fn route(
         },
         Err(refusal) => SeatVerdict::refuse(token, Refusal::new(verbs_reason(refusal.reason))),
     }
-}
-
-/// The three verbs whose effect lands on the store rather than on a handler.
-///
-/// Named as a closed enumeration of its own rather than matched inline, so "these three and no
-/// others" is a fact with a test on it. The verbs unit draws the same line from the other side: it
-/// gives each of them a method, and gives `execute` no arm that could reach one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RecoveryVerb {
-    ChainBreak,
-    StoreRestore,
-    ResealEpochFloor,
-}
-
-/// Which recovery verb this is, or `None` for a verb whose effect is the governance seam's.
-fn recovery_verb(verb: KernelVerb) -> Option<RecoveryVerb> {
-    match verb {
-        KernelVerb::ChainBreak => Some(RecoveryVerb::ChainBreak),
-        KernelVerb::StoreRestore => Some(RecoveryVerb::StoreRestore),
-        KernelVerb::ResealEpochFloor => Some(RecoveryVerb::ResealEpochFloor),
-        _ => None,
-    }
-}
-
-/// What an operation that changed something and has nothing to say answers with.
-///
-/// A recovery verb's whole result is its effect: the chain broke, the store restored, the floor
-/// resealed. There is no document to return and none was ever specified, so the answer carries no
-/// body and declares no content type — inventing a document here would put a schema on the wire that
-/// nothing describes and that a client would then be entitled to depend on.
-fn applied_answer() -> AdminAnswer {
-    AdminAnswer {
-        status: 204,
-        headers: Vec::new(),
-        body: Vec::new(),
-    }
-}
-
-/// The backup a `store_restore` request names, or `None` when it names none.
-///
-/// A deliberately small reader for a deliberately small document: one field, whose value is a JSON
-/// string. Written out rather than taken from a serialization crate because this crate carries none
-/// on the request path, and because getting it wrong in the permissive direction is what would let a
-/// malformed body restore something the operator did not ask for. Anything this does not understand
-/// — a missing field, a value that is not a string, an unterminated one — is `None`, and `None` is
-/// a refusal at the call site.
-fn backup_ref_of(body: &[u8]) -> Option<String> {
-    const FIELD: &str = "\"backup_ref\"";
-    let text = std::str::from_utf8(body).ok()?;
-    let after = &text[text.find(FIELD)? + FIELD.len()..];
-    let after = after.trim_start();
-    let after = after.strip_prefix(':')?.trim_start();
-    let mut chars = after.strip_prefix('"')?.chars();
-    let mut value = String::new();
-    loop {
-        match chars.next()? {
-            '"' => break,
-            '\\' => match chars.next()? {
-                '"' => value.push('"'),
-                '\\' => value.push('\\'),
-                '/' => value.push('/'),
-                'n' => value.push('\n'),
-                'r' => value.push('\r'),
-                't' => value.push('\t'),
-                'b' => value.push('\u{08}'),
-                'f' => value.push('\u{0c}'),
-                'u' => {
-                    let mut hex = String::with_capacity(4);
-                    for _ in 0..4 {
-                        hex.push(chars.next()?);
-                    }
-                    value.push(char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?);
-                }
-                // An escape this reader does not know is a document it does not understand, and a
-                // backup reference is the last field to guess at.
-                _ => return None,
-            },
-            c => value.push(c),
-        }
-    }
-    // An empty reference names nothing, which is the same refusal as naming no field at all.
-    (!value.is_empty()).then_some(value)
 }
 
 /// Whether the operation's own surface has already minted the identity this answer carries.
@@ -3946,13 +3816,7 @@ impl RegisteredUnits for AdminPlane {
         ctx: &UnitCtx,
         _destinations: &[busbar_contract::caps::VerifiedDestination],
     ) -> SeatVerdict<Route> {
-        route(
-            &root.admin,
-            root.store.clone(),
-            &root.admin_token,
-            token,
-            ctx,
-        )
+        route(&root.admin, &root.admin_token, token, ctx)
     }
 
     fn meter(

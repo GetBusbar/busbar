@@ -206,13 +206,9 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         // change what it does. Its sibling `POST /agents/{name}/approve` is NOT here — that one
         // carries the fingerprint the operator is attesting they saw, which is the whole trust root.
         ("post", "/api/v1/admin/agents/{name}/connect"),
-        // The 1.6.0 kernel verbs whose body the node's administrative loop never reads: the two
-        // recovery verbs are pure commands (the effect is the store's; the verb IS the argument).
-        // Their siblings that DO take one — `store-restore` (`backup_ref`), `adjust` (the count
-        // correction) and `ledger/amend-rate-history` (the signed correction) — are not here; the
-        // verbs with no effect bound are not served, so not documented at all.
-        ("post", "/api/v1/admin/chain-break"),
-        ("post", "/api/v1/admin/reseal-epoch-floor"),
+        // No 1.6.0 kernel verb is bodyless: the two that were (`chain-break`,
+        // `reseal-epoch-floor`) are deleted with `store-restore` (Q128 arch u71, 1.5.5 parity), and
+        // the verbs with no effect bound are not served, so not documented at all.
     ];
 
     let doc = openapi_doc_seamed();
@@ -271,12 +267,12 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         "every BODYLESS entry must name a real operation; saw {bodyless_seen:?}"
     );
     assert_eq!(
-        declared, 34,
-        "34 mutating operations take a body; a change here is a deliberate API change. 34 = 22 \
+        declared, 33,
+        "33 mutating operations take a body; a change here is a deliberate API change. 33 = 22 \
          + each plane section's PUT and PATCH-settings (both DELETEs are bodyless, above) + the \
          agents plane's approve verb, whose body carries the fingerprint the \
-         operator is attesting they read + the seven 1.6.0 kernel verbs that read one \
-         (`store-restore`, `adjust`, `ledger/amend-rate-history`, since owner answer Q71(2) \
+         operator is attesting they read + the six 1.6.0 kernel verbs that read one \
+         (`adjust`, `ledger/amend-rate-history`, since owner answer Q71(2) \
          `plane-record-write` and `commit-upgrade`, and the ARCHITECT's 2026-10-06 \
          `trust/approve` and `trust/revoke`, whose body names the trust key)"
     );

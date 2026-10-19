@@ -395,7 +395,7 @@ fn the_audit_doors_carry_no_credential_into_the_sealed_facts() {
 /// consulted. Under a fleet that sealed dual control, one principal's mutation is REFUSED — a step
 /// that wrote `approved` for itself would let a single operator change a node whose whole reason
 /// for sealing the posture was that no single operator can. Under a fleet that
-/// HAS run the ceremony, a disaster-recovery verb is ADMITTED — a step that wrote `unset` for
+/// HAS run the ceremony, an irreducible verb is ADMITTED — a step that wrote `unset` for
 /// itself refused the very operators who ran the ceremony, permanently and with no way to lift
 /// it. And a posture the node cannot read at all is refused rather than guessed.
 #[test]
@@ -434,7 +434,7 @@ fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
             .expect("the plane's table declares this operation");
         binding.units.set_granted(key, VerbScope::Full);
         let token: Pass<Route> = busbar_kernel::test_support::tokens::pass();
-        let outcome = route(&binding, None, &admin, &token, &ctx).into_result(&seal);
+        let outcome = route(&binding, &admin, &token, &ctx).into_result(&seal);
         binding.units.close(key);
         outcome.map(|_| ()).map_err(|refusal| refusal.reason())
     };
@@ -461,14 +461,25 @@ fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
         },
         ApprovalState::NotYetApproved,
     )));
-    // The gate is what this cell is about, so the assertion is that the unit got PAST it. It no
-    // longer ends `Ok`, and that is the point of the verb reaching the store: the fixture's
-    // store refuses everything, so a chain break admitted by the ceremony now ends on the
-    // store's own answer rather than on the gate's. What must not appear here is the gate's
-    // refusal — that would be a fleet that ran the ceremony being told it had not.
+    // The gate is what this cell is about, so the assertion is that the unit got PAST it: an
+    // irreducible verb (`commit_upgrade`) ends on whatever its own effect answers, never on the
+    // gate's refusal (`OperatorUnset`, said as `ScopeDenied`) — that would be a fleet that ran the
+    // ceremony being told it had not. The control is the same verb under a fleet that has not.
+    let ceremony_not_run = Sealed(Some((
+        PostureCtx {
+            operator: busbar_core_admin::OperatorState::Unset,
+            dual_control: busbar_core_admin::DualControl::Single,
+        },
+        ApprovalState::NotYetApproved,
+    )));
     assert_eq!(
-        under("/api/v1/admin/chain-break", ceremony_run),
-        Err(ReasonCode::DurabilityUnavailable),
+        under("/api/v1/admin/commit-upgrade", ceremony_not_run),
+        Err(ReasonCode::ScopeDenied),
+        "the control: a fleet that has not run the ceremony is refused at the gate"
+    );
+    assert_ne!(
+        under("/api/v1/admin/commit-upgrade", ceremony_run),
+        Err(ReasonCode::ScopeDenied),
         "a fleet that ran the ceremony was still refused for not having run it"
     );
 
@@ -659,28 +670,6 @@ fn only_the_two_minting_verbs_are_reached_through_the_seam_directly() {
 struct ReplaySlots(Mutex<HashMap<(String, String), Vec<u8>>>);
 
 impl busbar_contract::verb_store::Store for ReplaySlots {
-    fn chain_break(
-        &self,
-        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        Ok(())
-    }
-
-    fn store_restore(
-        &self,
-        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-        _backup_ref: &str,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        Ok(())
-    }
-
-    fn reseal_epoch_floor(
-        &self,
-        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        Ok(())
-    }
-
     fn replay_new_verb(
         &self,
         key: &(String, String),
@@ -1453,222 +1442,6 @@ fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none(
 /// stop passing.
 const AN_IDENTIFIED_OPERATOR: &str = "operator-alice";
 
-/// Each of the three recovery verbs reaches the STORE, and a refusing store's answer is the
-/// caller's.
-///
-/// The three used to travel `Verbs::execute`, which sends every new verb to the governance seam
-/// — and the governance seam is the mounted router, which has no route for any of them. So all
-/// three passed the scope check, the rate class, the operator ceremony and dual control, and
-/// then received a 404 from the surface underneath: the gates on the most destructive
-/// operations this node has were being run in front of nothing.
-///
-/// Two assertions per verb, and both are needed. That the store METHOD was reached — recorded by
-/// the store itself, so nothing here infers it from a status — and that a store which refuses
-/// surfaces as the documented refusal rather than as a success or as a decode failure. A test
-/// that only checked the second would pass against a verb that never touched the store at all.
-#[cfg(feature = "root-admin")]
-#[test]
-fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
-    /// A store that records what reached it and refuses it.
-    #[derive(Debug, Default)]
-    struct RecordingStore(Mutex<Vec<String>>);
-
-    impl busbar_contract::verb_store::Store for RecordingStore {
-        fn chain_break(
-            &self,
-            _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-        ) -> Result<(), busbar_contract::verb_store::StoreError> {
-            self.0.lock().unwrap().push("chain_break".to_string());
-            Err(busbar_contract::verb_store::StoreError::Failed)
-        }
-
-        fn store_restore(
-            &self,
-            _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-            backup_ref: &str,
-        ) -> Result<(), busbar_contract::verb_store::StoreError> {
-            self.0
-                .lock()
-                .unwrap()
-                .push(format!("store_restore:{backup_ref}"));
-            Err(busbar_contract::verb_store::StoreError::Failed)
-        }
-
-        fn reseal_epoch_floor(
-            &self,
-            _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-        ) -> Result<(), busbar_contract::verb_store::StoreError> {
-            self.0
-                .lock()
-                .unwrap()
-                .push("reseal_epoch_floor".to_string());
-            Err(busbar_contract::verb_store::StoreError::Failed)
-        }
-
-        fn replay_new_verb(
-            &self,
-            _key: &(String, String),
-        ) -> Result<Option<Vec<u8>>, busbar_contract::verb_store::StoreError> {
-            Ok(None)
-        }
-
-        fn commit_new_verb_replay(
-            &self,
-            _key: &(String, String),
-            _response: &[u8],
-        ) -> Result<(), busbar_contract::verb_store::StoreError> {
-            Ok(())
-        }
-    }
-
-    /// A dispatch that must never be asked. If a recovery verb still travelled the governance
-    /// seam this would answer instead of the store, and the store's log would be empty — so the
-    /// two halves of the proof check each other.
-    struct NeverDispatched;
-    impl AdminDispatch for NeverDispatched {
-        fn execute(&self, verb: KernelVerb, _request: &AdminRequest) -> AdminAnswer {
-            panic!("a recovery verb reached the governance seam: {verb:?}");
-        }
-    }
-
-    let seal = busbar_kernel::test_support::tokens::seal();
-    let admin = crate::root::kernel::new_kernel().admin_token();
-
-    // The posture a fleet that has run its ceremony has, so the gates admit and what is left is
-    // the destination. Anything less and the verb would be refused before the store.
-    let ceremony_run = || -> Arc<dyn PostureView> {
-        struct Ran;
-        impl PostureView for Ran {
-            fn resolve(
-                &self,
-                _verb: KernelVerb,
-                _actor: &str,
-            ) -> Option<(PostureCtx, ApprovalState)> {
-                Some((
-                    PostureCtx {
-                        operator: busbar_core_admin::OperatorState::Set([0u8; 32]),
-                        dual_control: busbar_core_admin::DualControl::Single,
-                    },
-                    ApprovalState::NotYetApproved,
-                ))
-            }
-        }
-        Arc::new(Ran)
-    };
-
-    for (path, body, reached) in [
-        ("/api/v1/admin/chain-break", "{}", "chain_break"),
-        (
-            "/api/v1/admin/store-restore",
-            "{\"backup_ref\":\"nightly-2026-09-05\"}",
-            "store_restore:nightly-2026-09-05",
-        ),
-        (
-            "/api/v1/admin/reseal-epoch-floor",
-            "{}",
-            "reseal_epoch_floor",
-        ),
-    ] {
-        let store = Arc::new(RecordingStore::default());
-        let binding = AdminBinding::new(Arc::new(NeverDispatched), open_door())
-            .with_posture_view(ceremony_run());
-        let key = UnitKey::new(1);
-        let mut request = a_request();
-        request.method = "POST".to_string();
-        request.path = path.to_string();
-        request.body = body.as_bytes().to_vec();
-        binding.units.open(key, request);
-        let ctx = UnitCtx {
-            call: busbar_contract::caps::CallId::UNBOUND,
-            key,
-            origin: busbar_contract::caps::OriginKind::Client,
-            session: None,
-            generation: busbar_kernel::registry::Generation::FIRST,
-            admin_listener: true,
-            kernel_verb_only: true,
-        };
-        decode(&binding, &busbar_kernel::test_support::tokens::pass(), &ctx)
-            .into_result(&seal)
-            .unwrap_or_else(|_| panic!("{path} is a row the plane's table declares"));
-        binding.units.set_granted(key, VerbScope::Full);
-
-        let token: Pass<Route> = busbar_kernel::test_support::tokens::pass();
-        let outcome = route(
-            &binding,
-            Some(Arc::clone(&store) as Arc<dyn busbar_contract::verb_store::Store + Send + Sync>),
-            &admin,
-            &token,
-            &ctx,
-        )
-        .into_result(&seal);
-        binding.units.close(key);
-
-        assert_eq!(
-            store.0.lock().unwrap().as_slice(),
-            [reached.to_string()],
-            "{path} did not reach the store method it names"
-        );
-        assert_eq!(
-            outcome.err().map(|refusal| refusal.reason()),
-            Some(ReasonCode::DurabilityUnavailable),
-            "{path} did not surface the refusing store's refusal"
-        );
-    }
-}
-
-/// A `store_restore` that names no backup restores nothing.
-///
-/// The single most destructive request this surface takes, and the one whose argument must not
-/// be defaulted: a body that names no reference is refused before the ceremony runs, so the
-/// store is never asked to restore "whatever it thinks". The reader is exercised over the shapes
-/// a real body has and the shapes a malformed one does, because the refusal is only worth having
-/// if it survives both.
-///
-/// Every document below is written with ordinary escaped literals rather than raw ones. That is
-/// not a style choice: the structure lints read this file by blanking string literals and then
-/// counting braces, and their blanker does not know the raw byte-string form \u2014 so a JSON body
-/// spelt that way leaks its braces into their depth tracking and silently reclassifies the rest
-/// of this test module as production source.
-#[test]
-fn a_restore_that_names_no_backup_is_refused_rather_than_defaulted() {
-    assert_eq!(
-        backup_ref_of("{\"backup_ref\":\"nightly-2026-09-05\"}".as_bytes()),
-        Some("nightly-2026-09-05".to_string())
-    );
-    assert_eq!(
-        backup_ref_of("{ \"backup_ref\" : \"with \\\"quotes\\\" and \\\\slash\" }".as_bytes()),
-        Some("with \"quotes\" and \\slash".to_string())
-    );
-    // A `\u` escape, which is one of the two ways a JSON document carries a non-ASCII name.
-    assert_eq!(
-        backup_ref_of("{\"backup_ref\":\"\\u00e9t\\u00e9\"}".as_bytes()),
-        Some("\u{e9}t\u{e9}".to_string())
-    );
-    // And the other: the same name spelt as UTF-8 bytes.
-    assert_eq!(
-        backup_ref_of("{\"backup_ref\":\"\u{e9}t\u{e9}\"}".as_bytes()),
-        Some("\u{e9}t\u{e9}".to_string())
-    );
-    for malformed in [
-        "{}",
-        "{\"backup\":\"x\"}",
-        "{\"backup_ref\":\"\"}",
-        "{\"backup_ref\":null}",
-        "{\"backup_ref\":42}",
-        "{\"backup_ref\":\"unterminated",
-        "{\"backup_ref\":\"\\q\"}",
-        "",
-    ] {
-        assert_eq!(
-            backup_ref_of(malformed.as_bytes()),
-            None,
-            "a body naming no usable reference must not resolve to one"
-        );
-    }
-    // And bytes that are not text at all.
-    assert_eq!(backup_ref_of(&[0xff, 0xfe]), None);
-}
-
 /// Both carriers the administrative surface accepts reach the loop as one credential.
 ///
 /// The reader is what a closed chain here would judge, so every form a deployment's tooling
@@ -1729,38 +1502,6 @@ fn either_carrier_reaches_the_loop_as_the_credential_itself() {
         None,
         "a request with no carrier at all presents nothing"
     );
-}
-
-/// These three verbs and no others land on the store.
-///
-/// Written from this side as well as the verbs unit's, because the split is a fact two crates
-/// have to agree about: a verb added to the unit's store methods without a row here would go
-/// back to the governance seam and its 404, silently.
-#[test]
-fn exactly_three_verbs_land_on_the_store() {
-    let landing: Vec<KernelVerb> = NEW_VERBS
-        .iter()
-        .copied()
-        .filter(|verb| recovery_verb(*verb).is_some())
-        .collect();
-    assert_eq!(
-        landing,
-        vec![
-            KernelVerb::ChainBreak,
-            KernelVerb::StoreRestore,
-            KernelVerb::ResealEpochFloor
-        ]
-    );
-    for verb in LEGACY_VERBS
-        .iter()
-        .map(|row| row.verb)
-        .chain(LEDGER_VERBS.iter().chain(NAMED_SURFACES.iter()).copied())
-    {
-        assert!(
-            recovery_verb(verb).is_none(),
-            "{verb:?} is not a recovery verb"
-        );
-    }
 }
 
 /// A unit whose verb never resolved is sealed by its METHOD, not as a read whatever it asked.
@@ -3060,7 +2801,6 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
                 *verb,
                 a_ledger_request("/api/v1/admin/ledger/totals"),
             ),
-            None::<Arc<dyn busbar_contract::verb_store::Store + Send + Sync>>,
             CONFIG_CLASS_RULES,
             Arc::new(busbar_core_admin::rate::MutationLimiter::new()),
         );
@@ -3101,7 +2841,6 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
             KernelVerb::Adjust,
             a_ledger_request("/api/v1/admin/adjust"),
         ),
-        None::<Arc<dyn busbar_contract::verb_store::Store + Send + Sync>>,
         CONFIG_CLASS_RULES,
         Arc::new(busbar_core_admin::rate::MutationLimiter::new()),
     );
@@ -5501,7 +5240,6 @@ fn adjust_through_route(
     binding.units.set_granted(key, granted);
     let outcome = route(
         binding,
-        None,
         &admin,
         &busbar_kernel::test_support::tokens::pass::<Route>(),
         &ctx,
@@ -5856,7 +5594,6 @@ fn the_admin_listener_binds_its_claim_journal_on_a_data_dir_node_only() {
             open_door(),
             Arc::new(Mutex::new(durability)),
             Arc::new(rows),
-            None,
         )
     };
     assert!(
@@ -6517,7 +6254,7 @@ fn route_refuses_a_unit_whose_grant_was_never_recorded() {
     let key = UnitKey::new(1);
     let mut request = a_request();
     request.method = "POST".to_string();
-    request.path = "/api/v1/admin/chain-break".to_string();
+    request.path = "/api/v1/admin/commit-upgrade".to_string();
     binding.units.open(key, request);
     let ctx = UnitCtx {
         call: busbar_contract::caps::CallId::UNBOUND,
@@ -6537,7 +6274,7 @@ fn route_refuses_a_unit_whose_grant_was_never_recorded() {
     .expect("the plane's table declares this operation");
     // No `set_granted`: the Approve step never ran for this unit.
     let token: Pass<Route> = busbar_kernel::test_support::tokens::pass();
-    let outcome = route(&binding, None, &admin, &token, &ctx).into_result(&seal);
+    let outcome = route(&binding, &admin, &token, &ctx).into_result(&seal);
     binding.units.close(key);
     assert_eq!(
         outcome.map(|_| ()).map_err(|refusal| refusal.reason()),
