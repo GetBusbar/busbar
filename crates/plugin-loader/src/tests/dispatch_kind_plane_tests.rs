@@ -432,6 +432,72 @@ fn a_snapshot_with_a_zeroed_routing_entry_is_not_copied() {
     assert!(crate::dispatch::kinds::plane::copy_snapshot(&sn, 4).is_none());
 }
 
+/// GREEN (step 2b): a snapshot's judged routing is copied whole, in order, for the kernel to walk.
+#[test]
+fn a_snapshots_routing_is_copied_for_the_kernel() {
+    use busbar_contract::abi::plane::{
+        MemberFact, RouteEntry, RouteMember, FACT_CONCURRENCY_CAP, FACT_FAILOVER_MAX_HOPS,
+    };
+    let s = |t: &'static str| AbiStr {
+        ptr: t.as_ptr(),
+        len: t.len(),
+    };
+    let member_facts = [MemberFact {
+        fact: FACT_CONCURRENCY_CAP,
+        value: 4,
+        ..MemberFact::ZERO
+    }];
+    let entry_facts = [MemberFact {
+        fact: FACT_FAILOVER_MAX_HOPS,
+        value: 2,
+        ..MemberFact::ZERO
+    }];
+    let tags = [s("fast")];
+    let members = [RouteMember {
+        lane: s("lane-a"),
+        provider: s("prov"),
+        weight: 2,
+        tier: s("gold"),
+        tags: tags.as_ptr(),
+        tags_len: 1,
+        facts: member_facts.as_ptr(),
+        facts_len: 1,
+        ..RouteMember::ZERO
+    }];
+    let path = [s("sec"), s("e")];
+    let entries = [RouteEntry {
+        section: s("sec"),
+        entry: s("e"),
+        path: path.as_ptr(),
+        path_len: 2,
+        fallback: s("other"),
+        facts: entry_facts.as_ptr(),
+        facts_len: 1,
+        members: members.as_ptr(),
+        members_len: 1,
+        ..RouteEntry::ZERO
+    }];
+    let mut sn = snap(7);
+    sn.routing = entries.as_ptr();
+    sn.routing_len = 1;
+    let copied = crate::dispatch::kinds::plane::copy_snapshot(&sn, 4).expect("copied");
+    assert_eq!(copied.routing.len(), 1);
+    let e = &copied.routing[0];
+    assert_eq!((e.section.as_str(), e.entry.as_str()), ("sec", "e"));
+    assert_eq!(e.path, vec!["sec".to_string(), "e".to_string()]);
+    assert_eq!(e.fallback.as_deref(), Some("other"));
+    assert_eq!(e.facts, vec![(FACT_FAILOVER_MAX_HOPS, 2)]);
+    let m = &e.members[0];
+    assert_eq!(
+        (m.lane.as_str(), m.provider.as_str(), m.weight),
+        ("lane-a", "prov", 2)
+    );
+    assert_eq!(m.upstream, None);
+    assert_eq!(m.tier.as_deref(), Some("gold"));
+    assert_eq!(m.tags, vec!["fast".to_string()]);
+    assert_eq!(m.facts, vec![(FACT_CONCURRENCY_CAP, 4)]);
+}
+
 #[test]
 fn refresh_green_and_red_on_its_snapshot() {
     let mut i: RefreshIn = z();
