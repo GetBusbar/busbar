@@ -866,10 +866,6 @@ impl WakeRoute for Pool {
         self.env.io.get().cloned()
     }
 
-    fn seal(&self) -> Option<Arc<dyn busbar_contract::plugin::KernelSeal + Send + Sync>> {
-        self.env.seal.get().cloned()
-    }
-
     fn inline_waker(&self, t: Ticket) -> Option<std::task::Waker> {
         self.env.inline.waker_of(t)
     }

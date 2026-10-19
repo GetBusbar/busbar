@@ -293,15 +293,7 @@ pub(crate) unsafe fn serve(
     body: impl FnOnce(Option<Completer>) -> Ran,
 ) -> Answered {
     // SAFETY: the caller's contract, for `into`.
-    unsafe {
-        serve_with(
-            store,
-            route,
-            head,
-            |stored| unsafe { deliver(stored, into) },
-            body,
-        )
-    }
+    unsafe { serve_with(store, route, head, |stored| deliver(stored, into), body) }
 }
 
 /// [`serve`], its stored result written into the caller's buffers by `put` (a service whose answer

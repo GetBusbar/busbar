@@ -2824,8 +2824,8 @@ fn a_transports_outbound_auth_call_is_served_on_a_route_with_no_other_service() 
     let wake: &'static InstanceWake = Box::leak(Box::default());
     assert!(wake.route.set(Arc::downgrade(&route)).is_ok());
     let ctx = crate::dispatch::handle::mint(wake).expect("the host mints a handle");
-    let owner = crate::dispatch::handle::instance_id(ctx).0;
-    let r = mint_auth_ref(owner, generation(), OUTBOUND).expect("minted");
+    let me = crate::dispatch::handle::instance_id(ctx).0;
+    let r = mint_auth_ref(me, generation(), OUTBOUND).expect("minted");
     let line = content_type();
     let (mut buf, mut spans) = (vec![0_u8; 64], vec![no_span(); 4]);
     let mut slot = answer_slot();

@@ -632,3 +632,252 @@ fn the_auth_signs_the_exact_head_that_goes_on_the_wire() {
     );
     attempt_auth::forget(unit);
 }
+
+// ── the composed open: webrtc's signalling request (coordinator ruling) ─────────────────────────
+
+/// A dialling datagram framer, as small as the composed open needs: its `begin` answers its own
+/// session description as the stream-0 piece the connector sends as the signalling body.
+struct Datagram {
+    facts: busbar_core_connector::framer::DoorFacts,
+}
+
+/// The description the datagram framer offers.
+const OFFER: &[u8] = b"v=0 offer";
+
+impl FramerDoor for Datagram {
+    fn facts(&self) -> &busbar_core_connector::framer::DoorFacts {
+        &self.facts
+    }
+    fn cross(
+        &self,
+        call: busbar_core_connector::framer::Call<'_>,
+    ) -> busbar_core_connector::framer::Crossed {
+        use busbar_contract::abi::transport::{FramePiece, PIECE_END_OF_FRAME};
+        use busbar_core_connector::framer::{Call, Crossed};
+        let ok = Crossed {
+            outcome: Outcome::Ready,
+            error: None,
+        };
+        match call {
+            Call::Begin(i, o) => {
+                assert!(OFFER.len() <= i.sink.frame_cap && i.sink.pieces_cap > 0);
+                // SAFETY: the host's frame and piece buffers, bounded above.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(OFFER.as_ptr(), i.sink.frame, OFFER.len());
+                    i.sink.pieces.write(FramePiece {
+                        stream: 0,
+                        offset: 0,
+                        len: OFFER.len() as u64,
+                        flags: PIECE_END_OF_FRAME,
+                        ..std::mem::zeroed()
+                    });
+                }
+                o.framing = 7;
+                o.yielded.frame_len = OFFER.len() as u64;
+                o.yielded.pieces_len = 1;
+                ok
+            }
+            Call::Timer(..) | Call::Finish(..) => ok,
+            _ => Crossed {
+                outcome: Outcome::Refused,
+                error: None,
+            },
+        }
+    }
+}
+
+/// The caller's leg of the held session: it is never written in this cell.
+struct Quiet;
+
+impl busbar_core_connector::datagram::LegSink for Quiet {
+    fn line(&self, _: busbar_core_connector::datagram::Across, _: std::time::Instant) {}
+    fn close(&self) {}
+}
+
+/// THE COMPOSED SIGNALLING REQUEST CARRIES THE BINDING'S CREDENTIAL (coordinator ruling; THE
+/// DESIGN §6 item 5): a held session's upstream leg, opened over a datagram framer's need, sends
+/// the framer's session description as the body of a signalling exchange over the stream framer
+/// its target names. That exchange's framing begins with the member's binding handle and emits
+/// naming the session's unit, so the framer calls the member's auth through the host auth handle:
+/// the request that reaches the far end carries the auth's line FIRST, then exactly the head the
+/// auth signed (its own length line included), and the description as its body. RED: before, the
+/// composed open's inner exchange began with no binding, and with the kernel's fields call gone
+/// the signalling request went out with no credential.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn a_composed_signalling_request_carries_the_auth_line_over_the_head_it_signed() {
+    use busbar_contract::conn::{Conns as _, OpenDesc, PollConns as _};
+    use busbar_core_connector::registry::{Entry, Transports};
+    use tokio::io::AsyncReadExt;
+    const PLANE: InstanceId = InstanceId(78);
+    const MEMBER: &str = "signalling-member";
+    const UNIT: u64 = 0x7e57_0000_0002;
+
+    // The far end: everything the signalling request put on the wire.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let seen = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let heard = Arc::clone(&seen);
+    tokio::spawn(async move {
+        let (mut s, _) = listener.accept().await.unwrap();
+        let mut buf = [0_u8; 4096];
+        loop {
+            match s.read(&mut buf).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => heard.lock().unwrap().extend_from_slice(&buf[..n]),
+            }
+        }
+    });
+
+    // The connector: the build's transports, the linked test framer under `tst`, the datagram
+    // framer under `dg`; the root's outbound half armed on it.
+    let row = LinkedRow::of(door).expect("the test framer's door is a door");
+    let plugin =
+        load_linked::<TransportKind>(&row, row_bind("tst-signal")).expect("the test framer loads");
+    let tst: Arc<dyn FramerDoor> = Arc::new(
+        Dispatched::open(
+            plugin,
+            &busbar_contract::transport::TransportSettings::default(),
+        )
+        .expect("the test framer opens"),
+    );
+    let owner = tst.owner();
+    let settings = busbar_contract::transport::TransportSettings::default();
+    let mut entries = crate::root::connector::entries(crate::LINKED_TRANSPORT_DOORS, &settings)
+        .expect("the linked doors open");
+    entries.push(Entry {
+        door: Arc::clone(&tst),
+        alpn: Vec::new(),
+    });
+    entries.push(Entry {
+        door: Arc::new(Datagram {
+            facts: busbar_core_connector::framer::DoorFacts {
+                name: "dg".into(),
+                claims: vec!["dg"],
+                role: ROLE_FRAMER,
+                composes_over: Vec::new(),
+                ported: false,
+                status_rows: Vec::new(),
+                duplex: Vec::new(),
+                datagram: true,
+            },
+        }),
+        alpn: Vec::new(),
+    });
+    let dest = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
+        block_private_addresses: false,
+        ..busbar_kernel::config::Destinations::default()
+    })
+    .expect("the guard");
+    let c = busbar_core_connector::Connector::serving(
+        Transports::new(entries).expect("the view"),
+        busbar_core_connector::process::judge(dest, &[]),
+        None,
+        Arc::new(|_, _| {}),
+    );
+    c.declare_over(PLANE, NeedId(0), "dg")
+        .expect("the datagram need");
+    crate::root::outbound_auth::arm(&c);
+
+    // The member's binding, the kernel's record of the unit's attempt, the held session.
+    let bindings = crate::root::outbound_auth::process();
+    let signer = Arc::new(Signer::default());
+    bindings.register(
+        PLANE,
+        NeedId(0),
+        MEMBER,
+        &AuthBinding {
+            auth: Arc::clone(&signer) as Arc<dyn OutboundAuth>,
+            handle: 1,
+            style_flags: STYLE_NEEDS_HEADERS,
+            points: AuthPoints::HEAD,
+            passthrough: false,
+            per_request: None,
+        },
+    );
+    attempt_auth::record(
+        UNIT,
+        AttemptAuth {
+            member: MEMBER.to_owned(),
+            handle: 9,
+            extensions: Vec::new(),
+            caller_credential: None,
+            waived: false,
+            secret: [0, 0],
+            outcome: None,
+        },
+    );
+    let pairing = busbar_core_connector::datagram::Pairing::new(
+        Arc::new(Quiet),
+        "127.0.0.1:3478".parse().unwrap(),
+    );
+    c.pair(UNIT, pairing).expect("the session registers");
+
+    let target = format!("tst://127.0.0.1:{port}/v1/offer");
+    let conn = c
+        .open(
+            PLANE,
+            NeedId(0),
+            &OpenDesc {
+                target: &target,
+                fields: &[("content-type", b"application/sdp")],
+                body: b"",
+                timeout_ms: 5_000,
+                method: b"POST",
+                head_target: b"/v1/offer",
+                within: &[],
+                member: MEMBER,
+                unit: UNIT,
+            },
+        )
+        .expect("the upstream leg opens");
+
+    // Drive the connection until the whole signalling request reached the far end.
+    let whole = |w: &[u8]| {
+        w.windows(4)
+            .position(|x| x == b"\r\n\r\n")
+            .is_some_and(|at| w.len() >= at + 4 + OFFER.len())
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut buf = vec![0_u8; 4096];
+    while !whole(&seen.lock().unwrap()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the signalling request reaches the far end: {:?}",
+            String::from_utf8_lossy(&seen.lock().unwrap())
+        );
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            std::future::poll_fn(|cx| c.poll_read(PLANE, conn, cx, &mut buf)),
+        )
+        .await;
+    }
+
+    let wire = seen.lock().unwrap().clone();
+    let (first, wire_fields, body) = read_wire(&wire);
+    assert_eq!(first, "POST /v1/offer TST/1");
+    assert_eq!(
+        body, OFFER,
+        "the signalling body is the datagram framer's description"
+    );
+    let signed = signer.signed.lock().unwrap().clone();
+    assert_eq!(signed.len(), 1, "one auth call");
+    let (handle, method, path, authority, head) = &signed[0];
+    assert_eq!(*handle, 9, "served on the session's attempt's handle");
+    assert_eq!(wire_fields[0].0, "authorization", "the auth's line first");
+    let after: Vec<(Vec<u8>, Vec<u8>)> = wire_fields[1..]
+        .iter()
+        .map(|(n, v)| (n.as_bytes().to_vec(), v.clone()))
+        .collect();
+    assert_eq!(
+        &after, head,
+        "the signalling request carries exactly the head the auth signed, and nothing after"
+    );
+    let expected = format!(
+        "Sig {:016x}",
+        digest(&canonical(method, path, authority, head))
+    );
+    assert_eq!(wire_fields[0].1, expected.as_bytes());
+    let _ = c.close(PLANE, conn);
+    c.unpair(UNIT);
+    attempt_auth::forget(UNIT);
+}
