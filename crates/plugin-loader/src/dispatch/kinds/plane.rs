@@ -78,6 +78,7 @@ pub struct Plane;
 // are host buffers, host-borrowed inputs, or the plugin's generation snapshot, valid until
 // `retire` of its generation.
 unsafe impl InFrame for PlaneOpenIn {}
+unsafe impl InFrame for plane::PlaneRefreshIn {}
 unsafe impl InFrame for PlaneDriveIn {}
 unsafe impl InFrame for plane::PlaneCancelIn {}
 unsafe impl InFrame for ArriveIn {}
@@ -914,6 +915,7 @@ pub fn refresh_door(
     plugin: &crate::dispatch::Plugin<Plane>,
     settings: &[u8],
     owned: &[u8],
+    facts: &[busbar_contract::plane_calls::DialectFacts],
     next: u64,
 ) -> Result<OwnedSnapshot, String> {
     use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS};
@@ -952,13 +954,23 @@ pub fn refresh_door(
             flags: 0,
         };
     }
+    // Each points into `facts`, which outlives the refresh.
+    let providers = provider_facts(facts);
     let mut frame = Frame::new(
-        RefreshIn {
-            head,
-            generation: next,
-            settings: blob,
-            secrets: std::ptr::null(),
-            secrets_len: 0,
+        plane::PlaneRefreshIn {
+            refresh: RefreshIn {
+                head,
+                generation: next,
+                settings: blob,
+                secrets: std::ptr::null(),
+                secrets_len: 0,
+            },
+            providers: if providers.is_empty() {
+                std::ptr::null()
+            } else {
+                providers.as_ptr()
+            },
+            providers_len: providers.len(),
         },
         PlaneRefreshOut {
             head: out_head(),
@@ -1092,13 +1104,23 @@ fn facing(
         snapshot
     } else {
         let next = *current + 1;
+        // The same list the served instance's refresh is handed.
+        let providers = provider_facts(facts);
         let mut frame = Frame::new(
-            RefreshIn {
-                head: in_head(),
-                generation: next,
-                settings: blob,
-                secrets: std::ptr::null(),
-                secrets_len: 0,
+            plane::PlaneRefreshIn {
+                refresh: RefreshIn {
+                    head: in_head(),
+                    generation: next,
+                    settings: blob,
+                    secrets: std::ptr::null(),
+                    secrets_len: 0,
+                },
+                providers: if providers.is_empty() {
+                    std::ptr::null()
+                } else {
+                    providers.as_ptr()
+                },
+                providers_len: providers.len(),
             },
             PlaneRefreshOut {
                 head: out_head(),
@@ -1840,7 +1862,7 @@ impl crate::dispatch::Plugin<Plane> {
     /// `refresh`, and the new generation's snapshot copied as [`Self::open`] copies it.
     pub fn refresh(
         &self,
-        frame: &mut crate::dispatch::Frame<RefreshIn, PlaneRefreshOut>,
+        frame: &mut crate::dispatch::Frame<plane::PlaneRefreshIn, PlaneRefreshOut>,
     ) -> (crate::dispatch::Called, Option<OwnedSnapshot>) {
         let called = self.call(life::REFRESH, frame);
         let copy = (called.outcome == Outcome::Ready)

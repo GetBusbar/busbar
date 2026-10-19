@@ -128,7 +128,7 @@ mod door {
     use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, Span, BLOB_OCTETS};
     use busbar_contract::abi::mechanism::door::Door;
     use busbar_contract::abi::mechanism::lifecycle::{
-        slot as life, GenIn, OpenIn, OpenOut, RefreshIn, TickIn, TickOut, ValidateIn,
+        slot as life, GenIn, OpenIn, OpenOut, TickIn, TickOut, ValidateIn,
     };
     use busbar_contract::abi::plane::{
         self, slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneDriveIn,
@@ -451,9 +451,10 @@ mod door {
             x.out.cancel.disposition == CANCEL_ABORTED
         ));
 
-        let mut f: Frame<RefreshIn, PlaneRefreshOut> = Frame::new(z(), z());
-        (f.input.head, f.out.head) = (in_head(), out_head());
-        f.input.generation = 2;
+        let mut f: Frame<busbar_contract::abi::plane::PlaneRefreshIn, PlaneRefreshOut> =
+            Frame::new(z(), z());
+        (f.input.refresh.head, f.out.head) = (in_head(), out_head());
+        f.input.refresh.generation = 2;
         let c = p.call(life::REFRESH, &mut f);
         t.push(format!(
             "refresh {:?} {}",
@@ -607,9 +608,10 @@ mod door {
             assert_eq!(first.claims[0].target, "/echo");
             assert!(first.admin_routes.is_empty());
 
-            let mut r: Frame<RefreshIn, PlaneRefreshOut> = Frame::new(z(), z());
-            (r.input.head, r.out.head) = (in_head(), out_head());
-            r.input.generation = 2;
+            let mut r: Frame<busbar_contract::abi::plane::PlaneRefreshIn, PlaneRefreshOut> =
+                Frame::new(z(), z());
+            (r.input.refresh.head, r.out.head) = (in_head(), out_head());
+            r.input.refresh.generation = 2;
             let (c, second) = p.refresh(&mut r);
             assert_eq!(c.outcome, Outcome::Ready);
             let second = second.expect("a READY refresh's snapshot is copied");

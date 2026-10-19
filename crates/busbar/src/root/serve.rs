@@ -648,10 +648,18 @@ impl DoorApply {
         } else {
             handed_settings(settings_path(&self.served_facts), section)?
         };
+        // The dialect facts of the providers its section references, this generation's (a reload
+        // may change a base URL): the plane prints its boot lines from them.
+        let dialects = self
+            .reach
+            .as_ref()
+            .map(|r| crate::root::door_steps::dialect_facts(section, &r.providers))
+            .unwrap_or_default();
         crate::root::loader::dispatch::kinds::plane::refresh_door(
             &self.plugin,
             &settings,
             &owned_bytes(owned)?,
+            &dialects,
             generation,
         )?;
         let table = routes_of(
@@ -796,8 +804,9 @@ impl DoorAppliers {
                     continue;
                 }
             };
+            let dialects = crate::root::door_steps::dialect_facts(&walked, egress.reach.providers);
             if let Err(e) = crate::root::loader::dispatch::kinds::plane::refresh_door(
-                &p.plugin, &settings, &owned, next,
+                &p.plugin, &settings, &owned, &dialects, next,
             ) {
                 tracing::error!(plane = name, error = %e, "door plane did not refresh onto the new configuration; it keeps serving the previous one");
                 continue;

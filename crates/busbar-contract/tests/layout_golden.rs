@@ -1562,6 +1562,11 @@ fn compute_layout() -> String {
         [open, public_url, owned, providers, providers_len]
     );
     record!(s, pkind::PlaneOpenOut, [open, snapshot]);
+    record!(
+        s,
+        pkind::PlaneRefreshIn,
+        [refresh, providers, providers_len]
+    );
     record!(s, pkind::PlaneRefreshOut, [head, snapshot]);
     record!(s, pkind::UnitCount, [class, source, amount]);
     record!(s, pkind::OutField, [name, value]);

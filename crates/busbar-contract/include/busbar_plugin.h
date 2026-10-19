@@ -1058,6 +1058,7 @@ typedef struct bb_plane_PlaneSnapshot bb_plane_PlaneSnapshot;
 typedef struct bb_plane_ProviderFacts bb_plane_ProviderFacts;
 typedef struct bb_plane_PlaneOpenIn bb_plane_PlaneOpenIn;
 typedef struct bb_plane_PlaneOpenOut bb_plane_PlaneOpenOut;
+typedef struct bb_plane_PlaneRefreshIn bb_plane_PlaneRefreshIn;
 typedef struct bb_plane_PlaneRefreshOut bb_plane_PlaneRefreshOut;
 typedef struct bb_plane_OutField bb_plane_OutField;
 typedef struct bb_plane_UnitCount bb_plane_UnitCount;
@@ -2839,6 +2840,13 @@ struct bb_plane_PlaneOpenIn {
 struct bb_plane_PlaneOpenOut {
     bb_mech_OpenOut open;
     const bb_plane_PlaneSnapshot *snapshot;
+};
+
+/* The plane's `refresh` `in` (step 2b): the lifecycle's, plus the dialect facts of the providers */
+struct bb_plane_PlaneRefreshIn {
+    bb_mech_RefreshIn refresh;
+    const bb_plane_ProviderFacts *providers;
+    size_t providers_len;
 };
 
 /* The plane's `refresh` `out`: the new generation's snapshot. */
@@ -5564,6 +5572,11 @@ BB_ASSERT(sizeof(bb_plane_PlaneOpenOut) == 120, "bb_plane_PlaneOpenOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneOpenOut) == 8, "bb_plane_PlaneOpenOut: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneOpenOut, open) == 0, "bb_plane_PlaneOpenOut.open: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneOpenOut, snapshot) == 112, "bb_plane_PlaneOpenOut.snapshot: offset");
+BB_ASSERT(sizeof(bb_plane_PlaneRefreshIn) == 152, "bb_plane_PlaneRefreshIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneRefreshIn) == 8, "bb_plane_PlaneRefreshIn: alignment");
+BB_ASSERT(offsetof(bb_plane_PlaneRefreshIn, refresh) == 0, "bb_plane_PlaneRefreshIn.refresh: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneRefreshIn, providers) == 136, "bb_plane_PlaneRefreshIn.providers: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneRefreshIn, providers_len) == 144, "bb_plane_PlaneRefreshIn.providers_len: offset");
 BB_ASSERT(sizeof(bb_plane_PlaneRefreshOut) == 104, "bb_plane_PlaneRefreshOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneRefreshOut) == 8, "bb_plane_PlaneRefreshOut: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneRefreshOut, head) == 0, "bb_plane_PlaneRefreshOut.head: offset");
