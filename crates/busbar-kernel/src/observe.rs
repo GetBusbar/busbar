@@ -214,12 +214,6 @@ pub(crate) fn forget_cardinality(plugin: &str) {
     }
 }
 
-/// The hot lane's entry to the budget: an OPAQUE packed label blob, fingerprinted without being
-/// interpreted. See [`fingerprint`] for why that is enough.
-pub(crate) fn admits_cardinality_opaque(plugin: &str, series: &str, labels: &[u8]) -> bool {
-    admits_cardinality(plugin, series, fingerprint(labels))
-}
-
 /// The kernel's observer: validates what a plugin reported, bounds it, and folds it into THIS
 /// process's recorder and diagnostics path.
 ///

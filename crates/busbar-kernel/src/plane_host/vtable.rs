@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The HOST side of the [`PlaneHostVtable`]: the construction point that fills every slot with a
-//! host-side `extern "C-unwind"` fn wired over a real core primitive. After the Phase-1 capability
-//! fan-out (breaker, govern, journal, dispatch) every slot is wired — ZERO `unimplemented!()`
-//! stubs remain — except the trust family, `guard_url` and the egress family, which are absent: no
-//! plane calls them, the host services a plane calls are the `HostSlots` families (BUSBAR-1.6.0.md
-//! Part 3 §4, SUPERSEDED 2026-09-28), `trust.*` is served there, and every dial is the connector's
-//! (THE DESIGN §5; Appendix A B.6, l.3846: `egress_*` deleted). The three PROOF-OF-LIFE impls
-//! (`clock_now`, `metrics_emit`, `govern_admit`) live here; the rest forward into their capability
-//! modules
-//! ([`super::breaker`], [`super::govern`], [`super::journal`], [`super::dispatch`]).
+//! The HOST side of the [`PlaneHostVtable`]: the construction point that fills the slots the
+//! kernel's own callers still drive with a host-side `extern "C-unwind"` fn over a real core
+//! primitive: `clock_now`, `govern_admit`/`govern_admit_reason` (bodies in [`super::govern`]),
+//! `meter_charge`, `subkey_sign`, `identity_admit` and the host services. Every other family is
+//! absent: no plane is handed a `HostCtx`, the host services a plane calls are the `HostSlots`
+//! families (BUSBAR-1.6.0.md Part 3 §4), and Appendix A B.6 (l.3846) deletes the egress, pipe,
+//! auth-resolve, metrics, counter, journal, dispatch and breaker slots (u30, u35, u36). The table
+//! itself goes with `abi::hot`.
 //!
 //! ## Boundary discipline (reused from `busbar-contract/src/abi/sdk/boundary.rs`)
 //!
@@ -24,18 +22,16 @@
 
 use super::recover;
 use busbar_contract::abi::hot::host::{HostCtx, PlaneHostVtable};
-use busbar_contract::abi::hot::{
-    Decision, Facts, GovRefusal, MeterOutcome, MetricSample, StatusClass, Usage,
-};
-use busbar_contract::abi::shared::DeclStr;
+use busbar_contract::abi::hot::{Decision, Facts, GovRefusal, MeterOutcome, StatusClass, Usage};
 use busbar_contract::abi::AbiPreamble;
 use core::mem::MaybeUninit;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-/// Build the host's [`PlaneHostVtable`]: the FROZEN preamble + sized/versioned header, then every
-/// capability slot `Some(<a host-side fn>)`. Three slots are wired over real primitives here
-/// (`clock_now`, `metrics_emit`, `govern_admit`); every other slot forwards into its capability
-/// module. After the Phase-1 fan-out every slot is wired — no `unimplemented!()` stub remains.
+/// Build the host's [`PlaneHostVtable`]: the FROZEN preamble + sized/versioned header, then the
+/// slots the kernel's own callers drive (the clock, the govern admit, the meter, the card sign, the
+/// inbound identity admission) and the host services; every other slot is `None` (BUSBAR-1.6.0.md
+/// Appendix A B.6, l.3846: the egress, pipe, auth-resolve, metrics, counter, journal, dispatch and
+/// breaker families are deleted; u36, u35).
 #[must_use]
 pub fn build_plane_host_vtable() -> PlaneHostVtable {
     PlaneHostVtable {
@@ -46,49 +42,10 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         // ── WIRED proof-of-life (real primitives) ──────────────────────────────────────────────
         govern_admit: Some(govern_admit),
         govern_admit_reason: Some(govern_admit_reason),
-        metrics_emit: Some(metrics_emit),
         clock_now: Some(clock_now),
 
-        // ── WIRED capability slots — each forwards into its capability module (breaker / trust /
-        //    journal / dispatch), or a wired local fn (meter_charge) ────────
+        // ── WIRED `meter_charge` (the kernel's own `BudgetHost::meter_charge` drives it) ────────
         meter_charge: Some(meter_charge),
-        breaker_admit: Some(super::breaker::breaker_admit),
-        breaker_admit_reason: Some(super::breaker::breaker_admit_reason),
-        breaker_settle: Some(super::breaker::breaker_settle),
-        // The EGRESS family is gone (BUSBAR-1.6.0.md Appendix A B.6, l.3846: `egress_*` deleted;
-        // THE DESIGN §5: every dial is the connector's). Absent until `abi::hot` itself goes.
-        egress_open: None,
-        egress_poll: None,
-        egress_write: None,
-        egress_close: None,
-        egress_fault: None,
-        journal_append: Some(super::journal::journal_append),
-        journal_read: Some(super::journal::journal_read),
-        nested_dispatch: Some(super::dispatch::nested_dispatch),
-        workhandle_open: Some(super::dispatch::workhandle_open),
-        workhandle_resume: Some(super::dispatch::workhandle_resume),
-        // `auth_resolve` minted a credential ref only `egress_open` redeemed; both are gone
-        // (Appendix A B.6, l.3846: `auth_resolve` deleted).
-        auth_resolve: None,
-        entitlement_check: Some(super::dispatch::entitlement_check),
-        gate_scan: Some(super::dispatch::gate_scan),
-        // ── The byte-duplex PIPE tier (CLUSTER-3 egress): raw-connection / subprocess byte channels,
-        //    keyed by a `PipeId`, wired over the real governed child process in `super::pipe`. ──────
-        pipe_read: Some(super::pipe::pipe_read),
-        pipe_write: Some(super::pipe::pipe_write),
-        // ── The DURABLE journal seam (minor-9): the slots the kernel's own streams still reach,
-        //    wired over the store-backed `audit::journal::Journal<StreamRecord>` of
-        //    `audit::stream_registry`. A plane's record chains are framed and verified on the
-        //    kernel's record path (`crate::host_chains`, BUSBAR-1.6.0.md Part 3 §5), so the read,
-        //    restore, forget and verify slots no plane reached any more are gone (unwired). ───────
-        journal_register: Some(super::journal::journal_register),
-        journal_append_scoped: Some(super::journal::journal_append_scoped),
-        journal_read_scoped: None,
-        journal_restore: None,
-        journal_seed: Some(super::journal::journal_seed),
-        journal_forget: None,
-        journal_compact: Some(super::journal::journal_compact),
-        journal_verify_scoped: None,
         // ── The CARD-SIGN seam (minor-10): the host derives the deployment's domain-separated card
         //    subkey and signs a plane-framed input, so the card SECRET never crosses to the plane.
         //    Wired only when a plane declares a card-signing domain (the neutral `card-signing`
@@ -102,9 +59,6 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         //    caller's own credential, returning an opaque resolved-identity handle. Always wired (the
         //    host owns the auth chain whatever the plane); no plane feature gates it. ────────────────────
         identity_admit: Some(super::identity_admit::identity_admit),
-        // ── WIRED `counter_add` (minor-25, the METRIC-FAMILY seam) → the recorder, over a family the
-        //    emitting plane DECLARED. Always wired; what a plane may add to is its declaration's. ──
-        counter_add: Some(counter_add),
         // ── The HOST SERVICES (minor 30): the host's entropy and wall clock, served here (the
         //    contract holds neither: a codec is handed them as a `CodecHost`). The usage-tap fault
         //    latch and the translate cap are retired slots and stay `None` (row 155). The
@@ -208,175 +162,6 @@ extern "C-unwind" fn clock_now(host: HostCtx) -> u64 {
         busbar_kernel::store::now_ms().saturating_mul(1_000_000)
     }))
     .unwrap_or(0) // fail-closed: a panicked clock reads 0, never a wild value.
-}
-
-/// WIRED `metrics_emit` → the real `metrics` recorder (`crate::snapshot`), through the SAME rule the
-/// COLD lane's envelope is folded by.
-///
-/// A plane REPORTS a sample; the host decides whether it is allowed to have said it (DECISIONS #85).
-/// This slot is the hot lane's half of that, and it used to have no half at all: it took whatever
-/// name the plane handed over, verbatim, and — when the plane handed over no name — INVENTED
-/// `busbar_plane_metric`, writing into the reserved first-party namespace on the plane's behalf.
-/// Nothing checked the charset, so a plane could emit a name Prometheus cannot parse and cost the
-/// whole exposition; nothing checked the value, so a `NaN` from `f64::from_bits` went straight to
-/// the recorder; and nothing stopped a plane shadowing a real `busbar_*` series.
-///
-/// Now: the name goes through [`crate::snapshot::observe::admits_metric_name`] — the one predicate both lanes
-/// ask — and a non-finite value is refused. A rejected sample is `Refused`, not `Ok`, because the
-/// plane is entitled to know its telemetry did not land; and it is `Refused` rather than a fault
-/// because a badly-named metric is bad DATA, not a broken peer.
-///
-/// PROVENANCE is the host's, from [`super::HostState::emitter`] — stamped when the host MINTS the
-/// `HostCtx`, never read off the sample. A handle minted for the host's own use carries no emitter
-/// and this slot refuses it, because a series nobody can be held to is a series an operator cannot
-/// act on.
-///
-/// CARDINALITY is bounded on the same budget the cold lane uses
-/// ([`crate::snapshot::observe::admits_cardinality`]): a cap on distinct series per plugin and on
-/// distinct label sets per series, refused rather than silently dropped. The labels stay opaque —
-/// this ABI says the host does not interpret them — and are fingerprinted instead, so the bound
-/// exists before the label encoding does.
-extern "C-unwind" fn metrics_emit(host: HostCtx, sample: *const MetricSample) -> StatusClass {
-    catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: recovery invariant (see `recover`).
-        let Some(state) = (unsafe { recover(host) }) else {
-            return StatusClass::Refused;
-        };
-        // WHO IS EMITTING. Taken from the host's own `HostState`, never from the sample — an
-        // identity the emitter supplies is a claim, not an attribution, and is the same class of
-        // defect as the metric NAME this slot used to take verbatim. A handle minted for the host's
-        // own use (`calllog`, `auditlog`, trust, the breaker) carries no emitter and is refused
-        // here: a sample nobody can be held to is a series an operator cannot act on.
-        let Some(emitter) = state.emitter else {
-            return StatusClass::Refused;
-        };
-        if sample.is_null() {
-            return StatusClass::Refused;
-        }
-        // SAFETY: a non-null `sample` is a live, initialized `MetricSample` for the call (ABI).
-        let s = unsafe { &*sample };
-        let value = f64::from_bits(s.value_bits);
-        // A non-finite sample is not a value. `from_bits` will hand back `NaN`/`inf` for bit
-        // patterns a plane can produce by accident or on purpose, and the cold lane's validator has
-        // always dropped those; there is no reading of #85 on which one lane admits what the other
-        // refuses.
-        if !value.is_finite() {
-            return StatusClass::Refused;
-        }
-        if s.name_ptr.is_null() || s.name_len == 0 {
-            // No name is not a metric. Inventing one put a plane's sample in the reserved namespace
-            // under a name no plane chose and no operator could attribute.
-            return StatusClass::Refused;
-        }
-        // SAFETY: `(name_ptr, name_len)` is a live borrowed range for the call (ABI discipline).
-        let bytes = unsafe { std::slice::from_raw_parts(s.name_ptr, s.name_len) };
-        let name = String::from_utf8_lossy(bytes);
-        if !crate::snapshot::observe::admits_metric_name(&name) {
-            return StatusClass::Refused;
-        }
-        // THE CARDINALITY BUDGET — the second question, and the same one the cold lane asks. The
-        // labels are an OPAQUE packed blob this ABI says the host does not interpret, so they are
-        // fingerprinted rather than parsed: telling two label sets apart is all a budget needs, and
-        // it means the bound exists BEFORE the label encoding is designed rather than after the
-        // first explosion. A refusal here is returned to the plane, not swallowed.
-        let labels: &[u8] = if s.labels_ptr.is_null() || s.labels_len == 0 {
-            &[]
-        } else {
-            // SAFETY: `(labels_ptr, labels_len)` is a live borrowed range for the call (ABI).
-            unsafe { std::slice::from_raw_parts(s.labels_ptr, s.labels_len) }
-        };
-        if !crate::snapshot::observe::admits_cardinality_opaque(emitter, &name, labels) {
-            return StatusClass::Refused;
-        }
-        // Routes to the process-wide `metrics-exporter-prometheus` recorder installed by
-        // `crate::snapshot::init` (a no-op sink when the operator did not opt in). The host's
-        // provenance label is attached here, from the host's own knowledge — the same
-        // `plugin="<name>"` the cold lane's fold attaches, so one plugin reporting on either lane
-        // produces series an operator reads the same way.
-        metrics::gauge!(
-            name.into_owned(),
-            vec![metrics::Label::new(
-                crate::snapshot::observe::PLUGIN_LABEL,
-                emitter
-            )]
-        )
-        .set(value);
-        StatusClass::Ok
-    }))
-    .unwrap_or(StatusClass::Fault) // caught panic → the distinct fault class, never `Ok`.
-}
-
-/// WIRED `counter_add` → the real `metrics` recorder, over a metric family the emitting plane
-/// DECLARED (ARCHITECT RULING S2-c; #2 rule (2), #65).
-///
-/// The emitter is the host's own attribution ([`super::HostState::emitter`]); the family is looked
-/// up in THAT plane's registered declaration, so a plane adds only to what it declared — and a
-/// declaration reaches the registry only through the host's boot guard, which admits a `busbar_`
-/// family only when the host lists it as one a plane may carry. The label VALUES are decoded here,
-/// for a declared family only: one per declared key, positionally, each bounded UTF-8. The series
-/// renders exactly the declared name and keys — no provenance label — so a carried first-party
-/// series is byte-identical to the host's own. The label set is bounded on the same cardinality
-/// budget every plugin-reported series spends. Anything else is `Refused`; a panic is `Fault`.
-extern "C-unwind" fn counter_add(
-    host: HostCtx,
-    family_ptr: *const u8,
-    family_len: usize,
-    values_ptr: *const DeclStr,
-    values_len: usize,
-    delta: u64,
-) -> StatusClass {
-    catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: recovery invariant (see `recover`); every range below is live for the call (ABI).
-        let emitter = unsafe { recover(host) }.and_then(|s| s.emitter);
-        let name = unsafe { borrowed(family_ptr, family_len, 64) };
-        let declared = emitter.and_then(crate::plane::registry::plane_decl_for);
-        let family = declared.and_then(|d| {
-            let mut families = d.metric_families.iter();
-            families.find(|f| name == Some(f.name.as_bytes()))
-        });
-        let (Some(emitter), Some(family)) = (emitter, family) else {
-            return StatusClass::Refused;
-        };
-        if values_len != family.label_keys.len() || (values_ptr.is_null() && values_len > 0) {
-            return StatusClass::Refused;
-        }
-        let mut labels = Vec::with_capacity(values_len);
-        for (i, key) in family.label_keys.iter().enumerate() {
-            // SAFETY: `values_ptr` addresses `values_len` live entries (ABI), each a live range.
-            let v = unsafe { core::ptr::read_unaligned(values_ptr.add(i)) };
-            let bytes = unsafe {
-                borrowed(
-                    v.ptr,
-                    v.len,
-                    busbar_contract::hook_wire::reply::MAX_METRIC_LABEL_CHARS,
-                )
-            };
-            let Some(value) = bytes.and_then(|b| std::str::from_utf8(b).ok()) else {
-                return StatusClass::Refused;
-            };
-            labels.push(metrics::Label::new(*key, value.to_owned()));
-        }
-        let fingerprint = std::hash::BuildHasher::hash_one(
-            &std::hash::BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default(),
-            &labels,
-        );
-        if !crate::snapshot::observe::admits_cardinality(emitter, family.name, fingerprint) {
-            return StatusClass::Refused;
-        }
-        metrics::counter!(family.name, labels).increment(delta);
-        StatusClass::Ok
-    }))
-    .unwrap_or(StatusClass::Fault) // caught panic → the distinct fault class, never `Ok`.
-}
-
-/// A plane-borrowed `(ptr, len)` range as bytes — `None` for a null range or one over `cap` bytes,
-/// judged BEFORE the slice is formed (the length is plane-attested).
-///
-/// # Safety
-/// A non-null `ptr` with `len <= cap` addresses `len` live bytes for the call (ABI discipline).
-unsafe fn borrowed<'a>(ptr: *const u8, len: usize, cap: usize) -> Option<&'a [u8]> {
-    // SAFETY: the caller's contract, with `len` bounded by `cap` before the slice exists.
-    (!ptr.is_null() && len <= cap).then(|| unsafe { std::slice::from_raw_parts(ptr, len) })
 }
 
 /// WIRED `govern_admit` → the REAL admission over `crate::governance` (see [`super::govern::admit`]):

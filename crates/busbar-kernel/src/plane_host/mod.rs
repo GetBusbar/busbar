@@ -26,12 +26,8 @@
 //! * [`vtable`] — [`build_plane_host_vtable`]; every slot wired (three proof-of-life fns here, the
 //!   rest forwarding into the capability modules), zero stubs remaining.
 
-pub mod breaker;
-pub mod dispatch;
 mod govern;
 pub(crate) mod identity_admit;
-pub mod journal;
-pub mod pipe;
 pub mod scope;
 pub mod session_meter;
 pub mod vtable;
@@ -452,34 +448,6 @@ impl EngineHostImpl {
     #[must_use]
     pub fn from_handle(handle: Arc<crate::state::AppHandle>) -> Self {
         EngineHostImpl { app: handle.load() }
-    }
-}
-
-// AUDIT-D BRAKE: the BREAKER family, split off `EngineHost` into its `BreakerHost` supertrait. The
-// bodies are relocated byte-for-byte — same-dispatch reaches, same arenas — so the split is purely
-// structural. `EngineHost: BreakerHost` (in substrate) makes these visible on every `dyn EngineHost`.
-impl busbar_kernel::plane_host::BreakerHost for EngineHostImpl {
-    fn breaker_store(&self) -> &Arc<busbar_kernel::store::PlaneBreakers> {
-        // The bound snapshot's ONE breaker store (process-lifetime across applies).
-        &self.app.plane_breakers
-    }
-
-    fn breaker_settle(
-        &self,
-        scope: &DispatchScope,
-        admission: busbar_contract::abi::hot::AdmissionId,
-        signal: &busbar_contract::abi::hot::Signal,
-    ) -> busbar_contract::abi::hot::StatusClass {
-        // SAME dispatch as the in-place `with_borrowed_host` settle the plane's sync leg drove: mint
-        // the transient `HostCtx` over the caller's arena, fold the leg through the `breaker_settle`
-        // slot, and return the class — the raw host pointer never escapes the call.
-        with_borrowed_host(&self.app, scope, |host, vt| {
-            (vt.breaker_settle.expect("breaker_settle is a wired slot"))(
-                host,
-                admission,
-                signal as *const busbar_contract::abi::hot::Signal,
-            )
-        })
     }
 }
 
@@ -1634,7 +1602,6 @@ pub use crate::plane_host::engine_view::{
     set_pool_queued_depth, ConfigTables, EmptyEngineTablesView, EngineTablesView, LaneView,
     EMPTY_VIEW,
 };
-use busbar_contract::abi::hot::{AdmissionId, Signal, StatusClass};
 use busbar_contract::records::PlaneRequestCtx;
 
 /// The outcome of a refusal-fidelity admit driven over the host `govern_admit_reason` seam.
@@ -2145,32 +2112,6 @@ impl MeterPin {
 /// the gauges — byte-identical to the sink's current `Option<Arc<busbar_kernel::governance::AdmitGrant>>`.
 #[derive(Clone)]
 pub struct AdmitHandle(pub Arc<dyn std::any::Any + Send + Sync>);
-
-/// BRAKE (audit D): the BREAKER-family slice of the host seam, split off `EngineHost` as a supertrait
-/// so the circuit-breaker admission/settle/record cluster stays a cohesive, bounded ABI rather than
-/// dissolving into the ~30-method god-trait. A plane's dispatch/failover legs win a probe, record a
-/// leg in place and read a cooldown through the kernel's breaker functions ([`breaker::admit`],
-/// [`breaker::record_success`], [`breaker::record_signal`], [`breaker::retry_after_secs`]), which
-/// reach the shared breaker through [`breaker_store`](Self::breaker_store): the breaker is a core
-/// capability every plane gets, not a per-plane host method. A leg's outcome folds through
-/// [`breaker_settle`](Self::breaker_settle).
-pub trait BreakerHost: Send + Sync {
-    /// The kernel's breaker cell store: the one `(pool, lane)` breaker every plane's targets share.
-    /// Only the kernel's breaker functions ([`breaker::admit`] and its siblings) read it; a plane
-    /// reaches the breaker through those, never through this.
-    fn breaker_store(&self) -> &Arc<crate::store::PlaneBreakers>;
-
-    /// Fold a leg's classified outcome through the host `breaker_settle` seam over `admission` (looked
-    /// up in `scope`'s arena). `Ok` means the live admission was found and settled; a `Gone` means it
-    /// was already settled — the caller falls back to an in-place record. Byte-identical disposition
-    /// to the plane's own `record_signal`/`record_success`.
-    fn breaker_settle(
-        &self,
-        scope: &DispatchScope,
-        admission: AdmissionId,
-        signal: &Signal,
-    ) -> StatusClass;
-}
 
 /// BRAKE (audit D): the LANE/POOL-family slice of the host seam, split off `EngineHost` as a
 /// supertrait so the lane-runtime + pool-membership + probe-default cluster stays a cohesive,
@@ -2799,16 +2740,16 @@ pub trait AdmissionHost: Send + Sync {
 ///
 /// The residual flat method set has been cut into cohesive capability SUPERTRAITS ([`ClockHost`],
 /// [`TelemetryHost`], [`JournalHost`], [`MountHost`], [`RegistryHost`], [`HookConfigHost`],
-/// [`BudgetHost`], [`IdentityHost`], [`AdmissionHost`]), alongside the earlier braking slices
-/// ([`BreakerHost`], [`LanePoolHost`]). Every slice is PLANE-FACING and pricing-blind; the kernel's
+/// [`BudgetHost`], [`IdentityHost`], [`AdmissionHost`]), alongside the earlier braking slice
+/// ([`LanePoolHost`]). (The breaker slice is gone with the HOT breaker slots, u35: the breaker is
+/// reached only through the plane driver's walk.) Every slice is PLANE-FACING and pricing-blind; the kernel's
 /// pricing ([`MeteringHost`]) is deliberately NOT one of them, so a plane-side host implements the
 /// whole sum without naming a cost or price type (#43). `EngineHost` declares NO methods of its own
 /// — it is the SUM (a supertrait bound of every slice). An existing `Arc<dyn EngineHost>` caller is
 /// unaffected (it still reaches every method through the inherited bound); a plane that needs a
 /// narrower capability takes `&dyn SliceX` and depends only on what it uses.
 pub trait EngineHost:
-    BreakerHost
-    + LanePoolHost
+    LanePoolHost
     + ClockHost
     + TelemetryHost
     + JournalHost
@@ -2833,7 +2774,6 @@ pub trait EngineHost:
 /// cannot re-dissolve back into the flat god-trait).
 const _: () = {
     fn _assert_engine_host_is_sum_of_slices<T: EngineHost + ?Sized>() {
-        fn _needs_breaker<U: BreakerHost + ?Sized>() {}
         fn _needs_lane_pool<U: LanePoolHost + ?Sized>() {}
         fn _needs_clock<U: ClockHost + ?Sized>() {}
         fn _needs_telemetry<U: TelemetryHost + ?Sized>() {}
@@ -2844,7 +2784,6 @@ const _: () = {
         fn _needs_budget<U: BudgetHost + ?Sized>() {}
         fn _needs_identity<U: IdentityHost + ?Sized>() {}
         fn _needs_admission<U: AdmissionHost + ?Sized>() {}
-        _needs_breaker::<T>();
         _needs_lane_pool::<T>();
         _needs_clock::<T>();
         _needs_telemetry::<T>();

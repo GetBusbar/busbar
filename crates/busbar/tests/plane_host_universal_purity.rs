@@ -8,7 +8,7 @@
 //! ## The coupling this gate mechanises
 //!
 //! `crates/busbar-kernel/src/plane_host/mod.rs` declares the universal host seam `EngineHost` as
-//! the SUM of ~12 capability-slice supertraits (`BreakerHost`, `LanePoolHost`, `MeteringHost`,
+//! the SUM of ~11 capability-slice supertraits (`LanePoolHost`, `MeteringHost`,
 //! `ClockHost`, `TelemetryHost`, `JournalHost`, `MountHost`, `RegistryHost`, `HookConfigHost`,
 //! `BudgetHost`, `IdentityHost`, `AdmissionHost`). Every plane holds an `Arc<dyn EngineHost>` and
 //! inherits EVERY method of EVERY slice. Some of those methods were SINGLE-PLANE-PURPOSED — the MCP
@@ -65,7 +65,6 @@ const HOST_TRAIT_FILE: &str = "crates/busbar-kernel/src/plane_host/mod.rs";
 /// universal sum is ONE edit here — and the enumeration floor below bites if this list silently
 /// stops matching the trait file.
 const SLICE_TRAITS: &[&str] = &[
-    "BreakerHost",
     "LanePoolHost",
     "MeteringHost",
     "ClockHost",
@@ -531,7 +530,7 @@ fn detector_is_non_vacuous_across_single_multi_and_zero_plane_methods() {
         "settle_residual",   // JournalHost
         "verify_token_test", // IdentityHost
         "clock_now_secs",    // ClockHost
-        "breaker_settle",    // BreakerHost
+        "lane_store",        // LanePoolHost
         "plane_defs",        // RegistryHost
     ] {
         assert!(
