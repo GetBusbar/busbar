@@ -548,6 +548,11 @@ pub fn listed_styles(declared: impl IntoIterator<Item = DeclaredStyle>) -> Vec<D
             out.push(style);
         }
     }
+    // Stable: equal keys keep the order given. Unranked (`0`) sorts after every rank.
+    out.sort_by_key(|s| match crate::abi::auth::style_rank(s.flags) {
+        0 => u32::MAX,
+        rank => rank,
+    });
     out
 }
 
