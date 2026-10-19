@@ -377,7 +377,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-header"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-header?rev=b1623c7dd454dd3f3e23670f0d44c9e3ed07b49a#b1623c7dd454dd3f3e23670f0d44c9e3ed07b49a"
+source = "git+https://github.com/GetBusbar/busbar-auth-header?rev=32503d7884ea313f9d69bf700d0d526f109057b8#32503d7884ea313f9d69bf700d0d526f109057b8"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -428,7 +428,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-sigv4"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=80025af386ab08afe88bcd552c572e3021ba013f#80025af386ab08afe88bcd552c572e3021ba013f"
+source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=765d8120cfac540ab46b8e267cffc7a251a23707#765d8120cfac540ab46b8e267cffc7a251a23707"
 dependencies = [
  "busbar-contract",
  "hex",
@@ -922,7 +922,7 @@ dependencies = [
 [[package]]
 name = "busbar-secret-file"
 version = "1.0.0"
-source = "git+https://github.com/GetBusbar/busbar-secret-file?rev=ae5e56064da74fc0f7a53d3f7bc9d27f89fd3424#ae5e56064da74fc0f7a53d3f7bc9d27f89fd3424"
+source = "git+https://github.com/GetBusbar/busbar-secret-file?rev=aa8e585ac57b68b3f635f771d0fe3a370f5fa29d#aa8e585ac57b68b3f635f771d0fe3a370f5fa29d"
 dependencies = [
  "busbar-contract",
  "serde_json",
@@ -1004,7 +1004,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-ws"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=911f168b36c06d0513b30b1d189ea131d92c0437#911f168b36c06d0513b30b1d189ea131d92c0437"
+source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=7fc1dd8065f7bb95f93530426217a71b63ab7727#7fc1dd8065f7bb95f93530426217a71b63ab7727"
 dependencies = [
  "busbar-contract",
  "serde_json",

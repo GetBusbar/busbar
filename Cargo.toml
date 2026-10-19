@@ -69,7 +69,7 @@ busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-e
 # crate (`busbar-secret-env-plugin`, same repo) is NOT a dependency: it is built from this pinned
 # checkout by the build:dlopen-cdylibs step and dlopened.
 busbar-secret-env = { git = "https://github.com/GetBusbar/busbar-secret-env", rev = "046296aecc8088128dee36971f8da8cd8fd79175" }
-busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", rev = "ae5e56064da74fc0f7a53d3f7bc9d27f89fd3424" }
+busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", rev = "aa8e585ac57b68b3f635f771d0fe3a370f5fa29d" }
 # THE REQUEST-LOG WEBHOOK SINK: the one home of its pinned rev (a rev bump is this one edit). `busbar`
 # links the logic crate; `busbar-plugin-loader`'s conformance test builds the cdylib crate. Same repo,
 # same rev, one resolved copy in Cargo.lock.
@@ -81,7 +81,7 @@ busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-h
 busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "f1b5d4d75f5cdaa46eff23cfef44e0a675d2fbb4" }
 # THE WS TRANSPORT: the websocket framer door (kind: transport), pulled at a pinned rev; the logic
 # crate the root links (behind plane-streaming) and the ws-conformance subject drives.
-busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "911f168b36c06d0513b30b1d189ea131d92c0437" }
+busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "7fc1dd8065f7bb95f93530426217a71b63ab7727" }
 busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "b5240b33d1da15007fac3f74a1ead87f06289fe4" }
 # THE TCP TRANSPORT: the identity framer door (kind: transport), one pin for the logic crate the root
 # links and the cdylib crate the loader's both-ways proof builds. Same repo, same rev, one resolved copy.
@@ -89,7 +89,7 @@ busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tc
 busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "223ec3f02000de94089a1752635b9e206f7492e5" }
 # THE OUTBOUND HEADER STYLES (kind: auth): the logic crate the root links on its `auths` axis
 # (feature `auth-header`), pulled at a pinned rev (P5; OWNER Q99 keep the split).
-busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "b1623c7dd454dd3f3e23670f0d44c9e3ed07b49a" }
+busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "32503d7884ea313f9d69bf700d0d526f109057b8" }
 # THE OAUTH MINTING STYLES (kind: auth): the logic crate the root links on its `auths` axis (feature
 # `auth-oauth`; P2 D1: the kernel's own minting copies are deleted). One pin: the lane pin over predev's
 # rev that names the connection table's credential-unavailable cause in its exhaustive maps, plus the
@@ -98,7 +98,7 @@ busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", re
 # THE SIGV4 STYLE (kind: auth): outbound signing and the inbound SigV4 verify, linked on the root's
 # `auths` axis (feature `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin. The
 # pin carries the sealed-Secret port (#1021, Part 2 #54): its signing secret is a private `Held`.
-busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "80025af386ab08afe88bcd552c572e3021ba013f" }
+busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "765d8120cfac540ab46b8e267cffc7a251a23707" }
 # THE WEBHOOK-SIGNATURE STYLE (kind: auth): the inbound verify of a webhook sender's HMAC (variants
 # Twilio and Standard Webhooks), linked on the root's `auths` axis (feature `auth-webhook-signature`,
 # default-on, ARCHITECT 2026-10-14: its inbound verify is an auth-chain module, so
