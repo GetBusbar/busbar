@@ -21,8 +21,8 @@
 //!
 //! `crates/busbar/Cargo.toml` declares ONE `[[bin]]` and **no `[lib]`**. There is no
 //! `src/lib.rs`, so nothing outside the crate can link `busbar::root::…` — not another crate, and
-//! not even the crate's own integration tests under `crates/busbar/tests/`, which is why
-//! `tests/plane_meter_seam_reachability.rs` resorts to scanning source text. For this crate,
+//! not even the crate's own integration tests under `crates/busbar/tests/`, which can only scan
+//! source text. For this crate,
 //! therefore, **"reachable" can only mean "reached from `fn main()` in `crates/busbar/src/main.rs`"**,
 //! and the whole scan is scoped to `crates/busbar/src/**` on exactly that ground.
 //!
