@@ -509,7 +509,7 @@ fn mentions(files: &[&Scanned], cap: &Capability) -> Vec<Mention> {
                 rel: f.rel.clone(),
                 no: line.no,
                 text: line.code.trim().to_string(),
-                rejected: classify(line, &f.rel, f.test_path, &cap.symbol),
+                rejected: classify(line, &f.rel, f.test_path, symbol_fn(&cap.symbol)),
             });
         }
     }
@@ -533,17 +533,122 @@ fn declared_fn_name(code: &str) -> Option<&str> {
     Some(&name[..end]).filter(|n| !n.is_empty())
 }
 
-/// Is `symbol` DEFINED in `built`? The staleness anchor: a declaration about a capability that no
-/// longer exists is a row that outlived its subject.
+/// Is `symbol` DEFINED in `built`, ONCE? The staleness anchor: a declaration about a capability
+/// that no longer exists is a row that outlived its subject, and a name that anchors two
+/// definitions anchors neither (LAW 8: a name is not a thing) — see [`definitions`].
+fn defines(text: &str, symbol: &str) -> bool {
+    definitions(text, symbol) == 1
+}
+
+/// The `fn` name a row's `symbol` names: `new` for `RecordingRows::new`.
+fn symbol_fn(symbol: &str) -> &str {
+    symbol.rsplit("::").next().unwrap_or(symbol)
+}
+
+/// How many production definitions `symbol` names in `text`.
 ///
-/// A definition is a `fn` line whose DECLARED NAME is `symbol` — the same comment- and
+/// A definition is a `fn` line whose DECLARED NAME is the symbol's — the same comment- and
 /// literal-aware line [`classify`] reads — in production code: a `fn` under `#[cfg(test)]` is a
 /// test helper, not the capability, and a line that merely MENTIONS the name (a parameter, a
-/// return type, a sibling's body) defines nothing.
-fn defines(text: &str, symbol: &str) -> bool {
-    test_scope(text)
-        .iter()
-        .any(|l| !l.is_comment && !l.gated && declared_fn_name(&l.code) == Some(symbol))
+/// return type, a sibling's body) defines nothing. A TYPE-QUALIFIED symbol (`RecordingRows::new`)
+/// counts only a `fn` declared directly in an `impl` block whose self type is that type
+/// (`impl RecordingRows`, `impl<T> RecordingRows<T>`, `impl Trait for RecordingRows`); a bare one
+/// counts every `fn` of that name, which is why a bare name defined twice is refused.
+fn definitions(text: &str, symbol: &str) -> usize {
+    let (ty, name) = match symbol.rsplit_once("::") {
+        Some((ty, name)) => (Some(symbol_fn(ty)), name),
+        None => (None, symbol),
+    };
+    let mut depth: i32 = 0;
+    // Every open `impl` body: its self type and the depth inside its braces.
+    let mut impls: Vec<(String, i32)> = Vec::new();
+    // An `impl` header whose `{` has not been read yet (a `where` clause may span lines).
+    let mut header: Option<String> = None;
+    let mut n = 0;
+    for l in test_scope(text) {
+        if !l.is_comment && !l.gated {
+            if let Some(t) = impl_self_type(&l.code) {
+                header = Some(t);
+            }
+            if declared_fn_name(&l.code) == Some(name) {
+                let within = impls
+                    .last()
+                    .filter(|(_, d)| *d == depth)
+                    .map(|(t, _)| t.as_str());
+                if ty.is_none() || within == ty {
+                    n += 1;
+                }
+            }
+        }
+        for c in l.counted.chars() {
+            match c {
+                '{' => {
+                    depth += 1;
+                    if let Some(t) = header.take() {
+                        impls.push((t, depth));
+                    }
+                }
+                '}' => {
+                    if impls.last().is_some_and(|(_, d)| *d == depth) {
+                        impls.pop();
+                    }
+                    depth -= 1;
+                }
+                _ => {}
+            }
+        }
+    }
+    n
+}
+
+/// The self type an `impl` header line names, as its last path segment without generics:
+/// `impl<T: Clone> a::Wrap<T> {` and `impl<'a> fmt::Display for crate::x::Wrap<'a> {` are both
+/// `Wrap`. `None` when the line is not an `impl` header.
+fn impl_self_type(code: &str) -> Option<String> {
+    let t = code.trim_start();
+    let t = t.strip_prefix("unsafe ").map_or(t, str::trim_start);
+    let rest = t.strip_prefix("impl")?;
+    if !rest.starts_with([' ', '<']) {
+        return None;
+    }
+    let rest = rest.trim_start();
+    // The impl's own generic list, `->` inside it included.
+    let rest = if rest.starts_with('<') {
+        let mut d = 0i32;
+        let mut prev = ' ';
+        let mut end = rest.len();
+        for (i, c) in rest.char_indices() {
+            match c {
+                '<' => d += 1,
+                '>' if prev != '-' => {
+                    d -= 1;
+                    if d == 0 {
+                        end = i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            prev = c;
+        }
+        &rest[end..]
+    } else {
+        rest
+    };
+    let head = rest.split('{').next().unwrap_or(rest);
+    let head = head.split(" where").next().unwrap_or(head);
+    let ty = head.rsplit_once(" for ").map_or(head, |(_, ty)| ty);
+    let ty = ty.trim().trim_start_matches('&').trim_start();
+    let ty = match ty.strip_prefix('\'') {
+        Some(lt) => lt.split_once(' ').map_or("", |(_, t)| t),
+        None => ty,
+    };
+    let ty = ty
+        .trim_start_matches("mut ")
+        .trim_start_matches("dyn ")
+        .trim();
+    let base = ty.split('<').next().unwrap_or(ty).trim();
+    Some(symbol_fn(base).to_string()).filter(|s| !s.is_empty())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -732,22 +837,41 @@ impl Gate for UnconstructedGate {
             // points at nothing: it reds its own site row and [`ROW_DEAD_SYMBOL`], by row and by
             // symbol, whatever the construct scan found — neither a tracked debt nor a
             // construction proof can be about a function that is not there.
-            let symbol_live = built_text
+            // A NAME IS NOT A THING (LAW 8): a bare symbol the file defines twice keeps the row
+            // live while either survives, so it is refused until qualified by its type.
+            let found = built_text
                 .get(&c.built)
-                .is_some_and(|t| defines(t, &c.symbol));
-            if !symbol_live {
-                let finding = format!(
-                    "DEAD SYMBOL: row `{}` declares `symbol = \"{}\"` built in {}, which defines no \
-                     production `fn {}` — a ledgered row that points at nothing proves nothing. \
-                     Strike the row (and its KNOWN_UNSHIPPED entry) or correct it",
-                    c.id, c.symbol, c.built, c.symbol
-                );
+                .map_or(0, |t| definitions(t, &c.symbol));
+            if found != 1 {
+                let (finding, what) = if found == 0 {
+                    (
+                        format!(
+                            "DEAD SYMBOL: row `{}` declares `symbol = \"{}\"` built in {}, which \
+                             defines no production `fn {}` — a ledgered row that points at nothing \
+                             proves nothing. Strike the row (and its KNOWN_UNSHIPPED entry) or \
+                             correct it",
+                            c.id, c.symbol, c.built, c.symbol
+                        ),
+                        "names a symbol that no longer exists",
+                    )
+                } else {
+                    (
+                        format!(
+                            "AMBIGUOUS SYMBOL: row `{}` declares `symbol = \"{}\"` built in {}, \
+                             which defines {found} production `fn {}` — a name that anchors more \
+                             than one definition keeps the row live while its own subject is \
+                             deleted. Qualify it by its type (`Type::{}`)",
+                            c.id,
+                            c.symbol,
+                            c.built,
+                            symbol_fn(&c.symbol),
+                            symbol_fn(&c.symbol)
+                        ),
+                        "names a symbol that is more than one definition",
+                    )
+                };
                 dead.push(finding.clone());
-                rows.push(Row::fail(
-                    id,
-                    format!("`{}` names a symbol that no longer exists", c.id),
-                    finding,
-                ));
+                rows.push(Row::fail(id, format!("`{}` {what}", c.id), finding));
                 continue;
             }
 
@@ -867,7 +991,7 @@ impl Gate for UnconstructedGate {
         } else {
             Row::fail(
                 ROW_DEAD_SYMBOL,
-                "a declaration names a symbol that no longer exists",
+                "a declaration names a symbol that no longer exists, or more than one",
                 dead.join(" | "),
             )
         });
@@ -1506,9 +1630,18 @@ mod tests {
         assert!(defines(two, "B::default"));
         assert!(!defines(two, "A::default"));
         assert!(!defines(two, "C::new"));
-        assert!(!defines(two, "new"), "a bare symbol defined twice names neither");
-        let only_b = two.replace("impl A {\n    pub fn new() -> Self {\n        A\n    }\n}\n", "");
-        assert!(!defines(&only_b, "A::new"), "B's `new` does not keep A's alive");
+        assert!(
+            !defines(two, "new"),
+            "a bare symbol defined twice names neither"
+        );
+        let only_b = two.replace(
+            "impl A {\n    pub fn new() -> Self {\n        A\n    }\n}\n",
+            "",
+        );
+        assert!(
+            !defines(&only_b, "A::new"),
+            "B's `new` does not keep A's alive"
+        );
         assert!(defines(&only_b, "new"));
         assert!(defines(
             "impl<T: Clone> Wrap<T> {\n    pub fn new(t: T) -> Self {\n        Wrap(t)\n    }\n}\n",
