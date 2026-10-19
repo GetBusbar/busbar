@@ -2077,7 +2077,7 @@ struct ParkingStore {
     release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
 }
 
-impl crate::plane::store::PlaneStore for ParkingStore {
+impl crate::store::plane_view::PlaneStore for ParkingStore {
     fn upsert_plane_record(
         &self,
         _: busbar_contract::records::PlaneRecordRef<'_>,
@@ -2102,7 +2102,7 @@ impl crate::plane::store::PlaneStore for ParkingStore {
         kind: &str,
         _: &busbar_contract::records::PlaneSelector,
     ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
-        if kind != crate::plane::store::KIND_DEMOTION && self.armed.load(Ordering::SeqCst) {
+        if kind != crate::store::plane_view::KIND_DEMOTION && self.armed.load(Ordering::SeqCst) {
             if let Some(entered) = self.entered.lock().unwrap().take() {
                 entered.send(()).unwrap();
             }
