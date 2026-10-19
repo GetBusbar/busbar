@@ -804,7 +804,7 @@ pub(crate) fn apply_common_layers(
     let router = if handle.load().planes.has_mounts() {
         router.layer(axum::middleware::from_fn_with_state(
             handle.clone(),
-            crate::plane::observe::observe,
+            crate::ingress::observe::observe,
         ))
     } else {
         router
