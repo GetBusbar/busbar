@@ -54,7 +54,8 @@ use crate::abi::mechanism::check::{
     Filled, MAX_BYTES,
 };
 use crate::abi::mechanism::door::{
-    Section, SECTION_CONSUMED, SECTION_DECLARING, SECTION_NAMED_MAP, SECTION_REQUIRED,
+    Section, SECTION_CONSUMED, SECTION_DECLARING, SECTION_ENDPOINT_DOOR, SECTION_NAMED_MAP,
+    SECTION_REQUIRED,
 };
 use crate::abi::store::plane::{RETENTION_AGE, RETENTION_TERMINAL_ONLY};
 use crate::grammar::{PathSeg, Selector};
@@ -1354,7 +1355,11 @@ pub fn check_tail(t: &PlaneTail) -> Result<(), Fault> {
 ///
 /// The rule the sections break.
 pub fn check_sections(sections: &[Section]) -> Result<(), Fault> {
-    let known = SECTION_DECLARING | SECTION_REQUIRED | SECTION_CONSUMED | SECTION_NAMED_MAP;
+    let known = SECTION_DECLARING
+        | SECTION_REQUIRED
+        | SECTION_CONSUMED
+        | SECTION_NAMED_MAP
+        | SECTION_ENDPOINT_DOOR;
     for s in sections {
         named(s.name, "section.name")?;
         bits(u64::from(s.flags), u64::from(known), "section.flags")?;
@@ -1362,6 +1367,21 @@ pub fn check_sections(sections: &[Section]) -> Result<(), Fault> {
         if s.flags & SECTION_NAMED_MAP != 0 && s.flags & SECTION_DECLARING == 0 {
             return Err(fault(Rule::Contradiction, "section.flags"));
         }
+        // An endpoint door is an owned section beside the declaring one, never the verb itself
+        // and never a section the plane only reads.
+        if s.flags & SECTION_ENDPOINT_DOOR != 0
+            && s.flags & (SECTION_DECLARING | SECTION_CONSUMED) != 0
+        {
+            return Err(fault(Rule::Contradiction, "section.flags"));
+        }
+    }
+    if sections
+        .iter()
+        .filter(|s| s.flags & SECTION_ENDPOINT_DOOR != 0)
+        .count()
+        > 1
+    {
+        return Err(fault(Rule::NotExactlyOne, "section.endpoint_door"));
     }
     let declaring = sections
         .iter()

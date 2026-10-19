@@ -3023,6 +3023,7 @@ fn routing_door(
         section,
         named_map: true,
         entry_nouns: Vec::new(),
+        endpoint_door: None,
         owns: Vec::new(),
         consumes: Vec::new(),
         requires: Vec::new(),

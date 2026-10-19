@@ -29,21 +29,21 @@ use crate::abi::host::service::{
     HeadView, RefusalAnswer, UnitHandInIn, UnitRef, UnitRefuseIn,
 };
 use crate::abi::host::service::{
-    check_clock_now, check_content_scan, check_dest_judge, check_entitlement_check,
-    check_hook_call, check_hook_call_in, check_random_fill, check_random_fill_in,
-    check_records_claim, check_records_claim_in, check_records_get, check_records_list,
-    check_session_emit, check_session_emit_in, check_sign, check_snapshot_read, check_trust_decide,
-    check_trust_due, check_trust_serves, check_trust_sight, check_trust_sight_item,
-    check_trust_state, check_trust_verify, check_unit_nest, check_verify_lookup,
-    check_verify_store, check_work_find, check_work_open, check_work_resume, check_work_settle, op,
-    ClockNowIn, ClockReading, ContentScanIn, DestJudgeIn, EntitlementCheckIn, HookCallIn,
-    HostSlots, ItemSpan, RandomFillIn, RecordsClaimIn, RecordsGetIn, RecordsListIn, ServiceBufs,
-    ServiceFn, ServiceHead, ServiceOut, SessionEmitIn, SignIn, SnapshotReadIn, TrustDecideIn,
-    TrustDueIn, TrustServesIn, TrustSightIn, TrustSightItemIn, TrustStateIn, TrustVerifyIn,
-    UnitNestIn, VerifyLookupIn, VerifyStoreIn, WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn,
-    ABSENT, CLAIM_WON, CONTENT_BLOCK, DEST_ALLOWED, DEST_RESOLVE, ENTITLED, FOUND, HOOK_STOP_MIN,
-    TRUST_DECIDE_APPROVE, TRUST_DECIDE_REVOKE, TRUST_REACHED, TRUST_UNREACHABLE, VERIFY_FOLLOW,
-    VERIFY_HIT, VERIFY_LEAD,
+    check_clock_now, check_console_line, check_console_line_in, check_content_scan,
+    check_dest_judge, check_entitlement_check, check_hook_call, check_hook_call_in,
+    check_random_fill, check_random_fill_in, check_records_claim, check_records_claim_in,
+    check_records_get, check_records_list, check_session_emit, check_session_emit_in, check_sign,
+    check_snapshot_read, check_trust_decide, check_trust_due, check_trust_serves,
+    check_trust_sight, check_trust_sight_item, check_trust_state, check_trust_verify,
+    check_unit_nest, check_verify_lookup, check_verify_store, check_work_find, check_work_open,
+    check_work_resume, check_work_settle, op, ClockNowIn, ClockReading, ConsoleLineIn,
+    ContentScanIn, DestJudgeIn, EntitlementCheckIn, HookCallIn, HostSlots, ItemSpan, RandomFillIn,
+    RecordsClaimIn, RecordsGetIn, RecordsListIn, ServiceBufs, ServiceFn, ServiceHead, ServiceOut,
+    SessionEmitIn, SignIn, SnapshotReadIn, TrustDecideIn, TrustDueIn, TrustServesIn, TrustSightIn,
+    TrustSightItemIn, TrustStateIn, TrustVerifyIn, UnitNestIn, VerifyLookupIn, VerifyStoreIn,
+    WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, ABSENT, CLAIM_WON, CONTENT_BLOCK,
+    DEST_ALLOWED, DEST_RESOLVE, ENTITLED, FOUND, HOOK_STOP_MIN, TRUST_DECIDE_APPROVE,
+    TRUST_DECIDE_REVOKE, TRUST_REACHED, TRUST_UNREACHABLE, VERIFY_FOLLOW, VERIFY_HIT, VERIFY_LEAD,
 };
 use crate::abi::mechanism::call::{
     AbiStr, Blob, Field, Outcome, RawOutcome, Span, BLOB_JSON, BLOB_OCTETS,
@@ -480,6 +480,38 @@ impl Services {
                 |t| t.random_fill,
                 &input,
                 check_random_fill,
+            )?
+            .0
+        {
+            Outcome::Ready => Ok(()),
+            other => Err(ServiceError::Declined(other)),
+        }
+    }
+
+    /// `console.line`: one line for the operator's console, written verbatim by the host with a
+    /// newline after it. Served only inside a plane's `open` or `refresh` crossing (a generation's
+    /// boot lines); anywhere else the host REFUSES it. An empty line, or one over
+    /// [`MAX_CONSOLE_LINE`](crate::abi::host::service::MAX_CONSOLE_LINE) bytes, is REFUSED here,
+    /// before the host is called. Never pends.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError`]: the host serves no `console.line`, it or this wrapper declined it, or the
+    /// host broke its rules.
+    pub fn console_line(&self, handle: CompletionHandle, line: &str) -> Result<(), ServiceError> {
+        let input = ConsoleLineIn {
+            head: head::<ConsoleLineIn>(op::CONSOLE_LINE, handle),
+            line: text(line),
+        };
+        if check_console_line_in(&input).is_err() {
+            return Err(ServiceError::Declined(Outcome::Refused));
+        }
+        match self
+            .cross(
+                op::CONSOLE_LINE,
+                |t| t.console_line,
+                &input,
+                check_console_line,
             )?
             .0
         {
@@ -1457,13 +1489,15 @@ impl Services {
 
     /// `unit.refuse`: the refusal of a request, as the kernel owns and audits it (`cause` one of
     /// the `REFUSE_*`; `line` = `LINE_NONE` exactly for `REFUSE_NO_ROUTE`; `unit` none when there
-    /// is none). The kernel's answer is copied out before this returns, so nothing borrowed from
-    /// the kernel outlives the call. Never pends.
+    /// is none; `request` the request being refused, as decoded, whose method and target shape the
+    /// listener's 1.5.5 bytes for a refusal with no unit). The kernel's answer is copied out before
+    /// this returns, so nothing borrowed from the kernel outlives the call. Never pends.
     ///
     /// # Errors
     ///
     /// [`ServiceError`]: unserved, declined, or broken (a field or the body a count behind NULL,
     /// or a field name that is not UTF-8).
+    #[allow(clippy::too_many_arguments)] // one argument per `UnitRefuseIn` field, as `auth_call`
     pub fn unit_refuse(
         &self,
         handle: CompletionHandle,
@@ -1472,7 +1506,9 @@ impl Services {
         line: u32,
         conn: u64,
         stream: u64,
+        request: &HeadViewArgs<'_>,
     ) -> Result<RefusalCopy, ServiceError> {
+        let fields = view_fields(request);
         let mut answer = RefusalAnswer {
             size: 0,
             status: 0,
@@ -1489,6 +1525,7 @@ impl Services {
             conn,
             stream,
             answer: std::ptr::from_mut(&mut answer),
+            request: view(request, &fields),
         };
         let crossed = self.cross(
             op::UNIT_REFUSE,

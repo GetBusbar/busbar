@@ -1979,6 +1979,24 @@ pub struct PlaneOpenOut {
     pub snapshot: *const PlaneSnapshot,
 }
 
+/// The plane's `refresh` `in` (step 2b): the lifecycle's, plus the dialect facts of the providers
+/// THIS GENERATION's section references, built as `open`'s are ([`PlaneOpenIn::providers`]): a
+/// reload may change a provider's base URL, and a plane that prints its generation's boot lines at
+/// `refresh` (the previous release printed them on every applied configuration) prints the new one.
+/// The host lends it for every plane `refresh`; it leads with the lifecycle's [`RefreshIn`], so a
+/// plane that reads only that reads it unchanged.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct PlaneRefreshIn {
+    /// The lifecycle `in`.
+    pub refresh: RefreshIn,
+    /// The dialect facts of the providers its section references, one per provider, in the order
+    /// first referenced; NULL/0 = none.
+    pub providers: *const ProviderFacts,
+    /// How many.
+    pub providers_len: usize,
+}
+
 /// The plane's `refresh` `out`: the new generation's snapshot.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]

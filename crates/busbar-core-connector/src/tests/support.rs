@@ -955,10 +955,10 @@ pub fn lent(ptr: *const u8, len: usize) -> Vec<u8> {
     raw(ptr, len).to_vec()
 }
 
-/// A MULTIPLEXING framer's answer: one piece per byte of `streams`, on the stream the byte names
+/// A MULTIPLEXING framer's answer: one piece per byte of `lane_bytes`, on the stream the byte names
 /// (`'1'` is stream `1`), its byte the piece's, each ending its frame.
-pub fn pieces_on_streams(sink: &FramerSink, o: &mut FramerOut, streams: &[u8]) {
-    for (n, &b) in streams.iter().enumerate() {
+pub fn pieces_on_lanes(sink: &FramerSink, o: &mut FramerOut, lane_bytes: &[u8]) {
+    for (n, &b) in lane_bytes.iter().enumerate() {
         // SAFETY: the host's buffers; a test's few pieces fit them.
         unsafe {
             sink.frame.add(n).write(b);
@@ -975,6 +975,6 @@ pub fn pieces_on_streams(sink: &FramerSink, o: &mut FramerOut, streams: &[u8]) {
             });
         }
     }
-    o.yielded.frame_len = streams.len() as u64;
-    o.yielded.pieces_len = streams.len() as u32;
+    o.yielded.frame_len = lane_bytes.len() as u64;
+    o.yielded.pieces_len = lane_bytes.len() as u32;
 }

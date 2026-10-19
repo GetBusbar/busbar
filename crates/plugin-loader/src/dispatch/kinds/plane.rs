@@ -38,7 +38,8 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome};
 use busbar_contract::abi::mechanism::call::{InHead, OutHead};
 use busbar_contract::abi::mechanism::check::{fault, reported, Fault, Rule};
 use busbar_contract::abi::mechanism::door::{
-    Statement, SECTION_CONSUMED, SECTION_DECLARING, SECTION_NAMED_MAP, SECTION_REQUIRED,
+    Statement, SECTION_CONSUMED, SECTION_DECLARING, SECTION_ENDPOINT_DOOR, SECTION_NAMED_MAP,
+    SECTION_REQUIRED,
 };
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, DriveIn, OpenIn, RefreshIn};
 use busbar_contract::abi::mechanism::ticket::Ticket;
@@ -77,6 +78,7 @@ pub struct Plane;
 // are host buffers, host-borrowed inputs, or the plugin's generation snapshot, valid until
 // `retire` of its generation.
 unsafe impl InFrame for PlaneOpenIn {}
+unsafe impl InFrame for plane::PlaneRefreshIn {}
 unsafe impl InFrame for PlaneDriveIn {}
 unsafe impl InFrame for plane::PlaneCancelIn {}
 unsafe impl InFrame for ArriveIn {}
@@ -120,6 +122,9 @@ pub struct ServedFacts {
     /// Each Statement section's entry noun, `(section, noun)`, for every section stating one
     /// (`Section::entry_noun`), in Statement order.
     pub entry_nouns: Vec<(&'static str, &'static str)>,
+    /// The section flagged `SECTION_ENDPOINT_DOOR` (an owned section beside the verb); `None` =
+    /// none.
+    pub endpoint_door: Option<&'static str>,
     /// The keys of the sections the Statement reads beside it (`SECTION_CONSUMED`), in its order:
     /// the plane opens with all of them, one `{section: value}` object (spec Part 1 §4).
     pub consumed: Vec<&'static str>,
@@ -311,6 +316,10 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
                 .iter()
                 .find(|s| s.flags & SECTION_DECLARING != 0)
                 .map_or("", |s| kept(s.name)),
+            endpoint_door: sections
+                .iter()
+                .find(|s| s.flags & SECTION_ENDPOINT_DOOR != 0)
+                .map(|s| kept(s.name)),
             entry_nouns: sections
                 .iter()
                 .filter(|s| s.entry_noun.len != 0)
@@ -687,6 +696,7 @@ pub fn registration(
         section: served.section,
         named_map: served.named_map,
         entry_nouns: served.entry_nouns.clone(),
+        endpoint_door: served.endpoint_door,
         owns: served.owns.clone(),
         consumes: served.consumes.clone(),
         requires: served.requires.clone(),
@@ -905,6 +915,7 @@ pub fn refresh_door(
     plugin: &crate::dispatch::Plugin<Plane>,
     settings: &[u8],
     owned: &[u8],
+    facts: &[busbar_contract::plane_calls::DialectFacts],
     next: u64,
 ) -> Result<OwnedSnapshot, String> {
     use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS};
@@ -943,13 +954,23 @@ pub fn refresh_door(
             flags: 0,
         };
     }
+    // Each points into `facts`, which outlives the refresh.
+    let providers = provider_facts(facts);
     let mut frame = Frame::new(
-        RefreshIn {
-            head,
-            generation: next,
-            settings: blob,
-            secrets: std::ptr::null(),
-            secrets_len: 0,
+        plane::PlaneRefreshIn {
+            refresh: RefreshIn {
+                head,
+                generation: next,
+                settings: blob,
+                secrets: std::ptr::null(),
+                secrets_len: 0,
+            },
+            providers: if providers.is_empty() {
+                std::ptr::null()
+            } else {
+                providers.as_ptr()
+            },
+            providers_len: providers.len(),
         },
         PlaneRefreshOut {
             head: out_head(),
@@ -1083,13 +1104,23 @@ fn facing(
         snapshot
     } else {
         let next = *current + 1;
+        // The same list the served instance's refresh is handed.
+        let providers = provider_facts(facts);
         let mut frame = Frame::new(
-            RefreshIn {
-                head: in_head(),
-                generation: next,
-                settings: blob,
-                secrets: std::ptr::null(),
-                secrets_len: 0,
+            plane::PlaneRefreshIn {
+                refresh: RefreshIn {
+                    head: in_head(),
+                    generation: next,
+                    settings: blob,
+                    secrets: std::ptr::null(),
+                    secrets_len: 0,
+                },
+                providers: if providers.is_empty() {
+                    std::ptr::null()
+                } else {
+                    providers.as_ptr()
+                },
+                providers_len: providers.len(),
             },
             PlaneRefreshOut {
                 head: out_head(),
@@ -1831,7 +1862,7 @@ impl crate::dispatch::Plugin<Plane> {
     /// `refresh`, and the new generation's snapshot copied as [`Self::open`] copies it.
     pub fn refresh(
         &self,
-        frame: &mut crate::dispatch::Frame<RefreshIn, PlaneRefreshOut>,
+        frame: &mut crate::dispatch::Frame<plane::PlaneRefreshIn, PlaneRefreshOut>,
     ) -> (crate::dispatch::Called, Option<OwnedSnapshot>) {
         let called = self.call(life::REFRESH, frame);
         let copy = (called.outcome == Outcome::Ready)

@@ -146,7 +146,7 @@ impl Dest {
     fn for_declared(decl: &PlaneDecl, key: &'static str) -> Option<Dest> {
         if key != decl.config_section {
             let door = (EndpointSection::KEY == Declared::Door
-                && crate::plane::config::owns_endpoint_door(decl))
+                && crate::plane::config::endpoint_door_of(decl) == Some(key))
             .then_some(Dest::Endpoint(decl.config_section));
             return door.or(Some(Dest::Raw));
         }

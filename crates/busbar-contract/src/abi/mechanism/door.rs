@@ -313,6 +313,14 @@ pub const SECTION_CONSUMED: u32 = 1 << 2;
 /// (arch u28/u29/u34; #49, BUSBAR-1.6.0.md l.2235: the kernel learns which sections are named maps
 /// from the plane's Statement, never from a list of section names).
 pub const SECTION_NAMED_MAP: u32 = 1 << 3;
+/// [`Section::flags`]: an owned section beside the declaring one is the plane's endpoint door.
+///
+/// It configures the plane's receiving side on its own (Law 7); its canonical URI is the audience
+/// the kernel binds and the oauth_as protected resource; an open front door (no data-plane chain)
+/// is refused. Absent = not a door (zero grants nothing). At most one per plane. Never with
+/// [`SECTION_DECLARING`] or [`SECTION_CONSUMED`]; only a plane states it. Bit 4 is allocated to a
+/// flag in flight.
+pub const SECTION_ENDPOINT_DOOR: u32 = 1 << 5;
 
 /// One top-level config section the plugin owns or reads.
 #[repr(C)]

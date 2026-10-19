@@ -130,7 +130,7 @@ use busbar_contract::abi::hook::{MessageView, SignalEntry};
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, Field, OutHead, Span, BLOB_OCTETS,
 };
-use busbar_contract::abi::mechanism::lifecycle::{slot as life, GenIn, RefreshIn};
+use busbar_contract::abi::mechanism::lifecycle::{slot as life, GenIn};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneCancelIn, PlaneCancelOut,
@@ -1555,8 +1555,9 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     });
     // The refresh's frame carries no public URL: the instance keeps the one its `open` was handed.
     let refresh = |what: &[u8]| {
-        let mut f: Frame<RefreshIn, PlaneRefreshOut> = Frame::new(input(), output());
-        (f.input.generation, f.input.settings) = (2, json(what));
+        let mut f: Frame<busbar_contract::abi::plane::PlaneRefreshIn, PlaneRefreshOut> =
+            Frame::new(input(), output());
+        (f.input.refresh.generation, f.input.refresh.settings) = (2, json(what));
         let (c, snap) = p.refresh(&mut f);
         format!("{} {}", called(&c), snapshot(snap.as_ref()))
     };

@@ -1246,6 +1246,11 @@ fn a_statements_entry_nouns_are_kept_for_the_kernel() {
             flags: SECTION_CONSUMED,
             ..Section::ZERO
         },
+        Section {
+            name: s("door"),
+            flags: busbar_contract::abi::mechanism::door::SECTION_ENDPOINT_DOOR,
+            ..Section::ZERO
+        },
     ]));
     let mut st: Statement = z();
     st.kind_tail = &tail.head;
@@ -1257,4 +1262,5 @@ fn a_statements_entry_nouns_are_kept_for_the_kernel() {
         .downcast::<PlaneFacts>()
         .expect("the plane's facts");
     assert_eq!(facts.served.entry_nouns, vec![("verb", "entry")]);
+    assert_eq!(facts.served.endpoint_door, Some("door"));
 }

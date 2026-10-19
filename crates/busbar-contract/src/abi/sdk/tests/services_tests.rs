@@ -87,6 +87,7 @@ fn table(slot: Option<ServiceFn>) -> HostSlots {
         auth_call: None,
         unit_hand_in: None,
         unit_refuse: None,
+        console_line: None,
     }
 }
 
@@ -1904,7 +1905,15 @@ fn unit_refuse_copies_the_kernels_answer_out() {
         ..table(None)
     };
     assert_eq!(
-        services(&t).unit_refuse(handle(), UnitRef::NONE, REFUSE_NO_ROUTE, LINE_NONE, 1, 1),
+        services(&t).unit_refuse(
+            handle(),
+            UnitRef::NONE,
+            REFUSE_NO_ROUTE,
+            LINE_NONE,
+            1,
+            1,
+            &request()
+        ),
         Ok(RefusalCopy {
             status: 404,
             fields: vec![("x-reason".to_string(), b"no route".to_vec())],
@@ -1916,7 +1925,15 @@ fn unit_refuse_copies_the_kernels_answer_out() {
         ..table(None)
     };
     assert_eq!(
-        services(&broken).unit_refuse(handle(), UnitRef::NONE, REFUSE_NO_ROUTE, LINE_NONE, 1, 1),
+        services(&broken).unit_refuse(
+            handle(),
+            UnitRef::NONE,
+            REFUSE_NO_ROUTE,
+            LINE_NONE,
+            1,
+            1,
+            &request()
+        ),
         Err(ServiceError::Broken),
         "a READY with no answer written"
     );

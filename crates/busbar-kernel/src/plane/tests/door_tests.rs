@@ -24,6 +24,7 @@ fn registration(key: &'static str, section: &'static str) -> PlaneRegistration {
         section,
         named_map: section == NAMED,
         entry_nouns: Vec::new(),
+        endpoint_door: None,
         owns: Vec::new(),
         consumes: Vec::new(),
         requires: Vec::new(),

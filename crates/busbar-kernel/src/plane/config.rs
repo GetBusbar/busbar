@@ -309,7 +309,28 @@ pub fn named_sections() -> Vec<&'static str> {
 /// ([`NAMED_MAP_REPIN_BRIDGE`], status row 175).
 #[must_use]
 pub fn owns_endpoint_door(decl: &crate::plane::registry::PlaneDecl) -> bool {
-    decl.parse_endpoint.is_some() && NAMED_MAP_REPIN_BRIDGE[0] == decl.config_section
+    endpoint_door_of(decl).is_some()
+}
+
+/// The section `decl` owns beside its verb as its ENDPOINT DOOR, if any: the one its Statement flags
+/// `SECTION_ENDPOINT_DOOR`; else — only for a plane that flags none, under the repin bridge
+/// (status row 175) — the first section its bridge plane owns beside its verb.
+#[must_use]
+pub fn endpoint_door_of(decl: &crate::plane::registry::PlaneDecl) -> Option<&'static str> {
+    if decl.parse_endpoint.is_none() {
+        return None;
+    }
+    match crate::plane::door::stated_endpoint_door(decl.key) {
+        Some(Some(door)) => Some(door),
+        _ => (NAMED_MAP_REPIN_BRIDGE[0] == decl.config_section)
+            .then(|| {
+                decl.owned_config_sections
+                    .iter()
+                    .copied()
+                    .find(|s| *s != decl.config_section)
+            })
+            .flatten(),
+    }
 }
 
 /// THE ENDPOINT DOOR'S OWNER for a section a plane owns BESIDE its declaring section: the first
@@ -320,11 +341,7 @@ pub fn endpoint_door_owner(key: &str) -> Option<&'static crate::plane::registry:
     crate::plane::registry::plane_decls()
         .iter()
         .copied()
-        .find(|d| {
-            d.config_section != key
-                && d.owned_config_sections.contains(&key)
-                && owns_endpoint_door(d)
-        })
+        .find(|d| endpoint_door_of(d) == Some(key))
 }
 
 /// THE ENDPOINT BLOCK as it lands in `DeployCfg`, type-erased behind [`PlaneEndpointCfg`] — the

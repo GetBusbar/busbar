@@ -172,6 +172,17 @@ fn door(index: usize) -> Option<&'static Folded> {
     DOORS.get(index).and_then(OnceLock::get)
 }
 
+/// THE ENDPOINT DOOR a folded door plane STATES (its Statement's `SECTION_ENDPOINT_DOOR` row):
+/// `None` when `key` names no folded door; `Some(None)` when the door states none.
+#[must_use]
+pub fn stated_endpoint_door(key: &str) -> Option<Option<&'static str>> {
+    DOORS
+        .iter()
+        .filter_map(OnceLock::get)
+        .find(|f| f.reg.key == key)
+        .map(|f| f.reg.endpoint_door)
+}
+
 // ── THE SECTION ───────────────────────────────────────────────────────────────────────────────
 
 /// A DOOR PLANE'S SECTION, as written: the door judged it (`validate`) and is handed it raw; the

@@ -1342,6 +1342,7 @@ fn compute_layout() -> String {
         [
             head,
             side,
+            scheme,
             _reserved,
             target,
             facts,
@@ -1562,6 +1563,11 @@ fn compute_layout() -> String {
         [open, public_url, owned, providers, providers_len]
     );
     record!(s, pkind::PlaneOpenOut, [open, snapshot]);
+    record!(
+        s,
+        pkind::PlaneRefreshIn,
+        [refresh, providers, providers_len]
+    );
     record!(s, pkind::PlaneRefreshOut, [head, snapshot]);
     record!(s, pkind::UnitCount, [class, source, amount]);
     record!(s, pkind::OutField, [name, value]);
@@ -2018,7 +2024,8 @@ fn compute_layout() -> String {
             session_emit,
             auth_call,
             unit_hand_in,
-            unit_refuse
+            unit_refuse,
+            console_line
         ]
     );
     record!(s, hsvc::NeedAdmitIn, [head, need, _reserved]);
@@ -2074,8 +2081,9 @@ fn compute_layout() -> String {
     record!(
         s,
         hsvc::UnitRefuseIn,
-        [head, unit, cause, line, conn, stream, answer]
+        [head, unit, cause, line, conn, stream, answer, request]
     );
+    record!(s, hsvc::ConsoleLineIn, [head, line]);
 
     // M3-SHAPES (abi-v2-perkind.md B.2): the secret kind's `resolve`.
     record!(s, SecretOps, [head, resolve, check]);

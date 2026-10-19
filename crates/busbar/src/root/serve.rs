@@ -663,10 +663,18 @@ impl DoorApply {
         } else {
             handed_settings(settings_path(&self.served_facts), section)?
         };
+        // The dialect facts of the providers its section references, this generation's (a reload
+        // may change a base URL): the plane prints its boot lines from them.
+        let dialects = self
+            .reach
+            .as_ref()
+            .map(|r| crate::root::door_steps::dialect_facts(section, &r.providers))
+            .unwrap_or_default();
         let routing = crate::root::loader::dispatch::kinds::plane::refresh_door(
             &self.plugin,
             &settings,
             &owned_bytes(owned)?,
+            &dialects,
             generation,
         )?
         .routing;
@@ -804,8 +812,9 @@ impl DoorAppliers {
                     continue;
                 }
             };
+            let dialects = crate::root::door_steps::dialect_facts(&walked, egress.reach.providers);
             match crate::root::loader::dispatch::kinds::plane::refresh_door(
-                &p.plugin, &settings, &owned, next,
+                &p.plugin, &settings, &owned, &dialects, next,
             ) {
                 Err(e) => {
                     tracing::error!(plane = name, error = %e, "door plane did not refresh onto the new configuration; it keeps serving the previous one");
@@ -2269,6 +2278,9 @@ pub struct DoorRequest {
     pub credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
     /// The generation serving the request.
     pub app: Arc<busbar_kernel::state::App>,
+    /// The scheme of the listener the request arrived at (`SCHEME_*`): a stream another framer
+    /// frames begins with it.
+    pub scheme: u8,
 }
 
 /// THE AUTH ON A DOOR CLAIM'S GUEST-LIST LINE (THE DESIGN §6, "Auth points and guest lists"): the
@@ -2980,6 +2992,7 @@ impl DoorRequest {
             gov: ctx.gov.unwrap_or_default(),
             credential: ctx.caller_credential,
             app,
+            scheme: ctx.scheme,
         })
     }
 }
@@ -3013,6 +3026,7 @@ impl DataRoutes {
             gov,
             credential,
             app,
+            scheme: _,
         } = req;
         let fields: HeadFields = headers
             .iter()
@@ -3288,6 +3302,7 @@ impl DataRoutes {
             gov,
             credential,
             app,
+            scheme,
         } = req;
         let fields: HeadFields = headers
             .iter()
@@ -3359,7 +3374,7 @@ impl DataRoutes {
                 .collect();
             let target = String::from_utf8_lossy(&arrival.target).into_owned();
             let Ok(mut stream) = busbar_core_connector::framed_stream::FramedStream::open(
-                door, &carrier, &target, &head,
+                door, &carrier, &target, &head, scheme,
             ) else {
                 return stated(
                     (refusal_status(ReasonCode::DecodeFailed), Vec::new()),

@@ -4017,3 +4017,43 @@ fn a_tail_of_another_size_is_foreign() {
         assert_eq!(check_tail(&t), f(Rule::Foreign, "tail.size"), "{size}");
     }
 }
+
+/// Step 2b, THE ENDPOINT DOOR (`SECTION_ENDPOINT_DOOR`): accepted on one owned section beside the
+/// declaring one; refused beside `SECTION_DECLARING` or `SECTION_CONSUMED` (Contradiction at
+/// `section.flags`) and on a second section (NotExactlyOne at `section.endpoint_door`).
+#[test]
+fn an_endpoint_door_is_one_owned_section_beside_the_verb() {
+    use crate::abi::mechanism::door::{SECTION_CONSUMED, SECTION_ENDPOINT_DOOR};
+    let row = |name: &'static str, flags: u32| Section {
+        name: s(name),
+        flags,
+        ..Section::ZERO
+    };
+    let verb = row("verb", SECTION_DECLARING);
+    assert_eq!(
+        check_sections(&[verb, row("door", SECTION_ENDPOINT_DOOR)]),
+        Ok(())
+    );
+    assert_eq!(
+        check_sections(&[row("verb", SECTION_DECLARING | SECTION_ENDPOINT_DOOR)]),
+        f(Rule::Contradiction, "section.flags")
+    );
+    assert_eq!(
+        check_sections(&[verb, row("door", SECTION_CONSUMED | SECTION_ENDPOINT_DOOR)]),
+        f(Rule::Contradiction, "section.flags")
+    );
+    assert_eq!(
+        check_sections(&[
+            verb,
+            row("door", SECTION_ENDPOINT_DOOR),
+            row("other", SECTION_ENDPOINT_DOOR)
+        ]),
+        f(Rule::NotExactlyOne, "section.endpoint_door")
+    );
+    let zero = Section::ZERO;
+    assert_eq!(
+        zero.flags & SECTION_ENDPOINT_DOOR,
+        0,
+        "a zero is not a door"
+    );
+}

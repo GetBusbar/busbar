@@ -4588,6 +4588,7 @@ fn novel_named_plane() -> &'static crate::plane::registry::PlaneDecl {
         section: "u28_novel",
         named_map: true,
         entry_nouns: Vec::new(),
+        endpoint_door: None,
         owns: Vec::new(),
         consumes: Vec::new(),
         requires: Vec::new(),

@@ -435,7 +435,8 @@ fn the_services_that_never_pend_are_exactly_the_stated_sixteen() {
             op::TRUST_STATE,
             op::SESSION_EMIT,
             op::UNIT_HAND_IN,
-            op::UNIT_REFUSE
+            op::UNIT_REFUSE,
+            op::CONSOLE_LINE
         ]
     );
     assert!(
@@ -513,6 +514,7 @@ fn every_service_field_sits_at_its_op_index() {
         (offset_of!(HostSlots, auth_call), op::AUTH_CALL),
         (offset_of!(HostSlots, unit_hand_in), op::UNIT_HAND_IN),
         (offset_of!(HostSlots, unit_refuse), op::UNIT_REFUSE),
+        (offset_of!(HostSlots, console_line), op::CONSOLE_LINE),
     ];
     for (i, (offset, op)) in table.iter().enumerate() {
         assert_eq!(*op as usize, i, "op constants run 0.. in table order");
@@ -1106,6 +1108,7 @@ fn refuse_in(cause: u32, line: u32, answer: &mut RefusalAnswer) -> UnitRefuseIn 
         conn: 1,
         stream: 1,
         answer,
+        request: view(),
     }
 }
 
@@ -1298,7 +1301,8 @@ fn red_unit_hand_in_in_refuses_each_break() {
 }
 
 /// RED: each arm of the host's check of a `unit.refuse` `in`: an unknown cause, a line that
-/// disagrees with the cause, a unit with no line, no answer slot.
+/// disagrees with the cause, a unit with no line, no answer slot, and a request with no method or a
+/// malformed one (the refusal with no unit is shaped by the request, so it is always named).
 #[test]
 fn red_unit_refuse_in_refuses_each_break() {
     let mut a = refusal(0);
@@ -1339,6 +1343,18 @@ fn red_unit_refuse_in_refuses_each_break() {
     assert_eq!(
         in_rule(check_unit_refuse_in(&i)),
         fault(Rule::Missing, "unit_refuse.answer")
+    );
+    let mut i = refuse_in(REFUSE_NO_ROUTE, LINE_NONE, &mut a);
+    i.request.method = none();
+    assert_eq!(
+        in_rule(check_unit_refuse_in(&i)),
+        fault(Rule::Missing, "unit_refuse.request.method")
+    );
+    let mut i = refuse_in(REFUSE_NO_ROUTE, LINE_NONE, &mut a);
+    i.request.scheme = SCHEME_SECURE + 1;
+    assert_eq!(
+        in_rule(check_unit_refuse_in(&i)),
+        fault(Rule::UnknownCode, "head_view.scheme")
     );
 }
 
