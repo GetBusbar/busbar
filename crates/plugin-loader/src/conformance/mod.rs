@@ -348,15 +348,33 @@ impl Subject {
     /// ([`crate::https_conns::HttpsConns`]): each `{ "url", "cert_pem", "status", "body" }` is served
     /// at its exact URL, to a need trusting `cert_pem` (its `trust_from`), or to any need when
     /// `cert_pem` is `null` (a far end chaining to the public roots); every other URL is refused as
-    /// unreachable. `None` when the inputs name none (the instance is handed no table).
+    /// unreachable. `inputs.unreached_schemes` (strings) names the schemes a deployment's other
+    /// transports serve that the suite has no far end for ([`HttpsConns::unreached`](crate::https_conns::HttpsConns::unreached)):
+    /// a need over one passes the load's scheme match, and every open on it is refused. `None` when
+    /// the inputs name no far end (the instance is handed no table).
     ///
     /// # Panics
-    /// When a far end names no `url`.
+    /// When a far end names no `url`, or an unreached scheme is not a string.
     #[must_use]
     pub fn far_ends(&self) -> Option<Arc<dyn busbar_contract::conn::DeclaredConns>> {
         let ends = self.inputs.get("far_ends")?.as_array()?;
+        let unreached = self
+            .inputs
+            .get("unreached_schemes")
+            .and_then(serde_json::Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .map(|s| {
+                        s.as_str()
+                            .expect("conformance.json: every unreached scheme is a string")
+                            .to_owned()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         let table =
-            crate::https_conns::HttpsConns::framing(crate::stand_in::FramedFacts::stand_in());
+            crate::https_conns::HttpsConns::framing(crate::stand_in::FramedFacts::stand_in())
+                .unreached(unreached);
         for e in ends {
             let url = e["url"]
                 .as_str()

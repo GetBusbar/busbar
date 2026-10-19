@@ -65,6 +65,9 @@ pub struct HttpsConns {
     needs: Mutex<HashMap<(InstanceId, NeedId), Result<Declared, ConnError>>>,
     far: Mutex<HashMap<String, FarEnd>>,
     sent: Mutex<Vec<(u32, String)>>,
+    /// Schemes a deployment's other transports serve that this table frames no far end for
+    /// ([`HttpsConns::unreached`]).
+    unreached: Vec<String>,
 }
 
 impl std::fmt::Debug for HttpsConns {
@@ -95,7 +98,20 @@ impl HttpsConns {
             needs: Mutex::default(),
             far: Mutex::default(),
             sent: Mutex::default(),
+            unreached: Vec::new(),
         }
+    }
+
+    /// The same table, also answering the boot's scheme match for `schemes`: transports the
+    /// deployment it stands in for loads beside the framed one, which this table frames no far end
+    /// for. A need over one passes the load (as it does where that transport is loaded) and is
+    /// refused at declare, so every open on it is refused as an unreachable peer is: the scheme is
+    /// served, its far end is not here.
+    #[must_use]
+    pub fn unreached<I: IntoIterator<Item = String>>(mut self, schemes: I) -> Self {
+        self.unreached
+            .extend(schemes.into_iter().filter(|s| !s.is_empty()));
+        self
     }
 
     /// Serve `url` (exact, query included) under the certificate `cert_pem` (`None`: one chaining
@@ -351,6 +367,7 @@ impl DeclaredConns for HttpsConns {
     }
 
     fn serves_scheme(&self, transport: &str) -> bool {
-        !transport.is_empty() && transport == self.facts.transport
+        !transport.is_empty()
+            && (transport == self.facts.transport || self.unreached.iter().any(|s| s == transport))
     }
 }
