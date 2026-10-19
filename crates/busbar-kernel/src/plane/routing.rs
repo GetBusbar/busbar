@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE ROUTING TABLES OF ONE GENERATION, built from what each plane STATES on its snapshot
-//! (`PlaneSnapshot.routing`, contract step 2b) and from nothing else (arch u26; #47, BUSBAR-1.6.0.md
+//! (`PlaneSnapshot.routing`, contract step 2b, owned as `plane_calls::RoutingEntry`) and from nothing else (arch u26; #47, BUSBAR-1.6.0.md
 //! l.2232: the routing keys belong to the plane; #49 l.2235: the kernel spells no plane section).
 //!
 //! A plane resolves its own sections into routing entries — each a `(section, entry)` with its
@@ -24,7 +24,7 @@ use busbar_contract::abi::plane::{
     FACT_ATTEMPT_TIMEOUT_MS, FACT_CONCURRENCY_CAP, FACT_CONTEXT_WINDOW, FACT_FAILOVER_MAX_HOPS,
     FACT_FAILOVER_TIMEOUT_SECS, FACT_MAX_REQUESTS,
 };
-use busbar_plugin_loader::dispatch::kinds::plane::{OwnedRouteEntry, OwnedRouteMember};
+use busbar_contract::plane_calls::{RoutingEntry, RoutingMember};
 
 /// One plane's stated routing for the generation being built.
 #[derive(Debug, Clone, Copy)]
@@ -32,7 +32,7 @@ pub struct StatedRouting<'a> {
     /// The plane's registry key.
     pub plane: &'static str,
     /// The entries its snapshot states, in its order.
-    pub entries: &'a [OwnedRouteEntry],
+    pub entries: &'a [RoutingEntry],
 }
 
 /// ONE LANE: a member identity of one plane and the facts that are the lane's own.
@@ -108,7 +108,7 @@ fn fact(facts: &[(u16, u64)], fact: u16) -> Option<u64> {
 }
 
 /// The lane-level facts one member states of its lane.
-fn lane_of(plane: &'static str, m: &OwnedRouteMember) -> RoutedLane {
+fn lane_of(plane: &'static str, m: &RoutingMember) -> RoutedLane {
     RoutedLane {
         plane,
         name: m.lane.clone(),
@@ -357,6 +357,26 @@ impl RoutingTables {
         }
         errors
     }
+}
+
+/// PROBE/SERVED EQUALITY (Q6 facing ruling, condition 2): a plane's SERVED instance, opened or
+/// refreshed onto a generation, must state exactly the routing its facing probe stated for that
+/// generation (`stated`; `None` = it stated none), since the generation's tables were built from the
+/// probe's. `None` when they agree; else the refusal, naming the plane. The caller refuses that
+/// generation (a boot refuses; an apply keeps the live generation serving).
+#[must_use]
+pub fn served_routing_refusal(
+    plane: &str,
+    stated: Option<&[RoutingEntry]>,
+    served: &[RoutingEntry],
+) -> Option<String> {
+    (stated.unwrap_or_default() != served).then(|| {
+        format!(
+            "plane `{plane}`: its served instance states a routing different from the one its \
+             generation's tables were built from (its facing probe's, for the same settings); the \
+             generation is refused"
+        )
+    })
 }
 
 #[cfg(test)]

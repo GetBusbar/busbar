@@ -975,6 +975,16 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     )
     .unwrap_or_else(|e| die(e));
     root_rules.hold_owned_anchors(&served.need_trust());
+    // THE SERVED ROUTING IS THE ROUTING THE BOOT GENERATION WAS BUILT FROM (Q6 facing ruling,
+    // condition 2): each served plane's first snapshot states exactly what its facing probe stated
+    // for the same settings, or the boot is refused, naming the plane.
+    for plane in &served.planes {
+        if let Some(refusal) =
+            app.served_routing_refusal(&plane.facts.plane, &plane.snapshot.routing)
+        {
+            die(refusal);
+        }
+    }
     served.spawn_ticks();
     // RELIABILITY STATE IS STATELESS (store-or-RAM rule): a plane's own in-memory health/backoff
     // bookkeeping lives in RAM only and is RE-LEARNED after a restart — none of it is this crate's
@@ -1142,6 +1152,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
                 upgrades: upgrades.clone(),
             };
             door_appliers.refresh_models(
+                next,
                 &cfg.sections,
                 &root::serve::DoorEgress {
                     reach: &reach,

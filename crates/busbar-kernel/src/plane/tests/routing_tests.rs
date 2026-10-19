@@ -13,8 +13,8 @@ use busbar_contract::abi::plane::{
 const PLANE: &str = "u26-novel-plane";
 const SECTION: &str = "u26_novel_widgets";
 
-fn member(lane: &str, weight: u32, facts: &[(u16, u64)]) -> OwnedRouteMember {
-    OwnedRouteMember {
+fn member(lane: &str, weight: u32, facts: &[(u16, u64)]) -> RoutingMember {
+    RoutingMember {
         lane: lane.to_string(),
         provider: "acme".to_string(),
         upstream: None,
@@ -30,9 +30,9 @@ fn entry(
     name: &str,
     fallback: Option<&str>,
     facts: &[(u16, u64)],
-    members: Vec<OwnedRouteMember>,
-) -> OwnedRouteEntry {
-    OwnedRouteEntry {
+    members: Vec<RoutingMember>,
+) -> RoutingEntry {
+    RoutingEntry {
         section: section.to_string(),
         entry: name.to_string(),
         path: vec![section.to_string(), name.to_string()],

@@ -1785,6 +1785,53 @@ pub fn build_app_from_config(
         plane_slots.insert(fallback_runtime_key, slot);
     }
 
+    // THE GENERATION'S ROUTING (arch u26; Q6, the facing ruling): each plane's routing as its
+    // facing snapshot stated it for THIS generation's settings, and the tables built from it, here,
+    // inside the candidate generation, so a build the routing refuses drops the candidate and the
+    // live generation keeps serving, and no request sees an App without its lanes. An entry a
+    // plane states no fallback for takes the one its reserved `on_exhausted:` names, read by the
+    // kernel (a reserved sub-key never crosses to the plane): the fallback plane's own section's
+    // pools, located by that plane's declared section, never by name.
+    let stated_routing: std::collections::BTreeMap<
+        &'static str,
+        Vec<busbar_contract::plane_calls::RoutingEntry>,
+    > = crate::plane::registry::plane_decls()
+        .iter()
+        .filter_map(|d| {
+            let door = plane_slots
+                .get(d.key)?
+                .downcast_ref::<crate::plane::door::DoorSlot>()?;
+            (!door.facing.routing.is_empty()).then(|| (d.key, door.facing.routing.clone()))
+        })
+        .collect();
+    let routing = {
+        let stated: Vec<crate::plane::routing::StatedRouting<'_>> = stated_routing
+            .iter()
+            .map(|(plane, entries)| crate::plane::routing::StatedRouting {
+                plane: *plane,
+                entries,
+            })
+            .collect();
+        let pools_section = crate::plane::fallback_decl().map(|d| d.config_section);
+        let reserved_fallback = |path: &[String]| -> Option<String> {
+            let [section, name] = path else {
+                return None;
+            };
+            if Some(section.as_str()) != pools_section {
+                return None;
+            }
+            match cfg.pools.get(name)?.on_exhausted.as_ref()? {
+                crate::config::OnExhaustedCfg::FallbackPool(to) => Some(to.clone()),
+                _ => None,
+            }
+        };
+        Arc::new(
+            crate::plane::routing::RoutingTables::build(&stated, &reserved_fallback).map_err(
+                |errors| format!("config validation failed:\n  - {}", errors.join("\n  - ")),
+            )?,
+        )
+    };
+
     // THE AUTHORIZATION SERVER, built once per generation, and only when the operator asked for
     // one. Everything
     // this plane costs hangs off this `Option`: absent, nothing below runs, `App::oauth_as` is
@@ -2099,6 +2146,8 @@ pub fn build_app_from_config(
         ),
         plugin_routes,
         boot_route_paths,
+        stated_routing,
+        routing,
     };
     // PRUNE the verify-on-call gates to the subjects THIS generation still fronts. `flights` and
     // `drift_latch` are per-subject coordination CARRIED across every apply (above); without a prune

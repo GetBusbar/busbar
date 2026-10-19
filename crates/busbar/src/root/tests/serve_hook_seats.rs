@@ -1150,6 +1150,7 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
                 upgrades: Vec::new(),
             };
             appliers.refresh_models(
+                &app,
                 &sections,
                 &DoorEgress {
                     reach: &reach,

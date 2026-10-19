@@ -1873,6 +1873,9 @@ impl TestApp {
             Vec::new()
         };
         let app = std::sync::Arc::new(crate::state::App {
+            // A fixture states no plane routing unless a test hands its own App one.
+            stated_routing: Default::default(),
+            routing: Default::default(),
             // No authorization server unless a test asked for one with `TestApp::oauth_as`, which is
             // the production default and is what keeps every existing test's route table unchanged
             // by this plane's arrival.

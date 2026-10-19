@@ -615,7 +615,22 @@ impl DoorApply {
             Arc::clone(&app.secret_resolver) as Arc<dyn busbar_contract::secret::SecretResolve>,
             &scope,
         ) {
-            Ok(next) => {
+            Ok((next, routing)) => {
+                // THE SERVED ROUTING IS THE ROUTING THE GENERATION WAS BUILT FROM (Q6 facing
+                // ruling, condition 2): otherwise this generation is refused and the plane keeps
+                // serving the one it has.
+                if let Some(refusal) = app.served_routing_refusal(&self.facts.plane, &routing) {
+                    crate::root::loader::dispatch::kinds::plane::retire_door(
+                        &self.plugin,
+                        now.generation + 1,
+                    );
+                    tracing::error!(
+                        plane = self.facts.plane.as_str(),
+                        error = %refusal,
+                        "door plane kept its generation across a config apply"
+                    );
+                    return;
+                }
                 *self
                     .live
                     .write()
@@ -642,18 +657,19 @@ impl DoorApply {
         generation: u64,
         secrets: Arc<dyn busbar_contract::secret::SecretResolve>,
         scope: &busbar_contract::config_time::ConfigScope,
-    ) -> Result<DoorLive, String> {
+    ) -> Result<(DoorLive, Vec<busbar_contract::plane_calls::RoutingEntry>), String> {
         let settings = if section.is_null() {
             Vec::new()
         } else {
             handed_settings(settings_path(&self.served_facts), section)?
         };
-        crate::root::loader::dispatch::kinds::plane::refresh_door(
+        let routing = crate::root::loader::dispatch::kinds::plane::refresh_door(
             &self.plugin,
             &settings,
             &owned_bytes(owned)?,
             generation,
-        )?;
+        )?
+        .routing;
         let table = routes_of(
             section,
             self.reach.as_ref().and_then(|r| r.catalog.as_ref()),
@@ -690,15 +706,18 @@ impl DoorApply {
             }
             None => None,
         };
-        Ok(DoorLive {
-            section: section.clone(),
-            generation,
-            pools,
-            egress,
-            facts: self.facts.clone(),
-            probes: None,
-            shown: None,
-        })
+        Ok((
+            DoorLive {
+                section: section.clone(),
+                generation,
+                pools,
+                egress,
+                facts: self.facts.clone(),
+                probes: None,
+                shown: None,
+            },
+            routing,
+        ))
     }
 }
 
@@ -747,6 +766,7 @@ impl DoorAppliers {
     /// generation, and says why.
     pub fn refresh_models(
         &self,
+        app: &busbar_kernel::state::App,
         sections: &BTreeMap<&'static str, serde_yaml::Value>,
         egress: &DoorEgress<'_>,
     ) {
@@ -784,11 +804,22 @@ impl DoorAppliers {
                     continue;
                 }
             };
-            if let Err(e) = crate::root::loader::dispatch::kinds::plane::refresh_door(
+            match crate::root::loader::dispatch::kinds::plane::refresh_door(
                 &p.plugin, &settings, &owned, next,
             ) {
-                tracing::error!(plane = name, error = %e, "door plane did not refresh onto the new configuration; it keeps serving the previous one");
-                continue;
+                Err(e) => {
+                    tracing::error!(plane = name, error = %e, "door plane did not refresh onto the new configuration; it keeps serving the previous one");
+                    continue;
+                }
+                // THE SERVED ROUTING IS THE ROUTING THE GENERATION WAS BUILT FROM (Q6 facing
+                // ruling, condition 2); otherwise this generation is refused.
+                Ok(snapshot) => {
+                    if let Some(refusal) = app.served_routing_refusal(name, &snapshot.routing) {
+                        crate::root::loader::dispatch::kinds::plane::retire_door(&p.plugin, next);
+                        tracing::error!(plane = name, error = %refusal, "door plane's new generation states another routing; it keeps serving the previous one");
+                        continue;
+                    }
+                }
             }
             match seal_live(
                 name,

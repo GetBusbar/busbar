@@ -346,9 +346,10 @@ fn test_inert_durable_keys_banner_fires_only_for_durable_keyed_no_token() {
 /// would be noise there. This is a WARN, never a boot-block.
 #[test]
 fn test_stateful_plane_ephemeral_store_warn_fires_only_for_ram_plus_stateful() {
-    // RAM store + an MCP plane configured (tool or tool-pool) → the specific warn fires.
-    let w = stateful_plane_ephemeral_store_warn(true, true, false)
-        .expect("RAM + the first stateful plane → sharper warn fires");
+    // RAM store + a container plane configured (a registration or a failover pool) → the specific
+    // warn fires.
+    let w = stateful_plane_ephemeral_store_warn(true, true)
+        .expect("RAM + a stateful plane → sharper warn fires");
     assert!(
         w.contains("in-flight tasks will break")
             && w.contains(frozen_str("durable_store_advice").as_str())
@@ -356,22 +357,16 @@ fn test_stateful_plane_ephemeral_store_warn_fires_only_for_ram_plus_stateful() {
         "the warn must name the CONSEQUENCE and the durable-store fix; got: {w}"
     );
 
-    // RAM store + an A2A plane configured (agent or agent-pool) → fires (either stateful plane does).
-    assert!(
-        stateful_plane_ephemeral_store_warn(true, false, true).is_some(),
-        "RAM + the second stateful plane → the sharper warn fires"
-    );
-
     // RAM store but LLM-only (no stateful plane) → stateless, a restart costs nothing → NO warn.
     assert!(
-        stateful_plane_ephemeral_store_warn(true, false, false).is_none(),
+        stateful_plane_ephemeral_store_warn(true, false).is_none(),
         "a stateless-only deploy must NOT get the sharper warn — noise trains people to \
          ignore warnings"
     );
 
     // A DURABLE store → task state survives a restart → no warn, even with stateful planes present.
     assert!(
-        stateful_plane_ephemeral_store_warn(false, true, true).is_none(),
+        stateful_plane_ephemeral_store_warn(false, true).is_none(),
         "a durable store persists stateful-plane task state across restarts — no sharper warn"
     );
 }
@@ -2924,4 +2919,169 @@ async fn unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect() {
         "the kernel's envelope states the agnostic kind verbatim"
     );
     assert_eq!(v["error"]["message"], "everything is on fire");
+}
+
+// ── THE GENERATION'S ROUTING IS BUILT FROM WHAT THE PLANES STATE, INSIDE THE BUILD (arch u26;
+//    Q6, the facing ruling) ─────────────────────────────────────────────────────────────────────
+
+/// A door plane under `section` whose facing snapshot states `routing` for every generation.
+fn routing_door(
+    key: &'static str,
+    section: &'static str,
+    routing: Vec<busbar_contract::plane_calls::RoutingEntry>,
+) -> &'static crate::plane::registry::PlaneDecl {
+    use busbar_contract::plane_calls::{DoorFacing, PlaneRegistration};
+    crate::plane::door::fold(PlaneRegistration {
+        key,
+        section,
+        named_map: true,
+        entry_nouns: Vec::new(),
+        owns: Vec::new(),
+        consumes: Vec::new(),
+        requires: Vec::new(),
+        secret_refs: Vec::new(),
+        admin_routes: Vec::new(),
+        admin_openapi: None,
+        label: "Routes",
+        subject_noun: "route member",
+        admin_noun: "member",
+        audit_kind: "route_member",
+        signing: None,
+        dialects: Vec::new(),
+        scope_kinds: Vec::new(),
+        billable_classes: Vec::new(),
+        fee_units: Vec::new(),
+        record_kinds: Vec::new(),
+        trust_keys: Vec::new(),
+        caller_credential_refusal: None,
+        fallback: false,
+        provider_keys: None,
+        validate: std::sync::Arc::new(|_: &[u8]| Ok(())),
+        facing: std::sync::Arc::new(
+            move |_: &[u8],
+                  _: &[u8],
+                  _: Option<&str>,
+                  _: &[busbar_contract::plane_calls::DialectFacts]| {
+                Ok(DoorFacing {
+                    routing: routing.clone(),
+                    ..DoorFacing::default()
+                })
+            },
+        ),
+    })
+    .expect("the routing door folds")
+}
+
+/// One routing entry of `section`: `name` over the given `(lane, concurrency cap)` members.
+fn route(
+    section: &str,
+    name: &str,
+    members: &[(&str, u64)],
+) -> busbar_contract::plane_calls::RoutingEntry {
+    busbar_contract::plane_calls::RoutingEntry {
+        section: section.to_string(),
+        entry: name.to_string(),
+        path: vec![section.to_string(), name.to_string()],
+        members: members
+            .iter()
+            .map(|(lane, cap)| busbar_contract::plane_calls::RoutingMember {
+                lane: (*lane).to_string(),
+                provider: "acme".to_string(),
+                weight: 1,
+                facts: vec![(busbar_contract::abi::plane::FACT_CONCURRENCY_CAP, *cap)],
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    }
+}
+
+/// `cfg` carrying `section`, written with one registration, as the plane's declared section.
+fn with_section(mut cfg: crate::config::RootCfg, section: &'static str) -> crate::config::RootCfg {
+    let value: serde_yaml::Value =
+        serde_yaml::from_str("alpha: { url: \"https://a\" }").expect("a section");
+    let parsed = crate::plane::config::DeclaredSections::parse(section, value)
+        .expect("the door parses its section");
+    cfg.declared_sections.extend(parsed.0);
+    cfg.plane_sections.insert(section);
+    cfg
+}
+
+/// RED (b) through the build, and Q6's refusal: a plane stating its routing under a section the
+/// kernel has never seen gets the generation's lane and entry tables with no kernel edit; a
+/// generation whose stated routing contradicts itself is refused by the build (a refused build
+/// drops the candidate), and the live generation keeps its lanes. Its served instance stating
+/// another routing than its probe did is refused against the generation it would join
+/// (condition 2).
+#[test]
+fn the_generations_routing_is_built_from_the_planes_facing_and_a_contradiction_refuses_it() {
+    crate::snapshot::init();
+    let good = routing_door(
+        "u26-routing-good",
+        "u26_routing_good",
+        vec![
+            route("u26_routing_good", "alpha", &[("alpha", 4)]),
+            route("u26_routing_good", "pair", &[("alpha", 4), ("beta", 2)]),
+        ],
+    );
+    let bad = routing_door(
+        "u26-routing-bad",
+        "u26_routing_bad",
+        vec![
+            route("u26_routing_bad", "alpha", &[("alpha", 4)]),
+            // The same lane with another concurrency cap: the plane contradicts itself.
+            route("u26_routing_bad", "pair", &[("alpha", 9)]),
+        ],
+    );
+    let _registry = crate::plane::registry::TestRegistryIsolation::seeded(&[
+        crate::test_support::neutral_fallback_plane(),
+        good,
+        bad,
+    ]);
+    let base = || cfg_with_provider_api_key(crate::config::SecretRef::none());
+
+    let live = crate::test_support::build_once(with_section(base(), "u26_routing_good"), None)
+        .expect("a plane stating consistent routing builds");
+    let lanes: Vec<&str> = live
+        .routing
+        .lanes()
+        .iter()
+        .map(|l| l.name.as_str())
+        .collect();
+    assert_eq!(
+        lanes,
+        ["alpha", "beta"],
+        "the plane's stated lanes, by name"
+    );
+    assert!(live
+        .routing
+        .entry("u26-routing-good", "u26_routing_good", "pair")
+        .is_some());
+    assert_eq!(
+        live.stated_routing.get("u26-routing-good").map(Vec::len),
+        Some(2)
+    );
+
+    let refused =
+        crate::test_support::build_once(with_section(base(), "u26_routing_bad"), Some(&live))
+            .err()
+            .expect("a generation stating a lane twice with two caps is refused");
+    assert!(refused.contains("lane `alpha`"), "{refused}");
+    assert_eq!(
+        live.routing.lanes().len(),
+        2,
+        "the live generation keeps its lanes"
+    );
+
+    // Condition 2: the served instance states exactly what the probe stated, or it is refused.
+    let stated = live.stated_routing["u26-routing-good"].clone();
+    assert_eq!(
+        live.served_routing_refusal("u26-routing-good", &stated),
+        None
+    );
+    let mut other = stated;
+    other.pop();
+    assert!(live
+        .served_routing_refusal("u26-routing-good", &other)
+        .is_some_and(|r| r.contains("u26-routing-good")));
 }

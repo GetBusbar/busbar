@@ -485,6 +485,15 @@ pub struct App {
     /// mutation tell the operator "restart required" instead of silently no-opping
     /// ([`crate::plugin_routes::paths_awaiting_restart`]).
     pub boot_route_paths: Arc<std::collections::HashSet<String>>,
+    /// THE ROUTING EACH PLANE STATED for this generation (its facing snapshot's
+    /// `PlaneSnapshot.routing`, arch u26 / Q6 facing ruling), by plane key: what [`Self::routing`]
+    /// was built from, and what a plane's SERVED instance must state when it opens on this
+    /// generation (a mismatch refuses that generation; the live one keeps serving).
+    pub stated_routing:
+        std::collections::BTreeMap<&'static str, Vec<busbar_contract::plane_calls::RoutingEntry>>,
+    /// THE GENERATION'S ROUTING TABLES, built inside the build from [`Self::stated_routing`]: every
+    /// stated lane and entry ([`crate::plane::routing::RoutingTables`]).
+    pub routing: Arc<crate::plane::routing::RoutingTables>,
 }
 
 impl App {
@@ -524,6 +533,22 @@ impl App {
     /// zero-plane boot, or a decl with no viewer — yields the substrate-resident
     /// [`EMPTY_VIEW`](busbar_kernel::plane_host::EMPTY_VIEW) (an empty projection), so a scrape or
     /// discovery probe on a plane-less binary reads empty tables rather than panicking. Cold path: one
+    /// Whether plane `plane`'s served instance, stating `served` on this generation, states the
+    /// routing this generation's tables were built from ([`Self::stated_routing`]): `None` when it
+    /// does, else the refusal ([`crate::plane::routing::served_routing_refusal`]).
+    #[must_use]
+    pub fn served_routing_refusal(
+        &self,
+        plane: &str,
+        served: &[busbar_contract::plane_calls::RoutingEntry],
+    ) -> Option<String> {
+        crate::plane::routing::served_routing_refusal(
+            plane,
+            self.stated_routing.get(plane).map(Vec::as_slice),
+            served,
+        )
+    }
+
     /// `plane_slots` lookup + one downcast, then the neutral (allocating) projections.
     pub fn engine_tables_view(&self) -> &dyn busbar_kernel::plane_host::EngineTablesView {
         // THE PIVOT (1.6.0 money-path Phase 3-4 C): the runtime type now lives in the fallback plane's
