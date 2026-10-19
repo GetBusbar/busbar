@@ -1296,7 +1296,9 @@ fn compute_layout() -> String {
             alpn_written,
             alpn_needed,
             defaults_written,
-            defaults_needed
+            defaults_needed,
+            states_length,
+            _reserved
         ]
     );
     record!(s, tkind::FramerOut, [head, yielded, framing, datagram]);

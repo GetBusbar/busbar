@@ -73,6 +73,9 @@ use busbar_contract::transport::wire::{WireFault, WireStatus, WireStatusClass};
 use super::hooks::{CandidateFacts, Candidates, Constraint};
 use super::route::{FarEnd, FarPiece, OutboundRequest, Pick};
 
+/// The line a framer that states its body's length has the host add (`HeadDefaults::states_length`).
+const CONTENT_LENGTH: &[u8] = b"content-length";
+
 /// The bytes one read of the far end takes.
 const READ_BYTES: usize = 16 * 1024;
 
@@ -1246,20 +1249,36 @@ impl EgressFarEnd<'_> {
             return false;
         }
         let url = join(&base_url, &request.target);
-        // THE FRAMER'S OWN HEAD LINES for this target (THE DESIGN section 6, step 5): each one the
-        // request does not carry is part of the head the auth signs and goes out after the plane's
-        // fields, where 1.5.5's client wrote its defaults; the framer adds nothing at encode.
-        let defaults: Vec<(Vec<u8>, Vec<u8>)> = e
-            .conns
-            .head_defaults(e.caller, need, &url)
+        // THE FRAMER'S OWN HEAD for this target (THE DESIGN section 6, step 5): each of its lines
+        // the request does not carry is part of the head the auth signs and goes out after the
+        // plane's fields, where 1.5.5's client wrote its defaults; then, where the framer states
+        // it, the opening body's length, last, for a non-empty body whose head carries none. The
+        // framer adds nothing at encode.
+        let located = e.conns.head_defaults(e.caller, need, &url);
+        let carried = |name: &[u8]| {
+            request
+                .fields
+                .iter()
+                .any(|(n, _)| n.eq_ignore_ascii_case(name))
+        };
+        let mut defaults: Vec<(Vec<u8>, Vec<u8>)> = located
+            .lines
             .into_iter()
-            .filter(|(name, _)| {
-                !request
-                    .fields
-                    .iter()
-                    .any(|(n, _)| n.eq_ignore_ascii_case(name))
-            })
+            .filter(|(name, _)| !carried(name))
             .collect();
+        let opening: &[u8] = if request.text { &[] } else { &request.body };
+        if located.states_length
+            && !opening.is_empty()
+            && !carried(CONTENT_LENGTH)
+            && !defaults
+                .iter()
+                .any(|(n, _)| n.eq_ignore_ascii_case(CONTENT_LENGTH))
+        {
+            defaults.push((
+                CONTENT_LENGTH.to_vec(),
+                opening.len().to_string().into_bytes(),
+            ));
+        }
         // 2. The one auth call; its fields lead the head (1.5.5's order).
         let mut auth = Vec::new();
         if let Some(binding) = route.auth.as_ref().filter(|_| !waived) {
@@ -1355,7 +1374,7 @@ impl EgressFarEnd<'_> {
                 fields: &borrowed,
                 // A TEXT message rides no opening: the connection opens bare and the message is
                 // written to it as text once open (the opening carries no text bit).
-                body: if request.text { &[] } else { &request.body },
+                body: opening,
                 timeout_ms: cap_ms,
                 method: &request.verb,
                 head_target: path.as_bytes(),

@@ -3368,6 +3368,8 @@ struct bb_transport_LocateOut {
     uint64_t alpn_needed;
     uint64_t defaults_written;
     uint64_t defaults_needed;
+    uint8_t states_length;
+    uint8_t _reserved[7];
 };
 
 /* Every framer op's `out`. */
@@ -5814,7 +5816,7 @@ BB_ASSERT(offsetof(bb_transport_LocateIn, accept) == 152, "bb_transport_LocateIn
 BB_ASSERT(offsetof(bb_transport_LocateIn, _accept_reserved) == 156, "bb_transport_LocateIn._accept_reserved: offset");
 BB_ASSERT(offsetof(bb_transport_LocateIn, defaults_buf) == 160, "bb_transport_LocateIn.defaults_buf: offset");
 BB_ASSERT(offsetof(bb_transport_LocateIn, defaults_cap) == 168, "bb_transport_LocateIn.defaults_cap: offset");
-BB_ASSERT(sizeof(bb_transport_LocateOut) == 168, "bb_transport_LocateOut: size");
+BB_ASSERT(sizeof(bb_transport_LocateOut) == 176, "bb_transport_LocateOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_LocateOut) == 8, "bb_transport_LocateOut: alignment");
 BB_ASSERT(offsetof(bb_transport_LocateOut, head) == 0, "bb_transport_LocateOut.head: offset");
 BB_ASSERT(offsetof(bb_transport_LocateOut, authority_written) == 96, "bb_transport_LocateOut.authority_written: offset");
@@ -5827,6 +5829,8 @@ BB_ASSERT(offsetof(bb_transport_LocateOut, alpn_written) == 136, "bb_transport_L
 BB_ASSERT(offsetof(bb_transport_LocateOut, alpn_needed) == 144, "bb_transport_LocateOut.alpn_needed: offset");
 BB_ASSERT(offsetof(bb_transport_LocateOut, defaults_written) == 152, "bb_transport_LocateOut.defaults_written: offset");
 BB_ASSERT(offsetof(bb_transport_LocateOut, defaults_needed) == 160, "bb_transport_LocateOut.defaults_needed: offset");
+BB_ASSERT(offsetof(bb_transport_LocateOut, states_length) == 168, "bb_transport_LocateOut.states_length: offset");
+BB_ASSERT(offsetof(bb_transport_LocateOut, _reserved) == 169, "bb_transport_LocateOut._reserved: offset");
 BB_ASSERT(sizeof(bb_transport_FramerOut) == 264, "bb_transport_FramerOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_FramerOut) == 8, "bb_transport_FramerOut: alignment");
 BB_ASSERT(offsetof(bb_transport_FramerOut, head) == 0, "bb_transport_FramerOut.head: offset");

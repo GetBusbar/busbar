@@ -1073,6 +1073,15 @@ pub struct LocateOut {
     pub defaults_written: u64,
     /// Short answer: the bytes `defaults_buf` needs.
     pub defaults_needed: u64,
+    /// `1` = the framer's head states its body's length: the host adds `content-length: <the
+    /// opening body's length>` as the head's last line, after the framer's own lines and before the
+    /// auth signs the head, for a non-empty body and a head whose fields carry no line of that name
+    /// (THE DESIGN section 6, step 5). `0` = the host adds none: the framer frames its body its own
+    /// way. A framer that predates the field reads `0` (the host zeroes its whole `out` before
+    /// every crossing). A tail addition.
+    pub states_length: u8,
+    /// Alignment padding.
+    pub _reserved: [u8; 7],
 }
 
 /// Every framer op's `out`.

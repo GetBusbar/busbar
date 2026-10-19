@@ -28,7 +28,8 @@ use busbar_contract::abi::transport::{
 use busbar_contract::auth_calls::{AuthField, Fielding, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::caps::{Pass, Route};
 use busbar_contract::conn::{
-    ConnError, ConnId, Conns, InstanceId, NeedId, OpenDesc, Piece, PieceKind, PollConns, Ticket,
+    ConnError, ConnId, Conns, HeadDefaults, InstanceId, NeedId, OpenDesc, Piece, PieceKind,
+    PollConns, Ticket,
 };
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::{WireFault, WireStatusClass};
@@ -85,6 +86,8 @@ struct Table {
     failing: Mutex<Vec<u64>>,
     /// The head lines the framer states for every target (`PollConns::head_defaults`).
     defaults: Mutex<Vec<(Vec<u8>, Vec<u8>)>>,
+    /// Whether the framer's head states the body's length (`HeadDefaults::states_length`).
+    states_length: std::sync::atomic::AtomicBool,
 }
 
 fn piece(kind: PieceKind, len: usize, status: Option<(u32, Option<u64>)>) -> Piece {
@@ -242,8 +245,11 @@ impl Conns for Table {
 }
 
 impl PollConns for Table {
-    fn head_defaults(&self, _: InstanceId, _: NeedId, _: &str) -> Vec<(Vec<u8>, Vec<u8>)> {
-        self.defaults.lock().unwrap().clone()
+    fn head_defaults(&self, _: InstanceId, _: NeedId, _: &str) -> HeadDefaults {
+        HeadDefaults {
+            lines: self.defaults.lock().unwrap().clone(),
+            states_length: self.states_length.load(std::sync::atomic::Ordering::SeqCst),
+        }
     }
 
     fn poll_read(
@@ -2840,4 +2846,69 @@ async fn the_framers_own_head_lines_follow_the_planes_fields_in_the_head_that_go
     let opened = r.table.opened.lock().unwrap().clone();
     let head: Vec<&str> = opened[1].1.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(head, ["authorization", "content-type", "Accept", "host"]);
+}
+
+/// A FRAMER THAT STATES ITS BODY'S LENGTH (`HeadDefaults::states_length`, THE DESIGN section 6,
+/// step 5) has the host add `content-length: <the opening body's length>` as the head's LAST line,
+/// after its own lines and before the auth signs the head (1.5.5's goldens: `..., accept, host,
+/// content-length`). An empty body gets no line, and a framer that does not state it gets none, so
+/// every other framer's head is unchanged. RED before: no head carried the length; the framer
+/// added it at encode, after the auth.
+#[tokio::test]
+async fn a_framer_that_states_its_length_has_the_bodys_length_last_in_the_head() {
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    *r.table.defaults.lock().unwrap() = vec![
+        (b"accept".to_vec(), b"*/*".to_vec()),
+        (b"host".to_vec(), b"a.test".to_vec()),
+    ];
+    r.table
+        .states_length
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let t = token();
+    let names =
+        |n: usize| -> Vec<(String, Vec<u8>)> { r.table.opened.lock().unwrap()[n].1.clone() };
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    assert!(far.send(&t, request()).await);
+    let _ = drain(&far, &t).await;
+    let head = names(0);
+    let head: Vec<(&str, &[u8])> = head
+        .iter()
+        .map(|(n, v)| (n.as_str(), v.as_slice()))
+        .collect();
+    assert_eq!(
+        head,
+        [
+            ("authorization", b"Bearer sk-test".as_slice()),
+            ("content-type", b"application/json".as_slice()),
+            ("accept", b"*/*".as_slice()),
+            ("host", b"a.test".as_slice()),
+            ("content-length", b"2".as_slice()),
+        ]
+    );
+
+    // An empty body: no length line.
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    let mut req = request();
+    req.body.clear();
+    assert!(far.send(&t, req).await);
+    let _ = drain(&far, &t).await;
+    let head: Vec<String> = names(1).into_iter().map(|(n, _)| n).collect();
+    assert_eq!(head, ["authorization", "content-type", "accept", "host"]);
+
+    // A framer that does not state it: no length line.
+    r.table
+        .states_length
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    assert!(far.send(&t, request()).await);
+    let _ = drain(&far, &t).await;
+    let head: Vec<String> = names(2).into_iter().map(|(n, _)| n).collect();
+    assert_eq!(head, ["authorization", "content-type", "accept", "host"]);
 }

@@ -108,6 +108,7 @@ pub fn check_locate(
 ) -> Result<(), Fault> {
     code(u64::from(out.secure), 0, 1, "locate.secure")?;
     code(u64::from(out.has_name), 0, 1, "locate.has_name")?;
+    code(u64::from(out.states_length), 0, 1, "locate.states_length")?;
     if out.has_name == 0 && (out.name_written | out.name_needed) != 0 {
         return Err(fault(Rule::Contradiction, "locate.name_without_has_name"));
     }

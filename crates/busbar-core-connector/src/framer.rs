@@ -640,6 +640,9 @@ pub struct Located {
     /// The framer's own head lines on a request to the target (`LocateIn::defaults_buf`), in order:
     /// each one a request that does not state it carries, added before the auth signs the head.
     pub defaults: Vec<crate::compose::HeadWords>,
+    /// The framer's head states its body's length (`LocateOut::states_length`): the host adds the
+    /// opening body's `content-length` as the head's last line.
+    pub states_length: bool,
 }
 
 /// A protocol offer in the handshake's ProtocolNameList encoding (each name led by its one-byte
@@ -736,6 +739,7 @@ fn locate_as(door: &dyn FramerDoor, target: &str, accept: bool) -> Result<Locate
             secure: o.secure != 0,
             offer: offered,
             defaults: crate::framed_stream::field_lines(lines)?,
+            states_length: o.states_length != 0,
         });
     }
     Err(Refused {

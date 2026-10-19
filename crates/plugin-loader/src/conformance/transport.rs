@@ -33,7 +33,9 @@
 //!                                                    /* optional, in place of emit: the request
 //!                                                       the host encodes, its head merged with
 //!                                                       the framer's own head lines (locate's
-//!                                                       defaults) whose names it lacks */
+//!                                                       defaults) whose names it lacks, then
+//!                                                       the body's content-length where locate
+//!                                                       states it (states_length) */
 //!         "ingest": "<bytes from the far side>",    "frames": ["<the frames they are>", ...],
 //!         "ingest_wire": "<what reading them writes>", /* optional: the far side closed in them
 //!                                                       and the close is answered (ws); the
@@ -497,7 +499,7 @@ type HeadLine = (Vec<u8>, Vec<u8>);
 /// request as fields and a body has them merged into the request's head before it is encoded, as
 /// the host's walk adds each one its request does not carry before the auth signs the head (THE
 /// DESIGN section 6, step 5).
-fn located_defaults(p: &Plugin<Transport>, target: &[u8]) -> (String, Vec<HeadLine>) {
+fn located_defaults(p: &Plugin<Transport>, target: &[u8]) -> (String, (Vec<HeadLine>, bool)) {
     let (mut authority, mut name, mut alpn, mut defaults) = (
         vec![0_u8; AMPLE],
         vec![0_u8; AMPLE],
@@ -531,8 +533,13 @@ fn located_defaults(p: &Plugin<Transport>, target: &[u8]) -> (String, Vec<HeadLi
     } else {
         Vec::new()
     };
-    let line = format!("{:?} defaults={}", c.outcome, lines.len());
-    (line, lines)
+    let states_length = c.outcome == Outcome::Ready && f.out.states_length != 0;
+    let line = format!(
+        "{:?} defaults={} states_length={states_length}",
+        c.outcome,
+        lines.len()
+    );
+    (line, (lines, states_length))
 }
 
 /// One `locate` of `target` with an authority buffer of `cap` bytes: its line, and its SHORT
@@ -797,7 +804,8 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     // THE REQUEST THE DIAL SENDS: `dial.emit` as the message bytes, or `dial.request` (`fields` and
     // `body`) encoded by the framer itself with its own head lines merged in, as the host's walk
     // merges them: the request's fields, then each line the framer states whose name the request
-    // does not carry (THE DESIGN section 6, step 5).
+    // does not carry, then the body's length where the framer states it (THE DESIGN section 6,
+    // step 5).
     let emit = if dial["request"].is_null() {
         text(&dial["emit"], "dial.emit")
     } else {
@@ -816,11 +824,25 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
                     .collect()
             })
             .unwrap_or_default();
-        let defaults = r.step("dial defaults", 1, || located_defaults(&p, &target));
+        let (defaults, states_length) =
+            r.step("dial defaults", 1, || located_defaults(&p, &target));
         for (name, value) in defaults {
             if !named.iter().any(|(n, _)| n.eq_ignore_ascii_case(&name)) {
                 named.push((name, value));
             }
+        }
+        // Where the framer states its body's length, the body's `content-length` LAST, for a
+        // non-empty body whose head carries none, as the host's walk adds it.
+        if states_length
+            && !body.is_empty()
+            && !named
+                .iter()
+                .any(|(n, _)| n.eq_ignore_ascii_case(b"content-length"))
+        {
+            named.push((
+                b"content-length".to_vec(),
+                body.len().to_string().into_bytes(),
+            ));
         }
         let fields: Vec<Field> = named
             .iter()

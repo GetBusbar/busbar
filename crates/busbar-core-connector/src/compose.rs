@@ -363,6 +363,7 @@ pub fn carried_at(claim: &str, target: &str) -> Result<framer::Located, Failure>
         secure: false,
         offer: Vec::new(),
         defaults: Vec::new(),
+        states_length: false,
     })
 }
 

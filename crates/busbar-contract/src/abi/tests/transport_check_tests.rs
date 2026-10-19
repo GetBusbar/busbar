@@ -175,6 +175,15 @@ fn locate_answers_an_alpn_offer_the_connector_can_trust() {
         Ok(()),
         "short: re-call with 64"
     );
+    // Whether the framer's head states its body's length: a flag, 0 or 1.
+    let mut o: LocateOut = z();
+    o.states_length = 1;
+    assert_eq!(check_locate(Ready, &o, 8, 8, 16, &[], 32), Ok(()));
+    o.states_length = 2;
+    assert_eq!(
+        check_locate(Ready, &o, 8, 8, 16, &[], 32),
+        f(Rule::UnknownCode, "locate.states_length")
+    );
     assert_eq!(check_agreed(offer, b"h2"), Ok(()));
     assert_eq!(check_agreed(offer, b"http/1.1"), Ok(()));
     assert_eq!(check_agreed(offer, b""), Ok(()));

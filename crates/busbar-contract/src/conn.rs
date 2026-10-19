@@ -460,6 +460,17 @@ pub fn origin_of(url: &str) -> &str {
     url[after..].find('/').map_or(url, |at| &url[..after + at])
 }
 
+/// THE FRAMER'S OWN HEAD, located at a target ([`PollConns::head_defaults`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HeadDefaults {
+    /// Its own head lines, `(name, value)`, in the framer's order.
+    pub lines: Vec<(Vec<u8>, Vec<u8>)>,
+    /// Whether its head states the body's length (`LocateOut::states_length`): the host adds
+    /// `content-length: <the opening body's length>` as the head's last line for a non-empty body
+    /// whose head carries no line of that name.
+    pub states_length: bool,
+}
+
 /// THE CREDENTIAL A UNIT LENDS its passthrough member (the kernel's caller-credential lending): the
 /// caller's verified credential, by the unit it was verified for.
 pub trait LendCredential: Send + Sync {
@@ -718,21 +729,17 @@ pub trait PollConns: Conns {
         }
     }
 
-    /// THE FRAMER'S OWN HEAD LINES on a request `owner`'s `need` opens to `target` (the transport
-    /// ABI's `LocateIn::defaults_buf`): the field lines its wire adds to a head that does not state
-    /// them, in the framer's order. The host's walk adds each one its request does not carry BEFORE
-    /// the auth kind signs the head, so nothing is added after the auth runs (THE DESIGN section 6,
-    /// step 5); the framer then writes the head as handed. Host-side only, never lowered. The default
-    /// is none: a table whose framers state none, and a framer that predates the field, add theirs
-    /// at encode as before.
-    fn head_defaults(
-        &self,
-        owner: InstanceId,
-        need: NeedId,
-        target: &str,
-    ) -> Vec<(Vec<u8>, Vec<u8>)> {
+    /// THE FRAMER'S OWN HEAD on a request `owner`'s `need` opens to `target` (the transport ABI's
+    /// `LocateIn::defaults_buf` and `LocateOut::states_length`): the field lines its wire adds to a
+    /// head that does not state them, in the framer's order, and whether its head states the
+    /// body's length. The host's walk adds each line its request does not carry, then the length
+    /// where the framer states it, BEFORE the auth kind signs the head, so nothing is added after
+    /// the auth runs (THE DESIGN section 6, step 5); the framer then writes the head as handed.
+    /// Host-side only, never lowered. The default is none: a table whose framers state none, and a
+    /// framer that predates the fields, add theirs at encode as before.
+    fn head_defaults(&self, owner: InstanceId, need: NeedId, target: &str) -> HeadDefaults {
         let _ = (owner, need, target);
-        Vec::new()
+        HeadDefaults::default()
     }
 
     /// SEAL ONE REGISTRATION'S PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`, SEAM-4k: keyed
