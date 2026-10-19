@@ -54,3 +54,40 @@ fn a_re_read_of_one_set_returns_the_one_leaked_fold() {
     let b = plane_decls();
     assert!(std::ptr::eq(a, b), "one set folds and leaks once");
 }
+
+// THE CARD SIGNER IS FOUND BY ITS DECLARED FACT, NOT BY A SECTION NAME (arch u32; #49,
+// BUSBAR-1.6.0.md l.2235). A plane under any section that states a card-signing domain is the
+// signer; a second declarer leaves the host signing nothing.
+static SIGNER: PlaneDecl = PlaneDecl {
+    declaration: PlaneDeclaration {
+        card_signing_domain: Some("planted-card-domain"),
+        card_kid_prefix: Some("planted-"),
+        ..crate::plane::neutral_sibling_decl("card-signer", "not-a-known-section", "signer")
+            .declaration
+    },
+    ..crate::plane::neutral_sibling_decl("card-signer", "not-a-known-section", "signer")
+};
+static OTHER_SIGNER: PlaneDecl = PlaneDecl {
+    declaration: PlaneDeclaration {
+        card_signing_domain: Some("planted-other-domain"),
+        card_kid_prefix: Some("other-"),
+        ..crate::plane::neutral_sibling_decl("card-signer-2", "another-section", "signer")
+            .declaration
+    },
+    ..crate::plane::neutral_sibling_decl("card-signer-2", "another-section", "signer")
+};
+
+#[test]
+fn the_card_signer_is_the_plane_stating_a_signing_domain_under_any_section() {
+    let found = card_signing_decl_of(&[&ONE, &SIGNER, &TWO]).map(|d| d.key);
+    assert_eq!(found, Some("card-signer"));
+    assert_eq!(card_signing_decl_of(&[&ONE, &TWO]).map(|d| d.key), None);
+}
+
+#[test]
+fn two_planes_stating_a_signing_domain_sign_nothing() {
+    assert_eq!(
+        card_signing_decl_of(&[&SIGNER, &OTHER_SIGNER]).map(|d| d.key),
+        None
+    );
+}

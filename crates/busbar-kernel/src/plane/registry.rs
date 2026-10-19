@@ -535,6 +535,23 @@ pub fn plane_decl_for_config_section(section: &str) -> Option<&'static PlaneDecl
         .find(|d| d.config_section == section)
 }
 
+/// THE PLANE THAT SIGNS CARDS, against the PROCESS list: the one registered declaration that states
+/// a card-signing domain (its Statement tail's `signing` fact), found by that fact and never by a
+/// section name (#49, BUSBAR-1.6.0.md l.2235: the kernel hardcodes no plane verb). `None` when no
+/// registered plane states one, or when more than one does: two planes would sign under one
+/// deployment key with no rule choosing between them, so the host signs nothing (fail-closed).
+pub fn card_signing_decl() -> Option<&'static PlaneDecl> {
+    card_signing_decl_of(plane_decls())
+}
+
+/// [`card_signing_decl`] over an injected decl list, so the one-signer rule is drivable without the
+/// process plane list.
+pub fn card_signing_decl_of(decls: &[&'static PlaneDecl]) -> Option<&'static PlaneDecl> {
+    let mut signers = decls.iter().copied().filter(|d| d.card_signing_domain.is_some());
+    let first = signers.next()?;
+    signers.next().is_none().then_some(first)
+}
+
 /// FOLD THE DISPATCH TABLE from the registered plane declarations and the per-plane runtime objects
 /// (`slots`, each type-erased as `&dyn Any` and keyed by plane key). For every decl with a slot this
 /// reads the plane's declared claims and admission from its OWN object — the seam that lets a plane
