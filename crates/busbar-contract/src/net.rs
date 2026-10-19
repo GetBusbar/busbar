@@ -336,13 +336,14 @@ pub fn is_socket_literal(s: &str) -> bool {
     s.parse::<std::net::SocketAddr>().is_ok()
 }
 
-/// Whether `s` is an IPV4 LITERAL: exactly the dotted-quad grammar `std::net::Ipv4Addr`'s parser
-/// accepts (four decimal octets, no leading zeros, no alternate spelling, no port). A plugin whose
-/// source may not name the system's network module tells a v4 literal from a name here, and
-/// accepts exactly what the parser accepts.
+/// Whether `s` is a bare IP LITERAL, v4 or v6: exactly the grammar `std::net::IpAddr`'s parser
+/// accepts (a dotted quad with no leading zeros or alternate spelling, or an IPv6 address with no
+/// brackets, no zone and no port). An IP literal is not a name: a plugin whose source may not name
+/// the system's network module tells one from a name here, and accepts exactly what the parser
+/// accepts.
 #[must_use]
-pub fn is_ipv4_literal(s: &str) -> bool {
-    s.parse::<std::net::Ipv4Addr>().is_ok()
+pub fn is_ip_literal(s: &str) -> bool {
+    s.parse::<std::net::IpAddr>().is_ok()
 }
 
 /// The address a normalized host names, in any spelling the resolver accepts as a literal: a
