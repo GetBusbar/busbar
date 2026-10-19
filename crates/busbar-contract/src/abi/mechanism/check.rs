@@ -646,7 +646,15 @@ pub unsafe fn check_statement(st: &Statement) -> Result<(), Fault> {
     let words = unsafe { list(st.mark_words, st.mark_words_len, "statement.mark_words") }?;
     check_marks(st.marks, words)?;
     check_rewrites(unsafe { list(st.rewrites, st.rewrites_len, "statement.rewrites") }?)?;
-    check_statement_sections(unsafe { list(st.sections, st.sections_len, "statement.sections") }?)?;
+    let sections = unsafe { list(st.sections, st.sections_len, "statement.sections") }?;
+    check_statement_sections(sections)?;
+    // A NAMED MAP IS A PLANE'S FACT (its verb's registrations): any other kind stating it is
+    // refused, never silently ignored.
+    if sections.iter().any(|s| s.flags & SECTION_NAMED_MAP != 0)
+        && st.kind != super::KindCode::Plane as u32
+    {
+        return Err(fault(Rule::Contradiction, "statement.sections"));
+    }
     check_needs(unsafe { list(st.needs, st.needs_len, "statement.needs") }?)?;
     text(st.target_from, "statement.target_from")?;
     text(st.trust_from, "statement.trust_from")?;
