@@ -1213,3 +1213,48 @@ fn provider_facts_carry_the_base_url_as_spelled() {
     assert_eq!(read(lowered[0].base_url), "https://a.example/v1");
     assert_eq!(lowered[1].base_url.len, 0);
 }
+
+/// Step 2b: every Statement section that states an entry noun is kept as `(section, noun)`, in
+/// Statement order, for the kernel's generic refusals; a section stating none is not listed.
+#[test]
+fn a_statements_entry_nouns_are_kept_for_the_kernel() {
+    use busbar_contract::abi::mechanism::door::{
+        KindTailHead, Section, Statement, SECTION_CONSUMED, SECTION_DECLARING,
+    };
+    use busbar_contract::abi::plane::{PlaneTail, INGRESS_REQUEST_RESPONSE};
+    let s = |t: &'static str| AbiStr {
+        ptr: t.as_ptr(),
+        len: t.len(),
+    };
+    let tail: &'static PlaneTail = Box::leak(Box::new(PlaneTail {
+        head: KindTailHead {
+            size: size_of::<PlaneTail>() as u32,
+            _reserved: 0,
+        },
+        ingress: INGRESS_REQUEST_RESPONSE,
+        ..PlaneTail::ZERO
+    }));
+    let sections: &'static [Section] = Box::leak(Box::new([
+        Section {
+            name: s("verb"),
+            flags: SECTION_DECLARING,
+            entry_noun: s("entry"),
+            ..Section::ZERO
+        },
+        Section {
+            name: s("read"),
+            flags: SECTION_CONSUMED,
+            ..Section::ZERO
+        },
+    ]));
+    let mut st: Statement = z();
+    st.kind_tail = &tail.head;
+    st.sections = sections.as_ptr();
+    st.sections_len = sections.len();
+    let facts = Plane::context(&st)
+        .expect("the tail binds")
+        .expect("a plane has a context")
+        .downcast::<PlaneFacts>()
+        .expect("the plane's facts");
+    assert_eq!(facts.served.entry_nouns, vec![("verb", "entry")]);
+}

@@ -134,9 +134,50 @@ pub type Lent = Arc<dyn Any + Send + Sync>;
 /// A door's own `validate` over a whole section (its settings, JSON): `Ok`, or the door's words.
 pub type SectionJudge = Arc<dyn Fn(&[u8]) -> Result<(), String> + Send + Sync>;
 
+/// ONE ROUTING ENTRY a plane's generation snapshot states (`PlaneSnapshot::routing`, step 2b),
+/// owned by the host after `check_routing` passed: the one owned shape the loader's copy of a
+/// served snapshot and a door's facing both carry, so the two compare with `==`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RoutingEntry {
+    /// The plane's declared section it lives in.
+    pub section: String,
+    /// Its name.
+    pub entry: String,
+    /// Its config path, segment by segment.
+    pub path: Vec<String>,
+    /// The entry it falls back to; `None` = none.
+    pub fallback: Option<String>,
+    /// The lanes it never picks.
+    pub exclude: Vec<String>,
+    /// Its entry-level facts, `(FACT_*, value)`, in its order.
+    pub facts: Vec<(u16, u64)>,
+    /// Its members, in its order.
+    pub members: Vec<RoutingMember>,
+}
+
+/// ONE MEMBER of a [`RoutingEntry`], owned by the host.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RoutingMember {
+    /// The lane identity.
+    pub lane: String,
+    /// The provider it is reached through.
+    pub provider: String,
+    /// The name the far end knows it by; `None` = its lane name.
+    pub upstream: Option<String>,
+    /// Its weight (never `0`).
+    pub weight: u32,
+    /// Its tier; `None` = none.
+    pub tier: Option<String>,
+    /// Its tags.
+    pub tags: Vec<String>,
+    /// Its facts, `(FACT_*, value)`, in its order.
+    pub facts: Vec<(u16, u64)>,
+}
+
 /// WHAT A DOOR FACES THE WORLD WITH for one generation, as its `open` published it: the paths it
 /// answers on (each with the dialect word a refusal on it wears), the audience it binds, with its
-/// protected-resource metadata document (`None` = it binds none), and the names it lists.
+/// protected-resource metadata document (`None` = it binds none), the names it lists and its
+/// routing.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DoorFacing {
     /// Each claimed target, as stated (a pattern keeps its `{name}` segments), and its dialect word.
@@ -145,6 +186,10 @@ pub struct DoorFacing {
     pub admission: Option<(String, String)>,
     /// The names its snapshot lists (`PlaneSnapshot::listed`), in its order; empty = none.
     pub listed: Vec<String>,
+    /// Its snapshot's routing (`PlaneSnapshot::routing`), judged by `check_routing`, in its order;
+    /// empty = it routes nothing this generation. The kernel builds the generation's routing
+    /// tables from it.
+    pub routing: Vec<RoutingEntry>,
 }
 
 /// A door's facing for a section, its other owned sections (one JSON object keyed by section name,
@@ -244,6 +289,10 @@ pub struct PlaneRegistration {
     /// Whether the declaring section is a NAMED MAP (`SECTION_NAMED_MAP`): one registration per key,
     /// each addressable over the admin named-definition surface and nameable as a pool member.
     pub named_map: bool,
+    /// THE NOUN FOR ONE ENTRY of each Statement section that states one (`Section::entry_noun`,
+    /// step 2b), as `(section, noun)` in Statement order: the kernel's generic refusals name an
+    /// entry by it, never by a literal of their own.
+    pub entry_nouns: Vec<(&'static str, &'static str)>,
     /// The sections the Statement marks REQUIRED (`SECTION_REQUIRED`), in Statement order: a
     /// document must carry each while the plane is linked (CONFIG-REQ, Law 7), and the kernel's
     /// config pre-pass refuses one that omits it with the frozen missing-field text.

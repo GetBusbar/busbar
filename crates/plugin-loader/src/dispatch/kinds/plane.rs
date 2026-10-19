@@ -117,6 +117,9 @@ pub struct ServedFacts {
     pub section: &'static str,
     /// Whether the declaring section is a named map (`SECTION_NAMED_MAP` on it).
     pub named_map: bool,
+    /// Each Statement section's entry noun, `(section, noun)`, for every section stating one
+    /// (`Section::entry_noun`), in Statement order.
+    pub entry_nouns: Vec<(&'static str, &'static str)>,
     /// The keys of the sections the Statement reads beside it (`SECTION_CONSUMED`), in its order:
     /// the plane opens with all of them, one `{section: value}` object (spec Part 1 §4).
     pub consumed: Vec<&'static str>,
@@ -308,6 +311,11 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
                 .iter()
                 .find(|s| s.flags & SECTION_DECLARING != 0)
                 .map_or("", |s| kept(s.name)),
+            entry_nouns: sections
+                .iter()
+                .filter(|s| s.entry_noun.len != 0)
+                .map(|s| (kept(s.name), kept(s.entry_noun)))
+                .collect(),
             named_map: sections
                 .iter()
                 .any(|s| s.flags & SECTION_DECLARING != 0 && s.flags & SECTION_NAMED_MAP != 0),
@@ -678,6 +686,7 @@ pub fn registration(
         key,
         section: served.section,
         named_map: served.named_map,
+        entry_nouns: served.entry_nouns.clone(),
         owns: served.owns.clone(),
         consumes: served.consumes.clone(),
         requires: served.requires.clone(),
@@ -1126,6 +1135,7 @@ fn facing(
             .collect(),
         admission: snapshot.audience.zip(snapshot.resource_metadata),
         listed: snapshot.listed,
+        routing: snapshot.routing,
     })
 }
 
@@ -1747,45 +1757,7 @@ pub struct OwnedSnapshot {
     pub listed: Vec<String>,
     /// Its routing (`PlaneSnapshot::routing`), in its order, judged by `check_routing`; empty =
     /// it routes nothing this generation.
-    pub routing: Vec<OwnedRouteEntry>,
-}
-
-/// One routing entry of a snapshot, owned by the host.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OwnedRouteEntry {
-    /// The plane's declared section it lives in.
-    pub section: String,
-    /// Its name.
-    pub entry: String,
-    /// Its config path, segment by segment.
-    pub path: Vec<String>,
-    /// The entry it falls back to; `None` = none.
-    pub fallback: Option<String>,
-    /// The lanes it never picks.
-    pub exclude: Vec<String>,
-    /// Its entry-level facts, `(FACT_*, value)`, in its order.
-    pub facts: Vec<(u16, u64)>,
-    /// Its members, in its order.
-    pub members: Vec<OwnedRouteMember>,
-}
-
-/// One member of a routing entry, owned by the host.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OwnedRouteMember {
-    /// The lane identity.
-    pub lane: String,
-    /// The provider it is reached through.
-    pub provider: String,
-    /// The name the far end knows it by; `None` = its lane name.
-    pub upstream: Option<String>,
-    /// Its weight (never `0`).
-    pub weight: u32,
-    /// Its tier; `None` = none.
-    pub tier: Option<String>,
-    /// Its tags.
-    pub tags: Vec<String>,
-    /// Its facts, `(FACT_*, value)`, in its order.
-    pub facts: Vec<(u16, u64)>,
+    pub routing: Vec<busbar_contract::plane_calls::RoutingEntry>,
 }
 
 /// A judged list's elements (`check_routing` bounded each count and refused NULL with a count).
@@ -1802,7 +1774,7 @@ fn judged<'a, T>(ptr: *const T, len: usize) -> &'a [T] {
 /// UTF-8.
 fn owned_routing(
     entries: &[busbar_contract::abi::plane::RouteEntry],
-) -> Option<Vec<OwnedRouteEntry>> {
+) -> Option<Vec<busbar_contract::plane_calls::RoutingEntry>> {
     let named = |a| owned_str(a).flatten();
     let opt = |a| -> Option<Option<String>> { Some(owned_str(a)?.filter(|t| !t.is_empty())) };
     let names = |p, n| -> Option<Vec<String>> { judged(p, n).iter().map(|a| named(*a)).collect() };
@@ -1815,7 +1787,7 @@ fn owned_routing(
     entries
         .iter()
         .map(|e| {
-            Some(OwnedRouteEntry {
+            Some(busbar_contract::plane_calls::RoutingEntry {
                 section: named(e.section)?,
                 entry: named(e.entry)?,
                 path: names(e.path, e.path_len)?,
@@ -1825,7 +1797,7 @@ fn owned_routing(
                 members: judged(e.members, e.members_len)
                     .iter()
                     .map(|m| {
-                        Some(OwnedRouteMember {
+                        Some(busbar_contract::plane_calls::RoutingMember {
                             lane: named(m.lane)?,
                             provider: named(m.provider)?,
                             upstream: opt(m.upstream)?,

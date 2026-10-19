@@ -23,6 +23,7 @@ fn registration(key: &'static str, section: &'static str) -> PlaneRegistration {
         key,
         section,
         named_map: section == NAMED,
+        entry_nouns: Vec::new(),
         owns: Vec::new(),
         consumes: Vec::new(),
         requires: Vec::new(),
@@ -103,6 +104,7 @@ fn registration(key: &'static str, section: &'static str) -> PlaneRegistration {
                     admission: public_url
                         .map(|u| (format!("{u}/fleet"), format!("{u}/.well-known/fleet"))),
                     listed: Vec::new(),
+                    routing: Vec::new(),
                 })
             },
         ),
@@ -375,6 +377,7 @@ fn a_doors_owned_section_is_carried_and_handed_to_its_facing() {
                 claims: Vec::new(),
                 admission: audience,
                 listed: Vec::new(),
+                routing: Vec::new(),
             })
         },
     );
