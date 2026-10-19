@@ -1721,10 +1721,11 @@ fn facts_expose_the_peer_certificate_hash() {
     assert_eq!(read(2), (1, Some("ab".repeat(32))), "secured");
 }
 
-/// Q-L16-4: `UpgradeIn::flags`' verify-off reaches the table; an `in` from before the flags
-/// (`UPGRADE_IN_V1_SIZE`) reads them as 0, never past what the head states.
+/// Q-L16-4: `UpgradeIn::flags`' verify-off reaches the table. RED (ruling 21, one size per
+/// struct): an `in` of the size before the flags, or longer than the whole, is refused and never
+/// reaches the table; its flags are never read as 0.
 #[test]
-fn an_upgrades_verify_off_reaches_the_table_and_a_v1_in_reads_none() {
+fn an_upgrades_verify_off_reaches_the_table_and_an_in_of_another_size_is_refused() {
     use busbar_contract::abi::host::conn::connector::{
         UpgradeIn, UPGRADE_IN_V1_SIZE, UPGRADE_VERIFY_OFF,
     };
@@ -1748,15 +1749,19 @@ fn an_upgrades_verify_off_reaches_the_table_and_a_v1_in_reads_none() {
         _reserved: 0,
     };
     let full = std::mem::size_of::<UpgradeIn>();
-    for (size, flags, seq) in [
-        (full, UPGRADE_VERIFY_OFF, 20),
-        (full, 0, 21),
-        (UPGRADE_IN_V1_SIZE, UPGRADE_VERIFY_OFF, 22),
-    ] {
+    for (size, flags, seq) in [(full, UPGRADE_VERIFY_OFF, 20), (full, 0, 21)] {
         let out = call(&p, CONN_SLOTS.upgrade_secure, &upgrade(size, flags, seq));
         assert_eq!(out.outcome, RawOutcome::of(Outcome::Ready));
     }
-    assert_eq!(*table.verify_offs.lock().unwrap(), vec![true, false, false]);
+    for (size, seq) in [(std::mem::offset_of!(UpgradeIn, flags), 22), (full + 8, 23)] {
+        let out = call(&p, CONN_SLOTS.upgrade_secure, &upgrade(size, 0, seq));
+        assert_eq!(
+            out.outcome,
+            RawOutcome::of(Outcome::Refused),
+            "a {size}-byte `in` is refused"
+        );
+    }
+    assert_eq!(*table.verify_offs.lock().unwrap(), vec![true, false]);
 }
 
 /// The member-program need (`settings.*`): each registration that names a program is a member.
@@ -1835,12 +1840,12 @@ fn a_member_program_need_is_declared_with_each_registrations_program() {
     );
 }
 
-/// RED (SEAM-4k): an `ESTABLISH` that names a REGISTRATION (`EstablishIn::member`, appended) opens
-/// on the table under that name, so what the host sealed for that registration alone (its private
-/// reach) applies to the stream; a head whose `size` ends before the field names none and is
-/// still served.
+/// RED (SEAM-4k): an `ESTABLISH` that names a REGISTRATION (`EstablishIn::member`) opens on the
+/// table under that name, so what the host sealed for that registration alone (its private reach)
+/// applies to the stream. RED (ruling 21, one size per struct): a head whose `size` ends before the
+/// field, or is longer than the whole, is refused and never opens, never read as naming none.
 #[test]
-fn an_establish_names_its_registration_and_a_shorter_head_names_none() {
+fn an_establish_names_its_registration_and_an_in_of_another_size_is_refused() {
     let table = Arc::new(Recording::default());
     let p = bound(Box::leak(Box::new(NEEDS)), &table);
     assert_eq!(
@@ -1851,23 +1856,18 @@ fn an_establish_names_its_registration_and_a_shorter_head_names_none() {
     let memberless = std::mem::offset_of!(EstablishIn, member);
     let named = establish_as(&p, 0, "127.0.0.1:9", Ticket::NONE, Some("inside"), full);
     assert_eq!(named.outcome, RawOutcome::of(Outcome::Ready));
-    let short = establish_as(
-        &p,
-        0,
-        "127.0.0.1:9",
-        Ticket::NONE,
-        Some("ignored"),
-        memberless,
-    );
-    assert_eq!(
-        short.outcome,
-        RawOutcome::of(Outcome::Ready),
-        "a shorter head is served"
-    );
+    for size in [memberless, full + 8] {
+        let other = establish_as(&p, 0, "127.0.0.1:9", Ticket::NONE, Some("ignored"), size);
+        assert_eq!(
+            other.outcome,
+            RawOutcome::of(Outcome::Refused),
+            "a {size}-byte head is refused"
+        );
+    }
     assert_eq!(
         table.named.lock().unwrap().as_slice(),
-        &["inside".to_owned(), String::new()],
-        "the named registration, then none"
+        &["inside".to_owned()],
+        "only the whole head opened"
     );
 }
 
@@ -2701,4 +2701,19 @@ fn red_the_connector_service_frame_writes_no_further_than_the_out_the_caller_sta
         "the host wrote past the `out` stated"
     );
     assert_eq!(lent.0[5], 0, "`exited` is written zero by every frame");
+    // RED (ruling 21, one size per struct): an `out` LONGER than `ServiceOut` is refused too,
+    // before the service runs, and none of it is written.
+    let mut lent = LentOut::stating(
+        std::mem::size_of::<busbar_contract::abi::host::service::ServiceOut>() as u32 + 8,
+    );
+    let raw: RawOutcome = super::slot(
+        busbar_contract::abi::mechanism::ticket::HostCtx::NONE,
+        std::ptr::null(),
+        lent.out(),
+        0,
+        0,
+        |_, _, _| unreachable!("a NULL `in` never reaches the body"),
+    );
+    assert_eq!(raw.outcome(), Outcome::Refused, "a long `out` was served");
+    assert!(lent.untouched_from(4), "a long `out` was written");
 }

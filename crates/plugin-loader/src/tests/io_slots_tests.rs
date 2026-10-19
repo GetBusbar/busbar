@@ -80,6 +80,20 @@ fn red_the_io_slot_frame_writes_no_further_than_the_out_the_caller_stated() {
         "the host wrote past the `out` stated"
     );
     assert_eq!(lent.0[5], 0, "`exited` is written zero by every frame");
+    // RED (ruling 21, one size per struct): an `out` LONGER than `ServiceOut` is refused too,
+    // before the service runs, and none of it is written.
+    let mut lent = LentOut::stating(
+        std::mem::size_of::<busbar_contract::abi::host::service::ServiceOut>() as u32 + 8,
+    );
+    let raw: RawOutcome = slot::<busbar_contract::abi::host::io::AddrIn>(
+        busbar_contract::abi::mechanism::ticket::HostCtx::NONE,
+        std::ptr::null(),
+        lent.out(),
+        busbar_contract::abi::host::io::op::ENDS,
+        |_, _, _| unreachable!("a NULL `in` never reaches the body"),
+    );
+    assert_eq!(raw.outcome(), Outcome::Refused, "a long `out` was served");
+    assert!(lent.untouched_from(4), "a long `out` was written");
 }
 
 /// `io.ends` on a program that has exited answers `exited` = 1 and its exit code in `value`, and

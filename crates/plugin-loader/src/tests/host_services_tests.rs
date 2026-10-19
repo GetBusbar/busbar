@@ -528,6 +528,35 @@ fn clock_now_reads_the_one_clock_without_a_ticket() {
     );
 }
 
+/// RED (ruling 21, one size per struct): a service `in` of any other size than its service's one
+/// size, shorter or longer, is REFUSED before it is read ([`NOT_EXACT`], the declared refusal), and
+/// the service never runs.
+#[test]
+fn red_a_service_in_of_any_other_size_is_refused() {
+    let d = double();
+    let whole = size_of::<ClockNowIn>();
+    for size in [whole - 8, whole + 8] {
+        let mut reading = ClockReading {
+            size: 0,
+            _reserved: 0,
+            wall_ns: 0,
+            mono_ns: 0,
+        };
+        let mut raw = [0u64; 32];
+        let i = ClockNowIn {
+            head: head(op::CLOCK_NOW, Ticket::NONE, 0, size),
+            reading: &mut reading,
+        };
+        // SAFETY: a `ClockNowIn` fits the buffer's start.
+        unsafe { raw.as_mut_ptr().cast::<ClockNowIn>().write_unaligned(i) };
+        let mut o = blank();
+        let ret = HOST_SLOTS.clock_now.unwrap()(d.ctx, raw.as_ptr().cast(), &mut o);
+        assert_eq!(ret.outcome(), Outcome::Refused, "a {size}-byte `in`");
+        assert_eq!(error(&o), NOT_EXACT, "a {size}-byte `in`");
+        assert_eq!(reading.wall_ns, 0, "the service never ran");
+    }
+}
+
 /// A service that may pend, called with no ticket (a pure op's call), is REFUSED and never
 /// runs, for every may-pend service in the table.
 #[test]
@@ -2324,6 +2353,16 @@ fn red_the_host_service_frame_writes_no_further_than_the_out_the_caller_stated()
         "the host wrote past the `out` stated"
     );
     assert_eq!(lent.0[5], 0, "`exited` is written zero by every frame");
+    // RED (ruling 21, one size per struct): an `out` LONGER than `ServiceOut` is refused too,
+    // before the service runs, and none of it is written.
+    let mut lent = LentOut::stating(
+        std::mem::size_of::<busbar_contract::abi::host::service::ServiceOut>() as u32 + 8,
+    );
+    let raw: RawOutcome = framed(std::ptr::null(), lent.out(), 0, 0, |_| {
+        unreachable!("a NULL `in` never reaches the body")
+    });
+    assert_eq!(raw.outcome(), Outcome::Refused, "a long `out` was served");
+    assert!(lent.untouched_from(4), "a long `out` was written");
 }
 
 // ── the host auth handle ──────────────────────────────────────────────────────────────────────
