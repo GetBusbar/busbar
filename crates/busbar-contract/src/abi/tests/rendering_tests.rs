@@ -259,3 +259,51 @@ fn a_truncated_padded_or_foreign_rendering_is_unreadable() {
     huge.extend_from_slice(&u32::MAX.to_le_bytes());
     assert!(read(&huge).is_err());
 }
+
+/// RED (u11 LOW): a need's response-header keep rule (its mode, its kept names and its denied
+/// names) is part of the canonical rendering, so the signed manifest and the load-time compare
+/// bind it: a door whose keep rule differs from what was packed renders other bytes.
+#[test]
+fn a_needs_keep_rule_changes_the_rendering() {
+    use crate::abi::host::conn::connector::KEEP_ALL_EXCEPT_DENIED;
+    const NAMES: &[AbiStr] = &[abi_str("x-request-id")];
+    let base = bytes(&full());
+    let mode: &'static [Need] = Box::leak(Box::new([Need {
+        keep_mode: KEEP_ALL_EXCEPT_DENIED,
+        ..NEEDS[0]
+    }]));
+    let kept: &'static [Need] = Box::leak(Box::new([Need {
+        keep_response_headers: NAMES.as_ptr(),
+        keep_response_headers_len: NAMES.len(),
+        ..NEEDS[0]
+    }]));
+    let denied: &'static [Need] = Box::leak(Box::new([Need {
+        keep_mode: KEEP_ALL_EXCEPT_DENIED,
+        deny_response_headers: NAMES.as_ptr(),
+        deny_response_headers_len: NAMES.len(),
+        ..NEEDS[0]
+    }]));
+    for (needs, what) in [
+        (mode, "keep_mode"),
+        (kept, "kept names"),
+        (denied, "denied names"),
+    ] {
+        let st = Statement {
+            needs: needs.as_ptr(),
+            ..full()
+        };
+        assert_ne!(bytes(&st), base, "the rendering ignores the need's {what}");
+    }
+    let st = Statement {
+        needs: denied.as_ptr(),
+        ..full()
+    };
+    assert_ne!(
+        bytes(&st),
+        bytes(&Statement {
+            needs: mode.as_ptr(),
+            ..full()
+        }),
+        "the denied names"
+    );
+}
