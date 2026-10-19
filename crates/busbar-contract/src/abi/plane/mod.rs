@@ -1983,8 +1983,8 @@ pub struct PlaneOpenOut {
 /// THIS GENERATION's section references, built as `open`'s are ([`PlaneOpenIn::providers`]): a
 /// reload may change a provider's base URL, and a plane that prints its generation's boot lines at
 /// `refresh` (the previous release printed them on every applied configuration) prints the new one.
-/// The host lends it for every plane `refresh`; it leads with the lifecycle's [`RefreshIn`], so a
-/// plane that reads only that reads it unchanged.
+/// The host lends it, at exactly its size, for every plane `refresh`, and a plane's refresh slot
+/// reads it whole ([`PlaneLifecycle`]); it leads with the lifecycle's [`RefreshIn`].
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct PlaneRefreshIn {
@@ -2752,6 +2752,7 @@ pub struct ProjectOut {
 //
 // SAFETY (all below): `#[repr(C)]`, leading with `InHead`/`OutHead`, plain data only.
 unsafe impl super::sdk::door::AbiIn for PlaneOpenIn {}
+unsafe impl super::sdk::door::AbiIn for PlaneRefreshIn {}
 unsafe impl super::sdk::door::AbiIn for PlaneDriveIn {}
 unsafe impl super::sdk::door::AbiIn for PlaneCancelIn {}
 unsafe impl super::sdk::door::AbiIn for ArriveIn {}
@@ -2782,7 +2783,8 @@ super::sdk::door::slot_structs!(Ops {
 
 /// The plane's LIFECYCLE `in`/`out` ([`KindOps::Lifecycle`](super::sdk::door::KindOps::Lifecycle)):
 /// the lifecycle's own, except `open` ([`PlaneOpenIn`], [`PlaneOpenOut`]) and `refresh`
-/// ([`PlaneRefreshOut`]), which carry the generation snapshot, and `drive` ([`PlaneDriveIn`],
+/// ([`PlaneRefreshIn`], [`PlaneRefreshOut`]), which carry the providers' facts and the generation
+/// snapshot, and `drive` ([`PlaneDriveIn`],
 /// [`PlaneDriveOut`]), which names the ready sessions.
 ///
 /// A plane plugin wiring a slot to another op's structs does not compile, a kind op:
@@ -2799,7 +2801,7 @@ super::sdk::door::slot_structs!(Ops {
 /// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
 /// # } }
 /// # ready!(V, ValidateIn, OutHead); ready!(Op_, PlaneOpenIn, PlaneOpenOut);
-/// # ready!(Rf, RefreshIn, PlaneRefreshOut);
+/// # ready!(Rf, PlaneRefreshIn, PlaneRefreshOut);
 /// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut);
 /// # ready!(Dr, PlaneDriveIn, PlaneDriveOut);
 /// # ready!(Cn, PlaneCancelIn, PlaneCancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
@@ -2831,7 +2833,7 @@ super::sdk::door::slot_structs!(Ops {
 /// #     impl Slot for $n { type In = $i; type Out = $o;
 /// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
 /// # } }
-/// # ready!(V, ValidateIn, OutHead); ready!(Rf, RefreshIn, PlaneRefreshOut);
+/// # ready!(V, ValidateIn, OutHead); ready!(Rf, PlaneRefreshIn, PlaneRefreshOut);
 /// ready!(Op_, OpenIn, OpenOut); // the lifecycle's `open`, no snapshot: refused
 /// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut);
 /// # ready!(Dr, PlaneDriveIn, PlaneDriveOut);
@@ -2859,7 +2861,7 @@ pub struct PlaneLifecycle;
 super::sdk::door::slot_structs!(PlaneLifecycle {
     life::VALIDATE => ValidateIn, OutHead;
     life::OPEN => PlaneOpenIn, PlaneOpenOut;
-    life::REFRESH => RefreshIn, PlaneRefreshOut;
+    life::REFRESH => PlaneRefreshIn, PlaneRefreshOut;
     life::RETIRE => GenIn, OutHead;
     life::TICK => TickIn, TickOut;
     life::DRIVE => PlaneDriveIn, PlaneDriveOut;

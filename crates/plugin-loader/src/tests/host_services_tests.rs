@@ -2645,11 +2645,12 @@ fn an_auth_call_whose_view_declares_no_scheme_is_refused_by_name() {
     );
 }
 
-/// Step 2b, `console.line`: REFUSED outside a plane's `open` or `refresh` crossing (no crossing,
-/// or a unit's serving, states no console), with nothing written; served inside one; an empty or
-/// over-long line is refused first, wherever it is called.
+/// Step 2b, `console.line`: the facing probe's plane `open`/`refresh` writes the line, exactly once;
+/// a SERVED instance's is answered READY and writes nothing; every other crossing (a unit's
+/// serving, or none) is REFUSED with nothing written; an empty or over-long line is refused first.
 #[test]
-fn a_console_line_is_written_only_inside_a_planes_open_or_refresh() {
+fn a_console_line_is_written_once_by_the_probe_and_dropped_by_the_served_instance() {
+    use busbar_contract::abi::mechanism::lifecycle::slot as life;
     let d = double();
     let line_in = |line: &[u8]| svc::ConsoleLineIn {
         head: head(
@@ -2670,28 +2671,57 @@ fn a_console_line_is_written_only_inside_a_planes_open_or_refresh() {
         assert!(svc::check_console_line(&i, ret, &o).is_ok());
         (ret.outcome(), error(&o))
     };
-    // RED: no console outside a generation's crossing (serve time).
+    let written = |line: &[u8]| {
+        CONSOLE_WRITTEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|l| l.as_slice() == line)
+            .count()
+    };
+    // THE ONE RULE: probe open/refresh writes, served open/refresh drops, anything else refuses.
+    assert_eq!(console_mode(true, true, life::OPEN), CONSOLE_WRITE);
+    assert_eq!(console_mode(true, true, life::REFRESH), CONSOLE_WRITE);
+    assert_eq!(console_mode(false, true, life::OPEN), CONSOLE_DROP);
+    assert_eq!(console_mode(false, true, life::REFRESH), CONSOLE_DROP);
+    assert_eq!(console_mode(true, true, life::TICK), CONSOLE_NONE);
+    assert_eq!(console_mode(true, false, life::OPEN), CONSOLE_NONE);
+    // RED: the served instance's open prints nothing, and is not refused.
+    let served = b"  model served-unique via p (https://a.example) max 4";
     {
-        let _serving = super::console(false);
+        let _served = console(CONSOLE_DROP);
+        assert_eq!(call(served), (Outcome::Ready, ""));
+    }
+    assert_eq!(written(served), 0, "a served instance prints nothing");
+    // RED: a unit's serving (or no crossing) is refused, nothing written.
+    let serving = b"  model serving-unique via p (https://a.example) max 4";
+    {
+        let _serving = console(CONSOLE_NONE);
         assert_eq!(
-            call(b"  model m via p (https://a.example) max 4"),
+            call(serving),
             (Outcome::Refused, CONSOLE_OUTSIDE_GENERATION)
         );
     }
     assert_eq!(
-        call(b"x"),
-        (Outcome::Refused, CONSOLE_OUTSIDE_GENERATION),
-        "no crossing states no console"
+        call(serving),
+        (Outcome::Refused, CONSOLE_OUTSIDE_GENERATION)
     );
-    // GREEN: inside a plane's open or refresh.
+    assert_eq!(written(serving), 0);
+    // GREEN: the probe's line appears exactly once.
+    let probe = b"  model probe-unique via p (https://a.example) max 4";
     {
-        let _open = super::console(true);
-        assert_eq!(
-            call(b"  model m via p (https://a.example) max 4").0,
-            Outcome::Ready
-        );
+        let _probe = console(CONSOLE_WRITE);
+        assert_eq!(call(probe), (Outcome::Ready, ""));
         assert_eq!(call(b""), (Outcome::Refused, CONSOLE_LINE_MALFORMED));
         let long = vec![b'x'; svc::MAX_CONSOLE_LINE + 1];
         assert_eq!(call(&long), (Outcome::Refused, CONSOLE_LINE_MALFORMED));
     }
+    assert_eq!(written(probe), 1, "the probe's line appears exactly once");
+    // The probe window is the caller's thread's, restored when its guard drops.
+    assert!(!in_probe_window());
+    {
+        let _w = probe_window();
+        assert!(in_probe_window());
+    }
+    assert!(!in_probe_window());
 }

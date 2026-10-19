@@ -1136,15 +1136,27 @@ extern "C" fn trust_verify(ctx: HostCtx, input: *const c_void, out: *mut Service
     )
 }
 
+/// `console.line` is REFUSED: the crossing on this thread is no plane `open` or `refresh`.
+pub(crate) const CONSOLE_NONE: u8 = 0;
+/// `console.line` answers READY and writes nothing: a SERVED plane instance's `open` or `refresh`
+/// (its generation's lines are the facing probe's to print, once).
+pub(crate) const CONSOLE_DROP: u8 = 1;
+/// `console.line` writes: the FACING PROBE's `open` or `refresh` (the loader's own probe binding,
+/// `registration().facing`), which the kernel opens where the previous release printed its boot
+/// lines, at boot and inside every apply's rebuild.
+pub(crate) const CONSOLE_WRITE: u8 = 2;
+
 thread_local! {
-    /// Whether the crossing on this thread may write to the operator's console: a plane's `open` or
-    /// `refresh`, and nothing else.
-    static CONSOLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// What `console.line` does in the crossing on this thread ([`CONSOLE_NONE`],
+    /// [`CONSOLE_DROP`], [`CONSOLE_WRITE`]).
+    static CONSOLE: std::cell::Cell<u8> = const { std::cell::Cell::new(CONSOLE_NONE) };
+    /// Whether this thread is calling into a plane on behalf of its facing probe.
+    static PROBE_WINDOW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Whether the crossing on this thread may call `console.line`, restored to the crossing it is
-/// nested in when the guard drops.
-pub(crate) struct Console(bool);
+/// What `console.line` does in the crossing on this thread, restored to the crossing it is nested
+/// in when the guard drops.
+pub(crate) struct Console(u8);
 
 impl Drop for Console {
     fn drop(&mut self) {
@@ -1152,10 +1164,42 @@ impl Drop for Console {
     }
 }
 
-/// State that the crossing on this thread may (`true`) or may not write console lines until the
-/// returned guard drops.
-pub(crate) fn console(allowed: bool) -> Console {
-    Console(CONSOLE.with(|c| c.replace(allowed)))
+/// State what `console.line` does in the crossing on this thread until the returned guard drops.
+pub(crate) fn console(mode: u8) -> Console {
+    Console(CONSOLE.with(|c| c.replace(mode)))
+}
+
+/// The facing probe's window, restored when the guard drops.
+pub(crate) struct ProbeWindow(bool);
+
+impl Drop for ProbeWindow {
+    fn drop(&mut self) {
+        PROBE_WINDOW.with(|c| c.set(self.0));
+    }
+}
+
+/// State that this thread's calls into a plane are its facing probe's until the guard drops.
+pub(crate) fn probe_window() -> ProbeWindow {
+    ProbeWindow(PROBE_WINDOW.with(|c| c.replace(true)))
+}
+
+/// Whether this thread's calls into a plane are its facing probe's.
+pub(crate) fn in_probe_window() -> bool {
+    PROBE_WINDOW.with(std::cell::Cell::get)
+}
+
+/// THE ONE RULE for what `console.line` does in a crossing: a plane's `open` or `refresh` writes
+/// when it is the facing probe's and is dropped when it is a served instance's; every other
+/// crossing, a unit's serving included, is refused.
+pub(crate) const fn console_mode(probe: bool, plane: bool, slot: u32) -> u8 {
+    use busbar_contract::abi::mechanism::lifecycle::slot as life;
+    if !plane || !matches!(slot, life::OPEN | life::REFRESH) {
+        CONSOLE_NONE
+    } else if probe {
+        CONSOLE_WRITE
+    } else {
+        CONSOLE_DROP
+    }
 }
 
 /// `console.line`'s refusal of an empty, over-long or NULL-counted line, before anything is written.
@@ -1165,9 +1209,34 @@ pub const CONSOLE_LINE_MALFORMED: &str = "a console line is 1 to MAX_CONSOLE_LIN
 pub const CONSOLE_OUTSIDE_GENERATION: &str =
     "a console line is written only inside a plane's open or refresh";
 
+#[cfg(test)]
+/// THE TEST SEAM: every line written, in order, instead of standard error.
+pub(crate) static CONSOLE_WRITTEN: std::sync::Mutex<Vec<Vec<u8>>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// The line and its newline, whole, to standard error under its lock.
+#[cfg(not(test))]
+fn emit(line: &[u8]) -> std::io::Result<()> {
+    let mut err = std::io::stderr().lock();
+    std::io::Write::write_all(&mut err, line)
+        .and_then(|()| std::io::Write::write_all(&mut err, b"\n"))
+}
+
+/// The test build's emit: the line is kept ([`CONSOLE_WRITTEN`]).
+#[cfg(test)]
+#[allow(clippy::unnecessary_wraps)]
+fn emit(line: &[u8]) -> std::io::Result<()> {
+    CONSOLE_WRITTEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(line.to_vec());
+    Ok(())
+}
+
 /// `console.line` (step 2b): the line's bytes, verbatim, then one newline, to the process's
-/// standard error, written whole under its lock. Served only while the crossing on this thread is a
-/// plane's `open` or `refresh` ([`console`]); REFUSED otherwise, with nothing written.
+/// standard error, written whole. What it does follows [`console_mode`]: the facing probe's plane
+/// `open` or `refresh` writes; a served instance's is answered READY with nothing written; every
+/// other crossing is REFUSED, with nothing written.
 extern "C" fn console_line(_: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     framed(
         input,
@@ -1180,16 +1249,15 @@ extern "C" fn console_line(_: HostCtx, input: *const c_void, out: *mut ServiceOu
             if svc::check_console_line_in(&i).is_err() {
                 return Answered::bare(Outcome::Refused, CONSOLE_LINE_MALFORMED);
             }
-            if !CONSOLE.with(std::cell::Cell::get) {
-                return Answered::bare(Outcome::Refused, CONSOLE_OUTSIDE_GENERATION);
+            match CONSOLE.with(std::cell::Cell::get) {
+                CONSOLE_WRITE => {}
+                CONSOLE_DROP => return Answered::bare(Outcome::Ready, ""),
+                _ => return Answered::bare(Outcome::Refused, CONSOLE_OUTSIDE_GENERATION),
             }
             // SAFETY: checked non-NULL with `len` at most `MAX_CONSOLE_LINE`; the caller's bytes,
             // live for the call.
             let line = unsafe { std::slice::from_raw_parts(i.line.ptr, i.line.len) };
-            let mut err = std::io::stderr().lock();
-            let wrote = std::io::Write::write_all(&mut err, line)
-                .and_then(|()| std::io::Write::write_all(&mut err, b"\n"));
-            match wrote {
+            match emit(line) {
                 Ok(()) => Answered::bare(Outcome::Ready, ""),
                 Err(_) => Answered::bare(Outcome::Failed, "the console could not be written"),
             }
