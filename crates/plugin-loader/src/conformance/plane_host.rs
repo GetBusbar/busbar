@@ -518,6 +518,48 @@ fn rows_of(rows: Vec<(Vec<u8>, Vec<u8>)>) -> Stored {
 }
 
 impl HostServices for Host {
+    // Not served by this host: it states the refusal itself (no inherited default).
+    fn trust_unreached(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _counterparty: &str,
+    ) -> busbar_contract::services::Stored {
+        busbar_contract::services::Stored::refused(busbar_contract::services::UNSERVED)
+    }
+    fn trust_sight_item(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _counterparty: &str,
+        _item: &str,
+        _digest: &str,
+    ) -> busbar_contract::services::Stored {
+        busbar_contract::services::Stored::refused(busbar_contract::services::UNSERVED)
+    }
+    fn trust_decide(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _key: busbar_contract::services::TrustKeyRef<'_>,
+        _expected: Option<&str>,
+        _approve: bool,
+    ) -> busbar_contract::services::Stored {
+        busbar_contract::services::Stored::refused(busbar_contract::services::UNSERVED)
+    }
+    fn trust_state(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _counterparty: &str,
+    ) -> busbar_contract::services::Stored {
+        busbar_contract::services::Stored::refused(busbar_contract::services::UNSERVED)
+    }
+    fn session_emit(
+        &self,
+        _caller: &busbar_contract::services::Caller,
+        _session: u64,
+        _bytes: &[u8],
+    ) -> busbar_contract::services::Stored {
+        busbar_contract::services::Stored::refused(busbar_contract::services::UNSERVED)
+    }
+
     fn now(&self) -> Reading {
         Reading {
             wall_ns: 0,
