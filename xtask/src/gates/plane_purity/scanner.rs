@@ -9,7 +9,7 @@
 //! taught out of:
 //!
 //! * **The spellings that are not `::` and not CamelCase.** `extern crate busbar_mcp;`,
-//!   `use busbar_a2a as alias;`, `busbar_core :: internal`, `MCPCallRecord` / `OpenAIClient` /
+//!   `use busbar_a2a as alias;`, `busbar_kernel :: internal`, `MCPCallRecord` / `OpenAIClient` /
 //!   `LLMRouter`, and `include!("…/busbar-voice/…")` each bind exactly the side channel the
 //!   original patterns were written for, spelled so the original patterns could not see them.
 //! * **`include!` is decided ABOVE the pragma gate.** It used to fall through to the vocabulary
@@ -56,7 +56,7 @@ const RECORD_TYPES: [&str; 4] = ["McpCallRecord", "McpDemotionRow", "TaskRow", "
 pub enum Mode {
     /// Scan NEUTRAL sources for the side channels reaching AROUND the ABI.
     Forward,
-    /// Scan PLANE sources for the backwards reach into `busbar_core::` implementation.
+    /// Scan PLANE sources for the backwards reach past the contract ([`Vocab::wall_idents`]).
     Reverse,
 }
 
@@ -201,15 +201,14 @@ fn scan_file(
         let mut emit = |category: &'static str, segment: bool| found.push((category, segment));
 
         if mode == Mode::Reverse {
-            // No backwards reach: a plane crate must not name `busbar_core::` implementation items.
-            // THE CRATE IS NAMED, NOT ONLY ITS PATHS — the two spellings that bind the crate with
-            // no `::` on the line walked straight through the original rule, and either one
-            // re-opens plane→core-internals wholesale.
-            if code.contains("busbar_core")
-                && (path_of(&code, "busbar_core")
-                    || extern_crate_of(&code, "busbar_core")
-                    || bound_as(&code, "busbar_core"))
-            {
+            // No backwards reach: a plane crate names nothing past the contract. THE NEEDLES ARE
+            // THE TREE'S ([`Vocab::wall_idents`]): every neutral-family crate the architecture
+            // grants a plane no edge to — the kernel and its workflow crates, the loader, the
+            // cleanliness crates, the root. The rule used to name `busbar_core` alone, a crate
+            // `busbar-kernel` absorbed (673ecdaaa), so it matched nothing and a plane's kernel reach
+            // read as clean. THE CRATE IS NAMED, NOT ONLY ITS PATHS — the two spellings that bind a
+            // crate with no `::` on the line walk straight through a path-only rule.
+            if reaches_past_wall(&code, &vocab.wall_idents) {
                 emit("BACKWARDS", false);
             }
         } else {
@@ -314,6 +313,51 @@ fn forward_rules(
     if word || segment {
         emit("DIALECT", segment);
     }
+}
+
+/// Whether `code` names any of `idents` as a crate: a path (`krate::`), an `extern crate krate`, or
+/// a `krate as alias` rename. The crate word must start on an identifier boundary, so
+/// `my_busbar_kernel::` is not `busbar_kernel::`, and [`path_of`]'s `::` must follow the whole word,
+/// so `busbar_kernel_ledger::` is that crate and not `busbar_kernel`.
+pub fn reaches_past_wall(code: &str, idents: &[String]) -> bool {
+    idents.iter().any(|krate| {
+        code.contains(krate.as_str())
+            && (bounded_path_of(code, krate)
+                || extern_crate_of(code, krate)
+                || bound_as(code, krate))
+    })
+}
+
+/// [`path_of`] with a leading identifier boundary.
+fn bounded_path_of(code: &str, krate: &str) -> bool {
+    let b = code.as_bytes();
+    code.match_indices(krate).any(|(i, _)| {
+        (i == 0 || !is_ident_b(b[i - 1]))
+            && code[i + krate.len()..]
+                .trim_start_matches([' ', '\t'])
+                .starts_with("::")
+    })
+}
+
+/// The VOCABULARY categories (TYPE, KEY, DIALECT) `code` would be guilty of with no pragma in
+/// force — the rows a frozen-wire pragma exempts. Read by [`super::claims`], which ties a pragma's
+/// claim to the names its line actually carries.
+pub fn vocabulary_categories(code: &str, vocab: &Vocab) -> Vec<&'static str> {
+    let mut found: Vec<&'static str> = Vec::new();
+    let mut include = false;
+    forward_rules(
+        code,
+        false,
+        vocab,
+        &mut |c: &'static str, _segment: bool| {
+            if matches!(c, "TYPE" | "KEY" | "DIALECT") && !found.contains(&c) {
+                found.push(c);
+            }
+        },
+        &mut include,
+        false,
+    );
+    found
 }
 
 /// `FILENAME ~ /_tests?\.rs$/`

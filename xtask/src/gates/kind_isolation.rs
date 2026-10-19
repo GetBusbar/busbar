@@ -13475,4 +13475,4 @@ mod spec_allowed_tests {
 // THE NEUTRAL CENSUS lives in its own file and is declared down here so that no line above moves:
 // the kind table and its rules are cited by line number across the ledgers.
 mod neutral;
-pub use neutral::{neutral_census, neutral_kind_src_roots, NeutralCensus};
+pub use neutral::{neutral_census, neutral_kind_src_roots, plane_wall_crates, NeutralCensus};

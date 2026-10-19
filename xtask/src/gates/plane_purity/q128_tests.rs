@@ -18,8 +18,8 @@
 use crate::ctx::{Ctx, Overlay, WalkSpec};
 use crate::gates::construction::ceilings::BASE_PIN_KEY;
 use crate::gates::plane_purity::{
-    strict, strict_category_row, strict_reach_row, PlanePurityGate, PlanePurityStrictGate,
-    ROW_BACKWARDS, ROW_DENOMINATOR, ROW_FREEZE, ROW_FROZEN_WIRE_CLAIM, ROW_SYMBOL,
+    strict, strict_category_row, PlanePurityGate, PlanePurityStrictGate, ROW_BACKWARDS,
+    ROW_DENOMINATOR, ROW_FREEZE, ROW_FROZEN_WIRE_CLAIM, ROW_STRICT_REACH, ROW_SYMBOL,
 };
 use crate::gates::Gate;
 use crate::ledger::{Status, Verdict};
@@ -72,15 +72,18 @@ fn a_plane_crate_reaching_the_kernel_reds_backwards() {
     }
 }
 
-/// HIGH. The per-crate test-reach rows are the plane population's, not the legacy-engine roster's:
-/// `busbar-plane-llm`'s own test code reaching the kernel has a row, and the row sees it.
+/// HIGH. The test-reach ratchet covers the plane population, not the legacy-engine roster:
+/// `busbar-plane-llm`'s own test code reaching the kernel is counted under its own key, and the
+/// row sees it. (The per-key row ids became one row over the derived population: the owed set is
+/// static and the population is not.)
 #[test]
 fn a_plane_crates_test_reach_has_its_own_row_and_it_sees_the_kernel() {
     let cx = Ctx::workspace().expect("workspace");
-    let id = strict_reach_row("plane-llm");
     assert!(
-        PlanePurityStrictGate.owed().contains(&id),
-        "{id} is not owed: {:?}",
+        PlanePurityStrictGate
+            .owed()
+            .contains(&ROW_STRICT_REACH.to_string()),
+        "{ROW_STRICT_REACH} is not owed: {:?}",
         PlanePurityStrictGate.owed()
     );
     let mut ov = Overlay::new();
@@ -90,7 +93,7 @@ fn a_plane_crates_test_reach_has_its_own_row_and_it_sees_the_kernel() {
         "fn r() { let _ = busbar_kernel::teller::run_unit; }\n",
     );
     let v = PlanePurityStrictGate.run(&cx.with_overlay(ov));
-    assert_red_naming(&v, &id, "> ceiling");
+    assert_red_naming(&v, ROW_STRICT_REACH, " plane-llm: 1 > ceiling 0");
 }
 
 /// MEDIUM. A neutral crate the kind table derives — a new kernel workflow crate — is scanned the
