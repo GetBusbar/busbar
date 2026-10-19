@@ -21,9 +21,9 @@
 //!   counterparty; every sighting after that answers [`Sight::Quarantined`] until the pin is seen
 //!   again. That clean sighting clears the demotion, unless the declared recovery backoff since the
 //!   last drift has not elapsed (or the clock went backwards since it), in which case it is held,
-//!   by the same rule as [`super::reverify::settle`]. Demotion is never held. A demotion replayed
-//!   for a counterparty with no declared pin has no pin to clear it by, and stays until the operator
-//!   declares one.
+//!   so a counterparty that flapped recently is not believed at once. Demotion is never held. A
+//!   demotion replayed for a counterparty with no declared pin has no pin to clear it by, and stays
+//!   until the operator declares one.
 //! * **Re-verification.** The kernel's tick marks a counterparty due by [`super::reverify::due`]
 //!   under its declared cadence; a cadence of zero declares none and is never marked by the timer.
 //!   `trust.due` answers the marks; a sighting clears its counterparty's mark, so a mark outlives a
@@ -608,7 +608,9 @@ impl TrustBook {
     /// authenticity root.
     pub fn apply(&self, fact: &RulingRow) -> Result<KeyRow, Undecided> {
         let mut map = self.lock();
-        let book = map.get_mut(fact.instance.as_str()).ok_or(Undecided::NoSuchKey)?;
+        let book = map
+            .get_mut(fact.instance.as_str())
+            .ok_or(Undecided::NoSuchKey)?;
         let entry = book
             .entries
             .get(&fact.counterparty)

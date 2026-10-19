@@ -142,8 +142,8 @@ fn read_entry(
             TrustRole::ItemApprovals => out.approved = item_approvals(decl, value),
         }
     }
-    // A REGISTRATION WITH NO AUTHENTICITY ROOT APPROVES NOTHING (`trust::declared`: "unpinned can
-    // never be approved"): its configured item approvals are not seeded, whatever digests it
+    // A REGISTRATION WITH NO AUTHENTICITY ROOT APPROVES NOTHING ("unpinned can never be
+    // approved"): its configured item approvals are not seeded, whatever digests it
     // writes, as an unrooted registration never served under the plane-local approval before.
     if out.rootless() {
         out.approved.clear();

@@ -2211,7 +2211,11 @@ fn a_trust_decision_the_store_refused_never_takes_effect() {
     assert_eq!(k.trust_judge("inst", &whole), Err(Distrust::NotApproved));
     probe.refuse_decisions.store(false, Ordering::SeqCst);
     k.trust_rule("inst/cp", Ruling::Approve).unwrap();
-    assert_eq!(k.trust_judge("inst", &whole), Ok(()), "kept, it is in force");
+    assert_eq!(
+        k.trust_judge("inst", &whole),
+        Ok(()),
+        "kept, it is in force"
+    );
 }
 
 /// ADMIT READS THE KEPT DECISIONS OUTSIDE THE HOST LOCK (Q128 p5#4; THE DESIGN §11.2 l.1285,

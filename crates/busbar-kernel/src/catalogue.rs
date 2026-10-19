@@ -148,7 +148,7 @@ pub fn judge<'i, I: CatalogueItem>(
     let mut grants: Vec<Grant<'_>> = Vec::new();
     item.required_grants(query, &mut grants);
     // THE FAIL-CLOSED FLOOR, and it is checked before the gate rather than by it: an EMPTY grant
-    // list is honest at `validate_request`'s door (some asks legitimately need no grant) and is
+    // list is honest at `validate_visibility`'s door (some asks legitimately need no grant) and is
     // never honest for an item in an inventory.
     if grants.is_empty() {
         return Err(item.ungranted());

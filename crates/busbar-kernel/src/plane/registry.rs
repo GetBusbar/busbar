@@ -637,8 +637,7 @@ pub struct BuildCtx<'a> {
     /// `OnceLock`) off its own prior runtime object across a config apply without the composition root
     /// naming the plane's runtime type. Reached by key through [`crate::plane_host::PlaneSlots::plane_slot`]
     /// and downcast inside the plane's own `build`, exactly as the runtime accessors downcast the live
-    /// slot. The A2A plane reads it to carry its `VerifyGate` and card-fetch `OnceLock`; a plane with no
-    /// carry-over ignores it.
+    /// slot. A plane with no carry-over ignores it.
     pub prior: Option<&'a dyn crate::plane_host::PlaneSlots>,
     /// THIS GENERATION'S RESOLVED `providers:` (catalog-merged), from which a door plane's probe is
     /// handed the dialect facts of the providers its section references, as its served instance

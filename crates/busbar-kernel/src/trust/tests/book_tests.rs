@@ -794,8 +794,16 @@ fn a_pin_changed_to_no_root_or_another_root_keeps_no_approval() {
     let (b, i) = book(pinned_by("root-kind", true, Some("K")));
     approved(&b, &i);
     b.admit(&i, [("cp".to_string(), pinned_by("none", false, None))], []);
-    assert_eq!(b.judge(&i, &whole), Err(Distrust::NotApproved), "rootless now");
-    assert_eq!(b.judge(&i, &item), Err(Distrust::NotApproved), "its item too");
+    assert_eq!(
+        b.judge(&i, &whole),
+        Err(Distrust::NotApproved),
+        "rootless now"
+    );
+    assert_eq!(
+        b.judge(&i, &item),
+        Err(Distrust::NotApproved),
+        "its item too"
+    );
     assert_eq!(
         b.sight(&i, "cp", "h1", 2),
         Ok((Sight::New, Effect::None)),
@@ -874,7 +882,11 @@ fn a_kept_approval_does_not_replay_over_a_declaration_changed_while_down() {
 
     let (same, s) = book(entry(Some("fp"), 0, 0));
     same.admit_decided(&s, [&kept]);
-    assert_eq!(same.judge(&s, &whole), Ok(()), "the same declaration replays");
+    assert_eq!(
+        same.judge(&s, &whole),
+        Ok(()),
+        "the same declaration replays"
+    );
 
     let (moved, m) = book(entry(Some("fp2"), 0, 0));
     moved.admit_decided(&m, [&kept]);
