@@ -410,3 +410,159 @@ fn a_non_canonical_claim_flags_is_unreadable() {
     .concat();
     assert_eq!(read(&other).unwrap_err().what, "claim_flags");
 }
+
+// ── an auth plugin's tail facts (Law 7: a dropped auth plugin is selected and listed unopened) ──
+
+use crate::abi::auth::{
+    ranked, AuthTail, StyleDecl, CAP_OUTBOUND, POINT_HEAD, STYLE_ENDPOINT_TOKEN_URL,
+};
+
+use super::{ReadAuth, ReadStyle, TAIL_AUTH};
+
+const STYLES: &[StyleDecl] = &[
+    StyleDecl {
+        name: abi_str("first"),
+        flags: ranked(1),
+        points: POINT_HEAD,
+    },
+    StyleDecl {
+        name: abi_str("second"),
+        flags: STYLE_ENDPOINT_TOKEN_URL,
+        points: POINT_HEAD,
+    },
+];
+
+/// [`full`] as an AUTH plugin's Statement whose tail serves `styles` outbound (none: a tail that
+/// states nothing).
+fn auth(styles: &'static [StyleDecl]) -> Statement {
+    // SAFETY: an auth tail is plain C data (integers, raw pointers, strings); all-zero is valid.
+    let mut tail: AuthTail = unsafe { core::mem::zeroed() };
+    tail.head = KindTailHead {
+        size: core::mem::size_of::<AuthTail>() as u32,
+        _reserved: 0,
+    };
+    if !styles.is_empty() {
+        tail.caps = CAP_OUTBOUND;
+        tail.styles = styles.as_ptr();
+        tail.styles_len = styles.len();
+    }
+    let tail: &'static AuthTail = Box::leak(Box::new(tail));
+    Statement {
+        kind: crate::abi::mechanism::KindCode::Auth as u32,
+        kind_tail: core::ptr::from_ref(tail).cast::<KindTailHead>(),
+        ..full()
+    }
+}
+
+/// The `auth` field's bytes, tag first.
+fn auth_field(caps: u32, facts: u32, login: u32, styles: &[(&str, u32, u32)]) -> Vec<u8> {
+    let mut b = Vec::new();
+    for v in [TAIL_AUTH, caps, facts, login, 0, 0, 0] {
+        b.extend_from_slice(&v.to_le_bytes());
+    }
+    b.extend_from_slice(&(styles.len() as u32).to_le_bytes());
+    for (name, flags, points) in styles {
+        b.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        b.extend_from_slice(name.as_bytes());
+        b.extend_from_slice(&flags.to_le_bytes());
+        b.extend_from_slice(&points.to_le_bytes());
+    }
+    b
+}
+
+const AUTH_GOLDEN: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/golden/statement-rendering-auth.golden"
+);
+
+/// THE THIRD GOLDEN: an auth plugin's tail facts render as the `auth` field after `claims`.
+#[test]
+fn an_auth_tail_renders_its_facts_after_the_claims() {
+    let got = format!("{}\n", hex(&bytes(&auth(STYLES))));
+    if std::env::var_os("BUSBAR_UPDATE_GOLDEN").is_some() {
+        std::fs::write(AUTH_GOLDEN, &got).expect("write the golden");
+    }
+    let want = std::fs::read_to_string(AUTH_GOLDEN).expect(
+        "the auth rendering golden exists; re-seed intentionally with BUSBAR_UPDATE_GOLDEN=1",
+    );
+    assert_eq!(got, want, "the auth tail rendering drifted from its golden");
+}
+
+/// THE ROUND TRIP, AND ABSENCE IS CANONICAL: the field reads back to exactly the facts the tail
+/// states, and a tail stating nothing renders no field (its bytes are the stating one's less the
+/// field), so every auth rendering signed before the field existed is unchanged.
+#[test]
+fn auth_facts_round_trip_and_a_silent_tail_renders_none() {
+    let stating = bytes(&auth(STYLES));
+    let silent = bytes(&auth(&[]));
+    let field = auth_field(
+        CAP_OUTBOUND,
+        0,
+        0,
+        &[
+            ("first", ranked(1), POINT_HEAD),
+            ("second", STYLE_ENDPOINT_TOKEN_URL, POINT_HEAD),
+        ],
+    );
+    assert_eq!([silent.as_slice(), field.as_slice()].concat(), stating);
+    assert_eq!(read(&silent).expect("reads").auth, None);
+    assert_eq!(
+        read(&stating).expect("reads").auth,
+        Some(ReadAuth {
+            caps: CAP_OUTBOUND,
+            styles: vec![
+                ReadStyle {
+                    name: "first".into(),
+                    flags: ranked(1),
+                    points: POINT_HEAD,
+                },
+                ReadStyle {
+                    name: "second".into(),
+                    flags: STYLE_ENDPOINT_TOKEN_URL,
+                    points: POINT_HEAD,
+                },
+            ],
+            ..ReadAuth::default()
+        })
+    );
+}
+
+/// THE `auth` FIELD IS CANONICAL (REDs): refused on another kind, all empty, with an unknown
+/// capability, fact or login kind, or a style the contract refuses; a byte after it, or a tag out
+/// of order, is refused at "the end".
+#[test]
+fn a_non_canonical_auth_field_is_unreadable() {
+    let silent = bytes(&auth(&[]));
+    let with = |f: Vec<u8>| [silent.as_slice(), f.as_slice()].concat();
+    let ok = [("s", 0, POINT_HEAD)];
+    for (why, field) in [
+        ("all empty", auth_field(0, 0, 0, &[])),
+        (
+            "unknown capability",
+            auth_field(CAP_OUTBOUND | 8, 0, 0, &ok),
+        ),
+        ("unknown fact", auth_field(CAP_OUTBOUND, 1 << 20, 0, &ok)),
+        ("unknown login kind", auth_field(CAP_OUTBOUND, 0, 3, &ok)),
+        (
+            "a refused style",
+            auth_field(CAP_OUTBOUND, 0, 0, &[("s", 1 << 24, POINT_HEAD)]),
+        ),
+    ] {
+        assert_eq!(read(&with(field)).unwrap_err().what, "auth", "{why}");
+    }
+    let other = [
+        bytes(&full()).as_slice(),
+        auth_field(CAP_OUTBOUND, 0, 0, &ok).as_slice(),
+    ]
+    .concat();
+    assert_eq!(read(&other).unwrap_err().what, "auth", "another kind");
+    let mut trailing = bytes(&auth(STYLES));
+    trailing.push(0);
+    assert_eq!(read(&trailing).unwrap_err().what, "the end");
+    let out_of_order = [
+        bytes(&auth(STYLES)).as_slice(),
+        &TAIL_CLAIM_FLAGS.to_le_bytes(),
+    ]
+    .concat();
+    assert_eq!(read(&out_of_order).unwrap_err().what, "the end");
+}

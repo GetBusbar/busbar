@@ -38,6 +38,10 @@
 //! order; an absent field writes nothing. The tags, in the one order they are written:
 //!   1 claim_flags  list of u32  a transport's Statement whose claim rows state a non-zero
 //!                               `flags`: claim i's row's flags
+//!   2 auth         { caps u32, facts u32, login_kind u32, inbound_points u32,
+//!                    operator_principal str, credential_kinds list of str,
+//!                    styles list of { name str, flags u32, points u32 } }
+//!                               an auth Statement whose tail states anything: its tail's facts
 //!
 //! str   = u32 length, then the bytes
 //! list  = u32 count, then each item
@@ -59,6 +63,12 @@
 //! `claim_flags`: a transport's claim-row `flags` (`abi::transport::CLAIM_SECURE`, BUSBAR-1.6.0.md
 //! #50). Refused present on another kind, of another count than `claims`, all zero, or stating any
 //! bit but `CLAIM_SECURE`.
+//!
+//! `auth`: an auth plugin's tail (`abi::auth::AuthTail`: capabilities, facts, login kind, inbound
+//! points, operator principal, credential kinds and outbound styles), so the host selects and
+//! judges a dropped auth plugin from its signed rendering without opening it (Law 7, as a linked one
+//! is read off its door's Statement). Refused present on another kind, all empty, or stating an
+//! unknown capability, fact or login kind, or a style `abi::auth::check_style_decl` refuses.
 
 use super::call::{AbiStr, Blob};
 use super::door::{MarkWord, MetricFamily, Rewrite, Section, Statement};
@@ -71,6 +81,9 @@ pub const RENDERING_MAGIC: &[u8; 8] = b"BBSTMT01";
 /// THE OPTIONAL TAIL's tag of a transport's claim-row `flags` (module docs: the tagged fields after
 /// `claims`, in strictly ascending tag order).
 pub const TAIL_CLAIM_FLAGS: u32 = 1;
+
+/// THE OPTIONAL TAIL's tag of an auth plugin's tail facts ([`ReadAuth`]).
+pub const TAIL_AUTH: u32 = 2;
 
 /// One of the rendering's lengths or counts was above `u32::MAX`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -369,6 +382,38 @@ pub struct Read {
     /// Each claim's row `flags` (`abi::transport::CLAIM_SECURE`), parallel to `claims`; every one
     /// `0` when the rendering states none.
     pub claim_flags: Vec<u32>,
+    /// An auth plugin's tail facts; `None` when the rendering states none.
+    pub auth: Option<ReadAuth>,
+}
+
+/// AN AUTH PLUGIN'S TAIL, read back ([`TAIL_AUTH`]): every fact `abi::auth::AuthTail` states.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ReadAuth {
+    /// `abi::auth::CAP_*`.
+    pub caps: u32,
+    /// `abi::auth::FACT_*`.
+    pub facts: u32,
+    /// `abi::auth::LOGIN_KIND_*`.
+    pub login_kind: u32,
+    /// The auth points `verify` needs inbound.
+    pub inbound_points: u32,
+    /// The operator principal; empty when none.
+    pub operator_principal: String,
+    /// The credential kinds `verify` reads.
+    pub credential_kinds: Vec<String>,
+    /// The outbound styles, in the tail's order.
+    pub styles: Vec<ReadStyle>,
+}
+
+/// ONE OUTBOUND STYLE, read back: `abi::auth::StyleDecl`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ReadStyle {
+    /// The style name.
+    pub name: String,
+    /// `abi::auth::STYLE_*` and the list rank.
+    pub flags: u32,
+    /// Its auth points.
+    pub points: u32,
 }
 
 /// Why a rendering could not be read back: the byte offset and what was expected there.
@@ -441,6 +486,7 @@ impl In<'_> {
 #[derive(Default)]
 struct OptionalTail {
     claim_flags: Option<Vec<u32>>,
+    auth: Option<ReadAuth>,
 }
 
 /// THE OPTIONAL TAIL (module docs), read to the end of `i`: each tagged field present, in strictly
@@ -571,6 +617,7 @@ pub fn read(bytes: &[u8]) -> Result<Read, Unreadable> {
     let claims = i.strs("claims")?;
     let tail = optional_tail(&mut i, kind, claims.len())?;
     let claim_flags = tail.claim_flags.unwrap_or_else(|| vec![0; claims.len()]);
+    let auth = tail.auth;
     if i.at != bytes.len() {
         return Err(Unreadable {
             at: i.at,
@@ -600,6 +647,7 @@ pub fn read(bytes: &[u8]) -> Result<Read, Unreadable> {
         answers,
         claims,
         claim_flags,
+        auth,
     })
 }
 

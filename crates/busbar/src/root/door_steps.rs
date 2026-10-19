@@ -2542,12 +2542,26 @@ impl OutboundAuths {
 
     /// THE OUTBOUND STYLES every auth row declares, linked first, then dropped in, in the host's
     /// one listing order (`busbar_contract::auth_calls::listed_styles`).
+    ///
+    /// Read off each row's Statement rendering (a linked door's own, a dropped plugin's signed
+    /// one): nothing is bound or opened (Law 7). A row whose rendering does not read declares none.
     pub fn declared(&self) -> Vec<busbar_contract::auth_calls::DeclaredStyle> {
-        busbar_contract::auth_calls::listed_styles(self.facts().iter().flat_map(|row| {
-            row.styles
-                .iter()
+        use crate::root::loader::auth_axis::{door_facts, stated_facts};
+        let linked = self
+            .linked
+            .iter()
+            .filter_map(|(_, _, door)| door_facts(*door).ok());
+        let dropped = self
+            .dropped
+            .map_or(&[][..], |r| r.loadable())
+            .iter()
+            .filter(|r| r.manifest.kind == "auth")
+            .filter_map(|r| stated_facts(r).ok());
+        busbar_contract::auth_calls::listed_styles(linked.chain(dropped).flat_map(|f| {
+            f.styles
+                .into_iter()
                 .map(|s| busbar_contract::auth_calls::DeclaredStyle {
-                    name: s.name.clone(),
+                    name: s.name,
                     flags: s.flags,
                 })
         }))
