@@ -232,6 +232,10 @@ pub struct Connection {
     /// THE PROXY TUNNEL a dial through a proxy asks for before anything else rides the socket
     /// ([`crate::proxy`]); `None` once the proxy answered, and on every direct connection.
     tunnel: Option<Tunnel>,
+    /// A STREAM'S OWN BACKPRESSURE (`busbar_contract::abi::transport`): the streams whose last
+    /// emit the framer answered `YIELD_STREAM_FULL`. Nothing more is emitted on one until the
+    /// framer hands a writable piece for it, or its end or failure piece.
+    full: std::collections::HashSet<u64>,
 }
 
 /// A CONNECT exchange in flight: the request (until it is queued), the proxy's answer so far, and
@@ -696,6 +700,7 @@ impl Connection {
             security_error: None,
             cause: None,
             tunnel: None,
+            full: std::collections::HashSet::new(),
         })
     }
 }
@@ -748,6 +753,7 @@ impl Connection {
             framer_error: None,
             cause: None,
             tunnel: None,
+            full: std::collections::HashSet::new(),
             security_error: None,
             key_pin: None,
             presented: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -898,6 +904,7 @@ impl Connection {
             security_error: None,
             cause: None,
             tunnel: None,
+            full: std::collections::HashSet::new(),
         };
         if conn.tls.is_none() {
             conn.begin()?;
@@ -1039,6 +1046,9 @@ impl Connection {
     fn put(&mut self, stream: u64, bytes: &[u8], end: bool, text: bool) -> Result<(), Failure> {
         if let Some(framing) = self.framing.as_mut() {
             let y = framing.emit(stream, bytes, end, text).map_err(failed)?;
+            if y.full {
+                self.full.insert(stream);
+            }
             return self.absorb(y);
         }
         if self.door.is_some() {
@@ -1324,6 +1334,12 @@ impl Connection {
         if let Err(f) = self.drive(cx) {
             self.fail(f.clone());
             return Err(f);
+        }
+        // A FULL STREAM takes nothing (not-ready: the drive above parked `cx` on the socket, whose
+        // bytes bring the framer's writable piece). An empty write adds nothing to the stream's
+        // queue, and its end of message is never held back.
+        if self.full.contains(&stream) && !bytes.is_empty() {
+            return Ok(0);
         }
         let take = bytes
             .len()
@@ -1747,6 +1763,14 @@ impl Connection {
                 }
                 None => self.queue(&y.wire, false),
             }
+        }
+        // A stream the framer says is writable again, or whose last piece arrived, is held no
+        // more.
+        for stream in &y.writable {
+            self.full.remove(stream);
+        }
+        for g in y.pieces.iter().filter(|g| g.ends_stream() || g.failed) {
+            self.full.remove(&g.stream);
         }
         self.inbox.extend(y.pieces);
         self.framer_deadline = y.deadline_ns.map(framer::instant_of);
