@@ -2013,6 +2013,7 @@ impl TestApp {
             // exercise. Recorder not installed ⇒ empty table (no `/metrics`), as when metrics are off.
             plugin_routes,
             boot_route_paths,
+            planes_awaiting_restart: Vec::new(),
         });
         // Mirror main's boot-version floor so rollback tests have a v0 to restore.
         crate::admin::seam::record_boot(&app);

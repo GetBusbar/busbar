@@ -932,6 +932,21 @@ impl Served {
             .flat_map(|p| p.live.served_facts.need_trust.iter().copied())
             .collect()
     }
+
+    /// The declaring sections of the planes among `doors` this composition did not open (what the
+    /// root's rules hold as restart-to-apply, `door_steps::Rules::hold_unopened`). The fallback
+    /// plane is never one: its generation is built at every apply, as the previous release built
+    /// it.
+    #[must_use]
+    pub fn unopened(&self, doors: &[(String, DoorPlane)]) -> Vec<&'static str> {
+        doors
+            .iter()
+            .filter(|(instance, _)| !self.planes.iter().any(|p| p.instance == *instance))
+            .map(|(_, plugin)| plugin.served())
+            .filter(|served| !served.fallback)
+            .map(|served| served.section)
+            .collect()
+    }
 }
 
 impl Served {

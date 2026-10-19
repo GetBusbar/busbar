@@ -494,6 +494,25 @@ pub struct App {
     /// THE GENERATION'S ROUTING TABLES, built inside the build from [`Self::stated_routing`]: every
     /// stated lane and entry ([`crate::plane::routing::RoutingTables`]).
     pub routing: Arc<crate::plane::routing::RoutingTables>,
+    /// The plane SECTIONS this generation's configuration writes whose plane the process did not
+    /// open at boot ([`crate::appbuild::RootRules::planes_awaiting_restart`]): stored and
+    /// validated, given no slot, and served from the next restart. Sorted; empty when every
+    /// written plane is served.
+    pub planes_awaiting_restart: Vec<String>,
+}
+
+/// THE PLANE HALF OF THE RESTART-TO-APPLY SIGNAL, keyed on the DELTA like
+/// [`crate::plugin_routes::paths_awaiting_restart`]: the plane sections `installed` holds awaiting
+/// restart that `previous` did not, so only the mutation that itself first writes such a section is
+/// flagged and a later unrelated edit does not re-flag it. Sorted.
+#[must_use]
+pub fn planes_awaiting_restart_added(installed: &App, previous: &App) -> Vec<String> {
+    installed
+        .planes_awaiting_restart
+        .iter()
+        .filter(|s| !previous.planes_awaiting_restart.contains(s))
+        .cloned()
+        .collect()
 }
 
 impl App {
