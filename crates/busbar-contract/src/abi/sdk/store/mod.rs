@@ -146,16 +146,35 @@ pub enum CapsRefused {
     Failed(String),
 }
 
-/// What a store states about itself: `ephemeral` as the Statement mark `MARK_EPHEMERAL`, the rest
-/// in its Statement tail (`abi::store::StoreTail`).
+/// [`Tail::durable`]: no durability claimed, the zero. The store's Statement states
+/// `MARK_EPHEMERAL` and the not-durable boot warning fires (a zero never grants).
+pub const DURABLE_NOT_CLAIMED: u8 = 0;
+/// [`Tail::durable`]: what the store holds survives a restart; its Statement states no
+/// `MARK_EPHEMERAL`.
+pub const DURABLE_CLAIMED: u8 = 1;
+
+/// What a store states about itself: `durable` as the absence of the Statement mark
+/// `MARK_EPHEMERAL`, the rest in its Statement tail (`abi::store::StoreTail`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tail {
-    /// What it holds is lost on restart (the Statement mark `MARK_EPHEMERAL`).
-    pub ephemeral: bool,
+    /// [`DURABLE_CLAIMED`] when what it holds survives a restart; anything else, the zero
+    /// [`DURABLE_NOT_CLAIMED`] included, is no claim, and the Statement states `MARK_EPHEMERAL`.
+    pub durable: u8,
     /// It holds plane records durably.
     pub durable_plane: bool,
     /// A different record at a used `seq` is refused as a fork.
     pub fork_refusal: bool,
+}
+
+impl Tail {
+    /// THE EMPTY DECLARATION: no durability claimed, no plane records held durably, no fork
+    /// refusal. A store built as `Tail { …, ..Tail::ZERO }` that never claims durability warns at
+    /// boot.
+    pub const ZERO: Self = Self {
+        durable: DURABLE_NOT_CLAIMED,
+        durable_plane: false,
+        fork_refusal: false,
+    };
 }
 
 /// A store plugin, as the store v3 table serves it. Every method is required: the table has no

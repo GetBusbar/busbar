@@ -54,18 +54,11 @@ pub const ZERO_HELPERS: &[&str] = &[
 
 /// THE FIXED EXEMPTIONS: plugin-built contract structs that state NO `ZERO`, as `(file under the
 /// contract's src, type, reason)`. A test holds each to its file and to having no `ZERO`.
-pub const EXEMPT: &[(&str, &str, &str)] = &[
-    (
-        "abi/mechanism/observe.rs",
-        "Envelope",
-        "generic R has no ZERO; the envelope carries no grant field",
-    ),
-    (
-        "abi/sdk/store/mod.rs",
-        "Tail",
-        "ephemeral false claims a durable store: renumbered in step 2",
-    ),
-];
+pub const EXEMPT: &[(&str, &str, &str)] = &[(
+    "abi/mechanism/observe.rs",
+    "Envelope",
+    "generic R has no ZERO; the envelope carries no grant field",
+)];
 
 /// One contract struct: its named fields, and whether it states a `ZERO`.
 #[derive(Debug, Clone)]

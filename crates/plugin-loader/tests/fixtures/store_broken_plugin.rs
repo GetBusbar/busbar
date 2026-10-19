@@ -30,7 +30,8 @@ pub struct HalfGrants;
 
 impl StoreSlots for HalfGrants {
     const TAIL: Tail = Tail {
-        ephemeral: true,
+        // Not durable: the not-durable boot warning fires for it.
+        durable: busbar_contract::abi::sdk::store::DURABLE_NOT_CLAIMED,
         durable_plane: false,
         fork_refusal: true,
     };

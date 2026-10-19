@@ -42,7 +42,7 @@ use serde::Serialize;
 use super::op::Parked;
 use super::{
     Cap, CapsRefused, Cell, CellKey, Dimension, Grant, Op, OpRefused, ReserveRefused, Step,
-    StoreSlots,
+    StoreSlots, Tail,
 };
 use crate::abi::mechanism::call::{
     AbiStr, Blob, Diag, InHead, OutHead, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET, MAX_TEXT,
@@ -96,7 +96,7 @@ const DIAG_CAP: &[Diag] = &[Diag {
 }];
 
 /// The Statement tail of a store `B` (`abi::store::StoreTail`), for [`store_door!`](crate::store_door).
-/// `B::TAIL.ephemeral` is not a tail fact: [`marks`] states it.
+/// `B::TAIL.durable` is not a tail fact: [`marks`] states it.
 #[must_use]
 pub const fn tail<B: StoreSlots>() -> StoreTail {
     StoreTail {
@@ -110,15 +110,23 @@ pub const fn tail<B: StoreSlots>() -> StoreTail {
     }
 }
 
-/// The Statement marks of a store `B`, for [`store_door!`](crate::store_door): an ephemeral store
-/// states [`MARK_EPHEMERAL`](crate::abi::mechanism::door::MARK_EPHEMERAL) (One Statement: the fact
-/// lives on the Statement, not in the store tail).
+/// The Statement marks of a store `B`, for [`store_door!`](crate::store_door): [`marks_of`] its
+/// tail.
 #[must_use]
 pub const fn marks<B: StoreSlots>() -> u64 {
-    if B::TAIL.ephemeral {
-        crate::abi::mechanism::door::MARK_EPHEMERAL
-    } else {
+    marks_of(B::TAIL)
+}
+
+/// The Statement marks a store tail states: a store that does not claim durability
+/// ([`super::DURABLE_CLAIMED`]) states [`MARK_EPHEMERAL`](crate::abi::mechanism::door::MARK_EPHEMERAL)
+/// (One Statement: the fact lives on the Statement, not in the store tail). A zero never grants: a
+/// zeroed tail is not durable.
+#[must_use]
+pub const fn marks_of(t: Tail) -> u64 {
+    if t.durable == super::DURABLE_CLAIMED {
         0
+    } else {
+        crate::abi::mechanism::door::MARK_EPHEMERAL
     }
 }
 
