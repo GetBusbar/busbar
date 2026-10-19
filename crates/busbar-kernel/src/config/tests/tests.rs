@@ -4678,3 +4678,38 @@ fn a_named_map_plane_under_a_new_section_is_failover_and_hook_checked_with_no_ke
         "a dangling hook is refused in the novel plane's own words: {errors:?}"
     );
 }
+
+/// THE 1.5.5 STRATEGY WORDS KEEP 1.5.5'S POOL BEHAVIOUR now that they are the ranking row's declared
+/// data (arch u29): v1.5.5 hand-parsed the word (`config/mod.rs:1415`, `parse_strategy`), and the
+/// same five words parse to the same pool here. Each of 1.5.3's four ranking words is a base
+/// strategy that names itself (no gate), `weighted` is the base floor (no policy object), and an
+/// unknown word reads as weighted under `parse_strategy` and as a hook-name reference in a pool's
+/// `hooks:` list, as 1.5.5 read both.
+#[cfg(feature = "hooks-ranking")]
+#[test]
+fn the_1_5_5_strategy_words_keep_their_1_5_5_pool_behaviour() {
+    for word in ["cheapest", "fastest", "least_busy", "usage"] {
+        assert!(is_strategy_name(word), "{word} is a strategy word");
+        assert_eq!(parse_strategy(word), PoolPolicy::Declared(word.to_string()));
+        assert_eq!(parse_strategy(word).native_name(), Some(word));
+        let pool: PoolCfg = serde_yaml::from_str(&format!("hooks: [{word}]\nmembers: []\n"))
+            .expect("a strategy word parses");
+        assert_eq!(pool.policy.native_name(), Some(word));
+        assert!(pool.base_named && pool.gates.is_empty(), "{word}");
+    }
+
+    assert!(is_strategy_name("weighted"));
+    assert_eq!(parse_strategy("weighted"), PoolPolicy::Weighted);
+    let weighted: PoolCfg =
+        serde_yaml::from_str("hooks: [weighted]\nmembers: []\n").expect("weighted parses");
+    assert_eq!(weighted.policy, PoolPolicy::Weighted);
+    assert!(weighted.base_named && weighted.gates.is_empty());
+
+    assert!(!is_strategy_name("no-such-strategy"));
+    assert_eq!(parse_strategy("no-such-strategy"), PoolPolicy::Weighted);
+    let unknown: PoolCfg = serde_yaml::from_str("hooks: [no-such-strategy]\nmembers: []\n")
+        .expect("an unknown word parses as a hook reference");
+    assert_eq!(unknown.policy, PoolPolicy::Weighted);
+    assert!(!unknown.base_named);
+    assert_eq!(unknown.gates, ["no-such-strategy"]);
+}
