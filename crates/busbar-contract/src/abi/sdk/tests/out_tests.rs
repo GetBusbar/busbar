@@ -402,3 +402,24 @@ fn keep_names_a_lease_for_static_material() {
     assert_eq!(leases.release(o.head.lease), Outcome::Ready);
     assert_eq!(leases.held(), 0);
 }
+
+/// RED (Q128 contract u13 LOW): every route-flag setter adds its bit to the ones already set, so
+/// the order a plane calls them in never drops one. `once` after `stream`, `session` and `counted`
+/// keeps all four.
+#[test]
+fn red_once_keeps_the_route_flags_set_before_it() {
+    use crate::abi::plane::{ArriveOut, ROUTE_COUNTED, ROUTE_ONCE, ROUTE_SESSION, ROUTE_STREAM};
+    let mut o: ArriveOut = zeroed();
+    let mut out = Out::new(&mut o);
+    out.stream();
+    out.session();
+    out.counted();
+    out.once();
+    let all = ROUTE_STREAM | ROUTE_SESSION | ROUTE_COUNTED | ROUTE_ONCE;
+    assert_eq!(o.route_flags, all);
+    let mut first: ArriveOut = zeroed();
+    let mut out = Out::new(&mut first);
+    out.once();
+    out.stream();
+    assert_eq!(first.route_flags, ROUTE_ONCE | ROUTE_STREAM);
+}
