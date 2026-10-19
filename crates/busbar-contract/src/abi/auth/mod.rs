@@ -50,8 +50,9 @@ mod outbound;
 mod points;
 
 pub use check::{
-    check_begin_login, check_complete_login, check_fields, check_identify, check_inbound_points,
-    check_points, check_style_decl, check_target, FIELDS_HARD_MAX, IDENTITY_GROUPS_HARD_MAX,
+    check_auth_tail, check_begin_login, check_complete_login, check_fields, check_identify,
+    check_inbound_points, check_login_fields, check_points, check_style_decl, check_target,
+    FIELDS_HARD_MAX, IDENTITY_GROUPS_HARD_MAX,
 };
 
 pub use inbound::{
@@ -188,9 +189,6 @@ pub const CAP_OUTBOUND: u32 = 4;
 /// [`AuthTail::facts`]: the plugin's verdicts may be cached. INFORMATIONAL (status, operators):
 /// the plugin caches them itself, and the kernel keeps no verdict cache.
 pub const FACT_CACHEABLE: u32 = 1;
-/// [`AuthTail::facts`]: `verify` reads the request body's hash. The body itself reaches `verify` as
-/// [`VerifyIn::body`] when the tail's points hold [`POINT_HEAD_BODY`].
-pub const FACT_INBOUND_NEEDS_BODY_HASH: u32 = 2;
 /// [`AuthTail::facts`]: `verify` reads EVERY request header, not only its carriers (the Statement's
 /// [`MARK_WORD_CARRIER`](crate::abi::mechanism::door::MARK_WORD_CARRIER) word marks); the
 /// host passes them all in [`VerifyIn::lines`]. An inbound signature check needs it: the set of
@@ -270,8 +268,10 @@ pub struct AuthTail {
     pub head: KindTailHead,
     /// [`CAP_INBOUND`] | [`CAP_LOGIN`] | [`CAP_OUTBOUND`].
     pub caps: u32,
-    /// [`FACT_CACHEABLE`] | [`FACT_INBOUND_NEEDS_BODY_HASH`] | [`FACT_INBOUND_ALL_HEADERS`] |
-    /// [`FACT_OPERATOR`] | [`FACT_READS_CREDENTIALS`] | [`FACT_DEFAULT_INBOUND_STYLE`].
+    /// [`FACT_CACHEABLE`] | [`FACT_INBOUND_ALL_HEADERS`] | [`FACT_OPERATOR`] |
+    /// [`FACT_READS_CREDENTIALS`] | [`FACT_DEFAULT_INBOUND_STYLE`]; any other bit refuses the load
+    /// ([`check_auth_tail`]). (Bit `2`, the superseded body-hash fact, is no fact: the body reaches
+    /// `verify` through the auth-point set, [`POINT_HEAD_BODY`].)
     pub facts: u32,
     /// [`LOGIN_KIND_NONE`] | [`LOGIN_KIND_REDIRECT`] | [`LOGIN_KIND_CREDENTIAL`]: the
     /// classification the login chooser reads without calling `begin_login`. It is `NONE` exactly

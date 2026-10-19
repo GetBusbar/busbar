@@ -6,14 +6,18 @@
 //! math and hold no state. The dispatcher calls them after every READY or FAILED answer, and
 //! any `Err` makes the answer FAULT. No host re-implements them.
 
-use super::inbound::{BeginLoginOut, IdentifyOut, IdentityBuf, StripName};
+use super::inbound::{BeginLoginOut, IdentifyOut, IdentityBuf, LoginField, StripName};
 use super::outbound::{FieldSpan, FieldsOut, TargetOut};
 use super::points::{AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
 use super::{
-    BEGIN_AUTHORIZE, BEGIN_FORM, CAP_INBOUND, DECISION_CONTINUE, DECISION_STOP, FIELD_QUERY,
-    FIELD_SENSITIVE, IDENTITY_HAS_TTL, LOGIN_IDENTITY, LOGIN_SECURITY_CHECK_FAILED, SPAN_ABSENT,
-    STRIP_FIELD, STRIP_QUERY, STYLE_CALLER_CREDENTIAL, STYLE_NEEDS_HEADERS, VERDICT_IDENTITY,
-    VERDICT_PASS,
+    BEGIN_AUTHORIZE, BEGIN_FORM, CAP_INBOUND, CAP_LOGIN, CAP_OUTBOUND, DECISION_CONTINUE,
+    DECISION_STOP, FIELD_QUERY, FIELD_SENSITIVE, IDENTITY_HAS_TTL, LOGIN_IDENTITY,
+    LOGIN_SECURITY_CHECK_FAILED, SPAN_ABSENT, STRIP_FIELD, STRIP_QUERY, STYLE_CALLER_CREDENTIAL,
+    STYLE_NEEDS_HEADERS, VERDICT_IDENTITY, VERDICT_PASS,
+};
+use super::{
+    FACT_CACHEABLE, FACT_DEFAULT_INBOUND_STYLE, FACT_INBOUND_ALL_HEADERS, FACT_OPERATOR,
+    FACT_READS_CREDENTIALS, FORM_PASSWORD, FORM_TEXT,
 };
 use crate::abi::mechanism::call::{AbiStr, Outcome, Span, BLOB_OCTETS};
 use crate::abi::mechanism::check::{fault, results, Dim, Fault, Rule, MAX_BYTES};
@@ -453,6 +457,54 @@ pub fn check_begin_login(outcome: Outcome, out: &BeginLoginOut) -> Result<(), Fa
     };
     if named_absent {
         return Err(fault(Rule::Missing, a.missing));
+    }
+    Ok(())
+}
+
+/// Every field of a `begin_login` form ([`BeginLoginOut::form`], formed by the host from its
+/// checked count): a known kind ([`FORM_TEXT`] | [`FORM_PASSWORD`]), `required` `0` or `1`, a
+/// non-empty name, and no text counted over NULL. An unknown kind is FAULT, never a plain text
+/// field (THE DESIGN: an unknown enum or flag value is FAULT).
+///
+/// # Errors
+/// The rule a field breaks.
+pub fn check_login_fields(form: &[LoginField]) -> Result<(), Fault> {
+    let a = &BEGIN_LOGIN;
+    for f in form {
+        if f.kind != FORM_TEXT && f.kind != FORM_PASSWORD {
+            return Err(fault(Rule::UnknownCode, a.vocabulary));
+        }
+        if f.required > 1 {
+            return Err(fault(Rule::UnknownCode, a.vocabulary));
+        }
+        text(f.name, a)?;
+        text(f.label, a)?;
+        if f.name.len == 0 {
+            return Err(fault(Rule::Missing, a.missing));
+        }
+    }
+    Ok(())
+}
+
+/// The auth tail's capability and fact bits: only the known ones ([`CAP_INBOUND`] |
+/// [`CAP_LOGIN`] | [`CAP_OUTBOUND`]; [`FACT_CACHEABLE`] | [`FACT_INBOUND_ALL_HEADERS`] |
+/// [`FACT_OPERATOR`] | [`FACT_READS_CREDENTIALS`] | [`FACT_DEFAULT_INBOUND_STYLE`]). The loader runs
+/// it when it reads a plugin's tail, so a stray, future or superseded bit refuses the load rather
+/// than be silently ignored.
+///
+/// # Errors
+/// An unknown capability or fact bit.
+pub const fn check_auth_tail(caps: u32, facts: u32) -> Result<(), Fault> {
+    if caps & !(CAP_INBOUND | CAP_LOGIN | CAP_OUTBOUND) != 0 {
+        return Err(fault(Rule::UnknownCode, "tail.caps"));
+    }
+    let known = FACT_CACHEABLE
+        | FACT_INBOUND_ALL_HEADERS
+        | FACT_OPERATOR
+        | FACT_READS_CREDENTIALS
+        | FACT_DEFAULT_INBOUND_STYLE;
+    if facts & !known != 0 {
+        return Err(fault(Rule::UnknownCode, "tail.facts"));
     }
     Ok(())
 }

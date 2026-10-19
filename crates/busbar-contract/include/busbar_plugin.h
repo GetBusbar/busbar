@@ -206,7 +206,6 @@ extern "C" {
 #define BB_AUTH_CAP_LOGIN UINT32_C(2) /* [`AuthTail::caps`]: the plugin serves `begin_login`/`complete_login`. */
 #define BB_AUTH_CAP_OUTBOUND UINT32_C(4) /* [`AuthTail::caps`]: the plugin serves `open_outbound`/`outbound_ready`/`fields`. */
 #define BB_AUTH_FACT_CACHEABLE UINT32_C(1) /* [`AuthTail::facts`]: the plugin's verdicts may be cached. INFORMATIONAL (status, operators): */
-#define BB_AUTH_FACT_INBOUND_NEEDS_BODY_HASH UINT32_C(2) /* [`AuthTail::facts`]: `verify` reads the request body's hash. The body itself reaches `verify` as */
 #define BB_AUTH_FACT_INBOUND_ALL_HEADERS UINT32_C(4) /* [`AuthTail::facts`]: `verify` reads EVERY request header, not only its carriers (the Statement's */
 #define BB_AUTH_FACT_OPERATOR UINT32_C(8) /* [`AuthTail::facts`]: this plugin's `verify` judges THE OPERATOR CREDENTIAL, the one admin */
 #define BB_AUTH_FACT_READS_CREDENTIALS UINT32_C(16) /* [`AuthTail::facts`]: this plugin's `verify` reads host-held credentials of the kinds */

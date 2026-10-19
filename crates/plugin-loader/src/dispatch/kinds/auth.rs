@@ -29,13 +29,13 @@
 
 use busbar_contract::abi::auth::{
     self, check_begin_login, check_complete_login, check_fields, check_identify,
-    check_inbound_points, check_style_decl, check_target, slot, AuthPoints, BeginLoginIn,
-    BeginLoginOut, CompleteLoginIn, FieldSpan, FieldsIn, FieldsOut, IdentifyOut, IdentityBuf,
-    OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, StripName, TargetIn,
-    TargetOut, VerifyIn, LOGIN_IDENTITY, VERDICT_IDENTITY,
+    check_inbound_points, check_login_fields, check_style_decl, check_target, slot, AuthPoints,
+    BeginLoginIn, BeginLoginOut, CompleteLoginIn, FieldSpan, FieldsIn, FieldsOut, IdentifyOut,
+    IdentityBuf, OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, StripName,
+    TargetIn, TargetOut, VerifyIn, LOGIN_IDENTITY, VERDICT_IDENTITY,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, Span};
-use busbar_contract::abi::mechanism::check::{reported, Fault};
+use busbar_contract::abi::mechanism::check::{reported, Fault, Rule};
 use busbar_contract::abi::mechanism::door::{
     Statement, MARK_WORD_CARRIER, MARK_WORD_ISSUED_ID_ALPHABET, MARK_WORD_ISSUED_ID_LENGTH,
     MARK_WORD_ISSUED_ID_PREFIX, MARK_WORD_ISSUED_SECRET_ALPHABET, MARK_WORD_ISSUED_SECRET_LENGTH,
@@ -246,6 +246,8 @@ fn facts(st: &Statement) -> Result<AuthFacts, String> {
     // SAFETY: `AuthTail` is a `#[repr(C)]` kind tail of integers, pointers and strings; a non-NULL
     // kind tail is `'static` plugin data of its stated size, read only at exactly this host's.
     let t: auth::AuthTail = unsafe { crate::dispatch::plugin::kind_tail(st, "an auth plugin") }?;
+    auth::check_auth_tail(t.caps, t.facts)
+        .map_err(|f| format!("the auth tail breaks {:?} at {}", f.rule, f.field))?;
     let carriers = carriers(st)?;
     let issued = issued(st)?;
     // The default inbound style IS its carriers: a tail stating it with none refuses the load.
@@ -507,7 +509,24 @@ impl Kind for Auth {
             }
             slot::BEGIN_LOGIN => {
                 a.input::<BeginLoginIn>()?;
-                check_begin_login(a.outcome, a.out::<BeginLoginOut>()?)
+                let out = a.out::<BeginLoginOut>()?;
+                check_begin_login(a.outcome, out)?;
+                if a.outcome != Outcome::Ready || out.shape != auth::BEGIN_FORM {
+                    return Ok(());
+                }
+                // EVERY FORM FIELD IS JUDGED (u10 LOW): the form is plugin memory under the op's
+                // lease, its count capped before the slice is formed.
+                // SAFETY: `check_begin_login` refused a count over NULL; the form names
+                // `form_len` live fields under the lease.
+                let Some(form) =
+                    (unsafe { crate::dispatch::validate::lent(out.form, out.form_len) })
+                else {
+                    return Err(Fault {
+                        rule: Rule::OverCap,
+                        field: "begin_login.form",
+                    });
+                };
+                check_login_fields(form)
             }
             slot::TARGET => {
                 let cap = a.input::<TargetIn>()?.buf_cap;

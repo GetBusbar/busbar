@@ -192,12 +192,11 @@ fn sized_field_guard_reads_a_buffer_shorter_than_the_struct() {
 #[test]
 fn the_auth_fact_bits_are_distinct_and_name_the_default_inbound_style() {
     use crate::abi::auth::{
-        FACT_CACHEABLE, FACT_DEFAULT_INBOUND_STYLE, FACT_INBOUND_ALL_HEADERS,
-        FACT_INBOUND_NEEDS_BODY_HASH, FACT_OPERATOR, FACT_READS_CREDENTIALS,
+        FACT_CACHEABLE, FACT_DEFAULT_INBOUND_STYLE, FACT_INBOUND_ALL_HEADERS, FACT_OPERATOR,
+        FACT_READS_CREDENTIALS,
     };
     let bits = [
         FACT_CACHEABLE,
-        FACT_INBOUND_NEEDS_BODY_HASH,
         FACT_INBOUND_ALL_HEADERS,
         FACT_OPERATOR,
         FACT_READS_CREDENTIALS,
