@@ -1116,18 +1116,20 @@ fn meter_script(p: &Plugin<Plane>, fx: &Fixtures) -> TwilioMeterObs {
 fn meter_expected() -> Vec<String> {
     vec![
         "start Ready units=[]".to_string(),
-        "caller audio 2s Ready units=[]".to_string(),
+        // Every answer reports the open turn's running seconds (Q128 u64: a cancel or a cut
+        // reports nothing of its own, so the last answer before it is what bills).
+        "caller audio 2s Ready units=[4:1=2]".to_string(),
         "frames not READY 0".to_string(),
-        "turn attempt Ready units=[]".to_string(),
+        "turn attempt Ready units=[4:1=2]".to_string(),
         format!("far usage Ready units=[{}]", usage_units(2)),
         format!("collect Ready units=[{}]", usage_units(2)),
-        format!("second turn 0.98s Ready units=[{}]", usage_units(2)),
+        format!("second turn 0.98s Ready units=[{}]", usage_units(3)),
         "short Failed units=[needed 6]".to_string(),
-        format!("short re-call Ready units=[{}]", usage_units(2)),
+        format!("short re-call Ready units=[{}]", usage_units(3)),
         format!("stop mid-turn Ready units=[{}] done=true", usage_units(3)),
         "second stop Refused units=[] done=false".to_string(),
         "unanswered start Ready units=[]".to_string(),
-        "unanswered audio 1s Ready units=[]".to_string(),
+        "unanswered audio 1s Ready units=[4:1=1]".to_string(),
         "unanswered stop Ready units=[4:1=1] done=true".to_string(),
         format!("settled stop Ready units=[{}] done=true", usage_units(2)),
     ]
@@ -1140,7 +1142,8 @@ fn meter_check(o: &TwilioMeterObs) -> Result<String, String> {
     }
     Ok(
         "a Twilio session reports its units per declared class once per turn: the far end's \
-         tokens and the audio seconds of the closed turn when the far end reports it, a short \
+         tokens when the far end reports them and the audio seconds of the open turn as they \
+         stream (the last answer before a cancel or a cut bills them), a short \
          answer's re-call does not count its audio twice, a call ending mid-turn (stop) settles \
          that open turn's audio once instead of discarding it, an unanswered call reports its \
          audio and no fee, a closed turn is not counted again at stop, and a second stop reports \
