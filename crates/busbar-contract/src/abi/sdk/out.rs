@@ -300,9 +300,11 @@ impl Out<'_, crate::abi::plane::ArriveOut> {
     }
 
     /// THE UNIT'S OPERATION IS PERFORMED AT MOST ONCE ([`crate::abi::plane::ROUTE_ONCE`]): a member
-    /// that answered with a failure is not retried on another.
+    /// that answered with a failure is not retried on another. Like its siblings, it adds its bit
+    /// to the flags already set.
     pub fn once(&mut self) {
-        self.set(|o| &o.route_flags, crate::abi::plane::ROUTE_ONCE);
+        let flags = self.get().route_flags | crate::abi::plane::ROUTE_ONCE;
+        self.set(|o| &o.route_flags, flags);
     }
 
     /// THE UNIT IS ROUTED BY THE PRINCIPAL'S SCOPE ([`crate::abi::plane::ROUTE_SCOPE`], ARCHITECT
