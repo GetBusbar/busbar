@@ -722,6 +722,32 @@ impl GovState {
         usage: Option<&crate::billing::TokenUsage>,
         now: u64,
     ) {
+        self.record_metering_dated(
+            key_id,
+            model,
+            provider,
+            usage,
+            now,
+            &crate::store::now_ms,
+            &crate::rate_apply::effective_from_at,
+        );
+    }
+
+    /// [`Self::record_metering`] with the price-instant clock and the rate dater passed in, so a
+    /// test drives the dating behaviourally against a dater double rather than the process-wide
+    /// `OnceLock` holder. The production path passes the wall clock in milliseconds and the
+    /// installed holder.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_metering_dated(
+        &self,
+        key_id: &str,
+        model: &str,
+        provider: &str,
+        usage: Option<&crate::billing::TokenUsage>,
+        now: u64,
+        clock_ms: &dyn Fn() -> u64,
+        dater: &dyn Fn(u64) -> u64,
+    ) {
         // THE CELL'S PRICE INSTANT (DECISION #79): when the card this response was served under
         // STARTED, not which card it is. A build with no root ledger in it answers zero, the
         // opening entry's own `effective_from`, so the cell still dates to a card that covers it
@@ -736,7 +762,7 @@ impl GovState {
         // two card publishes and still resolving to the first. Two clocks of different resolution
         // cannot order two events inside one tick of the coarser one, so the accrual reads the
         // finer one, which is the one the thing it is being compared against was written on.
-        let priced_from_ms = crate::rate_apply::effective_from_at(crate::store::now_ms());
+        let priced_from_ms = dater(clock_ms());
         let key: MeterKey = (
             key_id.to_string(),
             metering_bucket(now),

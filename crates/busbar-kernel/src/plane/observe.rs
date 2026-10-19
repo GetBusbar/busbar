@@ -115,7 +115,7 @@ pub(crate) async fn observe(
     // plane request paid across all workers.
     let app = handle.snapshot();
     // The mount table this router was built from decides, so an unmounted plane cannot be counted
-    // and a sibling path (`/mcpx` beside a `/mcp` mount) cannot be attributed to a plane whose
+    // and a sibling path (`/xs` beside an `/x` mount) cannot be attributed to a plane whose
     // grants are inadmissible everywhere else.
     let path = req.uri().path();
     let plane = app.planes.mounted_plane_of(path);
