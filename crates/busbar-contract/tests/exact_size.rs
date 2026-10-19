@@ -167,3 +167,26 @@ fn the_plane_tail_caps_every_list_count() {
         "tail.record_retentions"
     );
 }
+
+// ── item: the dead locate head-defaults and states-length words are gone ─────────────────────────
+
+const TRANSPORT: &str = include_str!("../src/abi/transport/mod.rs");
+
+/// RED (2d, after the framers took their head lines and body length, #1203): `LocateIn` lends no
+/// head-defaults buffer and `LocateOut` states no `states_length`, so `LocateOut` is one exact size
+/// again with no field nothing reads.
+#[test]
+fn locate_carries_no_dead_head_defaults() {
+    for needle in [
+        "pub defaults_buf",
+        "pub defaults_cap",
+        "pub defaults_written",
+        "pub defaults_needed",
+        "pub states_length",
+    ] {
+        assert!(
+            !TRANSPORT.contains(needle),
+            "abi/transport still states `{needle}`"
+        );
+    }
+}
