@@ -192,7 +192,7 @@ fn a_zero_padded_tear_at_every_byte_offset_is_torn_never_corrupt() {
             recovered.verdict
         );
         assert!(
-            recovered.quarantined.is_none() && sink.quarantined().is_empty(),
+            recovered.quarantined.is_empty() && sink.quarantined().is_empty(),
             "a write that stopped at byte {stop} was quarantined"
         );
         assert_eq!(
@@ -261,7 +261,7 @@ fn recovery_cuts_the_backing_so_the_next_append_lands_on_a_boundary() {
     assert_eq!(shared.lock().unwrap().len(), 2 * FRAME_BYTES);
     assert_eq!(segment.write_offset(), 2 * FRAME_BYTES as u64);
     // A torn tail is a crash mid-append: cut silently, nothing set aside.
-    assert!(recovered.quarantined.is_none());
+    assert!(recovered.quarantined.is_empty());
     assert!(sink.quarantined().is_empty());
 }
 

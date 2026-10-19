@@ -123,6 +123,8 @@ fn a_mid_log_checksum_flip_quarantines_only_the_damaged_record_and_keeps_every_o
         vec![(3, 2)],
         "the set-aside record is handed over, as it now reads, for the caller to attribute"
     );
+    assert_eq!(q.before, Some((3, 1)), "the record kept before the hole");
+    assert_eq!(q.after, Some((3, 3)), "the record kept behind it");
 
     // The quarantine file is beside the segment and holds exactly the damaged bytes.
     let files = quarantine_files(dir.path());
@@ -197,6 +199,7 @@ fn a_flipped_byte_in_the_final_record_is_quarantined_not_cut() {
     let q = wal.quarantined();
     assert_eq!(q.len(), 1, "the altered final record is set aside, loudly");
     assert_eq!(q[0].identities, vec![(3, 4)]);
+    assert_eq!((q[0].before, q[0].after), (Some((3, 3)), None));
     assert_eq!(
         std::fs::read(segment_path(dir.path())).unwrap()[3 * FRAME_BYTES + 200],
         written[3].encode()[0][200] ^ 0xFF,
@@ -501,6 +504,7 @@ fn damage_in_a_commit_a_subsequent_commit_acknowledges_is_corrupt_whatever_its_s
         q[0].identities.is_empty(),
         "a zeroed frame carries no identity to name"
     );
+    assert_eq!((q[0].before, q[0].after), (Some((3, 1)), Some((3, 3))));
     assert_eq!(quarantine_files(dir.path()).len(), 1);
     assert_eq!(wal.next_free_seq(3), 7);
 }
@@ -532,6 +536,8 @@ fn the_scan_names_the_verdict() {
         3,
         "the scan reads past the hole to the record behind it"
     );
+    assert_eq!(corrupt.holes.len(), 1);
+    assert_eq!(corrupt.tail, TailVerdict::Clean);
 }
 
 /// **ACKNOWLEDGED DAMAGE IS FOUND AGAIN AT EVERY BOOT, AND NOTHING ABOUT IT IS LOST OR DOUBLED.**
@@ -947,7 +953,7 @@ fn damage_in_a_segment_below_the_tail_is_quarantined_reported_and_read_past() {
             3,
         )
     };
-    for (damaged, kept, _before, _after) in [
+    for (damaged, kept, before, after) in [
         (2u64, vec![1, 3, 4, 5, 6, 7, 8], (3, 1), (3, 3)),
         (4u64, vec![1, 2, 3, 5, 6, 7, 8], (3, 3), (3, 5)),
     ] {
@@ -968,6 +974,7 @@ fn damage_in_a_segment_below_the_tail_is_quarantined_reported_and_read_past() {
         assert_eq!(q[0].segment, 0);
         assert_eq!(q[0].offset, (damaged - 1) * FRAME_BYTES as u64);
         assert_eq!(q[0].identities, vec![(3, damaged)]);
+        assert_eq!((q[0].before, q[0].after), (Some(before), Some(after)));
         assert_eq!(quarantine_files(dir.path()).len(), 1);
         let back: Vec<u64> = journal
             .log()

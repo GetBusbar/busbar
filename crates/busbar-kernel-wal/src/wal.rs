@@ -305,7 +305,16 @@ impl Wal {
         ceiling: u64,
         clock: Clock,
     ) -> Result<Self, OpenError> {
-        let (segment, recovered, quarantined) = open_tail(factory.as_mut(), ceiling, clock)?;
+        let (segment, recovered, quarantined, tail_index) =
+            open_tail(factory.as_mut(), ceiling, clock)?;
+        let quarantined = quarantine_below(
+            factory.as_mut(),
+            ceiling,
+            clock,
+            tail_index,
+            &recovered,
+            quarantined,
+        )?;
         let segments_used = segment.index() + 1;
         let mut wal = Wal {
             factory,
@@ -779,7 +788,7 @@ impl Wal {
         // the same terms as the one a boot resumes in: a torn tail is cut, a corrupt one is set
         // aside first.
         let recovered = recover_and_truncate(&mut segment, self.factory.as_mut(), self.clock)?;
-        if let Some(q) = recovered.quarantined {
+        for q in recovered.quarantined {
             self.take_quarantine(q);
         }
         Ok(segment)
@@ -831,16 +840,18 @@ impl Wal {
 ///
 /// ## A corrupt segment on the way
 ///
-/// The walk recovers each segment it steps through on the verdict's terms: a torn tail is cut, a
-/// corrupt remainder is set aside in a quarantine before anything is cut, and every quarantine met
-/// is handed back so the log can mark its identities taken and the caller can raise the alarm. A
-/// segment whose whole content was set aside holds no complete record, so the walk steps back over
-/// it exactly as it steps over one a crash left empty.
+/// The walk recovers each segment it steps through on the verdict's terms: a torn tail is cut;
+/// acknowledged damage is copied into a quarantine and never cut — a hole is read past to the
+/// records behind it, and a corrupt remainder closes the segment to writes — and every quarantine
+/// met is handed back so the log can mark its identities taken and the caller can raise the alarm.
+/// A segment that kept no complete record is stepped back over exactly as one a crash left empty.
+/// The index returned is the segment the tail was read from; [`quarantine_below`] reads the ones
+/// beneath it.
 fn open_tail(
     factory: &mut dyn SegmentFactory,
     ceiling: u64,
     clock: Clock,
-) -> Result<(Segment, Recovered, Vec<Quarantine>), OpenError> {
+) -> Result<(Segment, Recovered, Vec<Quarantine>, u64), OpenError> {
     let mut index = factory.highest_index()?.unwrap_or(0);
     let mut quarantined = Vec::new();
     // The highest segment, held while the walk steps back below it for the tail: the appends go to
@@ -854,16 +865,76 @@ fn open_tail(
         // durable somewhere else. Appending then resumes at the boundary rather than at whatever
         // length the crash happened to leave behind.
         let mut recovered = recover_and_truncate(&mut segment, factory, clock)?;
-        // The quarantine travels in the list, not twice.
-        if let Some(q) = recovered.quarantined.take() {
-            quarantined.push(q);
-        }
+        // The quarantines travel in the list, not twice.
+        quarantined.append(&mut recovered.quarantined);
         if !recovered.records.is_empty() || index == 0 {
-            return Ok((newest.unwrap_or(segment), recovered, quarantined));
+            return Ok((newest.unwrap_or(segment), recovered, quarantined, index));
         }
         if newest.is_none() {
             newest = Some(segment);
         }
         index -= 1;
     }
+}
+
+/// Scan every segment below the one the tail was read from, set aside what acknowledged damage
+/// each holds, and name every quarantine's place in the log as a whole.
+///
+/// ## Why the segments below the tail are read at all
+///
+/// [`open_tail`] reads only the tail, and a segment below it is never written again — so damage in
+/// one was never found by anything that could set it aside or say so. It surfaced only as a chain
+/// that did not verify, and [`Wal::read_back`] read past nothing: the rest of that segment simply
+/// dropped out. So each one is scanned here, its holes and a corrupt end copied into a quarantine
+/// exactly as the tail's are, nothing in it cut (it is closed), and every quarantine handed to the
+/// caller with the others. It costs one read of the log at open; the boot reads the whole log once
+/// more when it replays the chain.
+///
+/// ## Where a quarantine sits in the log
+///
+/// A scan names the records on either side of a hole only inside its own segment. A hole at the
+/// start of a segment follows the last record of the segment before; a remainder at the end of one
+/// is followed by the first record of the next. Those are filled in here, from the records each
+/// segment kept, so the chain can verify across the hole and nowhere else.
+fn quarantine_below(
+    factory: &mut dyn SegmentFactory,
+    ceiling: u64,
+    clock: Clock,
+    tail_index: u64,
+    tail: &Recovered,
+    mut quarantined: Vec<Quarantine>,
+) -> Result<Vec<Quarantine>, OpenError> {
+    // Each segment that kept a record: its index, its first record and its last.
+    let mut kept: Vec<(u64, (u64, u64), (u64, u64))> = Vec::new();
+    for index in 0..tail_index {
+        let Some(backend) = factory.existing(index)? else {
+            continue;
+        };
+        let earlier = Segment::open_at(backend, index, 0, ceiling)?;
+        let mut found = crate::recover::quarantine_in_place(&earlier, factory, clock)?;
+        if let (Some(first), Some(last)) = (found.records.first(), found.records.last()) {
+            kept.push((index, first.identity(), last.identity()));
+        }
+        quarantined.append(&mut found.quarantined);
+    }
+    if let (Some(first), Some(last)) = (tail.records.first(), tail.records.last()) {
+        kept.push((tail_index, first.identity(), last.identity()));
+    }
+    quarantined.sort_by_key(|q| (q.segment, q.offset));
+    for q in &mut quarantined {
+        if q.before.is_none() {
+            q.before = kept
+                .iter()
+                .rev()
+                .find(|(index, _, _)| *index < q.segment)
+                .map(|(_, _, last)| *last);
+        }
+        if q.after.is_none() {
+            q.after = kept
+                .iter()
+                .find(|(index, _, _)| *index > q.segment)
+                .map(|(_, first, _)| *first);
+        }
+    }
+    Ok(quarantined)
 }
