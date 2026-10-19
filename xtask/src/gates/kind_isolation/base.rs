@@ -97,7 +97,15 @@ pub fn read(cx: &Ctx) -> Result<std::sync::Arc<Base>, String> {
             format!("{:016x}", h.finish())
         })
         .unwrap_or_default();
-    let key = format!("{}\u{0}{commit}\u{0}{planted_ledger}", cx.root().display());
+    // A planted REF answers `git show` only for what the overlay planted, so it is part of the
+    // question too.
+    let planted_ref = cx
+        .overlay_command(&format!("git-ref:{commit}"))
+        .unwrap_or_default();
+    let key = format!(
+        "{}\u{0}{commit}\u{0}{planted_ledger}\u{0}{planted_ref}",
+        cx.root().display()
+    );
     if let Some(hit) = cache().lock().ok().and_then(|m| m.get(&key).cloned()) {
         return hit;
     }
@@ -148,12 +156,17 @@ fn build(cx: &Ctx, commit: &str) -> Result<Base, String> {
              read is a base no edge can be shown to pre-date, and reporting nothing is not passing"
         ));
     }
-    match cx.git_show(commit, REGISTRY_FILE) {
-        Ok(t) => {
-            base.registry = t;
-            base.registry_present = true;
-        }
-        Err(_) => base.registry_present = false,
+    // PRESENT IS WHAT THE BASE'S TREE LISTS, never what `git show` managed to read: a ledger the
+    // tree carries and this process cannot read is a base that cannot be established, and reading
+    // it as "the branch adds the ledger" would switch the mint rule off.
+    base.registry_present = listing.iter().any(|rel| rel == REGISTRY_FILE);
+    if base.registry_present {
+        base.registry = cx.git_show(commit, REGISTRY_FILE).map_err(|e| {
+            format!(
+                "{commit} lists {REGISTRY_FILE} and it cannot be read ({e}): a base ledger that \
+                 cannot be read is no row's provenance, and reading it as absent is not passing"
+            )
+        })?;
     }
     Ok(base)
 }
