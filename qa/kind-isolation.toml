@@ -1624,8 +1624,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "export"
-count = "18"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -5 for R-FIX3: the kernel's tests drop the export-prometheus dev-dependency and run on the stand-in axis's scrape double; LOWERED 28 -> 27: the kernel's dead copy of the request-log webhook SSRF guard is deleted (the export-webhook plugin carries its own; KN-2) (measured); LOWERED 27 -> 19: KN-2b: the migration's export/observability words are the root legacy table's rows (measured); LOWERED 19 -> 18: KN-2c: the host recorder's log line is the root legacy table's frozen 1.5.5 row and snapshot/mod.rs names no sink or plane (measured)"
+count = "16"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -5 for R-FIX3: the kernel's tests drop the export-prometheus dev-dependency and run on the stand-in axis's scrape double; LOWERED 28 -> 27: the kernel's dead copy of the request-log webhook SSRF guard is deleted (the export-webhook plugin carries its own; KN-2) (measured); LOWERED 27 -> 19: KN-2b: the migration's export/observability words are the root legacy table's rows (measured); LOWERED 19 -> 18: KN-2c: the host recorder's log line is the root legacy table's frozen 1.5.5 row and snapshot/mod.rs names no sink or plane (measured); LOWERED 18 -> 16: Q128 p12 re-read NIT 5 (#1208): limits/mod.rs and limits_tests.rs describe an export sink's per-instance bound without naming the webhook export plugin or its instance (the gate's measure of 79c7412c42; law0-slack)"
 
 [[law0]]
 crate = "busbar-kernel"
