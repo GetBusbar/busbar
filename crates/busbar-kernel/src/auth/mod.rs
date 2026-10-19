@@ -288,8 +288,11 @@ fn without_query_keys(uri: &axum::http::Uri, keys: &[&str]) -> Option<axum::http
 // thread. A door's `verify` is submitted and AWAITED; the budget only bounds how many awaited
 // verifies are admitted at once, process-wide, and how long a request waits for a slot — 1.5.5's
 // bounds (64 data-plane / 16 admin in flight, a 5s wait), so a saturated verifier is denied as 1.5.5
-// denied it, with 1.5.5's diagnostic text byte for byte. A door's own instance-level `Overloaded`
-// (its `max_inflight` full) is the same saturation: the same diagnostic, latch and deny.
+// denied it, with 1.5.5's diagnostic text byte for byte. A data-plane door's own instance-level
+// `Overloaded` (its `max_inflight` full) is NOT that saturation: nothing was judged, so it is
+// handed back apart as [`VerifierOverloaded`] and answered 503 with `Retry-After` and no 4005 (owner
+// ruling Q134, [`data_verdict_of`]). An admin door's `Overloaded` is 4008 and a deny
+// ([`admin_verdict_of`]).
 
 /// How many data-plane auth verifies are admitted at once, process-wide (1.5.5's bound).
 const AUTH_ADMISSION_MAX_INFLIGHT: usize = 64;
@@ -440,6 +443,30 @@ fn data_verdict_of(answer: VerifyAnswer, faulted: bool) -> Result<Judgement, Ver
     }
     cleared(&AUTH_SATURATED_WARNED);
     Ok(chain_verdict_of(answer))
+}
+
+/// THE SIGNED-REQUEST VERIFIER'S ANSWER, as the data-plane gate reads it: the lines the verifier
+/// named join `strips` on every arm (THE DESIGN §6.3, l.925: "Every auth called names its
+/// credential lines whatever its verdict, and the transport strips the union"), and a FAULT (the
+/// plugin broke its contract) is 4006 and a refusal, as on every other data-plane verify.
+///
+/// PARITY (1.5.5): this verify draws no data-plane admission slot. 1.5.5 verified a signed request
+/// in-process, on the request task, with no offload permit (v1.5.5 `crates/busbar/src/auth/mod.rs`
+/// :1441-1502; the permit pool at :149-168 bounded only the offloaded plugin chain), so a saturated
+/// budget never refused a signed request there and does not here.
+fn signed_verdict_of(answer: VerifyAnswer, faulted: bool, strips: &mut Vec<Strip>) -> Verified {
+    let VerifyAnswer {
+        verified,
+        strips: named,
+        ..
+    } = answer;
+    strips.extend(named);
+    if faulted {
+        auth_faulted();
+        return Verified::Failed;
+    }
+    cleared(&AUTH_FAULTED_WARNED);
+    verified
 }
 
 /// An external admin module's verdict of a verify that answered `answer` (`faulted`: the plugin
@@ -2329,7 +2356,9 @@ pub(crate) async fn auth_middleware(
             };
             let request = signed_request(&parts, &body_bytes);
             req = Request::from_parts(parts, Body::from(body_bytes));
-            match reader.calls.verify(request).await.verified {
+            let mut call = reader.calls.verify(request);
+            let answer = (&mut call).await;
+            match signed_verdict_of(answer, call.faulted(), &mut strips) {
                 Verified::Pass => None,
                 Verified::Identity(id) => {
                     // The identity names the credential it verified; the governance key that holds
@@ -2385,7 +2414,7 @@ pub(crate) async fn auth_middleware(
                     return Err(challenge::refuse(
                         challenge::ChallengeError::InvalidToken,
                         &adm.resource_metadata,
-                        "The access token's audience does not identify this resource. Request a                          token whose `resource` (RFC 8707) is this server's canonical URI.",
+                        audience::MISMATCH_DESCRIPTION,
                         None,
                     ))
                 }
@@ -2393,7 +2422,7 @@ pub(crate) async fn auth_middleware(
                     return Err(challenge::refuse(
                         challenge::ChallengeError::InvalidToken,
                         &adm.resource_metadata,
-                        "This credential carries no readable audience, so it cannot be shown to                          have been issued for this resource. A JWT access token is required here.",
+                        audience::OPAQUE_DESCRIPTION,
                         None,
                     ))
                 }
@@ -2409,7 +2438,9 @@ pub(crate) async fn auth_middleware(
         .await;
         match judged {
             Ok(verdict) => {
-                strips = named;
+                // The union (THE DESIGN §6.3): a signed-request verifier that PASSed named its
+                // lines too.
+                strips.extend(named);
                 verdict
             }
             // A position's `max_inflight` is full: 503 with `Retry-After`, never a bad
@@ -2601,13 +2632,13 @@ pub use caller_credential::{present_caller, CallerCredential, ConsumedCredential
 pub mod audience;
 
 /// RFC 9449 DPoP at the resource: `Authorization: DPoP` with its proof, verified through the
-/// authorization-server seam, and a DPoP-bound token refused as a bearer.
+/// authorization-server seam, and a DPoP-bound token refused as a bearer where an authorization
+/// server is configured.
 pub mod dpop;
 
-/// The RFC 6750 `WWW-Authenticate` challenge, for ingresses that are OAuth 2.1 resource servers.
-/// Relocated to the neutral substrate (`busbar_kernel::auth::challenge`) — pure `axum::http` +
-/// `serde_json`, no core reach — so a plane crate names it without depending on core; re-exported
-/// here so `crate::auth::challenge::{refuse, ChallengeError}` still resolves for its in-core callers.
+/// The RFC 6750 `WWW-Authenticate` challenge, for ingresses that are OAuth 2.1 resource servers:
+/// implemented here (`challenge.rs`, pure `axum::http` + `serde_json`), and called as
+/// `crate::auth::challenge::{refuse, ChallengeError}`.
 pub mod challenge;
 
 /// The self-serve key SEAM (1.5.2 token-exchange): `SelfServeKeys` trait + the deterministic
@@ -2619,9 +2650,9 @@ pub mod self_keys;
 pub mod exchange;
 
 /// The `GET /auth/token` hosted browser-login page (1.5.2): the chooser / begin / callback
-/// sub-states, PKCE + state + nonce, the core-executed token-exchange hop (client_secret injected by
-/// the CORE only), and the render of the key-issued page — all issuing through the SAME [`self_keys`]
-/// seam as the headless `POST`.
+/// sub-states, PKCE + state + nonce, the plugin's `complete_login` (the plugin redeems the code
+/// itself, with the client secret it was lent at `open`), and the render of the key-issued page —
+/// all issuing through the SAME [`self_keys`] seam as the headless `POST`.
 pub mod token;
 
 /// TEST STAND-INS ONLY: an in-process module as a chain position.
