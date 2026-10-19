@@ -62,10 +62,10 @@ fn every_refusal_the_cell_can_give_says_which_one_it_was() {
     // somebody deciding whether a child has to post late. A rendering that collapsed them would
     // make the two decisions indistinguishable.
     let refusals = REFUSALS;
-    for (refusal, spelling) in refusals.iter().copied() {
-        assert_eq!(refusal.to_string(), spelling);
-        let as_error: &dyn std::error::Error = &refusal;
-        assert_eq!(as_error.to_string(), spelling);
+    for (refusal, spelling) in refusals {
+        assert_eq!(refusal.to_string(), *spelling);
+        let as_error: &dyn std::error::Error = refusal;
+        assert_eq!(as_error.to_string(), *spelling);
     }
     let mut spellings: Vec<&str> = refusals.iter().map(|(_, s)| *s).collect();
     spellings.sort_unstable();
@@ -76,10 +76,10 @@ fn every_refusal_the_cell_can_give_says_which_one_it_was() {
         "two refusals render as one sentence"
     );
 
-    for (error, spelling) in CELL_ERRORS.iter().copied() {
-        assert_eq!(error.to_string(), spelling);
-        let as_error: &dyn std::error::Error = &error;
-        assert_eq!(as_error.to_string(), spelling);
+    for (error, spelling) in CELL_ERRORS {
+        assert_eq!(error.to_string(), *spelling);
+        let as_error: &dyn std::error::Error = error;
+        assert_eq!(as_error.to_string(), *spelling);
     }
     let mut cell_spellings: Vec<&str> = CELL_ERRORS.iter().map(|(_, s)| *s).collect();
     cell_spellings.sort_unstable();
