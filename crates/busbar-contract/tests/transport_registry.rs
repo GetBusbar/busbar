@@ -100,3 +100,17 @@ fn the_transport_kind_has_one_abi_generation() {
         busbar_contract::transport::AbiVersion(1)
     );
 }
+
+/// THE RUST FACE'S GENERATION IS THE KIND'S. `TRANSPORT_ABI` is the transport kind's
+/// `abi::transport::ABI_VERSION` and nothing else, at every path it is reached by.
+#[test]
+fn the_transport_generation_is_the_abi_kind_version() {
+    assert_eq!(
+        u32::from(busbar_contract::transport::TRANSPORT_ABI.0),
+        busbar_contract::abi::transport::ABI_VERSION
+    );
+    assert_eq!(
+        busbar_contract::TRANSPORT_ABI,
+        busbar_contract::abi::transport::TRANSPORT_ABI
+    );
+}

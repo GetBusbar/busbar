@@ -36,7 +36,7 @@
 # THE DECLARED LEGS (discovered from `legs/*.sh`, never enumerated here — the same rule
 # `verdict-covers-every-leg.py` applies to the workflow, one level in). Every leg drives the streaming
 # plane's DOOR through the dev-only `voice_conform` harness (testing/voice-conformance/harness), BOTH ways — the
-# linked door and the `streaming_door` cdylib, dlopened through the loader — requires the two to answer
+# linked door and the plane's cdylib twin (`busbar-plane-streaming-plugin`), dlopened through the loader — requires the two to answer
 # identically, and carries a RED arm per assertion (the leg's planted wrong answer must be refused;
 # `VOICE_CONFORM_RED=1` makes the planted answers the subject, and every leg must then go RED). Each
 # leg judges the DOOR'S half of its seam and names the half that is the kernel's (lib/conform-bin.sh):
@@ -385,7 +385,12 @@ selftest() {
   say ""
   say "-- the shipped legs, accounted for --"
   local shipped; shipped="$(declared_legs | paste -sd' ' -)"
-  ( emit_verdict ) >/dev/null 2>&1 || die "the shipped scaffold does not self-account cleanly: $shipped"
+  local verdict_out
+  if ! verdict_out="$( ( emit_verdict ) 2>&1 )"; then
+    # Say WHY: the verdict's own words (its last lines), so a red here names the leg and its result.
+    printf '%s\n' "$verdict_out" | tail -n 60 >&2
+    die "the shipped scaffold does not self-account cleanly: $shipped"
+  fi
   local n; n="$(declared_legs | grep -c . || true)"
   say ""
   say "self-test PASS, $n legs accounted for: $shipped"

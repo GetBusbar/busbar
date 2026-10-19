@@ -91,7 +91,7 @@ extern "C-unwind" fn refuse_counter_add(
     _host: HostCtx,
     _family_ptr: *const u8,
     _family_len: usize,
-    _values_ptr: *const crate::abi::hot::decl::DeclStr,
+    _values_ptr: *const crate::abi::shared::DeclStr,
     _values_len: usize,
     _delta: u64,
 ) -> StatusClass {

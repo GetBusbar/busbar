@@ -11,4 +11,5 @@
 merge_drivers:
   ledger-count:
     run: "cargo xtask ledger-merge %O %A %B"
-    timeout: 5m
+    timeout: 15m
+

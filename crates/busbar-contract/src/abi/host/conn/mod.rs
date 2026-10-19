@@ -24,8 +24,7 @@ use std::collections::HashMap;
 use std::os::raw::c_void;
 use std::sync::{Arc, Mutex};
 
-use crate::abi::hot::decl::DeclStr;
-use crate::abi::hot::transport::{code, WireConnFacts, WireField};
+use crate::abi::shared::{code, DeclStr, WireConnFacts, WireField};
 use crate::conn::{
     ConnError, ConnId, Conns, InstanceId, NeedId, OpenDesc, Piece, PieceKind, Ticket,
 };

@@ -153,29 +153,25 @@ fn the_fallback_and_multi_binding_planes_have_earned_an_ir_today() {
     );
 }
 
-/// THE MULTI-BINDING LEGS' NAMES ARE THE PLANE'S WIRE FORMATS, and this is the assertion that keeps
-/// the two lists one vocabulary rather than two that happen to agree. A door row carries its
-/// Statement's dialect words verbatim (the kernel's fold copies them), the mount table labels a
-/// request with the word of the door it was knocked on (`wire_format_of`), and the transport axis
-/// names its legs with `Transport::name`. If these ever diverge, an operator correlating a
-/// Prometheus series with a leg is silently comparing two strings that no longer describe the same
-/// leg. The `agents:` owner is a door row, whose Statement states its wire-format words; the
-/// door's card spelling of each binding is pinned in its own crate.
-///
-/// Relocated from `src/tests/transport_tests.rs` (the "fix the 38" pass).
+/// THE MULTI-BINDING LEGS' NAMES ARE THE SHARED WIRE-FORMAT WORDS. A door row carries its
+/// Statement's dialect words verbatim (the kernel's fold copies them), and the mount table labels a
+/// request with the word of the door it was knocked on (`wire_format_of`). If the door's words ever
+/// diverge from the shared spellings, an operator correlating a Prometheus series with a leg is
+/// silently comparing two strings that no longer describe the same leg. The door's card spelling of
+/// each binding is pinned in its own crate.
 #[test]
 fn the_multi_binding_legs_are_named_by_the_planes_wire_formats() {
     register_planes();
-    use busbar_kernel::transport::Transport;
     let wires = wire_format_names(multi());
-    let legs: Vec<&str> = [Transport::JsonRpc, Transport::HttpJson, Transport::Grpc]
-        .iter()
-        .map(|t| t.name())
-        .collect();
     assert_eq!(
         wires,
-        legs.as_slice(),
-        "the multi-binding plane's wire formats and the transports its legs ride must be one list"
+        [
+            WIRE_JSONRPC,
+            busbar_kernel::plane::WIRE_HTTP_JSON,
+            WIRE_GRPC
+        ]
+        .as_slice(),
+        "the multi-binding plane's wire formats must be the shared wire-format words"
     );
 }
 

@@ -43,7 +43,7 @@ fn enter(key: UnitKey, kernel: &Kernel) -> Enter {
         session: None,
         admin_listener: false,
         zero_hold_tick: false,
-        arrival: arrival_hold(kernel, &TestDoor, principal()),
+        arrival: arrival_hold(kernel, &TestDoor, principal(), kernel.next_call()),
         now: 0,
     }
 }

@@ -641,33 +641,66 @@ pub trait Resolve: Send + Sync {
 }
 
 /// The system resolver, one short-lived thread per resolution, so a slow name never holds a
-/// worker.
+/// worker. Its threads are CAPPED: at most [`crate::compose::MAX_PENDING_LOOKUPS`] resolutions are
+/// in flight at once, and one more is answered at once as a resolution failure, no thread started.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SystemResolver;
 
 impl Resolve for SystemResolver {
     fn resolve(&self, host: &str, done: Resolved) {
         use std::net::ToSocketAddrs;
-        use std::sync::{Arc, Mutex};
-        let cell = Arc::new(Mutex::new(Some(done)));
-        let mine = Arc::clone(&cell);
-        let take = |c: &Mutex<Option<Resolved>>| c.lock().unwrap_or_else(|e| e.into_inner()).take();
-        let host = host.to_owned();
-        let spawned = std::thread::Builder::new()
-            .name("busbar-resolve".into())
-            .spawn(move || {
-                let answer = (host.as_str(), 0)
+        resolve_capped(
+            host,
+            done,
+            crate::compose::MAX_PENDING_LOOKUPS,
+            &RESOLVING,
+            |host: &str| {
+                (host, 0)
                     .to_socket_addrs()
                     .map(|a| a.map(|s| s.ip()).collect())
-                    .map_err(|e| e.to_string());
-                if let Some(done) = take(&mine) {
-                    done(answer);
-                }
-            });
-        if spawned.is_err() {
-            if let Some(done) = take(&cell) {
-                done(Err("no resolver thread".into()));
+                    .map_err(|e| e.to_string())
+            },
+        );
+    }
+}
+
+/// The resolutions [`SystemResolver`] has in flight.
+static RESOLVING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Resolve `host` by `lookup` on a thread of its own, answering through `done`, with at most `cap`
+/// resolutions counted in `in_flight` at once: past it `done` is answered now with a failure and
+/// no thread starts. The place is given back when the lookup ends, whoever still waits for it.
+pub(crate) fn resolve_capped<F>(
+    host: &str,
+    done: Resolved,
+    cap: usize,
+    in_flight: &'static std::sync::atomic::AtomicUsize,
+    lookup: F,
+) where
+    F: FnOnce(&str) -> Result<Vec<IpAddr>, String> + Send + 'static,
+{
+    use std::sync::Mutex;
+    let Some(place) = crate::hostio::LookupPlace::take(cap, in_flight) else {
+        done(Err(format!("name lookup: {cap} lookups already in flight")));
+        return;
+    };
+    let cell = Arc::new(Mutex::new(Some(done)));
+    let mine = Arc::clone(&cell);
+    let take = |c: &Mutex<Option<Resolved>>| c.lock().unwrap_or_else(|e| e.into_inner()).take();
+    let host = host.to_owned();
+    let spawned = std::thread::Builder::new()
+        .name("busbar-resolve".into())
+        .spawn(move || {
+            // Given back when this thread ends, an unwinding panic included.
+            let _place = place;
+            let answer = lookup(host.as_str());
+            if let Some(done) = take(&mine) {
+                done(answer);
             }
+        });
+    if spawned.is_err() {
+        if let Some(done) = take(&cell) {
+            done(Err("no resolver thread".into()));
         }
     }
 }

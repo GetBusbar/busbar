@@ -62,7 +62,7 @@ use busbar_contract::abi::transport::{
     FAULT_NONE, STATUS_CALLER_FAULT, STATUS_FAR_END_FAULT, STATUS_OTHER, STATUS_SUCCESS,
 };
 use busbar_contract::auth_calls::{AuthField, Fields, FieldsRequest, OutboundAuth};
-use busbar_contract::caps::{Pass, ReasonCode, Route};
+use busbar_contract::caps::{CallId, Pass, ReasonCode, Route};
 use busbar_contract::conn::{
     ConnError, ConnId, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
 };
@@ -434,6 +434,10 @@ struct Live {
     /// The plane took the answer as final before its last piece ([`FarEnd::taken`]): the attempt's
     /// budget unit stays spent when it settles mid-read.
     taken: bool,
+    /// The unit's call (#74): the call of the route pass the attempt was claimed under. An answer
+    /// the kernel records on its own pass (the plane never read it) is recorded on a pass bound to
+    /// this call, never an unbound one (audit XG #5).
+    call: CallId,
 }
 
 /// The transport's reading of a relayed answer, held for the plane's.
@@ -848,12 +852,13 @@ impl EgressFarEnd<'_> {
             return;
         }
         let now = e.clock.now_secs();
-        // Settling with the answer unread: the kernel records it on its own pass.
+        // Settling with the answer unread: the kernel records it on its own pass, bound to the
+        // unit's call the attempt was claimed under (#74).
         let own;
         let token = match plane {
             Some((token, _)) => token,
             None => {
-                own = Pass::<Route>::mint(&crate::seal::acquire());
+                own = Pass::<Route>::mint_bound(&crate::seal::acquire(), live.call);
                 &own
             }
         };
@@ -888,7 +893,7 @@ impl EgressFarEnd<'_> {
     }
 
     /// Make the member the walk took the live attempt.
-    fn admit_taken(&self, w: &mut State, taken: Taken) -> Pick {
+    fn admit_taken(&self, w: &mut State, taken: Taken, call: CallId) -> Pick {
         let Taken {
             pool,
             member,
@@ -897,7 +902,16 @@ impl EgressFarEnd<'_> {
             degraded,
             attempt,
         } = taken;
-        self.claim_member(w, pool, member, Some(permit), probe, degraded, attempt)
+        self.claim_member(
+            w,
+            pool,
+            member,
+            Some(permit),
+            probe,
+            degraded,
+            attempt,
+            call,
+        )
     }
 
     /// Make `member` of `pool` the live attempt: the walk's take, or a health probe's one member
@@ -912,6 +926,7 @@ impl EgressFarEnd<'_> {
         probe: Option<u64>,
         degraded: bool,
         attempt: u32,
+        call: CallId,
     ) -> Pick {
         let record = Dispatched {
             leg: self.route.leg,
@@ -951,6 +966,7 @@ impl EgressFarEnd<'_> {
             stated: None,
             fault_reason: None,
             taken: false,
+            call,
         });
         Pick::Member {
             name,
@@ -974,14 +990,23 @@ impl EgressFarEnd<'_> {
                 if let Some(member) = w.probe.take() {
                     // ONE member: a probe that brings no answer has nowhere to fail over to, so
                     // every step after this one answers the pinned walk's shed.
-                    return self.claim_member(&mut w, String::new(), member, None, None, false, 1);
+                    return self.claim_member(
+                        &mut w,
+                        String::new(),
+                        member,
+                        None,
+                        None,
+                        false,
+                        1,
+                        token.call(),
+                    );
                 }
             }
             match w
                 .walk
                 .next_shaped(&ports, self.route.affinity, Some(self), token)
             {
-                Step::Take(taken) => return self.admit_taken(&mut w, taken),
+                Step::Take(taken) => return self.admit_taken(&mut w, taken, token.call()),
                 Step::Shed(shed) => return shed_pick(&shed),
                 Step::Wait(wait) => wait,
             }
@@ -994,7 +1019,7 @@ impl EgressFarEnd<'_> {
         let waited = parked.wait(&ports).await;
         let mut w = self.lock();
         match w.walk.waited(&ports, waited, token) {
-            Ok(taken) => self.admit_taken(&mut w, taken),
+            Ok(taken) => self.admit_taken(&mut w, taken, token.call()),
             Err(shed) => exhausted(&shed),
         }
     }

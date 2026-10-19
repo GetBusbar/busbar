@@ -839,9 +839,9 @@ static COUNTING_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registr
 };
 
 /// Borrowed label values, as a plane hands them.
-fn values(v: &[&'static str]) -> Vec<busbar_contract::abi::hot::DeclStr> {
+fn values(v: &[&'static str]) -> Vec<busbar_contract::abi::shared::DeclStr> {
     v.iter()
-        .map(|s| busbar_contract::abi::hot::DeclStr::new(s))
+        .map(|s| busbar_contract::abi::shared::DeclStr::new(s))
         .collect()
 }
 
@@ -849,7 +849,7 @@ fn values(v: &[&'static str]) -> Vec<busbar_contract::abi::hot::DeclStr> {
 fn add(
     plane: &'static str,
     family: &str,
-    v: &[busbar_contract::abi::hot::DeclStr],
+    v: &[busbar_contract::abi::shared::DeclStr],
     delta: u64,
 ) -> StatusClass {
     let _registry = crate::plane::registry::TestRegistryIsolation::seeded(&[&COUNTING_PLANE]);
@@ -902,7 +902,7 @@ fn counter_add_refuses_what_the_plane_did_not_declare() {
     let long: &'static str = Box::leak("x".repeat(65).into_boxed_str());
     let bad_utf8: &'static [u8] = &[0xff, 0xfe];
     let not_utf8 = [
-        busbar_contract::abi::hot::DeclStr {
+        busbar_contract::abi::shared::DeclStr {
             ptr: bad_utf8.as_ptr(),
             len: 2,
         },
@@ -925,7 +925,7 @@ fn counter_add_refuses_what_the_plane_did_not_declare() {
         (
             "counting-plane",
             "counting_plane_units_total",
-            &[busbar_contract::abi::hot::DeclStr::NONE, two[1]][..],
+            &[busbar_contract::abi::shared::DeclStr::NONE, two[1]][..],
         ),
         ("undeclaring-plane", "counting_plane_units_total", &two[..]),
     ] {

@@ -321,8 +321,8 @@ pub(crate) struct SelfMint<'a> {
     pub principal: &'a Principal,
     /// The bound TEAM group the `user:<sub>` leaf is provisioned under.
     pub team: String,
-    /// The pool union across every granting binding (`None` = all).
-    pub pools: Option<Vec<String>>,
+    /// The pools the mint grants: the union across every granting binding (`None` = all).
+    pub granted_pools: Option<Vec<String>>,
     /// The key's lifetime: the self-serve default, clamped to the ceiling.
     pub ttl: Duration,
 }
@@ -356,7 +356,7 @@ pub(crate) fn admit_self_mint<'a>(
     Ok(SelfMint {
         principal,
         team,
-        pools,
+        granted_pools: pools,
         ttl: Duration::from_secs(ttl_secs),
     })
 }

@@ -71,11 +71,6 @@ item = "busbar_plane_llm"
 
 [[finding]]
 rule = "door-only:static-seam"
-file = "crates/busbar-core-admin/src/v1/service.rs"
-item = "USAGE_RATE_HISTORY"
-
-[[finding]]
-rule = "door-only:static-seam"
 file = "crates/busbar-kernel-audit/src/amend.rs"
 item = "SINK"
 

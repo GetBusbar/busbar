@@ -114,11 +114,11 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
             .contains(&busbar_kernel::config::operator_provider()),
         "auth_modules must contain `admin-tokens` iff its row is linked: {auth_modules:?}"
     );
-    // RED with a hook name spelled here rather than installed by the root (Law 1).
+    // RED with a hook name spelled here rather than read off the root's install record (Law 1).
     assert_eq!(
         body["build"]["hook_plugins"],
-        serde_json::json!(crate::TEST_LINKED_HOOKS),
-        "hook_plugins must be exactly the linked hook rows the root installed"
+        serde_json::json!(busbar_kernel::preflight::root_rows().hook_names),
+        "hook_plugins must be exactly the linked hook rows the root's install record carries"
     );
     // Topology keys are present and numeric (exact counts depend on the TestApp fixture).
     assert!(body["topology"]["pools"].is_number());
@@ -4155,7 +4155,7 @@ async fn test_admin_v1_plugins_catalog_by_type() {
     assert!(h_items
         .iter()
         .any(|p| p["name"] == "weighted" && p["loader"] == "compiled-in"));
-    for linked in crate::TEST_LINKED_HOOKS {
+    for linked in busbar_kernel::preflight::root_rows().hook_names {
         assert!(
             h_items
                 .iter()

@@ -23,13 +23,23 @@
 
 /// The 1.5.5 admin error envelope around one code and one message.
 ///
-/// Hand-formatted rather than serialized: the shape is two fixed keys and two string values the
-/// callers already know are quote-safe (closed code strings; closed, comma/quote-free prose), so a
-/// dependency on a serializer would buy nothing here that hand-formatting does not already give
-/// byte-for-byte.
+/// The two keys are written here, in their order, with no trailing byte; each VALUE is written as a
+/// JSON string (`serde_json`'s escaping, the same bytes `err_json` gives 1.5.5's answers). A
+/// message routinely carries request text (a pool, a plane, a trust key the caller named), so a
+/// value spliced in raw would let a `"` or `\` end the string and the body leave JSON. For a value
+/// with nothing to escape the bytes are the raw splice's.
 #[must_use]
 pub fn envelope_of(code: &str, message: &str) -> String {
-    format!(r#"{{"error":{{"code":"{code}","message":"{message}"}}}}"#)
+    format!(
+        r#"{{"error":{{"code":{},"message":{}}}}}"#,
+        json_string(code),
+        json_string(message)
+    )
+}
+
+/// `value` as one JSON string literal, quotes included.
+fn json_string(value: &str) -> String {
+    serde_json::Value::from(value).to_string()
 }
 
 #[cfg(test)]

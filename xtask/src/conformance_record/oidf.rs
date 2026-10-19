@@ -952,7 +952,7 @@ impl Runner {
     /// NOT `cargo build -p busbar-auth-oidc-plugin` in this workspace: the plugin is only a DEV edge
     /// of the root here, and `cargo build -p` of a dev-only dependency panics cargo 1.98's feature
     /// resolver (exit 101 before anything builds), so the rig never reached the suite. The repo is
-    /// found the way the release turnstile's dropped-in cdylibs are: `cargo metadata` names the
+    /// found the way the `test-gated` check's dropped-in cdylibs are: `cargo metadata` names the
     /// pinned checkout's manifest, and the build runs over that repo's own workspace into this
     /// checkout's target dir, so the library lands where the pack step reads it.
     fn oidc_plugin(&self, pdir: &Path) -> Result<std::path::PathBuf, String> {

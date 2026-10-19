@@ -14,17 +14,9 @@
 //! ([`layout_breaks`]).
 
 use busbar_contract::abi::host::conn::{ConnCtx, ConnSlots, WireOpenDesc, WirePiece};
-use busbar_contract::abi::hot::decl::{
-    BuildCtx, DeclBillableClass, DeclMetricFamily, DeclServedOpClass, DeclStr, PlaneDecl,
-};
 use busbar_contract::abi::hot::host::PlaneHostVtable;
-use busbar_contract::abi::hot::transport::{
-    CarrierSlots, DeclByteList, DeclClaim, DeclStrList, FramerSlots, TransportDecl, WireBytesOut,
-    WireConnFacts, WireDest, WireEnvPair, WireField, WireFramed, WireFramerOut, WireSettings,
-    WireWaker,
-};
-use busbar_contract::abi::hot::workitem::{EmitHandle, HeadField, InboundHandle, WorkItem};
 use busbar_contract::abi::hot::*;
+use busbar_contract::abi::shared::{DeclStr, WireConnFacts, WireField};
 use busbar_contract::abi::AbiPreamble;
 // THE ONE MEMORY ABI (M0 ABI-SPEC): aliased, so a name the hot lane also uses cannot collide.
 use busbar_contract::abi::mechanism::call::{
@@ -297,19 +289,6 @@ fn compute_layout() -> String {
             url_len
         ]
     );
-    record!(
-        s,
-        CmdDesc,
-        [
-            size,
-            version,
-            argv_count,
-            program_ptr,
-            program_len,
-            argv_ptr,
-            argv_len
-        ]
-    );
     record!(s, FramingDesc, [size, version, framing, digests_scope]);
     record!(
         s,
@@ -506,35 +485,6 @@ fn compute_layout() -> String {
         ContentChunk,
         [size, version, is_final, _reserved, session_id, offset, data_ptr, data_len]
     );
-    record!(s, OpaqueState, [ptr, free]);
-
-    // The WorkItem keystone + its tagged handles.
-    record!(s, InboundHandle, [kind, _reserved, id, ptr, len]);
-    record!(s, EmitHandle, [kind, _reserved, id]);
-    record!(
-        s,
-        WorkItem,
-        [
-            size,
-            version,
-            _reserved,
-            inbound,
-            emit,
-            // The dispatch's own host and reply (minor 23).
-            host,
-            host_ctx,
-            reply_ptr,
-            reply_cap,
-            reply_written,
-            // The request head and the answer's head and stream (minor 30).
-            head,
-            head_read,
-            emit_head,
-            stream,
-            emit_body
-        ]
-    );
-    record!(s, HeadField, [name_ptr, name_len, value_ptr, value_len]);
 
     // The two vtable headers (preamble + sized header), then the slots themselves. (Slot offsets do
     // NOT "follow deterministically" from the header — every slot is one pointer wide, so the
@@ -602,212 +552,9 @@ fn compute_layout() -> String {
             translate_cap
         ]
     );
-    record!(
-        s,
-        BuildCtx,
-        [
-            size,
-            version,
-            _reserved,
-            _reserved2,
-            host,
-            host_ctx,
-            config_ptr,
-            config_len,
-            resolved_refs_ptr,
-            resolved_refs_len,
-            // The deployment's public URL (minor 23).
-            public_url_ptr,
-            public_url_len
-        ]
-    );
-    record!(
-        s,
-        PlaneDecl,
-        [
-            abi,
-            size,
-            version,
-            name_ptr,
-            name_len,
-            section_key_ptr,
-            section_key_len,
-            scope_ptr,
-            scope_len,
-            label_ptr,
-            label_len,
-            provided_carriers,
-            _reserved,
-            // The export slots, for the same reason as the host vtable's: `build`/`hydrate`/`start`
-            // share a shape, and swapping two of them is invisible to every other check.
-            config_validate,
-            build,
-            hydrate,
-            start,
-            admin_routes,
-            openapi,
-            dispatch,
-            // The declaration tail (minor 22).
-            fallback,
-            _reserved2,
-            subject_noun,
-            admin_noun,
-            audit_kind,
-            signing_domain,
-            signing_kid_prefix,
-            scope_kinds_ptr,
-            scope_kinds_len,
-            owned_sections_ptr,
-            owned_sections_len,
-            billable_classes_ptr,
-            billable_classes_len,
-            fee_units_ptr,
-            fee_units_len,
-            // The plane's door (minor 23).
-            claims,
-            admission,
-            metric_families_ptr,
-            metric_families_len,
-            // The served operation classes (minor 28).
-            served_op_classes_ptr,
-            served_op_classes_len,
-            // The plane-record kinds (minor 29).
-            record_kinds_ptr,
-            record_kinds_len,
-            // How its dispatch runs (minor 31).
-            dispatch_flags,
-            _reserved3,
-            // The required config sections (minor 34).
-            required_sections_ptr,
-            required_sections_len
-        ]
-    );
+    // The borrowed string, the connection facts and the borrowed field the connection table
+    // carries (`abi::shared`).
     record!(s, DeclStr, [ptr, len]);
-    record!(s, DeclBillableClass, [class, family]);
-    record!(
-        s,
-        DeclMetricFamily,
-        [name, kind, label_keys_ptr, label_keys_len]
-    );
-    record!(s, DeclServedOpClass, [op, name]);
-
-    // The TRANSPORT decl, generation 2 (minor 31, TRANSPORT-STACK): the header, the ROW (every
-    // constant the transport declares) and exactly one role's slot table. Several fields are
-    // same-width neighbours (the `DeclStr`s, the flag bytes, the two table pointers) — a swap is
-    // invisible to everything but this.
-    record!(
-        s,
-        TransportDecl,
-        [
-            abi,
-            size,
-            version,
-            key,
-            composes_over,
-            selector_forms,
-            egress_selector_forms,
-            handoff_from,
-            handoff_to,
-            handoff_binding_fact,
-            upgrades_to,
-            handshake_frame_kind,
-            transport_facts,
-            status_namespace,
-            framing,
-            session,
-            session_bound,
-            decodes_payload,
-            unit0_trigger,
-            handshake_max_steps,
-            status_at,
-            _reserved,
-            init,
-            carrier,
-            framer,
-            // The claims (minor 33).
-            claims_ptr,
-            claims_len
-        ]
-    );
-    // One claim of the entry, lowered field for field from `Claim`.
-    record!(
-        s,
-        DeclClaim,
-        [
-            key,
-            selector_forms,
-            transport_facts,
-            status_namespace,
-            session,
-            session_bound,
-            unit0_trigger,
-            status_at,
-            _reserved
-        ]
-    );
-    // One slot per `Carrier` method, named for it: every poll slot is a same-width fn pointer, so a
-    // swap of two is invisible to everything but this.
-    record!(
-        s,
-        CarrierSlots,
-        [
-            size,
-            _reserved,
-            listen,
-            poll_accept,
-            dial,
-            poll_read,
-            poll_write,
-            poll_flush,
-            poll_close,
-            arrival
-        ]
-    );
-    // One slot per `Framer` method, named for it.
-    record!(
-        s,
-        FramerSlots,
-        [
-            size,
-            _reserved,
-            locate,
-            open,
-            ingest,
-            emit,
-            encode_envelope,
-            refusal,
-            close,
-            detach,
-            adopt,
-            // The clock seam.
-            tick
-        ]
-    );
-    record!(s, DeclStrList, [ptr, len]);
-    record!(s, DeclByteList, [ptr, len]);
-    record!(
-        s,
-        WireSettings,
-        [
-            size,
-            version,
-            upstream_http1_only,
-            upstream_h2_prior_knowledge,
-            pool_max_idle_per_host,
-            pool_idle_timeout_secs,
-            request_body_max_bytes,
-            response_body_max_bytes,
-            request_timeout_secs
-        ]
-    );
-    // The host's waker handle: the ONE service the host hands a transport.
-    record!(s, WireWaker, [size, version, wake]);
-    record!(
-        s,
-        WireDest,
-        [size, kind, _reserved, authority, program, args, env, env_len]
-    );
-    record!(s, WireEnvPair, [name, value]);
     record!(
         s,
         WireConnFacts,
@@ -823,38 +570,6 @@ fn compute_layout() -> String {
             claim
         ]
     );
-    record!(
-        s,
-        WireFramed,
-        [
-            size,
-            end_of_frame,
-            status_class,
-            flags,
-            _reserved,
-            stream,
-            bytes,
-            len,
-            status_code,
-            _reserved2,
-            retry_after_secs
-        ]
-    );
-    record!(
-        s,
-        WireFramerOut,
-        [
-            ctx,
-            send,
-            frame,
-            end,
-            // The host's clock.
-            now_monotonic_nanos,
-            now_unix_nanos,
-            wake_at
-        ]
-    );
-    record!(s, WireBytesOut, [ctx, put]);
     record!(s, WireField, [name, value]);
 
     // THE CONNECTION TABLE: one slot per `Conns` operation, the open descriptor and the

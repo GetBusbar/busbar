@@ -967,8 +967,7 @@ impl Default for TestApp {
 /// THE ROOT'S `register_seams`, IN A TEST BINARY: the parse-time section list (the test fold,
 /// [`crate::plane::config::default_plane_sections`]), first-wins. A plane's test-kit calls this where
 /// the composition root would have bound it, so a plane test that drives a wire leg without building
-/// a [`TestApp`] runs on the same binding a shipped binary does. The hostless-egress driver is no
-/// longer a binding: a plane is handed its App's on the build context (`BuildCtx::hostless`).
+/// a [`TestApp`] runs on the same binding a shipped binary does.
 pub fn install_root_seams() {
     crate::plane::config::install_plane_sections(crate::plane::config::default_plane_sections);
 }

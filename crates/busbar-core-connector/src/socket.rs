@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The host's OS sockets: a non-blocking dial (TCP, or a unix-domain stream for an
-//! operator-infrastructure need, [`UNIX_TARGET`]) and a per-acceptor listener. Nothing here waits;
-//! the caller registers the socket with [`crate::io::register`] and waits on its readiness.
+//! operator-infrastructure need alone, [`UNIX_TARGET`]) and a per-acceptor listener. Nothing here
+//! waits; the caller registers the socket with [`crate::io::register`] and waits on its readiness.
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};

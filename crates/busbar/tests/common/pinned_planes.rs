@@ -110,7 +110,11 @@ pub fn pinned_dirs(root: &Path) -> Vec<(String, PathBuf)> {
 }
 
 /// Where `rel` (a repo-relative path) is read: the tree's own file, or, under `crates/<package>/`
-/// of a pinned plane no crate on disk is, that plane's checkout.
+/// of a pinned plane no crate on disk is, that plane's checkout. Under `crates/<package>-plugin/`,
+/// the same plane's cdylib twin in that same checkout, at the pinned rev (ARCHITECT ruling on #1072
+/// (2): a plane's both-ways witness lives in its twin, and a citation of it is read there). A path
+/// that resolves to nothing stays the tree's own, which does not exist, so a citation of it fails
+/// closed.
 pub fn resolve(root: &Path, rel: &str) -> PathBuf {
     let on_disk = root.join(rel);
     if on_disk.exists() {
@@ -123,9 +127,41 @@ pub fn resolve(root: &Path, rel: &str) -> PathBuf {
     if !package.starts_with(PLANE_PREFIX) || root.join("crates").join(package).exists() {
         return on_disk;
     }
-    match pinned_dirs(root).into_iter().find(|(n, _)| n == package) {
-        Some((_, dir)) if inner.is_empty() => dir,
-        Some((_, dir)) => dir.join(inner),
-        None => on_disk,
+    let plane = package.strip_suffix(TWIN_SUFFIX).unwrap_or(package);
+    let Some((_, dir)) = pinned_dirs(root).into_iter().find(|(n, _)| n == plane) else {
+        return on_disk;
+    };
+    let dir = if plane == package {
+        dir
+    } else {
+        match twin_dir(&dir, package) {
+            Some(twin) => twin,
+            None => return on_disk,
+        }
+    };
+    if inner.is_empty() {
+        dir
+    } else {
+        dir.join(inner)
     }
+}
+
+/// The directory of `twin`, the cdylib crate of the plugin repo whose logic crate cargo checked out
+/// at `plane_dir`: the member of that repo's workspace (the nearest `Cargo.toml` above `plane_dir`
+/// that declares `[workspace]`) whose manifest names the package `twin`. `None` when the checkout
+/// has no such member.
+fn twin_dir(plane_dir: &Path, twin: &str) -> Option<PathBuf> {
+    let workspace = plane_dir.ancestors().skip(1).find(|d| {
+        std::fs::read_to_string(d.join("Cargo.toml"))
+            .is_ok_and(|t| t.lines().any(|l| l.trim() == "[workspace]"))
+    })?;
+    let named = format!("name = \"{twin}\"");
+    std::fs::read_dir(workspace)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .find(|d| {
+            std::fs::read_to_string(d.join("Cargo.toml"))
+                .is_ok_and(|t| t.lines().any(|l| l.trim() == named))
+        })
 }

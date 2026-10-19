@@ -59,8 +59,8 @@
 //! 3. A Rust string literal under `xtask/src` that BEGINS with `cargo ` — the command strings
 //!    a runner mirrors a pipeline with. The "begins with" is load-bearing: the same tuples carry PROSE
 //!    strings that quote dead selectors on purpose, and prose is not a command.
-//! 4. A JSON string that is the value of a `run` key — the turnstile's `qa/pipeline-checks.json`
-//!    runs exactly those as bash. JSON is data, and a string in it is a command only where a
+//! 4. A JSON string that is the value of a `run` key — `qa/pipeline-checks.json` declares exactly
+//!    those as bash, for the `dev` -> `qa` move. JSON is data, and a string in it is a command only where a
 //!    consumer executes it: the audit evidence under `qa/` opens prose fields with `cargo test -p
 //!    <a crate since folded away> …` as the record of what was run, and that record is not a
 //!    command.

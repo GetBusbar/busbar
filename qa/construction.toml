@@ -1156,7 +1156,7 @@ deny_kinds = ["transport", "abi", "loader", "store", "export"]
 # name below; a new crate NOT on this list is held to the rule immediately.
 known_missing_forbid = [
 ]
-known_missing_deny = [ "plugin-loader",
+known_missing_deny = [
 ]
 
 # ── 22. secret-carrier-debug (BUSBAR-1.6.0.md THE DESIGN, §8) ───────────────────────────────────────────────────

@@ -355,10 +355,12 @@ pub async fn run_gauntlet_via_kernel(
     };
     table.open(raw_key);
 
+    let call = kernel.next_call();
     let arrival = busbar_kernel::inflight::arrival_hold(
         &kernel,
         &crate::root::kernel::AdmissionDoor,
         principal,
+        call,
     );
     let entered = inflight.insert(busbar_kernel::inflight::Enter {
         key,
@@ -377,7 +379,7 @@ pub async fn run_gauntlet_via_kernel(
                 &kernel,
                 &unit,
                 &UnitCtx {
-                    call: busbar_contract::caps::CallId::UNBOUND,
+                    call,
                     key,
                     origin: OriginKind::Client,
                     session: None,
@@ -455,10 +457,12 @@ pub fn open_gauntlet_via_kernel(
     };
     table.open(raw_key);
 
+    let call = kernel.next_call();
     let arrival = busbar_kernel::inflight::arrival_hold(
         &kernel,
         &crate::root::kernel::AdmissionDoor,
         principal,
+        call,
     );
     let entered = inflight.insert(busbar_kernel::inflight::Enter {
         key,
@@ -479,7 +483,7 @@ pub fn open_gauntlet_via_kernel(
                 &kernel,
                 &unit,
                 &UnitCtx {
-                    call: busbar_contract::caps::CallId::UNBOUND,
+                    call,
                     key,
                     origin: OriginKind::Client,
                     session: None,

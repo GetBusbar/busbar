@@ -1499,7 +1499,12 @@ async fn drive_screened_by(
         None => &*route,
     };
     let history = crate::root::kernel::ROOT_CARD.pin();
-    let hold = busbar_kernel::inflight::arrival_hold(&node.kernel, &node.door, principal.clone());
+    let hold = busbar_kernel::inflight::arrival_hold(
+        &node.kernel,
+        &node.door,
+        principal.clone(),
+        node.kernel.next_call(),
+    );
     let slot = node
         .inflight
         .insert(busbar_kernel::inflight::Enter {
@@ -3673,7 +3678,12 @@ fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
             session: None,
             admin_listener: false,
             zero_hold_tick: false,
-            arrival: busbar_kernel::inflight::arrival_hold(&node.kernel, &node.door, who),
+            arrival: busbar_kernel::inflight::arrival_hold(
+                &node.kernel,
+                &node.door,
+                who,
+                node.kernel.next_call(),
+            ),
             now: EPOCH * 1_000,
         })
         .expect("the uncapped table takes the unit");
@@ -3741,6 +3751,7 @@ fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
                 &node.kernel,
                 &node.door,
                 PrincipalId::new("acct:finished"),
+                node.kernel.next_call(),
             ),
             now: EPOCH * 1_000,
         })
@@ -4301,7 +4312,12 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     let (principal, op_class, _proto, build) = plane::handed(arrival, None);
     let meter = Arc::new(AccrualMeter::new());
     let (units, route, finish) = build((node.resolver(), EPOCH));
-    let hold = busbar_kernel::inflight::arrival_hold(&node.kernel, &node.door, principal.clone());
+    let hold = busbar_kernel::inflight::arrival_hold(
+        &node.kernel,
+        &node.door,
+        principal.clone(),
+        node.kernel.next_call(),
+    );
     let slot = node
         .inflight
         .insert(busbar_kernel::inflight::Enter {
@@ -5343,7 +5359,12 @@ async fn drive_reading_the_tap(rig: &Rig) -> Reached {
     let key = node.next_key.mint();
     let meter = Arc::new(AccrualMeter::new());
     let (units, route, finish) = build((node.resolver(), arrived.secs()));
-    let hold = busbar_kernel::inflight::arrival_hold(&node.kernel, &node.door, principal.clone());
+    let hold = busbar_kernel::inflight::arrival_hold(
+        &node.kernel,
+        &node.door,
+        principal.clone(),
+        node.kernel.next_call(),
+    );
     let slot = node
         .inflight
         .insert(busbar_kernel::inflight::Enter {
@@ -5592,7 +5613,12 @@ async fn serve_rerank(
     let (principal, op_class, _proto, build) = plane::handed(arrival, None);
     let meter = Arc::new(AccrualMeter::new());
     let (units, route, finish) = build((node.resolver(), EPOCH));
-    let hold = busbar_kernel::inflight::arrival_hold(&node.kernel, &node.door, principal.clone());
+    let hold = busbar_kernel::inflight::arrival_hold(
+        &node.kernel,
+        &node.door,
+        principal.clone(),
+        node.kernel.next_call(),
+    );
     let slot = node
         .inflight
         .insert(busbar_kernel::inflight::Enter {

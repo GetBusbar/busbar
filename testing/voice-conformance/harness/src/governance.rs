@@ -33,7 +33,7 @@ pub fn run(rig: &Rig, checkpoint: &str) -> i32 {
     0
 }
 
-// ── V1: a barge-in preempts the turn ────────────────────────────────────────────────────────────
+// ── V1: a barge-in is the caller's (Law 11) ─────────────────────────────────────────────────────
 
 fn barge_script(p: &Plugin<Plane>) -> Log {
     let _ = open(p, SESSION, Some(PUBLIC));
@@ -55,15 +55,16 @@ fn barge_check(log: &Log) -> Result<String, String> {
     if !log.anomalies.is_empty() {
         return Err(format!("not every piece READY: {:?}", log.anomalies));
     }
-    if far != [Norm::ResponseCancel, Norm::Truncate(2)] {
+    if !far.is_empty() {
         return Err(format!("the barge-in sent the far end {far:?}"));
     }
     if near != [Norm::AudioDown(vec![0; 96]), Norm::SpeechStart] {
         return Err(format!("the caller was sent {near:?}"));
     }
     Ok(
-        "the far end's speech_started preempts the turn: the door cancels the response and \
-         truncates the item at the 2 ms the caller heard, and tells the caller"
+        "the far end's speech_started reaches the caller as it was sent, and the door sends the \
+         far end nothing on the caller's behalf (Law 11): cancelling or truncating is the \
+         caller's act"
             .to_string(),
     )
 }
@@ -76,9 +77,13 @@ fn barge_in(rig: &Rig, checkpoint: &str) {
         &barge_check,
         &|l: &Log| {
             let mut planted = l.clone();
-            if let Some(i) = planted.emissions.iter().rposition(|e| e.to_far) {
-                planted.emissions.remove(i);
-            }
+            planted.emissions.push(Emission {
+                to_far: true,
+                frame: frame(&json!({"type": "response.cancel"})),
+                need: 0,
+                verb: String::new(),
+                target: String::new(),
+            });
             planted
         },
     );
@@ -212,7 +217,7 @@ fn settled_once(rig: &Rig, checkpoint: &str) {
     );
 }
 
-// ── V4: crossing a dialect down-scopes ──────────────────────────────────────────────────────────
+// ── V4: crossing a dialect down-scopes; at the door the lock is spliced ─────────────────────────
 
 fn widened(text: &str) -> bool {
     text.contains("semantic") || text.contains("g711")
@@ -237,23 +242,23 @@ fn downscope_check(log: &Log) -> Result<String, String> {
         return Err(format!("the bridge toward Gemini widened: {bridged}"));
     }
     let far: Vec<&Emission> = log.emissions.iter().filter(|e| e.to_far).collect();
-    if !log.anomalies.is_empty()
-        || far.len() != 1
-        || far
-            .iter()
-            .any(|e| widened(&String::from_utf8_lossy(&e.frame)))
-        || !far_norms(Dialect::OpenAi, log)
-            .iter()
-            .any(|n| matches!(n, Norm::Config(_)))
-    {
+    let sent: Vec<serde_json::Value> = far
+        .iter()
+        .filter_map(|e| serde_json::from_slice(&e.frame).ok())
+        .collect();
+    let spliced = matches!(sent.as_slice(), [v]
+        if v["session"]["model"] == "m-cap"
+            && v["session"].get("instructions").is_none()
+            && v["session"]["turn_detection"]["type"] == "semantic_vad");
+    if !log.anomalies.is_empty() || far.len() != 1 || !spliced {
         return Err(format!(
-            "the caller's session.update reached the far end as {far:?}"
+            "the caller's session.update reached the far end as {sent:?}"
         ));
     }
     Ok(
         "an OpenAI-only semantic_vad/g711 concept is down-scoped, never widened, toward Gemini; \
-         and at the door the caller's session.update never reaches the far end: the locked \
-         session params do"
+         and at the door the caller's session.update reaches the far end with the locked keys \
+         spliced in (the locked model, no caller instructions) and its own keys kept"
             .to_string(),
     )
 }

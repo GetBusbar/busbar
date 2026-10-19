@@ -11,7 +11,7 @@
 //!
 //! 1. land the Rust gate with its own selftest, NOT yet registered;
 //! 2. land `parity` GREEN — legacy and Rust produce byte-identical rows over the real tree;
-//! 3. register it (the turnstile then runs it on every hop);
+//! 3. register it (ModernCI's `gates` check then runs it on every move);
 //! 4. delete the Python/bash in a separate commit that touches no `qa/*.json` byte.
 //!
 //! If a committed artifact must change, it changes in its own commit with the diff reviewable,

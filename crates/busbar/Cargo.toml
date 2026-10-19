@@ -92,7 +92,7 @@ busbar-kernel-audit = { path = "../busbar-kernel-audit" }
 # `claims` axis), so the root names none of them. The streaming plane's edge is the crate the
 # `plane-streaming` switch's `plane-door` row names: its memory-ABI door, served through the loader's
 # one load like every dropped-in plane door (FLIP-STREAMING).
-busbar-plane-streaming = { path = "../busbar-plane-streaming", optional = true }
+busbar-plane-streaming = { workspace = true, optional = true }
 # THE DECISIONS PLANE (jev), #48's fifth: the edge the `plane-decisions` switch's `plane-door` row
 # names. The plane is served through its memory-ABI door (`busbar_plane_decisions::plane_door::door`),
 # loaded through the loader's one load like every dropped-in plane door (FLIP-DECISIONS), so its
@@ -479,6 +479,9 @@ plane-streaming = "busbar_plane_streaming::door"
 [package.metadata.busbar.linked-declares]
 plane-mcp-door = "busbar_plane_mcp::DECLARES"
 plane-a2a-door = "busbar_plane_a2a::DECLARES"
+# The file source reads the disk (`"disk": true`): the host resolves it only at config time, on its
+# disk lane, never from a request path (BUSBAR-1.6.0.md l.1464-1469, R4).
+secret-file = "busbar_secret_file::DECLARES"
 
 # Each linked plane door's DECLARING section (the one its Statement flags `SECTION_DECLARING`): the
 # build sets `linked_section_<section>` when the row's feature is on, so a test that needs "the plane

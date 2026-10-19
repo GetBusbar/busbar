@@ -128,7 +128,7 @@ pub struct Registration {
 /// that was not mentioned.
 ///
 /// An excused gate is still fully reconciled, still self-tested, and still exits non-zero when run
-/// BY NAME (`cargo xtask gate construction`), which is what the pipeline's turnstile captures. This
+/// BY NAME (`cargo xtask gate construction`), which is what a check that names it captures. This
 /// governs one thing: whether `--all` adds it to the red list.
 pub const REPORT_ONLY: &[Posture] = &[
     Posture {
@@ -725,7 +725,7 @@ impl Registration {
 /// THE SELF-TEST BUDGET, AND WHY IT IS NOT MEASURED IN SECONDS.
 ///
 /// The `test:xtask-selftest` check runs `xtask selftest <gate>` for every registered gate, split
-/// across the hop's shards (`cargo xtask gate --list` names the parts), and that is the ONE place
+/// across the check's shards (`cargo xtask gate --list` names the parts), and that is the ONE place
 /// every gate's cases are driven: `cargo test -p xtask` pins the dispatcher's arms with one gate's
 /// self-test, never all of them (verification runs once per input). That check is the only place
 /// several of these gates are ever proven RED-able, so the shard cannot simply be made smaller --

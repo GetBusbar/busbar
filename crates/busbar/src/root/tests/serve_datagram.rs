@@ -195,3 +195,56 @@ async fn boot_binds_a_claim_door_for_each_datagram_listener_and_no_other() {
     .expect_err("one claim, two doors");
     assert!(twice.contains("a second claim door"), "{twice}");
 }
+
+/// A datagram session's open answers under the head its plane states on the session's first
+/// crossing (ARCHITECT row 132 ruling (a)): the plane's status and its fields, `location` among
+/// them, as it stated them.
+#[tokio::test]
+async fn the_open_answers_under_the_head_the_plane_states() {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let location = (b"location".to_vec(), b"/v1/calls/c_0123abcd".to_vec());
+    tx.send((201, vec![location.clone()])).unwrap();
+    let head = super::plane_head(rx, std::time::Duration::from_secs(5)).await;
+    assert_eq!(head, Some((201, vec![location])));
+}
+
+/// RED: a plane that states no head within the open's bound, or whose session ends first, answers
+/// nothing: the open is refused, never a bare 201.
+#[tokio::test]
+async fn a_plane_that_states_no_head_in_time_answers_nothing() {
+    let (_held, rx) = tokio::sync::oneshot::channel::<(u32, super::HeadFields)>();
+    let started = Instant::now();
+    assert_eq!(
+        super::plane_head(rx, std::time::Duration::from_millis(50)).await,
+        None
+    );
+    assert!(started.elapsed() >= std::time::Duration::from_millis(50));
+    let (dropped, rx) = tokio::sync::oneshot::channel::<(u32, super::HeadFields)>();
+    drop(dropped);
+    assert_eq!(
+        super::plane_head(rx, std::time::Duration::from_secs(5)).await,
+        None
+    );
+}
+
+/// The session's caller side opens with one empty piece, before the caller's first message: the
+/// plane crosses the session once before the open is answered.
+#[tokio::test]
+async fn the_caller_side_opens_with_one_empty_piece() {
+    use busbar_kernel::plane_driver::SessionCaller;
+    let (_door, leg, _pairing, _rx) = leg(8);
+    let (to, from) = mpsc::channel(8);
+    let (head, _rx) = tokio::sync::oneshot::channel();
+    let caller = super::DatagramCaller {
+        leg,
+        from: tokio::sync::Mutex::new(from),
+        head: std::sync::Mutex::new(Some(head)),
+        stated: std::sync::atomic::AtomicU32::new(0),
+        opened: std::sync::atomic::AtomicBool::new(false),
+    };
+    to.send(b"{\"type\":\"x\"}".to_vec()).await.unwrap();
+    assert_eq!(caller.read().await, Some(Vec::new()), "the open");
+    assert_eq!(caller.read().await, Some(b"{\"type\":\"x\"}".to_vec()));
+    drop(to);
+    assert_eq!(caller.read().await, None);
+}

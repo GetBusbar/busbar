@@ -109,10 +109,10 @@ case "${1:-}" in --fast) FAST=1 ;; --selftest) SELFTEST=1 ;; "" ) ;; -h|--help) 
 # THE BASE THE GATES ARE MEASURED AGAINST, named as CI names it. `ceiling-census` and kind-isolation
 # hold their floors against a base, and a detached checkout derives none, which is RED (a base that
 # cannot be established is never a silent pass). So name it: a caller's own value stands, then the
-# ModernCI target sha the gates check exports, then the merge-base with origin/predev. If none
+# ModernCI target sha the gates check exports, then the merge-base with origin/dev. If none
 # resolves it stays unset and the gates say so.
 if [ -z "${XTASK_CEILING_BASE:-}" ]; then
-  XTASK_CEILING_BASE="${MODERNCI_TO_SHA:-$(git merge-base HEAD origin/predev 2>/dev/null || true)}"
+  XTASK_CEILING_BASE="${MODERNCI_TO_SHA:-$(git merge-base HEAD origin/dev 2>/dev/null || true)}"
   [ -n "$XTASK_CEILING_BASE" ] && export XTASK_CEILING_BASE || unset XTASK_CEILING_BASE
 fi
 
@@ -448,7 +448,7 @@ filtered_cargo_test() {  # $1 = expected passing count ; rest = the cargo argv
 #     checkout and PARITY records and diffs some OTHER tree's candidate while this script's own
 #     banner still says this tree is what was proven.
 #   * BUSBAR_ORACLE_TOOL_DIR repoints where bin/oracle's generated record.sh shim (and any
-#     caller that locates the harness through this var, e.g. the turnstile) are read from — an
+#     caller that locates the harness through this var, e.g. HarnessOracle) are read from — an
 #     operator-chosen tool dir is an operator-chosen judge.
 #   * BUSBAR_ORACLE_CACHE repoints the cached golden `fetch-golden --check` verifies against
 #     (default `$HOME/.cache/busbar-oracle`). Point it at a cache seeded with a hand-edited "1.5.5"
@@ -1419,7 +1419,25 @@ step "plane-config-noun-gate --selftest" bash scripts/plane-config-noun-gate.sh 
 # RE-MEASURED 2026-10-13 on predev 163843dd2c: 10 (pools 5 · agents 2 · streams 3). streams fell 7 -> 3,
 # and `tools` is no longer a scanned noun since mcp left PLANE_KEYS (5e52651535): the gate reads its
 # nouns off the PLANE_KEYS planes' PlaneDecls. The floor follows the measure down, never up.
-CONFIG_NOUN_FLOOR=10
+# RE-MEASURED 2026-10-18 on dev e757601362: the armed gate read 9, and that fall was NOT a drain.
+# FLIP-A2A struck `a2a` from PLANE_KEYS, so `agents` fell out of the noun set (-2) while core still
+# declares both targets, and the same drop hid a NEW `pools` target (+1, the self-serve mint's grant
+# list). plane-config-noun-gate.sh now keeps `agents` by name, as it keeps `streams`: 11. The grant
+# list is renamed off the noun (`granted_pools`, not a parse target): 10 (pools 5 · agents 2 ·
+# streams 3).
+# RE-ARMED 10 -> 16 (ruling 2026-10-18, Law 9: a noun or a line that leaves the scan while the
+# floor follows it down is a silent narrowing, and the 2026-10-13 move 17 -> 10 was one). Against
+# the 17 measured 2026-09-21 (pools 5 · tools 3 · agents 2 · streams 7):
+#   tools   LEFT THE NOUN SET when mcp left PLANE_KEYS: back, by name. Its hook-wire line moved
+#           with the hook reply wire into busbar-contract (P2 D4): scanned there.  3 -> 4
+#   pools   the admin contract's `pools` moved into busbar-core-admin (P2 D4): scanned there; a
+#           far-end table and the contract's record field are counted too.          5 -> 7
+#   agents  unchanged (kept by name since FLIP-A2A).                                2 -> 2
+#   streams DeployCfg's `streams` field, the pre-pass slot and the kernel's StreamsSection
+#           (plane/config.rs x2) are DELETED: the kernel carries plane sections in one map
+#           carrier and holds no plane-named field (S-SECTION, b7ea9f08c8). Real drains. 7 -> 3
+# Measured on dev e757601362 + this change: 16 (pools 7 · tools 4 · agents 2 · streams 3).
+CONFIG_NOUN_FLOOR=16
 config_noun_residual() {
   local out rc line count
   out="$(GREP_GATE_REPORT_ONLY=0 bash scripts/plane-config-noun-gate.sh --check 2>&1)"; rc=$?
@@ -1617,11 +1635,14 @@ step "design-bindings --strict"    cargo xtask gate design-bindings --strict
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
-begin_group "AUDIT-LEDGER — every production path is covered by a scope, nothing open at HIGH/MEDIUM"
+begin_group "AUDIT-LEDGER — every production path is covered by a scope and every production scope is clean"
 # qa/audit-ledger.json carries one scope per production path, its tree hash at the audited commit and
-# the round that produced the result. --check is red two ways: a tracked production file that no
-# scope covers (coverage cannot silently regress when a crate is added), and a scope with findings
-# recorded and no fix commit stamped. A result whose tree hash has moved reads `stale` in
+# the round that produced the result. --check is red, among its other rules: on a tracked production
+# file that no scope covers (coverage cannot silently regress when a crate is added); on a scope with
+# findings recorded that no fix stamp and no two other auditors' zero rounds at one tree have
+# answered; on an excuse or a scope shape the source does not derive; and below its floor, which it
+# states on every run: every production scope clean (two zero rounds from distinct auditors at the
+# current hash), over a denominator that is not empty. A result whose tree hash has moved reads `stale` in
 # qa/evidence/AUDIT-STATUS.md rather than green — an audit describes one tree, not the code forever.
 if [ -f qa/audit-ledger.json ]; then
   # The gate's own RED proof runs first, as everywhere else. It judges the five rules about the
@@ -1631,15 +1652,19 @@ if [ -f qa/audit-ledger.json ]; then
   # The `audit-ledger` GATE was deleted with the old register; what survives, and what
   # judges a restored register, is `cargo xtask ledger`. Its rules' own RED proofs are its unit
   # tests, declared by count so a filter that drifts off them is RED rather than vacuously green.
-  # 28 = the 11 audit rule tests (xtask/src/audit.rs) + the 12 audit_cmd tests (hygiene_tests 4,
-  # move_tests 8, the eighth L-R23's: `sync --write` keeps a gone scope with an open HIGH/MEDIUM
-  # unless `--drop` names it) + the five pinned-scope tests (xtask/src/audit_pinned/pinned_tests.rs: a moved pin
+  # 42 = the 11 audit rule tests (xtask/src/audit.rs) + the 5 answered-finding tests
+  # (xtask/src/tests/audit_rules_tests.rs: one zero, the finder's own zero, a moved tree and two
+  # zeros at two trees answer nothing; two other auditors at one tree do) + the 14 audit_cmd tests
+  # (hygiene_tests 4, move_tests 10, among them L-R23's: `sync --write` keeps a gone scope with an
+  # open HIGH/MEDIUM unless `--drop` names it) + the 7 check tests (xtask/src/tests/
+  # audit_check_tests.rs: the floor, a contradicted finding held open and kept by `sync`, a
+  # hand-edited excuse, exclude or kind is red) + the five pinned-scope tests (xtask/src/audit_pinned/pinned_tests.rs: a moved pin
   # reads stale, a byte-identical pin carries the record, an unproducible pin is RED naming it, a
   # twin / non-plugin git dep is not mounted, the tree wins). THE FILTER NAMES THE THREE MODULES, not
   # the bare substring `audit`: that substring also selected q128's two `an_audit_of_*` tests and the
   # construction gate's two `no_response_escapes_audit_tests`, so the run passed 31 against a declared
   # 29 and this step was RED on tests that are not the ledger's rules (they run in TEST).
-  step "audit ledger rules (xtask audit + audit_cmd + audit_pinned tests)" filtered_cargo_test 28 cargo test -p xtask --lib -- audit:: audit_cmd:: audit_pinned::
+  step "audit ledger rules (xtask audit + audit_cmd + audit_pinned tests)" filtered_cargo_test 42 cargo test -p xtask --lib -- audit:: audit_cmd:: audit_pinned::
   step "audit-ledger --check"  cargo xtask ledger --check
 else
   absent_step "audit ledger" "qa/audit-ledger.json"

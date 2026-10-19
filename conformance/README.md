@@ -18,7 +18,7 @@ The conformance-claim manifest home (`CONFORMANCE-SYNC-DESIGN.md` §3.1).
 
 1. `cargo xtask conformance check --suite <id>` — reads `manifest.json`,
    exits 0 iff that suite's row is `status:"pass"` for the exact candidate
-   SHA (freshness per §5.2). The turnstile side already shells to this.
+   SHA (freshness per §5.2). ModernCI's `conformance` check shells to this.
 2. `cargo xtask conformance-manifest --write` — the generator (§3.2):
    downloads `conformance-verdict-<suite>` artifacts, reconciles against
    `registry.toml` (owed vs got, §3.2 step 3), applies staleness (§5.2),
@@ -34,7 +34,6 @@ The conformance-claim manifest home (`CONFORMANCE-SYNC-DESIGN.md` §3.1).
 
 See `CONFORMANCE-GATES-PLAN.md`, `CONFORMANCE-SYNC-DESIGN.md`, and
 `CONFORMANCE-MATRIX-RULING.md` for the full grounding. What CONSUMES this
-manifest is ModernCI's `conformance` check on the `predev` → `dev` move
-(`.ci/predev.yaml`: `cargo xtask conformance record --all`, then
-`cargo xtask conformance check --musts`). The busbar-release turnstile and
-train that consumed it before are deleted.
+manifest is ModernCI's `conformance` check on the `dev` → `qa` move
+(`.ci/dev.yaml`: `cargo xtask conformance record --all`, then
+`cargo xtask conformance check --musts`).

@@ -115,9 +115,8 @@ fn http_desc(url: &[u8]) -> EgressDesc {
     }
 }
 
-/// Open a governed HTTP egress over the HOST-AUTHORED path — the shared [`open_http`] body the hostless
-/// in-core entry (`egress_open_scoped`) funnels through, where the desc's `allowlist_scope` IS host
-/// authority. This is how a FIRST-PARTY plane drives the seam, so loopback/plaintext MECHANICS are
+/// Open a governed HTTP egress over the HOST-AUTHORED path — the shared [`open_http`] body with the
+/// desc's `allowlist_scope` as host authority. This is how a FIRST-PARTY plane drives the seam, so loopback/plaintext MECHANICS are
 /// exercised as production drives them.
 ///
 /// The FFI vtable `egress_open` slot, by contrast, grants the plane NO privilege (FFI-F2) and refuses

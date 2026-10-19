@@ -78,6 +78,7 @@ fn fold_over(s: &Subject, leg: Leg, url: Option<&str>, all: &Value) -> Fold {
         member: b"m1".to_vec(),
         pool: Some(b"p1".to_vec()),
         caller_ref: Some(b"c0ffee".to_vec()),
+        host: None,
     };
     let driver = d.driver(&p, 0);
     sessions(&mut r, (&p, &d, driver), &Session::all(all), &carried);
@@ -397,6 +398,7 @@ fn red_a_cancel_naming_no_session_ticket_ends_nothing() {
         member: b"m1".to_vec(),
         pool: None,
         caller_ref: None,
+        host: None,
     };
     let driver = d.driver(&p, 0);
     sessions(&mut r, (&p, &d, driver), &Session::all(&all), &carried);
@@ -477,6 +479,7 @@ fn served_fold(leg: Leg, host: &str, all: &Value) -> Fold {
         member: b"m1".to_vec(),
         pool: None,
         caller_ref: None,
+        host: None,
     };
     let driver = d.driver(&p, 0);
     sessions(&mut r, (&p, &d, driver), &Session::all(all), &carried);

@@ -7,7 +7,7 @@
 //! * A **CARRIER** moves bytes: it listens, accepts, dials a [`Dest`], reads, writes, flushes and
 //!   closes connections, and reports what it knows about a connection's two ends
 //!   ([`CarrierFacts`]). It is POLL-shaped: every method answers at once, `Pending` registering the
-//!   caller's waker (the HOT lowering hands it a token and the host's waker instead).
+//!   caller's waker.
 //! * A **FRAMER** gives bytes a shape: it is a sans-IO state machine with no socket and no waker. The
 //!   host opens a framing state per connection, INGESTS the bytes the carrier read (it answers the
 //!   frames they complete and the bytes the far side is owed), EMITS a frame as the bytes that carry
@@ -24,9 +24,8 @@
 //! Connection security is core's alone (#40(b); TLS never crosses the ABI): no method here hands a
 //! plugin key or certificate material — [`ConnFacts`] is what the handshake established, as facts.
 //!
-//! These traits are the LINKED source of truth. The HOT lane (`abi::hot::transport`) is their
-//! mechanical `#[repr(C)]` lowering, one slot per method, so a dropped-in carrier or framer and a
-//! linked one are driven through the same methods.
+//! These traits are the LINKED source of truth. A transport plugin reaches the host through its
+//! door and the transport kind's ops table (`abi::transport`), the one memory ABI every kind speaks.
 
 use std::task::{Context, Poll};
 

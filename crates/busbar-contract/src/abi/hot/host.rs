@@ -516,7 +516,7 @@ pub type IdentityAdmitFn = extern "C-unwind" fn(
 ) -> StatusClass;
 /// Add `delta` to one series of a metric family the calling plane DECLARED (its declaration's
 /// metric families; minor 25). `family_ptr`/`family_len` is the family's name; `values_ptr`/
-/// `values_len` is one borrowed [`DeclStr`](super::decl::DeclStr) label VALUE per declared label key,
+/// `values_len` is one borrowed [`DeclStr`](crate::abi::shared::DeclStr) label VALUE per declared label key,
 /// in the declared order — every range live for the call only. The host decodes the values for a
 /// declared family only and renders exactly the declared name and keys.
 ///
@@ -528,7 +528,7 @@ pub type CounterAddFn = extern "C-unwind" fn(
     host: HostCtx,
     family_ptr: *const u8,
     family_len: usize,
-    values_ptr: *const super::decl::DeclStr,
+    values_ptr: *const crate::abi::shared::DeclStr,
     values_len: usize,
     delta: u64,
 ) -> StatusClass;

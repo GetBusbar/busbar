@@ -352,6 +352,14 @@ pub const CLAIM_EXACT: u32 = 1 << 1;
 /// reads it as the claim grammar's segment pattern ([`check::claim_selector`]), so the registry's
 /// sealed precedence is unchanged: exact beats pattern beats prefix. Never with [`CLAIM_EXACT`].
 pub const CLAIM_PATTERN: u32 = 1 << 2;
+/// [`Claim::flags`]: the target is a RAW AFFIX, spelled `<prefix>*<suffix>`. It matches a request
+/// whose raw, undecoded path starts with the prefix and ends with the suffix, compared as bytes:
+/// empty segments, a trailing `/` and a leading `//` count as the bytes they are, and the two
+/// affixes may share bytes ([`check::raw_affix_matches`]). One spelling per suffix, so a path with
+/// N suffixes is N claims. A raw-affix claim states a fact about paths, read by path: it mounts no
+/// route and takes no arrival (ARCHITECT ruling 2026-10-17). Never with [`CLAIM_OPEN`],
+/// [`CLAIM_EXACT`] or [`CLAIM_PATTERN`]. Bits 3 and 4 are taken by flags in flight.
+pub const CLAIM_RAW_AFFIX: u32 = 1 << 5;
 
 /// [`ArriveIn::claim`]: the arrival is a health probe, not a snapshot claim. Only a plane whose
 /// tail states [`TAIL_PROBES`] is sent one.
@@ -1440,7 +1448,7 @@ pub const MAX_METRIC_LANES: usize = 16;
 /// `RefreshIn::head.extensions`): the plane's other owned sections the applied document writes,
 /// the same JSON object [`PlaneOpenIn::owned`] carries at `open` (keyed by section name, each as
 /// written). Absent = the document writes none. A plane that reads no owned section at `refresh`
-/// never reads it; the host resolves a need's `owned.` trust path against it (§11: a new field
+/// never reads it; the host resolves a need's `owned.` trust path against it (ABI rule: a new field
 /// lives in the extensions blob first).
 pub const EXT_OWNED: &str = "owned";
 

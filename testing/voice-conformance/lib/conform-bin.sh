@@ -8,7 +8,8 @@
 # `legs/*.sh` glob never discovers it). Sourced by each `legs/<name>.sh` to locate the REAL Rust
 # conformance harness the legs shell out to: the `voice_conform` binary of the testkit crate
 # `testing/voice-conformance/harness`, which drives the streaming plane's DOOR both ways through the loader — the linked door and
-# the `streaming_door` example cdylib, dlopened (ARCHITECT Q6). The legs reuse the plane's own door
+# the plane's cdylib twin (`busbar-plane-streaming-plugin`, built from the pinned plane's own
+# workspace), dlopened (ARCHITECT Q6). The legs reuse the plane's own door
 # and codecs through this harness; they never reimplement a codec — or a door — in shell.
 
 # Resolved from THIS file's location (testing/voice-conformance/lib/): the battery dir, repo root,
@@ -19,15 +20,33 @@ VC_ROOT="$(cd "$VC_DIR/../.." && pwd)"          # repo root
 VC_FIXTURES="$VC_DIR/fixtures"
 VC_MAP="$VC_ROOT/qa/evidence/voice-cross-dialect-map.json"
 
+# THE PINNED PLANE'S WORKSPACE: the streaming plane lives in its own repo (GetBusbar/busbar-plane-streaming,
+# row 106), pinned in the root manifest. Echo the `Cargo.toml` of the workspace cargo checked it out
+# at for the rev this checkout's lock pins (its logic crate's manifest, two levels up), and return 0
+# when there is one. The dropped-in door is that workspace's cdylib twin, `busbar-plane-streaming-plugin`.
+_vc_plane_ws() {
+  local man
+  man="$(cargo metadata --format-version 1 --locked --manifest-path "$VC_ROOT/Cargo.toml" 2>/dev/null \
+    | grep -o '"manifest_path":"[^"]*/plane-streaming/Cargo.toml"' | head -n 1 \
+    | sed 's/^"manifest_path":"//; s/"$//')"
+  [ -n "$man" ] || return 1
+  man="$(dirname "$(dirname "$man")")/Cargo.toml"
+  [ -f "$man" ] || return 1
+  printf '%s' "$man"
+}
+
 # The trees the harness IS. A `voice_conform` older than any file under these is a binary that would
 # judge source it was not built from — which is not an error at run time, it is a PASS about code
 # nobody is running. The legs are in the list for the reason the note below already gives: the bin
 # answers a `composition <slice>` subcommand per leg, so a leg added after the binary was built is a
 # slice the binary has never heard of.
 _vc_harness_trees() {
+  local ws
+  if ws="$(_vc_plane_ws)"; then
+    ws="$(dirname "$ws")"
+    printf '%s\n' "$ws/plane-streaming/src" "$ws/plane-streaming-plugin/src"
+  fi
   printf '%s\n' \
-    "$VC_ROOT/crates/busbar-plane-streaming/src" \
-    "$VC_ROOT/crates/busbar-plane-streaming/examples" \
     "$VC_DIR/harness/src" \
     "$VC_ROOT/crates/plugin-loader/src" \
     "$VC_ROOT/crates/busbar-contract/src" \
@@ -59,7 +78,7 @@ _vc_newer_than() {
 #     false green the runner's anti-vacuity rule refuses, one level further in). The dropped-in door
 #     it loads is found beside it (or at $VOICE_CONFORM_DOOR); a door that is not there is a FAIL in
 #     every assertion, never a skip.
-#   * else both examples are built (cargo is incremental, so an up-to-date pair costs a lock and a
+#   * else the harness and the plane's cdylib twin are built (cargo is incremental, so an up-to-date pair costs a lock and a
 #     stat; a harness older than the legs it serves would answer "unknown composition slice" for a leg
 #     that exists only in source) — cargo noise goes to stderr so it never pollutes the RESULT lines
 #     the runner parses on stdout.
@@ -82,8 +101,13 @@ voice_conform_bin() {
   local bin="${CARGO_TARGET_DIR:-$VC_ROOT/target}/debug/voice_conform"
   cargo build -q --manifest-path "$VC_ROOT/Cargo.toml" -p voice-conformance-harness \
     --bin voice_conform >&2 || return 1
-  cargo build -q --manifest-path "$VC_ROOT/Cargo.toml" -p busbar-plane-streaming \
-    --example streaming_door >&2 || return 1
+  local ws
+  ws="$(_vc_plane_ws)" || {
+    printf 'voice_conform: this checkout'"'"'s lock pins no busbar-plane-streaming checkout\n' >&2
+    return 1
+  }
+  cargo build -q --locked --manifest-path "$ws" -p busbar-plane-streaming-plugin \
+    --target-dir "${CARGO_TARGET_DIR:-$VC_ROOT/target}" >&2 || return 1
   [ -x "$bin" ] || return 1
   printf '%s' "$bin"
 }

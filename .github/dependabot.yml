@@ -1,13 +1,13 @@
 # Dependabot configuration — keeps dependencies current with automated PRs.
 # Every update of an ecosystem is ONE grouped PR; the grouped PRs are
-# judged by ModernCI like any other predev PR.
+# judged by ModernCI like any other dev PR.
 # Security updates are enabled separately in the repo's security settings.
 version: 2
 updates:
   # Rust crate dependencies (Cargo.toml / Cargo.lock).
   - package-ecosystem: "cargo"
     directory: "/"
-    target-branch: "predev"
+    target-branch: "dev"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
@@ -21,7 +21,7 @@ updates:
   # A compromised action is itself a supply-chain vector, so these are tracked too.
   - package-ecosystem: "github-actions"
     directory: "/"
-    target-branch: "predev"
+    target-branch: "dev"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
@@ -34,7 +34,7 @@ updates:
   # The release image (Dockerfile base images).
   - package-ecosystem: "docker"
     directory: "/"
-    target-branch: "predev"
+    target-branch: "dev"
     schedule:
       interval: "weekly"
     groups:

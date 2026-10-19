@@ -26,8 +26,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::caps::{
-    Admittance, Grant, Hold, HoldCell, OriginKind, PrincipalId, ReasonCode, SessionId, StepName,
-    UnitKey,
+    Admittance, CallId, Grant, Hold, HoldCell, OriginKind, PrincipalId, ReasonCode, SessionId,
+    StepName, UnitKey,
 };
 
 use busbar_contract::Framing;
@@ -330,8 +330,17 @@ pub trait ArrivalDoor {
 /// It reserves nothing: a unit that is refused at the gate has spent nothing, and the point of the
 /// arrival hold is that even a refusal is an event with a cell of its own to settle. The door swaps
 /// it for the real reservation, once.
-pub fn arrival_hold(kernel: &Kernel, door: &dyn ArrivalDoor, principal: PrincipalId) -> Hold {
-    door.arrival_hold(principal, &kernel.admit_token())
+///
+/// BOUND TO THE UNIT'S CALL (#74; audit XG #5): the caller opens the call (`Kernel::next_call`)
+/// before the hold, hands it here, and runs the unit under the same call (`UnitCtx::call`), so the
+/// arrival hold and every proof the loop mints for the unit carry one call.
+pub fn arrival_hold(
+    kernel: &Kernel,
+    door: &dyn ArrivalDoor,
+    principal: PrincipalId,
+    call: CallId,
+) -> Hold {
+    door.arrival_hold(principal, &kernel.admit_token_for(call))
 }
 
 /// Which step an in-flight-cap refusal is stamped at, by origin.

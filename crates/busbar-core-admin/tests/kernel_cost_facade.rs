@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE ADMIN CRATE'S MONEY SIGNATURES NAME THE KERNEL'S FACADE. The usage read's derivations and
-//! the dated-history seam take and return the money types by `busbar_kernel::cost`, the path the
+//! the dated history it reads take and return the money types by `busbar_kernel::cost`, the path the
 //! kernel re-exports the ledger's own items under. This file is the compile-level witness: every
 //! binding below spells its type through `busbar_kernel::cost`, so a signature that drifted to any
 //! other path, or to a second type of the same name, stops compiling here. The one figure test
@@ -14,18 +14,9 @@ use std::sync::Arc;
 use busbar_core_admin::v1::contract::UsageBreakdown;
 use busbar_core_admin::v1::service::{
     derive_spend_micros_row, derive_spend_micros_row_at_card, derive_spend_micros_row_classes,
-    derive_spend_micros_row_classes_at_card, UsageRateHistory,
+    derive_spend_micros_row_classes_at_card,
 };
 use busbar_kernel::cost::{self, CostModel};
-
-/// The dated-history seam's one method answers the facade's `History`.
-struct Pinned(Arc<cost::History>);
-
-impl UsageRateHistory for Pinned {
-    fn history(&self) -> Option<Arc<cost::History>> {
-        Some(Arc::clone(&self.0))
-    }
-}
 
 #[test]
 fn the_usage_read_signatures_name_the_kernel_cost_facade() {
@@ -52,6 +43,8 @@ fn the_usage_read_signatures_name_the_kernel_cost_facade() {
         &UsageBreakdown,
     ) -> Spend = derive_spend_micros_row_at_card;
     let _: DatedClasses = derive_spend_micros_row_classes_at_card;
+    // The process's dated history, which the usage read prices through, is the facade's `History`.
+    let _: fn() -> Option<Arc<cost::History>> = busbar_kernel::rate_apply::dated_history;
     // `CostModel::card` hands back the facade's `RateCard`: the kernel's card IS the ledger's.
     let _: fn(&CostModel) -> &cost::RateCard = CostModel::card;
 }
@@ -63,8 +56,7 @@ fn the_dated_read_through_the_facade_prices_the_opening_card_as_the_current_read
         requests: 3,
         ..UsageBreakdown::default()
     };
-    let seam = Pinned(Arc::new(cost::History::opening(model.card().clone(), 0)));
-    let history = seam.history().expect("the pinned history");
+    let history = Arc::new(cost::History::opening(model.card().clone(), 0));
     let view: cost::HistoryView<'_> = history.current();
     let (_, card) = view.card_at(0).expect("the opening card is in force at 0");
     let head: Option<cost::HistorySeq> = history.head();

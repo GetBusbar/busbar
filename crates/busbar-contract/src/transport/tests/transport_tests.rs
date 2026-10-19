@@ -22,13 +22,15 @@ fn websocket_is_enumerated_with_a_stable_unique_label() {
     assert_eq!(deduped.len(), names.len(), "transport names must be unique");
 }
 
-/// The axis answers the full-duplex leg with its neutral wire shape — the one match on this axis,
-/// mapping WebSocket to the bidirectional framed byte wire.
-#[cfg(any(feature = "dispatch", feature = "runtime"))]
+/// THE AXIS NAMES CHANNELS AND NO PLANE'S BINDINGS (Law 1; THE DESIGN, the kinds: "kernel, contract and
+/// cleanliness crates × every kind instance = 0"). Which wire formats a plane speaks is the plane's
+/// own declaration; the contract's axis is the channels a framed operation rides, and nothing else.
 #[test]
-fn websocket_selects_the_duplex_upstream_wire() {
+fn the_transport_axis_names_channels_and_no_plane_binding() {
+    let names: Vec<_> = Transport::ALL.iter().map(|t| t.name()).collect();
     assert_eq!(
-        Transport::WebSocket.upstream_wire(),
-        Some(UpstreamWireKind::Duplex)
+        names,
+        ["http", "stdio", "websocket"],
+        "the transport axis carries a plane's bindings as channels"
     );
 }

@@ -9,8 +9,8 @@
 //! that is a share of the walk's own deadline.
 
 /// The per-attempt cap on time to the first answer, floored by what the walk has left
-/// (`remaining_ms`). A cap can never grant more time than the request still has, and it is never
-/// zero.
+/// (`remaining_ms`). A cap can never grant more time than the request still has; a walk with no
+/// time left still grants one millisecond, and a configured cap of zero stays zero.
 #[must_use]
 pub fn attempt_cap_ms(ms: u64, remaining_ms: u64) -> u64 {
     ms.min(remaining_ms.max(1))

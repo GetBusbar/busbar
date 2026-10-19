@@ -48,14 +48,15 @@ use crate::gitp;
 pub use a2a::{discriminates, governance_observed, NEGATIVE_PAIRS};
 pub use h2::{decide_h2, junit_cases, Case, CaseResult, H2Run};
 pub use jev::{
-    decide_jev, is_jev_refusal, jev_models_config, jev_nanojev_config, jev_providers,
-    jev_refusal_code, jev_subject_config, judge_admit, judge_audit, judge_audit_window, judge_exit,
-    judge_jev_ledger, judge_meter, judge_nanojev_no_count, judge_nanojev_served,
-    judge_refused_before_dial, judge_route, judge_unrouted, judge_upstream_model, ledger_spend,
-    models_request, nanojev_providers, tests_passed, Call, JevRun, Spend, AUDIT_OP_CLASS,
-    ELSEWHERE, H2_CHECKS, NANOJEV_MODEL, NANOJEV_NO_COUNT, NANOJEV_PROVIDER, NANOJEV_REQUEST,
-    NANOJEV_SUCCESS, ONE_REQUEST_GROUP, PATH_EVALUATE, REPORTED_UNITS, SUCCESS as JEV_SUCCESS,
-    UNAVAILABLE, UPSTREAM_MODEL, UPSTREAM_NAME,
+    decide_jev, is_jev_refusal, jev_battery_command, jev_models_config, jev_nanojev_config,
+    jev_providers, jev_refusal_code, jev_subject_config, judge_admit, judge_audit,
+    judge_audit_window, judge_exit, judge_jev_ledger, judge_meter, judge_nanojev_no_count,
+    judge_nanojev_served, judge_refused_before_dial, judge_route, judge_unrouted,
+    judge_upstream_model, ledger_spend, models_request, nanojev_providers, tests_passed, Call,
+    JevRun, Spend, AUDIT_OP_CLASS, ELSEWHERE, H2_CHECKS, JEV_PLANE, NANOJEV_MODEL,
+    NANOJEV_NO_COUNT, NANOJEV_PROVIDER, NANOJEV_REQUEST, NANOJEV_SUCCESS, ONE_REQUEST_GROUP,
+    PATH_EVALUATE, REPORTED_UNITS, SUCCESS as JEV_SUCCESS, UNAVAILABLE, UPSTREAM_MODEL,
+    UPSTREAM_NAME,
 };
 pub use oidf::{
     as_signing_key, base64_std, decide_oidf, es256_jwk, idp_reply, module_results,
@@ -65,9 +66,12 @@ pub use oidf::{
 };
 pub use rigs::{
     decide_legs, decide_llm, decide_voice, decide_webrtc, decide_ws, mcp_node_platform, rig_for,
-    Inputs, LlmRun, VoiceRun, WebrtcRun, WsRun, LLM_DIALECTS, MCP_NODE_VERSION, WEBRTC_SUITE,
+    voice_config_command, Inputs, LlmRun, VoiceRun, WebrtcRun, WsRun, LLM_DIALECTS,
+    MCP_NODE_VERSION, VOICE_PLANE, WEBRTC_SUITE,
 };
-pub use slsa::{decide_slsa, provenance_commit, SlsaRun};
+pub use slsa::{
+    decide_slsa, dev_bin_assets, provenance_commit, SlsaRun, SOURCE_BRANCH, SOURCE_URI,
+};
 pub use subject::{b64url, base_config};
 pub use tls::{decide_tls, TlsRun};
 
@@ -408,7 +412,7 @@ pub fn main(cx: &Ctx, args: &[String]) -> i32 {
     }
     let runner = rigs::Runner::new(&root, &inputs);
     // The rigs run IN PARALLEL (ARCHITECT 2026-10-02): each is a separate toolchain
-    // (python, node, Docker, cargo) and most of the hop's conformance time is waiting
+    // (python, node, Docker, cargo) and most of the check's conformance time is waiting
     // on one of them; one thread per rig, each in its own work dir.
     let ran: BTreeMap<rigs::Rig, BTreeMap<String, Outcome>> = match &blocked {
         Some(_) => BTreeMap::new(),
@@ -489,8 +493,8 @@ pub fn main(cx: &Ctx, args: &[String]) -> i32 {
         return 3;
     }
     // The manifest `conformance check` reads is rendered from the verdicts just
-    // written: reconcile it here, so producing is ONE command and the turnstile
-    // never has to run a gate to produce (an inheriting rung runs no gate).
+    // written: reconcile it here, so producing is ONE command and the `conformance`
+    // check never has to run a gate to produce.
     if out_dir == root.join("conformance").join("verdicts") {
         match reconcile_manifest(&root) {
             Ok(()) => {

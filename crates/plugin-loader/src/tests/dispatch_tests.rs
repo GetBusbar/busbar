@@ -295,6 +295,31 @@ fn open(d: &Dispatcher, p: &Plugin<TestKind>, worker: u32) -> Outcome {
     done.outcome
 }
 
+/// Run the ignored test `child` of this test binary in a child process, with `CHILD_ENV` set, and
+/// answer how it ended: a range read past its buffer kills the child, never the test run.
+pub(crate) fn run_child(child: &str) -> std::process::Output {
+    std::process::Command::new(std::env::current_exe().expect("the test binary's path"))
+        .args([child, "--ignored", "--test-threads=1", "--nocapture"])
+        .env(CHILD_ENV, "1")
+        .output()
+        .expect("run the child")
+}
+
+/// Set in a child [`run_child`] runs; an ignored child test run without it refuses to run.
+pub(crate) const CHILD_ENV: &str = "BUSBAR_DISPATCH_CHILD";
+
+/// Assert the child test `child` ran and passed (exit 0), naming how it ended otherwise.
+pub(crate) fn assert_child_passes(child: &str, what: &str) {
+    let out = run_child(child);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("1 passed"),
+        "{what}: the child ended {:?}\n{stdout}\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 fn until(what: &str, f: impl Fn() -> bool) {
     let t = Instant::now();
     while !f() {

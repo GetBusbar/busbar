@@ -236,6 +236,10 @@ pub struct PlaneRegistration {
     /// A plane that consumes the transport kind's root restricts the members its section names
     /// there to the dialects it states.
     pub consumes: Vec<&'static str>,
+    /// The sections the Statement marks REQUIRED (`SECTION_REQUIRED`), in Statement order: a
+    /// document must carry each while the plane is linked (CONFIG-REQ, Law 7), and the kernel's
+    /// config pre-pass refuses one that omits it with the frozen missing-field text.
+    pub requires: Vec<&'static str>,
     /// The Statement's secret-reference paths (`Statement::secret_refs`): the settings paths whose
     /// values are secret references, each `settings.<key>...`, where `*` stands for every key of
     /// the map at that point (each registration, each entry). The kernel enumerates the references

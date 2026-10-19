@@ -178,7 +178,7 @@ fn a_lost_task_is_settled_within_one_tick() {
             session: None,
             admin_listener: false,
             zero_hold_tick: false,
-            arrival: arrival_hold(&kernel, &TestDoor, principal()),
+            arrival: arrival_hold(&kernel, &TestDoor, principal(), kernel.next_call()),
             now: 0,
         })
         .map_err(|_| ())
@@ -262,7 +262,7 @@ fn the_sweep_gives_back_the_lease_the_door_drew_on_a_lost_task() {
             session: None,
             admin_listener: false,
             zero_hold_tick: false,
-            arrival: arrival_hold(&kernel, &TestDoor, principal()),
+            arrival: arrival_hold(&kernel, &TestDoor, principal(), kernel.next_call()),
             now: 0,
         })
         .map_err(|_| ())
@@ -348,7 +348,7 @@ fn the_sweep_gives_back_the_group_leases_of_a_lost_task_too() {
             admin_listener: false,
             zero_hold_tick: false,
             now: 0,
-            arrival: arrival_hold(&kernel, &TestDoor, principal()),
+            arrival: arrival_hold(&kernel, &TestDoor, principal(), kernel.next_call()),
         })
         .map_err(|_| ())
         .expect("under the cap");
@@ -423,7 +423,7 @@ fn the_sweep_gives_back_the_door_count_a_lost_task_was_holding() {
             admin_listener: false,
             zero_hold_tick: false,
             now: 0,
-            arrival: arrival_hold(&kernel, &TestDoor, principal()),
+            arrival: arrival_hold(&kernel, &TestDoor, principal(), kernel.next_call()),
         })
         .map_err(|_| ())
         .expect("under the cap");
@@ -472,6 +472,7 @@ fn the_sweep_gives_back_the_door_count_a_lost_task_was_holding() {
         &kernel,
         &TestDoor,
         principal(),
+        kernel.next_call(),
     ));
     let leases = busbar_kernel::slice::LeaseCell::new();
     let ended = busbar_kernel::teller::run_unit(
@@ -515,7 +516,7 @@ fn a_sweep_racing_a_running_unit_reclaims_nothing_of_it() {
             session: None,
             admin_listener: false,
             zero_hold_tick: false,
-            arrival: arrival_hold(&kernel, &TestDoor, principal()),
+            arrival: arrival_hold(&kernel, &TestDoor, principal(), kernel.next_call()),
             now: 0,
         })
         .map_err(|_| ())
@@ -572,7 +573,7 @@ fn a_unit_that_just_entered_is_never_already_stalled() {
             session: None,
             admin_listener: false,
             zero_hold_tick: false,
-            arrival: arrival_hold(&kernel, &TestDoor, principal()),
+            arrival: arrival_hold(&kernel, &TestDoor, principal(), kernel.next_call()),
             now,
         })
         .map_err(|_| ())
@@ -604,7 +605,7 @@ fn a_slow_unit_is_not_a_lost_one() {
             session: None,
             admin_listener: false,
             zero_hold_tick: false,
-            arrival: arrival_hold(&kernel, &TestDoor, principal()),
+            arrival: arrival_hold(&kernel, &TestDoor, principal(), kernel.next_call()),
             now: 0,
         })
         .map_err(|_| ())
@@ -663,7 +664,7 @@ fn a_stalled_unit_posts_its_floor_and_gives_its_lease_back() {
             session: None,
             admin_listener: false,
             zero_hold_tick: false,
-            arrival: arrival_hold(&kernel, &TestDoor, principal()),
+            arrival: arrival_hold(&kernel, &TestDoor, principal(), kernel.next_call()),
             now: 0,
         })
         .map_err(|_| ())

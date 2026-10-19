@@ -17,7 +17,7 @@ pub mod registry;
 // THE TWO TRANSPORT ROLES (TRANSPORT-STACK): a transport plugin is a carrier or a framer.
 pub mod stack;
 pub mod surface;
-// The transport-axis enum (`Transport`, `UpstreamWireKind`) keeps its own file name from the folded
+// The transport-axis enum (`Transport`) keeps its own file name from the folded
 // crate; nested under the `transport` kind module this reads as inception, but renaming the axis
 // module would change the public path dependents reach the enum through.
 #[allow(clippy::module_inception)]

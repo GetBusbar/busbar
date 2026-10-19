@@ -71,3 +71,30 @@ fn all_eleven_frozen_codes_render_verbatim() {
         assert_eq!(parsed["error"]["message"], *code);
     }
 }
+
+/// A message carrying caller text stays one JSON document whose message is that text.
+///
+/// Callers put request values in the message (`adjust`'s `pool`, `plane_facts`'s `plane`, the
+/// trust verbs' `key`). RED while the message was spliced in unescaped: a `"` or `\` in such a
+/// value broke the body out of JSON, or let it carry keys of the caller's choosing.
+#[test]
+fn a_message_carrying_caller_text_is_escaped_into_one_string() {
+    let hostile = r#"`pool` names `a","injected":"x\`, which is not a configured pool"#;
+    let rendered = envelope_of("invalid_request", hostile);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&rendered).expect("the envelope is valid JSON whatever the message");
+    let error = parsed["error"].as_object().expect("an object");
+    assert_eq!(
+        error.len(),
+        2,
+        "no key of the caller's choosing: {rendered}"
+    );
+    assert_eq!(error["code"], "invalid_request");
+    assert_eq!(error["message"], hostile);
+    let control = envelope_of("invalid_request", "line\nbreak");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&control).expect("valid JSON")["error"]
+            ["message"],
+        "line\nbreak"
+    );
+}

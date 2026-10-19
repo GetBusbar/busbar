@@ -448,7 +448,7 @@ fn no_policy_mints_at_the_self_serve_default_and_self_mint_off_still_refuses() {
     let open = crate::governance::mint_policy::MintPolicy::default();
     let mint = admit_self_mint(&v, &rb, &open, SELF_TTL).expect("no ceiling");
     assert_eq!(mint.ttl, Duration::from_secs(SELF_TTL));
-    assert_eq!(mint.pools, None);
+    assert_eq!(mint.granted_pools, None);
     let off = crate::governance::mint_policy::MintPolicy {
         self_mint: Some(false),
         block_max_ttl_secs: Some(3_600),

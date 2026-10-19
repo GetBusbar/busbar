@@ -70,6 +70,11 @@ pub fn retry_after_secs(
 /// defeats the whole point of a last resort. Members that are dead or out of budget are filtered
 /// first, so their zero cooldown never sorts them to the front.
 ///
+/// A DRAINED member (`weight: 0`) stays a candidate here: the previous release ranked every
+/// admissible member of the candidate list on this path (v1.5.5 `proxy/engine/walk.rs:1126-1130`),
+/// and drain only ever kept a member out of the weighted selection (v1.5.5 `proxy/select.rs:282`,
+/// `store/in_memory/mod.rs:870`). Q128 kernel-egress LOW 4, closed as 1.5.5 parity.
+///
 /// It owns NO probe and the walk passes none on: handing it the cell's current epoch instead would
 /// be actively unsafe, since a half-open cell's epoch may be a PEER's, and an owner-checked release
 /// keyed on it would revert the peer's live probe.

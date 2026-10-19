@@ -117,8 +117,8 @@ fn main() {
     let (source, cfgs) = linked_source(&manifest, &enabled);
     let out = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("linked.rs");
     std::fs::write(out, source).expect("write linked.rs");
-    // THE LINKED HOOK NAMES: what the root hands the admin surface as its compiled-in hook plugins
-    // (`main.rs` and the admin integration tests include it).
+    // THE LINKED HOOK NAMES: what the root carries on its install record as the admin surface's
+    // compiled-in hook plugins (`main.rs` includes it).
     let out = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"))
         .join("linked_hook_names.rs");
     std::fs::write(out, linked_hook_names_source(&manifest, &enabled))

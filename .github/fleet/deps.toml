@@ -87,8 +87,9 @@ reason = "the ProtoJSON mapping of the a2aproject's gRPC messages the a2a plane 
 
 [plugin-deps.prost-build]
 version = "0.14"
+default-features = false
 repos = ["busbar-plane-a2a"]
-reason = "BUILD ONLY: the a2a plane's `build.rs` generates the a2aproject's prost messages from its vendored `a2a.proto` (ARCHITECT ruling Q1 (C), 2026-10-04). Never in the shipped image. Moved here from busbar's root table with the plane (row 106)."
+reason = "BUILD ONLY: the a2a plane's `build.rs` generates the a2aproject's prost messages from its vendored `a2a.proto` (ARCHITECT ruling Q1 (C), 2026-10-04). Never in the shipped image. Moved here from busbar's root table with the plane (row 106). Default features off: the `format` feature pulls prettyplease, which the C-dependency/cdeps gate refuses, and the generated messages are compiled, not read, so they need no pretty-printing."
 
 [plugin-deps.pbjson-build]
 version = "0.9"

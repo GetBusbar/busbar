@@ -100,17 +100,41 @@ pub fn parse_proxy(v: &str) -> Result<ProxyHop, String> {
     let port = parsed.port().unwrap_or(80);
     let auth = (!parsed.username().is_empty()).then(|| {
         use base64::Engine;
-        let creds = format!(
-            "{}:{}",
-            parsed.username(),
-            parsed.password().unwrap_or_default()
-        );
+        // The userinfo as the URL spells it is percent-encoded; the credential is what it
+        // encodes, as reqwest decoded it before Basic-encoding it.
+        let creds = [
+            percent_decoded(parsed.username()),
+            b":".to_vec(),
+            percent_decoded(parsed.password().unwrap_or_default()),
+        ]
+        .concat();
         format!(
             "Basic {}",
             base64::engine::general_purpose::STANDARD.encode(creds)
         )
     });
     Ok(ProxyHop::new(host, port, auth))
+}
+
+/// `text` with every `%XX` escape decoded to its byte; a `%` not followed by two hex digits is
+/// kept as written.
+fn percent_decoded(text: &str) -> Vec<u8> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| char::from(b).to_digit(16);
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push(u8::try_from(hi * 16 + lo).unwrap_or(b'%'));
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    out
 }
 
 /// The raw proxy env, read once — a plain value bag so precedence resolution

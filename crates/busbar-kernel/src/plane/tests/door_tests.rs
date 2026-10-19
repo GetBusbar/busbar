@@ -24,6 +24,7 @@ fn registration(key: &'static str, section: &'static str) -> PlaneRegistration {
         section,
         owns: Vec::new(),
         consumes: Vec::new(),
+        requires: Vec::new(),
         admin_routes: Vec::new(),
         admin_openapi: None,
         secret_refs: vec!["settings.*.token.secret", "settings.*.env.*"],
@@ -172,6 +173,22 @@ fn the_provider_keys_a_door_states_are_kept_by_the_fold() {
     .expect("folds");
     assert!(is_door(decl));
     assert_eq!(provider_keys(), Some(&keys));
+}
+
+/// CONFIG-REQ (ARCHITECT 2026-09-27, Law 7): the sections a door's Statement marks required
+/// (`SECTION_REQUIRED`, carried as `requires`) are the folded row's `required_config_sections`, in
+/// Statement order, so the config pre-pass watches for them as it does a linked plane's. RED ARM:
+/// the fold wrote `&[]`, so a door plane required nothing.
+#[test]
+fn the_sections_a_door_requires_are_the_folded_rows_required_sections() {
+    let decl = fold(PlaneRegistration {
+        requires: vec!["catalog_a", "catalog_b"],
+        ..registration("door-requiring-row", "door_requiring_row")
+    })
+    .expect("folds");
+    assert_eq!(decl.required_config_sections, ["catalog_a", "catalog_b"]);
+    let none = fold(registration("door-requiring-none", "door_requiring_none")).expect("folds");
+    assert!(none.required_config_sections.is_empty());
 }
 
 #[test]
@@ -377,7 +394,6 @@ fn a_doors_owned_section_is_carried_and_handed_to_its_facing() {
         public_url: None,
         prior: None,
         providers: None,
-        hostless: Default::default(),
     };
     let slot = (decl.build)(&ctx).expect("a slot");
     let adm = (decl.admission)(&*slot).expect("an audience from its owned block");
@@ -416,7 +432,6 @@ fn lane_less_healthz(
             public_url: None,
             prior: None,
             providers: None,
-            hostless: Default::default(),
         })
         .expect("a configured door builds its generation's slot");
         fixture.install_plane_runtime(decl.key, slot);
@@ -598,7 +613,6 @@ fn a_doors_probe_is_handed_its_referenced_providers_dialect_facts() {
         public_url: None,
         prior: None,
         providers,
-        hostless: Default::default(),
     };
     let slot = (decl.build)(&ctx(Some(&providers))).expect("a slot");
     let slot = slot.downcast_ref::<DoorSlot>().expect("a door slot");

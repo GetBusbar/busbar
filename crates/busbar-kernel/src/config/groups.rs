@@ -220,8 +220,9 @@ pub fn default_true() -> bool {
     true
 }
 
-/// The metric a limit caps.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The metric a limit caps. The order is the order a bucket's caps are checked in, so a refusal
+/// names the same metric whichever order the operator wrote the limits in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LimitMetric {
     /// Request count per window.
     Requests,
@@ -254,6 +255,23 @@ impl LimitMetric {
             LimitMetric::TokensCacheWrite => "tokens_cache_write",
             LimitMetric::Budget => "budget",
             LimitMetric::Concurrent => "concurrent",
+        }
+    }
+
+    /// THE METER CLASS A PER-CLASS TOKEN CAP COUNTS, read off its config word: a `tokens_<class>`
+    /// limit caps the ledger class `<class>`, exactly the class name the plane declares and the
+    /// ledger keys its counts by. `None` for every metric that is not a per-class cap. The
+    /// governance check reads the class from here and names none itself.
+    pub fn capped_class(&self) -> Option<&'static str> {
+        match self {
+            LimitMetric::Requests
+            | LimitMetric::Tokens
+            | LimitMetric::Budget
+            | LimitMetric::Concurrent => None,
+            LimitMetric::TokensInput
+            | LimitMetric::TokensOutput
+            | LimitMetric::TokensCacheRead
+            | LimitMetric::TokensCacheWrite => self.as_str().strip_prefix("tokens_"),
         }
     }
 }

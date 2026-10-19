@@ -8,7 +8,9 @@
 use super::*;
 use crate::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
 use crate::config::RateEntryCfg;
-use busbar_contract::records::{VirtualKey, RESERVED_UNITS};
+use busbar_contract::records::{
+    VirtualKey, RESERVED_UNITS, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
+};
 use std::collections::BTreeMap;
 
 fn card(entries: &[(&str, f64, f64)]) -> BTreeMap<String, RateEntryCfg> {
@@ -214,8 +216,7 @@ fn derive_spend_cents_refuses_an_overflow_never_wraps_or_pins() {
 #[test]
 fn rate_card_is_sole_cost_source_and_drives_routing_scalar() {
     let c = card(&[("gpt-5", 2.5, 10.0)]);
-    let cm = resolve_card_fee(Some(&c), 0);
-    let r = cm.rate_for("gpt-5").unwrap();
+    let r = crate::cost::RateNanos::from_cfg(&c["gpt-5"]);
     assert_eq!(
         (r.input, r.output),
         (2_500, 10_000),
@@ -403,7 +404,7 @@ fn four_tier_card_prices_each_tier_against_its_own_rate() {
         Ok(1500),
         "each tier must bill against its own rate; a swapped cache_read/cache_write mapping changes this"
     );
-    let r = cm.rate_for("quad").unwrap();
+    let r = crate::cost::RateNanos::from_cfg(&c["quad"]);
     assert_eq!(
         (r.input, r.output, r.cache_read, r.cache_write),
         (1_000, 2_000, 500, 4_000),
@@ -1039,7 +1040,7 @@ fn the_one_function_does_not_wrap_an_astronomical_bill_down_to_nearly_free() {
 fn a_fractional_cent_rate_prices_exactly_through_the_live_intake() {
     let c = card(&[("m", 0.1, 0.2)]);
     let cm = resolve_card_fee(Some(&c), 0);
-    let r = cm.rate_for("m").expect("the lane is priced");
+    let r = crate::cost::RateNanos::from_cfg(&c["m"]);
     assert_eq!(
         (r.input, r.output),
         (100, 200),
@@ -1074,7 +1075,7 @@ fn a_fractional_cent_rate_prices_exactly_through_the_live_intake() {
 fn a_large_count_times_a_rate_has_no_float_drift() {
     let c = card(&[("m", 0.3, 0.0)]);
     let cm = resolve_card_fee(Some(&c), 0);
-    let r = cm.rate_for("m").expect("the lane is priced");
+    let r = crate::cost::RateNanos::from_cfg(&c["m"]);
     let count: u64 = (1 << 53) + 1;
     assert_eq!(
         one_nanos(&r, &toks(count, 0)),
@@ -1101,9 +1102,7 @@ fn the_intake_prices_every_money_fixture_rate_at_its_1_5_5_figure() {
     ] {
         let v155 = (utok * 1000.0_f64).round() as u64;
         let c = card(&[("m", utok, utok)]);
-        let r = resolve_card_fee(Some(&c), 0)
-            .rate_for("m")
-            .expect("the lane is priced");
+        let r = crate::cost::RateNanos::from_cfg(&c["m"]);
         assert_eq!(
             (r.input, r.output),
             (v155, v155),
@@ -1114,5 +1113,38 @@ fn the_intake_prices_every_money_fixture_rate_at_its_1_5_5_figure() {
             Ok(u128::from(v155) * (1_234_567 + 7_654_321)),
             "{utok} prices a count as 1.5.5 did"
         );
+    }
+}
+
+/// **THE COST MODEL AND THE CAP CHECK NAME NO METER CLASS** (audit K5#2; BUSBAR-1.6.0.md #77(4):
+/// "Classes are STRINGS declared by the plane"). A per-class token cap is carried as the class its
+/// `tokens_<class>` config word names and checked against the cell's count of that class, so
+/// neither the resolved bucket nor the admission check has a field or a constant per tier. A
+/// source witness: what has to stay true is that these two files spell no tier.
+#[test]
+fn the_cost_model_and_the_cap_check_name_no_meter_class() {
+    for (file, src) in [
+        ("cost.rs", include_str!("../cost.rs")),
+        (
+            "governance/state.rs",
+            include_str!("../governance/state.rs"),
+        ),
+    ] {
+        for name in [
+            "UNIT_INPUT",
+            "UNIT_OUTPUT",
+            "UNIT_CACHE_READ",
+            "UNIT_CACHE_WRITE",
+            "tokens_input_cap",
+            "tokens_output_cap",
+            "tokens_cache_read_cap",
+            "tokens_cache_write_cap",
+        ] {
+            assert!(
+                !src.contains(name),
+                "{file} names `{name}`: a per-tier field or constant in the kernel's cost model or \
+                 cap check, where a cap is an opaque class name"
+            );
+        }
     }
 }

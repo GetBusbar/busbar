@@ -65,8 +65,8 @@ HEAD at generation: `ff0fe55988a3048a092cd02b638937812abeb2fd`
 | `crates/busbar-plane-streaming/src` | open | 1 | 17 | 10354 | findings (HIGH=9, MEDIUM=3, LOW=3, NIT=1) | opus-ledger-plane-streaming | `The streaming plane has no ABI door; an older plane crate drives it as a library. Its sample tool executor answers the model's tool calls, which never reach the caller. On a barge-in it cancels and truncates upstream itself. Same-dialect sessions are rebuilt from a narrow model, losing unmodelled events and fields. It claims five dialects and no WebRTC, keys sessions by the raw principal, receives the provider key, sends no error frame on a budget cut, and under-counts Gemini audio seconds. Read fully except the Gemini config mapping, sampled.` |
 | `crates/busbar-secret-env/declares.json` (pinned: GetBusbar/busbar-secret-env@495318c9fa) | unaudited | - | - | 6 | unaudited | - | - |
 | `crates/busbar-secret-env/src` (pinned: GetBusbar/busbar-secret-env@495318c9fa) | unaudited | - | - | 216 | unaudited | - | - |
-| `crates/busbar-secret-file/declares.json` (pinned: GetBusbar/busbar-secret-file@479c833a10) | unaudited | - | - | 6 | unaudited | - | - |
-| `crates/busbar-secret-file/src` (pinned: GetBusbar/busbar-secret-file@479c833a10) | unaudited | - | - | 262 | unaudited | - | - |
+| `crates/busbar-secret-file/declares.json` (pinned: GetBusbar/busbar-secret-file@e1a5a17a49) | unaudited | - | - | 7 | unaudited | - | - |
+| `crates/busbar-secret-file/src` (pinned: GetBusbar/busbar-secret-file@e1a5a17a49) | unaudited | - | - | 268 | unaudited | - | - |
 | `crates/busbar-transport-grpc/declares.json` (pinned: GetBusbar/busbar-transport-grpc@5607182ed5) | unaudited | - | - | 6 | unaudited | - | - |
 | `crates/busbar-transport-grpc/src` (pinned: GetBusbar/busbar-transport-grpc@5607182ed5) | unaudited | - | - | 2044 | unaudited | - | - |
 | `crates/busbar-transport-http/src` (pinned: GetBusbar/busbar-transport-http@9e0d6fee15) | unaudited | - | - | 5663 | unaudited | - | - |
@@ -129,7 +129,7 @@ HEAD at generation: `ff0fe55988a3048a092cd02b638937812abeb2fd`
 | `crates/busbar-plane-streaming/src/tests` | unaudited | - | - | 3439 | unaudited | - | - |
 | `crates/busbar-plane-streaming/tests` | unaudited | - | - | 954 | unaudited | - | - |
 | `crates/busbar-secret-env/src/tests` (pinned: GetBusbar/busbar-secret-env@495318c9fa) | unaudited | - | - | 111 | unaudited | - | - |
-| `crates/busbar-secret-file/src/tests` (pinned: GetBusbar/busbar-secret-file@479c833a10) | unaudited | - | - | 144 | unaudited | - | - |
+| `crates/busbar-secret-file/src/tests` (pinned: GetBusbar/busbar-secret-file@e1a5a17a49) | unaudited | - | - | 153 | unaudited | - | - |
 | `crates/busbar-transport-grpc/examples` (pinned: GetBusbar/busbar-transport-grpc@5607182ed5) | unaudited | - | - | 7 | unaudited | - | - |
 | `crates/busbar-transport-grpc/src/tests` (pinned: GetBusbar/busbar-transport-grpc@5607182ed5) | unaudited | - | - | 929 | unaudited | - | - |
 | `crates/busbar-transport-grpc/tests` (pinned: GetBusbar/busbar-transport-grpc@5607182ed5) | unaudited | - | - | 1542 | unaudited | - | - |

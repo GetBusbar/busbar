@@ -23,9 +23,10 @@
 use super::recover;
 use busbar_contract::abi::hot::host::{HostCtx, PlaneHostVtable};
 use busbar_contract::abi::hot::{
-    AuthQuery, AuthResolved, Decision, DeclStr, Facts, GovRefusal, MeterOutcome, MetricSample,
-    StatusClass, Usage,
+    AuthQuery, AuthResolved, Decision, Facts, GovRefusal, MeterOutcome, MetricSample, StatusClass,
+    Usage,
 };
+use busbar_contract::abi::shared::DeclStr;
 use busbar_contract::abi::AbiPreamble;
 use core::mem::MaybeUninit;
 use std::panic::{catch_unwind, AssertUnwindSafe};

@@ -9,11 +9,21 @@
 //!
 //! No plugin of any kind loads through a JSON lane or the HOT `#[repr(C)]` decl lane: both are gone
 //! (row 84), with the handshake they shared (`busbar_abi`, `busbar_plugin_kind`).
+//!
+//! UNSAFE CODE (`BUSBAR-1.6.0.md` THE DESIGN §2: "transport, loader, store and export crates are
+//! `#![deny(unsafe_code)]` with a reviewed allow-list"): denied for the whole crate. THE REVIEWED
+//! ALLOW-LIST is every `#[allow(unsafe_code)]` below and the two named functions: the modules that
+//! cross the memory ABI (the dispatcher, the doors and axes that lend it memory, the plugin thread,
+//! the staging `memfd`, the published conformance suite) and their tests; `dlopen_on_worker`
+//! (`Library::new`); `boot`'s secret wipe (a volatile write). A new `unsafe` anywhere else does
+//! not compile until it is added here, by name, for review.
+#![deny(unsafe_code)]
 
 use libloading::Library;
 use std::path::Path;
 
 pub mod auth_axis;
+#[allow(unsafe_code)] // REVIEWED: lends the auth door its request lines, body and result buffers
 pub mod auth_door;
 /// THE BOOT STAGES the loader owns: what config uses, Discover, Select and the one load
 /// (`BUSBAR-1.6.0.md` THE DESIGN, §3).
@@ -23,9 +33,11 @@ pub mod boot;
 /// dev-dependency turns it on; no busbar build ships it. This crate's own tests drive the shipped
 /// transport row through it too (`transport_door_conformance_tests`).
 #[cfg(any(test, feature = "conformance"))]
+#[allow(unsafe_code)] // REVIEWED: the published suite drives raw doors and plants faults
 pub mod conformance;
 /// THE ONE DISPATCHER of the memory ABI (`BUSBAR-1.6.0.md` THE DESIGN, §11): one loader path, one
 /// crossing, tickets, wakes, deadlines and the watchdog, generic over the kind.
+#[allow(unsafe_code)] // REVIEWED: THE ONE DISPATCHER: every crossing of the memory ABI
 pub mod dispatch;
 /// THE ONE DURABLE-WRITE OWNER: the whole-file publish (temp, fsync, rename, fsync the holding
 /// directory) every durable file write in busbar goes through — the loader's own (fetched artifacts,
@@ -36,10 +48,13 @@ pub mod dispatch;
 /// one per process.
 pub mod durable;
 pub mod export_axis;
+#[allow(unsafe_code)] // REVIEWED: lends the export door its batch
 pub mod export_door;
 pub mod fetch;
+#[allow(unsafe_code)] // REVIEWED: the plugin thread every crossing and `dlopen` runs on
 mod ffi_thread;
 pub mod highwater;
+#[allow(unsafe_code)] // REVIEWED: lends the hook door its frame
 pub mod hook_door;
 mod host;
 /// NEVER SHIPPED: the framed connection-table stand-in with in-process far ends (`test-support`,
@@ -51,21 +66,25 @@ pub mod observe;
 pub mod open_once;
 pub mod registry;
 /// THE SECRET AXIS over the one dispatcher: every admitted secret plugin, linked or dropped in.
+#[allow(unsafe_code)] // REVIEWED: lends the secret door its names and result buffers
 pub mod secret_calls;
 // The former `busbar-plugin-sign` crate, folded in whole (DECISIONS #33): signature verify +
 // trust evaluation is the loader's OWN job, not a crate the loader reaches for. Pure data +
 // policy, no I/O -- the I/O that acts on its verdicts is `tarball`, `fetch` and `registry`.
 /// TEST ONLY: a real door restated with one `tcp` need (the bind tests' subject; no plugin).
 #[cfg(test)]
+#[allow(unsafe_code)] // TEST ONLY: raw doors and crossings
 #[path = "tests/needs_restated.rs"]
 mod needs_restated;
 pub mod sign;
+#[allow(unsafe_code)] // REVIEWED: the staged image's `memfd` and its file descriptors
 mod stage;
 /// NEVER SHIPPED: the facts the test connection tables stand in for, read from data
 /// (`stand_in.json`), so no Rust source of this crate names a transport.
 #[cfg(any(test, feature = "test-support", feature = "conformance"))]
 pub mod stand_in;
 pub mod store_adapter;
+#[allow(unsafe_code)] // REVIEWED: lends the store door its request (`Lend`)
 pub mod store_v3;
 pub mod tarball;
 /// TEST ONLY: the test connection table. Also the published conformance suite's (`conformance`):
@@ -194,6 +213,7 @@ pub fn intern_name(name: &str) -> &'static str {
 /// plugin code, on whatever thread called it, and it is as capable of arming the plugin's
 /// `pthread_key` TLS destructor as any ABI symbol, so it runs where every routed crossing runs
 /// (`ffi_thread`).
+#[allow(unsafe_code)] // REVIEWED: `Library::new`, behind the trust gate
 pub(crate) fn dlopen_on_worker(path: &std::ffi::OsStr) -> Result<Library, String> {
     // SAFETY (unchanged from the direct call this replaces): loading an operator-placed library runs
     // its init code, which is the same trust as compiling it in. Callers apply the trust gate first.
@@ -316,6 +336,7 @@ mod tests;
 /// merely the first one with real plugins that can prove it (ARCHITECT ruling EXP2-PROOF
 /// 2026-10-03: the spec's working proof of the plugin model, on the export kind's door registries).
 #[cfg(test)]
+#[allow(unsafe_code)] // TEST ONLY: raw doors and crossings
 #[path = "tests/export_conformance_tests.rs"]
 mod export_conformance_tests;
 
@@ -349,10 +370,12 @@ mod auth_verify_conformance_tests;
 /// The dispatcher's test plugin, compiled in: the LINKED door of `dispatch_tests` (the same
 /// source is the `dispatch_test_plugin` example `cdylib`, the DROPPED door).
 #[cfg(test)]
+#[allow(unsafe_code)] // TEST ONLY: raw doors and crossings
 #[path = "../tests/fixtures/dispatch_test_plugin.rs"]
 mod dispatch_test_plugin;
 
 #[cfg(test)]
+#[allow(unsafe_code)] // TEST ONLY: raw doors and crossings
 #[path = "tests/dispatch_tests.rs"]
 mod dispatch_tests;
 
@@ -365,42 +388,50 @@ mod plane_door_plugin;
 /// `kind: plane`: the plane door both ways, the plane kind's one version, and the refusal of a
 /// plane with no door.
 #[cfg(test)]
+#[allow(unsafe_code)] // TEST ONLY: raw doors and crossings
 #[path = "tests/plane_conformance_tests.rs"]
 mod plane_conformance_tests;
 
 /// The secret and export kind's answer checks, through the dispatcher's `Kind` adapter.
 #[cfg(test)]
+#[allow(unsafe_code)] // TEST ONLY: raw doors and crossings
 #[path = "tests/dispatch_kind_secret_export_tests.rs"]
 mod dispatch_kind_secret_export_tests;
 
 /// The transport kind's answer checks, through the dispatcher's `Kind` adapter.
 #[cfg(test)]
+#[allow(unsafe_code)] // TEST ONLY: raw doors and crossings
 #[path = "tests/dispatch_kind_transport_tests.rs"]
 mod dispatch_kind_transport_tests;
 
 /// The plane kind's answer checks, through the dispatcher's `Kind` adapter.
 #[cfg(test)]
+#[allow(unsafe_code)] // TEST ONLY: raw doors and crossings
 #[path = "tests/dispatch_kind_plane_tests.rs"]
 mod dispatch_kind_plane_tests;
 
 /// The store kind's answer checks, through the dispatcher's `Kind` adapter.
 #[cfg(test)]
+#[allow(unsafe_code)] // TEST ONLY: raw doors and crossings
 #[path = "tests/dispatch_kind_store_tests.rs"]
 mod dispatch_kind_store_tests;
 
 /// The hook kind's answer checks, through the dispatcher's `Kind` adapter.
 #[cfg(test)]
+#[allow(unsafe_code)] // TEST ONLY: raw doors and crossings
 #[path = "tests/dispatch_kind_hook_tests.rs"]
 mod dispatch_kind_hook_tests;
 
 /// The auth kind's answer checks, through the dispatcher's `Kind` adapter.
 #[cfg(test)]
+#[allow(unsafe_code)] // TEST ONLY: raw doors and crossings
 #[path = "tests/dispatch_kind_auth_tests.rs"]
 mod dispatch_kind_auth_tests;
 
 /// The both-ways harness on the memory ABI (TODO ABI-b4): one door loaded LINKED and DROPPED IN
 /// through the one dispatcher, one script, two transcripts compared.
 #[cfg(test)]
+#[allow(unsafe_code)] // TEST ONLY: raw doors and crossings
 #[path = "tests/door_both_ways.rs"]
 mod door_both_ways;
 
@@ -411,6 +442,7 @@ mod store_door_conformance_tests;
 
 /// `kind: secret` through both doors on the memory ABI: resolve identical, a broken one refused.
 #[cfg(test)]
+#[allow(unsafe_code)] // TEST ONLY: raw doors and crossings
 #[path = "tests/secret_door_conformance_tests.rs"]
 mod secret_door_conformance_tests;
 

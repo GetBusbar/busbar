@@ -69,7 +69,6 @@
 # slot panics BY DESIGN because nothing is ever meant to dispatch through it. Measured: the only
 # consumers of either constant in the whole tree are this crate's own tests —
 #   crates/busbar-contract/src/abi/hot/tests/host_tests.rs:84,140,150,157,169,234
-#   crates/busbar-contract/src/abi/hot/tests/decl_tests.rs:29
 # A fixture whose callers are the tests that check its types is not a deferral, and these rows do not
 # claim a future release will fix it. They are exempt because the thing they mark is FINISHED.
 #
@@ -118,16 +117,6 @@
 # no waiver rows remain for it. (Any residual "dev-only until DoD" prose outside busbar-voice src — e.g.
 # the config-schema tracking note or the composition-root feature comment — is its own row, not this one's.)
 
-crates/busbar-contract/src/abi/hot/decl.rs:427	class-B the `PlaneDecl::STUB` label on the stub module's doc comment: it DOCUMENTS the fixture below it; the marker is the word `PlaneDecl::STUB` in prose, not a capability anyone can call. [owner: architect] [retires: KP-36]
-crates/busbar-contract/src/abi/hot/decl.rs:439	class-A STUB fn-pointer slot `PlaneDecl::config_validate`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: KP-36]
-crates/busbar-contract/src/abi/hot/decl.rs:446	class-A STUB fn-pointer slot `PlaneDecl::build`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: KP-36]
-crates/busbar-contract/src/abi/hot/decl.rs:450	class-A STUB fn-pointer slot `PlaneDecl::hydrate`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: KP-36]
-crates/busbar-contract/src/abi/hot/decl.rs:454	class-A STUB fn-pointer slot `PlaneDecl::start`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: KP-36]
-crates/busbar-contract/src/abi/hot/decl.rs:463	class-A STUB fn-pointer slot `PlaneDecl::admin_routes`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: KP-36]
-crates/busbar-contract/src/abi/hot/decl.rs:472	class-A STUB fn-pointer slot `PlaneDecl::openapi`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: KP-36]
-crates/busbar-contract/src/abi/hot/decl.rs:481	class-A STUB fn-pointer slot `PlaneDecl::claims`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: KP-36]
-crates/busbar-contract/src/abi/hot/decl.rs:490	class-A STUB fn-pointer slot `PlaneDecl::admission`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: KP-36]
-crates/busbar-contract/src/abi/hot/decl.rs:497	class-A STUB fn-pointer slot `PlaneDecl::dispatch`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: KP-36]
 
 # ── THE FOUR COMMENT TAGS, DECLARED FOR THE FIRST TIME, 2026-09-23 ──────────────────────────────
 # Until 2026-09-23 this gate matched `TODO` / `FIXME` / `XXX` / `HACK` WITH NOTHING. The playbook

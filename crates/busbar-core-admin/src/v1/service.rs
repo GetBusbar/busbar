@@ -104,7 +104,7 @@ use super::named_def_views::{export_def_view, identity_provider_view, unparseabl
 /// at ITS OWN arrival instant, resolved through the dated history by
 /// [`derive_spend_micros_row_at_card`] against the entry `card_at(row.priced_from_ms)` resolves to.
 /// This derivation is what the read answers when there is no dated history to resolve against — a
-/// build whose composition root installed no [`UsageRateHistory`], or a row whose instant falls in
+/// build whose composition root installed no rate dater, or a row whose instant falls in
 /// a hole no entry of the snapshot covers.
 /// It prices at the CURRENT card — the previous release's reading — and prices nothing here: the
 /// row goes to the cost unit's own row read,
@@ -226,40 +226,16 @@ pub(crate) fn usage_refusal(
 // figure and billed at another.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/// **THE DATED-HISTORY READ SEAM** — the one question `GET /api/v1/admin/usage` asks of the
-/// process's rate-card history, answered by whoever holds it.
+/// **THE DATED-HISTORY READ** — the one question `GET /api/v1/admin/usage` asks of the process's
+/// rate-card history, PINNED for the length of one read: a card appended while the read is in
+/// flight must not price half of one response's rows against one history and half against another.
 ///
-/// Shaped after [`busbar_kernel::rate_apply`] and for the same reason: the composition root is the
-/// only place entitled to hold a deployment's history, so the root installs an implementor once at
-/// boot ([`install_usage_rate_history`]) and this crate reaches it by name. A build that installed
-/// none answers `None` and the read derives exactly as the previous release did — a no-op rather
-/// than a swap quietly dropped.
-pub trait UsageRateHistory: Send + Sync {
-    /// The process's dated history, PINNED for the length of one read.
-    ///
-    /// Pinned rather than read per row: a card appended while the read is in flight must not price
-    /// half of one response's rows against one history and half against another.
-    ///
-    /// `None` for a node that has resolved no configuration yet — which is a node with no entry a
-    /// row could resolve to, not a node whose rows are free.
-    fn history(&self) -> Option<Arc<busbar_kernel::cost::History>>;
-}
-
-/// THE PROCESS-WIDE dated-history source, installed once by the composition root.
-static USAGE_RATE_HISTORY: OnceLock<&'static dyn UsageRateHistory> = OnceLock::new();
-
-/// Install the process's dated-history source — the composition root's one write, at boot, before
-/// the first usage read. Idempotent by `OnceLock`: a second install is a no-op.
-///
-/// Until this is called the usage read prices off the current card exactly as the previous release
-/// did, which is the honest answer for a binary with no root ledger in it.
-pub fn install_usage_rate_history(source: &'static dyn UsageRateHistory) {
-    let _ = USAGE_RATE_HISTORY.set(source);
-}
-
-/// The installed source, if the composition root installed one.
-fn installed_usage_rate_history() -> Option<&'static dyn UsageRateHistory> {
-    USAGE_RATE_HISTORY.get().copied()
+/// The history is the kernel's rate dater's ([`busbar_kernel::rate_apply::dated_history`]) — the
+/// one the composition root installs at boot and the budget ledger's reads price by — so this crate
+/// holds no seam of its own (R6). `None` for a build that installed no dater, or a node that has
+/// resolved no configuration yet: the read then derives exactly as the previous release did.
+fn dated_rate_history() -> Option<Arc<busbar_kernel::cost::History>> {
+    busbar_kernel::rate_apply::dated_history()
 }
 
 /// **THE INSTANT A METERING ROW RESOLVES AT**: its own FIRST instant — the later of the bucket's
@@ -709,25 +685,14 @@ pub fn auth_modules_compiled_in() -> Vec<&'static str> {
     modules
 }
 
-/// The hook rows this binary LINKS, by the name every surface prints (the root's `linked-name` row for
-/// each `hooks`-axis row), installed once by the composition root.
-static HOOK_PLUGINS: OnceLock<&'static [&'static str]> = OnceLock::new();
-
-/// Install the names of the hook rows this build links — the composition root's one write, at boot,
-/// before the first info read. This crate names no hook plugin (Law 1): the list is the root's data.
-/// Idempotent by `OnceLock`: a second install is a no-op.
-pub fn install_hook_plugins(names: &'static [&'static str]) {
-    let _ = HOOK_PLUGINS.set(names);
-}
-
-/// The removable hook plugins COMPILED INTO this binary: the linked hook rows the composition root
-/// installed ([`install_hook_plugins`]); none before it does. Excludes the always-present,
-/// non-removable weighted SWRR floor, which is reported separately (as `weighted_floor` / the
-/// `weighted` compiled-in entry).
+/// The removable hook plugins COMPILED INTO this binary: the hook rows this build LINKS, by the name
+/// every surface prints, read off the composition root's install record
+/// (`busbar_kernel::preflight::RootInstall::hook_names`) as the store catalog reads its `stores`.
+/// This crate names no hook plugin (Law 1) and holds no seam of its own (R6): the list is the
+/// root's data. Excludes the always-present, non-removable weighted SWRR floor, which is reported
+/// separately (as `weighted_floor` / the `weighted` compiled-in entry).
 pub(crate) fn hook_plugins_compiled_in() -> Vec<&'static str> {
-    HOOK_PLUGINS
-        .get()
-        .map_or_else(Vec::new, |names| names.to_vec())
+    busbar_kernel::preflight::root_rows().hook_names.to_vec()
 }
 
 /// Longest a plugin filename may be — generous headroom over any real tarball name, guarding the
@@ -1203,10 +1168,9 @@ fn manifest_schema_url_and_error(
 /// transport builds ONE and hands `Arc<AdminService>` to its routes.
 pub(crate) struct AdminService {
     app: Arc<App>,
-    /// The dated rate-card history the usage read resolves against — the process's, installed once
-    /// by the composition root ([`install_usage_rate_history`]). `None` in a build that installed
-    /// none, and the read then prices exactly as the previous release did.
-    rate_history: Option<&'static dyn UsageRateHistory>,
+    /// A dated rate-card history a test pins the usage read to in place of the process's
+    /// ([`dated_rate_history`]). `None` on every production construction.
+    rate_history: Option<Arc<busbar_kernel::cost::History>>,
 }
 
 // EVERY ADMIN OPERATION — the `impl AdminService` block — is in the file this line names, moved

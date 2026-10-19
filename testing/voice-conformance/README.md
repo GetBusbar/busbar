@@ -12,8 +12,8 @@ shells out to one dev-only harness, the `voice_conform` binary of the testkit cr
 `busbar-plugin-loader` **both ways** (ARCHITECT Q6):
 
 - **linked** — `busbar_plane_streaming::door::door`, through `load_linked`;
-- **dropped** — the `streaming_door` example `cdylib`, dlopened through `load_dropped` against the
-  linked row's own Statement.
+- **dropped** — the plane's cdylib twin (`busbar-plane-streaming-plugin`), dlopened through
+  `load_dropped` against the linked row's own Statement.
 
 Each assertion drives a fresh instance of each door with one script and is PASS only when
 
@@ -25,10 +25,11 @@ Each assertion drives a fresh instance of each door with one script and is PASS 
    subject; every conformance leg must then go RED.
 
 `lib/conform-bin.sh` builds the pair once (`cargo build -p voice-conformance-harness --bin
-voice_conform` and `cargo build -p busbar-plane-streaming --example streaming_door`);
-`VOICE_CONFORM_BIN` names a prebuilt harness (checked for staleness against the plane, loader,
-contract and harness sources), `VOICE_CONFORM_DOOR` a dropped door that is not in the profile's
-`examples/` beside it.
+voice_conform`, and the cdylib twin from the workspace this checkout's lock pins the plane at:
+`cargo build --locked --manifest-path <that workspace> -p busbar-plane-streaming-plugin
+--target-dir <this target>`); `VOICE_CONFORM_BIN` names a prebuilt harness (checked for staleness
+against the plane, loader, contract and harness sources), `VOICE_CONFORM_DOOR` a dropped door that
+is not in the profile directory beside it.
 
 ## The legs — each judges the DOOR'S half of its seam
 

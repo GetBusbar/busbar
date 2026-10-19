@@ -792,11 +792,11 @@ where
 }
 
 /// One taken place among the lookups in flight; dropping it gives the place back.
-struct LookupPlace(&'static AtomicUsize);
+pub(crate) struct LookupPlace(&'static AtomicUsize);
 
 impl LookupPlace {
     /// Takes a place if fewer than `cap` are taken.
-    fn take(cap: usize, in_flight: &'static AtomicUsize) -> Option<Self> {
+    pub(crate) fn take(cap: usize, in_flight: &'static AtomicUsize) -> Option<Self> {
         in_flight
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
                 (n < cap).then_some(n + 1)

@@ -1,12 +1,13 @@
 //! A ROW'S CELLS ON THE TSV WIRE: `cargo xtask gate --format=tsv` prints each cell of a row whose
 //! detail is a list of coded findings as its own indented line under the row.
 //!
-//! WHY. busbar-release judges a ledger row PER CELL (BUSBAR-1.6.0.md Law 9, "arm at today's
-//! number"; its `baseline::cells`): a cell standing red at the base and not grown is the base's
-//! debt, a new red cell or one whose figure rose is the candidate's. A generic CI that compares
-//! failing row ids between a change and its target sees one id, `kind-isolation:law0`, for every
-//! cell of that row, so a second cell going red inside an already-red row is invisible to it. One
-//! line per cell gives such a reader a failing id per cell, the same unit busbar-release judges.
+//! WHY. A ledger row is judged PER CELL (BUSBAR-1.6.0.md Law 9, "arm at today's number"): a cell
+//! standing red at the base and not grown is the base's debt, a new red cell or one whose figure
+//! rose is the candidate's. ModernCI, which judges every move (Part 6, "BUSBAR-RELEASE RETIRED
+//! FROM BUSBAR"), compares failing ids between a change and its target; with one line per row it
+//! would see one id, `kind-isolation:law0`, for every cell of that row, so a second cell going red
+//! inside an already-red row would be invisible to it. One line per cell gives it a failing id per
+//! cell.
 //!
 //! THE LINE: a leading tab, then `<row-id>/<cell>`, the cell's `PASS`/`FAIL`, its
 //! `<figure>/<ceiling>` (`-` for a side the finding does not state), and the cell's finding(s):
@@ -16,18 +17,18 @@
 //! \tkind-isolation:law0/busbar×plane\tFAIL\t828/826\tlaw0-rise busbar × plane 828 hit(s) ...
 //! ```
 //!
-//! `<cell>` is the key busbar-release's `baseline::cells` files the finding under (the words after
-//! the code up to the first count, `busbar × plane`) with its spaces removed, so the id is one
-//! token. THE LEADING TAB is what keeps every existing reader where it was: busbar-release's
-//! `gate::parse_tsv_rows` reads column 1 as the row id and drops a line whose id is empty, so its
-//! rows, and the JSON report built from them, are byte-identical with or without the cell lines; a
-//! reader that trims the line reads the cell as a row. The row line itself is unchanged.
+//! `<cell>` is the finding's cell key (the words after the code up to the first count,
+//! `busbar × plane`) with its spaces removed, so the id is one token. THE LEADING TAB is what keeps
+//! every row reader where it was: a reader keyed on column 1 drops a line whose id is empty, so its
+//! rows, and any report built from them, are byte-identical with or without the cell lines; a
+//! reader that trims the line (ModernCI's) reads the cell as a row. The row line itself is
+//! unchanged.
 //!
 //! WHERE THE CELLS COME FROM. A gate that measured the row cell by cell attaches the cells to the
 //! row ([`Row::cells`], `kind-isolation:law0`: every neutral crate × axis, the at-ceiling ones
-//! PASS). Any other FAIL row is decomposed by [`findings`], the port of busbar-release's own
-//! `baseline::findings` / `finding_parts`, so the rows decomposed are exactly the rows it
-//! decomposes and every cell is keyed as it keys it. A PASS or SKIP row, a FAIL row that is not a
+//! PASS). Any other FAIL row is decomposed by [`findings`] / [`finding_parts`] (first ported from
+//! the release engine's baseline reader, retired with it; this is now the one definition). A PASS
+//! or SKIP row, a FAIL row that is not a
 //! list of coded findings, and one whose findings all fall in one unnamed cell (the row itself),
 //! keeps its single line.
 
@@ -95,8 +96,8 @@ pub fn cells_of(row: &Row) -> Vec<Cell> {
         .into_iter()
         .map(|(key, mut found)| {
             found.sort();
-            // The cell's figure is its highest finding's (busbar-release `baseline::grown` reads
-            // the max), and the ceiling the one that finding states.
+            // The cell's figure is its highest finding's, and the ceiling the one that finding
+            // states.
             let top = found
                 .iter()
                 .max_by_key(|f| finding_parts(f).2)
@@ -116,7 +117,7 @@ pub fn cells_of(row: &Row) -> Vec<Cell> {
 /// The coded findings of a FLATTENED row detail, `<head>: <finding> | <finding> ...`, each finding
 /// opening with its code (`law0-rise busbar × vendor 90 hit(s) against a ceiling of 89: ...`).
 /// `None` when the detail is not such a list. A ` | ` not followed by a code continues the finding
-/// before it. A verbatim port of busbar-release `baseline::findings`.
+/// before it.
 #[must_use]
 pub fn findings(detail: &str) -> Option<Vec<String>> {
     let opens = |s: &str| {
@@ -148,8 +149,7 @@ pub fn findings(detail: &str) -> Option<Vec<String>> {
 }
 
 /// A finding's code, its cell (the words after the code up to its first count, `busbar × vendor`),
-/// and that count (its figure, `None` when it states none). A verbatim port of busbar-release
-/// `baseline::finding_parts`.
+/// and that count (its figure, `None` when it states none).
 #[must_use]
 pub fn finding_parts(f: &str) -> (&str, String, Option<u64>) {
     let mut words = f.split_whitespace();

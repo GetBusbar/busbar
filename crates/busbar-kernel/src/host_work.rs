@@ -23,8 +23,10 @@
 //! * **Durable before answered.** Every open and settle is written to the store before it is
 //!   answered; a write the store refuses answers FAILED and leaves the book as it was.
 //! * **Across a restart.** A reference not in memory is read from the store, and an instance's
-//!   rows are read once ([`WorkBook::load`]) before its first open, so the bound counts the live
-//!   handles an earlier process left.
+//!   rows are read once ([`WorkBook::load`]) before its first open. A handle an earlier process
+//!   left holds NO slot of the bound (audit P-M8): its work died with the process that opened
+//!   it, so admission releases it at the first load and the instance admits up to its full bound
+//!   again. The handle stays findable; settling it is its plane's.
 //!
 //! The row is at most [`busbar_contract::bounded::MAX_RECORD_BYTES`]: the handle's record is capped
 //! at [`MAX_WORK_RECORD`] (the body lives in the plugin's own records; the handle's record names it).
@@ -381,13 +383,15 @@ impl WorkBook {
 
     /// Reserve a live handle for `work` unless `instance` already holds `max_live`: the handle, or
     /// `None` at the bound. The reservation is the bound's: two racing opens never both pass it.
+    /// Only a handle opened in THIS process holds a slot: one read from the store (`opened_by` is
+    /// `None`) is an earlier process's, whose work died with it.
     #[must_use]
     pub fn reserve(&self, work: Work, max_live: usize) -> Option<u64> {
         let mut book = self.lock();
         let live = book
             .handles
             .values()
-            .filter(|w| w.live && w.instance == work.instance)
+            .filter(|w| w.live && w.opened_by.is_some() && w.instance == work.instance)
             .count();
         if live >= max_live {
             return None;

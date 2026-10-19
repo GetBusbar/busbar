@@ -41,17 +41,15 @@
 
 use core::mem::MaybeUninit;
 
-/// ONE DECLARATIVE LIST PER TABLE (the TRANSPORT-STACK shrink): each slot's fn-pointer type and the
-/// `#[repr(C)]` table holding one `Option` of each — the table's size header first, then the slots in
-/// the order listed, each named for the trait method it lowers. The coverage witnesses
-/// (`tests/transport_slot_coverage.rs`, `tests/conn_slot_coverage.rs`) read these lists and hold them
-/// to the traits. A table's slots answer [`hot::transport::RawWireOutcome`] unless the list states
-/// another outcome byte (`-> Outcome`).
+/// ONE DECLARATIVE LIST PER TABLE: each slot's fn-pointer type and the `#[repr(C)]` table holding
+/// one `Option` of each — the table's size header first, then the slots in the order listed, each
+/// named for the trait method it lowers, each answering the outcome byte the list states (`->
+/// Outcome`). The coverage witness (`tests/conn_slot_coverage.rs`) reads the list and holds it to
+/// the trait.
 ///
-/// A list led by `extern "C";` lowers to `extern "C"` slots (THE DESIGN, the signed kind-ABI
-/// design's finding M3: unwinding across a foreign cdylib is undefined behaviour, so a slot catches
-/// its own panic and answers its fault byte, and a panic that escapes it aborts). A list without it
-/// is still `extern "C-unwind"`, each one a `one-memory-abi:c-unwind` row until it is lowered.
+/// Every slot is `extern "C"` (THE DESIGN, the signed kind-ABI design's finding M3: unwinding across
+/// a foreign cdylib is undefined behaviour, so a slot catches its own panic and answers its fault
+/// byte, and a panic that escapes it aborts).
 macro_rules! slot_table {
     (
         extern "C";
@@ -66,34 +64,6 @@ macro_rules! slot_table {
         $(
             $(#[$sdoc])*
             pub type $alias = extern "C" fn($($arg: $ty),*) -> $ret;
-        )*
-        slot_table!(@table $(#[$doc])* $table { $($slot: $alias),* });
-    };
-    (
-        $(#[$doc:meta])*
-        pub struct $table:ident lowers $trait:ident {
-            $($body:tt)*
-        }
-    ) => {
-        slot_table! {
-            $(#[$doc])*
-            pub struct $table lowers $trait -> RawWireOutcome {
-                $($body)*
-            }
-        }
-    };
-    (
-        $(#[$doc:meta])*
-        pub struct $table:ident lowers $trait:ident -> $ret:ty {
-            $(
-                $(#[$sdoc:meta])*
-                $slot:ident: $alias:ident = fn($($arg:ident: $ty:ty),* $(,)?);
-            )*
-        }
-    ) => {
-        $(
-            $(#[$sdoc])*
-            pub type $alias = extern "C-unwind" fn($($arg: $ty),*) -> $ret;
         )*
         slot_table!(@table $(#[$doc])* $table { $($slot: $alias),* });
     };

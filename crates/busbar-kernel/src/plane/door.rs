@@ -134,7 +134,7 @@ fn declaration_of(reg: &PlaneRegistration) -> PlaneDeclaration {
         fee_units: reg.fee_units.clone().leak(),
         metric_families: &[],
         record_kinds: reg.record_kinds.clone().leak(),
-        required_config_sections: &[],
+        required_config_sections: reg.requires.clone().leak(),
         trust_keys: reg.trust_keys.clone().leak(),
         caller_credential_refusal: reg.caller_credential_refusal,
         served_op_classes: &[],

@@ -46,7 +46,6 @@ fn every_pod_leads_with_size_version() {
     assert_preamble!(EgressHead);
     assert_preamble!(EgressOpen);
     assert_preamble!(EgressFault);
-    assert_preamble!(CmdDesc);
     assert_preamble!(FramingDesc);
     assert_preamble!(JournalQuery);
     assert_preamble!(JournalStreamDesc);

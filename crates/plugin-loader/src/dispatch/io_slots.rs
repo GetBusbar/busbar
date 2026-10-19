@@ -208,29 +208,18 @@ fn slot<I: Copy>(
 /// # Safety
 /// `s` is the caller's, live for the call.
 unsafe fn text<'a>(s: AbiStr) -> Option<&'a str> {
-    if s.len == 0 {
-        return Some("");
-    }
-    if s.ptr.is_null() {
-        return None;
-    }
-    // SAFETY: the caller's range, live for the call.
-    std::str::from_utf8(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }).ok()
+    // SAFETY: the caller's range, live for the call; its length capped before the slice is formed.
+    std::str::from_utf8(unsafe { super::validate::lent_str(s) }?).ok()
 }
 
-/// A caller's list, checked: `None` for NULL with a count.
+/// A caller's list, checked: `None` for NULL with a count, or a count over the hard byte maximum
+/// (refused before the slice is formed, THE DESIGN §11.13 M1).
 ///
 /// # Safety
 /// `ptr` names `len` of the caller's `T`s, live for the call.
 unsafe fn list<'a, T>(ptr: *const T, len: usize) -> Option<&'a [T]> {
-    if len == 0 {
-        return Some(&[]);
-    }
-    if ptr.is_null() {
-        return None;
-    }
     // SAFETY: the caller's list, live for the call.
-    Some(unsafe { std::slice::from_raw_parts(ptr, len) })
+    unsafe { super::validate::lent(ptr, len) }
 }
 
 /// Write `addr` into the caller's address buffer (checked at least `MAX_ADDR`); its length.
@@ -290,14 +279,10 @@ c_entry! {
 
     fn read(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
         slot::<ReadIn>(ctx, input, out, op::READ, |i, c, ticket| {
-            if i.cap > 0 && i.buf.is_null() {
+            // SAFETY: the caller's buffer, writable for `cap` bytes for the call; NULL with a
+            // capacity, or a capacity over the hard byte maximum, is refused before it is formed.
+            let Some(buf) = (unsafe { super::validate::lent_mut(i.buf, i.cap) }) else {
                 return Answer::with(Outcome::Fault, "");
-            }
-            let buf: &mut [u8] = if i.cap == 0 {
-                &mut []
-            } else {
-                // SAFETY: the caller's buffer, writable for `cap` bytes for the call.
-                unsafe { std::slice::from_raw_parts_mut(i.buf, i.cap) }
             };
             let p = c.io.read(c.owner, i.handle, buf, &c.waker(ticket));
             Answer::polled(p, |n| Answer::ready(0, n as u64))
@@ -393,3 +378,7 @@ c_entry! {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/io_slots_tests.rs"]
+mod tests;

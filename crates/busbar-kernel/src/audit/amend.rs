@@ -23,10 +23,12 @@ pub use busbar_kernel_audit::{
     Access, Adjust, Subject,
 };
 
-static KERNEL: std::sync::OnceLock<crate::teller::Kernel> = std::sync::OnceLock::new();
-
+/// The audit step's pass for a journal record, minted where it is used from the kernel's seal
+/// (`crate::seal::acquire`: a kernel service that mints a kernel value takes the seal where it
+/// mints). No second `Kernel` kept in a process static: THE DESIGN §11.11 adds no kernel `OnceLock`
+/// seam beyond the two R6 exempts (audit K4 #1).
 fn pass() -> Pass<Audit> {
-    Pass::<Audit>::mint(KERNEL.get_or_init(crate::teller::Kernel::new).seal())
+    Pass::<Audit>::mint(&crate::seal::acquire())
 }
 
 /// A hook was handed a unit's content — and the caller's identity, when granted.

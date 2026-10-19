@@ -605,11 +605,15 @@ impl DoorApply {
             .and_then(|p| p.downcast_ref::<crate::root::door_steps::DoorConfig>())
             .map(|c| owned_sections(&self.served_facts, &c.sections))
             .unwrap_or_default();
+        // A CONFIG APPLY IS CONFIG TIME (BUSBAR-1.6.0.md l.1468, R4): the proof is minted here,
+        // once, and handed down to every credential this refresh resolves.
+        let scope = busbar_contract::config_time::ConfigScope::config_time();
         match self.refreshed(
             &section,
             &owned,
             now.generation + 1,
             Arc::clone(&app.secret_resolver) as Arc<dyn busbar_contract::secret::SecretResolve>,
+            &scope,
         ) {
             Ok(next) => {
                 *self
@@ -637,6 +641,7 @@ impl DoorApply {
         owned: &serde_json::Map<String, serde_json::Value>,
         generation: u64,
         secrets: Arc<dyn busbar_contract::secret::SecretResolve>,
+        scope: &busbar_contract::config_time::ConfigScope,
     ) -> Result<DoorLive, String> {
         let settings = if section.is_null() {
             Vec::new()
@@ -671,6 +676,7 @@ impl DoorApply {
                     &pools,
                     &self.served_facts,
                     &reach,
+                    scope,
                 )?;
                 Some(Arc::new(crate::root::door_steps::compose_egress(
                     &self.facts,
@@ -756,6 +762,9 @@ impl DoorAppliers {
         sections: &BTreeMap<&'static str, serde_yaml::Value>,
         egress: &DoorEgress<'_>,
     ) {
+        // A CONFIG APPLY IS CONFIG TIME (BUSBAR-1.6.0.md l.1468, R4): the proof is minted here,
+        // once, and handed down to every credential the re-seal resolves.
+        let scope = busbar_contract::config_time::ConfigScope::config_time();
         for p in &self.0 {
             let facts = &p.served_facts;
             if facts.section != busbar_contract::section::RESERVED_POOLS_KEY {
@@ -802,6 +811,7 @@ impl DoorAppliers {
                 Some(egress),
                 next,
                 p.facts.bench_below_trip_threshold,
+                &scope,
             ) {
                 Ok(mut live) => {
                     arm_probes(&p.driver, facts, &mut live, Some(egress), &p.probe_schedule);
@@ -1391,6 +1401,9 @@ pub fn compose_planes(
     egress: Option<&DoorEgress<'_>>,
     hooks: Option<&HookStage>,
 ) -> Result<Served, String> {
+    // BOOT IS CONFIG TIME (BUSBAR-1.6.0.md l.1468, R4): the proof is minted here, once, and handed
+    // down to every member credential the planes' egress resolves.
+    let scope = busbar_contract::config_time::ConfigScope::config_time();
     compose_planes_over(
         &crate::LINKED,
         doors,
@@ -1401,6 +1414,7 @@ pub fn compose_planes(
         money,
         egress,
         hooks,
+        &scope,
     )
 }
 
@@ -1421,6 +1435,7 @@ pub(crate) fn compose_planes_over(
     money: &dyn Fn() -> Arc<PlaneMoney>,
     egress: Option<&DoorEgress<'_>>,
     hooks: Option<&HookStage>,
+    scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<Served, String> {
     let mut served = Served::default();
     if doors.is_empty() {
@@ -1591,6 +1606,7 @@ pub(crate) fn compose_planes_over(
             egress,
             1,
             bench,
+            scope,
         )?;
         // The door's own requests to its members carry the members' bindings (ARCHITECT round 5
         // Q-L3B-DOOR-EXCHANGE), held on the connection table its need is declared on.
@@ -1599,9 +1615,14 @@ pub(crate) fn compose_planes_over(
             // folded in.
             let table = routes_of(section, egress.reach.catalog);
             let pools = DoorPools::of(&table);
-            let routes =
-                crate::root::door_steps::member_routes(&table, &pools, &served_facts, egress.reach)
-                    .map_err(|e| format!("{instance}: {e}"))?;
+            let routes = crate::root::door_steps::member_routes(
+                &table,
+                &pools,
+                &served_facts,
+                egress.reach,
+                scope,
+            )
+            .map_err(|e| format!("{instance}: {e}"))?;
             crate::root::door_steps::bind_member_fetches(
                 &served_facts,
                 &routes,
@@ -1727,6 +1748,7 @@ fn seal_live(
     egress: Option<&DoorEgress<'_>>,
     generation: u64,
     bench_below_trip_threshold: Option<bool>,
+    scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<DoorLive, String> {
     let models_plane = served_facts.section == busbar_contract::section::RESERVED_POOLS_KEY;
     let card_plane = if models_plane { "" } else { plugin.name() };
@@ -1779,9 +1801,14 @@ fn seal_live(
     let pools = DoorPools::of(&table);
     let egress = match egress {
         Some(egress) => {
-            let routes =
-                crate::root::door_steps::member_routes(&table, &pools, served_facts, egress.reach)
-                    .map_err(|e| format!("{instance}: {e}"))?;
+            let routes = crate::root::door_steps::member_routes(
+                &table,
+                &pools,
+                served_facts,
+                egress.reach,
+                scope,
+            )
+            .map_err(|e| format!("{instance}: {e}"))?;
             let sealed = match egress.reach.models {
                 Some(models) if models_plane => crate::root::model_egress::compose(
                     &facts,
@@ -3146,14 +3173,23 @@ impl DataRoutes {
             joining,
         } = opened;
         let joining = Arc::new(Mutex::new(Some(joining)));
+        // The admitted unit, so an open whose plane never states its head can end its session.
+        let admitted_unit: Arc<Mutex<Option<u64>>> = Arc::default();
         let admitted = {
             let joining = Arc::clone(&joining);
+            let admitted_unit = Arc::clone(&admitted_unit);
             Box::new(move |unit: u64| {
                 let j = joining
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .take();
-                j.map_or(Err("admitted twice".to_owned()), |j| j.admit(unit))
+                let joined = j.map_or(Err("admitted twice".to_owned()), |j| j.admit(unit));
+                if joined.is_ok() {
+                    *admitted_unit
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(unit);
+                }
+                joined
             }) as Box<dyn FnOnce(u64) -> Result<(), String> + Send>
         };
         let ended = Box::new(|unit: u64| crate::root::connector::the().unpair(unit))
@@ -3167,11 +3203,25 @@ impl DataRoutes {
         tokio::spawn(self.session(door, caller, arrival, verdict, attach));
         match said.await {
             Ok(Ok(())) => {
-                // The plane's head where it stated one before the session ran, else the created
-                // status alone; the body is the framer's own description.
-                let mut head = head;
-                let (status, fields) = head.try_recv().unwrap_or((CREATED, Vec::new()));
-                stated((status, fields), Body::from(description))
+                // THE PLANE'S HEAD, stated on the session's first crossing (ARCHITECT row 132
+                // ruling (a)): the open answers under it, the body the framer's own description.
+                // A plane that states none within the open's bound is the open's failure: its
+                // session ends, and the caller is refused, never answered without the plane.
+                match serve_datagram::plane_head(head, OPEN_HEAD_WAIT).await {
+                    Some((status, fields)) => stated((status, fields), Body::from(description)),
+                    None => {
+                        let unit = *admitted_unit
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if let Some(unit) = unit {
+                            crate::root::connector::the().unpair(unit);
+                        }
+                        stated(
+                            (refusal_status(ReasonCode::PlanePanic), Vec::new()),
+                            Body::empty(),
+                        )
+                    }
+                }
             }
             Ok(Err(Some(rendered))) => stated(
                 (rendered.status, rendered.fields),
@@ -3809,6 +3859,9 @@ const SWITCHED: u32 = 101;
 /// The status a datagram session's caller is answered with when its plane states no head of its
 /// own: the session was created (`201 Created`).
 const CREATED: u32 = 201;
+
+/// How long a datagram session's open waits for its plane's head: the connector's open bound.
+const OPEN_HEAD_WAIT: std::time::Duration = busbar_core_connector::compose::DEFAULT_OPEN_TIMEOUT;
 
 /// WHAT A SESSION'S CARRIER DOES AROUND ITS ADMISSION: the status its caller was answered with
 /// (the session's money settles on it); what runs once the unit is admitted, before the session

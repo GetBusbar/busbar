@@ -24,8 +24,6 @@
 //! so no renderer can drift from the others again. It lives here, beside the gates, because it
 //! names every plane's renderer and the tree's crates may not name one another's planes.
 
-use std::path::{Path, PathBuf};
-
 /// The renderers, by file and function: each turns a reason into wire bytes, and each must ask the
 /// one classification rather than decide for itself.
 const RENDERERS: &[(&str, &[&str])] = &[
@@ -60,12 +58,14 @@ const CLASSIFIER: (&str, &str) = ("crates/busbar-contract/src/abi/plane/mod.rs",
 /// The reason vocabulary's one written table: `Kernel => "spelling", Contract,`.
 const VOCABULARY: &str = "crates/busbar-contract/src/caps/seat_verdict.rs";
 
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
-}
-
+/// The tree, with the planes that left it for their own repos laid at the paths they had
+/// (`Ctx::workspace`'s base layer, ARCHITECT row 106 (A)): the streaming plane's renderer is read
+/// from the checkout the root pins, so it is scanned exactly as when it lived here.
 fn read(file: &str) -> String {
-    std::fs::read_to_string(root().join(file)).unwrap_or_else(|e| panic!("{file} is readable: {e}"))
+    xtask::ctx::Ctx::workspace()
+        .expect("the workspace (with its pinned planes) opens")
+        .read(file)
+        .unwrap_or_else(|e| panic!("{file} is readable: {e}"))
 }
 
 /// One reason: its kernel name, its spelling, its contract name.

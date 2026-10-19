@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE CONFIG-TIME PROOF (`BUSBAR-1.6.0.md` THE DESIGN §11.11 R4 as the OWNER amended it,
+//! THE CONFIG-TIME PROOF (`BUSBAR-1.6.0.md` THE DESIGN Q-DISK R4 as the OWNER amended it,
 //! 2026-10-13): the host-owned bounded disk lane serves the disk work of the store and export
 //! kinds and the secret kind's source that reads a file — the last ONLY at config time (boot, a
 //! config apply, a refresh), and NEVER from a request path.

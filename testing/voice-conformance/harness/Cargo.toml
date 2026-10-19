@@ -20,9 +20,10 @@ path = "src/main.rs"
 [dependencies]
 busbar-contract = { path = "../../../crates/busbar-contract" }
 # THE PLANE UNDER TEST: its linked door (`busbar_plane_streaming::door::door`) and its codecs, which
-# compute every expectation from the wire. The dropped-in door is the plane's own `streaming_door`
-# example cdylib.
-busbar-plane-streaming = { path = "../../../crates/busbar-plane-streaming" }
+# compute every expectation from the wire, at the rev the root pins (GetBusbar/busbar-plane-streaming,
+# row 106). The dropped-in door is that repo's cdylib twin, `busbar-plane-streaming-plugin`, built
+# from the pinned plane's own workspace (`lib/conform-bin.sh`).
+busbar-plane-streaming = { workspace = true }
 # THE ONE LOADER both doors are loaded through (`load_linked`, `load_dropped`).
 busbar-plugin-loader = { path = "../../../crates/plugin-loader" }
 serde_json = { workspace = true }

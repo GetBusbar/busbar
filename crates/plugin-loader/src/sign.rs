@@ -1244,6 +1244,7 @@ pub fn evaluate(
 }
 
 #[cfg(test)]
+#[allow(unsafe_code)] // TEST ONLY
 #[path = "tests/sign_tests.rs"]
 mod tests;
 

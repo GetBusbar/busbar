@@ -463,6 +463,7 @@ fn with_listing_door(
         section,
         owns: Vec::new(),
         consumes: Vec::new(),
+        requires: Vec::new(),
         secret_refs: Vec::new(),
         admin_routes: Vec::new(),
         admin_openapi: None,
@@ -597,6 +598,7 @@ fn opening_door() -> &'static busbar_kernel::plane::registry::PlaneDecl {
         section: "healthz_lanes_door",
         owns: Vec::new(),
         consumes: Vec::new(),
+        requires: Vec::new(),
         secret_refs: Vec::new(),
         admin_routes: Vec::new(),
         admin_openapi: None,
@@ -648,7 +650,6 @@ async fn healthz_with_model_lanes_every_cell_open_stays_unready_beside_an_opened
         public_url: None,
         prior: None,
         providers: None,
-        hostless: Default::default(),
     })
     .expect("the configured door builds its generation's slot");
     assert!(

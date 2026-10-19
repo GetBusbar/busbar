@@ -38,9 +38,29 @@ use crate::udp::{ReadyPort, MAX_DATAGRAM};
 const READS_PER_DRIVE: usize = 256;
 /// The most channel messages a leg holds for a reader that has not read them.
 const MAX_READY: usize = 1024;
+/// The most bytes of the far end's description the open buffers before its end.
+const MAX_DESCRIPTION: usize = 64 * 1024;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Take the next channel message a reader has not read into `buf`: how many bytes, and whether
+/// they end the message. The rest of a message longer than `buf` stays first in line.
+pub(crate) fn take_ready(
+    ready: &Mutex<VecDeque<(Vec<u8>, bool)>>,
+    buf: &mut [u8],
+) -> Option<(usize, bool)> {
+    // The lock is let go before the rest is put back: held through an `if let`, the put-back's
+    // second lock on the same thread would never be granted.
+    let next = lock(ready).pop_front();
+    let (bytes, end) = next?;
+    let n = bytes.len().min(buf.len());
+    buf[..n].copy_from_slice(&bytes[..n]);
+    if n < bytes.len() {
+        lock(ready).push_front((bytes[n..].to_vec(), end));
+    }
+    Some((n, end && n == bytes.len()))
 }
 
 /// Where the composed open stands.
@@ -252,6 +272,15 @@ impl Dialled {
                 Ok(Some(piece))
             }
             (PieceKind::Body, Some(true)) => {
+                if answer.len().saturating_add(bytes.len()) > MAX_DESCRIPTION {
+                    // Past its bound the description settles nothing: the open fails, and
+                    // nothing is attached.
+                    *phase = Phase::Over;
+                    drop(phase);
+                    self.pairing.close();
+                    self.leg.close();
+                    return Err(ConnError::Refused);
+                }
                 answer.extend_from_slice(bytes);
                 Ok(None)
             }
@@ -301,17 +330,12 @@ impl Dialled {
         }
         let mut cx = Context::from_waker(waker);
         loop {
-            if let Some((bytes, end)) = lock(&self.leg.ready).pop_front() {
-                let n = bytes.len().min(buf.len());
-                buf[..n].copy_from_slice(&bytes[..n]);
-                if n < bytes.len() {
-                    lock(&self.leg.ready).push_front((bytes[n..].to_vec(), end));
-                }
+            if let Some((n, end)) = take_ready(&self.leg.ready, buf) {
                 return Ok(Piece {
                     kind: PieceKind::Body,
                     stream: StreamId(0),
                     len: n,
-                    end: end && n == bytes.len(),
+                    end,
                     status: None,
                     status_code: None,
                     status_namespace: None,
@@ -350,6 +374,12 @@ impl Dialled {
             Phase::Over => return Err(ConnError::Closed),
         }
         let mut gather = lock(&self.gather);
+        // A message is bounded as a write is (THE DESIGN §5, writes are back-pressured): one
+        // gathered past the bound is refused, and what was gathered of it is let go.
+        if gather.len().saturating_add(bytes.len()) > crate::compose::WRITE_BUFFER_BYTES {
+            gather.clear();
+            return Err(ConnError::Refused);
+        }
         gather.extend_from_slice(bytes);
         if !end {
             return Ok(bytes.len());
@@ -391,3 +421,75 @@ impl Dialled {
         self.leg.close();
     }
 }
+
+/// THE EXCHANGE BODY OF A COMPOSED OPEN (row 132, the ARCHITECT ticket ruling, item 4): what goes
+/// to the far end beside the dialling association's own `description`.
+///
+/// - An open with no body sends the description as the whole body.
+/// - An open with a body states its head's `content-type` as `multipart/form-data` with a
+///   `boundary`, and its body is the form's leading parts, ending with the opened header block of
+///   the part that carries the description. The exchange body is that body, the description, and
+///   the form's closing delimiter.
+///
+/// The connector frames the form and names no part: the opener's body names them.
+///
+/// # Errors
+///
+/// [`ConnError::Refused`] for a body under any other content type, a form with no boundary, or a
+/// description that holds the form's delimiter.
+pub(crate) fn composed_body(
+    fields: &[(&str, &[u8])],
+    body: &[u8],
+    description: &[u8],
+) -> Result<Vec<u8>, ConnError> {
+    if body.is_empty() {
+        return Ok(description.to_vec());
+    }
+    let boundary = fields
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+        .and_then(|(_, value)| std::str::from_utf8(value).ok())
+        .and_then(form_boundary)
+        .ok_or(ConnError::Refused)?;
+    let delimiter = [b"\r\n--", boundary.as_bytes()].concat();
+    if description
+        .windows(delimiter.len())
+        .any(|w| w == delimiter.as_slice())
+    {
+        return Err(ConnError::Refused);
+    }
+    Ok([body, description, &delimiter, b"--\r\n"].concat())
+}
+
+/// The `boundary` of a `multipart/form-data` content type (RFC 7578, RFC 2046 section 5.1.1),
+/// unquoted; `None` for any other content type, or one with no usable boundary.
+fn form_boundary(content_type: &str) -> Option<String> {
+    let mut params = content_type.split(';');
+    if !params
+        .next()?
+        .trim()
+        .eq_ignore_ascii_case("multipart/form-data")
+    {
+        return None;
+    }
+    let boundary = params.find_map(|p| {
+        let (name, value) = p.split_once('=')?;
+        name.trim()
+            .eq_ignore_ascii_case("boundary")
+            .then(|| value.trim().trim_matches('"').to_string())
+    })?;
+    // RFC 2046: 1 to 70 characters from the boundary alphabet.
+    let fits = (1..=70).contains(&boundary.len())
+        && boundary
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"'()+_,-./:=? ".contains(&b));
+    fits.then_some(boundary)
+}
+
+#[cfg(test)]
+#[path = "tests/dialled_compose_tests.rs"]
+mod compose_tests;
+
+#[cfg(test)]
+#[path = "tests/dialled_tests.rs"]
+mod tests;

@@ -249,3 +249,34 @@ fn a_payload_piece_inside_an_open_block_is_refused_and_a_failure_drops_the_block
     assert_eq!(l.take(3, fields(false, true), b"a: b\r\n"), Ok(()));
     assert_eq!(l.take(3, FieldPiece::Payload, b"body"), Ok(()));
 }
+
+/// RED (Law 0: a plugin is isolated to its ABI, and holds no host worker): a framer that keeps
+/// answering that it owes more (`YIELD_MORE`) and writes nothing FAULTs its framing after a bounded
+/// number of re-calls. Re-called with no bound, it spun the host worker forever.
+#[test]
+fn a_framer_that_owes_more_forever_and_writes_nothing_faults() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let door = Arc::new(TestDoor::new(
+        "spin",
+        &["spin"],
+        &[],
+        Knobs {
+            spin: true,
+            ..Knobs::default()
+        },
+    ));
+    let (answer, answered) = mpsc::channel();
+    std::thread::spawn(move || {
+        let begun = Framing::begin(door, SIDE_DIAL, "t", &Established::default())
+            .map(|_| ())
+            .map_err(|r| r.outcome);
+        let _ = answer.send(begun);
+    });
+    assert_eq!(
+        answered.recv_timeout(Duration::from_secs(5)),
+        Ok(Err(busbar_contract::abi::mechanism::call::Outcome::Fault)),
+        "the framing faults within its bound"
+    );
+}

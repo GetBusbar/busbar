@@ -1946,21 +1946,23 @@ pub enum Held {
         arrived_ms: u64,
     },
     /// A record of the era that carried the reserved FIGURE: decoded, never written. Its figure
-    /// sits in [`FiguresEra`], whose field only [`HoldOpened::from_record`] can fill, so no writer
+    /// sits in [`FiguresEra`], whose fields only [`HoldOpened::from_record`] can fill, so no writer
     /// in this build can put a money figure on a hold (#71: the ledger records counts; #77: money
     /// holds no record field). Money-shape hardening; no amount moves.
     FiguresEra(FiguresEra),
 }
 
-/// The reserved figure (nanos) a FIGURES-ERA hold record holds, as it was read. Constructible only
-/// by decoding such a record ([`HoldOpened::from_record`]); read through [`FiguresEra::nanos`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FiguresEra(u64);
+/// The reserved figure (nanos) a FIGURES-ERA hold record holds, as it was read, and the record's
+/// own body bytes. Constructible only by decoding such a record ([`HoldOpened::from_record`]);
+/// read through [`FiguresEra::nanos`]. The bytes are kept so [`HoldOpened::body`] hands back the
+/// record it was read from verbatim: no figure is ever fed to a `BodyWriter` again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FiguresEra(u64, Vec<u8>);
 
 impl FiguresEra {
     /// The figure the old record holds, in nanos, exactly as written.
     #[must_use]
-    pub fn nanos(self) -> u64 {
+    pub fn nanos(&self) -> u64 {
         self.0
     }
 }
@@ -1989,9 +1991,9 @@ impl HoldOpened {
     /// Its journal body.
     #[must_use]
     pub fn body(&self) -> Vec<u8> {
-        let mut body = BodyWriter::new();
         match &self.held {
             Held::Counts { counts, arrived_ms } => {
+                let mut body = BodyWriter::new();
                 body.text(HOLD_OPENED_COUNTS);
                 body.num(self.incarnation);
                 body.text(&self.principal);
@@ -1999,19 +2001,13 @@ impl HoldOpened {
                 body.num(self.window);
                 body.num(*arrived_ms);
                 write_counts(&mut body, Some(counts));
+                body.finish()
             }
-            // A decoded figures-era hold re-spells exactly the bytes it was read from: the figure
-            // is the record's own, never one this build minted (only `from_record` makes one).
-            Held::FiguresEra(era) => {
-                body.text(HOLD_OPENED);
-                body.num(self.incarnation);
-                body.text(&self.principal);
-                write_key(&mut body, &self.key);
-                body.num(self.window);
-                body.num(era.nanos());
-            }
+            // A decoded figures-era hold is the record it was read from, byte for byte: its body is
+            // handed back as kept, so no figure is written by this build (only `from_record` makes
+            // one, and it keeps the bytes it decoded).
+            Held::FiguresEra(era) => era.1.clone(),
         }
-        body.finish()
     }
 
     /// Read one back. `None` for a record that is not a hold.
@@ -2036,7 +2032,7 @@ impl HoldOpened {
                 arrived_ms,
             }
         } else {
-            Held::FiguresEra(FiguresEra(body.num()?))
+            Held::FiguresEra(FiguresEra(body.num()?, record.body.clone()))
         };
         body.is_done().then_some(HoldOpened {
             key,

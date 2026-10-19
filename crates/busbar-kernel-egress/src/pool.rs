@@ -42,7 +42,7 @@ pub struct Member {
     /// The largest request this member accepts, where it declares one. The walk reads it only to
     /// exclude the members that share or undercut a limit that has just refused a request.
     pub context_max: Option<u64>,
-    /// The lane this member is priced on, as the trust unit sealed it.
+    /// The lane this member is priced on, as the verify step sealed it.
     pub lane: Option<busbar_contract::LaneId>,
     /// Through this pool the member is reached with the caller's own credential (the pool's
     /// `upstream_credentials: passthrough`): its auth call is lent the caller's verified
