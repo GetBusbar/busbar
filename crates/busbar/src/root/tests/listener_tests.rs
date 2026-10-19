@@ -913,6 +913,7 @@ async fn spawn_tls_server(
         Some(tls),
         &busbar_kernel::config::secret::SecretResolver::builtins_only(),
         true,
+        &busbar_contract::config_time::ConfigScope::config_time(),
     )
     .expect("valid test TLS config");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

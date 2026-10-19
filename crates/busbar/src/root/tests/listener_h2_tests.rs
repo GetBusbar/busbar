@@ -52,6 +52,7 @@ async fn tls_listener(tls: &TlsCfg) -> (SocketAddr, tokio::sync::oneshot::Sender
         Some(tls),
         &SecretResolver::builtins_only(),
         true,
+        &busbar_contract::config_time::ConfigScope::config_time(),
     )
     .expect("a valid tls: block over a capable transport");
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");

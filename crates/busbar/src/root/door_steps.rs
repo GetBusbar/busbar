@@ -3308,8 +3308,14 @@ pub fn member_routes(
                 if let Some((registration, target)) = registration
                     .and_then(|r| entry_text(r, key).filter(|t| !t.is_empty()).map(|t| (r, t)))
                 {
-                    let anchors =
-                        registration_anchors(entry, registration, need, served, &*reach.secrets)?;
+                    let anchors = registration_anchors(
+                        entry,
+                        registration,
+                        need,
+                        served,
+                        &*reach.secrets,
+                        scope,
+                    )?;
                     let base_url = origin_of(target).to_string();
                     // Each other member-target need the registration names a target for rides
                     // beside its own, held to the same anchors; one whose target is another
@@ -3733,6 +3739,7 @@ fn registration_anchors(
     need: busbar_contract::conn::NeedId,
     served: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
     secrets: &dyn busbar_contract::secret::SecretResolve,
+    scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<busbar_contract::transport::trust::Anchors, String> {
     let at = format!("`{}.{entry}`", served.section);
     let pin = busbar_kernel::trust::section::parse_entry(&at, registration, &served.trust_keys)?
@@ -3764,7 +3771,7 @@ fn registration_anchors(
             };
             let (cert, private) = (reference("cert")?, reference("key")?);
             Some(
-                busbar_core_connector::tls::client_identity(secrets, &cert, &private)
+                busbar_core_connector::tls::client_identity(secrets, &cert, &private, scope)
                     .map_err(|e| format!("member '{entry}': `{key}`: {e}"))?,
             )
         }

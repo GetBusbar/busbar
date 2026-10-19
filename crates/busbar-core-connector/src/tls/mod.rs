@@ -51,6 +51,7 @@ use std::sync::Arc;
 pub mod client;
 pub mod engine;
 
+use busbar_contract::config_time::ConfigScope;
 use busbar_contract::transport::wire::{ConnectionSecurity, RawIo, SecuredIoFut};
 use busbar_kernel::config::secret::SecretResolver;
 use busbar_kernel::config::sections::TlsCfg;
@@ -101,9 +102,10 @@ pub fn installed_crypto() -> Arc<rustls::crypto::CryptoProvider> {
 fn load_cert_chain(
     resolver: &dyn busbar_contract::secret::SecretResolve,
     secret: &SecretRef,
+    scope: &ConfigScope,
 ) -> Result<Vec<CertificateDer<'static>>, String> {
     let src = secret.describe();
-    let bytes = busbar_kernel::tls::read_pem(resolver, secret, "cert")?;
+    let bytes = busbar_kernel::tls::read_pem(resolver, secret, "cert", scope)?;
     let certs = CertificateDer::pem_slice_iter(&bytes)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("cannot parse TLS cert ({src}): {e}"))?;
@@ -122,9 +124,10 @@ fn load_cert_chain(
 fn load_private_key(
     resolver: &dyn busbar_contract::secret::SecretResolve,
     secret: &SecretRef,
+    scope: &ConfigScope,
 ) -> Result<PrivateKeyDer<'static>, String> {
     let src = secret.describe();
-    let bytes = busbar_kernel::tls::read_pem(resolver, secret, "key")?;
+    let bytes = busbar_kernel::tls::read_pem(resolver, secret, "key", scope)?;
     // `PrivateKeyDer::from_pem_slice` accepts PKCS#8, PKCS#1, and SEC1 sections, picking the first
     // private-key section it finds. `NoItemsFound` means none was present; any other variant is a
     // genuine parse error. Neither path echoes key material - error messages name only the source.
@@ -149,9 +152,10 @@ pub fn client_identity(
     resolver: &dyn busbar_contract::secret::SecretResolve,
     cert: &SecretRef,
     key: &SecretRef,
+    scope: &ConfigScope,
 ) -> Result<busbar_contract::transport::trust::ClientIdentity, String> {
-    let chain = load_cert_chain(resolver, cert)?;
-    let key = load_private_key(resolver, key)?;
+    let chain = load_cert_chain(resolver, cert, scope)?;
+    let key = load_private_key(resolver, key, scope)?;
     Ok(busbar_contract::transport::trust::ClientIdentity {
         cert_chain: chain.into_iter().map(|c| c.as_ref().to_vec()).collect(),
         private_key: key.secret_der().to_vec().into(),
@@ -164,9 +168,10 @@ pub fn client_identity(
 fn load_client_roots(
     resolver: &SecretResolver,
     secret: &SecretRef,
+    scope: &ConfigScope,
 ) -> Result<RootCertStore, String> {
     let src = secret.describe();
-    let bytes = busbar_kernel::tls::read_pem(resolver, secret, "client_ca")?;
+    let bytes = busbar_kernel::tls::read_pem(resolver, secret, "client_ca", scope)?;
     let cas = CertificateDer::pem_slice_iter(&bytes)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("cannot parse TLS client_ca ({src}): {e}"))?;
@@ -284,15 +289,16 @@ impl<S: futures::io::AsyncWrite + Unpin> futures::io::AsyncWrite for Preface<S> 
 pub fn build_server_config(
     tls: &TlsCfg,
     resolver: &SecretResolver,
+    scope: &ConfigScope,
 ) -> Result<ServerConfig, String> {
-    let certs = load_cert_chain(resolver, &tls.cert)?;
-    let key = load_private_key(resolver, &tls.key)?;
+    let certs = load_cert_chain(resolver, &tls.cert, scope)?;
+    let key = load_private_key(resolver, &tls.key, scope)?;
 
     let builder = ServerConfig::builder();
 
     let builder = match &tls.client_ca {
         Some(ca) => {
-            let roots = load_client_roots(resolver, ca)?;
+            let roots = load_client_roots(resolver, ca, scope)?;
             let verifier = WebPkiClientVerifier::builder(Arc::new(roots))
                 .build()
                 .map_err(|e| {
@@ -432,6 +438,7 @@ pub fn prepare(
     tls_cfg: Option<&TlsCfg>,
     resolver: &SecretResolver,
     transport_capable: bool,
+    scope: &ConfigScope,
 ) -> Result<Arc<dyn ConnectionSecurity>, FailClosed> {
     match tls_cfg {
         None => Ok(Arc::new(Identity)),
@@ -441,7 +448,7 @@ pub fn prepare(
         Some(tls) => {
             // Ring installed as the process's backend before the `ServerConfig` is built.
             let _ = installed_crypto();
-            let config = build_server_config(tls, resolver).map_err(|reason| {
+            let config = build_server_config(tls, resolver, scope).map_err(|reason| {
                 FailClosed::MaterialUnavailable {
                     label: label.to_string(),
                     reason,

@@ -7,9 +7,15 @@
 //! the disk takes `&ConfigScope`, and the one constructor is `ConfigScope::config_time()`. The type
 //! holds the line only if its construction does, so this gate names every construction in the
 //! workspace's production source and holds each to [`ALLOWED`], an allow-list by file AND by
-//! function: the host's boot, config-apply, refresh, pre-flight and `--validate` functions, TLS
-//! material's `read_pem`, and the auth chain's config load. A construction anywhere else — a
-//! request path above all — is RED, naming the file, the line and the function it sits in.
+//! function: the host's boot, config-apply, refresh, pre-flight and `--validate` functions, the
+//! listeners' TLS boot, the admin API's hook applies, and the auth chain's config load. A
+//! construction anywhere else — a request path above all — is RED, naming the file, the line and
+//! the function it sits in.
+//!
+//! The list names ROOTS, never helpers. A helper that needs the proof (a hook's settings resolve,
+//! the TLS PEM reader) takes `&ConfigScope` from its caller: one that minted its own would be
+//! callable from a status read, and a mint-site gate could not tell (u77). Taking it moves the
+//! question to every caller, where a request path has to construct the proof — which is RED here.
 //!
 //! Two rows:
 //! * [`ROW_SITE`]: every construction sits in an allowed (file, function);
@@ -40,10 +46,16 @@ pub const ALLOWED: &[(&str, &[&str])] = &[
     // The auth chain's config load (boot and reload, inside `build_app_from_config`).
     ("crates/busbar-kernel/src/auth/mod.rs", &["build", "new"]),
     ("crates/busbar-kernel/src/auth/token.rs", &["build_on"]),
-    // A hook's settings, resolved at the configure push (boot / apply / hot reload).
+    // The admin API's hook applies: a register (and a settings commit) and a snapshot install
+    // settle every hook's bag with the proof made here; a settings push makes its own, the PATCH
+    // being the apply. The hook READS (`hook_status`, `hook_schema`) make none.
     (
-        "crates/busbar-kernel/src/hooks/mod.rs",
-        &["resolve_hook_settings"],
+        "crates/busbar-core-admin/src/v1/service.rs",
+        &["build_with_hook", "build_with_registry"],
+    ),
+    (
+        "crates/busbar-core-admin/src/v1/json/handlers.rs",
+        &["patch_hook_settings"],
     ),
     // Pre-flight: the operator credential, the signing keys and the secret plugins' own settings.
     (
@@ -61,8 +73,12 @@ pub const ALLOWED: &[(&str, &[&str])] = &[
         "crates/busbar-kernel/src/config_validate/mod.rs",
         &["validate_with_unset", "validate_providers_with"],
     ),
-    // TLS material, read when the connector's `tls:` block and a plane's client identity load.
-    ("crates/busbar-kernel/src/tls.rs", &["read_pem"]),
+    // The listeners' TLS material, resolved at boot before the listener accepts: the data plane's
+    // one validation before any worker exists, and each listener's own build.
+    (
+        "crates/busbar/src/main.rs",
+        &["serve_thread_per_core", "serve_listener"],
+    ),
     // A door plane's members are bound at boot and at a config apply; the proof is minted at those
     // two moments and handed down to every member credential (BUSBAR-1.6.0.md l.1468, R4: "boot,
     // config apply, refresh"): the boot's composition, a door's config apply, and the pools
@@ -372,13 +388,13 @@ impl Gate for ConfigScopeGate {
         ));
 
         // AN ALLOWED FILE, A FUNCTION THE LIST DOES NOT NAME.
-        let tls = "crates/busbar-kernel/src/tls.rs";
-        let tls_text = cx.read(tls).unwrap_or_default();
+        let boot = "crates/busbar/src/main.rs";
+        let boot_text = cx.read(boot).unwrap_or_default();
         let mut wrong_fn = Overlay::new();
         wrong_fn.set(
-            tls,
+            boot,
             format!(
-                "{tls_text}\npub fn handshake() {{\n    let _p = busbar_contract::config_time::ConfigScope::config_time();\n}}\n"
+                "{boot_text}\npub fn handshake() {{\n    let _p = busbar_contract::config_time::ConfigScope::config_time();\n}}\n"
             ),
         );
         report.push(prove_red(
@@ -387,14 +403,14 @@ impl Gate for ConfigScopeGate {
             "an allowed file is allowed by function: a construction in another fn is RED",
             &[ROW_SITE],
             wrong_fn,
-            &[tls, "fn handshake"],
+            &[boot, "fn handshake"],
         ));
 
         // AN ALLOWANCE NOBODY USES.
         let mut unused = Overlay::new();
         unused.set(
-            tls,
-            tls_text.replace("ConfigScope::config_time()", "ConfigScope::default()"),
+            boot,
+            boot_text.replace("ConfigScope::config_time()", "ConfigScope::default()"),
         );
         report.push(prove_red(
             cx,
@@ -402,7 +418,7 @@ impl Gate for ConfigScopeGate {
             "an allowance that matches no construction is RED, naming it",
             &[ROW_ALLOW],
             unused,
-            &[tls, "fn read_pem"],
+            &[boot, "fn serve_listener"],
         ));
 
         // A HELPER THAT MINTS ITS OWN PROOF (u77). The proof is held by the call graph only if the
@@ -411,7 +427,10 @@ impl Gate for ConfigScopeGate {
         // settings resolver and the TLS PEM reader, both reached from more than one root, are never
         // allowed to mint; each takes `&ConfigScope`.
         for (helper, func) in [
-            ("crates/busbar-kernel/src/hooks/mod.rs", "resolve_hook_settings"),
+            (
+                "crates/busbar-kernel/src/hooks/mod.rs",
+                "resolve_hook_settings",
+            ),
             ("crates/busbar-kernel/src/tls.rs", "read_pem"),
         ] {
             let text = cx.read(helper).unwrap_or_default();

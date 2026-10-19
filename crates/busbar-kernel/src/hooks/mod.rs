@@ -148,6 +148,52 @@ pub struct HookEnv {
     /// `HookEnv::new`, i.e. every boot/reload, so a still-inert hook re-banners on the NEXT
     /// boot/reload rather than going silent forever.
     banner_seen: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// THE SETTLED BAGS: each hook's settings with every `SecretRef` resolved, as the last
+    /// CONFIG-TIME pass resolved them (THE DESIGN §11.11 R4, BUSBAR-1.6.0.md l.1464-1469: the
+    /// secret kind's file source reads only at config time — boot, a config apply, a refresh — and
+    /// is never reachable from a request path). Written ONLY by [`HookEnv::settle_hook_settings`], which takes the
+    /// config-time proof; read by every transport open, the control-plane reads (`status`,
+    /// `describe`, the `/metrics/hooks` refresh) among them, which therefore resolve nothing.
+    /// `Arc`-shared like `banner_seen`, fresh every `HookEnv::new`. See [`Settled`].
+    settled: std::sync::Arc<std::sync::Mutex<Settled>>,
+}
+
+/// The settled bags, by hook name: the newest [`SETTLED_PER_HOOK`] settings bags settled for that
+/// name, each keyed by its verbatim (unresolved) form, newest first. Two, not one: an admin apply
+/// settles the NEXT snapshot's settings before it commits, and the CURRENT snapshot keeps serving
+/// its own until the swap — a rejected apply must not leave the running one unsettled.
+///
+/// No `Debug`: the values are resolved secret material.
+#[derive(Default)]
+struct Settled {
+    by_hook: std::collections::HashMap<String, Vec<(String, ResolvedSettings)>>,
+}
+
+/// How many settings bags [`Settled`] keeps per hook name.
+const SETTLED_PER_HOOK: usize = 2;
+
+/// The verbatim form a settings bag is settled under: the unresolved map, serialized.
+fn settled_key(settings: &serde_json::Map<String, serde_json::Value>) -> String {
+    serde_json::Value::Object(settings.clone()).to_string()
+}
+
+/// A settings bag that carries no `SecretRef` is its own resolution — every value verbatim, a
+/// `{ literal: … }` unwrapped — and is computed by SHAPE, with no I/O and no proof
+/// (`config::secret::classify_setting`, the one classifier `resolve_settings` uses). `None` when any
+/// value is a reference.
+fn verbatim_settings(
+    settings: &serde_json::Map<String, serde_json::Value>,
+) -> Option<ResolvedSettings> {
+    let mut out = serde_json::Map::with_capacity(settings.len());
+    for (field, value) in settings {
+        match crate::config::secret::classify_setting(value) {
+            crate::config::secret::SettingShape::Verbatim(v) => {
+                out.insert(field.clone(), v.clone());
+            }
+            crate::config::secret::SettingShape::Reference(_) => return None,
+        }
+    }
+    Some(out)
 }
 
 impl HookEnv {
@@ -172,6 +218,7 @@ impl HookEnv {
             banner_seen: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashSet::new(),
             )),
+            settled: std::sync::Arc::default(),
         })
     }
 
@@ -190,6 +237,7 @@ impl HookEnv {
             banner_seen: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashSet::new(),
             )),
+            settled: std::sync::Arc::default(),
         }
     }
 
@@ -223,15 +271,60 @@ impl HookEnv {
     /// Resolve a hook's opaque `settings:` map — substituting any SecretRef-typed value (e.g. a
     /// `licenseKey`) with its resolved secret — before the JSON crosses the ABI at open/configure.
     /// FAIL-CLOSED: an unresolvable ref is an `Err`, never a dangling reference handed to the plugin.
+    ///
+    /// Takes the config-time proof from its caller and never makes one (THE DESIGN §11.11 R4): a
+    /// helper that minted its own would be callable from a status read, and the config-scope gate
+    /// could not tell. Reached only through [`HookEnv::settle_hook_settings`].
     fn resolve_hook_settings(
         &self,
         settings: &serde_json::Map<String, serde_json::Value>,
+        scope: &busbar_contract::config_time::ConfigScope,
     ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-        crate::config::secret::resolve_settings(
-            settings,
-            self.secret_resolver.as_ref(),
-            &busbar_contract::config_time::ConfigScope::config_time(),
-        )
+        crate::config::secret::resolve_settings(settings, self.secret_resolver.as_ref(), scope)
+    }
+
+    /// SETTLE hook `name`'s `settings` at config time: resolve its `SecretRef`s with the caller's
+    /// proof and keep the bag for every transport open that follows, so no read resolves one.
+    /// Resolves afresh on every call — a config apply re-settles, which is how a rotated secret
+    /// reaches the hook. FAIL-CLOSED: an unresolvable ref is an `Err` and settles nothing.
+    ///
+    /// # Errors
+    /// A `SecretRef` in `settings` does not resolve.
+    pub fn settle_hook_settings(
+        &self,
+        name: &str,
+        settings: &serde_json::Map<String, serde_json::Value>,
+        scope: &busbar_contract::config_time::ConfigScope,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+        let resolved = self.resolve_hook_settings(settings, scope)?;
+        let key = settled_key(settings);
+        let mut settled = self.settled.lock().unwrap_or_else(|p| p.into_inner());
+        let bags = settled.by_hook.entry(name.to_string()).or_default();
+        bags.retain(|(k, _)| *k != key);
+        bags.insert(0, (key, resolved.clone()));
+        bags.truncate(SETTLED_PER_HOOK);
+        Ok(resolved)
+    }
+
+    /// The bag hook `name`'s `settings` cross the ABI as, WITHOUT resolving anything: a bag with no
+    /// `SecretRef` is its own resolution; one with a `SecretRef` is the bag the last config-time
+    /// [`settle_hook_settings`](HookEnv::settle_hook_settings) of these exact settings produced, or `None` when none did.
+    fn settled_settings(
+        &self,
+        name: &str,
+        settings: &serde_json::Map<String, serde_json::Value>,
+    ) -> Option<ResolvedSettings> {
+        if let Some(bag) = verbatim_settings(settings) {
+            return Some(bag);
+        }
+        let key = settled_key(settings);
+        let settled = self.settled.lock().unwrap_or_else(|p| p.into_inner());
+        settled
+            .by_hook
+            .get(name)?
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, bag)| bag.clone())
     }
 
     /// PRE-BUILD FAIL-CLOSED PASS: resolve every configured hook's SecretRef settings ONCE, up
@@ -245,13 +338,16 @@ impl HookEnv {
     /// resolve* must fail the boot/reload CLOSED — never quietly disable the gate.
     ///
     /// Returns `Err` naming the offending hook on the first unresolvable secret. Called once from
-    /// `build_app_from_config` before any `resolve_*` consumes the hooks.
+    /// `build_app_from_config` before any `resolve_*` consumes the hooks; every bag it resolves is
+    /// SETTLED ([`HookEnv::settle_hook_settings`]), so the resolvers and the control-plane reads that follow open
+    /// against it and resolve nothing.
     pub fn preresolve_hook_secrets(
         &self,
         hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+        scope: &busbar_contract::config_time::ConfigScope,
     ) -> Result<(), String> {
         for (name, hook) in hooks {
-            self.resolve_hook_settings(&hook.settings)
+            self.settle_hook_settings(name, &hook.settings, scope)
                 .map_err(|e| format!("hook '{name}' settings: {e}"))?;
         }
         Ok(())
@@ -279,14 +375,22 @@ impl HookEnv {
     /// Opening here is consistent with the transport model (every `gate_transport_named` opens a
     /// fresh instance; `fetch_status`/`push_configure` open per call), so this pre-open does not
     /// leak a live instance — the constructed policy is dropped at the end of the iteration.
+    ///
+    /// It is also the admin applies' SETTLE pass (a hook register, a settings commit, a snapshot
+    /// install): every hook in `hooks` is settled with the caller's config-time proof, so the
+    /// resolvers that follow and the control-plane reads after the swap resolve nothing. A hook that
+    /// is not a pre-opened gate settles best-effort, exactly as its resolver treated an unresolvable
+    /// secret before: absent, with the resolver's warning.
     pub fn preopen_gate_hooks(
         &self,
         hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+        scope: &busbar_contract::config_time::ConfigScope,
     ) -> Result<(), String> {
         for (name, hook) in hooks {
             // Only decision + rewrite GATES fail closed. Taps observe (fail-open by design); a
             // non-gate kind never enforces an admission/redaction decision.
             if hook.kind != crate::config::HookKind::Gate {
+                let _ = self.settle_hook_settings(name, &hook.settings, scope);
                 continue;
             }
             // Genuinely-absent plugin: the legitimate safety-net skip (fail-open). We only pre-open
@@ -294,13 +398,14 @@ impl HookEnv {
             // referenced-but-unloadable plugin, and a truly missing plugin degrades to "gate absent"
             // exactly as before. This is the DISTINCTION between absent (ok) and open()-failed (abort).
             if !self.knows(&hook.plugin) {
+                let _ = self.settle_hook_settings(name, &hook.settings, scope);
                 continue;
             }
-            // The plugin IS present: resolve its (already-secret-substituted) settings and OPEN it.
-            // An open failure here is a hard boot/reload error — the gate would otherwise be silently
+            // The plugin IS present: settle its (secret-substituted) settings and OPEN it. An open
+            // failure here is a hard boot/reload error — the gate would otherwise be silently
             // dropped and its admission/rewrite decision lost.
             let resolved = self
-                .resolve_hook_settings(&hook.settings)
+                .settle_hook_settings(name, &hook.settings, scope)
                 .map_err(|e| format!("hook '{name}' settings: {e}"))?;
             self.open(&hook.plugin, &resolved, name, hook.timeout_ms)
                 .map_err(|e| {
@@ -783,8 +888,10 @@ fn admits_rewrite(name: &str, hook: &crate::config::HookCfg, env: &HookEnv) -> b
 /// and the configure ack. `None` when the reference doesn't resolve to a loadable `kind: hook`
 /// plugin (the plugin pre-flight already fails boot on that, so a `None` here is a safety net that
 /// degrades to "gate absent", never a stranded request). A SecretRef in `settings` that fails to
-/// resolve is a DIFFERENT case: it is caught up front by `HookEnv::preresolve_hook_secrets` (which
-/// aborts boot/reload CLOSED), so it never reaches this `None`-on-error path in practice.
+/// resolve is a DIFFERENT case: it is caught at the config-time settle pass
+/// (`HookEnv::preresolve_hook_secrets` / `preopen_gate_hooks`, which abort boot/reload/apply
+/// CLOSED), so it never reaches this `None`-on-error path in practice. Nothing here resolves a
+/// secret: the bag is the one that pass settled.
 ///
 /// Returns the transport TOGETHER WITH the resolved settings map it was opened against. The pairing
 /// is the point: `push_configure` needs that same resolved bag to send in its `configure` call, and
@@ -801,8 +908,9 @@ fn gate_transport_named(
 ) -> Option<(Arc<dyn RoutingPolicy>, ResolvedSettings)> {
     // ONE load per distinct resolution, and that load is SINGLE-FLIGHT. See [`resolution`] for why
     // this is a correctness fix and not a cache for speed's sake. A hook carrying a `SecretRef` is
-    // deliberately NOT eligible (`key` returns `None`) and re-resolves on every call, exactly as
-    // before, because its resolved value can change under us without any of the key's inputs moving.
+    // deliberately NOT eligible (`key` returns `None`) and reopens on every call against the bag the
+    // last config-time settle produced, because a re-settle (a rotated secret) changes that bag
+    // without any of the key's inputs moving.
     let Some(key) = resolution::key(name, hook, env) else {
         return gate_transport_uncached(name, hook, env);
     };
@@ -825,24 +933,20 @@ fn gate_transport_uncached(
     hook: &crate::config::HookCfg,
     env: &HookEnv,
 ) -> Option<(Arc<dyn RoutingPolicy>, ResolvedSettings)> {
-    // Resolve any SecretRef-typed setting (e.g. a `licenseKey`) against the secret store BEFORE the
-    // settings cross the ABI (ADR-0010). The FAIL-CLOSED guarantee lives in
-    // `HookEnv::preresolve_hook_secrets`, called once from `build_app_from_config` BEFORE any gate is
-    // resolved: an unresolvable hook secret aborts boot/reload there (matching the store/auth paths),
-    // so this path is never reached with a dangling secret. This site therefore cannot silently drop
-    // a gate whose secret failed to resolve — by the time we get here the secret has ALREADY resolved.
-    // A residual `Err` here (e.g. a race where the secret was rotated away after the pre-resolve pass)
-    // is still treated conservatively as absent, but the pre-resolve pass is the real gate.
-    let resolved = match env.resolve_hook_settings(&hook.settings) {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!(
-                hook = %name, plugin = %hook.plugin, error = %e,
-                "hook settings did not resolve; gate treated as absent (should have been caught by \
-                 the pre-resolve pass at boot/reload)"
-            );
-            return None;
-        }
+    // The settings cross the ABI with every SecretRef-typed value (e.g. a `licenseKey`) already
+    // resolved (ADR-0010) — resolved by the CONFIG-TIME pass, not here (THE DESIGN §11.11 R4: this
+    // function serves the control-plane reads too, and a read never reaches the secret source). The
+    // FAIL-CLOSED guarantee lives in that pass: `HookEnv::preresolve_hook_secrets` at boot/reload and
+    // `HookEnv::preopen_gate_hooks` on an admin apply settle every hook BEFORE any gate is resolved,
+    // and an unresolvable hook secret aborts there (matching the store/auth paths). A bag nobody
+    // settled — its secret did not resolve at the apply — is treated conservatively as absent.
+    let Some(resolved) = env.settled_settings(name, &hook.settings) else {
+        tracing::warn!(
+            hook = %name, plugin = %hook.plugin,
+            "hook settings carry a secret reference no config-time pass settled; gate treated as \
+             absent (an unresolvable secret is caught by the settle pass at boot/reload/apply)"
+        );
+        return None;
     };
     match env.open(&hook.plugin, &resolved, name, hook.timeout_ms) {
         Ok(policy) => Some((policy, resolved)),
@@ -900,10 +1004,12 @@ type Resolved = (Arc<dyn RoutingPolicy>, ResolvedSettings);
 /// fresh load.
 ///
 /// **What is NOT admitted, and this is the part that must not be softened.** A hook whose settings
-/// carry a `SecretRef` gets `None` from [`key`] and is resolved from scratch every single time. Its
-/// resolved value can change (rotation) without any input to the key moving, so a reused transport
-/// would be running last hour's credential while `settings_drift_keys` reported no drift. Freshness
-/// there is the whole point of the secret indirection and it is not traded for a load.
+/// carry a `SecretRef` gets `None` from [`key`] and is opened from scratch every single time, against
+/// the bag the last config-time settle produced ([`HookEnv::settle_hook_settings`]; THE DESIGN
+/// §11.11 R4 keeps the resolution itself at config time). A re-settle changes that bag (rotation)
+/// without any input to the key moving, so a reused transport would be running the previous credential while
+/// `settings_drift_keys` reported no drift. Freshness there is the whole point of the secret
+/// indirection and it is not traded for a load.
 ///
 /// **Single flight.** The claim is held ACROSS the load, so a second resolution of the same key
 /// waits for the first instead of queueing its own `dlopen` behind it. That is what makes an
@@ -1159,14 +1265,20 @@ const CONFIGURE_TIMEOUT_MS: u64 = 5000;
 
 /// PUSH a settings map to a hook over its transport and wait for the ack (the
 /// `PATCH /api/v1/admin/hooks/{name}/settings` core). `Ok` = acked (commit); `Err` = NOT committed.
+///
+/// A settings push IS a config apply (THE DESIGN §11.11 R4's "config apply"), so it takes the
+/// config-time proof from its caller — the PATCH handler, the one place that makes the apply — and
+/// SETTLES the pushed bag with it on the blocking thread before the transport opens.
 pub async fn push_configure(
     hook: &crate::config::HookCfg,
     name: &str,
     settings_version: u64,
     env: &HookEnv,
+    scope: busbar_contract::config_time::ConfigScope,
 ) -> Result<(), String> {
-    // ONE offloaded step resolves the SecretRefs AND opens the transport (ADR-0010: an unresolvable
-    // ref is FAIL-CLOSED, so the plugin never receives a dangling reference on a settings push).
+    // ONE offloaded step settles the SecretRefs with the apply's proof AND opens the transport
+    // (ADR-0010: an unresolvable ref is FAIL-CLOSED, so the plugin never receives a dangling
+    // reference on a settings push).
     //
     // The resolution used to happen HERE, inline, one line above this call — a synchronous FFI call
     // into a `kind: secret` plugin (a Vault/AWS-SM round trip) on a Tokio worker inside an `async
@@ -1175,8 +1287,18 @@ pub async fn push_configure(
     // parked one worker each until the runtime polled nothing. `gate_transport_named` already
     // resolves the bag to build its `cfg_json`, so taking it from there removes the second
     // resolution rather than offloading it twice.
-    let Some((transport, resolved)) =
-        gate_transport_offloaded(name, hook, env, settings_version).await
+    let (name_owned, hook_owned, env_owned) = (name.to_string(), hook.clone(), env.clone());
+    let Some((transport, resolved)) = offload_bounded(name, move || {
+        if let Err(e) = env_owned.settle_hook_settings(&name_owned, &hook_owned.settings, &scope) {
+            tracing::warn!(
+                hook = %name_owned, plugin = %hook_owned.plugin, error = %e,
+                "hook settings did not resolve; the settings push is refused"
+            );
+            return None;
+        }
+        gate_transport_named(&name_owned, &hook_owned, &env_owned, settings_version)
+    })
+    .await
     else {
         return Err("hook plugin unresolvable".to_string());
     };
@@ -1274,8 +1396,9 @@ async fn offload_bounded_with_deadline<T: Send + 'static>(
 /// inline on the reactor -- so a slow disk or a slow plugin constructor stalled request serving, on
 /// a path (`GET /metrics/hooks`) that a monitoring system hits on a fixed interval forever.
 ///
-/// One offload site for all three readers, so a fourth cannot reintroduce the inline form by
-/// calling `gate_transport_named` from an `async fn`.
+/// One offload site for the readers (`push_configure` offloads its settle and open together, through
+/// the same [`offload_bounded`]), so another cannot reintroduce the inline form by calling
+/// `gate_transport_named` from an `async fn`.
 async fn gate_transport_offloaded(
     name: &str,
     hook: &crate::config::HookCfg,
@@ -1306,7 +1429,7 @@ async fn gate_transport_offloaded(
 /// failing with a message that says so beats a test that never returns.
 ///
 /// `false` means the hook resolved to nothing (an unloadable plugin) or is not eligible for
-/// publication at all — a hook carrying a `SecretRef` is resolved fresh every time by design, so
+/// publication at all — a hook carrying a `SecretRef` is opened fresh every time by design, so
 /// there is no readiness to wait on and the caller should just proceed.
 #[cfg(any(test, feature = "test-support"))]
 pub async fn await_transport_published(
@@ -1360,9 +1483,13 @@ pub async fn await_transport_published(
 /// control-plane read behind `GET /api/v1/admin/hooks/{name}/status`. Its own transport, never the
 /// hot request path's (that one is resolved at boot and lives in the routing chain); `None` =
 /// unsupported/unreachable (fail-open). The transport is shared with the other control-plane
-/// readers of the SAME hook+settings+registry and no further — see [`resolution`], and note in
-/// particular that a hook carrying a `SecretRef` is still resolved fresh on every one of these
-/// reads, so a rotated credential is picked up on the next scrape exactly as before.
+/// readers of the SAME hook+settings+registry and no further — see [`resolution`].
+///
+/// THIS READ RESOLVES NO SECRET (THE DESIGN §11.11 R4, BUSBAR-1.6.0.md l.1464-1469: the secret
+/// source reads only at config time, never from a request path). A hook carrying a `SecretRef`
+/// opens against the bag the last config-time pass settled ([`HookEnv::settle_hook_settings`]: boot, a reload, an
+/// admin apply, a settings push), so a rotated credential reaches this read at the next of those,
+/// the same moment it reaches the hook's request-path transport.
 pub async fn fetch_status(
     name: &str,
     hook: &crate::config::HookCfg,
@@ -1434,6 +1561,7 @@ pub fn settings_drift_keys(
 
 /// Fetch a hook's self-described settings schema over its transport
 /// (`GET /api/v1/admin/hooks/{name}/schema`). `None` = the hook/transport doesn't answer describe.
+/// Resolves no secret, as [`fetch_status`].
 pub async fn fetch_schema(
     name: &str,
     hook: &crate::config::HookCfg,

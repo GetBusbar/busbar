@@ -3233,8 +3233,17 @@ pub(crate) async fn patch_hook_settings(
     // never leaves the running hook ahead of committed config. The hook plugin env is captured here;
     // the load() that feeds the actual swap is re-taken AFTER the await, under the mutation lock.
     let hook_env = current.hook_env.clone();
-    if let Err(e) =
-        busbar_kernel::hooks::push_configure(&updated, &name, settings_version, &hook_env).await
+    // A settings push IS a config apply (THE DESIGN §11.11 R4, "boot, config apply, refresh"): the
+    // config-time proof is made HERE, by the apply, and the push settles the new bag with it. The
+    // hook reads (`hook_status`, `hook_schema`) make none and resolve nothing.
+    if let Err(e) = busbar_kernel::hooks::push_configure(
+        &updated,
+        &name,
+        settings_version,
+        &hook_env,
+        busbar_contract::config_time::ConfigScope::config_time(),
+    )
+    .await
     {
         // The hook NACKed / timed out: nothing was pushed-and-acked, so nothing is live and nothing
         // committed — the running hook keeps its old settings. Reject cleanly, no compensation needed.
@@ -3316,6 +3325,7 @@ pub(crate) async fn patch_hook_settings(
                     &name,
                     committed.config_version,
                     &committed.hook_env,
+                    busbar_contract::config_time::ConfigScope::config_time(),
                 )
                 .await
                 {

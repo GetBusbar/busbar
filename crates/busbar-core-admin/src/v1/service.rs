@@ -906,7 +906,14 @@ pub fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result<App, A
     // silently `filter_map`-dropped by the resolvers below (which would return 200 OK while the gate
     // vanished from the routing chain — a fail-open of an admission control on the live reload path).
     // A genuinely-absent plugin stays the legitimate fail-open skip (distinguished inside).
-    if let Err(e) = next.hook_env.preopen_gate_hooks(&next.hook_registry) {
+    // A hook register IS a config apply (THE DESIGN §11.11 R4): the proof is made here, and the
+    // pre-open SETTLES every hook's bag with it, so the resolvers below and every status/schema read
+    // after the swap resolve nothing.
+    let scope = busbar_contract::config_time::ConfigScope::config_time();
+    if let Err(e) = next
+        .hook_env
+        .preopen_gate_hooks(&next.hook_registry, &scope)
+    {
         return Err(AdminError::Validation(e));
     }
     // Re-resolve every registry-derived field (transports, plane gates, and the two compute gates)
@@ -1069,7 +1076,13 @@ pub(crate) fn build_with_registry(
     // FAIL-CLOSED (open-time variant): OPEN every referenced decision/rewrite gate before
     // re-resolving so a plugin that fails to `open()` aborts this snapshot install instead of being
     // silently dropped from the routing chain (fail-open). A genuinely-absent plugin stays a skip.
-    if let Err(e) = next.hook_env.preopen_gate_hooks(&next.hook_registry) {
+    // A snapshot install IS a config apply (THE DESIGN §11.11 R4): the pre-open settles every hook's
+    // bag with the proof made here.
+    let scope = busbar_contract::config_time::ConfigScope::config_time();
+    if let Err(e) = next
+        .hook_env
+        .preopen_gate_hooks(&next.hook_registry, &scope)
+    {
         return Err(AdminError::Validation(e));
     }
     rebuild_hook_derived(&mut next);

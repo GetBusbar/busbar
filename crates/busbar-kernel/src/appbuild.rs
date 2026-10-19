@@ -1179,7 +1179,12 @@ pub fn build_app_from_config(
     // (`AuthMiddleware::new`). Without this, a gate whose SecretRef fails to resolve would be
     // silently dropped from the routing chain by `resolve_pool_gates`/`resolve_on_error_chain`
     // (fail-OPEN), letting traffic the gate was configured to restrict/reject flow unfiltered.
-    hook_env.preresolve_hook_secrets(&cfg.hooks)?;
+    //
+    // THE CONFIG-TIME PROOF for the hooks (THE DESIGN §11.11 R4): this pass and the pre-open below
+    // SETTLE every hook's bag, and every resolver and control-plane read after them opens against
+    // it, resolving nothing.
+    let hook_scope = busbar_contract::config_time::ConfigScope::config_time();
+    hook_env.preresolve_hook_secrets(&cfg.hooks, &hook_scope)?;
 
     // The store's SecretRefs are resolved only on the BOOT arm (`prior == None`), because the store
     // backend is reused across a hot reload. So a `PUT /config/settings` naming an unresolvable ref
@@ -1213,7 +1218,7 @@ pub fn build_app_from_config(
     // boot reports success. A GENUINELY-ABSENT plugin stays the legitimate fail-open skip.
     // `plugins_preflight` is manifest-only (no dlopen) and `preresolve_hook_secrets` only resolves
     // SecretRefs, so neither catches an `open()` failure — this pass does.
-    hook_env.preopen_gate_hooks(&cfg.hooks)?;
+    hook_env.preopen_gate_hooks(&cfg.hooks, &hook_scope)?;
 
     // The per-pool runtime bundle (member metadata + resolved failover/affinity/breaker), the
     // any-pool-override fast-path flag, and the per-pool `on_exhausted:` table are all part of the

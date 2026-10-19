@@ -172,6 +172,7 @@ fn seams() -> Vec<Seam> {
             methods: Vec::new(),
             bare: strs(&[
                 "resolve_hook_settings",
+                "settle_hook_settings",
                 "resolve_settings",
                 "resolve_string",
                 "preresolve_hook_secrets",
@@ -1797,6 +1798,24 @@ impl Gate for BlockingFfiGate {
                 "plugin OPEN",
                 "an App/hook-chain build",
             ],
+        ));
+
+        // THE CONFIG-TIME SETTLE (u77): `HookEnv::settle_hook_settings` resolves a hook's secrets
+        // with the apply's proof, a `kind: secret` plugin call like `resolve_hook_settings` it
+        // wraps. Inline in an async fn it is flagged; offloaded it is not.
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{CORE}/planted_inline_settle.rs"),
+            "pub async fn push_configure(env: &HookEnv, scope: ConfigScope) -> Result<(), String> {\n\
+             \x20   let resolved = env.settle_hook_settings(name, &hook.settings, &scope)?;\n    Ok(())\n}\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a hook settle inline in an async fn is flagged",
+            &[ROW_NO_INLINE],
+            ov,
+            &["planted_inline_settle.rs", "secret-plugin FFI"],
         ));
 
         // ITEM 186: A SPAWNED ASYNC BLOCK IN A SYNC FN RUNS ON A TOKIO WORKER. `tokio::spawn` is

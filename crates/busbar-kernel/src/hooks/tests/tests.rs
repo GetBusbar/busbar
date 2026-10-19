@@ -12,6 +12,12 @@ fn from_ranked_drops_unknown_and_dedups() {
 use crate::config::{HookCfg, HookKind, PolicyOnError, PoolPolicy, PromptAccess, UserAccess};
 use std::collections::HashMap;
 
+/// The config-time proof a test's boot / apply pass holds (THE DESIGN §11.11 R4). Test code is a
+/// config-time root of its own; the config-scope gate does not scan it.
+fn config_time() -> busbar_contract::config_time::ConfigScope {
+    busbar_contract::config_time::ConfigScope::config_time()
+}
+
 // ── Hook test env ─────────────────────────────────────────────────────────────────────────────────
 // A hook resolves its `plugin:` ref against the registry's `kind: hook` rows and opens through the
 // hook axis into a `HookPolicy`. These resolution tests build the rows (each stating its manifest
@@ -64,7 +70,7 @@ fn preresolve_hook_secrets_fails_closed_on_unresolvable_secret() {
     let mut hooks = HashMap::new();
     hooks.insert("compliance-gate".to_string(), hook);
     let err = env
-        .preresolve_hook_secrets(&hooks)
+        .preresolve_hook_secrets(&hooks, &config_time())
         .expect_err("an unresolvable hook secret must fail the pre-resolve pass CLOSED");
     assert!(
         err.contains("compliance-gate"),
@@ -78,7 +84,9 @@ fn preresolve_hook_secrets_fails_closed_on_unresolvable_secret() {
         .insert("mode".to_string(), serde_json::json!("strict"));
     let mut ok_hooks = HashMap::new();
     ok_hooks.insert("plain-gate".to_string(), plain);
-    assert!(env.preresolve_hook_secrets(&ok_hooks).is_ok());
+    assert!(env
+        .preresolve_hook_secrets(&ok_hooks, &config_time())
+        .is_ok());
 }
 
 /// `preopen_gate_hooks` pre-opens ONLY `kind: gate` hooks (decision + rewrite), never taps — taps
@@ -102,7 +110,7 @@ fn preopen_gate_hooks_aborts_on_a_broken_gate_but_never_a_broken_tap() {
     broken_tap.settings = settings.clone();
     let tap_hooks = registry("broken-tap", broken_tap);
     assert!(
-        env.preopen_gate_hooks(&tap_hooks).is_ok(),
+        env.preopen_gate_hooks(&tap_hooks, &config_time()).is_ok(),
         "a broken TAP must never abort boot/reload (taps fail-open)"
     );
 
@@ -112,7 +120,7 @@ fn preopen_gate_hooks_aborts_on_a_broken_gate_but_never_a_broken_tap() {
     broken_gate.settings = settings;
     let gate_hooks = registry("broken-gate", broken_gate);
     let err = env
-        .preopen_gate_hooks(&gate_hooks)
+        .preopen_gate_hooks(&gate_hooks, &config_time())
         .expect_err("a gate whose settings/open() fails must abort boot/reload CLOSED");
     assert!(
         err.contains("broken-gate"),
@@ -122,7 +130,7 @@ fn preopen_gate_hooks_aborts_on_a_broken_gate_but_never_a_broken_tap() {
     // A healthy gate (resolvable plugin, valid settings) pre-opens cleanly.
     let ok_hooks = registry("ok-gate", base_gate());
     assert!(
-        env.preopen_gate_hooks(&ok_hooks).is_ok(),
+        env.preopen_gate_hooks(&ok_hooks, &config_time()).is_ok(),
         "a gate with valid settings must pre-open without error"
     );
 }
@@ -1593,7 +1601,7 @@ async fn dlopen_configure_acks_exact_version() {
     const ATTEMPTS: usize = 4;
     let mut last = String::new();
     for _ in 0..ATTEMPTS {
-        match push_configure(&hook, "h", 7, &env).await {
+        match push_configure(&hook, "h", 7, &env, config_time()).await {
             Ok(()) => return,
             Err(e) if e.contains("deadline") || e.contains("unresolvable") => last = e,
             Err(e) => panic!("the plugin must ack the pushed version exactly: {e}"),
@@ -2002,7 +2010,9 @@ async fn dlopen_configure_nack_does_not_commit() {
         .cloned()
         .unwrap();
     assert!(
-        push_configure(&hook, "h", 7, &env).await.is_err(),
+        push_configure(&hook, "h", 7, &env, config_time())
+            .await
+            .is_err(),
         "a hook that refuses to ack must fail the configure push (no commit)"
     );
 }
@@ -2292,9 +2302,9 @@ fn concurrent_push_configure_does_not_starve_the_runtime() {
     let tasks: Vec<_> = (0..4)
         .map(|_| {
             let (h, e) = (hook.clone(), env.clone());
-            rt.spawn(
-                async move { crate::hooks::push_configure(&h, "compliance-gate", 1, &e).await },
-            )
+            rt.spawn(async move {
+                crate::hooks::push_configure(&h, "compliance-gate", 1, &e, config_time()).await
+            })
         })
         .collect();
     std::thread::sleep(std::time::Duration::from_millis(200));
@@ -2504,7 +2514,7 @@ async fn status_and_schema_reads_resolve_no_secret() {
     let hooks = registry("h", hook.clone());
 
     // CONFIG TIME: the boot / apply pass settles the hook's secrets.
-    env.preresolve_hook_secrets(&hooks)
+    env.preresolve_hook_secrets(&hooks, &config_time())
         .expect("the hook's secret resolves at config time");
     let settled = resolves.load(Ordering::SeqCst);
     assert!(settled >= 1, "the config-time pass resolves the SecretRef");

@@ -1512,9 +1512,18 @@ fn serve_thread_per_core(
     if tls_cfg.is_some() {
         // `FailClosed`'s Display already names the listener (`TLS configuration error for '<addr>':
         // <reason>`, 1.5.5's line); wrapping it again printed that prefix twice.
-        let _ =
-            busbar_core_connector::tls::prepare(&addr, tls_cfg.as_ref(), &secret_resolver, true)
-                .unwrap_or_else(|e| die(e.to_string()));
+        //
+        // BOOT IS CONFIG TIME (THE DESIGN §11.11 R4, BUSBAR-1.6.0.md l.1468): the TLS material's
+        // secret references resolve under the proof made here, before any worker exists.
+        let scope = busbar_contract::config_time::ConfigScope::config_time();
+        let _ = busbar_core_connector::tls::prepare(
+            &addr,
+            tls_cfg.as_ref(),
+            &secret_resolver,
+            true,
+            &scope,
+        )
+        .unwrap_or_else(|e| die(e.to_string()));
     }
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
     let cores: Vec<Option<core_affinity::CoreId>> =
@@ -1674,9 +1683,20 @@ async fn serve_listener(
             // (`transport_capable = true`); `prepare` still fails closed rather than silently
             // downgrading to plaintext if the material cannot be resolved/parsed (DECISIONS #40).
             // Printed as `FailClosed` renders it — it already carries the label (see above).
-            let security =
-                busbar_core_connector::tls::prepare(label, Some(&tls), &secret_resolver, true)
-                    .unwrap_or_else(|e| die(e.to_string()));
+            //
+            // That is BOOT, i.e. config time (THE DESIGN §11.11 R4, BUSBAR-1.6.0.md l.1468): the
+            // proof is made here, for this one resolve, and is gone before the listener accepts.
+            let security = {
+                let scope = busbar_contract::config_time::ConfigScope::config_time();
+                busbar_core_connector::tls::prepare(
+                    label,
+                    Some(&tls),
+                    &secret_resolver,
+                    true,
+                    &scope,
+                )
+                .unwrap_or_else(|e| die(e.to_string()))
+            };
             let mtls = tls.client_ca.is_some();
             if log_at_info {
                 tracing::info!(listen = %label, mtls, "busbar listening (TLS)");
