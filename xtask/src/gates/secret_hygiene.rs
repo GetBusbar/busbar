@@ -2132,6 +2132,20 @@ fn selftest_battery<'a>(gate: &'a SecretHygieneGate, cx: &'a Ctx) -> Report<'a> 
         &[ROW_FLOOR],
         &["selftest-missing-root", "is not a directory"],
     ));
+    // THE SCAN IS RECONCILED AGAINST THE TRACKED SET (Law 8): one tracked file hidden from the
+    // walk is refused BY NAME, though every root still holds production source. "Not zero" is no
+    // floor: a walk narrowed to one file must not read as a measured tree.
+    match crate::gates::population::one_file_hidden(cx) {
+        Ok((ov, rel)) => report.push(prove_rows_red(
+            &quiet,
+            gate,
+            "RED floor: a tracked production .rs the walk did not read is refused by name, not certified clean",
+            &[ROW_FLOOR],
+            ov,
+            &["NOT scanned", rel.as_str()],
+        )),
+        Err(e) => report.note_infra_failure(format!("secret-hygiene selftest: {e}")),
+    }
 
     // ── The test-file shape (item 506) ──
     // Multi-line on purpose: Check 1 reads a field only when the struct body opens on an EARLIER line
@@ -2519,6 +2533,151 @@ mod tests {
         for p in ["a/contests.rs", "a/lib.rs", "a/latest.rs"] {
             assert!(!is_test_file(p), "{p}");
         }
+    }
+
+    /// Q128 LOW: every legal spelling of a bare secret is bare — `Arc<str>`, `Box<str>`,
+    /// `Rc<str>`, `Cow<str>`, a byte array, a boxed byte slice, `Bytes` — and a struct-variant
+    /// body of an enum is a field frame like a struct body (Part 2 #53/#54).
+    #[test]
+    fn check1_reads_every_bare_spelling_and_enum_variant_fields() {
+        let t = "pub struct Keys {\n    pub api_key: Arc<str>,\n    pub client_secret: Box<str>,\n    pub signing_key: [u8; 32],\n    pub private_key: Box<[u8]>,\n    pub access_token: Cow<'static, str>,\n    pub bearer: Bytes,\n    pub password: Rc<str>,\n}\npub enum Cred {\n    Bearer {\n        token: String,\n    },\n    Basic {\n        user: String,\n        password: String,\n    },\n}\n";
+        assert_eq!(
+            fields(&c1(t)),
+            [
+                "api_key",
+                "client_secret",
+                "signing_key",
+                "private_key",
+                "access_token",
+                "bearer",
+                "password",
+                "token",
+                "password"
+            ]
+        );
+        // Still wrapped: the wrapper is a whole type name, not a substring of a longer one.
+        let ok = "pub struct Keys {\n    pub api_key: Secret<Arc<str>>,\n    pub signing_key: Zeroizing<[u8; 32]>,\n}\npub enum Cred {\n    Bearer {\n        token: busbar_contract::Secret<String>,\n    },\n}\n";
+        assert!(c1(ok).is_empty(), "{:?}", c1(ok));
+        let fake = "pub struct Keys {\n    pub api_key: NotASecretString,\n}\n";
+        assert_eq!(fields(&c1(fake)), ["api_key"]);
+    }
+
+    /// A temp tree of one crate `a` with two clean production files, a context over it, and the
+    /// overlay that plants its index (a temp tree has no git index of its own) and an empty
+    /// `cargo metadata` answer (no pinned package).
+    fn temp_tree(tag: &str) -> (std::path::PathBuf, Ctx, Overlay) {
+        let root = std::env::temp_dir().join(format!(
+            "xtask-secret-hygiene-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let krate = root.join("crates").join("a");
+        std::fs::create_dir_all(krate.join("src")).expect("src dir creates");
+        std::fs::write(krate.join("Cargo.toml"), "[package]\nname = \"a\"\n")
+            .expect("manifest write");
+        std::fs::write(
+            krate.join("src/lib.rs"),
+            "pub struct Clean { pub n: usize }\n",
+        )
+        .expect("lib write");
+        std::fs::write(krate.join("src/more.rs"), "pub fn f() {}\n").expect("more write");
+        let mut ov = Overlay::new();
+        ov.set_command(
+            crate::ctx::INDEX_KEY,
+            "crates/a/Cargo.toml\ncrates/a/src/lib.rs\ncrates/a/src/more.rs",
+        );
+        ov.set_command("cargo-metadata:Cargo.toml", r#"{"packages":[]}"#);
+        let cx = Ctx::at(&root, root.join(".fix").join("xtask"))
+            .expect("ctx opens over the temp root")
+            .secret_gate_blocking(true);
+        (root, cx, ov)
+    }
+
+    fn row<'v>(v: &'v Verdict, id: &str) -> &'v Row {
+        v.rows
+            .iter()
+            .find(|r| r.id == id)
+            .unwrap_or_else(|| panic!("row {id} is in the verdict"))
+    }
+
+    /// Q128 MEDIUM (Law 8, the absent floor): a tracked file the walk did not read is refused BY
+    /// NAME, though the scan still read one file. "Not zero" is no floor.
+    #[test]
+    fn a_tracked_file_the_scan_did_not_read_is_refused_by_name() {
+        let (root, cx, mut ov) = temp_tree("hidden");
+        ov.remove("crates/a/src/more.rs");
+        let v = SecretHygieneGate::shipped().run(&cx.with_overlay(ov));
+        let floor = row(&v, ROW_FLOOR);
+        assert_eq!(floor.status, crate::ledger::Status::Fail, "{floor:?}");
+        assert!(floor.detail.contains("crates/a/src/more.rs"), "{floor:?}");
+        assert!(floor.detail.contains("NOT scanned"), "{floor:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The other direction: a file the walk read that nothing tracks is refused by name.
+    #[test]
+    fn a_scanned_file_nothing_tracks_is_refused_by_name() {
+        let (root, cx, mut ov) = temp_tree("extra");
+        ov.set_command(
+            crate::ctx::INDEX_KEY,
+            "crates/a/Cargo.toml\ncrates/a/src/lib.rs",
+        );
+        let v = SecretHygieneGate::shipped().run(&cx.with_overlay(ov));
+        let floor = row(&v, ROW_FLOOR);
+        assert_eq!(floor.status, crate::ledger::Status::Fail, "{floor:?}");
+        assert!(floor.detail.contains("crates/a/src/more.rs"), "{floor:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Q128 MEDIUM (Part 2 #53): a bare secret in the source of a git-pinned plugin the binary
+    /// links is a Check-1 finding, named at the pinned crate's path.
+    #[test]
+    fn a_bare_secret_in_a_pinned_plugin_source_is_caught() {
+        let (root, cx, mut ov) = temp_tree("pinned");
+        let checkout = root.join("checkout").join("auth-x");
+        std::fs::create_dir_all(checkout.join("src")).expect("checkout src creates");
+        std::fs::write(
+            checkout.join("Cargo.toml"),
+            "[package]\nname = \"busbar-auth-x\"\n",
+        )
+        .expect("checkout manifest write");
+        std::fs::write(
+            checkout.join("src/lib.rs"),
+            "pub struct OidcClient {\n    pub client_secret: String,\n}\n",
+        )
+        .expect("checkout lib write");
+        let manifest = checkout.join("Cargo.toml").display().to_string();
+        ov.set_command(
+            "cargo-metadata:Cargo.toml",
+            serde_json::json!({"packages": [{
+                "name": "busbar-auth-x",
+                "source": "git+https://github.com/GetBusbar/busbar-auth-x?rev=1#1",
+                "manifest_path": manifest,
+            }]})
+            .to_string(),
+        );
+        let v = SecretHygieneGate::shipped().run(&cx.with_overlay(ov));
+        let c1 = row(&v, ROW_C1);
+        assert_eq!(c1.status, crate::ledger::Status::Fail, "{c1:?}");
+        assert!(
+            c1.detail
+                .contains("crates/busbar-auth-x/src/lib.rs:2 client_secret"),
+            "{c1:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A pinned set that cannot be resolved is a refusal, never a smaller scan.
+    #[test]
+    fn an_unresolvable_pinned_set_is_refused() {
+        let (root, cx, mut ov) = temp_tree("nometa");
+        ov.set_command("cargo-metadata:Cargo.toml", "this is not json");
+        let v = SecretHygieneGate::shipped().run(&cx.with_overlay(ov));
+        let floor = row(&v, ROW_FLOOR);
+        assert_eq!(floor.status, crate::ledger::Status::Fail, "{floor:?}");
+        assert!(floor.detail.contains("pinned"), "{floor:?}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
