@@ -204,3 +204,54 @@ fn an_open_on_an_unreached_scheme_is_counted() {
         [("planted-unreached".to_string(), 1)]
     );
 }
+
+/// THE FRAMED TABLE DECLARES AS THE CONNECTOR DECLARES (busbar-core-connector `declare`): a
+/// member-target need (`settings.*.<key>`) is pinned by no one target, each member's route being
+/// sealed at its own, so it is declared with none, and a member-scoped or OWNED (optional) trust
+/// path that resolved to nothing leaves the public roots alone; a single-target need whose target
+/// resolved to nothing is still refused. RED before the fix: the suite's table refused every need
+/// whose paths resolved to nothing, so a plane's member needs could never be opened in its suite.
+#[test]
+fn a_member_need_is_declared_with_no_one_target_as_the_connector_declares_it() {
+    use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
+    use busbar_contract::conn::{ConnError, InstanceId, NeedId};
+    let framed = crate::https_conns::HttpsConns::framing(FramedFacts::stand_in());
+    let need = |target_from: &str, trust_from: &str| ReadNeed {
+        direction: 0,
+        egress_class: 0,
+        transport: FramedFacts::stand_in().transport,
+        auth: String::new(),
+        target_from: target_from.into(),
+        trust_from: trust_from.into(),
+        details: ReadBlob {
+            fmt: 0,
+            flags: 0,
+            bytes: Vec::new(),
+        },
+        timeout_ms: 0,
+    };
+    let owner = InstanceId(9);
+    for (i, (target, trust)) in [
+        ("settings.*.url", "settings.*.client_identity"),
+        ("settings.*.url", ""),
+        ("", "owned.push.ca"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let id = NeedId(u32::try_from(i).unwrap());
+        assert_eq!(
+            framed.declare(owner, id, &need(target, trust), None, None),
+            Ok(()),
+            "{target} / {trust}"
+        );
+    }
+    assert_eq!(
+        framed.declare(owner, NeedId(7), &need("settings.url", ""), None, None),
+        Err(ConnError::Refused)
+    );
+    assert_eq!(
+        framed.declare(owner, NeedId(8), &need("", "settings.ca"), None, None),
+        Err(ConnError::Refused)
+    );
+}
