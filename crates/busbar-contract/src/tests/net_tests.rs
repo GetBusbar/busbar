@@ -331,3 +331,43 @@ fn ipv6_link_local_is_its_own_predicate_not_a_metadata_one() {
         assert!(!host_is_link_local_v6(host), "{host}");
     }
 }
+
+/// A SOCKET LITERAL is exactly what the standard parser accepts: every row agrees with
+/// `SocketAddr`'s own answer, and states it.
+#[test]
+fn a_socket_literal_is_exactly_what_the_standard_parser_accepts() {
+    for (s, want) in [
+        ("127.0.0.1:8080", true),
+        ("0.0.0.0:0", true),
+        ("10.1.2.3:65535", true),
+        ("[::1]:443", true),
+        ("[2001:db8::1]:80", true),
+        ("[::ffff:127.0.0.1]:80", true),
+        ("[fe80::1%eth0]:80", false),
+        // A numeric scope id is the standard grammar's; a named zone is not.
+        ("[fe80::1%2]:80", true),
+        ("0x7f.1:80", false),
+        ("127.1:80", false),
+        ("2130706433:80", false),
+        ("127.0.0.1", false),
+        ("127.0.0.1:", false),
+        ("127.0.0.1:65536", false),
+        ("127.0.0.1:-1", false),
+        ("127.0.0.1:80 ", false),
+        (" 127.0.0.1:80", false),
+        ("localhost:80", false),
+        ("example.test:443", false),
+        ("::1:443", false),
+        ("[::1]", false),
+        ("::1", false),
+        ("[::1]:", false),
+        ("", false),
+    ] {
+        assert_eq!(is_socket_literal(s), want, "{s:?}");
+        assert_eq!(
+            is_socket_literal(s),
+            s.parse::<std::net::SocketAddr>().is_ok(),
+            "{s:?} disagrees with the standard parser"
+        );
+    }
+}

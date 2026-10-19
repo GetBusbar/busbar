@@ -327,6 +327,15 @@ pub fn expand_alternate_ipv4(host: &str) -> Option<Ipv4Addr> {
     Some(Ipv4Addr::from(addr))
 }
 
+/// Whether `s` is a SOCKET LITERAL: `v4:port` or `[v6]:port`, exactly the grammar
+/// `std::net::SocketAddr`'s parser accepts (no named zone, no alternate v4 spelling, a port in
+/// `0..=65535`, never a bare host). A plugin whose source may not name the system's network module
+/// tells a pinned literal from a name here, and accepts exactly what the parser accepts.
+#[must_use]
+pub fn is_socket_literal(s: &str) -> bool {
+    s.parse::<std::net::SocketAddr>().is_ok()
+}
+
 /// The address a normalized host names, in any spelling the resolver accepts as a literal: a
 /// canonical v4 or v6 literal (a v6 zone suffix `%…` is ignored), or an alternate IPv4 spelling
 /// ([`expand_alternate_ipv4`]). `None` for a DNS name.
