@@ -137,3 +137,83 @@ agent_pools:
         "the model pool resolves onto the model plane"
     );
 }
+
+/// A POOL OF A PLANE'S ENTRIES REFUSES EVERY FIELD ITS PLANE DOES NOT HONOUR (Q128 arch u28 HIGH,
+/// coordinator ruling: a field the path does not honour is refused, naming it). The projection onto
+/// a plane keeps `members:` by name, `repeatable:` and `breaker:`; each other family below was
+/// dropped without a word, so a gate the operator wrote on such a pool never fired. One RED per
+/// field family, on pools of `tools:` entries and of `agents:` entries alike, and a control: the
+/// carried fields alone resolve. RED before: every case resolved clean, the field gone. No 1.5.5
+/// config reaches this path: v1.5.5's deployment grammar (crates/busbar/src/config/mod.rs:2573,
+/// `deny_unknown_fields`) has no plane sections.
+#[test]
+fn a_plane_pool_refuses_each_field_its_plane_does_not_honour() {
+    register_planes();
+    let base = r#"
+providers:
+  acme:
+    api_key: { env: BUSBAR_T_POOL_FIELDS_ACME }
+models:
+  fast-a:
+    provider: acme
+hooks:
+  audit:
+    kind: gate
+    module: audit-hook
+    phase: [request]
+tools:
+  search-eu:
+    url: "https://eu.example/t"
+    pin: { mechanism: unpinned }
+  search-us:
+    url: "https://us.example/t"
+    pin: { mechanism: unpinned }
+agents:
+  planner-eu:
+    url: "https://a1.example/card"
+    pin: { mechanism: unpinned }
+  planner-us:
+    url: "https://a2.example/card"
+    pin: { mechanism: unpinned }
+"#;
+    let defs: std::collections::HashMap<String, ProviderDef> = serde_yaml::from_str(
+        "acme:\n  protocol: anthropic\n  base_url: https://api.acme.example\n",
+    )
+    .expect("provider defs parse");
+    let resolve_pool = |members: &str, extra: &str| {
+        let raw = format!("{base}pools:\n  p:\n    members: {members}\n{extra}");
+        let deploy: DeployCfg = deploy_from_yaml_str(&raw)
+            .unwrap_or_else(|e| panic!("the config parses: {e}\n{raw}"));
+        resolve(&deploy, &defs).map(|_| ()).map_err(|e| format!("{e:?}"))
+    };
+    for members in ["[search-eu, search-us]", "[planner-eu, planner-us]"] {
+        // The control: what the plane honours resolves.
+        resolve_pool(members, "    repeatable: [read]\n")
+            .unwrap_or_else(|e| panic!("a carried field is refused for {members}: {e}"));
+        for (extra, named) in [
+            ("    hooks: [audit]\n", "`hooks:`"),
+            ("    hooks: [cheapest]\n", "`hooks:`"),
+            ("    failover: { max_hops: 2 }\n", "`failover:`"),
+            ("    on_exhausted: reject\n", "`on_exhausted:`"),
+            ("    affinity: { mode: session }\n", "`affinity:`"),
+            ("    upstream_credentials: passthrough\n", "`upstream_credentials:`"),
+            ("    weights: { search-eu: 3, planner-eu: 3 }\n", "`weights:`"),
+            ("    tier: large\n", "`tier:`"),
+            ("    attempt_timeout_ms: 500\n", "`attempt_timeout_ms:`"),
+        ] {
+            let refused = resolve_pool(members, extra);
+            assert!(
+                refused.as_ref().is_err_and(|e| e.contains(named)),
+                "a pool of {members} must refuse {named}, naming it: {refused:?}"
+            );
+        }
+        let rich = members.replace("[", "[{ model: ").replacen(", ", ", weight: 3 }, ", 1);
+        let refused = resolve_pool(&rich, "");
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|e| e.contains("a member's own keys beside its name")),
+            "a pool of {members} must refuse a member's own keys: {refused:?}"
+        );
+    }
+}

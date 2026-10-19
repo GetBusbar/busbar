@@ -2196,11 +2196,27 @@ pub fn resolve(
             }
             // Fallback-lane pools — and an all-unresolvable pool, which `config_validate` refuses
             // member by member once it is resolved — stay in `pools`.
-            let derived = match kind {
-                Some(k) if k == tools_section => &mut tool_pools_derived,
-                Some(k) if k == agents_section => &mut agent_pools_derived,
+            let (section, derived) = match kind {
+                Some(k) if k == tools_section => (k, &mut tool_pools_derived),
+                Some(k) if k == agents_section => (k, &mut agent_pools_derived),
                 _ => continue,
             };
+            // A POOL PROJECTED ONTO A PLANE carries what that plane's pool runs on, and nothing
+            // else is silently dropped: a pool field the projection cannot carry is REFUSED, naming
+            // it, so a gate the operator wrote never stands unfired (Q128 arch u28). No 1.5.5
+            // config reaches this arm (1.5.5's deployment grammar has no plane sections).
+            let uncarried = pools::fields_a_plane_pool_cannot_carry(pool);
+            if !uncarried.is_empty() {
+                errors.push(format!(
+                    "pools.{pool_name}: its members are `{section}:` entries, and a pool of \
+                     `{section}:` entries does not carry {}; remove {} from the pool, or the \
+                     pool would run without {}",
+                    uncarried.join(", "),
+                    if uncarried.len() == 1 { "it" } else { "them" },
+                    if uncarried.len() == 1 { "it" } else { "them" },
+                ));
+                continue;
+            }
             let members = pool.members.iter().map(|m| m.model.clone()).collect();
             let repeatable = pool.repeatable.clone();
             let candidates = pools::CandidatePoolCfg {

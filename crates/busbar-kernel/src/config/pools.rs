@@ -63,6 +63,51 @@ pub struct PoolCfg {
     pub repeatable: Vec<String>,
 }
 
+/// The fields of `pool` that a pool projected onto a plane cannot carry, as the operator wrote
+/// them (`hooks:` for its gates or a named ordering strategy, then each block key, then a member's
+/// own keys): the projection keeps `members:` by name, `repeatable:` and `breaker:`, and every
+/// field named here would otherwise be dropped without a word. Empty = the pool projects whole.
+#[must_use]
+pub fn fields_a_plane_pool_cannot_carry(pool: &PoolCfg) -> Vec<&'static str> {
+    let mut uncarried = Vec::new();
+    if !pool.gates.is_empty() || pool.base_named {
+        uncarried.push("`hooks:`");
+    }
+    if pool.failover.is_some() {
+        uncarried.push("`failover:`");
+    }
+    if pool.on_exhausted.is_some() {
+        uncarried.push("`on_exhausted:`");
+    }
+    if pool.affinity.is_some() {
+        uncarried.push("`affinity:`");
+    }
+    if pool.upstream_credentials.is_some() {
+        uncarried.push("`upstream_credentials:`");
+    }
+    if !pool.weights.is_empty() {
+        uncarried.push("`weights:`");
+    }
+    if pool.tier.is_some() {
+        uncarried.push("`tier:`");
+    }
+    if pool.attempt_timeout_ms.is_some() {
+        uncarried.push("`attempt_timeout_ms:`");
+    }
+    // A member is carried by name alone: any key of its own beside the name is dropped.
+    if pool.members.iter().any(|m| {
+        m.weight != default_weight()
+            || m.context_max.is_some()
+            || m.tier.is_some()
+            || m.attempt_timeout_ms.is_some()
+            || m.reasoning.is_some()
+            || !m.tags.is_empty()
+    }) {
+        uncarried.push("a member's own keys beside its name");
+    }
+    uncarried
+}
+
 /// Whether `name` is one of the native ordering strategies (usable BARE in a pool `hooks:` list).
 /// The strategy set is fixed + known at parse time; any OTHER bare name is a hook-NAME reference
 /// (1.5.3: no inline instances — a hook is defined in the top-level `hooks:` map and referenced by
