@@ -725,10 +725,16 @@ fn validate_definition(
         )));
     }
     let Some(obj) = def.as_object() else {
-        return Err(AdminError::Validation(format!(
-            "a {} definition must be an object",
-            section.singular()
-        )));
+        // 1.5.5's sentence, byte for byte, for a section whose entries name a `module:` (its wire
+        // bytes: Q128 core-admin u19); a section with no plugin behind it has no `module` to show.
+        return Err(AdminError::Validation(if section.requires_module() {
+            format!(
+                "a {} definition must be an object (`{{\"module\": …}}`)",
+                section.singular()
+            )
+        } else {
+            format!("a {} definition must be an object", section.singular())
+        }));
     };
     // `module:` is required only of a PLUGIN-INSTANCE section. A `tools:` or an `agents:` entry is
     // a remote endpoint somebody else runs; there is no plugin behind either to name, and demanding
