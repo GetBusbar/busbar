@@ -55,7 +55,7 @@ impl GovState {
     ///   holds until the admin re-enables or deletes the key; a login must neither re-enable the row
     ///   nor mint a fresh key beside it.
     /// - [`SelfMintRefusal::OtherProvider`]: one of those rows records a minting provider
-    ///   ([`SELF_KEY_PROVIDER_LABEL`]) other than `provider`. The subject alone keys the binding,
+    ///   ([`VirtualKey::idp_provider`]) other than `provider`. The subject alone keys the binding,
     ///   so a second provider asserting the same subject would otherwise be handed this key.
     fn self_mint_refusal(&self, user_sub: &str, provider: &str) -> Option<SelfMintRefusal> {
         let group = format!("{SELF_KEY_GROUP_PREFIX}{user_sub}");
@@ -70,10 +70,7 @@ impl GovState {
             if !k.enabled {
                 return Some(SelfMintRefusal::Disabled);
             }
-            if k.labels
-                .get(SELF_KEY_PROVIDER_LABEL)
-                .is_some_and(|p| p != provider)
-            {
+            if k.idp_provider.as_deref().is_some_and(|p| p != provider) {
                 refusal = Some(SelfMintRefusal::OtherProvider);
             }
         }
@@ -177,11 +174,10 @@ impl GovState {
             enabled: true,
             created_at: now,
             group: Some(format!("{SELF_KEY_GROUP_PREFIX}{user_sub}")),
-            // The minting identity provider, so another provider asserting this subject is refused.
-            labels: std::collections::BTreeMap::from([(
-                SELF_KEY_PROVIDER_LABEL.to_string(),
-                provider.to_string(),
-            )]),
+            // EMPTY, as 1.5.5 wrote a self-serve key (v1.5.5 crates/busbar/src/governance/state.rs
+            // :487): `labels` is served by every admin key view, so the minting provider rides the
+            // kernel-only `idp_provider` below, never this map.
+            labels: std::collections::BTreeMap::new(),
             expires_at: None,
             deleted_at: None,
             revision: 0,
@@ -193,6 +189,8 @@ impl GovState {
             // preserving; they are pure attribution metadata.
             idp_subject: Some(user_sub.to_string()),
             binding_mode: Some(SELF_KEY_BINDING_MODE.to_string()),
+            // The minting identity provider, so another provider asserting this subject is refused.
+            idp_provider: Some(provider.to_string()),
             ..Default::default()
         };
         self.store.put_key(&binding)?;
@@ -234,9 +232,9 @@ impl GovState {
             Some(existing) => {
                 // The pools the caller resolved THIS login (from the possibly-changed binding).
                 let new_scopes = crate::governance::pool_scopes(allowed_pools.clone());
-                // A binding minted before the provider label existed ADOPTS the first provider that
-                // logs in, recorded on the row so every other provider is refused from now on.
-                let adopt = !existing.labels.contains_key(SELF_KEY_PROVIDER_LABEL);
+                // A binding minted before the provider record existed ADOPTS the first provider
+                // that logs in, recorded on the row so every other provider is refused from now on.
+                let adopt = existing.idp_provider.is_none();
                 if new_scopes != existing.allowed_scopes || adopt {
                     // allowed_pools CHANGED since the binding was created (an admin narrowed or
                     // widened the group) — update THE EXISTING ROW in place with the fresh pools,
@@ -257,9 +255,7 @@ impl GovState {
                     // the row that already existed.
                     let mut updated = (*existing).clone();
                     updated.allowed_scopes = new_scopes;
-                    updated
-                        .labels
-                        .insert(SELF_KEY_PROVIDER_LABEL.to_string(), provider.to_string());
+                    updated.idp_provider = Some(provider.to_string());
                     self.store.put_key(&updated)?;
                     self.refresh()?;
                     let generation = binding_generation(&updated.generation_hash);

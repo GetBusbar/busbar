@@ -78,15 +78,6 @@ pub const SELF_KEY_BINDING_MODE: &str = "user-bound";
 /// spelling (`"time-bound"`). Named `_APP` to contrast the self-serve personal `user-bound` key.
 pub const SELF_KEY_BINDING_MODE_APP: &str = "time-bound";
 
-/// The reserved [`busbar_contract::records::VirtualKey::labels`] entry a SELF-SERVE binding records
-/// its minting identity provider under: the `identity-providers:` instance name that asserted the
-/// subject. The self group and the derived id are keyed by subject alone, and two providers backed by
-/// one module can both assert `oidc:alice`, so the binding remembers which one minted it and the
-/// self-serve mint refuses any other. A row without it (minted before the label existed) adopts the
-/// first provider that logs in. Kept off the key metric series (`snapshot::money`), so recording it
-/// changes no scrape.
-pub const SELF_KEY_PROVIDER_LABEL: &str = "busbar_self_provider";
-
 /// The `generation_hash` marker for a signed-token binding at a given rotation generation.
 pub fn binding_marker(id: &str, generation: &str) -> String {
     format!("{BINDING_MARKER_PREFIX}{id}:{generation}")
@@ -872,7 +863,7 @@ pub enum SelfMintRefusal {
     /// login or refresh must not re-enable it or route around it with a fresh key.
     Disabled,
     /// The subject's binding was minted through a different identity provider
-    /// ([`SELF_KEY_PROVIDER_LABEL`]).
+    /// ([`busbar_contract::records::VirtualKey::idp_provider`]).
     OtherProvider,
 }
 
