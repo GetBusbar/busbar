@@ -677,6 +677,8 @@ fn a_failed_exchange_closes_its_stream_before_it_answers() {
     );
     assert!(whole.answered.is_ok(), "{:?}", whole.answered);
     assert_eq!(whole.held, 0);
+}
+
 /// One READ_CHUNK of body: a reply that plays it without end passes [`REPLY_MAX`].
 static HUGE: [u8; READ_CHUNK] = [b'x'; READ_CHUNK];
 
@@ -689,7 +691,7 @@ fn head_then_endless_body() -> Vec<Scripted> {
     ]
 }
 
-/// RED (Q128 ruling A; THE DESIGN §2, a port keeps 1.5.5's surface): a HEAD-ONLY exchange is
+/// RED (Q128 ruling A; THE DESIGN: a port keeps 1.5.5's surface): a HEAD-ONLY exchange is
 /// judged on the reply's head. A 2xx head followed by a slow or huge body that never ends answers
 /// status 200 on the head read alone: no body is read or buffered, no `REPLY_OVER_BOUND`, and the
 /// stream is closed. Every entry after the head replays its read, and the replayed head ends the
