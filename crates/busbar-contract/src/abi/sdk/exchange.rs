@@ -50,19 +50,19 @@ pub struct Request {
     pub timeout_ms: u64,
 }
 
-/// A request is WIPED when it is dropped: its body (a token exchange's form carries a client secret,
-/// a code, a verifier) and its fields are zeroized, not freed as they were.
-impl Drop for Request {
-    fn drop(&mut self) {
-        use zeroize::Zeroize;
-        self.method.zeroize();
-        self.target.zeroize();
-        for (name, value) in &mut self.fields {
-            name.zeroize();
-            value.zeroize();
-        }
-        self.body.zeroize();
+/// A request handed to [`Exchange::request`] is WIPED once the exchange has copied what it sends:
+/// its body (a token exchange's form carries a client secret, a code, a verifier), fields, method
+/// and target are zeroized, not freed as they were. (No `Drop`, so a request still builds with
+/// `..Request::default()`.)
+fn wipe(request: &mut Request) {
+    use zeroize::Zeroize;
+    request.method.zeroize();
+    request.target.zeroize();
+    for (name, value) in &mut request.fields {
+        name.zeroize();
+        value.zeroize();
     }
+    request.body.zeroize();
 }
 
 /// The far end's reply to an [`exchange`].
@@ -239,7 +239,14 @@ impl Exchange {
     /// # Errors
     /// A field is a pseudo-field (its name starts with `:`), or a name or value carries a line
     /// break: REFUSED, nothing sent.
-    pub fn request(request: Request) -> Result<Self, ConnFailure> {
+    pub fn request(mut request: Request) -> Result<Self, ConnFailure> {
+        let built = Self::build(&request);
+        wipe(&mut request);
+        built
+    }
+
+    /// [`Exchange::request`]'s build, over a request it wipes after.
+    fn build(request: &Request) -> Result<Self, ConnFailure> {
         // Sized whole up front, so building it never leaves a grown-out copy behind unwiped; the
         // working buffer is wiped once the sent copy is taken.
         let whole = request.method.len()
