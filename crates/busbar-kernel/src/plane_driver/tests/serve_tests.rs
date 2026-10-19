@@ -33,6 +33,8 @@ type Crossed = (String, Vec<String>);
 struct Echo {
     crossed: Mutex<Vec<Crossed>>,
     next: AtomicU32,
+    /// The status it answers (`0`: `200`).
+    status: AtomicU32,
 }
 
 const READY: Answered = Answered {
@@ -178,7 +180,10 @@ impl PlaneCalls for Echo {
         }
         o.arena_written = words.len() as u64;
         o.records_written = 1;
-        o.status = 200;
+        o.status = match self.status.load(Ordering::SeqCst) {
+            0 => 200,
+            n => n,
+        };
         Box::new(Now(o))
     }
     fn on_piece(&self, _: Ticket, _: OnPieceIn, _: OnPieceOut, _: Lent) -> Box<dyn PieceInFlight> {
@@ -289,4 +294,45 @@ async fn a_door_plane_admin_route_sees_no_consumed_credential_and_its_row_names_
         rows.0.lock().unwrap().as_slice(),
         [("door.check".to_string(), "op".to_string())]
     );
+}
+
+/// AN APPLIED SERVE ANSWER IS AUDITED EVEN WHEN ITS HEAD CANNOT BE RENDERED (Q128 arch u35 #43): the
+/// plane's record writes were committed, so the route's `<audit_kind>.<audit_verb>` row is written,
+/// and the caller gets the kernel's 502. RED before the fix: the reply failed to render first and
+/// the row was skipped, so a mutation the plane applied left no audit row.
+#[tokio::test]
+async fn an_applied_answer_whose_head_cannot_render_is_still_audited() {
+    let echo = std::sync::Arc::new(Echo::default());
+    echo.status.store(1_000, Ordering::SeqCst);
+    publish(
+        ServeTable {
+            instance: "unrendered-red".to_string(),
+            audit_kind: "unrendered".to_string(),
+            calls: echo.clone(),
+            caps: BufferCaps::default(),
+            routes: vec![ServeRoute {
+                verb: "POST".to_string(),
+                target: "/unrendered-red/{name}/ping".to_string(),
+                flags: ROUTE_PUBLIC,
+                audit_verb: "ping".to_string(),
+            }],
+            records: None,
+        },
+        &[],
+    )
+    .expect("publishes");
+    let resp = answer_public(
+        "POST",
+        "/unrendered-red/a/ping",
+        "/unrendered-red/a/ping",
+        &axum::http::HeaderMap::new(),
+        Bytes::new(),
+    )
+    .await;
+    withdraw("unrendered-red");
+    assert_eq!(resp.status(), 502, "no response can carry status 1000");
+    let rows = crate::audit_ring::AUDIT.list_filtered(0, 16, Some("unrendered.ping"), None);
+    assert_eq!(rows.len(), 1, "the applied mutation is audited: {rows:?}");
+    assert_eq!(rows[0].resource, "unrendered:a");
+    assert_eq!(rows[0].outcome, busbar_contract::vocab::OUTCOME_APPLIED);
 }
