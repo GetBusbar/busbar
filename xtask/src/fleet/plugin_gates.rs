@@ -916,6 +916,9 @@ fn abi_matches(got: &Json, want: u64) -> bool {
     }
 }
 
+/// The DECLARES finding for a declares.json that states a contract-ABI range at all.
+pub const STATED_RANGE: &str = "DECLARES states a contract_abi range; a plugin declares its kind's ABI version, never a range (THE DESIGN §2). Re-render it with busbar-release plugin sync.";
+
 /// declares.json states no contract-ABI range (THE DESIGN §2 l.237-240, §9 l.1164-1165: a plugin
 /// declares its kind's ABI version, never a range). THE ORDERED STEP, agreed with the fleet: while
 /// the fleet's re-render strips the field from every repo, a file WITHOUT it passes and a file that
@@ -1675,7 +1678,7 @@ fn cases() -> Vec<(&'static str, Res<Vec<String>>, bool)> {
     v.push((
         "declares current",
         declares(d, "store", r#"{"contract_abi": {"min": 4, "max": 4}}"#),
-        false,
+        true,
     ));
     v.push((
         "declares stale",
@@ -1740,7 +1743,7 @@ fn cases() -> Vec<(&'static str, Res<Vec<String>>, bool)> {
     v.push((
         "declares literal",
         declares(d, "auth", r#"{"contract_abi": {"min": 3, "max": 3}}"#),
-        false,
+        true,
     ));
     v
 }
@@ -2269,10 +2272,9 @@ mod tests {
 
     #[test]
     fn declares_text() {
-        assert_eq!(
-            found("declares stale"),
-            ["DECLARES contract_abi is {'min': 3, 'max': 3}; busbar at the pin speaks store v4 (min = max = 4). Re-render it with busbar-release plugin sync."]
-        );
+        assert_eq!(found("declares stale"), [STATED_RANGE]);
+        assert_eq!(found("declares current"), [STATED_RANGE]);
+        assert_eq!(found("declares literal"), [STATED_RANGE]);
     }
 
     #[test]
@@ -2308,22 +2310,20 @@ mod tests {
             "\"auth\" => &[1, 3],",
         )
         .unwrap();
-        let tail = "; busbar at the pin speaks auth v3 (min = max = 3). Re-render it with busbar-release plugin sync.";
         let go = |json: &str| declares(d, "auth", json).unwrap();
-        // ABSENT is the shape the fleet re-renders to: it passes.
+        // ABSENT is the shape every plugin declares: it passes.
         assert!(go("{}").is_empty());
         assert!(go(r#"{"needs": ["http"]}"#).is_empty());
-        // STATED, a range is still held to the kind's version at the pin, min = max.
-        assert_eq!(
-            go(r#"{"contract_abi": {"max": 3, "min": true, "x": [1, "a", null, false]}}"#),
-            [format!("DECLARES contract_abi is {{'max': 3, 'min': True, 'x': [1, 'a', None, False]}}{tail}")]
-        );
-        assert_eq!(
-            go(r#"{"contract_abi": "s"}"#),
-            [format!("DECLARES contract_abi is s{tail}")]
-        );
-        assert!(!go(r#"{"contract_abi": {"max": 3.0, "min": true}}"#).is_empty());
-        assert!(go(r#"{"contract_abi": {"max": 3, "min": 3.0}}"#).is_empty());
+        // STATED, in any shape and at any value (the kind's own version included), it is refused.
+        for stated in [
+            r#"{"contract_abi": {"max": 3, "min": true, "x": [1, "a", null, false]}}"#,
+            r#"{"contract_abi": "s"}"#,
+            r#"{"contract_abi": {"max": 3.0, "min": true}}"#,
+            r#"{"contract_abi": {"max": 3, "min": 3}}"#,
+            r#"{"contract_abi": null}"#,
+        ] {
+            assert_eq!(go(stated), [STATED_RANGE], "{stated}");
+        }
     }
 
     #[test]
