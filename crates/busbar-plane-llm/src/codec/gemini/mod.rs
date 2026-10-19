@@ -343,6 +343,11 @@ const PARKED: &[crate::codec::drops::Parked] = &[
         key: FIELD_LABELS,
         holds: crate::codec::drops::Holds::Nothing,
     },
+    // The same-dialect marker for the caller's own hosted tools (`GEMINI_HOSTED_TOOLS_SENTINEL`).
+    crate::codec::drops::Parked {
+        key: GEMINI_HOSTED_TOOLS_SENTINEL,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
     // The members of `generationConfig` the reader's own code carries; the map file maps the rest
     // of what crosses.
     crate::codec::drops::Parked {
@@ -413,6 +418,17 @@ const RESPONSE_DROPS: &[&str] = &[
 /// impossible. Defined here and referenced at this owning path, so the route/forward sites reach it
 /// via `super::gemini::GEMINI_JSON_ARRAY_SHIM_KEY`.
 pub const GEMINI_JSON_ARRAY_SHIM_KEY: &str = "__busbar_gemini_json_array";
+
+/// Busbar-internal `extra` key the Gemini reader sets when the caller's own request carried a hosted
+/// tool (`googleSearch`, `codeExecution`, `urlContext`). The writer emits typed hosted tools only
+/// when it is present, i.e. on a SAME-dialect write: the cross-protocol seam clears `extra`, so a
+/// translated request reaches the writer without it and its hosted tools are dropped, as v1.5.5
+/// dropped them (it had no hosted-tool slot). Never written to the wire.
+///
+/// Coordinator ruling 2026-10-19 (Q128 plane-llm p12): on a translated route the carry would make
+/// Google run, and charge, work 1.5.5 never requested, and the LLM DIALECT FIDELITY rule says
+/// "Billing never moves" (BUSBAR-1.6.0.md l.4827). The carry is pending an owner sign-off.
+pub const GEMINI_HOSTED_TOOLS_SENTINEL: &str = "__busbar_gemini_hosted_tools";
 
 /// The canonical Gemini bad-API-key message text (`google.rpc.Status.message` a real Generative
 /// Language API 400/INVALID_ARGUMENT carries on an invalid key). Single-sourced here: the auth-failure

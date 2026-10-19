@@ -483,7 +483,17 @@ impl ProtocolWriter for GeminiWriter {
             .iter()
             .filter(|tool| omit_to_subset.is_none_or(|names| names.contains(&tool.name)))
             .collect();
-        let hosted_entries = write_gemini_hosted_tools(&req.hosted_tools);
+        // A hosted tool reaches Gemini only from a Gemini caller (the reader's same-dialect marker
+        // rides `extra`, which the cross-protocol seam clears). On a translated route each one is
+        // dropped on the one drop path, as v1.5.5 dropped it: Google would otherwise run, and
+        // charge, work 1.5.5 never requested (coordinator ruling 2026-10-19, Q128 plane-llm p12;
+        // BUSBAR-1.6.0.md l.4827 "Billing never moves"; the carry is pending an owner sign-off).
+        let hosted_entries = if req.extra.contains_key(super::GEMINI_HOSTED_TOOLS_SENTINEL) {
+            write_gemini_hosted_tools(&req.hosted_tools)
+        } else {
+            drop_translated_hosted_tools(&req.hosted_tools);
+            Vec::new()
+        };
         if !func_tools.is_empty() || !hosted_entries.is_empty() {
             let func_decls: Vec<_> = func_tools
                 .iter()
@@ -759,7 +769,10 @@ impl ProtocolWriter for GeminiWriter {
         // override would build correctly above, then get overwritten right back to the stale raw
         // value by this loop. Every OTHER unmodeled top-level key still round-trips verbatim.
         for (key, value) in &req.extra {
-            if key == FIELD_GENERATION_CONFIG || key == keys::TOOL_CONFIG {
+            if key == FIELD_GENERATION_CONFIG
+                || key == keys::TOOL_CONFIG
+                || key == super::GEMINI_HOSTED_TOOLS_SENTINEL
+            {
                 continue;
             }
             out.insert(key.clone(), value.clone());

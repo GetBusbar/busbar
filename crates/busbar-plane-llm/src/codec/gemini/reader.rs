@@ -687,6 +687,12 @@ impl ProtocolReader for GeminiReader {
             output_modalities: read_gemini_response_modalities(obj.get(FIELD_GENERATION_CONFIG)),
             ..Default::default()
         };
+        if !ir.hosted_tools.is_empty() {
+            ir.extra.insert(
+                super::GEMINI_HOSTED_TOOLS_SENTINEL.to_string(),
+                serde_json::Value::Bool(true),
+            );
+        }
         crate::codec::carry::read_fields(super::map::REQUEST, obj, &mut ir);
         Ok(ir)
     }

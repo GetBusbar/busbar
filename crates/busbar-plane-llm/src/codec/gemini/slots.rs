@@ -78,6 +78,26 @@ pub(super) fn read_gemini_hosted_tools(
     (typed, raw_tools)
 }
 
+/// A TRANSLATED request's hosted tools, each dropped on the one drop path (WARN plus the audit row
+/// naming its wire path), as v1.5.5 dropped them. See [`super::GEMINI_HOSTED_TOOLS_SENTINEL`].
+pub(super) fn drop_translated_hosted_tools(hosted: &[IrHostedTool]) {
+    for tool in hosted {
+        let path = match tool {
+            IrHostedTool::WebSearch(_) => "tools[].googleSearch",
+            IrHostedTool::CodeExecution => "tools[].codeExecution",
+            IrHostedTool::WebFetch(_) => "tools[].urlContext",
+            IrHostedTool::Custom(_) => "tools[]",
+        };
+        crate::codec::drops::writer_drop!(
+            crate::codec::drops::wire(path),
+            &crate::codec::diagnostics::IR_DROP_HOSTED_TOOLS,
+            [hosted_tool = tool.kind_str(),],
+            "dropping a hosted tool on a translated Gemini request: Google would run and charge \
+             work 1.5.5 never requested (billing never moves; pending owner sign-off)"
+        );
+    }
+}
+
 /// One Gemini `tools[]` entry per IR hosted tool (IR-11). Gemini's three hosted tools take no
 /// neutral parameter, so a parameter the source set (Anthropic `max_uses`/`allowed_domains`/
 /// `blocked_domains`/`user_location`, Responses `search_context_size`) is dropped with a warn and the

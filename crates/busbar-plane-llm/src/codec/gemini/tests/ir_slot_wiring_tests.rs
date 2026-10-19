@@ -92,23 +92,48 @@ fn gem10_gemini_hosted_tools_read_into_the_typed_slot() {
         vec![json!({"fileSearch": {"fileSearchStoreNames": ["s"]}})]
     );
 
-    // Through the seam the three typed tools survive (the raw one is dropped) and a Gemini backend
-    // gets them back in its own spelling beside the function.
+    // A SAME-dialect write (no seam: the reader's marker rides `extra`) gives a Gemini backend
+    // the three typed tools back in its own spelling beside the function, the marker never on the
+    // wire.
+    let out = gw().write_request(crate::codec::test_host::HOST, &ir);
+    assert_eq!(
+        out["tools"][0],
+        json!({"functionDeclarations": [{"name": "g", "parameters": {"type": "object"}}]}),
+        "{out}"
+    );
+    for kind in ["googleSearch", "codeExecution", "urlContext"] {
+        assert!(
+            out["tools"]
+                .as_array()
+                .is_some_and(|ts| ts.iter().any(|t| t.get(kind).is_some())),
+            "{kind}: {out}"
+        );
+    }
+    assert!(
+        out.get(super::super::GEMINI_HOSTED_TOOLS_SENTINEL)
+            .is_none(),
+        "the marker is never written: {out}"
+    );
+
+    // Through the seam (a TRANSLATED request: `extra` cleared) the hosted tools are dropped, as
+    // v1.5.5 dropped them (coordinator ruling 2026-10-19, Q128 plane-llm p12: "billing never
+    // moves"); the function is kept.
     let out = gw().write_request(crate::codec::test_host::HOST, &read_then_seam(&body));
     assert_eq!(
         out["tools"],
-        json!([
-            {"functionDeclarations": [{"name": "g", "parameters": {"type": "object"}}]},
-            {"googleSearch": {}}, {"codeExecution": {}}, {"urlContext": {}}
-        ]),
+        json!([{"functionDeclarations": [{"name": "g", "parameters": {"type": "object"}}]}]),
         "{out}"
     );
 }
 
-/// GEM-10 / IR-11 (writer): a foreign hosted tool reaches a Gemini backend as its Gemini kind, with
-/// the parameters Gemini lacks dropped and the tool kept — including when it is the only tool.
+/// GEM-10 / IR-11 (writer): a foreign hosted tool reaches a Gemini backend as NOTHING. 1.5.5 had
+/// no hosted-tool slot and dropped it, and the carry would make Google run and charge work 1.5.5
+/// never requested (coordinator ruling 2026-10-19, Q128 plane-llm p12; BUSBAR-1.6.0.md l.4827
+/// "Billing never moves"; pending an owner sign-off). Each is dropped on the one drop path, and no
+/// `tools` member is written when they were the only tools. RED: any `googleSearch`,
+/// `urlContext` or `codeExecution` written for a request that did not come from a Gemini caller.
 #[test]
-fn ir11_foreign_hosted_tools_write_as_gemini_tools() {
+fn ir11_foreign_hosted_tools_are_dropped_on_a_translated_gemini_request() {
     let mut ir = bare_ir();
     ir.hosted_tools = vec![
         IrHostedTool::WebSearch(IrWebSearch {
@@ -123,11 +148,7 @@ fn ir11_foreign_hosted_tools_write_as_gemini_tools() {
         IrHostedTool::CodeExecution,
     ];
     let out = gw().write_request(crate::codec::test_host::HOST, &ir);
-    assert_eq!(
-        out["tools"],
-        json!([{"googleSearch": {}}, {"urlContext": {}}, {"codeExecution": {}}]),
-        "{out}"
-    );
+    assert!(out.get("tools").is_none(), "{out}");
 }
 
 /// GEM-19 / IR-18 (writer): a reasoning signature minted by another family is NOT sent to Gemini as
@@ -400,10 +421,11 @@ fn ir09_anthropic_thinking_disabled_reaches_gemini_as_off() {
     );
 }
 
-/// GEM-10 / IR-11 across the seam: an Anthropic hosted web search / code execution reaches a
-/// Gemini backend as `googleSearch` / `codeExecution`.
+/// GEM-10 / IR-11 across the seam: an Anthropic hosted web search / code execution does NOT reach a
+/// Gemini backend (coordinator ruling 2026-10-19, Q128 plane-llm p12: dropped as v1.5.5 dropped
+/// it, "billing never moves"). RED: a `googleSearch` or `codeExecution` on the far request.
 #[test]
-fn ir11_anthropic_hosted_tools_reach_gemini() {
+fn ir11_anthropic_hosted_tools_do_not_reach_gemini() {
     let body = json!({"model": "claude", "max_tokens": 64,
     "messages": [{"role": "user", "content": "hi"}],
     "tools": [
@@ -412,11 +434,7 @@ fn ir11_anthropic_hosted_tools_reach_gemini() {
     ]});
     let ir = read_then_seam_from("anthropic", &body);
     let out = gw().write_request_for_model(crate::codec::test_host::HOST, &ir, "gemini-2.5-flash");
-    assert_eq!(
-        out["tools"],
-        json!([{"googleSearch": {}}, {"codeExecution": {}}]),
-        "{out}"
-    );
+    assert!(out.get("tools").is_none(), "{out}");
 }
 
 /// IR-04..07: the slots Gemini has no form for are not written and are reported to the seam. The
