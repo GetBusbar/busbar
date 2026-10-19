@@ -20,8 +20,8 @@ use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::transport::{
     FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, DEST_PROGRAM, EMIT_TEXT, PIECE_END,
-    PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_DECLARED_LEN, PIECE_TEXT, READ_END_OF_FRAME,
-    YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_DECLARED_LEN, PIECE_TEXT, PIECE_WRITABLE,
+    READ_END_OF_FRAME, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
 };
 use busbar_contract::io_host::{IoHost, IoRefusal, Spawn};
 use futures::task::AtomicWaker;
@@ -65,6 +65,11 @@ pub struct Knobs {
     pub echo: bool,
     /// Every answer the framing gives says it owes more (`YIELD_MORE`), whatever it wrote.
     pub spin: bool,
+    /// A STREAM'S OWN BACKPRESSURE: an `emit` that brings the bytes emitted since the stream was
+    /// last writable to this many answers `YIELD_STREAM_FULL`; a scripted `w` from the far end
+    /// ([`Knobs::messages`]) is a `PIECE_WRITABLE` piece on the scripted stream, and makes it
+    /// writable again.
+    pub full_at: Option<usize>,
 }
 
 #[derive(Default)]
@@ -81,6 +86,8 @@ struct State {
     declared_len: Option<u64>,
     echo: bool,
     spin: bool,
+    full_at: Option<usize>,
+    emitted: usize,
 }
 
 /// One `begin` crossing's opening head fields, name and value.
@@ -228,6 +235,10 @@ fn answer(st: &mut State, sink: &FramerSink, o: &mut FramerOut, silence: Option<
                 b'b' => (0, PIECE_END_OF_FRAME),
                 b't' => (0, PIECE_TEXT | PIECE_END_OF_FRAME),
                 b'e' => (0, PIECE_END | PIECE_END_OF_FRAME),
+                b'w' => {
+                    st.emitted = 0;
+                    (0, PIECE_WRITABLE)
+                }
                 other => {
                     // SAFETY: `frame_len < frame_cap`.
                     unsafe { sink.frame.add(frame_len).write(other) };
@@ -414,6 +425,7 @@ impl FramerDoor for TestDoor {
                     declared_len: self.knobs.declared_len,
                     echo: self.knobs.echo,
                     spin: self.knobs.spin,
+                    full_at: self.knobs.full_at,
                     ..State::default()
                 };
                 answer(&mut st, &i.sink, o, silence);
@@ -466,7 +478,11 @@ impl FramerDoor for TestDoor {
                 None => ("emit", failed("no such framing")),
                 Some(st) => {
                     st.outbound.extend(raw(i.bytes, i.len));
+                    st.emitted += i.len;
                     answer(st, &i.sink, o, silence);
+                    if st.full_at.is_some_and(|n| st.emitted >= n) {
+                        o.yielded.flags |= YIELD_STREAM_FULL;
+                    }
                     // A text emit is counted as its own op, so a test sees the bit cross.
                     let op = if i.flags & EMIT_TEXT != 0 {
                         "emit text"
