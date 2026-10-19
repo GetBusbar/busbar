@@ -172,7 +172,7 @@ pub mod fields;
 pub mod route;
 
 /// A guest-list line an accepting transport is lent ([`BeginIn::lines`]).
-pub use route::LineEntry;
+pub use route::{FieldPredicate, LineEntry, RouteMatch};
 
 pub use datagram::{
     DatagramLane, DatagramPath, DatagramRoute, DatagramYield, KeyingMaterial, RendezvousTerms,

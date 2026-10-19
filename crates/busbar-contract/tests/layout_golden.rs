@@ -19,7 +19,7 @@ use busbar_contract::abi::shared::{DeclStr, WireConnFacts, WireField};
 use busbar_contract::abi::AbiPreamble;
 // THE ONE MEMORY ABI (M0 ABI-SPEC): aliased, so a name the hot lane also uses cannot collide.
 use busbar_contract::abi::mechanism::call::{
-    AbiStr as MechStr, Blob as MechBlob, Diag as MechDiag, Envelope as MechEnvelope,
+    AbiStr as MechAbiStr, Blob as MechBlob, Diag as MechDiag, Envelope as MechEnvelope,
     Field as MechField, InHead as MechInHead, MetricEntry as MechMetricEntry,
     OutHead as MechOutHead, RawOutcome as MechRawOutcome, Span as MechSpan,
 };
@@ -575,7 +575,7 @@ fn compute_layout() -> String {
     // THE ONE MEMORY ABI (`BUSBAR-1.6.0.md` THE DESIGN, §11.5): the shared mechanism and the seven kind
     // tables. This golden is the ONE layout pin (`abi-audit` F2).
     record!(s, MechRawOutcome, []);
-    record!(s, MechStr, [ptr, len]);
+    record!(s, MechAbiStr, [ptr, len]);
     record!(s, MechBlob, [ptr, len, fmt, flags]);
     record!(s, MechSpan, [offset, len]);
     record!(s, MechField, [name, value]);
@@ -1091,14 +1091,10 @@ fn compute_layout() -> String {
     );
     record!(s, tkind::StatusRow, [claim, lo, hi, class]);
     record!(s, tkind::FaultRow, [claim, lo, hi, fault]);
+    record!(s, tkind::FieldPredicate, [op, _reserved, name, value]);
     record!(
         s,
-        tkind::route::FieldPredicate,
-        [op, _reserved, name, value]
-    );
-    record!(
-        s,
-        tkind::route::RouteMatch,
+        tkind::RouteMatch,
         [methods, path_form, path, fields, fields_len, rung, _reserved]
     );
     record!(s, tkind::LineEntry, [line, points, auth, body_limit, route]);
@@ -1263,6 +1259,7 @@ fn compute_layout() -> String {
     record!(s, tkind::FramerOut, [head, yielded, framing, datagram]);
     record!(s, tkind::KeyingMaterial, [size, profile, bytes, len]);
     record!(s, tkind::DatagramRoute, [offset, len, path, lane]);
+    record!(s, tkind::DatagramPath, [path, _reserved, addr]);
     record!(
         s,
         tkind::DatagramLane,
