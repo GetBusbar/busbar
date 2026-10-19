@@ -2211,9 +2211,9 @@ fn an_idempotency_claim_with_no_hold_behind_it_is_voided_at_recovery() {
 }
 
 /// A JOURNAL SEGMENT CORRUPTED MID-LOG DOES NOT STOP THE BOOT, AND IS NOT SILENT: the book opens over
-/// the records before the damage, the damaged remainder is in a quarantine file beside the segment,
-/// the verdict names the file, the offset and the byte count, and a durable `ChainBreak` record of
-/// it goes on the chain.
+/// every record that verifies, those behind the damage included, the damaged record is in a
+/// quarantine file beside the segment, the verdict names the file, the offset and the byte count, a
+/// durable `ChainBreak` record of it goes on the chain, and the chain still verifies across it.
 #[test]
 fn a_mid_log_corrupt_journal_boots_quarantines_and_records_it() {
     use busbar_kernel_wal::{Entry, Journal, QuarantineKept, RecordClass, FRAME_BYTES};
@@ -2256,13 +2256,13 @@ fn a_mid_log_corrupt_journal_boots_quarantines_and_records_it() {
     let q = durability.quarantined[0].clone();
     assert_eq!(q.segment_file.as_deref(), Some(segment.as_path()));
     assert_eq!(q.offset, FRAME_BYTES as u64);
-    assert_eq!(q.bytes, 3 * FRAME_BYTES as u64);
+    assert_eq!(q.bytes, FRAME_BYTES as u64, "the damaged record alone");
     let QuarantineKept::File(file) = &q.kept else {
         panic!("an on-disk journal quarantines to a file");
     };
     assert_eq!(
         std::fs::read(file).expect("the quarantine file is there"),
-        bytes[FRAME_BYTES..4 * FRAME_BYTES].to_vec()
+        bytes[FRAME_BYTES..2 * FRAME_BYTES].to_vec()
     );
 
     let ack = durability
@@ -2271,6 +2271,122 @@ fn a_mid_log_corrupt_journal_boots_quarantines_and_records_it() {
         .expect("a quarantine is recorded");
     assert_eq!(ack.sealed.len(), 1);
     assert_eq!(ack.sealed[0].class, RecordClass::ChainBreak);
+    let seqs: Vec<u64> = durability
+        .journal
+        .replay()
+        .expect("reads")
+        .expect("the chain verifies across the quarantine")
+        .iter()
+        .map(|r| r.node_seq)
+        .collect();
+    assert_eq!(seqs[..3], [1, 3, 4], "every kept record: {seqs:?}");
+    assert!(seqs.len() > 3, "and the break after them: {seqs:?}");
+}
+
+/// **ONE DAMAGED SETTLEMENT COSTS ITS OWN UNIT AND NOTHING ELSE, ON EVERY BOOT** (arch-audit u44:
+/// THE DESIGN, MONEY-CHAIN, BUSBAR-1.6.0.md l.1056-1059; one sealed facts line per unit, written
+/// once, never edited, #77 l.2279). Three units settle; the middle one's settlement is altered on
+/// the medium while the node is down.
+///
+/// RED before the fix, twice over. On the boot that found the damage, the scan stopped at it for
+/// good, so the third unit's settlement — whole and acknowledged — was cut off the log with it and
+/// left the book. And once that boot sealed the quarantine's `ChainBreak`, the chain never verified
+/// again: every later boot rebuilt an EMPTY book. Now the damaged settlement alone is set aside;
+/// every other unit's line is on the book at every boot; and the unit the damaged record names
+/// stays OPEN-QUARANTINED at every boot, never settled at 0.
+#[test]
+fn one_damaged_settlement_costs_its_own_unit_and_nothing_else_on_every_boot() {
+    let scratch = ScratchDir::new("one-damaged-settlement");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let (a, b, c, d) = (
+        totals_key("vk_a"),
+        totals_key("vk_b"),
+        totals_key("vk_c"),
+        totals_key("vk_d"),
+    );
+    {
+        let mut durability = boot(&cfg, 26).expect("the directory is writable");
+        settle_one(&mut durability, &a, 5_000, 1_111, 31);
+        settle_one(&mut durability, &b, 5_000, 4_321, 32);
+        settle_one(&mut durability, &c, 5_000, 2_222, 33);
+    }
+    assert!(
+        edit_segment(&scratch.path, &4_321u64.to_le_bytes(), |bytes, i| {
+            bytes[i..i + 8].copy_from_slice(&4_322u64.to_le_bytes());
+        }),
+        "the fixture found the middle settlement on disk"
+    );
+
+    let check = |durability: &Durability, boot: &str| {
+        let book = durability.ledger.book();
+        assert_eq!(book.get(&a, 86_400).settled, 1_111, "{boot}: unit a");
+        assert_eq!(
+            book.get(&c, 86_400).settled,
+            2_222,
+            "{boot}: the unit settled BEHIND the damage is on the book"
+        );
+        let damaged = book.get(&b, 86_400);
+        assert_eq!(
+            damaged.settled, 0,
+            "{boot}: the altered figure is not taken"
+        );
+        assert_eq!(
+            damaged.open_holds, 5_000,
+            "{boot}: and its hold is NOT settled at its checkpoint"
+        );
+        assert_eq!(durability.recovered_holds, 0, "{boot}: nothing on a guess");
+        let findings: Vec<String> = durability
+            .restart_findings
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.starts_with("journal quarantine:"))
+                && findings
+                    .iter()
+                    .any(|f| f.contains("unit 32 is left OPEN-QUARANTINED")),
+            "{boot}: the findings name the quarantine and the unit: {findings:?}"
+        );
+        assert!(
+            !findings.iter().any(|f| f.contains("does not verify")),
+            "{boot}: the chain verifies across the quarantine: {findings:?}"
+        );
+    };
+
+    {
+        let mut restarted = boot(&cfg, 26).expect("a corrupt journal does not stop the boot");
+        assert_eq!(
+            restarted.quarantined.len(),
+            1,
+            "the damaged record is set aside"
+        );
+        check(&restarted, "the boot that found it");
+        restarted
+            .journal_quarantines(&token(), StepName::Meter, 1_758_700_000)
+            .expect("appends")
+            .expect("the quarantine goes on the chain");
+        settle_one(&mut restarted, &d, 5_000, 3_333, 34);
+    }
+    for later in ["the next boot", "the one after"] {
+        let mut again = boot(&cfg, 26).expect("reopens");
+        check(&again, later);
+        assert_eq!(
+            again.ledger.book().get(&d, 86_400).settled,
+            3_333,
+            "{later}: a unit settled after the quarantine is on the book"
+        );
+        assert!(
+            again
+                .journal_quarantines(&token(), StepName::Meter, 1_758_700_001)
+                .expect("appends")
+                .is_none(),
+            "{later}: the hole is on the chain once"
+        );
+    }
 }
 
 /// A SETTLED FIGURE TAMPERED ON DISK IS CAUGHT AT BOOT (the boot reconciliation is the check a stored
