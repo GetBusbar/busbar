@@ -22,7 +22,6 @@ mod served_surface;
 mod service;
 
 include!(concat!(env!("OUT_DIR"), "/test_operator_auth.rs"));
-include!(concat!(env!("OUT_DIR"), "/linked_hook_names.rs"));
 
 // The served-surface reconciliation reads the plane-complete document through its sibling's helper.
 #[cfg(feature = "openapi-schema")]
@@ -52,8 +51,6 @@ pub(crate) fn ensure_seam() {
         }
         linked::install();
         busbar_core_admin::install();
-        // The linked hook rows' names, as the composition root hands them in.
-        busbar_core_admin::v1::service::install_hook_plugins(LINKED_HOOK_NAMES);
     });
 }
 
