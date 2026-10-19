@@ -540,44 +540,29 @@ pub const fn abi_str(s: &'static str) -> AbiStr {
 #[must_use]
 pub const fn statement(name: &'static str, version: &'static str, max_inflight: u32) -> Statement {
     Statement {
-        size: 0,
-        kind: 0,
-        kind_abi: 0,
         max_inflight,
         name: abi_str(name),
         version: abi_str(version),
         families: ptr::null::<MetricFamily>(),
-        families_len: 0,
         diag_ids: ptr::null::<AbiStr>(),
-        diag_ids_len: 0,
         secret_refs: ptr::null::<AbiStr>(),
-        secret_refs_len: 0,
         settings_schema: Blob::ABSENT,
         kind_tail: ptr::null::<KindTailHead>(),
         extensions: Blob::ABSENT,
-        marks: 0,
         mark_words: ptr::null::<MarkWord>(),
-        mark_words_len: 0,
         rewrites: ptr::null::<Rewrite>(),
-        rewrites_len: 0,
         sections: ptr::null::<Section>(),
-        sections_len: 0,
         needs: ptr::null::<Need>(),
-        needs_len: 0,
         target_from: ABSENT,
         trust_from: ABSENT,
         answers: ptr::null::<AbiStr>(),
-        answers_len: 0,
         claims: ptr::null::<AbiStr>(),
-        claims_len: 0,
+        ..Statement::ZERO
     }
 }
 
 /// An absent string.
-const ABSENT: AbiStr = AbiStr {
-    ptr: ptr::null(),
-    len: 0,
-};
+const ABSENT: AbiStr = AbiStr::ZERO;
 
 /// `statement` with `size`, `kind` and `kind_abi` stamped from `T`, so the Statement and the door
 /// can never disagree on them.

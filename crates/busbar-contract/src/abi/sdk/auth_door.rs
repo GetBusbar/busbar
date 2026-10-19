@@ -26,7 +26,6 @@
 //! directory read) writes its own slots over [`crate::plugin_door!`].
 
 use std::marker::PhantomData;
-use std::ptr;
 
 use crate::abi::auth::{
     AuthPoint, AuthPoints, AuthTail, IdentifyOut, IdentityBuf, StripName, VerifyIn,
@@ -378,7 +377,7 @@ fn write(
         match t {
             None => Span {
                 offset: SPAN_ABSENT,
-                len: 0,
+                ..Span::ZERO
             },
             Some(s) => {
                 let at = bytes.extend(s.as_bytes());
@@ -427,7 +426,7 @@ fn write(
         |o| &o.identity.claims,
         Span {
             offset: SPAN_ABSENT,
-            len: 0,
+            ..Span::ZERO
         },
     );
     out.set(|o| &o.identity.claims_fmt, BLOB_ABSENT);
@@ -502,17 +501,14 @@ pub const fn verify_tail(facts: u32, points: AuthPoints) -> AuthTail {
     AuthTail {
         head: KindTailHead {
             size: std::mem::size_of::<AuthTail>() as u32,
-            _reserved: 0,
+            ..KindTailHead::ZERO
         },
         caps: crate::abi::auth::CAP_INBOUND,
         facts,
         login_kind: crate::abi::auth::LOGIN_KIND_NONE,
         inbound_points: points.bits(),
-        styles: ptr::null(),
-        styles_len: 0,
         operator_principal: crate::abi::sdk::door::abi_str(""),
-        credential_kinds: ptr::null(),
-        credential_kinds_len: 0,
+        ..AuthTail::ZERO
     }
 }
 
@@ -545,8 +541,8 @@ pub const fn with_credential_kinds(tail: AuthTail, kinds: &'static [AbiStr]) -> 
 pub const fn carrier(name: &'static str) -> MarkWord {
     MarkWord {
         class: MARK_WORD_CARRIER,
-        _reserved: 0,
         word: crate::abi::sdk::door::abi_str(name),
+        ..MarkWord::ZERO
     }
 }
 
