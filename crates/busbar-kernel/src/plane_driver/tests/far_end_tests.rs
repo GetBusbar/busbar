@@ -2793,7 +2793,8 @@ async fn an_answer_cut_after_its_head_ends_on_a_cut_piece_and_a_complete_one_doe
 
 /// THE FRAMER'S OWN HEAD LINES GO OUT IN THE HEAD THE AUTH SIGNS (THE DESIGN section 6, step 5:
 /// nothing is added after the auth runs), in 1.5.5's order: the auth's fields, the plane's, then the
-/// client's defaults (v1.5.5's goldens: `authorization, content-type, accept, host`). A default the
+/// client's defaults (v1.5.5 walk.rs:564-590 sets the auth's headers before the request's own,
+/// and its goldens read `authorization, content-type, accept, host`). A default the
 /// request already carries is the request's, never doubled. RED before the walk read them: the head
 /// went out without the framer's lines, which the framer then added at encode, after the auth.
 #[tokio::test]
