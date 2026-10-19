@@ -3112,23 +3112,33 @@ impl DataRoutes {
             let _ = verdict.send(Err(None));
             return;
         };
-        let status = match opened {
+        let admitted = match opened {
             // The open's hook stage (K5, ARCHITECT Q-L5B-PROJECT) runs before the caller is
-            // answered: a hook that stops it is answered in the plane's rendering, never upgraded.
+            // answered: a hook that stops it is answered in the plane's rendering, never upgraded,
+            // and the session's record says it was refused there.
             SessionOpen::Admitted {
                 route,
                 destinations,
-            } if units.open_hooks(&route, &ctx).await.is_ok()
-                && attach
+            } => match units.open_hooks(&route, &ctx).await {
+                Err(reason) => {
+                    self.post.stopped(unit, reason);
+                    None
+                }
+                Ok(()) => attach
                     .admitted
                     .take()
-                    .is_none_or(|admitted| admitted(unit.get()).is_ok()) =>
-            {
+                    .is_none_or(|admitted| admitted(unit.get()).is_ok())
+                    .then_some((route, destinations)),
+            },
+            SessionOpen::Refused => None,
+        };
+        let status = match admitted {
+            Some((route, destinations)) => {
                 let _ = verdict.send(Ok(()));
                 let _ended = units.session(&route, &ctx, &destinations).await;
                 attach.answered
             }
-            _ => {
+            None => {
                 let rendered = units.take_rendered();
                 let status = rendered
                     .as_ref()
@@ -3141,6 +3151,9 @@ impl DataRoutes {
         if let Some(ended) = attach.ended.take() {
             ended(unit.get());
         }
+        // The session's record carries what it consumed, read before its money closes.
+        self.post
+            .reported(unit, report_of(&served.money, unit, &live.facts));
         slot.finish(&self.post);
         served.money.settle_end(unit, status);
     }

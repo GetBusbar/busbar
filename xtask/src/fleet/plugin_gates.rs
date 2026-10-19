@@ -43,6 +43,9 @@ usage:
   (--tree: `cargo tree -e normal,build --target all --prefix none -f '{p}|{f}'` per workspace member,
    concatenated; the closure and features are then the shipped build's, not the dev-unified resolve's)
   cargo xtask plugin-gates imports <undefined-symbols.txt> <needed-libs.txt> <deps.toml> <repo>
+  cargo xtask plugin-gates gitsources <deps.toml>
+  (every [git-sources] row admits one repository under https://github.com/GetBusbar/, at a 40-hex rev,
+   for named plugin repos, with a reason)
   cargo xtask plugin-gates parity <plugin Cargo.lock> <busbar Cargo.lock> [<deps.toml> <repo>] [--advisories <cargo-deny json lines>]
   cargo xtask plugin-gates bothways <conformance --list output>
   cargo xtask plugin-gates declares <busbar-root> <kind> <declares.json>
@@ -981,6 +984,79 @@ pub fn former_names(
     Ok(out)
 }
 
+// -- gitsources: the [git-sources] rows ----------------------------------------------------------
+
+/// `deps.toml [git-sources]`: one finding per row that admits anything but ONE repository under
+/// https://github.com/GetBusbar/ at a full 40-hex commit, for named plugin repos, with a reason.
+pub fn gitsources(deps: &Json) -> Res<Vec<String>> {
+    let rows = match deps.get("git-sources") {
+        Json::Null => return Ok(Vec::new()),
+        Json::Object(o) => o,
+        _ => return Err("plugin-gates: deps.toml [git-sources] is not a table".to_string()),
+    };
+    let mut out = Vec::new();
+    for (name, row) in rows.iter() {
+        let Some(fields) = row.as_object() else {
+            out.push(format!(
+                "GITSRC {name}: not a table (`git`, `rev`, `repos`, `reason`)"
+            ));
+            continue;
+        };
+        let s = |k: &str| row.get(k).as_str().unwrap_or("");
+        let git = s("git");
+        if !getbusbar_repo(git) {
+            out.push(format!(
+                "GITSRC {name}: `{git}` is not one repository under {GETBUSBAR}"
+            ));
+        }
+        let rev = s("rev");
+        if !full_sha(rev) {
+            out.push(format!(
+                "GITSRC {name}: rev `{rev}` is not a full 40-hex commit"
+            ));
+        }
+        let repos = row.get("repos").as_array().unwrap_or(&[]);
+        if repos.is_empty()
+            || repos
+                .iter()
+                .any(|r| r.as_str().is_none_or(|r| r.trim().is_empty()))
+        {
+            out.push(format!("GITSRC {name}: names no plugin repo"));
+        }
+        if s("reason").trim().is_empty() {
+            out.push(format!("GITSRC {name}: has no reason"));
+        }
+        for k in fields.keys() {
+            if !matches!(k, "git" | "rev" | "repos" | "reason") {
+                out.push(format!(
+                    "GITSRC {name}: `{k}` is not a [git-sources] key (git, rev, repos, reason)"
+                ));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The one GitHub organisation a `[git-sources]` row may name.
+const GETBUSBAR: &str = "https://github.com/GetBusbar/";
+
+/// `https://github.com/GetBusbar/<repo>`: one path segment of letters, digits, `-`, `_` and `.`,
+/// and not `.` or `..`.
+fn getbusbar_repo(git: &str) -> bool {
+    git.strip_prefix(GETBUSBAR).is_some_and(|r| {
+        !r.is_empty()
+            && r != "."
+            && r != ".."
+            && r.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    })
+}
+
+/// A full commit sha: 40 lowercase hex digits.
+fn full_sha(rev: &str) -> bool {
+    rev.len() == 40 && rev.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 // -- the deps.toml reader ------------------------------------------------------------------------
 
 struct Toml {
@@ -1725,8 +1801,27 @@ fn cases() -> Vec<(&'static str, Res<Vec<String>>, bool)> {
         declares(d, "auth", r#"{"contract_abi": {"min": 3, "max": 3}}"#),
         false,
     ));
+    let src = |git: &str, rev: &str| -> Res<Vec<String>> {
+        gitsources(&parse_toml(&format!(
+            "[git-sources.x]\ngit = \"{git}\"\nrev = \"{rev}\"\nrepos = [\"busbar-transport-x\"]\nreason = \"r\"\n"
+        ))?)
+    };
+    v.push((
+        "gitsources outside GetBusbar",
+        src("https://github.com/algesten/str0m", FORTY_HEX),
+        true,
+    ));
+    v.push((
+        "gitsources a branch, not a rev",
+        src("https://github.com/GetBusbar/str0m", "main"),
+        true,
+    ));
+    v.push(("gitsources committed", gitsources(&committed), false));
     v
 }
+
+/// A full commit sha, for the `[git-sources]` plants.
+const FORTY_HEX: &str = "a142c64e1fafc5cca029adda1507a51064f81902";
 
 /// The selftest's failure lines (without the `SELFTEST ` prefix).
 fn selftest_failures() -> Vec<String> {
@@ -1916,6 +2011,7 @@ fn run(cmd: &str, args: &[String]) -> Res<Vec<String>> {
             )
         }
         "bothways" => Ok(bothways(&splitlines(&read(a(0)?)?))),
+        "gitsources" => gitsources(&load_toml(a(0)?)?),
         "plane" => plane(Path::new(a(0)?), Path::new(a(1)?), a(2)?),
         "declares" => declares(Path::new(a(0)?), a(1)?, &read(a(2)?)?),
         "former-names" => {
@@ -2044,6 +2140,81 @@ mod tests {
         assert!(
             red[0].contains("busbar-hook-webrequest") && red[0].contains("'busbar-webrequest'")
         );
+    }
+
+    /// Q128 ruling (2026-10-18): a `[git-sources]` row admits ONE repository under GetBusbar, at a
+    /// 40-hex rev, for the plugin repos it names, with a reason. Anything else is RED, by name.
+    #[test]
+    fn gitsources_refuses_a_row_outside_getbusbar_or_off_a_pinned_rev() {
+        let row = |body: &str| {
+            gitsources(&parse_toml(&format!("[git-sources.str0m]\n{body}")).unwrap()).unwrap()
+        };
+        let good = format!(
+            "git = \"https://github.com/GetBusbar/str0m\"\nrev = \"{FORTY_HEX}\"\nrepos = [\"busbar-transport-webrtc\"]\nreason = \"H2\"\n"
+        );
+        assert_eq!(row(&good), Vec::<String>::new());
+        for (from, to, needle) in [
+            (
+                "https://github.com/GetBusbar/str0m",
+                "https://github.com/algesten/str0m",
+                "is not one repository under https://github.com/GetBusbar/",
+            ),
+            (
+                "https://github.com/GetBusbar/str0m",
+                "https://github.com/GetBusbar/str0m/../../algesten/str0m",
+                "is not one repository under https://github.com/GetBusbar/",
+            ),
+            (
+                "https://github.com/GetBusbar/str0m",
+                "http://github.com/GetBusbar/str0m",
+                "is not one repository under https://github.com/GetBusbar/",
+            ),
+            (FORTY_HEX, "a142c64e1f", "is not a full 40-hex commit"),
+            (FORTY_HEX, "main", "is not a full 40-hex commit"),
+            (
+                FORTY_HEX,
+                "A142C64E1FAFC5CCA029ADDA1507A51064F81902",
+                "is not a full 40-hex commit",
+            ),
+            (
+                "[\"busbar-transport-webrtc\"]",
+                "[]",
+                "names no plugin repo",
+            ),
+            ("\"H2\"", "\" \"", "has no reason"),
+        ] {
+            let got = row(&good.replace(from, to));
+            assert!(
+                got.len() == 1 && got[0].starts_with("GITSRC str0m:") && got[0].contains(needle),
+                "{from} -> {to}: {got:?}"
+            );
+        }
+        let got = row(&good.replace(&format!("rev = \"{FORTY_HEX}\"\n"), ""));
+        assert!(
+            got.len() == 1 && got[0].contains("is not a full 40-hex commit"),
+            "no rev: {got:?}"
+        );
+        let got = row(&format!("{good}branch = \"main\"\n"));
+        assert!(
+            got.len() == 1 && got[0].contains("`branch`"),
+            "an unknown key: {got:?}"
+        );
+        assert!(gitsources(&parse_toml("[git-sources]\nx = 1\n").unwrap())
+            .unwrap()
+            .iter()
+            .any(|f| f.starts_with("GITSRC x:")));
+    }
+
+    /// The committed rows are the H2 forks, each admitted for busbar-transport-webrtc only.
+    #[test]
+    fn the_committed_git_sources_are_the_h2_forks_for_webrtc_only() {
+        let committed = parse_toml(COMMITTED_POLICY).unwrap();
+        assert_eq!(gitsources(&committed).unwrap(), Vec::<String>::new());
+        let rows = committed.get("git-sources").as_object().unwrap();
+        assert_eq!(rows.keys().collect::<Vec<_>>(), ["str0m", "dimpl"]);
+        for (_, row) in rows.iter() {
+            assert_eq!(str_list(row.get("repos")), ["busbar-transport-webrtc"]);
+        }
     }
 
     #[test]
