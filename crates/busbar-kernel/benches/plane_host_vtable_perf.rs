@@ -49,9 +49,8 @@
 //! the perf-budget claims above; this file is what actually measures them.
 
 use busbar_contract::abi::hot::host::{ClockNowFn, HostCtx, PlaneHostVtable};
-use busbar_contract::abi::hot::transport::{
-    CarrierPollCloseFn, CarrierSlots, RawWireOutcome, TransportDecl, WireOutcome, NO_WAKER,
-};
+use busbar_contract::abi::mechanism::call::{Op, Outcome, RawOutcome};
+use busbar_contract::abi::transport::Ops as TransportOps;
 use busbar_contract::abi::AbiPreamble;
 use criterion::{criterion_group, criterion_main, Criterion};
 use std::hint::black_box;
@@ -154,83 +153,70 @@ fn assert_hot_path_delta_under_budget() {
     );
 }
 
-/// A carrier slot in the HOT-lane POLL shape (TRANSPORT-STACK: the `Carrier` trait lowered one
-/// slot per method): a by-value connection handle, the waiting task's token and the close reason's
-/// byte in, one outcome byte out — `Ok` (ready) or `Pending`. The body is as trivial as the
-/// clock's, for the same reason — the crossing is what is measured.
-extern "C-unwind" fn carrier_poll_close(
-    _state: *mut std::os::raw::c_void,
-    conn: u64,
-    token: u64,
-    reason: u8,
-) -> RawWireOutcome {
-    RawWireOutcome(((conn ^ token ^ u64::from(reason)) & 1) as u8 * WireOutcome::Pending as u8)
+/// A carrier slot in the memory ABI's one call shape (`op(instance, in, out)`, THE DESIGN §11.2):
+/// the transport kind's `read` slot, answering one outcome byte — `Ready` or `Pending`. The body is
+/// as trivial as the clock's, for the same reason — the crossing is what is measured.
+extern "C" fn carrier_read(
+    instance: *mut std::os::raw::c_void,
+    input: *const std::os::raw::c_void,
+    _out: *mut std::os::raw::c_void,
+) -> RawOutcome {
+    let pending = ((instance as usize ^ input as usize) & 1) == 0;
+    RawOutcome::of(if pending {
+        Outcome::Pending
+    } else {
+        Outcome::Ready
+    })
 }
 
-/// A carrier's slot table as its image states it: attested size, and the `poll_close` slot armed
-/// (every other slot `None`, the all-zero niche, as [`armed_vtable`] builds the host table).
-fn armed_carrier_slots() -> CarrierSlots {
-    // SAFETY: every field of `CarrierSlots` is valid all-zero — integers and
-    // `Option<extern "C-unwind" fn>` slots whose `None` is the null niche.
-    let mut slots: CarrierSlots = unsafe { std::mem::MaybeUninit::zeroed().assume_init() };
-    slots.size = std::mem::size_of::<CarrierSlots>() as u32;
-    slots.poll_close = Some(carrier_poll_close as CarrierPollCloseFn);
-    slots
+/// A transport's ops table as its door states it: the attested size and slot count, and the
+/// carrier's `read` slot armed (every other slot `None`, the all-zero niche, as [`armed_vtable`]
+/// builds the host table).
+fn armed_transport_ops() -> TransportOps {
+    // SAFETY: every field of `TransportOps` is valid all-zero — the head's integers and
+    // `Option<extern "C" fn>` slots whose `None` is the null niche.
+    let mut ops: TransportOps = unsafe { std::mem::MaybeUninit::zeroed().assume_init() };
+    ops.head.size = std::mem::size_of::<TransportOps>() as u32;
+    ops.head.slots = busbar_contract::abi::transport::SLOTS;
+    ops.read = Some(carrier_read as Op);
+    ops
 }
 
-/// A [`TransportDecl`] as a loader admits it: preamble, attested size, and the carrier's slot table.
-fn armed_transport_decl(slots: &CarrierSlots) -> TransportDecl {
-    // SAFETY: every field of `TransportDecl` is valid all-zero — integers, null pointers, and
-    // `Option<extern "C-unwind" fn>` slots whose `None` is the null niche.
-    let mut decl: TransportDecl = unsafe { std::mem::MaybeUninit::zeroed().assume_init() };
-    decl.abi = AbiPreamble::CURRENT;
-    decl.size = std::mem::size_of::<TransportDecl>() as u32;
-    decl.carrier = slots;
-    decl
+/// The carrier's `read` slot as the dispatcher reaches it on every read: the table's attested size
+/// checked against the host's, then the slot.
+fn read_slot(ops: *const TransportOps) -> Op {
+    // SAFETY: `ops` is the live table the cell below owns.
+    let table = unsafe { &*ops };
+    assert_eq!(
+        table.head.size as usize,
+        std::mem::size_of::<TransportOps>(),
+        "the table states the host's size"
+    );
+    table.read.expect("read slot is armed")
 }
 
-/// The carrier's `poll_close` slot as the host reaches it on every poll: the decl's slot table,
-/// read through the decl's sized-struct guard, and the slot, read through the table's own.
-fn poll_close_slot(decl: *const TransportDecl, size: u32) -> CarrierPollCloseFn {
-    let table = busbar_contract::abi::read_sized_field!(decl, size, TransportDecl, carrier)
-        .expect("the decl states its carrier table");
-    // SAFETY: the table is the live `CarrierSlots` the decl above points at.
-    let table_size = unsafe { (*table).size };
-    busbar_contract::abi::read_sized_field!(table, table_size, CarrierSlots, poll_close)
-        .flatten()
-        .expect("poll_close slot is armed")
-}
-
-/// THE TRANSPORT CELL (#30: plane AND transport are the HOT kinds, and both owe `< 1µs`): the same
-/// delta budget, over the crossing a loaded carrier's every byte-moving POLL makes (the host polls
-/// inline, no thread handoff) — the slot table and the slot read through their sized-struct guards
-/// (each attested size bounds its read, as the loader reads them), the indirect call and the decode
-/// of its Ready | Pending answer — against the same slot body called directly.
+/// THE TRANSPORT CELL (both the plane and the transport owe `< 1µs`): the same delta budget, over
+/// the crossing a loaded carrier's every byte-moving `read` makes through its door's ops table —
+/// the table's size check, the slot read, the indirect call and the decode of its Ready | Pending
+/// answer — against the same slot body called directly.
 fn assert_transport_hot_path_delta_under_budget() {
-    let slots = armed_carrier_slots();
-    let decl = armed_transport_decl(&slots);
-    let decl_ptr: *const TransportDecl = &decl;
-    let state = std::ptr::null_mut();
+    let ops = armed_transport_ops();
+    let ops_ptr: *const TransportOps = &ops;
+    let instance = std::ptr::null_mut();
+    let input = std::ptr::null();
+    let out = std::ptr::null_mut();
 
     let (direct_p50, direct_p99) = percentiles(|| {
-        black_box(carrier_poll_close(
-            black_box(state),
-            black_box(3),
-            black_box(NO_WAKER),
-            black_box(0),
+        black_box(carrier_read(
+            black_box(instance),
+            black_box(input),
+            black_box(out),
         ));
     });
     let (slot_p50, slot_p99) = percentiles(|| {
-        let f = poll_close_slot(black_box(decl_ptr), black_box(decl.size));
+        let f = read_slot(black_box(ops_ptr));
         black_box(
-            f(
-                black_box(state),
-                black_box(3),
-                black_box(NO_WAKER),
-                black_box(0),
-            )
-            .outcome()
-                == WireOutcome::Pending,
+            f(black_box(instance), black_box(input), black_box(out)).outcome() == Outcome::Pending,
         );
     });
 
@@ -238,12 +224,12 @@ fn assert_transport_hot_path_delta_under_budget() {
     let transport_p99_delta_nanos = slot_p99.saturating_sub(direct_p99);
     assert!(
         transport_p50_delta_nanos < HOT_PATH_BUDGET_NANOS,
-        "HOT-PATH PERF (transport, p50): the decl crossing cost {transport_p50_delta_nanos}ns over \
+        "HOT-PATH PERF (transport, p50): the door crossing cost {transport_p50_delta_nanos}ns over \
          the direct call (budget {HOT_PATH_BUDGET_NANOS}ns). direct {direct_p50}ns, slot {slot_p50}ns."
     );
     assert!(
         transport_p99_delta_nanos < HOT_PATH_BUDGET_NANOS,
-        "HOT-PATH PERF (transport, p99): the decl crossing cost {transport_p99_delta_nanos}ns over \
+        "HOT-PATH PERF (transport, p99): the door crossing cost {transport_p99_delta_nanos}ns over \
          the direct call (budget {HOT_PATH_BUDGET_NANOS}ns). direct {direct_p99}ns, slot {slot_p99}ns."
     );
 }
@@ -298,28 +284,25 @@ fn hot_path(c: &mut Criterion) {
         });
     });
 
-    // The transport cell's two legs: the slot body called directly, and through the decl.
-    let slots = armed_carrier_slots();
-    let decl = armed_transport_decl(&slots);
-    let decl_ptr: *const TransportDecl = &decl;
+    // The transport cell's two legs: the slot body called directly, and through the door's table.
+    let ops = armed_transport_ops();
+    let ops_ptr: *const TransportOps = &ops;
     c.bench_function("TRANSPORT_DIRECT_CALL", |b| {
         b.iter(|| {
-            black_box(carrier_poll_close(
+            black_box(carrier_read(
                 black_box(std::ptr::null_mut()),
-                black_box(3),
-                black_box(NO_WAKER),
-                black_box(0),
+                black_box(std::ptr::null()),
+                black_box(std::ptr::null_mut()),
             ))
         });
     });
-    c.bench_function("TRANSPORT_DECL_CALL", |b| {
+    c.bench_function("TRANSPORT_DOOR_CALL", |b| {
         b.iter(|| {
-            let f = poll_close_slot(black_box(decl_ptr), black_box(decl.size));
+            let f = read_slot(black_box(ops_ptr));
             black_box(f(
                 black_box(std::ptr::null_mut()),
-                black_box(3),
-                black_box(NO_WAKER),
-                black_box(0),
+                black_box(std::ptr::null()),
+                black_box(std::ptr::null_mut()),
             ))
         });
     });

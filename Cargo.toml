@@ -16,7 +16,6 @@ members = [
     "crates/busbar-kernel-wal",
     "crates/busbar-kernel-audit",
     "crates/busbar-plane-llm",
-    "crates/busbar-plane-streaming",
     "crates/plugin-loader",
     "testing/ws-conformance/subject",
     "testing/voice-conformance/harness",
@@ -138,6 +137,11 @@ busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-deci
 # states under its `links` name. Its dropped-in cdylib twin (`busbar-plane-a2a-plugin`) and its gates
 # live in that repo's plugin CI.
 busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "a644de52561abb942ed212d6bb2a2de43f58f0b2" }
+# THE STREAMING PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
+# streaming plane's door row (`plane-streaming`, `busbar_plane_streaming::door::door`), whose own root
+# cells it states under its `links` name, and the voice conformance harness drives. Its dropped-in
+# cdylib twin (`busbar-plane-streaming-plugin`) and its gates live in that repo's plugin CI.
+busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "55f953f3a450cfc4a1624f809dc4c69e06aa3243" }
 arc-swap = "1"
 async-trait = "0.1"
 axum = "0.8"
