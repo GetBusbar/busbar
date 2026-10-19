@@ -2611,21 +2611,6 @@ fn a_unit_ref_verifies_only_for_its_own_request() {
     assert!(mint_auth_ref(40, 7, 0).is_none());
 }
 
-/// ONE ALLOCATOR, TWO SPACES: a line's id never sets the top bit and is never `0`; a binding's
-/// always sets it; each id names its space. RED arm: no line id and binding id ever coincide.
-#[test]
-fn a_line_id_and_a_binding_id_are_drawn_from_two_spaces() {
-    use crate::dispatch::auth_handle::{next_ref_id, space_of, RefSpace};
-    let lines: Vec<u64> = (0..64).map(|_| next_ref_id(RefSpace::Line)).collect();
-    let bindings: Vec<u64> = (0..64).map(|_| next_ref_id(RefSpace::Binding)).collect();
-    assert!(lines.iter().all(|&i| i != 0 && i & (1 << 63) == 0));
-    assert!(bindings.iter().all(|&i| i & (1 << 63) != 0));
-    assert!(lines.iter().all(|i| !bindings.contains(i)));
-    assert!(lines.iter().all(|&i| space_of(i) == Some(RefSpace::Line)));
-    assert!(bindings
-        .iter()
-        .all(|&i| space_of(i) == Some(RefSpace::Binding)));
-    assert_eq!(space_of(0), None);
 // ── the outbound half of the auth handle ─────────────────────────────────────────────────────
 
 use crate::dispatch::auth_serve::double::{armed as outbound, OUTBOUND, OUT_UNIT, REFUSING};
@@ -2848,6 +2833,15 @@ fn a_transports_outbound_auth_call_is_served_on_a_route_with_no_other_service() 
     let (ret, o) = call_auth(ctx, &i);
     assert_eq!(ret.outcome(), Outcome::Ready, "{}", error(&o));
     assert_eq!(slot.unit, OUT_UNIT);
+    // OWNER-SCOPED on that route too (#65, #74): another instance's ref is refused before the
+    // server is asked.
+    let other = double();
+    let theirs = mint_auth_ref(owner(&other), generation(), OUTBOUND).expect("minted");
+    let mut slot = answer_slot();
+    let i = outbound_in(theirs, 1, &mut slot, &mut buf, &mut spans, &line);
+    let (ret, o) = call_auth(ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), REF_NOT_MINTED);
     // The route still serves no other service.
     let mut reading = ClockReading {
         size: 0,
@@ -2867,4 +2861,21 @@ fn a_transports_outbound_auth_call_is_served_on_a_route_with_no_other_service() 
         "no kernel service on a transport's route"
     );
     drop(route);
+}
+
+/// ONE ALLOCATOR, TWO SPACES: a line's id never sets the top bit and is never `0`; a binding's
+/// always sets it; each id names its space. RED arm: no line id and binding id ever coincide.
+#[test]
+fn a_line_id_and_a_binding_id_are_drawn_from_two_spaces() {
+    use crate::dispatch::auth_handle::{next_ref_id, space_of, RefSpace};
+    let lines: Vec<u64> = (0..64).map(|_| next_ref_id(RefSpace::Line)).collect();
+    let bindings: Vec<u64> = (0..64).map(|_| next_ref_id(RefSpace::Binding)).collect();
+    assert!(lines.iter().all(|&i| i != 0 && i & (1 << 63) == 0));
+    assert!(bindings.iter().all(|&i| i & (1 << 63) != 0));
+    assert!(lines.iter().all(|i| !bindings.contains(i)));
+    assert!(lines.iter().all(|&i| space_of(i) == Some(RefSpace::Line)));
+    assert!(bindings
+        .iter()
+        .all(|&i| space_of(i) == Some(RefSpace::Binding)));
+    assert_eq!(space_of(0), None);
 }

@@ -1623,6 +1623,12 @@ pub(crate) fn compose_planes_over(
                 scope,
             )
             .map_err(|e| format!("{instance}: {e}"))?;
+            crate::root::door_steps::refuse_unframed_bindings(
+                &routes,
+                plugin.instance(),
+                &*conn_table,
+            )
+            .map_err(|e| format!("{instance}: {e}"))?;
             crate::root::door_steps::bind_member_fetches(
                 &served_facts,
                 &routes,

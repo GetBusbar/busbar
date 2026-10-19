@@ -42,7 +42,8 @@ use crate::root::loader::dispatch::auth_serve::{
     OUTBOUND_REFUSED,
 };
 
-/// The tag every outbound binding id carries (its top bit): an inbound line's id never does.
+/// The tag every outbound binding id carries (its top bit: the loader's `RefSpace::Binding`, one
+/// allocator for both spaces): an inbound line's id never does.
 pub const OUTBOUND_ID: u64 = 1 << 63;
 
 /// The tag every plugin-own request unit carries ([`OutboundServer::record_request`]): a kernel
@@ -67,7 +68,6 @@ struct Held {
 pub struct OutboundBindings {
     by_member: Mutex<HashMap<(InstanceId, NeedId, String), u64>>,
     by_id: Mutex<HashMap<u64, Held>>,
-    next: AtomicU64,
     /// The next plugin-own request unit.
     requests: AtomicU64,
 }
@@ -95,7 +95,7 @@ impl OutboundBindings {
             .lock()
             .expect("bindings")
             .entry(key)
-            .or_insert_with(|| OUTBOUND_ID | (self.next.fetch_add(1, Ordering::Relaxed) + 1));
+            .or_insert_with(|| auth_handle::next_ref_id(auth_handle::RefSpace::Binding));
         self.by_id.lock().expect("bindings").insert(
             id,
             Held {
