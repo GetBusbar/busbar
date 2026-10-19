@@ -24,16 +24,18 @@
 //!   minted the first time it booted, and a restart resumes that chain and recovers the holds it
 //!   left open. The host name is held under a LEASE ([`take_node`]): a boot that finds the name's
 //!   lease free or expired takes it and resumes; one that finds it held by another live process
-//!   journals under a fresh id of its own and logs the clash. The lease is refreshed on the node's
-//!   checkpoint flush tick and released on a clean shutdown, so an immediate restart resumes.
+//!   journals under a fresh id of its own and logs the clash. A boot that finds it held WATCHES it
+//!   for up to one lease period first: a holder that never refreshes it is a crashed predecessor,
+//!   and the boot takes the lease once it lapses and resumes. The lease is refreshed on every
+//!   [`LEASE_REFRESH_TICKS`]-th checkpoint flush tick and released on a clean shutdown, so a clean
+//!   restart resumes at once and a crash-restart waits at most one lease period.
 //!
 //! The host is the operating system's host name ([`host_identity`]), a label: two processes with one
 //! name, or two with none, never journal under one identity while both are live. A deployment whose
 //! host name changes on every restart mints a new identity each time, and its predecessor's chain
 //! stays in the store under the old one, readable and verified by `/admin/verify`
 //! ([`walk_stored_chains`]) but not resumed (a known limit, ARCHITECT 2026-10-07), and so does a
-//! process that restarts while its predecessor's lease is still live (a crash inside one lease
-//! period, [`LEASE_TTL_MS`]).
+//! process that restarts while its predecessor still refreshes the lease ([`LEASE_TTL_MS`]).
 //!
 //! ## The deployment keyset
 //!
@@ -307,12 +309,28 @@ fn fresh_node_id(calls: &dyn StoreCalls, host: &str) -> Result<u64, String> {
     Ok(id)
 }
 
-/// How long a node's lease on its host name holds without a refresh, in milliseconds: three of the
-/// checkpoint flush ticks it is refreshed on.
+/// The tick every lease constant is derived from: the checkpoint flush tick the lease is refreshed
+/// on (`root::serve`'s `Checkpoints::tick`, every [`busbar_kernel::host_records::FLUSH_INTERVAL`]).
 #[cfg(not(test))]
-pub const LEASE_TTL_MS: u64 = 3 * busbar_kernel::host_records::FLUSH_INTERVAL.as_secs() * 1_000;
+const LEASE_TICK: Duration = busbar_kernel::host_records::FLUSH_INTERVAL;
 #[cfg(test)]
-pub const LEASE_TTL_MS: u64 = 300;
+const LEASE_TICK: Duration = Duration::from_millis(20);
+
+/// The lease is refreshed on every this-many-th checkpoint flush tick.
+pub(super) const LEASE_REFRESH_TICKS: u32 = 3;
+
+/// How long a node's lease on its host name holds without a refresh, in milliseconds: three of its
+/// refresh periods, each [`LEASE_REFRESH_TICKS`] flush ticks.
+pub const LEASE_TTL_MS: u64 = 3
+    * LEASE_REFRESH_TICKS as u64
+    * (LEASE_TICK.as_secs() * 1_000 + LEASE_TICK.subsec_millis() as u64);
+
+/// How long a boot that finds its host name's lease held WATCHES it before it decides: one lease
+/// period, enough for a live holder to refresh it and for a dead one's to lapse.
+const LEASE_WATCH: Duration = Duration::from_millis(LEASE_TTL_MS);
+
+/// How often a watching boot reads the lease again: one flush tick.
+const LEASE_POLL: Duration = LEASE_TICK;
 
 // A lease that lapses the moment it is taken holds nothing.
 const _: () = assert!(LEASE_TTL_MS > 0);
@@ -437,6 +455,10 @@ impl NodeLease {
 /// lease (it was free, released or lapsed, and this boot won the store's claim on taking it), and
 /// `false` when another live process holds it or won that claim.
 ///
+/// A lease found held is WATCHED for up to [`LEASE_WATCH`] before deciding: refreshed (or taken)
+/// meanwhile, its holder is live and this boot clashes with it; released, or left to lapse, its
+/// holder is gone (a crash), and this boot takes it and resumes the chain, recovering its holds.
+///
 /// The store has no compare-and-set, so taking a lease REDEEMS a claim named after the lease row
 /// this boot read (and the period it is in, so a claimant that died before writing frees it within
 /// [`MINT_CLAIM_SECS`]): two boots that read one row race on one claim, and only the first writes.
@@ -445,9 +467,29 @@ impl NodeLease {
 ///
 /// The store refused or failed a read, the claim or the write.
 fn take_lease(calls: &dyn StoreCalls, host: &str, holder: [u8; 16]) -> Result<bool, String> {
-    let seen = read_lease(calls, host)?;
+    let mut seen = read_lease(calls, host)?;
     if held_live(seen, &holder, now_ms()) {
-        return Ok(false);
+        let deadline = Instant::now() + LEASE_WATCH + LEASE_POLL;
+        loop {
+            std::thread::sleep(LEASE_POLL);
+            let now = read_lease(calls, host)?;
+            let live = held_live(now, &holder, now_ms());
+            if now != seen {
+                // Refreshed or taken by another: a live holder. Released: free.
+                if live {
+                    return Ok(false);
+                }
+                seen = now;
+                break;
+            }
+            if !live {
+                // Never refreshed, and lapsed: its holder is gone.
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+        }
     }
     let observed = seen.map_or_else(
         || "free".to_string(),
@@ -530,9 +572,17 @@ fn held() -> Option<Held> {
         .clone()
 }
 
-/// REFRESH this process's lease, if it holds one: run on the checkpoint flush tick, off any runtime
-/// worker. A lease another process took (this one went unrefreshed past its lapse) is logged.
+/// The checkpoint flush ticks counted since the lease was last refreshed.
+static LEASE_TICKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// REFRESH this process's lease, if it holds one, on every [`LEASE_REFRESH_TICKS`]-th call: run on
+/// the checkpoint flush tick, off any runtime worker. A lease another process took (this one went
+/// unrefreshed past its lapse) is logged.
 pub fn refresh_held_lease() {
+    let tick = LEASE_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if (tick + 1) % LEASE_REFRESH_TICKS != 0 {
+        return;
+    }
     let Some((calls, lease)) = held() else {
         return;
     };
