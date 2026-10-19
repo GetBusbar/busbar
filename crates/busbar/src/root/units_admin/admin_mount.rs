@@ -823,7 +823,7 @@ pub fn mount(
 /// `retired_operator_key` is the slot the operator key held before #77(9)
 /// (`docs/design/BUSBAR-1.6.0.md` l.2279: no verb carries operator signatures, and
 /// `set_operator_key` does not exist). Nothing reads it. It stays in the call shape because the
-/// pinned door plane's root cells (`busbar-plane-a2a` `tests/root/mod.rs`) drive this one function
+/// root cells a pinned door plugin carries (its `tests/root/mod.rs`) drive this one function
 /// with it, the way the v3 amendment record keeps its `operator_fingerprint` slot written empty so
 /// no stored shape moves; it leaves with the repin that drops it from that call.
 #[cfg(feature = "root-admin")]
