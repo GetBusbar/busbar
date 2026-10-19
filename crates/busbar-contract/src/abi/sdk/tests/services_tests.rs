@@ -1628,13 +1628,6 @@ extern "C" fn always_short(
     RawOutcome::of(Outcome::Failed)
 }
 
-/// An auth whose call is not ready yet.
-extern "C" fn pends(_ctx: HostCtx, _input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    // SAFETY: a live `out`.
-    unsafe { (*out).outcome = RawOutcome::of(Outcome::Pending) };
-    RawOutcome::of(Outcome::Pending)
-}
-
 /// A name-only span flagged as neither a field line nor a query key.
 extern "C" fn names_nowhere(
     _ctx: HostCtx,
@@ -1652,17 +1645,6 @@ fn auth_table(slot: Option<ServiceFn>) -> HostSlots {
     }
 }
 
-const fn ticketed() -> CompletionHandle {
-    CompletionHandle {
-        ticket: Ticket {
-            slot: 1,
-            generation: 1,
-        },
-        seq: 0,
-        _reserved: 0,
-    }
-}
-
 fn request() -> HeadViewArgs<'static> {
     HeadViewArgs {
         method: "POST",
@@ -1677,7 +1659,7 @@ fn request() -> HeadViewArgs<'static> {
 fn auth_call_answers_the_names_to_strip_for_an_inbound_line() {
     let t = auth_table(Some(strips));
     let called: AuthCalled<Own> = match services(&t).auth_call(
-        ticketed(),
+        ticketed(0),
         LINE_REF,
         UnitRef::NONE,
         POINT_HEAD,
@@ -1706,7 +1688,7 @@ fn auth_call_owns_the_one_short_recall_and_holds_outbound_values_as_the_callers_
     let t = auth_table(Some(signs_long));
     let before = AUTH_CALLS.load(Ordering::SeqCst);
     let Poll::Ready(Ok(called)) = services(&t).auth_call::<Own>(
-        ticketed(),
+        ticketed(0),
         LINE_REF,
         MINTED,
         POINT_HEAD,
@@ -1730,7 +1712,7 @@ fn auth_call_owns_the_one_short_recall_and_holds_outbound_values_as_the_callers_
     let t = auth_table(Some(always_short));
     assert!(matches!(
         services(&t).auth_call::<Own>(
-            ticketed(),
+            ticketed(0),
             LINE_REF,
             MINTED,
             POINT_HEAD,
@@ -1748,7 +1730,7 @@ fn auth_call_pends_on_a_ticket_and_refuses_what_breaks_the_rules() {
     let t = auth_table(Some(pends));
     assert!(services(&t)
         .auth_call::<Own>(
-            ticketed(),
+            ticketed(0),
             LINE_REF,
             UnitRef::NONE,
             POINT_HEAD,
@@ -1775,7 +1757,7 @@ fn auth_call_pends_on_a_ticket_and_refuses_what_breaks_the_rules() {
     let t = auth_table(Some(names_nowhere));
     assert!(matches!(
         services(&t).auth_call::<Own>(
-            ticketed(),
+            ticketed(0),
             LINE_REF,
             UnitRef::NONE,
             POINT_HEAD,
@@ -1788,7 +1770,7 @@ fn auth_call_pends_on_a_ticket_and_refuses_what_breaks_the_rules() {
     ));
     assert!(matches!(
         services(&auth_table(None)).auth_call::<Own>(
-            ticketed(),
+            ticketed(0),
             LINE_REF,
             UnitRef::NONE,
             POINT_HEAD,
