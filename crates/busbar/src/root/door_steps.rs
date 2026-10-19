@@ -3178,9 +3178,9 @@ pub(crate) fn refresh_credentials() {
 }
 
 /// A HEAD-CALLED BINDING OVER A TRANSPORT WITH NO HEAD IS REFUSED AT BOOT (THE DESIGN §6, "Auth
-/// points and guest lists", item 5; coordinator ruling on stdio): a member whose binding's auth
+/// points and guest lists", item 5; coordinator ruling on pipe programs): a member whose binding's auth
 /// is called at the head (`POINT_HEAD`, `POINT_HEAD_BODY`) and whose need rides a transport that
-/// frames no head (a carrier carried as itself: a program's stdio, a raw stream) has no point the
+/// frames no head (a carrier carried as itself: a program's own pipes, a raw stream) has no point the
 /// framer could call its auth at. Rather than send its requests with no credential, the boot
 /// refuses it, naming the member; such a server's credentials stay where they live (its program's
 /// environment). A binding called at no head point, or a need on a framer, passes.

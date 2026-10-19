@@ -8070,9 +8070,9 @@ fn an_owned_anchor_the_boot_would_refuse_is_refused_by_the_same_rule() {
     );
 }
 
-/// RED (coordinator ruling on stdio; THE DESIGN §6 item 5): a member whose binding is called at
+/// RED (coordinator ruling on pipe programs; THE DESIGN §6 item 5): a member whose binding is called at
 /// the HEAD and whose need (or a need it rides) is carried over a transport with no framer (a
-/// program's stdio, a raw stream) has no point its auth could be called at: the boot REFUSES it,
+/// program's own pipes, a raw stream) has no point its auth could be called at: the boot REFUSES it,
 /// naming the member, rather than send its requests with no credential. A binding called at no
 /// head point, or one whose every need is framed, passes.
 #[test]
@@ -8080,7 +8080,7 @@ fn a_head_called_binding_over_a_transport_with_no_framer_is_refused_at_boot() {
     use busbar_kernel::plane_driver::{AuthBinding, MemberRoute, ResponseKeep};
     let route = |points: u32| MemberRoute {
         need: busbar_contract::conn::NeedId(1),
-        base_url: "stdio:/bin/server".to_string(),
+        base_url: "pipe:/bin/server".to_string(),
         auth: Some(AuthBinding {
             auth: std::sync::Arc::new(Bound),
             handle: 1,

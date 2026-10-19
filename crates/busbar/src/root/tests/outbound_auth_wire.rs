@@ -633,7 +633,7 @@ fn the_auth_signs_the_exact_head_that_goes_on_the_wire() {
     attempt_auth::forget(unit);
 }
 
-// ── the composed open: webrtc's signalling request (coordinator ruling) ─────────────────────────
+// ── the composed open: the media session's signalling request (coordinator ruling) ─────────────────────────
 
 /// A dialling datagram framer, as small as the composed open needs: its `begin` answers its own
 /// session description as the stream-0 piece the connector sends as the signalling body.

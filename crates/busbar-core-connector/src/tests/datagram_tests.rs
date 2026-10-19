@@ -1465,7 +1465,7 @@ fn a_message_written_in_parts_past_its_bound_is_refused() {
     });
 }
 
-// ── the signalling dial's binding (THE DESIGN §6 item 5; coordinator ruling on webrtc) ─────────
+// ── the signalling dial's binding (THE DESIGN §6 item 5; coordinator ruling on the media framer) ─────────
 
 /// A stream framer that records the binding each begin carries and the unit each emit names, then
 /// frames as the identity door does.
@@ -1540,11 +1540,11 @@ impl crate::framer::BindingRefs for Refs {
     }
 }
 
-/// THE WEBRTC SIGNALLING DIAL CARRIES ITS MEMBER'S BINDING (coordinator ruling; THE DESIGN §6
+/// THE MEDIA SIGNALLING DIAL CARRIES ITS MEMBER'S BINDING (coordinator ruling; THE DESIGN §6
 /// item 5): a held session's upstream leg opens its signalling exchange over the stream framer its
 /// target names, and that framing BEGINS with the member's auth handle and its points and EMITS the
 /// offer naming the session's unit, so the framer signs the signalling request head with the
-/// member's credential (the streaming plane's API key). RED: before, the kernel's fields call put
+/// member's credential (the session plane's API key). RED: before, the kernel's fields call put
 /// the credential in the head, and its deletion left the signalling request bare.
 #[test]
 fn the_signalling_dial_begins_with_its_members_binding_and_emits_its_unit() {
