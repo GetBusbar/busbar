@@ -160,6 +160,51 @@ fn a_tcb_edge_this_branch_introduced_is_refused_whatever_its_row_says() {
     );
 }
 
+// ── part 25 finding 1 (HIGH): the mint rule reads the ledger the way the loader does ─────────
+
+/// `[[ cell ]]` is the loader's `[[cell]]` (it trims the header), so the mint rule's reader must
+/// see the row too: a row the loader grants and the mint rule never sees is an allowance minted in
+/// the same change as its coupling (base.rs header; Law 9, l.2081-2085).
+#[test]
+fn the_mint_reader_reads_a_spaced_header_as_the_loader_does() {
+    let text = "[[ cell ]]\ncrate = \"busbar-kernel\"\nkind = \"plane\"\n";
+    let loaded = parse_registry(text);
+    assert!(
+        loaded
+            .matrix_cells
+            .iter()
+            .any(|c| c.krate == "busbar-kernel" && c.kind == "plane"),
+        "the loader reads `[[ cell ]]` as a cell row"
+    );
+    let keys = super::base::row_keys(text, "cell", &["crate", "kind"]);
+    assert!(
+        keys.contains("busbar-kernel \u{d7} plane"),
+        "the mint rule did not see a row the loader grants: {keys:?}"
+    );
+}
+
+/// A row that names its identity key twice is refused at load, so no reader has to guess which
+/// value it meant: the loader took the first and the mint rule the last, and a new row hid behind
+/// the identity of one the base already had.
+#[test]
+fn a_row_that_repeats_a_key_is_refused_at_load() {
+    let text = "[[cell]]\ncrate = \"busbar-kernel-minted\"\ncrate = \"busbar-kernel\"\n\
+                kind = \"plane\"\n";
+    let loaded = parse_registry(text);
+    assert!(
+        loaded
+            .errors
+            .iter()
+            .any(|e| e.starts_with("duplicate-field\t")),
+        "a repeated `crate` loaded: {:?}",
+        loaded.errors
+    );
+    assert!(
+        loaded.matrix_cells.is_empty(),
+        "a row with two `crate` values granted a cell"
+    );
+}
+
 // ── finding 4 (MEDIUM): `--write` lowers a count that fell ───────────────────────────────────
 
 #[test]
