@@ -92,3 +92,20 @@ fn the_headless_connection_lowering_is_gone() {
         );
     }
 }
+
+// ── item: the C header pins every structure's one size ───────────────────────────────────────────
+
+const HEADER: &str = include_str!("../include/busbar_plugin.h");
+
+/// RED (ruling 21): the C header carries a size assert for EVERY structure it declares, so a C
+/// plugin is held to each struct's one size: "N of N structures are pinned by the golden".
+#[test]
+fn the_c_header_pins_every_structure() {
+    let line = HEADER
+        .lines()
+        .find(|l| l.contains("structures are pinned by the golden"))
+        .expect("the header states its layout proof");
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let at = words.iter().position(|w| *w == "of").expect("`N of M`");
+    assert_eq!(words[at - 1], words[at + 1], "{line}");
+}
