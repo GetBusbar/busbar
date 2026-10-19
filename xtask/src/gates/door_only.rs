@@ -101,11 +101,27 @@ pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
         Err(e) => return (findings, vec![e]),
     };
     let closure = one_abi::binary_closure(&members);
-    let plugin_idents: Vec<String> = members
-        .iter()
-        .filter(|m| one_abi::is_plugin_crate(&m.name))
-        .map(|m| m.name.replace('-', "_"))
-        .collect();
+    // EVERY PLUGIN THE BINARY LINKS, the pinned ones included (Q128 xtask #29): a plugin that left
+    // for its own repo is still a crate whose Rust items the kernel may not name. The SCOPE stays the
+    // workspace's binary closure; only the names it may not spell widen. A pinned `-plugin` twin
+    // the root links (`busbar-auth-admin-tokens-plugin`) is such a crate too.
+    let pinned = crate::gates::kind_isolation::every_pinned_plugin(cx);
+    let pinned_names: Vec<String> = match pinned.as_ref() {
+        Ok(ps) => ps.iter().map(|p| p.name.clone()).collect(),
+        Err(e) => return (findings, vec![e.clone()]),
+    };
+    let mut plugin_idents: Vec<String> = match one_abi::members_with_pinned(cx) {
+        Ok(all) => all
+            .into_iter()
+            .map(|m| m.name)
+            .chain(pinned_names)
+            .filter(|n| one_abi::is_plugin_crate(n))
+            .map(|n| n.replace('-', "_"))
+            .collect(),
+        Err(e) => return (findings, vec![e]),
+    };
+    plugin_idents.sort();
+    plugin_idents.dedup();
     let scope: Vec<_> = members
         .iter()
         .filter(|m| {
@@ -200,11 +216,8 @@ impl Gate for DoorOnlyGate {
     }
 
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
-        // THE PLUGIN THE PLANT NAMES IS ONE THE WORKSPACE HOLDS. The plant named
-        // `busbar_transport_tcp` until that transport left for its own repo (66853bf6e1); the scan
-        // only knows the plugin crates that are members, so a path into a departed one is no
-        // finding and the red arm proved nothing. The plugins leave this tree one by one, so the
-        // plant takes whichever plugin member the census holds first.
+        // ONE PLANT NAMES A PLUGIN THE WORKSPACE HOLDS, and one a plugin the root pins from its own
+        // repo (below): the scan knows both, so a path into either is a finding.
         let plugin: &'static str = match one_abi::members(cx).map(|ms| {
             ms.into_iter()
                 .find(|m| one_abi::is_plugin_crate(&m.name))

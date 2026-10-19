@@ -269,6 +269,9 @@ struct Metadata {
     /// than assuming (wrongly) that an activated optional dependency's OWN name always appears
     /// verbatim in the active-features list — new-style `dep:foo` syntax means it often does not.
     feature_defs: BTreeMap<String, BTreeMap<String, Vec<String>>>,
+    /// package id -> its `source` (`git+…` for a crate pinned from its own repo; empty for a
+    /// workspace path crate).
+    sources: BTreeMap<String, String>,
 }
 
 fn run_cargo_metadata(manifest_path: &Path) -> Value {
@@ -320,8 +323,13 @@ fn parse_metadata(v: &Value) -> Metadata {
     let mut manifest_paths = BTreeMap::new();
     let mut optional_normal_deps: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut feature_defs: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
+    let mut sources = BTreeMap::new();
     for pkg in v["packages"].as_array().cloned().unwrap_or_default() {
         let id = pkg["id"].as_str().unwrap_or_default().to_string();
+        sources.insert(
+            id.clone(),
+            pkg["source"].as_str().unwrap_or_default().to_string(),
+        );
         names.insert(
             id.clone(),
             pkg["name"].as_str().unwrap_or_default().to_string(),
@@ -399,6 +407,7 @@ fn parse_metadata(v: &Value) -> Metadata {
         nodes,
         optional_normal_deps,
         feature_defs,
+        sources,
     }
 }
 
@@ -1263,21 +1272,6 @@ pub fn run(cx: &Ctx) -> Report {
     let exemptions = edge_exemptions_of(&config);
     let allowed = load_allowlist(root);
     let crates = match pure_crates(cx, &config) {
-        Ok(crates) if crates.is_empty() => {
-            // Every pure kind's glob matched nothing. On a tree that has planes, hooks and auth
-            // crates this can only mean the scan was pointed somewhere it was not meant to be, and
-            // a scan of nothing is not a clean bill of health.
-            return Report {
-                hits: Vec::new(),
-                crates_scanned: 0,
-                defects: vec![format!(
-                    "no crate under {}/crates matched any pure kind's glob — nothing was scanned, \
-                     so nothing was proven",
-                    root.display()
-                )],
-                stale_waivers: Vec::new(),
-            };
-        }
         Ok(crates) => crates,
         Err(defect) => {
             return Report {
@@ -1289,39 +1283,83 @@ pub fn run(cx: &Ctx) -> Report {
         }
     };
 
-    let meta_json = run_cargo_metadata(&root.join("Cargo.toml"));
+    // A PLANTED ANSWER WINS ([`Ctx::cargo_metadata`]'s overlay key), so a self-test can plant a
+    // banned edge into a pinned plugin's closure without a fixture workspace.
+    let meta_json = match cx.overlay_command(METADATA_KEY) {
+        Some(planted) => match serde_json::from_str(&planted) {
+            Ok(v) => v,
+            Err(e) => {
+                return Report {
+                    hits: Vec::new(),
+                    crates_scanned: 0,
+                    defects: vec![format!("the planted `cargo metadata` answer is not JSON: {e}")],
+                    stale_waivers: Vec::new(),
+                }
+            }
+        },
+        None => run_cargo_metadata(&root.join("Cargo.toml")),
+    };
     let meta = parse_metadata(&meta_json);
     let fragments = config.table("gate").get_list("test_path_fragments");
+    let mut crates = crates;
+    let checkouts = with_pinned_pure_crates(&mut crates, &meta, &config);
+    if crates.is_empty() {
+        // No pure kind's glob matched and the root pins no pure plugin. On a tree that has planes,
+        // hooks and auth crates this can only mean the scan was pointed somewhere it was not meant
+        // to be, and a scan of nothing is not a clean bill of health.
+        return Report {
+            hits: Vec::new(),
+            crates_scanned: 0,
+            defects: vec![format!(
+                "no crate under {}/crates matched any pure kind's glob and no pinned plugin is of a \
+                 pure kind — nothing was scanned, so nothing was proven",
+                root.display()
+            )],
+            stale_waivers: Vec::new(),
+        };
+    }
 
     let mut hits = Vec::new();
+    let mut defects = Vec::new();
     for pc in &crates {
+        // AN UNRESOLVED PURE CRATE IS A DEFECT (Q128 xtask #5). It used to be a printed warning and
+        // a counted crate, so the scan row read green over a closure nobody walked.
         if let Some(id) = find_package_id(&meta, &pc.dir, &pc.name) {
             hits.extend(closure_hits(&meta, &id, &pc.report_name, &banned));
         } else {
-            eprintln!(
-                "xtask denylist: warning: {} ({}) not found in `cargo metadata` output; skipped",
-                pc.name, pc.kind
-            );
+            defects.push(format!(
+                "{} ({}, crates/{}) is not a package of the `cargo metadata` answer, so its \
+                 dependency closure was walked by nobody",
+                pc.name, pc.kind, pc.report_name
+            ));
         }
         let src_root = format!("crates/{}/src", pc.report_name);
-        let files: Vec<(String, String)> = if cx.exists(&src_root) {
-            match cx.walk(&WalkSpec::new([src_root.clone()]).ext("rs")) {
-                Ok(fs) => fs.into_iter().map(|f| (f.rel_str(), f.text)).collect(),
-                Err(e) => {
-                    return Report {
-                        hits: Vec::new(),
-                        crates_scanned: 0,
-                        defects: vec![format!(
-                            "{src_root} would not list ({e}) — a crate whose source cannot be read \
-                             is scanned as zero files, and zero files carry no banned path"
-                        )],
-                        stale_waivers: Vec::new(),
-                    }
+        let mut files: BTreeMap<String, String> = BTreeMap::new();
+        // A PINNED PLUGIN NO LAYER LAYS is read from the checkout cargo fetched for its rev, at the
+        // path it is read under; anything the tree shows there (a plant) wins.
+        if let Some(checkout) = checkouts.get(&pc.name) {
+            if !cx.is_dir(format!("crates/{}", pc.report_name)) {
+                for (sub, text) in checkout_rs_files(&checkout.join("src")) {
+                    files.insert(format!("{src_root}/{sub}"), text);
                 }
             }
-        } else {
-            Vec::new()
-        };
+        }
+        match cx.walk(&WalkSpec::new([src_root.clone()]).ext("rs").allow_empty()) {
+            Ok(fs) => files.extend(fs.into_iter().map(|f| (f.rel_str(), f.text))),
+            Err(crate::ctx::WalkError::MissingRoot { .. }) => {}
+            Err(e) => {
+                return Report {
+                    hits: Vec::new(),
+                    crates_scanned: 0,
+                    defects: vec![format!(
+                        "{src_root} would not list ({e}) — a crate whose source cannot be read \
+                         is scanned as zero files, and zero files carry no banned path"
+                    )],
+                    stale_waivers: Vec::new(),
+                }
+            }
+        }
+        let files: Vec<(String, String)> = files.into_iter().collect();
         hits.extend(own_src_hits_over(&files, pc, &banned, &fragments));
     }
 
@@ -1337,9 +1375,83 @@ pub fn run(cx: &Ctx) -> Report {
     Report {
         hits,
         crates_scanned: crates.len(),
-        defects: Vec::new(),
+        defects,
         stale_waivers: stale,
     }
+}
+
+/// The overlay key a planted `cargo metadata` answer for the root manifest is read under
+/// ([`Ctx::cargo_metadata`]).
+const METADATA_KEY: &str = "cargo-metadata:Cargo.toml";
+
+/// Does `name` resolve to the pure kind `kind`, as `[rules.source-denylist].kinds` spells it? The
+/// kind table spells the hook kind `hooks`; the config spells it `hook`.
+fn is_pinned_kind(name: &str, kind: &str) -> bool {
+    crate::gates::kind_isolation::plugin_kind(name)
+        .is_some_and(|k| k == kind || (kind == "hook" && k == "hooks"))
+}
+
+/// THE PINNED PURE PLUGINS ARE PURE CRATES (Q128 xtask #5). Every plugin left `crates/` for its own
+/// repo and comes back as a `git+` package pinned at one rev, so the directory globs of
+/// `[gate.plugin_kinds]` match nothing of it: the auth and hook kinds read as empty, and a plane
+/// the base lays at `crates/<package>` never matched cargo's manifest path, so its closure was
+/// skipped. Each `git+` package of `meta` whose name resolves to one of the rule's kinds is a pure
+/// crate here, its `-plugin` twin included; a crate the globs already listed is resolved to its
+/// pinned checkout instead of listed twice. Returns package name -> checkout directory for every
+/// pinned pure crate, where its own source is read when no layer lays it.
+fn with_pinned_pure_crates(
+    crates: &mut Vec<PureCrate>,
+    meta: &Metadata,
+    config: &Document,
+) -> BTreeMap<String, PathBuf> {
+    let kinds = config.table("rules.source-denylist").get_list("kinds");
+    let mut checkouts: BTreeMap<String, PathBuf> = BTreeMap::new();
+    for (id, name) in &meta.names {
+        if !meta.sources.get(id).is_some_and(|s| s.starts_with("git+"))
+            || checkouts.contains_key(name)
+        {
+            continue;
+        }
+        let Some(kind) = kinds.iter().find(|k| is_pinned_kind(name, k)) else {
+            continue;
+        };
+        let Some(dir) = meta
+            .manifest_paths
+            .get(id)
+            .and_then(|m| Path::new(m).parent())
+        else {
+            continue;
+        };
+        checkouts.insert(name.clone(), dir.to_path_buf());
+        match crates.iter_mut().find(|pc| pc.name == *name) {
+            Some(pc) => {
+                if !pc.dir.exists() {
+                    pc.dir = dir.to_path_buf();
+                }
+            }
+            None => crates.push(PureCrate {
+                name: name.clone(),
+                dir: dir.to_path_buf(),
+                kind: kind.clone(),
+                report_name: name.clone(),
+            }),
+        }
+    }
+    checkouts
+}
+
+/// Every `.rs` file under a checkout's `src/`, as `(path under src, text)`, sorted.
+fn checkout_rs_files(src: &Path) -> Vec<(String, String)> {
+    let mut paths = Vec::new();
+    walk_rs_files(src, &mut paths);
+    paths.sort();
+    paths
+        .into_iter()
+        .filter_map(|f| {
+            let sub = f.strip_prefix(src).ok()?.to_string_lossy().replace('\\', "/");
+            Some((sub, std::fs::read_to_string(&f).ok()?))
+        })
+        .collect()
 }
 
 /// Test-only entry point: like [`run_on`], but also applies a synthetic allow-list (never read

@@ -23,8 +23,10 @@
 //!
 //! THE PLUGIN BOUNDARY is derived, never listed: every crate whose `[lib]` declares
 //! `crate-type = ["cdylib"]` (the artefact the loader dlopens; an `[[example]]` cdylib test double
-//! does not make its crate a plugin), and every crate the kind census resolves to the `plane` kind
-//! ([`crate::gates::kind_isolation::plane_kind_crates`]). The `legacy` kind (`busbar-llm`,
+//! does not make its crate a plugin), every crate the kind census resolves to the `plane` kind
+//! ([`crate::gates::kind_isolation::plane_kind_crates`]), and every plugin crate the root pins from
+//! its own repo, of every kind, logic crate and `-plugin` twin, read from the checkout cargo fetched
+//! for its rev ([`crate::gates::kind_isolation::with_every_pinned_plugin`]). The `legacy` kind (`busbar-llm`,
 //! `busbar-a2a`, `busbar-voice`) shares the plane family and is not in this population: it reads
 //! `Secret::expose` at production sites today, those crates are being deleted (row 155), and
 //! `plane-secret-blindness` holds every one of those sites on its counted drain-only ledger.
@@ -185,10 +187,14 @@ fn rs_files(cx: &Ctx, krate: &str) -> Result<Vec<String>, String> {
     }
 }
 
-/// The plugin crate directories: every crate whose `[lib]` is a cdylib, and every crate the kind
-/// census resolves to the `plane` kind. A census that cannot be read, or reads no plane crate, is
-/// an error: an empty plane population is the passing answer to the ban.
-fn plugin_crates(cx: &Ctx) -> Result<Vec<String>, String> {
+/// The plugin crate directories: every crate whose `[lib]` is a cdylib, every crate the kind
+/// census resolves to the `plane` kind, and EVERY PLUGIN THE ROOT PINS, of every kind, its
+/// `-plugin` twin included (Q128 xtask #38; [`crate::gates::kind_isolation::with_every_pinned_plugin`]):
+/// a pinned transport's logic crate is an rlib and no plane, and a pinned auth, secret, export,
+/// store or hook crate is laid by no base, yet each is a plugin the binary links. `cx` is the tree
+/// with every pinned plugin laid; `pinned` the directories laid. A census that cannot be read, or
+/// reads no plane crate, is an error: an empty plane population is the passing answer to the ban.
+fn plugin_crates(cx: &Ctx, pinned: &[String]) -> Result<Vec<String>, String> {
     let mut out: std::collections::BTreeSet<String> = manifests(cx)?
         .into_iter()
         .filter(|(_, text)| lib_is_cdylib(text))
@@ -202,6 +208,7 @@ fn plugin_crates(cx: &Ctx) -> Result<Vec<String>, String> {
                 .to_string(),
         );
     }
+    out.extend(pinned.iter().cloned());
     Ok(out.into_iter().collect())
 }
 
@@ -269,7 +276,10 @@ impl Gate for SecretAccessorSealGate {
 
     fn run(&self, cx: &Ctx) -> Verdict {
         let title_err = "the plugin crates could not be listed or read";
-        let crates = match plugin_crates(cx) {
+        let home_cx = cx;
+        let crates = match crate::gates::kind_isolation::with_every_pinned_plugin(cx)
+            .and_then(|(all, pinned)| plugin_crates(&all, &pinned).map(|c| (all, c)))
+        {
             Ok(c) => c,
             Err(why) => {
                 return Verdict::of(
@@ -280,6 +290,8 @@ impl Gate for SecretAccessorSealGate {
                 )
             }
         };
+        let (all, crates) = crates;
+        let cx = &all;
 
         let crates_row = if crates.is_empty() {
             Row::fail(
@@ -290,7 +302,7 @@ impl Gate for SecretAccessorSealGate {
         } else {
             Row::pass(
                 ROW_CRATES,
-                "plugin crates (cdylib [lib] or plane kind) were found",
+                "plugin crates (cdylib [lib], plane kind, or pinned plugin of any kind) were found",
                 format!("{} crate(s)", crates.len()),
             )
         };
@@ -374,7 +386,7 @@ impl Gate for SecretAccessorSealGate {
             )
         };
 
-        let home_row = match seal_home_problems(cx) {
+        let home_row = match seal_home_problems(home_cx) {
             Err(why) => Row::fail(ROW_HOME, "the seal's home could not be derived", why),
             Ok(p) if p.is_empty() => Row::pass(
                 ROW_HOME,
@@ -526,7 +538,7 @@ impl Gate for SecretAccessorSealGate {
 
         // RED: a zero-crate scan (every real plugin manifest removed, cdylib and plane kind) is
         // FAIL, never a clean pass: the plane census refuses an empty plane population.
-        if let Ok(real) = plugin_crates(cx) {
+        if let Ok(real) = plugin_crates(cx, &[]) {
             let mut ov = Overlay::new();
             for c in &real {
                 ov.remove(format!("{c}/Cargo.toml"));

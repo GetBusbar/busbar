@@ -10,8 +10,8 @@
 //! doing no I/O of its own is `source-denylist`'s row, scoped to those kinds only, and never to a
 //! transport (carrier) crate, which is the one kind whose job IS to own the wire.
 //!
-//! * **`busbar-deps`** — a busbar crate other than `busbar-contract` reached through the plugin's
-//!   shipped workspace edges (its own and those of every workspace crate it reaches).
+//! * **`busbar-deps`** — a busbar crate other than `busbar-contract` named by a shipped edge of the
+//!   plugin or of any workspace crate it reaches, whether the workspace holds that crate or not.
 //!
 //! Plugin crates are the workspace members named for a plugin kind ([`one_abi::is_plugin_crate`]),
 //! and every PINNED plugin crate the root links from its own repository
@@ -50,23 +50,29 @@ fn is_busbar(name: &str, members: &BTreeSet<&str>) -> bool {
     name.starts_with("busbar") || members.contains(name)
 }
 
-/// Every workspace member a plugin reaches through shipped edges, the plugin excluded, and the
-/// member each was first reached from.
+/// Every package a plugin reaches through shipped edges, the plugin excluded, and the member each
+/// was first reached from. EVERY dependency name is recorded, member or not (Q128 xtask #36): a
+/// busbar crate the workspace does not hold (a git or registry copy of a retired one) is a busbar
+/// crate in the plugin's closure all the same. The walk recurses into members only, the manifests
+/// it can read.
 fn reached<'m>(
     start: &'m Member,
     by_name: &BTreeMap<&str, &'m Member>,
 ) -> BTreeMap<String, String> {
     let mut out: BTreeMap<String, String> = BTreeMap::new();
-    let mut todo: Vec<(&Member, String)> = vec![(start, start.name.clone())];
+    let mut todo: Vec<&Member> = vec![start];
     let mut seen: BTreeSet<String> = BTreeSet::new();
-    while let Some((m, _)) = todo.pop() {
+    while let Some(m) = todo.pop() {
         if !seen.insert(m.name.clone()) {
             continue;
         }
         for d in m.decls.iter().filter(|d| d.table.shipped()) {
+            if d.pkg == start.name {
+                continue;
+            }
+            out.entry(d.pkg.clone()).or_insert_with(|| m.name.clone());
             if let Some(next) = by_name.get(d.pkg.as_str()) {
-                out.entry(d.pkg.clone()).or_insert_with(|| m.name.clone());
-                todo.push((next, m.name.clone()));
+                todo.push(next);
             }
         }
     }

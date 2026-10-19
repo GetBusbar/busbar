@@ -485,3 +485,143 @@ pub(super) fn with_pinned(cx: &Ctx) -> Ctx {
     };
     cx.with_overlay(layered)
 }
+
+// ── EVERY PINNED PLUGIN, EVERY KIND (Q128 xtask populations) ────────────────────────────────────
+
+/// One pinned plugin crate a population gate reads: its package name, the checkout directory its
+/// manifest governs, and the `git+` source `cargo metadata` resolved it from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PinnedPlugin {
+    pub name: String,
+    pub dir: PathBuf,
+    pub source: String,
+}
+
+type EveryResolved = Arc<Result<Vec<PinnedPlugin>, String>>;
+
+static EVERY_MEMO: OnceLock<Mutex<BTreeMap<String, EveryResolved>>> = OnceLock::new();
+
+/// EVERY PLUGIN THE ROOT PINS, OF EVERY KIND, ITS `-plugin` TWIN INCLUDED: each `git+` package of
+/// `cargo metadata --all-features` over the root manifest that is a plugin crate
+/// ([`crate::gates::one_abi::is_plugin_crate`]), and the twin beside each logic crate's checkout
+/// when the repo carries one (a plugin repo is a logic crate plus the cdylib that packages it, §9;
+/// a twin no member links is in no answer, so it is found beside its logic crate). Sorted by name.
+/// The base layer ([`plane_base`]) lays only the planes and transports; a gate whose population is
+/// every plugin the binary links reads the rest from here. FAILS CLOSED: `cargo metadata` that does
+/// not answer is an `Err`, never an empty population.
+///
+/// # Errors
+/// `cargo metadata` does not answer, or its answer does not parse.
+pub(crate) fn every_pinned_plugin(cx: &Ctx) -> EveryResolved {
+    let key = key(cx);
+    let memo = EVERY_MEMO.get_or_init(Default::default);
+    if let Some(hit) = memo
+        .lock()
+        .expect("the every-pin memo mutex is never poisoned")
+        .get(&key)
+    {
+        return Arc::clone(hit);
+    }
+    let resolved = Arc::new(resolve_every(cx));
+    memo.lock()
+        .expect("the every-pin memo mutex is never poisoned")
+        .insert(key, Arc::clone(&resolved));
+    resolved
+}
+
+fn resolve_every(cx: &Ctx) -> Result<Vec<PinnedPlugin>, String> {
+    let meta = cx.cargo_metadata_all_features("Cargo.toml")?;
+    let meta: serde_json::Value =
+        serde_json::from_str(&meta).map_err(|e| format!("cargo metadata is not JSON: {e}"))?;
+    let mut out: Vec<PinnedPlugin> = Vec::new();
+    for p in meta["packages"].as_array().into_iter().flatten() {
+        let source = p["source"].as_str().unwrap_or("");
+        let Some(name) = p["name"].as_str() else {
+            continue;
+        };
+        if !source.starts_with("git+")
+            || !crate::gates::one_abi::is_plugin_crate(name)
+            || out.iter().any(|q| q.name == name)
+        {
+            continue;
+        }
+        let dir = p["manifest_path"]
+            .as_str()
+            .and_then(|m| Path::new(m).parent())
+            .ok_or_else(|| format!("{name}: `cargo metadata` names no manifest_path"))?;
+        out.push(PinnedPlugin {
+            name: name.to_string(),
+            dir: dir.to_path_buf(),
+            source: source.to_string(),
+        });
+    }
+    let twins: Vec<PinnedPlugin> = out
+        .iter()
+        .filter(|p| !p.name.ends_with(CDYLIB_SUFFIX))
+        .filter_map(|p| {
+            let logic = Pinned {
+                name: p.name.clone(),
+                dir: p.dir.clone(),
+                source: p.source.clone(),
+            };
+            twin_of(&logic).map(|dir| PinnedPlugin {
+                name: format!("{}{CDYLIB_SUFFIX}", p.name),
+                dir,
+                source: p.source.clone(),
+            })
+        })
+        .collect();
+    for t in twins {
+        if !out.iter().any(|q| q.name == t.name) {
+            out.push(t);
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+/// `cx` WITH EVERY PINNED PLUGIN LAID, and the directories laid: each [`every_pinned_plugin`] crate
+/// no crate on disk is and the base does not already lay, read from its checkout and laid at its
+/// [`mount_dir`] BENEATH the base (the base's bytes, and any `BUSBAR_PLANE_SOURCE` it honours, win)
+/// and so beneath every plant. The returned list is every pinned plugin's `crates/<package>`, laid
+/// here or by the base, so a population gate counts each one exactly once. Read, never written
+/// (spec #39).
+///
+/// # Errors
+/// As [`every_pinned_plugin`], or a pinned checkout that reads no file.
+pub(crate) fn with_every_pinned_plugin(cx: &Ctx) -> Result<(Ctx, Vec<String>), String> {
+    let resolved = every_pinned_plugin(cx);
+    let pinned = resolved.as_ref().as_ref().map_err(|e| {
+        format!("the pinned plugin crates cannot be read: cargo metadata does not answer ({e})")
+    })?;
+    let on_disk = disk_crate_names(cx.root());
+    let mut extra = Overlay::new();
+    let mut dirs = Vec::new();
+    for p in pinned {
+        let at = mount_dir(&p.name);
+        if on_disk.contains(&p.name) || cx.root().join(&at).exists() {
+            continue;
+        }
+        dirs.push(at.clone());
+        if cx.in_base(format!("{at}/Cargo.toml")) {
+            continue;
+        }
+        let files = crate_files(&p.dir);
+        if files.is_empty() {
+            return Err(format!(
+                "the pinned plugin `{}` ({}): {} reads no file",
+                p.name,
+                p.source,
+                p.dir.display()
+            ));
+        }
+        for (rel, text) in files {
+            extra.set(format!("{at}/{rel}"), text);
+        }
+    }
+    let base = match cx.base() {
+        Some(b) => extra.layered(b),
+        None => extra,
+    };
+    Ok((cx.with_base(base), dirs))
+}

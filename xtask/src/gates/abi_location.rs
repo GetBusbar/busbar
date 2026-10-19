@@ -58,10 +58,12 @@
 //!
 //! Every plugin `plugins.yaml` registers is looked for as a local clone under `[external].root`
 //! (default `..`, the sibling-checkout convention `release-check.sh` and qa-gate use), by its `repo`
-//! name or that name without its `busbar-` prefix. A clone that exists is scanned by the same rules
-//! (its `tests/`, `benches/`, `target/` skipped) and held to the ledger's rows that carry
-//! `repo = "<repo>"`; one that does not exist is SKIPPED AND NAMED in the row's detail — never a
-//! silent green. CI checks out no siblings, so there the row says exactly that.
+//! name or that name without its `busbar-` prefix, else as the checkout cargo fetched for the rev
+//! the root pins it at (`cargo metadata`'s manifest path; CI checks out no siblings). What is found
+//! is scanned by the same rules (its `tests/`, `benches/`, `target/` skipped) and held to the
+//! ledger's rows that carry `repo = "<repo>"`. A registered plugin the root pins that neither finds
+//! is RED, by name (the floor: every pinned plugin is read); one the root does not pin and no clone
+//! holds is SKIPPED AND NAMED in the row's detail. A scan of no plugin at all is RED.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -729,8 +731,67 @@ struct External {
     findings: Vec<Finding>,
     scanned: Vec<String>,
     absent: Vec<String>,
+    /// Registered plugins the root pins whose source was read nowhere: no local clone, and no
+    /// checkout in the `cargo metadata` answer. Each is a RED, never a skip (Q128 xtask #25).
+    unread: Vec<String>,
     errors: Vec<String>,
     root: PathBuf,
+}
+
+/// The repos the root manifest pins a plugin from: every `[workspace.dependencies]` row naming a
+/// `git` source, by the URL's last segment (`busbar-hook-ranking`). Read off the manifest, not off
+/// `cargo metadata`, so a pin cargo did not resolve is still named, and still owed a scan.
+fn root_pinned_repos(cx: &Ctx) -> Result<BTreeSet<String>, String> {
+    let manifest = cx.read("Cargo.toml")?;
+    let mut out = BTreeSet::new();
+    let mut inside = false;
+    for raw in manifest.lines() {
+        let t = raw.trim();
+        if t.starts_with('[') {
+            inside = t == "[workspace.dependencies]";
+            continue;
+        }
+        if !inside || t.starts_with('#') {
+            continue;
+        }
+        let Some((_, url)) = t.split_once("git = \"") else {
+            continue;
+        };
+        let Some((url, _)) = url.split_once('"') else {
+            continue;
+        };
+        let last = url.trim_end_matches('/').rsplit('/').next().unwrap_or("");
+        let repo = last.strip_suffix(".git").unwrap_or(last);
+        if !repo.is_empty() {
+            out.insert(repo.to_string());
+        }
+    }
+    Ok(out)
+}
+
+/// The checkout root of every pinned plugin repo, by repo name: the topmost directory above a
+/// pinned crate's directory that still holds a `Cargo.toml` (a plugin repo's workspace root; the
+/// crate's own directory for a single-crate repo).
+fn pinned_checkouts(cx: &Ctx) -> Result<BTreeMap<String, PathBuf>, String> {
+    let resolved = crate::gates::kind_isolation::every_pinned_plugin(cx);
+    let pinned = resolved.as_ref().as_ref().map_err(|e| {
+        format!("the pinned plugin checkouts cannot be found: cargo metadata does not answer ({e})")
+    })?;
+    let mut out = BTreeMap::new();
+    for p in pinned {
+        let Some(pin) = crate::audit_pinned::Pin::from_source(&p.name, &p.source) else {
+            continue;
+        };
+        let mut root = p.dir.clone();
+        while let Some(up) = root.parent() {
+            if !up.join("Cargo.toml").is_file() {
+                break;
+            }
+            root = up.to_path_buf();
+        }
+        out.entry(pin.repo_name()).or_insert(root);
+    }
+    Ok(out)
 }
 
 fn scan_external(cx: &Ctx, root_decl: &str, sigs: &BTreeSet<Sig>) -> External {
@@ -746,9 +807,19 @@ fn scan_external(cx: &Ctx, root_decl: &str, sigs: &BTreeSet<Sig>) -> External {
         findings: Vec::new(),
         scanned: Vec::new(),
         absent: Vec::new(),
+        unread: Vec::new(),
         errors: Vec::new(),
         root: root.clone(),
     };
+    let pinned_repos = root_pinned_repos(cx).unwrap_or_else(|e| {
+        ext.errors
+            .push(format!("the root manifest's pins could not be read: {e}"));
+        BTreeSet::new()
+    });
+    let checkouts = pinned_checkouts(cx).unwrap_or_else(|e| {
+        ext.errors.push(e);
+        BTreeMap::new()
+    });
     let fleet = match crate::fleet::registry::load(cx) {
         Ok(f) => f,
         Err(e) => {
@@ -766,12 +837,20 @@ fn scan_external(cx: &Ctx, root_decl: &str, sigs: &BTreeSet<Sig>) -> External {
                 .unwrap_or(&p.repo)
                 .to_string(),
         ];
+        // A LOCAL CLONE FIRST (the work in progress beside this tree), ELSE THE CHECKOUT CARGO
+        // FETCHED FOR THE ROOT'S PIN: CI checks out no sibling, and a plugin the binary links is
+        // read where its source is (Q128 xtask #25).
         let Some(dir) = candidates
             .iter()
             .map(|c| root.join(c))
             .find(|d| d.join("Cargo.toml").is_file())
+            .or_else(|| checkouts.get(&p.repo).cloned())
         else {
-            ext.absent.push(p.repo.clone());
+            if pinned_repos.contains(&p.repo) {
+                ext.unread.push(p.repo.clone());
+            } else {
+                ext.absent.push(p.repo.clone());
+            }
             continue;
         };
         let mut files = Vec::new();
@@ -1331,6 +1410,21 @@ fn external_row(cx: &Ctx, ledger: &Ledger) -> Row {
     let stale = minus(&ext_ledger, &keys);
 
     let mut problems = ext.errors.clone();
+    // THE FLOOR (Law 8, "a denominator with no floor"): every registered plugin the root pins is
+    // read, and a scan of no plugin at all is no pass.
+    problems.extend(ext.unread.iter().map(|r| {
+        format!(
+            "UNREAD {r}: the root pins it and its source was read nowhere (no local clone under {}, \
+             no checkout in the cargo metadata answer)",
+            ext.root.display()
+        )
+    }));
+    if ext.scanned.is_empty() {
+        problems.push(
+            "scanned 0 registered plugins: a scan of nothing proves nothing about any of them"
+                .to_string(),
+        );
+    }
     let mut pending = new.clone();
     for f in &ext.findings {
         if let Some(i) = pending.iter().position(|k| *k == f.key()) {
@@ -1355,7 +1449,7 @@ fn external_row(cx: &Ctx, ledger: &Ledger) -> Row {
     if problems.is_empty() {
         Row::pass(
             ROW_EXTERNAL,
-            "every locally-cloned registered plugin defines no ABI shape of its own",
+            "every registered plugin read (local clone or pinned checkout) defines no ABI shape of its own",
             format!(
                 "scanned {}: {}{skipped}",
                 ext.scanned.len(),
@@ -1369,7 +1463,7 @@ fn external_row(cx: &Ctx, ledger: &Ledger) -> Row {
     } else {
         Row::fail(
             ROW_EXTERNAL,
-            "a registered plugin's local clone defines an ABI shape outside busbar-contract's abi/",
+            "a registered plugin defines an ABI shape outside busbar-contract's abi/, or was not read",
             format!("{}{skipped}", problems.join(" | ")),
         )
     }
