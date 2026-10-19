@@ -305,6 +305,8 @@ static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
     metric_lanes: std::ptr::null(),
     metric_lanes_len: 0,
     stream_ceiling_secs: 0,
+    record_retentions: std::ptr::null(),
+    record_retentions_len: 0,
 });
 
 static FAMILIES: Shared<[MetricFamily; 1]> = Shared([MetricFamily {

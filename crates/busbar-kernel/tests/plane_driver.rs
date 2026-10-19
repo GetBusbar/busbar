@@ -1624,6 +1624,7 @@ fn declaring() -> Double {
                 mechanisms: &[],
             }],
             record_chains: Vec::new(),
+            record_retentions: Vec::new(),
         },
         ..Double::default()
     }

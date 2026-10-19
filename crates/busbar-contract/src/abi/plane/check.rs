@@ -24,12 +24,12 @@ use super::reason_of;
 use super::{units_bill, UNITS_FLOOR};
 use super::{
     AdminRoute, ArriveOut, BillableClass, Claim, DialectAuth, OnPieceOut, OutField, PinMechanism,
-    PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain, RecordWrite, RefusalOut,
-    RefusalStatus, RouteCost, ServeOut, TrustKey, UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL,
-    CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED, CLAIM_EXACT, CLAIM_OPEN,
-    CLAIM_PATTERN, CLAIM_RAW_AFFIX, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END,
-    EMIT_TO_FAR_END, EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP,
-    INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
+    PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain, RecordRetention, RecordWrite,
+    RefusalOut, RefusalStatus, RouteCost, ServeOut, TrustKey, UnitCount, CANCEL_ABORTED,
+    CANCEL_OK_PARTIAL, CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED,
+    CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN, CLAIM_RAW_AFFIX, EMIT_DONE, EMIT_FINAL_STATUS,
+    EMIT_MESSAGE_END, EMIT_TO_FAR_END, EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE,
+    INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
     INGRESS_SUBSCRIPTION, MAX_METRIC_LANES, MAX_REFUSAL_TEXT, MECHANISM_PEER_KEY, MECHANISM_ROOT,
     PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT,
     REFUSAL_ANY_DIALECT, REFUSED_AFTER_ADMISSION, REFUSED_UNSUPPORTED_ACTION,
@@ -48,6 +48,7 @@ use crate::abi::mechanism::check::{
     Filled, MAX_BYTES,
 };
 use crate::abi::mechanism::door::{Section, SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED};
+use crate::abi::store::plane::{RETENTION_AGE, RETENTION_TERMINAL_ONLY};
 use crate::grammar::{PathSeg, Selector};
 
 /// The most unit counts one answer may carry.
@@ -1221,7 +1222,8 @@ pub fn check_admin_routes(routes: &[AdminRoute]) -> Result<(), Fault> {
 /// The Statement tail, at load: known flags, ingress bits and dispatch shape; at least one ingress
 /// shape; no string or list counted with a NULL pointer. Its elements: [`check_sections`],
 /// [`check_dialect_auth`], [`check_route_cost`], [`check_billable_classes`], [`check_fee_units`],
-/// [`check_needs`], [`check_record_chains`], [`check_trust_keys`] and each pin's
+/// [`check_needs`], [`check_record_chains`], [`check_record_retentions`], [`check_trust_keys`] and
+/// each pin's
 /// [`check_pin_mechanisms`], and
 /// [`check_refusal_statuses`].
 ///
@@ -1287,6 +1289,11 @@ pub fn check_tail(t: &PlaneTail) -> Result<(), Fault> {
     )?;
     listed(t.admin_routes, t.admin_routes_len, "tail.admin_routes")?;
     listed(t.metric_lanes, t.metric_lanes_len, "tail.metric_lanes")?;
+    listed(
+        t.record_retentions,
+        t.record_retentions_len,
+        "tail.record_retentions",
+    )?;
     if t.metric_lanes_len > MAX_METRIC_LANES {
         return Err(fault(Rule::OverMax, "tail.metric_lanes"));
     }
@@ -1458,6 +1465,31 @@ pub fn check_record_chains(chains: &[RecordChain], record_kinds_len: u64) -> Res
         )?;
         if chains[..i].iter().any(|d| d.kind == c.kind) {
             return Err(fault(Rule::Contradiction, "record_chain.kind_twice"));
+        }
+    }
+    Ok(())
+}
+
+/// The record kinds' retention rules ([`PlaneTail::record_retentions`]): each names a record kind
+/// at most once, with a known rule.
+///
+/// # Errors
+///
+/// The rule an entry breaks.
+pub fn check_record_retentions(
+    retentions: &[RecordRetention],
+    record_kinds_len: u64,
+) -> Result<(), Fault> {
+    for (i, r) in retentions.iter().enumerate() {
+        index(r.kind, record_kinds_len, "record_retention.kind")?;
+        code(
+            u64::from(r.rule),
+            u64::from(RETENTION_AGE),
+            u64::from(RETENTION_TERMINAL_ONLY),
+            "record_retention.rule",
+        )?;
+        if retentions[..i].iter().any(|d| d.kind == r.kind) {
+            return Err(fault(Rule::Contradiction, "record_retention.kind_twice"));
         }
     }
     Ok(())

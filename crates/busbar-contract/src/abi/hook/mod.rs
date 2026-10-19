@@ -859,6 +859,18 @@ pub struct Route {
     pub _reserved: u32,
 }
 
+impl Route {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `Route { …, ..Route::ZERO }` so a field appended later reads as not
+    /// declared.
+    pub const ZERO: Self = Self {
+        path: AbiStr::ZERO,
+        method: AbiStr::ZERO,
+        auth: 0,
+        _reserved: 0,
+    };
+}
+
 /// [`Tail::kind_class`]: a GATE (fire-and-wait; `decide`/`transform` may block the chain) — OLD
 /// `HookKind::Gate`.
 pub const CLASS_GATE: u32 = 0;
@@ -906,6 +918,24 @@ pub struct Tail {
     pub routes: *const Route,
     /// How many.
     pub routes_len: usize,
+}
+
+impl Tail {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `Tail { …, ..Tail::ZERO }` so a field appended later reads as not
+    /// declared.
+    pub const ZERO: Self = Self {
+        head: KindTailHead::ZERO,
+        kind_class: 0,
+        prompt_access: 0,
+        user_access: 0,
+        infallible: 0,
+        _reserved: [0; 3],
+        requested_signals: std::ptr::null(),
+        requested_signals_len: 0,
+        routes: std::ptr::null(),
+        routes_len: 0,
+    };
 }
 
 /// The hook kind's [`super::mechanism::lifecycle::CancelOut::disposition`] vocabulary.

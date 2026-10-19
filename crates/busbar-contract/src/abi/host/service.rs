@@ -52,6 +52,17 @@ pub struct ServiceHead {
     pub handle: CompletionHandle,
 }
 
+impl ServiceHead {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `ServiceHead { …, ..ServiceHead::ZERO }` so a field appended later reads
+    /// as not declared.
+    pub const ZERO: Self = Self {
+        size: 0,
+        op: 0,
+        handle: CompletionHandle::ZERO,
+    };
+}
+
 /// Every service's `out`, in either table. The caller states its `size`; the host writes
 /// `min(size, its own)` bytes of it ([`write_out`]), and refuses an `out` below
 /// [`SERVICE_OUT_V1`] before the service runs ([`lent_out`]), so an `out` may grow by appending
@@ -118,6 +129,24 @@ pub unsafe fn write_out(out: *mut ServiceOut, mut o: ServiceOut, lent: usize) {
     }
 }
 
+impl ServiceOut {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `ServiceOut { …, ..ServiceOut::ZERO }` so a field appended later reads
+    /// as not declared.
+    pub const ZERO: Self = Self {
+        size: 0,
+        outcome: RawOutcome(0),
+        exited: 0,
+        _reserved: [0; 2],
+        value: 0,
+        len: 0,
+        items: 0,
+        needed_bytes: 0,
+        needed_items: 0,
+        error: AbiStr::ZERO,
+    };
+}
+
 /// One named range of a result's bytes: a key and a value, each a [`Span`] into the bytes
 /// written, or absent (`offset` = [`check::SPAN_ABSENT`], `len` = `0`).
 #[repr(C)]
@@ -127,6 +156,16 @@ pub struct ItemSpan {
     pub key: Span,
     /// The value.
     pub value: Span,
+}
+
+impl ItemSpan {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `ItemSpan { …, ..ItemSpan::ZERO }` so a field appended later reads as
+    /// not declared.
+    pub const ZERO: Self = Self {
+        key: Span::ZERO,
+        value: Span::ZERO,
+    };
 }
 
 /// The plugin's buffers a service writes its result into, preallocated at the sizes the plugin
@@ -142,6 +181,18 @@ pub struct ServiceBufs {
     pub spans: *mut ItemSpan,
     /// Their capacity, in spans.
     pub spans_cap: usize,
+}
+
+impl ServiceBufs {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `ServiceBufs { …, ..ServiceBufs::ZERO }` so a field appended later reads
+    /// as not declared.
+    pub const ZERO: Self = Self {
+        buf: std::ptr::null_mut(),
+        cap: 0,
+        spans: std::ptr::null_mut(),
+        spans_cap: 0,
+    };
 }
 
 /// The most spans one result may carry.
@@ -343,6 +394,18 @@ pub struct RecordsSecretIn {
     pub id: AbiStr,
     /// Where the secret goes.
     pub into: ServiceBufs,
+}
+
+impl RecordsSecretIn {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `RecordsSecretIn { …, ..RecordsSecretIn::ZERO }` so a field appended
+    /// later reads as not declared.
+    pub const ZERO: Self = Self {
+        head: ServiceHead::ZERO,
+        kind: AbiStr::ZERO,
+        id: AbiStr::ZERO,
+        into: ServiceBufs::ZERO,
+    };
 }
 
 /// `value` of [`op::RECORDS_SECRET`]: not live, or no such credential.
@@ -1030,6 +1093,19 @@ pub struct DiskWritten {
     pub _reserved: [u8; 2],
     /// The bytes appended: `bytes.len` on READY, `0` otherwise.
     pub written: u64,
+}
+
+impl DiskWritten {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `DiskWritten { …, ..DiskWritten::ZERO }` so a field appended later reads
+    /// as not declared.
+    pub const ZERO: Self = Self {
+        size: 0,
+        rotated: 0,
+        faults: 0,
+        _reserved: [0; 2],
+        written: 0,
+    };
 }
 
 /// [`DiskWritten::rotated`]: the host rotated the file before appending.
