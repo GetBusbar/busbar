@@ -1310,3 +1310,23 @@ fn a_begin_binding_is_checked() {
         assert_eq!(check_binding(&a), f(Rule::Contradiction, "begin.auth"));
     }
 }
+
+/// RED: a `begin`'s scheme, on every side: an undeclared scheme (a zeroed `in`) is refused, never
+/// read as plain; a code above `SCHEME_SECURE` is unknown; plain and secure pass.
+#[test]
+fn a_begin_scheme_is_declared() {
+    use crate::abi::host::service::{SCHEME_PLAIN, SCHEME_SECURE, SCHEME_UNDECLARED};
+    use crate::abi::transport::check::check_begin_scheme;
+    for side in [SIDE_DIAL, SIDE_ACCEPT, SIDE_ACCEPT_STREAM] {
+        let mut i: BeginIn = z();
+        i.side = side;
+        assert_eq!(i.scheme, SCHEME_UNDECLARED, "a zeroed begin declares none");
+        assert_eq!(check_begin_scheme(&i), f(Rule::Missing, "begin.scheme"));
+        i.scheme = SCHEME_SECURE + 1;
+        assert_eq!(check_begin_scheme(&i), f(Rule::UnknownCode, "begin.scheme"));
+        for scheme in [SCHEME_PLAIN, SCHEME_SECURE] {
+            i.scheme = scheme;
+            assert_eq!(check_begin_scheme(&i), Ok(()));
+        }
+    }
+}

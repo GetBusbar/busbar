@@ -955,6 +955,27 @@ pub const fn check_binding(i: &super::BeginIn) -> Result<(), Fault> {
     Ok(())
 }
 
+/// A `begin`'s scheme ([`super::BeginIn::scheme`]), on every side: a declared code,
+/// [`SCHEME_PLAIN`](crate::abi::host::service::SCHEME_PLAIN) or
+/// [`SCHEME_SECURE`](crate::abi::host::service::SCHEME_SECURE). A zero never grants: the framer
+/// copies the scheme into every request view it builds for its auth call, so an undeclared one is
+/// refused here, before the crossing, rather than read as plain.
+///
+/// # Errors
+///
+/// [`Rule::Missing`] for [`SCHEME_UNDECLARED`](crate::abi::host::service::SCHEME_UNDECLARED);
+/// [`Rule::UnknownCode`] for a code above `SCHEME_SECURE`.
+pub const fn check_begin_scheme(i: &super::BeginIn) -> Result<(), Fault> {
+    use crate::abi::host::service::{SCHEME_SECURE, SCHEME_UNDECLARED};
+    if i.scheme == SCHEME_UNDECLARED {
+        return Err(fault(Rule::Missing, "begin.scheme"));
+    }
+    if i.scheme > SCHEME_SECURE {
+        return Err(fault(Rule::UnknownCode, "begin.scheme"));
+    }
+    Ok(())
+}
+
 /// Every field predicate's shape: a known op and well-formed strings.
 ///
 /// # Errors
