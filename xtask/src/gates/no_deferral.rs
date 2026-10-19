@@ -916,7 +916,7 @@ impl Gate for NoDeferralGate {
         // The expiry every planted waiver names: the one the committed `hot/*` rows retire against,
         // read off the allowlist rather than typed here, so a re-pointed plan cannot leave these
         // plants naming an item that is gone (they named tracker row `H5` for as long as it lived).
-        let live = hot_expiry(base).unwrap_or_else(|| "KP-36".to_string());
+        let live = live_expiry(base);
 
         report.push(prove_green(
             base,
@@ -1111,12 +1111,25 @@ impl Gate for NoDeferralGate {
                 &["not an item in", id],
             ));
         }
-        // ── ITEM 212: A WAIVER WHOSE EXPIRY FIRED. Close the TODO item every `hot/*` waiver names
-        //    while the 52 markers stay; before this case the closed row still "resolved" and the
-        //    waivers could never expire.
+        // ── ITEM 212: A WAIVER WHOSE EXPIRY FIRED. Close the TODO item a waiver names while the
+        //    waiver stays; before this case the closed row still "resolved" and the waivers could
+        //    never expire.
+        //
+        //    THE PLANT WRITES ITS OWN WAIVER ROW. It used to close the item the COMMITTED `hot/*`
+        //    waivers named and lean on those rows to expire; when the last of them was struck
+        //    (3d5638a58e) the register was empty, closing the item expired nothing, and the case
+        //    went GREEN — a proof that had quietly become a no-op. The row is now part of the
+        //    plant, naming the same open item the plant closes, so the predicate it proves (a
+        //    waiver whose expiry is closed is EXPIRED) holds over any register, empty included.
         match close_todo_item(&base.read(TODO).unwrap_or_default(), &live) {
             Some(closed) => {
-                let mut ov = Overlay::new();
+                let mut ov = waivers_overlay(
+                    base,
+                    &format!(
+                        "crates/busbar-contract/src/abi/hot/xtask_expired_plant.rs:1\ta planted \
+                         waiver whose expiry the plant closes [retires: {live}]"
+                    ),
+                );
                 ov.set(TODO, closed);
                 report.push(prove_red(
                     base,
@@ -1217,6 +1230,24 @@ impl Gate for NoDeferralGate {
 }
 
 /// The expiry the first committed `*/hot/*` waiver names — the id every planted waiver reuses.
+/// The expiry every planted waiver names: the committed `hot/*` rows' own, while one is open in
+/// the TODO, else the first OPEN `KP-<step>` the TODO carries (`KP-36` first, the step those rows
+/// retired against). Derived from the tree rather than typed, so a plant never names an item that
+/// is gone or already closed — a closed one would make every expiry plant red for the wrong reason
+/// and the expired-waiver plant inert.
+fn live_expiry(cx: &Ctx) -> String {
+    let todo = cx.read(TODO).unwrap_or_default();
+    let open = |id: &String| todo_item_open(&todo, id) == Some(true);
+    hot_expiry(cx)
+        .filter(open)
+        .or_else(|| {
+            std::iter::once("KP-36".to_string())
+                .chain((0..1000).map(|n| format!("KP-{n}")))
+                .find(open)
+        })
+        .unwrap_or_else(|| "KP-36".to_string())
+}
+
 fn hot_expiry(cx: &Ctx) -> Option<String> {
     let text = cx.read(WAIVERS).ok()?;
     text.lines()
