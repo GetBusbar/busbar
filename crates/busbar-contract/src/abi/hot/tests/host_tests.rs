@@ -337,17 +337,14 @@ fn the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate
 #[test]
 fn an_over_large_attested_size_is_clamped_to_this_builds_struct() {
     let ours = core::mem::size_of::<PlaneHostVtable>();
-    assert_eq!(crate::abi::hot::honoured_size(u32::MAX, ours), ours as u32);
+    assert_eq!(crate::abi::honoured_size(u32::MAX, ours), ours as u32);
     assert_eq!(
-        crate::abi::hot::honoured_size(ours as u32 + 1, ours),
+        crate::abi::honoured_size(ours as u32 + 1, ours),
         ours as u32
     );
     // A shorter claim is honoured verbatim — that is the append-only rule, untouched.
-    assert_eq!(crate::abi::hot::honoured_size(16, ours), 16);
-    assert_eq!(
-        crate::abi::hot::honoured_size(ours as u32, ours),
-        ours as u32
-    );
+    assert_eq!(crate::abi::honoured_size(16, ours), 16);
+    assert_eq!(crate::abi::honoured_size(ours as u32, ours), ours as u32);
 }
 
 // ── ABI review A6: the `HostCtx` generation guard (use-after-free hardening) ─────────────────────
