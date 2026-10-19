@@ -1614,6 +1614,11 @@ pub struct Rules {
     /// ([`Rules::hold_unopened`]). A door plane is opened once, at boot, so a configuration that
     /// writes one of these is restart-to-apply ([`Rules::planes_awaiting_restart`]).
     unopened: Mutex<Vec<&'static str>>,
+    /// The discovered plane doors the boot's configuration did not use, so the boot never loaded
+    /// them (Law 7), held from the boot plan ([`Rules::hold_unloaded`]). A running process cannot
+    /// take a first section of one: an apply or reload that writes one is refused
+    /// ([`unloaded_plane_refusal`]).
+    unloaded: Mutex<Vec<crate::root::loader::boot::Candidate>>,
 }
 
 impl Rules {
@@ -1631,6 +1636,15 @@ impl Rules {
                 held.push(path);
             }
         }
+    }
+
+    /// Hold the discovered plane doors the boot did not load (`candidates`): each one the boot's
+    /// configuration used by no section of its ([`unloaded_doors`]).
+    pub fn hold_unloaded(&self, candidates: Vec<crate::root::loader::boot::Candidate>) {
+        self.unloaded
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend(candidates);
     }
 
     /// Hold the declaring sections of the door planes the boot left unopened (`sections`): each a
@@ -1655,7 +1669,59 @@ pub(crate) fn writes_plane(section: &str, cfg: &busbar_kernel::config::RootCfg) 
     cfg.plane_sections.contains(section)
 }
 
+/// THE DISCOVERED PLANE DOORS THE BOOT DID NOT LOAD: every plane door discovered (linked or dropped
+/// in) that the boot's configuration uses by no section (`plane_use` over the boot plan, Law 7).
+#[must_use]
+pub fn unloaded_doors() -> Vec<crate::root::loader::boot::Candidate> {
+    let plan = crate::root::boot::plane_uses();
+    crate::root::boot::DOOR_CANDIDATES
+        .get()
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .filter(|c| c.kind == busbar_contract::abi::mechanism::KindCode::Plane)
+        .filter(|c| crate::root::loader::boot::plane_use(plan, c).is_none())
+        .cloned()
+        .collect()
+}
+
+/// THE REFUSAL OF A FIRST SECTION OF AN UNLOADED PLANE (u67 BLOCK 2 item 2, ruled (iv)): the first
+/// of `unloaded` that a document whose root keys are `keys` uses (`plane_use`, the boot's own
+/// selection), named with the section that uses it. A plane is loaded only at start, when config
+/// uses it (Law 7, BUSBAR-1.6.0.md l.547), so its first section cannot take effect on a running
+/// process: the change is refused whole and nothing is changed (§6 item 8, l.980-982).
+#[must_use]
+pub fn unloaded_plane_refusal(
+    unloaded: &[crate::root::loader::boot::Candidate],
+    keys: &[&str],
+) -> Option<String> {
+    let uses = crate::root::loader::boot::Uses {
+        roots: keys.iter().map(|k| (*k).to_string()).collect(),
+        ..Default::default()
+    };
+    unloaded.iter().find_map(|c| {
+        crate::root::loader::boot::plane_use(&uses, c).map(|section| {
+            format!(
+                "`{section}:` is the section of the `{plane}` plane, which this process did not \
+                 load because its configuration did not use it at start; a first `{section}:` \
+                 cannot take effect on a running process, so the change was refused and nothing \
+                 was changed: write it in the config file and restart.",
+                plane = c.name
+            )
+        })
+    })
+}
+
 impl busbar_kernel::appbuild::RootRules for Rules {
+    fn unloaded_plane_refusal(&self, keys: &[&str]) -> Option<String> {
+        unloaded_plane_refusal(
+            &self
+                .unloaded
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            keys,
+        )
+    }
+
     fn planes_awaiting_restart(&self, cfg: &busbar_kernel::config::RootCfg) -> Vec<&'static str> {
         let mut out: Vec<&'static str> = self
             .unopened

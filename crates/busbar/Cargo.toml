@@ -731,6 +731,11 @@ path = "tests/law7_direct_model_route.rs"
 required-features = ["auth-admin-tokens"]
 
 [[test]]
+name = "law7_unloaded_plane_apply"
+path = "tests/law7_unloaded_plane_apply.rs"
+required-features = ["auth-admin-tokens"]
+
+[[test]]
 name = "root_listeners_are_the_connectors"
 path = "tests/root_listeners_are_the_connectors.rs"
 required-features = ["auth-admin-tokens"]
