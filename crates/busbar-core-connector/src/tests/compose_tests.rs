@@ -750,7 +750,7 @@ fn a_far_end_that_never_reads_is_not_read_past_the_answers_it_is_owed() {
 /// answers, the first stream's request goes out, and its answer comes back, with exactly one auth
 /// call. Each head emit states the length of the body it opens with.
 #[test]
-fn one_streams_pending_auth_holds_only_that_stream_on_the_connection() {
+fn one_stream_pending_auth_holds_only_that_stream_on_the_connection() {
     worker().block_on(async {
         let far = echo().await;
         let door = Arc::new(crate::support::PendingDoor::new(
