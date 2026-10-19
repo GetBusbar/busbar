@@ -1080,6 +1080,61 @@ pub fn build_app_from_config(
         );
     }
 
+    // PLANE-FIRST (coordinator ruling for #1214): the planes' slots — and so each door plane's
+    // facing open for this generation, where it states its routing and prints its own boot lines
+    // (console.line) — are built HERE, right after the model and pool lines' place and BEFORE every
+    // build step whose refusal 1.5.5 printed after them (the open-relay banner, the auth chain,
+    // the store's secrets and load, budget hydration, key groups, governance, the signing key):
+    // their stderr order stays 1.5.5's.
+    // THE PLANE SLOT MAP (Step 2.3's app-state seam): every registered plane's runtime object for
+    // THIS config generation, built ONCE via its own decl's `build` fn and type-erased into
+    // `Arc<dyn Any + Send + Sync>`. Built here, ahead of the `App` literal below. Each plane's object
+    // lives ONLY in this map now — the former typed `App` fields per plane were deleted in the D4
+    // step — and every reader downcasts the SAME `Arc` out of the slot rather than building a second
+    // one that could disagree. One container plane's object is already validated (its resource-from-cfg
+    // step ran at `RootCfg` construction), so its `build` fn is a wrap, not a second parse; the other
+    // container plane's object is lowered here for the first time, exactly where its own
+    // from-config constructor used to be called directly — it is still lowered ONCE, now through the
+    // decl instead of by name, and read from `plane_slots` everywhere below (the dispatch table's
+    // admission facts and the registry the re-verification job sweeps).
+    let mut plane_slots: std::collections::BTreeMap<
+        &'static str,
+        Arc<dyn std::any::Any + Send + Sync>,
+    > = {
+        // LAW 7: an unconfigured plane builds no slot, so it claims, admits and mounts nothing.
+        crate::plane::registry::plane_decls()
+            .iter()
+            .filter(|decl| decl.fallback || cfg.plane_sections.contains(decl.config_section))
+            .filter(|decl| decl.fallback || !planes_awaiting_restart.contains(&decl.config_section))
+            .filter_map(|decl| {
+                let ctx = crate::plane::registry::BuildCtx {
+                    // THIS plane's own section-keyed resource, ALREADY validated and TYPE-ERASED by
+                    // config resolution: the `tools:` container plane's endpoint resource (the SAME
+                    // `Arc` it clones into `plane_slots` and downcasts inside its own module, so
+                    // "one lowering, one Arc" holds), or a raw-carried plane's `(section, value)`.
+                    // `None` when the plane's section carries none. Names no plane resource type.
+                    endpoint_slot: cfg.endpoint_resources.get(decl.config_section).cloned(),
+                    // The plane's own declared section, erased as `&dyn Any` via `PlaneCfg::as_any`
+                    // so `BuildCtx` names no plane-owned config type; the plane's `build` downcasts
+                    // it back to its own typed config.
+                    section: cfg
+                        .declared_sections
+                        .get(decl.config_section)
+                        .map(AsRef::as_ref)
+                        .map(busbar_kernel::plane::config::PlaneCfg::as_any),
+                    public_url: cfg.public_url.as_deref(),
+                    // THE PRIOR GENERATION'S SLOTS, so a plane's `build` can CARRY accumulated
+                    // coordination off its own prior runtime object across this apply — the same
+                    // neutral `&dyn PlaneSlots` a container plane's `build_runtime` receives below.
+                    prior: prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
+                    // The resolved providers: a door plane's probe is handed its referenced ones.
+                    providers: Some(&cfg.providers),
+                };
+                (decl.build)(&ctx).map(|obj| (decl.key, obj))
+            })
+            .collect()
+    };
+
     // Loud warning for an empty `auth.chain` (open relay). Not fatal — busbar still starts (useful for
     // local dev) — but operators must not run this in production. NOTE: an ABSENT `auth:` block
     // serde-defaults to an empty chain too (`AuthCfg::default_none`), so a config that merely omits
@@ -1624,55 +1679,6 @@ pub fn build_app_from_config(
         || std::sync::Arc::new(plugin_routes.paths()),
         |p| p.boot_route_paths.clone(),
     );
-
-    // THE PLANE SLOT MAP (Step 2.3's app-state seam): every registered plane's runtime object for
-    // THIS config generation, built ONCE via its own decl's `build` fn and type-erased into
-    // `Arc<dyn Any + Send + Sync>`. Built here, ahead of the `App` literal below. Each plane's object
-    // lives ONLY in this map now — the former typed `App` fields per plane were deleted in the D4
-    // step — and every reader downcasts the SAME `Arc` out of the slot rather than building a second
-    // one that could disagree. One container plane's object is already validated (its resource-from-cfg
-    // step ran at `RootCfg` construction), so its `build` fn is a wrap, not a second parse; the other
-    // container plane's object is lowered here for the first time, exactly where its own
-    // from-config constructor used to be called directly — it is still lowered ONCE, now through the
-    // decl instead of by name, and read from `plane_slots` everywhere below (the dispatch table's
-    // admission facts and the registry the re-verification job sweeps).
-    let mut plane_slots: std::collections::BTreeMap<
-        &'static str,
-        Arc<dyn std::any::Any + Send + Sync>,
-    > = {
-        // LAW 7: an unconfigured plane builds no slot, so it claims, admits and mounts nothing.
-        crate::plane::registry::plane_decls()
-            .iter()
-            .filter(|decl| decl.fallback || cfg.plane_sections.contains(decl.config_section))
-            .filter(|decl| decl.fallback || !planes_awaiting_restart.contains(&decl.config_section))
-            .filter_map(|decl| {
-                let ctx = crate::plane::registry::BuildCtx {
-                    // THIS plane's own section-keyed resource, ALREADY validated and TYPE-ERASED by
-                    // config resolution: the `tools:` container plane's endpoint resource (the SAME
-                    // `Arc` it clones into `plane_slots` and downcasts inside its own module, so
-                    // "one lowering, one Arc" holds), or a raw-carried plane's `(section, value)`.
-                    // `None` when the plane's section carries none. Names no plane resource type.
-                    endpoint_slot: cfg.endpoint_resources.get(decl.config_section).cloned(),
-                    // The plane's own declared section, erased as `&dyn Any` via `PlaneCfg::as_any`
-                    // so `BuildCtx` names no plane-owned config type; the plane's `build` downcasts
-                    // it back to its own typed config.
-                    section: cfg
-                        .declared_sections
-                        .get(decl.config_section)
-                        .map(AsRef::as_ref)
-                        .map(busbar_kernel::plane::config::PlaneCfg::as_any),
-                    public_url: cfg.public_url.as_deref(),
-                    // THE PRIOR GENERATION'S SLOTS, so a plane's `build` can CARRY accumulated
-                    // coordination off its own prior runtime object across this apply — the same
-                    // neutral `&dyn PlaneSlots` a container plane's `build_runtime` receives below.
-                    prior: prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
-                    // The resolved providers: a door plane's probe is handed its referenced ones.
-                    providers: Some(&cfg.providers),
-                };
-                (decl.build)(&ctx).map(|obj| (decl.key, obj))
-            })
-            .collect()
-    };
 
     // EACH NON-FALLBACK PLANE'S PER-GENERATION RUNTIME, carried in `plane_slots` under its
     // ALWAYS-PRESENT companion key (`runtime_slot_key(<its decl key>)`), distinct from the plane's
