@@ -277,13 +277,10 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
     };
     check_sections(sections)
         .map_err(|f| format!("the plane's sections break {:?} at {}", f.rule, f.field))?;
-    let refusal_statuses: Vec<RefusalStatus> = (0..tail.refusal_statuses_len)
-        .map(|i| {
-            // SAFETY: `check_tail` refused a count over a NULL list; the list is `'static` plugin
-            // data of `refusal_statuses_len` entries.
-            unsafe { tail.refusal_statuses.add(i).read_unaligned() }
-        })
-        .collect();
+    // `check_tail` capped the count and refused it over NULL; `listed` caps it again before the
+    // slice is formed (THE DESIGN's M1: every plugin-reported length capped first).
+    let refusal_statuses: Vec<RefusalStatus> =
+        listed(tail.refusal_statuses, tail.refusal_statuses_len);
     check_refusal_statuses(&refusal_statuses, tail.dialects_len as u64)
         .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     // Each dialect's default style and its parameters, judged before they are kept.

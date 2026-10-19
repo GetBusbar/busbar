@@ -44,8 +44,8 @@ use crate::abi::hook::{
 };
 use crate::abi::mechanism::call::{AbiStr, Blob, Outcome, BLOB_ABSENT, BLOB_OCTETS, MAX_TEXT};
 use crate::abi::mechanism::check::{
-    bits, code, fault, first, index, listed, range, result, results, span, text, weight, Dim,
-    Filled, MAX_BYTES,
+    bits, bounded, code, fault, first, index, listed, range, result, results, span, text, weight,
+    Dim, Filled, MAX_BYTES,
 };
 use crate::abi::mechanism::door::{Section, SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED};
 use crate::abi::store::plane::{RETENTION_AGE, RETENTION_TERMINAL_ONLY};
@@ -1214,7 +1214,8 @@ pub fn check_admin_routes(routes: &[AdminRoute]) -> Result<(), Fault> {
 }
 
 /// The Statement tail, at load: known flags, ingress bits and dispatch shape; at least one ingress
-/// shape; no string or list counted with a NULL pointer. Its elements: [`check_sections`],
+/// shape; no string or list counted with a NULL pointer, and every list capped at
+/// [`STATEMENT_LIST_MAX`](crate::abi::mechanism::check::STATEMENT_LIST_MAX) (aligned) before any slice is formed over it. Its elements: [`check_sections`],
 /// [`check_dialect_auth`], [`check_route_cost`], [`check_billable_classes`], [`check_fee_units`],
 /// [`check_needs`], [`check_record_chains`], [`check_record_retentions`], [`check_trust_keys`] and
 /// each pin's
@@ -1257,33 +1258,33 @@ pub fn check_tail(t: &PlaneTail) -> Result<(), Fault> {
     ] {
         text(s, field)?;
     }
-    listed(t.dialects, t.dialects_len, "tail.dialects")?;
-    listed(t.dialect_auth, t.dialect_auth_len, "tail.dialect_auth")?;
-    listed(t.scope_kinds, t.scope_kinds_len, "tail.scope_kinds")?;
-    listed(t.op_classes, t.op_classes_len, "tail.op_classes")?;
-    listed(
+    capped(t.dialects, t.dialects_len, "tail.dialects")?;
+    capped(t.dialect_auth, t.dialect_auth_len, "tail.dialect_auth")?;
+    capped(t.scope_kinds, t.scope_kinds_len, "tail.scope_kinds")?;
+    capped(t.op_classes, t.op_classes_len, "tail.op_classes")?;
+    capped(
         t.billable_classes,
         t.billable_classes_len,
         "tail.billable_classes",
     )?;
-    listed(t.route_cost, t.route_cost_len, "tail.route_cost")?;
-    listed(t.fee_units, t.fee_units_len, "tail.fee_units")?;
-    listed(t.record_kinds, t.record_kinds_len, "tail.record_kinds")?;
-    listed(
+    capped(t.route_cost, t.route_cost_len, "tail.route_cost")?;
+    capped(t.fee_units, t.fee_units_len, "tail.fee_units")?;
+    capped(t.record_kinds, t.record_kinds_len, "tail.record_kinds")?;
+    capped(
         t.egress_targets,
         t.egress_targets_len,
         "tail.egress_targets",
     )?;
-    listed(t.record_chains, t.record_chains_len, "tail.record_chains")?;
-    listed(t.trust_keys, t.trust_keys_len, "tail.trust_keys")?;
-    listed(
+    capped(t.record_chains, t.record_chains_len, "tail.record_chains")?;
+    capped(t.trust_keys, t.trust_keys_len, "tail.trust_keys")?;
+    capped(
         t.refusal_statuses,
         t.refusal_statuses_len,
         "tail.refusal_statuses",
     )?;
-    listed(t.admin_routes, t.admin_routes_len, "tail.admin_routes")?;
-    listed(t.metric_lanes, t.metric_lanes_len, "tail.metric_lanes")?;
-    listed(
+    capped(t.admin_routes, t.admin_routes_len, "tail.admin_routes")?;
+    capped(t.metric_lanes, t.metric_lanes_len, "tail.metric_lanes")?;
+    capped(
         t.record_retentions,
         t.record_retentions_len,
         "tail.record_retentions",
@@ -1311,6 +1312,13 @@ pub fn check_tail(t: &PlaneTail) -> Result<(), Fault> {
             "tail.caller_credential_refusal",
         )
     }
+}
+
+/// A tail list: never counted over NULL, and capped at [`STATEMENT_LIST_MAX`](crate::abi::mechanism::check::STATEMENT_LIST_MAX) and aligned for `T`
+/// before any caller forms a slice over it (the u11 LOW: every count capped, not two).
+fn capped<T>(ptr: *const T, len: usize, field: &'static str) -> Result<(), Fault> {
+    listed(ptr, len, field)?;
+    bounded(ptr, len, field)
 }
 
 /// A plane's Statement sections: each named, known flags, and EXACTLY ONE is the declaring
