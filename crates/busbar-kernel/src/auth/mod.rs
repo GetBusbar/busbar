@@ -945,6 +945,24 @@ impl AuthMiddleware {
         self.chain.iter().map(|e| e.name.clone()).collect()
     }
 
+    /// The opened instance a guest-list line's auth `provider` is called through by the inbound
+    /// handle ([`crate::inbound`]): the chain position's, or for `keys` the first host-held
+    /// credential's verifier (core's `keys` verifies the credential that style yields, through the
+    /// same handle; THE DESIGN §6, "Auth points and guest lists", step 3). `None` when the chain
+    /// opened none for it: the line's auth then refuses, fail closed.
+    #[must_use]
+    pub fn position_calls(&self, provider: &str) -> Option<std::sync::Arc<dyn AuthCalls>> {
+        if let Some(entry) = self.chain.iter().find(|e| e.provider == provider) {
+            return Some(std::sync::Arc::clone(&entry.calls));
+        }
+        if provider != crate::config::KEYS_MODULE {
+            return None;
+        }
+        self.readers
+            .first()
+            .map(|r| std::sync::Arc::clone(&r.calls))
+    }
+
     /// THE POINT SET OF THE DATA CHAIN'S POSITION `provider` (THE DESIGN §6, "Auth points and
     /// guest lists"): the points its opened instance's `verify` is called at. A provider that is no
     /// boxed position (`keys`) is its host-held credentials' verifiers' union, `{Head}` with none.

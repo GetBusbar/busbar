@@ -3225,6 +3225,9 @@ pub fn door_mounts(
         .collect::<Vec<_>>();
     let mut routes_of = routes_of;
     routes_of.extend(public);
+    // THE DATA LISTENER'S LIST, staged for the inbound auth handle's tables (`root::inbound`),
+    // with the door routes' unit-less refusals a stopped request is answered with.
+    crate::root::inbound::stage(routes.guests.clone(), refusals.clone());
     Ok(DoorMounts {
         routes: routes_of,
         sessions,

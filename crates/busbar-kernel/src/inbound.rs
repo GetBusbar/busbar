@@ -38,8 +38,6 @@
 //! This module names no loader: the composition root glues it to the plugin loader's auth handle,
 //! injecting the MAC, the unit mint, the spawner and the refusal sink.
 
-#![allow(dead_code, unused_imports)]
-
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -554,8 +552,12 @@ impl Inbound {
     ) -> Result<(), &'static str> {
         let lines = listener.guests.lines().len();
         let lines_by_id: HashMap<u64, u32> = listener.ids.iter().copied().zip(0u32..).collect();
-        // RED: the ids are not judged.
-        let _ = lines;
+        if listener.ids.len() != lines
+            || lines_by_id.len() != lines
+            || !listener.ids.iter().all(|id| is_line_id(*id))
+        {
+            return Err(IDS_REFUSED);
+        }
         let doors = crate::core_routes::CoreRouteTable::default()
             .with_door_refusals(listener.door_refusals.clone());
         let mut tables = self.tables.write().unwrap_or_else(PoisonError::into_inner);
@@ -688,9 +690,20 @@ impl Inbound {
         call: Call,
         done: Done,
     ) -> Option<Result<Answer, &'static str>> {
-        // RED: not yet served.
-        let _ = (call, done);
-        Some(Err(NO_LIST))
+        let walk = match self.prepare(call) {
+            Ok(walk) => walk,
+            Err(e) => return Some(Err(e)),
+        };
+        let mut walk = Box::pin(walk);
+        let waker = futures::task::noop_waker();
+        let mut cx = std::task::Context::from_waker(&waker);
+        match walk.as_mut().poll(&mut cx) {
+            std::task::Poll::Ready(answer) => Some(answer),
+            std::task::Poll::Pending => {
+                (self.spawn)(Box::pin(async move { done(walk.await) }));
+                None
+            }
+        }
     }
 
     /// The checks before any auth is called, the unit minted or verified, then the walk.
@@ -871,9 +884,28 @@ impl Inbound {
     /// [`NO_LIST`] for a listener the kernel holds no list for; [`UNIT_FOREIGN`] for a presented
     /// unit it did not mint for this owner; [`UNIT_UNMINTED`] when no unit could be minted.
     pub fn hand_in(&self, h: HandIn) -> Result<(u32, UnitRef), &'static str> {
-        // RED: not yet served.
-        let _ = h;
-        Err(NO_LIST)
+        let table = self.table(h.owner, h.generation).ok_or(NO_LIST)?;
+        let lines = table.listener.guests.lines();
+        let unit = if h.unit.is_none() {
+            let names: &[String] = match lines.get(h.line as usize).map(|l| &l.auth) {
+                Some(LineAuth::Chain(names, _)) => names,
+                _ => &[],
+            };
+            self.mint(h.owner, h.generation, h.line, names)?
+        } else if self.verified(h.owner, None, None, h.unit) {
+            h.unit
+        } else {
+            return Err(UNIT_FOREIGN);
+        };
+        let flow = if self.admits(&table, &h, unit) {
+            FLOW_CONTINUE
+        } else {
+            FLOW_STOP
+        };
+        if let Some(u) = self.units().get_mut(&unit.id) {
+            u.head = Some(h.head);
+        }
+        Ok((flow, unit))
     }
 
     /// The hand-in's checks (a) to (c) (l.953-958).
@@ -925,9 +957,97 @@ impl Inbound {
     /// [`NO_LIST`], [`NO_LINE`] for a line the list does not hold, [`UNIT_FOREIGN`] for a unit the
     /// kernel did not mint for this owner and line, [`CAUSE_UNKNOWN`].
     pub fn refuse(&self, r: Refuse) -> Result<Refusal, &'static str> {
-        // RED: not yet served.
-        let _ = r;
-        Err(NO_LIST)
+        use axum::http::StatusCode;
+        let table = self.table(r.owner, r.generation).ok_or(NO_LIST)?;
+        let line = if r.cause == REFUSE_NO_ROUTE {
+            None
+        } else {
+            Some(
+                table
+                    .listener
+                    .guests
+                    .lines()
+                    .get(r.line as usize)
+                    .ok_or(NO_LINE)?,
+            )
+        };
+        let unit = (!r.unit.is_none()).then_some(r.unit);
+        if let Some(u) = unit {
+            if !self.verified(r.owner, None, line.map(|_| r.line), u) {
+                return Err(UNIT_FOREIGN);
+            }
+        }
+        let (head, overloaded) = unit
+            .and_then(|u| {
+                self.units()
+                    .get(&u.id)
+                    .map(|s| (s.head.clone(), s.fixed() == Some(Fixed::Overloaded)))
+            })
+            .unwrap_or((None, false));
+        let path = head
+            .as_ref()
+            .map(|h| h.target.clone())
+            .or_else(|| {
+                r.target
+                    .as_deref()
+                    .map(|t| t.split_once('?').map_or(t, |(p, _)| p).to_string())
+            })
+            .or_else(|| line.map(|l| l.route.path.clone()))
+            .unwrap_or_else(|| "/".to_string());
+        let target = head
+            .as_ref()
+            .map(Head::path_and_query)
+            .or(r.target)
+            .unwrap_or_else(|| path.clone());
+        let app = &table.listener.app;
+        let resp = match r.cause {
+            REFUSE_NO_ROUTE => crate::router::fallback_error_response(
+                &app.planes,
+                &path,
+                StatusCode::NOT_FOUND,
+                crate::taxonomy::ERR_TYPE_NOT_FOUND,
+                "the requested resource was not found",
+            ),
+            REFUSE_METHOD_MISS => crate::router::fallback_error_response(
+                &app.planes,
+                &path,
+                StatusCode::METHOD_NOT_ALLOWED,
+                crate::taxonomy::ERR_TYPE_INVALID_REQUEST,
+                "method not allowed for this resource",
+            ),
+            REFUSE_OVER_GATE => crate::router::fallback_error_response(
+                &app.planes,
+                &path,
+                StatusCode::PAYLOAD_TOO_LARGE,
+                crate::proxy::KIND_REQUEST_TOO_LARGE,
+                "request body exceeds the maximum allowed size",
+            ),
+            REFUSE_STOPPED | REFUSE_CHECK_FAILED if overloaded => {
+                crate::auth::verifier_overloaded_response()
+            }
+            REFUSE_STOPPED | REFUSE_CHECK_FAILED => {
+                let method = head
+                    .as_ref()
+                    .and_then(|h| axum::http::Method::from_bytes(h.method.as_bytes()).ok());
+                let door = method
+                    .and_then(|m| table.doors.door_refusal(&path, &m).cloned())
+                    .map(|refuse| (refuse, target));
+                crate::auth::unauthorized_with_completion_taps(app, &path, door.as_ref())
+            }
+            _ => return Err(CAUSE_UNKNOWN),
+        };
+        let refusal = Refusal::of(resp);
+        if let Some(u) = unit {
+            self.exit(u.id);
+        }
+        (self.refused)(&RefusedUnit {
+            unit: unit.map(|u| u.id),
+            owner: r.owner,
+            line: r.line,
+            cause: r.cause,
+            status: refusal.status,
+        });
+        Ok(refusal)
     }
 }
 

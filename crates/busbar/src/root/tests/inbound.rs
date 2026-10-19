@@ -19,6 +19,8 @@ use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
 use busbar_kernel::inbound::{self as kin, Inbound};
 use serde_json::Value;
 
+use crate::root::loader::dispatch::auth_handle::{self, RefSpace};
+
 const OWNER: u64 = 11;
 const GEN: u64 = 1;
 /// A line under the native API's root (`admin::gate::API_ROOT`).
@@ -66,10 +68,14 @@ fn side() -> (Arc<Inbound>, GuestList) {
                 body_limit: 16,
                 app: busbar_kernel::test_support::TestApp::new().build(),
                 door_refusals: Vec::new(),
-                ids: (1..=guests.lines().len() as u64).collect(),
+                ids: guests
+                    .lines()
+                    .iter()
+                    .map(|_| auth_handle::next_ref_id(RefSpace::Line))
+                    .collect(),
             },
         )
-        .expect("the line ids are line ids");
+        .expect("the root's line ids are line ids");
     (inbound, guests)
 }
 
@@ -156,4 +162,20 @@ fn red_an_over_gate_body_under_the_native_root_is_the_1_5_5_answer() {
         &refuse(&side, REFUSE_OVER_GATE, ix(&guests, NATIVE), NATIVE),
         "http.crosscut__413__api-prefix",
     );
+}
+
+/// The kernel's line half of the ref-id space is the loader's: every id the root mints for a line
+/// keeps the binding bit clear and is a line's, and the bit the kernel refuses is the one a binding
+/// id carries (one rule both ways, #74).
+#[test]
+fn the_roots_line_ids_and_the_kernels_rule_are_one_space() {
+    for _ in 0..64 {
+        let id = auth_handle::next_ref_id(RefSpace::Line);
+        assert!(kin::is_line_id(id), "{id:#x}");
+        assert_eq!(auth_handle::space_of(id), Some(RefSpace::Line));
+    }
+    let binding = auth_handle::next_ref_id(RefSpace::Binding);
+    assert_eq!(auth_handle::space_of(binding), Some(RefSpace::Binding));
+    assert!(!kin::is_line_id(binding));
+    assert_ne!(binding & kin::BINDING_BIT, 0);
 }

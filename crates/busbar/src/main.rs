@@ -1089,6 +1089,15 @@ async fn run(
             std::sync::Arc::clone(&app_handle),
         )));
     }
+    // THE INBOUND AUTH HANDLE'S TABLES (THE DESIGN §6, "Auth points and guest lists", steps 4 and
+    // 8): the data listener's list at the boot generation, and a new generation at each apply.
+    // A transport calls its line's auth through the host auth handle on the transport doors'
+    // dispatcher: the kernel's inbound side serves it.
+    let _ = root::inbound::install(root::doors::dispatcher());
+    let _ = root::inbound::publish(&app_handle.load());
+    app_handle.on_apply(Box::new(|app| {
+        let _ = root::inbound::publish(app);
+    }));
     app_handle.on_apply(Box::new({
         let door_appliers = door_appliers.clone();
         move |app| door_appliers.apply(app)
