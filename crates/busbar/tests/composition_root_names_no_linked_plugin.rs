@@ -264,8 +264,8 @@ unit-b = "beta"
 
 /// THE TRANSPORT AND CLAIMS AXES, and the rows no feature can drop. A row whose crate is a required
 /// dependency is linked in every build and its key only names the row; two rows may share a crate,
-/// each naming its own entry; a `transport` row fills `transports` with the entry's `KEY`,
-/// `COMPOSES_OVER`, and the build, claims and upgrade claims its `door` answers; a `claims` row fills
+/// each naming its own entry; a `transport` row fills `transports` with the key, layers, build,
+/// claims and upgrade claims its `door` answers off its Statement; a `claims` row fills
 /// `claims` with its `PLANE` and `CLAIMS`. A row on an OPTIONAL crate still needs its feature,
 /// `claims` off the plane axis is refused, and so is a `transport` row off the door axis: a
 /// transport is linked only as its memory-ABI door (step 36).
@@ -301,22 +301,37 @@ host = "unit"
         1,
         "two rows on one crate link it once: {out}"
     );
-    // A door row is built from its door and reads its claims, upgrades, lines and offered points off
-    // the door's Statement (`crate::root::doors::{build, claims_of, upgrades_of, lines_of,
-    // offered_of}`).
-    assert!(out.contains("key: busbar_wire::linked::KEY, composes_over: busbar_wire::linked::COMPOSES_OVER, build: __door_build_0, claims: __door_claims_0, upgrades: __door_upgrades_0, lines: __door_lines_0, offered: __door_offered_0 }"), "{out}");
+    // A door row is built from its door and reads its key, layers, claims, upgrades, lines and
+    // offered points off the door's Statement (`crate::root::doors::{name_of, composes_over_of,
+    // build, claims_of, upgrades_of, lines_of, offered_of}`): it names its `door` and nothing else.
+    assert!(out.contains("key: __door_key_0, composes_over: __door_composes_over_0, build: __door_build_0, claims: __door_claims_0, upgrades: __door_upgrades_0, lines: __door_lines_0, offered: __door_offered_0 }"), "{out}");
+    assert!(
+        out.contains("crate::root::doors::name_of(busbar_wire::linked::door)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("crate::root::doors::composes_over_of(busbar_wire::linked::door)"),
+        "{out}"
+    );
+    assert!(
+        !out.contains("::KEY") && !out.contains("::COMPOSES_OVER"),
+        "a transport row names no item of its crate but its door: {out}"
+    );
     assert!(
         out.contains(
             "fn __door_claims_0() -> Vec<&'static str> {\n    crate::root::doors::claims_of(busbar_wire::linked::door)\n}"
         ),
         "{out}"
     );
-    assert!(out.contains("key: busbar_wire::linked::high::KEY"), "{out}");
+    assert!(
+        out.contains("crate::root::doors::name_of(busbar_wire::linked::high::door)"),
+        "{out}"
+    );
     assert!(out.contains("::std::sync::Arc::new(busbar_plane_host::linked::PLANE), claims: busbar_plane_host::linked::CLAIMS"), "{out}");
 
     let (off, _) = linked_source(manifest, &|_: &str| false);
     assert!(
-        off.contains("busbar_wire::linked::KEY"),
+        off.contains("busbar_wire::linked::door"),
         "a required crate's row is always linked: {off}"
     );
     assert!(

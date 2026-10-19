@@ -106,8 +106,9 @@ pub struct Linked {
     /// flips onto the unified loop's ONE-SHOT runner, and of each it flips onto the SESSION runner.
     pub gauntlet_one_shot: &'static [&'static str],
     pub gauntlet_session: &'static [&'static str],
-    /// The transport axis (#3, #30): each linked wire's key, declared layers and build, in manifest
-    /// order — the boot seal folds them bottom-up (see `crate::root::registry`).
+    /// The transport axis (#3, #30): each linked wire's key, declared layers and build, each read off
+    /// its door's Statement, in manifest order — the boot seal folds them bottom-up (see
+    /// `crate::root::registry`).
     pub transports: &'static [LinkedTransport],
     /// Each linked plane's pure plane, as the boot seal registers it, and the claims it declares.
     pub claims: &'static [LinkedClaims],
@@ -159,19 +160,20 @@ pub mod node {
     pub type Drive = fn(Handed) -> Pin<Box<dyn Future<Output = PlaneAnswer> + Send>>;
 }
 
-/// One linked wire, as its crate's entry states it: the registry key, the layers it declares it can
-/// be built over, and its build — handed the layer the root built beneath it, where one is, and the
-/// deployment's transport settings.
+/// One linked wire, as its door's Statement states it: the registry key, the layers it declares it
+/// can be built over, and its build. The row names its crate's `door` and nothing else; every fact
+/// here is read off that door (`crate::root::doors::stated_of`), when the seal first asks.
 #[derive(Clone, Copy)]
 pub struct LinkedTransport {
-    /// The wire's registry key.
-    pub key: &'static str,
-    /// The layers it declares, in the order it would take one.
-    pub composes_over: &'static [&'static str],
+    /// The wire's registry key: its door's Statement `name` (`crate::root::doors::name_of`).
+    pub key: KeyOf,
+    /// The layers it declares, in the order it would take one: its door's tail `composes_over`
+    /// (`crate::root::doors::composes_over_of`).
+    pub composes_over: LayersOf,
     /// Open the row's door and serve it over the host's sockets (it is handed no layer: no transport
     /// names another).
     pub build: BuildTransport,
-    /// Every scheme its entry claims, its own first: a door row's are read off the door's
+    /// Every scheme its entry claims: a door row's are read off the door's
     /// Statement (ONE ENTRY PER PLUGIN, the schemes are its claims), and the seal registers each.
     pub claims: ClaimsOf,
     /// The claims whose unit 0 opens at an UPGRADE, read off the door's Statement: the data door's
@@ -184,6 +186,12 @@ pub struct LinkedTransport {
     /// EXT_OFFERED_POINTS`): a guest-list line's auth may need no other (THE DESIGN §6 step 3).
     pub offered: OfferedOf,
 }
+
+/// A row's registry key, read off its door's Statement once, when the seal first asks.
+pub type KeyOf = fn() -> &'static str;
+
+/// A row's declared layers, read off its door's tail once, when the seal first asks.
+pub type LayersOf = fn() -> &'static [&'static str];
 
 /// A row's claims, read when the seal runs.
 pub type ClaimsOf = fn() -> Vec<&'static str>;
@@ -207,19 +215,37 @@ pub struct LinkedClaims {
     pub claims: &'static [busbar_contract::grammar::Claim],
 }
 
-/// A linked export sink on the export kind's MEMORY ABI: what its signed tarball states (its name,
-/// its alias, the manifest `declares` section as JSON) and its door (`plugin_door!`), the same door
-/// its `cdylib` exports.
+/// A linked export sink on the export kind's MEMORY ABI: what its signed tarball states (its alias,
+/// the manifest `declares` section as JSON) and its door (`plugin_door!`), the same door its
+/// `cdylib` exports. Its name is its door's Statement `name` ([`LinkedDoorExport::name`]).
 #[derive(Clone, Copy)]
 pub struct LinkedDoorExport {
-    /// The plugin's name.
-    pub name: &'static str,
-    /// The module name an `export:` instance names it by.
+    /// The module name an `export:` instance names it by. NO STATEMENT HOME: a Statement states an
+    /// alias as a `REWRITE_ALIAS` rewrite, and not every export door states one, so the row still
+    /// reads its crate's `ALIAS` (`src/linked_gen.rs`, the export axis).
     pub alias: &'static str,
-    /// Its manifest `declares` section.
+    /// Its manifest `declares` section. NO STATEMENT HOME: the Statement carries metric families,
+    /// diagnostic ids and answers, never the whole `declares` document (destinations, egress), so
+    /// the row still reads its crate's `DECLARES` (`src/linked_gen.rs`, the export axis).
     pub declares: &'static str,
     /// Its door.
     pub door: busbar_contract::abi::mechanism::door::DoorFn,
+}
+
+impl LinkedDoorExport {
+    /// The plugin's name: its door's Statement `name`, read off the door's Statement rendering (the
+    /// rendering a dropped-in copy's signed manifest carries).
+    ///
+    /// # Errors
+    ///
+    /// The door or its Statement is refused.
+    pub fn name(&self) -> Result<String, String> {
+        let row =
+            crate::root::loader::dispatch::LinkedRow::of(self.door).map_err(|e| e.to_string())?;
+        busbar_contract::abi::mechanism::rendering::read(&row.statement)
+            .map(|read| read.name)
+            .map_err(|e| format!("its Statement rendering: byte {} is not {}", e.at, e.what))
+    }
 }
 
 /// The newest export payload schema this binary speaks — what a linked sink states.
@@ -261,7 +287,8 @@ pub fn linked_exports(
     let mut rows = doors
         .iter()
         .map(|d| {
-            manifest(d.name, d.alias, d.declares)
+            let name = d.name().map_err(|e| format!("a linked export door: {e}"))?;
+            manifest(&name, d.alias, d.declares)
                 .map(|m| crate::root::loader::LinkedPlugin::door(m, d.door))
                 .map(busbar_kernel::preflight::answering_former_names)
         })

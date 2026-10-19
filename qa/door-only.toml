@@ -109,22 +109,12 @@ item = "busbar_export_file::DECLARES"
 [[finding]]
 rule = "door-only:plugin-path"
 file = "crates/busbar/src/linked_gen.rs"
-item = "busbar_export_file::NAME"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar/src/linked_gen.rs"
 item = "busbar_export_otlp::ALIAS"
 
 [[finding]]
 rule = "door-only:plugin-path"
 file = "crates/busbar/src/linked_gen.rs"
 item = "busbar_export_otlp::DECLARES"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar/src/linked_gen.rs"
-item = "busbar_export_otlp::NAME"
 
 [[finding]]
 rule = "door-only:plugin-path"
@@ -144,11 +134,6 @@ item = "busbar_export_prometheus::DECLARES"
 [[finding]]
 rule = "door-only:plugin-path"
 file = "crates/busbar/src/linked_gen.rs"
-item = "busbar_export_prometheus::NAME"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar/src/linked_gen.rs"
 item = "busbar_export_prometheus::door::door"
 
 [[finding]]
@@ -160,11 +145,6 @@ item = "busbar_export_webhook::ALIAS"
 rule = "door-only:plugin-path"
 file = "crates/busbar/src/linked_gen.rs"
 item = "busbar_export_webhook::DECLARES"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar/src/linked_gen.rs"
-item = "busbar_export_webhook::NAME"
 
 [[finding]]
 rule = "door-only:plugin-path"
@@ -229,27 +209,7 @@ item = "busbar_store_memory::linked::STORE"
 [[finding]]
 rule = "door-only:plugin-path"
 file = "crates/busbar/src/linked_gen.rs"
-item = "busbar_transport_grpc::linked::COMPOSES_OVER"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar/src/linked_gen.rs"
-item = "busbar_transport_grpc::linked::KEY"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar/src/linked_gen.rs"
 item = "busbar_transport_grpc::linked::door"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar/src/linked_gen.rs"
-item = "busbar_transport_http::linked::COMPOSES_OVER"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar/src/linked_gen.rs"
-item = "busbar_transport_http::linked::KEY"
 
 [[finding]]
 rule = "door-only:plugin-path"
@@ -259,27 +219,7 @@ item = "busbar_transport_http::linked::door"
 [[finding]]
 rule = "door-only:plugin-path"
 file = "crates/busbar/src/linked_gen.rs"
-item = "busbar_transport_stdio::linked::COMPOSES_OVER"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar/src/linked_gen.rs"
-item = "busbar_transport_stdio::linked::KEY"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar/src/linked_gen.rs"
 item = "busbar_transport_stdio::linked::door"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar/src/linked_gen.rs"
-item = "busbar_transport_tcp::linked::COMPOSES_OVER"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar/src/linked_gen.rs"
-item = "busbar_transport_tcp::linked::KEY"
 
 [[finding]]
 rule = "door-only:plugin-path"
@@ -289,27 +229,7 @@ item = "busbar_transport_tcp::linked::door"
 [[finding]]
 rule = "door-only:plugin-path"
 file = "crates/busbar/src/linked_gen.rs"
-item = "busbar_transport_webrtc::linked::COMPOSES_OVER"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar/src/linked_gen.rs"
-item = "busbar_transport_webrtc::linked::KEY"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar/src/linked_gen.rs"
 item = "busbar_transport_webrtc::linked::door"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar/src/linked_gen.rs"
-item = "busbar_transport_ws::linked::COMPOSES_OVER"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar/src/linked_gen.rs"
-item = "busbar_transport_ws::linked::KEY"
 
 [[finding]]
 rule = "door-only:plugin-path"

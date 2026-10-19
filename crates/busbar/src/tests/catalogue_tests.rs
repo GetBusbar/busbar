@@ -40,7 +40,10 @@ fn declared_by_linked_plugins() -> Vec<&'static Diagnostic> {
     };
     let mut out = Vec::new();
     // The export axis: each memory-ABI row on `export-doors` states its `declares`.
-    let rows = LINKED.export_doors.iter().map(|d| (d.name, d.declares));
+    let rows = LINKED.export_doors.iter().map(|d| {
+        let name = d.name().expect("a linked export door states its name");
+        (name, d.declares)
+    });
     for (name, declares) in rows {
         let decl: serde_json::Value = serde_json::from_str(declares)
             .unwrap_or_else(|e| panic!("linked export '{name}': its declares section: {e}"));

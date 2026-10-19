@@ -15,7 +15,7 @@
 //!      declares `SESSION = false`, so the pump is handed no session slot, and the run of "not yet"
 //!      answers is a property of a session slot: with none, `ask_again` is false whatever the count.
 //!      Driven here well past the ceiling on each. The wires are read off the linked transport
-//!      table (build.rs `$OUT_DIR/linked_transports.rs`: each linked row's `KEY` and `SESSION`), so
+//!      table (build.rs `$OUT_DIR/linked_transports.rs`: each linked row's key and session, read off its door's Statement), so
 //!      this file names no transport and pins no distribution's set of them.
 //!   2. What DOES bound the body is the operator's `limits.request_body_max_bytes`, counted in
 //!      actual bytes against the node's spill budget, and it refuses at the same byte however the
@@ -60,8 +60,8 @@ fn the_body_cap_is_the_operators_and_its_default_and_ceiling_are_the_documented_
 fn the_frame_ceiling_is_unreachable_on_the_two_transports_that_carry_no_session() {
     let one_shot: Vec<&str> = LINKED_TRANSPORTS
         .iter()
-        .filter(|row| !row.session)
-        .map(|row| row.key)
+        .filter(|row| !row.session())
+        .map(|row| row.key())
         .collect();
     assert!(
         !one_shot.is_empty(),

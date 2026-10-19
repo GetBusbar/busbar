@@ -252,9 +252,9 @@ fn main() {
     std::fs::write(out_dir.join("driver_words.rs"), words).expect("write driver_words.rs");
 
     // THE LINKED WIRES FOR THE INTEGRATION TESTS (tests only include it): each linked transport row's
-    // entry (`KEY`, `COMPOSES_OVER`, `SESSION`, `build`), the rows this build leaves unlinked, and the same
-    // bottom-up fold the boot seal runs — so a test addresses a wire by the key its row declares and
-    // builds it over the layers the root would, without naming a transport crate.
+    // `door` (its key, layers and session read off its Statement), the rows this build leaves
+    // unlinked, and the same bottom-up fold the boot seal runs — so a test addresses a wire by the key
+    // its door states and builds it over the layers the root would, without naming a transport crate.
     let (wires, wires_off) = linked_transports_source(&manifest, &enabled);
     let out = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"))
         .join("linked_transports.rs");
@@ -777,14 +777,15 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
         // every scheme it claims off its Statement.
         door_builds.push_str(&format!(
             "fn __door_build_{n}(settings: &::busbar_contract::transport::TransportSettings) -> Wire {{\n    \
-             self::__busbar_doors::build(::{entry}::KEY, ::{entry}::door, settings, None)\n}}\n\
+             self::__busbar_doors::build(self::__busbar_doors::name_of(::{entry}::door), ::{entry}::door, settings, None)\n}}\n\
              fn __door_claims_{n}() -> Vec<&'static str> {{\n    \
              self::__busbar_doors::claims_of(::{entry}::door)\n}}\n"
         ));
         let (build, claims) = (format!("__door_build_{n}"), format!("__door_claims_{n}"));
+        // The row names its crate's `door` and nothing else: its key, layers and session are read
+        // off that door's Statement ([`LinkedWire::key`] and its siblings), as the root reads them.
         rows.push_str(&format!(
-            "    LinkedWire {{ key: ::{entry}::KEY, composes_over: ::{entry}::COMPOSES_OVER, \
-             session: ::{entry}::SESSION, build: {build}, claims: {claims} }},\n"
+            "    LinkedWire {{ door: ::{entry}::door, build: {build}, claims: {claims} }},\n"
         ));
     }
     let source = format!(
@@ -793,15 +794,29 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
          pub(crate) type Wire = ::std::sync::Arc<::busbar_core_connector::wire::HostWire>;\n\
          /// A wire's build: handed the settings, it answers the wire the host serves the row's door over.\n\
          pub(crate) type BuildWire = fn(&::busbar_contract::transport::TransportSettings) -> Wire;\n\
-         /// One linked wire: its registry key, the layers it declares, whether it carries a session,\n\
-         /// its build, and every scheme its entry claims (its own first).\n\
+         /// One linked wire: its door, its build, and every scheme its entry claims; its registry key,\n\
+         /// the layers it declares and whether it carries a session are read off its door's Statement.\n\
          #[allow(dead_code)]\n\
          pub(crate) struct LinkedWire {{\n    \
-             pub(crate) key: &'static str,\n    \
-             pub(crate) composes_over: &'static [&'static str],\n    \
-             pub(crate) session: bool,\n    \
+             pub(crate) door: ::busbar_contract::abi::mechanism::door::DoorFn,\n    \
              pub(crate) build: BuildWire,\n    \
              pub(crate) claims: fn() -> Vec<&'static str>,\n\
+         }}\n\
+         #[allow(dead_code)]\n\
+         impl LinkedWire {{\n    \
+             /// The wire's registry key: its door's Statement `name`.\n    \
+             pub(crate) fn key(&self) -> &'static str {{\n        \
+                 self::__busbar_doors::name_of(self.door)\n    \
+             }}\n    \
+             /// The layers it declares: its door's tail `composes_over`.\n    \
+             pub(crate) fn composes_over(&self) -> Vec<&'static str> {{\n        \
+                 self::__busbar_doors::composes_over_of(self.door)\n    \
+             }}\n    \
+             /// Whether it carries sessions: the claim row its Statement `name` owns states `session = 1`.\n    \
+             pub(crate) fn session(&self) -> bool {{\n        \
+                 let stated = self::__busbar_doors::stated_of(self.door);\n        \
+                 stated.sessions.contains(&stated.name)\n    \
+             }}\n\
          }}\n\
          /// Every wire this build links, in manifest order.\n\
          #[allow(dead_code)]\n\
@@ -815,18 +830,18 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
          pub(crate) fn fold_linked_transports(\n    \
              settings: &::busbar_contract::transport::TransportSettings,\n\
          ) -> Vec<(&'static LinkedWire, Wire)> {{\n    \
-             let linked = |key: &str| LINKED_TRANSPORTS.iter().any(|r| r.key == key);\n    \
+             let linked = |key: &str| LINKED_TRANSPORTS.iter().any(|r| r.key() == key);\n    \
              let mut built: Vec<(&'static LinkedWire, Wire)> = Vec::new();\n    \
              let mut pending: Vec<&'static LinkedWire> = LINKED_TRANSPORTS.iter().collect();\n    \
              while !pending.is_empty() {{\n        \
                  let at = pending\n            \
                      .iter()\n            \
                      .position(|row| {{\n                \
-                         row.composes_over\n                    \
+                         row.composes_over()\n                    \
                              .iter()\n                    \
-                             .all(|l| !linked(l) || built.iter().any(|(r, _)| r.key == *l))\n            \
+                             .all(|l| !linked(l) || built.iter().any(|(r, _)| r.key() == *l))\n            \
                      }})\n            \
-                     .unwrap_or_else(|| panic!(\"`{{}}` has no bottom\", pending[0].key));\n        \
+                     .unwrap_or_else(|| panic!(\"`{{}}` has no bottom\", pending[0].key()));\n        \
                  let row = pending.remove(at);\n        \
                  built.push((row, (row.build)(settings)));\n    \
              }}\n    \

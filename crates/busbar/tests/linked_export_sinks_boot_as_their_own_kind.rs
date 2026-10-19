@@ -201,7 +201,7 @@ fn every_linked_export_sink_loads_as_its_own_kind_in_the_shipped_binary() {
 
     // THE WIRE UNDER THE DOOR. A build that does not link the tcp row boots only with it dropped
     // in; one that links it would refuse the tarball as a second row on the same key.
-    if !LINKED_TRANSPORTS.iter().any(|w| w.key == "tcp") {
+    if !LINKED_TRANSPORTS.iter().any(|w| w.key() == "tcp") {
         let (lib, _) = common::plugins::transport_cdylib_under(&["tcp"]).unwrap_or_else(|| {
             common::plugins::missing("tcp transport", common::plugins::BUILD_PINNED)
         });
