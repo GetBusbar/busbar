@@ -1716,6 +1716,47 @@ fn records_secret_serves_only_a_declared_kind() {
     );
 }
 
+/// RED (Q128 plugin-loader u70 MEDIUM): a secret-bearing result the host holds under its handle
+/// is secret on the host side (THE DESIGN: secret-bearing answers are always secret on the host
+/// side): the store's Debug rendering never prints its bytes, while a result that is not secret
+/// still renders.
+#[test]
+fn red_a_held_secret_result_never_prints() {
+    let d = double();
+    let wake: &'static InstanceWake = Box::leak(Box::default());
+    let dyn_route: Arc<dyn WakeRoute> = d.route.clone();
+    assert!(wake.route.set(Arc::downgrade(&dyn_route)).is_ok());
+    assert!(wake.credential_kinds.set(vec!["sigv4".to_string()]).is_ok());
+    let reader = crate::dispatch::handle::mint(wake).expect("the host mints a handle");
+    let (mut buf, mut spans) = ([0u8; 16], [SPAN; 1]);
+    let i = secret_in("sigv4", "AKID", &mut buf, &mut spans);
+    let (ret, _) = call_secret(reader, &i);
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert_eq!(&buf[..6], b"s3cr3t");
+    let printed = format!("{:?}", d.route.store);
+    assert_eq!(
+        d.route.store.held(),
+        1,
+        "the result is held under its handle"
+    );
+    assert!(
+        !printed.contains(&format!("{:?}", b"s3cr3t".to_vec())),
+        "the held secret prints: {printed}"
+    );
+    let store = Arc::new(ServiceStore::default());
+    let runs = AtomicUsize::new(0);
+    let h = head(op::RECORDS_GET, TICKET, 0, 0);
+    let (mut b, mut s) = ([0u8; 8], [SPAN; 1]);
+    let into = bufs(&mut b, &mut s);
+    // SAFETY: the test's own buffers.
+    let got = unsafe { serve(&store, &nowhere(), &h, Some(&into), eight(&runs)) };
+    assert_eq!(got.outcome, Outcome::Ready);
+    assert!(
+        format!("{store:?}").contains(&format!("{:?}", b"01234567".to_vec())),
+        "a result that is not secret still renders"
+    );
+}
+
 /// The work family reaches the kernel as its caller, with the unit its crossing serves, and a
 /// record past its cap is refused before the kernel sees it.
 #[test]
