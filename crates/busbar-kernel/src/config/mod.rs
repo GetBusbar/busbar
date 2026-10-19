@@ -2695,8 +2695,8 @@ mod tests;
 mod advanced_destinations_tests;
 
 #[cfg(test)]
-#[path = "tests/named_map_merge_tests.rs"]
-mod named_map_merge_tests;
+#[path = "tests/named_map_replace_tests.rs"]
+mod named_map_replace_tests;
 
 // The CONFIG BACK-COMPAT CORPUS GATE: the resolved billing/limits surface is byte-stable across
 // 1.6.0 changes (the baseline M3's config-noun eviction must preserve). Lives here because it reads

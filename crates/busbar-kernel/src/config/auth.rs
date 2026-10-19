@@ -34,11 +34,9 @@ use busbar_contract::secret_ref::SecretRef;
 /// The built-in `keys` (data-plane signed-key verifier) and the operator credential
 /// are referenced BARE with no definition at all; a definition entry exists only when the provider
 /// needs config (e.g. the operator credential carrying its `token:` secret ref).
-// `Serialize` is required by the overlay's per-entry MERGE (`config::patch::merge_entry`): an
-// overlay entry is a PATCH, so the base entry has to be projected back to JSON in order to be
-// patched. The projection is config-internal and round-trips straight back into this same struct;
-// it reaches no reader and no HTTP response, which is the distinction the settings-leak lint's
-// category (c) turns on.
+// `Serialize` projects the entry back to a raw definition document. The projection is
+// config-internal and round-trips straight back into this same struct; it reaches no reader and no
+// HTTP response, which is the distinction the settings-leak lint's category (c) turns on.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)] // a typo'd key must fail boot, never silently disable a ceiling.
 pub struct IdentityProviderCfg {
