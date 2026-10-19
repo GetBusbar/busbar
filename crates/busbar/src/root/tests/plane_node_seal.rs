@@ -259,6 +259,7 @@ async fn a_borrowed_unit_seals_its_verified_destination_and_its_hold_and_settle_
             Box::new(|| -> Option<Reported> { None }),
             None,
             None,
+            OpClassId::new("seal"),
         )
         .await;
     assert!(outcome.is_some(), "the table took the unit and it ended");
@@ -372,6 +373,7 @@ fn open_and_finish<U: Units>(node: &Arc<Node>, post: &NodeEndPost, units: &U) ->
             post,
             units,
             None,
+            OpClassId::new("seal"),
         )
         .expect("the table took the session");
     let admitted = matches!(opened, busbar_kernel::teller::SessionOpen::Admitted { .. });
