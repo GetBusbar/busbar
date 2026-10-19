@@ -371,3 +371,34 @@ fn a_socket_literal_is_exactly_what_the_standard_parser_accepts() {
         );
     }
 }
+
+/// AN IPV4 LITERAL is exactly what the standard parser accepts: every row agrees with
+/// `Ipv4Addr`'s own answer, and states it.
+#[test]
+fn an_ipv4_literal_is_exactly_what_the_standard_parser_accepts() {
+    for (s, want) in [
+        ("127.0.0.1", true),
+        ("0.0.0.0", true),
+        ("255.255.255.255", true),
+        ("10.1.2.3", true),
+        ("256.0.0.1", false),
+        ("127.0.0.01", false),
+        ("127.1", false),
+        ("0x7f.0.0.1", false),
+        ("2130706433", false),
+        ("127.0.0.1:80", false),
+        (" 127.0.0.1", false),
+        ("127.0.0.1 ", false),
+        ("127.0.0.", false),
+        ("::1", false),
+        ("localhost", false),
+        ("", false),
+    ] {
+        assert_eq!(is_ipv4_literal(s), want, "{s:?}");
+        assert_eq!(
+            is_ipv4_literal(s),
+            s.parse::<std::net::Ipv4Addr>().is_ok(),
+            "{s:?} disagrees with the standard parser"
+        );
+    }
+}
