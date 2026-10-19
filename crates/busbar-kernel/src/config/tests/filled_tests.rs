@@ -89,9 +89,10 @@ fn a_credential_field_filled_in_part_reaches_a_plane_as_a_template_reference() {
     );
     let reference: SecretRef =
         serde_json::from_value(bound["reg"][ENV]["AUTH"].clone()).expect("a reference");
+    let fill = crate::test_support::secrets::fill_word();
     let resolved = reference
-        .resolve_template(&|r| {
-            crate::test_support::secrets::fill_var(&r)
+        .resolve_template(Some(&fill), &|r| {
+            crate::test_support::secrets::fill_var(r)
                 .and_then(|v| std::env::var(v).ok())
                 .map(busbar_contract::secret::Resolved::new)
                 .ok_or_else(|| "unresolved".to_string())
