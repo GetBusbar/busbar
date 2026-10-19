@@ -5622,7 +5622,7 @@ mod pools_door_walk_and_breaker {
         let message = answer["error"]["message"].as_str().unwrap_or("");
         assert_eq!(
             message,
-            busbar_kernel::proto::vendor_auth_failure_message(door_word("messages_dialect")),
+            door_word("messages_auth_failure"),
             "the dialect's own sentence: {answer}"
         );
         assert!(!message.contains("lane"), "{answer}");

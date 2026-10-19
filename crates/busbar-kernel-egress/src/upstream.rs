@@ -8,7 +8,6 @@
 //! verbatim from the retired shared value crate; the kernel's `proxy` re-exports every item at its
 //! historical `busbar_kernel::proxy::…` path.
 
-use busbar_contract::http;
 use bytes::Bytes;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

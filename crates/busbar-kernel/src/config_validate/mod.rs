@@ -2145,8 +2145,8 @@ pub(crate) use secret_refs::{boot_resolved_secret_refs, keyless_credential_allow
 /// ([`validate_provider_protocol_with`]) was already parameterised and already had its empty-set
 /// test. What that test could NOT see is the production caller: a re-inlined `!known.contains(p)`
 /// in this loop would restore the fail-OPEN with the arm's own test still green, which is exactly
-/// the shape D5 exists to catch one level up. So the loop itself takes the set, `known_protocols()`
-/// is read at ONE site (`validate_with_unset`'s call to this function), and
+/// the shape D5 exists to catch one level up. So the loop itself takes the set, the declared
+/// provider dialects are read at ONE site (`validate_with_unset`'s call to this function), and
 /// `an_empty_protocol_set_refuses_every_provider_through_the_real_sweep` drives this whole sweep —
 /// the production code path, error ordering and all — against an empty set.
 fn validate_providers_with(
@@ -2166,12 +2166,11 @@ fn validate_providers_with(
     // circuit breaker), exactly like the shipped built-in catalog entries that carry none. Only the
     // entries that ARE present must name a known StatusClass.
     for (provider_name, provider_cfg) in &cfg.providers {
-        // The provider's `protocol` selects a declared `Protocol` from the registry at lane
-        // construction. An unknown protocol used to escape this multi-error collection entirely and
+        // The provider's `protocol` names a dialect a registered plane declares. An unknown protocol used to escape this multi-error collection entirely and
         // surface as a lone `die()` deep in `main.rs` (lane build) — so an operator with several
         // config mistakes saw only the first one. Validate it HERE against the single source of
-        // truth (`proto::known_protocols()`, DERIVED from the protocol declarations rather than
-        // maintained beside them) so a bad protocol is collected alongside every other error.
+        // truth (the registered planes' declared provider dialects, DERIVED from their declarations
+        // rather than maintained beside them) so a bad protocol is collected alongside every other error.
         // `main.rs`'s `die()` remains a defensive (now unreachable) backstop.
         //
         // THE EMPTY LIST IS ITS OWN ERROR, and this arm is why. The list used to be a compile-time
@@ -2655,7 +2654,7 @@ pub fn vet_token_uri(token_uri: &str, posture: &MetadataPosture) -> Result<(), S
 /// rather than by feature-gating the registry, because a feature that empties the registry would be
 /// a SECOND way to have no protocols, and this project's whole objection is to second ways.
 ///
-/// THE EMPTY SET IS THE LOAD-BEARING CASE. `known_protocols()` is derived from the registry, and
+/// THE EMPTY SET IS THE LOAD-BEARING CASE. The known set is derived from the planes' declarations, and
 /// the core split (step 3.7) makes emptying it a one-line `Cargo.toml` edit by someone who is not
 /// thinking about this module: from step 4 on, a protocol is a dependency edge, and removing an
 /// edge is exactly what the deletion gate does per protocol in CI. `!known.contains(p)` alone is

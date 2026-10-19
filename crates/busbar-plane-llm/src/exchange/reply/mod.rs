@@ -20,9 +20,9 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
+use crate::protocol::HeadFields;
 use busbar_contract::billing::TokenUsage;
 use busbar_contract::codec::{OperationHandler, UsageTapFault};
-use busbar_contract::protocol::HeadFields;
 use busbar_contract::upstream::{Disposition, StatusClass};
 
 use super::arrive::Arrived;
@@ -291,7 +291,7 @@ impl Reply {
                 .and_then(wire::head_text)
                 .is_some_and(|ct| ct.starts_with(invoke::EVENTSTREAM));
         let far_ct = if invoke_stream {
-            Some(busbar_contract::protocol::TEXT_EVENT_STREAM.as_bytes())
+            Some(crate::protocol::TEXT_EVENT_STREAM.as_bytes())
         } else {
             far_ct
         };
@@ -328,9 +328,7 @@ impl Reply {
         match relay::content_type(ingress, egress, far_is_stream, json_array(ctx)) {
             relay::ContentType::Json => fields.push((
                 "content-type".to_string(),
-                busbar_contract::protocol::APPLICATION_JSON
-                    .as_bytes()
-                    .to_vec(),
+                crate::protocol::APPLICATION_JSON.as_bytes().to_vec(),
             )),
             relay::ContentType::Ingress(ct) => {
                 fields.push(("content-type".to_string(), ct.as_bytes().to_vec()));

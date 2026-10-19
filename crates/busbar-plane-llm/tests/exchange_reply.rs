@@ -156,7 +156,7 @@ fn a_far_end_error_is_judged_for_every_pair() {
                 HOST,
                 ingress,
                 egress,
-                OpVerb::CHAT,
+                busbar_plane_llm::verbs::CHAT,
                 &HashMap::new(),
                 true,
                 &far(401),
@@ -169,7 +169,7 @@ fn a_far_end_error_is_judged_for_every_pair() {
                 HOST,
                 ingress,
                 egress,
-                OpVerb::CHAT,
+                busbar_plane_llm::verbs::CHAT,
                 &HashMap::new(),
                 false,
                 &far(400),
@@ -197,7 +197,7 @@ fn a_far_end_error_is_judged_for_every_pair() {
                 HOST,
                 ingress,
                 egress,
-                OpVerb::CHAT,
+                busbar_plane_llm::verbs::CHAT,
                 &HashMap::new(),
                 false,
                 &far(401),
@@ -209,7 +209,7 @@ fn a_far_end_error_is_judged_for_every_pair() {
                 HOST,
                 ingress,
                 egress,
-                OpVerb::CHAT,
+                busbar_plane_llm::verbs::CHAT,
                 &HashMap::new(),
                 false,
                 &far(503),
@@ -341,7 +341,7 @@ fn ctx<'a>(
     WholeCtx {
         ingress,
         egress,
-        operation: OpVerb::CHAT,
+        operation: busbar_plane_llm::verbs::CHAT,
         model: "m-1",
         wants_stream,
         json_array,
@@ -442,7 +442,7 @@ fn chat_handler(dialect: &str) -> &'static dyn busbar_contract::codec::Operation
         .iter()
         .find(|d| d.name == dialect)
         .and_then(|d| d.handler)
-        .and_then(|rh| rh.operation_handler(OpVerb::CHAT))
+        .and_then(|rh| rh.operation_handler(busbar_plane_llm::verbs::CHAT))
         .expect("every dialect serves chat")
 }
 
@@ -704,7 +704,7 @@ fn arrival(dialect: &'static str, stream: bool) -> Arrived {
         "messages": [{"role": "user", "content": "hi"}]});
     Arrived {
         dialect,
-        operation: OpVerb::CHAT,
+        operation: busbar_plane_llm::verbs::CHAT,
         model: "p".to_string(),
         content_type: "application/json".to_string(),
         body: serde_json::to_vec(&body).unwrap(),
@@ -1069,7 +1069,7 @@ mod rehomed_answers {
         let stream = request["stream"].as_bool().unwrap_or(false);
         Arrived {
             dialect,
-            operation: OpVerb::CHAT,
+            operation: busbar_plane_llm::verbs::CHAT,
             model: "p".to_string(),
             content_type: "application/json".to_string(),
             body: serde_json::to_vec(&request).expect("JSON"),
@@ -1600,7 +1600,7 @@ mod rehomed_answers {
                 HOST,
                 "anthropic",
                 "openai",
-                OpVerb::CHAT,
+                busbar_plane_llm::verbs::CHAT,
                 &HashMap::new(),
                 true,
                 &far,
@@ -3343,7 +3343,7 @@ mod rehomed_metering {
         (
             arrived_for(
                 caller,
-                OpVerb::CHAT,
+                busbar_plane_llm::verbs::CHAT,
                 Some(chat_request(caller, stream)),
                 false,
             ),
@@ -3670,7 +3670,12 @@ mod rehomed_metering {
     fn ingress_unsupported_404_does_not_charge() {
         let body = br#"{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2,0.3]}],"model":"text-embedding-3-small","usage":{"prompt_tokens":42}}"#;
         let request = json!({"model": "p", "input": "hi"});
-        let arrived = arrived_for("anthropic", OpVerb::EMBEDDINGS, Some(request), false);
+        let arrived = arrived_for(
+            "anthropic",
+            busbar_plane_llm::verbs::EMBEDDINGS,
+            Some(request),
+            false,
+        );
         let lane = lane("openai");
         let ctx = reply_ctx(&arrived, &lane);
         let read = answer(&ctx, 200, JSON_HEAD, &[body], false);
@@ -3679,7 +3684,7 @@ mod rehomed_metering {
         assert_eq!(read.end().verdict, Verdict::Hard);
         assert_eq!(read.end().fault, None);
         let mut whole_ctx = super::ctx("anthropic", "openai", false, false);
-        whole_ctx.operation = OpVerb::EMBEDDINGS;
+        whole_ctx.operation = busbar_plane_llm::verbs::EMBEDDINGS;
         let answered = whole::translate(HOST, &whole_ctx, 200, body);
         assert_eq!(answered.end, WholeEnd::IngressUnsupported);
         assert_eq!(answered.usage, None);
@@ -3695,7 +3700,7 @@ mod rehomed_metering {
         let body: &[u8] = &[
             0x00, 0x01, 0x02, 0xFF, b'n', b'o', b't', b'-', b'j', b's', b'o', b'n',
         ];
-        let arrived = arrived_for("anthropic", OpVerb::SPEECH, None, false);
+        let arrived = arrived_for("anthropic", busbar_plane_llm::verbs::SPEECH, None, false);
         let lane = lane("openai");
         let ctx = reply_ctx(&arrived, &lane);
         let read = answer(&ctx, 200, JSON_HEAD, &[body], false);
@@ -3879,7 +3884,7 @@ mod rehomed_metering {
     fn test_cross_protocol_stream_delivers_trailing_usage_gemini_json_array() {
         let arrived = arrived_for(
             "gemini",
-            OpVerb::CHAT,
+            busbar_plane_llm::verbs::CHAT,
             Some(chat_request("gemini", true)),
             true,
         );

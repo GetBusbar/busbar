@@ -48,23 +48,23 @@ static SPEECH: OpenAiSpeech = OpenAiSpeech;
 /// OpenAI ships no rerank surface, and the protocol-surface verbs are MCP's and A2A's, so the pair
 /// is unrepresentable rather than refused at runtime.
 static CELLS: &[busbar_contract::codec::Cell] = &[
-    (OpVerb::CHAT, &CHAT),
-    (OpVerb::MODERATION, &MODERATION),
-    (OpVerb::EMBEDDINGS, &EMBEDDINGS),
-    (OpVerb::IMAGE, &IMAGE),
-    (OpVerb::TRANSCRIPTION, &TRANSCRIPTION),
-    (OpVerb::SPEECH, &SPEECH),
+    (crate::verbs::CHAT, &CHAT),
+    (crate::verbs::MODERATION, &MODERATION),
+    (crate::verbs::EMBEDDINGS, &EMBEDDINGS),
+    (crate::verbs::IMAGE, &IMAGE),
+    (crate::verbs::TRANSCRIPTION, &TRANSCRIPTION),
+    (crate::verbs::SPEECH, &SPEECH),
 ];
 
 /// The egress half of the path constants above; `resolve_operation` reads the same constants on the
 /// ingress side, so the two directions cannot drift.
 static PATHS: &[(OpVerb, &str)] = &[
-    (OpVerb::CHAT, PATH_CHAT_COMPLETIONS),
-    (OpVerb::EMBEDDINGS, PATH_EMBEDDINGS),
-    (OpVerb::MODERATION, PATH_MODERATIONS),
-    (OpVerb::IMAGE, PATH_IMAGES_GENERATIONS),
-    (OpVerb::TRANSCRIPTION, PATH_AUDIO_TRANSCRIPTIONS),
-    (OpVerb::SPEECH, PATH_AUDIO_SPEECH),
+    (crate::verbs::CHAT, PATH_CHAT_COMPLETIONS),
+    (crate::verbs::EMBEDDINGS, PATH_EMBEDDINGS),
+    (crate::verbs::MODERATION, PATH_MODERATIONS),
+    (crate::verbs::IMAGE, PATH_IMAGES_GENERATIONS),
+    (crate::verbs::TRANSCRIPTION, PATH_AUDIO_TRANSCRIPTIONS),
+    (crate::verbs::SPEECH, PATH_AUDIO_SPEECH),
 ];
 
 impl RequestHandler for OpenAiRequestHandler {
@@ -79,19 +79,19 @@ impl RequestHandler for OpenAiRequestHandler {
     fn resolve_operation(&self, path: &str, _body: &[u8]) -> Option<OpVerb> {
         // OpenAI names the operation in the path — the body is never needed.
         if path.ends_with(PATH_CHAT_COMPLETIONS) {
-            Some(OpVerb::CHAT)
+            Some(crate::verbs::CHAT)
         } else if path.ends_with(PATH_EMBEDDINGS) {
-            Some(OpVerb::EMBEDDINGS)
+            Some(crate::verbs::EMBEDDINGS)
         } else if path.ends_with(PATH_MODERATIONS) {
-            Some(OpVerb::MODERATION)
+            Some(crate::verbs::MODERATION)
         } else if path.contains("/v1/images/") {
-            Some(OpVerb::IMAGE)
+            Some(crate::verbs::IMAGE)
         } else if path.ends_with(PATH_AUDIO_TRANSCRIPTIONS)
             || path.ends_with("/v1/audio/translations")
         {
-            Some(OpVerb::TRANSCRIPTION)
+            Some(crate::verbs::TRANSCRIPTION)
         } else if path.ends_with(PATH_AUDIO_SPEECH) {
-            Some(OpVerb::SPEECH)
+            Some(crate::verbs::SPEECH)
         } else {
             None
         }
@@ -623,8 +623,8 @@ pub fn write_embeddings_response(r: &EmbeddingsResp) -> WireBody {
 
 // ---------------------------------------------------------------- image OperationHandler (real, cross-protocol)
 
+use crate::codec::ir::image::ImageOutput;
 use crate::codec::ir::image::{ImageOp, ImageReq, ImageResp, ImageSize};
-use busbar_contract::media::ImageOutput;
 
 struct OpenAiImage;
 
@@ -1259,7 +1259,7 @@ pub fn read_image_request(
     // unsupported today — the second 404 site, not a missing route.
     if wire.get("image").is_some() {
         return Err(IngressReject::UnsupportedSubOp {
-            op: OpVerb::IMAGE,
+            op: crate::verbs::IMAGE,
             model,
         });
     }

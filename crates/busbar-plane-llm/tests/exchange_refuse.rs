@@ -1055,8 +1055,10 @@ fn the_kernels_method_and_size_refusals_read_as_the_previous_release_answered() 
 fn the_kernels_refusals_are_the_previous_releases_writing_in_every_dialect() {
     use busbar_contract::abi::plane::reason_code;
     use busbar_contract::caps::ReasonCode;
-    use busbar_contract::protocol::{KIND_API_ERROR, KIND_INVALID_REQUEST, KIND_REQUEST_TOO_LARGE};
     use busbar_plane_llm::exchange::refuse::render;
+    use busbar_plane_llm::protocol::{
+        KIND_API_ERROR, KIND_INVALID_REQUEST, KIND_REQUEST_TOO_LARGE,
+    };
     for d in SIX {
         for (reason, status, kind, text) in [
             (

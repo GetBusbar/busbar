@@ -36,7 +36,7 @@
 //! So [`has_superset_ir`] is derived from [`wire_formats`] rather than written as
 //! `matches!(key, FALLBACK_KEY)`. That makes it a RULE rather than a fact about today's planes: the
 //! day a second dialect lands on some plane, that plane earns an IR and the test says so. And the
-//! fallback plane's dialect count is read off the real protocol registry, so a new dialect does not
+//! fallback plane's dialect count is read off its own declaration, so a new dialect does not
 //! depend on anyone remembering to bump a literal here.
 //!
 //! A TRANSPORT IS NOT A WIRE FORMAT. A plane can be reachable over several transports while every
@@ -530,10 +530,12 @@ impl PlaneDispatch {
     pub fn ingress_of(&self, path: &str) -> Ingress {
         match self.mounted_plane_of(path) {
             Some(key) => Ingress::Mounted(key),
-            // THE FALLBACK ARM, and the only place a path SHAPE decides anything. It answers
-            // `None` for a path that names no dialect — an honest answer the old classifier could
-            // not give, because it always spent that case on one hard-coded dialect.
-            None => Ingress::Fallback(crate::proto::residual_dialect_for_path(path)),
+            // THE FALLBACK ARM. The kernel names no dialect, so the fallback is reached with none:
+            // a plane that serves a path claims it at its door, and what falls through here is
+            // shaped in the neutral envelope. (The path-shape classifier this read was fed by the
+            // kernel's protocol registry, which production never populated, so its answer was
+            // always `None`; Q128 contract p11 finding 1 removed it.)
+            None => Ingress::Fallback(None),
         }
     }
 

@@ -12,13 +12,13 @@
 
 use std::borrow::Cow;
 
-use busbar_contract::codec::{EgressCtx, EgressWire, IngressReject, OperationHandler};
-use busbar_contract::ir::egress_prep::EgressPrep;
-use busbar_contract::operation::OpVerb;
-use busbar_contract::protocol::{
+use crate::protocol::{
     HeadFields, ProtocolDecl, APPLICATION_JSON, KIND_API_ERROR, KIND_INVALID_REQUEST,
     KIND_NOT_FOUND,
 };
+use busbar_contract::codec::{EgressCtx, EgressWire, IngressReject, OperationHandler};
+use busbar_contract::ir::egress_prep::EgressPrep;
+use busbar_contract::operation::OpVerb;
 use serde_json::Value;
 
 use super::arrive::Arrived;
@@ -654,10 +654,8 @@ fn head_fields(
     if !legal_field_value(content_type.as_bytes()) {
         return Err(internal(arrived.dialect));
     }
-    let user_agent = far.map_or(busbar_contract::protocol::EGRESS_UA_DEFAULT, |d| {
-        d.egress_user_agent
-    });
-    let stream_accept = far.map_or(busbar_contract::protocol::TEXT_EVENT_STREAM, |d| {
+    let user_agent = far.map_or(crate::protocol::EGRESS_UA_DEFAULT, |d| d.egress_user_agent);
+    let stream_accept = far.map_or(crate::protocol::TEXT_EVENT_STREAM, |d| {
         d.egress_stream_accept
     });
     let accept = (

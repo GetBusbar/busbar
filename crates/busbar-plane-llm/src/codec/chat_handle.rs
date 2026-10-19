@@ -449,7 +449,7 @@ impl Sealed for ChatRespHandle {}
 
 impl IrHandle for ChatReqHandle {
     fn verb(&self) -> OpVerb {
-        OpVerb::CHAT
+        crate::verbs::CHAT
     }
     fn wants_stream(&self) -> bool {
         self.0.stream
@@ -493,7 +493,7 @@ impl IrHandle for ChatReqHandle {
 
 impl IrHandle for ChatRespHandle {
     fn verb(&self) -> OpVerb {
-        OpVerb::CHAT
+        crate::verbs::CHAT
     }
     fn billing(&self) -> Option<Billing> {
         chat_usage(&self.0)

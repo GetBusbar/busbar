@@ -1,5 +1,5 @@
 use super::*;
-use busbar_contract::http::StatusCode;
+use http::StatusCode;
 
 /// The cached streaming-CT set aggregated from the writer vtable must be exactly the SSE +
 /// AWS-event-stream pair the per-request sweep produced — the `OnceLock` only memoizes it.
@@ -2612,7 +2612,7 @@ mod ir_property_tests {
     #[test]
     fn test_openai_write_response_event_error() {
         let writer = OpenAiWriter;
-        let err = busbar_contract::protocol::IrError {
+        let err = crate::protocol::IrError {
             class: busbar_contract::upstream::StatusClass::ClientError,
             provider_signal: Some("boom".to_string()),
             retry_after: None,

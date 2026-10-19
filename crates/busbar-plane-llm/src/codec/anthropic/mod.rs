@@ -48,20 +48,20 @@ use usage::*;
 #[cfg(test)]
 use crate::codec::ir::IrUsage;
 use crate::codec::ir::{IrBlockMeta, IrDelta, IrStreamEvent};
-use busbar_contract::http::StatusCode;
-use busbar_contract::protocol::*;
+use crate::protocol::*;
 #[cfg(test)]
 use busbar_contract::upstream::CanonicalSignal;
 use busbar_contract::upstream::StatusClass;
+use http::StatusCode;
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::codec::proto_codec) and netted into core (core::proto::proto_codec).
 #[allow(unused_imports)]
-// used standalone; redundant with the `busbar_contract::protocol::*` glob when netted into core
+// used standalone; redundant with the `crate::protocol::*` glob when netted into core
 use super::proto_codec::*;
 use busbar_contract::ir::egress_prep::LaneCaps;
 // The wire-codec surface, named EXPLICITLY so it resolves to THIS crate's own `proto_codec` and not to
-// the `busbar_contract::protocol::*` glob above — which, in a `test-support` build of busbar-core (this
+// the `crate::protocol::*` glob above — which, in a `test-support` build of busbar-core (this
 // crate's dev-dependency), re-exports a SECOND copy of these same source items through core's `#[path]`
 // dual-compile, and a bare use of either name would then be ambiguous. An explicit import outranks both
 // globs; when this file is netted INTO core the two paths are one item, so the explicit is harmless.
@@ -115,10 +115,10 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
 /// Anthropic's alone among the six (rung 4, catching curl users who omit the version header), then
 /// the `/v1/messages` path (rung 11). Lower strength binds tighter — the shared ladder positions.
 fn claims(
-    h: busbar_contract::protocol::HeadFields<'_>,
+    h: crate::protocol::HeadFields<'_>,
     path: &str,
-) -> Option<busbar_contract::protocol::ClaimStrength> {
-    use busbar_contract::protocol::{head_field, ClaimStrength};
+) -> Option<crate::protocol::ClaimStrength> {
+    use crate::protocol::{head_field, ClaimStrength};
     if head_field(h, HDR_ANTHROPIC_VERSION).is_some() || head_field(h, "anthropic-beta").is_some() {
         return Some(ClaimStrength(2));
     }
@@ -133,9 +133,9 @@ fn claims(
 
 /// ANTHROPIC'S RESIDUAL DETECTION — its arm of the headerless `residual_dialect_for_path` ladder: a
 /// `/v1/messages` path (exact or model-prefixed) names Anthropic (rung 40).
-fn residual_claims(path: &str) -> Option<busbar_contract::protocol::ClaimStrength> {
+fn residual_claims(path: &str) -> Option<crate::protocol::ClaimStrength> {
     if path == "/v1/messages" || path.ends_with("/v1/messages") {
-        return Some(busbar_contract::protocol::ClaimStrength(40));
+        return Some(crate::protocol::ClaimStrength(40));
     }
     None
 }
@@ -144,9 +144,9 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     name: VENDOR_NAME,
     codec: dialect_codec!(VENDOR_NAME),
     handler: Some(&handler::AnthropicRequestHandler),
-    verbs: &[busbar_contract::operation::OpVerb::CHAT],
+    verbs: &[crate::verbs::CHAT],
     head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
-    streaming_content_type: Some(busbar_contract::protocol::TEXT_EVENT_STREAM),
+    streaming_content_type: Some(crate::protocol::TEXT_EVENT_STREAM),
     array_stream_shim_key: None,
     // `toolu_…` is Anthropic's documented native tool-call id shape.
     native_tool_id_prefix: Some("toolu_"),
@@ -158,8 +158,6 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // a bearer). ONE scheme per request, never both: two schemes carrying one secret is a request
     // shape no native client sends. The kernel's egress-auth unit presents the lane credential under
     // it, so the key never passes through this plane; the version header is `static_headers` below.
-    egress_auth_headers: None,
-    egress_auth_lane_constant: false,
     egress_scheme: Some(EgressScheme::Static {
         families: &[
             CredentialFamily {
@@ -189,7 +187,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     frame_after_message_start: Some(ANTHROPIC_PING_SSE_FRAME),
     reshapes_body_at_path_base: true,
     max_cache_control_breakpoints: Some(4),
-    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS.as_u16(),
+    quota_exceeded_status: http::StatusCode::TOO_MANY_REQUESTS.as_u16(),
     ingress_is_eventstream: false,
     emits_sse_done_terminator: false,
     max_citations_per_delta: Some(1),
@@ -203,15 +201,15 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     egress_user_agent: "Anthropic/Python 0.39.0",
     has_model_in_url: false,
     auth_failure_status_and_kind: (
-        busbar_contract::http::StatusCode::UNAUTHORIZED.as_u16(),
-        busbar_contract::protocol::ERR_TYPE_AUTHENTICATION,
+        http::StatusCode::UNAUTHORIZED.as_u16(),
+        crate::protocol::ERR_TYPE_AUTHENTICATION,
     ),
     ingress_relays_amzn_headers: false,
     ingress_relayed_response_header_names: &[HDR_REQUEST_ID],
     auth_failure_message: "invalid x-api-key",
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
-    egress_stream_accept: busbar_contract::protocol::TEXT_EVENT_STREAM,
+    egress_stream_accept: crate::protocol::TEXT_EVENT_STREAM,
     models_list_envelope: Some(models_list_envelope),
     claims: Some(claims),
     residual_claims: Some(residual_claims),
@@ -637,20 +635,20 @@ fn stashed_inserts(sentinel: &[serde_json::Value], m: usize) -> Vec<(usize, serd
 /// shared with the forward/OpenAI-family vocabulary alias their canonical home in
 /// `openai_family.rs`; only `timeout_error` is an Anthropic-specific spelling (the forward layer's
 /// agnostic kind is the bare `timeout`).
-const ERR_TYPE_OVERLOADED: &str = busbar_contract::protocol::ERR_TYPE_OVERLOADED;
-const ERR_TYPE_INVALID_REQUEST: &str = busbar_contract::protocol::ERR_TYPE_INVALID_REQUEST;
-const ERR_TYPE_AUTHENTICATION: &str = busbar_contract::protocol::ERR_TYPE_AUTHENTICATION;
-const ERR_TYPE_RATE_LIMIT: &str = busbar_contract::protocol::ERR_TYPE_RATE_LIMIT;
-const ERR_TYPE_API_ERROR: &str = busbar_contract::protocol::ERR_TYPE_API_ERROR;
+const ERR_TYPE_OVERLOADED: &str = crate::protocol::ERR_TYPE_OVERLOADED;
+const ERR_TYPE_INVALID_REQUEST: &str = crate::protocol::ERR_TYPE_INVALID_REQUEST;
+const ERR_TYPE_AUTHENTICATION: &str = crate::protocol::ERR_TYPE_AUTHENTICATION;
+const ERR_TYPE_RATE_LIMIT: &str = crate::protocol::ERR_TYPE_RATE_LIMIT;
+const ERR_TYPE_API_ERROR: &str = crate::protocol::ERR_TYPE_API_ERROR;
 const ERR_TYPE_TIMEOUT: &str = "timeout_error";
 /// The billing member of the published Anthropic `ErrorResponse.error` discriminator — the type a
 /// native client sees when the account cannot pay for the request. It has no cross-dialect alias in
 /// the substrate vocabulary (OpenAI names the same condition `insufficient_quota`), so it is spelled
 /// here, beside the other Anthropic-only type token.
 const ERR_TYPE_BILLING: &str = "billing_error";
-const ERR_TYPE_NOT_FOUND: &str = busbar_contract::protocol::ERR_TYPE_NOT_FOUND;
-const ERR_TYPE_PERMISSION: &str = busbar_contract::protocol::ERR_TYPE_PERMISSION;
-const ERR_TYPE_REQUEST_TOO_LARGE: &str = busbar_contract::protocol::ERR_TYPE_REQUEST_TOO_LARGE;
+const ERR_TYPE_NOT_FOUND: &str = crate::protocol::ERR_TYPE_NOT_FOUND;
+const ERR_TYPE_PERMISSION: &str = crate::protocol::ERR_TYPE_PERMISSION;
+const ERR_TYPE_REQUEST_TOO_LARGE: &str = crate::protocol::ERR_TYPE_REQUEST_TOO_LARGE;
 
 // One spelling per wire word (OWNER 2026-10-01): each word this dialect speaks more than once is
 // spelled here, once, and referenced everywhere else; words shared with other dialects live in

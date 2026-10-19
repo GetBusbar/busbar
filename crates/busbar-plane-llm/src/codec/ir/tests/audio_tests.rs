@@ -61,7 +61,6 @@ fn speech_carries_binary_out_and_char_or_token_billing() {
 // ── IrFacts projection (close-non-chat-gate-blindness) ───────────────────────────────────────────
 
 use busbar_contract::ir::facts::{ContentItem, IrFacts, OPAQUE_CONTENT_MARKER};
-use busbar_contract::operation::OpVerb;
 
 fn screened(items: &[ContentItem<'_>]) -> Vec<String> {
     items
@@ -83,7 +82,7 @@ fn transcription_projects_prompt_as_text_and_audio_as_opaque() {
         stream: true,
         ..Default::default()
     };
-    assert_eq!(IrFacts::verb(&req), OpVerb::TRANSCRIPTION);
+    assert_eq!(IrFacts::verb(&req), crate::verbs::TRANSCRIPTION);
     assert!(IrFacts::wants_stream(&req));
     let items = req.content();
     // The audio blob is opaque (present-but-unscreenable); the caller `prompt` is screenable text —
@@ -106,7 +105,7 @@ fn speech_projects_input_instructions_and_speaker_names() {
         stream: false,
         ..Default::default()
     };
-    assert_eq!(IrFacts::verb(&req), OpVerb::SPEECH);
+    assert_eq!(IrFacts::verb(&req), crate::verbs::SPEECH);
     let screened = screened(&req.content());
     // `instructions` is caller free-text forwarded verbatim; it must be screenable.
     assert!(screened.iter().any(|t| t == "hello world"));

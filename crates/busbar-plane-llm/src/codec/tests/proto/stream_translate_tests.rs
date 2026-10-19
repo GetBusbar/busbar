@@ -1,6 +1,6 @@
 use super::*;
 use crate::codec::ir::{IrBlockMeta, IrStreamEvent};
-use busbar_contract::http::StatusCode;
+use http::StatusCode;
 
 /// STRUCTURAL ROUND-TRIP MATRIX (the test class that would have caught the cohere object-shape
 /// and openai usage bugs): for EVERY protocol, writing a canonical IR stream through that
@@ -4697,13 +4697,13 @@ fn test_gemini_protocol_resolves() {
     // `Authorization: Bearer` (every upstream call 401s) stayed green.
     // Since #83a S2-a the declaration states the scheme as DATA — the raw key in `x-goog-api-key`
     // for every mode — and the host presents it (bytes pinned in the host's suite).
-    let raw = busbar_contract::protocol::CredentialHeader::Raw {
+    let raw = crate::protocol::CredentialHeader::Raw {
         header: "x-goog-api-key",
         trim_start: false,
     };
     assert!(matches!(
         decl_for("gemini").expect("gemini declares itself").egress_scheme,
-        Some(busbar_contract::protocol::EgressScheme::Static { families: [], own, passthrough })
+        Some(crate::protocol::EgressScheme::Static { families: [], own, passthrough })
             if own == raw && passthrough == raw
     ));
 
@@ -4746,10 +4746,10 @@ fn test_bedrock_and_responses_register() {
     // Responses stopped emitting an auth header, or switched to `api-key`, it stayed green.
     // Since #83a S2-a the declaration states the scheme as DATA — `authorization: Bearer <key>` for
     // every mode — and the host presents it (bytes pinned in the host's suite).
-    let bearer = busbar_contract::protocol::CredentialHeader::Bearer;
+    let bearer = crate::protocol::CredentialHeader::Bearer;
     assert!(matches!(
         decl_for("responses").expect("responses declares itself").egress_scheme,
-        Some(busbar_contract::protocol::EgressScheme::Static { families: [], own, passthrough })
+        Some(crate::protocol::EgressScheme::Static { families: [], own, passthrough })
             if own == bearer && passthrough == bearer
     ));
 

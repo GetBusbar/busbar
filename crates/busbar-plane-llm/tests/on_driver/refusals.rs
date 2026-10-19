@@ -220,7 +220,7 @@ fn p_item_refusal_reason_collapse_no_llm_refusal_reads_as_an_internal_error() {
             if status == 500 {
                 wrong.push(format!("{d} {reason:?} answers a bare 500"));
             }
-            let generic = kind == busbar_contract::protocol::KIND_API_ERROR;
+            let generic = kind == busbar_plane_llm::protocol::KIND_API_ERROR;
             if generic != (class.is_node_fault() || class == RefusalClass::Timeout) {
                 wrong.push(format!(
                     "{d} {reason:?} ({class:?}) reads as {kind} at {status}"

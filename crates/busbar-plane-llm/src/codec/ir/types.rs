@@ -306,7 +306,7 @@ pub enum IrStreamEvent {
         usage: IrUsage,
     },
     MessageStop,
-    Error(busbar_contract::protocol::IrError),
+    Error(crate::protocol::IrError),
 }
 
 /// Canonical, protocol-neutral stop/finish reason — the typed IR carrier (closing the `stop_reason`

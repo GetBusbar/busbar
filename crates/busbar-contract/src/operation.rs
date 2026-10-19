@@ -73,12 +73,11 @@
 //! [`OpVerb::name`] is the tracing/metrics `op` field and the `paths:` config key. An unbounded
 //! caller-supplied string reaching it is a cardinality explosion. Nothing constructs an `OpVerb`
 //! from the wire: the entire set of values that exist is [`OpVerb::ALL`] (the six shape verbs
-//! the core owns) plus `proto::registry::declared_verbs()` (the verbs the registered protocols
-//! declare, folded at boot from `ProtocolDecl::verbs` — the seven LLM words arrive this way).
-//! Every one of them is an associated `const` — here for the shapes, in `operation.rs` still for
-//! the seven LLM verbs that `ir::variant` constructs — and a protocol's `resolve_operation`
-//! RETURNS one of these constants after matching the wire word; it never builds one out of the
-//! wire word. `Verb`'s fields are `pub(crate)` to this module's readers by pattern only; the
+//! the core owns) plus the `const` verbs a plane states in ITS OWN crate through
+//! [`OpVerb::named_invoke`] (the llm plane's seven endpoint words live in that plane). A
+//! protocol's `resolve_operation` RETURNS one of these constants after matching the wire word; it
+//! never builds one out of the wire word. `Verb`'s fields are `pub(crate)` to this module's readers
+//! by pattern only; the
 //! constants are the constructors.
 
 /// THE SHAPE OF AN EXCHANGE — the closed tag the agnostic core is allowed to know about, and the
@@ -203,17 +202,6 @@ pub enum OpVerb {
 }
 
 impl OpVerb {
-    // ── THE LLM FAMILY'S SEVEN VERBS. All one shape (`Invoke`): name a model, hand it arguments,
-    //    get content or an error back. They keep their published names to the letter, because those
-    //    names are the metrics label and the `paths:` config key and a rename is a broken dashboard.
-    pub const CHAT: OpVerb = OpVerb::named_invoke("chat");
-    pub const EMBEDDINGS: OpVerb = OpVerb::named_invoke("embeddings");
-    pub const MODERATION: OpVerb = OpVerb::named_invoke("moderation");
-    pub const IMAGE: OpVerb = OpVerb::named_invoke("image");
-    pub const TRANSCRIPTION: OpVerb = OpVerb::named_invoke("transcription");
-    pub const SPEECH: OpVerb = OpVerb::named_invoke("speech");
-    pub const RERANK: OpVerb = OpVerb::named_invoke("rerank");
-
     // ── THE PROTOCOL SURFACE'S SIX. One verb per shape today, carrying the shape's own word: MCP
     //    and A2A both address these through their own method names, which the protocol's
     //    `resolve_operation` maps onto these constants. When a cell needs to distinguish two verbs
@@ -230,15 +218,11 @@ impl OpVerb {
     #[cfg_attr(not(test), allow(dead_code))]
     pub const CONTROL: OpVerb = OpVerb::of(OpShape::Control);
 
-    /// EVERY OPERATION THE CORE ITSELF OWNS — the six protocol-surface verbs, one per shape. This
-    /// used to also list the seven LLM verbs, which made it a core table naming one family's
-    /// endpoints — exactly the coupling the module header calls out, and the reason the deletion
-    /// test passed "in the weakest sense": with every LLM protocol deleted, `ALL` still published
-    /// `chat`…`rerank` as if something served them. The LLM rows now reach the vocabulary from the
-    /// protocol DECLARATIONS instead (`proto::registry::declared_verbs()`, folded at boot from
-    /// `ProtocolDecl::verbs`), so a protocol's verbs leave when the protocol does. The closed
-    /// metric-label surface the header promises is `ALL ∪ declared_verbs()`: both halves are
-    /// `&'static` consts fixed at load, and nothing constructs an `OpVerb` from the wire.
+    /// EVERY OPERATION THE CORE ITSELF OWNS — the six protocol-surface verbs, one per shape. It
+    /// names no plane's endpoint words: a plane's own verbs are `const`s in that plane's crate, built
+    /// with [`Self::named_invoke`], so they leave when the plane does. The closed metric-label
+    /// surface is `ALL` plus those plane constants: all `&'static` consts fixed at compile time, and
+    /// nothing constructs an `OpVerb` from the wire.
     #[cfg_attr(not(test), allow(dead_code))]
     pub const ALL: &'static [OpVerb] = &[
         OpVerb::INVOKE,
@@ -249,19 +233,19 @@ impl OpVerb {
         OpVerb::CONTROL,
     ];
 
-    /// A NAMED `Invoke` verb: one shape, an explicit wire word. Private, `const`, and the only way
-    /// the family's several words are spelled — so "are they really all one shape?" is answered by the
-    /// constructor rather than by several arms that could drift. (The LLM family's seven verbs — chat,
-    /// embeddings, … — are all built here; the constructor names no protocol.)
-    const fn named_invoke(name: &'static str) -> OpVerb {
+    /// A NAMED `Invoke` verb: one shape, an explicit wire word. `const`, and the way a plane spells
+    /// its own family of invoke words as `const`s in its own crate (the llm plane's seven endpoint
+    /// words are built here); the constructor names no protocol. Only ever called in a `const`
+    /// initializer with a literal, so the label set stays closed.
+    pub const fn named_invoke(name: &'static str) -> OpVerb {
         OpVerb::Verb {
             op: OpShape::Invoke,
             name,
         }
     }
 
-    /// The verb a shape carries when the shape's own word is the name. Private for the same reason
-    /// [`Self::named_invoke`] is: constructing an `OpVerb` is this module's business.
+    /// The verb a shape carries when the shape's own word is the name. Private: the six shape verbs
+    /// are the core's own, and only this module constructs them.
     const fn of(op: OpShape) -> OpVerb {
         OpVerb::Verb {
             op,

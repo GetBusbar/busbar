@@ -168,9 +168,7 @@ pub type PathIngressFn = fn() -> &'static [PathIngressEntry];
 static INSTALLED_PATH_INGRESS: std::sync::OnceLock<Vec<(&'static str, PathIngress)>> =
     std::sync::OnceLock::new();
 
-/// INSTALL THE PATH-MODEL ARRIVALS — the composition root's one write, folded into
-/// [`crate::proto::install_protocols_with_path_ingress`] beside the decl install so the two cannot
-/// drift. Set-once, mirroring `install_protocols`.
+/// INSTALL THE PATH-MODEL ARRIVALS — the composition root's one write. Set-once.
 ///
 /// # Panics
 /// - if called twice: two composition roots is a wiring bug, not a merge to attempt.
@@ -181,7 +179,7 @@ pub fn install_path_ingress(arrivals: Vec<(&'static str, PathIngress)>) {
     );
 }
 
-/// THE CORE-TEST/`test-support` ARRIVAL HOOK — the analogue of [`crate::proto::set_test_builtins`]. A
+/// THE CORE-TEST/`test-support` ARRIVAL HOOK. A
 /// build with no composition root (core's own test binary, a downstream `test-support` consumer) seeds
 /// the dialect crate's `PATH_INGRESS` slice here from a `tests/` file / the LLM test-kit, so
 /// [`path_ingress_for`] resolves the URL-model arrivals without a set-once `install_path_ingress`.

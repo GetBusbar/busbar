@@ -5,16 +5,13 @@
 //! fills and every other plane must encode identically, plus the base64 codec they cross the
 //! JSON/binary boundary with.
 //!
-//! Two distinct value types, deliberately NOT unified: a single one-of type is lossy for image
-//! output.
-//!
 //! - [`MediaBlob`] — AUDIO. A single representation (bytes OR base64 OR uri), enforced by a one-of
 //!   enum. Carries optional PCM parameters because headerless raw PCM (`audio/L16` and similar
 //!   codec-only formats) keeps sample-rate / channels / bit-depth in the operation's contract, not
 //!   the bytes.
-//! - [`ImageOutput`] — IMAGE. ADDITIVE: a single image may legitimately return base64 AND a url/uri
-//!   at once (upstreams vary — some return only a URL, some a bucket URI, some base64), and
-//!   losslessness requires keeping every form present — so optionals, never a one-of.
+//!
+//! The generated-image output shape is one plane's, so it lives in that plane (Q128 contract p11
+//! finding 1).
 //!
 //! Relocated from `busbar-substrate-values::media`, which re-exports every item under its historical
 //! path. The raw-bytes arm is RE-EXPRESSED over this crate's own [`SlabBytes`] (a shared, windowed
@@ -147,29 +144,6 @@ impl MediaBlob {
             || self.mime_type.ends_with("/pcm")
             || self.mime_type.contains("codec=pcm");
         raw_pcm == self.pcm.is_some()
-    }
-}
-
-/// A single generated image. ADDITIVE: `b64` and `url` may BOTH be present and both are
-/// kept. `b64` is the common path; `url`/`uri` are additive (some upstreams return a URL, others a
-/// bucket URI). The other fields are upstream-specific extras kept for lossless round-trip.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ImageOutput {
-    pub b64: Option<String>,
-    pub url: Option<String>,
-    pub mime_type: Option<String>,
-    pub revised_prompt: Option<String>, // dall-e-3
-    pub seed: Option<u64>,              // SDXL / Stable Image
-    pub finish_reason: Option<String>,  // SUCCESS / CONTENT_FILTERED / "Filter reason: …"
-}
-
-impl ImageOutput {
-    /// At least one representation must be present — an image output with neither `b64` nor `url` is
-    /// meaningless (and would silently drop the image). No runtime path currently calls this; the
-    /// invariant is documented and self-tested but not enforced on real data.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn has_payload(&self) -> bool {
-        self.b64.is_some() || self.url.is_some()
     }
 }
 

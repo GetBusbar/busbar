@@ -22,10 +22,11 @@
 use std::sync::{Arc, OnceLock};
 
 use busbar_contract::config::UpstreamCreds;
-use busbar_contract::protocol::{
-    CredentialFamily, CredentialHeader, EgressScheme, ProtocolDecl, SigningContext,
-};
+use busbar_contract::protocol::SigningContext;
+// The declaration shapes the twins are built from are the dialects' plane's (Q128 contract p11
+// finding 1): the plane is this suite's dev-dependency, and the twins carry no dialect's bytes.
 use busbar_kernel::bound_credential::{bind, CredentialProvider, StyleBinding};
+use busbar_plane_llm::protocol::{CredentialFamily, CredentialHeader, EgressScheme, ProtocolDecl};
 
 fn fixture() -> &'static serde_json::Value {
     static DOC: OnceLock<serde_json::Value> = OnceLock::new();

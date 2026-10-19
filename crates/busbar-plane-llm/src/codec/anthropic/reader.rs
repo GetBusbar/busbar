@@ -64,7 +64,7 @@ impl ProtocolReader for AnthropicReader {
                 || (lower.contains("exceeds the maximum")
                     && (lower.contains(keys::TOKEN) || lower.contains(keys::CONTEXT)))
             {
-                Some(busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
+                Some(crate::protocol::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
             } else {
                 None
             }

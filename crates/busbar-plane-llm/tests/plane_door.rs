@@ -421,7 +421,7 @@ fn the_sticky_key_is_the_pools_header_else_the_chat_bodys_system() {
         .iter()
         .find(|d| d.name == "anthropic")
         .and_then(|d| d.handler)
-        .and_then(|h| h.operation_handler(busbar_contract::operation::OpVerb::CHAT));
+        .and_then(|h| h.operation_handler(busbar_plane_llm::verbs::CHAT));
     let body = serde_json::json!({"model": "p", "system": "be brief", "messages": []});
     let session: &[(&[u8], &[u8])] = &[(b"X-Session-Id", b"s-1")];
     assert_eq!(
@@ -467,7 +467,7 @@ fn every_open_class_becomes_one_reported_count_at_its_tail_index() {
 // ── F25 REHOME: the registry facts and the plane's published identity (coverage map v2) ──────────
 
 /// The declaration of the dialect named `name`, from the one table the plane serves through.
-fn decl_named(name: &str) -> Option<&'static busbar_contract::protocol::ProtocolDecl> {
+fn decl_named(name: &str) -> Option<&'static busbar_plane_llm::protocol::ProtocolDecl> {
     busbar_plane_llm::codec::DECLS
         .iter()
         .copied()
@@ -493,12 +493,13 @@ const SHIPPED_DIALECTS: [&str; 6] = [
 /// another protocol's name, or an unknown name resolves to some declaration.
 #[test]
 fn registry_resolves_openai_and_its_moderation_handler() {
-    use busbar_contract::operation::OpVerb;
     let handler = decl_named("openai")
         .and_then(|d| d.handler)
         .expect("the shipped protocol's handler is registered");
     assert_eq!(handler.protocol_name(), "openai");
-    assert!(handler.operation_handler(OpVerb::MODERATION).is_some());
+    assert!(handler
+        .operation_handler(busbar_plane_llm::verbs::MODERATION)
+        .is_some());
     assert!(
         decl_named("zzz-unknown").is_none(),
         "unknown protocol -> None"
@@ -512,14 +513,15 @@ fn registry_resolves_openai_and_its_moderation_handler() {
 /// RED: any of the six dialects stops resolving a handler, or its handler stops serving chat.
 #[test]
 fn every_protocol_serves_chat_via_its_request_handler() {
-    use busbar_contract::operation::OpVerb;
     for proto in SHIPPED_DIALECTS {
         let handler = decl_named(proto)
             .and_then(|d| d.handler)
             .unwrap_or_else(|| panic!("{proto}: protocol registered"));
         assert_eq!(handler.protocol_name(), proto);
         assert!(
-            handler.operation_handler(OpVerb::CHAT).is_some(),
+            handler
+                .operation_handler(busbar_plane_llm::verbs::CHAT)
+                .is_some(),
             "{proto} must serve chat via operation_handler(Chat)"
         );
     }
@@ -542,10 +544,9 @@ fn every_protocol_serves_chat_via_its_request_handler() {
 /// an affinity key from an empty `system` (or none from a non-empty one).
 #[test]
 fn chat_declares_its_capabilities() {
-    use busbar_contract::operation::OpVerb;
     let chat = decl_named("openai")
         .and_then(|d| d.handler)
-        .and_then(|h| h.operation_handler(OpVerb::CHAT))
+        .and_then(|h| h.operation_handler(busbar_plane_llm::verbs::CHAT))
         .expect("the shipped protocol serves chat");
     assert!(chat.streaming(), "chat streams");
     assert!(chat.taps_usage(), "chat bills tokens from the body");

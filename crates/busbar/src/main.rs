@@ -258,14 +258,8 @@ include!(concat!(env!("OUT_DIR"), "/linked.rs"));
 // admin crate names no hook plugin.
 include!(concat!(env!("OUT_DIR"), "/linked_hook_names.rs"));
 
-/// REGISTER THE LINKED PROTOCOLS — the composition root's one write into the protocol axis, over
+/// REGISTER THE LINKED ARRIVALS — the composition root's one write into the arrival axes, over
 /// every entry in [`LINKED`] (see [`root::linked::register_protocols`]).
-///
-/// THE ORDER IS OPERATOR-VISIBLE. `merged_boot_decls` folds this set AHEAD of whatever built-in
-/// declarations core still carries, and the resulting sequence is both the "must be one of:" tail on
-/// a bad `protocol:` and the list `telemetry` indexes its per-protocol metric families by POSITION
-/// in. The set is the table's order, which is the manifest's: appending a row keeps every existing
-/// index; inserting one renumbers them.
 fn register_protocols() {
     root::linked::register_protocols(&LINKED, ROOT_UNITS);
 }

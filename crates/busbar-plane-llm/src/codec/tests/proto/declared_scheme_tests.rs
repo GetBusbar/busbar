@@ -15,7 +15,7 @@
 //! presented under schemes carrying exactly this data, it writes exactly those headers. Together the
 //! two suites are the byte-identity proof of the switch.
 
-use busbar_contract::protocol::{CredentialHeader, EgressScheme, ProtocolDecl};
+use crate::protocol::{CredentialHeader, EgressScheme, ProtocolDecl};
 
 fn fixture() -> serde_json::Value {
     let path = concat!(
@@ -105,12 +105,6 @@ fn the_declared_dialects_carry_a_scheme_and_no_builder() {
         let scheme = decl
             .egress_scheme
             .unwrap_or_else(|| panic!("{} declares no scheme", decl.name));
-        assert!(
-            decl.egress_auth_headers.is_none(),
-            "{} still carries a credential builder",
-            decl.name
-        );
-        assert!(!decl.egress_auth_lane_constant, "{}", decl.name);
         assert_eq!(
             describe(&scheme),
             doc["schemes"][decl.name],

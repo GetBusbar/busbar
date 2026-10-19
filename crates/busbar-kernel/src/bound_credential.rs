@@ -15,15 +15,15 @@
 //!
 //! [`CredentialProvider`] is the shape the request path asks; this module holds no credential
 //! logic of its own: a binding no plugin serves is [`NoCredential`] (no auth header, so the
-//! upstream answers 401, the fail-closed answer), and a protocol that declares its own builder
-//! ([`busbar_contract::protocol::ProtocolDecl::egress_auth_headers`]) is that builder.
+//! upstream answers 401, the fail-closed answer). No plane's code is ever handed the credential: the
+//! builder shape a protocol declaration once offered for that went with the declaration out of the
+//! contract, and nothing in production ever constructed it (Q128 contract p11 finding 2).
 
 use std::sync::Arc;
 
 use busbar_contract::abi::auth::{AuthPoint, AuthPoints, STYLE_NEEDS_HEADERS};
 use busbar_contract::auth_calls::{AuthAxis, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::config::UpstreamCreds;
-use busbar_contract::protocol::EgressAuthHeaders;
 use busbar_contract::redacted::Secret;
 use http::{HeaderName, HeaderValue};
 
@@ -73,34 +73,6 @@ impl CredentialProvider for NoCredential {
     }
     fn is_lane_constant(&self) -> bool {
         true // constantly nothing
-    }
-}
-
-/// A credential a PROTOCOL DECLARED its own builder for
-/// ([`busbar_contract::protocol::ProtocolDecl::egress_auth_headers`]): the plane's builder, behind
-/// the one shape the request path asks.
-pub struct DeclaredBuilder {
-    /// The plane's builder.
-    pub headers_for: EgressAuthHeaders,
-    /// Whether it reads only `(key, mode)` (`ProtocolDecl::egress_auth_lane_constant`).
-    pub lane_constant: bool,
-}
-
-impl CredentialProvider for DeclaredBuilder {
-    /// The plane's field pairs as headers, in order; a pair that is not a legal header is dropped.
-    fn headers_for(&self, key: &str, ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
-        (self.headers_for)(key, ctx)
-            .into_iter()
-            .filter_map(|(name, value)| {
-                Some((
-                    HeaderName::from_bytes(name.as_bytes()).ok()?,
-                    HeaderValue::from_bytes(&value).ok()?,
-                ))
-            })
-            .collect()
-    }
-    fn is_lane_constant(&self) -> bool {
-        self.lane_constant
     }
 }
 

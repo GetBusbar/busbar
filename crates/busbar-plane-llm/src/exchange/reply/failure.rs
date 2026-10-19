@@ -11,10 +11,10 @@
 
 use std::collections::HashMap;
 
-use busbar_contract::operation::OpVerb;
-use busbar_contract::protocol::{
+use crate::protocol::{
     HeadFields, ProtocolDecl, KIND_AUTHENTICATION, PROVIDER_CODE_CONTEXT_LENGTH,
 };
+use busbar_contract::operation::OpVerb;
 use busbar_contract::upstream::{CanonicalSignal, Disposition, RawUpstreamError, StatusClass};
 
 use super::super::refuse::{render, Rendered};

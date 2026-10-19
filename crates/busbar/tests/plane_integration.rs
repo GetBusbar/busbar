@@ -68,7 +68,10 @@ fn resolved(sections: &str) -> RootCfg {
         "acme".to_string(),
         serde_yaml::from_str(&format!(
             "protocol: {}\nbase_url: https://api.example.com\n",
-            busbar_kernel::proto::residual_default_dialect().expect("a residual-default dialect")
+            busbar_kernel::plane::provider_dialects()
+                .first()
+                .copied()
+                .expect("a linked plane declares a provider dialect")
         ))
         .expect("provider def"),
     );

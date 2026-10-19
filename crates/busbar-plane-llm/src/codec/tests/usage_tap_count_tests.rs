@@ -50,7 +50,7 @@ fn the_chat_cells_three_fault_paths_each_return_their_reason() {
 
 #[test]
 fn a_leaf_cells_default_tap_returns_a_refused_body_as_a_decode_fault() {
-    for op in [OpVerb::EMBEDDINGS, OpVerb::IMAGE] {
+    for op in [crate::verbs::EMBEDDINGS, crate::verbs::IMAGE] {
         assert_eq!(
             cell(op).extract_usage(crate::codec::test_host::HOST, "bedrock", NOT_JSON),
             Err(UsageTapFault::Decode),

@@ -322,7 +322,7 @@ pub fn read_usage(
     protocol: &'static str,
     usage: Option<&serde_json::Value>,
     table: &[UsageCount],
-) -> Result<crate::codec::ir::IrUsage, busbar_contract::protocol::IrError> {
+) -> Result<crate::codec::ir::IrUsage, crate::protocol::IrError> {
     // One refused field: said loudly, and it bills nothing. The readable fields bill as stated.
     let kept = |read: Result<Option<u64>, UnreadableCount>| match read {
         Ok(n) => n,

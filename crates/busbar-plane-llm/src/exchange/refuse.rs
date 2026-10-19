@@ -11,12 +11,12 @@
 //! dialect's own vendor sentence) from the reason; every other message is the kernel's own text,
 //! which names the facts only the kernel has (a group, a window, a model with no rate).
 
-use busbar_contract::abi::plane::{class_of_word, reason_of, RefusalClass};
-use busbar_contract::protocol::{
+use crate::protocol::{
     ProtocolDecl, APPLICATION_JSON, KIND_API_ERROR, KIND_AUTHENTICATION, KIND_INSUFFICIENT_QUOTA,
     KIND_INVALID_REQUEST, KIND_NOT_FOUND, KIND_OVERLOADED, KIND_PERMISSION, KIND_RATE_LIMIT,
     KIND_REQUEST_TOO_LARGE, KIND_TIMEOUT,
 };
+use busbar_contract::abi::plane::{class_of_word, reason_of, RefusalClass};
 use serde_json::Value;
 
 use crate::codec::DECLS;
@@ -174,7 +174,7 @@ pub fn kernel_refusal(
     let spelling = reason_of(reason).map_or("", |r| r.as_str());
     if is_authentication(spelling) {
         let d = decl(envelope);
-        let kind = d.map_or(busbar_contract::protocol::KIND_AUTHENTICATION, |d| {
+        let kind = d.map_or(crate::protocol::KIND_AUTHENTICATION, |d| {
             d.auth_failure_status_and_kind.1
         });
         let message = d.map_or("authentication failed", |d| d.auth_failure_message);

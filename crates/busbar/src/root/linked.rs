@@ -72,8 +72,6 @@ pub struct Linked {
         busbar_contract::abi::mechanism::door::DoorFn,
         &'static str,
     )],
-    /// Protocol declarations, appended to the installed protocol set in this order.
-    pub protocols: &'static [&'static [&'static busbar_kernel::proto::ProtocolDecl]],
     /// URL-model arrivals, by protocol name.
     pub path_ingress: &'static [&'static [PathIngressEntry]],
     /// Body-model arrivals, by protocol name.
@@ -311,21 +309,17 @@ pub struct BookCtx<'a> {
     pub app: &'a busbar_kernel::state::App,
 }
 
-/// THE PROTOCOL AXIS: every entry's declarations and its path- and body-model arrivals, then each
-/// entry's protocol-axis seams — and the node axis, which those arrivals hand their units to: every
-/// entry on it is handed the node a root unit drives it through.
+/// THE ARRIVAL AXES: every entry's path- and body-model arrivals, then each entry's protocol-axis
+/// seams — and the node axis, which those arrivals hand their units to: every entry on it is handed
+/// the node a root unit drives it through. (No protocol declaration is registered here: a dialect is
+/// its plane's, and the kernel holds no declaration registry, Q128 contract p11 finding 1.)
 pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
-    let installed: Vec<&'static busbar_kernel::proto::ProtocolDecl> = linked
-        .protocols
-        .iter()
-        .flat_map(|decls| decls.iter().copied())
-        .collect();
     let path_ingress: Vec<PathIngressEntry> = linked
         .path_ingress
         .iter()
         .flat_map(|arrivals| arrivals.iter().copied())
         .collect();
-    busbar_kernel::proto::install_protocols_with_path_ingress(installed, path_ingress);
+    busbar_kernel::ingress::arrival::install_path_ingress(path_ingress);
     let body_ingress: Vec<BodyIngressEntry> = linked
         .body_ingress
         .iter()

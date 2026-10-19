@@ -1101,7 +1101,7 @@ fn overloaded_kind_on_chat_completions() -> String {
         &NoHost,
         "openai",
         503,
-        busbar_contract::protocol::KIND_OVERLOADED,
+        busbar_plane_llm::protocol::KIND_OVERLOADED,
         "x",
         0,
     );

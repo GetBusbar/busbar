@@ -15,7 +15,6 @@
 
 use busbar_contract::billing::{Billing, TokenUsage};
 use busbar_contract::ir::SourceScopedExtra;
-use busbar_contract::media::ImageOutput;
 
 /// Which image operation. Support is non-uniform per model → unsupported `(op, model)` = 404.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -89,7 +88,7 @@ pub struct ImageReq {
 /// knobs are enum/numeric roles, not caller free-text, and stay out.
 impl busbar_contract::ir::facts::IrFacts for ImageReq {
     fn verb(&self) -> busbar_contract::operation::OpVerb {
-        busbar_contract::operation::OpVerb::IMAGE
+        crate::verbs::IMAGE
     }
 
     fn wants_stream(&self) -> bool {
@@ -235,6 +234,29 @@ impl ImageResp {
                 quality: cb.quality.clone(),
             })
         }
+    }
+}
+
+/// A single generated image. ADDITIVE: `b64` and `url` may BOTH be present and both are
+/// kept. `b64` is the common path; `url`/`uri` are additive (some upstreams return a URL, others a
+/// bucket URI). The other fields are upstream-specific extras kept for lossless round-trip.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ImageOutput {
+    pub b64: Option<String>,
+    pub url: Option<String>,
+    pub mime_type: Option<String>,
+    pub revised_prompt: Option<String>, // dall-e-3
+    pub seed: Option<u64>,              // SDXL / Stable Image
+    pub finish_reason: Option<String>,  // SUCCESS / CONTENT_FILTERED / "Filter reason: …"
+}
+
+impl ImageOutput {
+    /// At least one representation must be present — an image output with neither `b64` nor `url` is
+    /// meaningless (and would silently drop the image). No runtime path currently calls this; the
+    /// invariant is documented and self-tested but not enforced on real data.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn has_payload(&self) -> bool {
+        self.b64.is_some() || self.url.is_some()
     }
 }
 

@@ -18,15 +18,14 @@ use axum::response::Response;
 
 use crate::plane::Ingress;
 
-/// The dialect an answer to `ingress` is SHAPED IN, as a name the protocol registry understands.
+/// The dialect an answer to `ingress` is SHAPED IN, or `""` (the generic envelope) when it names
+/// none.
 ///
-/// This is the ONE place an unrecognised residual path is answered in the registry's declared
-/// residual-default dialect, and it is a decision about the REPLY rather than a claim about the
-/// path: the caller's dialect is unknown, and the residual-default is whichever dialect declares
-/// itself the most widely understood — what a generic HTTP client probing `/` is most likely to
-/// parse. Stated here so the status/message lookups and the envelope builder cannot answer it two
-/// different ways, which is precisely how a mounted plane's path once acquired the wrong dialect's
-/// error shape.
+/// This is the ONE place an unrecognised residual path's reply shape is decided, and it is a
+/// decision about the REPLY rather than a claim about the path: the caller's dialect is unknown,
+/// and the kernel, which names no dialect, answers in the generic envelope. Stated here so the
+/// status/message lookups and the envelope builder cannot answer it two different ways, which is
+/// precisely how a mounted plane's path once acquired the wrong dialect's error shape.
 ///
 /// IT IS [`Ingress::shaping_wire_format`] THAT IS READ HERE, NOT `wire_format`. The two ask
 /// different questions and only one of them is answerable at a door: see the note on
@@ -34,15 +33,10 @@ use crate::plane::Ingress;
 /// error body, and for what reading `wire_format` here did the day a mounted plane grew a second
 /// dialect.
 pub fn envelope_dialect(ingress: Ingress) -> &'static str {
-    // The residual fallback dialect is the one the protocol registry declares as its
-    // `residual_default` (whichever dialect declares itself the most widely understood — declared on
-    // its `ProtocolDecl`, read here so core spells no dialect). A build that registers no such default
-    // (every dialect deleted) has no dialect to shape an unrecognised residual path in, so the
-    // caller gets the generic envelope — the honest deletion behaviour.
-    ingress
-        .shaping_wire_format()
-        .or_else(crate::proto::residual_default_dialect)
-        .unwrap_or("")
+    // The kernel holds no dialect to fall back to, so an ingress that names none is shaped in the
+    // generic envelope (`""`). The residual-default dialect this once read came from the kernel's
+    // protocol registry, which production never populated (Q128 contract p11 finding 1).
+    ingress.shaping_wire_format().unwrap_or("")
 }
 
 /// Render `status`/`kind`/`message` in the dialect the resolved `ingress` is spoken in.

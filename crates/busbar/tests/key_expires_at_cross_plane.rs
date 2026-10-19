@@ -81,15 +81,6 @@ fn mint_then_expire_the_row(
 async fn a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane() {
     register_planes();
     busbar_kernel::snapshot::init();
-    // Force the protocol registry's core-test built-in tail to seed BEFORE `TestApp::build()` banks
-    // `AppSlots` off `busbar_kernel::proto::known_protocols()`. Any registry accessor seeds it
-    // (idempotent, process-wide), and ordinarily some earlier test in the same binary already has by
-    // the time this one runs — but filtered down to just this test there is no earlier caller, so
-    // `known_protocols()` is empty at bank time and grows later on the request path, and `AppSlots`
-    // (sized off the empty snapshot) then indexes out of bounds. Not this test's bug to fix twice;
-    // seeding here up front is what every real request path does implicitly by the time it reads the
-    // registry at all.
-    let _ = busbar_kernel::proto::decl_for(busbar_kernel::proto::PROTO_ANTHROPIC);
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: axum::http::StatusCode::OK,

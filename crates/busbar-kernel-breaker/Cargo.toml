@@ -31,3 +31,5 @@ busbar-contract = { path = "../busbar-contract" }
 # The served path's `Retry-After` read (`normalize::parse_retry_after`) accepts every RFC 9110
 # HTTP-date form a provider may send, through the one date parser the host has always used.
 httpdate = { workspace = true }
+# The header vocabulary `parse_retry_after` reads (the contract no longer re-exports it).
+http = { workspace = true }

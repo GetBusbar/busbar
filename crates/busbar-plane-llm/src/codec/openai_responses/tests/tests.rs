@@ -522,7 +522,7 @@ fn test_auth_headers() {
     // `authorization: Bearer <key>` for every credential and mode. The bytes the host writes for a
     // valid key, and the omission of a key whose bytes no header value may carry, are pinned in the
     // host's suite over the shared fixture `testing/plane-copies/declared-credentials.json`.
-    let Some(busbar_contract::protocol::EgressScheme::Static {
+    let Some(crate::protocol::EgressScheme::Static {
         families,
         own,
         passthrough,
@@ -531,17 +531,8 @@ fn test_auth_headers() {
         panic!("responses declares a static credential scheme");
     };
     assert!(families.is_empty());
-    assert_eq!(own, busbar_contract::protocol::CredentialHeader::Bearer);
-    assert_eq!(
-        passthrough,
-        busbar_contract::protocol::CredentialHeader::Bearer
-    );
-    assert!(
-        crate::codec::openai_responses::DECL
-            .egress_auth_headers
-            .is_none(),
-        "no credential passes through the plane"
-    );
+    assert_eq!(own, crate::protocol::CredentialHeader::Bearer);
+    assert_eq!(passthrough, crate::protocol::CredentialHeader::Bearer);
 }
 
 /// Warn+OMIT policy (`proto::bearer_auth_headers`): a key with bytes invalid for an HTTP header
@@ -553,7 +544,7 @@ fn auth_headers_invalid_key_omits_header_no_panic() {
     // `authorization: Bearer <key>` for every credential and mode. The bytes the host writes for a
     // valid key, and the omission of a key whose bytes no header value may carry, are pinned in the
     // host's suite over the shared fixture `testing/plane-copies/declared-credentials.json`.
-    let Some(busbar_contract::protocol::EgressScheme::Static {
+    let Some(crate::protocol::EgressScheme::Static {
         families,
         own,
         passthrough,
@@ -562,17 +553,8 @@ fn auth_headers_invalid_key_omits_header_no_panic() {
         panic!("responses declares a static credential scheme");
     };
     assert!(families.is_empty());
-    assert_eq!(own, busbar_contract::protocol::CredentialHeader::Bearer);
-    assert_eq!(
-        passthrough,
-        busbar_contract::protocol::CredentialHeader::Bearer
-    );
-    assert!(
-        crate::codec::openai_responses::DECL
-            .egress_auth_headers
-            .is_none(),
-        "no credential passes through the plane"
-    );
+    assert_eq!(own, crate::protocol::CredentialHeader::Bearer);
+    assert_eq!(passthrough, crate::protocol::CredentialHeader::Bearer);
 }
 
 #[test]
@@ -2024,7 +2006,7 @@ fn test_stream_failed_invalid_api_key_classifies_as_auth() {
         StatusClass::RateLimit
     );
     assert_eq!(
-        class_for_response_failed(busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH),
+        class_for_response_failed(crate::protocol::PROVIDER_CODE_CONTEXT_LENGTH),
         StatusClass::ContextLength
     );
     assert_eq!(
@@ -2058,7 +2040,7 @@ fn test_read_response_failed_body_classifies_by_signal() {
             .read_response(crate::codec::test_host::HOST, &serde_json::json!({
                 "status": STATUS_FAILED,
                 "output": [],
-                "error": {"code": busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH, "type": ERR_TYPE_INVALID_REQUEST}
+                "error": {"code": crate::protocol::PROVIDER_CODE_CONTEXT_LENGTH, "type": ERR_TYPE_INVALID_REQUEST}
             }))
             .expect_err("failed body must surface an IrError");
     assert_eq!(
@@ -3679,7 +3661,7 @@ fn test_response_failed_code_is_enum_even_for_human_provider_signal() {
             crate::codec::test_host::HOST,
             &IrStreamEvent::Error(IrError {
                 class: StatusClass::ServerError,
-                provider_signal: Some(busbar_contract::protocol::STREAM_ABORT_DETAIL.to_string()),
+                provider_signal: Some(crate::protocol::STREAM_ABORT_DETAIL.to_string()),
                 retry_after: None,
             }),
         )
@@ -3696,7 +3678,7 @@ fn test_response_failed_code_is_enum_even_for_human_provider_signal() {
     );
     assert_eq!(
         error.get("message").and_then(|m| m.as_str()),
-        Some(busbar_contract::protocol::STREAM_ABORT_DETAIL),
+        Some(crate::protocol::STREAM_ABORT_DETAIL),
         "the human text stays in `message`"
     );
 
@@ -5105,10 +5087,7 @@ fn test_write_error_maps_forward_transient_kinds() {
         );
         assert!(v["error"]["code"].is_null(), "server_error code is null");
     }
-    for kind in [
-        busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH,
-        "bad_request",
-    ] {
+    for kind in [crate::protocol::PROVIDER_CODE_CONTEXT_LENGTH, "bad_request"] {
         let v = writer.write_error(crate::codec::test_host::HOST, 400, kind, "bad request");
         assert_eq!(
             v["error"]["type"].as_str(),

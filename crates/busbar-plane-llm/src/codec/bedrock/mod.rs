@@ -5,25 +5,25 @@
 
 use crate::codec::ir::IrStreamEvent;
 use crate::codec::keys;
-use busbar_contract::http::{HeaderName, HeaderValue, StatusCode};
-use busbar_contract::protocol::*;
-use busbar_contract::protocol::{
+use crate::protocol::*;
+use crate::protocol::{
     ERR_TYPE_AUTHENTICATION, ERR_TYPE_INSUFFICIENT_QUOTA, ERR_TYPE_INVALID_REQUEST,
     ERR_TYPE_NOT_FOUND, ERR_TYPE_PERMISSION, ERR_TYPE_RATE_LIMIT,
 };
 #[cfg(test)]
 use busbar_contract::upstream::CanonicalSignal;
 use busbar_contract::upstream::StatusClass;
+use http::{HeaderName, HeaderValue, StatusCode};
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::codec::proto_codec) and netted into core (core::proto::proto_codec).
 #[allow(unused_imports)]
-// used standalone; redundant with the `busbar_contract::protocol::*` glob when netted into core
+// used standalone; redundant with the `crate::protocol::*` glob when netted into core
 use super::proto_codec::*;
 use crate::codec::usage_count::{CountRead, CountSlot, UsageCount};
 use busbar_contract::ir::egress_prep::LaneCaps;
 // See the anthropic dialect for the rationale: an explicit import of the codec surface so it binds to
-// THIS crate's own `proto_codec` rather than the `busbar_contract::protocol::*` glob.
+// THIS crate's own `proto_codec` rather than the `crate::protocol::*` glob.
 #[allow(unused_imports)]
 use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming};
 
@@ -142,10 +142,10 @@ pub fn protocol() -> Protocol {
 /// unambiguous regardless of path), then the `/converse` path (rung 12) and the `/model/{id}/invoke`
 /// path (rung 13). Lower strength binds tighter — the shared ladder positions.
 fn claims(
-    h: busbar_contract::protocol::HeadFields<'_>,
+    h: crate::protocol::HeadFields<'_>,
     path: &str,
-) -> Option<busbar_contract::protocol::ClaimStrength> {
-    use busbar_contract::protocol::{head_field, ClaimStrength};
+) -> Option<crate::protocol::ClaimStrength> {
+    use crate::protocol::{head_field, ClaimStrength};
     if head_field(h, "authorization")
         .is_some_and(|a| a.is_ascii() && a.starts_with(b"AWS4-HMAC-SHA256"))
     {
@@ -163,11 +163,11 @@ fn claims(
 /// BEDROCK'S RESIDUAL DETECTION — its arm of the headerless `residual_dialect_for_path` ladder: a
 /// `/model/{id}/converse[-stream]` path names Bedrock (rung 30). The `/converse`-suffix requirement
 /// is load-bearing: a non-Converse `/model/…` path must NOT wear a Bedrock envelope.
-fn residual_claims(path: &str) -> Option<busbar_contract::protocol::ClaimStrength> {
+fn residual_claims(path: &str) -> Option<crate::protocol::ClaimStrength> {
     if path.starts_with("/model/")
         && (path.ends_with("/converse") || path.ends_with("/converse-stream"))
     {
-        return Some(busbar_contract::protocol::ClaimStrength(30));
+        return Some(crate::protocol::ClaimStrength(30));
     }
     None
 }
@@ -190,10 +190,10 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     codec: dialect_codec!(VENDOR_NAME),
     handler: Some(&handler::BedrockRequestHandler),
     verbs: &[
-        busbar_contract::operation::OpVerb::CHAT,
-        busbar_contract::operation::OpVerb::EMBEDDINGS,
-        busbar_contract::operation::OpVerb::IMAGE,
-        busbar_contract::operation::OpVerb::RERANK,
+        crate::verbs::CHAT,
+        crate::verbs::EMBEDDINGS,
+        crate::verbs::IMAGE,
+        crate::verbs::RERANK,
     ],
     head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
     // Bedrock ingress expects a BINARY eventstream body, not SSE: mislabeling it breaks the SDK.
@@ -208,13 +208,11 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // kernel's egress-auth unit holds the lane credential (`ACCESS:SECRET[:SESSION]`) and signs
     // under a teller-minted grant, so the secret never passes through this plane. Never
     // lane-constant: every signature covers the body, the time and the path.
-    egress_auth_headers: None,
-    egress_auth_lane_constant: false,
     egress_scheme: Some(EgressScheme::SigV4 {
         service: VENDOR_NAME,
         region_of_host: declared_sigv4_region,
         default_region: "us-east-1",
-        content_type: busbar_contract::protocol::APPLICATION_JSON,
+        content_type: crate::protocol::APPLICATION_JSON,
     }),
     // THE MODEL IS IN THE URL (`/model/{model_id}/converse`, `/converse-stream`, `/invoke`): this
     // dialect registers its arrival (`busbar_kernel::ingress::bedrock_arrival`) through
@@ -232,7 +230,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // 429 with `ThrottlingException`, a Converse-declared error, like the other five dialects' 429.
     // 1.5.5 answered 400 `ServiceQuotaExceededException`, which Converse does not declare (OWNER
     // rule 22, 2026-10-14; accepted difference "C-22 bedrock budget refusal is a declared Converse error").
-    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS.as_u16(),
+    quota_exceeded_status: http::StatusCode::TOO_MANY_REQUESTS.as_u16(),
     ingress_is_eventstream: true,
     emits_sse_done_terminator: false,
     max_citations_per_delta: Some(1),
@@ -243,10 +241,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // kernel-originated health probe; a same-dialect caller's own user-agent replaces it.
     egress_user_agent: "Boto3/1.35.0 md/Botocore#1.35.0",
     has_model_in_url: true,
-    auth_failure_status_and_kind: (
-        busbar_contract::http::StatusCode::FORBIDDEN.as_u16(),
-        keys::AUTH_WORD,
-    ),
+    auth_failure_status_and_kind: (http::StatusCode::FORBIDDEN.as_u16(), keys::AUTH_WORD),
     ingress_relays_amzn_headers: true,
     ingress_relayed_response_header_names: &[HDR_AMZN_REQUEST_ID, HDR_AMZN_ERROR_TYPE],
     auth_failure_message: "",
@@ -304,11 +299,11 @@ const APPLICATION_VND_AMAZON_EVENTSTREAM: &str = "application/vnd.amazon.eventst
 
 /// The Bedrock-side spelling of the "overloaded" error type that AWS's own error responses carry
 /// in their `__type` field (`ServiceUnavailableException` maps back to this on a round-trip).
-/// Distinguished from `busbar_contract::protocol::KIND_OVERLOADED` ("overloaded"), which is busbar's own
+/// Distinguished from `crate::protocol::KIND_OVERLOADED` ("overloaded"), which is busbar's own
 /// internal kind vocabulary. Both map to `ServiceUnavailableException` via
 /// `error_kind_to_bedrock_type`; named here so the match arm is a const pattern rather than a
 /// bare literal.
-const ERR_TYPE_OVERLOADED: &str = busbar_contract::protocol::ERR_TYPE_OVERLOADED;
+const ERR_TYPE_OVERLOADED: &str = crate::protocol::ERR_TYPE_OVERLOADED;
 
 /// Map busbar's generic error `kind` vocabulary to the AWS Bedrock Converse exception name carried
 /// in `__type`. AWS's Converse error model is a fixed, closed set of exception shapes
@@ -335,15 +330,15 @@ pub fn error_kind_to_bedrock_type(kind: &str) -> &'static str {
         | "forbidden"
         | "unauthorized" => "AccessDeniedException",
         "not_found" | ERR_TYPE_NOT_FOUND | "model_not_found" => "ResourceNotFoundException",
-        busbar_contract::protocol::KIND_TIMEOUT | "model_timeout" => "ModelTimeoutException",
-        busbar_contract::protocol::KIND_OVERLOADED
+        crate::protocol::KIND_TIMEOUT | "model_timeout" => "ModelTimeoutException",
+        crate::protocol::KIND_OVERLOADED
         | ERR_TYPE_OVERLOADED
         | "service_unavailable"
         | "unavailable" => EXC_SERVICE_UNAVAILABLE,
         "quota_exceeded" | "service_quota_exceeded" | ERR_TYPE_INSUFFICIENT_QUOTA => EXC_THROTTLING,
-        busbar_contract::protocol::KIND_API_ERROR
-        | "internal_error"
-        | busbar_contract::protocol::KIND_SERVER_ERROR => EXC_INTERNAL_SERVER,
+        crate::protocol::KIND_API_ERROR | "internal_error" | crate::protocol::KIND_SERVER_ERROR => {
+            EXC_INTERNAL_SERVER
+        }
         // No native Bedrock counterpart: fall back to the generic client-error exception so the
         // wire `__type` is still a real AWS exception name a native SDK can decode.
         _ => EXC_VALIDATION,
@@ -391,7 +386,7 @@ pub fn synth_amzn_request_id(host: &dyn busbar_contract::codec::CodecHost) -> Op
 /// encoding fails we skip that header rather than panic — this runs on the request path.
 fn attach_bedrock_error_headers(
     host: &dyn busbar_contract::codec::CodecHost,
-    headers: &mut busbar_contract::http::HeaderMap,
+    headers: &mut http::HeaderMap,
     kind: &str,
 ) {
     if let Some(id) = synth_amzn_request_id(host) {
@@ -432,9 +427,7 @@ fn attach_bedrock_error_headers(
 /// Shared by `write_response_exception` (the StreamTranslate exception-frame path) and the fallback
 /// `write_response_event` Error arm (also a stream-output context) so both stay consistent. The
 /// message prefers the upstream's `provider_signal`, falling back to the exception name.
-fn bedrock_stream_exception_for(
-    err: &busbar_contract::protocol::IrError,
-) -> (&'static str, String) {
+fn bedrock_stream_exception_for(err: &crate::protocol::IrError) -> (&'static str, String) {
     let exception_name = match err.class {
         StatusClass::RateLimit => EXC_THROTTLING,
         StatusClass::Overloaded => EXC_SERVICE_UNAVAILABLE,

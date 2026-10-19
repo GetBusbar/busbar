@@ -14,7 +14,7 @@ use std::borrow::Cow;
 
 impl IrFacts for IrRequest {
     fn verb(&self) -> OpVerb {
-        OpVerb::CHAT
+        crate::verbs::CHAT
     }
 
     fn wants_stream(&self) -> bool {

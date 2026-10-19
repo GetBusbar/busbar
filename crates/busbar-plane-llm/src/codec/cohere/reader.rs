@@ -73,7 +73,7 @@ impl ProtocolReader for CohereReader {
             || status == StatusCode::PAYLOAD_TOO_LARGE)
             && Self::body_signals_context_length(body)
         {
-            Some(busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
+            Some(crate::protocol::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
         } else {
             provider_code
         };
@@ -125,9 +125,7 @@ impl ProtocolReader for CohereReader {
         {
             return CanonicalSignal {
                 class: StatusClass::ContextLength,
-                provider_signal: Some(
-                    busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH.to_string(),
-                ),
+                provider_signal: Some(crate::protocol::PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
                 retry_after: None,
             };
         }
@@ -1026,7 +1024,7 @@ impl ProtocolReader for CohereReader {
                 // a content-moderation refusal is a successful, correctly-served response, and
                 // faulting a lane for one would trip the breaker on ordinary safety behaviour.
                 if stop_reason == Some(crate::codec::ir::IrStopReason::Error) {
-                    out.push(IrStreamEvent::Error(busbar_contract::protocol::IrError {
+                    out.push(IrStreamEvent::Error(crate::protocol::IrError {
                         // The upstream gives no code or message on this frame — only the
                         // `ERROR` token — so classify it as a TRANSIENT server fault: the lane
                         // recovers via cooldown rather than being permanently penalized.

@@ -428,7 +428,7 @@ pub fn encode_frame(event_type: &str, payload: &[u8]) -> Vec<u8> {
         || !push_string_header(
             &mut frame,
             HDR_CONTENT_TYPE,
-            busbar_contract::protocol::APPLICATION_JSON,
+            crate::protocol::APPLICATION_JSON,
         )
         || !push_string_header(&mut frame, HDR_MESSAGE_TYPE, MSG_TYPE_EVENT)
     {
@@ -466,7 +466,7 @@ pub fn encode_exception_frame(exception_type: &str, message: &str) -> Vec<u8> {
         || !push_string_header(
             &mut frame,
             HDR_CONTENT_TYPE,
-            busbar_contract::protocol::APPLICATION_JSON,
+            crate::protocol::APPLICATION_JSON,
         )
         || !push_string_header(&mut frame, HDR_MESSAGE_TYPE, MSG_TYPE_EXCEPTION)
     {

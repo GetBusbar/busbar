@@ -196,7 +196,7 @@ pub mod leaf_codec;
 pub mod proto_codec;
 
 /// The concrete streaming byte-translator (`StreamTranslate`) behind the neutral
-/// `busbar_contract::protocol::StreamTranslator`.
+/// `crate::protocol::StreamTranslator`.
 pub mod proto_stream;
 
 /// The two body-shaping helpers a caller needs on either side of a translate, kept here because
@@ -246,7 +246,7 @@ pub const PLANE_KEY: &str = "llm";
 /// plane's own table (Law 5), never the host's registry. `None` for a name this plane does not
 /// declare.
 #[must_use]
-pub fn decl_of(name: &str) -> Option<&'static busbar_contract::protocol::ProtocolDecl> {
+pub fn decl_of(name: &str) -> Option<&'static crate::protocol::ProtocolDecl> {
     DECLS.iter().copied().find(|d| d.name == name)
 }
 
@@ -296,10 +296,10 @@ pub(crate) const DIALECTS: &[&proto_codec::DialectEntry] = &[
 
 /// Every registered dialect's declaration, in [`DIALECTS`] order (the operator-visible order
 /// documented there).
-pub static DECLS: &[&busbar_contract::protocol::ProtocolDecl] = &decls::<{ DIALECTS.len() }>();
+pub static DECLS: &[&crate::protocol::ProtocolDecl] = &decls::<{ DIALECTS.len() }>();
 
 /// [`DIALECTS`]' declarations as an array, evaluated at compile time.
-const fn decls<const N: usize>() -> [&'static busbar_contract::protocol::ProtocolDecl; N] {
+const fn decls<const N: usize>() -> [&'static crate::protocol::ProtocolDecl; N] {
     let mut out = [DIALECTS[0].decl; N];
     let mut i = 0;
     while i < N {

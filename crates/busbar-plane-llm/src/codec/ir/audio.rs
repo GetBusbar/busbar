@@ -75,7 +75,7 @@ pub struct TranscriptionReq {
 /// `target_language`/`response_format` are enum roles, not content.
 impl busbar_contract::ir::facts::IrFacts for TranscriptionReq {
     fn verb(&self) -> busbar_contract::operation::OpVerb {
-        busbar_contract::operation::OpVerb::TRANSCRIPTION
+        crate::verbs::TRANSCRIPTION
     }
 
     fn wants_stream(&self) -> bool {
@@ -186,7 +186,7 @@ impl SpeechReq {
 /// provider knobs (voice ids, format enums), not caller free-text, and stay out.
 impl busbar_contract::ir::facts::IrFacts for SpeechReq {
     fn verb(&self) -> busbar_contract::operation::OpVerb {
-        busbar_contract::operation::OpVerb::SPEECH
+        crate::verbs::SPEECH
     }
 
     fn wants_stream(&self) -> bool {

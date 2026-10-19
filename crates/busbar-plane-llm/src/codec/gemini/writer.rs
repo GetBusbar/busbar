@@ -835,15 +835,13 @@ impl ProtocolWriter for GeminiWriter {
                 ERR_TYPE_RATE_LIMIT | "resource_exhausted" | "rate_limit" => {
                     Some(GRPC_RESOURCE_EXHAUSTED)
                 }
-                ERR_TYPE_OVERLOADED
-                | busbar_contract::protocol::KIND_OVERLOADED
-                | "unavailable" => Some(GRPC_UNAVAILABLE),
-                "deadline_exceeded" | busbar_contract::protocol::KIND_TIMEOUT => {
-                    Some(GRPC_DEADLINE_EXCEEDED)
+                ERR_TYPE_OVERLOADED | crate::protocol::KIND_OVERLOADED | "unavailable" => {
+                    Some(GRPC_UNAVAILABLE)
                 }
-                busbar_contract::protocol::KIND_API_ERROR
+                "deadline_exceeded" | crate::protocol::KIND_TIMEOUT => Some(GRPC_DEADLINE_EXCEEDED),
+                crate::protocol::KIND_API_ERROR
                 | "internal"
-                | busbar_contract::protocol::KIND_SERVER_ERROR => Some(GRPC_INTERNAL),
+                | crate::protocol::KIND_SERVER_ERROR => Some(GRPC_INTERNAL),
                 "unimplemented" | "not_implemented" => Some(GRPC_UNIMPLEMENTED),
                 _ => None,
             }
@@ -1629,9 +1627,7 @@ impl ProtocolWriter for GeminiWriter {
         out
     }
 
-    fn make_array_stream_framer(
-        &self,
-    ) -> Option<Box<dyn busbar_contract::protocol::ArrayStreamFramer>> {
+    fn make_array_stream_framer(&self) -> Option<Box<dyn crate::protocol::ArrayStreamFramer>> {
         // Gemini `:streamGenerateContent` WITHOUT `?alt=sse` expects a JSON-array streamed body; this
         // builds the framer that reframes the (gemini-shape) SSE bytes into that array. The forward
         // path engages it only when `uses_array_stream_shim()` AND `wants_array_stream(body)` hold.

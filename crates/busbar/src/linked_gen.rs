@@ -44,7 +44,6 @@ pub(crate) const NODE_UNIT: &str = "node";
 /// that registers on it exports. The plane axis is the one exception, built below (two items,
 /// joined); a plane's door is its own axis ([`PLANE_DOOR_AXIS`]).
 pub(crate) const AXES: &[(&str, &str, &str)] = &[
-    ("protocols", "protocols", "PROTOCOLS"),
     ("path-ingress", "path_ingress", "PATH_INGRESS"),
     ("body-ingress", "body_ingress", "BODY_INGRESS"),
     ("protocol-seams", "protocol_seams", "install_protocol_seams"),
@@ -185,8 +184,15 @@ pub(crate) const SEAMS: &[(&str, &str)] = &[
 pub(crate) const LINKED_SWAPS: &str = "package.metadata.busbar.linked-swaps";
 
 /// Whether `feature`'s row is linked: its feature is `on`, and no switch that swaps it is.
-pub(crate) fn swapped_in(swaps: &[(String, String)], on: &dyn Fn(&str) -> bool, feature: &str) -> bool {
-    on(feature) && !swaps.iter().any(|(row, switch)| row == feature && on(switch))
+pub(crate) fn swapped_in(
+    swaps: &[(String, String)],
+    on: &dyn Fn(&str) -> bool,
+    feature: &str,
+) -> bool {
+    on(feature)
+        && !swaps
+            .iter()
+            .any(|(row, switch)| row == feature && on(switch))
 }
 
 /// The `key = "value"` rows of the `[table]` header of a Cargo manifest, in file order. Deliberately
@@ -514,9 +520,12 @@ pub(crate) fn linked_source(
                          `[package.metadata.busbar.linked-name]` row naming its registry key"
                     )
                 });
-            let canonical =
-                metadata_value(manifest, "package.metadata.busbar.linked-canonical", feature)
-                    .unwrap_or_else(|| name.clone());
+            let canonical = metadata_value(
+                manifest,
+                "package.metadata.busbar.linked-canonical",
+                feature,
+            )
+            .unwrap_or_else(|| name.clone());
             out.push_str(&format!("({name:?}, {canonical:?}, {entry}::door::door), "));
         }
     }

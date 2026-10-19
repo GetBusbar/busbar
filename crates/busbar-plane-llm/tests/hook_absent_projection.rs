@@ -13,7 +13,7 @@ use busbar_plane_llm::exchange::project::{project, HookView};
 fn arrived(dialect: &'static str, body: &[u8], parsed: Option<serde_json::Value>) -> Arrived {
     Arrived {
         dialect,
-        operation: busbar_contract::operation::OpVerb::EMBEDDINGS,
+        operation: busbar_plane_llm::verbs::EMBEDDINGS,
         model: "m0".to_string(),
         content_type: "application/json".to_string(),
         body: body.to_vec(),

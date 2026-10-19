@@ -13,12 +13,12 @@
 //! crate's own; core nets it at its root). Byte-identical to the pre-move definitions — path prefixes
 //! only.
 
-use busbar_contract::http::StatusCode;
+use http::StatusCode;
 // A dialect fact this crate looks up by name is read off the plane's OWN declaration table
 // (`crate::codec::decl_of`, Law 5); the declaration shape itself is the contract's.
+use crate::protocol::{ArrayStreamFramer, DialectCodec, IrError};
 /// A lane's request-shape capabilities, handed to [`ProtocolWriter::write_request_for_lane`].
 use busbar_contract::ir::egress_prep::LaneCaps;
-use busbar_contract::protocol::{ArrayStreamFramer, DialectCodec, IrError};
 
 // The six dialect NAMES, plane-local (no longer the host's `proto::PROTO_*` — that was a backwards
 // reach into core). File-local `const`s so a bare `PROTO_ANTHROPIC` resolves identically in BOTH
@@ -574,7 +574,7 @@ pub trait ProtocolWriter: Send + Sync {
     fn attach_error_response_headers(
         &self,
         _host: &dyn busbar_contract::codec::CodecHost,
-        _headers: &mut busbar_contract::http::HeaderMap,
+        _headers: &mut http::HeaderMap,
         _kind: &str,
         _envelope: &serde_json::Value,
     ) {
@@ -967,7 +967,7 @@ impl Protocol {
     /// protocol (every `Protocol` resolves from a declaration); the `Option` mirrors
     /// [`crate::codec::decl_of`]'s signature so a caller holding a `Protocol` reads a fact exactly as a
     /// by-name caller does.
-    pub fn decl(&self) -> Option<&'static busbar_contract::protocol::ProtocolDecl> {
+    pub fn decl(&self) -> Option<&'static crate::protocol::ProtocolDecl> {
         crate::codec::decl_of(self.name)
     }
 
@@ -1072,7 +1072,7 @@ pub fn protocol_for(name: &str) -> Option<Protocol> {
 /// there; nothing in this file names a dialect.
 pub struct DialectEntry {
     /// The dialect's declaration (its name is the registry key).
-    pub decl: &'static busbar_contract::protocol::ProtocolDecl,
+    pub decl: &'static crate::protocol::ProtocolDecl,
     /// Build the dialect's wire codec: a fresh instance per resolution ([`protocol_for`]).
     pub protocol: fn() -> Protocol,
     /// Hand a fresh writer, built on the stack, to the callback ([`with_writer`]).
@@ -1248,7 +1248,7 @@ impl DialectCodec for DialectRef {
         kind: &str,
         envelope: &serde_json::Value,
     ) -> Vec<(String, Vec<u8>)> {
-        let mut headers = busbar_contract::http::HeaderMap::new();
+        let mut headers = http::HeaderMap::new();
         with_writer(self.0, |w| {
             w.attach_error_response_headers(host, &mut headers, kind, envelope)
         });

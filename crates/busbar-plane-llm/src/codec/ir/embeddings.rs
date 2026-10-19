@@ -87,7 +87,7 @@ pub struct EmbeddingsReq {
 /// and stay out.
 impl busbar_contract::ir::facts::IrFacts for EmbeddingsReq {
     fn verb(&self) -> busbar_contract::operation::OpVerb {
-        busbar_contract::operation::OpVerb::EMBEDDINGS
+        crate::verbs::EMBEDDINGS
     }
 
     fn wants_stream(&self) -> bool {

@@ -107,7 +107,7 @@ impl ProtocolReader for GeminiReader {
                     || (lower.contains("exceeds the maximum")
                         && (lower.contains(keys::TOKEN) || lower.contains("context")))
                 {
-                    Some(busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
+                    Some(crate::protocol::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
                 } else {
                     provider_code
                 }
@@ -219,9 +219,7 @@ impl ProtocolReader for GeminiReader {
         {
             return CanonicalSignal {
                 class: StatusClass::ContextLength,
-                provider_signal: Some(
-                    busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH.to_string(),
-                ),
+                provider_signal: Some(crate::protocol::PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
                 retry_after: None,
             };
         }
@@ -733,7 +731,7 @@ impl ProtocolReader for GeminiReader {
                 .and_then(|m| m.as_str())
                 .map(String::from)
                 .or_else(|| status_str.map(String::from));
-            out.push(IrStreamEvent::Error(busbar_contract::protocol::IrError {
+            out.push(IrStreamEvent::Error(crate::protocol::IrError {
                 class,
                 provider_signal: message,
                 retry_after: None,

@@ -7,23 +7,23 @@ use crate::codec::dialect::*;
 use crate::codec::ir::IrStreamEvent;
 use crate::codec::keys;
 use crate::codec::usage_count::read_count_u64;
-use busbar_contract::http::StatusCode;
-use busbar_contract::protocol::*;
-use busbar_contract::protocol::{
+use crate::protocol::*;
+use crate::protocol::{
     ERR_TYPE_AUTHENTICATION, ERR_TYPE_INVALID_REQUEST, ERR_TYPE_NOT_FOUND, ERR_TYPE_PERMISSION,
     ERR_TYPE_RATE_LIMIT,
 };
 #[cfg(test)]
 use busbar_contract::upstream::CanonicalSignal;
 use busbar_contract::upstream::StatusClass;
+use http::StatusCode;
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::codec::proto_codec) and netted into core (core::proto::proto_codec).
 #[allow(unused_imports)]
-// used standalone; redundant with the `busbar_contract::protocol::*` glob when netted into core
+// used standalone; redundant with the `crate::protocol::*` glob when netted into core
 use super::proto_codec::*;
 // See the anthropic dialect for the rationale: an explicit import of the codec surface so it binds to
-// THIS crate's own `proto_codec` rather than the `busbar_contract::protocol::*` glob.
+// THIS crate's own `proto_codec` rather than the `crate::protocol::*` glob.
 #[allow(unused_imports)]
 use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming};
 
@@ -78,10 +78,10 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
 /// `/v1{,beta}/models/` wildcard surface (rung 6). Strength values are the ladder POSITION (lower
 /// binds tighter); they are the single ladder shared with the sibling dialects' predicates.
 fn claims(
-    h: busbar_contract::protocol::HeadFields<'_>,
+    h: crate::protocol::HeadFields<'_>,
     path: &str,
-) -> Option<busbar_contract::protocol::ClaimStrength> {
-    use busbar_contract::protocol::{head_field, ClaimStrength};
+) -> Option<crate::protocol::ClaimStrength> {
+    use crate::protocol::{head_field, ClaimStrength};
     if head_field(h, FIELD_X_GOOG_API_KEY).is_some() {
         return Some(ClaimStrength(3));
     }
@@ -117,8 +117,8 @@ const GEMINI_RESIDUAL_ACTIONS: [&str; 7] = [
 /// whole `/v1beta/models…` surface is Gemini-only (rung 10), and a `/v1/models/{id}` whose last
 /// segment carries a genuine Gemini action suffix is Gemini (rung 20, tighter than the OpenAI
 /// `/v1/models/` catch at rung 25).
-fn residual_claims(path: &str) -> Option<busbar_contract::protocol::ClaimStrength> {
-    use busbar_contract::protocol::ClaimStrength;
+fn residual_claims(path: &str) -> Option<crate::protocol::ClaimStrength> {
+    use crate::protocol::ClaimStrength;
     if path.starts_with("/v1beta/models") {
         return Some(ClaimStrength(10));
     }
@@ -142,14 +142,14 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     codec: dialect_codec!(COUNT_LABEL),
     handler: Some(&handler::GeminiRequestHandler),
     verbs: &[
-        busbar_contract::operation::OpVerb::CHAT,
-        busbar_contract::operation::OpVerb::EMBEDDINGS,
-        busbar_contract::operation::OpVerb::IMAGE,
-        busbar_contract::operation::OpVerb::TRANSCRIPTION,
-        busbar_contract::operation::OpVerb::SPEECH,
+        crate::verbs::CHAT,
+        crate::verbs::EMBEDDINGS,
+        crate::verbs::IMAGE,
+        crate::verbs::TRANSCRIPTION,
+        crate::verbs::SPEECH,
     ],
     head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
-    streaming_content_type: Some(busbar_contract::protocol::TEXT_EVENT_STREAM),
+    streaming_content_type: Some(crate::protocol::TEXT_EVENT_STREAM),
     array_stream_shim_key: Some(GEMINI_JSON_ARRAY_SHIM_KEY),
     // Gemini carries NO tool id on the wire (it correlates `functionCall`s by name), so there is
     // nothing to reshape and no risk of a foreign id leaking to a Gemini client.
@@ -159,8 +159,6 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // DECLARED here as data (#83a S2-a, #40(b)): the kernel's egress-auth unit presents the lane
     // credential under it (lane-constant, so the boot path prebuilds it), and the key never passes
     // through this plane.
-    egress_auth_headers: None,
-    egress_auth_lane_constant: false,
     egress_scheme: Some(EgressScheme::header(FIELD_X_GOOG_API_KEY)),
     // THE MODEL IS IN THE URL (`/v1beta/models/{model}:generateContent`): this dialect registers its
     // arrival (`busbar_kernel::ingress::gemini_arrival`) through `busbar_llm::PATH_INGRESS`, which the
@@ -176,7 +174,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     frame_after_message_start: None,
     reshapes_body_at_path_base: false,
     max_cache_control_breakpoints: None,
-    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS.as_u16(),
+    quota_exceeded_status: http::StatusCode::TOO_MANY_REQUESTS.as_u16(),
     ingress_is_eventstream: false,
     emits_sse_done_terminator: false,
     max_citations_per_delta: None,
@@ -188,7 +186,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     egress_user_agent: "google-genai-sdk/0.8.0 gl-python/3.11",
     has_model_in_url: true,
     auth_failure_status_and_kind: (
-        busbar_contract::http::StatusCode::BAD_REQUEST.as_u16(),
+        http::StatusCode::BAD_REQUEST.as_u16(),
         ERR_TYPE_INVALID_REQUEST,
     ),
     ingress_relays_amzn_headers: false,
@@ -196,7 +194,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     auth_failure_message: GEMINI_BAD_KEY_MESSAGE,
     uses_array_stream_shim: true,
     has_native_path_not_found: true,
-    egress_stream_accept: busbar_contract::protocol::TEXT_EVENT_STREAM,
+    egress_stream_accept: crate::protocol::TEXT_EVENT_STREAM,
     models_list_envelope: Some(models_list_envelope),
     claims: Some(claims),
     residual_claims: Some(residual_claims),
@@ -810,7 +808,7 @@ const STATUS_HTTP: &[(&str, u16)] = &[
 ];
 
 /// Busbar/Anthropic internal error kind for an overloaded upstream (maps to GRPC_UNAVAILABLE).
-const ERR_TYPE_OVERLOADED: &str = busbar_contract::protocol::ERR_TYPE_OVERLOADED;
+const ERR_TYPE_OVERLOADED: &str = crate::protocol::ERR_TYPE_OVERLOADED;
 
 // ── ErrorInfo tokens ──────────────────────────────────────────────────────────
 /// The machine-readable `reason` value carried in `google.rpc.ErrorInfo` for an invalid API key.

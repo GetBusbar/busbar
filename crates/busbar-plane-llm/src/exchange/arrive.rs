@@ -13,8 +13,8 @@
 
 use std::borrow::Cow;
 
+use crate::protocol::{HeadFields, ProtocolDecl, KIND_INVALID_REQUEST, KIND_NOT_FOUND};
 use busbar_contract::operation::OpVerb;
-use busbar_contract::protocol::{HeadFields, ProtocolDecl, KIND_INVALID_REQUEST, KIND_NOT_FOUND};
 use serde_json::Value;
 
 use crate::codec::gemini::STREAM_QUERY;
@@ -218,7 +218,7 @@ fn method_not_allowed(path: &str) -> Declined {
         Decline::MethodNotAllowed,
         405,
         envelope_for(path),
-        busbar_contract::protocol::ERR_TYPE_INVALID_REQUEST,
+        crate::protocol::ERR_TYPE_INVALID_REQUEST,
         "method not allowed for this resource",
     )
 }

@@ -187,7 +187,7 @@ fn every_dialects_egress_user_agent_version_is_pinned_and_present() {
     }
     // The foreign far end (a dialect no declaration names) still gets a present, plausible UA.
     assert_eq!(
-        busbar_contract::protocol::EGRESS_UA_DEFAULT,
+        busbar_plane_llm::protocol::EGRESS_UA_DEFAULT,
         "okhttp/4.12.0",
         "the foreign/default egress UA drifted from the pinned literal"
     );
@@ -206,7 +206,7 @@ fn every_dialects_egress_user_agent_version_is_pinned_and_present() {
     let every: Vec<&str> = pinned
         .iter()
         .map(|(_, ua)| *ua)
-        .chain([busbar_contract::protocol::EGRESS_UA_DEFAULT])
+        .chain([busbar_plane_llm::protocol::EGRESS_UA_DEFAULT])
         .collect();
     for ua in every {
         assert!(!ua.is_empty(), "an egress UA must never be empty");

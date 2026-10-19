@@ -5,20 +5,20 @@
 
 use crate::codec::ir::IrStreamEvent;
 use crate::codec::keys;
-use busbar_contract::http::StatusCode;
-use busbar_contract::protocol::*;
+use crate::protocol::*;
 #[cfg(test)]
 use busbar_contract::upstream::CanonicalSignal;
 #[cfg(test)]
 use busbar_contract::upstream::StatusClass;
+use http::StatusCode;
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::codec::proto_codec) and netted into core (core::proto::proto_codec).
 #[allow(unused_imports)]
-// used standalone; redundant with the `busbar_contract::protocol::*` glob when netted into core
+// used standalone; redundant with the `crate::protocol::*` glob when netted into core
 use super::proto_codec::*;
 // See the anthropic dialect for the rationale: an explicit import of the codec surface so it binds to
-// THIS crate's own `proto_codec` rather than the `busbar_contract::protocol::*` glob.
+// THIS crate's own `proto_codec` rather than the `crate::protocol::*` glob.
 #[allow(unused_imports)]
 use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming};
 
@@ -40,10 +40,10 @@ pub fn protocol() -> Protocol {
 /// (`/v2/chat`, `/v1/chat`, rung 8) and the v2 embed/rerank paths (`/v2/embed`, `/v2/rerank`, rung
 /// 9). Lower strength binds tighter — the shared ladder positions.
 fn claims(
-    _h: busbar_contract::protocol::HeadFields<'_>,
+    _h: crate::protocol::HeadFields<'_>,
     path: &str,
-) -> Option<busbar_contract::protocol::ClaimStrength> {
-    use busbar_contract::protocol::ClaimStrength;
+) -> Option<crate::protocol::ClaimStrength> {
+    use crate::protocol::ClaimStrength;
     if path.ends_with("/v2/chat") || path.ends_with("/v1/chat") {
         return Some(ClaimStrength(8));
     }
@@ -55,9 +55,9 @@ fn claims(
 
 /// COHERE'S RESIDUAL DETECTION — its arm of the headerless `residual_dialect_for_path` ladder: an
 /// exact `/v2/chat` names Cohere (rung 50).
-fn residual_claims(path: &str) -> Option<busbar_contract::protocol::ClaimStrength> {
+fn residual_claims(path: &str) -> Option<crate::protocol::ClaimStrength> {
     if path == "/v2/chat" {
-        return Some(busbar_contract::protocol::ClaimStrength(50));
+        return Some(crate::protocol::ClaimStrength(50));
     }
     None
 }
@@ -68,12 +68,12 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     codec: dialect_codec!(VENDOR_NAME),
     handler: Some(&handler::CohereRequestHandler),
     verbs: &[
-        busbar_contract::operation::OpVerb::CHAT,
-        busbar_contract::operation::OpVerb::EMBEDDINGS,
-        busbar_contract::operation::OpVerb::RERANK,
+        crate::verbs::CHAT,
+        crate::verbs::EMBEDDINGS,
+        crate::verbs::RERANK,
     ],
     head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
-    streaming_content_type: Some(busbar_contract::protocol::TEXT_EVENT_STREAM),
+    streaming_content_type: Some(crate::protocol::TEXT_EVENT_STREAM),
     array_stream_shim_key: None,
     // Cohere tool ids are free-form with NO canonical prefix. An empty prefix would make the
     // reversibility marker itself the only distinguishing signal, which collides with a legitimate
@@ -84,8 +84,6 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // Cohere's native credential scheme is a plain `Authorization: Bearer <key>` — DECLARED here as
     // data (#83a S2-a, #40(b)): the kernel's egress-auth unit presents the lane credential under it
     // (lane-constant, so prebuilt), and the key never passes through this plane.
-    egress_auth_headers: None,
-    egress_auth_lane_constant: false,
     egress_scheme: Some(EgressScheme::bearer()),
     stream_usage_requires_opt_in: false,
     // ── Promoted writer facts (G6 step A1): the same constants the `CohereWriter` methods returned.
@@ -96,7 +94,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     frame_after_message_start: None,
     reshapes_body_at_path_base: false,
     max_cache_control_breakpoints: None,
-    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS.as_u16(),
+    quota_exceeded_status: http::StatusCode::TOO_MANY_REQUESTS.as_u16(),
     ingress_is_eventstream: false,
     emits_sse_done_terminator: false,
     // Cohere v2's `citation-start` event carries a SINGLE Citation at `delta.message.citations`
@@ -113,15 +111,15 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     egress_user_agent: "cohere-python/5.11.0",
     has_model_in_url: false,
     auth_failure_status_and_kind: (
-        busbar_contract::http::StatusCode::UNAUTHORIZED.as_u16(),
-        busbar_contract::protocol::ERR_TYPE_AUTHENTICATION,
+        http::StatusCode::UNAUTHORIZED.as_u16(),
+        crate::protocol::ERR_TYPE_AUTHENTICATION,
     ),
     ingress_relays_amzn_headers: false,
     ingress_relayed_response_header_names: &[],
     auth_failure_message: "invalid api token",
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
-    egress_stream_accept: busbar_contract::protocol::TEXT_EVENT_STREAM,
+    egress_stream_accept: crate::protocol::TEXT_EVENT_STREAM,
     // No model-discovery surface: Cohere's `/v1/models` fingerprint resolves to the OpenAI envelope
     // (documented), so this dialect declares none of its own.
     models_list_envelope: None,

@@ -209,7 +209,7 @@ impl GeminiJsonArrayFramer {
     }
 }
 
-impl busbar_contract::protocol::ArrayStreamFramer for GeminiJsonArrayFramer {
+impl crate::protocol::ArrayStreamFramer for GeminiJsonArrayFramer {
     fn feed(&mut self, chunk: &[u8]) -> Vec<u8> {
         GeminiJsonArrayFramer::feed(self, chunk)
     }

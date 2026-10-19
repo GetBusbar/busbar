@@ -14,8 +14,8 @@ pub mod reply;
 pub mod shaping;
 pub mod webhook;
 
+use crate::protocol::ProtocolDecl;
 use busbar_contract::codec::OperationHandler;
-use busbar_contract::protocol::ProtocolDecl;
 
 use crate::codec::DECLS;
 

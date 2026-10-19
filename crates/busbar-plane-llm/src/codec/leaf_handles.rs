@@ -37,7 +37,7 @@ impl Sealed for EmbeddingsRespHandle {}
 
 impl IrHandle for EmbeddingsReqHandle {
     fn verb(&self) -> OpVerb {
-        OpVerb::EMBEDDINGS
+        crate::verbs::EMBEDDINGS
     }
     fn wants_stream(&self) -> bool {
         false
@@ -77,7 +77,7 @@ impl IrHandle for EmbeddingsReqHandle {
 
 impl IrHandle for EmbeddingsRespHandle {
     fn verb(&self) -> OpVerb {
-        OpVerb::EMBEDDINGS
+        crate::verbs::EMBEDDINGS
     }
     fn billing(&self) -> Option<Billing> {
         self.0.billing()
@@ -121,7 +121,7 @@ impl Sealed for ImageRespHandle {}
 
 impl IrHandle for ImageReqHandle {
     fn verb(&self) -> OpVerb {
-        OpVerb::IMAGE
+        crate::verbs::IMAGE
     }
     fn wants_stream(&self) -> bool {
         false
@@ -161,7 +161,7 @@ impl IrHandle for ImageReqHandle {
 
 impl IrHandle for ImageRespHandle {
     fn verb(&self) -> OpVerb {
-        OpVerb::IMAGE
+        crate::verbs::IMAGE
     }
     fn billing(&self) -> Option<Billing> {
         self.0.billing()
@@ -205,7 +205,7 @@ impl Sealed for RerankRespHandle {}
 
 impl IrHandle for RerankReqHandle {
     fn verb(&self) -> OpVerb {
-        OpVerb::RERANK
+        crate::verbs::RERANK
     }
     fn wants_stream(&self) -> bool {
         false
@@ -245,7 +245,7 @@ impl IrHandle for RerankReqHandle {
 
 impl IrHandle for RerankRespHandle {
     fn verb(&self) -> OpVerb {
-        OpVerb::RERANK
+        crate::verbs::RERANK
     }
     fn billing(&self) -> Option<Billing> {
         self.0.billing()
@@ -289,7 +289,7 @@ impl Sealed for ModerationRespHandle {}
 
 impl IrHandle for ModerationReqHandle {
     fn verb(&self) -> OpVerb {
-        OpVerb::MODERATION
+        crate::verbs::MODERATION
     }
     fn wants_stream(&self) -> bool {
         false
@@ -329,7 +329,7 @@ impl IrHandle for ModerationReqHandle {
 
 impl IrHandle for ModerationRespHandle {
     fn verb(&self) -> OpVerb {
-        OpVerb::MODERATION
+        crate::verbs::MODERATION
     }
     fn billing(&self) -> Option<Billing> {
         Some(Billing::Flat)
@@ -373,7 +373,7 @@ impl Sealed for TranscriptionRespHandle {}
 
 impl IrHandle for TranscriptionReqHandle {
     fn verb(&self) -> OpVerb {
-        OpVerb::TRANSCRIPTION
+        crate::verbs::TRANSCRIPTION
     }
     fn wants_stream(&self) -> bool {
         self.0.stream
@@ -413,7 +413,7 @@ impl IrHandle for TranscriptionReqHandle {
 
 impl IrHandle for TranscriptionRespHandle {
     fn verb(&self) -> OpVerb {
-        OpVerb::TRANSCRIPTION
+        crate::verbs::TRANSCRIPTION
     }
     fn billing(&self) -> Option<Billing> {
         self.0.billing()
@@ -457,7 +457,7 @@ impl Sealed for SpeechRespHandle {}
 
 impl IrHandle for SpeechReqHandle {
     fn verb(&self) -> OpVerb {
-        OpVerb::SPEECH
+        crate::verbs::SPEECH
     }
     fn wants_stream(&self) -> bool {
         self.0.stream
@@ -502,7 +502,7 @@ impl IrHandle for SpeechReqHandle {
 
 impl IrHandle for SpeechRespHandle {
     fn verb(&self) -> OpVerb {
-        OpVerb::SPEECH
+        crate::verbs::SPEECH
     }
     fn billing(&self) -> Option<Billing> {
         self.0.billing()

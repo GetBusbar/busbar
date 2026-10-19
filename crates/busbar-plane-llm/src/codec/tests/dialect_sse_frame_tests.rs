@@ -3,7 +3,7 @@
 //! with the host's copies when those were deleted, SD-8).
 
 use super::*;
-use busbar_contract::protocol::find_frame_terminator;
+use crate::protocol::find_frame_terminator;
 
 /// The event-stream grammar names three line terminators — CRLF, a lone LF, a lone CR — and a
 /// blank line is any terminator immediately followed by any terminator (nine pairings). A

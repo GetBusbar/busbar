@@ -211,7 +211,6 @@ fn a_dialect_path_takes_post_only_and_an_unknown_path_is_not_found_first() {
 // ── rehomed from the legacy engine's arrival, decode and ingress tests ──────────────────────────
 
 use busbar_contract::codec::OperationHandler;
-use busbar_contract::operation::OpVerb;
 use busbar_plane_llm::exchange::attempt::build;
 use busbar_plane_llm::exchange::refuse::{declined, kernel_refusal, model_not_found, render};
 use busbar_plane_llm::exchange::reply::whole::{self, WholeCtx, WholeEnd};
@@ -935,7 +934,7 @@ fn the_gemini_url_space_reads_every_fact() {
     let read = |target: &str| ok(target, &json(), br#"{"contents":[]}"#);
     let a = read("/v1beta/models/p:generateContent");
     assert_eq!(a.model, "p");
-    assert_eq!(a.operation, OpVerb::CHAT);
+    assert_eq!(a.operation, busbar_plane_llm::verbs::CHAT);
     let pm = a.path_model.expect("a path model");
     assert!(!pm.stream && !pm.json_array);
     assert_eq!(
@@ -978,7 +977,7 @@ fn the_bedrock_url_space_reads_every_fact() {
     let converse = br#"{"messages":[{"role":"user","content":[{"text":"hi"}]}]}"#;
     let a = ok("/model/p/converse", &json(), converse);
     assert_eq!(a.model, "p");
-    assert_eq!(a.operation, OpVerb::CHAT);
+    assert_eq!(a.operation, busbar_plane_llm::verbs::CHAT);
     let pm = a.path_model.expect("a path model");
     assert!(!pm.stream && !pm.json_array);
     assert_eq!(pm.model_not_found_message, None);
@@ -1016,7 +1015,7 @@ fn live_chat_handler(dialect: &str) -> &'static dyn OperationHandler {
         .iter()
         .find(|d| d.name == dialect)
         .and_then(|d| d.handler)
-        .and_then(|rh| rh.operation_handler(OpVerb::CHAT))
+        .and_then(|rh| rh.operation_handler(busbar_plane_llm::verbs::CHAT))
         .expect("every dialect serves chat")
 }
 
@@ -1521,7 +1520,7 @@ fn every_recorded_body_model_resolves_the_same_model_both_spellings() {
             br#"{"messages":[{"role":"user","content":[{"text":"hi"}]}]}"#,
         );
         assert_eq!(p.model, a.model, "{name}");
-        assert_eq!(p.operation, OpVerb::CHAT, "{name}");
+        assert_eq!(p.operation, busbar_plane_llm::verbs::CHAT, "{name}");
         assert!(
             busbar_plane_llm::exchange::handler_of(&p).is_some(),
             "{name}"

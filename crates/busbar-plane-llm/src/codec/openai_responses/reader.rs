@@ -59,7 +59,7 @@ impl ProtocolReader for ResponsesReader {
             }
             let lower = String::from_utf8_lossy(body).to_lowercase();
             if crate::codec::dialect::context_length_prose_scan(&lower) {
-                Some(busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
+                Some(crate::protocol::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
             } else {
                 None
             }

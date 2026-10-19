@@ -36,7 +36,12 @@ pub mod exchange;
 pub mod meta;
 pub mod plane;
 pub mod plane_door;
+// The dialect seam moved here from the contract with its fields' docs as they were written there,
+// under the contract's own `missing_docs` exemption for the module; the exemption travels with it.
+#[allow(missing_docs)]
+pub mod protocol;
 pub mod refusal;
+pub mod verbs;
 
 /// THE PLANE'S DECLARED METADATA (`declares.json`): the `declares` section its signed tarball carries
 /// and the one the composition root reads for its linked door (`linked-declares`), one file for both

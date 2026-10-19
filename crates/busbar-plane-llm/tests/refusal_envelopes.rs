@@ -282,7 +282,7 @@ fn a_refusal_never_names_the_internal_reason() {
 // ── F25 REHOME: the rendered refusal's status and head (coverage map v2) ─────────────────────────
 
 /// The dialect codec of the dialect named `name`.
-fn dialect_codec(name: &str) -> &'static dyn busbar_contract::protocol::DialectCodec {
+fn dialect_codec(name: &str) -> &'static dyn busbar_plane_llm::protocol::DialectCodec {
     busbar_plane_llm::codec::DECLS
         .iter()
         .find(|d| d.name == name)
@@ -325,8 +325,8 @@ fn head_value<'a>(fields: &'a [(String, Vec<u8>)], name: &str) -> Option<&'a [u8
 /// dialect's refusal starts carrying Anthropic's field.
 #[test]
 fn test_anthropic_ingress_error_request_id_header_matches_body() {
-    use busbar_contract::protocol::KIND_INVALID_REQUEST;
     use busbar_plane_llm::exchange::refuse::render;
+    use busbar_plane_llm::protocol::KIND_INVALID_REQUEST;
     let rendered = render(
         SEVENS,
         "anthropic",
@@ -376,11 +376,11 @@ fn test_anthropic_ingress_error_request_id_header_matches_body() {
 /// an empty body, or a class leaves the table.
 #[test]
 fn every_refusal_class_renders_byte_identically_on_both_paths() {
-    use busbar_contract::protocol::{
+    use busbar_plane_llm::exchange::refuse::render;
+    use busbar_plane_llm::protocol::{
         KIND_AUTHENTICATION, KIND_INSUFFICIENT_QUOTA, KIND_INVALID_REQUEST, KIND_NOT_FOUND,
         KIND_PERMISSION, KIND_RATE_LIMIT, KIND_REQUEST_TOO_LARGE, PROVIDER_CODE_CONTEXT_LENGTH,
     };
-    use busbar_plane_llm::exchange::refuse::render;
     // (class, status, kind, message, retry-after seconds)
     let classes: [(&str, u16, &str, &str, u32); 8] = [
         (

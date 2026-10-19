@@ -43,7 +43,6 @@ fn request_holds_mixed_text_and_image_inputs() {
 // ── IrFacts projection (close-non-chat-gate-blindness) ───────────────────────────────────────────
 
 use busbar_contract::ir::facts::{ContentItem, IrFacts, OPAQUE_CONTENT_MARKER};
-use busbar_contract::operation::OpVerb;
 
 #[test]
 fn moderation_projects_text_and_marks_image_url_opaque() {
@@ -55,7 +54,7 @@ fn moderation_projects_text_and_marks_image_url_opaque() {
         ],
         ..Default::default()
     };
-    assert_eq!(IrFacts::verb(&req), OpVerb::MODERATION);
+    assert_eq!(IrFacts::verb(&req), crate::verbs::MODERATION);
     let items = req.content();
     assert_eq!(items.len(), 2);
     // The text is screenable; the ImageUrl is opaque, not the empty projection it was before.

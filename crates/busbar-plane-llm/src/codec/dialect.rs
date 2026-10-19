@@ -7,9 +7,9 @@
 //! top-level `usage` stripper of the same-protocol verbatim writer, and the dropped provider-metadata
 //! report. Every one of them is spoken only by this plane's dialects, so they are the plane's own;
 //! the contract carries only the vocabulary both sides of the seam must spell alike
-//! (`busbar_contract::protocol`: the error-`type` bank, the SSE frame-boundary scan and line walkers).
+//! (`crate::protocol`: the error-`type` bank, the SSE frame-boundary scan and line walkers).
 
-use busbar_contract::protocol::{
+use crate::protocol::{
     sse_line_spans, sse_lines, ERR_TYPE_API_ERROR, ERR_TYPE_AUTHENTICATION,
     ERR_TYPE_INSUFFICIENT_QUOTA, ERR_TYPE_INVALID_REQUEST, ERR_TYPE_NOT_FOUND, ERR_TYPE_PERMISSION,
     ERR_TYPE_RATE_LIMIT, ERR_TYPE_SERVER_ERROR,
@@ -109,10 +109,10 @@ pub fn warn_dropped<'a>(dropped: impl IntoIterator<Item = &'a str>, warn: &DropW
 /// The refusal a dialect reader returns for bytes it cannot read as its own shape: a client error
 /// carrying the `ir_parse` lane signal. One constructor, so every reader refuses alike.
 #[must_use]
-pub fn ir_parse_error() -> busbar_contract::protocol::IrError {
-    busbar_contract::protocol::IrError {
+pub fn ir_parse_error() -> crate::protocol::IrError {
+    crate::protocol::IrError {
         class: busbar_contract::upstream::StatusClass::ClientError,
-        provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
+        provider_signal: Some(crate::protocol::SIGNAL_IR_PARSE.to_string()),
         retry_after: None,
     }
 }
@@ -196,7 +196,7 @@ pub(crate) fn bearer_error_classify(
                 .map(|s| s.to_string())
         })
         .as_deref()
-        == Some(busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH);
+        == Some(crate::protocol::PROVIDER_CODE_CONTEXT_LENGTH);
     // Mirror production `extract_error`: the prose message scan is GATED to the HTTP statuses an
     // oversized request actually uses (400 invalid_request_error; 413 payload-too-large). Without the
     // gate a 401/429/5xx whose prose happens to contain "maximum context length" would reclassify as
@@ -316,7 +316,7 @@ pub fn rewrite_text_pairs(messages: &[serde_json::Value]) -> Option<Vec<(String,
 /// Returns `""` when the frame carries no `event:` line (OpenAI style) or the name is not UTF-8, and
 /// the LAST `event:` line wins when a frame illegally carries several.
 ///
-/// Walks the SAME line grammar as [`sse_lines`] / [`busbar_contract::protocol::find_frame_terminator`] — CRLF, a lone LF, **or**
+/// Walks the SAME line grammar as [`sse_lines`] / [`crate::protocol::find_frame_terminator`] — CRLF, a lone LF, **or**
 /// a lone CR each end a line — rather than splitting on LF alone. Splitting on LF alone made a
 /// bare-CR frame read as ONE line, so the whole frame body came back as the event name
 /// (`message_start\rdata: …`); the Anthropic same-protocol fast path matches that name against its

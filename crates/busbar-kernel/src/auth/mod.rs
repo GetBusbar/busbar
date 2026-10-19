@@ -1309,42 +1309,22 @@ fn ingress_for_path(app: &crate::state::App, path: &str) -> crate::plane::Ingres
     app.planes.ingress_of(path)
 }
 
-/// The auth-failure wire message for an inferred ingress protocol — a THIN delegation to the
-/// CANONICAL `crate::proto::vendor_auth_failure_message` so the auth path and any other site that
-/// shapes a native bad-credential body cannot drift on the protocol's own copy. The string lands
-/// verbatim in the native error body — the exact field it lands in (and any wrapping shape) is a
-/// registry-resolved per-protocol writer's concern, not core's — so it MUST read like the copy the
-/// REAL protocol returns for a bad/missing credential and carry NO busbar-internal vocabulary
-/// ("virtual key", "client token", "allowlist", "disabled", "passthrough", …). The wording is chosen
-/// PURELY from the inferred protocol and is deliberately independent of WHY auth failed (missing
-/// token vs. wrong token vs. disabled virtual key vs. admin-token mismatch) — surfacing that
-/// distinction on the wire is itself an oracle. Call sites therefore pass no reason string.
-fn vendor_auth_failure_message(proto: &str) -> &'static str {
-    crate::proto::vendor_auth_failure_message(proto)
+/// The auth-failure wire message the kernel answers a bad or missing credential with. It carries NO
+/// busbar-internal vocabulary ("virtual key", "client token", "allowlist", "disabled",
+/// "passthrough", …) and is deliberately independent of WHY auth failed, since surfacing that
+/// distinction on the wire is itself an oracle; call sites therefore pass no reason string.
+/// `_proto` is the inferred ingress; the kernel names no dialect, so the copy is the one generic
+/// message whatever it is, and a plane whose dialect has its own copy shapes that refusal at its
+/// door. (This read a per-dialect copy off the kernel's protocol registry, which production never
+/// populated, so this was always the answer; Q128 contract p11 finding 1 removed the registry.)
+fn vendor_auth_failure_message(_proto: &str) -> &'static str {
+    "authentication failed"
 }
 
-/// The HTTP status and protocol-agnostic error `kind` a bad/missing credential yields for an
-/// inferred ingress protocol. The pair is chosen to MATCH what the genuine protocol returns for a
-/// bad API key, because the status code and the writer-mapped `error.type`/`error.status` are both
-/// deterministic protocol tells a native SDK keys its typed exception off — a native SDK's
-/// typed-exception match is often keyed off the exact status/error-shape pairing, so a mismatched
-/// pair (e.g. the right status with the wrong error code) is itself a deterministic proxy tell.
-///
-/// This function holds NO protocol-specific knowledge itself; the default (401,
-/// "authentication_error") is what an unknown or standard protocol gets. A registry-resolved
-/// per-protocol writer may override that default to match its own genuine failure shape (a
-/// different status code, a different `kind`, or both) — that mapping lives entirely in the writer
-/// vtable, outside this crate, so a new protocol is onboarded there without touching this agnostic
-/// function.
-///
-/// Not a disposition/breaker match, so an unknown future proto falls back to the standard
-/// 401 authentication_error, keeping the request path panic-free.
-///
-/// Thin wrapper: dispatches through `ProtocolWriter::auth_failure_status_and_kind` so the
-/// per-protocol decision lives in the writer vtable, not in this agnostic function.
-// RELOCATED to `busbar_kernel::proxy::auth_failure_status_and_kind` (registry-resolved, neutral).
-// Re-exported here by-identity so every in-core caller (`auth::auth_failure_status_and_kind`) and the
-// historical path are unchanged.
+/// The HTTP status and protocol-agnostic error `kind` a bad/missing credential yields: 401 and
+/// `authentication_error`, the one pair the kernel answers with (it names no dialect; a plane whose
+/// dialect answers otherwise shapes that refusal at its door). Re-exported by identity from
+/// `busbar_kernel::proxy` so every in-core caller and the historical path are unchanged.
 pub use busbar_kernel::proxy::auth_failure_status_and_kind;
 
 /// Build an unauthorized-request response carrying the inferred ingress protocol's NATIVE error envelope.

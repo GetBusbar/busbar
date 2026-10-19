@@ -7,7 +7,6 @@
 //! RED: before the envelope, `models.<m>.protocol: bedrock-invoke` was refused as an unknown
 //! protocol, so none of these builds or holds.
 
-use busbar_contract::operation::OpVerb;
 use busbar_plane_llm::codec::eventstream::{encode_exception_frame, encode_frame};
 use busbar_plane_llm::exchange::arrive::{arrive, Arrived};
 use busbar_plane_llm::exchange::attempt::{build, stream_intent, upstream_path, FarRequest};
@@ -122,11 +121,11 @@ fn the_target_is_the_models_invoke_operation() {
     let s = shaping();
     let lane = s.lane("claude-invoke").expect("the lane");
     assert_eq!(
-        upstream_path(lane, OpVerb::CHAT, false).as_deref(),
+        upstream_path(lane, busbar_plane_llm::verbs::CHAT, false).as_deref(),
         Some("/model/anthropic.claude-3-5-sonnet-20240620-v1:0/invoke")
     );
     assert_eq!(
-        upstream_path(lane, OpVerb::CHAT, true).as_deref(),
+        upstream_path(lane, busbar_plane_llm::verbs::CHAT, true).as_deref(),
         Some("/model/anthropic.claude-3-5-sonnet-20240620-v1:0/invoke-with-response-stream")
     );
 }

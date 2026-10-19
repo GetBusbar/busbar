@@ -541,7 +541,7 @@ impl Plane for LlmPlane {
                 };
                 match crate::exchange::attempt::relay_request(
                     far,
-                    busbar_contract::protocol::APPLICATION_JSON,
+                    crate::protocol::APPLICATION_JSON,
                     bytes,
                 )
                 .bytes

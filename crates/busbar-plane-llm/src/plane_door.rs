@@ -1194,9 +1194,7 @@ fn answer(host: &DoorHost, unit: &mut UnitState, from: u32, piece: &PieceIn<'_>)
                 status: 200,
                 fields: vec![(
                     b"content-type".to_vec(),
-                    busbar_contract::protocol::APPLICATION_JSON
-                        .as_bytes()
-                        .to_vec(),
+                    crate::protocol::APPLICATION_JSON.as_bytes().to_vec(),
                 )],
                 bytes: ack,
                 done: true,
@@ -1508,7 +1506,7 @@ slot!(
                         why: arrive::Decline::WebhookBody,
                         status: 400,
                         envelope: RESPONSES,
-                        kind: busbar_contract::protocol::KIND_INVALID_REQUEST,
+                        kind: crate::protocol::KIND_INVALID_REQUEST,
                         message: message.into(),
                     };
                     out.set(|o| &o.refusal, declined.why.code());

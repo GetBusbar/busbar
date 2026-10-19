@@ -6,14 +6,14 @@
 use crate::codec::dialect::ir_parse_error;
 use crate::codec::ir::IrStreamEvent;
 use crate::codec::keys;
-use busbar_contract::http::StatusCode;
+use http::StatusCode;
 // `bearer_error_code` and `CODE_INVALID_API_KEY` now live in the neutral substrate; read them there
 // so this plugin names no `busbar-core` implementation path for them.
 use crate::codec::dialect::{bearer_error_code, CODE_INVALID_API_KEY};
 // The neutral canonical error-type vocabulary lives in the substrate; read it there, not via core's
 // re-export, so this plugin names no `busbar-core` implementation path for it.
-use busbar_contract::protocol::*;
-use busbar_contract::protocol::{
+use crate::protocol::*;
+use crate::protocol::{
     ERR_TYPE_AUTHENTICATION, ERR_TYPE_INSUFFICIENT_QUOTA, ERR_TYPE_INVALID_REQUEST,
     ERR_TYPE_NOT_FOUND, ERR_TYPE_OVERLOADED, ERR_TYPE_PERMISSION, ERR_TYPE_RATE_LIMIT,
     ERR_TYPE_SERVER_ERROR,
@@ -25,11 +25,11 @@ use busbar_contract::upstream::StatusClass;
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::codec::proto_codec) and netted into core (core::proto::proto_codec).
 #[allow(unused_imports)]
-// used standalone; redundant with the `busbar_contract::protocol::*` glob when netted into core
+// used standalone; redundant with the `crate::protocol::*` glob when netted into core
 use super::proto_codec::*;
 use crate::codec::usage_count::{CountRead, CountSlot, UsageCount};
 // See the anthropic dialect for the rationale: an explicit import of the codec surface so it binds to
-// THIS crate's own `proto_codec` rather than the `busbar_contract::protocol::*` glob.
+// THIS crate's own `proto_codec` rather than the `crate::protocol::*` glob.
 #[allow(unused_imports)]
 use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -51,20 +51,20 @@ pub fn protocol() -> Protocol {
 /// THE RESPONSES ROUTER DETECTION — its single rung of the old core `protocol_id` ladder:
 /// `/v1/responses` (rung 10).
 fn claims(
-    _h: busbar_contract::protocol::HeadFields<'_>,
+    _h: crate::protocol::HeadFields<'_>,
     path: &str,
-) -> Option<busbar_contract::protocol::ClaimStrength> {
+) -> Option<crate::protocol::ClaimStrength> {
     if path.ends_with("/v1/responses") {
-        return Some(busbar_contract::protocol::ClaimStrength(10));
+        return Some(crate::protocol::ClaimStrength(10));
     }
     None
 }
 
 /// THE RESPONSES RESIDUAL DETECTION — its arm of the headerless `residual_dialect_for_path` ladder:
 /// an exact `/v1/responses` (rung 60).
-fn residual_claims(path: &str) -> Option<busbar_contract::protocol::ClaimStrength> {
+fn residual_claims(path: &str) -> Option<crate::protocol::ClaimStrength> {
     if path == "/v1/responses" {
-        return Some(busbar_contract::protocol::ClaimStrength(60));
+        return Some(crate::protocol::ClaimStrength(60));
     }
     None
 }
@@ -75,17 +75,15 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     name: VENDOR_NAME,
     codec: dialect_codec!(VENDOR_NAME),
     handler: Some(&handler::ResponsesRequestHandler),
-    verbs: &[busbar_contract::operation::OpVerb::CHAT],
+    verbs: &[crate::verbs::CHAT],
     head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
-    streaming_content_type: Some(busbar_contract::protocol::TEXT_EVENT_STREAM),
+    streaming_content_type: Some(crate::protocol::TEXT_EVENT_STREAM),
     array_stream_shim_key: None,
     native_tool_id_prefix: Some("call_"),
     ingress_auth: IngressAuth::Bearer,
     // The `/v1/responses` surface shares OpenAI's plain `Authorization: Bearer <key>` — DECLARED here
     // as data (#83a S2-a, #40(b)): the kernel's egress-auth unit presents the lane credential under
     // it (lane-constant, so the boot path prebuilds it), and the key never passes through this plane.
-    egress_auth_headers: None,
-    egress_auth_lane_constant: false,
     egress_scheme: Some(EgressScheme::bearer()),
     stream_usage_requires_opt_in: false,
     // ── Promoted writer facts (G6 step A1): the same constants the `ResponsesWriter` methods returned.
@@ -96,7 +94,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     frame_after_message_start: None,
     reshapes_body_at_path_base: false,
     max_cache_control_breakpoints: None,
-    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS.as_u16(),
+    quota_exceeded_status: http::StatusCode::TOO_MANY_REQUESTS.as_u16(),
     ingress_is_eventstream: false,
     emits_sse_done_terminator: false,
     max_citations_per_delta: None,
@@ -108,15 +106,15 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     egress_user_agent: "OpenAI/Python 1.54.0",
     has_model_in_url: false,
     auth_failure_status_and_kind: (
-        busbar_contract::http::StatusCode::UNAUTHORIZED.as_u16(),
-        busbar_contract::protocol::ERR_TYPE_AUTHENTICATION,
+        http::StatusCode::UNAUTHORIZED.as_u16(),
+        crate::protocol::ERR_TYPE_AUTHENTICATION,
     ),
     ingress_relays_amzn_headers: false,
     ingress_relayed_response_header_names: &[],
     auth_failure_message: AUTH_FAILURE_MSG,
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
-    egress_stream_accept: busbar_contract::protocol::TEXT_EVENT_STREAM,
+    egress_stream_accept: crate::protocol::TEXT_EVENT_STREAM,
     // The Responses surface carries no list-models fingerprint of its own; a `/v1/models` GET
     // resolves to the OpenAI Chat envelope.
     models_list_envelope: None,
@@ -837,7 +835,7 @@ fn class_for_response_failed(signal: &str) -> StatusClass {
     match signal {
         CODE_INVALID_API_KEY | ERR_TYPE_AUTHENTICATION => StatusClass::Auth,
         ERR_CODE_RATE_LIMIT | ERR_TYPE_INSUFFICIENT_QUOTA => StatusClass::RateLimit,
-        busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH | ERR_CODE_STRING_ABOVE_MAX => {
+        crate::protocol::PROVIDER_CODE_CONTEXT_LENGTH | ERR_CODE_STRING_ABOVE_MAX => {
             StatusClass::ContextLength
         }
         ERR_TYPE_SERVER_ERROR | ERR_TYPE_OVERLOADED => StatusClass::ServerError,
@@ -871,7 +869,7 @@ fn is_code_like_signal(signal: &str) -> bool {
 /// — the code is DERIVED from the error class so the wire ALWAYS carries a valid enum an SDK can
 /// switch on, never a free-form string. Exhaustive over `StatusClass` (no `_`) per the no-catch-all
 /// rule.
-fn responses_error_code(err: &busbar_contract::protocol::IrError) -> String {
+fn responses_error_code(err: &crate::protocol::IrError) -> String {
     if let Some(s) = err.provider_signal.as_deref() {
         if is_code_like_signal(s) {
             return s.to_string();

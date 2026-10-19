@@ -51,13 +51,6 @@ fn door(key: &str) -> String {
     format!("/{key}")
 }
 
-/// WARM THE SHARED PROTOCOL REGISTRY. Reading `known_protocols()` once, up front, before any plane
-/// helper reaches it, keeps the dialect list populated order-independently of whatever order the
-/// harness runs tests in.
-fn warm_shared_protocol_registry() {
-    let _ = busbar_kernel::proto::known_protocols();
-}
-
 /// Every plane is reachable from `plane_keys()`, and it has no duplicates. The router, the config
 /// validator and the candidate projection all iterate this, so a plane missing from it is a plane
 /// that silently does not exist.
@@ -142,7 +135,6 @@ fn a_plane_earns_a_superset_ir_at_two_wire_formats_and_not_before() {
 #[test]
 fn the_fallback_and_multi_binding_planes_have_earned_an_ir_today() {
     register_planes();
-    warm_shared_protocol_registry();
     assert!(has_superset_ir(fallback()));
     assert!(!has_superset_ir(single()));
     assert!(
@@ -172,23 +164,6 @@ fn the_multi_binding_legs_are_named_by_the_planes_wire_formats() {
         ]
         .as_slice(),
         "the multi-binding plane's wire formats must be the shared wire-format words"
-    );
-}
-
-/// The fallback plane's wire-format count is DERIVED from the real protocol registry, never a
-/// literal. An additional registered protocol must not require anyone to remember to bump a number
-/// here.
-#[test]
-fn the_fallback_wire_format_count_comes_from_the_protocol_registry() {
-    register_planes();
-    warm_shared_protocol_registry();
-    assert_eq!(
-        wire_formats(fallback()),
-        busbar_kernel::proto::known_protocols().len()
-    );
-    assert!(
-        wire_formats(fallback()) >= 2,
-        "the registry itself is what earns the fallback plane its IR"
     );
 }
 
@@ -339,7 +314,6 @@ fn a_mount_is_readable_back() {
 #[test]
 fn sole_wire_format_answers_exactly_when_a_plane_speaks_one() {
     register_planes();
-    warm_shared_protocol_registry();
     for p in plane_keys() {
         assert_eq!(
             sole_wire_format(p).is_some(),
@@ -541,32 +515,4 @@ fn a_plane_with_zero_wire_formats_is_labelless_and_irless_by_design() {
     assert_eq!(sole_of(&["jsonrpc"]), Some("jsonrpc"));
     assert_eq!(sole_of(&["a", "b"]), None);
     assert!(superset_of(2));
-}
-
-/// **The fallback plane's dialect list IS the registry's, so the empty case is the registry's empty
-/// case.**
-#[test]
-fn the_fallback_planes_dialects_are_the_registrys_so_an_empty_registry_empties_the_plane() {
-    register_planes();
-    warm_shared_protocol_registry();
-    assert_eq!(
-        wire_format_names(fallback()),
-        busbar_kernel::proto::known_protocols(),
-        "the fallback plane's wire formats must track the registry"
-    );
-
-    let empty = busbar_kernel::proto::registry::Registry::new(
-        busbar_kernel::proto::registry::merged_boot_decls(&[], &[]),
-    );
-    let names: &'static [&'static str] = empty.codec_protocols();
-    assert!(names.is_empty(), "premise: no declarations, no dialects");
-    assert_eq!(
-        sole_of(names),
-        None,
-        "a plane with no dialect has nothing to label a request with"
-    );
-    assert!(
-        !superset_of(names.len()),
-        "zero dialects have earned no superset IR (the threshold is two)"
-    );
 }

@@ -204,7 +204,7 @@ fn test_event_type_exception_frame_returns_normalized_exception_name() {
     let mut h = string_header(HDR_EXCEPTION_TYPE, "InternalServerException");
     h.extend_from_slice(&string_header(
         HDR_CONTENT_TYPE,
-        busbar_contract::protocol::APPLICATION_JSON,
+        crate::protocol::APPLICATION_JSON,
     ));
     h.extend_from_slice(&string_header(HDR_MESSAGE_TYPE, MSG_TYPE_EXCEPTION));
     assert_eq!(event_type_for_frame(&h), "internalServerException");
@@ -343,7 +343,7 @@ fn test_event_type_exception_without_exception_type_yields_empty() {
     let mut h2 = string_header(HDR_MESSAGE_TYPE, MSG_TYPE_EXCEPTION);
     h2.extend_from_slice(&string_header(
         HDR_CONTENT_TYPE,
-        busbar_contract::protocol::APPLICATION_JSON,
+        crate::protocol::APPLICATION_JSON,
     ));
     assert_eq!(
         event_type_for_frame(&h2),

@@ -47,9 +47,8 @@ pub fn max_upstream_buffered_bytes() -> usize {
 // THE AGNOSTIC INGRESS-ERROR SHAPER and its neutral fallback envelope RELOCATED DOWN to
 // `busbar_kernel::proxy` (the extracted the retired engine crate native-ingress path shapes an ingress error
 // through the neutral ABI); re-exported here at their historical `crate::proxy::{ingress_error,
-// agnostic_error_envelope}` paths so every in-core caller is unchanged. They name no dialect —
-// `proto::decl_for` reads whatever registry the resident planes populated — and the fallback is
-// neutral, so both survive any one plane being dropped from the build.
+// agnostic_error_envelope}` paths so every in-core caller is unchanged. They name no dialect: the
+// envelope is the neutral one, so both survive any one plane being dropped from the build.
 pub use busbar_kernel::proxy::{agnostic_error_envelope, ingress_error};
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====

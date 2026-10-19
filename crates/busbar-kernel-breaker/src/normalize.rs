@@ -14,7 +14,6 @@
 //! error-map rule, the context-length code) belong to the plane's own outcome verdict, and the
 //! requested-wait read to the framer that owns the header.
 
-use busbar_contract::http;
 use busbar_contract::upstream::{CanonicalSignal, RawUpstreamError, StatusClass};
 
 /// The non-standard 529 overload status a provider sends as its server-overloaded signal (distinct

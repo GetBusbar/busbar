@@ -333,7 +333,7 @@ pub mod timing;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 /// The kernel's neutral test seam: a test-support consumer that links no plane installs it, and the
-/// kernel's own test binary reads its protocol set.
+/// kernel's own test binary reads its synthetic provider dialect names.
 #[cfg(any(test, feature = "test-support"))]
 pub mod testkit;
 pub mod tls;

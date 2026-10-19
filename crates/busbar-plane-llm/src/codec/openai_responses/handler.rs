@@ -20,7 +20,7 @@ static CHAT: super::super::chat_handle::ChatOperation =
 
 /// THE RESPONSES API'S ROW OF THE SUPPORT MATRIX — one verb; every other verb is the standard
 /// no-handler 404.
-static CELLS: &[busbar_contract::codec::Cell] = &[(OpVerb::CHAT, &CHAT)];
+static CELLS: &[busbar_contract::codec::Cell] = &[(crate::verbs::CHAT, &CHAT)];
 
 impl RequestHandler for ResponsesRequestHandler {
     dialect_identity!(super::VENDOR_NAME);
@@ -28,7 +28,7 @@ impl RequestHandler for ResponsesRequestHandler {
         PATH_RESPONSES.into()
     }
     fn resolve_operation(&self, path: &str, _body: &[u8]) -> Option<OpVerb> {
-        path.ends_with(PATH_RESPONSES).then_some(OpVerb::CHAT)
+        path.ends_with(PATH_RESPONSES).then_some(crate::verbs::CHAT)
     }
 }
 

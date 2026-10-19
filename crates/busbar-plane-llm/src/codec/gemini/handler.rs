@@ -43,19 +43,19 @@ static SPEECH: GeminiSpeech = GeminiSpeech;
 /// GEMINI'S ROW OF THE SUPPORT MATRIX — the verbs this protocol speaks, as data. A verb absent from
 /// it is the standard no-handler 404: Gemini has no moderation/rerank surface.
 static CELLS: &[busbar_contract::codec::Cell] = &[
-    (OpVerb::CHAT, &CHAT),
-    (OpVerb::EMBEDDINGS, &EMB),
-    (OpVerb::IMAGE, &IMG),
-    (OpVerb::TRANSCRIPTION, &TRANSCRIPTION),
-    (OpVerb::SPEECH, &SPEECH),
+    (crate::verbs::CHAT, &CHAT),
+    (crate::verbs::EMBEDDINGS, &EMB),
+    (crate::verbs::IMAGE, &IMG),
+    (crate::verbs::TRANSCRIPTION, &TRANSCRIPTION),
+    (crate::verbs::SPEECH, &SPEECH),
 ];
 
 /// The `:verb` suffix each verb's egress URL ends in — this protocol's own vocabulary, keyed by
 /// this protocol's own verb constants. The three that ride `generateContent` are absent because
 /// that is the fallback below; the two stream-aware ones are decided there too.
 static ACTIONS: &[(OpVerb, &str)] = &[
-    (OpVerb::EMBEDDINGS, "embedContent"),
-    (OpVerb::IMAGE, "predict"),
+    (crate::verbs::EMBEDDINGS, "embedContent"),
+    (crate::verbs::IMAGE, "predict"),
 ];
 
 impl RequestHandler for GeminiRequestHandler {
@@ -74,8 +74,12 @@ impl RequestHandler for GeminiRequestHandler {
         // `stream` says, exactly as 1.5.5 did (v1.5.5 `crates/busbar/src/handlers/gemini.rs:52-63`:
         // only Chat | Transcription | Speech were stream-aware; Moderation and Rerank were
         // `:generateContent`).
-        let stream_aware =
-            [OpVerb::CHAT, OpVerb::TRANSCRIPTION, OpVerb::SPEECH].contains(&ctx.operation);
+        let stream_aware = [
+            crate::verbs::CHAT,
+            crate::verbs::TRANSCRIPTION,
+            crate::verbs::SPEECH,
+        ]
+        .contains(&ctx.operation);
         let action = if stream_aware && ctx.stream {
             FIELD_STREAM_GENERATE_CONTENT
         } else {
@@ -89,10 +93,10 @@ impl RequestHandler for GeminiRequestHandler {
         // an audio mime ⇒ transcription, an inline IMAGE part is multimodal CHAT. The byte-scan is a
         // cheap pre-filter so plain chat never pays the JSON parse.
         if path.contains(":embedContent") || path.contains(":batchEmbedContents") {
-            return Some(OpVerb::EMBEDDINGS);
+            return Some(crate::verbs::EMBEDDINGS);
         }
         if path.contains(":predict") {
-            return Some(OpVerb::IMAGE);
+            return Some(crate::verbs::IMAGE);
         }
         if !(path.contains(":generateContent") || path.contains(":streamGenerateContent")) {
             return None;
@@ -120,7 +124,7 @@ impl RequestHandler for GeminiRequestHandler {
                     .and_then(Value::as_array)
                     .is_some_and(|m| m.iter().any(|x| x.as_str() == Some(GEMINI_AUDIO)));
                 if audio_out {
-                    return Some(OpVerb::SPEECH);
+                    return Some(crate::verbs::SPEECH);
                 }
                 let audio_in = v
                     .pointer("/contents/0/parts")
@@ -138,11 +142,11 @@ impl RequestHandler for GeminiRequestHandler {
                         })
                     });
                 if audio_in {
-                    return Some(OpVerb::TRANSCRIPTION);
+                    return Some(crate::verbs::TRANSCRIPTION);
                 }
             }
         }
-        Some(OpVerb::CHAT)
+        Some(crate::verbs::CHAT)
     }
     fn path_model(&self, path: &str) -> Option<String> {
         // `/{v1,v1beta}/models/{model}:{action}` — model is the last segment up to the LAST colon.
@@ -790,12 +794,12 @@ pub fn read_image_request(
 pub fn read_image_response(wire: &[u8]) -> Result<crate::codec::ir::image::ImageResp, CodecError> {
     let v: Value =
         serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
-    let images: Vec<busbar_contract::media::ImageOutput> = v
+    let images: Vec<crate::codec::ir::image::ImageOutput> = v
         .get(FIELD_PREDICTIONS)
         .and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
-                .map(|p| busbar_contract::media::ImageOutput {
+                .map(|p| crate::codec::ir::image::ImageOutput {
                     b64: p
                         .get(FIELD_BYTES_BASE64_ENCODED)
                         .and_then(Value::as_str)

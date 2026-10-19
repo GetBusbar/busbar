@@ -33,7 +33,7 @@ pub struct ModerationReq {
 /// [`busbar_contract::ir::facts::ContentItem::Opaque`] (chat-parity, present-but-unscreenable).
 impl busbar_contract::ir::facts::IrFacts for ModerationReq {
     fn verb(&self) -> busbar_contract::operation::OpVerb {
-        busbar_contract::operation::OpVerb::MODERATION
+        crate::verbs::MODERATION
     }
 
     fn wants_stream(&self) -> bool {

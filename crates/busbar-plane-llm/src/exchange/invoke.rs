@@ -28,7 +28,7 @@
 
 use std::borrow::Cow;
 
-use busbar_contract::protocol::HeadFields;
+use crate::protocol::HeadFields;
 use serde_json::Value;
 
 use crate::codec::eventstream::{drain_frames_checked, DrainStatus};

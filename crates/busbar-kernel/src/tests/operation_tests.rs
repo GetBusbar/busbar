@@ -9,18 +9,10 @@ use crate::operation::*;
 /// publishes. Written out rather than derived: a verb added without a line here is a verb no test
 /// names, and the pairing below is what pins both halves of `Verb { op, name }`.
 ///
-/// **THE THIRTEEN NAMES ARE THE 1.5-ERA METRIC LABEL SET, UNCHANGED.** Collapsing thirteen flat
-/// variants onto six shapes must not re-base a single metric series, and this table is where that
-/// is asserted rather than assumed.
-const ALL: [(OpVerb, OpShape, &str); 13] = [
-    // The LLM family: seven words, ONE shape. Name a model, hand it arguments, get content back.
-    (OpVerb::CHAT, OpShape::Invoke, "chat"),
-    (OpVerb::EMBEDDINGS, OpShape::Invoke, "embeddings"),
-    (OpVerb::MODERATION, OpShape::Invoke, "moderation"),
-    (OpVerb::IMAGE, OpShape::Invoke, "image"),
-    (OpVerb::TRANSCRIPTION, OpShape::Invoke, "transcription"),
-    (OpVerb::SPEECH, OpShape::Invoke, "speech"),
-    (OpVerb::RERANK, OpShape::Invoke, "rerank"),
+/// These are the core's own six. A plane's named verbs are that plane's constants and its suite
+/// pins them (the llm plane's seven endpoint words, and the thirteen-label metric surface they make
+/// with these six, are pinned in `busbar_plane_llm::verbs`).
+const ALL: [(OpVerb, OpShape, &str); 6] = [
     // The protocol surface: one verb per shape today, carrying the shape's own word.
     (OpVerb::INVOKE, OpShape::Invoke, "invoke"),
     (OpVerb::CATALOGUE, OpShape::Catalogue, "catalogue"),
@@ -38,7 +30,7 @@ fn names_are_stable_and_distinct() {
     sorted.sort_unstable();
     sorted.dedup();
     assert_eq!(sorted.len(), names.len(), "operation names must be unique");
-    assert_eq!(OpVerb::CHAT.name(), "chat");
+    assert_eq!(OpVerb::INVOKE.name(), "invoke");
 }
 
 /// THE NAMES ARE AN OPERATOR-VISIBLE CONTRACT — the metrics label and the `paths:` config key — so
@@ -51,9 +43,8 @@ fn every_name_is_pinned_to_its_literal() {
     }
 }
 
-/// EVERY VERB'S SHAPE, PINNED. The seven LLM words collapsing onto one shape is the finding this
-/// change is built on; if one of them ever needs a shape of its own, that is a design decision and
-/// it should have to be written down here first.
+/// EVERY VERB'S SHAPE, PINNED. If one of them ever needs a different shape, that is a design
+/// decision and it should have to be written down here first.
 #[test]
 fn every_verb_is_pinned_to_its_shape() {
     for (op, expected, name) in ALL {
@@ -61,10 +52,9 @@ fn every_verb_is_pinned_to_its_shape() {
     }
 }
 
-/// `Operation::ALL` IS THE CORE-OWNED HALF OF THE VOCABULARY — the six shape verbs, exactly the
-/// table's protocol-surface rows, in the same order. The LLM rows are deliberately NOT in it any
-/// more: they reach the vocabulary through `proto::registry::declared_verbs()` (the declarations),
-/// which `the_metric_label_surface_is_exactly_these_thirteen` below pins as the other half.
+/// `Operation::ALL` IS THE CORE-OWNED VOCABULARY — the six shape verbs, exactly the table's rows,
+/// in the same order. A plane's named verbs are deliberately NOT in it: they are that plane's own
+/// constants.
 #[test]
 fn all_holds_every_core_owned_verb_and_nothing_else() {
     let listed: Vec<OpVerb> = ALL
@@ -79,47 +69,6 @@ fn all_holds_every_core_owned_verb_and_nothing_else() {
     );
 }
 
-/// THE METRIC LABEL SURFACE, AS A SET. `Operation::name` is a Prometheus/tracing label; the set of
-/// values it can take is the set of series an operator's dashboard can select. This is that set,
-/// spelled once, sorted, so any change to it is a visible diff in this file rather than a silently
-/// re-based series.
-///
-/// DERIVED FROM BOTH HALVES since the LLM rows left `Operation::ALL`: the core's six shape verbs
-/// plus whatever the registered protocol declarations serve. With the built-in protocols present
-/// this is the SAME thirteen labels the 1.5 era published — asserting that here is what proves the
-/// derivation re-based nothing — and in a build whose protocols are deleted the declared half
-/// genuinely shrinks, which is the vocabulary-level teeth the deletion test lacked while the seven
-/// words were a core table.
-#[test]
-fn the_metric_label_surface_is_exactly_these_thirteen() {
-    let mut labels: Vec<&str> = OpVerb::ALL
-        .iter()
-        .chain(crate::proto::registry::declared_verbs())
-        .map(|o| o.name())
-        .collect();
-    labels.sort_unstable();
-    labels.dedup();
-    assert_eq!(
-        labels,
-        [
-            "catalogue",
-            "chat",
-            "control",
-            "embeddings",
-            "fetch",
-            "image",
-            "invoke",
-            "moderation",
-            "rerank",
-            "speech",
-            "subscribe",
-            "task",
-            "transcription",
-        ],
-        "the operation metric label surface changed; a dashboard depends on this set"
-    );
-}
-
 /// `ToolCall` became `Invoke` in 1.6.0 because the operation now carries A2A `message/send` as well
 /// as MCP `tools/call`; the old MCP-flavoured label must not survive anywhere on this axis, or a
 /// dashboard would keep reading a name that claims the engine knows which protocol it is serving.
@@ -129,35 +78,6 @@ fn no_operation_is_still_called_tool_call() {
         ALL.iter().all(|(_, _, n)| *n != "tool_call"),
         "`tool_call` was renamed to `invoke`; no operation may publish the old label"
     );
-}
-
-/// NO VERB NAMES A PROTOCOL. The whole point of the split is that a core type carries no protocol's
-/// identity, so the metric label surface may not contain one either — `mcp_tools_call` in this list
-/// would fail the deletion test on line one.
-#[test]
-fn no_verb_name_carries_a_protocol_identity() {
-    // The identities are READ OFF THE REGISTRY, not listed here: every protocol this test binary
-    // registers, so a protocol added to the registry is checked the day it lands. The plane keys of
-    // the real roster are checked against the same verbs in
-    // `crates/busbar/tests/operation_names_cross_plane.rs`, where that roster is registered.
-    let identities: Vec<&str> = crate::proto::registry::registry()
-        .decls()
-        .iter()
-        .map(|d| d.name)
-        .collect();
-    assert_eq!(
-        identities.len(),
-        7,
-        "core's test binary registers seven protocols; an empty list would pass vacuously"
-    );
-    for (_, _, name) in ALL {
-        for forbidden in &identities {
-            assert!(
-                !name.contains(forbidden),
-                "`{name}` names the `{forbidden}` protocol; verbs are shapes plus neutral words"
-            );
-        }
-    }
 }
 
 /// THE SHAPE SET IS ENUMERABLE, and every shape has a distinct word. The same role
@@ -195,21 +115,4 @@ fn only_the_invoke_shape_may_stream() {
             "{shape:?} answers once; it must not be able to claim a stream"
         );
     }
-}
-
-/// THE SEVEN LLM VERBS SHARE A SHAPE, so the shape alone cannot tell them apart — which is exactly
-/// why the word rides beside it. If this ever fails, either a verb changed shape or two verbs
-/// collided on a name, and both are breaking changes.
-#[test]
-fn the_named_invoke_family_is_one_shape_with_seven_distinct_words() {
-    let family: Vec<&str> = ALL
-        .iter()
-        .filter(|(op, _, _)| *op != OpVerb::INVOKE && op.shape() == OpShape::Invoke)
-        .map(|(_, _, n)| *n)
-        .collect();
-    assert_eq!(family.len(), 7, "seven named verbs, all `Invoke`-shaped");
-    assert!(
-        !family.contains(&"invoke"),
-        "the named verbs keep their published endpoint names; none is the shape's own word"
-    );
 }

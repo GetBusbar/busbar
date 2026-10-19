@@ -16,6 +16,8 @@ untranslatable_answer = {"id":"msg_1","type":"message","role":"assistant","model
 # its streamed events, its error envelopes), and that dialect's answer (1 in, 1 out).
 messages_dialect = anthropic
 messages_answer = {"id":"msg_1","type":"message","role":"assistant","model":"m0","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1}}
+# That dialect's own bad-credential sentence (its declaration's `auth_failure_message`).
+messages_auth_failure = invalid x-api-key
 # Each caller dialect's own path onto pool `p`, and a request body in that dialect.
 messages_path = /v1/messages
 respond_path = /v1/responses

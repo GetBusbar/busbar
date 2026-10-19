@@ -2461,7 +2461,7 @@ fn test_response_identity_cross_protocol_synthesizes_id_when_created_set() {
 #[test]
 fn test_stream_error_emits_full_google_rpc_status() {
     let writer = GeminiWriter;
-    let err = busbar_contract::protocol::IrError {
+    let err = crate::protocol::IrError {
         class: StatusClass::RateLimit,
         provider_signal: Some("slow down".to_string()),
         retry_after: None,
@@ -2490,7 +2490,7 @@ fn test_stream_error_emits_full_google_rpc_status() {
 #[test]
 fn test_stream_error_server_error_maps_internal() {
     let writer = GeminiWriter;
-    let err = busbar_contract::protocol::IrError {
+    let err = crate::protocol::IrError {
         class: StatusClass::ServerError,
         provider_signal: None,
         retry_after: None,
@@ -4049,11 +4049,11 @@ fn test_auth_headers_valid_key_emits_x_goog_api_key() {
     // in the custom `x-goog-api-key` header for every credential and mode, no Bearer. The bytes the host writes
     // for a valid key, and the omission of a key whose bytes no header value may carry, are pinned in
     // the host's suite over the shared fixture `testing/plane-copies/declared-credentials.json`.
-    let raw = busbar_contract::protocol::CredentialHeader::Raw {
+    let raw = crate::protocol::CredentialHeader::Raw {
         header: "x-goog-api-key",
         trim_start: false,
     };
-    let Some(busbar_contract::protocol::EgressScheme::Static {
+    let Some(crate::protocol::EgressScheme::Static {
         families,
         own,
         passthrough,
@@ -4064,10 +4064,6 @@ fn test_auth_headers_valid_key_emits_x_goog_api_key() {
     assert!(families.is_empty());
     assert_eq!(own, raw);
     assert_eq!(passthrough, raw);
-    assert!(
-        crate::codec::gemini::DECL.egress_auth_headers.is_none(),
-        "no credential passes through the plane"
-    );
 }
 
 /// Security regression: a credential whose bytes are invalid for an HTTP header value
@@ -4081,11 +4077,11 @@ fn test_auth_headers_invalid_key_omits_header_no_empty_value() {
     // in the custom `x-goog-api-key` header for every credential and mode, no Bearer. The bytes the host writes
     // for a valid key, and the omission of a key whose bytes no header value may carry, are pinned in
     // the host's suite over the shared fixture `testing/plane-copies/declared-credentials.json`.
-    let raw = busbar_contract::protocol::CredentialHeader::Raw {
+    let raw = crate::protocol::CredentialHeader::Raw {
         header: "x-goog-api-key",
         trim_start: false,
     };
-    let Some(busbar_contract::protocol::EgressScheme::Static {
+    let Some(crate::protocol::EgressScheme::Static {
         families,
         own,
         passthrough,
@@ -4096,10 +4092,6 @@ fn test_auth_headers_invalid_key_omits_header_no_empty_value() {
     assert!(families.is_empty());
     assert_eq!(own, raw);
     assert_eq!(passthrough, raw);
-    assert!(
-        crate::codec::gemini::DECL.egress_auth_headers.is_none(),
-        "no credential passes through the plane"
-    );
 }
 
 /// An ASCII control byte other than the newline above (here a NUL) is also rejected, exercising
@@ -4110,11 +4102,11 @@ fn test_auth_headers_control_byte_key_omits_header() {
     // in the custom `x-goog-api-key` header for every credential and mode, no Bearer. The bytes the host writes
     // for a valid key, and the omission of a key whose bytes no header value may carry, are pinned in
     // the host's suite over the shared fixture `testing/plane-copies/declared-credentials.json`.
-    let raw = busbar_contract::protocol::CredentialHeader::Raw {
+    let raw = crate::protocol::CredentialHeader::Raw {
         header: "x-goog-api-key",
         trim_start: false,
     };
-    let Some(busbar_contract::protocol::EgressScheme::Static {
+    let Some(crate::protocol::EgressScheme::Static {
         families,
         own,
         passthrough,
@@ -4125,10 +4117,6 @@ fn test_auth_headers_control_byte_key_omits_header() {
     assert!(families.is_empty());
     assert_eq!(own, raw);
     assert_eq!(passthrough, raw);
-    assert!(
-        crate::codec::gemini::DECL.egress_auth_headers.is_none(),
-        "no credential passes through the plane"
-    );
 }
 
 /// HIGH/correctness regression: a Tool-role IR message carries `ToolResult` blocks, which the

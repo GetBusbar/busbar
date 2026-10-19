@@ -1137,7 +1137,7 @@ fn test_auth_headers_valid_key_emits_bearer() {
     // `authorization: Bearer <key>` for every credential and mode. The bytes the host writes for a
     // valid key, and the omission of a key whose bytes no header value may carry, are pinned in the
     // host's suite over the shared fixture `testing/plane-copies/declared-credentials.json`.
-    let Some(busbar_contract::protocol::EgressScheme::Static {
+    let Some(crate::protocol::EgressScheme::Static {
         families,
         own,
         passthrough,
@@ -1146,15 +1146,8 @@ fn test_auth_headers_valid_key_emits_bearer() {
         panic!("cohere declares a static credential scheme");
     };
     assert!(families.is_empty());
-    assert_eq!(own, busbar_contract::protocol::CredentialHeader::Bearer);
-    assert_eq!(
-        passthrough,
-        busbar_contract::protocol::CredentialHeader::Bearer
-    );
-    assert!(
-        crate::codec::cohere::DECL.egress_auth_headers.is_none(),
-        "no credential passes through the plane"
-    );
+    assert_eq!(own, crate::protocol::CredentialHeader::Bearer);
+    assert_eq!(passthrough, crate::protocol::CredentialHeader::Bearer);
 }
 
 /// A credential carrying bytes `HeaderValue::from_str` rejects
@@ -1168,7 +1161,7 @@ fn test_auth_headers_invalid_key_omits_header_no_empty_value() {
     // `authorization: Bearer <key>` for every credential and mode. The bytes the host writes for a
     // valid key, and the omission of a key whose bytes no header value may carry, are pinned in the
     // host's suite over the shared fixture `testing/plane-copies/declared-credentials.json`.
-    let Some(busbar_contract::protocol::EgressScheme::Static {
+    let Some(crate::protocol::EgressScheme::Static {
         families,
         own,
         passthrough,
@@ -1177,15 +1170,8 @@ fn test_auth_headers_invalid_key_omits_header_no_empty_value() {
         panic!("cohere declares a static credential scheme");
     };
     assert!(families.is_empty());
-    assert_eq!(own, busbar_contract::protocol::CredentialHeader::Bearer);
-    assert_eq!(
-        passthrough,
-        busbar_contract::protocol::CredentialHeader::Bearer
-    );
-    assert!(
-        crate::codec::cohere::DECL.egress_auth_headers.is_none(),
-        "no credential passes through the plane"
-    );
+    assert_eq!(own, crate::protocol::CredentialHeader::Bearer);
+    assert_eq!(passthrough, crate::protocol::CredentialHeader::Bearer);
 }
 
 /// A NUL control byte in the credential is also rejected and the header omitted (not emitted as
@@ -1196,7 +1182,7 @@ fn test_auth_headers_control_byte_key_omits_header() {
     // `authorization: Bearer <key>` for every credential and mode. The bytes the host writes for a
     // valid key, and the omission of a key whose bytes no header value may carry, are pinned in the
     // host's suite over the shared fixture `testing/plane-copies/declared-credentials.json`.
-    let Some(busbar_contract::protocol::EgressScheme::Static {
+    let Some(crate::protocol::EgressScheme::Static {
         families,
         own,
         passthrough,
@@ -1205,15 +1191,8 @@ fn test_auth_headers_control_byte_key_omits_header() {
         panic!("cohere declares a static credential scheme");
     };
     assert!(families.is_empty());
-    assert_eq!(own, busbar_contract::protocol::CredentialHeader::Bearer);
-    assert_eq!(
-        passthrough,
-        busbar_contract::protocol::CredentialHeader::Bearer
-    );
-    assert!(
-        crate::codec::cohere::DECL.egress_auth_headers.is_none(),
-        "no credential passes through the plane"
-    );
+    assert_eq!(own, crate::protocol::CredentialHeader::Bearer);
+    assert_eq!(passthrough, crate::protocol::CredentialHeader::Bearer);
 }
 
 /// `ERROR_TOXIC` is a v1 Generate-API finish token, not a member of Cohere v2's
@@ -1498,7 +1477,7 @@ fn test_stream_error_emits_native_message_end_not_error_event() {
     let writer = CohereWriter;
 
     // Generic infrastructure error -> ERROR.
-    let infra = IrStreamEvent::Error(busbar_contract::protocol::IrError {
+    let infra = IrStreamEvent::Error(crate::protocol::IrError {
         class: busbar_contract::upstream::StatusClass::ServerError,
         provider_signal: Some("internal_server_error".to_string()),
         retry_after: None,
@@ -1575,7 +1554,7 @@ fn test_stream_error_emits_native_message_end_not_error_event() {
     );
 
     // Content-moderation signal -> ERROR_TOXIC.
-    let toxic = IrStreamEvent::Error(busbar_contract::protocol::IrError {
+    let toxic = IrStreamEvent::Error(crate::protocol::IrError {
         class: busbar_contract::upstream::StatusClass::ClientError,
         provider_signal: Some("content_filter_safety".to_string()),
         retry_after: None,
@@ -1597,7 +1576,7 @@ fn test_stream_error_emits_native_message_end_not_error_event() {
     );
 
     // An absent provider_signal still produces a native ERROR termination (never `type: error`).
-    let bare = IrStreamEvent::Error(busbar_contract::protocol::IrError {
+    let bare = IrStreamEvent::Error(crate::protocol::IrError {
         class: busbar_contract::upstream::StatusClass::ServerError,
         provider_signal: None,
         retry_after: None,

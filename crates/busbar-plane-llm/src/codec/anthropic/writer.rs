@@ -90,19 +90,17 @@ impl ProtocolWriter for AnthropicWriter {
             // as a `type` its SDK's error factory cannot map (it falls through to a generic
             // `APIError`), and named a competitor's vocabulary on our wire. Map it, exactly as the
             // sibling writers project this kind into their own dialect's vocabulary.
-            busbar_contract::protocol::KIND_INSUFFICIENT_QUOTA | "quota_exceeded" => {
-                ERR_TYPE_BILLING
-            }
+            crate::protocol::KIND_INSUFFICIENT_QUOTA | "quota_exceeded" => ERR_TYPE_BILLING,
             // CONTEXT OVERFLOW. `context_length_exceeded` is the canonical PROVIDER CODE the
             // readers synthesize for the breaker; it is likewise not an Anthropic error type. On the
             // Anthropic wire an over-long prompt is a request the model cannot accept, i.e.
             // `invalid_request_error` (real Anthropic returns exactly that, with a
             // "prompt is too long" message).
-            busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH
-            | busbar_contract::protocol::DISPOSITION_CONTEXT_LENGTH => ERR_TYPE_INVALID_REQUEST,
-            busbar_contract::protocol::KIND_OVERLOADED => ERR_TYPE_OVERLOADED,
-            busbar_contract::protocol::KIND_TIMEOUT => ERR_TYPE_TIMEOUT,
-            ERR_TYPE_API_ERROR | busbar_contract::protocol::KIND_SERVER_ERROR | "internal" => {
+            crate::protocol::PROVIDER_CODE_CONTEXT_LENGTH
+            | crate::protocol::DISPOSITION_CONTEXT_LENGTH => ERR_TYPE_INVALID_REQUEST,
+            crate::protocol::KIND_OVERLOADED => ERR_TYPE_OVERLOADED,
+            crate::protocol::KIND_TIMEOUT => ERR_TYPE_TIMEOUT,
+            ERR_TYPE_API_ERROR | crate::protocol::KIND_SERVER_ERROR | "internal" => {
                 ERR_TYPE_API_ERROR
             }
             // Already an Anthropic-native type (e.g. "invalid_request_error") or an unmapped value:
@@ -122,7 +120,7 @@ impl ProtocolWriter for AnthropicWriter {
     fn attach_error_response_headers(
         &self,
         _host: &dyn busbar_contract::codec::CodecHost,
-        headers: &mut busbar_contract::http::HeaderMap,
+        headers: &mut http::HeaderMap,
         _kind: &str,
         envelope: &serde_json::Value,
     ) {
@@ -132,7 +130,7 @@ impl ProtocolWriter for AnthropicWriter {
         // so body and header AGREE and the SDK populates `request_id` — omitting it was a deterministic
         // proxy tell on every error response.
         if let Some(rid) = envelope.get(super::REQUEST_ID).and_then(|v| v.as_str()) {
-            if let Ok(hv) = busbar_contract::http::HeaderValue::from_str(rid) {
+            if let Ok(hv) = http::HeaderValue::from_str(rid) {
                 headers.insert(HDR_REQUEST_ID, hv);
             }
         }

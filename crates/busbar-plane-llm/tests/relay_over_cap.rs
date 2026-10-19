@@ -7,7 +7,6 @@
 //! "this request's tokens are undercounted"). The relay billed a FLOOR estimate over the bytes it
 //! kept instead. The cap is the relay's own `translate_cap`, set here at 64 bytes.
 
-use busbar_contract::operation::OpVerb;
 use busbar_plane_llm::exchange::reply::relay::{Relay, RelayCtx};
 
 /// The codec host these relays are handed: the OS CSPRNG and the system clock in whole seconds.
@@ -38,7 +37,7 @@ fn embeddings_handler() -> &'static dyn busbar_contract::codec::OperationHandler
         .iter()
         .find(|d| d.name == "openai")
         .and_then(|d| d.handler)
-        .and_then(|rh| rh.operation_handler(OpVerb::EMBEDDINGS))
+        .and_then(|rh| rh.operation_handler(busbar_plane_llm::verbs::EMBEDDINGS))
         .expect("the openai dialect serves embeddings")
 }
 

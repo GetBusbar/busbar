@@ -1334,7 +1334,7 @@ fn responses_stream_failed_event_emitted() {
     let w = ResponsesWriter;
     let names = event_names(
         &w,
-        crate::codec::ir::IrStreamEvent::Error(busbar_contract::protocol::IrError {
+        crate::codec::ir::IrStreamEvent::Error(crate::protocol::IrError {
             class: busbar_contract::upstream::StatusClass::ServerError,
             provider_signal: Some("boom".to_string()),
             retry_after: None,

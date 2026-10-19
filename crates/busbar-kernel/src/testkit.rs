@@ -1,15 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE KERNEL'S NEUTRAL TEST SEAM, for a test-support consumer that links no plane: the synthetic
-//! protocol set the kernel's own test binary validates, routes and frames over
-//! (`proto/tests/neutral_protocols.rs`), and the neutral fallback plane that declares them as its
-//! provider dialects (`test_support::register_neutral_test_plane`; ARCHITECT ruling 2026-10-16 D:
-//! provider dialects are read off registered planes only). A consumer lists `busbar-kernel` in its
-//! `test-linked` table and its generated loop installs this entry, as it installs a plane's.
+//! THE KERNEL'S NEUTRAL TEST SEAM, for a test-support consumer that links no plane: the neutral
+//! fallback plane (`test_support::register_neutral_test_plane`; ARCHITECT ruling 2026-10-16 D:
+//! provider dialects are read off registered planes only) and the synthetic provider dialect names
+//! it declares, so a test lane names a provider protocol the boot accepts without naming a plane's
+//! dialect. A consumer lists `busbar-kernel` in its `test-linked` table and its generated loop
+//! installs this entry, as it installs a plane's.
 
-#[path = "proto/tests/neutral_protocols.rs"]
-pub(crate) mod neutral_protocols;
+/// THE SYNTHETIC PROVIDER DIALECTS the neutral test plane declares, in a fixed order. Names only:
+/// the kernel holds no dialect (Q128 contract p11 finding 1), so a test that needs a provider
+/// `protocol:` the boot accepts names one of these, and a dialect's behaviour is its plane's suite.
+pub const NEUTRAL_TEST_DIALECTS: &[&str] = &[
+    "proto-a", "proto-b", "proto-c", "proto-d", "proto-e", "proto-f",
+];
+
+/// The synthetic dialect a fixture names when it needs one and does not care which.
+pub const NEUTRAL_TEST_DIALECT: &str = "proto-b";
 
 /// The neutral seam's entry in a consumer's `test-linked` table.
 pub static TEST_SEAM: crate::test_support::seam::TestPlaneSeam =
@@ -21,9 +28,7 @@ pub static TEST_SEAM: crate::test_support::seam::TestPlaneSeam =
         verify_gate: None,
     };
 
-/// Register the synthetic protocols and the neutral fallback plane. Idempotent: both registrations
-/// are per name.
+/// Register the neutral fallback plane. Idempotent: the registration is per name.
 fn install() {
-    crate::proto::register_test_protocols(neutral_protocols::NEUTRAL_PROTOCOLS);
     crate::test_support::register_neutral_test_plane();
 }

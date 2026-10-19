@@ -12,7 +12,6 @@
 use crate::codec::proto_codec::protocol_for;
 use crate::codec::translate::{TranslateCodec as _, TranslateReqInput};
 use busbar_contract::ir::egress_prep::EgressPrep;
-use busbar_contract::operation::OpVerb;
 use busbar_contract::testkit::WarnCapture;
 use serde_json::{json, Value};
 
@@ -21,7 +20,7 @@ fn translate(ingress: &str, egress: &str, body: &Value) -> (Vec<String>, WarnCap
     let _ = protocol_for(ingress);
     let handler = crate::codec::decl_of(ingress)
         .and_then(|d| d.handler)
-        .and_then(|h| h.operation_handler(OpVerb::CHAT))
+        .and_then(|h| h.operation_handler(crate::verbs::CHAT))
         .expect("a chat handler");
     let prep = EgressPrep {
         ingress_protocol: ingress,
@@ -58,7 +57,7 @@ fn answer(egress: &str, ingress: &str, body: &Value) -> (Vec<String>, WarnCaptur
     let ctx = crate::exchange::reply::whole::WholeCtx {
         ingress,
         egress,
-        operation: OpVerb::CHAT,
+        operation: crate::verbs::CHAT,
         model: "m",
         wants_stream: false,
         json_array: false,
@@ -279,7 +278,7 @@ fn translate_body(ingress: &str, egress: &str, body: &Value) -> (Value, Vec<Stri
     let _ = protocol_for(ingress);
     let handler = crate::codec::decl_of(ingress)
         .and_then(|d| d.handler)
-        .and_then(|h| h.operation_handler(OpVerb::CHAT))
+        .and_then(|h| h.operation_handler(crate::verbs::CHAT))
         .expect("a chat handler");
     let prep = EgressPrep {
         ingress_protocol: ingress,
@@ -318,7 +317,7 @@ fn refused_natively(ingress: &str, egress: &str, body: &Value) {
     let _ = protocol_for(ingress);
     let handler = crate::codec::decl_of(ingress)
         .and_then(|d| d.handler)
-        .and_then(|h| h.operation_handler(OpVerb::CHAT))
+        .and_then(|h| h.operation_handler(crate::verbs::CHAT))
         .expect("a chat handler");
     let prep = EgressPrep {
         ingress_protocol: ingress,

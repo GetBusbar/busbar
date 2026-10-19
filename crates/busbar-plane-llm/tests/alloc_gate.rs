@@ -320,7 +320,7 @@ fn resolving_every_dialect_by_name_allocates_nothing() {
         body: &serde_json::Value,
     ) {
         let codec = decl_of(name)
-            .and_then(busbar_contract::protocol::ProtocolDecl::dialect)
+            .and_then(busbar_plane_llm::protocol::ProtocolDecl::dialect)
             .unwrap_or_else(|| panic!("{name} declares a codec"));
         // Warm both sides outside the measured windows: a first touch of a lazy static a writer
         // reads is a per-process cost, not a per-request one.
@@ -331,7 +331,7 @@ fn resolving_every_dialect_by_name_allocates_nothing() {
         });
         let resolved = allocations_of(|| {
             let codec = decl_of(name)
-                .and_then(busbar_contract::protocol::ProtocolDecl::dialect)
+                .and_then(busbar_plane_llm::protocol::ProtocolDecl::dialect)
                 .expect("declared");
             let _ = codec.requested_candidate_count(body);
         });

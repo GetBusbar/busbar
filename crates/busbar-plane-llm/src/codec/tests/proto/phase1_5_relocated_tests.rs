@@ -118,7 +118,7 @@ fn responses_multi_part_reasoning_text_concatenates() {
 /// `ingress_error` seam), while the dialect mapping's identity is proven here beside the codec.
 #[test]
 fn error_kind_to_bedrock_type_covers_ingress_emitted_kinds() {
-    use busbar_contract::protocol::{
+    use crate::protocol::{
         KIND_INSUFFICIENT_QUOTA, KIND_INVALID_REQUEST, KIND_PERMISSION, KIND_RATE_LIMIT,
     };
     assert_eq!(
@@ -158,7 +158,7 @@ fn every_bedrock_error_kind_is_a_converse_declared_exception() {
         "ThrottlingException",
         "ValidationException",
     ];
-    use busbar_contract::protocol::{
+    use crate::protocol::{
         KIND_API_ERROR, KIND_INSUFFICIENT_QUOTA, KIND_INVALID_REQUEST, KIND_OVERLOADED,
         KIND_PERMISSION, KIND_RATE_LIMIT, KIND_SERVER_ERROR, KIND_TIMEOUT,
     };

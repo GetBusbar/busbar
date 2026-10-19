@@ -134,21 +134,17 @@ fn op_shape_all_has_exactly_six_entries() {
 
 // ── `Operation` ───────────────────────────────────────────────────────────────────────────────────
 
+/// A plane's own invoke words are built with `named_invoke`: each is `Invoke`-shaped and carries
+/// exactly the word it was given (the llm plane's seven endpoint words are pinned in that plane).
 #[test]
-fn operation_invoke_class_verbs_are_all_invoke_shape_with_their_published_name() {
-    let cases = [
-        (OpVerb::CHAT, "chat"),
-        (OpVerb::EMBEDDINGS, "embeddings"),
-        (OpVerb::MODERATION, "moderation"),
-        (OpVerb::IMAGE, "image"),
-        (OpVerb::TRANSCRIPTION, "transcription"),
-        (OpVerb::SPEECH, "speech"),
-        (OpVerb::RERANK, "rerank"),
-    ];
-    for (op, name) in cases {
+fn a_named_invoke_verb_is_invoke_shaped_and_carries_its_word() {
+    const TELEX: OpVerb = OpVerb::named_invoke("telex");
+    const WIRE: OpVerb = OpVerb::named_invoke("wire");
+    for (op, name) in [(TELEX, "telex"), (WIRE, "wire")] {
         assert_eq!(op.shape(), OpShape::Invoke, "{name} must be Invoke-shaped");
         assert_eq!(op.name(), name);
     }
+    assert_ne!(TELEX, WIRE, "two words are two verbs");
 }
 
 #[test]
@@ -182,14 +178,14 @@ fn operation_all_lists_exactly_the_six_protocol_surface_verbs_in_order() {
     );
 }
 
-/// The invoke-class verbs above are NOT in `Operation::ALL` (they arrive from protocol declarations
-/// instead — see the module doc) — pinning the negative half of that design so a mutant that folded
+/// A plane's named invoke verbs are NOT in `Operation::ALL` (they are that plane's own constants —
+/// see the module doc) — pinning the negative half of that design so a mutant that folded
 /// them back in (or dropped a real entry without anyone noticing the length still matched some other
 /// case) fails.
 #[test]
 fn operation_all_excludes_the_invoke_class_verbs() {
-    assert!(!OpVerb::ALL.contains(&OpVerb::CHAT));
-    assert!(!OpVerb::ALL.contains(&OpVerb::EMBEDDINGS));
+    assert!(!OpVerb::ALL.contains(&OpVerb::named_invoke("telex")));
+    assert!(!OpVerb::ALL.contains(&OpVerb::named_invoke("wire")));
     assert_eq!(OpVerb::ALL.len(), 6);
 }
 

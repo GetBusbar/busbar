@@ -53,7 +53,7 @@ pub use crate::codec::dialect::{
     strip_top_level_usage_member, write_sse_frame, BASE62_ALPHABET, HDR_AUTHORIZATION,
     SSE_DONE_FRAME, SSE_DONE_SENTINEL,
 };
-pub use busbar_contract::protocol::{find_frame_terminator, IrError, SIGNAL_IR_PARSE};
+pub use crate::protocol::{find_frame_terminator, IrError, SIGNAL_IR_PARSE};
 // The by-name views the suites read, over THIS PLANE'S OWN declarations (#83a SD-3: the codec's
 // tests prove the codec's own seam and never reach the host). `decl_for` is the plane's own lookup;
 // the list views are the plane's declaration table read in its declared order, which is the order
@@ -96,7 +96,7 @@ pub fn array_stream_shim_keys() -> &'static [&'static str] {
 pub const DEFAULT_MAX_TOKENS: u32 = 4096;
 
 // Substrate atoms the suites name bare (breaker signal + the neutral framing seam types).
-pub use busbar_contract::protocol::{ArrayStreamFramer, DialectCodec};
+pub use crate::protocol::{ArrayStreamFramer, DialectCodec};
 pub use busbar_contract::upstream::{CanonicalSignal, StatusClass};
 
 #[path = "adversarial_tests.rs"]

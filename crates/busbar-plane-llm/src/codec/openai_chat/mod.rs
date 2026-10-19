@@ -6,14 +6,14 @@
 use crate::codec::dialect::ir_parse_error;
 use crate::codec::ir::{IrStreamEvent, IrUsage};
 use crate::codec::keys;
-use busbar_contract::http::StatusCode;
+use http::StatusCode;
 // The openai-family error helpers (`bearer_error_code`/`context_length_prose_scan`) now live
 // in the neutral substrate; name them there so this plugin reaches no `busbar-core` path for them.
 use crate::codec::dialect::{bearer_error_code, context_length_prose_scan};
 // The neutral canonical error-type vocabulary lives in the substrate; read it there, not via core's
 // re-export, so this plugin names no `busbar-core` implementation path for it.
-use busbar_contract::protocol::*;
-use busbar_contract::protocol::{
+use crate::protocol::*;
+use crate::protocol::{
     ERR_TYPE_AUTHENTICATION, ERR_TYPE_INSUFFICIENT_QUOTA, ERR_TYPE_INVALID_REQUEST,
     ERR_TYPE_NOT_FOUND, ERR_TYPE_OVERLOADED, ERR_TYPE_PERMISSION, ERR_TYPE_RATE_LIMIT,
     ERR_TYPE_SERVER_ERROR,
@@ -25,12 +25,12 @@ use busbar_contract::upstream::StatusClass;
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::codec::proto_codec) and netted into core (core::proto::proto_codec).
 #[allow(unused_imports)]
-// used standalone; redundant with the `busbar_contract::protocol::*` glob when netted into core
+// used standalone; redundant with the `crate::protocol::*` glob when netted into core
 use super::proto_codec::*;
 use crate::codec::usage_count::{CountRead, CountSlot, UsageCount};
 use busbar_contract::ir::egress_prep::{LaneCaps, MaxOutputKey};
 // See the anthropic dialect for the rationale: an explicit import of the codec surface so it binds to
-// THIS crate's own `proto_codec` rather than the `busbar_contract::protocol::*` glob.
+// THIS crate's own `proto_codec` rather than the `crate::protocol::*` glob.
 #[allow(unused_imports)]
 use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming};
 
@@ -64,10 +64,10 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
 /// (rung 7), then the OpenAI-family JSON/audio/image ops (`/v1/embeddings`, `/v1/moderations`,
 /// `/v1/images/…`, `/v1/audio/…`, rung 14, the loosest path claims). Lower strength binds tighter.
 fn claims(
-    _h: busbar_contract::protocol::HeadFields<'_>,
+    _h: crate::protocol::HeadFields<'_>,
     path: &str,
-) -> Option<busbar_contract::protocol::ClaimStrength> {
-    use busbar_contract::protocol::ClaimStrength;
+) -> Option<crate::protocol::ClaimStrength> {
+    use crate::protocol::ClaimStrength;
     if path.ends_with("/v1/chat/completions") {
         return Some(ClaimStrength(7));
     }
@@ -86,8 +86,8 @@ fn claims(
 /// (rung 25, LOOSER than Gemini's `/v1/models/{id}:{action}` at rung 20, so a genuine Gemini action
 /// wins and only a colon-less or non-action id falls here) and an exact `/v1/chat/completions` (rung
 /// 55). The broad `/v1/models/` catch is what makes a colon-bearing OpenAI fine-tune id stay OpenAI.
-fn residual_claims(path: &str) -> Option<busbar_contract::protocol::ClaimStrength> {
-    use busbar_contract::protocol::ClaimStrength;
+fn residual_claims(path: &str) -> Option<crate::protocol::ClaimStrength> {
+    use crate::protocol::ClaimStrength;
     if path.starts_with("/v1/models/") {
         return Some(ClaimStrength(25));
     }
@@ -103,15 +103,15 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     codec: dialect_codec!(VENDOR_NAME),
     handler: Some(&handler::OpenAiRequestHandler),
     verbs: &[
-        busbar_contract::operation::OpVerb::CHAT,
-        busbar_contract::operation::OpVerb::EMBEDDINGS,
-        busbar_contract::operation::OpVerb::MODERATION,
-        busbar_contract::operation::OpVerb::IMAGE,
-        busbar_contract::operation::OpVerb::TRANSCRIPTION,
-        busbar_contract::operation::OpVerb::SPEECH,
+        crate::verbs::CHAT,
+        crate::verbs::EMBEDDINGS,
+        crate::verbs::MODERATION,
+        crate::verbs::IMAGE,
+        crate::verbs::TRANSCRIPTION,
+        crate::verbs::SPEECH,
     ],
     head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
-    streaming_content_type: Some(busbar_contract::protocol::TEXT_EVENT_STREAM),
+    streaming_content_type: Some(crate::protocol::TEXT_EVENT_STREAM),
     array_stream_shim_key: None,
     // `call_…` is the documented native tool-call id shape for both OpenAI surfaces.
     native_tool_id_prefix: Some("call_"),
@@ -119,8 +119,6 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // OpenAI's native credential scheme is a plain `Authorization: Bearer <key>` — DECLARED here as
     // data (#83a S2-a, #40(b)): the kernel's egress-auth unit presents the lane credential under it,
     // so the key never passes through this plane.
-    egress_auth_headers: None,
-    egress_auth_lane_constant: false,
     egress_scheme: Some(EgressScheme::bearer()),
     stream_usage_requires_opt_in: true,
     // ── Promoted writer facts (G6 step A1): the same constants the `OpenAiWriter` methods returned.
@@ -131,7 +129,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     frame_after_message_start: None,
     reshapes_body_at_path_base: false,
     max_cache_control_breakpoints: None,
-    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS.as_u16(),
+    quota_exceeded_status: http::StatusCode::TOO_MANY_REQUESTS.as_u16(),
     ingress_is_eventstream: false,
     emits_sse_done_terminator: true,
     max_citations_per_delta: None,
@@ -143,15 +141,15 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     egress_user_agent: "OpenAI/Python 1.54.0",
     has_model_in_url: false,
     auth_failure_status_and_kind: (
-        busbar_contract::http::StatusCode::UNAUTHORIZED.as_u16(),
-        busbar_contract::protocol::ERR_TYPE_AUTHENTICATION,
+        http::StatusCode::UNAUTHORIZED.as_u16(),
+        crate::protocol::ERR_TYPE_AUTHENTICATION,
     ),
     ingress_relays_amzn_headers: false,
     ingress_relayed_response_header_names: &[],
     auth_failure_message: AUTH_FAILURE_MSG,
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
-    egress_stream_accept: busbar_contract::protocol::TEXT_EVENT_STREAM,
+    egress_stream_accept: crate::protocol::TEXT_EVENT_STREAM,
     models_list_envelope: Some(models_list_envelope),
     claims: Some(claims),
     residual_claims: Some(residual_claims),

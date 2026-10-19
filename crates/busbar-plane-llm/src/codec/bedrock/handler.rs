@@ -27,10 +27,10 @@ static RERANK: BedrockRerank = BedrockRerank;
 /// BEDROCK'S ROW OF THE SUPPORT MATRIX — the verbs this protocol speaks, as data. A verb absent
 /// from it is a genuine gap → the standard no-handler 404.
 static CELLS: &[busbar_contract::codec::Cell] = &[
-    (OpVerb::CHAT, &CHAT),
-    (OpVerb::EMBEDDINGS, &EMB),
-    (OpVerb::IMAGE, &IMG),
-    (OpVerb::RERANK, &RERANK),
+    (crate::verbs::CHAT, &CHAT),
+    (crate::verbs::EMBEDDINGS, &EMB),
+    (crate::verbs::IMAGE, &IMG),
+    (crate::verbs::RERANK, &RERANK),
 ];
 
 impl RequestHandler for BedrockRequestHandler {
@@ -39,7 +39,7 @@ impl RequestHandler for BedrockRequestHandler {
         // Chat uses the Converse API (stream-aware); everything else rides InvokeModel. The
         // discriminator is this protocol's OWN verb constant, compared against this protocol's OWN
         // table — not a core enum's variant, which is the point of the 1.6.0 split.
-        if ctx.operation == OpVerb::CHAT {
+        if ctx.operation == crate::verbs::CHAT {
             let verb = if ctx.stream {
                 "converse-stream"
             } else {
@@ -56,7 +56,7 @@ impl RequestHandler for BedrockRequestHandler {
         // Converse is chat; InvokeModel multiplexes — the BODY names the op (Titan image vs Titan
         // embeddings). Unknown invoke bodies resolve to None (a clean 400 at the route layer).
         if path.ends_with("/converse") || path.ends_with("/converse-stream") {
-            return Some(OpVerb::CHAT);
+            return Some(crate::verbs::CHAT);
         }
         if path.ends_with("/invoke") {
             // Anchor every scan to the QUOTED JSON key (`"key"`), not the bare token: an unanchored
@@ -67,13 +67,13 @@ impl RequestHandler for BedrockRequestHandler {
             // Rerank models (cohere.rerank-*, amazon.rerank-*) take {query, documents} — no
             // other InvokeModel body carries both keys.
             if has(b"\"query\"") && has(b"\"documents\"") {
-                return Some(OpVerb::RERANK);
+                return Some(crate::verbs::RERANK);
             }
             if has(b"\"textToImageParams\"") {
-                return Some(OpVerb::IMAGE);
+                return Some(crate::verbs::IMAGE);
             }
             if has(b"\"inputText\"") {
-                return Some(OpVerb::EMBEDDINGS);
+                return Some(crate::verbs::EMBEDDINGS);
             }
         }
         None
@@ -366,13 +366,13 @@ pub fn read_image_request(
 pub fn read_image_response(wire: &[u8]) -> Result<crate::codec::ir::image::ImageResp, CodecError> {
     let v: Value =
         serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
-    let images: Vec<busbar_contract::media::ImageOutput> = v
+    let images: Vec<crate::codec::ir::image::ImageOutput> = v
         .get(super::IMAGES)
         .and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
                 .filter_map(|b| b.as_str())
-                .map(|b| busbar_contract::media::ImageOutput {
+                .map(|b| crate::codec::ir::image::ImageOutput {
                     b64: Some(b.to_string()),
                     ..Default::default()
                 })

@@ -11,7 +11,6 @@
 use crate::codec::proto_codec::protocol_for;
 use crate::codec::translate::{TranslateCodec as _, TranslateReqInput};
 use busbar_contract::ir::egress_prep::EgressPrep;
-use busbar_contract::operation::OpVerb;
 use busbar_contract::testkit::WarnCapture;
 use serde_json::{json, Value};
 
@@ -42,7 +41,7 @@ fn translate(
     let _ = protocol_for(ingress);
     let handler = crate::codec::decl_of(ingress)
         .and_then(|d| d.handler)
-        .and_then(|h| h.operation_handler(OpVerb::CHAT))
+        .and_then(|h| h.operation_handler(crate::verbs::CHAT))
         .expect("a chat handler");
     let prep = EgressPrep {
         ingress_protocol: ingress,

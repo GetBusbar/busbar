@@ -572,7 +572,7 @@ async fn leg_legacy(fixture: Fixture) -> Observed {
         json_headers(),
         fixture.body(),
         PROTO,
-        busbar_contract::operation::OpVerb::CHAT,
+        self::node_plane::verbs::CHAT,
         None,
     )
     .await;
@@ -608,7 +608,7 @@ async fn drive(rig: &Rig, fixture: Fixture) -> Response {
         host: rig.host(),
         gov: rig.gov(),
         proto: PROTO,
-        operation: busbar_contract::operation::OpVerb::CHAT,
+        operation: self::node_plane::verbs::CHAT,
         caller_token: None,
         headers: json_headers(),
         query: None,
@@ -768,7 +768,7 @@ async fn a_unit_arriving_at_a_window_boundary_bills_in_the_window_it_arrived_in(
         host: rig.host(),
         gov: rig.gov(),
         proto: PROTO,
-        operation: busbar_contract::operation::OpVerb::CHAT,
+        operation: self::node_plane::verbs::CHAT,
         caller_token: None,
         headers: json_headers(),
         query: None,
@@ -1293,7 +1293,7 @@ async fn every_unit_the_node_answers_served_or_refused_seals_one_record_on_one_t
             host: rig.host(),
             gov: rig.gov(),
             proto: PROTO,
-            operation: busbar_contract::operation::OpVerb::CHAT,
+            operation: self::node_plane::verbs::CHAT,
             caller_token: None,
             headers: json_headers(),
             query: None,
@@ -1479,7 +1479,7 @@ async fn drive_screened_by(
         host: rig.host(),
         gov,
         proto: PROTO,
-        operation: busbar_contract::operation::OpVerb::CHAT,
+        operation: self::node_plane::verbs::CHAT,
         caller_token: None,
         headers: json_headers(),
         query: None,
@@ -1838,7 +1838,7 @@ fn path_facts(proto: &'static str, fixture: Fixture) -> PathFacts {
     let model = fixture.model().to_string();
     let stream = fixture.streamed();
     PathFacts {
-        operation: busbar_contract::operation::OpVerb::CHAT,
+        operation: self::node_plane::verbs::CHAT,
         stream,
         // A streamed request on a dialect whose URL takes the JSON-array framing is framed that
         // way; the other has no such framing at all.
@@ -2026,7 +2026,7 @@ async fn an_empty_url_model_ends_where_the_shipped_path_model_entry_point_ends_i
                 host: rig.host(),
                 gov: rig.gov(),
                 proto,
-                operation: busbar_contract::operation::OpVerb::CHAT,
+                operation: self::node_plane::verbs::CHAT,
                 caller_token: None,
                 headers: json_headers(),
                 query: None,
@@ -2091,7 +2091,7 @@ async fn the_url_facts_ride_the_unit_and_not_the_thread() {
         host: rig.host(),
         gov: rig.gov(),
         proto,
-        operation: busbar_contract::operation::OpVerb::CHAT,
+        operation: self::node_plane::verbs::CHAT,
         caller_token: None,
         headers: json_headers(),
         query: None,
@@ -2236,12 +2236,12 @@ fn dialect_body(proto: &str, shape: Decoded) -> Bytes {
 /// that answers all seven, which is a dialect this shape has nothing to say about.
 fn unsupported_verb(proto: &str) -> Option<busbar_contract::operation::OpVerb> {
     [
-        busbar_contract::operation::OpVerb::EMBEDDINGS,
-        busbar_contract::operation::OpVerb::MODERATION,
-        busbar_contract::operation::OpVerb::IMAGE,
-        busbar_contract::operation::OpVerb::TRANSCRIPTION,
-        busbar_contract::operation::OpVerb::SPEECH,
-        busbar_contract::operation::OpVerb::RERANK,
+        self::node_plane::verbs::EMBEDDINGS,
+        self::node_plane::verbs::MODERATION,
+        self::node_plane::verbs::IMAGE,
+        self::node_plane::verbs::TRANSCRIPTION,
+        self::node_plane::verbs::SPEECH,
+        self::node_plane::verbs::RERANK,
     ]
     .into_iter()
     .find(|op| plane::declines(proto, *op))
@@ -2314,7 +2314,7 @@ async fn the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it() {
         for shape in [Decoded::Named, Decoded::NoModel, Decoded::Malformed] {
             let label = format!("{proto}/{shape:?}");
             let body = dialect_body(proto, shape);
-            let op = busbar_contract::operation::OpVerb::CHAT;
+            let op = self::node_plane::verbs::CHAT;
             let legacy = leg_legacy_decode(proto, op, body.clone()).await;
             let looped = leg_loop_decode(proto, op, body).await;
             compare(&label, &legacy, &looped, &mut failures);
@@ -2469,7 +2469,7 @@ async fn leg_legacy_as(rig: &Rig, gov: busbar_contract::records::PlaneRequestCtx
         json_headers(),
         Fixture::BufferedOk.body(),
         PROTO,
-        busbar_contract::operation::OpVerb::CHAT,
+        self::node_plane::verbs::CHAT,
         None,
     )
     .await;
@@ -2483,7 +2483,7 @@ async fn leg_loop_as(rig: &Rig, gov: busbar_contract::records::PlaneRequestCtx) 
         host: rig.host(),
         gov,
         proto: PROTO,
-        operation: busbar_contract::operation::OpVerb::CHAT,
+        operation: self::node_plane::verbs::CHAT,
         caller_token: None,
         headers: json_headers(),
         query: None,
@@ -2601,7 +2601,7 @@ async fn the_loop_attributes_the_identity_the_door_resolved_and_invents_none() {
                         host: loop_rig.host(),
                         gov: open.clone(),
                         proto: PROTO,
-                        operation: busbar_contract::operation::OpVerb::CHAT,
+                        operation: self::node_plane::verbs::CHAT,
                         caller_token: None,
                         headers: json_headers(),
                         query: None,
@@ -2684,7 +2684,7 @@ async fn leg_loop_seated(
         host: rig.host(),
         gov: rig.gov(),
         proto: PROTO,
-        operation: busbar_contract::operation::OpVerb::CHAT,
+        operation: self::node_plane::verbs::CHAT,
         caller_token: None,
         headers: json_headers(),
         query: None,
@@ -2815,7 +2815,7 @@ async fn drive_counting(rig: &Rig, fixture: Fixture) -> (Response, Option<u64>) 
         host: rig.host(),
         gov: rig.gov(),
         proto: PROTO,
-        operation: busbar_contract::operation::OpVerb::CHAT,
+        operation: self::node_plane::verbs::CHAT,
         caller_token: None,
         headers: json_headers(),
         query: None,
@@ -2979,7 +2979,7 @@ async fn leg_native_run(fixture: Fixture) -> Observed {
         json_headers(),
         fixture.body(),
         PROTO,
-        busbar_contract::operation::OpVerb::CHAT,
+        self::node_plane::verbs::CHAT,
         None,
     )
     .await;
@@ -3049,7 +3049,7 @@ async fn leg_native_run_via_loop(fixture: Fixture) -> Observed {
         &host,
         &rig.gov(),
         PROTO,
-        busbar_contract::operation::OpVerb::CHAT,
+        self::node_plane::verbs::CHAT,
         fixture.model(),
         &json_headers(),
         fixture.body(),
@@ -4293,13 +4293,13 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
                 .as_str()
                 .expect("the fixture names the rerank unit's dialect"),
         ),
-        operation: busbar_contract::operation::OpVerb::RERANK,
+        operation: self::node_plane::verbs::RERANK,
         caller_token: None,
         headers: json_headers(),
         query: None,
         body: Bytes::from_static(br#"{"query":"which is fastest","documents":["a","b","c"]}"#),
         path: Some(PathFacts {
-            operation: busbar_contract::operation::OpVerb::RERANK,
+            operation: self::node_plane::verbs::RERANK,
             stream: false,
             gemini_json_array: false,
             model_not_found_message: None,
@@ -5137,7 +5137,7 @@ fn chat_arrival(rig: &Rig, fixture: Fixture) -> plane::WalkArrival {
         host: rig.host(),
         gov: rig.gov(),
         proto: PROTO,
-        operation: busbar_contract::operation::OpVerb::CHAT,
+        operation: self::node_plane::verbs::CHAT,
         caller_token: None,
         headers: json_headers(),
         query: None,
@@ -5572,7 +5572,7 @@ async fn serve_rerank(
     let key = Arc::new(key);
     let (body, path) = if by_path {
         let mut facts = path_facts(arrival_dialect, Fixture::BufferedOk);
-        facts.operation = busbar_contract::operation::OpVerb::RERANK;
+        facts.operation = self::node_plane::verbs::RERANK;
         facts.model = RERANK_POOL.to_string();
         (
             Bytes::from_static(br#"{"query":"which is fastest","documents":["a","b","c"]}"#),
@@ -5601,7 +5601,7 @@ async fn serve_rerank(
             key: Some(Arc::clone(&key)),
         },
         proto: arrival_dialect,
-        operation: busbar_contract::operation::OpVerb::RERANK,
+        operation: self::node_plane::verbs::RERANK,
         caller_token: None,
         headers: json_headers(),
         query: None,

@@ -22,7 +22,7 @@ use crate::state::App;
 // (`busbar_kernel::ingress::arrival::set_test_body_ingress(|| the retired engine crate::BODY_INGRESS)`, idempotent,
 // first-wins) from an integration-test target, exactly the posture an external `test-support`
 // consumer already used — so this neutral source names no dialect crate under any build surface.
-pub(crate) use busbar_kernel::ingress::arrival::{body_ingress_for, path_ingress_for};
+pub(crate) use busbar_kernel::ingress::arrival::body_ingress_for;
 
 /// enforce a virtual key's allowed-pools list against the resolved target pool. No-op
 /// when governance is off (`gov.key` is None) or the key allows all pools. Returns a 403 response
@@ -189,7 +189,7 @@ pub fn admit_check(
         // bucket label, not an internal credential handle. Server-side tracing records the
         // full detail either way.
         tracing::info!(key_id = %key.id, blocked = ?blocked, "governance: limit bucket blocked admission");
-        let (status, kind, message, retry_after) = limit_refusal(proto, &blocked);
+        let (status, kind, message, retry_after) = limit_refusal(&blocked);
         let mut resp = ingress_error(proto, status, kind, &message);
         // Standard `Retry-After` for a rolling window so a well-behaved SDK backs off the
         // right amount ('total' never rolls: no header).
@@ -203,12 +203,11 @@ pub fn admit_check(
     }
 }
 
-/// THE LIMIT REFUSAL a blocked admission is answered with: its status in `proto`, its kind word,
+/// THE LIMIT REFUSAL a blocked admission is answered with: its status, its kind word,
 /// its message (naming the group, metric and window, never the key), and its Retry-After seconds
 /// (a rolling window's; `total` never rolls). One spelling, read by every door that admits.
 #[must_use]
 pub fn limit_refusal(
-    proto: &str,
     blocked: &crate::governance::LimitBlocked,
 ) -> (StatusCode, &'static str, String, Option<u64>) {
     use crate::governance::LimitBlocked;
@@ -258,12 +257,9 @@ pub fn limit_refusal(
             retry_after,
             ..
         } => (
-            // The native quota status is the writer's (every dialect answers 429 today;
-            // Bedrock's is ThrottlingException, a Converse-declared error). The writer owns
-            // that mapping.
-            crate::proto::decl_for(proto)
-                .and_then(|d| StatusCode::from_u16(d.quota_exceeded_status).ok())
-                .unwrap_or(StatusCode::TOO_MANY_REQUESTS),
+            // The quota status the kernel answers is 429. A plane whose dialect answers quota
+            // differently shapes its own refusal at its door; the kernel names no dialect.
+            StatusCode::TOO_MANY_REQUESTS,
             crate::proxy::KIND_INSUFFICIENT_QUOTA,
             format!(
                 "You have exceeded your current quota (group '{group}' budget per {}{} \
@@ -310,9 +306,7 @@ pub fn limit_refusal(
         // FAIL-CLOSED: a key bound to a group this node's config does not know is not
         // admitted; the message names the missing bucket so the operator can fix it.
         LimitBlocked::MissingGroup(group) => (
-            crate::proto::decl_for(proto)
-                .and_then(|d| StatusCode::from_u16(d.quota_exceeded_status).ok())
-                .unwrap_or(StatusCode::TOO_MANY_REQUESTS),
+            StatusCode::TOO_MANY_REQUESTS,
             crate::proxy::KIND_INSUFFICIENT_QUOTA,
             format!(
                 "Your quota configuration is incomplete (group '{group}' is not \
@@ -750,10 +744,10 @@ pub(crate) async fn named(
 ) -> Response {
     // The plane never sees the credential the gate consumed (#65, #40(b)).
     crate::auth::ConsumedCredentials::strip_from(consumed.as_deref(), &mut headers);
-    // The dialect the `/v1/messages` convenience surface speaks, resolved from the registry (the
-    // dialect whose `residual_claims` predicate claims that path — Anthropic Messages), so core names
-    // no dialect. `""` when no such dialect is registered.
-    let proto = crate::proto::residual_dialect_for_path("/v1/messages").unwrap_or("");
+    // The kernel names no dialect for the convenience surface: `""`, the neutral name, as it always
+    // was in production (no protocol declaration was ever installed to name one). A plane that
+    // serves this surface claims it at its door before this shell runs.
+    let proto = "";
     delegate_body_arrival(
         app,
         gov,
@@ -827,9 +821,8 @@ pub async fn adhoc(
 ) -> Response {
     // The plane never sees the credential the gate consumed (#65, #40(b)).
     crate::auth::ConsumedCredentials::strip_from(consumed.as_deref(), &mut headers);
-    // The dialect the `/v1/messages` convenience surface speaks, resolved from the registry (see
-    // `named`); `""` when no such dialect is registered.
-    let proto = crate::proto::residual_dialect_for_path("/v1/messages").unwrap_or("");
+    // The neutral name, as in `named`.
+    let proto = "";
     // ADHOC PROVIDER MATCH (pre-relocation `adhoc`'s Some(i)-wrong-provider arm): the path names BOTH a
     // provider and a model, and a configured model reached under the WRONG provider is a client error,
     // not a route to that model's real provider. Read the neutral routing view: a model that IS

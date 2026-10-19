@@ -30,7 +30,7 @@ pub struct RerankReq {
 /// numeric knobs, not content.
 impl busbar_contract::ir::facts::IrFacts for RerankReq {
     fn verb(&self) -> busbar_contract::operation::OpVerb {
-        busbar_contract::operation::OpVerb::RERANK
+        crate::verbs::RERANK
     }
 
     fn wants_stream(&self) -> bool {

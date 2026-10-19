@@ -636,15 +636,12 @@ fn the_scrapes_pool_queued_gauge_reads_the_live_depth() {
     init();
     // Unique labels: the recorder and the park table are process-global.
     let pool = "q-live-pool";
-    // The linked plane's own default dialect, read off the registry (this cell names none).
-    let dialect = busbar_kernel::proto::residual_default_dialect()
-        .or_else(|| {
-            busbar_kernel::proto::detect_protocol(
-                "/v1/chat/completions",
-                &axum::http::HeaderMap::new(),
-            )
-        })
-        .expect("a linked plane states a dialect");
+    // A provider dialect a linked plane declares, read off the registered planes (this cell names
+    // none).
+    let dialect = busbar_kernel::plane::provider_dialects()
+        .first()
+        .copied()
+        .expect("a linked plane states a provider dialect");
     let app = TestApp::new()
         .lane(LaneSpec::new("q-live-model", dialect, "http://q"))
         .pool(pool, &[(0, 1)])

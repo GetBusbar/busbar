@@ -1000,7 +1000,7 @@ impl ProtocolWriter for OpenAiWriter {
             ERR_TYPE_SERVER_ERROR | "internal_error" | "internal_server_error" => {
                 ERR_TYPE_SERVER_ERROR
             }
-            busbar_contract::protocol::KIND_API_ERROR => busbar_contract::protocol::KIND_API_ERROR,
+            crate::protocol::KIND_API_ERROR => crate::protocol::KIND_API_ERROR,
             // Quota exhaustion is a first-class native OpenAI type (HTTP 429); preserve it so the
             // over-budget governance path keeps the real `insufficient_quota` type AND its matching
             // `code` (set in `bearer_error_code`).
@@ -1011,7 +1011,7 @@ impl ProtocolWriter for OpenAiWriter {
             // `server_error` — so emitting `type:"overloaded"` is both a conformance break (the
             // official SDK's typed-exception mapping fails on an unknown type) and a cross-protocol
             // vocabulary leak. Map every transient/unavailable spelling onto OpenAI's native 5xx type.
-            busbar_contract::protocol::KIND_OVERLOADED
+            crate::protocol::KIND_OVERLOADED
             | ERR_TYPE_OVERLOADED
             | "service_unavailable"
             | "unavailable"
@@ -1019,7 +1019,7 @@ impl ProtocolWriter for OpenAiWriter {
             | "timeout"
             | "network"
             | "5xx" => ERR_TYPE_SERVER_ERROR,
-            busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH => ERR_TYPE_INVALID_REQUEST,
+            crate::protocol::PROVIDER_CODE_CONTEXT_LENGTH => ERR_TYPE_INVALID_REQUEST,
             // Empty kind: derive a valid OpenAI type from the HTTP status bucket rather than emitting
             // an empty `type`, so the SDK still sees a real error type.
             "" => {

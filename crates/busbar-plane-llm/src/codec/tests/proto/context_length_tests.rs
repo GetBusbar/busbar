@@ -1,7 +1,7 @@
 use super::*;
 use crate::codec::dialect::PROVIDER_SIGNAL_CONTEXT_LENGTH;
-use busbar_contract::http::StatusCode;
 use busbar_contract::upstream::Disposition;
+use http::StatusCode;
 
 #[test]
 fn test_classify_context_length_both_protocols() {

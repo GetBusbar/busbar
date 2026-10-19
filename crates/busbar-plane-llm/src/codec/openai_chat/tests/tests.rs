@@ -1037,7 +1037,7 @@ fn write_error_maps_kind_vocabulary() {
         ("forbidden", ERR_TYPE_PERMISSION),
         ("invalid_request", ERR_TYPE_INVALID_REQUEST),
         (
-            busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH,
+            crate::protocol::PROVIDER_CODE_CONTEXT_LENGTH,
             ERR_TYPE_INVALID_REQUEST,
         ),
     ] {
@@ -4070,7 +4070,7 @@ fn auth_headers_valid_key_emits_bearer_authorization() {
     // `authorization: Bearer <key>` for every credential and mode. The bytes the host writes for a
     // valid key, and the omission of a key whose bytes no header value may carry, are pinned in the
     // host's suite over the shared fixture `testing/plane-copies/declared-credentials.json`.
-    let Some(busbar_contract::protocol::EgressScheme::Static {
+    let Some(crate::protocol::EgressScheme::Static {
         families,
         own,
         passthrough,
@@ -4079,17 +4079,8 @@ fn auth_headers_valid_key_emits_bearer_authorization() {
         panic!("openai declares a static credential scheme");
     };
     assert!(families.is_empty());
-    assert_eq!(own, busbar_contract::protocol::CredentialHeader::Bearer);
-    assert_eq!(
-        passthrough,
-        busbar_contract::protocol::CredentialHeader::Bearer
-    );
-    assert!(
-        crate::codec::openai_chat::DECL
-            .egress_auth_headers
-            .is_none(),
-        "no credential passes through the plane"
-    );
+    assert_eq!(own, crate::protocol::CredentialHeader::Bearer);
+    assert_eq!(passthrough, crate::protocol::CredentialHeader::Bearer);
 }
 
 #[test]
@@ -4098,7 +4089,7 @@ fn auth_headers_invalid_key_omits_header_no_panic() {
     // `authorization: Bearer <key>` for every credential and mode. The bytes the host writes for a
     // valid key, and the omission of a key whose bytes no header value may carry, are pinned in the
     // host's suite over the shared fixture `testing/plane-copies/declared-credentials.json`.
-    let Some(busbar_contract::protocol::EgressScheme::Static {
+    let Some(crate::protocol::EgressScheme::Static {
         families,
         own,
         passthrough,
@@ -4107,17 +4098,8 @@ fn auth_headers_invalid_key_omits_header_no_panic() {
         panic!("openai declares a static credential scheme");
     };
     assert!(families.is_empty());
-    assert_eq!(own, busbar_contract::protocol::CredentialHeader::Bearer);
-    assert_eq!(
-        passthrough,
-        busbar_contract::protocol::CredentialHeader::Bearer
-    );
-    assert!(
-        crate::codec::openai_chat::DECL
-            .egress_auth_headers
-            .is_none(),
-        "no credential passes through the plane"
-    );
+    assert_eq!(own, crate::protocol::CredentialHeader::Bearer);
+    assert_eq!(passthrough, crate::protocol::CredentialHeader::Bearer);
 }
 
 // --- tool_choice is a first-class IR control; it must round-trip, not degrade to auto ---

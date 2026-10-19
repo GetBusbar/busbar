@@ -10,12 +10,12 @@
 
 use std::collections::BTreeMap;
 
-use busbar_contract::billing::{Billing, TokenUsage};
-use busbar_contract::protocol::{
+use crate::protocol::{
     HeadFields, ProtocolDecl, StreamTranslator, KIND_API_ERROR, KIND_AUTHENTICATION,
     KIND_INVALID_REQUEST, KIND_OVERLOADED, KIND_PERMISSION, KIND_RATE_LIMIT, KIND_TIMEOUT,
     PROVIDER_CODE_CONTEXT_LENGTH,
 };
+use busbar_contract::billing::{Billing, TokenUsage};
 use busbar_contract::upstream::{CanonicalSignal, StatusClass};
 use serde_json::Value;
 
@@ -35,7 +35,7 @@ pub const GENERIC_RESPONSE_ERROR_DETAIL: &str =
     "An internal error occurred while processing the response.";
 
 /// The message a stream cut after its first byte ends on.
-pub const MID_STREAM_GENERIC_DETAIL: &str = busbar_contract::protocol::STREAM_ABORT_DETAIL;
+pub const MID_STREAM_GENERIC_DETAIL: &str = crate::protocol::STREAM_ABORT_DETAIL;
 
 /// The content type `d` declares for a streamed answer.
 fn stream_ct(d: &ProtocolDecl) -> Option<&'static str> {

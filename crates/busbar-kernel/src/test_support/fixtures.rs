@@ -26,13 +26,8 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
     let mut error_map = std::collections::HashMap::new();
     error_map.insert("400".to_string(), "client_error".to_string());
     let provider = crate::config::ProviderCfg {
-        // The registry-supplied residual-default dialect — the neutral test protocol — in place of the
-        // hard-coded `"openai"` literal. Under every surface that drives this fixture the LLM protocols
-        // are registered first (core's `cfg(test)` auto-publish, or each test's `install_test_seams`),
-        // so this resolves to the same default dialect the literal named.
-        protocol: crate::proto::residual_default_dialect()
-            .expect("a residual-default protocol (the neutral test dialect) must be registered")
-            .into(),
+        // A synthetic provider dialect the neutral test plane declares: the kernel names no real one.
+        protocol: crate::testkit::NEUTRAL_TEST_DIALECT.into(),
         base_url: "https://api.example.com".into(),
         api_key,
         health: None,
@@ -139,9 +134,8 @@ pub const NEUTRAL_FALLBACK: crate::plane::registry::PlaneDecl = crate::plane::re
         caller_credential_refusal: None,
     },
     wire_format_names: || &[],
-    // The test binary's provider dialects are the codecs its protocol registry seeds, so a test
-    // lane names one the boot accepts.
-    provider_dialects: || crate::proto::registry::registry().codec_protocols(),
+    // The synthetic provider dialects, so a test lane names one the boot accepts.
+    provider_dialects: || crate::testkit::NEUTRAL_TEST_DIALECTS,
     claims: |_| Vec::new(),
     admission: |_| None,
     build: |_| None,

@@ -70,6 +70,9 @@ sonic-rs = { workspace = true }
 bytes = { workspace = true }
 # The codecs' own diagnostics.
 tracing = { workspace = true }
+# The header and status vocabulary the codecs write. The contract no longer re-exports it (its
+# dialect seam moved here, Q128 contract p11 finding 1), so the plane names it as its own.
+http = { workspace = true }
 
 [dev-dependencies]
 # The TEST-ONLY seal (#65). `busbar_contract::plugin::TestKernelSeal` is the one blessed

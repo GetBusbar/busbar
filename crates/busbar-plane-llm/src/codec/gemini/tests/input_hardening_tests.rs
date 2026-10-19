@@ -15,7 +15,7 @@ fn assert_ir_parse_reject(res: Result<crate::codec::ir::IrRequest, IrError>, ctx
     );
     assert_eq!(
         err.provider_signal.as_deref(),
-        Some(busbar_contract::protocol::SIGNAL_IR_PARSE),
+        Some(crate::protocol::SIGNAL_IR_PARSE),
         "{ctx}: must carry the ir_parse signal"
     );
 }

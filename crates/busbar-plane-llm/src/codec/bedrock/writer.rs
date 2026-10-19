@@ -450,7 +450,7 @@ impl ProtocolWriter for BedrockWriter {
     fn write_response_exception(
         &self,
         _host: &dyn busbar_contract::codec::CodecHost,
-        err: &busbar_contract::protocol::IrError,
+        err: &crate::protocol::IrError,
     ) -> Option<(String, String)> {
         let (exception_name, message) = bedrock_stream_exception_for(err);
         Some((exception_name.to_string(), message))
@@ -459,7 +459,7 @@ impl ProtocolWriter for BedrockWriter {
     fn write_error_frame(
         &self,
         host: &dyn busbar_contract::codec::CodecHost,
-        err: &busbar_contract::protocol::IrError,
+        err: &crate::protocol::IrError,
     ) -> Option<(String, serde_json::Value)> {
         // The streaming-error seam. A Bedrock-INGRESS stream never reaches here — its mid-stream
         // error is a modeled-exception event-stream frame emitted via `write_response_exception`
@@ -659,7 +659,7 @@ impl ProtocolWriter for BedrockWriter {
     fn attach_error_response_headers(
         &self,
         host: &dyn busbar_contract::codec::CodecHost,
-        headers: &mut busbar_contract::http::HeaderMap,
+        headers: &mut http::HeaderMap,
         kind: &str,
         _envelope: &serde_json::Value,
     ) {

@@ -719,6 +719,7 @@ name = "busbar-kernel-breaker"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "http",
  "httpdate",
 ]
 
@@ -730,6 +731,7 @@ dependencies = [
  "busbar-kernel-breaker",
  "bytes",
  "futures",
+ "http",
 ]
 
 [[package]]
@@ -805,6 +807,7 @@ dependencies = [
  "busbar-plugin-loader",
  "bytes",
  "getrandom 0.3.4",
+ "http",
  "serde",
  "serde_json",
  "sonic-rs",

@@ -55,7 +55,7 @@ fn test_bedrock_sigv4_sign_request_structure() {
     // signed bytes (the `AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/bedrock/
     // aws4_request` scope, the signed header set, `x-amz-date`, no security token without one) are
     // pinned in the host's suite over the shared fixture `testing/plane-copies/declared-credentials.json`.
-    let Some(busbar_contract::protocol::EgressScheme::SigV4 {
+    let Some(crate::protocol::EgressScheme::SigV4 {
         service,
         region_of_host,
         default_region,
@@ -72,17 +72,13 @@ fn test_bedrock_sigv4_sign_request_structure() {
         Some("us-east-1"),
         "scope/region derived from host"
     );
-    assert!(
-        super::DECL.egress_auth_headers.is_none(),
-        "the plane holds no signer"
-    );
 }
 
 #[test]
 fn test_bedrock_sigv4_session_token() {
     // The session token is carried and signed by the host (pinned in its suite); the region the
     // signature is scoped to is this dialect's declared answer for the host.
-    let Some(busbar_contract::protocol::EgressScheme::SigV4 {
+    let Some(crate::protocol::EgressScheme::SigV4 {
         service,
         region_of_host,
         default_region,
@@ -877,7 +873,7 @@ fn test_error_kind_to_bedrock_type_mapping() {
     // would pair an HTTP 503 with a 400-class `__type` AWS never produces, making an AWS SDK
     // raise a non-retryable client fault instead of a retryable ServiceUnavailableException.
     assert_eq!(
-        error_kind_to_bedrock_type(busbar_contract::protocol::KIND_OVERLOADED),
+        error_kind_to_bedrock_type(crate::protocol::KIND_OVERLOADED),
         "ServiceUnavailableException"
     );
     assert_eq!(
@@ -1418,7 +1414,7 @@ fn test_write_request_tool_result_preserves_non_text_content() {
 fn test_write_response_event_error_names_real_exception() {
     let writer = BedrockWriter;
 
-    let throttle = IrStreamEvent::Error(busbar_contract::protocol::IrError {
+    let throttle = IrStreamEvent::Error(crate::protocol::IrError {
         class: StatusClass::RateLimit,
         provider_signal: Some("slow down".to_string()),
         retry_after: None,
@@ -1437,7 +1433,7 @@ fn test_write_response_event_error_names_real_exception() {
 
     // A server-class error maps to InternalServerException and falls back to the exception name
     // when no provider_signal is present.
-    let server = IrStreamEvent::Error(busbar_contract::protocol::IrError {
+    let server = IrStreamEvent::Error(crate::protocol::IrError {
         class: StatusClass::ServerError,
         provider_signal: None,
         retry_after: None,
@@ -2800,7 +2796,7 @@ fn test_stream_exception_only_emits_converse_stream_union_members() {
     ];
 
     for (class, expected) in cases {
-        let err = busbar_contract::protocol::IrError {
+        let err = crate::protocol::IrError {
             class,
             provider_signal: Some("upstream detail".to_string()),
             retry_after: None,
@@ -2820,7 +2816,7 @@ fn test_stream_exception_only_emits_converse_stream_union_members() {
         assert_eq!(msg, "upstream detail", "message prefers provider_signal");
 
         // Fallback event-arm path uses the SAME stream union.
-        let ev = IrStreamEvent::Error(busbar_contract::protocol::IrError {
+        let ev = IrStreamEvent::Error(crate::protocol::IrError {
             class,
             provider_signal: None,
             retry_after: None,
@@ -2849,7 +2845,7 @@ fn test_stream_exception_only_emits_converse_stream_union_members() {
         StatusClass::Auth,
         StatusClass::Billing,
     ] {
-        let err = busbar_contract::protocol::IrError {
+        let err = crate::protocol::IrError {
             class,
             provider_signal: None,
             retry_after: None,
@@ -3197,7 +3193,7 @@ fn test_derive_sigv4_region_shapes() {
 fn test_bedrock_sigv4_fips_host_derives_correct_region() {
     // A FIPS host in a non-us-east-1 region signs for THAT region's scope: the declared region
     // function answers it, so the host never falls back to the default.
-    let Some(busbar_contract::protocol::EgressScheme::SigV4 {
+    let Some(crate::protocol::EgressScheme::SigV4 {
         service,
         region_of_host,
         default_region,
@@ -3227,7 +3223,7 @@ fn test_bedrock_sigv4_fips_host_derives_correct_region() {
 fn test_bedrock_sigv4_undecodable_host_falls_back_to_us_east_1() {
     // A non-derivable host names no region, so the host signs for the declared `us-east-1`
     // default (signing still proceeds); the operator WARN comes from the declared region function.
-    let Some(busbar_contract::protocol::EgressScheme::SigV4 {
+    let Some(crate::protocol::EgressScheme::SigV4 {
         service,
         region_of_host,
         default_region,
@@ -6445,7 +6441,7 @@ fn total_tokens_includes_cache_tokens_on_both_write_paths() {
 /// reaches a Bedrock client as a typed, decodable exception.
 #[test]
 fn write_response_exception_folds_to_stream_union_members() {
-    let mk = |class| busbar_contract::protocol::IrError {
+    let mk = |class| crate::protocol::IrError {
         class,
         provider_signal: None,
         retry_after: None,
@@ -6469,7 +6465,7 @@ fn write_response_exception_folds_to_stream_union_members() {
         assert_eq!(name, expect, "class {class:?} must fold to {expect}");
     }
     // The message prefers the upstream provider_signal when present.
-    let err = busbar_contract::protocol::IrError {
+    let err = crate::protocol::IrError {
         class: StatusClass::RateLimit,
         provider_signal: Some("slow down".to_string()),
         retry_after: None,
@@ -6863,7 +6859,7 @@ fn the_served_tier_is_read_and_written() {
 /// after the service labels the codec's rule reads, else its default with its warning.
 #[test]
 fn the_tails_sigv4_parameters_restate_the_signing_scheme() {
-    let Some(busbar_contract::protocol::EgressScheme::SigV4 {
+    let Some(crate::protocol::EgressScheme::SigV4 {
         service,
         region_of_host,
         default_region,

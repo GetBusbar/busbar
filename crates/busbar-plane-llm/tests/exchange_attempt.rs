@@ -877,7 +877,7 @@ fn every_dialects_chat_target_is_its_released_path_both_stream_intents() {
         let r = build(HOST, &a, &h, &s, "p", "m-1").unwrap_or_else(|e| panic!("{dialect}: {e:?}"));
         assert_eq!(r.target, wire, "{dialect} stream {stream}");
         let lane = s.lane("m-1").expect("the lane");
-        let path = upstream_path(lane, OpVerb::CHAT, stream).expect("a path");
+        let path = upstream_path(lane, busbar_plane_llm::verbs::CHAT, stream).expect("a path");
         assert_eq!(
             wire_and_canonical_path(&path),
             (wire.to_string(), canonical.to_string()),
@@ -903,7 +903,7 @@ fn a_provider_path_with_a_query_is_the_target_verbatim() {
         assert_eq!(r.target, fixed, "stream {stream}");
     }
     let lane = s.lane("gpt-4o").expect("the lane");
-    let path = upstream_path(lane, OpVerb::CHAT, false).expect("a path");
+    let path = upstream_path(lane, busbar_plane_llm::verbs::CHAT, false).expect("a path");
     assert_eq!(
         wire_and_canonical_path(&path),
         (
@@ -1128,7 +1128,7 @@ fn an_unsupported_sub_operation_is_a_404_naming_the_operation_and_the_model() {
     let refused = ingress_reject(
         "openai",
         &IngressReject::UnsupportedSubOp {
-            op: OpVerb::IMAGE,
+            op: busbar_plane_llm::verbs::IMAGE,
             model: "dall-e-2".into(),
         },
     );
@@ -1299,7 +1299,7 @@ fn multi_input_embeddings_to_gemini_embed_the_first() {
         &h,
         r#"{"model":"text-embedding-3-small","input":["alpha","beta","gamma"]}"#,
     );
-    assert_eq!(a.operation, OpVerb::EMBEDDINGS);
+    assert_eq!(a.operation, busbar_plane_llm::verbs::EMBEDDINGS);
     let r = build(HOST, &a, &h, &s, "p", "text-embedding-004").expect("forwarded, not refused");
     assert_eq!(
         far_json(&r).pointer("/content/parts/0/text"),
@@ -1324,13 +1324,13 @@ fn single_input_embeddings_to_gemini_are_written() {
 
 /// The seven family operations the legacy parity test walked, each with a label for the table.
 const OPS: [(OpVerb, &str); 7] = [
-    (OpVerb::CHAT, "chat"),
-    (OpVerb::EMBEDDINGS, "embeddings"),
-    (OpVerb::MODERATION, "moderation"),
-    (OpVerb::IMAGE, "image"),
-    (OpVerb::TRANSCRIPTION, "transcription"),
-    (OpVerb::SPEECH, "speech"),
-    (OpVerb::RERANK, "rerank"),
+    (busbar_plane_llm::verbs::CHAT, "chat"),
+    (busbar_plane_llm::verbs::EMBEDDINGS, "embeddings"),
+    (busbar_plane_llm::verbs::MODERATION, "moderation"),
+    (busbar_plane_llm::verbs::IMAGE, "image"),
+    (busbar_plane_llm::verbs::TRANSCRIPTION, "transcription"),
+    (busbar_plane_llm::verbs::SPEECH, "speech"),
+    (busbar_plane_llm::verbs::RERANK, "rerank"),
 ];
 
 /// 1.5.5's far path for one dialect, operation and stream intent (v1.5.5
@@ -1992,7 +1992,7 @@ fn an_ad_hoc_route_naming_another_provider_is_refused_at_the_attempt() {
     assert_eq!(refused.status, 400);
     assert_eq!(
         refused.kind,
-        busbar_contract::protocol::KIND_INVALID_REQUEST
+        busbar_plane_llm::protocol::KIND_INVALID_REQUEST
     );
     assert_eq!(
         refused.message,

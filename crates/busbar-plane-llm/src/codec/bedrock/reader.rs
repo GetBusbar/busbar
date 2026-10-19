@@ -83,7 +83,7 @@ impl ProtocolReader for BedrockReader {
                 || (lower.contains("exceeds the maximum")
                     && (lower.contains(keys::TOKEN) || lower.contains(keys::CONTEXT)))
             {
-                Some(busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
+                Some(crate::protocol::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
             } else {
                 provider_code
             }
@@ -120,9 +120,7 @@ impl ProtocolReader for BedrockReader {
         {
             return CanonicalSignal {
                 class: StatusClass::ContextLength,
-                provider_signal: Some(
-                    busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH.to_string(),
-                ),
+                provider_signal: Some(crate::protocol::PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
                 retry_after: None,
             };
         }
@@ -1269,7 +1267,7 @@ impl ProtocolReader for BedrockReader {
                         StatusClass::ServerError
                     }
                 };
-                out.push(IrStreamEvent::Error(busbar_contract::protocol::IrError {
+                out.push(IrStreamEvent::Error(crate::protocol::IrError {
                     class,
                     provider_signal: message.or_else(|| Some(exc.to_string())),
                     retry_after: None,

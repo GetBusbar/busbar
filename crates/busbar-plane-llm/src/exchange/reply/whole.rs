@@ -10,12 +10,12 @@
 //! serving no such operation is a 404; and anything the caller's dialect cannot be written from is
 //! a 500, never the far end's native bytes.
 
+use crate::protocol::{
+    ProtocolDecl, APPLICATION_JSON, KIND_API_ERROR, KIND_NOT_FOUND, TEXT_EVENT_STREAM,
+};
 use busbar_contract::billing::Billing;
 use busbar_contract::codec::{OperationHandler, TranslatedResponse};
 use busbar_contract::operation::OpVerb;
-use busbar_contract::protocol::{
-    ProtocolDecl, APPLICATION_JSON, KIND_API_ERROR, KIND_NOT_FOUND, TEXT_EVENT_STREAM,
-};
 use serde_json::Value;
 
 use super::super::attempt::DETAIL_ENDPOINT_UNSUPPORTED_OPERATION;
@@ -300,7 +300,10 @@ fn json(
             | TranslatedResponse::Typed(_)
             | TranslatedResponse::Json(_)
     );
-    if delivers && ctx.operation == OpVerb::CHAT && wire::generation_failed(host, ctx.egress, rv) {
+    if delivers
+        && ctx.operation == crate::verbs::CHAT
+        && wire::generation_failed(host, ctx.egress, rv)
+    {
         return Ok(Some(whole(
             WholeEnd::FailedGeneration,
             usage,

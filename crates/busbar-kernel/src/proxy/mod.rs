@@ -72,16 +72,16 @@ pub use busbar_kernel::egress::engine::{
 // plane driver reaches its walk through (the pick, the breaker ports, the exhaustion terminals).
 pub use busbar_kernel_egress::{self as egress_unit, upstream::*};
 
-// ── THE SHAPE VOCABULARY lives in `busbar_contract::protocol` (DECISIONS #83: contract = shapes;
-//    SD-1 of the #83a split): the media-type and default user-agent literals a declaration defaults
-//    to, the provider context-length code, the agnostic error-KIND tokens and the context-length
-//    disposition label a dialect and the kernel both key on. Re-exported here under their historical
-//    paths, so every caller compiles unchanged.
+// ── THE NEUTRAL WIRE VOCABULARY lives in `busbar_contract::protocol`: the media-type literals, the
+//    provider context-length code, the agnostic error-KIND tokens and the context-length disposition
+//    label a plane and the kernel both key on. Re-exported here under their historical paths, so
+//    every caller compiles unchanged. (No dialect default lives here: a dialect's declared defaults
+//    are its plane's, Q128 contract p11 finding 1.)
 pub use busbar_contract::protocol::{
-    APPLICATION_JSON, DISPOSITION_CONTEXT_LENGTH, EGRESS_UA_DEFAULT, KIND_API_ERROR,
-    KIND_AUTHENTICATION, KIND_INSUFFICIENT_QUOTA, KIND_INVALID_REQUEST, KIND_NOT_FOUND,
-    KIND_OVERLOADED, KIND_PERMISSION, KIND_RATE_LIMIT, KIND_REQUEST_TOO_LARGE, KIND_SERVER_ERROR,
-    KIND_TIMEOUT, PROVIDER_CODE_CONTEXT_LENGTH, TEXT_EVENT_STREAM,
+    APPLICATION_JSON, DISPOSITION_CONTEXT_LENGTH, KIND_API_ERROR, KIND_AUTHENTICATION,
+    KIND_INSUFFICIENT_QUOTA, KIND_INVALID_REQUEST, KIND_NOT_FOUND, KIND_OVERLOADED,
+    KIND_PERMISSION, KIND_RATE_LIMIT, KIND_REQUEST_TOO_LARGE, KIND_SERVER_ERROR, KIND_TIMEOUT,
+    PROVIDER_CODE_CONTEXT_LENGTH, TEXT_EVENT_STREAM,
 };
 
 /// Metric-label values for the `disposition` dimension on `UPSTREAM_FAILURES_TOTAL` and the
@@ -160,19 +160,14 @@ pub fn agnostic_error_envelope(kind: &str, msg: &str) -> serde_json::Value {
     serde_json::json!({ "error": { "message": msg, "type": kind } })
 }
 
-/// The canonical auth-failure `(HTTP status, error kind)` for an ingress protocol name — the agnostic
-/// dispatch through the registry's `ProtocolDecl::auth_failure_status_and_kind` (which replaced the
-/// `ProtocolWriter` vtable method). `BedrockWriter` resolves to (403, "auth"); `GeminiWriter` to (400,
-/// "invalid_request_error"); every other dialect and an unknown/dropped protocol fall back to the
-/// default (401, [`KIND_AUTHENTICATION`]) so the request path stays panic-free. Neutral: reads only the
-/// protocol registry, so it survives every LLM dialect being dropped from the build.
-pub fn auth_failure_status_and_kind(proto: &str) -> (http::StatusCode, &'static str) {
-    crate::proto::decl_for(proto)
-        .and_then(|d| {
-            let (status, kind) = d.auth_failure_status_and_kind;
-            Some((http::StatusCode::from_u16(status).ok()?, kind))
-        })
-        .unwrap_or((http::StatusCode::UNAUTHORIZED, KIND_AUTHENTICATION))
+/// The auth-failure `(HTTP status, error kind)` the kernel answers a bad or missing credential with:
+/// 401 and [`KIND_AUTHENTICATION`], whatever the ingress. `_proto` is the caller's ingress name; the
+/// kernel names no dialect, so it shapes nothing by it. A plane whose dialect answers a bad
+/// credential otherwise shapes that refusal at its own door. (This read a per-dialect pair off the
+/// kernel's protocol registry, which production never populated, so the answer was always this one;
+/// Q128 contract p11 finding 1 removed the registry.)
+pub fn auth_failure_status_and_kind(_proto: &str) -> (http::StatusCode, &'static str) {
+    (http::StatusCode::UNAUTHORIZED, KIND_AUTHENTICATION)
 }
 
 tokio::task_local! {
@@ -199,48 +194,28 @@ pub fn build_egress_client(
         .expect("the base egress engine posture has no failing build arm")
 }
 
-// ── THE AGNOSTIC INGRESS-ERROR SHAPER — RELOCATED DOWN from `busbar_kernel::proxy::proxy_vocab` ──────
-// The dialect-blind `(status, kind, msg)` → caller-dialect error `Response` projection, and core's own
-// fallback envelope. Moved onto the neutral substrate so the extracted native-ingress path in
-// the retired engine crate shapes an ingress error through the neutral ABI rather than reaching BACK into
-// `busbar-core`. It names no dialect literally: `crate::proto::decl_for` reads whatever registry the
-// resident planes populated, and the fallback is the neutral envelope so it survives every LLM dialect
-// being dropped with the the retired engine crate plane. `busbar-core` re-exports both at their historical
-// `busbar_kernel::proxy::{ingress_error, agnostic_error_envelope}` paths so every in-core caller is
-// unchanged.
+// ── THE AGNOSTIC INGRESS-ERROR SHAPER ──────────────────────────────────────────────────────────────
+// The `(status, kind, msg)` → error `Response` projection the kernel's own refusals answer with.
 
-/// The agnostic ingress-error shaper: project a `(status, kind, msg)` into the caller-dialect error
-/// response, attaching the protocol-appropriate headers via the resolved writer vtable. When `ingress`
-/// resolves to no protocol the body is the neutral `agnostic_error_envelope` and no protocol headers
-/// are attached — the shape that survives every LLM dialect being dropped with the the retired engine crate plane.
+/// The agnostic ingress-error shaper: project a `(status, kind, msg)` into the neutral
+/// [`agnostic_error_envelope`] response. `_ingress` is the caller's ingress name; the kernel names no
+/// dialect, so it shapes nothing by it, and a plane whose dialect has its own error envelope shapes
+/// its refusals at its own door. (This once rendered the envelope through the dialect the kernel's
+/// protocol registry held for `_ingress`; production never populated that registry, so the neutral
+/// envelope was always the answer, and Q128 contract p11 finding 1 removed the registry.)
 pub fn ingress_error(
-    ingress: &str,
+    _ingress: &str,
     status: axum::http::StatusCode,
     kind: &str,
     msg: &str,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
-    let dialect = crate::proto::decl_for(ingress).and_then(|d| d.dialect());
-    let envelope = match &dialect {
-        Some(di) => di.write_error(crate::proto::CODEC_HOST, status.as_u16(), kind, msg),
-        None => agnostic_error_envelope(kind, msg),
-    };
+    let envelope = agnostic_error_envelope(kind, msg);
     let body = crate::json::to_string(&envelope)
         .unwrap_or_else(|_| agnostic_error_envelope(kind, msg).to_string());
-    let mut resp = axum::response::Response::builder()
+    axum::response::Response::builder()
         .status(status)
         .header(axum::http::header::CONTENT_TYPE, APPLICATION_JSON)
         .body(axum::body::Body::from(body))
-        .unwrap_or_else(|_| status.into_response());
-    if let Some(di) = &dialect {
-        for (name, value) in di.error_response_fields(crate::proto::CODEC_HOST, kind, &envelope) {
-            if let (Ok(n), Ok(v)) = (
-                axum::http::HeaderName::from_bytes(name.as_bytes()),
-                axum::http::HeaderValue::from_bytes(&value),
-            ) {
-                resp.headers_mut().insert(n, v);
-            }
-        }
-    }
-    resp
+        .unwrap_or_else(|_| status.into_response())
 }

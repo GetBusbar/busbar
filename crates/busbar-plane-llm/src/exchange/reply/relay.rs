@@ -12,9 +12,9 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
+use crate::protocol::{ArrayStreamFramer, ProtocolDecl, StreamTranslator};
 use busbar_contract::billing::{Billing, TokenUsage};
 use busbar_contract::codec::{OperationHandler, UsageTapFault};
-use busbar_contract::protocol::{ArrayStreamFramer, ProtocolDecl, StreamTranslator};
 use serde_json::Value;
 
 use super::wire;
@@ -382,7 +382,7 @@ impl Relay {
             None
         } else if let Some(t) = self.translate.as_ref() {
             open_billing = t.open_billing();
-            if t.terminal_error() == Some(busbar_contract::protocol::SIGNAL_IR_PARSE) {
+            if t.terminal_error() == Some(crate::protocol::SIGNAL_IR_PARSE) {
                 fault_unreadable(self.ingress, self.upstream_bytes);
                 Some(wire::estimate_usage_from_truncated_tail(
                     self.upstream_bytes,
@@ -559,9 +559,9 @@ fn far_reported_failure(
         return false;
     };
     crate::codec::proto_codec::protocol_for(protocol).is_some_and(|p| {
-        p.reader().read_response(host, &v).is_err_and(|e| {
-            e.provider_signal.as_deref() != Some(busbar_contract::protocol::SIGNAL_IR_PARSE)
-        })
+        p.reader()
+            .read_response(host, &v)
+            .is_err_and(|e| e.provider_signal.as_deref() != Some(crate::protocol::SIGNAL_IR_PARSE))
     })
 }
 

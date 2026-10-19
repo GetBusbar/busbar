@@ -37,7 +37,7 @@ fn stop_reason_egress_never_leaks_foreign_tokens() {
 /// `x-api-key` verbatim, a forwarded caller token as a bearer. One scheme per request, never both.
 #[test]
 fn egress_scheme_is_the_declared_credential_family_table() {
-    use busbar_contract::protocol::{CredentialFamily, CredentialHeader as H};
+    use crate::protocol::{CredentialFamily, CredentialHeader as H};
     let Some(EgressScheme::Static {
         families,
         own,
@@ -71,10 +71,6 @@ fn egress_scheme_is_the_declared_credential_family_table() {
         }
     );
     assert_eq!(passthrough, H::Bearer);
-    assert!(
-        DECL.egress_auth_headers.is_none() && !DECL.egress_auth_lane_constant,
-        "no credential passes through the plane"
-    );
 }
 
 /// Every Anthropic request carries the pinned API version whatever its credential, as a DECLARED
@@ -4130,7 +4126,7 @@ fn unmodelled_block_is_left_out_of_the_ir_and_spliced_back_same_dialect() {
 /// Q-L6-AUTHPARAMS): the same families, own header and passthrough, in the auth plugin's words.
 #[test]
 fn the_tails_api_key_parameters_restate_the_credential_family_table() {
-    use busbar_contract::protocol::CredentialHeader as H;
+    use crate::protocol::CredentialHeader as H;
     let Some(EgressScheme::Static {
         families,
         own,
