@@ -1702,8 +1702,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel-egress"
 axis  = "plane"
-count = "2"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 5 -> 2 (Q128 kernel-egress): the dead verify-step trust cluster (counterparty, arity, guard, destination) is deleted (the gate's measure on this branch)"
+count = "1"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 5 -> 2 (Q128 kernel-egress): the dead verify-step trust cluster (counterparty, arity, guard, destination) is deleted (the gate's measure on this branch); LOWERED 2 -> 1 by Q128 kernel-egress LOW 3: the unconstructed pinned-arity reroute is deleted (the gate's measure on lane-q128-kernel-egress-lows, law0-slack)"
 
 [[law0]]
 crate = "busbar-kernel-egress"
