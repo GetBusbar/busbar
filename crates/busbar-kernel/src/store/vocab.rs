@@ -120,7 +120,6 @@ pub enum BreakerState {
 /// core's `PlaneBreakers`) so a plane crate builds the key without reaching into `busbar-core`;
 /// core's `PlaneBreakers::tool_key` delegates to it so the ONE spelling of the prefix stays
 /// single-sourced.
-#[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
 pub fn tool_key(server: &str) -> String {
     format!("tool:{server}")
 }
@@ -132,7 +131,6 @@ pub fn tool_key(server: &str) -> String {
 /// core's `PlaneBreakers`) so a plane crate builds the key without reaching into `busbar-core`;
 /// core's `PlaneBreakers::agent_key` delegates to it so the ONE spelling of the prefix stays
 /// single-sourced.
-#[cfg_attr(not(feature = "relay"), allow(dead_code))]
 pub fn agent_key(agent: &str) -> String {
     format!("agent:{agent}")
 }
