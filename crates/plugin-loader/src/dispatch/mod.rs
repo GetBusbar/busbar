@@ -113,9 +113,10 @@ pub trait Kind: Send + Sync + 'static {
         lifecycle_name(slot)
     }
 
-    /// Whether the kind's table may leave `slot` NULL: an op the kind appended that a plugin
-    /// serves only when it states the use (the plane's `catalog`, ARCHITECT ruling 2026-10-16,
-    /// 3b C). A NULL optional slot answers REFUSED from the host; every other slot is required.
+    /// Whether `slot` is a kind op this kind states OPTIONAL: a door may leave it NULL (absent),
+    /// and the host reads an absent one as a pass (the plane's `catalog`, ARCHITECT ruling
+    /// 2026-10-16, 3b C, a door that states no catalog claim is never asked it; the secret `check`;
+    /// the auth `target`). Every other slot NULL refuses the load.
     fn optional_slot(slot: u32) -> bool {
         let _ = slot;
         false

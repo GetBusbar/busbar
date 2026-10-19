@@ -147,7 +147,7 @@ impl PlaneCalls for Prober {
         AbiOutcome::Ready
     }
 
-    fn cancel(&self, _: PlaneTicket) -> Option<busbar_contract::plane_calls::Cancelled> {
+    fn cancel(&self, _: PlaneTicket, _: u64) -> Option<busbar_contract::plane_calls::Cancelled> {
         None
     }
 

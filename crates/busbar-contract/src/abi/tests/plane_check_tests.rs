@@ -1054,6 +1054,56 @@ fn a_snapshot_from_before_listed_is_read_and_its_list_is_judged() {
     );
 }
 
+/// THE ARRIVAL SPANS (status row 173): a snapshot published before they were appended states the
+/// size its fields end at and opens none; a list is none or one per claim, never counted over NULL,
+/// and each name is empty (that claim opens none) or at most `MAX_ARRIVAL_SPAN` bytes.
+#[test]
+fn a_snapshots_arrival_spans_are_none_or_one_per_claim() {
+    use crate::abi::plane::check::check_arrival_spans;
+    use crate::abi::plane::MAX_ARRIVAL_SPAN;
+    let mut sn = snapshot();
+    sn.size = std::mem::offset_of!(PlaneSnapshot, arrival_spans) as u32;
+    assert_eq!(
+        check_snapshot(&sn, 7),
+        Ok(()),
+        "the pre-append size is accepted"
+    );
+    let claims = [
+        claim("POST", "/a", CLAIM_EXACT),
+        claim("POST", "/b", CLAIM_EXACT),
+    ];
+    let mut sn = snapshot();
+    sn.claims = claims.as_ptr();
+    sn.claims_len = 2;
+    let one = [s("arrival")];
+    sn.arrival_spans = one.as_ptr();
+    sn.arrival_spans_len = 1;
+    assert_eq!(
+        check_snapshot(&sn, 7),
+        f(Rule::Contradiction, "snapshot.arrival_spans"),
+        "RED: a list that is not one per claim"
+    );
+    let two = [s("arrival"), s("")];
+    sn.arrival_spans = two.as_ptr();
+    sn.arrival_spans_len = 2;
+    assert_eq!(check_snapshot(&sn, 7), Ok(()));
+    sn.arrival_spans = std::ptr::null();
+    assert_eq!(
+        check_snapshot(&sn, 7),
+        f(Rule::NullWithCount, "snapshot.arrival_spans")
+    );
+    assert_eq!(check_arrival_spans(&[s("arrival"), s("")]), Ok(()));
+    let long = "x".repeat(MAX_ARRIVAL_SPAN + 1);
+    let long = crate::abi::mechanism::call::AbiStr {
+        ptr: long.as_ptr(),
+        len: long.len(),
+    };
+    assert_eq!(
+        check_arrival_spans(&[long]),
+        f(Rule::OverMax, "snapshot.arrival_spans")
+    );
+}
+
 fn claim(verb: &'static str, target: &'static str, flags: u32) -> Claim {
     Claim {
         verb: s(verb),

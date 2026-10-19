@@ -766,7 +766,28 @@ pub(crate) fn validate_door<K: Kind>(p: *const Door) -> Result<Validated, LoadEr
     })
 }
 
-/// The table: `slots` and `size` equal to the host's table of `K`, every slot non-NULL.
+/// THE ABSENT OP: what the host calls for an optional kind op a door left NULL. It answers READY,
+/// writing nothing but `outcome` into the host's `out` head: a pass, read as the kind states for an
+/// absent op (no refusal, no destination).
+extern "C" fn absent(
+    _: *mut std::ffi::c_void,
+    _: *const std::ffi::c_void,
+    out: *mut std::ffi::c_void,
+) -> busbar_contract::abi::mechanism::call::RawOutcome {
+    use busbar_contract::abi::mechanism::call::{OutHead, Outcome, RawOutcome};
+    if !out.is_null() {
+        // SAFETY: a non-NULL host `out` leads with an `OutHead` (the call convention), and the
+        // host built it.
+        unsafe {
+            std::ptr::addr_of_mut!((*out.cast::<OutHead>()).outcome)
+                .write_unaligned(RawOutcome::of(Outcome::Ready));
+        }
+    }
+    RawOutcome::of(Outcome::Ready)
+}
+
+/// The table: `slots` and `size` equal to the host's table of `K`, every slot non-NULL but the
+/// kind's optional ones, which are the host's [`absent`] op when left NULL.
 fn table<K: Kind>(ops: *const OpsHead) -> Result<Box<[Op]>, LoadError> {
     if ops.is_null() {
         return Err(LoadError::NullOps);
@@ -800,23 +821,12 @@ fn table<K: Kind>(ops: *const OpsHead) -> Result<Box<[Op]>, LoadError> {
             // SAFETY: `size` equals the host's table, which holds `slots` contiguous slots here.
             match unsafe { first.add(i as usize).read_unaligned() } {
                 Some(op) => Ok(op),
-                None if K::optional_slot(i) => Ok(absent_op as Op),
+                // An OPTIONAL kind op left NULL is absent: the host's own pass answers it.
+                None if K::optional_slot(i) => Ok(absent as Op),
                 None => Err(LoadError::NullSlot(i)),
             }
         })
         .collect()
-}
-
-/// THE HOST'S ANSWER FOR AN OPTIONAL OP A PLUGIN LEFT NULL ([`Kind::optional_slot`]): REFUSED,
-/// touching nothing it is lent.
-extern "C" fn absent_op(
-    _instance: *mut std::ffi::c_void,
-    _input: *const std::ffi::c_void,
-    _out: *mut std::ffi::c_void,
-) -> busbar_contract::abi::mechanism::call::RawOutcome {
-    busbar_contract::abi::mechanism::call::RawOutcome::of(
-        busbar_contract::abi::mechanism::call::Outcome::Refused,
-    )
 }
 
 pub(crate) fn statement(door: &Door) -> Result<Statement, LoadError> {
