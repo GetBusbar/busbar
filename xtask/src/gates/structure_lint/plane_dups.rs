@@ -448,6 +448,7 @@ fn unledgered_row(unledgered: &[String]) -> Row {
             ),
         );
     }
+    let tally = "x".repeat(n);
     let why = if n > UNLEDGERED_ARMED {
         format!(
             "{n} finding(s) against an armed count of {UNLEDGERED_ARMED}: a new plane-local copy"
@@ -461,7 +462,7 @@ fn unledgered_row(unledgered: &[String]) -> Row {
     Row::fail(
         ROW_UNLEDGERED,
         "a shared concern grew a second, plane-local implementation",
-        format!("{why}: {}", unledgered.join(" | ")),
+        format!("TALLY {tally} END {why}: {}", unledgered.join(" | ")),
     )
 }
 
