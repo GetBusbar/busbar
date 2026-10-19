@@ -2610,3 +2610,20 @@ fn a_unit_ref_verifies_only_for_its_own_request() {
     assert!(mint_unit_ref(secret, 7, 40, 2, 0).is_none());
     assert!(mint_auth_ref(40, 7, 0).is_none());
 }
+
+/// ONE ALLOCATOR, TWO SPACES: a line's id never sets the top bit and is never `0`; a binding's
+/// always sets it; each id names its space. RED arm: no line id and binding id ever coincide.
+#[test]
+fn a_line_id_and_a_binding_id_are_drawn_from_two_spaces() {
+    use crate::dispatch::auth_handle::{next_ref_id, space_of, RefSpace};
+    let lines: Vec<u64> = (0..64).map(|_| next_ref_id(RefSpace::Line)).collect();
+    let bindings: Vec<u64> = (0..64).map(|_| next_ref_id(RefSpace::Binding)).collect();
+    assert!(lines.iter().all(|&i| i != 0 && i & (1 << 63) == 0));
+    assert!(bindings.iter().all(|&i| i & (1 << 63) != 0));
+    assert!(lines.iter().all(|i| !bindings.contains(i)));
+    assert!(lines.iter().all(|&i| space_of(i) == Some(RefSpace::Line)));
+    assert!(bindings
+        .iter()
+        .all(|&i| space_of(i) == Some(RefSpace::Binding)));
+    assert_eq!(space_of(0), None);
+}

@@ -85,6 +85,45 @@ pub fn generation() -> u64 {
     GENERATION.load(Ordering::Acquire)
 }
 
+/// THE TWO SPACES AN AUTH REF'S ID IS DRAWN FROM: an inbound guest-list LINE's, top bit clear,
+/// and an outbound BINDING's, top bit set. One allocator for both ([`next_ref_id`]), so a line's id
+/// is never a binding's: whoever looks an id up holds the table of its space ([`space_of`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RefSpace {
+    /// An inbound line: ids `1..=2^63-1`.
+    Line,
+    /// An outbound binding: ids with the top bit set.
+    Binding,
+}
+
+/// The top bit: set on every binding id, clear on every line id.
+const BINDING_BIT: u64 = 1 << 63;
+
+/// The next id of `space`, never `0` and never one of the other space. Each space counts on its
+/// own; a holder that keeps an id stable across generations allocates it once (the ref's mac
+/// carries the generation).
+#[must_use]
+pub fn next_ref_id(space: RefSpace) -> u64 {
+    static LINES: AtomicU64 = AtomicU64::new(0);
+    static BINDINGS: AtomicU64 = AtomicU64::new(0);
+    let (counter, tag) = match space {
+        RefSpace::Line => (&LINES, 0),
+        RefSpace::Binding => (&BINDINGS, BINDING_BIT),
+    };
+    let n = counter.fetch_add(1, Ordering::Relaxed) % (BINDING_BIT - 1) + 1;
+    tag | n
+}
+
+/// The space id `id` was drawn from; `None` for `0` (no handle).
+#[must_use]
+pub const fn space_of(id: u64) -> Option<RefSpace> {
+    match id {
+        0 => None,
+        i if i & BINDING_BIT != 0 => Some(RefSpace::Binding),
+        _ => Some(RefSpace::Line),
+    }
+}
+
 /// The tag of an auth ref.
 fn auth_tag(key: (u64, u64), owner: u64, generation: u64, id: u64) -> u64 {
     siphash24(key, &[DOMAIN_AUTH_REF, owner, generation, id])
