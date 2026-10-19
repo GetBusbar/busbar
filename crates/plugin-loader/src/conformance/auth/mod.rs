@@ -579,7 +579,7 @@ fn undeclared<I: crate::dispatch::InFrame, O: crate::dispatch::OutFrame>(
 
 /// The secret `records.secret` answers, not live, for an id the host does not hold: busbar's root
 /// answers the kernel's `auth::DUMMY_SECRET`, these bytes.
-const DUMMY_SECRET: &str = "AWS4-DUMMY-SECRET-FOR-CONSTANT-TIME-REJECT-PATH";
+const DUMMY_SECRET: &str = "busbar-dummy-secret-for-the-constant-time-reject-path";
 
 /// One host-held credential: kind, id, secret, live.
 type HeldCredential = (String, String, String, bool);
