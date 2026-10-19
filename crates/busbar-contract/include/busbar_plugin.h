@@ -546,6 +546,7 @@ extern "C" {
 #define BB_TRANSPORT_UNIT0_FIRST_DATAGRAM UINT8_C(4) /* [`Claim::unit0_trigger`]: the first datagram. */
 #define BB_TRANSPORT_UNIT0_UPGRADE UINT8_C(5) /* [`Claim::unit0_trigger`]: an upgrade. */
 #define BB_TRANSPORT_UNIT0_HANDSHAKE UINT8_C(6) /* [`Claim::unit0_trigger`]: a handshake. */
+#define BB_TRANSPORT_CLAIM_SECURE UINT32_C(1) /* [`Claim::flags`]: the scheme is the SECURE form of its wire: the connection is secured by the */
 #define BB_TRANSPORT_SETTING_FLAG UINT32_C(1) /* [`SettingDecl::kind`]: `0`/`1`. */
 #define BB_TRANSPORT_SETTING_COUNT UINT32_C(2) /* [`SettingDecl::kind`]: an unsigned integer. */
 #define BB_TRANSPORT_SETTING_TEXT UINT32_C(3) /* [`SettingDecl::kind`]: text. */
@@ -3158,7 +3159,7 @@ struct bb_transport_Claim {
     uint8_t session_bound;
     uint8_t unit0_trigger;
     uint8_t status_at;
-    uint32_t _reserved;
+    uint32_t flags;
 };
 
 /* One status-table row: a code range of a claim's numbering and the class it means. The breaker */
@@ -5777,7 +5778,7 @@ BB_ASSERT(offsetof(bb_transport_Claim, session) == 64, "bb_transport_Claim.sessi
 BB_ASSERT(offsetof(bb_transport_Claim, session_bound) == 65, "bb_transport_Claim.session_bound: offset");
 BB_ASSERT(offsetof(bb_transport_Claim, unit0_trigger) == 66, "bb_transport_Claim.unit0_trigger: offset");
 BB_ASSERT(offsetof(bb_transport_Claim, status_at) == 67, "bb_transport_Claim.status_at: offset");
-BB_ASSERT(offsetof(bb_transport_Claim, _reserved) == 68, "bb_transport_Claim._reserved: offset");
+BB_ASSERT(offsetof(bb_transport_Claim, flags) == 68, "bb_transport_Claim.flags: offset");
 BB_ASSERT(sizeof(bb_transport_StatusRow) == 16, "bb_transport_StatusRow: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_StatusRow) == 4, "bb_transport_StatusRow: alignment");
 BB_ASSERT(offsetof(bb_transport_StatusRow, claim) == 0, "bb_transport_StatusRow.claim: offset");

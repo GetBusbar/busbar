@@ -606,9 +606,9 @@ pub fn check_tail(t: &TransportTail) -> Result<(), Fault> {
     text(t.handshake_frame_kind, "tail.handshake_frame_kind")
 }
 
-/// Every claim row: no string or list counted with a NULL pointer, the session bits `0`/`1` and
-/// the trigger and status-frame codes known. (A row's scheme name is the Statement's; see
-/// [`check_claim_rows`].)
+/// Every claim row: no string or list counted with a NULL pointer, the session bits `0`/`1`, the
+/// trigger and status-frame codes known, and no flag but [`CLAIM_SECURE`]. (A row's scheme name is
+/// the Statement's; see [`check_claim_rows`].)
 ///
 /// # Errors
 ///

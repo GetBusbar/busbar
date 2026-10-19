@@ -524,6 +524,42 @@ pub fn dropped_from_config(
     Some(REGISTRY.get_or_init(|| registry))
 }
 
+/// THE SCHEMES THIS BUILD'S TRANSPORTS CLAIM (BUSBAR-1.6.0.md #50), as the kernel judges a
+/// provider's `base_url` against them (`busbar_kernel::preflight::install_transport_schemes`): every
+/// linked transport door's claims, read off its Statement with each row's SECURE bit, then every
+/// transport dropped into `plugins.dir`, read off its signed Statement rendering. A dropped
+/// transport's claim rows are read only when the seal opens it, after the configuration is
+/// judged, so its claims count as PLAINTEXT here: a private/loopback host may take them, a public
+/// one is refused (fail closed: a scheme is never taken for a secure one unless its row says so).
+/// A scheme two rows claim is listed once, at the first.
+#[must_use]
+pub fn claimed_schemes() -> Vec<busbar_kernel::preflight::ClaimedScheme> {
+    use busbar_kernel::preflight::ClaimedScheme;
+    let mut out: Vec<ClaimedScheme> = Vec::new();
+    let mut add = |scheme: &str, secure: bool| {
+        if !out.iter().any(|c| c.scheme == scheme) {
+            out.push(ClaimedScheme {
+                scheme: scheme.to_string(),
+                secure,
+            });
+        }
+    };
+    for (_, door) in crate::LINKED_TRANSPORT_DOORS {
+        let secure = super::doors::secure_of(*door);
+        for claim in super::doors::claims_of(*door) {
+            add(claim, secure.contains(&claim));
+        }
+    }
+    if let Some(registry) = REGISTRY.get() {
+        for candidate in discovered(registry, |kind| kind == "transport").unwrap_or_default() {
+            for scheme in &candidate.schemes {
+                add(scheme, false);
+            }
+        }
+    }
+    out
+}
+
 /// The one plugin registry [`dropped_from_config`] builds, held for the process.
 pub(crate) static REGISTRY: std::sync::OnceLock<crate::root::loader::PluginRegistry> =
     std::sync::OnceLock::new();

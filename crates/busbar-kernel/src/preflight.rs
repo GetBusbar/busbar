@@ -286,6 +286,40 @@ pub(crate) fn linked_auth_axis() -> Option<Arc<dyn busbar_contract::auth_calls::
     auth_axis(Arc::new(linked().ok()?))
 }
 
+/// ONE URL SCHEME A LOADED TRANSPORT CLAIMS (BUSBAR-1.6.0.md #50: each transport plugin declares
+/// the scheme set it serves, and a provider's `base_url` scheme selects the one that declares it),
+/// and whether its claim row states it the SECURE form of its wire (`abi::transport::CLAIM_SECURE`).
+/// Opaque data to the kernel: it names no scheme.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimedScheme {
+    /// The scheme, as the transport's Statement claims it.
+    pub scheme: String,
+    /// The claim row states `CLAIM_SECURE`. A claim that does not state it (or whose row the
+    /// kernel cannot read yet) is plaintext.
+    pub secure: bool,
+}
+
+/// The root's reader of the schemes this build's transports claim, linked and dropped in.
+pub type TransportSchemes = fn() -> Vec<ClaimedScheme>;
+
+static TRANSPORT_SCHEMES: std::sync::OnceLock<TransportSchemes> = std::sync::OnceLock::new();
+
+/// THE ROOT'S DOOR onto the claimed schemes (the first install stands). Installed before the
+/// configuration is first validated, so `--validate` and boot judge a provider's `base_url` against
+/// the same transports.
+pub fn install_transport_schemes(read: TransportSchemes) {
+    let _ = TRANSPORT_SCHEMES.set(read);
+}
+
+/// The schemes this build's transports claim; none when the root installed no reader (a build with
+/// no root claims nothing, so a provider's scheme is judged by the web rule alone).
+pub(crate) fn transport_schemes() -> Vec<ClaimedScheme> {
+    TRANSPORT_SCHEMES
+        .get()
+        .map(|read| read())
+        .unwrap_or_default()
+}
+
 /// The rows this build LINKS onto the cold-kind axis, ahead of the plugins directory's: the root's
 /// stores and the root's hooks — a test build (no root) stands its
 /// fixture entries in. Registered through `PluginRegistry::link`, the admission a dropped-in row
