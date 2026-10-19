@@ -381,7 +381,8 @@ pub fn check_fields(
 }
 
 /// One [`super::StyleDecl`]'s `flags` and `points`: only [`STYLE_NEEDS_HEADERS`] |
-/// [`STYLE_CALLER_CREDENTIAL`] flag bits, nothing else, and a valid, non-empty point set
+/// [`STYLE_CALLER_CREDENTIAL`] | [`STYLE_ENDPOINT_TOKEN_URL`] | [`STYLE_ENDPOINT_SA_TOKEN_URI`]
+/// flag bits and a list rank ([`STYLE_RANK_MASK`]), nothing else, and a valid, non-empty point set
 /// ([`check_points`]). Run by the loader when it reads a plugin's declared styles, so a plugin
 /// build with a stray or future bit, or a style that needs no point, refuses the load rather than
 /// have the host silently ignore it.
@@ -389,7 +390,8 @@ pub fn check_fields(
 /// # Errors
 /// An unknown flag bit, or a point set [`check_points`] refuses.
 pub const fn check_style_decl(flags: u32, points: u32) -> Result<AuthPoints, Fault> {
-    if flags & !(STYLE_NEEDS_HEADERS | STYLE_CALLER_CREDENTIAL) != 0 {
+    const KNOWN: u32 = STYLE_NEEDS_HEADERS | STYLE_CALLER_CREDENTIAL;
+    if flags & !KNOWN != 0 {
         return Err(fault(Rule::UnknownCode, "style.unknown_flags"));
     }
     check_points(points, true)

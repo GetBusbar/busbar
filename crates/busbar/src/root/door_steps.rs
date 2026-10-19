@@ -2539,6 +2539,65 @@ impl OutboundAuths {
         }
         Ok(Vec::new())
     }
+
+    /// THE OUTBOUND STYLES every auth row declares, linked first, then dropped in, in the host's
+    /// one listing order (`busbar_contract::auth_calls::listed_styles`).
+    pub fn declared(&self) -> Vec<busbar_contract::auth_calls::DeclaredStyle> {
+        busbar_contract::auth_calls::listed_styles(self.facts().iter().flat_map(|row| {
+            row.styles
+                .iter()
+                .map(|s| busbar_contract::auth_calls::DeclaredStyle {
+                    name: s.name.clone(),
+                    flags: s.flags,
+                })
+        }))
+    }
+
+    /// CHECK A PROVIDER ENTRY, NEVER DIAL: as [`Self::check`], over the entry's declared
+    /// credential, answering EVERY line the plugin's refusal names, verbatim (`settings: ...` and
+    /// `credential: ...`). A keyless entry hands the plugin no credential; an unresolved one a
+    /// one-byte stand-in, and its `credential:` lines are dropped (nothing was there to judge); a
+    /// resolved one is revealed to the binding alone, under the kernel's seal (Part 2 #54).
+    ///
+    /// # Errors
+    ///
+    /// The serving plugin would not open for its outbound styles.
+    pub fn check_entry(
+        &self,
+        style: &str,
+        credential: busbar_contract::auth_calls::EntryCredential<'_>,
+        settings: &serde_json::Value,
+    ) -> Result<Vec<String>, String> {
+        use crate::root::loader::dispatch::auth_outbound::OutboundInstance;
+        use crate::root::loader::dispatch::ConnTable;
+        use busbar_contract::auth_calls::EntryCredential;
+        let seal = busbar_kernel::seal::lend();
+        let (bytes, unresolved): (&[u8], bool) = match credential {
+            EntryCredential::Keyless => (&[], false),
+            EntryCredential::Unresolved => (b"-", true),
+            EntryCredential::Resolved(secret) => (secret.expose(&seal).as_slice(), false),
+        };
+        for row in self.facts() {
+            if !row.styles.iter().any(|s| s.name == style) {
+                continue;
+            }
+            let Some(plugin) = self.load_with(&row.name, row.door, ConnTable::NoNeeds) else {
+                continue;
+            };
+            let opened = serde_json::to_vec(settings).map_err(|e| e.to_string())?;
+            let instance =
+                OutboundInstance::open_with(plugin, Arc::clone(&self.dispatcher), 0, &opened)?;
+            return Ok(match instance.open_outbound_raw(style, bytes, settings) {
+                Ok(_) => Vec::new(),
+                Err((_, why)) => why
+                    .lines()
+                    .filter(|l| !(unresolved && l.starts_with("credential: ")))
+                    .map(str::to_string)
+                    .collect(),
+            });
+        }
+        Ok(Vec::new())
+    }
 }
 
 /// AN AUTH ROW'S DECLARED DIAGNOSTICS, WRITTEN TO THE MAIN LOG IN 1.5.5'S LINE (ARCHITECT D1
