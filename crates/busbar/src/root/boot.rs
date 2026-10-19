@@ -573,9 +573,9 @@ fn scan_configured() -> Option<crate::root::loader::PluginRegistry> {
 }
 
 /// THE PLANES DROPPED INTO `dropped` (see [`dropped_from_config`]) AND THE LINKED PLANE DOORS: every
-/// plane that states itself through a door is discovered here and bound by [`load_door_planes`] once
-/// the process's dispatcher is built. A trusted plane that will not state itself, or has no door,
-/// refuses the boot, as a linked plane's would.
+/// plane that states itself through a door is discovered here, and the ones the boot's configuration
+/// uses (Law 7) are bound by [`load_door_planes`] once the process's dispatcher is built. A trusted
+/// plane that will not state itself, or has no door, refuses the boot, as a linked plane's would.
 pub fn discover_planes(linked: &Linked, dropped: Option<&crate::root::loader::PluginRegistry>) {
     let set = match dropped {
         Some(registry) => registry.open_planes(linked.plane_doors),
@@ -590,6 +590,19 @@ pub fn discover_planes(linked: &Linked, dropped: Option<&crate::root::loader::Pl
     let path =
         crate::root::cli::resolve_config_path(crate::root::cli::config_path_flag().as_deref());
     let _ = PLANE_USES.set(plan(std::path::Path::new(&path)));
+    // THE DEFAULT BUILD'S REQUIRED SECTIONS: what each LINKED plane door's rendered Statement marks
+    // required, used or not, so a document missing one keeps 1.5.5's refusal while the plane itself
+    // loads only when config uses it. Read off the rendering; nothing is opened.
+    let required: Vec<&'static str> = set
+        .doors
+        .iter()
+        .filter(|c| matches!(c.origin, Origin::Linked(_)))
+        .flat_map(Candidate::required_sections)
+        .map(|s| -> &'static str { Box::leak(s.into_boxed_str()) })
+        .collect();
+    busbar_kernel::plane::registry::install_linked_required_sections(Box::leak(
+        required.into_boxed_slice(),
+    ));
     let _ = DOOR_CANDIDATES.set(set.doors);
 }
 
@@ -617,8 +630,9 @@ pub type DoorPlane = std::sync::Arc<
 >;
 
 /// THE DOOR PLANES' ONE LOAD, run once the process's dispatcher is built
-/// ([`crate::root::dispatch::boot`]): every plane [`discover_planes`] discovered, linked and
-/// dropped alike, bound through the loader's one load on that dispatcher, each to its own log sink
+/// ([`crate::root::dispatch::boot`]): every plane [`discover_planes`] discovered that the boot's
+/// configuration uses (Law 7), linked and dropped alike, bound through the loader's one load on that
+/// dispatcher, each to its own log sink
 /// under the configured `plugins.logs`, each declaring its needs on the process's one connection
 /// table (`root::connector::the()`). A plane that will not bind refuses the boot (exit 2).
 pub fn load_door_planes() {

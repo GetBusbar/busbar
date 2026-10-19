@@ -477,16 +477,32 @@ pub fn plane_rows(linked: &Linked) -> Result<Vec<&'static PlaneDecl>, String> {
     let mut rows: Vec<&'static PlaneDecl> = linked.planes.iter().collect();
     // A linked door's folded row goes at its manifest row's place among the linked plane rows (the
     // layering order is the manifest's whichever axis a plane registers on); a dropped one follows.
-    let doors = door_rows()?;
-    let (linked_doors, dropped_doors) =
-        doors.split_at(linked.plane_door_slots.len().min(doors.len()));
-    for (row, slot) in linked_doors.iter().zip(linked.plane_door_slots).rev() {
-        rows.insert((*slot).min(rows.len()), row);
+    // Only the doors config uses have rows (Law 7), each with its place among the discovered doors:
+    // the linked ones first, in manifest order, then the dropped-in ones.
+    let used = door_rows()?;
+    let linked_door = |at: usize| linked.plane_door_slots.get(at).copied();
+    for (at, row) in used.iter().rev() {
+        if let Some(slot) = linked_door(*at) {
+            rows.insert(slot.min(rows.len()), *row);
+        }
     }
-    rows.extend(dropped_doors.iter().copied());
+    rows.extend(
+        used.iter()
+            .filter(|(at, _)| linked_door(*at).is_none())
+            .map(|(_, row)| *row),
+    );
+    let doors: Vec<&'static PlaneDecl> = used.iter().map(|(_, row)| *row).collect();
     // PER-AXIS (SEAM-L(s)): a door row owns the plane axis for its key; a legacy row of the same
     // key yields that axis alone and keeps every other axis it registers (its tables are its own).
+    // A door config does not use still owns its key: the legacy row does not serve in its place.
+    let discovered: Vec<&str> = crate::root::boot::DOOR_CANDIDATES
+        .get()
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
     let rows = doors_own_their_plane_keys(rows, &doors);
+    let rows = unused_doors_own_their_plane_keys(rows, &doors, &discovered);
     let declared: Vec<&PlaneDeclaration> = rows.iter().map(|d| &d.declaration).collect();
     busbar_contract::plane::check_metric_families(&declared, PLANE_CARRIED_SERIES)?;
     busbar_contract::plane::check_served_op_classes(&declared)?;
@@ -515,6 +531,21 @@ pub fn doors_own_their_plane_keys(
     let is_door = |row: &PlaneDecl| doors.iter().any(|d| std::ptr::eq(*d, row));
     rows.into_iter()
         .filter(|row| is_door(row) || !doors.iter().any(|d| d.key == row.key))
+        .collect()
+}
+
+/// LAW 7 ON THE PLANE AXIS: a door config does not use is never bound, so it registers no row, yet
+/// it still owns its plane's key: a row of `rows` that is not one of `doors` (a linked legacy or
+/// HOT-lane row) and whose key is a discovered door's name (its Statement's, read off its
+/// rendering) is dropped, so a plane config does not use is served by nothing. Order is kept.
+pub fn unused_doors_own_their_plane_keys(
+    rows: Vec<&'static PlaneDecl>,
+    doors: &[&'static PlaneDecl],
+    discovered: &[&str],
+) -> Vec<&'static PlaneDecl> {
+    let is_door = |row: &PlaneDecl| doors.iter().any(|d| std::ptr::eq(*d, row));
+    rows.into_iter()
+        .filter(|row| is_door(row) || !discovered.contains(&row.key))
         .collect()
 }
 
@@ -549,10 +580,18 @@ pub(crate) fn door_probe_dispatcher() -> Arc<crate::root::loader::dispatch::Disp
 /// word is the door's; a door owns the plane axis for its key, a linked legacy row of the same key
 /// keeping only its other axes ([`doors_own_their_plane_keys`]), and two doors registering one key
 /// refuse the boot naming both. A door that will not bind refuses the boot, as its load would.
-fn door_rows() -> Result<Vec<&'static PlaneDecl>, String> {
+fn door_rows() -> Result<Vec<(usize, &'static PlaneDecl)>, String> {
     let doors = crate::root::boot::DOOR_CANDIDATES
         .get()
         .map_or(&[][..], Vec::as_slice);
+    // LAW 7: only a plane the boot's configuration uses is bound for its row; the others are not
+    // opened. Each keeps its place among the discovered doors.
+    let uses = crate::root::boot::plane_uses();
+    let doors: Vec<(usize, &crate::root::loader::boot::Candidate)> = doors
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| crate::root::loader::boot::plane_use(uses, c).is_some())
+        .collect();
     if doors.is_empty() {
         return Ok(Vec::new());
     }
@@ -562,9 +601,9 @@ fn door_rows() -> Result<Vec<&'static PlaneDecl>, String> {
     let probe = door_probe_dispatcher();
     let registrations = doors
         .iter()
-        .map(|candidate| {
+        .map(|(at, candidate)| {
             let name = candidate.name.clone();
-            let candidate = candidate.clone();
+            let candidate = (*candidate).clone();
             let probe = Arc::clone(&probe);
             let bind: crate::root::loader::dispatch::kinds::plane::ProbeBind =
                 Arc::new(move || {
@@ -583,18 +622,19 @@ fn door_rows() -> Result<Vec<&'static PlaneDecl>, String> {
                     .ok_or_else(|| format!("{}: the door bound nothing", candidate.name))
                 });
             Ok((
+                *at,
                 name,
                 crate::root::loader::dispatch::kinds::plane::registration(bind)?,
             ))
         })
         .collect::<Result<Vec<_>, String>>()?;
     let named: Vec<(String, &str)> = (registrations.iter())
-        .map(|(name, reg)| (name.clone(), reg.key))
+        .map(|(_, name, reg)| (name.clone(), reg.key))
         .collect();
     refuse_a_key_two_doors_register(&named)?;
     registrations
         .into_iter()
-        .map(|(_, reg)| busbar_kernel::plane::door::fold(reg))
+        .map(|(at, _, reg)| busbar_kernel::plane::door::fold(reg).map(|row| (at, row)))
         .collect()
 }
 

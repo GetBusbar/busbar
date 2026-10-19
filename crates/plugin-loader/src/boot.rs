@@ -450,8 +450,10 @@ pub fn select(uses: &Uses, candidates: &[Candidate]) -> Vec<Selected> {
     for (i, c) in candidates.iter().enumerate() {
         match c.kind {
             KindCode::Plane => {
-                if let Some(verb) = c.verbs.iter().find(|v| uses.roots.contains(*v)) {
-                    take(&mut out, i, c.kind, verb.clone());
+                // Selected under its verb, whichever of its sections uses it.
+                if let Some(at) = plane_use(uses, c) {
+                    let verb = c.verbs.first().map_or(at, String::as_str);
+                    take(&mut out, i, c.kind, verb.to_string());
                 }
             }
             KindCode::Transport => {
@@ -476,7 +478,9 @@ pub fn select(uses: &Uses, candidates: &[Candidate]) -> Vec<Selected> {
 
 /// WHETHER THE CONFIGURATION USES THE PLANE `plane` (Law 7, BUSBAR-1.6.0.md §4 "Selection
 /// follows the classes"; pure): the section of `uses` that uses it — the first of its verbs that is
-/// a root key — or `None`, and the plane is not loaded. Read off the candidate's rendered facts only,
+/// a root key, else the first section its Statement marks as selecting it (`SECTION_SELECTS`) that
+/// is one — or `None`, and the plane is not loaded. A section it only consumes or requires is no
+/// use of it. Read off the candidate's rendered facts only,
 /// so nothing is opened: what the boot selects planes by, and what a config apply asks of a plane
 /// that is not loaded now. A candidate of another kind is used by no section here.
 #[must_use]
@@ -487,6 +491,7 @@ pub fn plane_use<'c>(uses: &Uses, plane: &'c Candidate) -> Option<&'c str> {
     plane
         .verbs
         .iter()
+        .chain(&plane.selecting)
         .find(|v| uses.roots.contains(*v))
         .map(String::as_str)
 }
@@ -599,10 +604,10 @@ pub fn load_planes(
     max_inflight_cap: u32,
     conns: ConnTable,
 ) -> Result<Vec<(String, Plugin<Plane>)>, String> {
-    let _ = uses;
     let selected: Vec<Selected> = doors
         .iter()
         .enumerate()
+        .filter(|(_, c)| plane_use(uses, c).is_some())
         .map(|(candidate, c)| Selected {
             candidate,
             instance: c.name.clone(),

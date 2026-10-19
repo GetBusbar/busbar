@@ -52,10 +52,10 @@ use busbar_contract::abi::host::service::{ClockReading, MAX_RANDOM_FILL};
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, InHead, OutHead, Outcome, Span, BLOB_ABSENT, BLOB_OCTETS,
 };
-use busbar_contract::abi::mechanism::door::SECTION_REQUIRED;
 use busbar_contract::abi::mechanism::door::{
     KindTailHead, Section, Statement, SECTION_CONSUMED, SECTION_DECLARING,
 };
+use busbar_contract::abi::mechanism::door::{SECTION_REQUIRED, SECTION_SELECTS};
 use busbar_contract::abi::mechanism::extensions;
 use busbar_contract::abi::mechanism::lifecycle::{
     GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
@@ -129,11 +129,16 @@ const fn section(name: &'static str, flags: u32) -> Section {
 }
 
 /// `pools:` declared; `providers:`, `models:` and `limits:` read beside it; `webhooks:` its own,
-/// opened with as written (the receivers it switches on, [`webhook`]).
+/// opened with as written (the receivers it switches on, [`webhook`]). `models:` also SELECTS the
+/// plane (Law 7): a document that routes to its models directly, with no `pools:`, uses it, as
+/// 1.5.5 served `/<model>/v1/messages` with no pool configured.
 const SECTIONS: &[Section] = &[
     section(sections::POOLS, SECTION_DECLARING),
     section(sections::PROVIDERS, SECTION_CONSUMED | SECTION_REQUIRED),
-    section(sections::MODELS, SECTION_CONSUMED | SECTION_REQUIRED),
+    section(
+        sections::MODELS,
+        SECTION_CONSUMED | SECTION_REQUIRED | SECTION_SELECTS,
+    ),
     section(sections::LIMITS, SECTION_CONSUMED),
     section(webhook::SECTION, 0),
 ];

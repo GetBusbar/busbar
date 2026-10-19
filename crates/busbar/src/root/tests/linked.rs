@@ -423,6 +423,25 @@ fn a_door_owns_the_plane_axis_for_its_key_and_a_legacy_row_keeps_the_rest() {
     );
 }
 
+/// LAW 7 ON THE PLANE AXIS: a door config does not use registers no row (it is never bound), and
+/// still owns its key, so the legacy row of that key does not serve in its place; a legacy row of
+/// another key, and a door config uses, stay. RED before: a legacy row whose door was not bound kept
+/// the plane axis, so an unused plane was served by its legacy engine.
+#[test]
+fn an_unused_door_still_owns_its_key_and_its_legacy_row_does_not_serve() {
+    let legacy = &native("law7-unused")[0];
+    let other = &native("law7-other")[0];
+    let used = &native("law7-used")[0];
+    let rows = unused_doors_own_their_plane_keys(
+        vec![legacy, other, used],
+        &[used],
+        &["law7-unused", "law7-used"],
+    );
+    assert_eq!(rows.len(), 2, "the unused door's legacy row yields its key");
+    assert!(std::ptr::eq(rows[0], other), "a row of another key stays");
+    assert!(std::ptr::eq(rows[1], used), "the used door's row serves");
+}
+
 /// THE ENGINE DOES NOT RIDE THE KEY (status row 83, PR 4a; BUSBAR-1.6.0.md l.639, l.2577, #7): a
 /// door taking the key of the legacy row that is the fallback plane serves its key with its OWN
 /// row. The legacy row's engine (its fallback flag, the runtime it builds, the view, the provider
