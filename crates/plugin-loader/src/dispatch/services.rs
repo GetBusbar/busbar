@@ -1967,6 +1967,8 @@ extern "C" fn unit_refuse(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
             line: i.line,
             conn: i.conn,
             stream: i.stream,
+            // RED: the request is not passed on.
+            request: HeadCopy::default(),
         }) {
             Ok(b) => b,
             Err(e) => return Answered::bare(Outcome::Refused, e),

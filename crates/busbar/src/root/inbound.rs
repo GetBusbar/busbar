@@ -176,7 +176,7 @@ impl AuthHandleHost for LoaderSide {
                 unit: ask.unit,
                 cause: ask.cause,
                 line: ask.line,
-                target: None,
+                request: Some(head_of(ask.request)),
             })
             .map(|r| RefusalBytes {
                 status: r.status,

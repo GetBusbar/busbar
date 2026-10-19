@@ -348,7 +348,7 @@ impl Kit {
                 unit,
                 cause,
                 line,
-                target: Some(target.to_string()),
+                request: Some(post(target, &[], None)),
             })
             .expect("refused")
     }
@@ -814,7 +814,7 @@ fn red_every_refusal_is_the_kernels_and_byte_identical_to_todays_builders() {
                 unit: ans.unit,
                 cause: REFUSE_STOPPED,
                 line: k.line(MESSAGES),
-                target: None,
+                request: None,
             })
             .map(|r| r.status),
         Err(UNIT_FOREIGN)
@@ -1513,4 +1513,50 @@ fn red_a_call_whose_conn_disagrees_with_its_framing_is_refused() {
     // Once the framing ends, its connection is no longer held.
     k.inbound.framing_ended(40);
     assert!(call(40, 6).is_ok());
+}
+
+/// RED (ruling 1: `UnitRefuseIn::request`): a refusal with no unit is shaped by the REQUEST's
+/// path, as 1.5.5's router shaped it, not by the line's or the listener's root: a no-route, a
+/// method miss and an over-gate body on a path under the native API's root answer its envelope,
+/// and on any other path the data plane's.
+#[test]
+fn red_a_unitless_refusal_is_shaped_by_the_requests_path() {
+    use axum::http::StatusCode;
+    let a = Script::new(AuthPoints::HEAD, Verified::Reject, Vec::new());
+    let k = kit(&[("a", a)]);
+    for (cause, line, status, kind, message) in [
+        (
+            REFUSE_NO_ROUTE,
+            LINE_NONE,
+            StatusCode::NOT_FOUND,
+            crate::taxonomy::ERR_TYPE_NOT_FOUND,
+            "the requested resource was not found",
+        ),
+        (
+            REFUSE_METHOD_MISS,
+            k.line(MESSAGES),
+            StatusCode::METHOD_NOT_ALLOWED,
+            crate::taxonomy::ERR_TYPE_INVALID_REQUEST,
+            "method not allowed for this resource",
+        ),
+        (
+            REFUSE_OVER_GATE,
+            k.line(MESSAGES),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            crate::proxy::KIND_REQUEST_TOO_LARGE,
+            "request body exceeds the maximum allowed size",
+        ),
+    ] {
+        for path in ["/api/v1/admin/keys", "/definitely/unknown"] {
+            let got = k.refuse(cause, line, UnitRef::NONE, path);
+            let want = Refusal::of(crate::router::fallback_error_response(
+                &k.app.planes,
+                path,
+                status,
+                kind,
+                message,
+            ));
+            assert_eq!(got, want, "cause {cause} on {path}");
+        }
+    }
 }

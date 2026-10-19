@@ -3,17 +3,19 @@
 
 //! THE INBOUND HANDLE'S REFUSALS, HELD TO 1.5.5 (`BUSBAR-1.6.0.md` THE DESIGN §6, "Auth points and
 //! guest lists", step 4, l.950-952 and l.962-964): with this build's protocol declarations linked,
-//! the kernel's `unit.refuse` answers the bytes the 1.5.5 oracle recorded for no route and for an
-//! over-gate body under the native API's root (`testing/shadow-oracle/golden/1.5.5/cells/`
-//! `http.crosscut__unknown-path__bare`, `http.crosscut__413__api-prefix`). The dialect-shaped cells
-//! (a 405 or 413 on a protocol path) name a vendor, which this crate does not (Law 0); the kernel's
-//! own cells hold those refusals to the very builders that answer them.
+//! the kernel's `unit.refuse` answers, for the request the transport hands it
+//! (`UnitRefuseIn::request`, ruling 1), the bytes the 1.5.5 oracle recorded for every crosscut cell
+//! a refusal answers: the no-route cells, the method-miss cell, and the over-gate cells (an
+//! unauthenticated one answers its 401 first). The cells are READ from the oracle's own catalogue
+//! (`testing/shadow-oracle/cells.json`, by family), so this crate names no dialect (Law 0).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
-use busbar_contract::abi::host::service::{UnitRef, LINE_NONE, REFUSE_NO_ROUTE, REFUSE_OVER_GATE};
+use busbar_contract::abi::host::service::{
+    UnitRef, LINE_NONE, REFUSE_METHOD_MISS, REFUSE_NO_ROUTE, REFUSE_OVER_GATE, REFUSE_STOPPED,
+};
 use busbar_contract::abi::transport::route::{METHOD_POST, PATH_EXACT};
 use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
 use busbar_kernel::inbound::{self as kin, Inbound};
@@ -105,64 +107,156 @@ fn field<'a>(r: &'a kin::Refusal, name: &str) -> Option<&'a str> {
         .and_then(|(_, v)| std::str::from_utf8(v).ok())
 }
 
-/// `r` against golden cell `name`: its status, its content-type, its body (the cell's `<ID>`
-/// normalisation applied to a request id), and its content-length where the cell pins one.
-fn held_to(r: &kin::Refusal, name: &str) {
+/// `r` against golden cell `name`: its status, every head field the cell pins but the date and
+/// the length (its `<ID>` normalisation applied), its body (a request id normalised the same way),
+/// and its content-length where the cell pins one. The differences, worded; none when it holds.
+fn differences(r: &kin::Refusal, name: &str) -> Vec<String> {
     let cell = golden(name);
-    assert_eq!(
-        u64::from(r.status),
-        cell["status"].as_u64().unwrap(),
-        "{name}: status"
-    );
-    assert_eq!(
-        field(r, "content-type"),
-        cell["headers"]["content-type"].as_str(),
-        "{name}: content-type"
-    );
-    let mut body: Value = serde_json::from_slice(&r.body).expect("the refusal body is JSON");
-    if body.get("request_id").is_some() {
-        body["request_id"] = Value::from("<ID>");
+    let mut wrong = Vec::new();
+    if Some(u64::from(r.status)) != cell["status"].as_u64() {
+        wrong.push(format!("status {} not {}", r.status, cell["status"]));
     }
-    assert_eq!(body, cell["body"]["json"], "{name}: body");
+    if let Some(headers) = cell["headers"].as_object() {
+        for (n, want) in headers {
+            if n == "date" || n == "content-length" {
+                continue;
+            }
+            let want = want.as_str().unwrap_or_default();
+            let got = field(r, n).unwrap_or_default();
+            let holds = match want.split_once("<ID>") {
+                Some((prefix, suffix)) => {
+                    got.starts_with(prefix) && got.ends_with(suffix) && got.len() > want.len() - 4
+                }
+                None => got == want,
+            };
+            if !holds {
+                wrong.push(format!("field {n}: {got:?} not {want:?}"));
+            }
+        }
+    }
+    match serde_json::from_slice::<Value>(&r.body) {
+        Ok(mut body) => {
+            if body.get("request_id").is_some() {
+                body["request_id"] = Value::from("<ID>");
+            }
+            if body != cell["body"]["json"] {
+                wrong.push(format!("body {body} not {}", cell["body"]["json"]));
+            }
+        }
+        Err(e) => wrong.push(format!("body is not JSON: {e}")),
+    }
     if let Some(len) = cell["headers"]["content-length"]
         .as_str()
         .and_then(|l| l.parse::<usize>().ok())
     {
-        assert_eq!(r.body.len(), len, "{name}: content-length");
+        if r.body.len() != len {
+            wrong.push(format!("length {} not {len}", r.body.len()));
+        }
     }
+    wrong
 }
 
-fn refuse(side: &Inbound, cause: u32, line: u32, target: &str) -> kin::Refusal {
-    side.refuse(kin::Refuse {
-        owner: OWNER,
-        generation: GEN,
-        unit: UnitRef::NONE,
-        cause,
-        line,
-        target: Some(target.to_string()),
-    })
-    .expect("refused")
-}
-
-/// RED: no route is the listener's 1.5.5 404, byte for byte (`http.crosscut__unknown-path__bare`).
-#[test]
-fn red_no_route_is_the_1_5_5_not_found() {
-    let (side, _) = side();
-    held_to(
-        &refuse(&side, REFUSE_NO_ROUTE, LINE_NONE, "/no/such/route"),
-        "http.crosscut__unknown-path__bare",
+/// The oracle's crosscut cells of `family` (`http.crosscut|<family>|…`) that run without a
+/// fixture: (the golden cell's name, the request's method, path and head fields, whether it
+/// presents a credential).
+fn crosscut(family: &str) -> Vec<(String, kin::Head, bool)> {
+    let path = format!(
+        "{}/../../testing/shadow-oracle/cells.json",
+        env!("CARGO_MANIFEST_DIR")
     );
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let cells: Value = serde_json::from_str(&text).expect("the cell catalogue is JSON");
+    let prefix = format!("http.crosscut|{family}|");
+    cells["cells"]
+        .as_array()
+        .expect("the catalogue lists cells")
+        .iter()
+        .filter(|c| c["id"].as_str().is_some_and(|id| id.starts_with(&prefix)))
+        .filter(|c| !c["needs_fixture"].as_bool().unwrap_or(false))
+        .map(|c| {
+            let r = &c["request"];
+            let head = kin::Head {
+                method: r["method"].as_str().unwrap_or_default().to_string(),
+                target: r["path"].as_str().unwrap_or_default().to_string(),
+                authority: String::new(),
+                query: None,
+                fields: r["headers"]
+                    .as_object()
+                    .map(|h| {
+                        h.iter()
+                            .map(|(n, v)| {
+                                (
+                                    n.to_ascii_lowercase(),
+                                    v.as_str().unwrap_or_default().as_bytes().to_vec(),
+                                )
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            };
+            let name = c["id"].as_str().unwrap_or_default().replace('|', "__");
+            (name, head, r["auth"].as_str() != Some("none"))
+        })
+        .collect()
 }
 
-/// RED: an over-gate body on a line under the native API's root is 1.5.5's answer there, before
-/// any verdict (`http.crosscut__413__api-prefix`).
-#[test]
-fn red_an_over_gate_body_under_the_native_root_is_the_1_5_5_answer() {
+/// Every cell of `family` refused for `cause`, held to its golden bytes: the cells that differ, and
+/// how. A cell whose 1.5.5 answer is no refusal of this cause (it was routed) is named apart.
+fn refused_against(family: &str, cause: u32) -> Vec<String> {
     let (side, guests) = side();
-    held_to(
-        &refuse(&side, REFUSE_OVER_GATE, ix(&guests, NATIVE), NATIVE),
-        "http.crosscut__413__api-prefix",
-    );
+    let line = if cause == REFUSE_NO_ROUTE {
+        LINE_NONE
+    } else {
+        ix(&guests, NATIVE)
+    };
+    let mut failing = Vec::new();
+    for (name, head, credentialed) in crosscut(family) {
+        // An unauthenticated over-gate request is a stop at its head, before the body (its 401).
+        let cause = if credentialed { cause } else { REFUSE_STOPPED };
+        let refusal = side
+            .refuse(kin::Refuse {
+                owner: OWNER,
+                generation: GEN,
+                unit: UnitRef::NONE,
+                cause,
+                line,
+                request: Some(head),
+            })
+            .expect("refused");
+        let wrong = differences(&refusal, &name);
+        if !wrong.is_empty() {
+            failing.push(format!("{name}: {}", wrong.join("; ")));
+        }
+    }
+    failing
+}
+
+/// RED (ruling 1): every no-route crosscut cell answers its 1.5.5 bytes, shaped by the request's
+/// path. A suffix-routed cell is excluded by its own answer: 1.5.5 ROUTED that request (a
+/// 400 from its dialect), which is the guest list's parity, not a refusal's.
+#[test]
+fn red_every_no_route_cell_answers_its_1_5_5_bytes() {
+    let failing: Vec<String> = refused_against("unknown-path", REFUSE_NO_ROUTE)
+        .into_iter()
+        .filter(|f| !f.contains("status 404 not 400"))
+        .collect();
+    assert!(failing.is_empty(), "{failing:#?}");
+}
+
+/// RED (ruling 1): the method-miss crosscut cell answers its 1.5.5 bytes in the path's dialect,
+/// its request id included.
+#[test]
+fn red_the_method_miss_cell_answers_its_1_5_5_bytes() {
+    let failing = refused_against("wrong-method", REFUSE_METHOD_MISS);
+    assert!(failing.is_empty(), "{failing:#?}");
+}
+
+/// RED (ruling 1): every over-gate crosscut cell answers its 1.5.5 bytes in the path's dialect,
+/// before any verdict; the unauthenticated one its 401 first.
+#[test]
+fn red_every_over_gate_cell_answers_its_1_5_5_bytes() {
+    let failing = refused_against("413", REFUSE_OVER_GATE);
+    assert!(failing.is_empty(), "{failing:#?}");
 }
 
 /// The kernel's line half of the ref-id space is the loader's: every id the root mints for a line

@@ -3371,6 +3371,9 @@ fn red_hand_in_and_refuse_delegate_to_the_installed_kernel_side() {
     assert_eq!(name, b"content-type");
     assert_eq!(body, b"{\"error\":{}}");
     assert_eq!(side.refusals.lock().unwrap()[0].cause, REFUSE_NO_ROUTE);
+    // The request the refusal is for reaches the kernel, its path shaping the bytes (ruling 1).
+    assert_eq!(side.refusals.lock().unwrap()[0].request.target, "/v1");
+    assert_eq!(side.refusals.lock().unwrap()[0].request.method, "GET");
 }
 
 // ── the peer point, the op's deadline, and the refusal's lifetime ────────────────────────────
