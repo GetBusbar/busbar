@@ -2474,6 +2474,57 @@ fn only_reject_refuses_a_failed_call() {
     ));
 }
 
+// ── THE DESIGN §11.11 R4: a hook's secrets resolve at config time, never on a read ────────────────
+
+/// `GET /api/v1/admin/hooks/{name}/status`, `GET …/schema` and the `/metrics/hooks` scrape refresh
+/// are READS. THE DESIGN §11.11 R4 (BUSBAR-1.6.0.md l.1464-1469): the secret kind's file source reads
+/// only at config time (boot, config apply, refresh) and is never reachable from a request path. So
+/// the hook's `SecretRef` settings resolve ONCE, at the config-time pass, and every read after it is
+/// served from that settled bag: the counting resolver below must not move across the reads, while
+/// the reads still answer exactly as before.
+#[tokio::test]
+async fn status_and_schema_reads_resolve_no_secret() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let resolves = Arc::new(AtomicUsize::new(0));
+    let counted = resolves.clone();
+    let base = test_env();
+    let env = HookEnv::with_axis(
+        base.registry.clone(),
+        base.axis.clone().expect("the hook double's axis"),
+        Arc::new(crate::config::secret::SecretResolver::with_plugin(
+            Box::new(move |_module: &str, _settings: &str| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                Ok(b"lic-1".to_vec())
+            }),
+        )),
+    );
+    let mut hook = hook_with_plugin_secret();
+    hook.settings
+        .insert("order".to_string(), serde_json::json!([0]));
+    let hooks = registry("h", hook.clone());
+
+    // CONFIG TIME: the boot / apply pass settles the hook's secrets.
+    env.preresolve_hook_secrets(&hooks)
+        .expect("the hook's secret resolves at config time");
+    let settled = resolves.load(Ordering::SeqCst);
+    assert!(settled >= 1, "the config-time pass resolves the SecretRef");
+
+    // THE READS: status twice (a dashboard polls), then schema.
+    let first = fetch_status("h", &hook, 0, &env).await;
+    let second = fetch_status("h", &hook, 0, &env).await;
+    let schema = fetch_schema("h", &hook, 0, &env).await;
+    assert_eq!(
+        resolves.load(Ordering::SeqCst),
+        settled,
+        "a status or schema read resolved a hook secret: R4 holds the secret source to config time"
+    );
+    assert!(
+        first.is_some() && second.is_some(),
+        "the status read still answers"
+    );
+    assert!(schema.is_some(), "the schema read still answers");
+}
+
 // TODO M4 HOOK-PARITY: the consolidated v1.5.5 hook acceptance suite (module doc there).
 #[path = "m4_acceptance_suite.rs"]
 mod m4_acceptance_suite;

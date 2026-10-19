@@ -405,6 +405,51 @@ impl Gate for ConfigScopeGate {
             &[tls, "fn read_pem"],
         ));
 
+        // A HELPER THAT MINTS ITS OWN PROOF (u77). The proof is held by the call graph only if the
+        // functions that NEED it take it from their caller: a helper that constructs its own is
+        // callable from anywhere, a status read above all, and the gate cannot tell. So the hook
+        // settings resolver and the TLS PEM reader, both reached from more than one root, are never
+        // allowed to mint; each takes `&ConfigScope`.
+        for (helper, func) in [
+            ("crates/busbar-kernel/src/hooks/mod.rs", "resolve_hook_settings"),
+            ("crates/busbar-kernel/src/tls.rs", "read_pem"),
+        ] {
+            let text = cx.read(helper).unwrap_or_default();
+            let named = format!("fn {func}");
+            let mut minted = Overlay::new();
+            minted.set(
+                helper,
+                format!(
+                    "{text}\npub fn {func}() {{\n    let _p = busbar_contract::config_time::ConfigScope::config_time();\n}}\n"
+                ),
+            );
+            report.push(prove_red(
+                cx,
+                self,
+                format!("a helper minting its own proof ({func}) is RED, naming it"),
+                &[ROW_SITE],
+                minted,
+                &[helper, named.as_str()],
+            ));
+        }
+
+        // A STATUS READ THAT CALLS A PROOF-TAKING HELPER has to produce the proof, and that
+        // construction, in an admin read handler, is RED.
+        let handler = "crates/busbar-core-admin/src/v1/json/planted_status.rs";
+        let mut read = Overlay::new();
+        read.set(
+            handler,
+            "pub async fn hook_status(env: &busbar_kernel::hooks::HookEnv) {\n    let scope = busbar_contract::config_time::ConfigScope::config_time();\n    let _ = env.preresolve_hook_secrets(&Default::default(), &scope);\n}\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "an admin status read producing the proof for a config-time helper is RED",
+            &[ROW_SITE],
+            read,
+            &[handler, "fn hook_status"],
+        ));
+
         // PROSE AND TEST CODE ARE NOT CONSTRUCTIONS.
         let mut prose = Overlay::new();
         prose.set(
