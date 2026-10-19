@@ -264,6 +264,8 @@ fn a_truncated_padded_or_foreign_rendering_is_unreadable() {
 
 use crate::abi::transport::{Claim, TransportTail, CLAIM_SECURE};
 
+use super::TAIL_CLAIM_FLAGS;
+
 const fn row(flags: u32) -> Claim {
     Claim {
         selector_forms: NONE,
@@ -331,7 +333,7 @@ fn a_secure_claim_renders_its_flags_after_the_claims() {
 fn a_rendering_with_no_flag_is_byte_identical_to_the_one_signed_before_the_field() {
     let plain = bytes(&transport(PLAIN_ROWS));
     let secure = bytes(&transport(SECURE_ROWS));
-    let field: Vec<u8> = [2_u32, CLAIM_SECURE, 0]
+    let field: Vec<u8> = [TAIL_CLAIM_FLAGS, 2, CLAIM_SECURE, 0]
         .iter()
         .flat_map(|v| v.to_le_bytes())
         .collect();
@@ -361,36 +363,50 @@ fn claim_flags_round_trip() {
     }
 }
 
-/// THE ENCODING IS CANONICAL (REDs): a present list spelling "every flag zero", a list on another
-/// kind, a list of another count, a list stating a bit but `CLAIM_SECURE`, and a byte past the list
-/// are each refused, so no Statement has two signed byte forms.
+/// THE ENCODING IS CANONICAL (REDs): the optional tail is tagged fields in strictly ascending tag
+/// order (one routine reads every optional field, the order fixed in one place). A present
+/// `claim_flags` spelling "every flag zero", on another kind, of another count, or stating a bit but
+/// `CLAIM_SECURE` is refused as `claim_flags`; an unknown tag, a tag not above the one before it,
+/// and a byte that is no tag are refused at "the end". So no Statement has two signed byte forms.
 #[test]
 fn a_non_canonical_claim_flags_is_unreadable() {
     let field = |vals: &[u32]| -> Vec<u8> { vals.iter().flat_map(|v| v.to_le_bytes()).collect() };
     let plain = bytes(&transport(PLAIN_ROWS));
     let with = |vals: &[u32]| [plain.as_slice(), field(vals).as_slice()].concat();
-    assert_eq!(read(&with(&[2, 0, 0])).unwrap_err().what, "claim_flags");
-    assert_eq!(
-        read(&with(&[1, CLAIM_SECURE])).unwrap_err().what,
-        "claim_flags"
-    );
-    assert_eq!(
-        read(&with(&[3, CLAIM_SECURE, 0, 0])).unwrap_err().what,
-        "claim_flags"
-    );
-    assert_eq!(read(&with(&[2, 2, 0])).unwrap_err().what, "claim_flags");
-    assert_eq!(
-        read(&with(&[2, CLAIM_SECURE | 4, 0])).unwrap_err().what,
-        "claim_flags"
-    );
-    let mut trailing = bytes(&transport(SECURE_ROWS));
+    let t = TAIL_CLAIM_FLAGS;
+    for vals in [
+        vec![t, 2, 0, 0],
+        vec![t, 1, CLAIM_SECURE],
+        vec![t, 3, CLAIM_SECURE, 0, 0],
+        vec![t, 2, 2, 0],
+        vec![t, 2, CLAIM_SECURE | 4, 0],
+    ] {
+        assert_eq!(
+            read(&with(&vals)).unwrap_err().what,
+            "claim_flags",
+            "{vals:?}"
+        );
+    }
+    let secure = bytes(&transport(SECURE_ROWS));
+    let mut trailing = secure.clone();
     trailing.push(0);
     assert_eq!(read(&trailing).unwrap_err().what, "the end");
-    // Another kind states no claim flags: the same bytes on a non-transport Statement are refused.
-    let other = [
-        bytes(&full()).as_slice(),
-        field(&[2, CLAIM_SECURE, 0]).as_slice(),
+    let again = [
+        secure.as_slice(),
+        field(&[t, 2, CLAIM_SECURE, 0]).as_slice(),
     ]
     .concat();
-    assert_eq!(read(&other).unwrap_err().what, "the end");
+    assert_eq!(read(&again).unwrap_err().what, "the end", "a tag twice");
+    assert_eq!(
+        read(&with(&[99, 0])).unwrap_err().what,
+        "the end",
+        "an unknown tag"
+    );
+    // Another kind states no claim flags.
+    let other = [
+        bytes(&full()).as_slice(),
+        field(&[t, 2, CLAIM_SECURE, 0]).as_slice(),
+    ]
+    .concat();
+    assert_eq!(read(&other).unwrap_err().what, "claim_flags");
 }

@@ -62,6 +62,10 @@ use crate::abi::host::conn::connector::Need;
 /// The rendering's first eight bytes.
 pub const RENDERING_MAGIC: &[u8; 8] = b"BBSTMT01";
 
+/// THE OPTIONAL TAIL's tag of a transport's claim-row `flags` (module docs: the tagged fields after
+/// `claims`, in strictly ascending tag order).
+pub const TAIL_CLAIM_FLAGS: u32 = 1;
+
 /// One of the rendering's lengths or counts was above `u32::MAX`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TooLong(pub &'static str);
