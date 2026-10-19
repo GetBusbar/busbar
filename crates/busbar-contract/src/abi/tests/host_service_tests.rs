@@ -1436,6 +1436,53 @@ fn red_auth_call_answer_refuses_each_break() {
     assert!(check_auth_call(&i, ready(&pending), &pending).is_ok());
 }
 
+/// RED: at the peer point an `auth.call` answers ONLY continue or stop. An outbound binding's
+/// peer answer that carries a field (a name and a value: key material) or any byte is refused; the
+/// bare continue and the bare stop pass.
+#[test]
+fn red_a_peer_answer_that_carries_fields_or_bytes_is_refused() {
+    use crate::abi::auth::{FIELD_SENSITIVE, POINT_PEER};
+    let mut buf = [0u8; 32];
+    let mut spans = [no_span(); 2];
+    let mut a = AuthAnswer {
+        size: core::mem::size_of::<AuthAnswer>() as u32,
+        flow: FLOW_CONTINUE,
+        unit: UnitRef::NONE,
+    };
+    let i = auth_call_in(POINT_PEER, &mut buf, &mut spans, &mut a);
+    let bare = out(Outcome::Ready);
+    assert_eq!(
+        check_auth_call(&i, ready(&bare), &bare).unwrap(),
+        Filled::Written
+    );
+    // SAFETY (each block below): the test's own answer slot and spans, live for the test.
+    unsafe { (*i.answer).flow = FLOW_STOP };
+    assert!(
+        check_auth_call(&i, ready(&bare), &bare).is_ok(),
+        "a bare stop"
+    );
+    unsafe { (*i.answer).flow = FLOW_CONTINUE };
+    // A field the binding would add: `x-key: secret`, its name and its value in the bytes.
+    unsafe {
+        (*i.spans).name = Span { offset: 0, len: 5 };
+        (*i.spans).value = Span { offset: 5, len: 6 };
+        (*i.spans).flags = FIELD_SENSITIVE;
+    }
+    let mut keyed = out(Outcome::Ready);
+    keyed.len = 11;
+    keyed.items = 1;
+    assert_eq!(
+        check_auth_call(&i, ready(&keyed), &keyed).unwrap_err(),
+        fault(Rule::Contradiction, "auth_call.answer.peer_fields")
+    );
+    let mut bytes_only = out(Outcome::Ready);
+    bytes_only.len = 4;
+    assert_eq!(
+        check_auth_call(&i, ready(&bytes_only), &bytes_only).unwrap_err(),
+        fault(Rule::Contradiction, "auth_call.answer.peer_fields")
+    );
+}
+
 /// RED: the caller's check of a `unit.hand_in` answer: a known flow and the unit.
 #[test]
 fn red_unit_hand_in_answer_refuses_each_break() {

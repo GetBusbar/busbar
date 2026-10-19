@@ -411,6 +411,16 @@ fn served(ctx: HostCtx) -> Option<(Served, Waking)> {
     Some((served, waking))
 }
 
+/// A NEW OP starts on `ticket` (an inline ticket's op that is not a resume): the results the
+/// ticket's earlier op stored are forgotten, ending their epoch, so the new op's handles (counted
+/// from 0 again) never read them and a late completion of the old op stores into nothing. A
+/// resume keeps them: the re-issued handle reads its stored result.
+pub(crate) fn new_op(ctx: HostCtx, ticket: Ticket) {
+    if let Some((served, _)) = served(ctx) {
+        served.store.forget(ticket);
+    }
+}
+
 /// The caller an instance's context names; `None` before bind stated one.
 fn caller(ctx: HostCtx) -> Option<Caller> {
     super::handle::resolve(ctx)?.caller.get().cloned()

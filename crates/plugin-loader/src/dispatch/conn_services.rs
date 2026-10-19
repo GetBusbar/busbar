@@ -57,10 +57,10 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use busbar_contract::abi::host::conn::connector::{
     service, ConnectorSlots, EstablishIn, FactsIn, IdentityIn, IoIn, ProcessIdentity, ReplyIn,
-    ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn,
-    CAUSE_CREDENTIAL_UNAVAILABLE, CAUSE_NONE, REPLY_ACK, REPLY_BODY, REPLY_END, REPLY_HEAD,
-    REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES, UPGRADE_IN_V1_SIZE, UPGRADE_VERIFY_OFF,
-    WITHIN_SEPARATOR,
+    ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn, CAUSE_AUTH_FAILED,
+    CAUSE_AUTH_REFUSED, CAUSE_CREDENTIAL_UNAVAILABLE, CAUSE_NONE, REPLY_ACK, REPLY_BODY, REPLY_END,
+    REPLY_HEAD, REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES, UPGRADE_IN_V1_SIZE,
+    UPGRADE_VERIFY_OFF, WITHIN_SEPARATOR,
 };
 use busbar_contract::abi::host::service::{lent_out, write_out, ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
@@ -139,19 +139,27 @@ impl Answer {
 
     /// A connection table's refusal, as the plugin reads it. An unavailable credential is a refusal
     /// that names its own cause ([`CAUSE_CREDENTIAL_UNAVAILABLE`] in `value`), so the plugin can
-    /// tell it from the target's, the egress rules' or the far end's.
+    /// tell it from the target's, the egress rules' or the far end's; an auth's refusal and an auth
+    /// call's failure name theirs ([`CAUSE_AUTH_REFUSED`], [`CAUSE_AUTH_FAILED`]).
     const fn of(e: ConnError) -> Self {
         let outcome = match e {
             ConnError::Pending => Outcome::Pending,
-            ConnError::Timeout | ConnError::Closed | ConnError::Fault => Outcome::Failed,
+            ConnError::Timeout | ConnError::Closed | ConnError::Fault | ConnError::AuthFailed => {
+                Outcome::Failed
+            }
             ConnError::NotOwner
             | ConnError::UndeclaredNeed
             | ConnError::Refused
             | ConnError::Unarmed
-            | ConnError::CredentialUnavailable => Outcome::Refused,
+            | ConnError::CredentialUnavailable
+            | ConnError::AuthRefused => Outcome::Refused,
+            // A cause this host does not name is the host failing the call.
+            _ => Outcome::Fault,
         };
         let value = match e {
             ConnError::CredentialUnavailable => CAUSE_CREDENTIAL_UNAVAILABLE,
+            ConnError::AuthRefused => CAUSE_AUTH_REFUSED,
+            ConnError::AuthFailed => CAUSE_AUTH_FAILED,
             _ => CAUSE_NONE,
         };
         Self {

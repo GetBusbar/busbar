@@ -280,3 +280,203 @@ fn a_framer_that_owes_more_forever_and_writes_nothing_faults() {
         "the framing faults within its bound"
     );
 }
+
+/// THE HOST'S AUTH SERVICE, doubled as the mechanism keeps it: a call runs ONCE per handle
+/// `(ticket, seq)` and stores its result; a not-ready call answers NOT_READY and its completion
+/// wakes the ticket; a re-issued handle reads the stored result; a NEW op on the ticket forgets the
+/// ticket's results (its handles count from 0 again), so only a resume reads them.
+#[derive(Default)]
+struct AuthHost {
+    /// `None` = running, `Some` = the stored answer.
+    stored: std::sync::Mutex<std::collections::HashMap<(Ticket, u32), Option<u64>>>,
+    /// How many times the auth itself ran.
+    real_calls: std::sync::atomic::AtomicUsize,
+    /// The waker the ticket's holder registered.
+    waker: std::sync::Mutex<Option<std::task::Waker>>,
+}
+
+use busbar_contract::abi::mechanism::ticket::Ticket;
+
+impl AuthHost {
+    fn new_op(&self, t: Ticket) {
+        self.stored.lock().unwrap().retain(|(k, _), _| *k != t);
+    }
+
+    /// `auth.call` on `(t, seq)`: `Some` = READY with the stored answer, `None` = NOT_READY.
+    fn call(&self, t: Ticket, seq: u32) -> Option<u64> {
+        let mut m = self.stored.lock().unwrap();
+        if let Some(r) = m.get(&(t, seq)) {
+            return *r;
+        }
+        self.real_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        m.insert((t, seq), None);
+        None
+    }
+
+    /// The auth answers: every running call stores `answer`, and the ticket's wake fires.
+    fn complete(&self, answer: u64) {
+        for v in self.stored.lock().unwrap().values_mut() {
+            v.get_or_insert(answer);
+        }
+        if let Some(w) = self.waker.lock().unwrap().take() {
+            w.wake();
+        }
+    }
+}
+
+/// The framing's ticket, its registered waker held by the auth double.
+struct AuthTicket {
+    ticket: Ticket,
+    host: Arc<AuthHost>,
+}
+
+impl crate::carrier::Side for AuthTicket {
+    fn ticket(&self) -> Ticket {
+        self.ticket
+    }
+
+    fn register(&self, waker: &std::task::Waker) {
+        *self.host.waker.lock().unwrap() = Some(waker.clone());
+    }
+}
+
+/// A framer whose dial `begin` calls the auth service (handle seq 0) on its framing's ticket: it
+/// answers PENDING while the auth is not ready, and READY (framing token 42) once the call answers.
+struct AuthDoor {
+    facts: DoorFacts,
+    host: Arc<AuthHost>,
+    begins: std::sync::atomic::AtomicUsize,
+    resumes: std::sync::atomic::AtomicUsize,
+}
+
+impl FramerDoor for AuthDoor {
+    fn facts(&self) -> &DoorFacts {
+        &self.facts
+    }
+
+    fn cross(&self, call: Call<'_>) -> Crossed {
+        // Ticket-less, the auth service is refused, so a begin cannot complete; the close answers.
+        let outcome = match call {
+            Call::Begin(..) => busbar_contract::abi::mechanism::call::Outcome::Refused,
+            _ => busbar_contract::abi::mechanism::call::Outcome::Ready,
+        };
+        Crossed {
+            outcome,
+            error: None,
+        }
+    }
+
+    fn framing_side(&self) -> Option<Box<dyn crate::carrier::Side>> {
+        Some(Box::new(AuthTicket {
+            ticket: Ticket {
+                slot: 7,
+                generation: 1,
+            },
+            host: Arc::clone(&self.host),
+        }))
+    }
+
+    fn cross_on(&self, side: &dyn crate::carrier::Side, resume: bool, call: Call<'_>) -> Crossed {
+        use busbar_contract::abi::mechanism::call::Outcome;
+        use std::sync::atomic::Ordering;
+        match call {
+            Call::Begin(_, o) => {
+                self.begins.fetch_add(1, Ordering::SeqCst);
+                if resume {
+                    self.resumes.fetch_add(1, Ordering::SeqCst);
+                } else {
+                    self.host.new_op(side.ticket());
+                }
+                match self.host.call(side.ticket(), 0) {
+                    None => Crossed {
+                        outcome: Outcome::Pending,
+                        error: None,
+                    },
+                    Some(_) => {
+                        o.framing = 42;
+                        Crossed {
+                            outcome: Outcome::Ready,
+                            error: None,
+                        }
+                    }
+                }
+            }
+            other => self.cross(other),
+        }
+    }
+}
+
+/// A task waker that records it was woken.
+#[derive(Default)]
+struct Woken(std::sync::atomic::AtomicBool);
+
+impl std::task::Wake for Woken {
+    fn wake(self: Arc<Self>) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// RED (a framer pends only on a ticketed auth call): a TICKETED `begin` whose auth call answers
+/// not-ready PARKS, resumes on the ticket's wake with the same op on the same ticket, and
+/// completes; the auth runs EXACTLY ONCE across the not-ready (each re-issue reads the stored
+/// result; a re-issue as a new op would have run it again).
+#[test]
+fn a_ticketed_begin_whose_auth_pends_resumes_on_the_wake_with_one_auth_call() {
+    use std::sync::atomic::Ordering;
+    use std::task::{Context, Poll, Waker};
+    let door = Arc::new(AuthDoor {
+        facts: DoorFacts {
+            name: "framer".into(),
+            claims: vec!["t"],
+            role: busbar_contract::abi::transport::ROLE_FRAMER,
+            composes_over: Vec::new(),
+            ported: false,
+            status_rows: Vec::new(),
+            duplex: Vec::new(),
+            datagram: false,
+        },
+        host: Arc::new(AuthHost::default()),
+        begins: Default::default(),
+        resumes: Default::default(),
+    });
+    let (mut f, y) =
+        Framing::begin_ticketed(door.clone(), SIDE_DIAL, "t", &Established::default(), &[])
+            .unwrap();
+    assert!(f.parked(), "the begin waits on its auth call");
+    assert_eq!(y, Yielded::default(), "a parked op yields nothing");
+    assert!(
+        f.ingest(b"x", false).is_err(),
+        "no other op crosses a parked framing"
+    );
+    let woken = Arc::new(Woken::default());
+    let waker = Waker::from(Arc::clone(&woken));
+    let mut cx = Context::from_waker(&waker);
+    assert!(
+        f.poll_parked(&mut cx).is_pending(),
+        "the auth is still not ready"
+    );
+    assert!(!woken.0.load(Ordering::SeqCst));
+    door.host.complete(9);
+    assert!(
+        woken.0.load(Ordering::SeqCst),
+        "the auth's answer wakes the ticket"
+    );
+    match f.poll_parked(&mut cx) {
+        Poll::Ready(Ok(_)) => {}
+        other => panic!("the resumed begin completes: {other:?}"),
+    }
+    assert!(!f.parked());
+    assert_eq!(f.token, 42, "the framing the completed begin named");
+    assert_eq!(
+        door.host.real_calls.load(Ordering::SeqCst),
+        1,
+        "exactly one auth call across the not-ready"
+    );
+    assert_eq!(door.begins.load(Ordering::SeqCst), 3);
+    assert_eq!(
+        door.resumes.load(Ordering::SeqCst),
+        2,
+        "each re-drive is a resume"
+    );
+}

@@ -55,6 +55,8 @@ enum Script {
     Ended(u32, WireStatusClass, Option<WireFault>, Vec<&'static [u8]>),
     Silent,
     Refused,
+    /// The open answers this error, after the dial was asked for.
+    OpenFails(ConnError),
 }
 
 /// One open: its target, head, body and timeout.
@@ -149,6 +151,7 @@ impl Conns for Table {
         let id = self.next.fetch_add(1, Ordering::SeqCst) + 1;
         let (pieces, bytes) = match script {
             Script::Refused => return Err(ConnError::Refused),
+            Script::OpenFails(err) => return Err(err),
             Script::Silent => (VecDeque::new(), VecDeque::new()),
             Script::Trailed(status, chunks, trailers) => {
                 let mut pieces = VecDeque::new();
@@ -1517,6 +1520,47 @@ async fn an_attempt_whose_auth_refuses_records_nothing_against_the_member() {
     assert!(
         r.book.observed.lock().unwrap().is_empty(),
         "nothing recorded against the member"
+    );
+}
+
+/// RED (an auth outcome is never the destination failing): a dial whose auth REFUSED the request
+/// or whose auth call FAILED (`ConnError::AuthRefused`, `ConnError::AuthFailed`) records nothing
+/// against the destination and moves on, as an auth that answers no fields does. The control: a
+/// dial the far end refused does record against it.
+#[tokio::test]
+async fn a_dial_whose_auth_refuses_or_fails_records_nothing_against_the_destination() {
+    for err in [ConnError::AuthRefused, ConnError::AuthFailed] {
+        let r = rig(
+            &[("a.test", Script::OpenFails(err))],
+            OnExhausted::Status503,
+            None,
+        );
+        let t = token();
+        let far = r.egress.unit(route());
+        let _ = far.member(&t, 1).await;
+        assert!(!far.send(&t, request()).await, "{err:?}: nothing was sent");
+        assert_eq!(
+            r.table.opened.lock().unwrap().len(),
+            1,
+            "{err:?}: the dial was asked"
+        );
+        assert!(
+            r.book.observed.lock().unwrap().is_empty(),
+            "{err:?}: nothing recorded against the destination"
+        );
+    }
+    let r = rig(
+        &[("a.test", Script::OpenFails(ConnError::Refused))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    let _ = far.member(&t, 1).await;
+    assert!(!far.send(&t, request()).await);
+    assert!(
+        !r.book.observed.lock().unwrap().is_empty(),
+        "the far end's refusal is recorded against it"
     );
 }
 

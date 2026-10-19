@@ -232,6 +232,12 @@ pub struct Connection {
     /// THE PROXY TUNNEL a dial through a proxy asks for before anything else rides the socket
     /// ([`crate::proxy`]); `None` once the proxy answered, and on every direct connection.
     tunnel: Option<Tunnel>,
+    /// The framing's `begin` is parked on its ticket (an auth call it made is not ready): the
+    /// dial's first message and the early writes wait for it to complete.
+    opening_owed: bool,
+    /// What the carrier read while an op was parked on the framing's ticket, in order, for the
+    /// framer once it completes: `(bytes, end, end_of_frame)`.
+    unfed: VecDeque<(Vec<u8>, bool, bool)>,
 }
 
 /// A CONNECT exchange in flight: the request (until it is queued), the proxy's answer so far, and
@@ -678,6 +684,8 @@ impl Connection {
             presented,
             security_error: None,
             cause: None,
+            opening_owed: false,
+            unfed: VecDeque::new(),
             tunnel: None,
         })
     }
@@ -731,6 +739,8 @@ impl Connection {
         let mut conn = Self {
             framer_error: None,
             cause: None,
+            opening_owed: false,
+            unfed: VecDeque::new(),
             tunnel: None,
             security_error: None,
             key_pin: None,
@@ -881,6 +891,8 @@ impl Connection {
             presented: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             security_error: None,
             cause: None,
+            opening_owed: false,
+            unfed: VecDeque::new(),
             tunnel: None,
         };
         if conn.tls.is_none() {
@@ -892,7 +904,12 @@ impl Connection {
     /// Whether the connection is past its handshake and framing.
     #[must_use]
     pub fn is_open(&self) -> bool {
-        matches!(self.phase, Phase::Open)
+        matches!(self.phase, Phase::Open) && !self.opening_owed
+    }
+
+    /// Whether an op is parked on the framing's ticket, waiting for its wake.
+    fn parked(&self) -> bool {
+        self.framing.as_ref().is_some_and(Framing::parked)
     }
 
     /// Whether this connection was dialled (its exchanges are the caller's requests), not accepted.
@@ -932,6 +949,8 @@ impl Connection {
             && !self.read_end
             && self.inbox.is_empty()
             && self.early.is_empty()
+            && !self.parked()
+            && self.unfed.is_empty()
     }
 
     /// Take in whatever the far end sent while the connection sat idle (its goodbye, a closed
@@ -1021,6 +1040,12 @@ impl Connection {
     /// as itself, queued for the carrier as they are, `end` marking the end of a frame of its wire
     /// (through connection security when the stream was secured mid-way).
     fn put(&mut self, stream: u64, bytes: &[u8], end: bool, text: bool) -> Result<(), Failure> {
+        // An op parked on the framing's ticket parks only this connection's framing: what the
+        // caller writes meanwhile waits, in order, for it to complete.
+        if self.parked() {
+            self.early.push((stream, bytes.to_vec(), end, text));
+            return Ok(());
+        }
         if let Some(framing) = self.framing.as_mut() {
             let y = framing.emit(stream, bytes, end, text).map_err(failed)?;
             return self.absorb(y);
@@ -1133,7 +1158,9 @@ impl Connection {
             match &self.phase {
                 Phase::Failed(f) => return Poll::Ready(Err(f.clone())),
                 Phase::Ended => return Poll::Ready(Err(Failure::Closed)),
-                Phase::Open if !self.handshaking() => return Poll::Ready(Ok(())),
+                Phase::Open if !self.handshaking() && !self.opening_owed => {
+                    return Poll::Ready(Ok(()))
+                }
                 _ => {}
             }
             match self.drive(cx) {
@@ -1361,12 +1388,16 @@ impl Connection {
             }
         }
         if !matches!(self.phase, Phase::Connecting) {
+            moved |= self.resume(cx)?;
             moved |= self.flush(cx)?;
             // At the receive cap the socket waits for the holder to take what was read; past the
             // write side's room (a caller's writes fill at most WRITE_BUFFER_BYTES of it, the rest
             // is what the framer answered on its own) it waits for the far end to take what it is
             // owed, so a far end that sends and never reads is held back.
-            if self.unread_bytes() < RECEIVE_BUFFER_BYTES && self.out.len() < 2 * WRITE_BUFFER_BYTES
+            // A parked op holds the framer: nothing more is read for it until the op completes.
+            if !self.parked()
+                && self.unread_bytes() < RECEIVE_BUFFER_BYTES
+                && self.out.len() < 2 * WRITE_BUFFER_BYTES
             {
                 moved |= self.read(cx)?;
             }
@@ -1515,7 +1546,10 @@ impl Connection {
             self.open_deadline = None;
         }
         let mut moved = false;
-        if self.framer_deadline.is_some_and(|at| at <= now) {
+        // The framer's own deadline waits while an op is parked on its ticket (no other op crosses
+        // the framing until that one completes).
+        let framer_deadline = self.framer_deadline.filter(|_| !self.parked());
+        if framer_deadline.is_some_and(|at| at <= now) {
             self.framer_deadline = None;
             if let Some(framing) = self.framing.as_mut() {
                 let y = framing.timer().map_err(|e| match e.outcome {
@@ -1526,7 +1560,8 @@ impl Connection {
                 moved = true;
             }
         }
-        let next = match (self.open_deadline, self.framer_deadline) {
+        let framer_deadline = self.framer_deadline.filter(|_| !self.parked());
+        let next = match (self.open_deadline, framer_deadline) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
@@ -1553,6 +1588,38 @@ impl Connection {
         Ok(moved)
     }
 
+    /// RE-DRIVE THE OP PARKED on the framing's ticket (`cx`'s waker registered on the ticket):
+    /// once it completes, what it yielded is taken, then what waited for it goes, in order: the
+    /// dial's first message (a parked `begin`), the early writes, and what the carrier read
+    /// meanwhile. `Ok(true)` = it completed.
+    fn resume(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
+        let Some(framing) = self.framing.as_mut().filter(|f| f.parked()) else {
+            return Ok(false);
+        };
+        let y = match framing.poll_parked(cx) {
+            Poll::Pending => return Ok(false),
+            Poll::Ready(Ok(y)) => y,
+            Poll::Ready(Err(e)) => {
+                self.framer_error = Some(e.error.clone());
+                return Err(failed(e));
+            }
+        };
+        self.absorb(y)?;
+        if std::mem::take(&mut self.opening_owed) {
+            self.send_opening()?;
+        }
+        for (stream, bytes, end, text) in std::mem::take(&mut self.early) {
+            self.put(stream, &bytes, end, text)?;
+        }
+        while !self.parked() {
+            let Some((bytes, end, end_of_frame)) = self.unfed.pop_front() else {
+                break;
+            };
+            self.ingest(&bytes, end, end_of_frame)?;
+        }
+        Ok(true)
+    }
+
     /// Begin the framing over what the open established, then send the first message and any
     /// early writes.
     fn begin(&mut self) -> Result<(), Failure> {
@@ -1564,7 +1631,7 @@ impl Connection {
         };
         // A carrier carried as itself has no framing to begin: it is open.
         if let Some(door) = self.door.as_ref() {
-            let (framing, y) = Framing::begin_with(
+            let (framing, y) = Framing::begin_ticketed(
                 Arc::clone(door),
                 self.side,
                 &self.target,
@@ -1572,9 +1639,16 @@ impl Connection {
                 opening,
             )
             .map_err(|e| Failure::Refused(e.to_string()))?;
+            let parked = framing.parked();
             self.framing = Some(framing);
             self.phase = Phase::Open;
             self.absorb(y)?;
+            if parked {
+                // The begin waits on its ticket: the opening and the early writes go once it
+                // completes ([`Self::resume`]).
+                self.opening_owed = true;
+                return Ok(());
+            }
         } else {
             self.phase = Phase::Open;
         }
@@ -1679,6 +1753,10 @@ impl Connection {
     }
 
     fn ingest(&mut self, bytes: &[u8], end: bool, end_of_frame: bool) -> Result<(), Failure> {
+        if self.parked() {
+            self.unfed.push_back((bytes.to_vec(), end, end_of_frame));
+            return Ok(());
+        }
         let Some(framing) = self.framing.as_mut() else {
             if self.door.is_some() || !matches!(self.phase, Phase::Open) {
                 return if end { Err(Failure::Closed) } else { Ok(()) };

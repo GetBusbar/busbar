@@ -613,6 +613,8 @@ extern "C" {
 #define BB_HCONN_CAUSE_DEADLINE UINT64_C(4) /* `ServiceOut::value` on a failure: a deadline the host keeps passed. */
 #define BB_HCONN_CAUSE_FRAMER UINT64_C(5) /* `ServiceOut::value` on a failure: the open connection's framer failed it; `error` is its own. */
 #define BB_HCONN_CAUSE_CREDENTIAL_UNAVAILABLE UINT64_C(6) /* `ServiceOut::value` on a refusal: the request's credential is unavailable; nothing was sent. */
+#define BB_HCONN_CAUSE_AUTH_REFUSED UINT64_C(7) /* `ServiceOut::value` on a refusal: the request's auth refused it; nothing was sent. */
+#define BB_HCONN_CAUSE_AUTH_FAILED UINT64_C(8) /* `ServiceOut::value` on a failure: the request's auth call failed; nothing was sent. */
 #define BB_HCONN_UPGRADE_VERIFY_OFF UINT32_C(1) /* [`UpgradeIn::flags`]: run the handshake WITHOUT verifying the far end's certificate (1.5.5's */
 #define BB_HCONN_UPGRADE_IN_V1_SIZE ((size_t)64) /* The size of an [`UpgradeIn`] from before [`UpgradeIn::flags`]: the host reads its flags as `0`. */
 #define BB_HCONN_CHECKIN_REUSE UINT32_C(0) /* [`CheckinIn::disposition`]: return the stream to the pool as is. */
@@ -3436,6 +3438,12 @@ struct bb_transport_IngestIn {
     const bb_transport_DatagramLane *lane;
 };
 
+/* One request's unit, as the kernel binds it at the ABI (#74): minted on the request's first */
+struct bb_hsvc_UnitRef {
+    uint64_t id;
+    uint64_t mac;
+};
+
 /* `emit`'s `in`. */
 struct bb_transport_EmitIn {
     bb_mech_InHead head;
@@ -3450,6 +3458,7 @@ struct bb_transport_EmitIn {
     const bb_transport_DatagramLane *lane;
     uint32_t status;
     uint32_t _status_reserved;
+    bb_hsvc_UnitRef unit;
 };
 
 /* `encode`'s `in`. The rendered bytes go into `sink.wire`. */
@@ -3983,12 +3992,6 @@ struct bb_hsvc_SessionEmitIn {
     bb_hsvc_ServiceHead head;
     uint64_t session;
     bb_mech_Blob bytes;
-};
-
-/* One request's unit, as the kernel binds it at the ABI (#74): minted on the request's first */
-struct bb_hsvc_UnitRef {
-    uint64_t id;
-    uint64_t mac;
 };
 
 /* The request a transport decoded, as the auth handle and the kernel read it: neutral fields only. */
@@ -5981,7 +5984,7 @@ BB_ASSERT(offsetof(bb_transport_IngestIn, end) == 112, "bb_transport_IngestIn.en
 BB_ASSERT(offsetof(bb_transport_IngestIn, _reserved) == 116, "bb_transport_IngestIn._reserved: offset");
 BB_ASSERT(offsetof(bb_transport_IngestIn, sink) == 120, "bb_transport_IngestIn.sink: offset");
 BB_ASSERT(offsetof(bb_transport_IngestIn, lane) == 200, "bb_transport_IngestIn.lane: offset");
-BB_ASSERT(sizeof(bb_transport_EmitIn) == 232, "bb_transport_EmitIn: size");
+BB_ASSERT(sizeof(bb_transport_EmitIn) == 248, "bb_transport_EmitIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_EmitIn) == 8, "bb_transport_EmitIn: alignment");
 BB_ASSERT(offsetof(bb_transport_EmitIn, head) == 0, "bb_transport_EmitIn.head: offset");
 BB_ASSERT(offsetof(bb_transport_EmitIn, framing) == 88, "bb_transport_EmitIn.framing: offset");
@@ -5995,6 +5998,7 @@ BB_ASSERT(offsetof(bb_transport_EmitIn, deadline_ns) == 208, "bb_transport_EmitI
 BB_ASSERT(offsetof(bb_transport_EmitIn, lane) == 216, "bb_transport_EmitIn.lane: offset");
 BB_ASSERT(offsetof(bb_transport_EmitIn, status) == 224, "bb_transport_EmitIn.status: offset");
 BB_ASSERT(offsetof(bb_transport_EmitIn, _status_reserved) == 228, "bb_transport_EmitIn._status_reserved: offset");
+BB_ASSERT(offsetof(bb_transport_EmitIn, unit) == 232, "bb_transport_EmitIn.unit: offset");
 BB_ASSERT(sizeof(bb_transport_EncodeIn) == 232, "bb_transport_EncodeIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_EncodeIn) == 8, "bb_transport_EncodeIn: alignment");
 BB_ASSERT(offsetof(bb_transport_EncodeIn, head) == 0, "bb_transport_EncodeIn.head: offset");

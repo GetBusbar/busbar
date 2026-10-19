@@ -1176,7 +1176,8 @@ pub const FLOW_CONTINUE: u32 = 0;
 /// [`AuthAnswer::flow`]: the transport stops the request and asks [`op::UNIT_REFUSE`] for the answer.
 pub const FLOW_STOP: u32 = 1;
 
-/// What [`op::AUTH_CALL`] and [`op::UNIT_HAND_IN`] answer beyond [`ServiceOut`].
+/// What [`op::AUTH_CALL`] and [`op::UNIT_HAND_IN`] answer beyond [`ServiceOut`]. At the peer point
+/// it is the whole answer: continue or stop, with no field, name or byte beside it.
 ///
 /// Written by the host into the caller's `answer` on READY, and only then; the caller's check
 /// ([`check_auth_call`], [`check_unit_hand_in`]) refuses one of another size. The pattern
@@ -1206,6 +1207,12 @@ pub struct AuthAnswer {
 /// names it must strip: one [`FieldSpan`] per credential field line ([`FIELD_SENSITIVE`]) or query
 /// key ([`FIELD_QUERY`]), its `name` a span into `buf` and its `value` absent. The VERDICT and the
 /// verified CREDENTIAL go to the kernel first-hand and never appear in the answer.
+///
+/// THE PEER POINT. At `POINT_PEER` (once per connection, before any head: a dialling framer makes
+/// it at `begin` when its binding's points hold it) the answer is ONLY continue or stop: no field,
+/// no name and no byte, on either side. Outbound, the peer point never carries key material: the
+/// client identity of a secured connection stays the connector's. An answer at the peer point that
+/// writes any byte or span is refused ([`check_auth_call`]).
 ///
 /// AN OUTBOUND BINDING'S REF. The same call answers the auth fields that join the head, each a
 /// [`FieldSpan`] with its name and value spans into `buf` and its flags the auth's
@@ -2322,7 +2329,8 @@ fn check_answer_unit(
 /// `auth.call`'s answer: the common rules over the caller's `buf`/`spans` (the short-buffer rule
 /// included; `value` is `0`), and on READY an [`AuthAnswer`] of this layout's size with a known
 /// flow and the request's unit, at most `spans_cap` spans, each with a present name and a value
-/// absent or inside the bytes written, its flags only `FIELD_SENSITIVE` and `FIELD_QUERY`.
+/// absent or inside the bytes written, its flags only `FIELD_SENSITIVE` and `FIELD_QUERY`. At the
+/// peer point the answer writes no byte and no span: it is continue or stop and nothing else.
 ///
 /// # Errors
 ///
@@ -2354,6 +2362,12 @@ pub fn check_auth_call(i: &AuthCallIn, ret: RawOutcome, out: &ServiceOut) -> Res
         i.point == POINT_PEER,
         "auth_call.answer.unit",
     )?;
+    // THE PEER POINT ANSWERS ONLY CONTINUE OR STOP: no field, no name, no byte (an outbound
+    // binding's peer call never carries key material; the client identity stays the
+    // connector's).
+    if i.point == POINT_PEER && (out.len != 0 || out.items != 0) {
+        return Err(fault(Rule::Contradiction, "auth_call.answer.peer_fields"));
+    }
     // SAFETY: the caller's own spans buffer, `spans_cap` long; `reported` checks the count against
     // it before building the slice.
     let spans = unsafe {

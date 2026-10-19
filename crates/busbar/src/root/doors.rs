@@ -270,6 +270,28 @@ impl FramerDoor for Dispatched {
             Call::Timer(i, o) => go(p, slot::TIMER, i, o),
         }
     }
+
+    /// A framer's framing holds one inline ticket of the process's one dispatcher, as a carrier's
+    /// side does: its ticketed ops (`begin`, `ingest`, `emit`) may call the auth service, which
+    /// may pend, and their wakes route there.
+    fn framing_side(&self) -> Option<Box<dyn Side>> {
+        if self.facts.role != busbar_contract::abi::transport::ROLE_FRAMER {
+            return None;
+        }
+        dispatcher()
+            .inline_ticket()
+            .map(|t| Box::new(InlineSide(t)) as Box<dyn Side>)
+    }
+
+    fn cross_on(&self, side: &dyn Side, resume: bool, call: Call<'_>) -> Crossed {
+        let (p, t) = (&self.plugin, side.ticket());
+        match call {
+            Call::Begin(i, o) => go_inline(p, t, resume, slot::BEGIN, i, o),
+            Call::Ingest(i, o) => go_inline(p, t, resume, slot::INGEST, i, o),
+            Call::Emit(i, o) => go_inline(p, t, resume, slot::EMIT, i, o),
+            other => self.cross(other),
+        }
+    }
 }
 
 /// Where a served wire's framed connections find their carrier: the root hands the process's

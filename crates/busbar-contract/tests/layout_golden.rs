@@ -1372,7 +1372,8 @@ fn compute_layout() -> String {
             deadline_ns,
             lane,
             status,
-            _status_reserved
+            _status_reserved,
+            unit
         ]
     );
     record!(

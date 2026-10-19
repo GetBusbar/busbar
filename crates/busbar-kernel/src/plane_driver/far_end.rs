@@ -1405,6 +1405,14 @@ impl EgressFarEnd<'_> {
                 }
                 true
             }
+            // An AUTH outcome (the auth refused the request, or its call failed): nothing was sent
+            // and the destination did not fail. Nothing is recorded against it; the next member,
+            // as for an auth that answers no fields.
+            Err(err) if err.is_auth() => {
+                let mut w = self.lock();
+                self.settle(&mut w);
+                false
+            }
             Err(err) => {
                 let _ = self.no_answer(token, NoAnswer::of(err));
                 false
@@ -1496,6 +1504,13 @@ impl EgressFarEnd<'_> {
         let piece = match read {
             Err(_elapsed) if !answered => {
                 return Some(self.no_answer(token, NoAnswer::Timeout));
+            }
+            // An auth outcome before any answer: nothing recorded against the destination; the
+            // next member (as at the open).
+            Ok(Err(err)) if !answered && err.is_auth() => {
+                let mut w = self.lock();
+                self.settle(&mut w);
+                return Some(fail_over());
             }
             Ok(Err(err)) if !answered => {
                 return Some(self.no_answer(token, NoAnswer::of(err)));
