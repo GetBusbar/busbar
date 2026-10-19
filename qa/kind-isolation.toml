@@ -1528,8 +1528,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-contract"
 axis  = "transport"
-count = "184"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 226 -> 225 at lane-integration-w2: the gate's measure of the merged tree (80d5f031e4) (law0-slack); LOWERED 225 -> 184: the contract transport axis names channels only: the plane bindings (JsonRpc, HttpJson, Grpc), the MCP client wire hand-off (UpstreamWireKind) and their plane-naming prose are deleted, and the kernel and root readers with them (row 159, audit C3 HIGH 3; law0-slack)"
+count = "183"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 226 -> 225 at lane-integration-w2: the gate's measure of the merged tree (80d5f031e4) (law0-slack); LOWERED 225 -> 184: the contract transport axis names channels only: the plane bindings (JsonRpc, HttpJson, Grpc), the MCP client wire hand-off (UpstreamWireKind) and their plane-naming prose are deleted, and the kernel and root readers with them (row 159, audit C3 HIGH 3; law0-slack); LOWERED 184 -> 183: WireStatus::http and WireStatus::grpc are deleted, a status is read in the numbering its transport declares (Q128 contract part 13 finding 1; law0-slack)"
 
 [[law0]]
 crate = "busbar-core-admin"
