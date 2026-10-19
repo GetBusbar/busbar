@@ -511,6 +511,10 @@ extern "C" {
 #define BB_TRANSPORT_FRAMING_STREAM UINT32_C(0) /* [`TransportTail::framing`]: an ordered byte stream. */
 #define BB_TRANSPORT_FRAMING_DATAGRAM UINT32_C(1) /* [`TransportTail::framing`]: datagrams. */
 #define BB_TRANSPORT_FACT_DECODES_PAYLOAD UINT32_C(2) /* [`TransportTail::facts`]: the framer decodes the payload. (Bit 1 is retired: nothing is added to */
+#define BB_TRANSPORT_FACT_ACCEPTS UINT32_C(4) /* [`TransportTail::facts`]: the transport accepts: its framer begins on the accepting side. */
+#define BB_TRANSPORT_FACT_DIALS UINT32_C(8) /* [`TransportTail::facts`]: the transport dials: its framer begins on the dialling side. */
+#define BB_TRANSPORT_FACT_DETACHES UINT32_C(16) /* [`TransportTail::facts`]: the transport detaches a live connection for a hand-off. */
+#define BB_TRANSPORT_FACT_ADOPTS UINT32_C(32) /* [`TransportTail::facts`]: the transport adopts a connection handed to it. */
 #define BB_TRANSPORT_EXT_OFFERED_POINTS "offered-points" /* THE OFFERED-POINTS RECORD: the key under which a transport's Statement `extensions` states */
 #define BB_TRANSPORT_SIDE_ACCEPT UINT32_C(0) /* `side`: the accepting end. */
 #define BB_TRANSPORT_SIDE_DIAL UINT32_C(1) /* `side`: the dialing end. */
@@ -4216,7 +4220,7 @@ struct bb_hio_SpawnIn {
     size_t env_len;
 };
 
-/* ---- layout proof: 303 of 307 structures are pinned by the golden ---- */
+/* ---- layout proof: 300 of 304 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)

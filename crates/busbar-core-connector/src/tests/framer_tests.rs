@@ -449,7 +449,7 @@ fn noop_cx() -> std::task::Context<'static> {
 /// the first waits; then the first resumes on its ticket, carrying no new bytes, and goes out with
 /// exactly one auth call.
 #[test]
-fn one_streams_pending_auth_parks_only_that_stream_and_resumes_with_one_auth_call() {
+fn one_stream_pending_auth_parks_only_that_stream_and_resumes_with_one_auth_call() {
     let door = Arc::new(PendingDoor::new(TestDoor::identity("bytes"), 1));
     let (mut f, _) = Framing::begin_ticketed(
         door.clone(),
@@ -608,7 +608,7 @@ impl FramerDoor for MuxDoor {
                 return pending;
             }
             let held = self.held.lock().unwrap().remove(&t).unwrap_or_default();
-            crate::support::pieces_on_streams(&i.sink, o, &held);
+            crate::support::pieces_on_lanes(&i.sink, o, &held);
             return ready;
         }
         self.host.new_op(t);
@@ -617,7 +617,7 @@ impl FramerDoor for MuxDoor {
             self.held.lock().unwrap().insert(t, bytes);
             return pending;
         }
-        crate::support::pieces_on_streams(&i.sink, o, &bytes);
+        crate::support::pieces_on_lanes(&i.sink, o, &bytes);
         ready
     }
 }
@@ -628,7 +628,7 @@ impl FramerDoor for MuxDoor {
 /// first resumes; then the first resumes (carrying no bytes: the framer took them) and its head is
 /// handed up, with exactly one auth call.
 #[test]
-fn a_pending_ingest_holds_only_its_stream_and_the_next_streams_head_is_handed_up_first() {
+fn a_pending_ingest_holds_only_its_stream_and_the_next_stream_head_is_handed_up_first() {
     let door = Arc::new(MuxDoor::new());
     let (mut f, _) = Framing::begin_ticketed(
         door.clone(),

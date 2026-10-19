@@ -805,7 +805,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=02a78801908d87e7452a83d0753a04ac4dbe58ef#02a78801908d87e7452a83d0753a04ac4dbe58ef"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=eec60b165c7ff778bd69e61c01f14ecdeb0024ad#eec60b165c7ff778bd69e61c01f14ecdeb0024ad"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -824,7 +824,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-decisions"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=132bccd2ccb8a30cca243d0ee8e4d69090cc05c5#132bccd2ccb8a30cca243d0ee8e4d69090cc05c5"
+source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=186a9451e70b52ed55c993a878ba4de7dfb88c1f#186a9451e70b52ed55c993a878ba4de7dfb88c1f"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -848,7 +848,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-mcp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=1380b98084c34251083766926d45fb77c45988a7#1380b98084c34251083766926d45fb77c45988a7"
+source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=f766c31f4e94083c4d4898d0cc47a1b51e6f2e50#f766c31f4e94083c4d4898d0cc47a1b51e6f2e50"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -861,7 +861,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-streaming"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=26d2a6fff9d92bfc2d1e740b6e85cd25625ca93c#26d2a6fff9d92bfc2d1e740b6e85cd25625ca93c"
+source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=8c282f41b726513b6b63942a9fb285961b7f6aef#8c282f41b726513b6b63942a9fb285961b7f6aef"
 dependencies = [
  "busbar-contract",
  "bytes",

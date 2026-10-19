@@ -686,7 +686,7 @@ fn a_tail_without_claims_or_with_unknown_codes_is_fault() {
     t.claim_rows_len = MAX_CLAIMS as usize + 1;
     assert_eq!(check_tail(&t), f(Rule::OverMax, "tail.claim_rows"));
     let mut t = tail();
-    t.facts = 4;
+    t.facts = 64;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.facts"));
     // RED: the retired signs-nothing-after-auth bit (1) is no fact a tail may state.
     t.facts = 1;
@@ -694,6 +694,25 @@ fn a_tail_without_claims_or_with_unknown_codes_is_fault() {
     let mut t = tail();
     t.framing = 2;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.framing"));
+}
+
+/// The ops a transport declares (accept, dial, detach, adopt) are facts its tail states; each is
+/// accepted alone and together, and a tail stating none declares no op (a zero declares nothing).
+#[test]
+fn a_tail_states_the_ops_it_declares() {
+    for op in [FACT_ACCEPTS, FACT_DIALS, FACT_DETACHES, FACT_ADOPTS] {
+        let mut t = tail();
+        t.facts = op;
+        assert_eq!(check_tail(&t), Ok(()), "op fact {op}");
+    }
+    let mut t = tail();
+    t.facts = FACT_DECODES_PAYLOAD | FACT_ACCEPTS | FACT_DIALS | FACT_DETACHES | FACT_ADOPTS;
+    assert_eq!(check_tail(&t), Ok(()));
+    assert_eq!(
+        tail().facts & (FACT_ACCEPTS | FACT_DIALS | FACT_DETACHES | FACT_ADOPTS),
+        0,
+        "a zero declares no op"
+    );
 }
 
 fn claim() -> Claim {
