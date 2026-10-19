@@ -182,8 +182,6 @@ pub struct BootRegistry {
     pub resolved: Vec<ResolvedOverlap>,
     /// Every transport as the composition check read it, in the order the fold built them.
     pub registered: Vec<Registered>,
-    /// The wires the host serves the transport doors over, index for index with `registered`.
-    pub transports: Vec<Arc<HostWire>>,
     /// The keys of the rows that came in DROPPED IN rather than linked.
     pub dropped: Vec<&'static str>,
 }
@@ -233,7 +231,8 @@ impl Plugin for Claimed {
     }
 }
 
-/// One folded wire: its row as the composition check reads it, and the wire the host serves it over.
+/// One folded wire: its row as the composition check reads it, and the boot's admission of its entry
+/// (`HostWire::new`: a claim, no layer).
 pub type Built = (Registered, Arc<HostWire>);
 
 /// A transport DOOR dropped into `plugins.dir`: a memory-ABI entry admitted through the one
@@ -252,7 +251,7 @@ pub struct DroppedDoor {
     /// load by the same reader a linked door's are: its upgrade lines, beside the linked rows'
     /// (`crate::root::serve::upgrade_carriers`; compiled-in = dropped-in).
     pub upgrades: Vec<&'static str>,
-    /// The wire the host serves the entry over.
+    /// The boot's admission of the entry (`HostWire::new`: a claim, no layer).
     pub wire: Arc<HostWire>,
     /// The opened door the wire serves: the entry the connector serves for it, after the linked
     /// rows (`crate::root::connector::boot`).
@@ -377,10 +376,10 @@ pub fn seal(
     dropped: Dropped,
     settings: TransportSettings,
 ) -> Result<BootRegistry, BootRefusal> {
-    let (registered, transports): (Vec<Registered>, Vec<Arc<HostWire>>) =
-        compose(linked.transports, dropped, &settings)?
-            .into_iter()
-            .unzip();
+    let registered: Vec<Registered> = compose(linked.transports, dropped, &settings)?
+        .into_iter()
+        .map(|(row, _)| row)
+        .collect();
     let registry = register_all(&registered, linked.claims)?;
 
     let claims = plane_claims(linked.claims);
@@ -407,7 +406,6 @@ pub fn seal(
         precedence: sealed.order,
         resolved: sealed.resolved,
         registered,
-        transports,
         dropped: dropped.doors.iter().map(|d| d.key).collect(),
     })
 }

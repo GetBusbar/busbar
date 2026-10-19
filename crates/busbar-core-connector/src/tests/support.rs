@@ -111,8 +111,6 @@ pub struct TestDoor {
     pub refused_statuses: Mutex<Vec<u32>>,
     /// The opening head fields every `begin` crossing carried (`BeginIn::fields`), in order.
     pub begun_fields: Mutex<Vec<OpeningFields>>,
-    /// The target every `begin` crossing was handed (`BeginIn::target`), in order.
-    pub begun_targets: Mutex<Vec<Vec<u8>>>,
 }
 
 impl TestDoor {
@@ -160,7 +158,6 @@ impl TestDoor {
             threads: Mutex::new(HashSet::new()),
             refused_statuses: Mutex::new(Vec::new()),
             begun_fields: Mutex::new(Vec::new()),
-            begun_targets: Mutex::new(Vec::new()),
         }
     }
 
@@ -395,10 +392,6 @@ impl FramerDoor for TestDoor {
                 ("locate", ok)
             }
             Call::Begin(i, o) => {
-                self.begun_targets
-                    .lock()
-                    .unwrap()
-                    .push(raw(i.target.ptr, i.target.len).to_vec());
                 let fields = if i.fields.is_null() {
                     &[][..]
                 } else {

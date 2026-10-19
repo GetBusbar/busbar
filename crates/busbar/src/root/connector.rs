@@ -106,8 +106,8 @@ pub fn entries(
 
 /// THE CONNECTOR'S ENTRIES IN DECLARED ORDER (ARCHITECT, p2-transport-carrier): the build's linked
 /// rows in the order the build declares them, then every door dropped into `plugins.dir` in the
-/// directory's sorted order (the loader's plugin file listing), each the one instance the
-/// legacy seam serves too. The order is the declaration's, never the order things loaded in, so the
+/// directory's sorted order (the loader's plugin file listing), each the one instance the boot
+/// opened for it. The order is the declaration's, never the order things loaded in, so the
 /// ADDRESS carrier (`Transports::address_carrier`: the first carrier whose claim serves a port) is
 /// the same carrier on every boot of one deployment.
 ///
@@ -123,13 +123,6 @@ pub fn declared(
         alpn: Vec::new(),
     }));
     Ok(linked)
-}
-
-/// WHERE THE ROOT'S WIRES FIND THEIR CARRIER: the process's one connector's address carrier, asked at
-/// each dial (none before the connector is built, or when it serves no carrier).
-#[must_use]
-pub fn address_carrier() -> busbar_core_connector::carrier::AddressCarrier {
-    Arc::new(|| ONE.get().and_then(|c| c.address_via()).map(|via| via.door))
 }
 
 /// The claim of the carrier a root listener accepts through, for its boot line; `host` when the

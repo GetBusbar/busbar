@@ -36,8 +36,8 @@
 //!   connection as carrier -> \[TLS\] -> framer; [`pool`] keeps a dialled connection whose exchange
 //!   finished whole for the next open to the same place; [`listen`] has the carrier listen for each
 //!   inbound need and composes each accepted connection the same way, begun on the accept side;
-//!   [`registry`] is the view of which entry serves which scheme; [`wire`] presents an entry over
-//!   carried connections to the kernel's transport seam.
+//!   [`registry`] is the view of which entry serves which scheme; [`wire`] is the boot fold's
+//!   admission of an entry (its key, and no layer it composes over).
 //! * [`process`] builds the process's one connector for the root: the deployment's one destination
 //!   guard behind the one dial judge, the default outbound trust, and the proxy environment.
 //! * [`fetch`] is the `plugins.fetch` download over the connection table, the root's own need.
