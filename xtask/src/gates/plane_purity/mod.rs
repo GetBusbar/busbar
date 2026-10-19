@@ -44,6 +44,8 @@ pub mod segment_debt;
 pub mod strict;
 pub mod vocab;
 #[cfg(test)]
+mod q128_tests;
+#[cfg(test)]
 mod w18_tests;
 
 use std::collections::BTreeMap;
