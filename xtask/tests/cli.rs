@@ -180,3 +180,20 @@ fn an_explicit_root_is_the_tree_read() {
     );
     assert!(printed.contains("xtask-root-explicit-"), "{printed}");
 }
+
+#[test]
+fn the_listing_arms_refuse_the_flags_they_cannot_honour() {
+    for arm in ["--all", "--list"] {
+        for flag in [
+            "--strict",
+            "--posture",
+            "--execute",
+            "--require-version=1.6.0",
+            "--require-dated-top",
+            "--write-standing",
+            "--parity",
+        ] {
+            assert_eq!(run(&["gate", arm, flag]), 2, "{arm} {flag}");
+        }
+    }
+}

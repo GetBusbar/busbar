@@ -97,6 +97,13 @@ pub fn top_level_block(text: &str, name: &str) -> String {
     out.join("\n")
 }
 
+/// The workflow's trigger block, under whichever spelling of the `on` key the file uses: YAML 1.1
+/// reads a bare `on` as a boolean, so `"on":`, `'on':` and `true:` are all written for the same
+/// key. A rule that read only the bare spelling could be switched off by quoting the key.
+pub fn trigger_block(text: &str) -> String {
+    top_level_block(text, "on")
+}
+
 /// The action reference of a `uses:` line and its trailing tag comment, in either of YAML's two
 /// spellings of a step:
 ///
@@ -780,7 +787,7 @@ pub fn check(cx: &Ctx) -> Result<Vec<Finding>, String> {
     // a tag is an OUTPUT of a green release, so nothing may key off one.
     for name in &names {
         let text = strip_comments(&read(name).unwrap_or_default());
-        if has_v_star_tag_trigger(&top_level_block(&text, "on")) {
+        if has_v_star_tag_trigger(&trigger_block(&text)) {
             bad.push(Finding::new(
                 "R1",
                 format!(
@@ -1181,6 +1188,18 @@ fn mutations() -> Vec<Mutation> {
             rule: "R1",
             apply: |t| replant_on(t, "on:\n  push:\n    tags: [\"v*\"]\n"),
             creates: false,
+        },
+        Mutation {
+            // THE QUOTED KEY: `"on":` is the spelling YAML 1.1 tooling writes so `on` is not read as
+            // a boolean, and the runner treats it as the same trigger key.
+            label: "R1 a v* tag trigger comes back under a quoted \"on\" key",
+            file: "zz-planted-quoted-on.yml",
+            rule: "R1",
+            apply: |_| {
+                "\"on\":\n  push:\n    tags:\n      - 'v*'\njobs:\n  j:\n    steps:\n      - run: true\n"
+                    .to_string()
+            },
+            creates: true,
         },
         Mutation {
             // The refspec form a promote script documents, which the `HEAD:<dst>` test and the

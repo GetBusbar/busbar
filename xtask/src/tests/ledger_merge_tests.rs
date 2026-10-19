@@ -345,6 +345,22 @@ fn a_non_count_field_changed_differently_on_both_sides_is_refused_by_row_and_fie
 }
 
 #[test]
+fn a_field_theirs_deleted_and_ours_changed_is_refused_not_dropped() {
+    let base = ledger(&[dep("1", "allowed", &why(1), "none")]);
+    let ours = ledger(&[dep("1", "allowed", &why(1), "K1 inversion")]);
+    let theirs = base.replace("drain   = \"none\"\n", "");
+    assert_ne!(theirs, base, "the fixture deletes the drain field");
+    let why = refusals(&base, &ours, &theirs);
+    assert!(
+        why.contains("drain: changed differently on both sides"),
+        "{why}"
+    );
+    let (code, after) = drive("delete-vs-change", &base, &ours, &theirs);
+    assert_eq!(code, 1);
+    assert_eq!(after, ours);
+}
+
+#[test]
 fn a_negative_result_is_refused() {
     let base = ledger(&[law0("busbar", "auth", "5", "measured")]);
     let ours = ledger(&[law0("busbar", "auth", "0", "measured; LOWERED 5 -> 0")]);

@@ -2239,6 +2239,31 @@ mod tests {
         );
     }
 
+    /// The exemption for the repo's own crates is the repo's two crate names, not a name prefix.
+    #[test]
+    fn depwall_exempts_the_repos_own_twin_but_not_a_longer_name() {
+        let m: Pk = ("m", "busbar-secret-x", "1.0.0", None, None, &[]);
+        let own: Pk = ("t", "busbar-secret-env-plugin", "1", Some(CRATES), None, &[]);
+        let longer: Pk = ("o", "busbar-secret-envelope", "3", Some(CRATES), None, &[]);
+        let own_only = depwall(
+            &meta(&[m, own], &[("m", "t", None)]),
+            None,
+            "busbar-secret-env",
+        )
+        .unwrap();
+        assert_eq!(own_only, Vec::<String>::new());
+        let with_longer = depwall(
+            &meta(&[m, longer], &[("m", "o", None)]),
+            None,
+            "busbar-secret-env",
+        )
+        .unwrap();
+        assert_eq!(
+            with_longer,
+            ["DEPWALL busbar-secret-envelope 3 is another plugin in the shipped closure"]
+        );
+    }
+
     #[test]
     fn depwall_core_and_plugin_text() {
         let m: Pk = ("m", "busbar-store-x", "1.0.0", None, None, &[]);

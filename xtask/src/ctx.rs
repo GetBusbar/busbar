@@ -1599,6 +1599,45 @@ mod read_write_memo_tests {
 }
 
 #[cfg(test)]
+mod unreadable_dir_tests {
+    use super::{Ctx, WalkError, WalkSpec};
+
+    /// A subdirectory the walk cannot read is `WalkError::Io`, not a smaller file list.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_subdirectory_is_a_walk_error_not_a_smaller_scan() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "xtask-ctx-unreadable-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let locked = root.join("src/locked");
+        let scratch = root.join(".fix").join("xtask");
+        std::fs::create_dir_all(&locked).expect("dirs create");
+        std::fs::create_dir_all(&scratch).expect("scratch dir creates");
+        std::fs::write(root.join("src/a.txt"), "a").expect("seed");
+        std::fs::write(locked.join("b.txt"), "b").expect("seed");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+        let readable_anyway = std::fs::read_dir(&locked).is_ok();
+
+        let cx = Ctx::at(&root, &scratch).expect("ctx opens over the temp root");
+        let got = cx.list(&WalkSpec::new(["src"]).ext("txt"));
+
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let _ = std::fs::remove_dir_all(&root);
+        if readable_anyway {
+            // Running as a user the mode does not bind (root): there is no unreadable directory.
+            return;
+        }
+        assert!(
+            matches!(got, Err(WalkError::Io { .. })),
+            "an unreadable directory must refuse the walk, got {got:?}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod coverage_tests {
     use super::Coverage;
 

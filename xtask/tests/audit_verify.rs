@@ -155,6 +155,42 @@ fn a_window_short_of_the_head_has_lost_its_tail() {
     );
 }
 
+/// A validly sealed record at `seq` (the page's RFC 8032 key), so only the window is wrong.
+fn sealed_at(range: &Value, seq: u64) -> Value {
+    let pair = ring::signature::Ed25519KeyPair::from_seed_unchecked(&unhex(RFC8032_SEED)).unwrap();
+    let mut r = range["records"][0].clone();
+    r["seq"] = json!(seq);
+    r["prev_hash"] = json!("00".repeat(32));
+    let d = digest(&r, "busbar.audit.digest.v4").unwrap();
+    let mut pre = SIGNATURE_DOMAIN.as_bytes().to_vec();
+    pre.push(0);
+    pre.extend_from_slice(d.as_bytes());
+    r["hash"] = json!(d);
+    r["signature"] = json!(hexs(pair.sign(&pre).as_ref()));
+    r
+}
+
+#[test]
+fn a_head_inside_the_window_that_no_record_carries_is_not_green() {
+    let (mut range, keys, mut head) = (example(4, "range"), example(4, "keys"), example(4, "head"));
+    range["records"] = json!([sealed_at(&range, 6)]);
+    range["from"] = json!(1);
+    range["to"] = json!(10);
+    range["anchor"] = Value::Null;
+    head["head"]["seq"] = json!(5);
+    red_with(&range, &keys, Some(&head), "no record in the run carries");
+}
+
+#[test]
+fn a_front_trimmed_window_is_reported() {
+    let (mut range, keys) = (example(4, "range"), example(4, "keys"));
+    range["records"] = json!([sealed_at(&range, 6)]);
+    range["from"] = json!(1);
+    range["to"] = json!(6);
+    range["anchor"] = Value::Null;
+    red_with(&range, &keys, None, "records are missing from its front");
+}
+
 #[test]
 fn an_empty_run_verifies() {
     let (mut range, keys) = (example(4, "range"), example(4, "keys"));

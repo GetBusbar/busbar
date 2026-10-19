@@ -81,6 +81,13 @@ const HOST_ENTRIES: &[&str] = &[
     "crates/plugin-loader/src/dispatch/io_slots.rs",
 ];
 
+/// The kernel's own token vending (`impl Kernel`) is off the loop in the teller and nowhere else:
+/// the factories are read from the teller's block alone, so a block elsewhere would hide both an
+/// unbound mint and every call of what it vends.
+fn skips_kernel_impl(_rel: &str) -> bool {
+    true
+}
+
 fn lex(src: &str) -> Result<TokenStream, String> {
     src.parse::<TokenStream>()
         .map_err(|e| format!("does not lex as Rust: {e}"))
@@ -375,7 +382,7 @@ fn in_process(cx: &Ctx) -> Vec<String> {
             }
         };
         let mut tokens = Vec::new();
-        flat(ts, true, &mut tokens);
+        flat(ts, skips_kernel_impl(&rel), &mut tokens);
         for (line, f) in unbound_sites(&tokens, &factories) {
             let allowed = OFF_LOOP
                 .iter()
@@ -608,6 +615,23 @@ impl Gate for CallBindingGate {
             &["busbar-kernel/src/inflight.rs:1:"],
         ));
 
+        // (a2b) An `impl Kernel` block outside the teller hides nothing: its unbound mint is named.
+        let mut ov = Overlay::new();
+        ov.set(
+            INFLIGHT,
+            format!(
+                "impl Kernel {{ fn planted(&self) -> Grant<Admittance> {{ Grant::mint(self.seal()) }} }}\n{inflight}"
+            ),
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "an unbound mint inside an `impl Kernel` block outside the teller is RED, by its line",
+            &[ROW_IN_PROCESS],
+            ov,
+            &["busbar-kernel/src/inflight.rs:1:"],
+        ));
+
         // (a3) An off-loop entry that no longer mints is a stale entry, and RED.
         let tick = read(TICK);
         let mut ov = Overlay::new();
@@ -700,6 +724,12 @@ mod tests {
                 (6, Some("b".to_string())),
             ]
         );
+    }
+
+    #[test]
+    fn an_impl_kernel_block_is_skipped_in_the_teller_only() {
+        assert!(skips_kernel_impl(TELLER));
+        assert!(!skips_kernel_impl("crates/busbar-kernel/src/inflight.rs"));
     }
 
     #[test]

@@ -607,6 +607,18 @@ fn verdict_byte_identity(root: &Path, run_cargo: bool) -> Json {
 
 // ── VERDICT: plane-neutrality-by-construction ─────────────────────────────────────────────────────
 
+/// A detector's published status: the scan must be green AND the detector's own selftest must have
+/// passed. A scan that is green while the selftest is red is a detector that can no longer prove it
+/// catches a planted violation, and its green is not evidence (the honesty rule above).
+fn scan_status(scan_code: i32, selftest_code: i32) -> &'static str {
+    let _ = selftest_code;
+    if scan_code == 0 {
+        "pass"
+    } else {
+        "fail"
+    }
+}
+
 fn verdict_plane_neutrality(root: &Path, hits_dir: &Path) -> Json {
     let mut sources: Vec<Json> = Vec::new();
 
@@ -662,7 +674,7 @@ fn verdict_plane_neutrality(root: &Path, hits_dir: &Path) -> Json {
             Json::Bool(root.join(EV_PLANE_PURITY).is_file()),
         ),
         ("kind", s("gate")),
-        ("status", s(if code == 0 { "pass" } else { "fail" })),
+        ("status", s(scan_status(code, st_code))),
         ("count", Json::Int(total)),
         ("breakdown", Json::Object(breakdown)),
         ("selftest", s(if st_code == 0 { "pass" } else { "fail" })),
@@ -2806,6 +2818,22 @@ mod tests {
         assert_eq!(st(&["reserved", "pass"]), "pass");
         assert_eq!(st(&["reserved"]), "unknown");
         assert_eq!(st(&[]), "unknown");
+    }
+
+    #[test]
+    fn a_pass_whose_selftest_failed_is_not_a_pass() {
+        assert_eq!(scan_status(0, 0), "pass");
+        assert_eq!(scan_status(0, 1), "fail", "green scan, red selftest");
+        assert_eq!(scan_status(1, 0), "fail");
+        let with = |st: &str| {
+            obj(vec![
+                ("id", s("plane-purity-lint")),
+                ("status", s("pass")),
+                ("selftest", s(st)),
+            ])
+        };
+        assert_eq!(class_status(&[with("fail")]), "fail");
+        assert_eq!(class_status(&[with("pass")]), "pass");
     }
 
     #[test]

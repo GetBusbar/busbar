@@ -131,6 +131,17 @@ pub fn decide_slsa(run: &SlsaRun) -> Outcome {
     }
 }
 
+/// Write `contents` to `path`, then restrict it to its owner.
+pub fn write_secret_file(path: &std::path::Path, contents: &str) -> Result<(), String> {
+    std::fs::write(path, contents).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
 impl Runner {
     pub(super) fn run_slsa(&self) -> Outcome {
         let rig = Rig::Slsa;
@@ -224,13 +235,8 @@ impl Runner {
             })?;
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let header = dir.join(".auth-header");
-        std::fs::write(&header, format!("Authorization: Bearer {token}\n"))
+        write_secret_file(&header, &format!("Authorization: Bearer {token}\n"))
             .map_err(|e| format!("{}: {e}", header.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&header, std::fs::Permissions::from_mode(0o600));
-        }
         let auth = format!("@{}", header.display());
         let curl = |args: &[&str]| -> Result<Vec<u8>, String> {
             let out = Command::new("curl")
@@ -302,5 +308,40 @@ impl Runner {
         })();
         let _ = std::fs::remove_file(&header);
         result
+    }
+}
+
+#[cfg(all(test, unix))]
+mod secret_file_tests {
+    use super::write_secret_file;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// The token's file is a fresh inode created 0600, never bytes poured into an inode that an
+    /// earlier, looser file (and any other name linked to it) already holds.
+    #[test]
+    fn the_token_file_is_created_0600_and_never_written_into_an_existing_inode() {
+        let dir = std::env::temp_dir().join(format!("xtask-slsa-secret-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let header = dir.join(".auth-header");
+        let alias = dir.join("alias");
+        std::fs::write(&header, "stale").unwrap();
+        std::fs::set_permissions(&header, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::hard_link(&header, &alias).unwrap();
+
+        write_secret_file(&header, "Authorization: Bearer t0ken\n").unwrap();
+
+        let mode = std::fs::metadata(&header).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(
+            std::fs::read_to_string(&header).unwrap(),
+            "Authorization: Bearer t0ken\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&alias).unwrap(),
+            "stale",
+            "the token must not reach an inode another name already holds"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

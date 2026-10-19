@@ -640,6 +640,24 @@ fn the_records_own_reconciled_outputs_are_not_drift_but_any_other_tracked_edit_i
     assert_eq!(drift(&repo), vec!["a.txt".to_string()]);
 }
 
+#[test]
+fn an_untracked_build_input_is_drift_but_the_records_own_untracked_outputs_are_not() {
+    let repo = fixture_repo("record-drift-untracked");
+    let out = repo.join("conformance/verdicts");
+    std::fs::create_dir_all(&out).unwrap();
+    let drift = |r: &Path| xtask::conformance_record::tracked_drift(r, &out).expect("git status");
+
+    // The record's own outputs, never committed: still not drift.
+    std::fs::write(out.join("mcp.json"), "{}\n").unwrap();
+    std::fs::write(repo.join("conformance/manifest.json"), "{}\n").unwrap();
+    assert_eq!(drift(&repo), Vec::<String>::new());
+
+    // An untracked cargo config changes the binary the rigs build: the run is not-run.
+    std::fs::create_dir_all(repo.join(".cargo")).unwrap();
+    std::fs::write(repo.join(".cargo/config.toml"), "[build]\nrustflags = []\n").unwrap();
+    assert_eq!(drift(&repo), vec![".cargo/config.toml".to_string()]);
+}
+
 /// The browser cell: the browsers are the instrument. Not installed, not launching, a red
 /// self-test, a red control or a negative control that does not bite is `not-run`, never `pass`;
 /// only a red subject leg is `fail`; a pass needs an armed `pass` verdict from a leg that exited 0.

@@ -16,6 +16,20 @@ fn both_yaml_spellings_of_a_tag_trigger_are_caught() {
 }
 
 #[test]
+fn a_tag_trigger_under_a_quoted_or_boolean_on_key_is_caught() {
+    for key in ["on", "\"on\"", "'on'", "true"] {
+        let text = format!("name: x\n{key}:\n  push:\n    tags:\n      - 'v*'\njobs:\n  j: {{}}\n");
+        assert!(
+            has_v_star_tag_trigger(&trigger_block(&text)),
+            "the `{key}:` spelling hides a v* trigger"
+        );
+    }
+    assert!(!has_v_star_tag_trigger(&trigger_block(
+        "\"on\":\n  push:\n    branches: [main]\n"
+    )));
+}
+
+#[test]
 fn a_refspec_destination_is_read_from_either_side() {
     assert_eq!(
         refspec_destination("git push origin main:main").as_deref(),
