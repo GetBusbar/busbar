@@ -585,6 +585,17 @@ pub trait RootRules: Send + Sync {
     ) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
         None
     }
+
+    /// THE PLANES `cfg` WRITES THAT THIS PROCESS CANNOT SERVE UNTIL IT RESTARTS: the declaring
+    /// sections `cfg` writes whose plane the composition root did not open at boot. A door plane is
+    /// opened, driven and ticked once, at boot (Law 7 selection, BUSBAR-1.6.0.md l.547), so an
+    /// apply that first writes its section is stored and validated but RESTART-TO-APPLY: the 1.5.5
+    /// precedent for what is mounted once at boot (`plugin_routes::paths_awaiting_restart`). The
+    /// build gives such a plane no slot this generation (it claims, admits and lists nothing), and
+    /// the apply's answer names its section. Sorted. Default: none.
+    fn planes_awaiting_restart(&self, _cfg: &config::RootCfg) -> Vec<&'static str> {
+        Vec::new()
+    }
 }
 
 /// The rules of a build with no composition root's rules to judge by (a tool, a test fixture): it
@@ -614,6 +625,9 @@ pub fn build_app_from_config(
     // The root's rules of this configuration, before any part of it is built or installed: a
     // refusal leaves the running generation as it is.
     rules.check(&cfg)?;
+    // The planes this configuration writes that the process did not open at boot: restart-to-apply,
+    // so each builds no slot below and is reported by the caller, never half-served.
+    let planes_awaiting_restart = rules.planes_awaiting_restart(&cfg);
     // The root's projection of this configuration, taken before any part of it is consumed.
     let config_projection = rules.project(&cfg);
     // Install the resolved operational limits process-wide BEFORE any subsystem reads them —
@@ -1649,6 +1663,7 @@ pub fn build_app_from_config(
         crate::plane::registry::plane_decls()
             .iter()
             .filter(|decl| decl.fallback || cfg.plane_sections.contains(decl.config_section))
+            .filter(|decl| decl.fallback || !planes_awaiting_restart.contains(&decl.config_section))
             .filter_map(|decl| {
                 let ctx = crate::plane::registry::BuildCtx {
                     // THIS plane's own section-keyed resource, ALREADY validated and TYPE-ERASED by
@@ -2157,6 +2172,10 @@ pub fn build_app_from_config(
         ),
         plugin_routes,
         boot_route_paths,
+        planes_awaiting_restart: planes_awaiting_restart
+            .iter()
+            .map(|section| (*section).to_string())
+            .collect(),
     };
     // PRUNE the verify-on-call gates to the subjects THIS generation still fronts. `flights` and
     // `drift_latch` are per-subject coordination CARRIED across every apply (above); without a prune
