@@ -706,6 +706,7 @@ impl Connection {
         let established = Established {
             offered_name,
             agreed_protocol: prior,
+            scheme: Established::scheme_of(tls.is_some()),
             claim: door
                 .as_ref()
                 .unwrap_or(carried.door())
@@ -788,6 +789,7 @@ impl Connection {
         )
         .map_err(dial_failure)?;
         let established = Established {
+            scheme: Established::scheme_of(false),
             client_identity: false,
             peer_key_pin: None,
             offered_name: None,
@@ -918,6 +920,7 @@ impl Connection {
         let established = Established {
             offered_name: None,
             agreed_protocol: None,
+            scheme: Established::scheme_of(tls.is_some()),
             claim: door
                 .as_ref()
                 .unwrap_or(carried.door())
@@ -1254,6 +1257,7 @@ impl Connection {
             self.tls = Some(rustls::Connection::Client(client));
             self.upgraded = true;
             self.established.offered_name = Some(name.to_owned());
+            self.established.scheme = Established::scheme_of(true);
             self.open_deadline = Some(Instant::now() + timeout);
             if !matches!(self.phase, Phase::Connecting) {
                 if let Err(f) = self.tls_out() {

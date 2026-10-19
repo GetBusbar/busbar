@@ -1287,6 +1287,7 @@ fn compute_layout() -> String {
         [
             head,
             side,
+            scheme,
             _reserved,
             target,
             facts,
@@ -1990,7 +1991,7 @@ fn compute_layout() -> String {
     record!(
         s,
         hsvc::UnitRefuseIn,
-        [head, unit, cause, line, conn, stream, answer]
+        [head, unit, cause, line, conn, stream, answer, request]
     );
 
     // M3-SHAPES (abi-v2-perkind.md B.2): the secret kind's `resolve`.
