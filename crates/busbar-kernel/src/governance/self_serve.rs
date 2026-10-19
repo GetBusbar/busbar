@@ -177,7 +177,10 @@ impl GovState {
             // EMPTY, as 1.5.5 wrote a self-serve key (v1.5.5 crates/busbar/src/governance/state.rs
             // :487): `labels` is served by every admin key view, so the minting provider rides the
             // kernel-only `idp_provider` below, never this map.
-            labels: std::collections::BTreeMap::new(),
+            labels: std::collections::BTreeMap::from([(
+                "busbar_self_provider".to_string(),
+                provider.to_string(),
+            )]),
             expires_at: None,
             deleted_at: None,
             revision: 0,
