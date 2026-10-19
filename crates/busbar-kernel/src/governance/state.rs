@@ -654,25 +654,31 @@ impl GovState {
 
     /// ONE METERED REQUEST on `lane`'s metering row, keyed exactly as [`GovState::meter_classes`]
     /// keys the same lane, so a unit's request and its classes never split across two rows: an
-    /// unqualified (pools) lane meters on `(lane, provider)` with the token split, and with no
-    /// serving provider it meters nothing (1.5.5 metered no response it could not attribute to a
-    /// serving lane); a plane-qualified lane `"<plane>\u{1f}<subject>"` meters on
-    /// `(subject, plane)` with no token split, its classes carried by the mirror.
+    /// unqualified (pools) lane meters on `(lane, provider)` with the row's own count columns read
+    /// from `units` ([`MeterCounts::request`]), and with no serving provider it meters nothing
+    /// (1.5.5 metered no response it could not attribute to a serving lane); a plane-qualified lane
+    /// `"<plane>\u{1f}<subject>"` meters on `(subject, plane)` with the request alone, its classes
+    /// carried by the mirror. `units` are the unit's counts by opaque class name: this function
+    /// names no class.
     pub fn record_lane_metering(
         &self,
         key_id: &str,
         lane: &str,
         provider: Option<&str>,
-        usage: Option<&crate::billing::TokenUsage>,
+        units: &std::collections::BTreeMap<String, u64>,
         now: u64,
     ) {
         match split_plane_lane(lane) {
             ("", _) => {
                 if let Some(provider) = provider {
-                    self.record_metering(key_id, lane, provider, usage, now);
+                    let add = MeterCounts::request(units);
+                    self.record_metered_request(key_id, lane, provider, add, now);
                 }
             }
-            (plane, subject) => self.record_metering(key_id, subject, plane, None, now),
+            (plane, subject) => {
+                let add = MeterCounts::request(&std::collections::BTreeMap::new());
+                self.record_metered_request(key_id, subject, plane, add, now);
+            }
         }
     }
 
@@ -722,28 +728,50 @@ impl GovState {
         usage: Option<&crate::billing::TokenUsage>,
         now: u64,
     ) {
-        self.record_metering_dated(
+        let add = MeterCounts {
+            requests: 1,
+            tokens_input: usage.map(|u| u.input).unwrap_or(0),
+            tokens_output: usage.map(|u| u.output).unwrap_or(0),
+            tokens_cache_read: usage.and_then(|u| u.cache_read).unwrap_or(0),
+            tokens_cache_write: usage.and_then(|u| u.cache_creation).unwrap_or(0),
+            usage_units: std::collections::BTreeMap::new(),
+        };
+        self.record_metered_request(key_id, model, provider, add, now);
+    }
+
+    /// Accrue `add` (one request's counts) onto the `(key, day bucket, model, provider, card
+    /// instant)` metering cell: the one place both [`GovState::record_metering`] and
+    /// [`GovState::record_lane_metering`] date and accrue a metered request.
+    fn record_metered_request(
+        &self,
+        key_id: &str,
+        model: &str,
+        provider: &str,
+        add: MeterCounts,
+        now: u64,
+    ) {
+        self.record_metered_request_dated(
             key_id,
             model,
             provider,
-            usage,
+            add,
             now,
             &crate::store::now_ms,
             &crate::rate_apply::effective_from_at,
         );
     }
 
-    /// [`Self::record_metering`] with the price-instant clock and the rate dater passed in, so a
-    /// test drives the dating behaviourally against a dater double rather than the process-wide
-    /// `OnceLock` holder. The production path passes the wall clock in milliseconds and the
-    /// installed holder.
+    /// [`Self::record_metered_request`] with the price-instant clock and the rate dater passed in,
+    /// so a test drives the dating behaviourally against a dater double rather than the
+    /// process-wide `OnceLock` holder. The production path passes the wall clock in milliseconds
+    /// and the installed holder.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn record_metering_dated(
+    pub(crate) fn record_metered_request_dated(
         &self,
         key_id: &str,
         model: &str,
         provider: &str,
-        usage: Option<&crate::billing::TokenUsage>,
+        add: MeterCounts,
         now: u64,
         clock_ms: &dyn Fn() -> u64,
         dater: &dyn Fn(u64) -> u64,
@@ -770,14 +798,6 @@ impl GovState {
             provider.to_string(),
             priced_from_ms,
         );
-        let add = MeterCounts {
-            requests: 1,
-            tokens_input: usage.map(|u| u.input).unwrap_or(0),
-            tokens_output: usage.map(|u| u.output).unwrap_or(0),
-            tokens_cache_read: usage.and_then(|u| u.cache_read).unwrap_or(0),
-            tokens_cache_write: usage.and_then(|u| u.cache_creation).unwrap_or(0),
-            usage_units: std::collections::BTreeMap::new(),
-        };
         // Accrue through the sharded accumulator: this locks ONLY the shard owning `key_id`, so
         // concurrent completions for different keys no longer serialize on one process-wide mutex.
         // The bound (and the coalesce-never-drop behaviour) is enforced per shard inside `accrue`.

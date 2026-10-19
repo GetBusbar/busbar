@@ -5621,8 +5621,8 @@ fn proof_minted_admission_is_store_state_config_signing_is_not() {
 /// two card publishes and still resolved to the first — 52,500,000 where #79 says 277,530,000.
 /// Reading the finer clock made the same script answer 277,530,000 exactly.
 ///
-/// Behavioural: `record_metering_dated` is driven with a wall-clock double and a rate-dater double
-/// (the process-wide `OnceLock` holder is not touched, so no other accrual in this binary is
+/// Behavioural: `record_metered_request_dated` is driven with a wall-clock double and a rate-dater
+/// double (the process-wide `OnceLock` holder is not touched, so no other accrual in this binary is
 /// dated by it). The cards start at `T0` and `T0 + 500 ms`; the response is served at `T0 + 700 ms`,
 /// inside the same second as both. The cell must carry the SECOND card's start. An accrual that
 /// lifts `now * 1_000` into milliseconds asks the dater for `T0` and dates the cell at the first
@@ -5643,7 +5643,11 @@ fn the_metering_accrual_reads_the_millisecond_clock_not_the_lifted_second() {
     let clock = || T0 + 700;
 
     let gov = GovState::new(Arc::new(MemoryStore::new()), None).unwrap();
-    gov.record_metering_dated("vk_dated", "m", "p", None, T0 / 1_000, &clock, &dater);
+    let add = MeterCounts {
+        requests: 1,
+        ..MeterCounts::default()
+    };
+    gov.record_metered_request_dated("vk_dated", "m", "p", add, T0 / 1_000, &clock, &dater);
 
     let drained = gov.pending_metering.drain();
     assert_eq!(drained.len(), 1, "one response, one cell");
