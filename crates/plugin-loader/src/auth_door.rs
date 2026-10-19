@@ -728,6 +728,10 @@ impl AuthCalls for AuthInstance {
         self.facts.carriers.clone()
     }
 
+    fn issued_shape(&self) -> Option<busbar_contract::auth_calls::IssuedShape> {
+        self.facts.issued.clone()
+    }
+
     fn inbound_points(&self) -> busbar_contract::abi::auth::AuthPoints {
         self.facts.inbound_points
     }

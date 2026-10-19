@@ -36,8 +36,12 @@ use busbar_contract::abi::auth::{
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, Span};
 use busbar_contract::abi::mechanism::check::{reported, Fault};
-use busbar_contract::abi::mechanism::door::{Statement, MARK_WORD_CARRIER};
+use busbar_contract::abi::mechanism::door::{
+    Statement, MARK_WORD_CARRIER, MARK_WORD_ISSUED_ID_ALPHABET, MARK_WORD_ISSUED_ID_LENGTH,
+    MARK_WORD_ISSUED_ID_PREFIX, MARK_WORD_ISSUED_SECRET_ALPHABET, MARK_WORD_ISSUED_SECRET_LENGTH,
+};
 use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::auth_calls::IssuedShape;
 
 use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
 
@@ -83,6 +87,9 @@ pub struct AuthFacts {
     pub credential_kinds: Vec<String>,
     /// With `abi::auth::CAP_OUTBOUND`: the outbound styles it serves, each judged at load.
     pub styles: Vec<OutboundStyle>,
+    /// With `abi::auth::FACT_READS_CREDENTIALS`: the shape of the credential the host issues for
+    /// its kinds, from its `MARK_WORD_ISSUED_*` word marks, checked at load ([`issued`]).
+    pub issued: Option<IssuedShape>,
 }
 
 /// ONE OUTBOUND STYLE an auth plugin's tail states (`abi::auth::StyleDecl`), owned by the host.
@@ -154,6 +161,86 @@ fn carriers(st: &Statement) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+/// The longest issued id or secret, and the largest alphabet, a Statement may state: a byte of the
+/// OS CSPRNG picks one symbol, so an alphabet holds at most 256.
+const MAX_ISSUED: usize = 256;
+
+/// The issued credential's shape `st` states in its `MARK_WORD_ISSUED_*` word marks; `None` when it
+/// states none. Refused at load: a class stated twice, a shape missing a length or an alphabet, a
+/// length that is not a decimal in `1..=256`, an alphabet that is empty, over 256, not ASCII graphic
+/// or repeats a character, and a prefix that is not ASCII graphic or leaves no room in the id.
+fn issued(st: &Statement) -> Result<Option<IssuedShape>, String> {
+    let mut slots: [Option<String>; 5] = Default::default();
+    let classes = [
+        MARK_WORD_ISSUED_ID_PREFIX,
+        MARK_WORD_ISSUED_ID_LENGTH,
+        MARK_WORD_ISSUED_ID_ALPHABET,
+        MARK_WORD_ISSUED_SECRET_LENGTH,
+        MARK_WORD_ISSUED_SECRET_ALPHABET,
+    ];
+    for i in 0..st.mark_words_len {
+        // SAFETY: the loader's Statement check refused a NULL `mark_words` with a count; it holds
+        // `mark_words_len` `'static` word marks.
+        let w = unsafe { st.mark_words.add(i).read_unaligned() };
+        let Some(slot) = classes.iter().position(|c| *c == w.class) else {
+            continue;
+        };
+        if slots[slot].is_some() {
+            return Err(format!(
+                "the auth Statement states issued-credential mark class {} twice",
+                w.class
+            ));
+        }
+        slots[slot] = Some(owned(w.word).ok_or("an issued-credential mark is over-long")?);
+    }
+    if slots.iter().all(Option::is_none) {
+        return Ok(None);
+    }
+    let [prefix, id_len, id_alphabet, secret_len, secret_alphabet] = slots;
+    let length = |word: Option<String>, what: &str| -> Result<usize, String> {
+        let word = word.ok_or_else(|| format!("the issued-credential shape states no {what}"))?;
+        match word.parse::<usize>() {
+            Ok(n) if (1..=MAX_ISSUED).contains(&n) && word.bytes().all(|b| b.is_ascii_digit()) => {
+                Ok(n)
+            }
+            _ => Err(format!(
+                "the issued-credential {what} {word:?} is not a decimal in 1..={MAX_ISSUED}"
+            )),
+        }
+    };
+    let alphabet = |word: Option<String>, what: &str| -> Result<String, String> {
+        let word = word.ok_or_else(|| format!("the issued-credential shape states no {what}"))?;
+        let graphic = !word.is_empty() && word.bytes().all(|b| b.is_ascii_graphic());
+        let mut seen = [false; 128];
+        let distinct = word
+            .bytes()
+            .all(|b| !std::mem::replace(&mut seen[usize::from(b & 0x7f)], true));
+        if !graphic || !distinct || word.len() > MAX_ISSUED {
+            return Err(format!(
+                "the issued-credential {what} is not up to {MAX_ISSUED} distinct ASCII graphic \
+                 characters"
+            ));
+        }
+        Ok(word)
+    };
+    let id_len = length(id_len, "id length")?;
+    let shape = IssuedShape {
+        id_prefix: prefix.unwrap_or_default(),
+        id_len,
+        id_alphabet: alphabet(id_alphabet, "id alphabet")?,
+        secret_len: length(secret_len, "secret length")?,
+        secret_alphabet: alphabet(secret_alphabet, "secret alphabet")?,
+    };
+    if !shape.id_prefix.bytes().all(|b| b.is_ascii_graphic()) || shape.id_prefix.len() >= id_len {
+        return Err(format!(
+            "the issued-credential id prefix {:?} is not ASCII graphic or leaves no room in a \
+             {id_len}-character id",
+            shape.id_prefix
+        ));
+    }
+    Ok(Some(shape))
+}
+
 /// Read the auth tail, the carriers and the cache-flush family out of `st`.
 fn facts(st: &Statement) -> Result<AuthFacts, String> {
     // SAFETY: `AuthTail` is a `#[repr(C)]` kind tail of integers, pointers and strings (all-zero
@@ -163,6 +250,14 @@ fn facts(st: &Statement) -> Result<AuthFacts, String> {
         crate::dispatch::plugin::kind_tail(st, "an auth plugin", auth::AUTH_TAIL_FROZEN)
     }?;
     let carriers = carriers(st)?;
+    let issued = issued(st)?;
+    // The default inbound style IS its carriers: a tail stating it with none refuses the load.
+    if t.facts & auth::FACT_DEFAULT_INBOUND_STYLE != 0 && carriers.is_empty() {
+        return Err(
+            "the auth tail states the default inbound style and its Statement names no carrier"
+                .to_string(),
+        );
+    }
     // The login classification agrees with the login capability, and is one the host knows.
     let logs_in = t.caps & auth::CAP_LOGIN != 0;
     let kind_known = matches!(
@@ -220,6 +315,14 @@ fn facts(st: &Statement) -> Result<AuthFacts, String> {
             credential_kinds.len()
         ));
     }
+    // An issued credential is one the host holds for the row to read: a shape on a row that reads
+    // no host-held credential refuses the load.
+    if issued.is_some() && !reads {
+        return Err(
+            "the auth Statement states an issued-credential shape and reads no host-held credential"
+                .to_string(),
+        );
+    }
     // Every style states known flags and the points it needs; a stray bit refuses the load.
     if t.styles_len > MAX_STYLES || (t.styles.is_null() && t.styles_len != 0) {
         return Err(format!("the auth tail states {} styles", t.styles_len));
@@ -267,6 +370,7 @@ fn facts(st: &Statement) -> Result<AuthFacts, String> {
         operator_principal: operator.then_some(principal),
         credential_kinds,
         styles,
+        issued,
     })
 }
 
