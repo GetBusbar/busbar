@@ -2490,3 +2490,4 @@ llm|cohere|cohere|request|stream_upstream_cut	PASS	HTTP 200; usage Δ {"requests
 llm|gemini|gemini|request|stream_upstream_cut	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
 llm|openai|openai|request|stream_upstream_cut	PASS	HTTP 200; usage Δ {"requests":1}	
 llm|responses|responses|request|stream_upstream_cut	PASS	HTTP 200; usage Δ {"requests":1}	
+boot.warning|BOOT-I01|boot	PASS	exit 0; [2m2026-10-19T15:31:42.138630Z[0m [33m WARN[0m heterogen	
