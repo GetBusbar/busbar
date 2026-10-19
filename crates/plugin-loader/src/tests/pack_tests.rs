@@ -551,7 +551,7 @@ fn nested_secret_field_is_rejected_inline_and_via_ref() {
 
 /// A SECRET MARKER ONE OBJECT DOWN IS REFUSED IN 1.5.5's WORDS (ruling (B), 2026-10-19: pack keeps
 /// 1.5.5's refusal of a nested marker; v1.5.5 `crates/plugin-pack/src/main.rs:298-304`). A marked
-/// `auth_header.value` sits at nesting depth 2, and the refusal names that depth and says to
+/// `held.value` sits at nesting depth 2, and the refusal names that depth and says to
 /// flatten the field. RED before the fix: the refusal's words were not 1.5.5's.
 #[test]
 fn a_nested_secret_marker_is_refused_in_1_5_5_words() {
