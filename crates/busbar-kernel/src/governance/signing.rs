@@ -21,13 +21,12 @@
 //!
 //! ## Home: the NEUTRAL crypto primitive, GOVERNED by core
 //!
-//! [`TokenSigner`] lives HERE, in `busbar-substrate` — the neutral crate a plane may name — as a
-//! pure crypto primitive: it holds the ed25519 secret and turns a claims payload (`sub`/`exp`/`kid`
-//! plus the optional generation/audience) into signed bytes, and verifies them. It decides NOTHING
-//! about WHO gets a token or WHAT they may do. The mint POLICY (which subject, which expiry, which
-//! audience, which grants) and the durable key/binding state are owned by core's `governance`, which
-//! drives this signer and re-exports the module at `busbar_kernel::governance::signing::…` so every
-//! in-core call site is unchanged. Substrate carries the primitive; core is the governor.
+//! [`TokenSigner`] lives HERE, in this module (`governance::signing`), as a pure crypto primitive:
+//! it holds the ed25519 secret and turns a claims payload (`sub`/`exp`/`kid` plus the optional
+//! generation/audience) into signed bytes, and verifies them. It decides NOTHING about WHO gets a
+//! token or WHAT they may do. The mint POLICY (which subject, which expiry, which audience, which
+//! grants) and the durable key/binding state are owned by the rest of `governance`, which drives
+//! this signer. The module carries the primitive; governance is the governor.
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;

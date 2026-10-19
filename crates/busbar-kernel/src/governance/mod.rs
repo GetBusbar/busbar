@@ -119,10 +119,6 @@ pub(crate) fn generate_binding_generation() -> Result<String, getrandom::Error> 
     Ok(hex::encode(raw))
 }
 
-// SQLite `busy_timeout` for the on-disk DB: a transient lock contention retries for this many
-// milliseconds before failing, rather than erroring instantly with `SQLITE_BUSY`. Operator-tunable
-// via the store module's own `settings.busy_timeout_ms` (default 5000).
-
 /// One model's in-cell token counters: the CURRENT tier tokens plus the last durably-ACKNOWLEDGED
 /// (flushed) tier tokens - the additive-flush baseline, per model. The model name is an
 /// `Arc<str>` interned ONCE per (bucket, model) on first sight (allocate-on-miss); the per-request
@@ -316,9 +312,37 @@ impl BudgetCell {
     /// enforcement truth (its token contribution is zero) and no unacked write-behind delta (there is
     /// none). A model that later reappears is simply re-interned by `accrue`. Called from the
     /// amortized cell sweep, so it costs one linear pass on the same cadence as the stale-cell prune.
+    /// A segment pruned while a flush of it is still in flight is restored when that flush is
+    /// acknowledged ([`BudgetCell::advance_model_baselines`]).
     fn prune_dead_models(&mut self) {
         self.models
             .retain(|m| units_total(&m.cur) != 0 || units_total(&m.flushed) != 0);
+    }
+
+    /// ADVANCE THE PER-SEGMENT BASELINES to `acked`, the segments a flush snapshotted and the store
+    /// has now acknowledged. A segment the sweep pruned while that write was in flight (a refund
+    /// took its `cur` back to empty after the snapshot, so it looked dead) comes back holding the
+    /// acknowledged counts as its baseline and nothing current, and the cell is marked dirty: the
+    /// next flush writes the refund as a negative delta instead of leaving the store one fee unit
+    /// over (THE DESIGN §7: a refund returns the bucket actually charged; the write-behind loses no
+    /// delta).
+    fn advance_model_baselines(&mut self, acked: &[ModelCell]) {
+        for s in acked {
+            let at = (self.models.iter()).position(|m| m.model == s.model && m.era == s.era);
+            match at {
+                Some(i) => self.models[i].flushed = s.cur.clone(),
+                None if units_total(&s.cur) != 0 => {
+                    self.models.push(ModelCell {
+                        model: s.model.clone(),
+                        era: s.era,
+                        cur: std::collections::BTreeMap::new(),
+                        flushed: s.cur.clone(),
+                    });
+                    self.dirty = true;
+                }
+                None => {}
+            }
+        }
     }
 
     /// Total current TOKENS across models — every token-family class (the scalar view for admin
