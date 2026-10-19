@@ -51,7 +51,7 @@ pub struct RecordedCounts {
 /// Read-only: a replay of the node's own journal, nothing written.
 #[must_use]
 pub fn recorded_in(durability: &Durability, amends: &str) -> Option<RecordedCounts> {
-    let Ok(Ok(records)) = durability.journal.replay() else {
+    let Ok(Ok(records)) = durability.chain() else {
         return None;
     };
     let record = records

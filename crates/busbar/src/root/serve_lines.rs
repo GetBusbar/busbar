@@ -393,25 +393,33 @@ async fn collect(response: axum::response::Response) -> Vec<u8> {
 }
 
 /// One line of at most `max` bytes into `buf`; a longer one is read to its end and dropped (`Ok`
-/// with nothing kept but its terminator), so the session goes on. `Ok(0)` at EOF.
+/// with nothing kept), so the session goes on. `Ok(0)` at EOF.
+///
+/// Once the bound is crossed the line is OVER: every later piece of it, up to its terminator, is
+/// read and discarded too, so no tail of an over-long line is ever kept as a line of its own.
 async fn read_line<R: AsyncBufReadExt + Unpin>(
     reader: &mut R,
     buf: &mut Vec<u8>,
     max: usize,
 ) -> std::io::Result<usize> {
     let mut total = 0usize;
+    let mut over = false;
     loop {
         let chunk = reader.fill_buf().await?;
         if chunk.is_empty() {
+            if over {
+                buf.clear();
+            }
             return Ok(total);
         }
         let (take, done) = match chunk.iter().position(|b| *b == b'\n') {
             Some(i) => (i + 1, true),
             None => (chunk.len(), false),
         };
-        if buf.len() + take <= max {
+        if !over && buf.len() + take <= max {
             buf.extend_from_slice(&chunk[..take]);
         } else {
+            over = true;
             buf.clear();
         }
         reader.consume(take);
