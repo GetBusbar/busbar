@@ -1878,7 +1878,7 @@ fn arm_probes(
     egress: Option<&DoorEgress<'_>>,
     schedule: &Arc<busbar_kernel::probe::ProbeSchedule>,
 ) {
-    #[cfg(linked_axis_node)]
+    #[cfg(linked_section_pools)]
     {
         let (Some(sealed), Some(models)) = (&live.egress, egress.and_then(|e| e.reach.models))
         else {
@@ -1914,7 +1914,7 @@ fn arm_probes(
         busbar_kernel::probe::spawn_probers(&target, schedule, &members);
         live.probes = Some(target);
     }
-    #[cfg(not(linked_axis_node))]
+    #[cfg(not(linked_section_pools))]
     let _ = (driver, served_facts, live, egress, schedule);
 }
 
@@ -4570,38 +4570,38 @@ pub(crate) mod planes_tests;
 // which find their door among the linked plane doors. Its MCP cells reach the door_steps helpers
 // that need the default build's linked auth rows (gated with the node-axis plane that carries that
 // build), and the capability cells of the door serving the `pools` map.
-#[cfg(all(test, linked_axis_node))]
+#[cfg(all(test, linked_section_pools))]
 #[path = "tests/serve_tests.rs"]
 mod door_tests;
 
 // The door planes' own root cells (each plane crate's `tests/root/`, one module per enabled
 // `[package.metadata.busbar.door-cells]` row), compiled here beside the rig they drive.
-#[cfg(all(test, linked_axis_node))]
+#[cfg(all(test, linked_section_pools))]
 include!(concat!(env!("OUT_DIR"), "/door_cells.rs"));
 
 #[cfg(test)]
 #[path = "tests/serve_money.rs"]
 mod money_tests;
 
-#[cfg(all(test, linked_driver_proofs, linked_axis_node))]
+#[cfg(all(test, linked_driver_proofs, linked_section_pools))]
 #[path = "tests/serve_hook_seats.rs"]
 mod hook_seat_tests;
 
-#[cfg(all(test, linked_axis_node))]
+#[cfg(all(test, linked_section_pools))]
 #[path = "tests/serve_door_far.rs"]
 mod door_far_tests;
 
-#[cfg(all(test, linked_axis_node))]
+#[cfg(all(test, linked_section_pools))]
 #[path = "tests/serve_framed.rs"]
 mod framed_tests;
 
 // A secret reference that does not resolve, scanned for its source across every linked door plane's
 // caller-facing renders (coordinator ruling 2026-10-07).
-#[cfg(all(test, linked_axis_node, linked_axis_plane_door))]
+#[cfg(all(test, linked_section_pools, linked_axis_plane_door))]
 #[path = "tests/secret_source.rs"]
 mod secret_source_tests;
 
 // The door planes' own root cells, held to the linked roster and to the capability-equality ledger.
-#[cfg(all(test, linked_axis_node))]
+#[cfg(all(test, linked_section_pools))]
 #[path = "tests/door_cells.rs"]
 mod door_cells_tests;

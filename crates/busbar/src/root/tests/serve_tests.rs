@@ -3662,7 +3662,7 @@ mod tools_door {
     /// server that never answers fails when its continuation's walk is exhausted, and `tasks/get`
     /// states the failure as predev stated it: `-32603`, the upstream call failed, and the reason's
     /// own word.
-    #[cfg(linked_axis_node)]
+    #[cfg(linked_section_pools)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_tasks_exhausted_walk_fails_the_task_in_predevs_bytes() {
         let _one = PUBLISHING.lock().await;
@@ -3705,7 +3705,7 @@ mod tools_door {
     /// EXHAUSTED UNDER A TASK, THE SERVER TRIPPED: a task created on a tool whose server's cell is
     /// open fails as predev failed it, its `tasks/get` stating `-32603`, the upstream call failed,
     /// and the reason's own word.
-    #[cfg(linked_axis_node)]
+    #[cfg(linked_section_pools)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_task_on_a_tripped_server_fails_in_predevs_bytes() {
         let _one = PUBLISHING.lock().await;

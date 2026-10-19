@@ -1045,7 +1045,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // Every config apply refreshes each served door plane onto the generation it installed
     // (the ARCHITECT ruling on a served door plane's apply), bound on the handle once the routers are built.
     let door_appliers = served.appliers();
-    #[cfg(linked_axis_node)]
+    #[cfg(linked_section_pools)]
     let door_post = served.post.clone();
     // THE LINE CARRIER (SEAM-S1, `root::serve::lines`): with a plane's line-serve flag passed and a
     // served plane claiming the line carrier, the served planes are kept for the process's own
@@ -1101,7 +1101,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // (`DoorAppliers::refresh_models`): the swapped-in App's projected configuration, its lane
     // table and its secret seam. A build with no node composes no door plane's money, so it has
     // none to refresh.
-    #[cfg(linked_axis_node)]
+    #[cfg(linked_section_pools)]
     if let Some(post) = door_post {
         let (auths, live) = (
             std::sync::Arc::clone(&door_auths),

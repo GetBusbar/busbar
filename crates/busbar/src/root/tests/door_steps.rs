@@ -1911,7 +1911,7 @@ fn a_registration_member_is_reached_at_its_own_target() {
 /// in) and bound through the loader's one load, its need declared on the connector, exactly as its
 /// linked row binds it. The dropped-in fold of the same door is the plane crate's own
 /// conformance suite (`tests/conformance.rs`, one transcript through both loads).
-#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
 pub(crate) mod tool_door {
     use std::collections::BTreeMap;
     use std::sync::Arc;
@@ -4207,7 +4207,7 @@ pub(crate) mod tool_door {
 /// THE DOOR PLANE'S BOUNDARY, AT THE COMPOSITION ROOT (ARCHITECT Q-L3B-KHARNESS: a door plane's
 /// claims are mounted by the composition root at the data router's construction, Q-SW1, so these
 /// assertions live where the mount does; the kernel keeps no HOT-route assumption).
-#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
 pub(crate) mod door_boundary {
     use std::sync::Arc;
 
@@ -4818,7 +4818,7 @@ pub(crate) mod door_boundary {
 /// A fleet is two compositions reading one governance book (one key registry, one signing key),
 /// each binding its own handle on one durable journal; a restart is a composition dropped and a
 /// fresh one on the same journal.
-#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
 mod spent_ledger {
     use busbar_kernel::test_support::durable_store::{durable_cfg, open_durable};
 
@@ -5082,7 +5082,7 @@ mod spent_ledger {
 /// sampling ask reaches the caller with `inputRequests` verbatim under busbar's sealed state; the
 /// caller's retry goes back to the member that asked, carrying the caller's answers and the
 /// upstream's own state verbatim; a forged state and an ungranted ask are refused.
-#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
 mod upstream_ask_relay {
     use std::sync::Arc;
 
@@ -5226,7 +5226,7 @@ mod upstream_ask_relay {
 }
 
 /// `subscriptions/listen` ON THE HTTP CARRIER, A K6 SESSION (ARCHITECT round 5 Q-L3B-K6-HTTP (a)).
-#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
 #[path = "door_listen.rs"]
 mod door_listen;
 
@@ -5234,7 +5234,7 @@ mod door_listen;
 /// task-supporting `tools/call` is answered with a task, its continuation runs as a nested unit of
 /// the plane's own claim WITHOUT any poll, after the creating unit has exited, and `tasks/get`,
 /// `tasks/cancel` and the `-32021` gate answer as the served engine's tasks did.
-#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
 mod task_continuation {
     use busbar_kernel::governance::{NewKeySpec, PLANE_LANE_SEP};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -5993,7 +5993,7 @@ mod task_continuation {
 /// `hook_tap_tests`), each scenario driven through the door's composition: the same hook documents
 /// (`kind: gate` on the hermetic test cdylib), the same attaches (`tools.hooks`, the section-level
 /// list every server takes), the same verdicts, read off the far end the door dials.
-#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
 pub(crate) mod hook_parity {
     use super::tool_door::{send_as, surface, tool_server, Footing, Rig};
     use crate::root::serve::planes_tests::{Published, PUBLISHING};
@@ -6351,7 +6351,7 @@ pub(crate) mod hook_parity {
 /// and its script, inline here), one long-lived child per registration, greeted once, its every
 /// exchange — verify-on-call's tool list, the relayed call over the kernel's walk, the reply to its
 /// own request — on that one child, correlated by id.
-#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
 pub(crate) mod program_member {
     use axum::http::StatusCode;
 
@@ -6478,7 +6478,7 @@ pub(crate) mod program_member {
 /// busbar's sealed state (correlated with `work.*`); the caller's retry writes its answer to the
 /// child under the child's own id and the call the child still owed is answered; a partial answer,
 /// a spent state and a forged one are refused; an ungranted ask is refused on the child's input.
-#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
 mod program_member_ask {
     use axum::http::StatusCode;
 
