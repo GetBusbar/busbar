@@ -374,7 +374,7 @@ fn a_char_literal_holding_a_brace_is_text_and_does_not_open_a_region() {
     // `#[cfg(any(test, …))]` item. The line has no `"`, so the whole of it was counted, both `{`
     // included — depth went up by two where the compiler goes up by one, and the region opened at
     // the attribute never closed, reporting the rest of the file gated to EOF.
-    let src = "#[cfg(any(test, feature = \"openapi-schema\"))]\n\
+    let src = "#[cfg(any(test, feature = \"test-support\"))]\n\
                fn declared_errors(rel: &str) -> u8 {\n\
                \x20   if rel.contains('{') {\n\
                \x20       1\n\

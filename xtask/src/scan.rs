@@ -236,74 +236,17 @@ fn braces(blanked: &str) -> i32 {
     delta(blanked, '{', '}')
 }
 
-/// Arm only on a line that IS the attribute: anchored at the start of a CODE line, with `test` as a
-/// cfg predicate (`#[cfg(test)]`, `#[cfg(all(test, …))]`) — never `#[cfg(not(test))]`, which is
-/// production-only code, and never `#[cfg(feature = "test-utils")]`, which is not a test gate.
+/// Arm only on a line that IS the attribute: anchored at the start of a CODE line, with `test`
+/// REQUIRED by the cfg predicate (`#[cfg(test)]`, `#[cfg(all(test, …))]`, `#[cfg(any(test,
+/// feature = "test-support"))]`) — never `#[cfg(not(test))]`, which is production-only code, never
+/// `#[cfg(feature = "test-utils")]`, which is not a test gate, and never `#[cfg(any(test, feature =
+/// "root-admin"))]`, which compiles into the default build. The rule is
+/// [`crate::cfg_scope::Pred::requires_test`], the one every classifier reads.
 fn arms_test_cfg(code: &str) -> bool {
     if !code.trim_start().starts_with("#[cfg(") {
         return false;
     }
-    if !has_test_predicate(code) {
-        return false;
-    }
-    !has_not_test(code)
-}
-
-/// `[(,][[:space:]]*test[[:space:]]*[,)]`, spelled out.
-fn has_test_predicate(code: &str) -> bool {
-    let c: Vec<char> = code.chars().collect();
-    for i in 0..c.len() {
-        if c[i] != '(' && c[i] != ',' {
-            continue;
-        }
-        let mut j = i + 1;
-        while j < c.len() && c[j].is_whitespace() {
-            j += 1;
-        }
-        if !c[j..].starts_with(&['t', 'e', 's', 't']) {
-            continue;
-        }
-        let mut k = j + 4;
-        while k < c.len() && c[k].is_whitespace() {
-            k += 1;
-        }
-        if matches!(c.get(k), Some(',') | Some(')')) {
-            return true;
-        }
-    }
-    false
-}
-
-/// `not[[:space:]]*\([[:space:]]*test[[:space:]]*\)`, spelled out.
-fn has_not_test(code: &str) -> bool {
-    let c: Vec<char> = code.chars().collect();
-    for i in 0..c.len() {
-        if !c[i..].starts_with(&['n', 'o', 't']) {
-            continue;
-        }
-        let mut j = i + 3;
-        while j < c.len() && c[j].is_whitespace() {
-            j += 1;
-        }
-        if c.get(j) != Some(&'(') {
-            continue;
-        }
-        j += 1;
-        while j < c.len() && c[j].is_whitespace() {
-            j += 1;
-        }
-        if !c[j..].starts_with(&['t', 'e', 's', 't']) {
-            continue;
-        }
-        j += 4;
-        while j < c.len() && c[j].is_whitespace() {
-            j += 1;
-        }
-        if c.get(j) == Some(&')') {
-            return true;
-        }
-    }
-    false
+    crate::cfg_scope::parse_attr(code).is_some_and(|p| p.requires_test())
 }
 
 /// `sub(/^[[:space:]]*#\[cfg\(.*\)\][[:space:]]*/, "", rest)` — the GREEDY `.*`, so `#[cfg(test)]`
