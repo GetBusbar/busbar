@@ -26,7 +26,7 @@ const PROBE_RETRY_FLOOR_MS: u64 = 250;
 /// Advisory recovery floor for an inbound-shed request (`limits.max_inbound_concurrent`). Advisory
 /// like the probe floor above.
 ///
-/// `pub(crate)` so the inbound-admission `Retry-After` DERIVES its whole-second value from this one
+/// `pub` so the inbound-admission `Retry-After` DERIVES its whole-second value from this one
 /// source rather than hardcoding a bare `"1"` beside it — the same coupling
 /// [`AT_CAPACITY_RECOVERY_FLOOR_MS`] gives the proxy's at-capacity `Retry-After`. The store must not
 /// depend on `limits`, so the derivation lives at the consumer (`limits::admission`), reading this
@@ -116,10 +116,7 @@ pub enum BreakerState {
 /// A namespaced breaker-cell key for one caller-registered id, fixed-prefixed with `tool:` so a
 /// registration keyed this way can never collide with a bare-name key another caller uses directly,
 /// nor with a key built under a different fixed prefix (e.g. [`agent_key`]'s `agent:`). The id is
-/// the caller's own registration id, which is what every refusal names. Lives here (not only on
-/// core's `PlaneBreakers`) so a plane crate builds the key without reaching into `busbar-core`;
-/// core's `PlaneBreakers::tool_key` delegates to it so the ONE spelling of the prefix stays
-/// single-sourced.
+/// the caller's own registration id, which is what every refusal names.
 pub fn tool_key(server: &str) -> String {
     format!("tool:{server}")
 }
@@ -127,10 +124,7 @@ pub fn tool_key(server: &str) -> String {
 /// A namespaced breaker-cell key for one caller-registered id, fixed-prefixed with `agent:` so a
 /// registration keyed this way can never collide with a bare-name key another caller uses directly,
 /// nor with a key built under a different fixed prefix (e.g. [`tool_key`]'s `tool:`). The id is
-/// the caller's own registration id, which is what every refusal names. Lives here (not only on
-/// core's `PlaneBreakers`) so a plane crate builds the key without reaching into `busbar-core`;
-/// core's `PlaneBreakers::agent_key` delegates to it so the ONE spelling of the prefix stays
-/// single-sourced.
+/// the caller's own registration id, which is what every refusal names.
 pub fn agent_key(agent: &str) -> String {
     format!("agent:{agent}")
 }
@@ -396,8 +390,6 @@ pub struct LaneSnapshot {
 /// an in-flight probe records into the OLD store snapshot it was dispatched under), SWRR fairness
 /// counters (positional by nature; reset is harmless), and the rolling outcome windows (strictly
 /// time-windowed — they refill within seconds and carrying them would import stale samples).
-// Bin-target consumer is the config-apply core (next slice); tests exercise it now.
-#[allow(dead_code)]
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct LaneHealthSnapshot {
     /// The member the lane serves ([`LaneSnapshot::member`]).
@@ -430,7 +422,6 @@ pub struct LaneHealthSnapshot {
 }
 
 /// One per-pool breaker cell's portable state (the FSM triple; windows/probe/SWRR stay ephemeral).
-#[allow(dead_code)]
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PoolCellHealthSnapshot {
     pub pool: String,
