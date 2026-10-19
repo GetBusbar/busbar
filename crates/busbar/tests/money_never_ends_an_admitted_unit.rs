@@ -585,11 +585,11 @@ fn the_census_reads_a_broken_or_path_qualified_construction_as_the_same_site() {
     );
 }
 
-/// The ceiling verdict is named in one file: the module that defines the rule.
+/// No shipped file names a ceiling verdict.
 ///
-/// `Overdraft::Ceiling` is what `slice::overdraft(_, at_ceiling)` answers when a bucket is at its
-/// ceiling. Nothing outside the rule's own module names that verdict, so no shipped path branches
-/// on it and no shipped path can end a unit by it: the ceiling is unbounded in force, and the
+/// The rule that once answered `Overdraft::Ceiling` had no production caller and is deleted (Part
+/// 1: a capability that is never constructed does not ship), so no shipped path branches on a
+/// ceiling and no shipped path can end a unit by one: the ceiling is unbounded in force, and the
 /// operator verb that would set one (`KernelVerb::SetOverdraftCeiling`) is carried in the
 /// vocabulary with no dispatch arm behind it — flag-only, exactly as the binding says.
 #[test]
@@ -605,14 +605,9 @@ fn the_overdraft_ceiling_is_a_verdict_no_shipped_path_branches_on() {
             );
         }
     }
-    assert_eq!(
-        namers,
-        // The rule's own module is `busbar-contract/src/slice.rs` since b544c8bbf moved the slice
-        // ABI types out of the kernel (#38, to break the core-absorption cycle). The PROPERTY is
-        // unchanged and is what this pin is about: exactly ONE file — the module that defines
-        // `overdraft()` — names the verdict it returns.
-        BTreeSet::from(["busbar-contract/src/slice.rs".to_string()]),
-        "only the rule's own module may name the ceiling verdict"
+    assert!(
+        namers.is_empty(),
+        "no shipped file may name a ceiling verdict: {namers:?}"
     );
 
     // And the verb that would arm one carries no value anywhere in the tree.

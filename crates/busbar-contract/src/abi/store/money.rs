@@ -202,9 +202,8 @@ pub struct ReserveOut {
     pub grants_len: usize,
     /// [`RESERVE_OK`] or the refusal reason.
     pub reason: u32,
-    /// On FAILED, the index of the first cell that could not be granted (slice.rs
-    /// `ChainRefused { at }`); [`RESERVE_NO_FAILED_CELL`] when none applies ("window caps"
-    /// correction (3)).
+    /// On FAILED, the index of the first cell that could not be granted;
+    /// [`RESERVE_NO_FAILED_CELL`] when none applies ("window caps" correction (3)).
     pub failed_cell: u32,
     /// On a short FAILED, how many grants the answer needs (`cells_len`); `0` otherwise (M-SB).
     pub needed_grants: u64,

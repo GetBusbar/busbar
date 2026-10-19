@@ -1,28 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The node's share of a window, the fence that keeps two nodes from spending it twice, and the
-//! leases that count what is happening right now.
+//! The slice seam a store answers, and the leases that count what is happening right now.
 //!
-//! A cap is a number in a window that belongs to the whole fleet. A node does not ask the store on
-//! every unit — that would put a network round trip in the middle of every request — it draws a
-//! SLICE of the window and spends against it locally. Three things make that safe:
-//!
-//! - **The slice is fenced by an epoch.** A slice drawn under an old epoch is stale, and a stale
-//!   slice cannot be spent. That is what makes a partition recoverable: the other side's draws are
-//!   accounted, and this side's stop.
-//! - **The draw across a chain is all or nothing.** A principal's buckets are a chain, and either
-//!   every dimension of every bucket in it draws, or none does and the ones that did are released.
-//!   A half-drawn chain is money that exists in one place and not another.
-//! - **Running out is not a refusal mid-unit.** Value has already been delivered, so the unit runs
-//!   to its end, posts the full amount, and the overdraft reduces the next window. Refusing here
-//!   would lose the ledger's identity for the sake of a number that is already spent.
-//!
-//! Leases are the other half: a concurrency cap is not a window, it is a gauge, so it is one lease
-//! per capped group per unit, taken at the door and released on the exit path for EVERY end.
-//!
-//! The store itself is a trait. The kernel says what it needs — reserve, release, the epoch — and
-//! the integrator's store plugin answers.
+//! The slice shapes ([`SliceStore`] and what it reserves and grants) are what a store answers the
+//! kernel's reserve, release and epoch with. Leases are the other half: a concurrency cap is not a
+//! window, it is a gauge, so it is one lease per capped group per unit, taken at the door and
+//! released on the exit path for EVERY end.
 
 use std::collections::HashMap;
 
@@ -37,18 +21,8 @@ use crate::Millis;
 /// it for free, and the kernel never learns what the class means.
 ///
 /// The dimension, the scope and the bucket itself are the contract's own, because a plane declares
-/// the class a cap is taken on and a refusal names the bucket back to the caller. What stays here
-/// is the kernel's reading OF a bucket — how to build one, and whether it draws for a given pool —
-/// which is loop policy rather than part of what a bucket is.
+/// the class a cap is taken on and a refusal names the bucket back to the caller.
 pub use crate::{BucketRef as BucketId, BucketScope, CapDimension};
-
-/// Whether a dimension accrues DURING a unit, and can therefore overdraw.
-///
-/// Requests and concurrency are known at the door; money and class quantities are not, which is
-/// why only they can end a unit owing something.
-pub fn accrues_mid_unit(dimension: &CapDimension) -> bool {
-    matches!(dimension, CapDimension::NanoUnits | CapDimension::Class(_))
-}
 
 /// A bucket that applies to everything.
 #[must_use]
@@ -57,29 +31,6 @@ pub const fn bucket_all(id: &'static str) -> BucketId {
         id,
         scope: BucketScope::All,
         capped: true,
-    }
-}
-
-/// A bucket scoped to one pool.
-#[must_use]
-pub const fn bucket_pool(id: &'static str, pool: &'static str) -> BucketId {
-    BucketId {
-        id,
-        scope: BucketScope::Pool(pool),
-        capped: true,
-    }
-}
-
-/// Whether a bucket draws for a unit that routed through `pool`.
-///
-/// A scoped bucket draws when its scope EQUALS the effective pool: a hop into a fallback pool
-/// draws nothing from the pool it fell back from.
-#[must_use]
-pub fn draws_for(bucket: &BucketId, pool: Option<&str>) -> bool {
-    match (&bucket.scope, pool) {
-        (BucketScope::All, _) => true,
-        (BucketScope::Pool(mine), Some(theirs)) => *mine == theirs,
-        (BucketScope::Pool(_), None) => false,
     }
 }
 
@@ -149,202 +100,6 @@ pub trait SliceStore: Send + Sync {
 
     /// The fleet's current epoch, as this node last observed it.
     fn epoch(&self) -> Epoch;
-}
-
-/// One held slice and what has been spent against it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Slice {
-    /// The grant it came from.
-    pub grant: SliceGrant,
-    /// How much of it is spent.
-    pub spent: u64,
-}
-
-impl Slice {
-    /// How much is left.
-    pub fn remaining(self) -> u64 {
-        self.grant.granted.saturating_sub(self.spent)
-    }
-}
-
-/// Whether the node is serving normally or through an outage of the store.
-///
-/// The distinction matters for exactly one rule: during an outage a slice already drawn stays
-/// spendable past the moment it would normally expire, because the store still accounts it as
-/// drawn and no other node can have it. What is NOT allowed in either branch is a NEW draw.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Posture {
-    /// The store is reachable.
-    Normal,
-    /// The store is not, and the node is serving on what it already holds.
-    Outage,
-}
-
-/// What a local draw did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Draw {
-    /// It fitted in the slice the node holds.
-    Granted,
-    /// The slice is short by this much; the caller reserves once more.
-    NeedReserve {
-        /// How much more is needed.
-        shortfall: u64,
-    },
-    /// The node's slice is behind the fleet's epoch, so it cannot be spent.
-    Stale,
-}
-
-/// The slices this node is holding, by bucket and dimension.
-#[derive(Debug, Default)]
-pub struct SliceBook {
-    held: HashMap<(BucketId, CapDimension), Slice>,
-    /// Every grant that went into the held slice, in the order the store gave them.
-    ///
-    /// The held slice is the MERGED view a draw spends against; this is what the store is owed
-    /// back. They are not the same thing the moment a bucket is topped up: a top-up adds headroom
-    /// to something the node is already spending, and the second grant has an id of its own that
-    /// only ever gets spoken again if somebody kept it.
-    drawn: HashMap<(BucketId, CapDimension), Vec<SliceGrant>>,
-}
-
-impl SliceBook {
-    /// An empty book.
-    pub fn new() -> Self {
-        SliceBook::default()
-    }
-
-    /// Put a grant in the book.
-    ///
-    /// A top-up MERGES: the headroom adds up, and the validity and epoch are the newer grant's,
-    /// because that is the window the node is now spending in. What does not merge is the grant
-    /// itself — the store handed out two slices and is owed two back, so both are kept.
-    pub fn install(&mut self, bucket: BucketId, dimension: CapDimension, grant: SliceGrant) {
-        self.held
-            .entry((bucket, dimension))
-            .and_modify(|slice| {
-                slice.grant.granted = slice.grant.granted.saturating_add(grant.granted);
-                slice.grant.valid_until = grant.valid_until;
-                slice.grant.epoch = grant.epoch;
-            })
-            .or_insert(Slice { grant, spent: 0 });
-        self.drawn
-            .entry((bucket, dimension))
-            .or_default()
-            .push(grant);
-    }
-
-    /// Give a bucket's dimension back to the store: every grant that went into it, with what is
-    /// left unspent of that grant.
-    ///
-    /// Spend is attributed in the order the grants arrived — the node spent the headroom it had
-    /// before it spent the headroom it topped up with — so the unspent remainders add up to the
-    /// slice's own remainder and no grant is returned twice over.
-    pub fn release(&mut self, bucket: &BucketId, dimension: &CapDimension) -> Vec<(SliceId, u64)> {
-        let key = (*bucket, *dimension);
-        let mut spent = self.held.remove(&key).map(|slice| slice.spent).unwrap_or(0);
-        self.drawn
-            .remove(&key)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|grant| {
-                let consumed = spent.min(grant.granted);
-                spent -= consumed;
-                (grant.id, grant.granted - consumed)
-            })
-            .collect()
-    }
-
-    /// What the node holds for a bucket and dimension.
-    pub fn get(&self, bucket: &BucketId, dimension: &CapDimension) -> Option<Slice> {
-        self.held.get(&(*bucket, *dimension)).copied()
-    }
-
-    /// Spend against a held slice.
-    ///
-    /// A slice whose epoch is behind the fleet's is stale and refuses. A slice that has passed its
-    /// validity refuses too — EXCEPT during a store outage, where an already-drawn slice stays
-    /// spendable, because the alternative is refusing units the fleet has already accounted for.
-    pub fn draw(
-        &mut self,
-        bucket: &BucketId,
-        dimension: &CapDimension,
-        amount: u64,
-        now: Millis,
-        epoch: Epoch,
-        posture: Posture,
-    ) -> Draw {
-        let key = (*bucket, *dimension);
-        match self.held.get_mut(&key) {
-            None => Draw::NeedReserve { shortfall: amount },
-            Some(slice) => {
-                if slice.grant.epoch < epoch {
-                    return Draw::Stale;
-                }
-                if now > slice.grant.valid_until && posture == Posture::Normal {
-                    return Draw::Stale;
-                }
-                if slice.remaining() >= amount {
-                    slice.spent = slice.spent.saturating_add(amount);
-                    Draw::Granted
-                } else {
-                    Draw::NeedReserve {
-                        shortfall: amount - slice.remaining(),
-                    }
-                }
-            }
-        }
-    }
-
-    /// Give a draw back — the release at route of every dimension drawn on a scope the unit did
-    /// not route through.
-    pub fn give_back(&mut self, bucket: &BucketId, dimension: &CapDimension, amount: u64) {
-        if let Some(slice) = self.held.get_mut(&(*bucket, *dimension)) {
-            slice.spent = slice.spent.saturating_sub(amount);
-        }
-    }
-
-    /// One line of a chain draw.
-    pub fn draw_chain(
-        &mut self,
-        lines: &[(BucketId, CapDimension, u64)],
-        now: Millis,
-        epoch: Epoch,
-        posture: Posture,
-    ) -> Result<(), ChainRefused> {
-        let mut done: Vec<(BucketId, CapDimension, u64)> = Vec::new();
-        for (index, (bucket, dimension, amount)) in lines.iter().enumerate() {
-            match self.draw(bucket, dimension, *amount, now, epoch, posture) {
-                Draw::Granted => done.push((*bucket, *dimension, *amount)),
-                other => {
-                    // All or nothing: every line that drew gives it straight back, so a refusal at
-                    // the parent bucket releases the child's slice.
-                    for (bucket, dimension, amount) in &done {
-                        self.give_back(bucket, dimension, *amount);
-                    }
-                    return Err(ChainRefused {
-                        at: index,
-                        bucket: *bucket,
-                        dimension: *dimension,
-                        draw: other,
-                    });
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-/// A chain draw that could not be completed. Everything it had already drawn is released.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChainRefused {
-    /// Which line of the chain refused.
-    pub at: usize,
-    /// The bucket that refused.
-    pub bucket: BucketId,
-    /// The dimension of it.
-    pub dimension: CapDimension,
-    /// What the draw said.
-    pub draw: Draw,
 }
 
 /// The bucket a unit's in-flight slot is counted on.
@@ -687,31 +442,5 @@ impl ConcurrencyGauge {
         if let Some(entry) = counts.get_mut(bucket) {
             *entry = entry.saturating_sub(1);
         }
-    }
-}
-
-/// What the overdraft rule says about a unit that has run past everything it can reserve.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Overdraft {
-    /// Keep going and post the full amount. Value was delivered; the excess is carried into the
-    /// next window, which is what makes it impossible to escape a cap by overrunning it.
-    ContinueAndCarry,
-    /// The bucket's window never rolls, so there is no next window to carry into: the unit posts
-    /// what it used with nothing carried out, and the identity still balances.
-    ContinueNoCarry,
-    /// The ceiling on this bucket is reached: new units are refused, and a unit already in flight
-    /// on a session plane is cut at its next accrual.
-    Ceiling,
-}
-
-/// Decide the overdraft answer for a bucket.
-///
-/// `total_window` is a window that never rolls; `at_ceiling` is the hard bound the operator set,
-/// which is released only under dual control.
-pub fn overdraft(total_window: bool, at_ceiling: bool) -> Overdraft {
-    match (at_ceiling, total_window) {
-        (true, _) => Overdraft::Ceiling,
-        (false, true) => Overdraft::ContinueNoCarry,
-        (false, false) => Overdraft::ContinueAndCarry,
     }
 }
