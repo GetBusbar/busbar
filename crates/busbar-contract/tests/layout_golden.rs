@@ -1259,7 +1259,7 @@ fn compute_layout() -> String {
         tkind::DatagramLane,
         [
             size, lane, path, bound, path_addr, local_addr, verified, _reserved, keying, routes,
-            routes_cap
+            routes_cap, paths, paths_len
         ]
     );
     record!(
@@ -1745,7 +1745,7 @@ fn compute_layout() -> String {
     record!(
         s,
         hconn::EstablishIn,
-        [head, need, timeout_ms, target, within]
+        [head, need, timeout_ms, target, within, member]
     );
     record!(s, hconn::StreamIn, [head, stream]);
     record!(s, hconn::IoIn, [head, stream, buf, len]);

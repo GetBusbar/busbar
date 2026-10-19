@@ -5722,6 +5722,8 @@ BB_ASSERT(offsetof(bb_transport_DatagramLane, _reserved) == 52, "bb_transport_Da
 BB_ASSERT(offsetof(bb_transport_DatagramLane, keying) == 56, "bb_transport_DatagramLane.keying: offset");
 BB_ASSERT(offsetof(bb_transport_DatagramLane, routes) == 64, "bb_transport_DatagramLane.routes: offset");
 BB_ASSERT(offsetof(bb_transport_DatagramLane, routes_cap) == 72, "bb_transport_DatagramLane.routes_cap: offset");
+BB_ASSERT(offsetof(bb_transport_DatagramLane, paths) == 80, "bb_transport_DatagramLane.paths: offset");
+BB_ASSERT(offsetof(bb_transport_DatagramLane, paths_len) == 88, "bb_transport_DatagramLane.paths_len: offset");
 BB_ASSERT(sizeof(bb_transport_RendezvousTerms) == 104, "bb_transport_RendezvousTerms: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_RendezvousTerms) == 8, "bb_transport_RendezvousTerms: alignment");
 BB_ASSERT(offsetof(bb_transport_RendezvousTerms, role) == 0, "bb_transport_RendezvousTerms.role: offset");
@@ -6124,6 +6126,7 @@ BB_ASSERT(offsetof(bb_hconn_EstablishIn, need) == 24, "bb_hconn_EstablishIn.need
 BB_ASSERT(offsetof(bb_hconn_EstablishIn, timeout_ms) == 28, "bb_hconn_EstablishIn.timeout_ms: offset");
 BB_ASSERT(offsetof(bb_hconn_EstablishIn, target) == 32, "bb_hconn_EstablishIn.target: offset");
 BB_ASSERT(offsetof(bb_hconn_EstablishIn, within) == 48, "bb_hconn_EstablishIn.within: offset");
+BB_ASSERT(offsetof(bb_hconn_EstablishIn, member) == 64, "bb_hconn_EstablishIn.member: offset");
 BB_ASSERT(sizeof(bb_hconn_StreamIn) == 32, "bb_hconn_StreamIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hconn_StreamIn) == 8, "bb_hconn_StreamIn: alignment");
 BB_ASSERT(offsetof(bb_hconn_StreamIn, head) == 0, "bb_hconn_StreamIn.head: offset");
