@@ -331,6 +331,8 @@ impl Yielded {
 #[derive(Clone, Copy)]
 enum Op<'a> {
     Begin(u32, &'a [u8]),
+    /// A dial's `begin` with the head fields the host hands it.
+    BeginHead(u32, &'a [u8], &'a [Field]),
     Ingest(&'a [u8], bool),
     Emit(&'a [u8], bool),
     Refuse(&'a [u8]),
@@ -350,7 +352,7 @@ impl Op<'_> {
             // The host's re-call carries no bytes and completes no frame (as the connector's does).
             Op::Emit(..) => Op::Emit(&[], false),
             Op::Refuse(_) => Op::Refuse(&[]),
-            Op::Adopt(_) | Op::Begin(..) => Op::Timer,
+            Op::Adopt(_) | Op::Begin(..) | Op::BeginHead(..) => Op::Timer,
             other => other,
         }
     }
@@ -366,13 +368,15 @@ fn go<I: InFrame, O: OutFrame>(p: &Plugin<Transport>, s: u32, i: I) -> (Called, 
 fn cross(p: &Plugin<Transport>, framing: u64, op: Op<'_>, sink: &mut Sink) -> (Called, FramerOut) {
     let raw = sink.raw();
     match op {
-        Op::Begin(side, target) => {
+        Op::Begin(side, target) => cross(p, framing, Op::BeginHead(side, target, &[]), sink),
+        Op::BeginHead(side, target, fields) => {
             let mut i: BeginIn = input();
             (i.side, i.sink) = (side, raw);
             i.target = AbiStr {
                 ptr: target.as_ptr(),
                 len: target.len(),
             };
+            (i.fields, i.fields_len) = (fields.as_ptr(), fields.len());
             go(p, slot::BEGIN, i)
         }
         Op::Ingest(bytes, end) => {
@@ -482,6 +486,48 @@ pub(super) fn carrier_line(outcomes: &[Outcome; 8]) -> String {
         .map(|(op, o)| format!("{op}={o:?}"))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// THE FRAMER'S OWN HEAD LINES at `target` (`LocateIn::defaults_buf`), read as the connector reads
+/// them: its line, and the lines, `name: value` each, in the framer's order. The dial's head is
+/// begun with them, as the host's walk adds each one its request does not carry before the auth
+/// signs the head (THE DESIGN section 6, step 5).
+fn located_defaults(p: &Plugin<Transport>, target: &[u8]) -> (String, Vec<(Vec<u8>, Vec<u8>)>) {
+    let (mut authority, mut name, mut alpn, mut defaults) = (
+        vec![0_u8; AMPLE],
+        vec![0_u8; AMPLE],
+        vec![0_u8; AMPLE],
+        vec![0_u8; AMPLE],
+    );
+    let mut i: LocateIn = input();
+    i.target = AbiStr {
+        ptr: target.as_ptr(),
+        len: target.len(),
+    };
+    (i.authority_buf, i.authority_cap) = (authority.as_mut_ptr(), authority.len());
+    (i.name_buf, i.name_cap) = (name.as_mut_ptr(), name.len());
+    (i.alpn_buf, i.alpn_cap) = (alpn.as_mut_ptr(), alpn.len());
+    (i.defaults_buf, i.defaults_cap) = (defaults.as_mut_ptr(), defaults.len());
+    let mut f: Frame<LocateIn, LocateOut> = Frame::new(i, output());
+    let c = p.call(slot::LOCATE, &mut f);
+    let written = (f.out.defaults_written as usize).min(defaults.len());
+    let lines: Vec<(Vec<u8>, Vec<u8>)> = if c.outcome == Outcome::Ready {
+        defaults[..written]
+            .split(|b| *b == b'\n')
+            .map(|l| l.strip_suffix(b"\r").unwrap_or(l))
+            .filter(|l| !l.is_empty())
+            .filter_map(|l| {
+                let at = l.iter().position(|b| *b == b':')?;
+                let value = &l[at + 1..];
+                let start = value.iter().position(|b| *b != b' ').unwrap_or(value.len());
+                Some((l[..at].to_vec(), value[start..].to_vec()))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let line = format!("{:?} defaults={}", c.outcome, lines.len());
+    (line, lines)
 }
 
 /// One `locate` of `target` with an authority buffer of `cap` bytes: its line, and its SHORT
@@ -722,9 +768,25 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             0
         }
     };
+    // The framer's own head lines at the dial's target begin the dial's head, as the host's walk
+    // hands them (the suite's head states no field of its own, so each of them is added).
+    let defaults = r.step("dial defaults", 1, || located_defaults(&p, &target));
+    let head: Vec<Field> = defaults
+        .iter()
+        .map(|(n, v)| Field {
+            name: AbiStr {
+                ptr: n.as_ptr(),
+                len: n.len(),
+            },
+            value: AbiStr {
+                ptr: v.as_ptr(),
+                len: v.len(),
+            },
+        })
+        .collect();
     // A wire that opens with bytes of its own writes them at begin, re-driven by `timer`.
     let token = r.step("begin dial", sinkfuls(opening.len(), TIGHT_WIRE), || {
-        let y = pump(&p, 0, Op::Begin(SIDE_DIAL, &target), &mut tight);
+        let y = pump(&p, 0, Op::BeginHead(SIDE_DIAL, &target, &head), &mut tight);
         (y.line(), y.framing)
     });
     want.push(("begin dial".into(), begin_dial_want(dial, armed("begin"))));
