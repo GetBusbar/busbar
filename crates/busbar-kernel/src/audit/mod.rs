@@ -311,7 +311,8 @@ impl<R: ChainedRecord> Chain<R> {
         }
     }
 
-    /// The sequence the next appended record will carry.
+    /// TEST ONLY: the sequence the next appended record will carry.
+    #[cfg(test)]
     pub(crate) fn next_seq(&self) -> u64 {
         self.next_seq
     }
