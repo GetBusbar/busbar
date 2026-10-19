@@ -137,6 +137,7 @@ impl AuthHandleHost for LoaderSide {
             head: head_of(ask.request),
             body: ask.body,
             deadline: ask.deadline.map(|d| std::time::Instant::now() + d),
+            framing: ask.framing,
         };
         match self
             .0
@@ -158,8 +159,13 @@ impl AuthHandleHost for LoaderSide {
             unit: ask.unit,
             line: ask.line,
             conn: ask.conn,
+            framing: ask.framing,
             head: head_of(ask.request),
         })
+    }
+
+    fn framing_ended(&self, framing: u64) {
+        self.0.framing_ended(framing);
     }
 
     fn refuse(&self, ask: RefuseAsk) -> Result<RefusalBytes, &'static str> {

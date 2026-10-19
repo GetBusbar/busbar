@@ -38,6 +38,8 @@
 //! This module names no loader: the composition root glues it to the plugin loader's auth handle,
 //! injecting the MAC, the unit mint, the spawner and the refusal sink.
 
+#![allow(dead_code, unused_imports, unreachable_code)]
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -68,12 +70,12 @@ pub const POINT_UNNEEDED: &str = "the line's auth needs no call at this point";
 /// request: the peer point is before any head, and carries nothing (the Peer rule).
 pub const PEER_BYTES: &str = "a peer-point call presents no unit, no request and no body";
 /// The most connections whose `Peer` verdict the kernel holds at once. A verdict leaves when its
-/// connection ends ([`Inbound::connection_ended`]); a NEW connection's peer call at the bound is
+/// framing ends ([`Inbound::framing_ended`]); a NEW framing's peer call at the bound is
 /// refused LOUDLY ([`PEER_TABLE_FULL`], an error event), and no live connection's verdict is ever
 /// evicted for it.
 pub const PEER_CONNECTIONS_MAX: usize = 65_536;
-/// The refusal text of a new connection's peer call while [`PEER_CONNECTIONS_MAX`] connections
-/// hold a verdict.
+/// The refusal text of a new framing's peer call while [`PEER_CONNECTIONS_MAX`] framings hold a
+/// verdict.
 pub const PEER_TABLE_FULL: &str =
     "the kernel holds the most connection verdicts it may; this connection's peer call is refused";
 /// The refusal text of a body past the line's size gate presented at the body point.
@@ -82,6 +84,9 @@ pub const OVER_GATE: &str = "the body passes the line's size gate";
 pub const UNIT_FOREIGN: &str = "the unit is not one the kernel minted for this request";
 /// The refusal text of a unit that could not be minted (no secret, or no MAC).
 pub const UNIT_UNMINTED: &str = "the kernel could not mint the request's unit";
+/// The refusal text of a call whose connection is not the one its framing's earlier calls named.
+pub const CONN_MISMATCH: &str =
+    "the call names another connection than the one its framing's calls named";
 /// The refusal text of an unknown refusal cause.
 pub const CAUSE_UNKNOWN: &str = "the refusal names no cause the kernel answers";
 
@@ -156,8 +161,12 @@ pub struct Call {
     pub unit: UnitRef,
     /// The point bit.
     pub point: u32,
-    /// The connection.
+    /// The connection, as the transport names it: checked against its framing's.
     pub conn: u64,
+    /// THE FRAMING the call was made on: the host's own identity of the connection side (the
+    /// ticket of the framer op the call was made inside), never the transport's word. A
+    /// connection's `Peer` verdict is held by it, and leaves with it ([`Inbound::framing_ended`]).
+    pub framing: u64,
     /// The request.
     pub head: Head,
     /// The whole body, at the body point only.
@@ -196,8 +205,11 @@ pub struct HandIn {
     pub unit: UnitRef,
     /// The line the transport matched.
     pub line: u32,
-    /// The connection: a `Peer` line's verdict is its connection's.
+    /// The connection, as the transport names it.
     pub conn: u64,
+    /// The framing the hand-in was made on ([`Call::framing`]): a `Peer` line's verdict is its
+    /// framing's. `None` for a ticketless hand-in, which no `Peer` verdict reaches.
+    pub framing: Option<u64>,
     /// The request, after the transport stripped what the auths named.
     pub head: Head,
 }
@@ -532,7 +544,9 @@ impl Table {
 pub struct Inbound {
     tables: RwLock<HashMap<(u64, u64), Arc<Table>>>,
     units: Mutex<HashMap<u64, UnitState>>,
-    /// Each connection's `Peer` verdict, by (owner, generation, connection), at most
+    /// The connection each framing's calls named, by (owner, framing).
+    framing_conns: Mutex<HashMap<(u64, u64), u64>>,
+    /// Each framing's `Peer` verdict, by (owner, generation, framing), at most
     /// [`PEER_CONNECTIONS_MAX`].
     peers: Mutex<HashMap<(u64, u64, u64), UnitState>>,
     seals: Seals,
@@ -799,6 +813,7 @@ impl Inbound {
             tables: RwLock::default(),
             units: Mutex::default(),
             peers: Mutex::default(),
+            framing_conns: Mutex::default(),
             seals,
             spawn,
             refused,
@@ -892,11 +907,35 @@ impl Inbound {
         drop(self.units().remove(&unit));
     }
 
-    /// THE HOST'S END NOTIFICATION: `owner`'s connection `conn` ended. Its `Peer` verdict, at every
-    /// generation, leaves the table (its credential zeroised); nothing else is held by connection.
-    pub fn connection_ended(&self, owner: u64, conn: u64) {
-        self.peers()
-            .retain(|(o, _, c), _| *o != owner || *c != conn);
+    /// THE HOST'S END NOTIFICATION: the framing `framing` ended (the loader retired the ticket of
+    /// the connection side it drove). Its `Peer` verdict, at every generation and for every owner,
+    /// leaves the table (its credential zeroised), and so does the connection it named.
+    pub fn framing_ended(&self, framing: u64) {
+        // RED: nothing leaves.
+        let _ = framing;
+    }
+
+    /// The connection a framing's calls name: the first call's, and every later call must name the
+    /// same ([`CONN_MISMATCH`]).
+    fn same_conn(&self, owner: u64, framing: u64, conn: u64) -> Result<(), &'static str> {
+        // RED: the connection is not checked.
+        if framing != u64::MAX {
+            return Ok(());
+        }
+        let mut conns = self
+            .framing_conns
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        match conns.entry((owner, framing)) {
+            std::collections::hash_map::Entry::Occupied(e) if *e.get() != conn => {
+                Err(CONN_MISMATCH)
+            }
+            std::collections::hash_map::Entry::Occupied(_) => Ok(()),
+            std::collections::hash_map::Entry::Vacant(v) => {
+                v.insert(conn);
+                Ok(())
+            }
+        }
     }
 
     /// How many connections hold a `Peer` verdict.
@@ -905,8 +944,8 @@ impl Inbound {
         self.peers().len()
     }
 
-    /// Mint a unit for `owner`'s `line` at `generation` on connection `conn`: its key, its fresh
-    /// secret, its MAC. A connection's `Peer` verdict, held for the same ordered auths, is the
+    /// Mint a unit for `owner`'s `line` at `generation` on framing `framing`: its key, its fresh
+    /// secret, its MAC. The framing's `Peer` verdict, held for the same ordered auths, is the
     /// unit's from the start (l.975-976: a `{Peer}`-only verdict is applied to every unit on it).
     fn mint(
         &self,
@@ -914,7 +953,7 @@ impl Inbound {
         generation: u64,
         line: u32,
         providers: &[String],
-        conn: u64,
+        framing: Option<u64>,
     ) -> Result<UnitRef, &'static str> {
         let secret = fresh_secret().ok_or(UNIT_UNMINTED)?;
         let unit = (self.seals.mint)();
@@ -930,14 +969,13 @@ impl Inbound {
         })
         .ok_or(UNIT_UNMINTED)?;
         let mut state = UnitState::open(owner, generation, line, secret, providers);
-        if let Some(peer) = self
-            .peers()
-            .get(&(owner, generation, conn))
-            .filter(|p| p.providers == providers)
-        {
-            state.answers.clone_from(&peer.answers);
-            state.admitted.clone_from(&peer.admitted);
-            state.credential.clone_from(&peer.credential);
+        if let Some(peer) = framing.and_then(|f| {
+            self.peers()
+                .get(&(owner, generation, f))
+                .filter(|p| p.providers == providers)
+                .map(|p| (p.answers.clone(), p.admitted.clone(), p.credential.clone()))
+        }) {
+            (state.answers, state.admitted, state.credential) = peer;
         }
         self.units().insert(unit, state);
         Ok(UnitRef { id: unit, mac })
@@ -1032,8 +1070,9 @@ impl Inbound {
         {
             return Err(OVER_GATE);
         }
+        self.same_conn(call.owner, call.framing, call.conn)?;
         let (target, unit) = if peer {
-            let key = (call.owner, call.generation, call.conn);
+            let key = (call.owner, call.generation, call.framing);
             let mut peers = self.peers();
             if !peers.contains_key(&key) && peers.len() >= PEER_CONNECTIONS_MAX {
                 // Bounded, and LOUD: no live connection's verdict is evicted for a new one.
@@ -1051,7 +1090,13 @@ impl Inbound {
             (Target::Peer(key), UnitRef::NONE)
         } else {
             let unit = if call.unit.is_none() {
-                self.mint(call.owner, call.generation, line_ix, &providers, call.conn)?
+                self.mint(
+                    call.owner,
+                    call.generation,
+                    line_ix,
+                    &providers,
+                    Some(call.framing),
+                )?
             } else if self.verified(call.owner, Some(call.generation), Some(line_ix), call.unit) {
                 call.unit
             } else {
@@ -1266,13 +1311,16 @@ impl Inbound {
     /// unit it did not mint for this owner; [`UNIT_UNMINTED`] when no unit could be minted.
     pub fn hand_in(&self, h: HandIn) -> Result<(u32, UnitRef), &'static str> {
         let table = self.table(h.owner, h.generation).ok_or(NO_LIST)?;
+        if let Some(f) = h.framing {
+            self.same_conn(h.owner, f, h.conn)?;
+        }
         let lines = table.listener.guests.lines();
         let unit = if h.unit.is_none() {
             let names: &[String] = match lines.get(h.line as usize).map(|l| &l.auth) {
                 Some(LineAuth::Chain(names, _)) => names,
                 _ => &[],
             };
-            self.mint(h.owner, h.generation, h.line, &ordered(names), h.conn)?
+            self.mint(h.owner, h.generation, h.line, &ordered(names), h.framing)?
         } else if self.verified(h.owner, None, None, h.unit) {
             h.unit
         } else {

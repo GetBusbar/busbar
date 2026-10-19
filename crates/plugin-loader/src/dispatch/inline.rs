@@ -118,6 +118,9 @@ pub struct InlineTickets {
     /// The dispatcher's ticket key: inline generations are permuted as a worker slot's.
     key: TicketKey,
     slots: Mutex<(Vec<Arc<Slot>>, Vec<u32>)>,
+    /// Told when a ticket is retired: the kernel's side of the auth handle, whose per-framing
+    /// state ends with the connection side the ticket drove.
+    ended: std::sync::OnceLock<Arc<dyn super::auth_handle::AuthHandleHost>>,
 }
 
 impl std::fmt::Debug for InlineTickets {
@@ -132,7 +135,13 @@ impl InlineTickets {
         Self {
             key,
             slots: Mutex::default(),
+            ended: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Tell `host` of every ticket retired from here on; the first install stands.
+    pub(crate) fn tell_ended(&self, host: Arc<dyn super::auth_handle::AuthHandleHost>) {
+        let _ = self.ended.set(host);
     }
 
     /// Mint a ticket; `None` when every slot is held.
@@ -293,5 +302,6 @@ impl Drop for InlineTicket {
     fn drop(&mut self) {
         let (_, index) = decode(self.ticket.slot);
         self.owner.recycle(index, &self.slot);
+        // RED: the kernel side is not told.
     }
 }

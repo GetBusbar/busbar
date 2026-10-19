@@ -266,6 +266,7 @@ impl Kit {
                     unit,
                     point,
                     conn: 1,
+                    framing: 1,
                     head,
                     body,
                     deadline: None,
@@ -296,6 +297,7 @@ impl Kit {
                     unit,
                     point,
                     conn,
+                    framing: conn,
                     head,
                     body: None,
                     deadline,
@@ -317,6 +319,7 @@ impl Kit {
                 unit,
                 line: self.line(path),
                 conn,
+                framing: Some(conn),
                 head,
             })
             .expect("handed in")
@@ -331,6 +334,7 @@ impl Kit {
                 unit,
                 line: self.line(line_path),
                 conn: 1,
+                framing: Some(1),
                 head,
             })
             .expect("handed in")
@@ -1359,6 +1363,7 @@ fn red_signed_a_body_over_the_gate_is_the_413_before_any_verdict() {
             unit: UnitRef::NONE,
             point: POINT_HEAD_BODY,
             conn: 1,
+            framing: 1,
             head: signed_head(),
             body: Some(vec![b'x'; 64]),
             deadline: None,
@@ -1373,8 +1378,9 @@ fn red_signed_a_body_over_the_gate_is_the_413_before_any_verdict() {
 
 // ── the connection's end ─────────────────────────────────────────────────────────────────────
 
-/// RED (the host's end notification): N connections that each end leave no peer verdict held,
-/// and a live connection's verdict survives any number of others ending (and still admits).
+/// RED (the host's end notification, keyed by the host's framing): N framings that each end leave
+/// no peer verdict held, and a live framing's verdict survives any number of others ending (and
+/// still admits).
 #[test]
 fn red_ended_connections_leave_no_peer_verdict_and_a_live_one_survives() {
     let a = Script::new(AuthPoints::PEER, identity("peer", "cert"), Vec::new());
@@ -1391,7 +1397,7 @@ fn red_ended_connections_leave_no_peer_verdict_and_a_live_one_survives() {
             )
             .expect("answered");
         assert_eq!(ans.flow, FLOW_CONTINUE);
-        k.inbound.connection_ended(OWNER, conn);
+        k.inbound.framing_ended(conn);
     }
     assert_eq!(
         k.inbound.peer_verdicts(),
@@ -1417,12 +1423,12 @@ fn red_ended_connections_leave_no_peer_verdict_and_a_live_one_survives() {
             None,
         )
         .expect("answered");
-        k.inbound.connection_ended(OWNER, conn);
+        k.inbound.framing_ended(conn);
     }
     assert_eq!(k.inbound.peer_verdicts(), 1);
     let (flow, _) = k.hand_in_on(7, MESSAGES, UnitRef::NONE, post(MESSAGES, &[], None));
     assert_eq!(flow, FLOW_CONTINUE, "the live connection lost its verdict");
-    k.inbound.connection_ended(OWNER, 7);
+    k.inbound.framing_ended(7);
     let (flow, _) = k.hand_in_on(7, MESSAGES, UnitRef::NONE, post(MESSAGES, &[], None));
     assert_eq!(flow, FLOW_STOP);
 }
@@ -1458,4 +1464,53 @@ fn red_a_full_peer_table_refuses_a_new_connection_by_name_and_evicts_none() {
     assert_eq!(k.inbound.peer_verdicts(), PEER_CONNECTIONS_MAX);
     let (flow, _) = k.hand_in_on(0, MESSAGES, UnitRef::NONE, post(MESSAGES, &[], None));
     assert_eq!(flow, FLOW_CONTINUE, "a held verdict was evicted");
+}
+
+/// RED (the framing is the host's, the connection the transport's word): a call naming another
+/// connection than its framing's earlier calls named is refused, at the call and at the hand-in.
+#[test]
+fn red_a_call_whose_conn_disagrees_with_its_framing_is_refused() {
+    let a = Script::new(AuthPoints::HEAD, identity("alice", "k"), Vec::new());
+    let k = kit(&[("a", Arc::clone(&a))]);
+    let call = |framing: u64, conn: u64| {
+        k.inbound
+            .auth_call(
+                Call {
+                    owner: OWNER,
+                    generation: GEN,
+                    auth: k.id(MESSAGES),
+                    unit: UnitRef::NONE,
+                    point: POINT_HEAD,
+                    conn,
+                    framing,
+                    head: post(MESSAGES, &[], None),
+                    body: None,
+                    deadline: None,
+                },
+                Box::new(|_: Result<Answer, &'static str>| {}),
+            )
+            .expect("answered at once")
+    };
+    assert!(call(40, 5).is_ok());
+    assert_eq!(call(40, 6), Err(CONN_MISMATCH));
+    assert!(
+        call(41, 6).is_ok(),
+        "another framing may name another connection"
+    );
+    assert_eq!(
+        k.inbound.hand_in(HandIn {
+            owner: OWNER,
+            generation: GEN,
+            auth: k.id(MESSAGES),
+            unit: UnitRef::NONE,
+            line: k.line(MESSAGES),
+            conn: 9,
+            framing: Some(40),
+            head: post(MESSAGES, &[], None),
+        }),
+        Err(CONN_MISMATCH)
+    );
+    // Once the framing ends, its connection is no longer held.
+    k.inbound.framing_ended(40);
+    assert!(call(40, 6).is_ok());
 }

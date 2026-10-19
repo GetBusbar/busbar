@@ -285,6 +285,10 @@ pub struct AuthCallAsk {
     pub request: HeadCopy,
     /// The whole body, at the body point only.
     pub body: Option<Vec<u8>>,
+    /// THE FRAMING the call was made on: the ticket of the framer op it was made inside
+    /// ([`framing_of`]), the host's own identity of the connection side, never the transport's
+    /// word. Its end is [`AuthHandleHost::framing_ended`].
+    pub framing: u64,
     /// What remains of the deadline of the framer op the call was made in (its ticket was minted
     /// for that op with its deadline class): `None` = none (a write-behind op, or no deadline).
     pub deadline: Option<std::time::Duration>,
@@ -335,6 +339,9 @@ pub struct HandInAsk {
     pub stream: u64,
     /// The request, after the transport stripped what the auth named.
     pub request: HeadCopy,
+    /// The framing the hand-in was made on ([`framing_of`] its ticket); `None` for a ticketless
+    /// hand-in.
+    pub framing: Option<u64>,
 }
 
 /// `unit.refuse`, as the loader hands it to the kernel.
@@ -404,4 +411,15 @@ pub trait AuthHandleHost: Send + Sync {
     ///
     /// The kernel serves no list for the caller, or the cause names no line it holds.
     fn refuse(&self, ask: RefuseAsk) -> Result<RefusalBytes, &'static str>;
+
+    /// THE FRAMING ENDED: the loader retired the ticket `framing` names (the connection side it
+    /// drove was dropped). Everything the kernel holds for that framing goes.
+    fn framing_ended(&self, framing: u64);
+}
+
+/// The host's identity of the framing a ticket drives: its slot and its generation, which no
+/// later minting of the slot repeats.
+#[must_use]
+pub const fn framing_of(t: busbar_contract::abi::mechanism::ticket::Ticket) -> u64 {
+    ((t.slot as u64) << 32) | t.generation as u64
 }
