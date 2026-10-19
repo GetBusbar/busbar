@@ -97,6 +97,8 @@ pub(crate) mod quarantine;
 /// The durable demotion record, which the root attaches to the kernel's host services.
 pub use quarantine::DemotionRecord;
 pub mod registry;
+/// The generation's routing tables, built from each plane's stated routing.
+pub mod routing;
 // `store` is a core-internal plane primitive. Its module is widened to `pub` ONLY under the
 // test-support surface so an extracted plane's own test binary can name the durable-body
 // helpers it exercises (`StoreNamedTestExt`, `KIND_TASK_EVENT`, `task_event_row_from_body`); the
