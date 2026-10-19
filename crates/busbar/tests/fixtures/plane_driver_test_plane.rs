@@ -664,6 +664,8 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             resource_facts,
             listed: std::ptr::null(),
             listed_len: 0,
+            arrival_spans: std::ptr::null(),
+            arrival_spans_len: 0,
         });
         let me = Box::new(Inst {
             wake,
