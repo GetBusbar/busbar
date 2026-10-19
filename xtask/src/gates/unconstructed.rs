@@ -1171,6 +1171,44 @@ impl Gate for UnconstructedGate {
             &["DEAD SYMBOL", "dual_writing"],
         ));
 
+        // ── CONTROL 10c — A NAME IS NOT A THING (Q128 u91). ─────────────────────────────────
+        // A bare symbol the built file defines twice anchors whichever one survives: a second
+        // production `fn dual_writing` in another impl must make the row RED as ambiguous, and a
+        // type-qualified symbol whose type lost its `fn` is DEAD even though another type in the
+        // same file still declares a `fn` of that name.
+        report.push(prove_rows_red(
+            &base,
+            self,
+            "a bare symbol its `built` file defines twice is ambiguous, never live",
+            &[ROW_DEAD_SYMBOL],
+            on_base(
+                SETTLE,
+                format!(
+                    "{}\npub struct PlantedTwin;\nimpl PlantedTwin {{\n    pub fn dual_writing() \
+                     {{}}\n}}\n",
+                    cx.read(SETTLE).unwrap_or_default()
+                ),
+            ),
+            &["AMBIGUOUS SYMBOL", "ledger-dual-write", "dual_writing"],
+        ));
+        const LEGACY: &str = "crates/busbar-kernel-ledger/src/legacy.rs";
+        report.push(prove_rows_red(
+            &base,
+            self,
+            "a type-qualified symbol whose impl lost its `fn` is dead though another type keeps \
+             a `fn` of that name",
+            &[ROW_DEAD_SYMBOL],
+            on_base(
+                LEGACY,
+                cx.read(LEGACY).unwrap_or_default().replacen(
+                    "pub fn new() -> Self {\n        RecordingRows::default()",
+                    "pub fn renamed_away() -> Self {\n        RecordingRows::default()",
+                    1,
+                ),
+            ),
+            &["DEAD SYMBOL", "ledger-recording-rows"],
+        ));
+
         // ── CONTROL 12 — A SELF-DECLARED UNSHIPPED CAPABILITY IS RED (item 230). ────────────
         // The five-line silencing, planted: a new capability declared `unshipped` with a full
         // reason and switch, in the declaration file only. Its row must RED, because the register
@@ -1453,6 +1491,56 @@ mod tests {
         ));
         // Neither is a comment.
         assert!(!defines("// fn set_error_map() {}", "set_error_map"));
+    }
+
+    /// A NAME IS NOT A THING (Q128 u91): `Type::fn` resolves only inside that type's impl, and a
+    /// bare symbol the file defines twice anchors neither definition. RED on dev 0453923b9f: any
+    /// production `fn new` kept `new` live, whichever type it belonged to.
+    #[test]
+    fn a_qualified_symbol_resolves_in_its_impl_and_a_bare_one_defined_twice_is_ambiguous() {
+        let two = "pub struct A;\nimpl A {\n    pub fn new() -> Self {\n        A\n    }\n}\n\
+                   pub struct B;\nimpl Default for B {\n    fn default() -> Self {\n        B\n    \
+                   }\n}\nimpl B {\n    pub fn new() -> Self {\n        B\n    }\n}\n";
+        assert!(defines(two, "A::new"));
+        assert!(defines(two, "B::new"));
+        assert!(defines(two, "B::default"));
+        assert!(!defines(two, "A::default"));
+        assert!(!defines(two, "C::new"));
+        assert!(!defines(two, "new"), "a bare symbol defined twice names neither");
+        let only_b = two.replace("impl A {\n    pub fn new() -> Self {\n        A\n    }\n}\n", "");
+        assert!(!defines(&only_b, "A::new"), "B's `new` does not keep A's alive");
+        assert!(defines(&only_b, "new"));
+        assert!(defines(
+            "impl<T: Clone> Wrap<T> {\n    pub fn new(t: T) -> Self {\n        Wrap(t)\n    }\n}\n",
+            "Wrap::new"
+        ));
+        assert!(defines(
+            "impl<'a> std::fmt::Display for crate::x::Wrap<'a> {\n    fn fmt(&self) {}\n}\n",
+            "Wrap::fmt"
+        ));
+        // A free fn is no method of any type.
+        assert!(!defines("pub fn new() {}\n", "A::new"));
+    }
+
+    /// The real row the finding names: `ledger-recording-rows` anchors `RecordingRows::new`, and
+    /// `SummedRows::new` beside it in the same file does not keep it live.
+    #[test]
+    fn the_recording_rows_row_dies_with_its_own_new() {
+        const LEGACY: &str = "crates/busbar-kernel-ledger/src/legacy.rs";
+        let cx = Ctx::workspace().expect("workspace context");
+        let text = cx.read(LEGACY).expect("legacy.rs");
+        let gone = text.replacen(
+            "pub fn new() -> Self {\n        RecordingRows::default()",
+            "pub fn renamed_away() -> Self {\n        RecordingRows::default()",
+            1,
+        );
+        assert_ne!(gone, text, "the plant landed");
+        let mut ov = Overlay::new();
+        ov.set(LEGACY, gone);
+        let v = UnconstructedGate.run(&cx.with_overlay(ov));
+        let d = row(&v, ROW_DEAD_SYMBOL);
+        assert_eq!(d.status, Status::Fail, "{}", d.detail);
+        assert!(d.detail.contains("ledger-recording-rows"), "{}", d.detail);
     }
 
     /// The register and the declaration file agree today: every id on the register is declared

@@ -1377,6 +1377,58 @@ pub fn selftest<'a>(
             format!("{REGISTRY} files no alias of {MIN_NEEDLE_LEN}+ characters under any axis"),
         ))),
     }
+    // A HOOK'S REGISTRY ALIAS IS A HOOKS INSTANCE (Q128 u84). `plugins.yaml` writes the kind `hook`
+    // and the axis is spelled `hooks`; read as two words, every out-of-tree hook's alias fell out of
+    // the census and core could name it unmeasured. The alias is read off the live registry, never
+    // typed here.
+    let hook_alias = registry_aliases(&cx.read(REGISTRY).unwrap_or_default())
+        .into_iter()
+        .find(|(k, a, _)| k == "hook" && is_needle(a));
+    match hook_alias {
+        Some((_, alias, _)) => {
+            let pick =
+                format!("pub fn pick(module: &str) -> bool {{\n    module == \"{alias}\"\n}}\n");
+            report.push(prove_rows_red(
+                cx,
+                gate,
+                format!("a `hook` registry alias (`{alias}`) in a neutral crate is a hooks instance"),
+                &[ROW_MATRIX],
+                super::fixture_files(&[("planted_hook_alias.rs", pick.as_str())]),
+                &[
+                    "unlisted-instance",
+                    &super::fixture_subject("hooks"),
+                    "planted_hook_alias.rs",
+                ],
+            ));
+        }
+        None => report.push(crate::gates::CasePlan::from(super::super::unplantable(
+            "the instance registry files a `kind: hook` alias",
+            &[ROW_MATRIX],
+            &["instance"],
+            format!("{REGISTRY} files no `kind: hook` alias of {MIN_NEEDLE_LEN}+ characters"),
+        ))),
+    }
+    // A REGISTRY `kind:` THAT IS NO PLUGIN KIND IS REFUSED, never skipped: an alias the census
+    // cannot place is an alias it cannot count.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a `plugins.yaml` entry whose `kind:` names no plugin kind is refused",
+        &[ROW_MATRIX],
+        {
+            let mut ov = crate::ctx::Overlay::new();
+            ov.set(
+                REGISTRY,
+                format!(
+                    "{}\n  - repo: busbar-planted-gadget\n    kind: planted-kind\n    alias: \
+                     planted-gadget\n    crate: busbar-planted-gadget-plugin\n",
+                    cx.read(REGISTRY).unwrap_or_default().trim_end()
+                ),
+            );
+            ov
+        },
+        &["unknown-registry-kind", "planted-kind"],
+    ));
     // A NAMED SHAPE RESERVATION (ARCHITECT ruling on #787). A `[[shape-word]]` row reserves ONE
     // spelling of a word that is a shape (the 1.5.5 placement key `header`): the constant its
     // holder names, in the file it names. GREEN with the row; the same row beside a second spelling
@@ -1734,6 +1786,34 @@ mod tests {
             )]
         );
         assert!(render(&Instances::new(), &v).contains("short\tsecret\tc\t"));
+    }
+
+    #[test]
+    fn a_hook_registry_alias_is_a_hooks_instance_and_an_unknown_kind_is_refused() {
+        // RED on dev 0453923b9f (Q128 u84): `plugins.yaml` writes `kind: hook`, the axis is
+        // `hooks`, and the alias was dropped; a `kind:` naming no plugin kind was skipped silently.
+        let registry = "plugins:\n  - repo: busbar-hook-planted\n    kind: hook\n    alias: \
+                        planted-hook\n    crate: busbar-hook-planted-plugin\n  - repo: \
+                        busbar-gadget-planted\n    kind: gadget\n    alias: planted-gadget\n    \
+                        crate: busbar-gadget-planted-plugin\n  - repo: busbar-plane-planted\n    \
+                        kind: plane\n    alias: planted-plane\n    crate: busbar-plane-planted\n";
+        let v = vocabulary(&[], &[], &[], registry);
+        let hooks = v.names.get("hooks").expect("the hooks axis");
+        assert!(hooks.contains_key("planted-hook"), "{hooks:?}");
+        assert!(
+            v.unattributed
+                .iter()
+                .any(|f| f.starts_with("unknown-registry-kind\t") && f.contains("gadget")),
+            "{:?}",
+            v.unattributed
+        );
+        // `plane` is a plugin kind the ordinary columns count: no axis here, and no refusal.
+        assert!(
+            !v.unattributed.iter().any(|f| f.contains("planted-plane")),
+            "{:?}",
+            v.unattributed
+        );
+        assert!(v.names.values().all(|n| !n.contains_key("planted-plane")));
     }
 
     #[test]

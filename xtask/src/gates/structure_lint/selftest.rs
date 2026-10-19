@@ -689,6 +689,46 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         let mut throwaway = crate::gates::structure_lint::Findings::default();
         roots::resolve(cx, &mut throwaway)
     };
+
+    // THE BODIES, NOT THE DELEGATES (Q128 u90). `try_admit` is one line handing off to
+    // `admit_checked`, its sibling entry `try_admit_estimated` hands off to the same, and `decl_for`
+    // is `registry().decl(name)`. A store call or an allocation planted where the work is done
+    // must be named, or the purity row guards the doorway and not the room.
+    for (file, func, planted, tag) in [
+        (
+            format!("{}/governance/state.rs", addresses.core),
+            "admit_checked",
+            "        let _ = self.store.get(k);\n",
+            "STORE-ON-REQUEST-PATH",
+        ),
+        (
+            format!("{}/governance/state.rs", addresses.core),
+            "try_admit_estimated",
+            "        let _ = self.store.get(k);\n",
+            "STORE-ON-REQUEST-PATH",
+        ),
+        (
+            format!("{}/proto/installed.rs", addresses.substrate),
+            "decl",
+            "        let _ = Box::new(0u8);\n",
+            "ALLOC-ON-PROTOCOL-LOOKUP",
+        ),
+    ] {
+        match plant_into_fn(cx, &file, &format!("{func}("), planted) {
+            Some(ov) => report.push(tree_case(
+                cx,
+                gate,
+                &format!("a banned call inside `{func}`, behind its delegate, is named by line"),
+                &[fn_scoped::ROW_REQUEST_PATH_PURITY],
+                ov,
+                &[tag, &file],
+            )),
+            None => report.note_infra_failure(format!(
+                "structure-lint selftest: `fn {func}` is not in {file}, so the request-path body \
+                 plant has no body to plant into"
+            )),
+        }
+    }
     //
     // THREE PLANTS, ONE RUN, EVERY ONE NAMED (items 184, 223, 224). Each is a duplicate the old
     // two-plane scan could not see:

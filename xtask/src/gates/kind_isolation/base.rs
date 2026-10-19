@@ -198,3 +198,90 @@ pub fn row_keys(text: &str, table: &str, id_fields: &[&str]) -> BTreeSet<String>
     flush(&mut cur, &mut out);
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ctx::Overlay;
+    use crate::gates::construction::ceilings::BASE_PIN_KEY;
+    use std::path::Path;
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args([
+                "-c",
+                "user.name=base",
+                "-c",
+                "user.email=base@selftest",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// Q128 u82: a ledger the base's tree LISTS but `git show` cannot read is a base that cannot be
+    /// established — `no-base`, RED — and never the "this branch adds the ledger" state that
+    /// switches the mint rule off. RED on dev 0453923b9f: every read error set
+    /// `registry_present = false`. The GREEN arms: a readable ledger is present, and a base whose
+    /// tree has no ledger at all is the honest absent state.
+    #[test]
+    fn a_listed_ledger_the_base_cannot_show_is_no_base_and_never_an_absent_one() {
+        let dir = std::env::temp_dir().join(format!(
+            "xtask-base-registry-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("qa")).expect("the fixture repository");
+        let manifest = "[package]\nname = \"planted\"\nversion = \"0.0.0\"\n";
+        std::fs::write(dir.join("Cargo.toml"), manifest).expect("the manifest");
+        std::fs::write(dir.join(REGISTRY_FILE), "# planted\n").expect("the ledger");
+        git(&dir, &["init", "-q"]);
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-q", "-m", "with the ledger"]);
+        let with = git(&dir, &["rev-parse", "HEAD"]);
+        git(&dir, &["rm", "-q", REGISTRY_FILE]);
+        git(&dir, &["commit", "-q", "-m", "without the ledger"]);
+        let without = git(&dir, &["rev-parse", "HEAD"]);
+        let cx = Ctx::at(&dir, dir.join("scratch")).expect("a fixture context");
+        let pinned = |sha: &str, extra: &[(String, &str)]| {
+            let mut ov = Overlay::new();
+            ov.set_command(BASE_PIN_KEY, sha);
+            for (k, v) in extra {
+                ov.set_command(k.clone(), *v);
+            }
+            cx.with_overlay(ov)
+        };
+
+        // RED: the ref is planted, so `git show` answers only what the overlay plants — the
+        // manifest, not the ledger the tree lists.
+        let unreadable = pinned(
+            &with,
+            &[
+                (format!("git-ref:{with}"), with.as_str()),
+                (format!("git-show:{with}:Cargo.toml"), manifest),
+            ],
+        );
+        let got = read(&unreadable);
+        assert!(
+            got.is_err(),
+            "a listed ledger that cannot be read must be no-base, got registry_present = {:?}",
+            got.map(|b| b.registry_present)
+        );
+
+        let readable = read(&pinned(&with, &[])).expect("a readable base");
+        assert!(readable.registry_present);
+        assert_eq!(readable.registry, "# planted\n");
+
+        let absent = read(&pinned(&without, &[])).expect("a base with no ledger");
+        assert!(!absent.registry_present);
+        assert!(absent.registry.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
