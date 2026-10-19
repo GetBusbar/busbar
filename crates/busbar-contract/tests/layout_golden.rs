@@ -13,7 +13,6 @@
 //! a re-seed that is not append-only is refused unless named `BUSBAR_UPDATE_GOLDEN=break`
 //! ([`layout_breaks`]).
 
-use busbar_contract::abi::host::conn::{ConnCtx, ConnSlots, WireOpenDesc, WirePiece};
 use busbar_contract::abi::hot::host::PlaneHostVtable;
 use busbar_contract::abi::hot::*;
 use busbar_contract::abi::shared::{DeclStr, WireConnFacts, WireField};
@@ -572,51 +571,6 @@ fn compute_layout() -> String {
         ]
     );
     record!(s, WireField, [name, value]);
-
-    // THE CONNECTION TABLE: one slot per `Conns` operation, the open descriptor and the
-    // piece a read writes. Several fields are same-width neighbours — a swap is invisible to all
-    // but this.
-    record!(s, ConnCtx, [ptr]);
-    record!(
-        s,
-        ConnSlots,
-        [size, _reserved, open, write, read, wait, facts, close]
-    );
-    record!(
-        s,
-        WireOpenDesc,
-        [
-            size,
-            _reserved,
-            target,
-            fields,
-            fields_len,
-            body,
-            body_len,
-            timeout_ms,
-            method,
-            head_target
-        ]
-    );
-    record!(
-        s,
-        WirePiece,
-        [
-            size,
-            kind,
-            end,
-            status_class,
-            flags,
-            stream,
-            len,
-            code,
-            _reserved,
-            ns,
-            retry_after_secs,
-            reason,
-            declared_len
-        ]
-    );
 
     // THE ONE MEMORY ABI (`BUSBAR-1.6.0.md` THE DESIGN, §11.5): the shared mechanism and the seven kind
     // tables. This golden is the ONE layout pin (`abi-audit` F2).

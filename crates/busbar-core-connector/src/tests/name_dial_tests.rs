@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A NEED DIALS A HOSTNAME THROUGH THE ONE DESTINATION GUARD, END TO END (`BUSBAR-1.6.0.md` THE
-//! DESIGN, connections; CONNECTOR-19 ruling (b); OWNER ruling DESTINATION GUARD). A plugin's view of
-//! the connection table (`HostConns`, over the host's lowered slots) opens a need whose target is a
+//! DESIGN, connections; CONNECTOR-19 ruling (b); OWNER ruling DESTINATION GUARD). One instance's
+//! calls on the connection table (the connector's `Conns`, the caller stated) open a need whose target is a
 //! NAME; the connector judges the authority through the deployment's one judge
 //! (`process::GuardJudge`), the name resolves off the caller's thread, and the connector dials
 //! exactly the pinned address. The open answers at once with the dial in flight; the resolution
@@ -16,8 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use busbar_contract::abi::host::conn::{host_slots, ConnHost, HostConns};
-use busbar_contract::conn::{ConnError, ConnId, Conns, InstanceId, NeedId, OpenDesc};
+use busbar_contract::conn::{ConnError, ConnId, Conns, InstanceId, NeedId, OpenDesc, Piece};
 use busbar_kernel::config::Destinations;
 
 use crate::guard::{Guard, Resolve, Resolved, SystemResolver};
@@ -89,7 +88,7 @@ fn connector(resolver: Arc<dyn Resolve>, wakes: Arc<AtomicU64>) -> Arc<Connector
 }
 
 /// Read one piece, driving the connection by reads alone.
-async fn read(t: &HostConns, id: ConnId) -> Result<Vec<u8>, ConnError> {
+async fn read(t: &Caller, id: ConnId) -> Result<Vec<u8>, ConnError> {
     let mut buf = [0_u8; 64];
     for _ in 0..2000 {
         match t.read(id, 7, &mut buf) {
@@ -115,16 +114,35 @@ async fn echo(ip: IpAddr) -> u16 {
     port
 }
 
-fn host(c: &Arc<Connector>) -> ConnHost {
-    ConnHost::new(Arc::clone(c) as Arc<dyn Conns>, OWNER)
+/// One instance's calls on the connection table: the connector's [`Conns`] with the caller,
+/// [`OWNER`], stated on every call.
+struct Caller(Arc<dyn Conns>);
+
+impl Caller {
+    fn open(&self, need: NeedId, desc: &OpenDesc<'_>) -> Result<ConnId, ConnError> {
+        self.0.open(OWNER, need, desc)
+    }
+
+    fn write(&self, conn: ConnId, bytes: &[u8], end: bool, text: bool) -> Result<usize, ConnError> {
+        self.0.write(OWNER, conn, bytes, end, text)
+    }
+
+    fn read(&self, conn: ConnId, ticket: u64, buf: &mut [u8]) -> Result<Piece, ConnError> {
+        self.0.read(OWNER, conn, ticket, buf)
+    }
+
+    fn close(&self, conn: ConnId) -> Result<(), ConnError> {
+        self.0.close(OWNER, conn)
+    }
 }
 
-/// The plugin's view of `host`'s table. `host` must not move while the view is used: the view's
-/// context points at it.
-fn table(host: &ConnHost) -> HostConns {
-    // SAFETY: the host's own slots over the context it minted; `host` outlives every call and
-    // stays in place.
-    unsafe { HostConns::new(host_slots(), host.ctx()) }
+fn host(c: &Arc<Connector>) -> Caller {
+    Caller(Arc::clone(c) as Arc<dyn Conns>)
+}
+
+/// The instance's view of the table `host` calls.
+fn table(host: &Caller) -> &Caller {
+    host
 }
 
 /// THE PROOF: a hostname target opens at once, the read before the resolution answers is Pending,
