@@ -137,3 +137,28 @@ fn zero_statement_entries_are_refused() {
     let got = refused(check_statement_sections(&[Section::ZERO]));
     assert!(got.contains("section.name"), "{got}");
 }
+
+/// RED (a zero never grants): a store tail left at its zero claims no durability, so its
+/// Statement states `MARK_EPHEMERAL`, the mark the not-durable boot warning reads (the warning's
+/// bytes are 1.5.5's: the oracle's `boot.warning|BOOT-W14|boot` cell). Only an explicit claim
+/// drops the mark.
+#[test]
+fn a_zeroed_store_tail_warns() {
+    use busbar_contract::abi::mechanism::door::MARK_EPHEMERAL;
+    use busbar_contract::abi::sdk::store::door::marks_of;
+    use busbar_contract::abi::sdk::store::{Tail, DURABLE_CLAIMED, DURABLE_NOT_CLAIMED};
+    assert_eq!(DURABLE_NOT_CLAIMED, 0, "zero is no claim");
+    assert_eq!(Tail::ZERO.durable, DURABLE_NOT_CLAIMED);
+    assert_eq!(marks_of(Tail::ZERO) & MARK_EPHEMERAL, MARK_EPHEMERAL);
+    let claimed = Tail {
+        durable: DURABLE_CLAIMED,
+        ..Tail::ZERO
+    };
+    assert_eq!(marks_of(claimed) & MARK_EPHEMERAL, 0);
+    // A value that is neither code is no claim either.
+    let stray = Tail {
+        durable: 7,
+        ..Tail::ZERO
+    };
+    assert_eq!(marks_of(stray) & MARK_EPHEMERAL, MARK_EPHEMERAL);
+}
