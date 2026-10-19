@@ -49,6 +49,29 @@ impl ConsumedCredentials {
         }
     }
 
+    /// The consumed fields `headers` carries, each by its lower-case name with its value's scheme
+    /// word (the value up to its first space; empty when it has none): what an entry fact may read
+    /// of a field the gate consumed, never the credential itself.
+    pub(crate) fn fields_of(consumed: Option<&Self>, headers: &HeaderMap) -> Vec<(String, String)> {
+        let Some(consumed) = consumed else {
+            return Vec::new();
+        };
+        consumed
+            .names
+            .iter()
+            .filter_map(|name| {
+                let value = headers.get(name)?;
+                let scheme = value
+                    .to_str()
+                    .ok()
+                    .and_then(|v| v.split_once(' '))
+                    .map(|(word, _)| word.to_owned())
+                    .unwrap_or_default();
+                Some((name.as_str().to_owned(), scheme))
+            })
+            .collect()
+    }
+
     /// Strip the credentials the gate consumed (an absent extension consumed nothing).
     pub(crate) fn strip_from(consumed: Option<&Self>, headers: &mut HeaderMap) {
         if let Some(consumed) = consumed {

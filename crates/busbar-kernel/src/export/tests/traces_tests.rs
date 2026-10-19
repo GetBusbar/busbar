@@ -117,8 +117,10 @@ fn a_value_recorded_after_the_span_opened_is_one_of_its_facts() {
             pool = tracing::field::Empty,
             ingress = tracing::field::Empty,
             op = tracing::field::Empty,
+            lane = tracing::field::Empty,
             request_id = tracing::field::Empty
         );
+        span.record("lane", 3_u64);
         span.record("pool", "first");
         span.record("pool", "p1");
         span.record("ingress", "dialect_a");
@@ -138,6 +140,11 @@ fn a_value_recorded_after_the_span_opened_is_one_of_its_facts() {
         Some(&Value::from("dialect_a"))
     );
     assert_eq!(field(facts, ExportField::Op), Some(&Value::from("chat")));
+    assert_eq!(
+        field(facts, ExportField::Lane),
+        Some(&Value::from(3_u64)),
+        "an integer field is an integer fact, as 1.5.5 exported it, never its text"
+    );
     assert_eq!(
         facts
             .iter()

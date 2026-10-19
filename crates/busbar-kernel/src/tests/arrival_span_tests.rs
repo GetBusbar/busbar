@@ -62,50 +62,137 @@ fn an_empty_name_opens_no_span() {
     assert!(ArrivalSpan::named("").is_none());
 }
 
-/// THE ENTRY SPAN AN ARRIVAL OPENS (status row 173): its routed claim's own where it states one,
-/// else the first path fact (a raw-affix claim stating a span) of its verb whose affixes the raw
-/// path matches, in the snapshot's order; none where neither states one. A raw affix is no routed
-/// claim: an arrival on its index opens nothing of its own.
+/// One span opened with its fields: its name and each field's value as written.
+type Recorded = (&'static str, Vec<(&'static str, String)>);
+
+/// Every span opened under it, with the values it opened with.
+#[derive(Clone, Default)]
+struct Values(Arc<Mutex<Vec<Recorded>>>);
+
+/// A field visitor: every field's name and its value as written.
+struct Seen<'a>(&'a mut Vec<(&'static str, String)>);
+
+impl tracing::field::Visit for Seen<'_> {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.0.push((field.name(), format!("{value:?}")));
+    }
+
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        self.0.push((field.name(), value.to_string()));
+    }
+}
+
+impl<S: tracing::Subscriber> Layer<S> for Values {
+    fn on_new_span(
+        &self,
+        attrs: &tracing::span::Attributes<'_>,
+        _: &tracing::span::Id,
+        _: Context<'_, S>,
+    ) {
+        let mut fields = Vec::new();
+        attrs.record(&mut Seen(&mut fields));
+        self.0
+            .lock()
+            .unwrap()
+            .push((attrs.metadata().name(), fields));
+    }
+}
+
+/// The spans an arrival opens under `spans`, by its claim, verb, raw path and head fields.
+fn opened(
+    spans: &super::EntrySpans,
+    claim: u32,
+    method: &str,
+    path: &str,
+    head: &[(&str, &str)],
+) -> Vec<Recorded> {
+    let values = Values::default();
+    let subscriber = tracing_subscriber::registry().with(values.clone());
+    tracing::subscriber::with_default(subscriber, || {
+        let field = |name: &str| head.iter().find(|(n, _)| *n == name).map(|(_, v)| *v);
+        drop(spans.open(claim, method, path, field));
+    });
+    let mut seen = Vec::new();
+    seen.append(&mut values.0.lock().unwrap());
+    seen
+}
+
+/// THE ENTRY SPAN AN ARRIVAL OPENS (status row 173): the first fact of its verb the request meets,
+/// in the snapshot's order (an entry fact by its head fields and its path pattern, a raw affix by
+/// its affixes), else its routed claim's own. An entry fact that states no span ends the reading
+/// with none; a named path segment is recorded, percent-decoded, as the span's field. A fact is no
+/// routed claim: an arrival on its index opens nothing of its own.
 #[test]
-fn an_arrival_opens_its_claims_span_else_the_first_path_fact_it_matches() {
-    use busbar_contract::abi::plane::CLAIM_RAW_AFFIX;
+fn an_arrival_opens_the_first_fact_it_meets_else_its_claims_span() {
+    use busbar_contract::abi::plane::{CLAIM_ENTRY, CLAIM_RAW_AFFIX};
     let spans = super::EntrySpans::of([
         ("POST", "/own", 0, "entry_span_test_own"),
-        ("POST", "/prefix", 0, ""),
-        ("POST", "/*/first", CLAIM_RAW_AFFIX, "entry_span_test_first"),
         (
             "POST",
-            "/*/first",
-            CLAIM_RAW_AFFIX,
-            "entry_span_test_second",
+            "path:/{pool}/v1/m",
+            CLAIM_ENTRY,
+            "entry_span_test_named",
         ),
-        ("POST", "/*/stated", CLAIM_RAW_AFFIX, ""),
+        (
+            "POST",
+            "field:x-a=S1 path:*/end",
+            CLAIM_ENTRY,
+            "entry_span_test_head_path",
+        ),
+        ("POST", "field:x-a=S1", CLAIM_ENTRY, ""),
+        ("POST", "field:x-b", CLAIM_ENTRY, "entry_span_test_field"),
+        ("POST", "path:/own/*", CLAIM_ENTRY, "entry_span_test_under"),
+        ("POST", "/*/end", CLAIM_RAW_AFFIX, "entry_span_test_affix"),
+        ("POST", "/*/signed", CLAIM_RAW_AFFIX, ""),
     ]);
-    let names = |claim: u32, method: &str, path: &str| -> Vec<&'static str> {
-        let opened = Opened::default();
-        let subscriber = tracing_subscriber::registry().with(opened.clone());
-        tracing::subscriber::with_default(subscriber, || {
-            drop(spans.open(claim, method, path));
-        });
-        let seen = opened.0.lock().unwrap().clone();
-        seen.into_iter().map(|o| o.0).collect()
-    };
+    let name = |seen: Vec<Recorded>| seen.into_iter().map(|s| s.0).collect::<Vec<_>>();
     assert_eq!(
-        names(0, "POST", "/own/x/first"),
+        name(opened(&spans, 0, "POST", "/own", &[])),
         vec!["entry_span_test_own"]
     );
     assert_eq!(
-        names(1, "POST", "/prefix/m/first"),
-        vec!["entry_span_test_first"]
+        name(opened(&spans, 0, "POST", "/own/x", &[])),
+        vec!["entry_span_test_under"],
+        "a fact is read ahead of the claim's own span"
+    );
+    assert_eq!(
+        opened(&spans, 0, "POST", "/p%20q/v1/m", &[]),
+        vec![("entry_span_test_named", vec![("pool", "p q".to_string())])],
+        "a named segment is the span's field, percent-decoded"
+    );
+    assert_eq!(
+        name(opened(&spans, 0, "POST", "/x/end", &[("x-a", "S1 rest")])),
+        vec!["entry_span_test_head_path"]
     );
     assert!(
-        names(1, "GET", "/prefix/m/first").is_empty(),
+        opened(&spans, 0, "POST", "/own/x", &[("x-a", "S1 rest")]).is_empty(),
+        "a fact that states no span ends the reading with none"
+    );
+    assert_eq!(
+        name(opened(
+            &spans,
+            0,
+            "POST",
+            "/own/x",
+            &[("x-a", "S2"), ("x-b", "")]
+        )),
+        vec!["entry_span_test_field"],
+        "a value that does not start with the prefix is not met"
+    );
+    assert_eq!(
+        name(opened(&spans, 0, "POST", "/z/end", &[])),
+        vec!["entry_span_test_affix"]
+    );
+    assert!(
+        opened(&spans, 0, "GET", "/own/x", &[]).is_empty(),
         "another verb"
     );
-    assert!(names(1, "POST", "/prefix/m/other").is_empty(), "no affix");
-    assert!(names(1, "POST", "/prefix/m/stated").is_empty(), "no name");
     assert!(
-        names(2, "POST", "/x/y").is_empty(),
-        "a raw affix routes none"
+        opened(&spans, 0, "POST", "/z/signed", &[]).is_empty(),
+        "a raw affix stating no span is no fact"
+    );
+    assert!(
+        opened(&spans, 1, "POST", "/q", &[]).is_empty(),
+        "a fact routes none"
     );
 }

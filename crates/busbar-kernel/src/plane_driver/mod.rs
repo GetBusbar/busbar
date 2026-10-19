@@ -664,6 +664,21 @@ pub trait DriverSteps: Units {
         None
     }
 
+    /// THE UNIT'S REQUEST SPAN and the correlation id it carries (status row 173): opened as the
+    /// unit's route leg begins, once it is admitted, and its pool known, its decode `decoded` and
+    /// operation class `op` (as the previous release opened `forward` around its dispatch only, with
+    /// `pool`, `ingress`, `op` and a `request_id` stamped then, v1.5.5 `proxy/engine/mod.rs:120-152`).
+    /// The route leg runs inside it, and the unit's hooks carry the id. `None`: no span, and the
+    /// hooks' binder mints their id.
+    fn request_span(
+        &self,
+        _ctx: &UnitCtx,
+        _decoded: &Decoded,
+        _op: OpClassId,
+    ) -> Option<(tracing::Span, u64)> {
+        None
+    }
+
     /// The words of the refusal one of these steps raised, where it has its own: its Retry-After
     /// seconds (a rolling limit's wait, `RefusalIn::retry_after_s`, the previous release's
     /// `Retry-After` on a limit's 429) and its message (`RefusalIn::text`, the kernel's own message
@@ -712,6 +727,9 @@ pub struct Rendered {
 pub(crate) struct UnitState {
     /// The unit's kernel-minted key, once decode has run.
     unit: u64,
+    /// The unit's correlation id, where its host minted one with its request span
+    /// ([`DriverSteps::request_span`]): the id its hooks carry. `None`: the hooks' binder mints.
+    request_id: Option<u64>,
     decoded: Option<Decoded>,
     /// A REFUSED `arrive`'s own code and 4xx status.
     declined: Option<(u32, u32)>,
@@ -1540,7 +1558,22 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: SessionCaller> RouteAwait for PlaneUni
         if session {
             Box::pin(self.session_async(token, ctx, destinations))
         } else {
-            Box::pin(self.route_async(token, ctx))
+            use tracing::Instrument as _;
+            // THE UNIT'S REQUEST SPAN, where its steps open one (status row 173): the route leg
+            // runs inside it, and its hooks carry its correlation id.
+            let decoded = self.lock().decoded.clone();
+            let opened = decoded.as_ref().and_then(|d| {
+                let op = *self.driver.config.op_classes.get(d.op_class as usize)?;
+                self.steps.request_span(ctx, d, op)
+            });
+            let span = match opened {
+                Some((span, request_id)) => {
+                    self.lock().request_id = Some(request_id);
+                    span
+                }
+                None => tracing::Span::none(),
+            };
+            Box::pin(self.route_async(token, ctx).instrument(span))
         }
     }
 

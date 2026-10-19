@@ -77,8 +77,34 @@ impl tracing::field::Visit for Fields {
     }
 
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        self.fact(field, Value::from(value));
+    }
+
+    // A NUMBER STAYS A NUMBER (status row 173): the previous release's exporter wrote a span's
+    // integer, boolean and float fields as typed attributes (`lane = i` an integer, v1.5.5
+    // `proxy/engine/walk.rs:382`), never their text.
+    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+        self.fact(field, Value::from(value));
+    }
+
+    fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
+        self.fact(field, Value::from(value));
+    }
+
+    fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+        self.fact(field, Value::from(value));
+    }
+
+    fn record_f64(&mut self, field: &tracing::field::Field, value: f64) {
+        self.fact(field, Value::from(value));
+    }
+}
+
+impl Fields {
+    /// The value of `field`, where it is one of the stream's own fields.
+    fn fact(&mut self, field: &tracing::field::Field, value: Value) {
         let traced = F::from_token(field.name()).filter(|f| Traces.default_fields().contains(f));
-        self.0.extend(traced.map(|f| (f, Value::from(value))));
+        self.0.extend(traced.map(|f| (f, value)));
     }
 }
 

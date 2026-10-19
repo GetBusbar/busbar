@@ -113,6 +113,9 @@ pub struct Bind<'a> {
     pub principal: Option<&'a str>,
     /// The dialect the unit arrived in: the index into the plane's dialects.
     pub dialect: u32,
+    /// The unit's correlation id, where its host minted one (`DriverSteps::request_span`); the
+    /// binder mints one from the process's counter where it is `None`.
+    pub request_id: Option<u64>,
 }
 
 /// The stage taps a unit binds, by stage.
@@ -387,7 +390,7 @@ impl HookBinder for BoundHooks {
         Some(parts.bind(
             bind,
             (&self.caller, &self.dialects),
-            (self.next_request_id)(),
+            bind.request_id.unwrap_or_else(|| (self.next_request_id)()),
         ))
     }
 
@@ -440,7 +443,11 @@ impl HookBinder for HostHooks {
             },
             *h.requested_signals(),
         )?;
-        Some(parts.bind(bind, (&self.caller, &self.dialects), h.next_request_id()))
+        Some(parts.bind(
+            bind,
+            (&self.caller, &self.dialects),
+            bind.request_id.unwrap_or_else(|| h.next_request_id()),
+        ))
     }
 
     fn denied(&self, dialect: u32, status: u16) {
@@ -1342,11 +1349,15 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             .principal
             .as_ref()
             .map(|p| p.as_str().to_string());
-        let dialect = self.lock().decoded.as_ref().map_or(0, |d| d.dialect);
+        let (dialect, request_id) = {
+            let st = self.lock();
+            (st.decoded.as_ref().map_or(0, |d| d.dialect), st.request_id)
+        };
         let Some(hooks) = binder.bind(&Bind {
             pool: &walk_pool,
             principal: principal.as_deref(),
             dialect,
+            request_id,
         }) else {
             return Ok(());
         };
@@ -1956,6 +1967,7 @@ impl SessionStage {
                     pool: &self.pool,
                     principal: self.principal.as_deref(),
                     dialect: self.arrived_in,
+                    request_id: None,
                 })
             })
             .as_ref()
