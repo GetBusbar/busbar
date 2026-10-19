@@ -1300,7 +1300,10 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
     }
 
     /// THE REQUEST STAGE, at the head of the route leg (module doc, steps 1-5).
-    pub(crate) async fn request_stage(&self, token: &Pass<Route>) -> Result<(), Stopped> {
+    pub(crate) async fn request_stage(&self, token: &Pass<Route>) -> Result<(), Stopped>
+    where
+        S: super::DriverSteps,
+    {
         let Some(binder) = self.driver.hooks.as_ref() else {
             return Ok(());
         };

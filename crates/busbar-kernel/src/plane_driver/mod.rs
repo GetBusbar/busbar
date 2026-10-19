@@ -664,6 +664,15 @@ pub trait DriverSteps: Units {
         None
     }
 
+    /// Whether `member` is one of the members the generation's section states for the pool
+    /// `pool` (the pool a `ROUTE_POOL` unit's `arrive` named, as the kernel recorded it). A
+    /// gate-first unit routed over a pool binds the member its projection names only when this
+    /// holds (ARCHITECT 2026-10-07: the plane's later word never trades the gates attached to the
+    /// routed entry for another's). Fail-closed: steps that state no pools hold no member.
+    fn pool_holds(&self, _pool: &[u8], _member: &str) -> bool {
+        false
+    }
+
     /// The words of the refusal one of these steps raised, where it has its own: its Retry-After
     /// seconds (a rolling limit's wait, `RefusalIn::retry_after_s`, the previous release's
     /// `Retry-After` on a limit's 429) and its message (`RefusalIn::text`, the kernel's own message

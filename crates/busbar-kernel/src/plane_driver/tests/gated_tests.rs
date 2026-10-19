@@ -29,7 +29,8 @@ fn the_seams_own_failed_verdict_keeps_its_503_and_a_hook_status_is_clamped() {
 /// THE GATES ARE BOUND OVER THE ENTRY THE KERNEL RECORDED (audit kernel-K2 leftover A4): the entry
 /// the plane's `arrive` named at decode, never the plane's later word. A projection naming another
 /// entry, or one where `arrive` named none, refuses the unit; the same entry is bound. A pool's unit
-/// binds the member its projection names; a projection with no entry and no body binds nothing.
+/// binds the member its projection names when the recorded pool holds it; a projection with no
+/// entry and no body binds nothing.
 #[test]
 fn the_gates_bind_over_the_recorded_entry_and_a_projection_naming_another_is_refused() {
     use super::bound_entry;
@@ -40,32 +41,66 @@ fn the_gates_bind_over_the_recorded_entry_and_a_projection_naming_another_is_ref
         ..super::Projection::default()
     };
     let (files, shell, none) = (named("files"), named("shell"), named(""));
+    // The generation's pools: `pair` holds `files` and nothing else.
+    let holds = |pool: &[u8], member: &str| pool == b"pair" && member == "files";
     assert_eq!(
-        bound_entry(Some(b"files"), ROUTE_DIRECT, &files).ok(),
+        bound_entry(Some(b"files"), ROUTE_DIRECT, &files, holds).ok(),
         Some(Some("files"))
     );
-    assert_eq!(bound_entry(None, ROUTE_LOCAL, &none).ok(), Some(Some("")));
+    assert_eq!(bound_entry(None, ROUTE_LOCAL, &none, holds).ok(), Some(Some("")));
     assert!(
-        bound_entry(Some(b"files"), ROUTE_DIRECT, &shell).is_err(),
+        bound_entry(Some(b"files"), ROUTE_DIRECT, &shell, holds).is_err(),
         "a projection naming another entry bound that entry's gates"
     );
     assert!(
-        bound_entry(None, ROUTE_LOCAL, &shell).is_err(),
+        bound_entry(None, ROUTE_LOCAL, &shell, holds).is_err(),
         "a projection naming an entry arrive never named bound that entry's gates"
     );
     assert!(
-        bound_entry(None, ROUTE_POOL, &shell).is_err(),
+        bound_entry(None, ROUTE_POOL, &shell, holds).is_err(),
         "a pool route naming no pool bound the projection's entry"
     );
     assert_eq!(
-        bound_entry(Some(b"pair"), ROUTE_POOL, &files).ok(),
+        bound_entry(Some(b"pair"), ROUTE_POOL, &files, holds).ok(),
         Some(Some("files")),
         "a pool's unit binds the member its projection names"
     );
     assert_eq!(
-        bound_entry(Some(b"files"), ROUTE_DIRECT, &super::Projection::default()).ok(),
+        bound_entry(Some(b"files"), ROUTE_DIRECT, &super::Projection::default(), holds).ok(),
         Some(None),
         "a projection with no entry and no body has nothing to screen"
+    );
+}
+
+/// RED (Q128 p21#3; ARCHITECT 2026-10-07, THE DESIGN §1 l.183-187): under a pool route the plane's
+/// projection may name only a member of the recorded pool. A member of no recorded pool, and the
+/// empty entry with a body to screen, are refused; before the fix each bound whatever entry the
+/// plane named (another entry's gates, or none at all).
+#[test]
+fn a_pool_route_binds_only_a_member_of_the_recorded_pool() {
+    use super::bound_entry;
+    use busbar_contract::abi::plane::ROUTE_POOL;
+    let named = |entry: &str| super::Projection {
+        pool: entry.to_string(),
+        projected: Some(b"{}".to_vec()),
+        ..super::Projection::default()
+    };
+    let holds = |pool: &[u8], member: &str| pool == b"pair" && member == "files";
+    assert!(
+        bound_entry(Some(b"pair"), ROUTE_POOL, &named("shell"), holds).is_err(),
+        "a projection naming an entry outside the recorded pool bound that entry's gates"
+    );
+    assert!(
+        bound_entry(Some(b"pair"), ROUTE_POOL, &named(""), holds).is_err(),
+        "a projection naming no entry but stating a body bound the empty entry"
+    );
+    assert!(
+        bound_entry(Some(b"solo"), ROUTE_POOL, &named("files"), holds).is_err(),
+        "a member of another pool bound under a pool that does not hold it"
+    );
+    assert_eq!(
+        bound_entry(Some(b"pair"), ROUTE_POOL, &named("files"), holds).ok(),
+        Some(Some("files"))
     );
 }
 
