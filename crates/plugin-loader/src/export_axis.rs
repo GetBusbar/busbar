@@ -58,6 +58,9 @@ pub struct ExportRows<'r> {
     /// A sink an OPENED instance's #85 envelope is also handed to (the host observes it at the bind
     /// regardless); `None` = none. Under `plugins.logs` it is the log sink's own downstream.
     envelope: Option<Arc<dyn EnvelopeSink>>,
+    /// How long an opened instance's delivery caller waits
+    /// ([`crate::export_door::DELIVER_DEADLINE`] unless [`Self::with_deliver_deadline`] says).
+    deliver_deadline: std::time::Duration,
 }
 
 impl std::fmt::Debug for ExportRows<'_> {
@@ -77,7 +80,15 @@ impl<'r> ExportRows<'r> {
             logs: None,
             conns: None,
             envelope: None,
+            deliver_deadline: crate::export_door::DELIVER_DEADLINE,
         }
+    }
+
+    /// Each opened instance's delivery caller waits at most `deadline`.
+    #[must_use]
+    pub fn with_deliver_deadline(mut self, deadline: std::time::Duration) -> Self {
+        self.deliver_deadline = deadline;
+        self
     }
 
     /// Each opened instance logs to its own sink under `logs`.
@@ -294,7 +305,12 @@ impl<'r> ExportRows<'r> {
         // The destinations its manifest declares: `open` binds each to the path the operator's
         // settings give it, and `disk.append` serves the instance those only.
         p.grant_destinations(&row.manifest.declares.destinations);
-        let opened = ExportInstance::open(p, self.dispatcher.clone(), text.as_bytes())?;
+        let opened = ExportInstance::open_with_deadline(
+            p,
+            self.dispatcher.clone(),
+            text.as_bytes(),
+            self.deliver_deadline,
+        )?;
         // DISCOVERY AT BOOT (`abi::mechanism::lifecycle` READY, the one optional lifecycle op): an
         // export door that states `ready` is awaited once its instance is open over the host's
         // tables, before it is served, as a store's and an auth door's are. Only this, the open that

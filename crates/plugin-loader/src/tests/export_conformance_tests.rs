@@ -1946,3 +1946,54 @@ fn a_closed_span_reaches_a_collector_the_same_through_either_door() {
     );
     assert_eq!(linked, dropped, "both doors carry the same request");
 }
+
+/// RED (Q128 plugin-loader u70 LOW): a write-behind delivery carries a finite deadline (Appendix
+/// A: write-behind is a long deadline, never none; THE DESIGN: write-behind carries its own
+/// deadline class). The request-log WEBHOOK sink, its far end holding every request, its instance
+/// at the default in-flight bound of one: at the deadline the delivery's caller stops waiting, the
+/// lost wake is counted, and the flusher's slot is free, so the next line goes out while the first
+/// is still held. The held delivery is not offered again: it is still running on its ticket.
+#[test]
+fn red_a_held_delivery_releases_its_caller_at_its_deadline() {
+    let name = "l9-deadline";
+    let [linked, _dropped] = both(
+        manifest(name, webhook_declares()),
+        WEBHOOK_DOOR,
+        WEBHOOK_CDYLIB,
+    );
+    let d = dispatcher();
+    let far = Arc::new(Far::default());
+    assert!(far.waker.set(d.conn_waker()).is_ok());
+    let sink = ExportRows::new(&linked, d.clone())
+        .with_conns(far.clone())
+        .with_deliver_deadline(Duration::from_millis(200))
+        .open(
+            name,
+            "export.l9",
+            &serde_json::json!({
+                "url": format!("https://{STALL_TARGET}/in"),
+                "delivery_timeout_secs": 600,
+            }),
+        )
+        .expect("opens");
+    let answer = Released(far.clone());
+    deliver(sink.as_ref(), &serde_json::json!({ "n": 0 }));
+    until("the first delivery reaches the far end", || {
+        far.stalled() == 1
+    });
+    let wait = Instant::now() + Duration::from_secs(10);
+    while d.stats().deadline_without_wake == 0 {
+        assert!(
+            Instant::now() < wait,
+            "a held delivery's caller is never released: it has no deadline"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    deliver(sink.as_ref(), &serde_json::json!({ "n": 1 }));
+    until("the next line reaches the far end", || far.stalled() == 2);
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(far.stalled(), 2, "the held delivery is not offered again");
+    drop(answer);
+    until("both lines carried", || far.carried().len() == 2);
+    drop(sink);
+}

@@ -27,6 +27,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Poll, Waker};
+use std::time::Duration;
 
 use futures::stream::{FuturesUnordered, StreamExt as _};
 
@@ -54,6 +55,10 @@ pub const MAX_BATCH_LINES: usize = 256;
 pub const MAX_BATCH_BYTES: usize = 1024 * 1024;
 /// How many times one batch is offered (the first attempt included) before it is dropped.
 pub const DELIVER_ATTEMPTS: u32 = 3;
+/// How long the flusher waits on one write-behind delivery before its caller stops waiting
+/// (Appendix A: write-behind is a LONG deadline, never none). The op keeps its ticket and runs on;
+/// only the flusher's slot is freed, and a lost wake is counted.
+pub const DELIVER_DEADLINE: Duration = Duration::from_secs(300);
 /// The exposition buffer a scrape starts with; a short answer grows it once.
 const SCRAPE_BUF: usize = 64 * 1024;
 /// The most request headers a `serve` lends (64 name/value pairs).
@@ -223,6 +228,8 @@ struct Shared {
     /// This process's `op_id` node half; the counter half is [`Shared::minted`].
     node: [u8; 8],
     minted: AtomicU64,
+    /// How long one delivery's caller waits ([`DELIVER_DEADLINE`] unless the host states another).
+    deliver_deadline: Duration,
 }
 
 impl Shared {
@@ -420,6 +427,19 @@ impl ExportInstance {
         dispatcher: Arc<Dispatcher>,
         settings: &[u8],
     ) -> Result<Self, String> {
+        Self::open_with_deadline(plugin, dispatcher, settings, DELIVER_DEADLINE)
+    }
+
+    /// [`Self::open`], each delivery's caller waiting at most `deliver_deadline`.
+    ///
+    /// # Errors
+    /// As [`Self::open`].
+    pub fn open_with_deadline(
+        plugin: Plugin<Export>,
+        dispatcher: Arc<Dispatcher>,
+        settings: &[u8],
+        deliver_deadline: Duration,
+    ) -> Result<Self, String> {
         validate(&plugin, settings)?;
         let mut f = Frame::new(
             OpenIn {
@@ -452,6 +472,7 @@ impl ExportInstance {
             stop: AtomicBool::new(false),
             node: node_id(),
             minted: AtomicU64::new(0),
+            deliver_deadline,
         });
         let flusher = shared.clone();
         let flusher = std::thread::Builder::new()
