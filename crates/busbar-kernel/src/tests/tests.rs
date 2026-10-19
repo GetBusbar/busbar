@@ -2581,7 +2581,7 @@ fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart
     ]);
     crate::snapshot::init();
     let build = |rules: std::sync::Arc<dyn crate::appbuild::RootRules>, writes: bool| {
-        let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(
+        let mut cfg = cfg_with_provider_api_key(crate::test_support::secrets::fill_ref(
             "BUSBAR_TEST_NO_SUCH_KEY_PENDING_PLANE",
         ));
         if writes {
