@@ -487,7 +487,7 @@ impl GovState {
         let m = self.signing_material()?;
         Some(crate::plane::registry::CardIssuer {
             kid: format!("{prefix}{}", m.signer.kid()),
-            issuer_spki_base64: m.signer.card_subkey_key_info_base64(domain),
+            issuer_spki_base64: m.signer.subkey_key_info_base64(domain),
         })
     }
 
@@ -505,7 +505,7 @@ impl GovState {
         let domain =
             crate::plane::registry::plane_decl_for_config_section("agents")?.card_signing_domain?;
         let m = self.signing_material()?;
-        Some(m.signer.sign_with_card_subkey(domain, signing_input))
+        Some(m.signer.sign_with_subkey(domain, signing_input))
     }
 
     /// SIGN `input` with the subkey this node's signing key derives for `domain`: the key id and the
@@ -515,7 +515,7 @@ impl GovState {
         let m = self.signing_material()?;
         Some((
             m.signer.kid().to_string(),
-            m.signer.sign_with_card_subkey(domain, input),
+            m.signer.sign_with_subkey(domain, input),
         ))
     }
 
