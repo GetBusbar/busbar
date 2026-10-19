@@ -58,6 +58,41 @@ fn no_egress_slot_and_no_credential_mint_is_reachable() {
     assert!(vt.auth_resolve.is_none(), "auth_resolve");
 }
 
+/// RED (u36 MEDIUM, u35 MEDIUM; BUSBAR-1.6.0.md Appendix A B.6, l.3846): the plane host-service
+/// families the design deleted are not reachable through the host vtable. The pipe, journal,
+/// dispatch, metrics, counter and breaker slots each answer `None`; the kernel's own callers drive
+/// only the clock, the govern admit, the meter, the card sign and the identity admission.
+#[test]
+fn no_deleted_host_service_family_is_reachable() {
+    let vt = build_plane_host_vtable();
+    assert!(vt.pipe_read.is_none() && vt.pipe_write.is_none(), "pipe_*");
+    assert!(
+        vt.journal_append.is_none()
+            && vt.journal_read.is_none()
+            && vt.journal_register.is_none()
+            && vt.journal_append_scoped.is_none()
+            && vt.journal_seed.is_none()
+            && vt.journal_compact.is_none(),
+        "journal_*"
+    );
+    assert!(
+        vt.nested_dispatch.is_none()
+            && vt.workhandle_open.is_none()
+            && vt.workhandle_resume.is_none()
+            && vt.entitlement_check.is_none()
+            && vt.gate_scan.is_none(),
+        "the dispatch family"
+    );
+    assert!(vt.metrics_emit.is_none(), "metrics_emit");
+    assert!(vt.counter_add.is_none(), "counter_add");
+    assert!(
+        vt.breaker_admit.is_none()
+            && vt.breaker_admit_reason.is_none()
+            && vt.breaker_settle.is_none(),
+        "breaker_*"
+    );
+}
+
 #[test]
 fn wired_clock_now_returns_a_nonzero_nanos_clock() {
     with_test_state(|host, vt, _scope| {
