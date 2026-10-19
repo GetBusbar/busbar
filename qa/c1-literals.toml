@@ -66,11 +66,6 @@ item = "streaming"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/governance/state.rs"
-item = "sigv4"
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/plane/registry.rs"
 item = "openapi"
 
