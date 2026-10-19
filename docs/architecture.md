@@ -516,7 +516,7 @@ Metrics are emitted at the ingress boundary (`busbar_requests_total`, the durati
 histogram) on EVERY plane, and at each upstream attempt/failure/trip/failover/translation
 (`crates/busbar-kernel/src/telemetry.rs`, `crates/busbar-llm/src/engine/pipeline.rs`). The model plane emits from
 `ingress::finish_inner` (`crates/busbar-kernel/src/ingress/mod.rs`), every other plane from the plane
-ingress boundary layer (`crates/busbar-kernel/src/plane/observe.rs`), distinguished by a `plane` label. Optional OTLP spans and a request-log webhook
+ingress boundary layer (`crates/busbar-kernel/src/ingress/observe.rs`), distinguished by a `plane` label. Optional OTLP spans and a request-log webhook
 are configured via the `observability` section.
 
 ## How it deploys, simplest first

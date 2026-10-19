@@ -747,10 +747,8 @@ impl LaneSpec {
     }
     fn to_lane_data(&self) -> crate::store::LaneData {
         crate::store::LaneData {
-            reasoning: false,
-            prompt_caching: false,
-            model: self.model.clone(),
-            provider: self.provider.clone(),
+            member: self.model.clone(),
+            route: self.provider.clone(),
             max: self.max,
             sem: self
                 .sem
@@ -765,8 +763,6 @@ impl LaneSpec {
             ok: self.ok,
             err: self.err,
             client_fault: self.client_fault,
-            upstream_model: self.upstream_model.clone(),
-            attempt_timeout_ms: None,
         }
     }
 }
@@ -2252,6 +2248,39 @@ pub mod tokens;
 pub mod export_axis;
 /// The kind-neutral outbound auth double a test build binds lane credentials on.
 pub mod outbound_auth;
+
+/// THE ISSUED-CREDENTIAL DOUBLE: the kind and shape a test binary's governance issues a key's
+/// second credential under, standing for the linked signed-request verifier's Statement marks (a
+/// test binary links no auth plugin). Test data, never shipped.
+pub mod issued {
+    /// The persisted kind of the row-looked-up credential, as 1.5.5 stored it: frozen stored data,
+    /// read off the kernel's frozen-text fixture (the kind every test reads the row back under)
+    /// rather than spelled here.
+    fn frozen_kind() -> String {
+        const FROZEN: &str = include_str!("../../tests/fixtures/frozen_customer_text.yaml");
+        FROZEN
+            .lines()
+            .find_map(|l| l.strip_prefix("signed_credential_kind:"))
+            .map(|v| v.trim().to_string())
+            .expect("the frozen fixture names the signed credential kind")
+    }
+
+    /// `(kind, shape)` as the linked signed-request verifier states them.
+    #[must_use]
+    pub fn double() -> (String, busbar_contract::auth_calls::IssuedShape) {
+        (
+            frozen_kind(),
+            busbar_contract::auth_calls::IssuedShape {
+                id_prefix: "AKIA".to_string(),
+                id_len: 20,
+                id_alphabet: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".to_string(),
+                secret_len: 40,
+                secret_alphabet: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+                    .to_string(),
+            },
+        )
+    }
+}
 /// The stand-in secret axis a test build installs in place of the root's.
 pub mod secrets;
 pub use secrets::SecretsStandIn;
