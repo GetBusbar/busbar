@@ -605,18 +605,17 @@ impl FieldScan<'_> {
                                 .iter()
                                 .any(|r| index_of(&sname, r.as_bytes()) > 0);
                         }
-                        if needle {
-                            if is_bare(ftype)
-                                && !is_wrapped(field_type(ftype))
-                                && !self.allowlisted(name, fname)
-                            {
-                                out.push(Hit {
-                                    rule: lossy(fname),
-                                    loc: format!("{name}:{fnr}"),
-                                    name: String::new(),
-                                    text: lossy(trim_b(&code)),
-                                });
-                            }
+                        if needle
+                            && is_bare(ftype)
+                            && !is_wrapped(field_type(ftype))
+                            && !self.allowlisted(name, fname)
+                        {
+                            out.push(Hit {
+                                rule: lossy(fname),
+                                loc: format!("{name}:{fnr}"),
+                                name: String::new(),
+                                text: lossy(trim_b(&code)),
+                            });
                         }
                     }
                 }
