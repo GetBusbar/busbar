@@ -1,0 +1,4 @@
+# SCRATCH (never merged): show the budget lines of the two scratch self-test runs on success.
+[[profile.default.overrides]]
+filter = "test(/^selftest_budget_/)"
+success-output = "immediate"
