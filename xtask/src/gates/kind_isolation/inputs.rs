@@ -113,26 +113,104 @@ fn inside(dir: &str, target: &str) -> bool {
 /// pinning a table against `busbar-mcp`'s own source are covered by the `root -> legacy` row that
 /// already exists, not silent. What this row is for is the reach with NO edge at all: the transport
 /// that compiles a plane's file into itself and declares nothing.
+///
+/// THE EDGE MUST SHIP WHERE THE SPLICE SHIPS (Q128). A `[dev-dependencies]` row is a TEST edge,
+/// scored on `:test-deps`, and it covers a splice only from a file that is itself a test target
+/// (`test_file`: `tests/`, `benches/`, `examples/`, or a module only `cfg(test)` compiles). From
+/// shipped source the spliced code is in the release artifact, which no test edge declares (Law 2,
+/// l.1888-1890), so only a shipped declaration covers it.
 fn foreign_owner<'a>(
     by_dir: &BTreeMap<&str, &'a CrateInfo>,
     me: &CrateInfo,
     target: &str,
+    test_file: bool,
 ) -> Option<&'a CrateInfo> {
     if inside(&me.dir, target) {
         return None;
     }
     let theirs = by_dir.values().copied().find(|o| inside(&o.dir, target))?;
-    let declared = me
-        .deps
-        .iter()
-        .chain(me.dev_deps.iter())
-        .any(|d| d.pkg == theirs.name);
+    let declared = me.deps.iter().any(|d| d.pkg == theirs.name)
+        || (test_file && me.dev_deps.iter().any(|d| d.pkg == theirs.name));
     (!declared).then_some(theirs)
+}
+
+/// Is `rel`, a file of the crate at `crate_dir`, a TEST target: under the crate's `tests/`,
+/// `benches/` or `examples/`, or inside a module only `cfg(test)` compiles (`test_only`, read by
+/// [`super::test_only_modules`])?
+fn is_test_file(rel: &str, crate_dir: &str, test_only: &[String]) -> bool {
+    let inner = rel
+        .strip_prefix(crate_dir)
+        .and_then(|r| r.strip_prefix('/'))
+        .unwrap_or(rel);
+    matches!(
+        inner.split('/').next(),
+        Some("tests" | "benches" | "examples")
+    ) || test_only.iter().any(|p| rel.starts_with(p.as_str()))
+}
+
+/// THE BUILD SCRIPTS OF ONE CRATE (Q128), as cargo builds them: the script its manifest's
+/// `[package] build = "…"` names (`build.rs` when the key is absent, none when it is `false`), and
+/// every module that script declares with `mod NAME;`. A script at another path was never read as
+/// one, and a module it declares runs in the same build.
+fn build_scripts_of(cx: &Ctx, krate: &CrateInfo) -> Vec<String> {
+    let Ok(manifest) = cx.read(&krate.manifest) else {
+        return Vec::new();
+    };
+    let mut in_package = false;
+    let mut named: Option<String> = Some("build.rs".to_string());
+    for raw in manifest.lines() {
+        let t = raw.trim();
+        if t.starts_with('[') {
+            in_package = t.trim_start_matches('[').trim_end_matches(']').trim() == "package";
+            continue;
+        }
+        if !in_package {
+            continue;
+        }
+        let Some((k, v)) = t.split_once('=') else {
+            continue;
+        };
+        if k.trim() == "build" {
+            let v = v.split('#').next().unwrap_or("").trim();
+            named = match v {
+                "false" => None,
+                "true" => Some("build.rs".to_string()),
+                _ => Some(v.trim_matches('"').trim_matches('\'').to_string()),
+            };
+        }
+    }
+    let Some(script) = named else {
+        return Vec::new();
+    };
+    let script = resolve(&krate.dir, &script);
+    let mut out = vec![script.clone()];
+    if let Ok(text) = cx.read(&script) {
+        let at = dir_of(&script);
+        for raw in text.lines() {
+            let t = raw.trim();
+            let Some(name) = t
+                .strip_prefix("mod ")
+                .or_else(|| t.strip_prefix("pub mod "))
+                .and_then(|r| r.strip_suffix(';'))
+                .map(str::trim)
+            else {
+                continue;
+            };
+            if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                out.push(format!("{at}/{name}.rs"));
+                out.push(format!("{at}/{name}/mod.rs"));
+            }
+        }
+    }
+    out
 }
 
 /// Every `key = "value"` string an attribute or macro call writes on one line, for the keys this
 /// row reads. The line is RAW — never blanked — because the whole point is that these paths ARE
-/// string literals and a rule that blanks them first is a rule that cannot see them.
+/// string literals and a rule that blanks them first is a rule that cannot see them. The rule reads
+/// a call's whole ARGUMENT now ([`build_script_reach`], [`include_targets`]); this line reader is
+/// kept for the cases that pin what it used to miss.
+#[cfg(test)]
 fn quoted_after(line: &str, marker: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut rest = line;
@@ -515,10 +593,10 @@ fn literals(s: &str) -> Vec<String> {
 fn build_script_reach(
     by_dir: &BTreeMap<&str, &CrateInfo>,
     me: &CrateInfo,
-    here: &str,
     rel: &str,
     line_no: usize,
     raw: &str,
+    rest: &str,
 ) -> Vec<String> {
     const READS: &[(&str, &str)] = &[
         ("read_to_string", "reads"),
@@ -529,13 +607,49 @@ fn build_script_reach(
         ("include_bytes!", "reads"),
         ("include!", "compiles"),
     ];
+    let here = dir_of(rel);
     let mut out = Vec::new();
     for (marker, verb) in READS {
-        for p in quoted_after(raw, marker) {
-            if !(p.starts_with('/') || p.split('/').any(|s| s == "..")) {
+        let mut cut = 0usize;
+        while let Some(p) = raw[cut..].find(marker) {
+            let at = cut + p + marker.len();
+            cut = at;
+            // THE ARGUMENT, NOT THE LINE (Q128). `rest` is the file from this line on, so a path
+            // rustfmt moved onto the next line is still the argument, and the window stops short of
+            // borrowing a literal from the next function.
+            let end = (at + 400..=rest.len())
+                .find(|i| rest.is_char_boundary(*i))
+                .unwrap_or(rest.len());
+            let tail = &rest[at..end];
+            let opened;
+            let call: &str = if marker.ends_with('(') {
+                opened = format!("({tail}");
+                &opened
+            } else {
+                tail.trim_start()
+            };
+            let Some(arg) = balanced(call) else {
+                continue;
+            };
+            let lits = literals(arg);
+            // `concat!(env!("CARGO_MANIFEST_DIR"), "…")` is the crate directory and the path after
+            // it — the idiom this module names; `OUT_DIR` is the script's own output.
+            let (shown, target) = match lits.first().map(String::as_str) {
+                None | Some("OUT_DIR") => continue,
+                Some("CARGO_MANIFEST_DIR") => {
+                    let joined: String = lits[1..].concat();
+                    (
+                        format!("concat!(env!(\"CARGO_MANIFEST_DIR\"), \"{joined}\")"),
+                        resolve(&me.dir, &joined),
+                    )
+                }
+                Some(p) => (p.to_string(), resolve(&here, p)),
+            };
+            let climbs = shown.starts_with('/') || !inside(&me.dir, &target);
+            if !climbs {
                 continue;
             }
-            let target = resolve(here, &p);
+            let p = shown;
             let lands = by_dir
                 .values()
                 .find(|o| inside(&o.dir, &target))
@@ -1168,7 +1282,8 @@ fn reach(
 ) -> String {
     format!(
         "{label}\t{rel}:{line}\t{me} is {what} `{target}` — {theirs}'s own source, and {me} \
-         declares no dependency on it in any table. A crate reaches another crate through Cargo, \
+         declares no dependency on it that covers this file (a shipped table for shipped source; a \
+         test table only for a test target). A crate reaches another crate through Cargo, \
          where the edge is written down and scored; reading its files compiles it in with no edge \
          to score. {MAKE_A_NEW_KIND}"
     )
@@ -1198,11 +1313,25 @@ pub fn rule_inputs(
             )
         }
     };
-    let build_scripts: BTreeSet<String> = files
+    // THE BUILD SCRIPTS THE MANIFESTS NAME, and the modules they declare (Q128), of the files the
+    // walk found; the crates that have one, for `OUT_DIR`.
+    let walked: BTreeSet<String> = files.iter().map(|f| f.rel_str()).collect();
+    let build_scripts: BTreeSet<String> = crates
         .iter()
-        .map(|f| f.rel_str())
-        .filter(|r| r.ends_with("/build.rs"))
+        .flat_map(|c| build_scripts_of(cx, c))
+        .filter(|s| walked.contains(s))
         .collect();
+    let build_dirs: BTreeSet<&str> = crates
+        .iter()
+        .filter(|c| {
+            build_scripts_of(cx, c)
+                .first()
+                .is_some_and(|s| walked.contains(s))
+        })
+        .map(|c| c.dir.as_str())
+        .collect();
+    // A module only `cfg(test)` compiles is a test target ([`is_test_file`]).
+    let test_only = super::test_only_modules(&files);
     let mut scanned = 0usize;
     let mut spliced: Vec<Compiled> = Vec::new();
     for f in &files {
@@ -1220,8 +1349,15 @@ pub fn rule_inputs(
         for (line_no, raw) in f.text.lines().enumerate() {
             // THE ATTRIBUTE IS READ OFF THE RAW LINE. `blank_literals` would erase the very string
             // this rule is about — which is exactly why `#[path]` was invisible to `:vocab`.
-            if rel.ends_with("build.rs") {
-                offenders.extend(build_script_reach(&by_dir, me, &here, &rel, line_no, raw));
+            if build_scripts.contains(&rel) {
+                offenders.extend(build_script_reach(
+                    &by_dir,
+                    me,
+                    &rel,
+                    line_no,
+                    raw,
+                    f.text.get(line_start..).unwrap_or(""),
+                ));
             }
             let code = crate::scan::blank_code(raw, &mut lex);
             for (marker, label, what) in INCLUDE_MARKERS {
@@ -1241,7 +1377,7 @@ pub fn rule_inputs(
                     let end = (at + 400..=f.text.len())
                         .find(|i| f.text.is_char_boundary(*i))
                         .unwrap_or(f.text.len());
-                    let has_build_script = build_scripts.contains(&format!("{}/build.rs", me.dir));
+                    let has_build_script = build_dirs.contains(me.dir.as_str());
                     for target in
                         include_targets(&f.text[at..end], &me.dir, &here, has_build_script, in_code)
                     {
@@ -1275,7 +1411,12 @@ pub fn rule_inputs(
                                 candidates: vec![target.clone()],
                             });
                         }
-                        let Some(theirs) = foreign_owner(&by_dir, me, &target) else {
+                        let Some(theirs) = foreign_owner(
+                            &by_dir,
+                            me,
+                            &target,
+                            is_test_file(&rel, &me.dir, &test_only),
+                        ) else {
                             continue;
                         };
                         offenders.push(reach(
@@ -1303,7 +1444,12 @@ pub fn rule_inputs(
                 }
                 Ok(p) => {
                     let target = resolve(&here, &p);
-                    if let Some(theirs) = foreign_owner(&by_dir, me, &target) {
+                    if let Some(theirs) = foreign_owner(
+                        &by_dir,
+                        me,
+                        &target,
+                        is_test_file(&rel, &me.dir, &test_only),
+                    ) {
                         offenders.push(reach(
                             "path-include",
                             &rel,
