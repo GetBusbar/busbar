@@ -1421,10 +1421,16 @@ fn collect(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> Result<(), WalkEr
         }
         return Ok(());
     }
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return Ok(());
+    // A directory this walk cannot read is a gap in the scan, never a directory with nothing in it.
+    let io = |path: &Path, e: std::io::Error| WalkError::Io {
+        path: path.to_path_buf(),
+        message: e.to_string(),
     };
-    let mut entries: Vec<PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+    let rd = std::fs::read_dir(dir).map_err(|e| io(dir, e))?;
+    let mut entries: Vec<PathBuf> = Vec::new();
+    for entry in rd {
+        entries.push(entry.map_err(|e| io(dir, e))?.path());
+    }
     entries.sort();
     for path in entries {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");

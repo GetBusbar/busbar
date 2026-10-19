@@ -84,8 +84,8 @@ const HOST_ENTRIES: &[&str] = &[
 /// The kernel's own token vending (`impl Kernel`) is off the loop in the teller and nowhere else:
 /// the factories are read from the teller's block alone, so a block elsewhere would hide both an
 /// unbound mint and every call of what it vends.
-fn skips_kernel_impl(_rel: &str) -> bool {
-    true
+fn skips_kernel_impl(rel: &str) -> bool {
+    rel == TELLER
 }
 
 fn lex(src: &str) -> Result<TokenStream, String> {

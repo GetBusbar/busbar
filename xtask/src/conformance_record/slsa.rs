@@ -131,15 +131,41 @@ pub fn decide_slsa(run: &SlsaRun) -> Outcome {
     }
 }
 
-/// Write `contents` to `path`, then restrict it to its owner.
+/// Write `contents` to `path` as a file only its owner can read, from the first byte: the file is
+/// created with mode 0600 (never under the umask), an old file is replaced rather than reused with
+/// its old mode, and a mode that cannot be confirmed is an error, so a token is never written to a
+/// file another user can open.
+///
+/// # Errors
+/// The file cannot be created, written, or is not 0600 once created.
 pub fn write_secret_file(path: &std::path::Path, contents: &str) -> Result<(), String> {
-    std::fs::write(path, contents).map_err(|e| e.to_string())?;
+    use std::io::Write;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.to_string()),
+        }
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|e| e.to_string())?;
+        let mode = f.metadata().map_err(|e| e.to_string())?.permissions().mode() & 0o777;
+        if mode != 0o600 {
+            let _ = std::fs::remove_file(path);
+            return Err(format!("created with mode {mode:o}, not 600"));
+        }
+        f.write_all(contents.as_bytes()).map_err(|e| e.to_string())
     }
-    Ok(())
+    #[cfg(not(unix))]
+    {
+        let _ = (path, contents);
+        Err("a 0600 token file cannot be made on this platform".to_string())
+    }
 }
 
 impl Runner {

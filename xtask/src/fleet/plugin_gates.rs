@@ -363,7 +363,11 @@ pub fn depwall(meta: &Value, shipped: Option<&Shipped>, repo: &str) -> Res<Vec<S
             out.push(format!(
                 "DEPWALL {name} {version} is a kernel/core crate in the shipped closure"
             ));
-        } else if first_party_plugin(name) && !members.contains(name) && !name.starts_with(repo) {
+        } else if first_party_plugin(name)
+            && !members.contains(name)
+            && name != repo
+            && *name != format!("{repo}-plugin")
+        {
             out.push(format!(
                 "DEPWALL {name} {version} is another plugin in the shipped closure"
             ));

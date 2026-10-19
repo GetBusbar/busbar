@@ -101,7 +101,12 @@ pub fn top_level_block(text: &str, name: &str) -> String {
 /// reads a bare `on` as a boolean, so `"on":`, `'on':` and `true:` are all written for the same
 /// key. A rule that read only the bare spelling could be switched off by quoting the key.
 pub fn trigger_block(text: &str) -> String {
-    top_level_block(text, "on")
+    ["on", "\"on\"", "'on'", "true"]
+        .iter()
+        .map(|k| top_level_block(text, k))
+        .filter(|b| !b.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The action reference of a `uses:` line and its trailing tag comment, in either of YAML's two

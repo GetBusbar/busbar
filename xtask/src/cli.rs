@@ -378,6 +378,32 @@ fn gate(args: &[String]) -> i32 {
         return 2;
     }
 
+    // EVERY ARM-SELECTING FLAG THE LISTING ARMS CANNOT HONOUR IS AN ERROR TOO. `--list` and `--all`
+    // run `gates::execute` on each registry build and never reach `build_gate` (where --execute and
+    // --require-version are validated) or `execute_strict`, so `gate --all --strict` returned the
+    // non-strict verdict and could exit 0 for a check the caller never got.
+    if args.iter().any(|a| a == "--list" || a == "--all") {
+        const NOT_HONOURED: &[&str] = &[
+            "--strict",
+            "--posture",
+            "--execute",
+            "--require-dated-top",
+            "--write-standing",
+            "--parity",
+        ];
+        if let Some(flag) = args.iter().find(|a| {
+            NOT_HONOURED.contains(&a.as_str()) || a.starts_with("--require-version=")
+        }) {
+            eprintln!(
+                "xtask gate: {flag} cannot be combined with --list or --all — neither honours \
+                 it, and a green from the arm you did not ask for is a green for a check that \
+                 never ran."
+            );
+            eprintln!("  name the gate instead:  cargo xtask gate <name> {flag}");
+            return 2;
+        }
+    }
+
     if args.iter().any(|a| a == "--list") {
         for reg in gates::REGISTRY {
             println!(

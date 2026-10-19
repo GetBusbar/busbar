@@ -611,8 +611,7 @@ fn verdict_byte_identity(root: &Path, run_cargo: bool) -> Json {
 /// passed. A scan that is green while the selftest is red is a detector that can no longer prove it
 /// catches a planted violation, and its green is not evidence (the honesty rule above).
 fn scan_status(scan_code: i32, selftest_code: i32) -> &'static str {
-    let _ = selftest_code;
-    if scan_code == 0 {
+    if scan_code == 0 && selftest_code == 0 {
         "pass"
     } else {
         "fail"
@@ -1316,11 +1315,20 @@ fn mark_one(
 
 // ── class-status reducer (the honesty rule) ───────────────────────────────────────────────────────
 
+/// A source's status as the class reducer reads it: a `pass` whose own `selftest` field is present
+/// and not `pass` is not a pass (the detector's proof of detection failed), so it reads `fail`.
+fn effective_status(x: &Json) -> Option<&str> {
+    match (status_of(x), x.get("selftest").as_str()) {
+        (Some("pass"), Some(st)) if st != "pass" => Some("fail"),
+        (st, _) => st,
+    }
+}
+
 fn class_status(sources: &[Json]) -> String {
     let statuses: Vec<Option<&str>> = sources
         .iter()
         .filter(|x| status_of(x) != Some("reserved"))
-        .map(status_of)
+        .map(effective_status)
         .collect();
     let has = |x: &str| statuses.contains(&Some(x));
     if has("fail") {

@@ -293,7 +293,7 @@ pub fn tracked_drift(root: &Path, out_dir: &Path) -> Result<Vec<String>, String>
         .strip_prefix(root)
         .ok()
         .map(|p| p.to_string_lossy().replace('\\', "/"));
-    let text = gitp::git(root, &["status", "--porcelain", "--untracked-files=no"])?;
+    let text = gitp::git(root, &["status", "--porcelain", "--untracked-files=all"])?;
     Ok(text
         .lines()
         .filter_map(|l| l.get(3..))

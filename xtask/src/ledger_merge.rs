@@ -459,11 +459,11 @@ fn merge_record(b: &Record, o: &Record, t: &Record) -> Result<String, Vec<String
         }
     }
 
+    // THE UNION OF ALL THREE SIDES' KEYS: a key base held, theirs deleted and ours changed is
+    // visited too, so the plain three-way arm refuses it instead of dropping ours' edit.
     let mut keys: Vec<&str> = t.fields.iter().map(|f| f.key.as_str()).collect();
-    for f in &o.fields {
-        if t.field(&f.key).is_none() && b.field(&f.key).is_none() {
-            keys.push(f.key.as_str());
-        }
+    for f in o.fields.iter().chain(&b.fields) {
+        keys.push(f.key.as_str());
     }
     let mut seen_keys = BTreeSet::new();
     for key in keys {

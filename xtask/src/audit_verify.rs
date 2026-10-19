@@ -433,14 +433,33 @@ pub fn verify(range: &Value, keys: &Value, head: Option<&Value>) -> Verdict {
         }
         prev = Some((seq, hash.to_string()));
     }
-    // 5. The window's anchor names a head; where it falls inside the run, it must be that record.
+    // 5. The window's anchor names a head; where it falls inside the window, the run must carry
+    // that record and it must be that record.
+    let from = range.get("from").and_then(Value::as_u64);
+    let to = range.get("to").and_then(Value::as_u64);
+    if let (Some(from), Some(first)) = (
+        from,
+        records
+            .first()
+            .and_then(|r| r.get("seq"))
+            .and_then(Value::as_u64),
+    ) {
+        if first > from {
+            v.find(
+                first,
+                format!("the run starts at seq {first} but the window says from {from}: records are missing from its front, so no head before {first} can be compared"),
+            );
+        }
+    }
     if let Some(anchor) = range.get("anchor").filter(|a| !a.is_null()) {
-        check_head(&mut v, records, anchor, "anchor");
+        if !records.is_empty() {
+            check_head(&mut v, records, anchor, "anchor", from, to);
+        }
     }
     // 4. The tail: a window that stops short of min(to, head.seq) has lost records from its end.
     if let Some(head_body) = head {
         let head = head_body.get("head").unwrap_or(head_body);
-        check_head(&mut v, records, head, "head");
+        check_head(&mut v, records, head, "head", from, to);
         let head_seq = head.get("seq").and_then(Value::as_u64).unwrap_or(0);
         let to = range.get("to").and_then(Value::as_u64).unwrap_or(u64::MAX);
         let want = to.min(head_seq);
@@ -460,19 +479,35 @@ pub fn verify(range: &Value, keys: &Value, head: Option<&Value>) -> Verdict {
     v
 }
 
-fn check_head(v: &mut Verdict, records: &[Value], head: &Value, which: &str) {
+fn check_head(
+    v: &mut Verdict,
+    records: &[Value],
+    head: &Value,
+    which: &str,
+    from: Option<u64>,
+    to: Option<u64>,
+) {
     let seq = head.get("seq").and_then(Value::as_u64).unwrap_or(0);
     let hash = head.get("hash").and_then(Value::as_str).unwrap_or("");
     let at = records
         .iter()
         .find(|r| r.get("seq").and_then(Value::as_u64) == Some(seq));
-    if let Some(r) = at {
-        if r.get("hash").and_then(Value::as_str) != Some(hash) {
+    match at {
+        Some(r) => {
+            if r.get("hash").and_then(Value::as_str) != Some(hash) {
+                v.find(
+                    seq,
+                    format!("the {which} names a different hash for this position"),
+                );
+            }
+        }
+        None if seq >= from.unwrap_or(1) && seq <= to.unwrap_or(u64::MAX) => {
             v.find(
                 seq,
-                format!("the {which} names a different hash for this position"),
+                format!("the {which} names a position inside the window that no record in the run carries: it was not compared"),
             );
         }
+        None => {}
     }
 }
 
