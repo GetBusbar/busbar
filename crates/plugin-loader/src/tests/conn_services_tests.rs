@@ -2676,7 +2676,7 @@ fn red_the_connector_service_frame_writes_no_further_than_the_out_the_caller_sta
     use busbar_contract::abi::host::service::SERVICE_OUT_V1;
     use busbar_contract::abi::mechanism::call::{Outcome, RawOutcome};
     let mut lent = LentOut::stating(32);
-    let raw: RawOutcome = slot(
+    let raw: RawOutcome = super::slot(
         busbar_contract::abi::mechanism::ticket::HostCtx::NONE,
         std::ptr::null(),
         lent.out(),
@@ -2687,7 +2687,7 @@ fn red_the_connector_service_frame_writes_no_further_than_the_out_the_caller_sta
     assert_eq!(raw.outcome(), Outcome::Refused, "a short `out` was served");
     assert!(lent.untouched_from(4), "a short `out` was written");
     let mut lent = LentOut::stating(SERVICE_OUT_V1 as u32);
-    let raw: RawOutcome = slot(
+    let raw: RawOutcome = super::slot(
         busbar_contract::abi::mechanism::ticket::HostCtx::NONE,
         std::ptr::null(),
         lent.out(),
