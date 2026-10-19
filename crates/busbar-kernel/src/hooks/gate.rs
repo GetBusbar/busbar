@@ -70,8 +70,8 @@ pub(crate) enum GateVerdict {
     Proceed,
     /// A gate refused the request. `status` is held to the 4xx band by the one shared clamp
     /// (outside 400..=499 is 403) and `message` is the hook's own, re-sanitized by the one shared
-    /// sanitizer, as 1.5.5's `map_decision` did (v1.5.5 `crates/busbar/src/proxy/hooks.rs`,
-    /// `map_decision`, the `Reject` arm) — a hook cannot mint a 5xx, a success, or a
+    /// sanitizer, as 1.5.5's seam did (v1.5.5 `crates/busbar/src/proxy/hooks.rs:1228-1232`, the
+    /// reject arm) — a hook cannot mint a 5xx, a success, or a
     /// header-injecting message through this path. A load-bearing gate that could not answer is
     /// the shared [`crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS`] refusal instead.
     Reject {
@@ -349,7 +349,7 @@ async fn decide_over(
             );
         }
         let ctx = context(subject);
-        let decision = match tokio::time::timeout(
+        let answer = match tokio::time::timeout(
             *timeout,
             policy.decide(&req, NO_CANDIDATES, &ctx, *timeout),
         )
@@ -386,7 +386,7 @@ async fn decide_over(
                 continue;
             }
         };
-        if let Some(v) = verdict_of(decision, policy.name(), subject) {
+        if let Some(v) = verdict_of(answer, policy.name(), subject) {
             return v;
         }
         // A clean pass (no reject returned above): record the pieces just screened as cleared for this
@@ -399,22 +399,22 @@ async fn decide_over(
     GateVerdict::Proceed
 }
 
-/// One decision a gate (or a fallback link) answered, as the verdict a firing site acts on:
+/// One answer a gate (or a fallback link) gave, as the verdict a firing site acts on:
 /// `Some` only for a reject.
 ///
 /// The reject is RE-CLAMPED and RE-SANITIZED at the seam that acts on it, with the one shared rule
 /// (`clamp_reject_status`: outside 400..=499 is 403; `sanitize_reject_message`), exactly as 1.5.5's
-/// `map_decision` did for every primary and fallback answer (v1.5.5
-/// `crates/busbar/src/proxy/hooks.rs`, `map_decision`, the `Reject` arm; THE DESIGN §11.7
+/// seam did for every primary and fallback answer (v1.5.5 `crates/busbar/src/proxy/hooks.rs:1191`
+/// and its reject arm at `:1228-1232`; THE DESIGN §11.7
 /// l.1357-1358, the status clamp and the message cap stay 1.5.5's): no policy implementation,
 /// shipped or in-process, can mint a 5xx, a success or an injecting message here (audit Q128
 /// p15#5).
 fn verdict_of(
-    decision: RoutingDecision,
+    answer: RoutingDecision,
     hook: &'static str,
     subject: &GateSubject<'_>,
 ) -> Option<GateVerdict> {
-    match decision {
+    match answer {
         RoutingDecision::Reject { status, message } => Some(GateVerdict::Reject {
             status: clamp_reject_status(status),
             message: sanitize_reject_message(&message),
@@ -491,14 +491,14 @@ impl Fallback<'_, '_> {
             )
             .await
             {
-                Ok(Ok(decision)) => {
+                Ok(Ok(answer)) => {
                     tracing::info!(
                         hook = self.failed,
                         fallback = fb.policy.name(),
                         container = subject.container,
                         "on_error fallback hook answered for the failed gate"
                     );
-                    return verdict_of(decision, fb.policy.name(), subject);
+                    return verdict_of(answer, fb.policy.name(), subject);
                 }
                 // This link failed too — follow the chain to the next (its own on_error was
                 // flattened into this chain at resolution).
@@ -683,26 +683,28 @@ impl IrFacts for DoorFacts<'_> {
 }
 
 /// The kernel's reading of a door plane's projected body: `Some` when the body is JSON (the
-/// invoke document read as one; any other document screened WHOLE as the arguments of no tool, so
+/// invoke document read as one; any other document screened WHOLE as the arguments of an unnamed call, so
 /// no projected content is dropped), `None` when the plane stated no body or one that is not JSON
 /// (nothing a content gate can screen).
 fn read_projected(projected: Option<&[u8]>) -> Option<busbar_contract::ir::invoke::InvokeReq> {
     let doc: serde_json::Value = serde_json::from_slice(projected?).ok()?;
-    let tool = doc.get("tool").and_then(serde_json::Value::as_str);
-    Some(match tool {
-        Some(tool) => busbar_contract::ir::invoke::InvokeReq {
-            tool: tool.to_string(),
-            arguments: doc
-                .get("arguments")
+    let named = doc
+        .get("tool")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let (name, arguments) = match named {
+        Some(name) => (
+            name,
+            doc.get("arguments")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null),
-            extra: Default::default(),
-        },
-        None => busbar_contract::ir::invoke::InvokeReq {
-            tool: String::new(),
-            arguments: doc,
-            extra: Default::default(),
-        },
+        ),
+        None => (String::new(), doc),
+    };
+    Some(busbar_contract::ir::invoke::InvokeReq {
+        tool: name,
+        arguments,
+        extra: Default::default(),
     })
 }
 

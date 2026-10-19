@@ -1061,6 +1061,19 @@ async fn the_door_gate_projection_is_under_the_hook_content_ceiling() {
 
 // ── The on_error chain, the container-bound clearance and the plane's projection (audit Q128 p15) ──
 
+/// A spy answering `reply`.
+fn spying(reply: RoutingDecision) -> Arc<Spy> {
+    Arc::new(Spy {
+        reply,
+        seen: Mutex::new(None),
+    })
+}
+
+/// A spy that abstains.
+fn abstaining() -> Arc<Spy> {
+    spying(RoutingDecision::Abstain)
+}
+
 /// One `on_error` fallback link around `policy`, with the grants a test wants.
 fn link(
     policy: Arc<dyn RoutingPolicy>,
@@ -1118,12 +1131,9 @@ fn subject_on<'a>(facts: &'a InvokeReq, container: &'a str) -> GateSubject<'a> {
 #[tokio::test]
 async fn a_failed_gate_asks_its_fallback_and_the_fallbacks_reject_stops_the_request() {
     let facts = tool_call();
-    let fallback = Arc::new(Spy {
-        reply: RoutingDecision::Reject {
-            status: 403,
-            message: "fallback screened".to_string(),
-        },
-        seen: Mutex::new(None),
+    let fallback = spying(RoutingDecision::Reject {
+        status: 403,
+        message: "fallback screened".to_string(),
     });
     let gates = chained(
         Arc::new(Broken),
@@ -1161,10 +1171,7 @@ async fn a_failed_gate_asks_its_fallback_and_the_fallbacks_reject_stops_the_requ
 #[tokio::test]
 async fn the_first_link_that_answers_decides_before_the_terminal() {
     let facts = tool_call();
-    let abstains = Arc::new(Spy {
-        reply: RoutingDecision::Abstain,
-        seen: Mutex::new(None),
-    });
+    let abstains = abstaining();
     let gates = chained(
         Arc::new(Broken),
         vec![
@@ -1212,10 +1219,7 @@ async fn a_piece_cleared_on_one_container_is_screened_again_on_another() {
     let store = SessionStore::new(64, None);
     let session = SessionKey(4242);
     let facts = tool_call();
-    let spy = Arc::new(Spy {
-        reply: RoutingDecision::Abstain,
-        seen: Mutex::new(None),
-    });
+    let spy = abstaining();
     let gates = gate(
         spy.clone(),
         crate::config::PolicyOnError::Weighted,
@@ -1267,15 +1271,12 @@ fn door_on<'a>(projected: Option<&'a [u8]>, plane: DoorShape<'a>) -> DoorSubject
 /// B.9 l.5436-5437). A plane that states no body, or one that is not JSON, gives a content-granted
 /// gate nothing to screen: it is a gate that could not answer, and its `on_error` decides (here
 /// `reject`, the shared refusal), never a gate shown `null` that abstains. A shape-only gate reads
-/// no content and still fires. RED before: both bodies were screened as a call to no tool with
+/// no content and still fires. RED before: both bodies were screened as an unnamed call with
 /// `null` arguments, the spy abstained, and the unit proceeded.
 #[tokio::test]
 async fn an_unreadable_door_body_applies_a_content_gates_on_error() {
     for body in [None, Some(&b"\xff not json"[..])] {
-        let spy = Arc::new(Spy {
-            reply: RoutingDecision::Abstain,
-            seen: Mutex::new(None),
-        });
+        let spy = abstaining();
         let gates = gate(
             spy.clone(),
             crate::config::PolicyOnError::Reject,
@@ -1293,10 +1294,7 @@ async fn an_unreadable_door_body_applies_a_content_gates_on_error() {
             "the gate was not shown empty content"
         );
 
-        let shape_only = Arc::new(Spy {
-            reply: RoutingDecision::Abstain,
-            seen: Mutex::new(None),
-        });
+        let shape_only = abstaining();
         let gates = gate(
             shape_only.clone(),
             crate::config::PolicyOnError::Reject,
@@ -1320,10 +1318,7 @@ async fn an_unreadable_door_body_applies_a_content_gates_on_error() {
 /// dropped for the kernel's own reading.
 #[tokio::test]
 async fn a_door_gate_sees_the_planes_document_and_the_planes_own_fields() {
-    let spy = Arc::new(Spy {
-        reply: RoutingDecision::Abstain,
-        seen: Mutex::new(None),
-    });
+    let spy = abstaining();
     let gates = gate(
         spy.clone(),
         crate::config::PolicyOnError::Reject,
