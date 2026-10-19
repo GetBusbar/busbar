@@ -73,13 +73,13 @@ use busbar_contract::abi::plane::{
     SHAPE_PIECEWISE, SPAN_ABSENT, TAIL_FALLBACK, TAIL_PROBES, UNITS_FLOOR, UNITS_REPORTED,
     VERDICT_HARD, VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
 };
-use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
+use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut, ProviderFacts};
 use busbar_contract::abi::plane::{RecordWrite, AUDIT_DEGRADED, RECORD_AUDIT};
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::life::Refusal;
 use busbar_contract::abi::sdk::publish::{ClaimSpec, SnapshotSpec};
 use busbar_contract::abi::sdk::{
-    open_failed, Generations, HostBuf, Instance, Lent, Out, Safe, SafeSlot, Services,
+    open_failed, Generations, HostBuf, Instance, Lent, LentList, Out, Safe, SafeSlot, Services,
 };
 use busbar_contract::abi::transport::{FAULT_CALLER, FAULT_HARD, FAULT_NONE, FAULT_TRANSIENT};
 use busbar_contract::ids::{MeterClassDecl, OpClassId};
@@ -94,7 +94,7 @@ use crate::exchange::attempt::{self, stream_intent, FarRequest};
 use crate::exchange::reply::{At, Fault, Piece, Reply, ReplyCtx, Units, Verdict};
 use crate::exchange::shaping::{sections, Shaping};
 use crate::exchange::webhook::{self, Webhooks};
-use crate::exchange::{handler_of, probe, project, refuse};
+use crate::exchange::{boot, handler_of, probe, project, refuse};
 use crate::meta::PROVIDER_KEYS;
 use crate::LlmPlane;
 
@@ -720,6 +720,33 @@ fn snapshot(webhooks: Webhooks, shaping: &Shaping) -> SnapshotSpec {
     }
 }
 
+/// THE BOOT LINES of a generation (u26, coordinator ruling (a)): v1.5.5's three model/pool lines,
+/// built from the generation's routing ([`boot::lines`]) and the providers' display URLs the kernel
+/// hands (`ProviderFacts.base_url`, userinfo already stripped there, #40), each written whole to
+/// the console through the host's `console.line` (served only inside `open` and `refresh`).
+fn print_boot_lines(
+    services: Option<Services>,
+    shaping: &Shaping,
+    providers: LentList<'_, ProviderFacts>,
+) {
+    let Some(services) = services else {
+        return;
+    };
+    let urls: BTreeMap<String, String> = providers
+        .iter()
+        .filter_map(|p| {
+            let name = p.field(|f| &f.name).as_str().ok()?;
+            let url = String::from_utf8_lossy(p.field(|f| &f.base_url).bytes());
+            Some((name.to_string(), url.into_owned()))
+        })
+        .collect();
+    for line in boot::lines(&shaping.routing, &urls) {
+        // A line the console refuses or cannot write is lost, as an unwritable stderr lost
+        // v1.5.5's: the generation still opens.
+        let _ = services.console_line(UNTICKETED, &line);
+    }
+}
+
 // ── the answers ──────────────────────────────────────────────────────────────────────────────────
 
 fn dialect_index(name: &str) -> u32 {
@@ -1303,12 +1330,14 @@ slot!(
             Err(words) => return open_failed(open, &mut out, |o| &o.open.err_len, &words),
         };
         let snapshot = snapshot(webhooks, &shaping);
+        let services = open.host().and_then(|h| Services::of(&h));
+        print_boot_lines(services, &shaping, input.providers());
         let door = LlmDoor {
             generations: Generations::new(),
             shapings: Mutex::new(BTreeMap::from([(open.generation, Arc::new(shaping))])),
             units: Mutex::new(HashMap::new()),
             tickets: Mutex::new(HashMap::new()),
-            services: open.host().and_then(|h| Services::of(&h)),
+            services,
             webhooks,
         };
         out.publish(|o| &o.snapshot, &door.generations, open.generation, &snapshot);

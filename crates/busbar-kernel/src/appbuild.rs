@@ -865,26 +865,6 @@ pub fn build_app_from_config(
             err: 0,
             client_fault: 0,
         });
-
-        eprintln!(
-            "  model {} via {} ({}) max {}{}",
-            model,
-            mc.provider,
-            busbar_kernel_egress::trust::net::strip_userinfo(
-                provider_cfg.base_url.trim_end_matches('/')
-            ),
-            // Show the operator-facing form: an omitted cap reads "unbounded", not 2^60.
-            match mc.max_concurrent {
-                Some(n) => n.to_string(),
-                None => "unbounded".to_string(),
-            },
-            // Surface the alias→wire-id indirection at boot so an operator can see this lane sends a
-            // different model string upstream than the config key it's filed under.
-            match &mc.upstream_model {
-                Some(u) => format!(" → upstream {u}"),
-                None => String::new(),
-            }
-        );
     }
 
     // Build a map from model name to context_max. A model is one lane shared across every pool that
@@ -1042,29 +1022,6 @@ pub fn build_app_from_config(
                 .map(crate::store::breaker_cfg_to_runtime)
                 .map(|b| b.to_breaker_input()),
         });
-    }
-
-    eprintln!(
-        "busbar: {} models, {} pools",
-        lane_inputs.len(),
-        pool_inputs.len()
-    );
-    for p in &pool_inputs {
-        let agg: usize = p
-            .members
-            .iter()
-            .map(|m| lane_inputs[m.lane_idx].max_concurrent)
-            .sum();
-        eprintln!(
-            "  pool /{} = [{}] aggregate {}",
-            p.name,
-            p.members
-                .iter()
-                .map(|m| lane_inputs[m.lane_idx].model.clone())
-                .collect::<Vec<_>>()
-                .join(", "),
-            agg
-        );
     }
 
     // Loud warning for an empty `auth.chain` (open relay). Not fatal — busbar still starts (useful for
