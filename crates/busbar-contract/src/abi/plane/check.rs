@@ -975,23 +975,17 @@ pub fn check_cancel_records(
     records(records_buf, written, out.arena_written, b)
 }
 
-/// A generation snapshot (`open`/`refresh`): its own size, the generation asked for, lists within
-/// [`MAX_ROUTES`] and never counted with a NULL pointer, and arrival spans `0` or one per claim. Its
-/// elements: [`check_claims`], [`check_admin_routes`], [`check_listed`], [`check_arrival_spans`].
-///
-/// The size is this build's, or that of a snapshot published before [`PlaneSnapshot::listed`] or
-/// [`PlaneSnapshot::arrival_spans`] was appended (data structs grow by append under `honoured_size`): `s` is then the host's copy
-/// of the publisher's own bytes over zeros, so its appended fields read as none.
+/// A generation snapshot (`open`/`refresh`): its ONE size (`size_of::<PlaneSnapshot>()`, owner
+/// ruling 21: shorter or longer is refused, so a field a short snapshot lacks never reads as
+/// none), the generation asked for, lists within [`MAX_ROUTES`] and never counted with a NULL
+/// pointer, and arrival spans `0` or one per claim. Its elements: [`check_claims`],
+/// [`check_admin_routes`], [`check_listed`], [`check_arrival_spans`].
 ///
 /// # Errors
 ///
 /// The rule the snapshot breaks.
 pub fn check_snapshot(s: &PlaneSnapshot, generation: u64) -> Result<(), Fault> {
-    let size = s.size as usize;
-    if size != core::mem::size_of::<PlaneSnapshot>()
-        && size != core::mem::offset_of!(PlaneSnapshot, listed)
-        && size != core::mem::offset_of!(PlaneSnapshot, arrival_spans)
-    {
+    if s.size as usize != core::mem::size_of::<PlaneSnapshot>() {
         return Err(fault(Rule::Foreign, "snapshot.size"));
     }
     if s.generation != generation {

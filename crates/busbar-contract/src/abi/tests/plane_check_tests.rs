@@ -1024,17 +1024,17 @@ fn a_snapshot_list_counted_with_a_null_pointer_or_too_long_is_fault() {
     );
 }
 
-/// THE APPEND RULE ON THE SNAPSHOT: a snapshot published before `listed` was appended states the
-/// size its fields end at and is judged as one that lists nothing; any other size is foreign. The
-/// list itself is bounded and never counted over NULL, and each name is non-empty text.
+/// ONE SIZE PER SNAPSHOT (owner ruling 21): a snapshot of the size before `listed` is foreign,
+/// never judged as one that lists nothing. The list itself is bounded and never counted over NULL,
+/// and each name is non-empty text.
 #[test]
-fn a_snapshot_from_before_listed_is_read_and_its_list_is_judged() {
+fn a_snapshot_from_before_listed_is_refused_and_its_list_is_judged() {
     let mut sn = snapshot();
     sn.size = std::mem::offset_of!(PlaneSnapshot, listed) as u32;
     assert_eq!(
         check_snapshot(&sn, 7),
-        Ok(()),
-        "the pre-append size is accepted"
+        f(Rule::Foreign, "snapshot.size"),
+        "the size before `listed` is refused"
     );
     sn.size += 8;
     assert_eq!(check_snapshot(&sn, 7), f(Rule::Foreign, "snapshot.size"));
@@ -1054,9 +1054,9 @@ fn a_snapshot_from_before_listed_is_read_and_its_list_is_judged() {
     );
 }
 
-/// THE ARRIVAL SPANS (status row 173): a snapshot published before they were appended states the
-/// size its fields end at and opens none; a list is none or one per claim, never counted over NULL,
-/// and each name is empty (that claim opens none) or at most `MAX_ARRIVAL_SPAN` bytes.
+/// THE ARRIVAL SPANS (status row 173): a snapshot of the size before them is refused (owner ruling
+/// 21), never read as opening none; a list is none or one per claim, never counted over NULL, and
+/// each name is empty (that claim opens none) or at most `MAX_ARRIVAL_SPAN` bytes.
 #[test]
 fn a_snapshots_arrival_spans_are_none_or_one_per_claim() {
     use crate::abi::plane::check::check_arrival_spans;
@@ -1065,8 +1065,8 @@ fn a_snapshots_arrival_spans_are_none_or_one_per_claim() {
     sn.size = std::mem::offset_of!(PlaneSnapshot, arrival_spans) as u32;
     assert_eq!(
         check_snapshot(&sn, 7),
-        Ok(()),
-        "the pre-append size is accepted"
+        f(Rule::Foreign, "snapshot.size"),
+        "the size before the arrival spans is refused"
     );
     let claims = [
         claim("POST", "/a", CLAIM_EXACT),

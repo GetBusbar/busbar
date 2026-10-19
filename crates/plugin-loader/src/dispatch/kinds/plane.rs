@@ -253,8 +253,8 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
         tail.record_kinds_len as u64,
     )
     .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
-    // Each retention rule names a kind the tail keeps, once, with a rule the host passes; a tail
-    // that ends before the list (an older plane's) reads none, so every kind is purged by age.
+    // Each retention rule names a kind the tail keeps, once, with a rule the host passes; a kind
+    // with no rule is purged by age.
     check_record_retentions(
         &listed(tail.record_retentions, tail.record_retentions_len),
         tail.record_kinds_len as u64,
@@ -1649,33 +1649,21 @@ fn project(a: &Answer) -> Result<(), Fault> {
     )
 }
 
-/// A READY `open`'s or `refresh`'s generation snapshot: present, then `check_snapshot` (its size
-/// among them) against the generation the `in` names, on the host's copy of its own bytes.
+/// A READY `open`'s or `refresh`'s generation snapshot: present, then `check_snapshot` (its one
+/// size among them) against the generation the `in` names, on the host's copy of it.
 fn snapshot(s: *const PlaneSnapshot, generation: u64, field: &'static str) -> Result<(), Fault> {
     if s.is_null() {
         return Err(fault(Rule::Missing, field));
     }
-    check_snapshot(&as_written(s), generation)
-}
-
-/// THE SNAPSHOT AT `p` AS ITS PUBLISHER WROTE IT (the append rule: data structs grow by append
-/// under `honoured_size`): its leading `size` is read alone first, then that many bytes, never more
-/// than this host's struct, are copied over zeros. A field appended after the publisher was built
-/// reads as none, and nothing past the publisher's own `size` is read. `p` is non-NULL.
-fn as_written(p: *const PlaneSnapshot) -> PlaneSnapshot {
     // SAFETY: a non-NULL snapshot is the plugin's generation data, valid until `retire` of its
-    // generation; its leading `size` is read alone first.
-    let size = unsafe { p.cast::<u32>().read_unaligned() };
-    let n =
-        busbar_contract::abi::honoured_size(size, std::mem::size_of::<PlaneSnapshot>()) as usize;
-    let mut s = std::mem::MaybeUninit::<PlaneSnapshot>::zeroed();
-    // SAFETY: the plugin states `size` bytes of snapshot at `p`, and `n` is at most that and at
-    // most the host's own struct, which `s` is; all-zero is a valid `PlaneSnapshot` (integers, raw
-    // pointers, plain structs of both), so every byte the copy does not reach is a valid none.
-    unsafe {
-        std::ptr::copy_nonoverlapping(p.cast::<u8>(), s.as_mut_ptr().cast::<u8>(), n);
-        s.assume_init()
+    // generation; its leading `size` is read alone first, and the whole snapshot only when that is
+    // exactly the host's struct (one size per struct, owner ruling 21).
+    let size = unsafe { s.cast::<u32>().read_unaligned() };
+    if size as usize != std::mem::size_of::<PlaneSnapshot>() {
+        return Err(fault(Rule::Foreign, "snapshot.size"));
     }
+    // SAFETY: as above; the plugin states a whole `PlaneSnapshot` at `s`.
+    check_snapshot(&unsafe { s.read_unaligned() }, generation)
 }
 
 // ── the host's copy of a generation snapshot ─────────────────────────────────────────────────────
@@ -1798,12 +1786,17 @@ pub(crate) fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<Ow
     if p.is_null() {
         return None;
     }
-    // A READY answer's snapshot, whose size and lists this crossing's check accepted; valid until
-    // `retire` of its generation. Read as its publisher wrote it.
-    let s = &as_written(p);
+    // SAFETY: a READY answer's snapshot, whose one size and lists this crossing's check accepted;
+    // valid until `retire` of its generation. Its leading `size` is read alone first, and the whole
+    // snapshot only at exactly the host's size.
+    if unsafe { p.cast::<u32>().read_unaligned() } as usize != std::mem::size_of::<PlaneSnapshot>()
+    {
+        return None;
+    }
+    // SAFETY: as above; the plugin states a whole `PlaneSnapshot` at `p`.
+    let s = &unsafe { p.read_unaligned() };
     // SAFETY: the check refused a list counted over a NULL pointer or over its cap; each names
-    // `*_len` entries, bounded again before the slice is formed. A snapshot from before `listed`
-    // was appended reads NULL with `0`.
+    // `*_len` entries, bounded again before the slice is formed.
     let (claims, routes, listed) = unsafe {
         use crate::dispatch::validate::lent;
         (

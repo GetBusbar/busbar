@@ -387,11 +387,11 @@ fn open_green_and_red_on_its_snapshot() {
     );
 }
 
-/// RED, THE APPEND RULE AT THE HOST: a plugin built before `PlaneSnapshot::listed` was appended
-/// publishes a snapshot whose `size` ends before it. The host accepts it and reads its list as none,
-/// never the bytes past that `size` (here garbage: a count over a dangling pointer).
+/// RED (owner ruling 21, one size per struct): a snapshot whose `size` ends before
+/// `PlaneSnapshot::listed` is refused at the host, never read as listing none and never read past
+/// its `size` (here garbage: a count over a dangling pointer); the host copies none of it.
 #[test]
-fn a_snapshot_from_before_listed_reads_as_listing_none() {
+fn a_snapshot_from_before_listed_is_refused() {
     let mut i: PlaneOpenIn = z();
     i.open.generation = 7;
     let mut older = snap(7);
@@ -402,12 +402,13 @@ fn a_snapshot_from_before_listed_reads_as_listing_none() {
     o.snapshot = &older;
     assert_eq!(
         Plane::check(&answer(life::OPEN, Outcome::Ready, &i, &o)),
-        Ok(()),
-        "a snapshot of the size before the append is this host's to read"
+        f(Rule::Foreign, "snapshot.size"),
+        "a snapshot of the size before the list is refused"
     );
-    let copied = crate::dispatch::kinds::plane::copy_snapshot(&older, 4)
-        .expect("the older snapshot is copied");
-    assert!(copied.listed.is_empty(), "{:?}", copied.listed);
+    assert!(
+        crate::dispatch::kinds::plane::copy_snapshot(&older, 4).is_none(),
+        "the host copies none of it"
+    );
     let names = [AbiStr {
         ptr: b"listed-one".as_ptr(),
         len: 10,

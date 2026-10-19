@@ -1676,7 +1676,8 @@ pub struct AdminRoute {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct PlaneSnapshot {
-    /// `size_of::<PlaneSnapshot>()`.
+    /// `size_of::<PlaneSnapshot>()`, its ONE size (owner ruling 21): a snapshot of any other size,
+    /// shorter or longer, refuses the generation ([`check::check_snapshot`]).
     pub size: u32,
     /// Alignment padding.
     pub _reserved: u32,
@@ -1699,12 +1700,11 @@ pub struct PlaneSnapshot {
     /// THE PROTECTED-RESOURCE FACTS beside its audience (ARCHITECT Q-L3B-RFC9728): a JSON object
     /// `{"authorization_servers": [..], "scopes_supported": [..]}`, from which the kernel renders the
     /// RFC 9728 document at [`PlaneSnapshot::resource_metadata`] (no unit, no audit row); absent =
-    /// none stated. A tail addition.
+    /// none stated.
     pub resource_facts: Blob,
     /// THE NAMES IT LISTS for this generation (THE DESIGN section 2: `/v1/models` appends each
     /// plane generation's listed names, filtered by the caller's grant of the plane's scope kind),
-    /// each non-empty UTF-8; NULL/0 = none. A tail addition: a snapshot whose `size` ends before it
-    /// lists none, and the host reads nothing past that `size`.
+    /// each non-empty UTF-8; NULL/0 = none.
     pub listed: *const AbiStr,
     /// How many.
     pub listed_len: usize,
@@ -1713,8 +1713,7 @@ pub struct PlaneSnapshot {
     /// entry `i` names the span an arrival on `claims[i]` opens, empty = that claim opens none. Each
     /// name is DATA the kernel builds one tracing callsite for when it binds the snapshot, never per
     /// request; a non-empty name is `[a-z0-9_]`, at most [`MAX_ARRIVAL_SPAN`] bytes. NULL/0 = no
-    /// claim opens one; any other length than `claims_len` refuses the snapshot. A tail addition: a
-    /// snapshot whose `size` ends before it opens none, and the host reads nothing past that `size`.
+    /// claim opens one; any other length than `claims_len` refuses the snapshot.
     pub arrival_spans: *const AbiStr,
     /// How many: `0` or `claims_len`.
     pub arrival_spans_len: usize,
@@ -1749,12 +1748,11 @@ pub struct PlaneOpenIn {
     /// THE PLANE'S OTHER OWNED SECTIONS this document writes (the Statement's sections that are
     /// neither its declaring section nor consumed), as one JSON object keyed by section name, each
     /// as written; [`crate::abi::mechanism::call::BLOB_ABSENT`] when it writes none (ARCHITECT
-    /// Q-L3B-AUD: a plane reads its own sections and states its claims from them). A tail addition.
+    /// Q-L3B-AUD: a plane reads its own sections and states its claims from them).
     pub owned: Blob,
     /// THE DIALECT FACTS OF THE PROVIDERS ITS SECTION REFERENCES (each `models.<m>.provider`), one
     /// per provider, in the order first referenced; NULL/0 = none. Read at `open` only: the root
-    /// `providers:` a door plane is served over are the deployment's at boot. A tail addition: a
-    /// host whose `in` ends before it hands none (the `in` is read up to its `size`).
+    /// `providers:` a door plane is served over are the deployment's at boot.
     pub providers: *const ProviderFacts,
     /// How many.
     pub providers_len: usize,
@@ -1977,11 +1975,11 @@ pub struct ArriveOut {
     pub refusal_status: u32,
     /// On REFUSED: `REFUSED_*` bits, the refusal's neutral outcome ([`REFUSED_UNSUPPORTED_ACTION`])
     /// and, on a refusal about an entry, its order ([`REFUSED_AFTER_ADMISSION`]); `0` on every
-    /// other outcome. In what was padding.
+    /// other outcome.
     pub refusal_flags: u32,
     /// This unit's CORRELATION KEY: a non-zero value the plane derives from the arrival (for
     /// example from its request identifier), naming the unit for a subsequent
-    /// [`ArriveOut::cancels`]; `0` = the unit cannot be cancelled by name. A tail addition. It is
+    /// [`ArriveOut::cancels`]; `0` = the unit cannot be cancelled by name. It is
     /// scoped to (connection, the arrival's authenticated principal), never connection-wide: see
     /// the cancel rule in this module's documentation.
     pub correlation: u64,
@@ -1993,17 +1991,15 @@ pub struct ArriveOut {
     /// On READY: the ENTRY the unit routes over, its name inside the plane's own config section
     /// (ARCHITECT Q-SW6, 2026-10-02): a pool or a model entry, as [`ArriveOut::route`] says. The kernel
     /// resolves (plane key, entry) and never parses the name; none named is refused. Plane memory,
-    /// valid until the instance's next call. A tail addition; absent on every other outcome.
+    /// valid until the instance's next call. Absent on every other outcome.
     pub pool: AbiStr,
     /// On READY: [`ROUTE_POOL`] or [`ROUTE_DIRECT`], what [`ArriveOut::pool`] names (ARCHITECT Q-FL3,
     /// 2026-10-02), or [`ROUTE_LOCAL`], [`ROUTE_SCOPE`] or [`ROUTE_SCOPE_LOCAL`] with no pool named
-    /// (the scope's two naming their candidates there). A tail addition;
-    /// [`ROUTE_POOL`] on every
-    /// other outcome.
+    /// (the scope's two naming their candidates there); [`ROUTE_POOL`] on every other outcome.
     pub route: u8,
     /// On READY: `ROUTE_*` flag bits ([`ROUTE_ONCE`], [`ROUTE_SESSION`], [`ROUTE_STREAM`],
     /// [`ROUTE_COUNTED`]); `0`
-    /// on every other outcome. A tail addition, in what was padding.
+    /// on every other outcome.
     pub route_flags: u8,
     /// Alignment padding.
     pub _route_reserved: [u8; 6],
@@ -2011,7 +2007,7 @@ pub struct ArriveOut {
     /// 2026-10-05): the plane computes it from what only it reads (its dialect's body, its own
     /// section's settings), and the walk prefers one stable member for every unit stating the same
     /// key, with no plane or protocol knowledge. Absent (NULL, `0`) = no affinity, and absent on
-    /// every other outcome. Plane memory, valid until the instance's next call. A tail addition.
+    /// every other outcome. Plane memory, valid until the instance's next call.
     pub affinity: AbiStr,
     /// On READY: THE TRUST FACTS the unit rests on (ARCHITECT 2026-10-06: trust is the kernel's
     /// Approve step, and a plane states facts and judges none): the COUNTERPARTY, a name among the
@@ -2019,7 +2015,7 @@ pub struct ArriveOut {
     /// against its trust book (declared, sighted, not quarantined) and refuses the unit
     /// [`RefusalCode::Untrusted`] otherwise. Absent = the unit rests on no counterparty, and nothing
     /// is judged; absent on every other outcome. Plane memory, valid until the instance's next
-    /// call. A tail addition.
+    /// call.
     pub trust_counterparty: AbiStr,
     /// With `trust_counterparty`: the ITEM the unit uses there (a tool, a skill: the plane's own
     /// per-item trust key), opaque to the kernel; the kernel requires it sighted and approved at
@@ -2175,10 +2171,10 @@ pub struct OnPieceOut {
     /// picked (a call of one tool on a pooled server is the tool's lane, not the server's). The
     /// kernel qualifies it with the plane's own key, so a plane names lanes of its own card alone;
     /// the last one an answer of the unit named holds, and a unit whose answers name none is laned
-    /// by the entry its route picked. UTF-8, without control characters. A tail addition.
+    /// by the entry its route picked. UTF-8, without control characters.
     pub lane: Span,
     /// With [`EMIT_FINAL_STATUS`]: the reply's final status number, in the numbering the claim's
-    /// transport declares for its own statuses. A tail addition.
+    /// transport declares for its own statuses.
     pub final_status: u32,
     /// Alignment padding.
     pub _final_reserved: u32,
@@ -2191,11 +2187,11 @@ pub struct OnPieceOut {
     /// the kernel's upstream-attempt and upstream-failure counters carry for it, in the arena; a
     /// zero length = none, and the kernel keeps its own (the walk's pool). The kernel takes it only
     /// from a bounded set — a pool label or an entry name the unit's route can reach — and a word
-    /// outside it falls back to its own and is counted refused. UTF-8. A tail addition.
+    /// outside it falls back to its own and is counted refused. UTF-8.
     pub metric_pool: Span,
     /// The same for the `lane` label: an entry name the unit's route can reach, or a word of the
     /// plane's declared [`PlaneTail::metric_lanes`]; anything else falls back to the kernel's own
-    /// (the member's qualified entry) and is counted refused. A tail addition.
+    /// (the member's qualified entry) and is counted refused.
     pub metric_lane: Span,
     /// THE MEMBER WHOSE WAIT THE REFUSAL ANSWERS, stated on the answer to the [`PIECE_REFUSED`]
     /// piece the walk's exhaustion hands ([`TAIL_REFUSED_PIECE`], reason `BreakerOpen`): the ONE
@@ -2203,16 +2199,14 @@ pub struct OnPieceOut {
     /// [`OnPieceIn::member`] lends it), in the arena; the refusal's `Retry-After` is then that
     /// member's own cooldown in the pool, never the soonest across the pool's members (the walk's
     /// figure, which a zero length keeps). Stated on any other answer, or naming no member of the
-    /// unit's pool, it is refused: the unit ends as the plane's fault. UTF-8. A tail addition: a
-    /// plane whose answer stops short of it states none (the host reads an absent tail field as
-    /// zero, `abi::mechanism::call` SIZES).
+    /// unit's pool, it is refused: the unit ends as the plane's fault. UTF-8.
     pub wait_member: Span,
     /// THE REASON THE FAULT READING STATES (ARCHITECT, the far-end fault reading): beside a
     /// [`OnPieceOut::fault`] reading, the plane's own neutral words for why it reads the answer so
     /// (an exhausted account, a refused credential), in the arena; a zero length = none stated. The plane classifies the far end's code; the kernel carries these words
     /// VERBATIM to the breaker's record of the reading (the member's down reason and its operator
     /// diagnostic) and never reads a code to make its own. Stated with no reading, it contradicts
-    /// the answer. UTF-8. A tail addition.
+    /// the answer. UTF-8.
     pub fault_reason: Span,
 }
 
@@ -2260,17 +2254,17 @@ pub struct RefusalIn {
     pub target: AbiStr,
     /// HOST buffer for record writes: the refusal's record writes, as an `on_piece` answer's
     /// ([`RecordWrite`], their bytes in the arena), so a plane writes its declared audit row
-    /// ([`RECORD_AUDIT`]) for a unit the kernel refused. A tail addition.
+    /// ([`RECORD_AUDIT`]) for a unit the kernel refused.
     pub records_buf: *mut RecordWrite,
     /// Its capacity.
     pub records_cap: usize,
     /// With [`REFUSAL_GATE`]: the name of the hook that vetoed the unit, opaque bytes; absent on
-    /// every other refusal. A tail addition.
+    /// every other refusal.
     pub hook: AbiStr,
     /// With [`RefusalCode::Untrusted`]: why the kernel's Approve did not trust the unit's stated
     /// facts (`abi::host::service::DISTRUST_*`, the one trust vocabulary, `trust.serves`'s too),
     /// so the plane renders the words its dialect has for each (an unknown item as not found, a
-    /// known one ungranted as refused); `0` on every other refusal. A tail addition.
+    /// known one ungranted as refused); `0` on every other refusal.
     pub trust: u32,
     /// Alignment padding.
     pub _trust_reserved: u32,
@@ -2299,7 +2293,7 @@ pub struct RefusalOut {
     /// The status number the rendered reply carries, in [`RefusalIn::status`]'s space; the
     /// transport maps it to its wire. `0` = keep [`RefusalIn::status`].
     pub status: u32,
-    /// Record writes written to `records_buf`. A tail addition.
+    /// Record writes written to `records_buf`.
     pub records_written: u32,
     /// Short answer: the record writes `records_buf` needs.
     pub records_needed: u32,
@@ -2366,7 +2360,7 @@ pub struct ServeOut {
     pub fields_needed: u32,
     /// `AUDIT_*`: the row the kernel audits the request with, under the route's `audit_verb`.
     pub audit: u32,
-    /// Record writes written to `records_buf`. A tail addition.
+    /// Record writes written to `records_buf`.
     pub records_written: u32,
     /// Short answer: the record writes `records_buf` needs.
     pub records_needed: u32,
