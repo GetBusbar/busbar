@@ -8209,3 +8209,31 @@ fn two_planes_declaring_the_same_pools_get_the_same_walk() {
         "the pool's declared terminal ends the walk"
     );
 }
+
+/// A POOL THAT DECLARES NO WALK walks as a door plane's pool always did: every member at the
+/// pools grammar's default weight, under the default failover bounds and the shed, its fallback
+/// pool where it names one (the parity half of [`two_planes_declaring_the_same_pools_get_the_same_walk`]).
+#[test]
+fn a_pool_declaring_no_walk_walks_the_defaults_it_always_did() {
+    let egress = walk_over(
+        "plane-one",
+        "a: {url: \"https://far.example/a\"}\nb: {url: \"https://far.example/b\"}\n\
+         pools:\n  p:\n    members: [a, b]\n  q:\n    members: [b]\n    \
+         on_exhausted: {fallback_pool: p}\n",
+    );
+    let p = egress.pools.get("p").expect("the pool is sealed");
+    assert_eq!(
+        p.members.iter().map(|m| m.weight).collect::<Vec<_>>(),
+        [1, 1]
+    );
+    assert_eq!(p.failover, busbar_kernel_egress::Failover::default());
+    assert_eq!(p.on_exhausted, busbar_kernel_egress::OnExhausted::Status503);
+    assert_eq!(
+        egress
+            .pools
+            .get("q")
+            .expect("the pool is sealed")
+            .on_exhausted,
+        busbar_kernel_egress::OnExhausted::FallbackPool("p".to_string())
+    );
+}

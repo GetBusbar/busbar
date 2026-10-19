@@ -118,3 +118,45 @@ fn the_all_pools_credential_default_reaches_every_pool_without_its_own_and_every
         "with no default set, every member is reached with its own credential"
     );
 }
+
+/// THE PLANE SERVING THE `pools` MAP WALKS ITS POOLS AS 1.5.5 DID, now through the one reading
+/// every plane's pools take (`door_steps::pool_walk`): a declared `failover:` bounds the walk at its
+/// own deadline and hop cap, a declared `on_exhausted:` is its terminal, and a pool that
+/// declares neither walks 1.5.5's defaults (a 120 s deadline, three hops, no exclusions, the shed).
+#[test]
+fn the_pools_serving_plane_walks_its_declared_and_default_bounds_as_before() {
+    let plan = pools_of(
+        "  bounded:\n    members: []\n    failover: {timeout_secs: 7, max_hops: 1}\n    \
+         on_exhausted: least_bad\n  \
+         spills:\n    members: []\n    on_exhausted: {fallback_pool: bounded}\n  \
+         waits:\n    members: []\n    on_exhausted: {queue: {max_ms: 250}}\n  \
+         plain:\n    members: []\n",
+    );
+    assert_eq!(
+        plan.pools["bounded"].failover,
+        Failover {
+            timeout_secs: 7,
+            max_hops: 1,
+            exclusions: Vec::new(),
+        }
+    );
+    assert_eq!(plan.pools["bounded"].on_exhausted, OnExhausted::LeastBad);
+    assert_eq!(
+        plan.pools["spills"].on_exhausted,
+        OnExhausted::FallbackPool("bounded".to_string())
+    );
+    assert_eq!(
+        plan.pools["waits"].on_exhausted,
+        OnExhausted::Queue { max_ms: 250 }
+    );
+    assert_eq!(
+        plan.pools["plain"].failover,
+        Failover {
+            timeout_secs: 120,
+            max_hops: 3,
+            exclusions: Vec::new(),
+        },
+        "1.5.5's default deadline and hop cap"
+    );
+    assert_eq!(plan.pools["plain"].on_exhausted, OnExhausted::Status503);
+}

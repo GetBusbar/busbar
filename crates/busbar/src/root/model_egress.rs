@@ -80,7 +80,6 @@ impl ModelPools {
     /// The pools and models `cfg` resolved.
     #[must_use]
     pub fn of(cfg: &busbar_kernel::config::RootCfg) -> Self {
-        use busbar_kernel::config::pools::OnExhaustedCfg;
         let mut lanes: BTreeMap<String, ModelLane> = cfg
             .models
             .iter()
@@ -102,24 +101,11 @@ impl ModelPools {
                     lane.context_max.get_or_insert(c);
                 }
             }
-            let failover = pool.failover.as_ref().map_or(
-                Failover {
-                    timeout_secs: busbar_kernel::config::DEFAULT_FAILOVER_DEADLINE_SECS,
-                    max_hops: busbar_kernel::config::DEFAULT_FAILOVER_CAP,
-                    exclusions: Vec::new(),
-                },
-                |f| Failover {
-                    timeout_secs: f.timeout_secs,
-                    max_hops: f.max_hops,
-                    exclusions: f.exclusions.clone().unwrap_or_default(),
-                },
+            // The pool's walk, read the one way every plane's is (`door_steps::pool_walk`).
+            let (failover, on_exhausted) = crate::root::door_steps::pool_walk(
+                pool.failover.as_ref(),
+                pool.on_exhausted.as_ref(),
             );
-            let on_exhausted = match &pool.on_exhausted {
-                None | Some(OnExhaustedCfg::Reject) => OnExhausted::Status503,
-                Some(OnExhaustedCfg::LeastBad) => OnExhausted::LeastBad,
-                Some(OnExhaustedCfg::FallbackPool(p)) => OnExhausted::FallbackPool(p.clone()),
-                Some(OnExhaustedCfg::Queue { max_ms }) => OnExhausted::Queue { max_ms: *max_ms },
-            };
             pools.insert(
                 name.clone(),
                 ModelPool {

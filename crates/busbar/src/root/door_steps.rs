@@ -69,6 +69,20 @@ pub struct DoorPools {
     timeouts: BTreeMap<String, u64>,
     /// Each pool's members' tiers, in member order (`0` where a member states none).
     tiers: BTreeMap<String, Vec<u32>>,
+    /// Each pool's members' declared weight and attempt bound, in member order: the pools
+    /// grammar's member `weight` (its default where a member states none) and `attempt_timeout_ms`.
+    shapes: BTreeMap<String, Vec<(u32, Option<u64>)>>,
+    /// Each pool's declared walk: its `failover` bounds and its `on_exhausted` terminal, read as
+    /// the kernel's pools grammar reads them ([`pool_walk`]).
+    walks: BTreeMap<
+        String,
+        (
+            busbar_kernel_egress::Failover,
+            busbar_kernel_egress::OnExhausted,
+        ),
+    >,
+    /// Each pool's declared `breaker` ladder, as written; absent = the default ladder.
+    breakers: BTreeMap<String, serde_yaml::Value>,
 }
 
 /// A resolved route: its pool label (empty for a direct route) and its member entries.
@@ -108,7 +122,7 @@ impl DoorPools {
                     .filter_map(|(name, pool)| {
                         Some((
                             key(name)?,
-                            members(pool).into_iter().map(|(m, _)| m).collect(),
+                            members(pool).into_iter().map(|m| m.name).collect(),
                         ))
                     })
                     .collect()
@@ -123,7 +137,7 @@ impl DoorPools {
                     .filter_map(|(name, pool)| {
                         Some((
                             key(name)?,
-                            members(pool).into_iter().map(|(_, t)| t).collect(),
+                            members(pool).into_iter().map(|m| m.tier).collect(),
                         ))
                     })
                     .collect()
@@ -160,6 +174,57 @@ impl DoorPools {
                     .collect()
             })
             .unwrap_or_default();
+        // THE POOL'S DECLARED WALK (Law 1: every instance of a kind treated identically; THE DESIGN
+        // §1: every plane gets every capability): its members' weights and attempt bounds, its
+        // failover bounds, its exhaustion terminal and its breaker ladder, in the pools grammar's
+        // own words, whichever plane's section declares it.
+        let declared = map
+            .get(RESERVED_POOLS_KEY)
+            .and_then(serde_yaml::Value::as_mapping);
+        let shapes = declared
+            .map(|pools| {
+                pools
+                    .iter()
+                    .filter_map(|(name, pool)| {
+                        Some((
+                            key(name)?,
+                            members(pool)
+                                .into_iter()
+                                .map(|m| (m.weight, m.attempt_timeout_ms))
+                                .collect(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let walks = declared
+            .map(|pools| {
+                pools
+                    .iter()
+                    .filter_map(|(name, pool)| {
+                        let read = |k: &str| pool.get(k).cloned();
+                        let failover = read(FAILOVER_KEY).and_then(|v| {
+                            serde_yaml::from_value::<busbar_kernel::config::FailoverCfg>(v).ok()
+                        });
+                        let on_exhausted = read(ON_EXHAUSTED_KEY).and_then(|v| {
+                            serde_yaml::from_value::<busbar_kernel::config::OnExhaustedCfg>(v).ok()
+                        });
+                        Some((
+                            key(name)?,
+                            pool_walk(failover.as_ref(), on_exhausted.as_ref()),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let breakers = declared
+            .map(|pools| {
+                pools
+                    .iter()
+                    .filter_map(|(name, pool)| Some((key(name)?, pool.get(BREAKER_KEY)?.clone())))
+                    .collect()
+            })
+            .unwrap_or_default();
         // THE ENTRY'S ATTEMPT BOUND (ARCHITECT timeout ruling; R2-G "per-member ... timeout"): its
         // reserved `timeout:`, read the one way the kernel judged it at load, for every plane alike.
         let timeouts = entries
@@ -181,7 +246,46 @@ impl DoorPools {
             member_granted,
             timeouts,
             tiers,
+            shapes,
+            walks,
+            breakers,
         }
+    }
+
+    /// The declared weight and attempt bound of `pool`'s member at `index`: the pools grammar's
+    /// member default weight and no bound of its own where it states none.
+    #[must_use]
+    pub fn member_shape(&self, pool: &str, index: usize) -> (u32, Option<u64>) {
+        self.shapes
+            .get(pool)
+            .and_then(|s| s.get(index))
+            .copied()
+            .unwrap_or((busbar_kernel::config::default_weight(), None))
+    }
+
+    /// The walk `pool` declares: its failover bounds and its exhaustion terminal; the pools
+    /// grammar's defaults where it declares none.
+    #[must_use]
+    pub fn walk(
+        &self,
+        pool: &str,
+    ) -> (
+        busbar_kernel_egress::Failover,
+        busbar_kernel_egress::OnExhausted,
+    ) {
+        self.walks
+            .get(pool)
+            .cloned()
+            .unwrap_or_else(|| pool_walk(None, None))
+    }
+
+    /// The breaker ladder `pool` declares, read as the kernel's pools grammar reads it; `None` =
+    /// the default ladder.
+    #[must_use]
+    pub fn breaker(&self, pool: &str) -> Option<busbar_kernel::config::BreakerCfg> {
+        self.breakers
+            .get(pool)
+            .and_then(|v| serde_yaml::from_value(v.clone()).ok())
     }
 
     /// The attempt bound of `entry`'s member, milliseconds: its reserved `timeout:`; `None` = the
@@ -257,6 +361,51 @@ impl DoorPools {
 /// grammar's own words, `busbar_kernel::config::pools::OnExhaustedCfg`).
 const ON_EXHAUSTED_KEY: &str = "on_exhausted";
 const FALLBACK_POOL_KEY: &str = "fallback_pool";
+/// A pool's reserved `failover:` and `breaker:` keys, and a member's `weight:` and
+/// `attempt_timeout_ms:` (the pools grammar's own words, `busbar_kernel::config::pools`).
+const FAILOVER_KEY: &str = "failover";
+const BREAKER_KEY: &str = "breaker";
+const MEMBER_WEIGHT_KEY: &str = "weight";
+const MEMBER_ATTEMPT_KEY: &str = "attempt_timeout_ms";
+
+/// THE WALK ONE POOL DECLARES, read the one way for every plane (Law 1; THE DESIGN §1: every plane
+/// gets every capability): its `failover` bounds (the pools grammar's default deadline and hop cap
+/// where it declares none) and its `on_exhausted` terminal (the shed where it declares none). The
+/// plane serving the kernel's `pools` map ([`crate::root::model_egress`]) and every door plane's
+/// generic egress ([`compose_egress`]) both seal a pool's walk through this.
+#[must_use]
+pub fn pool_walk(
+    failover: Option<&busbar_kernel::config::FailoverCfg>,
+    on_exhausted: Option<&busbar_kernel::config::OnExhaustedCfg>,
+) -> (
+    busbar_kernel_egress::Failover,
+    busbar_kernel_egress::OnExhausted,
+) {
+    use busbar_kernel::config::OnExhaustedCfg;
+    let failover = failover.map_or(
+        busbar_kernel_egress::Failover {
+            timeout_secs: busbar_kernel::config::DEFAULT_FAILOVER_DEADLINE_SECS,
+            max_hops: busbar_kernel::config::DEFAULT_FAILOVER_CAP,
+            exclusions: Vec::new(),
+        },
+        |f| busbar_kernel_egress::Failover {
+            timeout_secs: f.timeout_secs,
+            max_hops: f.max_hops,
+            exclusions: f.exclusions.clone().unwrap_or_default(),
+        },
+    );
+    let on_exhausted = match on_exhausted {
+        None | Some(OnExhaustedCfg::Reject) => busbar_kernel_egress::OnExhausted::Status503,
+        Some(OnExhaustedCfg::LeastBad) => busbar_kernel_egress::OnExhausted::LeastBad,
+        Some(OnExhaustedCfg::FallbackPool(p)) => {
+            busbar_kernel_egress::OnExhausted::FallbackPool(p.clone())
+        }
+        Some(OnExhaustedCfg::Queue { max_ms }) => {
+            busbar_kernel_egress::OnExhausted::Queue { max_ms: *max_ms }
+        }
+    };
+    (failover, on_exhausted)
+}
 
 impl DoorPools {
     /// WHETHER THE CALLER'S GRANT ADMITS THE ROUTE AS NAMED, judged before its destination (1.5.5's
@@ -343,7 +492,16 @@ impl DoorPools {
 
 /// A pool's member entries: its `members` list, each an entry name or a member naming one, with the
 /// member's tier (`0` where it states none, or states one that is no unsigned integer).
-fn members(pool: &serde_yaml::Value) -> Vec<(String, u32)> {
+/// One pool member as its section writes it: its entry, its tier (`0` where it states none), its
+/// weight (the pools grammar's default where it states none) and its attempt bound.
+struct PoolMemberShape {
+    name: String,
+    tier: u32,
+    weight: u32,
+    attempt_timeout_ms: Option<u64>,
+}
+
+fn members(pool: &serde_yaml::Value) -> Vec<PoolMemberShape> {
     pool.get(POOL_MEMBERS_KEY)
         .and_then(serde_yaml::Value::as_sequence)
         .map(|list| {
@@ -358,7 +516,20 @@ fn members(pool: &serde_yaml::Value) -> Vec<(String, u32)> {
                         .and_then(serde_yaml::Value::as_u64)
                         .and_then(|t| u32::try_from(t).ok())
                         .unwrap_or(0);
-                    Some((name.to_owned(), tier))
+                    let weight = m
+                        .get(MEMBER_WEIGHT_KEY)
+                        .and_then(serde_yaml::Value::as_u64)
+                        .and_then(|w| u32::try_from(w).ok())
+                        .unwrap_or_else(busbar_kernel::config::default_weight);
+                    let attempt_timeout_ms = m
+                        .get(MEMBER_ATTEMPT_KEY)
+                        .and_then(serde_yaml::Value::as_u64);
+                    Some(PoolMemberShape {
+                        name: name.to_owned(),
+                        tier,
+                        weight,
+                        attempt_timeout_ms,
+                    })
                 })
                 .collect()
         })
@@ -1450,10 +1621,18 @@ pub fn compose_egress(
                     format!("pool '{label}' names entry '{e}', which has no sealed route")
                 })?;
                 member.tier = pools.tier(label, index);
+                // The member walks at its declared weight, and its declared attempt bound in this
+                // pool over its entry's own, as the pools grammar reads them for every plane.
+                let (weight, attempt) = pools.member_shape(label, index);
+                member.weight = weight;
+                member.attempt_timeout_ms = attempt.or(member.attempt_timeout_ms);
                 Ok(member)
             })
             .collect::<Result<Vec<_>, String>>()?;
         let mut pool = Pool::new(label.clone(), list);
+        let (failover, on_exhausted) = pools.walk(label);
+        pool.failover = failover;
+        pool.on_exhausted = on_exhausted;
         if let Some(fallback) = pools.fallback(label) {
             pool.on_exhausted = OnExhausted::FallbackPool(fallback.to_string());
         }
@@ -1465,18 +1644,19 @@ pub fn compose_egress(
             Pool::new(member.name.clone(), vec![member.clone()]),
         );
     }
-    // Every cell of this plane's members under the default ladder, with the plane's declared
-    // breaker fact where it states one (ARCHITECT Q4); where it states none, the default holds.
-    let cell = || {
-        let mut cfg = busbar_kernel::store::pool_breaker_cfg(None);
+    // Every cell under its pool's declared ladder (the pools grammar's `breaker:`, read as the
+    // kernel reads it for every plane), else the default ladder, with the plane's declared breaker
+    // fact where it states one (ARCHITECT Q4); where it states none, the ladder's own holds.
+    let cell = |declared: Option<busbar_kernel::config::BreakerCfg>| {
+        let mut cfg = busbar_kernel::store::pool_breaker_cfg(declared.as_ref());
         if let Some(bench) = facts.bench_below_trip_threshold {
             cfg.bench_below_trip_threshold = bench;
         }
         cfg
     };
     let policy = built.keys().fold(
-        crate::root::adapters::BreakerPolicy::new().with_default_cell(cell()),
-        |policy, pool| policy.with_pool(pool.as_str(), cell()),
+        crate::root::adapters::BreakerPolicy::new().with_default_cell(cell(None)),
+        |policy, pool| policy.with_pool(pool.as_str(), cell(pools.breaker(pool))),
     );
     Ok(busbar_kernel::plane_driver::Egress {
         caller,
