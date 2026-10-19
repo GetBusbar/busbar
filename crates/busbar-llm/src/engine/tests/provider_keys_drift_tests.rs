@@ -126,7 +126,7 @@ fn declared() -> ProviderKeys {
 fn sample(shape: &Shape) -> Value {
     match shape {
         Shape::Str => json!("word"),
-        Shape::Int => json!(1),
+        Shape::Int | Shape::U32 | Shape::U64 | Shape::Usize => json!(1),
         Shape::Bool => json!(true),
         Shape::StrMap => json!({ "word": "word" }),
         Shape::OneOf(words) => Value::String(words[0].clone()),
@@ -264,7 +264,13 @@ fn judge(
                     place(with(req.clone(), &name, Value::Object(m)))
                 });
             }
-            Shape::Str | Shape::Int | Shape::Bool | Shape::StrMap => {}
+            Shape::Str
+            | Shape::Int
+            | Shape::U32
+            | Shape::U64
+            | Shape::Usize
+            | Shape::Bool
+            | Shape::StrMap => {}
         }
     }
 }
