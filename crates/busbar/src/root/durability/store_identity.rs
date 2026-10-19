@@ -580,7 +580,7 @@ static LEASE_TICKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32:
 /// unrefreshed past its lapse) is logged.
 pub fn refresh_held_lease() {
     let tick = LEASE_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if (tick + 1) % LEASE_REFRESH_TICKS != 0 {
+    if !tick.wrapping_add(1).is_multiple_of(LEASE_REFRESH_TICKS) {
         return;
     }
     let Some((calls, lease)) = held() else {
