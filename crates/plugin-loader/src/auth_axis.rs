@@ -327,12 +327,11 @@ impl AuthRows {
 
     /// THE OUTBOUND STYLES every auth row this build reaches declares (linked rows first, then
     /// dropped-in rows), in the host's one listing order
-    /// ([`busbar_contract::auth_calls::listed_styles`]), read off a probe load of each row: no
-    /// instance is opened. A row that will not load declares none here; its load refuses it where
-    /// it is used.
+    /// ([`busbar_contract::auth_calls::listed_styles`]), read off each row's Statement rendering
+    /// ([`stated_facts`]): nothing is bound or opened (Law 7). A row whose rendering does not read
+    /// declares none here; its load refuses it where it is used.
     #[must_use]
     pub fn outbound_styles(&self) -> Vec<busbar_contract::auth_calls::DeclaredStyle> {
-        use crate::dispatch::auth_outbound::outbound_styles;
         let rows = self
             .registry
             .linked()
@@ -340,12 +339,8 @@ impl AuthRows {
             .chain(self.registry.loadable());
         let declared = rows
             .filter(|p| p.manifest.kind == AUTH)
-            .filter_map(|row| {
-                self.load(row, &row.manifest.alias, false)
-                    .ok()
-                    .map(|Door::Memory(plugin, _)| outbound_styles(&plugin))
-            })
-            .flatten()
+            .filter_map(|row| stated_facts(row).ok())
+            .flat_map(|f| f.styles)
             .map(|s| busbar_contract::auth_calls::DeclaredStyle {
                 name: s.name,
                 flags: s.flags,
@@ -367,19 +362,20 @@ impl AuthRows {
         credential: Option<&[u8]>,
         settings: &serde_json::Value,
     ) -> Result<Vec<String>, String> {
-        use crate::dispatch::auth_outbound::{outbound_styles, OutboundInstance};
+        use crate::dispatch::auth_outbound::OutboundInstance;
         let rows = self
             .registry
             .linked()
             .iter()
             .chain(self.registry.loadable());
-        for row in rows.filter(|p| p.manifest.kind == AUTH) {
+        // Only the row that STATES the style is bound (Law 7): read off the renderings first.
+        let serving = rows
+            .filter(|p| p.manifest.kind == AUTH)
+            .find(|row| stated_facts(row).is_ok_and(|f| f.styles.iter().any(|s| s.name == style)));
+        if let Some(row) = serving {
             let Ok(Door::Memory(plugin, _)) = self.load(row, &row.manifest.alias, false) else {
-                continue;
+                return Ok(Vec::new());
             };
-            if !outbound_styles(&plugin).iter().any(|s| s.name == style) {
-                continue;
-            }
             let bytes = serde_json::to_vec(settings).map_err(|e| e.to_string())?;
             let instance =
                 OutboundInstance::open_with(plugin, Arc::clone(&self.dispatcher), 0, &bytes)?;
@@ -433,6 +429,50 @@ impl AuthRows {
         }
         Ok(None)
     }
+}
+
+/// THE ONE READER OF AN AUTH ROW'S FACTS WITHOUT OPENING IT (Law 7; Part 2 #2): its Statement
+/// rendering (a linked door's own, a dropped plugin's signed one), read back and judged exactly as
+/// a bound door's Statement is ([`crate::dispatch::kinds::auth::rendered_facts`]). Selection and
+/// listing read this; only the row a configuration names is ever loaded.
+///
+/// # Errors
+/// The row states no rendering, it does not read back, or its facts refuse the load.
+pub fn stated_facts(
+    row: &LoadablePlugin,
+) -> Result<crate::dispatch::kinds::auth::AuthFacts, String> {
+    match row.door() {
+        Some(door) => door_facts(door),
+        None => rendering_facts(
+            &row.manifest
+                .stated_rendering()?
+                .ok_or_else(|| NO_DOOR.to_string())?,
+        ),
+    }
+}
+
+/// [`stated_facts`] of a compiled-in auth door: its own Statement rendering, nothing opened.
+///
+/// # Errors
+/// As [`stated_facts`].
+pub fn door_facts(
+    door: busbar_contract::abi::mechanism::door::DoorFn,
+) -> Result<crate::dispatch::kinds::auth::AuthFacts, String> {
+    rendering_facts(&LinkedRow::of(door).map_err(|e| e.to_string())?.statement)
+}
+
+/// [`stated_facts`] of a Statement rendering's bytes.
+///
+/// # Errors
+/// As [`stated_facts`].
+pub fn rendering_facts(stated: &[u8]) -> Result<crate::dispatch::kinds::auth::AuthFacts, String> {
+    let r = read(stated).map_err(|e| {
+        format!(
+            "the Statement rendering does not read back: byte {} is not {}",
+            e.at, e.what
+        )
+    })?;
+    crate::dispatch::kinds::auth::rendered_facts(&r)
 }
 
 /// The aliases `row`'s Statement states (its [`REWRITE_ALIAS`] rewrites; the design's One
