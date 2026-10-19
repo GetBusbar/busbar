@@ -925,7 +925,7 @@ pub struct TestApp {
     /// substrate `PlaneAdmission`), so `build()` names no plane type to assemble the router surface.
     plane_dispatch: crate::plane::PlaneDispatch,
     /// The type-erased section-defs config handles the built App carries, KEYED by the owning plane's
-    /// decl key (mirroring `plane_gates`/`plane_pools`). The agents-section plane's entry becomes
+    /// decl key (mirroring `plane_gates`). The agents-section plane's entry becomes
     /// [`crate::state::App::agent_defs`]; an absent key ⇒ the neutral empty placeholder (`Arc::new(())`),
     /// which no test-path consumer downcasts — the A2A plane reads its `AgentsCfg` off its own runtime
     /// object, not off this handle. Each plane's test-kit sets its real erased defs here for fidelity.
@@ -1891,7 +1891,7 @@ impl TestApp {
             // The type-erased `agents:` handle: the A2A test-kit erases its own `AgentsCfg` and hands
             // it via `set_plane_defs_any` KEYED by its plane; `build()` reads it under the decl key of
             // the plane that owns the `agents:` section (resolved from the registry, never a literal),
-            // exactly as `plane_pools`/`plane_gates` below. Absent that, a neutral empty placeholder no
+            // exactly as `plane_gates` below. Absent that, a neutral empty placeholder no
             // test-path consumer downcasts (the A2A plane reads its `AgentsCfg` off its runtime object).
             agent_defs: crate::plane::registry::plane_decl_for_config_section(
                 busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
@@ -1912,17 +1912,23 @@ impl TestApp {
             plane_breakers: std::sync::Arc::new(crate::store::PlaneBreakers::new()),
             session_store: std::sync::Arc::new(crate::session::SessionStore::new(1024, None)),
             incremental_scan: false,
-            tool_pools: self.tool_pools,
-            plane_pools: {
-                // Keyed by the DECL KEY of the plane that owns the `agents:` section — resolved from
-                // the registry, never spelled as a literal — exactly as production `appbuild` keys it.
-                // A compiled-out plane has no decl for its section, so nothing is inserted (the pool
-                // read treats an absent key identically to the former empty-value entry).
+            // Keyed by config section exactly as production `appbuild` keys it: the first named-map
+            // section's set always, the second's only when a registered plane owns that section.
+            section_pools: {
                 let mut m = std::collections::BTreeMap::new();
-                if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
+                m.insert(
+                    busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
+                    self.tool_pools,
+                );
+                if crate::plane::registry::plane_decl_for_config_section(
                     busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
-                ) {
-                    m.insert(decl.key, self.agent_pools);
+                )
+                .is_some()
+                {
+                    m.insert(
+                        busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
+                        self.agent_pools,
+                    );
                 }
                 m
             },
