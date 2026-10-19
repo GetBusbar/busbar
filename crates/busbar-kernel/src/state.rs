@@ -112,21 +112,17 @@ pub struct App {
     /// firing sites pass `incremental: None`. Env-driven, not config, so activating it does not touch
     /// the frozen `config-schema.snapshot.json` / config-stability gate.
     pub incremental_scan: bool,
-    /// A single container plane's failover pools — operator-declared interchangeable member sets,
-    /// carried resolved-verbatim onto the snapshot so that plane's own dispatch route builder
-    /// reads the SAME generation the request was admitted on. Empty ⇒ every
-    /// member keeps its degenerate single-member cell and no reroute exists to be had.
-    pub tool_pools: std::collections::BTreeMap<String, crate::config::pools::CandidatePoolCfg>,
-    /// THE PER-PLANE FAILOVER POOL MAPS reached through the GENERIC pool-member seam
-    /// ([`busbar_kernel::plane_host::LanePoolHost::plane_pool_members`]), keyed by the plane's stable
-    /// decl key (the opaque registry key) — a registry-keyed map in place of the former plane-named
-    /// pool field, so core carries no plane vocabulary in its own field names. Each plane's
-    /// entry is its own resolved pool-member set (member selection derives lanes from member position).
-    /// Read on the plane's submission/route path through [`App::plane_pools`].
+    /// THE FAILOVER POOL MAPS, KEYED BY CONFIG SECTION: each entry is the pool set the operator
+    /// declared for the plane that owns that section key (the key a plane's Statement declares, never
+    /// a plane-named field), carried resolved-verbatim onto the snapshot so the owning plane's route
+    /// builder reads the SAME generation the request was admitted on. An absent key ⇒ that section
+    /// declared no pools this generation: every member keeps its degenerate single-member cell and no
+    /// reroute exists to be had. Read through [`App::section_pools`] (by section key) or
+    /// [`App::plane_pools`] (by the owning plane's registry key).
     // Read on a plane's route/admission path; with one plane's feature off (and another's on) it is
     // never read.
     #[allow(dead_code)]
-    pub plane_pools: std::collections::BTreeMap<
+    pub section_pools: std::collections::BTreeMap<
         &'static str,
         std::collections::BTreeMap<String, crate::config::pools::CandidatePoolCfg>,
     >,
@@ -685,14 +681,28 @@ impl App {
             .unwrap_or(&[])
     }
 
-    /// The failover pool map for the plane identified by the opaque registry `plane_key`, or `None`
-    /// when the plane declared no pools this generation — a pure [`App::plane_pools`](Self::plane_pools)
-    /// map read, reached through the key instead of a plane-named field.
+    /// The failover pool map the operator declared under the config section `section`, or `None`
+    /// when that section declared no pools this generation — a pure
+    /// [`App::section_pools`](Self::section_pools) map read.
+    pub fn section_pools(
+        &self,
+        section: &str,
+    ) -> Option<&std::collections::BTreeMap<String, crate::config::pools::CandidatePoolCfg>> {
+        self.section_pools.get(section)
+    }
+
+    /// The failover pool map of the plane identified by the opaque registry `plane_key`: the pools
+    /// under the config section that plane's declaration owns, or `None` when no registered plane
+    /// has that key or its section declared no pools this generation.
     pub fn plane_pools(
         &self,
         plane_key: &str,
     ) -> Option<&std::collections::BTreeMap<String, crate::config::pools::CandidatePoolCfg>> {
-        self.plane_pools.get(plane_key)
+        let decl = crate::plane::registry::plane_decls()
+            .iter()
+            .copied()
+            .find(|d| d.key == plane_key)?;
+        self.section_pools(decl.config_section)
     }
 
     /// Resolve a container plane's per-registration hook gates against THIS snapshot's hook registry,

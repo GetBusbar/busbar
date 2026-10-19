@@ -1933,21 +1933,25 @@ pub fn build_app_from_config(
         incremental_scan: std::env::var_os("BUSBAR_INCREMENTAL_SCAN")
             .is_some_and(|v| !v.is_empty() && v != "0"),
         // The failover pools, resolved-verbatim per generation (the CELLS above are process-
-        // lifetime; the pool DECLARATIONS are config like any other).
-        tool_pools: cfg.tool_pools.clone(),
-        // The GENERIC per-plane failover pool map, keyed by each plane's stable decl key (the
-        // `agents:` container plane's `agent_pools:` set; the `tools:` container plane's
-        // `tool_pools:` set keeps its own dedicated field above).
-        plane_pools: {
-            // Keyed by the DECL KEY of the plane that owns the `agents:` section — resolved from the
-            // registry, never spelled as a literal — so this composition names no plane. A compiled-out
-            // plane has no decl for its section, so nothing is inserted; the pool read treats an absent
-            // key identically to the former empty-value entry.
+        // lifetime; the pool DECLARATIONS are config like any other), keyed by the config section
+        // whose plane owns them. The first named-map section's set is carried whatever is compiled
+        // in; the second's only when a registered plane owns that section (a compiled-out plane has
+        // no decl for it, and the pool read treats an absent key as no pools).
+        section_pools: {
             let mut m = std::collections::BTreeMap::new();
-            if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
+            m.insert(
+                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
+                cfg.tool_pools.clone(),
+            );
+            if crate::plane::registry::plane_decl_for_config_section(
                 busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
-            ) {
-                m.insert(decl.key, cfg.agent_pools.clone());
+            )
+            .is_some()
+            {
+                m.insert(
+                    busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
+                    cfg.agent_pools.clone(),
+                );
             }
             m
         },

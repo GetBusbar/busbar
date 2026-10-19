@@ -780,6 +780,51 @@ fn an_applied_door_section_carries_its_pools_and_hands_the_plane_no_work_key() {
     assert!(handed.get("fs").is_some(), "the plane's own entry is kept");
 }
 
+/// A DOOR PLANE'S APPLY READS EACH SECTION'S POOLS OFF THE SECTION-KEYED POOL MAP (step 2b, item
+/// d): the pools a generation resolved for a named-map section reach that section's door and no
+/// other, and the second section's pools are carried exactly when a registered plane owns that
+/// section, so moving the pools off a dedicated snapshot field changes no door's pools.
+#[tokio::test]
+async fn the_installed_door_pools_are_each_sections_own_pools() {
+    let first = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2];
+    let second = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3];
+    let app = busbar_kernel::test_support::TestApp::new()
+        .tool_pool("p1", &["a", "b"], &[])
+        .agent_pool("p2", &["c", "d"])
+        .build();
+    let pools = installed_door_pools(&app);
+    let members = |section: &str, pool: &str| -> Option<Vec<String>> {
+        pools
+            .iter()
+            .find(|(key, _)| *key == section)
+            .and_then(|(_, stated)| stated.get(pool))
+            .map(|cfg| cfg.members.clone())
+    };
+    assert_eq!(
+        members(first, "p1"),
+        Some(vec!["a".to_string(), "b".to_string()]),
+        "the first section's door lost its pools"
+    );
+    assert_eq!(members(first, "p2"), None, "a pool crossed sections");
+    assert_eq!(members(second, "p1"), None, "a pool crossed sections");
+    let owned = busbar_kernel::plane::registry::plane_decl_for_config_section(second);
+    assert_eq!(
+        members(second, "p2"),
+        owned.map(|_| vec!["c".to_string(), "d".to_string()]),
+        "the second section's pools are carried exactly when a plane owns that section"
+    );
+    // The plane-keyed read resolves to the same section's pools.
+    if let Some(decl) = owned {
+        assert_eq!(
+            app.plane_pools(decl.key)
+                .and_then(|p| p.get("p2"))
+                .map(|cfg| cfg.members.clone()),
+            members(second, "p2"),
+            "the owning plane's key reads its section's pools"
+        );
+    }
+}
+
 /// AN OPEN CLAIM'S LINE TAKES NO AUTH, WHATEVER THE CHAIN (ARCHITECT, FLIP-A2A): a plane's
 /// discovery documents answer a caller who holds no credential yet, with the operator's data chain
 /// configured exactly as without one.
