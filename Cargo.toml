@@ -88,14 +88,15 @@ busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tc
 busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "223ec3f02000de94089a1752635b9e206f7492e5" }
 # THE OUTBOUND HEADER STYLES (kind: auth): the logic crate the root links on its `auths` axis
 # (feature `auth-header`), pulled at a pinned rev (P5; OWNER Q99 keep the split).
-busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "bf1abefdec57c35afcf15b9076addeb39fb2ca5a" }
+busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "c5dac0784bd86f7d40b08490b05873550be9fd1b" }
 # THE OAUTH MINTING STYLES (kind: auth): the logic crate the root links on its `auths` axis (feature
 # `auth-oauth`; P2 D1: the kernel's own minting copies are deleted). One pin: the lane pin over predev's
 # rev that names the connection table's credential-unavailable cause in its exhaustive maps, plus the
 # sealed-Secret port (#1021, Part 2 #54): the plugin holds its own credentials in a private `Held`.
-# The pin is oauth dev 722a2fcecd: its secret-named fields are the crate's own `Secret<String, Own>`
-# (secret-hygiene check1, #1192), compiled against busbar dev's contract (oauth f62e2adc58).
-busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "722a2fcecd61082efa19378052598f109ed11d19" }
+# The pin is the u29 F1 development pin, busbar-auth-oauth #24's head (jwt-bearer rank 3 with
+# STYLE_ENDPOINT_FROM_CREDENTIAL; oauth-client-credentials rank 4 with STYLE_ENDPOINT_TOKEN_URL), over
+# oauth dev; it moves to #24's dev merge sha before this PR leaves draft.
+busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "d7653ad06b89c5749a660b4d9146a7c877728453" }
 # THE SIGV4 STYLE (kind: auth): outbound signing and the inbound SigV4 verify, linked on the root's
 # `auths` axis (feature `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin. The
 # pin carries the sealed-Secret port (#1021, Part 2 #54): its signing secret and session token are a

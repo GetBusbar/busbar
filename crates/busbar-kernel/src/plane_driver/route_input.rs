@@ -18,20 +18,21 @@ use std::collections::HashMap;
 /// The per-provider outbound AUTH STYLE, a neutral mirror of `Option<busbar_kernel::config::ProviderAuth>`
 /// (`None` ⇒ [`AuthStyleInput::Default`], the protocol's native auth). The plane maps it to the style
 /// its lane's credential is bound under, on the auth plugin that serves that style
-/// (`busbar_kernel::bound_credential`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+/// (`busbar_kernel::bound_credential`). The style is an opaque word some loaded auth plugin declares
+/// (BUSBAR-1.6.0.md #50), carried with the flags it declares, so a plane branches on what the style
+/// states (its endpoint bits) and the kernel names no style.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub enum AuthStyleInput {
     /// No `auth:` override — the protocol's native auth (its declared egress scheme).
     #[default]
     Default,
-    /// `auth: bearer`.
-    Bearer,
-    /// `auth: api-key`.
-    ApiKey,
-    /// `auth: jwt-bearer` (RFC 7523).
-    JwtBearer,
-    /// `auth: oauth-client-credentials` (RFC 6749 §4.4).
-    OAuthClientCredentials,
+    /// `auth: <style>`, and the `abi::auth::StyleDecl::flags` its plugin declares.
+    Named {
+        /// The style word.
+        style: String,
+        /// Its declared flags.
+        flags: u32,
+    },
 }
 
 /// Active health-probe mode — a neutral mirror of `busbar_kernel::config::HealthMode`.

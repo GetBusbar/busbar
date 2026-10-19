@@ -1482,6 +1482,59 @@ pub fn canonical(doc: &Value) -> String {
     serde_json::to_string_pretty(doc).unwrap_or_default() + "\n"
 }
 
+/// THE PLUGIN-DECLARED CONFIG TYPES (coordinator ruling (b) on arch-audit u29 F1/F2): a type whose
+/// accepted words are the ones the LINKED plugins declare, and the fixture they are read from. The
+/// fixture is written only by the composition root's drift test, from the linked rows' own
+/// Statements, and red on any mismatch, so it cannot claim a word the build does not declare.
+///
+/// The node is `kind: declared`, its `variants` the fixture's words (sorted), its `source` the
+/// fixture. The classifier holds it as it holds an enum: every baseline variant must still be
+/// declared (a missing one is a break), an added one is additive. The baseline is never edited.
+pub const DECLARED_TYPES: &[(&str, &str)] = &[("ProviderAuth", "qa/declared-auth-styles.json")];
+
+/// `doc` with each [`DECLARED_TYPES`] node replaced by its declared words. A fixture that does not
+/// read, or that names no list for its type, is a coverage hole and an error, never an empty set.
+///
+/// # Errors
+///
+/// A fixture is missing, is not JSON, or holds no string list for its type.
+pub fn with_declared_types(cx: &Ctx, mut doc: Value) -> Result<Value, String> {
+    for (tname, fixture) in DECLARED_TYPES {
+        let text = cx.read(fixture)?;
+        let parsed: Value = serde_json::from_str(&text).map_err(|e| {
+            format!("config-schema: the declared fixture {fixture} is not JSON: {e}")
+        })?;
+        let words: BTreeSet<String> = parsed
+            .get(*tname)
+            .and_then(Value::as_array)
+            .and_then(|a| {
+                a.iter()
+                    .map(|w| w.as_str().map(str::to_string))
+                    .collect::<Option<BTreeSet<String>>>()
+            })
+            .filter(|w| !w.is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "config-schema: the declared fixture {fixture} states no word list for \
+                     `{tname}` (a coverage hole, never an empty set)"
+                )
+            })?;
+        let mut node = Map::new();
+        node.insert("kind".into(), Value::String("declared".into()));
+        node.insert("source".into(), Value::String((*fixture).to_string()));
+        node.insert(
+            "variants".into(),
+            Value::Array(words.into_iter().map(Value::String).collect()),
+        );
+        let types = doc
+            .get_mut("types")
+            .and_then(Value::as_object_mut)
+            .ok_or("config-schema: the fingerprint has no types")?;
+        types.insert((*tname).to_string(), Value::Object(node));
+    }
+    Ok(doc)
+}
+
 /// The fingerprint over the TRACKED SOURCE SET, as the committed snapshot's bytes.
 pub fn render(cx: &Ctx) -> Result<String, String> {
     let files = resolve_sources(cx, &sources(cx)?)?;
@@ -1492,7 +1545,7 @@ pub fn render(cx: &Ctx) -> Result<String, String> {
     }
     let declared = super::declared::read(cx)?;
     match &reading(&read, &declared).extracted {
-        Ok(doc) => Ok(canonical(doc)),
+        Ok(doc) => Ok(canonical(&with_declared_types(cx, doc.clone())?)),
         Err(why) => Err(why.clone()),
     }
 }
