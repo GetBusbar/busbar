@@ -862,6 +862,57 @@ pub fn check_route(r: &super::route::RouteMatch) -> Result<(), Fault> {
     Ok(())
 }
 
+/// The most lines one guest list may lend.
+pub const MAX_LINES: u64 = 1024;
+
+/// A `begin`'s guest list: a line table only on an accepting side, never a count behind NULL, at
+/// most [`MAX_LINES`], and every line well-formed: an id that is not `LINE_NONE` and not repeated,
+/// a valid point set (empty exactly for a `none` line, whose handle is still the kernel's), a
+/// handle, a `body_limit` exactly with the body point, and a well-formed route.
+///
+/// # Errors
+///
+/// [`Rule::Contradiction`] for lines on the dial side, a `body_limit` that disagrees with the
+/// points, or a repeated line; [`Rule::NullWithCount`]; [`Rule::OverMax`]; [`Rule::Missing`] for
+/// no handle or a `LINE_NONE` id; the point set's and the route's own rules.
+///
+/// # Safety
+///
+/// A non-NULL `i.lines` is the host's own table of `i.lines_len` live entries.
+pub unsafe fn check_lines(i: &super::BeginIn) -> Result<(), Fault> {
+    use crate::abi::auth::check_points;
+    use crate::abi::host::service::LINE_NONE;
+    listed(i.lines, i.lines_len, "begin.lines")?;
+    if i.side == super::SIDE_DIAL && i.lines_len != 0 {
+        return Err(fault(Rule::Contradiction, "begin.lines"));
+    }
+    if i.lines_len as u64 > MAX_LINES {
+        return Err(fault(Rule::OverMax, "begin.lines"));
+    }
+    if i.lines_len == 0 {
+        return Ok(());
+    }
+    // SAFETY: the caller's contract; the count is bounded and the pointer non-NULL (checked).
+    let lines = unsafe { core::slice::from_raw_parts(i.lines, i.lines_len) };
+    for (n, l) in lines.iter().enumerate() {
+        if l.line == LINE_NONE {
+            return Err(fault(Rule::Missing, "line.line"));
+        }
+        if lines[..n].iter().any(|e| e.line == l.line) {
+            return Err(fault(Rule::Contradiction, "line.line"));
+        }
+        if l.auth.is_none() {
+            return Err(fault(Rule::Missing, "line.auth"));
+        }
+        check_points(l.points, false)?;
+        if (l.points & POINT_HEAD_BODY != 0) != (l.body_limit != 0) {
+            return Err(fault(Rule::Contradiction, "line.body_limit"));
+        }
+        check_route(&l.route)?;
+    }
+    Ok(())
+}
+
 /// Every field predicate's shape: a known op and well-formed strings.
 ///
 /// # Errors

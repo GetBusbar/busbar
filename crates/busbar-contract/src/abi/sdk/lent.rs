@@ -504,6 +504,7 @@ use crate::abi::plane::{
     ArriveIn, OnPieceIn, OutField, PlaneCancelIn, PlaneDriveIn, PlaneOpenIn, ProjectIn,
     ProviderFacts, RecordWrite, RefusalIn, ServeIn, UnitCount,
 };
+use crate::abi::transport::route::{FieldPredicate, LineEntry, RouteMatch};
 use crate::abi::transport::{
     AcceptIn, AdoptIn, ArrivalIn, BeginIn, ConnFacts, DatagramLane, DatagramPath, DatagramRoute,
     Destination, DialIn, EmitIn, EncodeIn, FinishIn, FramePiece, FramerSink, FramingIn, HeadSlots,
@@ -604,7 +605,9 @@ lend! {
         one(facts) -> ConnFacts;
         list(fields, fields_len) -> Field;
         one(lane) -> DatagramLane;
+        list(lines, lines_len) -> LineEntry;
     }
+    RouteMatch { list(fields, fields_len) -> FieldPredicate; }
     IngestIn {
         bytes(bytes, len);
         one(lane) -> DatagramLane;

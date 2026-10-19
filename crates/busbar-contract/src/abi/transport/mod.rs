@@ -150,6 +150,9 @@ pub mod datagram;
 pub mod fields;
 pub mod route;
 
+/// A guest-list line an accepting transport is lent ([`BeginIn::lines`]).
+pub use route::LineEntry;
+
 pub use datagram::{
     DatagramLane, DatagramPath, DatagramRoute, DatagramYield, KeyingMaterial, RendezvousTerms,
     FINGERPRINT_BYTES, HANDSHAKE_ANSWERS, HANDSHAKE_INITIATES, HANDSHAKE_NONE, LANE_CLEAR,
@@ -1125,6 +1128,12 @@ pub struct BeginIn {
     pub fields_len: usize,
     /// The datagram lane ([`datagram`]): NULL for a stream framer. A tail addition (pre-tag v1).
     pub lane: *const DatagramLane,
+    /// [`SIDE_ACCEPT`] | [`SIDE_ACCEPT_STREAM`]: the listener's guest list, in match order, lent
+    /// for the framing's life ([`check::check_lines`]); NULL on [`SIDE_DIAL`]. A tail addition
+    /// (pre-tag v1).
+    pub lines: *const route::LineEntry,
+    /// How many, at most [`check::MAX_LINES`].
+    pub lines_len: usize,
 }
 
 /// `ingest`'s `in`.

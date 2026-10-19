@@ -24,7 +24,12 @@
 //!   single-flight verify cache), `disk.append` (to the destinations the caller was granted,
 //!   [`NO_DESTINATION`] otherwise) and `snapshot.read` (the host's metric families, laid out in the
 //!   caller's buffer by [`super::snapshot`], to the crossing the kernel granted them). Every slot of
-//!   the table is served.
+//!   the table is served but the auth handle's three (`auth.call`, `unit.hand_in`,
+//!   `unit.refuse`): each refuses an `in` that is not exactly its size, then VERIFIES its refs
+//!   ([`super::auth_handle`]: a ref of another owner, of another generation or with a forged mac is
+//!   REFUSED, as is any unit until the kernel's unit table is installed), then its contract check,
+//!   and past those answers REFUSED [`AUTH_HANDLE_NOT_SERVED`]: the kernel side of the handle is
+//!   another lane's.
 //! * **Who called.** The instance's [`Caller`], stated at bind, is handed to every service that is
 //!   scoped to its caller; an instance with none is REFUSED ([`NO_CALLER`]).
 //!
@@ -393,6 +398,9 @@ pub static HOST_SLOTS: HostSlots = HostSlots {
     trust_decide: Some(trust_decide),
     trust_state: Some(trust_state),
     session_emit: Some(session_emit),
+    auth_call: Some(auth_call),
+    unit_hand_in: Some(unit_hand_in),
+    unit_refuse: Some(unit_refuse),
 };
 
 /// The dispatcher an instance's context routes to, and what it serves.
@@ -1196,6 +1204,99 @@ extern "C" fn session_emit(ctx: HostCtx, input: *const c_void, out: *mut Service
             }
         },
     )
+}
+
+// ── the host auth handle ──────────────────────────────────────────────────────────────────────
+
+/// The refusal of an `in` whose stated size is not its service's one v1 size, before it is read.
+pub const NOT_EXACT: &str = "the `in` is not exactly its service's size";
+/// The refusal of a non-zero unit no kernel unit table is installed to verify: fail closed.
+pub const UNIT_UNVERIFIED: &str = "the host holds no unit to verify this one against";
+/// The refusal of an auth-handle `in` that breaks its contract check.
+pub const AUTH_IN_MALFORMED: &str = "the auth-handle `in` breaks its check";
+/// What every auth-handle slot answers PAST its ref checks until the kernel serves the handle.
+pub const AUTH_HANDLE_NOT_SERVED: &str = "the auth handle is not yet served";
+
+/// THE AUTH HANDLE'S SLOT FRAME: [`slot`] with only the head read, then the `in` is refused unless
+/// its stated size is EXACTLY `T`'s ([`NOT_EXACT`], before any field is read), then `body` with the
+/// `in` read whole and the calling instance's identity, the owner its refs are verified for.
+fn exact<T: Copy>(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+    service: u32,
+    body: impl FnOnce(T, u64) -> Answered,
+) -> RawOutcome {
+    slot(
+        ctx,
+        input,
+        out,
+        service,
+        size_of::<ServiceHead>(),
+        |_, _, head| {
+            if svc::check_head_exact(&head, service, size_of::<T>()).is_err() {
+                return Answered::bare(Outcome::Refused, NOT_EXACT);
+            }
+            // SAFETY: the caller's non-NULL `in`, stating exactly a `T`.
+            let i = unsafe { input.cast::<T>().read_unaligned() };
+            body(i, super::handle::instance_id(ctx).0)
+        },
+    )
+}
+
+/// An auth ref, verified for `owner` at the published generation: `None` when it passes.
+fn refused_ref(owner: u64, r: &svc::AuthRef) -> Option<Answered> {
+    super::auth_handle::verify_auth_ref(owner, super::auth_handle::generation(), r)
+        .err()
+        .map(|e| Answered::bare(Outcome::Refused, e.text()))
+}
+
+/// A presented unit: none passes; any other is refused until the kernel's unit table (the
+/// per-request secrets [`super::auth_handle::verify_unit_ref`] needs) is installed.
+fn refused_unit(u: &svc::UnitRef) -> Option<Answered> {
+    (!u.is_none()).then(|| Answered::bare(Outcome::Refused, UNIT_UNVERIFIED))
+}
+
+/// `auth.call`: the exact size, the ref (owner, generation, mac), the unit, the `in`'s contract
+/// check, each refused in that order before anything else; then [`AUTH_HANDLE_NOT_SERVED`] (the
+/// kernel side of the handle is another lane's).
+extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    exact::<svc::AuthCallIn>(ctx, input, out, op::AUTH_CALL, |i, owner| {
+        if let Some(r) = refused_ref(owner, &i.auth).or_else(|| refused_unit(&i.unit)) {
+            return r;
+        }
+        if svc::check_auth_call_in(&i).is_err() {
+            return Answered::bare(Outcome::Refused, AUTH_IN_MALFORMED);
+        }
+        Answered::bare(Outcome::Refused, AUTH_HANDLE_NOT_SERVED)
+    })
+}
+
+/// `unit.hand_in`: as [`auth_call`], over the matched line's ref.
+extern "C" fn unit_hand_in(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    exact::<svc::UnitHandInIn>(ctx, input, out, op::UNIT_HAND_IN, |i, owner| {
+        if let Some(r) = refused_ref(owner, &i.auth).or_else(|| refused_unit(&i.unit)) {
+            return r;
+        }
+        if svc::check_unit_hand_in_in(&i).is_err() {
+            return Answered::bare(Outcome::Refused, AUTH_IN_MALFORMED);
+        }
+        Answered::bare(Outcome::Refused, AUTH_HANDLE_NOT_SERVED)
+    })
+}
+
+/// `unit.refuse`: the exact size, the unit, the `in`'s contract check; then
+/// [`AUTH_HANDLE_NOT_SERVED`].
+extern "C" fn unit_refuse(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    exact::<svc::UnitRefuseIn>(ctx, input, out, op::UNIT_REFUSE, |i, _| {
+        if let Some(r) = refused_unit(&i.unit) {
+            return r;
+        }
+        if svc::check_unit_refuse_in(&i).is_err() {
+            return Answered::bare(Outcome::Refused, AUTH_IN_MALFORMED);
+        }
+        Answered::bare(Outcome::Refused, AUTH_HANDLE_NOT_SERVED)
+    })
 }
 
 /// `session.emit`'s refusal of a write that names no session or no bytes.

@@ -44,6 +44,7 @@ macro_rules! c_entry {
 }
 
 pub mod answer;
+pub mod auth_handle;
 pub mod auth_outbound;
 pub mod auth_ticks;
 pub mod conn_services;

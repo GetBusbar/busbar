@@ -1152,3 +1152,93 @@ fn the_offered_points_record_reads_or_refuses() {
         Err(fault(Rule::UnknownCode, "offered_points.unknown_flags"))
     );
 }
+
+fn line(id: u32, points: u32, body_limit: u64) -> LineEntry {
+    LineEntry {
+        line: id,
+        points,
+        auth: crate::abi::host::service::AuthRef { id: 9, mac: 1 },
+        body_limit,
+        route: route(route::METHOD_GET, route::PATH_EXACT, "/v1"),
+    }
+}
+
+fn begin_with(side: u32, lines: &[LineEntry]) -> BeginIn {
+    let mut i: BeginIn = z();
+    i.side = side;
+    i.lines = lines.as_ptr();
+    i.lines_len = lines.len();
+    i
+}
+
+/// RED: a `begin`'s guest list, one break at a time: lines on the dial side, a count behind NULL,
+/// a repeated or `LINE_NONE` id, no handle, a bad point set, a `body_limit` that disagrees with
+/// the body point, a bad route. A `none` line (no points) and a body line with its limit pass.
+#[test]
+fn a_begin_line_table_is_checked() {
+    use crate::abi::host::service::{AuthRef, LINE_NONE};
+    // SAFETY (every `check_lines` below): each table is the test's own slice, live for the call.
+    let check = |i: &BeginIn| unsafe { check_lines(i) };
+    let good = [
+        line(1, 0, 0),
+        line(2, POINT_HEAD, 0),
+        line(3, POINT_HEAD_BODY, 1 << 20),
+        line(4, POINT_PEER, 0),
+    ];
+    assert_eq!(check(&begin_with(SIDE_ACCEPT, &good)), Ok(()));
+    assert_eq!(check(&begin_with(SIDE_ACCEPT_STREAM, &good)), Ok(()));
+    assert_eq!(check(&begin_with(SIDE_DIAL, &[])), Ok(()));
+    assert_eq!(
+        check(&begin_with(SIDE_DIAL, &good)),
+        f(Rule::Contradiction, "begin.lines")
+    );
+    let mut nul = begin_with(SIDE_ACCEPT, &[]);
+    nul.lines_len = 1;
+    assert_eq!(check(&nul), f(Rule::NullWithCount, "begin.lines"));
+    let mut many = begin_with(SIDE_ACCEPT, &good);
+    many.lines_len = MAX_LINES as usize + 1;
+    assert_eq!(check(&many), f(Rule::OverMax, "begin.lines"));
+    assert_eq!(
+        check(&begin_with(SIDE_ACCEPT, &[line(1, 0, 0), line(1, 0, 0)])),
+        f(Rule::Contradiction, "line.line")
+    );
+    assert_eq!(
+        check(&begin_with(SIDE_ACCEPT, &[line(LINE_NONE, 0, 0)])),
+        f(Rule::Missing, "line.line")
+    );
+    let mut anonymous = line(1, POINT_HEAD, 0);
+    anonymous.auth = AuthRef::NONE;
+    assert_eq!(
+        check(&begin_with(SIDE_ACCEPT, &[anonymous])),
+        f(Rule::Missing, "line.auth")
+    );
+    assert_eq!(
+        check(&begin_with(
+            SIDE_ACCEPT,
+            &[line(1, POINT_HEAD | POINT_HEAD_BODY, 1)]
+        ))
+        .unwrap_err()
+        .rule,
+        Rule::Contradiction
+    );
+    assert_eq!(
+        check(&begin_with(SIDE_ACCEPT, &[line(1, POINT_FRAME, 0)]))
+            .unwrap_err()
+            .rule,
+        Rule::UnknownCode
+    );
+    assert_eq!(
+        check(&begin_with(SIDE_ACCEPT, &[line(1, POINT_HEAD_BODY, 0)])),
+        f(Rule::Contradiction, "line.body_limit")
+    );
+    assert_eq!(
+        check(&begin_with(SIDE_ACCEPT, &[line(1, POINT_HEAD, 64)])),
+        f(Rule::Contradiction, "line.body_limit")
+    );
+    let mut unrouted = line(1, POINT_HEAD, 0);
+    unrouted.route.methods = 0;
+    assert_eq!(
+        check(&begin_with(SIDE_ACCEPT, &[unrouted])),
+        f(Rule::Missing, "route.methods")
+    );
+}
