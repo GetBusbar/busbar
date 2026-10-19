@@ -10,7 +10,8 @@ use busbar_contract::abi::auth::{
     BeginLoginOut, FieldSpan, FieldsOut, IdentifyOut, IdentityBuf, LoginField, BEGIN_AUTHORIZE,
     BEGIN_FORM, FIELDS_HARD_MAX, FIELD_QUERY, FIELD_SENSITIVE, IDENTITY_GROUPS_HARD_MAX,
     LOGIN_IDENTITY, LOGIN_OUTAGE, LOGIN_SECURITY_CHECK_FAILED, SPAN_ABSENT,
-    STYLE_CALLER_CREDENTIAL, STYLE_NEEDS_HEADERS, VERDICT_IDENTITY, VERDICT_PASS, VERDICT_REJECT,
+    STYLE_CALLER_CREDENTIAL, STYLE_NEEDS_HEADERS, STYLE_SIGNS_HEAD, VERDICT_IDENTITY, VERDICT_PASS,
+    VERDICT_REJECT,
 };
 use busbar_contract::abi::auth::{
     check_inbound_points, check_points, AuthPoint, AuthPoints, StripName, CAP_INBOUND, CAP_LOGIN,
@@ -561,6 +562,20 @@ fn a_style_decl_flag_vocabulary_is_the_two_known_bits() {
         ),
         Ok(AuthPoints::HEAD_BODY)
     );
+    // A style whose output depends on the head's bytes reads the head.
+    assert_eq!(
+        check_style_decl(STYLE_NEEDS_HEADERS | STYLE_SIGNS_HEAD, head),
+        Ok(AuthPoints::HEAD)
+    );
+}
+
+/// RED: a style that signs the head but does not read it is a contradiction.
+#[test]
+fn a_style_that_signs_the_head_reads_it() {
+    assert_eq!(
+        check_style_decl(STYLE_SIGNS_HEAD, POINT_HEAD),
+        red(Rule::Contradiction, "style.signs_head_without_headers")
+    );
 }
 
 #[test]
@@ -570,7 +585,7 @@ fn a_style_decl_flag_outside_the_vocabulary_is_fault() {
         red(Rule::UnknownCode, "style.unknown_flags")
     );
     assert_eq!(
-        check_style_decl(STYLE_CALLER_CREDENTIAL | (1 << 3), POINT_HEAD),
+        check_style_decl(STYLE_CALLER_CREDENTIAL | (1 << 4), POINT_HEAD),
         red(Rule::UnknownCode, "style.unknown_flags")
     );
     // RED: the retired body-hash flag bit (1) is no longer in the vocabulary: a style that signs

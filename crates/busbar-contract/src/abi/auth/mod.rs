@@ -236,6 +236,12 @@ pub const STYLE_NEEDS_HEADERS: u32 = 2;
 /// `caller-credential {as: X}` / `upstream_credentials: passthrough` config to style `X` in
 /// [`MODE_PASSTHROUGH`] (KERNEL<>PLUGINS step 21 seam; not built here).
 pub const STYLE_CALLER_CREDENTIAL: u32 = 4;
+/// [`StyleDecl::flags`]: this style's output DEPENDS ON THE HEAD'S BYTES (it signs the head), so a
+/// field the framer added after the auth call would break it. The host refuses, at bind, such a
+/// style over a framer whose tail does not state `transport::FACT_SIGNS_NOTHING_AFTER_AUTH`. A style
+/// that only presents a credential (a bearer, a key) states it not. Set only with
+/// [`STYLE_NEEDS_HEADERS`].
+pub const STYLE_SIGNS_HEAD: u32 = 8;
 
 /// One outbound style a plugin serves: an open string the provider's `auth:` resolves against.
 #[repr(C)]
