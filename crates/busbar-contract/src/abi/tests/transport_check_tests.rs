@@ -688,6 +688,9 @@ fn a_tail_without_claims_or_with_unknown_codes_is_fault() {
     let mut t = tail();
     t.facts = 4;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.facts"));
+    // RED: the retired signs-nothing-after-auth bit (1) is no fact a tail may state.
+    t.facts = 1;
+    assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.facts"));
     let mut t = tail();
     t.framing = 2;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.framing"));
