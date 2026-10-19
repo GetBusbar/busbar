@@ -972,6 +972,14 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     )
     .unwrap_or_else(|e| die(e));
     root_rules.hold_owned_anchors(&served.need_trust());
+    // THE DOOR PLANES THE BOOT LEFT UNOPENED (their section absent, Law 7): a door plane is opened
+    // once, here, so an apply that first writes one's section is stored and validated but
+    // RESTART-TO-APPLY, reported in the apply's answer and given no slot until the next boot (the
+    // 1.5.5 precedent for what is mounted once at boot, `plugin_routes::paths_awaiting_restart`).
+    // Without governance no door plane is opened at all, at boot or after a restart: none is held.
+    if app.governance.is_some() {
+        root_rules.hold_unopened(served.unopened(root::boot::door_planes()));
+    }
     served.spawn_ticks();
     // RELIABILITY STATE IS STATELESS (store-or-RAM rule): a plane's own in-memory health/backoff
     // bookkeeping lives in RAM only and is RE-LEARNED after a restart — none of it is this crate's

@@ -622,3 +622,29 @@ fn openapi_summaries_do_not_advertise_forbidden_body_fields() {
         }
     }
 }
+
+/// THE RESTART-TO-APPLY SENTENCE (u67 BLOCK 2 item 2): a write that introduces only routes keeps
+/// the exact sentence the answer has always given (the 1.5.5 wire), one that first writes the
+/// section of a plane the process did not open at boot names that section, both are joined, and
+/// neither is `None` (the field is then omitted, so the ordinary body is unchanged).
+#[test]
+fn the_restart_note_keeps_the_route_sentence_and_names_a_pending_plane() {
+    let routes = vec!["/metrics".to_string()];
+    let planes = vec!["pending-red".to_string()];
+    assert_eq!(named_map::restart_note(&[], &[]), None);
+    let route_only = named_map::restart_note(&routes, &[]).expect("a route is pending");
+    assert_eq!(
+        route_only,
+        "stored and applied, EXCEPT the newly declared route(s) /metrics — each plugin route path \
+         is registered on the HTTP router once, at process start, and a config apply swaps only \
+         the config snapshot, so a route that did not exist at boot keeps answering 404 until the \
+         next RESTART (removing one, by contrast, takes effect immediately)"
+    );
+    let plane_only = named_map::restart_note(&[], &planes).expect("a plane is pending");
+    assert!(plane_only.contains("pending-red") && plane_only.contains("RESTART"));
+    assert!(!plane_only.contains("/metrics"));
+    assert_eq!(
+        named_map::restart_note(&routes, &planes),
+        Some(format!("{route_only}; {plane_only}"))
+    );
+}
