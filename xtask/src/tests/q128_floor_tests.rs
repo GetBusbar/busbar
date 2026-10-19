@@ -18,6 +18,9 @@ fn run(ledger: LedgerView) -> Report {
         ),
         tree_of: &|c: &str| (c == HEAD).then(|| TREE.to_string()),
         changed: &|c: &str| (c == HEAD).then(Vec::new),
+        is_ancestor: &|a: &str, b: &str| Some(a == b),
+        pr_exists: &|_: &str, _: u64| Ok(false),
+        record_history: &|| Some(Vec::new()),
         ledger: Ok(ledger),
     })
 }

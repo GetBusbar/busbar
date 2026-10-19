@@ -19,7 +19,14 @@
 //!    byte-identical to the candidate's.
 //! 2. **THE AUDIT'S OWN FINDINGS.** Each finding the auditor recorded carries a severity (BLOCK,
 //!    HIGH, MEDIUM, LOW), a scope, its evidence and the Law or DESIGN line it is graded against. An
-//!    open BLOCK fails the audit. A finding is closed only with the change that closed it named.
+//!    open BLOCK fails the audit. A finding is closed only with the change that closed it named,
+//!    and the name is CHECKED, never taken on the record's word (Q128 arch u93): `closed_by` names
+//!    at least one full commit id, every commit it names resolves here and is the candidate or an
+//!    ancestor of it (the change is in the code that was read), and every pull request it names
+//!    (`owner/repo#N`, `#N`, `PR N`, or a `github.com/<owner>/<repo>/pull/N` link) exists. A
+//!    finding the record already carried OPEN on the same candidate, in any committed version of
+//!    the record, stays open at no lower severity: a record-only edit cannot close, lower or drop
+//!    it. Closing it takes a fresh audit of a new candidate.
 //! 3. **THE AUDIT LEDGER IS CLEAN.** `cargo xtask ledger --check`'s computation, run here on the
 //!    same tree. A red ledger is a BLOCK, and so is a ledger below its floor whatever its rules say:
 //!    every production scope `clean` (two zero rounds from distinct auditors at the current hash),
@@ -104,6 +111,9 @@ pub fn main(root: &Path, args: &[String]) -> i32 {
         record_text: record_text.as_deref(),
         tree_of: &|c: &str| rev(root, &format!("{c}^{{tree}}")),
         changed: &|c: &str| changed_paths(root, c),
+        is_ancestor: &|a: &str, b: &str| is_ancestor(root, a, b),
+        pr_exists: &|repo: &str, n: u64| pr_exists(root, repo, n),
+        record_history: &|| record_history(root, &display_rel(root, &record)),
         ledger,
     });
 
@@ -191,6 +201,109 @@ fn changed_paths(root: &Path, c: &str) -> Option<Vec<String>> {
     )
 }
 
+/// `git merge-base --is-ancestor a b`: `Some(true)` when `a` is `b` or an ancestor of it,
+/// `Some(false)` when it is not, `None` when git cannot answer (an id that names no commit
+/// included).
+fn is_ancestor(root: &Path, a: &str, b: &str) -> Option<bool> {
+    let st = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["merge-base", "--is-ancestor", a, b])
+        .status()
+        .ok()?;
+    match st.code() {
+        Some(0) => Some(true),
+        Some(1) => Some(false),
+        _ => None,
+    }
+}
+
+/// `owner/name` of a GitHub remote URL (`https://github.com/o/n(.git)`, `git@github.com:o/n`).
+fn github_repo_of(url: &str) -> Option<String> {
+    let rest = url
+        .split_once("github.com/")
+        .or_else(|| url.split_once("github.com:"))?
+        .1;
+    let rest = rest.trim_end_matches('/');
+    let rest = rest.strip_suffix(".git").unwrap_or(rest);
+    let mut it = rest.split('/');
+    let (o, n) = (it.next()?, it.next()?);
+    (!o.is_empty() && !n.is_empty() && it.next().is_none()).then(|| format!("{o}/{n}"))
+}
+
+/// Whether pull request `n` of `repo` exists. This repository's own pull requests are asked of
+/// `origin` (`refs/pull/<n>/head`, through the credentials the checkout already uses); any other
+/// repository's through `gh api`. `Err` when neither can answer: an unverifiable name is never
+/// read as a real one.
+fn pr_exists(root: &Path, repo: &str, n: u64) -> Result<bool, String> {
+    let origin = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| github_repo_of(String::from_utf8_lossy(&o.stdout).trim()));
+    if origin
+        .as_deref()
+        .is_some_and(|o| o.eq_ignore_ascii_case(repo))
+    {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["ls-remote", "origin", &format!("refs/pull/{n}/head")])
+            .output()
+            .map_err(|e| format!("git ls-remote could not run: {e}"))?;
+        if out.status.success() {
+            return Ok(!String::from_utf8_lossy(&out.stdout).trim().is_empty());
+        }
+    }
+    let out = Command::new("gh")
+        .args(["api", &format!("repos/{repo}/pulls/{n}"), "--jq", ".number"])
+        .output()
+        .map_err(|e| format!("neither origin nor `gh` could answer for {repo}#{n}: {e}"))?;
+    let said = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if out.status.success() {
+        return Ok(said == n.to_string());
+    }
+    let err = String::from_utf8_lossy(&out.stderr);
+    if err.contains("HTTP 404") || said.contains("Not Found") {
+        return Ok(false);
+    }
+    Err(format!(
+        "neither origin nor `gh` could answer for {repo}#{n}: {}",
+        err.trim()
+    ))
+}
+
+/// Every committed version of the record reachable from HEAD, oldest first, or `None` when git
+/// cannot list them.
+fn record_history(root: &Path, rel: &str) -> Option<Vec<String>> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["log", "--reverse", "--format=%H", "HEAD", "--", rel])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let mut texts = Vec::new();
+    for c in String::from_utf8_lossy(&out.stdout).lines() {
+        let show = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["show", &format!("{c}:{rel}")])
+            .output()
+            .ok()?;
+        // A commit that deleted the record has no blob there and carries nothing to hold.
+        if show.status.success() {
+            texts.push(String::from_utf8_lossy(&show.stdout).into_owned());
+        }
+    }
+    Some(texts)
+}
+
 /// What the audit ledger's `--check` found, reduced to what the record carries.
 pub struct LedgerView {
     pub red: bool,
@@ -245,6 +358,12 @@ pub struct Inputs<'a> {
     pub tree_of: &'a dyn Fn(&str) -> Option<String>,
     /// The paths whose blobs differ between a commit and HEAD, or `None` when git cannot say.
     pub changed: &'a dyn Fn(&str) -> Option<Vec<String>>,
+    /// Whether the first commit is the second or an ancestor of it, or `None` when git cannot say.
+    pub is_ancestor: &'a dyn Fn(&str, &str) -> Option<bool>,
+    /// Whether a pull request (`owner/repo`, number) exists; `Err` when it cannot be asked.
+    pub pr_exists: &'a dyn Fn(&str, u64) -> Result<bool, String>,
+    /// Every committed version of the record, oldest first; `None` when git cannot list them.
+    pub record_history: &'a dyn Fn() -> Option<Vec<String>>,
     pub ledger: Result<LedgerView, String>,
 }
 
@@ -443,8 +562,17 @@ pub fn judge(inp: &Inputs<'_>) -> Report {
                     CITE,
                 ));
             }
+            // A closure is judged against the commit that was read: the candidate when it
+            // resolves, HEAD otherwise (that record is already a BLOCK, and its closures are
+            // still held to a real change).
+            let anchor = candidate
+                .filter(|c| is_full_oid(c) && (inp.tree_of)(c).is_some())
+                .or(inp.head);
             for (i, f) in listed.into_iter().flatten().enumerate() {
-                findings.push(read_finding(inp.record_path, i, f));
+                findings.push(read_finding(inp, anchor, i, f));
+            }
+            if let (Some(c), Some(now)) = (candidate.filter(|c| is_full_oid(c)), listed) {
+                findings.extend(held_open(inp, c, now));
             }
         }
     }
@@ -552,7 +680,8 @@ pub fn judge(inp: &Inputs<'_>) -> Report {
 
 /// One finding of the auditor's record, held to the format. A finding that breaks it becomes a BLOCK
 /// naming what is wrong; it is never read as whatever it might have meant.
-fn read_finding(record_path: &str, i: usize, f: &Value) -> Value {
+fn read_finding(inp: &Inputs<'_>, anchor: Option<&str>, i: usize, f: &Value) -> Value {
+    let record_path = inp.record_path;
     let id = nonempty_str(f, "id").unwrap_or("").to_string();
     let label = if id.is_empty() {
         format!("findings[{i}]")
@@ -572,8 +701,11 @@ fn read_finding(record_path: &str, i: usize, f: &Value) -> Value {
     if !matches!(status, Some("open" | "closed")) {
         wrong.push(format!("status {status:?} is not open/closed"));
     }
-    if status == Some("closed") && nonempty_str(f, "closed_by").is_none() {
-        wrong.push("a closed finding names no change in `closed_by`".to_string());
+    if status == Some("closed") {
+        match nonempty_str(f, "closed_by") {
+            None => wrong.push("a closed finding names no change in `closed_by`".to_string()),
+            Some(by) => wrong.extend(closure_problems(inp, anchor, by)),
+        }
     }
     for key in ["id", "scope", "evidence", "cite"] {
         if nonempty_str(f, key).is_none() {
@@ -606,6 +738,201 @@ fn read_finding(record_path: &str, i: usize, f: &Value) -> Value {
     out
 }
 
+/// The repository a bare `#N` / `PR N` names.
+const HOME_REPO: &str = "GetBusbar/busbar";
+
+/// The full commit ids `closed_by` names (a bare 40-hex word, or the tail of a `/commit/<id>`
+/// link).
+fn named_commits(by: &str) -> Vec<String> {
+    by.split(|c: char| c.is_whitespace() || ",;()[]<>@'\"`".contains(c))
+        .filter_map(|w| {
+            let w = w.rsplit('/').next().unwrap_or(w).trim_end_matches('.');
+            is_full_oid(w).then(|| w.to_ascii_lowercase())
+        })
+        .collect()
+}
+
+fn is_repo(w: &str) -> bool {
+    let mut it = w.split('/');
+    matches!((it.next(), it.next(), it.next()), (Some(o), Some(n), None) if !o.is_empty() && !n.is_empty())
+}
+
+/// The pull requests `closed_by` names, as (`owner/repo`, number): `owner/repo#N`, `#N`,
+/// `[owner/repo] PR N` / `PR #N` / `pull N`, and `github.com/<owner>/<repo>/pull/N` links. A bare
+/// number is this repository's.
+fn named_prs(by: &str) -> Vec<(String, u64)> {
+    let words: Vec<&str> = by
+        .split(|c: char| c.is_whitespace() || ",;()[]<>'\"`".contains(c))
+        .filter(|w| !w.is_empty())
+        .collect();
+    let num = |s: &str| -> Option<u64> {
+        let s = s.trim_end_matches(['.', ':']);
+        if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) {
+            s.parse().ok()
+        } else {
+            None
+        }
+    };
+    let mut out = Vec::new();
+    for (i, w) in words.iter().enumerate() {
+        if let Some((_, tail)) = w.split_once("github.com/") {
+            let parts: Vec<&str> = tail.split('/').collect();
+            if parts.len() >= 4 && parts[2] == "pull" {
+                if let Some(n) = num(parts[3]) {
+                    out.push((format!("{}/{}", parts[0], parts[1]), n));
+                }
+            }
+            continue;
+        }
+        let pr_word = |k: usize| {
+            words
+                .get(k)
+                .is_some_and(|p| p.eq_ignore_ascii_case("pr") || p.eq_ignore_ascii_case("pull"))
+        };
+        let repo_before = |k: usize| -> String {
+            k.checked_sub(1)
+                .and_then(|j| words.get(j))
+                .filter(|p| is_repo(p))
+                .map_or(HOME_REPO.to_string(), |p| p.to_string())
+        };
+        if let Some((left, right)) = w.split_once('#') {
+            if let Some(n) = num(right) {
+                let repo = if is_repo(left) {
+                    left.to_string()
+                } else if left.is_empty() && i > 0 && pr_word(i - 1) {
+                    repo_before(i - 1)
+                } else {
+                    HOME_REPO.to_string()
+                };
+                out.push((repo, n));
+            }
+        } else if pr_word(i) {
+            if let Some(n) = words.get(i + 1).and_then(|n| num(n)) {
+                out.push((repo_before(i), n));
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Why a `closed_by` does not name a real change in the code that was read (empty when it does).
+fn closure_problems(inp: &Inputs<'_>, anchor: Option<&str>, by: &str) -> Vec<String> {
+    let mut wrong = Vec::new();
+    let commits = named_commits(by);
+    if commits.is_empty() {
+        wrong.push(format!(
+            "`closed_by` ({by}) names no full commit id: a closure names the commit that carries it"
+        ));
+    }
+    for c in &commits {
+        if (inp.tree_of)(c).is_none() {
+            wrong.push(format!("`closed_by` commit {c} is not in this repository"));
+            continue;
+        }
+        match anchor.map(|a| (inp.is_ancestor)(c, a)) {
+            Some(Some(true)) => {}
+            Some(Some(false)) => wrong.push(format!(
+                "`closed_by` commit {c} is not in the audited history: it is not {} or an ancestor of it",
+                anchor.unwrap_or("?")
+            )),
+            Some(None) | None => wrong.push(format!(
+                "git could not say whether `closed_by` commit {c} is in the audited history"
+            )),
+        }
+    }
+    for (repo, n) in named_prs(by) {
+        match (inp.pr_exists)(&repo, n) {
+            Ok(true) => {}
+            Ok(false) => wrong.push(format!(
+                "`closed_by` names {repo}#{n}, which does not exist"
+            )),
+            Err(e) => wrong.push(format!(
+                "`closed_by` names {repo}#{n}, which could not be verified: {e}"
+            )),
+        }
+    }
+    wrong
+}
+
+/// A finding a committed version of the record carried OPEN on this same candidate stays open at
+/// no lower severity. The code has not moved (it is the candidate's), so only a fresh audit of a
+/// new candidate can close it, never an edit of the record.
+fn held_open(inp: &Inputs<'_>, candidate: &str, now: &[Value]) -> Vec<Value> {
+    let Some(history) = (inp.record_history)() else {
+        return vec![finding(
+            "BLOCK",
+            "q128",
+            inp.record_path,
+            "the audit record's history could not be read",
+            "git could not list the committed versions of the record, so a finding closed by a \
+             record-only edit cannot be told from one closed by a fresh audit",
+            CITE,
+        )];
+    };
+    let rank = |s: Option<&str>| s.and_then(|s| SEVERITIES.iter().position(|x| *x == s));
+    let mut wrong: Vec<String> = Vec::new();
+    for text in &history {
+        let Ok(old) = serde_json::from_str::<Value>(text) else {
+            continue;
+        };
+        if old.get("candidate").and_then(Value::as_str) != Some(candidate) {
+            continue;
+        }
+        for f in old
+            .get("findings")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let (Some(id), Some("open")) = (
+                nonempty_str(f, "id"),
+                f.get("status").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
+            let was = f.get("severity").and_then(Value::as_str);
+            let here = now.iter().find(|n| nonempty_str(n, "id") == Some(id));
+            let problem = match here {
+                None => Some("dropped".to_string()),
+                Some(n) => {
+                    let st = n.get("status").and_then(Value::as_str);
+                    let sev = n.get("severity").and_then(Value::as_str);
+                    if st != Some("open") {
+                        Some(format!("now {}", st.unwrap_or("?")))
+                    } else if rank(sev).is_none() || rank(sev) > rank(was) {
+                        Some(format!("lowered to {}", sev.unwrap_or("?")))
+                    } else {
+                        None
+                    }
+                }
+            };
+            if let Some(p) = problem {
+                let line = format!("`{id}` (open {} on {candidate}) {p}", was.unwrap_or("?"));
+                if !wrong.contains(&line) {
+                    wrong.push(line);
+                }
+            }
+        }
+    }
+    if wrong.is_empty() {
+        return Vec::new();
+    }
+    vec![finding(
+        "BLOCK",
+        "q128",
+        inp.record_path,
+        "a finding recorded open on this candidate was closed without a fresh audit",
+        &format!(
+            "{}: the candidate's code has not moved, so only a fresh audit of a new candidate \
+             closes it",
+            wrong.join("; ")
+        ),
+        CITE,
+    )]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -620,6 +947,10 @@ mod tests {
     const READ_THEN_LEDGER: &str = "5555555555555555555555555555555555555555";
     /// A candidate whose differing paths git cannot list.
     const UNLISTED: &str = "6666666666666666666666666666666666666666";
+    /// A commit HEAD contains: a real closure.
+    const FIX: &str = "7777777777777777777777777777777777777777";
+    /// A commit in the repository that HEAD does not contain.
+    const ASIDE: &str = "8888888888888888888888888888888888888888";
 
     fn clean_ledger() -> Result<LedgerView, String> {
         Ok(LedgerView {
@@ -640,6 +971,8 @@ mod tests {
             READ => Some("cccccccccccccccccccccccccccccccccccccccc".to_string()),
             READ_THEN_LEDGER => Some("dddddddddddddddddddddddddddddddddddddddd".to_string()),
             UNLISTED => Some("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string()),
+            FIX => Some("ffffffffffffffffffffffffffffffffffffffff".to_string()),
+            ASIDE => Some("9999999999999999999999999999999999999999".to_string()),
             _ => None,
         }
     }
@@ -657,7 +990,29 @@ mod tests {
         }
     }
 
+    /// `a` is `b` or an ancestor of it: FIX is in every candidate's history, ASIDE in none.
+    fn is_ancestor(a: &str, b: &str) -> Option<bool> {
+        Some(a == b || (a == FIX && b != ASIDE))
+    }
+
+    /// GetBusbar/busbar#1 exists, #404 does not, and anything else cannot be asked.
+    fn pr_exists(repo: &str, n: u64) -> Result<bool, String> {
+        match (repo, n) {
+            ("GetBusbar/busbar", 1) => Ok(true),
+            ("GetBusbar/busbar", 404) => Ok(false),
+            _ => Err("offline".to_string()),
+        }
+    }
+
     fn run(record: Option<&str>, ledger: Result<LedgerView, String>) -> Report {
+        run_with(record, ledger, Some(Vec::new()))
+    }
+
+    fn run_with(
+        record: Option<&str>,
+        ledger: Result<LedgerView, String>,
+        history: Option<Vec<String>>,
+    ) -> Report {
         judge(&Inputs {
             head: Some(HEAD),
             head_tree: Some(TREE),
@@ -665,6 +1020,9 @@ mod tests {
             record_text: record,
             tree_of: &tree_of,
             changed: &changed,
+            is_ancestor: &is_ancestor,
+            pr_exists: &pr_exists,
+            record_history: &|| history.clone(),
             ledger,
         })
     }
@@ -757,12 +1115,133 @@ mod tests {
     #[test]
     fn an_audit_of_this_tree_with_no_open_block_and_a_clean_ledger_passes() {
         let fs = r#"[{"id":"A1","severity":"HIGH","status":"open","scope":"crates/x/src","evidence":"crates/x/src/lib.rs:1","cite":"BUSBAR-1.6.0.md l.1"},
-                     {"id":"A2","severity":"BLOCK","status":"closed","closed_by":"GetBusbar/busbar PR 1","scope":"crates/y/src","evidence":"crates/y/src/lib.rs:2","cite":"Law 0"}]"#;
+                     {"id":"A2","severity":"BLOCK","status":"closed","closed_by":"GetBusbar/busbar PR 1 at 7777777777777777777777777777777777777777","scope":"crates/y/src","evidence":"crates/y/src/lib.rs:2","cite":"Law 0"}]"#;
         let r = run(Some(&record(&format!("\"{HEAD}\""), fs)), clean_ledger());
         assert_eq!(r.verdict(), "PASS", "{:#}", r.json);
         assert_eq!(r.open("HIGH"), 1);
         assert_eq!(r.json["open"]["BLOCK"], 0);
         assert_eq!(r.json["audit"]["on_this_tree"], true);
+    }
+
+    fn closed(by: &str) -> String {
+        format!(
+            r#"[{{"id":"A1","severity":"BLOCK","status":"closed","closed_by":"{by}","scope":"s","evidence":"e","cite":"c"}}]"#
+        )
+    }
+
+    #[test]
+    fn a_closed_by_is_held_to_a_real_change_in_the_audited_history() {
+        // Good: a commit HEAD contains, and a pull request that exists, in every spelling.
+        for by in [
+            FIX.to_string(),
+            format!("GetBusbar/busbar#1 ({FIX})"),
+            format!("PR #1 @ {FIX}"),
+            format!("https://github.com/GetBusbar/busbar/pull/1 merged as {FIX}"),
+            format!("https://github.com/GetBusbar/busbar/commit/{FIX}"),
+        ] {
+            let r = run(
+                Some(&record(&format!("\"{HEAD}\""), &closed(&by))),
+                clean_ledger(),
+            );
+            assert_eq!(r.verdict(), "PASS", "{by}: {:#}", r.json);
+        }
+        // Bogus: each names no real change, or a pull request that is not there.
+        for (by, why) in [
+            ("anything".to_string(), "names no full commit id"),
+            (
+                "GetBusbar/busbar PR 1".to_string(),
+                "names no full commit id",
+            ),
+            (
+                "3333333333333333333333333333333333333333".to_string(),
+                "is not in this repository",
+            ),
+            (ASIDE.to_string(), "is not in the audited history"),
+            (format!("PR 404 {FIX}"), "#404, which does not exist"),
+            (
+                format!("GetBusbar/busbar-plane-mcp#5 {FIX}"),
+                "could not be verified",
+            ),
+        ] {
+            let r = run(
+                Some(&record(&format!("\"{HEAD}\""), &closed(&by))),
+                clean_ledger(),
+            );
+            assert_eq!(r.verdict(), "BLOCK", "{by}");
+            let ev = r.findings[0]["evidence"].as_str().unwrap_or("");
+            assert!(ev.contains(why), "{by}: {ev}");
+        }
+    }
+
+    #[test]
+    fn the_pull_requests_a_closed_by_names_are_read_in_every_spelling() {
+        let home = |n: u64| ("GetBusbar/busbar".to_string(), n);
+        assert_eq!(named_prs("#12"), [home(12)]);
+        assert_eq!(named_prs("PR 12"), [home(12)]);
+        assert_eq!(named_prs("pr #12"), [home(12)]);
+        assert_eq!(
+            named_prs("GetBusbar/busbar-plane-mcp PR 7, GetBusbar/busbar#9"),
+            [
+                ("GetBusbar/busbar".to_string(), 9),
+                ("GetBusbar/busbar-plane-mcp".to_string(), 7)
+            ]
+        );
+        assert_eq!(
+            named_prs("https://github.com/GetBusbar/busbar-auth-oidc/pull/3/files"),
+            [("GetBusbar/busbar-auth-oidc".to_string(), 3)]
+        );
+        assert!(named_prs(FIX).is_empty());
+        assert_eq!(named_commits(&format!("x {FIX}. y")), [FIX]);
+    }
+
+    #[test]
+    fn a_finding_open_on_this_candidate_in_a_committed_record_stays_open() {
+        let open = |sev: &str| {
+            record(
+                &format!("\"{HEAD}\""),
+                &format!(
+                    r#"[{{"id":"A1","severity":"{sev}","status":"open","scope":"s","evidence":"e","cite":"c"}}]"#
+                ),
+            )
+        };
+        let earlier = vec![open("BLOCK")];
+        // Closed, lowered, or dropped by an edit of the record alone: BLOCK.
+        for now in [
+            record(&format!("\"{HEAD}\""), &closed(FIX)),
+            open("LOW"),
+            record(&format!("\"{HEAD}\""), "[]"),
+        ] {
+            let r = run_with(Some(&now), clean_ledger(), Some(earlier.clone()));
+            assert!(
+                titles(&r, "BLOCK").contains(
+                    &"a finding recorded open on this candidate was closed without a fresh audit"
+                        .to_string()
+                ),
+                "{now}: {:#}",
+                r.json
+            );
+        }
+        // The same finding on ANOTHER candidate's record binds nothing here.
+        let other = record(
+            &format!("\"{OTHER}\""),
+            r#"[{"id":"A1","severity":"BLOCK","status":"open","scope":"s","evidence":"e","cite":"c"}]"#,
+        );
+        let now = record(&format!("\"{HEAD}\""), &closed(FIX));
+        let r = run_with(Some(&now), clean_ledger(), Some(vec![other]));
+        assert_eq!(r.verdict(), "PASS", "{:#}", r.json);
+        // Kept open at the same or a graver severity: no finding.
+        let r = run_with(
+            Some(&open("BLOCK")),
+            clean_ledger(),
+            Some(vec![open("HIGH")]),
+        );
+        assert_eq!(titles(&r, "BLOCK"), ["A1"]);
+        // A history git cannot list is never read as an empty one.
+        let r = run_with(Some(&now), clean_ledger(), None);
+        assert_eq!(
+            titles(&r, "BLOCK"),
+            ["the audit record's history could not be read"]
+        );
     }
 
     #[test]
