@@ -73,8 +73,8 @@ pub struct AxisRow {
     /// The path prefixes the axis GOVERNS.
     pub scope: Vec<String>,
     pub rules: Vec<AxisBan>,
-    /// Path PREFIXES where a branch on this axis is legitimate: the axis's own module, the `proto/`
-    /// arms, and the handlers that hold the codecs.
+    /// Path PREFIXES where a branch on this axis is legitimate: the axis's own module and the
+    /// protocol crates that hold the wire arms and their codecs.
     pub allowed: Vec<String>,
     pub remedy: String,
     pub why: String,
@@ -105,15 +105,14 @@ pub fn table(a: &Addresses) -> Vec<AxisRow> {
         // The `Operation` axis's own home: moved module-path-only out of `busbar-api` into the contract
         // (DECISIONS #83/#84); `busbar_contract::operation` is a re-export of it.
         "crates/busbar-contract/src/operation.rs".to_string(),
-        format!("{}/proto/", a.core),
-        format!("{}/handlers/", a.core),
     ];
     op_allowed.extend(a.proto_roots.iter().cloned());
-    let mut tr_allowed = vec![
-        format!("{}/proto/", a.core),
-        format!("{}/handlers/", a.core),
-    ];
-    tr_allowed.extend(a.proto_roots.iter().cloned());
+    // THE KERNEL HAS NO PROTOCOL ARM (Law 1, C1). Its `proto/` and `handlers/` were allowed here as
+    // arms while protocol code lived in them; the arms are the `busbar-plane-*` crates now, which
+    // `proto_roots` carries, and the kernel's two directories are agnostic core like the rest of it
+    // (q128 section 39). A neutral kernel site that must compare is ledgered in `exceptions()` with
+    // its why, never excused by directory.
+    let tr_allowed: Vec<String> = a.proto_roots.to_vec();
 
     vec![
         AxisRow {

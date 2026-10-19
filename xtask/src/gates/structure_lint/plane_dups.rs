@@ -389,78 +389,164 @@ pub fn scan(cx: &Ctx, a: &Addresses, corpus: Option<&Corpus>, t: &Tables, f: &mu
     }
 }
 
-/// THE UNLEDGERED ROW'S ARMED COUNT (Law 9: armed at the measure and never above it; ARCHITECT
-/// ruling on #787, its accounting corrected 2026-10-14). FLIP-A2A moved the a2a plane's home from
-/// the engine `busbar-a2a` to its door crate `busbar-plane-a2a`, and FLIP-STREAMING moved the
-/// streaming plane's from `busbar-voice` to `busbar-plane-streaming`, where this scan reads each.
-/// #787 armed 42 on its own tree; the integration that lands it with #503 and the pinned decisions
-/// and mcp planes (lane-integration-w1b, measured at 564506190a) measures 46, name by name:
+/// THE UNLEDGERED ROW'S ARMED LIST (Law 9: armed at the measure and never above it; Law 8: a census
+/// reports the LIST it scanned, not the count). Each entry is one standing plane-local duplicate,
+/// by name and by the exact set of planes it is declared in, as `structure-lint:plane-dup:
+/// unledgered` measured them on dev at 0453923b9f — the 46 of the ARCHITECT ruling on #787 (its
+/// accounting corrected 2026-10-14), name by name:
 ///
 /// * 36 of #787's 42 (2bce54dc57's carried and scope-moved findings, less the six the integrated
-///   drains removed: `arrive`, `build_runtime`, `fingerprint`, `meter`, `serve`, `decode`):
-///   modules `claims.rs`, `config.rs`, `diagnostics.rs`, `facts.rs`, `jsonrpc.rs`, `meta.rs`,
-///   `ops.rs`, `record.rs`, `records.rs`; symbols `absolute`, `Admitted`, `attempt`, `drive`,
-///   `Envelope`, `encode`, `error`, `Hop`, `IdShape`, `MethodRow`, `Tap`, `Task`,
-///   `correlation_for`, `correlation_value`, `id_shape`, `id_value`, `is_canonical_number`,
-///   `is_number`, `op_class`, `open`, `operations_for`, `owe`, `read`, `refused`, `relayed`,
-///   `row_for`, `success`;
-/// * 10 SCOPE-MOVED by the union: declarations each plane already held, seen side by side only once
-///   both homes moved in one tree (#503 measured with a2a still in its engine, #787 with streaming
-///   still in `busbar-voice`): `Attempt`, `From`, `Owed`, `Piece`, `dealt_section` (a2a and
-///   streaming), `SessionUnit`, `claim` (mcp and streaming), `dialect_auth`, `refusal_render`,
-///   `settle` (streaming and decisions).
+///   drains removed: `arrive`, `build_runtime`, `fingerprint`, `meter`, `serve`, `decode`);
+/// * 10 SCOPE-MOVED by the union of #503 and #787: declarations each plane already held, seen side
+///   by side only once both homes moved in one tree.
 ///
-/// The ledger rows `Outbound` and `Route` (signed for mcp and streaming) are struck: neither name is
-/// declared in two planes any more.
+/// It was a COUNT, and a count cannot tell a drain-plus-a-new-copy swap from a tree that did
+/// nothing: one duplicate removed and a security or money concern copied into a second plane kept
+/// the number at 46 and the row green (q128 section 40). So the row holds the names:
 ///
-/// The door code #787 added (52 names, and the 2 #703 met through predev's `door_sessions.rs`)
-/// is DRAINED, not armed: what was the same concept as the mcp door's copy is shared once in the
-/// SDK (`busbar_contract::abi::sdk`: `publish::ServedRoute`, `publish::admin_route`,
-/// `publish::class_index`, `Lent::stated`, `digest::lower_hex`, `trust::Sighting`,
-/// `trust::State`) and used by both doors; what only shared a name is renamed to what it is. A row
-/// per duplicate stays refused (it would be evasion), so the row holds the COUNT: above it is a new
-/// plane-local copy, below it is a drain that did not give its number back. DRAIN: the remaining
-/// door scaffolding moves to the SDK (planes never depend on each other, Law 0), the duplicates
-/// that encode a security or money property first (DoD item 5); lower this count in the commit
-/// that drains each one.
-pub const UNLEDGERED_ARMED: usize = 46;
+/// * a duplicate that is not on this list — a new name, or a listed name in a plane set it was
+///   not measured in — is a new plane-local copy, and the unledgered row is RED;
+/// * a listed duplicate the scan no longer finds is RED on the stale-ledger row until its entry is
+///   struck, so the list only shrinks.
+///
+/// DRAIN: the remaining door scaffolding moves to the SDK (planes never depend on each other,
+/// Law 0), the duplicates that encode a security or money property first (DoD item 5); strike the
+/// entry in the commit that drains each one. A row per duplicate in [`ledger`] stays refused (it
+/// would be evasion): these are debt, not signed claims.
+pub const UNLEDGERED_ARMED: &[(&str, &[&str])] = &[
+    ("claims.rs", &["a2a", "decisions", "streaming"]),
+    ("config.rs", &["a2a", "decisions", "streaming"]),
+    ("diagnostics.rs", &["a2a", "mcp", "streaming"]),
+    ("facts.rs", &["a2a", "decisions"]),
+    ("jsonrpc.rs", &["a2a", "mcp"]),
+    ("meta.rs", &["a2a", "decisions", "streaming"]),
+    ("ops.rs", &["a2a", "decisions"]),
+    ("record.rs", &["a2a", "mcp"]),
+    ("records.rs", &["a2a", "decisions"]),
+    ("Admitted", &["a2a", "llm"]),
+    ("Attempt", &["a2a", "streaming"]),
+    ("Envelope", &["a2a", "mcp"]),
+    ("From", &["a2a", "streaming"]),
+    ("Hop", &["a2a", "llm"]),
+    ("IdShape", &["a2a", "mcp"]),
+    ("MethodRow", &["a2a", "decisions"]),
+    ("Owed", &["a2a", "streaming"]),
+    ("Piece", &["a2a", "streaming"]),
+    ("SessionUnit", &["mcp", "streaming"]),
+    ("Tap", &["a2a", "llm"]),
+    ("Task", &["a2a", "mcp"]),
+    ("absolute", &["a2a", "streaming"]),
+    ("attempt", &["a2a", "llm"]),
+    ("claim", &["mcp", "streaming"]),
+    ("correlation_for", &["a2a", "mcp"]),
+    ("correlation_value", &["a2a", "mcp"]),
+    ("dealt_section", &["a2a", "streaming"]),
+    ("dialect_auth", &["decisions", "streaming"]),
+    ("drive", &["a2a", "llm", "mcp"]),
+    ("encode", &["a2a", "mcp"]),
+    ("error", &["a2a", "mcp"]),
+    ("id_shape", &["a2a", "mcp"]),
+    ("id_value", &["a2a", "mcp"]),
+    ("is_canonical_number", &["a2a", "mcp"]),
+    ("is_number", &["a2a", "mcp"]),
+    ("op_class", &["a2a", "decisions", "mcp"]),
+    ("open", &["a2a", "mcp", "streaming"]),
+    ("operations_for", &["a2a", "mcp"]),
+    ("owe", &["decisions", "mcp"]),
+    ("read", &["a2a", "mcp"]),
+    ("refusal_render", &["decisions", "streaming"]),
+    ("refused", &["a2a", "llm", "mcp"]),
+    ("relayed", &["a2a", "decisions", "mcp"]),
+    ("row_for", &["a2a", "decisions"]),
+    ("settle", &["decisions", "streaming"]),
+    ("success", &["a2a", "mcp"]),
+];
 
-/// [`ROW_UNLEDGERED`], judged against [`UNLEDGERED_ARMED`]. A tree with none is clean.
+/// The name and the planes of one `PLANE-DUPLICATE` finding, read back from the line
+/// [`finding_duplicate`] wrote: the backticked name, and the plane of every `plane:path:line` site
+/// before any `(the ledger row signs for …)` tail. `None` for a line of any other shape.
+fn duplicate_key(finding: &str) -> Option<(String, BTreeSet<String>)> {
+    let rest = finding.strip_prefix("PLANE-DUPLICATE (")?;
+    let (_, rest) = rest.split_once("): `")?;
+    let (name, where_) = rest.split_once('`')?;
+    let where_ = where_.trim_start().strip_prefix('—')?;
+    let sites = where_
+        .split_once("(the ledger row signs for")
+        .map_or(where_, |(sites, _)| sites);
+    let planes: BTreeSet<String> = sites
+        .split_whitespace()
+        .filter_map(|site| site.split_once(':').map(|(plane, _)| plane.to_string()))
+        .collect();
+    (!planes.is_empty()).then(|| (name.to_string(), planes))
+}
+
+/// Whether `finding` is the armed entry `(name, planes)`: the same name in exactly those planes.
+fn is_armed_entry(finding: &str, name: &str, planes: &[&str]) -> bool {
+    duplicate_key(finding).is_some_and(|(n, found)| {
+        n == name && found.iter().map(String::as_str).eq(planes.iter().copied())
+    })
+}
+
+pub fn finding_armed_gone(name: &str, planes: &[&str]) -> String {
+    format!(
+        "STALE-ARMED: `{name}` ({}) is on UNLEDGERED_ARMED but is no longer declared in exactly \
+         those planes. If you drained it — thank you — STRIKE its entry; the list only shrinks.",
+        planes.join("+")
+    )
+}
+
+/// Every [`UNLEDGERED_ARMED`] entry no unledgered finding is, each a [`finding_armed_gone`].
+fn armed_gone(unledgered: &[String]) -> Vec<String> {
+    UNLEDGERED_ARMED
+        .iter()
+        .filter(|(name, planes)| !unledgered.iter().any(|f| is_armed_entry(f, name, planes)))
+        .map(|(name, planes)| finding_armed_gone(name, planes))
+        .collect()
+}
+
+/// [`ROW_UNLEDGERED`], judged against [`UNLEDGERED_ARMED`] name by name. A tree with none is clean.
 fn unledgered_row(unledgered: &[String]) -> Row {
-    let n = unledgered.len();
-    if n == 0 {
+    if unledgered.is_empty() {
         return Row::pass(
             ROW_UNLEDGERED,
             "no name is declared in two planes without a signed claim about why",
             super::CLEAN,
         );
     }
-    if n == UNLEDGERED_ARMED {
+    let unarmed: Vec<&String> = unledgered
+        .iter()
+        .filter(|f| {
+            !UNLEDGERED_ARMED
+                .iter()
+                .any(|(name, planes)| is_armed_entry(f, name, planes))
+        })
+        .collect();
+    let n = unledgered.len();
+    if unarmed.is_empty() {
         return Row::pass(
             ROW_UNLEDGERED,
-            "the plane-local duplicates are the armed count and no more",
+            "every plane-local duplicate is on the armed list, by name and planes",
             format!(
-                "{n} finding(s), armed at {UNLEDGERED_ARMED} (predev's carried findings and the \
-                 a2a plane's pre-existing files its home move to busbar-plane-a2a made visible; \
-                 drain: shared door scaffolding to the SDK): {}",
+                "{n} finding(s), each an entry of the {} on UNLEDGERED_ARMED (drain: shared door \
+                 scaffolding to the SDK): {}",
+                UNLEDGERED_ARMED.len(),
                 unledgered.join(" | ")
             ),
         );
     }
-    let why = if n > UNLEDGERED_ARMED {
-        format!(
-            "{n} finding(s) against an armed count of {UNLEDGERED_ARMED}: a new plane-local copy"
-        )
-    } else {
-        format!(
-            "{n} finding(s) under an armed count of {UNLEDGERED_ARMED}: lower UNLEDGERED_ARMED to \
-             {n} in the commit that drained it (Law 9: the count ratchets down)"
-        )
-    };
     Row::fail(
         ROW_UNLEDGERED,
         "a shared concern grew a second, plane-local implementation",
-        format!("{why}: {}", unledgered.join(" | ")),
+        format!(
+            "{} of {n} finding(s) not on UNLEDGERED_ARMED (a new name, or an armed name in planes \
+             it was not measured in): {}",
+            unarmed.len(),
+            unarmed
+                .iter()
+                .map(|f| f.as_str())
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ),
     )
 }
 
@@ -475,9 +561,13 @@ pub fn rows(f: &Findings) -> Vec<Row> {
         ),
         row(
             ROW_STALE_LEDGER,
-            "every ledger row still describes duplication that exists",
-            "a ledger row outlived the duplication it recorded, which is an exemption nobody prunes",
-            &f.stale_ledger,
+            "every ledger row and armed duplicate still describes duplication that exists",
+            "a ledger row or armed duplicate outlived the duplication it recorded, which is an exemption nobody prunes",
+            &f.stale_ledger
+                .iter()
+                .cloned()
+                .chain(armed_gone(&f.unledgered))
+                .collect::<Vec<_>>(),
         ),
     ]
 }

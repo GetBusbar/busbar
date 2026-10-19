@@ -233,9 +233,10 @@ pub const REPORT_ONLY: &[Posture] = &[
     Posture {
         name: "structure-lint",
         why: "NO STANDING RED LEFT. Both named rows drained: `axis:purity` went green, and \
-              `plane-dup:unledgered` is ARMED at its measured count (`plane_dups::UNLEDGERED_ARMED`, \
-              Law 9; ARCHITECT ruling on #787), green at it, red above it (a new plane-local copy) \
-              and below it (a drain that did not lower the count). The history: be9c473f5 derived the plane set, \
+              `plane-dup:unledgered` is ARMED at its measured list (`plane_dups::UNLEDGERED_ARMED`, \
+              Law 9; ARCHITECT ruling on #787), name by name: red on a duplicate off the list (a \
+              new plane-local copy), and `plane-dup:stale-ledger` red on a listed one that is gone \
+              (a drain that did not strike its entry). The history: be9c473f5 derived the plane set, \
               the protocol crates and the tree-wide scope from the tree instead of from lists that \
               had gone stale, and the lint then saw what it had been blind to: \
               `plane-dup:unledgered` (24 plane-local reimplementations of a shared concern), \
@@ -426,9 +427,9 @@ pub const STRUCTURE_LINT_STANDING_REDS: &[&str] = &[
     // `structure-lint:axis:purity` STRUCK 2026-10-02 (GATE-GREEN, ee06655df0): the contract asks no
     // claim its transport and the ABI handshake has one home, so the row is green.
     // `structure-lint:plane-dup:unledgered` STRUCK at #787 (ARCHITECT ruling): the row is ARMED at
-    // the measured count (`plane_dups::UNLEDGERED_ARMED`, Law 9): predev's carried findings and the
+    // the measured list (`plane_dups::UNLEDGERED_ARMED`, Law 9): predev's carried findings and the
     // a2a plane's pre-existing files its home move made visible, the door code #787 added drained
-    // through the SDK or renamed; green at it and red above or below.
+    // through the SDK or renamed; red on a duplicate off the list, stale on a listed one gone.
 ];
 
 /// THE FIGURE EACH CONSTRUCTION STANDING RED IS EXCUSED AT: the count its row measures, the
@@ -440,7 +441,7 @@ pub const CONSTRUCTION_STANDING_FIGURES: &[(&str, u64)] = &[("one-pick-site", 3)
 
 /// THE FIGURE EACH STRUCTURE-LINT STANDING RED IS EXCUSED AT, read the same way. Empty: its one
 /// figure (`structure-lint:plane-dup:unledgered`, 22) was superseded when #787 armed that row at its
-/// measured count (`plane_dups::UNLEDGERED_ARMED`, Law 9) and struck it from
+/// measured list (`plane_dups::UNLEDGERED_ARMED`, Law 9) and struck it from
 /// [`STRUCTURE_LINT_STANDING_REDS`]; a figure for a row no list excuses excuses nothing.
 pub const STRUCTURE_LINT_STANDING_FIGURES: &[(&str, u64)] = &[];
 

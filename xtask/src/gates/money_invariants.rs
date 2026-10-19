@@ -72,6 +72,8 @@ use crate::scan;
 #[path = "tests/money_invariants_closure_tests.rs"]
 mod closure_tests;
 
+mod closure;
+
 pub const ROW_NO_PLUGIN_KEYED: &str = "money-invariants:no-plugin-keyed-money";
 pub const ROW_NO_STORED_PRICE: &str = "money-invariants:no-stored-price";
 pub const ROW_SINGLE_SEAL: &str = "money-invariants:single-seal-site";
@@ -631,6 +633,29 @@ fn use_paths(src: &str) -> Vec<String> {
         .collect()
 }
 
+/// [`use_paths`] of the file at `rel`, each `crate::`/`self::`/`super::` head rewritten to the
+/// file's OWN crate (`crates/busbar-kernel-audit/src/…` → `busbar_kernel_audit::…`), so the crate a
+/// relative import names is the writer's and not a guess.
+fn use_paths_in(rel: &str, src: &str) -> Vec<String> {
+    let own = rel
+        .strip_prefix("crates/")
+        .and_then(|r| r.split('/').next())
+        .map(|k| k.replace('-', "_"));
+    use_paths(src)
+        .into_iter()
+        .map(|path| {
+            let t = path.trim_start().trim_start_matches("::");
+            let head = t.split("::").next().unwrap_or("").trim();
+            match (&own, head) {
+                (Some(krate), "crate" | "self" | "super") => {
+                    format!("{krate}{}", &t[head.len()..])
+                }
+                _ => path,
+            }
+        })
+        .collect()
+}
+
 /// The crate source directory a type a file imports lives in: the first path segment of the `use`
 /// path that names it (`busbar_kernel_audit` → `crates/busbar-kernel-audit/src`).
 fn crate_dir_in(uses: &[String], ty: &str) -> Option<String> {
@@ -642,8 +667,11 @@ fn crate_dir_in(uses: &[String], ty: &str) -> Option<String> {
             continue;
         }
         let first = path.split("::").next()?.trim();
+        // A relative head names no crate: [`use_paths_in`] has already rewritten every one to the
+        // writer's own crate, and one left over is not guessed at (it was `crates/busbar/src` for
+        // every writer, which is wrong for a writer in any other crate — q128 section 11).
         let dir = match first {
-            "crate" | "super" | "self" => "crates/busbar/src".to_string(),
+            "crate" | "super" | "self" => return None,
             krate => format!("crates/{}/src", krate.replace('_', "-")),
         };
         return Some(dir);
@@ -805,7 +833,7 @@ fn derive_population(cx: &Ctx) -> Population {
             for (seam_path, seam) in &files {
                 writers.push(seam_path.clone());
                 let seam_decls = parse_decls(seam_path, seam);
-                let uses = use_paths(seam);
+                let uses = use_paths_in(seam_path, seam);
                 for root in journal_roots(seam_path, seam) {
                     roots.push(root.ty.clone());
                     let name = root.ty.as_str();
@@ -925,6 +953,11 @@ fn derive_population(cx: &Ctx) -> Population {
             }
         }
     }
+
+    // THE CLOSURE, CLOSED (q128 section 11): every type a member's field names, resolved where the
+    // field is declared and through every re-export, joins the population; what a writer's chain
+    // reaches is written whole; and a word nothing resolves is a gap, not a word stepped over.
+    closure::close(cx, &mut members, &mut written, &mut gaps);
 
     let files: Vec<String> = members.iter().map(|m| m.decl.file.clone()).collect();
     for home in REQUIRED_HOMES {
@@ -1095,7 +1128,7 @@ fn policy_scan(cx: &Ctx, table: &[(&str, &str, &str, Option<u8>)]) -> (Vec<Strin
         }
         let path = f.rel_str();
         let local = parse_decls(&path, &f.text);
-        let uses = use_paths(&f.text);
+        let uses = use_paths_in(&path, &f.text);
         for root in journal_roots(&path, &f.text) {
             let Some(def) = local.iter().find(|d| d.name == root.ty).cloned() else {
                 gaps.push(format!(
@@ -1634,6 +1667,42 @@ impl Gate for MoneyInvariantsGate {
             &[ROW_NO_STORED_PRICE],
             ov13,
             &["`ceiling: i128` on TotalsKey"],
+        ));
+
+        // RED (r) — q128 section 11: a stored price on a type reached only through a `pub use`
+        // re-export (`AuditRecord.usage` → `Usage.lines: Vec<UsageLine>`, re-exported by
+        // `busbar-kernel-audit` from `busbar-contract`). The writer never imports it, so the old
+        // closure resolved the word to nothing and stepped over it.
+        const USAGE: &str = "crates/busbar-contract/src/caps/usage.rs";
+        let ov16 = plant_over(cx, &fixture, USAGE, |s| {
+            s.replace(
+                "pub struct UsageLine {",
+                "pub struct UsageLine {\n    pub price: u64,",
+            )
+        });
+        report.push(prove_red(
+            &fcx,
+            self,
+            "a stored price on a re-exported type a journalled record holds is RED",
+            &[ROW_NO_STORED_PRICE],
+            ov16,
+            &["`price` on UsageLine", USAGE],
+        ));
+        // RED (s) — q128 section 11: a field type word nothing resolves is a gap both record rows
+        // refuse on, not a word the closure steps over.
+        let ov17 = plant_over(cx, &fixture, AUDIT, |s| {
+            s.replace(
+                "pub struct Usage {",
+                "pub struct Usage {\n    pub planted: PlantedUnheardOf,",
+            )
+        });
+        report.push(prove_red(
+            &fcx,
+            self,
+            "a field type the record closure cannot read is RED on both record rows",
+            &[ROW_NO_PLUGIN_KEYED, ROW_NO_STORED_PRICE],
+            ov17,
+            &["`PlantedUnheardOf` in the type of `Usage.planted`"],
         ));
 
         // THE POLICY RECORDS (ARCHITECT ruling, row 159, 2026-10-13): exact integer rates at a

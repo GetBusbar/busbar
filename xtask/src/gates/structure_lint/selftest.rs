@@ -797,6 +797,67 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         ],
     ));
 
+    // THE ARMED LIST IS A LIST (q128 section 40). One armed symbol duplicate is drained — its copy in
+    // one plane renamed — over the real tree: the stale-ledger row names the entry left to strike,
+    // and the same drain beside a new plane-local copy keeps the count and still names the copy.
+    let drain = existing.unledgered.iter().find_map(|finding| {
+        let (name, site) = plane_dups::UNLEDGERED_ARMED
+            .iter()
+            .filter(|(name, _)| !name.ends_with(".rs"))
+            .find_map(|(name, _)| {
+                let lead = format!("PLANE-DUPLICATE (symbol): `{name}` — ");
+                let sites = finding.strip_prefix(&lead)?;
+                let site = sites.split_whitespace().next()?;
+                Some((*name, site.to_string()))
+            })?;
+        let mut parts = site.splitn(3, ':');
+        let (_plane, path) = (parts.next()?, parts.next()?);
+        let text = cx.read(path).ok()?;
+        let decl = format!("fn {name}(");
+        text.contains(&decl).then(|| {
+            let mut ov = Overlay::new();
+            ov.set(
+                path,
+                text.replacen(&decl, &format!("fn planted_drained_{name}("), 1),
+            );
+            (name, ov)
+        })
+    });
+    match drain {
+        Some((name, ov)) => {
+            report.push(tree_case(
+                cx,
+                gate,
+                "an armed duplicate that is drained is stale until its entry is struck",
+                &[plane_dups::ROW_STALE_LEDGER],
+                ov.clone(),
+                &["STALE-ARMED", &format!("`{name}`")],
+            ));
+            let mut swap = ov;
+            let mcp = addresses.plane("mcp");
+            swap.set(
+                format!("{a2a}/planted_swapped_copy.rs"),
+                "pub fn planted_swapped_copy() {}\n",
+            );
+            swap.set(
+                format!("{mcp}/planted_swapped_copy.rs"),
+                "pub fn planted_swapped_copy() {}\n",
+            );
+            report.push(tree_case(
+                cx,
+                gate,
+                "a drain beside a new plane-local copy keeps the count and is still a new copy",
+                &[plane_dups::ROW_UNLEDGERED],
+                swap,
+                &["PLANE-DUPLICATE (symbol): `planted_swapped_copy`"],
+            ));
+        }
+        None => report.note_infra_failure(
+            "structure-lint selftest: no armed symbol duplicate has a declaration the drain plant \
+             can rename",
+        ),
+    }
+
     // THE DEBT HALF IS REACHABLE (item 236): a DEBT row naming a concern nobody declared is
     // refused. `Class::Debt` was constructed nowhere, so this branch could not produce a NO.
     let mut undeclared = t.clone();

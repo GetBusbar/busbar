@@ -64,14 +64,37 @@ const HDR_SERVER_TIMING_FILE: &str = "crates/busbar-kernel/src/router.rs";
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a clean tree";
 
+/// The plane driver's route-* emission site (`route_policy_fields`, gated by its caller on
+/// `crate::proxy::route_policy_headers_enabled()`): the 1.6.0 path writes the pair as head FIELDS,
+/// not through `.header(`, so a rule keyed on one call shape never saw it (q128 section 37).
+const HDR_ROUTE_DRIVER_FILE: &str = "crates/busbar-kernel/src/plane_driver/route.rs";
+
+/// THE ROUTE-* EMISSION SITES: every file a non-test `HDR_ROUTE_*` use may sit in. The const
+/// definition file, and each sanctioned emission site — each of which must read the operator's
+/// opt-in gate ([`ROUTE_GATE_READ`]), or the site writes the headers unconditionally.
+const HDR_ROUTE_SITES: &[&str] = &[
+    HDR_ROUTE_POLICY_FILE,
+    HDR_ROUTE_WIRE_FILE,
+    HDR_ROUTE_DRIVER_FILE,
+];
+
+/// The call every route-* emission site must make: the `advanced.response_headers.route_policy`
+/// opt-in, default off.
+const ROUTE_GATE_READ: &str = "route_policy_headers_enabled(";
+
 /// One rule: the code shape that WRITES a header, the row it answers on, the label it prints, and
-/// the one file allowed to carry it.
+/// the files allowed to carry it.
 struct Rule {
     row: &'static str,
     /// The needle, as a plain substring of a production line.
     needle: &'static str,
     what: &'static str,
-    allow: &'static str,
+    allow: &'static [&'static str],
+    /// A call every allowed file must make, or that file is itself a finding: the gate an emission
+    /// site reads before it writes.
+    gate_read: Option<&'static str>,
+    /// The production line the selftest plants to prove the rule fires.
+    plant: &'static str,
     title_ok: &'static str,
     title_bad: &'static str,
 }
@@ -86,7 +109,9 @@ fn rules() -> Vec<Rule> {
             needle: "\"x-busbar-route-policy\"",
             what: "raw x-busbar-route-policy string literal outside its HDR_ROUTE_POLICY const \
                    definition",
-            allow: HDR_ROUTE_POLICY_FILE,
+            allow: &[HDR_ROUTE_POLICY_FILE],
+            gate_read: None,
+            plant: "let _ = \"x-busbar-route-policy\";",
             title_ok: "the route-policy header name is spelled only at its const definition",
             title_bad: "a raw route-policy header literal outside its const definition",
         },
@@ -95,24 +120,35 @@ fn rules() -> Vec<Rule> {
             needle: "\"x-busbar-route-target\"",
             what: "raw x-busbar-route-target string literal outside its HDR_ROUTE_TARGET const \
                    definition",
-            allow: HDR_ROUTE_POLICY_FILE,
+            allow: &[HDR_ROUTE_POLICY_FILE],
+            gate_read: None,
+            plant: "let _ = \"x-busbar-route-target\";",
             title_ok: "the route-target header name is spelled only at its const definition",
             title_bad: "a raw route-target header literal outside its const definition",
         },
         Rule {
             row: "response-header:route-emission-site",
-            needle: ".header(HDR_ROUTE_",
-            what: "x-busbar-route-* header write outside proxy::wire::maybe_attach_route_policy \
+            // KEYED ON THE CONSTANTS, NOT ON ONE CALL SHAPE (q128 section 37): `.header(HDR_ROUTE_`
+            // saw the 1.5.5 builder write and nothing else, so the plane driver's
+            // `fields.push((HDR_ROUTE_POLICY.as_bytes()…` — or an ungated copy of it anywhere — passed.
+            // A `use` that imports the constants is not a write and is not read (see [`in_use_stmt`]);
+            // a renaming import is, because it hides the constant from this needle.
+            needle: "HDR_ROUTE_",
+            what: "x-busbar-route-* header constant used outside its sanctioned emission sites \
                    (bypasses the route_policy config gate)",
-            allow: HDR_ROUTE_WIRE_FILE,
-            title_ok: "the route-* headers are written from exactly one gated function",
+            allow: HDR_ROUTE_SITES,
+            gate_read: Some(ROUTE_GATE_READ),
+            plant: "fields.push((crate::proxy::HDR_ROUTE_POLICY.as_bytes().to_vec(), b\"cheapest\".to_vec()));",
+            title_ok: "the route-* headers are written only from sanctioned sites that read the gate",
             title_bad: "a route-* header write bypasses the route_policy config gate",
         },
         Rule {
             row: "response-header:server-timing-literal",
             needle: "\"server-timing\"",
             what: "raw server-timing string literal outside HEADER_SERVER_TIMING",
-            allow: HDR_SERVER_TIMING_FILE,
+            allow: &[HDR_SERVER_TIMING_FILE],
+            gate_read: None,
+            plant: "let _ = \"server-timing\";",
             title_ok: "the server-timing header name is spelled only at its const definition",
             title_bad: "a raw server-timing header literal outside its const definition",
         },
@@ -120,7 +156,9 @@ fn rules() -> Vec<Rule> {
             row: "response-header:server-timing-value",
             needle: "busbar;dur=",
             what: "busbar;dur= Server-Timing value formatted outside router.rs::server_timing",
-            allow: HDR_SERVER_TIMING_FILE,
+            allow: &[HDR_SERVER_TIMING_FILE],
+            gate_read: None,
+            plant: "let _ = \"busbar;dur=\";",
             title_ok: "the Server-Timing value shape is formatted at exactly one site",
             title_bad: "a second Server-Timing value formatter is a second ungated emission site",
         },
@@ -129,8 +167,40 @@ fn rules() -> Vec<Rule> {
 
 /// The one line a finding is written as, on BOTH sides of a parity run — the shell's
 /// `UNGATED-HEADER: <file>:<line>: <what> — route through <allow>`, minus the prefix.
-fn finding(rel: &str, line: usize, what: &str, allow: &str) -> String {
-    format!("{rel}:{line}: {what} — route through {allow}")
+fn finding(rel: &str, line: usize, what: &str, allow: &[&str]) -> String {
+    format!("{rel}:{line}: {what} — route through {}", allow.join(" or "))
+}
+
+/// The finding for a sanctioned site that does not read the gate it is sanctioned for.
+fn ungated_site(rel: &str, gate_read: &str) -> String {
+    format!(
+        "{rel}: a sanctioned route-* emission site that never calls `{gate_read})` — it writes the \
+         headers whether or not the operator opted in"
+    )
+}
+
+/// Whether a production line opens a `use` statement (`use`, `pub use`, `pub(crate) use`, …).
+fn opens_use(code: &str) -> bool {
+    let t = code.trim_start();
+    let t = match t.strip_prefix("pub(") {
+        Some(rest) => rest.split_once(')').map_or(t, |(_, r)| r.trim_start()),
+        None => t.strip_prefix("pub ").map_or(t, str::trim_start),
+    };
+    t.starts_with("use ")
+}
+
+/// For each production line, whether it sits in a `use` statement that imports without renaming.
+/// An import writes nothing; a renaming import (`HDR_ROUTE_POLICY as P`) is read like code, because
+/// the name it introduces is one no needle here would see again.
+fn in_use_stmt(lines: &[(usize, String)]) -> Vec<bool> {
+    let mut out = Vec::with_capacity(lines.len());
+    let mut open = false;
+    for (_, code) in lines {
+        let inside = open || opens_use(code);
+        open = inside && !code.contains(';');
+        out.push(inside && !code.contains(" as "));
+    }
+    out
 }
 
 fn row_for(rule: &Rule, offenders: &[String]) -> Row {
@@ -302,6 +372,7 @@ impl Gate for ResponseHeaderGate {
         let missing: Vec<&str> = [
             HDR_ROUTE_POLICY_FILE,
             HDR_ROUTE_WIRE_FILE,
+            HDR_ROUTE_DRIVER_FILE,
             HDR_SERVER_TIMING_FILE,
         ]
         .into_iter()
@@ -333,12 +404,20 @@ impl Gate for ResponseHeaderGate {
         for f in &files {
             let rel = f.rel_str();
             let lines = f.production_lines();
+            let imports = in_use_stmt(&lines);
             for (rule, found) in rules.iter().zip(offenders.iter_mut()) {
-                if rel == rule.allow {
+                if rule.allow.contains(&rel.as_str()) {
+                    // A SANCTIONED SITE IS SANCTIONED FOR READING THE GATE: one that stops reading
+                    // it writes the header unconditionally, from the one place this rule trusts.
+                    if let Some(gate_read) = rule.gate_read {
+                        if !lines.iter().any(|(_, code)| code.contains(gate_read)) {
+                            found.push(ungated_site(&rel, gate_read));
+                        }
+                    }
                     continue;
                 }
-                for (lineno, code) in &lines {
-                    if code.contains(rule.needle) {
+                for ((lineno, code), imported) in lines.iter().zip(&imports) {
+                    if !imported && code.contains(rule.needle) {
                         found.push(finding(&rel, *lineno, rule.what, rule.allow));
                     }
                 }
@@ -375,19 +454,13 @@ impl Gate for ResponseHeaderGate {
         for rule in rules() {
             let path = format!("{CORE}/planted_{}.rs", rule.row.replace([':', '-'], "_"));
             let mut ov = Overlay::new();
+            // Each rule's own plant line, which is CODE: the route-emission rule's is the plane
+            // driver's push shape, the one a call-shape needle could not see.
             ov.set(
                 &path,
                 format!(
-                    "fn bypass(rb: Builder) -> Builder {{\n    let _ = {};\n    rb\n}}\n",
-                    {
-                        // A `.header(HDR_ROUTE_` needle needs a call shape around it; the literals do
-                        // not. Either way the planted line is CODE, which is the point.
-                        if rule.needle.starts_with('.') {
-                            format!("rb{}POLICY, \"cheapest\")", rule.needle)
-                        } else {
-                            format!("\"{}\"", rule.needle.trim_matches('"'))
-                        }
-                    }
+                    "fn bypass(rb: Builder, fields: &mut Fields) -> Builder {{\n    {}\n    rb\n}}\n",
+                    rule.plant
                 ),
             );
             report.push(prove_red(
@@ -396,9 +469,77 @@ impl Gate for ResponseHeaderGate {
                 format!("a hand-rolled bypass of {} is flagged", rule.row),
                 &[rule.row],
                 ov,
-                &["1 finding(s)", &format!("route through {}", rule.allow)],
+                &[
+                    "1 finding(s)",
+                    &format!("route through {}", rule.allow.join(" or ")),
+                ],
             ));
         }
+
+        // THE 1.5.5 BUILDER SHAPE STAYS CAUGHT under the constant-keyed needle.
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{CORE}/planted_route_header_call.rs"),
+            "fn bypass(rb: Builder) -> Builder {\n    rb.header(HDR_ROUTE_POLICY, \"cheapest\")\n}\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a `.header(HDR_ROUTE_…` write outside a sanctioned site is flagged",
+            &["response-header:route-emission-site"],
+            ov,
+            &["planted_route_header_call.rs:2"],
+        ));
+
+        // A SANCTIONED SITE THAT STOPS READING THE GATE is named: the driver's emission with its
+        // caller's `route_policy_headers_enabled()` taken out.
+        let driver = cx.read(HDR_ROUTE_DRIVER_FILE).unwrap_or_default();
+        if driver.contains(ROUTE_GATE_READ) {
+            let mut ov = Overlay::new();
+            ov.set(
+                HDR_ROUTE_DRIVER_FILE,
+                driver.replace(ROUTE_GATE_READ, "planted_ungated("),
+            );
+            report.push(prove_red(
+                cx,
+                self,
+                "a sanctioned route-* emission site that never reads the gate is flagged",
+                &["response-header:route-emission-site"],
+                ov,
+                &[HDR_ROUTE_DRIVER_FILE, "never calls"],
+            ));
+        } else {
+            report.note_infra_failure(format!(
+                "response-header selftest: {HDR_ROUTE_DRIVER_FILE} does not read the gate, so the \
+                 ungated-site plant has nothing to remove"
+            ));
+        }
+
+        // AN IMPORT IS NOT A WRITE, and a renaming one is read like code.
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{CORE}/planted_route_import.rs"),
+            "pub use crate::proxy::{\n    HDR_ROUTE_POLICY,\n    HDR_ROUTE_TARGET,\n};\n",
+        );
+        report.push(prove_green(
+            &cx.with_overlay(ov),
+            self,
+            "a plain import of the route-* constants is not an emission",
+            &["response-header:route-emission-site"],
+        ));
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{CORE}/planted_route_alias.rs"),
+            "use crate::proxy::HDR_ROUTE_POLICY as P;\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a renaming import of a route-* constant is flagged",
+            &["response-header:route-emission-site"],
+            ov,
+            &["planted_route_alias.rs:1"],
+        ));
 
         // THE SANCTIONED SITE IS EXEMPT. The same bypass text, in the file the rule allowlists,
         // must stay silent -- otherwise the gate reds on the very site it sanctions.
