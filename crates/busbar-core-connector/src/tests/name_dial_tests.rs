@@ -116,6 +116,7 @@ async fn echo(ip: IpAddr) -> u16 {
 
 /// One instance's calls on the connection table: the connector's [`Conns`] with the caller,
 /// [`OWNER`], stated on every call.
+#[derive(Clone)]
 struct Caller(Arc<dyn Conns>);
 
 impl Caller {
@@ -141,8 +142,8 @@ fn host(c: &Arc<Connector>) -> Caller {
 }
 
 /// The instance's view of the table `host` calls.
-fn table(host: &Caller) -> &Caller {
-    host
+fn table(host: &Caller) -> Caller {
+    host.clone()
 }
 
 /// THE PROOF: a hostname target opens at once, the read before the resolution answers is Pending,
