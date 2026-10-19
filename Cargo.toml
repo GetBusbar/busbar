@@ -117,7 +117,7 @@ busbar-transport-stdio = { git = "https://github.com/GetBusbar/busbar-transport-
 # (`busbar-transport-webrtc-plugin`), the published suite's datagram script and its gates live in that
 # repo's plugin CI; busbar's gates read the pinned crate through the base layer. Its media stack (str0m,
 # aes) is pinned in that repo's own manifest: no member here inherits it.
-busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport-webrtc", rev = "78941e3d825dab8292fc7ec60d5c5887dc9c14fd" }
+busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport-webrtc", rev = "90c7d4b311e73439ac60c1412e24a23a75604562" }
 # THE MEMORY STORE (kind: store), pulled at a pinned rev: the logic crate the root links on its store
 # axis in every build (`[package.metadata.busbar.linked] store-memory`) and the plugin loader's `store`
 # both-ways fixture. The kernel names it under no name: its test build links the in-crate R-FIX3

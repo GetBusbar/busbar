@@ -992,7 +992,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-webrtc"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-webrtc?rev=78941e3d825dab8292fc7ec60d5c5887dc9c14fd#78941e3d825dab8292fc7ec60d5c5887dc9c14fd"
+source = "git+https://github.com/GetBusbar/busbar-transport-webrtc?rev=90c7d4b311e73439ac60c1412e24a23a75604562#90c7d4b311e73439ac60c1412e24a23a75604562"
 dependencies = [
  "aes",
  "busbar-contract",
