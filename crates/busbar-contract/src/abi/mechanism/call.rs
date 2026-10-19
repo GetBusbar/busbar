@@ -358,8 +358,9 @@ impl Envelope {
 /// ticket. On [`Ticket::NONE`] they are valid only until the op returns: the
 /// host copies them before it makes any other call on that thread.
 /// (iv) OFF-PATH LISTS AND SECRETS are held under a lease until `release(lease)`.
-/// SIZES: the plugin writes at most `min(out.size, its own size of the struct)` bytes of an `out`,
-/// never reads an `in` beyond `in.size`, and reads an absent tail field as zero.
+/// SIZES, ONE PER STRUCT (owner ruling 21): every `in` and `out` has exactly one size, its
+/// `size_of`; an `in.size` or `out.size` of any other size, shorter or longer, is FAULT, and a field
+/// a shorter struct lacks is never read as an absent zero.
 /// FIXED ELEMENTS: the element layouts of [`MetricEntry`], [`Diag`],
 /// [`super::door::MetricFamily`] and [`AbiStr`] are fixed by [`super::MECHANISM_VERSION`]; arrays of them
 /// carry no stride, so growing one is a mechanism bump.

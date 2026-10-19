@@ -27,8 +27,8 @@ fn the_four_memory_classes_are_stated_on_the_mechanism_and_on_out_head() {
             "NEXT op on the same",
             "valid only until the op returns",
             "(iv) OFF-PATH LISTS AND SECRETS",
-            "SIZES: the plugin writes at most `min(out.size",
-            "reads an absent tail field as zero",
+            "SIZES, ONE PER STRUCT (owner ruling 21)",
+            "never read as an absent zero",
             "FIXED ELEMENTS",
             "growing one is a mechanism bump",
         ] {

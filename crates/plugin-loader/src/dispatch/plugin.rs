@@ -5,7 +5,7 @@
 //!
 //! OUTCOME AUTHORITY. The value the slot RETURNS decides. An unknown byte is FAULT; an
 //! `OutHead.outcome` that differs from the return value is FAULT; an answer that fails
-//! [`super::validate`] (an `OutHead.size` outside `size_of::<OutHead>()..=` the host's `out`, error
+//! [`super::validate`] (an `OutHead.size` that is not the host's `out`'s one size, error
 //! text NULL-with-length or over-long, a #85 array NULL-with-length or over-long) is FAULT; PENDING on [`Ticket::NONE`] (a call that may not pend) is FAULT. The host
 //! zeroes the whole `out` before every crossing (then states its size), so an `out` nobody wrote
 //! reads as a fault.
@@ -1019,8 +1019,8 @@ impl Instance {
             self.declare_targeted(settings, owned);
             self.bind_destinations(settings);
         }
-        // THE HOST ZEROES THE WHOLE `out` BEFORE EVERY CALL, RESUME included (FAULT = 0, every
-        // tail field absent), then states its size: the plugin writes at most min(out.size, own).
+        // THE HOST ZEROES THE WHOLE `out` BEFORE EVERY CALL, RESUME included (FAULT = 0), then
+        // states its one size: the plugin writes back exactly that size (owner ruling 21).
         // SAFETY: `out` is the host's own `out_size` bytes.
         unsafe {
             std::ptr::write_bytes(out.cast::<u8>(), 0, out_size as usize);

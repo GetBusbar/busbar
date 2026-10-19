@@ -5,7 +5,7 @@
 //! is FAULT, never a clamp and never a guess.
 //!
 //! Two layers, and only two. The MECHANISM's checks of every `out` head live here and run in every
-//! crossing: `OutHead.size` within `size_of::<OutHead>()..=` the host's `out`, the error text and
+//! crossing: `OutHead.size` exactly the host's `out`'s one size (owner ruling 21), the error text and
 //! the #85 arrays not NULL-with-length nor over-long, the outcome mirror, and PENDING on NONE (in
 //! `plugin::judge`). A KIND's reply fields (spans, counts, `written`, `needed_*`) are checked only
 //! by that kind's pure `check_<op>` in `abi/<kind>/`, reached through [`super::Kind::check`]
@@ -28,7 +28,7 @@ pub enum Violation {
     Kind,
     /// A second SHORT answer on the one re-call.
     ShortTwice,
-    /// `OutHead.size` is smaller than the head or larger than the host's `out`.
+    /// `OutHead.size` is not the host's `out`'s ONE size (owner ruling 21): shorter or longer.
     OutSize {
         /// The size the plugin wrote back.
         stated: u32,
@@ -52,7 +52,7 @@ impl Violation {
 /// and its #85 arrays.
 pub(crate) fn out_head(head: &OutHead, host_out_size: u32) -> Result<(), Violation> {
     let stated = head.size;
-    if (stated as usize) < size_of::<OutHead>() || stated > host_out_size {
+    if stated != host_out_size {
         return Err(Violation::OutSize {
             stated,
             host: host_out_size,

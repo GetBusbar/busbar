@@ -797,7 +797,21 @@ impl<B: StoreSlots> SafeSlot for Open<B> {
         input: Lent<'_, OpenIn>,
         mut out: Out<'_, OpenOut>,
     ) -> Outcome {
-        let host = input.host().map(|h| Host::of(&h));
+        // ONE SIZE (owner ruling 21): host tables of another size are refused before `open` runs.
+        let host = match input.host() {
+            None => None,
+            Some(h) => match Host::checked(&h) {
+                Some(host) => Some(host),
+                None => {
+                    return open_failed(
+                        input,
+                        &mut out,
+                        |o| &o.err_len,
+                        crate::abi::sdk::conn::HOST_TABLES_SIZE,
+                    )
+                }
+            },
+        };
         let ticket = instance.ticket();
         // THE RESUME of a pended open: the retained instance box carries the opened store, and
         // what its connect step parked is read back on this ticket. A RESUME with no instance or

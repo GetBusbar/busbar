@@ -484,10 +484,17 @@ life_slot!(
 life_slot!(
     /// `open`: [`Life::open`]; the SDK holds the state it answers.
     Open(OpenIn => OpenOut) |instance, input, out| {
+        // ONE SIZE (owner ruling 21): host tables of another size are refused before `open` runs.
+        let host = match input.host() {
+            None => None,
+            Some(h) => match Host::checked(&h) {
+                Some(host) => Some(host),
+                None => return out.fail(Refusal::failed(super::conn::HOST_TABLES_SIZE)),
+            },
+        };
         let settings = input.field(|i| &i.settings).bytes();
         match L::open(settings, &secrets(input.secrets()), input.generation) {
             Ok(life) => {
-                let host = input.host().map(|h| Host::of(&h));
                 instance.open(Held::new(life, host));
                 Outcome::Ready
             }
@@ -529,7 +536,7 @@ life_slot!(
         let Some(h) = instance.get() else {
             return Outcome::Fault;
         };
-        let Some(host) = input.host().map(|t| Host::of(&t)) else {
+        let Some(host) = input.host().and_then(|t| Host::checked(&t)) else {
             return Outcome::Fault;
         };
         match h.life.ready(&host, instance.ticket()) {

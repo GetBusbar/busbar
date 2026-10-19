@@ -20,17 +20,19 @@
 //! slot of every kind:
 //!
 //! * HEAD AND SIZE CHECKS — a NULL `out`, or one whose `size` cannot hold an [`OutHead`], is
-//!   answered [`Outcome::Fault`] with nothing written; a NULL `in`, an `in` shorter than its
-//!   [`InHead`], or an `in.op` that is not this slot's index is [`Outcome::Fault`] (the `in.op`
-//!   check is the SDK's own reading of [`InHead::op`]: a call routed to the wrong slot never runs);
-//!   the host's heads are read unaligned, so a C host owes no alignment;
-//! * the `in` is read up to `min(in.size, size_of In)` and an absent tail reads as zero;
+//!   answered [`Outcome::Fault`] with nothing written; a NULL `in`, an `in.op` that is not this
+//!   slot's index, or an `in` or `out` whose `size` is not the slot's ONE size (owner ruling 21:
+//!   `size_of` its `In`/`Out`, shorter or longer refused) is [`Outcome::Fault`], only the `out`
+//!   head's outcome written and the body never run (the `in.op` check is the SDK's own reading of
+//!   [`InHead::op`]: a call routed to the wrong slot never runs); the host's heads are read
+//!   unaligned, so a C host owes no alignment;
+//! * the `in` is read whole, so no field is ever read as an absent zero;
 //! * `catch_unwind` around the slot body: a panic is [`Outcome::Fault`], never an abort and never
 //!   an unwind across the boundary (every plugin builds `panic = "unwind"`, ARCHITECT ruling,
 //!   m3-inputs; both macros refuse to compile under `panic = "abort"`);
 //! * PANIC-SAFE OUT WRITES — the body writes a private copy of `out`; only a body that RETURNED is
-//!   written back, and then at most `min(out.size, size_of Out)` bytes, with `out.size` set to the
-//!   plugin's own `size_of Out` (the host clamps) and `out.outcome` MIRRORING the returned outcome.
+//!   written back, the whole `out`, with `out.size` its one size and `out.outcome` MIRRORING the
+//!   returned outcome.
 //!   A panicking body writes nothing but `outcome = FAULT`;
 //! * [`Outcome::Pending`] answered on a [`Ticket::NONE`](crate::abi::mechanism::ticket::Ticket::NONE)
 //!   call is [`Outcome::Fault`] (the mechanism's rule, `OutHead::outcome`);
@@ -68,7 +70,7 @@ use crate::abi::sdk::capture::CaptureHome;
 /// The implementor is `#[repr(C)]`, its FIRST field is an [`InHead`] (or it is [`InHead`]), and
 /// EVERY initialized bit pattern is a valid value of it — all-zero included: integers, raw pointers,
 /// `Option<fn>` and `#[repr(transparent)]` bytes only; no `bool`, enum, reference or `NonNull`. The
-/// trampoline copies the host's bytes into it and zero-fills an absent tail.
+/// trampoline copies the host's `in`, of exactly this size, into it.
 pub unsafe trait AbiIn: Copy + UnwindSafe + RefUnwindSafe + 'static {}
 
 /// An `out` struct a slot writes.
@@ -377,31 +379,17 @@ unsafe fn enter<S: Entry, H: CaptureHome>(
             ptr::addr_of!((*in_head).op).read_unaligned(),
         )
     };
-    if host_in < size_of::<InHead>() || op != index {
+    // ONE SIZE PER STRUCT (owner ruling 21): the `in` and the `out` are each exactly this slot's.
+    if host_in != size_of::<S::In>() || host_out != size_of::<S::Out>() || op != index {
         // SAFETY: as above.
         unsafe { write_fault(out_head) };
         return Outcome::Fault;
     }
 
-    // SAFETY: `S::In: AbiIn`/`S::Out: AbiOut` — all-zero is a valid value.
-    let mut local_in: S::In = unsafe { MaybeUninit::zeroed().assume_init() };
-    let mut local_out: S::Out = unsafe { MaybeUninit::zeroed().assume_init() };
-    let in_n = host_in.min(size_of::<S::In>());
-    let out_n = host_out.min(size_of::<S::Out>());
-    // SAFETY: the host's `in` holds `host_in >= in_n` readable bytes and `local_in` holds
-    // `size_of::<S::In>() >= in_n`; likewise `out_n` for `out`. Neither local overlaps a host buffer.
-    unsafe {
-        ptr::copy_nonoverlapping(
-            input.cast::<u8>(),
-            ptr::addr_of_mut!(local_in).cast::<u8>(),
-            in_n,
-        );
-        ptr::copy_nonoverlapping(
-            out.cast::<u8>(),
-            ptr::addr_of_mut!(local_out).cast::<u8>(),
-            out_n,
-        );
-    }
+    // SAFETY: `S::In`/`S::Out` are plain `#[repr(C)]` values (`AbiIn`/`AbiOut`); the host's `in`
+    // and `out` are each exactly one of them (checked above). Neither local overlaps a host buffer.
+    let (local_in, local_out): (S::In, S::Out) =
+        unsafe { (input.read_unaligned(), out.read_unaligned()) };
 
     // The body runs on COPIES moved into the closure and hands its `out` back only by returning:
     // a panic leaves nothing half-written for the trampoline to copy out. It runs under the call
@@ -429,21 +417,14 @@ unsafe fn enter<S: Entry, H: CaptureHome>(
             // SAFETY: `S::Out` leads with an `OutHead` (`AbiOut`).
             let head = unsafe { &mut *ptr::addr_of_mut!(local_out).cast::<OutHead>() };
             head.outcome = RawOutcome::of(outcome);
-            // The plugin writes back its own size (the mechanism's growth rule); the host clamps.
+            // The plugin writes back its one size (owner ruling 21).
             head.size = size_of::<S::Out>() as u32;
             // What the body logged joins the envelope it answered.
             // SAFETY: the plugin's own `diags`, when set, point to `diags_len` live entries until
             // the next op on the ticket (the mechanism's memory rule).
             H::with(|slot| unsafe { slot.seal(&mut head.envelope) });
-            // SAFETY: `out_n <= host_out` bytes of the host's `out` are writable, and
-            // `out_n <= size_of::<S::Out>()` bytes of `local_out` are readable.
-            unsafe {
-                ptr::copy_nonoverlapping(
-                    ptr::addr_of!(local_out).cast::<u8>(),
-                    out.cast::<u8>(),
-                    out_n,
-                );
-            }
+            // SAFETY: the host's `out` is exactly one `S::Out` (checked above), writable.
+            unsafe { out.write_unaligned(local_out) };
             outcome
         }
         Err(payload) => {

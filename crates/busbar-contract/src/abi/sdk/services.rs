@@ -233,6 +233,10 @@ impl Wake {
     /// The wake in the tables `open` handed the instance; `None` when the host handed none.
     #[must_use]
     pub fn of(tables: &HostTables) -> Option<Self> {
+        // ONE SIZE (owner ruling 21): tables of another size hand nothing.
+        if tables.size as usize != std::mem::size_of::<HostTables>() {
+            return None;
+        }
         tables.wake.map(|wake| Self {
             ctx: tables.ctx,
             wake,
@@ -262,7 +266,9 @@ impl Services {
     /// The services in the tables `open` handed the instance; `None` when the host offers none.
     #[must_use]
     pub fn of(tables: &HostTables) -> Option<Self> {
-        (!tables.services.is_null()).then_some(Self {
+        // ONE SIZE (owner ruling 21): tables of another size hand nothing.
+        let whole = tables.size as usize == std::mem::size_of::<HostTables>();
+        (whole && !tables.services.is_null()).then_some(Self {
             ctx: tables.ctx,
             table: tables.services,
         })

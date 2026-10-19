@@ -115,6 +115,11 @@ pub struct DiskFailure {
 /// A `disk.append`'s answer.
 pub type DiskAnswer = Poll<Result<DiskWritten, DiskFailure>>;
 
+/// The declared refusal of host tables of any other size than this SDK's (owner ruling 21): the
+/// plugin's `open` (and `ready`) answers it rather than read a table the host did not hand.
+pub const HOST_TABLES_SIZE: &str =
+    "the host's tables are not this plugin's size; rebuild against this busbar-contract";
+
 /// THE INSTANCE'S HOST TABLES, as `open` handed them: the context every host call is made with,
 /// the wake, the connector table and the host services table.
 #[derive(Debug, Clone, Copy)]
@@ -136,21 +141,38 @@ unsafe impl Sync for Host {}
 impl Host {
     /// The tables `tables` names: what `open` was handed (`OpenIn::host`), for a kind whose SDK
     /// wrapper is not yet in this crate (the auth kind's outbound mint reaches its need through it).
+    /// Tables of any other size than `size_of::<HostTables>()` (owner ruling 21) are refused whole:
+    /// the host they answer lends no table, no wake and no context, never some tables and not
+    /// others. [`Host::checked`] names the refusal.
     #[must_use]
     pub const fn of(tables: &HostTables) -> Self {
-        // The I/O table was appended: tables whose `size` ends before it hand none.
-        let io = if tables.size as usize >= std::mem::size_of::<HostTables>() {
-            tables.io
-        } else {
-            std::ptr::null()
-        };
-        Self {
+        match Self::checked(tables) {
+            Some(host) => host,
+            None => Self {
+                ctx: HostCtx::NONE,
+                wake: None,
+                conns: std::ptr::null(),
+                services: std::ptr::null(),
+                io: std::ptr::null(),
+            },
+        }
+    }
+
+    /// The tables `tables` names, when they are this SDK's ONE size (`size_of::<HostTables>()`,
+    /// owner ruling 21); `None` for tables of any other size, shorter or longer, which a plugin
+    /// refuses ([`HOST_TABLES_SIZE`]).
+    #[must_use]
+    pub const fn checked(tables: &HostTables) -> Option<Self> {
+        if tables.size as usize != std::mem::size_of::<HostTables>() {
+            return None;
+        }
+        Some(Self {
             ctx: tables.ctx,
             wake: tables.wake,
             conns: tables.conns,
             services: tables.services,
-            io,
-        }
+            io: tables.io,
+        })
     }
 
     /// THE HOST'S I/O (`abi::host::io`, `io.*`) for ONE entry of the op running on `ticket`: what
