@@ -87,56 +87,79 @@ pub struct FnRow {
 /// appear here is that nothing on this path may suspend.
 pub fn request_path(a: &Addresses) -> Vec<FnRow> {
     let core = &a.core;
+    // THE BODIES, NOT THE DELEGATES (Q128 u90; LAW 8, "a name is not a thing"). `try_admit` is one
+    // line handing off to `admit_checked`, where the check-then-charge is done, and its sibling
+    // entry `try_admit_estimated` hands off to the same body: a row on `try_admit` alone guarded the
+    // doorway and not the room. Each of the three is a row of its own, so a renamed one is
+    // `SUBJECT-MISSING` by its own id.
+    let admission = |id: &str, func: &str| {
+        FnRow {
+        id: id.into(),
+        tag: "STORE-ON-REQUEST-PATH".into(),
+        file: format!("{core}/governance/state.rs"),
+        func: func.into(),
+        rules: vec![
+            FnBan::new(
+                "[^A-Za-z0-9_][Ss]tore[^A-Za-z0-9_]",
+                "a store reference inside the admission path",
+            ),
+            FnBan::new(
+                "[^A-Za-z0-9_][Ss]tore$",
+                "a store reference inside the admission path",
+            ),
+            FnBan::new(
+                r"\.await",
+                "an await inside the admission path (it is declared SYNCHRONOUS and INFALLIBLE)",
+            ),
+        ],
+        remedy: "keep the store off this path: admission reads in-memory cells only, and durability is flushed BEHIND the request (governance::state::flush / the ledger sink), never in front of it".into(),
+        why: "the store is a durability sink, never on the request path — every latency figure busbar publishes is measured on an admission that does no I/O".into(),
+    }
+    };
+    // THE PROTOCOL LOOKUP ALLOCATES NOTHING. `decl_for` is the one by-name protocol resolution
+    // in busbar and it is called several times per request. The `match` it replaced returned an
+    // OWNED `Protocol` and therefore allocated two vtable boxes on EVERY call — including the
+    // many calls that only wanted a `&'static` constant off the declaration. Everything
+    // reachable through a `ProtocolDecl` is `&'static`, so this function has no legitimate
+    // reason to allocate, own a string, or suspend. `decl_for` is `registry().decl(name)`, so the
+    // scan the row claims to bound is `Registry::decl` on the substrate, a row of its own.
+    let lookup = |id: &str, file: String, func: &str| {
+        FnRow {
+        id: id.into(),
+        tag: "ALLOC-ON-PROTOCOL-LOOKUP".into(),
+        file,
+        func: func.into(),
+        rules: vec![
+            FnBan::new("Box::new", "a box allocated while resolving a protocol name"),
+            FnBan::new("Vec::", "a vector allocated while resolving a protocol name"),
+            FnBan::new(
+                "to_string",
+                "an owned string allocated while resolving a protocol name",
+            ),
+            FnBan::new(
+                "String::",
+                "an owned string allocated while resolving a protocol name",
+            ),
+            FnBan::new(r"\.await", "an await inside the by-name protocol lookup"),
+        ],
+        remedy: "read the `&'static` declaration and hand it back: every fact on a `ProtocolDecl` is a constant the protocol declared, so nothing on this path needs to be built".into(),
+        why: "it is called several times per request, and the match it replaced allocated two vtable boxes on every call to answer a static question".into(),
+    }
+    };
     vec![
-        FnRow {
-            id: "A7-govstate-try-admit".into(),
-            tag: "STORE-ON-REQUEST-PATH".into(),
-            file: format!("{core}/governance/state.rs"),
-            func: "try_admit".into(),
-            rules: vec![
-                FnBan::new(
-                    "[^A-Za-z0-9_][Ss]tore[^A-Za-z0-9_]",
-                    "a store reference inside the admission path",
-                ),
-                FnBan::new(
-                    "[^A-Za-z0-9_][Ss]tore$",
-                    "a store reference inside the admission path",
-                ),
-                FnBan::new(
-                    r"\.await",
-                    "an await inside the admission path (it is declared SYNCHRONOUS and INFALLIBLE)",
-                ),
-            ],
-            remedy: "keep the store off this path: admission reads in-memory cells only, and durability is flushed BEHIND the request (governance::state::flush / the ledger sink), never in front of it".into(),
-            why: "the store is a durability sink, never on the request path — every latency figure busbar publishes is measured on an admission that does no I/O".into(),
-        },
-        // THE PROTOCOL LOOKUP ALLOCATES NOTHING. `decl_for` is the one by-name protocol resolution
-        // in busbar and it is called several times per request. The `match` it replaced returned an
-        // OWNED `Protocol` and therefore allocated two vtable boxes on EVERY call — including the
-        // many calls that only wanted a `&'static` constant off the declaration. Everything
-        // reachable through a `ProtocolDecl` is `&'static`, so this function has no legitimate
-        // reason to allocate, own a string, or suspend.
-        FnRow {
-            id: "A8-protocol-decl-for".into(),
-            tag: "ALLOC-ON-PROTOCOL-LOOKUP".into(),
-            file: format!("{core}/proto/registry.rs"),
-            func: "decl_for".into(),
-            rules: vec![
-                FnBan::new("Box::new", "a box allocated while resolving a protocol name"),
-                FnBan::new("Vec::", "a vector allocated while resolving a protocol name"),
-                FnBan::new(
-                    "to_string",
-                    "an owned string allocated while resolving a protocol name",
-                ),
-                FnBan::new(
-                    "String::",
-                    "an owned string allocated while resolving a protocol name",
-                ),
-                FnBan::new(r"\.await", "an await inside the by-name protocol lookup"),
-            ],
-            remedy: "read the `&'static` declaration and hand it back: every fact on a `ProtocolDecl` is a constant the protocol declared, so nothing on this path needs to be built".into(),
-            why: "it is called several times per request, and the match it replaced allocated two vtable boxes on every call to answer a static question".into(),
-        },
+        admission("A7-govstate-try-admit", "try_admit"),
+        admission("A7-govstate-try-admit-estimated", "try_admit_estimated"),
+        admission("A7-govstate-admit-checked", "admit_checked"),
+        lookup(
+            "A8-protocol-decl-for",
+            format!("{core}/proto/registry.rs"),
+            "decl_for",
+        ),
+        lookup(
+            "A8-protocol-registry-decl",
+            format!("{}/proto/installed.rs", a.substrate),
+            "decl",
+        ),
     ]
 }
 
