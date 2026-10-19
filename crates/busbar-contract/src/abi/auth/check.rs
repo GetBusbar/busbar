@@ -12,8 +12,8 @@ use super::points::{AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY, POINT_
 use super::{
     BEGIN_AUTHORIZE, BEGIN_FORM, CAP_INBOUND, DECISION_CONTINUE, DECISION_STOP, FIELD_QUERY,
     FIELD_SENSITIVE, IDENTITY_HAS_TTL, LOGIN_IDENTITY, LOGIN_SECURITY_CHECK_FAILED, SPAN_ABSENT,
-    STRIP_FIELD, STRIP_QUERY, STYLE_CALLER_CREDENTIAL, STYLE_NEEDS_HEADERS, VERDICT_IDENTITY,
-    VERDICT_PASS,
+    STRIP_FIELD, STRIP_QUERY, STYLE_CALLER_CREDENTIAL, STYLE_ENDPOINT_SA_TOKEN_URI,
+    STYLE_ENDPOINT_TOKEN_URL, STYLE_NEEDS_HEADERS, STYLE_RANK_MASK, VERDICT_IDENTITY, VERDICT_PASS,
 };
 use crate::abi::mechanism::call::{AbiStr, Outcome, Span, BLOB_OCTETS};
 use crate::abi::mechanism::check::{fault, results, Dim, Fault, Rule, MAX_BYTES};
@@ -414,7 +414,11 @@ pub fn check_target(outcome: Outcome, out: &TargetOut, buf_cap: usize) -> Result
 /// # Errors
 /// An unknown flag bit, or a point set [`check_points`] refuses.
 pub const fn check_style_decl(flags: u32, points: u32) -> Result<AuthPoints, Fault> {
-    const KNOWN: u32 = STYLE_NEEDS_HEADERS | STYLE_CALLER_CREDENTIAL;
+    const KNOWN: u32 = STYLE_NEEDS_HEADERS
+        | STYLE_CALLER_CREDENTIAL
+        | STYLE_ENDPOINT_TOKEN_URL
+        | STYLE_ENDPOINT_SA_TOKEN_URI
+        | STYLE_RANK_MASK;
     if flags & !KNOWN != 0 {
         return Err(fault(Rule::UnknownCode, "style.unknown_flags"));
     }
