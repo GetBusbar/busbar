@@ -2307,12 +2307,7 @@ impl GovState {
                         // Advance the acked baselines: the cell still holds the window written.
                         cell.flushed_requests = acked.requests;
                         cell.flushed_billable_requests = acked.billable_requests;
-                        for s in &acked.models {
-                            let seg = |m: &&mut ModelCell| m.model == s.model && m.era == s.era;
-                            if let Some(mc) = cell.models.iter_mut().find(seg) {
-                                mc.flushed = s.cur.clone();
-                            }
-                        }
+                        cell.advance_model_baselines(&acked.models);
                     } else if cell.window_start > snap.window {
                         // The cell rolled while this write was in flight, and the roll parked
                         // everything past the baseline — this delta included. It has landed now,
