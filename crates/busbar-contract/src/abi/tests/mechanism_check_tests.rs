@@ -222,7 +222,7 @@ fn section(name: &'static str, flags: u32) -> Section {
     Section {
         name: abi_str(name),
         flags,
-        _reserved: 0,
+        ..Section::ZERO
     }
 }
 
@@ -401,7 +401,7 @@ fn a_statement_of_another_kind_stating_a_named_map_is_refused() {
     const SECTIONS: &[Section] = &[Section {
         name: abi_str("things"),
         flags: SECTION_DECLARING | SECTION_NAMED_MAP,
-        _reserved: 0,
+        ..Section::ZERO
     }];
     let mut st = statement("p", "1.0.0", 1);
     st.sections = SECTIONS.as_ptr();

@@ -327,6 +327,9 @@ impl Publish for PlaneSnapshot {
             listed_len,
             arrival_spans,
             arrival_spans_len,
+            // The SDK's spec states no routing yet: an explicit empty list (step 2b).
+            routing: std::ptr::null(),
+            routing_len: 0,
         }
     }
 }

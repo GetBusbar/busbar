@@ -387,27 +387,28 @@ fn open_green_and_red_on_its_snapshot() {
     );
 }
 
-/// RED, THE APPEND RULE AT THE HOST: a plugin built before `PlaneSnapshot::listed` was appended
-/// publishes a snapshot whose `size` ends before it. The host accepts it and reads its list as none,
-/// never the bytes past that `size` (here garbage: a count over a dangling pointer).
+/// R9, ONE SIZE AT THE HOST (step 2b): a snapshot whose `size` ends before `listed`, before
+/// `arrival_spans` or before `routing` is refused, never read as one that lists none; the host's own
+/// size is copied with its list.
 #[test]
-fn a_snapshot_from_before_listed_reads_as_listing_none() {
+fn a_snapshot_of_another_size_is_refused_at_the_host() {
     let mut i: PlaneOpenIn = z();
     i.open.generation = 7;
-    let mut older = snap(7);
-    older.size = std::mem::offset_of!(PlaneSnapshot, listed) as u32;
-    older.listed = NonNull::<AbiStr>::dangling().as_ptr();
-    older.listed_len = 5;
-    let mut o: PlaneOpenOut = z();
-    o.snapshot = &older;
-    assert_eq!(
-        Plane::check(&answer(life::OPEN, Outcome::Ready, &i, &o)),
-        Ok(()),
-        "a snapshot of the size before the append is this host's to read"
-    );
-    let copied = crate::dispatch::kinds::plane::copy_snapshot(&older, 4)
-        .expect("the older snapshot is copied");
-    assert!(copied.listed.is_empty(), "{:?}", copied.listed);
+    for size in [
+        std::mem::offset_of!(PlaneSnapshot, listed),
+        std::mem::offset_of!(PlaneSnapshot, arrival_spans),
+        std::mem::offset_of!(PlaneSnapshot, routing),
+    ] {
+        let mut older = snap(7);
+        older.size = size as u32;
+        let mut o: PlaneOpenOut = z();
+        o.snapshot = &older;
+        assert_eq!(
+            Plane::check(&answer(life::OPEN, Outcome::Ready, &i, &o)),
+            f(Rule::Foreign, "snapshot.size"),
+            "{size}"
+        );
+    }
     let names = [AbiStr {
         ptr: b"listed-one".as_ptr(),
         len: 10,
@@ -417,6 +418,84 @@ fn a_snapshot_from_before_listed_reads_as_listing_none() {
     newer.listed_len = 1;
     let copied = crate::dispatch::kinds::plane::copy_snapshot(&newer, 4).expect("copied");
     assert_eq!(copied.listed, vec!["listed-one".to_string()]);
+}
+
+/// RULE 1 AT THE HOST (step 2b): a snapshot whose routing holds a zeroed entry is never copied (the
+/// open answers no snapshot), whatever its other lists.
+#[test]
+fn a_snapshot_with_a_zeroed_routing_entry_is_not_copied() {
+    use busbar_contract::abi::plane::RouteEntry;
+    let entries = [RouteEntry::ZERO];
+    let mut sn = snap(7);
+    sn.routing = entries.as_ptr();
+    sn.routing_len = 1;
+    assert!(crate::dispatch::kinds::plane::copy_snapshot(&sn, 4).is_none());
+}
+
+/// GREEN (step 2b): a snapshot's judged routing is copied whole, in order, for the kernel to walk.
+#[test]
+fn a_snapshots_routing_is_copied_for_the_kernel() {
+    use busbar_contract::abi::plane::{
+        MemberFact, RouteEntry, RouteMember, FACT_CONCURRENCY_CAP, FACT_FAILOVER_MAX_HOPS,
+    };
+    let s = |t: &'static str| AbiStr {
+        ptr: t.as_ptr(),
+        len: t.len(),
+    };
+    let member_facts = [MemberFact {
+        fact: FACT_CONCURRENCY_CAP,
+        value: 4,
+        ..MemberFact::ZERO
+    }];
+    let entry_facts = [MemberFact {
+        fact: FACT_FAILOVER_MAX_HOPS,
+        value: 2,
+        ..MemberFact::ZERO
+    }];
+    let tags = [s("fast")];
+    let members = [RouteMember {
+        lane: s("lane-a"),
+        provider: s("prov"),
+        weight: 2,
+        tier: s("gold"),
+        tags: tags.as_ptr(),
+        tags_len: 1,
+        facts: member_facts.as_ptr(),
+        facts_len: 1,
+        ..RouteMember::ZERO
+    }];
+    let path = [s("sec"), s("e")];
+    let entries = [RouteEntry {
+        section: s("sec"),
+        entry: s("e"),
+        path: path.as_ptr(),
+        path_len: 2,
+        fallback: s("other"),
+        facts: entry_facts.as_ptr(),
+        facts_len: 1,
+        members: members.as_ptr(),
+        members_len: 1,
+        ..RouteEntry::ZERO
+    }];
+    let mut sn = snap(7);
+    sn.routing = entries.as_ptr();
+    sn.routing_len = 1;
+    let copied = crate::dispatch::kinds::plane::copy_snapshot(&sn, 4).expect("copied");
+    assert_eq!(copied.routing.len(), 1);
+    let e = &copied.routing[0];
+    assert_eq!((e.section.as_str(), e.entry.as_str()), ("sec", "e"));
+    assert_eq!(e.path, vec!["sec".to_string(), "e".to_string()]);
+    assert_eq!(e.fallback.as_deref(), Some("other"));
+    assert_eq!(e.facts, vec![(FACT_FAILOVER_MAX_HOPS, 2)]);
+    let m = &e.members[0];
+    assert_eq!(
+        (m.lane.as_str(), m.provider.as_str(), m.weight),
+        ("lane-a", "prov", 2)
+    );
+    assert_eq!(m.upstream, None);
+    assert_eq!(m.tier.as_deref(), Some("gold"));
+    assert_eq!(m.tags, vec!["fast".to_string()]);
+    assert_eq!(m.facts, vec![(FACT_CONCURRENCY_CAP, 4)]);
 }
 
 #[test]
@@ -751,7 +830,7 @@ fn red_a_tail_trust_key_that_breaks_its_element_rule_does_not_bind() {
         let sections = [busbar_contract::abi::mechanism::door::Section {
             name: abi("door"),
             flags: busbar_contract::abi::mechanism::door::SECTION_DECLARING,
-            _reserved: 0,
+            ..busbar_contract::abi::mechanism::door::Section::ZERO
         }];
         let mut st: Statement = z();
         st.kind_tail = std::ptr::from_ref(&t).cast();
@@ -826,7 +905,7 @@ fn red_a_tail_whose_refusal_statuses_break_a_rule_does_not_bind() {
                     len: 4,
                 },
                 flags: busbar_contract::abi::mechanism::door::SECTION_DECLARING,
-                _reserved: 0,
+                ..busbar_contract::abi::mechanism::door::Section::ZERO
             }]));
         let mut st: Statement = z();
         st.kind_tail = &tail.head;
@@ -874,7 +953,7 @@ fn red_a_tail_whose_fee_unit_is_no_billable_class_does_not_bind() {
         let sections: &'static [Section] = Box::leak(Box::new([Section {
             name: s("door"),
             flags: SECTION_DECLARING,
-            _reserved: 0,
+            ..Section::ZERO
         }]));
         let mut st: Statement = z();
         st.kind_tail = &tail.head;
@@ -942,7 +1021,7 @@ fn red_a_tail_whose_record_chains_break_a_rule_does_not_bind() {
         let sections: &'static [Section] = Box::leak(Box::new([Section {
             name: s("door"),
             flags: SECTION_DECLARING,
-            _reserved: 0,
+            ..Section::ZERO
         }]));
         let mut st: Statement = z();
         st.kind_tail = &tail.head;
@@ -1011,7 +1090,7 @@ fn a_tail_declares_its_record_retentions_and_a_bad_one_does_not_bind() {
         let sections: &'static [Section] = Box::leak(Box::new([Section {
             name: s("door"),
             flags: SECTION_DECLARING,
-            _reserved: 0,
+            ..Section::ZERO
         }]));
         let mut st: Statement = z();
         st.kind_tail = &tail.head;
@@ -1034,10 +1113,9 @@ fn a_tail_declares_its_record_retentions_and_a_bad_one_does_not_bind() {
         vec![rule(0, RETENTION_TERMINAL_ONLY)]
     );
     let older = std::mem::offset_of!(PlaneTail, record_retentions);
-    assert_eq!(
-        bind(good, older).expect("a tail ending before the list binds"),
-        Vec::new(),
-        "a tail ending before the list declares no rule"
+    assert!(
+        bind(good, older).is_err(),
+        "R9, one size (step 2b): a tail ending before the list is refused"
     );
     let unknown: &'static [RecordRetention] =
         Box::leak(Box::new([rule(0, RETENTION_TERMINAL_ONLY + 1)]));
@@ -1054,12 +1132,12 @@ fn a_tail_declares_its_record_retentions_and_a_bad_one_does_not_bind() {
     assert!(refused.contains("record_retention.kind_twice"), "{refused}");
 }
 
-/// THE STREAM CEILING IS A TAIL ADDITION (ARCHITECT ruling 2026-10-07, STREAM-CEILING): a tail of
-/// the whole size states its ceiling and the root is handed it; a tail whose `size` ends before the
-/// field still loads and states none (`0`), even when the memory past its size holds a value. RED:
-/// a frozen size equal to the grown tail refused the shorter tail, and no fact carried the ceiling.
+/// THE STREAM CEILING (ARCHITECT ruling 2026-10-07, STREAM-CEILING): a tail of the contract's size
+/// states its ceiling and the root is handed it. R9, ONE SIZE (step 2b): a tail whose `size` is not
+/// exactly `size_of::<PlaneTail>()`, shorter or longer, is refused at bind; nothing past a short
+/// tail's end is read as a value.
 #[test]
-fn a_tail_states_its_stream_ceiling_and_a_tail_ending_before_it_states_none() {
+fn a_tail_states_its_stream_ceiling_and_a_tail_of_another_size_is_refused() {
     use busbar_contract::abi::mechanism::door::{
         KindTailHead, Section, Statement, SECTION_DECLARING,
     };
@@ -1079,28 +1157,31 @@ fn a_tail_states_its_stream_ceiling_and_a_tail_ending_before_it_states_none() {
                 len: 4,
             },
             flags: SECTION_DECLARING,
-            _reserved: 0,
+            ..Section::ZERO
         }]));
         let mut st: Statement = z();
         st.kind_tail = &tail.head;
         st.sections = sections.as_ptr();
         st.sections_len = sections.len();
-        Plane::context(&st)
-            .expect("the tail binds")
-            .expect("a plane has a context")
-            .downcast::<PlaneFacts>()
-            .expect("the plane's facts")
-            .served
-            .stream_ceiling_secs
+        Plane::context(&st).map(|facts| {
+            facts
+                .expect("a plane has a context")
+                .downcast::<PlaneFacts>()
+                .expect("the plane's facts")
+                .served
+                .stream_ceiling_secs
+        })
     };
     assert_eq!(
         bind(size_of::<PlaneTail>()),
-        600,
+        Ok(600),
         "the whole tail states it"
     );
-    assert_eq!(
-        bind(std::mem::offset_of!(PlaneTail, stream_ceiling_secs)),
-        0,
-        "a tail ending before the field loads and states no ceiling"
-    );
+    for size in [
+        std::mem::offset_of!(PlaneTail, stream_ceiling_secs),
+        std::mem::offset_of!(PlaneTail, record_retentions),
+        size_of::<PlaneTail>() + 8,
+    ] {
+        assert!(bind(size).is_err(), "a {size}-byte tail is refused");
+    }
 }

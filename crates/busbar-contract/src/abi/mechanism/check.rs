@@ -482,6 +482,7 @@ pub fn check_statement_sections(sections: &[Section]) -> Result<(), Fault> {
     for s in sections {
         named(s.name, "section.name")?;
         bits(u64::from(s.flags), u64::from(known), "section.flags")?;
+        text(s.entry_noun, "section.entry_noun")?;
     }
     if sections
         .iter()

@@ -25,18 +25,25 @@ use super::{units_bill, UNITS_FLOOR};
 use super::{
     AdminRoute, ArriveOut, BillableClass, Claim, DialectAuth, OnPieceOut, OutField, PinMechanism,
     PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain, RecordRetention, RecordWrite,
-    RefusalOut, RefusalStatus, RouteCost, ServeOut, TrustKey, UnitCount, CANCEL_ABORTED,
-    CANCEL_OK_PARTIAL, CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED,
-    CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN, CLAIM_RAW_AFFIX, EMIT_DONE, EMIT_FINAL_STATUS,
-    EMIT_MESSAGE_END, EMIT_TO_FAR_END, EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE,
-    INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
-    INGRESS_SUBSCRIPTION, MAX_METRIC_LANES, MAX_REFUSAL_TEXT, MECHANISM_PEER_KEY, MECHANISM_ROOT,
-    PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT,
-    REFUSAL_ANY_DIALECT, REFUSED_AFTER_ADMISSION, REFUSED_UNSUPPORTED_ACTION,
-    ROUTE_CARRIES_OWN_TOKEN, ROUTE_COUNTED, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_ONCE, ROUTE_POOL,
-    ROUTE_PUBLIC, ROUTE_SCOPE, ROUTE_SCOPE_LOCAL, ROUTE_SESSION, ROUTE_STREAM, SHAPE_PIECEWISE,
-    SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED, TAIL_PROBES, TAIL_REFUSED_PIECE, TAP_FAULT_NONE,
-    TRUST_ITEM_APPROVALS, TRUST_PIN, TRUST_PRIVATE_REACH, UNITS_ESTIMATED, VERDICT_HARD,
+    RefusalOut, RefusalStatus, RouteCost, RouteEntry, ServeOut, TrustKey, UnitCount,
+    CANCEL_ABORTED, CANCEL_OK_PARTIAL, CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED,
+    CHAIN_PIPE_SEPARATED, CLAIM_ANON_ON_OPEN_CHAIN, CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN,
+    CLAIM_RAW_AFFIX, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
+    EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION,
+    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION, MAX_METRIC_LANES,
+    MAX_REFUSAL_TEXT, MECHANISM_PEER_KEY, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT,
+    PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT, REFUSAL_ANY_DIALECT, REFUSED_AFTER_ADMISSION,
+    REFUSED_UNSUPPORTED_ACTION, ROUTE_CARRIES_OWN_TOKEN, ROUTE_COUNTED, ROUTE_DIRECT, ROUTE_LOCAL,
+    ROUTE_ONCE, ROUTE_POOL, ROUTE_PUBLIC, ROUTE_SCOPE, ROUTE_SCOPE_LOCAL, ROUTE_SESSION,
+    ROUTE_STREAM, SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED,
+    TAIL_KEYED_ROOT_MAP, TAIL_PROBES, TAIL_REFUSED_PIECE, TAP_FAULT_NONE, TRUST_ITEM_APPROVALS,
+    TRUST_PIN, TRUST_PRIVATE_REACH, UNITS_ESTIMATED, VERDICT_HARD,
+};
+use super::{
+    MemberFact, RouteMember, FACT_ATTEMPT_TIMEOUT_MS, FACT_CONCURRENCY_CAP, FACT_CONTEXT_WINDOW,
+    FACT_FAILOVER_MAX_HOPS, FACT_FAILOVER_TIMEOUT_SECS, FACT_LAST, FACT_MAX_REQUESTS,
+    FACT_PROBE_INTERVAL, FACT_PROBE_MODE, FACT_PROBE_TIMEOUT, MAX_MEMBER_TAGS, MAX_ROUTE_ENTRIES,
+    MAX_ROUTE_FACTS, MAX_ROUTE_MEMBERS, MAX_ROUTE_PATH, PROBE_MODE_ACTIVE, PROBE_MODE_NONE,
 };
 use crate::abi::hook::{
     signal, MessageView, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
@@ -981,19 +988,15 @@ pub fn check_cancel_records(
 /// [`MAX_ROUTES`] and never counted with a NULL pointer, and arrival spans `0` or one per claim. Its
 /// elements: [`check_claims`], [`check_admin_routes`], [`check_listed`], [`check_arrival_spans`].
 ///
-/// The size is this build's, or that of a snapshot published before [`PlaneSnapshot::listed`] or
-/// [`PlaneSnapshot::arrival_spans`] was appended (data structs grow by append under `honoured_size`): `s` is then the host's copy
-/// of the publisher's own bytes over zeros, so its appended fields read as none.
+/// The size is exactly this build's (R9, one size): a snapshot published at another size, shorter
+/// or longer, is foreign. Its routing list is bounded and never counted over NULL here; its
+/// entries are judged by [`check_routing`].
 ///
 /// # Errors
 ///
 /// The rule the snapshot breaks.
 pub fn check_snapshot(s: &PlaneSnapshot, generation: u64) -> Result<(), Fault> {
-    let size = s.size as usize;
-    if size != core::mem::size_of::<PlaneSnapshot>()
-        && size != core::mem::offset_of!(PlaneSnapshot, listed)
-        && size != core::mem::offset_of!(PlaneSnapshot, arrival_spans)
-    {
+    if s.size as usize != core::mem::size_of::<PlaneSnapshot>() {
         return Err(fault(Rule::Foreign, "snapshot.size"));
     }
     if s.generation != generation {
@@ -1026,7 +1029,11 @@ pub fn check_snapshot(s: &PlaneSnapshot, generation: u64) -> Result<(), Fault> {
         s.arrival_spans,
         s.arrival_spans_len,
         "snapshot.arrival_spans",
-    )
+    )?;
+    if s.routing_len > MAX_ROUTE_ENTRIES {
+        return Err(fault(Rule::OverMax, "snapshot.routing"));
+    }
+    listed(s.routing, s.routing_len, "snapshot.routing")
 }
 
 /// Every arrival span a snapshot states ([`PlaneSnapshot::arrival_spans`]): empty (that claim opens
@@ -1073,7 +1080,13 @@ pub fn check_claims(claims: &[Claim], dialects_len: u64) -> Result<(), Fault> {
         named(c.carrier, "claim.carrier")?;
         bits(
             u64::from(c.flags),
-            u64::from(CLAIM_OPEN | CLAIM_EXACT | CLAIM_PATTERN | CLAIM_RAW_AFFIX),
+            u64::from(
+                CLAIM_OPEN
+                    | CLAIM_EXACT
+                    | CLAIM_PATTERN
+                    | CLAIM_RAW_AFFIX
+                    | CLAIM_ANON_ON_OPEN_CHAIN,
+            ),
             "claim.flags",
         )?;
         if dialects_len > 0 || c.refusal_dialect != 0 {
@@ -1084,6 +1097,10 @@ pub fn check_claims(claims: &[Claim], dialects_len: u64) -> Result<(), Fault> {
             )?;
         }
         if c.flags & CLAIM_EXACT != 0 && c.flags & CLAIM_PATTERN != 0 {
+            return Err(fault(Rule::Contradiction, "claim.flags"));
+        }
+        // A raw affix takes no arrival, so it admits no one.
+        if c.flags & CLAIM_RAW_AFFIX != 0 && c.flags & CLAIM_ANON_ON_OPEN_CHAIN != 0 {
             return Err(fault(Rule::Contradiction, "claim.flags"));
         }
     }
@@ -1124,7 +1141,7 @@ pub fn check_claim_target(target: &str, flags: u32) -> Result<(), Fault> {
         return Err(fault(Rule::Contradiction, "claim.flags"));
     }
     if flags & CLAIM_RAW_AFFIX != 0 {
-        if flags & (CLAIM_OPEN | CLAIM_EXACT | CLAIM_PATTERN) != 0 {
+        if flags & (CLAIM_OPEN | CLAIM_EXACT | CLAIM_PATTERN | CLAIM_ANON_ON_OPEN_CHAIN) != 0 {
             return Err(fault(Rule::Contradiction, "claim.flags"));
         }
         raw_affix(target).ok_or_else(|| fault(Rule::Contradiction, "claim.affix"))?;
@@ -1233,9 +1250,19 @@ pub fn check_admin_routes(routes: &[AdminRoute]) -> Result<(), Fault> {
 ///
 /// The rule the tail breaks.
 pub fn check_tail(t: &PlaneTail) -> Result<(), Fault> {
+    // R9, one size: exactly this build's tail, never a shorter or a longer one.
+    if t.head.size as usize != core::mem::size_of::<PlaneTail>() {
+        return Err(fault(Rule::Foreign, "tail.size"));
+    }
     bits(
         u64::from(t.flags),
-        u64::from(TAIL_FALLBACK | TAIL_PROBES | TAIL_HOOKS_GATED | TAIL_REFUSED_PIECE),
+        u64::from(
+            TAIL_FALLBACK
+                | TAIL_PROBES
+                | TAIL_HOOKS_GATED
+                | TAIL_REFUSED_PIECE
+                | TAIL_KEYED_ROOT_MAP,
+        ),
         "tail.flags",
     )?;
     let ingress = INGRESS_REQUEST_RESPONSE
@@ -1332,6 +1359,7 @@ pub fn check_sections(sections: &[Section]) -> Result<(), Fault> {
     for s in sections {
         named(s.name, "section.name")?;
         bits(u64::from(s.flags), u64::from(known), "section.flags")?;
+        text(s.entry_noun, "section.entry_noun")?;
         if s.flags & SECTION_NAMED_MAP != 0 && s.flags & SECTION_DECLARING == 0 {
             return Err(fault(Rule::Contradiction, "section.flags"));
         }
@@ -1444,6 +1472,139 @@ pub fn check_metric_lanes(lanes: &[AbiStr]) -> Result<(), Fault> {
             return Err(fault(Rule::Contradiction, FIELD));
         }
         seen.push(word);
+    }
+    Ok(())
+}
+
+/// THE GENERATION'S ROUTING ([`PlaneSnapshot::routing`]).
+///
+/// # Errors
+///
+/// The rule an entry, member or fact breaks.
+pub fn check_routing(entries: &[RouteEntry]) -> Result<(), Fault> {
+    if entries.len() > MAX_ROUTE_ENTRIES {
+        return Err(fault(Rule::OverMax, "snapshot.routing"));
+    }
+    let mut seen: Vec<(&[u8], &[u8])> = Vec::with_capacity(entries.len());
+    for e in entries {
+        named(e.section, "route_entry.section")?;
+        named(e.entry, "route_entry.entry")?;
+        if e.path_len == 0 {
+            return Err(fault(Rule::Missing, "route_entry.path"));
+        }
+        if e.path_len > MAX_ROUTE_PATH {
+            return Err(fault(Rule::OverMax, "route_entry.path"));
+        }
+        for seg in slice(e.path, e.path_len, "route_entry.path")? {
+            named(*seg, "route_entry.path")?;
+        }
+        text(e.fallback, "route_entry.fallback")?;
+        if e.exclude_len > MAX_ROUTE_MEMBERS {
+            return Err(fault(Rule::OverMax, "route_entry.exclude"));
+        }
+        for lane in slice(e.exclude, e.exclude_len, "route_entry.exclude")? {
+            named(*lane, "route_entry.exclude")?;
+        }
+        facts(e.facts, e.facts_len, ENTRY_FACTS, "route_entry.facts")?;
+        if e.members_len > MAX_ROUTE_MEMBERS {
+            return Err(fault(Rule::OverMax, "route_entry.members"));
+        }
+        for m in slice(e.members, e.members_len, "route_entry.members")? {
+            route_member(m)?;
+        }
+        // SAFETY: `named` checked both strings non-NULL with their lengths; plugin generation data.
+        let key = unsafe {
+            (
+                core::slice::from_raw_parts(e.section.ptr, e.section.len),
+                core::slice::from_raw_parts(e.entry.ptr, e.entry.len),
+            )
+        };
+        if seen.contains(&key) {
+            return Err(fault(Rule::Contradiction, "route_entry.entry"));
+        }
+        seen.push(key);
+    }
+    Ok(())
+}
+
+/// The facts an entry may state; every other known fact is a member's.
+const ENTRY_FACTS: &[u16] = &[
+    FACT_ATTEMPT_TIMEOUT_MS,
+    FACT_FAILOVER_TIMEOUT_SECS,
+    FACT_FAILOVER_MAX_HOPS,
+];
+/// The facts a member may state.
+const MEMBER_FACTS: &[u16] = &[
+    FACT_CONCURRENCY_CAP,
+    FACT_CONTEXT_WINDOW,
+    FACT_PROBE_INTERVAL,
+    FACT_PROBE_TIMEOUT,
+    FACT_PROBE_MODE,
+    FACT_ATTEMPT_TIMEOUT_MS,
+    FACT_MAX_REQUESTS,
+];
+
+/// A plugin list as a slice, after its count was bounded: NULL with a count is refused; NULL/0 is
+/// empty.
+fn slice<'a, T>(ptr: *const T, len: usize, field: &'static str) -> Result<&'a [T], Fault> {
+    listed(ptr, len, field)?;
+    if len == 0 {
+        return Ok(&[]);
+    }
+    // SAFETY: non-NULL with a count bounded by the caller; plugin generation data, valid until
+    // `retire` of its generation.
+    Ok(unsafe { core::slice::from_raw_parts(ptr, len) })
+}
+
+/// One member: a named lane and provider, upstream text, a weight, its tier and tags, its facts.
+fn route_member(m: &RouteMember) -> Result<(), Fault> {
+    named(m.lane, "route_member.lane")?;
+    named(m.provider, "route_member.provider")?;
+    text(m.upstream, "route_member.upstream")?;
+    if m.weight == 0 {
+        return Err(fault(Rule::Missing, "route_member.weight"));
+    }
+    text(m.tier, "route_member.tier")?;
+    if m.tags_len > MAX_MEMBER_TAGS {
+        return Err(fault(Rule::OverMax, "route_member.tags"));
+    }
+    for t in slice(m.tags, m.tags_len, "route_member.tags")? {
+        named(*t, "route_member.tags")?;
+    }
+    facts(m.facts, m.facts_len, MEMBER_FACTS, "route_member.facts")
+}
+
+/// One member's or entry's facts: at most [`MAX_ROUTE_FACTS`], each a known fact of this side,
+/// zero padding, a probe mode one of its codes, no fact twice.
+fn facts(
+    ptr: *const MemberFact,
+    len: usize,
+    side: &[u16],
+    field: &'static str,
+) -> Result<(), Fault> {
+    if len > MAX_ROUTE_FACTS {
+        return Err(fault(Rule::OverMax, field));
+    }
+    let list = slice(ptr, len, field)?;
+    for (i, f) in list.iter().enumerate() {
+        if f.fact == 0 {
+            return Err(fault(Rule::Missing, "member_fact.fact"));
+        }
+        if f.fact > FACT_LAST {
+            return Err(fault(Rule::UnknownCode, "member_fact.fact"));
+        }
+        if f._reserved != [0; 3] {
+            return Err(fault(Rule::UnknownCode, "member_fact._reserved"));
+        }
+        if !side.contains(&f.fact) {
+            return Err(fault(Rule::Contradiction, field));
+        }
+        if f.fact == FACT_PROBE_MODE && !(PROBE_MODE_NONE..=PROBE_MODE_ACTIVE).contains(&f.value) {
+            return Err(fault(Rule::UnknownCode, "member_fact.value"));
+        }
+        if list[..i].iter().any(|g| g.fact == f.fact) {
+            return Err(fault(Rule::Contradiction, "member_fact.fact"));
+        }
     }
     Ok(())
 }

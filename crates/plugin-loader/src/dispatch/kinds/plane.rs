@@ -64,10 +64,9 @@ use crate::dispatch::{
     Frame, InFrame, Kind, OutFrame,
 };
 
-/// The plane tail's last frozen size (THE KIND TAIL GROWTH RULE,
-/// `abi::mechanism::door::tail_read_len`): the tail before `stream_ceiling_secs` was appended, so a
-/// tail that ends there loads and states no ceiling.
-const PLANE_TAIL_FROZEN: usize = std::mem::offset_of!(PlaneTail, stream_ceiling_secs);
+/// The plane tail's one size (R9, step 2b): a tail shorter than the whole `PlaneTail` is refused
+/// before it is read, and `check_tail` refuses a longer one.
+const PLANE_TAIL_FROZEN: usize = std::mem::size_of::<PlaneTail>();
 
 /// The plane kind.
 #[derive(Debug, Clone, Copy)]
@@ -1743,9 +1742,102 @@ pub struct OwnedSnapshot {
     pub resource_metadata: Option<String>,
     /// Its protected-resource facts (JSON); `None` = none.
     pub resource_facts: Option<Vec<u8>>,
-    /// The names it lists, in its order; empty = none (and none from a snapshot published before
-    /// the list was appended).
+    /// The names it lists, in its order; empty = none.
     pub listed: Vec<String>,
+    /// Its routing (`PlaneSnapshot::routing`), in its order, judged by `check_routing`; empty =
+    /// it routes nothing this generation.
+    pub routing: Vec<OwnedRouteEntry>,
+}
+
+/// One routing entry of a snapshot, owned by the host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedRouteEntry {
+    /// The plane's declared section it lives in.
+    pub section: String,
+    /// Its name.
+    pub entry: String,
+    /// Its config path, segment by segment.
+    pub path: Vec<String>,
+    /// The entry it falls back to; `None` = none.
+    pub fallback: Option<String>,
+    /// The lanes it never picks.
+    pub exclude: Vec<String>,
+    /// Its entry-level facts, `(FACT_*, value)`, in its order.
+    pub facts: Vec<(u16, u64)>,
+    /// Its members, in its order.
+    pub members: Vec<OwnedRouteMember>,
+}
+
+/// One member of a routing entry, owned by the host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedRouteMember {
+    /// The lane identity.
+    pub lane: String,
+    /// The provider it is reached through.
+    pub provider: String,
+    /// The name the far end knows it by; `None` = its lane name.
+    pub upstream: Option<String>,
+    /// Its weight (never `0`).
+    pub weight: u32,
+    /// Its tier; `None` = none.
+    pub tier: Option<String>,
+    /// Its tags.
+    pub tags: Vec<String>,
+    /// Its facts, `(FACT_*, value)`, in its order.
+    pub facts: Vec<(u16, u64)>,
+}
+
+/// A judged list's elements (`check_routing` bounded each count and refused NULL with a count).
+fn judged<'a, T>(ptr: *const T, len: usize) -> &'a [T] {
+    if len == 0 || ptr.is_null() {
+        return &[];
+    }
+    // SAFETY: the routing check refused a count over its cap or over NULL; plugin generation
+    // data, valid until `retire` of its generation, read while the crossing proves it live.
+    unsafe { std::slice::from_raw_parts(ptr, len) }
+}
+
+/// The routing a snapshot states, copied after `check_routing` passed: `None` when a string is not
+/// UTF-8.
+fn owned_routing(
+    entries: &[busbar_contract::abi::plane::RouteEntry],
+) -> Option<Vec<OwnedRouteEntry>> {
+    let named = |a| owned_str(a).flatten();
+    let opt = |a| -> Option<Option<String>> { Some(owned_str(a)?.filter(|t| !t.is_empty())) };
+    let names = |p, n| -> Option<Vec<String>> { judged(p, n).iter().map(|a| named(*a)).collect() };
+    let facts = |p, n| -> Vec<(u16, u64)> {
+        judged::<busbar_contract::abi::plane::MemberFact>(p, n)
+            .iter()
+            .map(|f| (f.fact, f.value))
+            .collect()
+    };
+    entries
+        .iter()
+        .map(|e| {
+            Some(OwnedRouteEntry {
+                section: named(e.section)?,
+                entry: named(e.entry)?,
+                path: names(e.path, e.path_len)?,
+                fallback: opt(e.fallback)?,
+                exclude: names(e.exclude, e.exclude_len)?,
+                facts: facts(e.facts, e.facts_len),
+                members: judged(e.members, e.members_len)
+                    .iter()
+                    .map(|m| {
+                        Some(OwnedRouteMember {
+                            lane: named(m.lane)?,
+                            provider: named(m.provider)?,
+                            upstream: opt(m.upstream)?,
+                            weight: m.weight,
+                            tier: opt(m.tier)?,
+                            tags: names(m.tags, m.tags_len)?,
+                            facts: facts(m.facts, m.facts_len),
+                        })
+                    })
+                    .collect::<Option<_>>()?,
+            })
+        })
+        .collect()
 }
 
 impl crate::dispatch::Plugin<Plane> {
@@ -1806,7 +1898,7 @@ fn owned_blob(b: Blob) -> Option<Option<Vec<u8>>> {
 /// refusal dialect against the `dialects` its tail declares.
 pub(crate) fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<OwnedSnapshot> {
     use busbar_contract::abi::plane::check::{
-        check_admin_routes, check_arrival_spans, check_claims, check_listed,
+        check_admin_routes, check_arrival_spans, check_claims, check_listed, check_routing,
     };
     if p.is_null() {
         return None;
@@ -1836,6 +1928,14 @@ pub(crate) fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<Ow
     check_admin_routes(routes).ok()?;
     check_listed(listed).ok()?;
     check_arrival_spans(spans).ok()?;
+    // The routing entries, judged (each count bounded, none over NULL) before any is copied.
+    let routing = if s.routing_len == 0 || s.routing.is_null() {
+        &[][..]
+    } else {
+        // SAFETY: this crossing's check bounded the count and refused NULL with a count.
+        unsafe { std::slice::from_raw_parts(s.routing, s.routing_len) }
+    };
+    check_routing(routing).ok()?;
     // A span name is `[a-z0-9_]`: the kernel builds a callsite of it, so nothing else is a name.
     let span_of = |i: usize| -> Option<String> {
         let name = spans.get(i).map_or(Some(String::new()), |n| {
@@ -1881,6 +1981,7 @@ pub(crate) fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<Ow
             .iter()
             .map(|n| owned_str(*n).flatten())
             .collect::<Option<_>>()?,
+        routing: owned_routing(routing)?,
     })
 }
 

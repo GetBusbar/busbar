@@ -62,7 +62,7 @@ const REWRITES: &[Rewrite] = &[
 const SECTIONS: &[Section] = &[Section {
     name: abi_str("golden"),
     flags: SECTION_DECLARING,
-    _reserved: 0,
+    ..Section::ZERO
 }];
 const NEEDS: &[Need] = &[Need {
     direction: DIRECTION_OUTBOUND,
