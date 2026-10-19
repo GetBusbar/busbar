@@ -1,5 +1,5 @@
 # THE REQUEST PATH'S SPANS, as 1.5.5 named them (status row 173; v1.5.5 docs/observability.md
-# l.162-174), read by tests/export_otlp_delivers_spans.rs. One request per row, tab-separated:
+# l.162-174), read by the root's span delivery test. One request per row, tab-separated:
 #   entry span it opens ("-": none) | the `ingress` its `forward` carries ("-": not asserted) |
 #   head fields it adds ("name: value", ";"-separated; "-": none) | path | body
 # 1.5.5 chose the entry by head fields first, then the path (proto/detect.rs protocol_id): it opened
