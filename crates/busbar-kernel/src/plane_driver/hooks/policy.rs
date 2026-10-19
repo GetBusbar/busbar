@@ -15,7 +15,7 @@
 use busbar_contract::abi::hook::{
     VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_REJECT, VERB_RESTRICT, VERB_REWRITE,
 };
-use busbar_contract::abi::host::hook::{DecideFrame, DecideView, NotifyFrame};
+use busbar_contract::abi::host::hook::{CandidateStatics, DecideFrame, DecideView, NotifyFrame};
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::hook_calls::{Answered, HookCalls};
 use busbar_contract::hook_wire::reply as wire;
@@ -31,7 +31,17 @@ pub(crate) struct HookPolicy {
     calls: Arc<dyn HookCalls>,
     /// The hook's registry name (metrics, `x-busbar-route`), interned once per distinct name.
     name: &'static str,
+    /// THE STATIC CANDIDATE HALVES this hook was last handed (Q128 contract C7): each candidate
+    /// set's configured facts, built once and reused while a request's candidates are exactly
+    /// those ([`CandidateStatics::matches`]), so a `decide` builds only its per-request half. A
+    /// generation swap that changes any candidate's facts no longer matches and builds afresh: the
+    /// hook never sees a stale candidate. Newest first, at most [`STATIC_HALVES`].
+    statics: std::sync::Mutex<Vec<Arc<CandidateStatics>>>,
 }
+
+/// How many candidate sets one hook keeps the static half of (one per pool it ranks, with room
+/// for the subsets a breaker trims).
+const STATIC_HALVES: usize = 16;
 
 impl HookPolicy {
     /// The routing seam over `calls`, named `name` (the hook's registry name).
@@ -39,7 +49,25 @@ impl HookPolicy {
         Arc::new(Self {
             calls,
             name: busbar_plugin_loader::intern_name(name),
+            statics: std::sync::Mutex::new(Vec::new()),
         })
+    }
+
+    /// The static half of `candidates`: a kept one that matches them, else one built now and kept.
+    fn statics_for(&self, candidates: &[Candidate<'_>]) -> Arc<CandidateStatics> {
+        let mut kept = self
+            .statics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(at) = kept.iter().position(|s| s.matches(candidates)) {
+            let found = kept.remove(at);
+            kept.insert(0, Arc::clone(&found));
+            return found;
+        }
+        let built = CandidateStatics::build(candidates);
+        kept.insert(0, Arc::clone(&built));
+        kept.truncate(STATIC_HALVES);
+        built
     }
 }
 
@@ -167,7 +195,8 @@ impl RoutingPolicy for HookPolicy {
         ctx: &RoutingContext<'_>,
         budget: Duration,
     ) -> PolicyResult {
-        let frame = DecideFrame::first(DecideView::build(req, candidates, ctx));
+        let statics = self.statics_for(candidates);
+        let frame = DecideFrame::first(DecideView::build_with(req, statics, candidates, ctx));
         match self.calls.decide(frame, budget).await {
             Answered::Answer {
                 outcome: Outcome::Ready,
@@ -245,3 +274,7 @@ impl RoutingPolicy for HookPolicy {
 #[cfg(test)]
 #[path = "tests/wire_tests.rs"]
 mod wire_tests;
+
+#[cfg(test)]
+#[path = "tests/statics_tests.rs"]
+mod statics_tests;
