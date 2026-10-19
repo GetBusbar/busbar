@@ -946,21 +946,31 @@ impl AuthMiddleware {
     }
 
     /// The opened instance a guest-list line's auth `provider` is called through by the inbound
-    /// handle ([`crate::inbound`]): the chain position's, or for `keys` the first host-held
-    /// credential's verifier (core's `keys` verifies the credential that style yields, through the
-    /// same handle; THE DESIGN §6, "Auth points and guest lists", step 3). `None` when the chain
-    /// opened none for it: the line's auth then refuses, fail closed.
+    /// handle ([`crate::inbound`]): the chain position's. `None` for any other name: `keys` is the
+    /// kernel's own arm there, as here, and a name the chain opened nothing for refuses, fail
+    /// closed.
     #[must_use]
     pub fn position_calls(&self, provider: &str) -> Option<std::sync::Arc<dyn AuthCalls>> {
-        if let Some(entry) = self.chain.iter().find(|e| e.provider == provider) {
-            return Some(std::sync::Arc::clone(&entry.calls));
-        }
-        if provider != crate::config::KEYS_MODULE {
+        self.chain
+            .iter()
+            .find(|e| e.provider == provider)
+            .map(|e| std::sync::Arc::clone(&e.calls))
+    }
+
+    /// THE HOST-HELD CREDENTIAL VERIFIER a signed request carries the lines of, with the credential
+    /// kinds it reads: the first such reader, and only when the chain names `keys` (1.5.5's gate
+    /// asked it ahead of the token path; the inbound handle does the same, [`crate::inbound`]).
+    pub(crate) fn signed_reader(
+        &self,
+        headers: &HeaderMap,
+    ) -> Option<(std::sync::Arc<dyn AuthCalls>, Vec<String>)> {
+        if !self.keys_in_chain {
             return None;
         }
         self.readers
-            .first()
-            .map(|r| std::sync::Arc::clone(&r.calls))
+            .iter()
+            .find(|r| r.carried(headers))
+            .map(|r| (std::sync::Arc::clone(&r.calls), r.kinds.clone()))
     }
 
     /// THE POINT SET OF THE DATA CHAIN'S POSITION `provider` (THE DESIGN §6, "Auth points and
@@ -1287,7 +1297,7 @@ async fn judge(
 ///   role-binding synth to be silently re-admitted (`verify_token` already filters non-enabled keys
 ///   to `None`, so this arm can only ever return `resolved: Some(enabled_key)` or a denial — it
 ///   never emits `Identified { resolved: None }`).
-fn keys_arm_verdict(
+pub(crate) fn keys_arm_verdict(
     gov: Option<&crate::governance::GovState>,
     candidate: Option<&str>,
     now: u64,
@@ -2835,6 +2845,28 @@ impl AuthMiddleware {
             carriers: test_inbound_style(),
             issued: None,
         }
+    }
+
+    /// TEST-ONLY: this chain naming `keys`, with `calls` as a host-held credentials' verifier that
+    /// reads `kinds` and whose credential sits on `carriers`.
+    #[must_use]
+    pub fn with_reader_for_test(
+        mut self,
+        calls: std::sync::Arc<dyn AuthCalls>,
+        kinds: Vec<String>,
+        carriers: &[&str],
+    ) -> Self {
+        self.keys_in_chain = true;
+        self.readers.push(CredentialReader {
+            kinds,
+            issued: None,
+            carriers: carriers
+                .iter()
+                .filter_map(|c| HeaderName::from_bytes(c.as_bytes()).ok())
+                .collect(),
+            calls,
+        });
+        self
     }
 }
 

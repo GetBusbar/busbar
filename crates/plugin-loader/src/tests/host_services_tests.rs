@@ -3041,6 +3041,8 @@ struct KernelSide {
     refusals: Mutex<Vec<RefuseAsk>>,
     /// `(owner, unit)` -> its secret.
     units: Mutex<Vec<(u64, u64, UnitSecret)>>,
+    /// At the peer point, answer the flow alone (else the names and a unit, as at the head).
+    peer_clean: std::sync::atomic::AtomicBool,
 }
 
 const SIDE_SECRET: [u64; 2] = [0x5eed, 0xc0de];
@@ -3081,6 +3083,16 @@ impl AuthHandleHost for KernelSide {
             },
         ));
         let unit = if ask.unit.is_none() { minted } else { ask.unit };
+        if ask.point == busbar_contract::abi::auth::POINT_PEER
+            && self.peer_clean.load(Ordering::SeqCst)
+        {
+            self.calls.lock().unwrap().push(ask);
+            return AuthRan::Now(Ok(AuthCallAnswer {
+                flow: svc::FLOW_CONTINUE,
+                unit: UnitRef::NONE,
+                strips: Vec::new(),
+            }));
+        }
         self.calls.lock().unwrap().push(ask);
         if self.pend.load(Ordering::SeqCst) {
             self.held.lock().unwrap().push(done);
@@ -3353,4 +3365,149 @@ fn red_hand_in_and_refuse_delegate_to_the_installed_kernel_side() {
     assert_eq!(name, b"content-type");
     assert_eq!(body, b"{\"error\":{}}");
     assert_eq!(side.refusals.lock().unwrap()[0].cause, REFUSE_NO_ROUTE);
+}
+
+// ── the peer point, the op's deadline, and the refusal's lifetime ────────────────────────────
+
+fn peer_call_in(
+    auth: AuthRef,
+    answer: &mut AuthAnswer,
+    buf: &mut [u8],
+    spans: &mut [FieldSpan],
+) -> AuthCallIn {
+    let mut i = auth_call_into(auth, answer, buf, spans);
+    i.point = busbar_contract::abi::auth::POINT_PEER;
+    i.request = HeadView {
+        method: AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+        target: AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+        authority: AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+        query: AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+        fields: std::ptr::null(),
+        fields_len: 0,
+        ..get_view()
+    };
+    i.request.scheme = 0;
+    i
+}
+
+/// RED (the Peer rule, the answer's side): a peer-point answer is continue or stop alone. A
+/// kernel answer naming lines or a unit there is REFUSED with nothing written; the flow alone is
+/// READY with no byte and no span.
+#[test]
+fn red_a_peer_answer_is_the_flow_alone() {
+    let (d, side) = served_double();
+    let r = mint_auth_ref(owner(&d), generation(), 3).expect("minted");
+    let mut slot = answer_slot();
+    let (mut buf, mut spans) = ([0u8; 64], [NO_FIELD_SPAN; 4]);
+    let i = peer_call_in(r, &mut slot, &mut buf, &mut spans);
+    let (ret, o) = call_auth(d.ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Refused, "{}", error(&o));
+    assert_eq!(error(&o), PEER_ANSWER_NAMES);
+    assert_eq!(slot.size, 0, "the answer slot was written");
+    assert!(
+        buf.iter().all(|b| *b == 0),
+        "a name was written at the peer point"
+    );
+    side.peer_clean.store(true, Ordering::SeqCst);
+    let mut slot = answer_slot();
+    let mut i = peer_call_in(r, &mut slot, &mut buf, &mut spans);
+    i.head.handle.seq = 1;
+    let (ret, o) = call_auth(d.ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Ready, "{}", error(&o));
+    assert_eq!((o.len, o.items), (0, 0));
+    assert_eq!((slot.flow, slot.unit), (svc::FLOW_CONTINUE, UnitRef::NONE));
+    assert_eq!(svc::check_auth_call(&i, ret, &o), Ok(Filled::Written));
+}
+
+/// RED (deadline classes): an `auth.call` made inside a framer op's crossing hands the kernel what
+/// remains of that op's deadline; a write-behind op's, or none outside an op, hands none.
+#[test]
+fn red_an_auth_call_carries_its_ops_deadline() {
+    let (d, side) = served_double();
+    let r = mint_auth_ref(owner(&d), generation(), 3).expect("minted");
+    let call = |seq: u32| {
+        let mut slot = answer_slot();
+        let (mut buf, mut spans) = ([0u8; 64], [NO_FIELD_SPAN; 4]);
+        let mut i = auth_call_into(r, &mut slot, &mut buf, &mut spans);
+        i.head.handle.seq = seq;
+        let (ret, o) = call_auth(d.ctx, &i);
+        assert_eq!(ret.outcome(), Outcome::Ready, "{}", error(&o));
+    };
+    let mut head = crate::dispatch::in_head();
+    head.deadline_ns = crate::dispatch::now_ns() + 5_000_000_000;
+    {
+        let _op = op_deadline(&head);
+        call(0);
+    }
+    head.deadline_class = busbar_contract::abi::mechanism::call::DeadlineClass::WriteBehind as u8;
+    {
+        let _op = op_deadline(&head);
+        call(1);
+    }
+    call(2);
+    let calls = side.calls.lock().unwrap();
+    let first = calls[0].deadline.expect("the op's deadline");
+    assert!(
+        first <= std::time::Duration::from_secs(5) && !first.is_zero(),
+        "{first:?}"
+    );
+    assert_eq!(
+        calls[1].deadline, None,
+        "a write-behind op's deadline was handed on"
+    );
+    assert_eq!(calls[2].deadline, None, "a deadline outside any op");
+}
+
+/// RED (per-call copy-out): the kernel's refusal is lent for the call alone and nothing is kept
+/// per connection: N refusals, over N connections and over one, leave at most the last lent.
+#[test]
+fn red_n_refusals_keep_nothing_per_connection() {
+    let (d, _side) = served_double();
+    for conn in (1..=8).chain(std::iter::repeat(3).take(8)) {
+        let mut refusal = RefusalAnswer {
+            size: 0,
+            status: 0,
+            _reserved: 0,
+            fields: std::ptr::null(),
+            fields_len: 0,
+            body: no_blob(),
+        };
+        let refuse = UnitRefuseIn {
+            conn,
+            answer: &mut refusal,
+            ..refuse_in()
+        };
+        let mut o = blank();
+        let ret =
+            HOST_SLOTS.unit_refuse.unwrap()(d.ctx, std::ptr::from_ref(&refuse).cast(), &mut o);
+        assert_eq!(ret.outcome(), Outcome::Ready, "{}", error(&o));
+        assert_eq!(refusal.status, 404);
+        assert!(refusals_held() <= 1, "{} refusals held", refusals_held());
+    }
+}
+
+/// A no-route `unit.refuse` `in` with no answer slot yet.
+fn refuse_in() -> UnitRefuseIn {
+    UnitRefuseIn {
+        head: head(op::UNIT_REFUSE, Ticket::NONE, 0, size_of::<UnitRefuseIn>()),
+        unit: UnitRef::NONE,
+        cause: REFUSE_NO_ROUTE,
+        line: LINE_NONE,
+        conn: 1,
+        stream: 1,
+        answer: std::ptr::null_mut(),
+        request: get_view(),
+    }
 }

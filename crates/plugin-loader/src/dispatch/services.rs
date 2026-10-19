@@ -1479,6 +1479,15 @@ pub(crate) fn serving_unit() -> Option<u64> {
     SERVING.with(std::cell::Cell::get)
 }
 
+/// RED: the op deadline a crossing states (not yet stated).
+pub(crate) struct OpDeadline;
+
+/// RED: the op's deadline is not read.
+pub(crate) fn op_deadline(head: &busbar_contract::abi::mechanism::call::InHead) -> OpDeadline {
+    let _ = head;
+    OpDeadline
+}
+
 extern "C" fn entitlement_check(
     ctx: HostCtx,
     input: *const c_void,
@@ -1545,6 +1554,10 @@ pub const NOT_EXACT: &str = "the `in` is not exactly its service's size";
 pub const UNIT_UNVERIFIED: &str = "the host holds no unit to verify this one against";
 /// The refusal of an auth-handle `in` that breaks its contract check.
 pub const AUTH_IN_MALFORMED: &str = "the auth-handle `in` breaks its check";
+/// The refusal of a peer-point `auth.call` whose kernel answer named a line, a byte or a unit
+/// (RED: not yet applied).
+pub const PEER_ANSWER_NAMES: &str =
+    "a peer-point answer is continue or stop, with nothing beside it";
 /// What every auth-handle slot answers PAST its checks while no kernel side is installed
 /// ([`super::Dispatcher::install_auth_handle`]): fail closed.
 pub const AUTH_HANDLE_NOT_SERVED: &str = "the auth handle is not yet served";
@@ -1799,6 +1812,8 @@ extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                 stream: i.stream,
                 request,
                 body,
+                // RED: the op's deadline is not handed on.
+                deadline: None,
             };
             serve_with(
                 &store,
@@ -1896,6 +1911,12 @@ fn held_refusals() -> std::sync::MutexGuard<'static, HashMap<(u64, u64), Box<Hel
     HELD.get_or_init(Mutex::default)
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// How many refusals are held (RED: one per connection).
+#[cfg(test)]
+pub(crate) fn refusals_held() -> usize {
+    held_refusals().len()
 }
 
 /// `unit.refuse`: the exact size, the unit, the `in`'s contract check; then the installed kernel

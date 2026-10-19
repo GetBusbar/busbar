@@ -136,6 +136,7 @@ impl AuthHandleHost for LoaderSide {
             conn: ask.conn,
             head: head_of(ask.request),
             body: ask.body,
+            deadline: ask.deadline.map(|d| std::time::Instant::now() + d),
         };
         match self
             .0
@@ -156,6 +157,7 @@ impl AuthHandleHost for LoaderSide {
             auth: ask.auth,
             unit: ask.unit,
             line: ask.line,
+            conn: ask.conn,
             head: head_of(ask.request),
         })
     }
@@ -241,6 +243,7 @@ pub fn publish(app: &Arc<busbar_kernel::state::App>) -> Option<u64> {
         app: Arc::clone(app),
         door_refusals,
         ids,
+        signed_ingress: kin::signed_by_dialect(),
     };
     if let Err(e) = host().install(ROOT_OWNER, generation, listener) {
         tracing::error!(

@@ -73,6 +73,7 @@ fn side() -> (Arc<Inbound>, GuestList) {
                     .iter()
                     .map(|_| auth_handle::next_ref_id(RefSpace::Line))
                     .collect(),
+                signed_ingress: kin::signed_by_dialect(),
             },
         )
         .expect("the root's line ids are line ids");
