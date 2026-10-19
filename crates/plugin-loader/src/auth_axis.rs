@@ -233,7 +233,11 @@ impl AuthRows {
     ///
     /// # Errors
     /// Two or more rows state it: [`two_default_inbound_styles`] names them, and boot is refused.
-    pub fn default_inbound_style(&self) -> Result<Vec<String>, String> {
+    pub fn default_inbound_style(
+        &self,
+        uses: &busbar_contract::auth_calls::AuthUses,
+    ) -> Result<Vec<String>, String> {
+        let _ = uses;
         let rows = self
             .registry
             .linked()
@@ -558,8 +562,11 @@ impl busbar_contract::auth_calls::AuthAxis for AuthRows {
         AuthRows::carriers(self, module)
     }
 
-    fn default_inbound_style(&self) -> Result<Vec<String>, String> {
-        AuthRows::default_inbound_style(self)
+    fn default_inbound_style(
+        &self,
+        uses: &busbar_contract::auth_calls::AuthUses,
+    ) -> Result<Vec<String>, String> {
+        AuthRows::default_inbound_style(self, uses)
     }
 
     fn outbound_styles(&self) -> Vec<busbar_contract::auth_calls::DeclaredStyle> {

@@ -33,6 +33,15 @@ fn a_module_no_row_answers_is_refused_by_name() {
     assert_eq!(err, "no `kind: auth` plugin answers to 'nobody'");
 }
 
+/// A configuration whose chain names `keys` and no auth module: the build's linked rows stating the
+/// default inbound style are the ones it reads.
+fn keys_named() -> busbar_contract::auth_calls::AuthUses {
+    busbar_contract::auth_calls::AuthUses {
+        keys: true,
+        ..Default::default()
+    }
+}
+
 /// A verify-only fixture plugin whose verdict is never read: these tests read Statements.
 struct Fixture;
 
@@ -136,7 +145,7 @@ fn linking(doors: &[(&str, busbar_contract::abi::mechanism::door::DoorFn)]) -> A
 fn the_default_inbound_style_is_the_one_stating_rows_carriers_in_order() {
     let rows = linking(&[("plain", plain::door), ("default-a", default_a::door)]);
     assert_eq!(
-        rows.default_inbound_style(),
+        rows.default_inbound_style(&keys_named()),
         Ok(vec![
             "line-one".to_string(),
             "line-two".to_string(),
@@ -146,7 +155,7 @@ fn the_default_inbound_style_is_the_one_stating_rows_carriers_in_order() {
     assert_eq!(rows.carriers("plain").len(), 3, "a row's own carriers");
     assert!(rows.carriers("nobody").is_empty());
     let none = linking(&[("plain", plain::door)]);
-    assert_eq!(none.default_inbound_style(), Ok(Vec::new()));
+    assert_eq!(none.default_inbound_style(&keys_named()), Ok(Vec::new()));
 }
 
 /// TWO ROWS stating the default inbound style refuse boot, naming both (RED arm: one row answers).
@@ -157,7 +166,7 @@ fn two_default_inbound_styles_refuse_naming_both() {
         ("default-b", default_b::door),
     ]);
     assert_eq!(
-        rows.default_inbound_style(),
+        rows.default_inbound_style(&keys_named()),
         Err(super::two_default_inbound_styles(&[
             "default-a",
             "default-b"
@@ -170,7 +179,7 @@ fn two_default_inbound_styles_refuse_naming_both() {
 #[test]
 fn a_default_inbound_style_with_no_carrier_is_refused_at_load() {
     let rows = linking(&[("markless-default", markless_default::door)]);
-    assert_eq!(rows.default_inbound_style(), Ok(Vec::new()));
+    assert_eq!(rows.default_inbound_style(&keys_named()), Ok(Vec::new()));
     let err = rows
         .open(
             "markless-default",

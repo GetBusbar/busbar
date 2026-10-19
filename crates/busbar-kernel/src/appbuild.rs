@@ -1083,8 +1083,13 @@ pub fn build_app_from_config(
     // auth plugin that cannot be loaded (missing/untrusted tarball, wrong kind, ABI failure) aborts
     // boot here rather than silently dropping the module and leaving the front door open.
     let auth_mw = Arc::new(
-        AuthMiddleware::new(&auth_cfg, &plugin_registry, &secret_resolver)
-            .map_err(|e| format!("auth chain construction failed: {e}"))?,
+        AuthMiddleware::new_using(
+            &auth_cfg,
+            &crate::auth::provider_style_words(cfg.providers.values().map(|p| p.auth)),
+            &plugin_registry,
+            &secret_resolver,
+        )
+        .map_err(|e| format!("auth chain construction failed: {e}"))?,
     );
     // ADMIN-plane external auth plugins (1.5.2 admin-plane OIDC): resolve every non-builtin
     // `admin_auth:` entry as a signed `kind: auth` plugin through the SAME validated registry. Runs

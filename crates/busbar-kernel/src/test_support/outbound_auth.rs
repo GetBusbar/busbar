@@ -95,8 +95,11 @@ impl AuthAxis for StandIn {
     }
 
     /// The rows' own; where no row states one, the double's default inbound style.
-    fn default_inbound_style(&self) -> Result<Vec<String>, String> {
-        let rows = self.0.default_inbound_style()?;
+    fn default_inbound_style(
+        &self,
+        uses: &busbar_contract::auth_calls::AuthUses,
+    ) -> Result<Vec<String>, String> {
+        let rows = self.0.default_inbound_style(uses)?;
         if rows.is_empty() {
             return Ok(double_inbound_style());
         }

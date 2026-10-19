@@ -385,6 +385,22 @@ pub trait AuthCalls: Send + Sync {
     }
 }
 
+/// WHAT ONE CONFIGURATION USES ON THE AUTH AXIS (Law 7, BUSBAR-1.6.0.md §2: "A plugin loads if and
+/// only if config uses it. There are no special plugins."): the facts the axis selects auth rows
+/// by, so a row config does not use changes nothing. A row is CONFIGURED when it answers one of
+/// `modules`, serves one of `styles`, or states it reads host-held credentials while `keys` is
+/// named.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AuthUses {
+    /// The module keys config names: its identity providers', its chains' and the operator
+    /// credential's.
+    pub modules: Vec<String>,
+    /// The outbound style words its providers resolve to (1.5.5's implicit `bearer` included).
+    pub styles: Vec<String>,
+    /// Whether a chain names `keys`, the host-held credentials' verifier.
+    pub keys: bool,
+}
+
 /// THE AUTH AXIS, as the composition root hands it to the kernel (the shape of the export kind's
 /// `ExportAxis`): which auth modules a door answers, and opening one on the process's one
 /// dispatcher. Installed once through the root's rows (`busbar_kernel::preflight::RootRows`).
@@ -437,11 +453,13 @@ pub trait AuthAxis: Send + Sync {
     /// THE HOST'S DEFAULT INBOUND STYLE's carriers: the carrier marks of the one auth row whose
     /// Statement states [`FACT_DEFAULT_INBOUND_STYLE`](crate::abi::auth::FACT_DEFAULT_INBOUND_STYLE),
     /// in the Statement's order; none when no row states it. Where the credential sits on every line
-    /// the operator's config leaves without a style.
+    /// the operator's config leaves without a style. Only a row configured under `uses` counts
+    /// (Law 7); when a chain names `keys` and none states it, the build's linked rows that do.
     ///
     /// # Errors
     /// More than one row states the fact, naming them: boot is refused.
-    fn default_inbound_style(&self) -> Result<Vec<String>, String> {
+    fn default_inbound_style(&self, uses: &AuthUses) -> Result<Vec<String>, String> {
+        let _ = uses;
         Ok(Vec::new())
     }
 

@@ -160,7 +160,10 @@ fn the_linked_default_inbound_style_is_the_1_5_5_client_token_lines_in_order() {
     let linked = Arc::new(busbar_kernel::preflight::linked().expect("the linked registry"));
     let axis = crate::root::dispatch::auth_axis(linked);
     assert_eq!(
-        axis.default_inbound_style(),
+        axis.default_inbound_style(&busbar_contract::auth_calls::AuthUses {
+            keys: true,
+            ..Default::default()
+        }),
         Ok(vec![
             "authorization".to_string(),
             "x-api-key".to_string(),

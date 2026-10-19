@@ -117,8 +117,11 @@ impl busbar_contract::auth_calls::AuthAxis for RootAuthAxis {
         self.0.carriers(module)
     }
 
-    fn default_inbound_style(&self) -> Result<Vec<String>, String> {
-        self.0.default_inbound_style()
+    fn default_inbound_style(
+        &self,
+        uses: &busbar_contract::auth_calls::AuthUses,
+    ) -> Result<Vec<String>, String> {
+        self.0.default_inbound_style(uses)
     }
 
     fn check_outbound(

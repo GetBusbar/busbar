@@ -599,6 +599,61 @@ pub use busbar_kernel_identity::{
     operator::{Operator, OperatorCredential},
 };
 
+/// The outbound style a provider that names none resolves to: 1.5.5's implicit `auth:`, the
+/// protocol's native bearer.
+pub const IMPLICIT_PROVIDER_STYLE: &str = "bearer";
+
+/// The outbound style word each provider's `auth:` resolves to, 1.5.5's implicit one
+/// ([`IMPLICIT_PROVIDER_STYLE`]) for a provider that names none: the styles a configuration uses.
+pub fn provider_style_words(
+    styles: impl IntoIterator<Item = Option<crate::config::ProviderAuth>>,
+) -> Vec<&'static str> {
+    use crate::config::ProviderAuth as Style;
+    let mut words = Vec::new();
+    for style in styles {
+        let word = match style {
+            None | Some(Style::Bearer) => IMPLICIT_PROVIDER_STYLE,
+            Some(Style::ApiKey) => "api-key",
+            Some(Style::JwtBearer) => "jwt-bearer",
+            Some(Style::OAuthClientCredentials) => "oauth-client-credentials",
+        };
+        if !words.contains(&word) {
+            words.push(word);
+        }
+    }
+    words
+}
+
+/// WHAT `cfg` USES ON THE AUTH AXIS (Law 7): the modules its identity providers, its data and
+/// admin chains and the operator credential name; the outbound styles its providers resolve to
+/// (`provider_styles`); and whether a chain names `keys`.
+pub fn auth_uses(cfg: &AuthCfg, provider_styles: &[&str]) -> busbar_contract::auth_calls::AuthUses {
+    let mut modules: Vec<String> = Vec::new();
+    let named = cfg
+        .chain
+        .iter()
+        .chain(&cfg.admin_auth)
+        .map(|e| e.module.as_str())
+        .chain(cfg.methods.values().map(|m| m.module.as_str()))
+        .chain(std::iter::once(crate::config::operator_provider()));
+    for module in named {
+        let module = module.trim();
+        if module != crate::config::KEYS_MODULE && !modules.iter().any(|m| m == module) {
+            modules.push(module.to_string());
+        }
+    }
+    let keys = cfg
+        .chain
+        .iter()
+        .chain(&cfg.admin_auth)
+        .any(|e| e.module == crate::config::KEYS_MODULE);
+    busbar_contract::auth_calls::AuthUses {
+        modules,
+        styles: provider_styles.iter().map(|s| (*s).to_string()).collect(),
+        keys,
+    }
+}
+
 /// Open the operator credential from `registry` through this build's auth axis: the row answering
 /// [`crate::config::operator_provider`], opened on its door over the operator token's SHA-256 hex
 /// `digest` (the plaintext never crosses the seam), answering for every provider the effective
@@ -765,6 +820,23 @@ impl AuthMiddleware {
         registry: &std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
         secret_resolver: &crate::config::secret::SecretResolver,
     ) -> Result<Self, String> {
+        Self::new_using(cfg, &[IMPLICIT_PROVIDER_STYLE], registry, secret_resolver)
+    }
+
+    /// [`Self::new`] for a configuration whose providers resolve to the outbound styles
+    /// `provider_styles` ([`provider_style_words`]): with the chains and identity providers of
+    /// `cfg`, what it uses on the auth axis ([`auth_uses`], Law 7), so an auth row config does not
+    /// use changes nothing here.
+    ///
+    /// # Errors
+    /// As [`Self::new`].
+    pub fn new_using(
+        cfg: &AuthCfg,
+        provider_styles: &[&str],
+        registry: &std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
+        secret_resolver: &crate::config::secret::SecretResolver,
+    ) -> Result<Self, String> {
+        let uses = auth_uses(cfg, provider_styles);
         let mut keys_in_chain = false;
         let mut chain: Vec<ChainEntry> = Vec::new();
         // An in-process TEST stand-in, as a chain position: the in-process adapter over the module,
@@ -891,9 +963,9 @@ impl AuthMiddleware {
         // THE DEFAULT INBOUND STYLE: where the caller's credential sits on a line the config leaves
         // without a style. FAIL-CLOSED: two rows stating it is a hard boot error, naming both.
         let carriers = match &axis {
-            Some(axis) => axis.default_inbound_style()?,
+            Some(axis) => axis.default_inbound_style(&uses)?,
             None => crate::preflight::auth_axis(registry.clone())
-                .map(|axis| axis.default_inbound_style())
+                .map(|axis| axis.default_inbound_style(&uses))
                 .transpose()?
                 .unwrap_or_default(),
         };
@@ -2631,7 +2703,13 @@ fn test_inbound_style() -> Vec<HeaderName> {
     }
     header_names(
         &crate::preflight::linked_auth_axis()
-            .and_then(|axis| axis.default_inbound_style().ok())
+            .and_then(|axis| {
+                axis.default_inbound_style(&busbar_contract::auth_calls::AuthUses {
+                    keys: true,
+                    ..Default::default()
+                })
+                .ok()
+            })
             .unwrap_or_default(),
     )
 }

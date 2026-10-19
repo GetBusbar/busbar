@@ -555,6 +555,14 @@ const REAPER_WATCH_THREAD: &str = "busbar-dispatch-reaper-watch";
 #[cfg(test)]
 pub(crate) static UNLOADS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// TEST WITNESS: the dropped-in libraries THIS THREAD asked the loader to open ([`load_dropped`],
+/// [`load_dropped_bytes`]), counted before anything is read or opened: what a test of "never
+/// opened" reads (Law 7).
+#[cfg(test)]
+thread_local! {
+    pub(crate) static DROPPED_OPENS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 /// TEST WITNESS: hung unloads the watch warned of.
 #[cfg(test)]
 pub(crate) static HUNG_WARNED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -568,6 +576,8 @@ pub fn load_dropped<K: Kind>(
     stated: &[u8],
     bind: Bind,
 ) -> Result<Plugin<K>, LoadError> {
+    #[cfg(test)]
+    DROPPED_OPENS.with(|n| n.set(n.get() + 1));
     check_facts::<K>(stated)?;
     let lib = crate::dlopen_on_worker(path.as_os_str()).map_err(LoadError::Open)?;
     bind_library::<K>(Lib(Some(lib), None), stated, bind)
@@ -582,6 +592,8 @@ pub fn load_dropped_bytes<K: Kind>(
     stated: &[u8],
     bind: Bind,
 ) -> Result<Plugin<K>, LoadError> {
+    #[cfg(test)]
+    DROPPED_OPENS.with(|n| n.set(n.get() + 1));
     check_facts::<K>(stated)?;
     let (lib, staged) =
         crate::stage::load_library_from_bytes(bytes, display).map_err(LoadError::Open)?;
