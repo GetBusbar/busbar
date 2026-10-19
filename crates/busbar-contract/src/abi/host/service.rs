@@ -1436,8 +1436,9 @@ pub struct RefusalAnswer {
 ///
 /// `request` is the request being refused, as the transport decoded it. A refusal with no unit (no
 /// route, a method miss, a body over the gate before any verdict) is answered with the listener's
-/// 1.5.5 bytes, and those are shaped by the request's method and target (BUSBAR-1.6.0.md §4 item 4,
-/// "the listener's 1.5.5 default"), so the kernel reads them here and nowhere else.
+/// 1.5.5 bytes, and those are shaped by the request's method and target (THE DESIGN, the inbound
+/// refusal answers, item 4, "the listener's 1.5.5 default"), so the kernel reads them here and
+/// nowhere else.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct UnitRefuseIn {
