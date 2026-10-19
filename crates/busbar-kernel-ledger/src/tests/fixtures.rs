@@ -13,4 +13,3 @@ pub fn key(bucket: &str) -> TotalsKey {
         BucketScope::All,
     )
 }
-
