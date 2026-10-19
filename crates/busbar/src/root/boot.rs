@@ -902,23 +902,22 @@ pub fn book(
     let adapter = super::loader::store_adapter::StoreAdapter::native(gov.store());
     // THIS NODE'S IDENTITY (ARCHITECT 2026-10-07 H3 ruling, follow-up; Q128 root part 12 HIGH 2):
     // with a data directory, the id kept in it (adopting the registry's id for this host on the
-    // first boot that has none); without one, the store registry's id for this host while this
+    // first boot that has none, and then holding the host name's lease for it); without one, the store registry's id for this host while this
     // process holds the host name's lease, else a fresh id of its own. Its journal records are
     // keyed by it, so two live nodes on one store never write under one identity, whatever their
     // host names. The host name is only a label.
     let data_dir = busbar_kernel::preflight::fleet_data_dir();
     let host = super::durability::host_identity();
     let calls = lane.calls();
-    let node = match data_dir.as_deref() {
+    let taken = match data_dir.as_deref() {
         Some(dir) => super::durability::persisted_node(calls.as_ref(), dir, &host),
-        None => super::durability::take_node(calls.as_ref(), &host).map(|taken| {
-            if let Some(lease) = taken.lease {
-                super::durability::hold_lease(std::sync::Arc::clone(&calls), lease);
-            }
-            taken.id
-        }),
+        None => super::durability::take_node(calls.as_ref(), &host),
     }
     .map_err(|why| format!("this node's identity in the store `{store}`: {why}"))?;
+    if let Some(lease) = taken.lease {
+        super::durability::hold_lease(std::sync::Arc::clone(&calls), lease);
+    }
+    let node = taken.id;
     let mig = super::migration::MigrationConfig {
         node,
         ..super::migration::config_from(&app.cost, now)

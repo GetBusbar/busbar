@@ -17,7 +17,8 @@
 //!   first boot and kept in the directory ([`NODE_ID_FILE`], written atomically), read back on every
 //!   later boot ([`persisted_node`]); the journal is keyed by its low 64 bits. A directory with no id
 //!   file yet ADOPTS the id the store's registry holds under this host's name, so one node
-//!   continuing on its host keeps its chain (unless another live node holds that name's lease).
+//!   continuing on its host keeps its chain (unless another live node holds that name's lease),
+//!   and then holds that name's lease as a node with no data directory does.
 //! * WITH NO DATA DIRECTORY there is nowhere of its own to keep one (PB-13: no data-dir files), so
 //!   the identity is the STABLE one the store's node registry ([`NODE_SCHEMA`]) keeps for this host,
 //!   minted the first time it booted, and a restart resumes that chain and recovers the holds it
@@ -565,11 +566,14 @@ pub const NODE_ID_FILE: &str = "node_id";
 
 /// THE IDENTITY OF A NODE WITH A DATA DIRECTORY: the 128-bit id kept in `dir` ([`NODE_ID_FILE`]),
 /// its low 64 bits being the journal's key. A directory with none yet takes one now and keeps it:
-/// the id the store's registry holds under `host`'s name when there is one and no other live
-/// process holds that name's lease (MIGRATION: one node continuing on its host keeps its chain),
-/// otherwise a fresh one. An id file that does not read back is replaced the same way; a chain the
-/// directory already holds keeps the identity it was written under regardless (the journal adopts
-/// it).
+/// the id the store's registry holds under `host`'s name when this boot takes that name's lease
+/// (MIGRATION: one node continuing on its host keeps its chain), otherwise a fresh one. An id file
+/// that does not read back is replaced the same way; a chain the directory already holds keeps the
+/// identity it was written under regardless (the journal adopts it).
+///
+/// A node whose id IS the host name's registry id (it adopted it) holds that name's lease on every
+/// boot, as a node with no data directory does, so a live node with no data directory and the same
+/// name takes a fresh id rather than the adopted one. A node whose id is its own holds none.
 ///
 /// # Errors
 ///
@@ -578,44 +582,71 @@ pub fn persisted_node(
     calls: &dyn StoreCalls,
     dir: &std::path::Path,
     host: &str,
-) -> Result<u64, String> {
+) -> Result<TakenNode, String> {
     let path = dir.join(NODE_ID_FILE);
-    match std::fs::read_to_string(&path) {
+    let kept = match std::fs::read_to_string(&path) {
         Ok(text) => {
-            if let Some(id) = u128::from_str_radix(text.trim(), 16)
+            let id = u128::from_str_radix(text.trim(), 16)
                 .ok()
                 .and_then(|full| u64::try_from(full & u128::from(u64::MAX)).ok())
-                .filter(|&id| id != 0)
-            {
-                return Ok(id);
+                .filter(|&id| id != 0);
+            if id.is_none() {
+                tracing::warn!(
+                    path = %path.display(),
+                    "this node's id file does not hold an id; it is kept again"
+                );
             }
-            tracing::warn!(
-                path = %path.display(),
-                "this node's id file does not hold an id; it is kept again"
-            );
+            id
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => {
             return Err(format!(
                 "this node's id file {} would not read: {e}",
                 path.display()
             ))
         }
-    }
-    let adopted = if held_live(read_lease(calls, host)?, &[0u8; 16], now_ms()) {
-        None
-    } else {
-        registry_get(calls, &host_key(host))?
     };
-    let low = match adopted {
-        Some(id) => id,
-        None => fresh_node_id(calls, host)?,
+    let registry = registry_get(calls, &host_key(host))?;
+    let holder = random::<16>()?;
+    let lease = || NodeLease {
+        host: host.to_string(),
+        holder,
+    };
+    if let Some(id) = kept {
+        // An adopted id is the host name's: held under its lease, as a node with no data
+        // directory holds it.
+        if registry != Some(id) {
+            return Ok(TakenNode { id, lease: None });
+        }
+        if take_lease(calls, host, holder)? {
+            return Ok(TakenNode {
+                id,
+                lease: Some(lease()),
+            });
+        }
+        tracing::warn!(
+            host = %host,
+            node = id,
+            "another live process on this store holds this host name's lease; this node's data \
+             directory keeps the id it adopted"
+        );
+        return Ok(TakenNode { id, lease: None });
+    }
+    let taken = match registry {
+        Some(id) if take_lease(calls, host, holder)? => TakenNode {
+            id,
+            lease: Some(lease()),
+        },
+        _ => TakenNode {
+            id: fresh_node_id(calls, host)?,
+            lease: None,
+        },
     };
     let high = u64::from_be_bytes(random()?);
-    let full = (u128::from(high) << 64) | u128::from(low);
+    let full = (u128::from(high) << 64) | u128::from(taken.id);
     write_atomically(dir, &path, format!("{full:032x}\n").as_bytes())
         .map_err(|e| format!("this node's id file {} was not kept: {e}", path.display()))?;
-    Ok(low)
+    Ok(taken)
 }
 
 /// Write `bytes` to `path` in `dir` ATOMICALLY: a temporary file in the same directory, flushed to
