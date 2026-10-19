@@ -7,11 +7,9 @@
 //! structured-field sweep and its closed metric set are byte-identical.
 //!
 //! `a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric` — the real-request-lifecycle
-//! half of this binding — MOVED to the composition root's
-//! `crates/busbar/tests/alarm_silence_cross_plane.rs`: it drives a real router
-//! built from `TestApp::lane`/`.pool()`, which only routes through the REAL the retired engine crate plane's
-//! `build_runtime`/`viewer` (see that file's header, and `endpoints_cross_plane.rs`'s for the same
-//! reason). What stays here is the pure-function half: the marker matcher and the exposition-line
+//! half of this binding — MOVED to the composition root's door suite
+//! (`crates/busbar/src/root/tests/serve_tests.rs`): it drives a real request lifecycle through the
+//! data router built with the claims of the door that serves the `pools` map. What stays here is the pure-function half: the marker matcher and the exposition-line
 //! name extractor the moved test (and any future alarm code) both drive.
 //!
 //! The closed-set half of the same binding (no series outside 1.5.5's 25 names on the shipped

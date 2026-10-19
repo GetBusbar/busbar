@@ -10053,3 +10053,144 @@ async fn the_pools_door_bills_a_delivered_cross_dialect_answer_once_and_keeps_it
         "a delivered answer keeps the budget unit"
     );
 }
+
+// ── THE 1.5.5 LIFECYCLE ON THE DOOR: NO ALARM, NO DISPUTE ──────────────────────────────────────────
+//
+// MOVED HERE from `crates/busbar/tests/alarm_silence_cross_plane.rs`, assertions unchanged
+// (DEV-GREEN row 83, ARCHITECT option (a) on #1161): the kernel's router alone serves no model unit
+// any more (the retired engine crate's arrivals are gone); the door serving the `pools` map does,
+// so the lifecycle is driven through the data router built with the door's claims.
+
+/// The words no 1.5.5-shaped deployment's tracing event or metric name may carry.
+#[cfg(linked_driver_proofs)]
+const SILENCE_MARKERS: &[&str] = &["alarm", "dispute"];
+
+#[cfg(linked_driver_proofs)]
+fn mentions_a_silence_marker(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    SILENCE_MARKERS.iter().any(|m| lower.contains(m))
+}
+
+/// The metric name an exposition line carries: the family a `# HELP`/`# TYPE` line names, or the
+/// series name before its labels or value.
+#[cfg(linked_driver_proofs)]
+fn exposition_metric_name(line: &str) -> Option<&str> {
+    if let Some(rest) = line.strip_prefix("# ") {
+        let mut it = rest.split_whitespace();
+        let _kind = it.next()?;
+        return it.next();
+    }
+    let end = line.find(['{', ' ']).unwrap_or(line.len());
+    let name = &line[..end];
+    (!name.is_empty()).then_some(name)
+}
+
+/// LEGACY `crates/busbar/tests/alarm_silence_cross_plane.rs::a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric`.
+/// A 1.5.5-SHAPED LIFECYCLE EMITS NO ALARM OR DISPUTE EVENT OR METRIC: two pools over the
+/// messages wire, no governance beyond the keyed caller, one pool's member answering and the other's
+/// at a closed port, then `/healthz` and `/stats`. The successful request comes back 200, the dead
+/// member's does not, the probe answers; no tracing event at DEBUG or above (on the test's thread
+/// or any of its runtime's workers) and no metric name mentions an alarm or a dispute.
+/// RED: any event or family that names either word on this deployment.
+#[cfg(linked_driver_proofs)]
+#[test]
+fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
+    use busbar_kernel::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    busbar_kernel::snapshot::init();
+    let cap = WarnCapture::capturing_debug();
+    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(cap.clone()));
+    let mut statuses: Vec<(&str, u16)> = Vec::new();
+    tracing::dispatcher::with_default(&dispatch, || {
+        let on_workers = dispatch.clone();
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .on_thread_start(move || {
+                // Every worker's events reach the capture, for the thread's whole life.
+                std::mem::forget(tracing::dispatcher::set_default(&on_workers));
+            })
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        rt.block_on(async {
+            let _one = ONE_PUBLISHER.lock().await;
+            let instance = "serve-door-alarm-silence";
+            let _published = Withdrawn(instance);
+            let far = seat_far_end(200, door_word("messages_answer")).await;
+            // Member 1 sits at a closed port, so pool `pb`'s request fails upstream: the path a
+            // stall or lane alarm would ride.
+            let rig = rig(
+                instance,
+                RigOpts {
+                    members: &[(far.port, 1), (1, 1)],
+                    dialect: Some(door_word("messages_dialect")),
+                    pooled: Some(1),
+                    more_pools: &[("pb", &[(1, 1)])],
+                    ..RigOpts::default()
+                },
+            )
+            .await;
+            let ask = |pool: &str| {
+                serde_json::json!({
+                    "model": pool,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "max_tokens": 8
+                })
+            };
+            let path = door_word("messages_path");
+            statuses.push(("ok request", rig.send("POST", path, Some(ask("p"))).await.0));
+            statuses.push((
+                "failed-upstream request",
+                rig.send("POST", path, Some(ask("pb"))).await.0,
+            ));
+            statuses.push(("healthz", rig.send("GET", "/healthz", None).await.0));
+            statuses.push(("stats", rig.send("GET", "/stats", None).await.0));
+        });
+    });
+
+    // The lifecycle really happened: the successful request reached the far end and came back 200,
+    // the dead-member request did NOT succeed, and the probe answered.
+    let status_of = |what: &str| {
+        statuses
+            .iter()
+            .find(|(w, _)| *w == what)
+            .map(|(_, s)| *s)
+            .unwrap()
+    };
+    assert_eq!(status_of("ok request"), 200, "statuses: {statuses:?}");
+    assert_ne!(
+        status_of("failed-upstream request"),
+        200,
+        "statuses: {statuses:?}"
+    );
+    assert_eq!(status_of("healthz"), 200, "statuses: {statuses:?}");
+
+    // No event at DEBUG or above mentions an alarm or a dispute, in its message or in any field.
+    let events = cap.messages();
+    let hits: Vec<&String> = events
+        .iter()
+        .filter(|m| mentions_a_silence_marker(m))
+        .collect();
+    assert!(
+        hits.is_empty(),
+        "no tracing event may carry an alarm/dispute message or field on a 1.5.5-shaped \
+         deployment; found:\n{}",
+        hits.iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    // No metric name carries either word.
+    let exposition = busbar_kernel::snapshot::render();
+    let leaked: Vec<&str> = exposition
+        .lines()
+        .filter_map(exposition_metric_name)
+        .filter(|n| mentions_a_silence_marker(n))
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "no metric name may mention an alarm or a dispute on a 1.5.5-shaped deployment; found: \
+         {leaked:?}"
+    );
+}

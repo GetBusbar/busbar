@@ -299,34 +299,6 @@ dialect = "anthropic"
 owner = "kernel-neutrality lane"
 
 [[segment-debt]]
-file = "crates/busbar/tests/alarm_silence_cross_plane.rs"
-line = 55
-text = "fn anthropic_ok() -> MockResponse {"
-dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar/tests/alarm_silence_cross_plane.rs"
-line = 116
-text = "state.push(anthropic_ok());"
-dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar/tests/alarm_silence_cross_plane.rs"
-line = 126
-text = "busbar_kernel::proto::PROTO_ANTHROPIC,"
-dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar/tests/alarm_silence_cross_plane.rs"
-line = 134
-text = "busbar_kernel::proto::PROTO_ANTHROPIC,"
-dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
 file = "crates/busbar/tests/config_cross_plane.rs"
 line = 44
 text = "anthropic_adaptive_thinking: None,"
