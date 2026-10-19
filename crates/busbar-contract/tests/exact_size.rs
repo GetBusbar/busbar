@@ -194,3 +194,23 @@ fn locate_carries_no_dead_head_defaults() {
         );
     }
 }
+
+/// RED (u95 LOW): the header asserts the offsets of the trailing fields a reader could otherwise
+/// read at another layout: `DatagramLane.paths`/`paths_len` and `EstablishIn.member`.
+#[test]
+fn the_c_header_pins_the_trailing_fields() {
+    for (t, f) in [
+        ("bb_transport_DatagramLane", "paths"),
+        ("bb_transport_DatagramLane", "paths_len"),
+        ("bb_hconn_EstablishIn", "member"),
+    ] {
+        let want = format!("offsetof({t}, {f})");
+        assert!(HEADER.contains(&want), "the header does not pin {t}.{f}");
+    }
+    for word in ["_FROZEN", "_V1_SIZE"] {
+        assert!(
+            !HEADER.contains(word),
+            "the header still publishes a `{word}` size"
+        );
+    }
+}
