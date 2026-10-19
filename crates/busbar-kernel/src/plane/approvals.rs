@@ -22,7 +22,7 @@
 ///
 /// ## Keyed on the nonce, and only the terminal redemption is recorded
 ///
-/// The nonce already exists and is already unique per mint (`mrtr`'s multi-round scenario requires
+/// The nonce already exists and is already unique per mint (a multi-round exchange requires
 /// it), so it is the natural handle and nothing new has to be sealed. What is recorded is the ONE
 /// redemption that dispatches: an intermediate round's state is answered with a fresh ask and a
 /// fresh state, so burning it would refuse the ordinary case of a client retrying a request whose
@@ -114,7 +114,7 @@ impl SpentTokenLedger {
 // and spends it by the host's one-time `records.claim`, and only the root composes a door's
 // served path (P3 DEL-MCP).
 
-/// The DEFAULT life of a sealed state. Short, per `mrtr.mdx:236`: a caller answering an elicitation
+/// The DEFAULT life of a sealed state. Short: a caller answering an elicitation
 /// is a human at a prompt, not a batch job, and every second of validity is a second of replay
 /// window.
 pub const DEFAULT_TTL_SECS: u64 = 300;

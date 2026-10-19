@@ -239,11 +239,11 @@ fn entitlement_check_denies_a_target_outside_the_grant() {
             !entitlement_check(host, &caller, &cold),
             "a pool the grant omits is denied"
         );
-        // Cross-kind is fail-closed: a pool-only grant does not cover an mcp_server target.
-        let server = target_ref(b"fast", 1); // scope_kind 1 = "mcp_server"
+        // Cross-kind is fail-closed: a pool-only grant does not cover a target of another scope kind.
+        let server = target_ref(b"fast", 1); // scope_kind 1 = a scope kind other than the pool's
         assert!(
             !entitlement_check(host, &caller, &server),
-            "a `pool` grant must NOT cover a scope_kind 1 target — kind 1 resolves to the server \
+            "a `pool` grant must NOT cover a scope_kind 1 target — kind 1 resolves to its own \
              scope, not a phantom second \"pool\""
         );
         // An unknown caller id is denied.
