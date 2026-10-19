@@ -881,9 +881,9 @@ const STREAM_OPTIONS: &str = "stream_options";
 const INCLUDE_USAGE: &str = "include_usage";
 
 /// Ask a streamed request for its usage: `stream_options.include_usage = true`, the object made
-/// when absent or null. A byte-level splice over the payload (every other byte stays): the member is
+/// when absent; a `null` is left as written (v1.5.5). A byte-level splice over the payload (every other byte stays): the member is
 /// set where it stands, or inserted after the opening brace. `Err` carries the payload back verbatim
-/// when `stream_options` is not an object (the request cannot be asked, and the caller refuses it
+/// when `stream_options` is neither an object nor `null` (the request cannot be asked, and the caller refuses it
 /// rather than bill it blind); a payload that is not a JSON object goes out unchanged.
 ///
 /// # Errors
@@ -895,9 +895,12 @@ pub fn try_inject_stream_include_usage(payload: Vec<u8>) -> Result<Vec<u8>, Vec<
     };
     let value: Cow<'_, [u8]> = match top.last(STREAM_OPTIONS) {
         None => Cow::Borrowed(br#"{"include_usage":true}"#),
-        Some(m) if &payload[m.value_start..m.value_end] == b"null" => {
-            Cow::Borrowed(br#"{"include_usage":true}"#)
-        }
+        // A `null` goes upstream as the caller wrote it: v1.5.5's injector left a
+        // `stream_options` that is not an object untouched (proxy/engine/mod.rs:2366-2386), and
+        // Q33c signed the 400 only for a wrong-typed value (coordinator ruling 2026-10-19, Q128
+        // plane-llm p17). The stream then bills the tokens its far end reports unasked, as in
+        // 1.5.5.
+        Some(m) if &payload[m.value_start..m.value_end] == b"null" => return Ok(payload),
         Some(m) => {
             let Some(inner) = json_splice::object_at(&payload[..m.value_end], m.value_start) else {
                 return Err(payload);

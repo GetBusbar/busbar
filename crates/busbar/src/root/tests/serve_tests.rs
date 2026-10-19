@@ -4881,15 +4881,16 @@ mod pools_door_walk_and_breaker {
 
     use super::super::hook_seat_tests::DoorRig;
 
-    /// A NULL `stream_options` IS UPGRADED (F25 row 2; legacy
-    /// `assemble::a_null_stream_options_is_upgraded_so_the_upstream_reports_usage`): a same-dialect
-    /// streamed chat spelling `"stream_options": null` reaches the far end carrying
-    /// `stream_options.include_usage: true` (1.5.5 upgraded it like an absent key, so the far end
-    /// reports usage and the ledger reads it), and the caller, who did not opt in, is served the
-    /// answer ("Hi", 200) without the usage chunk (`completion_tokens` never reaches it). RED: the
-    /// null forwarded verbatim, or the usage chunk relayed to the caller.
+    /// A NULL `stream_options` REACHES THE FAR END AS WRITTEN (F25 row 2; Q128 plane-llm p17,
+    /// coordinator ruling 2026-10-19): v1.5.5 sent a body carrying `stream_options` through its DOM
+    /// injector, which left any value that is not an object untouched (crates/busbar/src/proxy/
+    /// engine/mod.rs:1584-1587, :2366-2386), so a same-dialect streamed chat spelling
+    /// `"stream_options": null` reached the far end with that `null`, and the stream bills what the
+    /// far end reports unasked. The caller, who did not opt in, is served the answer ("Hi", 200)
+    /// without the usage chunk (`completion_tokens` never reaches it). RED: the null rewritten to an
+    /// object (an unsigned 1.6.0 edit), or the usage chunk relayed to the caller.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn the_pools_door_upgrades_a_null_stream_options_and_keeps_the_usage_chunk_back() {
+    async fn the_pools_door_forwards_a_null_stream_options_and_keeps_the_usage_chunk_back() {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-null-stream-options";
         let _published = Withdrawn(instance);
@@ -4925,9 +4926,9 @@ mod pools_door_walk_and_breaker {
         )
         .expect("the far end's request is JSON");
         assert_eq!(
-            egress.pointer("/stream_options/include_usage"),
-            Some(&serde_json::Value::Bool(true)),
-            "a null stream_options asks the far end for its usage: {egress}"
+            egress.get("stream_options"),
+            Some(&serde_json::Value::Null),
+            "a null stream_options reaches the far end as the caller wrote it: {egress}"
         );
         assert!(text.contains("Hi"), "the answer reaches the caller: {text}");
         assert!(

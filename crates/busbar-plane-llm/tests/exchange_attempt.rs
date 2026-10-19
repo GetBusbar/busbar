@@ -372,9 +372,12 @@ fn a_member_the_generation_does_not_hold_is_the_callers_500() {
 fn the_usage_ask_is_a_splice_after_the_opening_brace_or_in_place() {
     let out = try_inject_stream_include_usage(br#" {"a":1}"#.to_vec()).expect("asked");
     assert_eq!(out, br#" {"stream_options":{"include_usage":true},"a":1}"#);
-    let out =
-        try_inject_stream_include_usage(br#"{"stream_options":null}"#.to_vec()).expect("asked");
-    assert_eq!(out, br#"{"stream_options":{"include_usage":true}}"#);
+    let out = try_inject_stream_include_usage(br#"{"stream_options":null}"#.to_vec())
+        .expect("a null is forwarded");
+    assert_eq!(
+        out, br#"{"stream_options":null}"#,
+        "a null is left as written (1.5.5)"
+    );
     let out = try_inject_stream_include_usage(br#"{"z":1, "stream_options":{"b":2}}"#.to_vec())
         .expect("asked");
     assert_eq!(
@@ -1882,8 +1885,9 @@ fn a_caller_already_opted_in_stays_opted_in() {
 /// Rehomes `crates/busbar-llm/src/engine/engine_tests/inject_include_usage_tests.rs::an_existing_stream_options_is_edited_in_place`.
 /// 1.5.5 behaviour pinned (DIALECT FIDELITY), exact bytes: an existing `include_usage:false` is set
 /// true where it stands; a leading-space inner object gains the member after its brace with its
-/// spacing kept; a `null` with a sibling becomes `{"include_usage":true}` in place.
-/// RED if any byte other than the governed member moves.
+/// spacing kept; a `null` with a sibling reaches the far end byte-identical, as v1.5.5 left it
+/// (proxy/engine/mod.rs:2366-2386; coordinator ruling 2026-10-19, Q128 plane-llm p17).
+/// RED if any byte other than the governed member moves, or the `null` is rewritten.
 #[test]
 fn the_usage_ask_edits_an_existing_stream_options_in_place_byte_for_byte() {
     for (input, want) in [
@@ -1897,7 +1901,7 @@ fn the_usage_ask_edits_an_existing_stream_options_in_place_byte_for_byte() {
         ),
         (
             &br#"{"stream":true,"stream_options":null,"z":1}"#[..],
-            &br#"{"stream":true,"stream_options":{"include_usage":true},"z":1}"#[..],
+            &br#"{"stream":true,"stream_options":null,"z":1}"#[..],
         ),
     ] {
         let out = try_inject_stream_include_usage(input.to_vec()).expect("asked");
