@@ -377,7 +377,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-header"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-header?rev=32503d7884ea313f9d69bf700d0d526f109057b8#32503d7884ea313f9d69bf700d0d526f109057b8"
+source = "git+https://github.com/GetBusbar/busbar-auth-header?rev=bf1abefdec57c35afcf15b9076addeb39fb2ca5a#bf1abefdec57c35afcf15b9076addeb39fb2ca5a"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -922,10 +922,12 @@ dependencies = [
 [[package]]
 name = "busbar-secret-file"
 version = "1.0.0"
-source = "git+https://github.com/GetBusbar/busbar-secret-file?rev=aa8e585ac57b68b3f635f771d0fe3a370f5fa29d#aa8e585ac57b68b3f635f771d0fe3a370f5fa29d"
+source = "git+https://github.com/GetBusbar/busbar-secret-file?rev=3186c8664591e407ad0487fafa081f393769382d#3186c8664591e407ad0487fafa081f393769382d"
 dependencies = [
  "busbar-contract",
+ "libc",
  "serde_json",
+ "zeroize",
 ]
 
 [[package]]

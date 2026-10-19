@@ -4270,6 +4270,7 @@
           "window",
           "as_of",
           "currency",
+          "rate_card_version",
           "total",
           "by_model",
           "by_key",

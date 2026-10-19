@@ -23,29 +23,6 @@ use busbar_contract::auth_calls::{
 };
 use busbar_kernel_identity::operator::Judgement;
 
-/// The two non-`Authorization` headers that native vendor SDKs use to carry their API key:
-/// the Anthropic SDK sends `x-api-key`, the Gemini SDK sends `x-goog-api-key`. busbar accepts
-/// either as a carrier of the SAME busbar client token / virtual key (validated identically,
-/// in constant time, against the same allowlist / governance lookup). Checked AFTER
-/// `Authorization: Bearer` (see `extract_client_token`).
-const X_API_KEY: &str = "x-api-key";
-const X_GOOG_API_KEY: &str = "x-goog-api-key";
-
-/// THE CREDENTIAL CARRIERS THE DATA-PLANE GATE READS, in precedence order — the one declaration
-/// [`AuthMiddleware::extract_client_token`] walks and the host strips from every plane's request
-/// (`caller_credential`): all of them, whichever one carried this request's token (#65).
-const CLIENT_TOKEN_CARRIERS: [HeaderName; 3] = [
-    AUTHORIZATION,
-    HeaderName::from_static(X_API_KEY),
-    HeaderName::from_static(X_GOOG_API_KEY),
-];
-/// THE CREDENTIAL CARRIERS A CONFIGURED ADMIN CHAIN READS (the operator token, Bearer or header) —
-/// stripped from every plane's request whenever an admin chain is configured.
-const ADMIN_TOKEN_CARRIERS: [HeaderName; 2] =
-    [AUTHORIZATION, HeaderName::from_static(X_ADMIN_TOKEN)];
-
-/// The header name for the operator admin token carrier (busbar-proprietary surface).
-pub const X_ADMIN_TOKEN: &str = "x-admin-token";
 /// The Bearer auth-scheme token (case-insensitive match in `extract_bearer_token`).
 const AUTH_SCHEME_BEARER: &str = "bearer";
 /// The liveness-probe path, mounted `RouteAuth::None` on every router that serves it (see
@@ -63,12 +40,6 @@ pub const ADMIN_PATH: &str = "/api";
 /// (fail-closed): a future area (`events`, `metrics`) mounted under `/api/` is admin-guarded by
 /// default and must explicitly carve out a weaker class if it ever wants one.
 const ADMIN_PATH_PREFIX: &str = "/api/";
-/// The fixed dummy secret `records.secret` answers for an unknown host-held credential
-/// ([`crate::governance::GovState::credential_secret`]): the verifying auth plugin still runs its
-/// full verification over it, so the timing is indistinguishable from a bad-signature rejection
-/// (no identifier-enumeration oracle).
-pub const DUMMY_SECRET: &str = "AWS4-DUMMY-SECRET-FOR-CONSTANT-TIME-REJECT-PATH";
-
 // The UPSTREAM-credential mode (`upstream_credentials:`) now lives in the neutral contracts crate
 // so a plane names it without reaching into busbar-core; re-exported here so every
 // crate::auth::UpstreamCreds caller is unchanged.
@@ -147,6 +118,14 @@ pub struct AuthMiddleware {
     /// Called on a request whose dialect declares a signed ingress and which carries one of the
     /// verifier's own carrier lines; the kernel names no credential line itself.
     readers: Vec<CredentialReader>,
+    /// THE HOST'S DEFAULT INBOUND STYLE's carriers (THE DESIGN §6, "Auth points and guest lists":
+    /// the line's style names where its credentials sit): the carrier marks of the one auth row
+    /// stating `FACT_DEFAULT_INBOUND_STYLE`, in its Statement's order, read on every line the
+    /// operator's config leaves without a style. Opaque words: the kernel names none of them.
+    carriers: Vec<HeaderName>,
+    /// THE CREDENTIAL THE HOST ISSUES beside a signed-token key: the first host-held credentials'
+    /// verifier stating an issued shape, as its first kind and that shape ([`Self::issued_credential`]).
+    issued: Option<(String, busbar_contract::auth_calls::IssuedShape)>,
 }
 
 /// ONE HOST-HELD CREDENTIAL'S VERIFIER: the opened instance, the credential kinds it reads through
@@ -155,6 +134,9 @@ struct CredentialReader {
     calls: std::sync::Arc<dyn AuthCalls>,
     kinds: Vec<String>,
     carriers: Vec<HeaderName>,
+    /// The shape of the credential the host issues for `kinds`, as the verifier's Statement states
+    /// it; `None` = the host issues none for it.
+    issued: Option<busbar_contract::auth_calls::IssuedShape>,
 }
 
 impl CredentialReader {
@@ -288,8 +270,11 @@ fn without_query_keys(uri: &axum::http::Uri, keys: &[&str]) -> Option<axum::http
 // thread. A door's `verify` is submitted and AWAITED; the budget only bounds how many awaited
 // verifies are admitted at once, process-wide, and how long a request waits for a slot — 1.5.5's
 // bounds (64 data-plane / 16 admin in flight, a 5s wait), so a saturated verifier is denied as 1.5.5
-// denied it, with 1.5.5's diagnostic text byte for byte. A door's own instance-level `Overloaded`
-// (its `max_inflight` full) is the same saturation: the same diagnostic, latch and deny.
+// denied it, with 1.5.5's diagnostic text byte for byte. A data-plane door's own instance-level
+// `Overloaded` (its `max_inflight` full) is NOT that saturation: nothing was judged, so it is
+// handed back apart as [`VerifierOverloaded`] and answered 503 with `Retry-After` and no 4005 (owner
+// ruling Q134, [`data_verdict_of`]). An admin door's `Overloaded` is 4008 and a deny
+// ([`admin_verdict_of`]).
 
 /// How many data-plane auth verifies are admitted at once, process-wide (1.5.5's bound).
 const AUTH_ADMISSION_MAX_INFLIGHT: usize = 64;
@@ -440,6 +425,30 @@ fn data_verdict_of(answer: VerifyAnswer, faulted: bool) -> Result<Judgement, Ver
     }
     cleared(&AUTH_SATURATED_WARNED);
     Ok(chain_verdict_of(answer))
+}
+
+/// THE SIGNED-REQUEST VERIFIER'S ANSWER, as the data-plane gate reads it: the lines the verifier
+/// named join `strips` on every arm (THE DESIGN §6.3, l.925: "Every auth called names its
+/// credential lines whatever its verdict, and the transport strips the union"), and a FAULT (the
+/// plugin broke its contract) is 4006 and a refusal, as on every other data-plane verify.
+///
+/// PARITY (1.5.5): this verify draws no data-plane admission slot. 1.5.5 verified a signed request
+/// in-process, on the request task, with no offload permit (v1.5.5 `crates/busbar/src/auth/mod.rs`
+/// :1441-1502; the permit pool at :149-168 bounded only the offloaded plugin chain), so a saturated
+/// budget never refused a signed request there and does not here.
+fn signed_verdict_of(answer: VerifyAnswer, faulted: bool, strips: &mut Vec<Strip>) -> Verified {
+    let VerifyAnswer {
+        verified,
+        strips: named,
+        ..
+    } = answer;
+    strips.extend(named);
+    if faulted {
+        auth_faulted();
+        return Verified::Failed;
+    }
+    cleared(&AUTH_FAULTED_WARNED);
+    verified
 }
 
 /// An external admin module's verdict of a verify that answered `answer` (`faulted`: the plugin
@@ -598,10 +607,14 @@ pub fn open_operator(
     let answered = axis.as_ref().is_some_and(|axis| axis.answers(op));
     let defs = providers.iter().map(|(n, d)| (n.as_str(), d.module.trim()));
     let is_op = |m: &str| crate::config::names_operator(m);
+    // The operator row's carriers, read from its Statement whether or not a token opens it: the
+    // admin lines are stripped and read where the style says, never where the kernel says.
+    let carriers = axis.as_ref().map(|a| a.carriers(op)).unwrap_or_default();
     Operator::open(op, defs, &is_op, answered, digest, |d| {
         let axis = axis.ok_or_else(|| format!("no `kind: auth` plugin answers to '{op}'"))?;
         axis.open(op, op, &serde_json::Value::String(d.to_string()))
     })
+    .map(|operator| operator.with_carriers(carriers))
 }
 
 /// Why no door on the auth axis answers `module`, in the registry's own words: the kind-neutral
@@ -839,8 +852,8 @@ impl AuthMiddleware {
         // open is a hard boot error, like any other chain position.
         let mut readers = Vec::new();
         if keys_in_chain {
-            let axis = match axis {
-                Some(axis) => Some(axis),
+            let axis = match &axis {
+                Some(axis) => Some(axis.clone()),
                 None => crate::preflight::auth_axis(registry.clone()),
             };
             for module in axis.iter().flat_map(|a| a.credential_readers()) {
@@ -857,6 +870,7 @@ impl AuthMiddleware {
                 if let Some(calls) = calls {
                     readers.push(CredentialReader {
                         kinds: calls.credential_kinds(),
+                        issued: calls.issued_shape(),
                         carriers: calls
                             .carriers()
                             .iter()
@@ -868,10 +882,26 @@ impl AuthMiddleware {
             }
         }
 
+        // THE DEFAULT INBOUND STYLE: where the caller's credential sits on a line the config leaves
+        // without a style. FAIL-CLOSED: two rows stating it is a hard boot error, naming both.
+        let carriers = match &axis {
+            Some(axis) => axis.default_inbound_style()?,
+            None => crate::preflight::auth_axis(registry.clone())
+                .map(|axis| axis.default_inbound_style())
+                .transpose()?
+                .unwrap_or_default(),
+        };
+
+        let issued = readers.iter().find_map(|r| {
+            let kind = r.kinds.first()?.clone();
+            r.issued.clone().map(|shape| (kind, shape))
+        });
         Ok(Self {
             keys_in_chain,
             chain,
             readers,
+            carriers: header_names(&carriers),
+            issued,
         })
     }
 
@@ -881,12 +911,21 @@ impl AuthMiddleware {
     /// dozens of builtin-only test call sites from threading a registry + `.unwrap()` each.
     #[cfg(any(test, feature = "test-support"))]
     pub fn new_builtin(cfg: &AuthCfg) -> Self {
-        Self::new(
+        let mut mw = Self::new(
             cfg,
             &std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
             &crate::config::secret::SecretResolver::builtins_only(),
         )
-        .expect("builtin-only auth chain never fails to construct")
+        .expect("builtin-only auth chain never fails to construct");
+        if mw.carriers.is_empty() {
+            mw.carriers = test_inbound_style();
+        }
+        // An empty registry opens no host-held credentials' verifier, so none states the issued
+        // shape: the double stands for it, whatever rows the test binary links.
+        if mw.issued.is_none() {
+            mw.issued = Some(crate::test_support::issued::double());
+        }
+        mw
     }
 
     /// The ordered names of the auth chain's positions (each instance's stated name). For the Admin API
@@ -1138,34 +1177,26 @@ impl AuthMiddleware {
         }
     }
 
-    /// Extract the busbar client token from whichever scheme the caller used, in a FIXED
-    /// precedence order: `Authorization: Bearer <t>` first, then `x-api-key: <t>` (Anthropic SDK),
-    /// then `x-goog-api-key: <t>` (Gemini SDK). The `x-api-key`/`x-goog-api-key` values are the raw
-    /// token (no scheme prefix); an empty value is treated as absent so a present-but-blank header
-    /// does not mask a token in a lower-precedence carrier. The returned token is validated
-    /// identically and in constant time regardless of which header carried it.
-    ///
-    /// An ingress protocol whose auth is inbound AWS SigV4 request-signing (a real pre-step, not a
-    /// fork on the dialect classifier) authenticates with that signature, NOT a bearer-style token,
-    /// so this extractor deliberately does NOT read any `x-amz-*` / SigV4 `Authorization` header — a
-    /// non-Bearer `Authorization` (AWS4-HMAC-SHA256 or Basic) falls through to the header carriers
-    /// above and otherwise yields `None` here. Inbound SigV4 is now handled SEPARATELY, under
-    /// governance, by `verify_sigv4_ingress_credential` (the MinIO/S3-compatible model: an AWS-style
-    /// access-key-id + secret access key issued per virtual key, whose signature busbar verifies via
-    /// the SigV4 ingress check). On a successful verify the same `GovCtx` a bearer auth attaches is attached,
-    /// so a SigV4-signing ingress now receives full virtual-key governance under `token`/governance
-    /// mode — it no longer requires `passthrough`. This token path itself is unchanged.
-    pub fn extract_client_token(req: &Request<Body>) -> Option<String> {
-        // Walks the gate's declared carrier table, in its precedence order: the bearer scheme on
-        // `Authorization`, the raw token on the others (blank = absent).
-        CLIENT_TOKEN_CARRIERS.iter().find_map(|carrier| {
-            let value = req.headers().get(carrier)?.to_str().ok()?;
-            if *carrier == AUTHORIZATION {
-                Self::extract_bearer_token(value)
-            } else {
-                Some(value.to_owned()).filter(|t| !t.is_empty())
-            }
-        })
+    /// The caller's credential, as the host's default inbound style yields it ([`carried_credential`] over
+    /// this chain's carriers): the first of its carrier lines, in its Statement's order, that
+    /// presents one. The kernel names no credential line (THE DESIGN §6, "Auth points and guest
+    /// lists"); the returned token is validated identically whichever line carried it.
+    pub fn extract_client_token(&self, headers: &HeaderMap) -> Option<String> {
+        carried_credential(&self.carriers, headers)
+    }
+
+    /// THE CREDENTIAL THE HOST ISSUES beside a signed-token key (the admin `POST /keys` second
+    /// credential, 1.5.5's `issue_aws_credential`): the first host-held credentials' verifier whose
+    /// Statement states an issued shape, as its first credential kind and that shape. `None` when no
+    /// verifier states one: the host then issues none. Kind and shape are the verifier's words.
+    pub fn issued_credential(&self) -> Option<(String, busbar_contract::auth_calls::IssuedShape)> {
+        self.issued.clone()
+    }
+
+    /// The default inbound style's carriers: every line the host strips from a plane's request
+    /// whichever of them carried this request's credential.
+    pub(crate) fn carriers(&self) -> &[HeaderName] {
+        &self.carriers
     }
 
     /// Validate the request's token by running the AUTH CHAIN. `token` accepts a credential extracted
@@ -1373,19 +1404,28 @@ fn unauthorized_response(
     crate::ingress::native::native_error(ingress, status, kind, message)
 }
 
-/// THE TWO ADMIN CARRIERS, as every admin door reads them: `Authorization: Bearer` (another scheme
-/// is absent) and `x-admin-token`, a present-but-blank value ABSENT — the empty-filter
-/// `extract_client_token` applies to the vendor carriers, so a blank header never reaches the
-/// constant-time compare. Only the admin Bearer: the multi-scheme client carriers can never present
-/// an operator token via `x-api-key`/`x-goog-api-key`.
-pub fn admin_carriers(headers: &HeaderMap) -> (Option<String>, Option<String>) {
-    let text = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
-    (
-        text(AUTHORIZATION.as_str()).and_then(AuthMiddleware::extract_bearer_token),
-        text(X_ADMIN_TOKEN)
-            .filter(|t| !t.is_empty())
-            .map(String::from),
-    )
+/// THE CREDENTIAL A STYLE'S CARRIERS YIELD on `headers`: the first carrier line, in `carriers`'
+/// order, that presents one. The `authorization` field is read in the Bearer scheme (RFC 6750; the
+/// protocol's vocabulary, owner Q1), another scheme presenting nothing there; every other line is
+/// taken raw, a present-but-blank value ABSENT so a blank line never masks a credential on a later
+/// one and never reaches a constant-time compare. The lines are the style's own words.
+pub fn carried_credential(carriers: &[HeaderName], headers: &HeaderMap) -> Option<String> {
+    carriers.iter().find_map(|carrier| {
+        let value = headers.get(carrier)?.to_str().ok()?;
+        if *carrier == AUTHORIZATION {
+            AuthMiddleware::extract_bearer_token(value)
+        } else {
+            Some(value.to_owned()).filter(|t| !t.is_empty())
+        }
+    })
+}
+
+/// A style's carrier words as field names; a word that is no field name names no line.
+pub(crate) fn header_names(words: &[String]) -> Vec<HeaderName> {
+    words
+        .iter()
+        .filter_map(|w| HeaderName::from_bytes(w.as_bytes()).ok())
+        .collect()
 }
 
 /// Request-extension carrier for the authenticated [`Principal`]. Relocated to `busbar-api` in
@@ -1464,7 +1504,8 @@ pub(crate) struct AdminCarried {
 /// Mirrors `AuthMiddleware::run_chain` (first Identify admits, Reject denies, all-Pass denies, empty
 /// chain = the explicit open posture). The operator credential is judged on the request's head
 /// ([`admin_head`]) through its door ([`OperatorCredential::judge`]; the both-carriers fold is the
-/// plugin's); an external admin module takes `bearer.or(header)` of the [`admin_carriers`].
+/// plugin's); an external admin module takes the candidate the operator credential's carriers yield
+/// ([`carried_credential`]).
 /// Unknown names are skipped with a loud log (config_validate rejects them at boot). `probe`: each
 /// module answers on the spot (`verify_now`, the sync [`admin_door`]); else its verify is AWAITED
 /// (the middleware). The kernel keeps no verdict of any module: a plugin caches inside itself.
@@ -1479,8 +1520,13 @@ async fn run_admin_chain(
     if app.admin_chain.is_empty() {
         return (ChainVerdict::Open, None);
     }
-    let carriers = admin_carriers(headers);
-    let (bearer, header) = (carriers.0.as_deref(), carriers.1.as_deref());
+    // The candidate the operator credential's style yields on its own carriers (1.5.5 handed every
+    // admin module the Bearer, else the second line): the style names the lines, not the kernel.
+    let candidate = carried_credential(
+        &header_names(app.admin_modules.operator.carriers()),
+        headers,
+    );
+    let candidate = candidate.as_deref();
     let now = busbar_kernel::store::now();
     for name in &app.admin_chain {
         let operator = app.admin_modules.operator.is(name);
@@ -1490,17 +1536,15 @@ async fn run_admin_chain(
             // `grp:<group>` identifies as a principal carrying exactly that group. Compiled out
             // of release binaries entirely.
             #[cfg(any(test, feature = "test-support"))]
-            "test-scope-module" => Some(
-                match bearer.or(header).and_then(|t| t.strip_prefix("grp:")) {
-                    Some(group) => {
-                        let mut p = Principal::from_id(format!("test:{group}"));
-                        p.roles = vec![group.to_string()];
-                        Judgement::of(AuthVerdict::Identify(p))
-                    }
-                    // Not my credential shape — the next module is tried (the PAM contract).
-                    None => Judgement::of(AuthVerdict::Pass),
-                },
-            ),
+            "test-scope-module" => Some(match candidate.and_then(|t| t.strip_prefix("grp:")) {
+                Some(group) => {
+                    let mut p = Principal::from_id(format!("test:{group}"));
+                    p.roles = vec![group.to_string()];
+                    Judgement::of(AuthVerdict::Identify(p))
+                }
+                // Not my credential shape — the next module is tried (the PAM contract).
+                None => Judgement::of(AuthVerdict::Pass),
+            }),
             // The operator credential (its row, opened through the auth axis by the provider key),
             // judged on the request's head through its door: an overloaded verifier or one that
             // answered no verdict is denied, as 1.5.5 refused (its 401) — the admin-door 503 is not
@@ -1508,10 +1552,10 @@ async fn run_admin_chain(
             _ if operator => {
                 let operator = &app.admin_modules.operator;
                 let mut head = admin_head(method, target, headers, now);
-                // The Bearer is the candidate the host extracted: lent as the credential, beside
-                // the lines the plugin reads its carriers from.
-                head.credential =
-                    bearer.map(|b| busbar_contract::redacted::Secret::new(b.as_bytes().to_vec()));
+                // The candidate its own carriers yield, lent as the credential beside the lines the
+                // plugin reads its carriers from.
+                head.credential = candidate
+                    .map(|c| busbar_contract::redacted::Secret::new(c.as_bytes().to_vec()));
                 match probe {
                     true => operator.probe(&head),
                     false => operator.judge(head).await,
@@ -1521,10 +1565,9 @@ async fn run_admin_chain(
             // (keyed by config name — the same `name` this loop iterates).
             other => {
                 // The external module is lent the request's head and the candidate 1.5.5 handed
-                // it (`bearer.or(header)`).
+                // it (the Bearer, else the second admin line).
                 let mut request = admin_head(method, target, headers, now);
-                request.credential = bearer
-                    .or(header)
+                request.credential = candidate
                     .map(|c| busbar_contract::redacted::Secret::new(c.as_bytes().to_vec()));
                 external_admin_module(app, other, request, probe).await
             }
@@ -1967,9 +2010,9 @@ fn verifier_overloaded_response() -> Response {
 /// it was proven, and always on the admin plane, whose door judges none and whose routes' planes
 /// have no use for one. The host strips all of them before any plane sees the request.
 pub(crate) fn gate_consumed(app: &App, is_admin: bool, dpop_proven: bool) -> ConsumedCredentials {
-    let mut consumed = ConsumedCredentials::carrying(&CLIENT_TOKEN_CARRIERS);
+    let mut consumed = ConsumedCredentials::carrying(app.auth.carriers());
     if !app.admin_chain.is_empty() {
-        consumed.carry(&ADMIN_TOKEN_CARRIERS);
+        consumed.carry(&header_names(app.admin_modules.operator.carriers()));
     }
     if dpop_proven || is_admin {
         consumed.carry(&[dpop::DPOP_HEADER]);
@@ -2068,11 +2111,11 @@ pub(crate) async fn auth_middleware(
     // or an `/api/` delimiter so only the native-API root (`/api/<version>/<area>/…`) matches.
     let is_admin = declared_admin
         || (!claimed_at_key && (path == ADMIN_PATH || path.starts_with(ADMIN_PATH_PREFIX)));
-    // The busbar client token, taken from whichever carrier the SDK used (Authorization: Bearer,
-    // then x-api-key, then x-goog-api-key). This single value drives BOTH the static-allowlist
+    // The busbar client token, taken from whichever of the default inbound style's carriers the
+    // caller used, in that style's order (`carried`). This single value drives BOTH the static-allowlist
     // check and the governance virtual-key lookup, so every scheme is validated identically and in
     // constant time. Replaces the previous Bearer-only `bearer_token`.
-    let client_token: Option<String> = AuthMiddleware::extract_client_token(&req);
+    let client_token: Option<String> = app.auth.extract_client_token(req.headers());
     // RFC 9449 SENDER CONSTRAINT, on the data plane only (`auth::dpop`). A request that is neither
     // a DPoP presentation nor a bound bearer is `Unconstrained` and nothing below changes for it.
     let mut dpop_proven = false;
@@ -2114,7 +2157,7 @@ pub(crate) async fn auth_middleware(
     consumed.caller = client_token.clone().map(CallerCredential);
 
     // Thread the caller's token into request extensions for passthrough forwarding, using the same
-    // multi-scheme carrier precedence as auth (Bearer / x-api-key / x-goog-api-key). Inserted BEFORE
+    // carrier precedence as auth (the default inbound style's carriers, in order). Inserted BEFORE
     // any early-return below so EVERY request that reaches `next.run(req)` through this middleware
     // carries the extension — the `Extension<CallerToken>` extractor in handlers never sees it
     // absent (which would surface as a 500 MissingExtension). Always inserted (even when `None`).
@@ -2133,7 +2176,7 @@ pub(crate) async fn auth_middleware(
     // and NOT the native-SDK carriers (admin is a busbar operator surface, not a native SDK
     // ingress). The chain authenticates (WHO); the principal's admin SCOPE then authorizes against
     // the endpoint's required scope (WHAT) — the matrix, checked here at the one chokepoint
-    // every /admin path crosses, over the two admin carriers (`admin_carriers`).
+    // every /admin path crosses, over the operator credential's carriers (`carried`).
     if is_admin {
         let target = req.uri().path_and_query().map_or("/", |t| t.as_str());
         let mut strips = Vec::new();
@@ -2329,7 +2372,9 @@ pub(crate) async fn auth_middleware(
             };
             let request = signed_request(&parts, &body_bytes);
             req = Request::from_parts(parts, Body::from(body_bytes));
-            match reader.calls.verify(request).await.verified {
+            let mut call = reader.calls.verify(request);
+            let answer = (&mut call).await;
+            match signed_verdict_of(answer, call.faulted(), &mut strips) {
                 Verified::Pass => None,
                 Verified::Identity(id) => {
                     // The identity names the credential it verified; the governance key that holds
@@ -2385,7 +2430,7 @@ pub(crate) async fn auth_middleware(
                     return Err(challenge::refuse(
                         challenge::ChallengeError::InvalidToken,
                         &adm.resource_metadata,
-                        "The access token's audience does not identify this resource. Request a                          token whose `resource` (RFC 8707) is this server's canonical URI.",
+                        audience::MISMATCH_DESCRIPTION,
                         None,
                     ))
                 }
@@ -2393,7 +2438,7 @@ pub(crate) async fn auth_middleware(
                     return Err(challenge::refuse(
                         challenge::ChallengeError::InvalidToken,
                         &adm.resource_metadata,
-                        "This credential carries no readable audience, so it cannot be shown to                          have been issued for this resource. A JWT access token is required here.",
+                        audience::OPAQUE_DESCRIPTION,
                         None,
                     ))
                 }
@@ -2409,7 +2454,9 @@ pub(crate) async fn auth_middleware(
         .await;
         match judged {
             Ok(verdict) => {
-                strips = named;
+                // The union (THE DESIGN §6.3): a signed-request verifier that PASSed named its
+                // lines too.
+                strips.extend(named);
                 verdict
             }
             // A position's `max_inflight` is full: 503 with `Retry-After`, never a bad
@@ -2567,6 +2614,22 @@ fn signed_request(parts: &axum::http::request::Parts, body: &[u8]) -> VerifyRequ
     }
 }
 
+/// TEST-ONLY: the default inbound style a chain built without the build's registry reads: the
+/// LINKED rows' where the test binary links auth rows (a composition root's test links the real
+/// header auth, and reads only what it states), else the stand-in double's (a test binary that
+/// links no auth plugin at all).
+#[cfg(any(test, feature = "test-support"))]
+fn test_inbound_style() -> Vec<HeaderName> {
+    if crate::preflight::linked_auth_names().is_empty() {
+        return header_names(&crate::test_support::outbound_auth::double_inbound_style());
+    }
+    header_names(
+        &crate::preflight::linked_auth_axis()
+            .and_then(|axis| axis.default_inbound_style().ok())
+            .unwrap_or_default(),
+    )
+}
+
 #[cfg(any(test, feature = "test-support"))]
 impl AuthMiddleware {
     /// Build an `AuthMiddleware` directly over `chain`: each `(provider NAME, instance)` an instance
@@ -2586,6 +2649,8 @@ impl AuthMiddleware {
             keys_in_chain: false,
             chain,
             readers: Vec::new(),
+            carriers: test_inbound_style(),
+            issued: None,
         }
     }
 }
@@ -2601,13 +2666,13 @@ pub use caller_credential::{present_caller, CallerCredential, ConsumedCredential
 pub mod audience;
 
 /// RFC 9449 DPoP at the resource: `Authorization: DPoP` with its proof, verified through the
-/// authorization-server seam, and a DPoP-bound token refused as a bearer.
+/// authorization-server seam, and a DPoP-bound token refused as a bearer where an authorization
+/// server is configured.
 pub mod dpop;
 
-/// The RFC 6750 `WWW-Authenticate` challenge, for ingresses that are OAuth 2.1 resource servers.
-/// Relocated to the neutral substrate (`busbar_kernel::auth::challenge`) — pure `axum::http` +
-/// `serde_json`, no core reach — so a plane crate names it without depending on core; re-exported
-/// here so `crate::auth::challenge::{refuse, ChallengeError}` still resolves for its in-core callers.
+/// The RFC 6750 `WWW-Authenticate` challenge, for ingresses that are OAuth 2.1 resource servers:
+/// implemented here (`challenge.rs`, pure `axum::http` + `serde_json`), and called as
+/// `crate::auth::challenge::{refuse, ChallengeError}`.
 pub mod challenge;
 
 /// The self-serve key SEAM (1.5.2 token-exchange): `SelfServeKeys` trait + the deterministic
@@ -2619,9 +2684,9 @@ pub mod self_keys;
 pub mod exchange;
 
 /// The `GET /auth/token` hosted browser-login page (1.5.2): the chooser / begin / callback
-/// sub-states, PKCE + state + nonce, the core-executed token-exchange hop (client_secret injected by
-/// the CORE only), and the render of the key-issued page — all issuing through the SAME [`self_keys`]
-/// seam as the headless `POST`.
+/// sub-states, PKCE + state + nonce, the plugin's `complete_login` (the plugin redeems the code
+/// itself, with the client secret it was lent at `open`), and the render of the key-issued page —
+/// all issuing through the SAME [`self_keys`] seam as the headless `POST`.
 pub mod token;
 
 /// TEST STAND-INS ONLY: an in-process module as a chain position.

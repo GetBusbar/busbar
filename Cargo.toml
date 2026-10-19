@@ -68,7 +68,7 @@ busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-e
 # crate (`busbar-secret-env-plugin`, same repo) is NOT a dependency: it is built from this pinned
 # checkout by the build:dlopen-cdylibs step and dlopened.
 busbar-secret-env = { git = "https://github.com/GetBusbar/busbar-secret-env", rev = "046296aecc8088128dee36971f8da8cd8fd79175" }
-busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", rev = "aa8e585ac57b68b3f635f771d0fe3a370f5fa29d" }
+busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", rev = "3186c8664591e407ad0487fafa081f393769382d" }
 # THE REQUEST-LOG WEBHOOK SINK: the one home of its pinned rev (a rev bump is this one edit). `busbar`
 # links the logic crate; `busbar-plugin-loader`'s conformance test builds the cdylib crate. Same repo,
 # same rev, one resolved copy in Cargo.lock.
@@ -88,7 +88,7 @@ busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tc
 busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "223ec3f02000de94089a1752635b9e206f7492e5" }
 # THE OUTBOUND HEADER STYLES (kind: auth): the logic crate the root links on its `auths` axis
 # (feature `auth-header`), pulled at a pinned rev (P5; OWNER Q99 keep the split).
-busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "32503d7884ea313f9d69bf700d0d526f109057b8" }
+busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "bf1abefdec57c35afcf15b9076addeb39fb2ca5a" }
 # THE OAUTH MINTING STYLES (kind: auth): the logic crate the root links on its `auths` axis (feature
 # `auth-oauth`; P2 D1: the kernel's own minting copies are deleted). One pin: the lane pin over predev's
 # rev that names the connection table's credential-unavailable cause in its exhaustive maps, plus the

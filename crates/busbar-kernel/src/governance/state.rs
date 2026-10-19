@@ -321,7 +321,7 @@ impl GovState {
     }
 
     /// Whether `sub` is currently revoked. Consulted by BOTH auth paths: the signed-token path
-    /// (`verify_token`) and the inbound SigV4 admit path (`verify_inbound_sigv4_and_resolve`), so a
+    /// (`verify_token`) and the host-held credential read (`records.secret`), so a
     /// revoked subject's credentials are rejected identically regardless of which credential is presented.
     pub fn is_revoked(&self, sub: &str) -> bool {
         self.is_revoked_at(sub, busbar_kernel::store::now())
@@ -358,20 +358,23 @@ impl GovState {
         Ok((binding, token.into()))
     }
 
-    /// MINT a signed-token key that ALSO carries an AWS-style credential for inbound SigV4 (the
-    /// MinIO/S3-compatible model). Persists the binding + AWS credential atomically and issues the
-    /// signed token. Returns `(binding, token, aws_access_key_id, aws_secret_access_key)` - the
-    /// token and the AWS secret are shown ONCE. See `mint_signed` for the binding shape.
+    /// MINT a signed-token key that ALSO carries a host-held credential of `kind`, drawn over the
+    /// `shape` its verifier's Statement states ([`super::issue_credential`]): the binding and the
+    /// credential persist atomically and the signed token is issued. Returns `(binding, token,
+    /// public_id, secret)`; the token and the secret are shown ONCE. Kind and shape are the
+    /// verifier's words: governance stamps the credential row and names no credential format.
     ///
     /// Both secrets come back as [`Secret`](busbar_contract::redacted::Secret): a `{:?}`/`{}` of
     /// either (or of the tuple) prints `[REDACTED]`, so the one-time values cannot reach a log line
-    /// by accident; the caller reads them once, at the response boundary, via the sealed `expose`. The
-    /// AccessKeyId is not secret (it travels in the SigV4 header) and stays a plain `String`.
-    pub fn mint_signed_with_aws(
+    /// by accident; the caller reads them once, at the response boundary, via the sealed `expose`.
+    /// The public id is the lookup handle, not secret, and stays a plain `String`.
+    pub fn mint_signed_with_credential(
         &self,
         spec: NewKeySpec,
         exp: u64,
         now: u64,
+        kind: &str,
+        shape: &busbar_contract::auth_calls::IssuedShape,
     ) -> RecordStoreResult<(VirtualKey, Secret<String>, String, Secret<String>)> {
         let Some(material) = self.signing_material() else {
             return Err(RecordStoreError(
@@ -379,22 +382,22 @@ impl GovState {
             ));
         };
         let (binding, generation) = signed_binding(spec, now)?;
-        let access_key_id = generate_aws_access_key_id().store()?;
-        let secret_access_key = Secret::new(generate_aws_secret_access_key().store()?);
+        let (public_id, secret_value) = super::issue_credential(shape).store()?;
+        let secret_value = Secret::new(secret_value);
         let mut cred_raw = [0u8; 16];
         getrandom::fill(&mut cred_raw)
             .map_err(|e| RecordStoreError(format!("CSPRNG unavailable: {e}")))?;
         let cred_id = format!("cred_{}", hex::encode(cred_raw));
-        // SigV4: kind belongs to `credentials` because it IS row-looked-up (by AccessKeyId), unlike
-        // the signed token above (see CredentialMeta's doc). `secret_form: Recoverable` — HMAC
-        // verification needs the plaintext back, so it cannot be a one-way digest.
+        // The credential is row-looked-up (by its public id), unlike the signed token above (see
+        // CredentialMeta's doc). `secret_form: Recoverable`: its verifier re-derives from the
+        // plaintext, so it cannot be a one-way digest.
         let secret = CredentialSecret {
             meta: CredentialMeta {
                 id: cred_id,
                 key_id: binding.id.clone(),
-                kind: "sigv4".to_string(),
+                kind: kind.to_string(),
                 slot: 0,
-                public_id: access_key_id.clone(),
+                public_id: public_id.clone(),
                 secret_form: SecretForm::Recoverable,
                 created_at: now,
                 updated_at: now,
@@ -403,15 +406,12 @@ impl GovState {
                 revoke_reason: None,
                 revision: 0,
             },
-            secret: format!(
-                "v1:plain:{}",
-                secret_access_key.expose(&crate::seal::lend())
-            ),
+            secret: format!("v1:plain:{}", secret_value.expose(&crate::seal::lend())),
         };
         self.store.put_key_with_credential(&binding, &secret)?;
         self.refresh()?;
         let token = material.signer.mint(&binding.id, exp, Some(&generation));
-        Ok((binding, token.into(), access_key_id, secret_access_key))
+        Ok((binding, token.into(), public_id, secret_value))
     }
 
     /// THE CALLER-REFERENCE KEY a door plane's units are lent their caller's opaque reference under
@@ -1060,8 +1060,10 @@ impl GovState {
         let hash = busbar_contract::redacted::sha256_hex(secret.as_bytes());
         let id = format!("{VK_ID_PREFIX}{}", &hash[..VK_ID_HASH_PREFIX_LEN]);
         self.ensure_id_free_for_hash(&id, &hash)?;
-        let access_key_id = generate_aws_access_key_id().store()?;
-        let secret_access_key = generate_aws_secret_access_key().store()?;
+        // The shape and kind the linked signed-request verifier states, as the test double holds
+        // them (`test_support::issued`).
+        let (kind, shape) = crate::test_support::issued::double();
+        let (access_key_id, secret_access_key) = super::issue_credential(&shape).store()?;
         let mut cred_raw = [0u8; 16];
         getrandom::fill(&mut cred_raw)
             .map_err(|e| RecordStoreError(format!("CSPRNG unavailable: {e}")))?;
@@ -1093,7 +1095,7 @@ impl GovState {
                 meta: CredentialMeta {
                     id: cred_id,
                     key_id: id,
-                    kind: "sigv4".to_string(),
+                    kind,
                     slot: 0,
                     public_id: access_key_id.clone(),
                     secret_form: SecretForm::Recoverable,
@@ -2307,12 +2309,7 @@ impl GovState {
                         // Advance the acked baselines: the cell still holds the window written.
                         cell.flushed_requests = acked.requests;
                         cell.flushed_billable_requests = acked.billable_requests;
-                        for s in &acked.models {
-                            let seg = |m: &&mut ModelCell| m.model == s.model && m.era == s.era;
-                            if let Some(mc) = cell.models.iter_mut().find(seg) {
-                                mc.flushed = s.cur.clone();
-                            }
-                        }
+                        cell.advance_model_baselines(&acked.models);
                     } else if cell.window_start > snap.window {
                         // The cell rolled while this write was in flight, and the roll parked
                         // everything past the baseline — this delta included. It has landed now,
@@ -2401,10 +2398,10 @@ impl GovState {
         Ok(map)
     }
 
-    /// Resolve a wire-supplied `(kind, public_id)` pair (SigV4: `kind = "sigv4"`, `public_id` = the
-    /// AccessKeyId parsed in plaintext from the `Credential=` field of the `Authorization` header)
-    /// to the owning virtual key plus the resolved credential secret. Used ONLY by the
-    /// SigV4-credential verify path (today's sole row-looked-up kind). Returns `None` for an
+    /// Resolve a wire-supplied `(kind, public_id)` pair (the kind a host-held credentials'
+    /// verifier states, and the public id it read off the request) to the owning virtual key plus
+    /// the resolved credential secret. Used ONLY by the host-held credential read (`records.secret`).
+    /// Returns `None` for an
     /// unknown pair — the verify path is written so an unknown identifier and a bad signature reject
     /// indistinguishably (no enumeration oracle): on the `None` branch the caller still runs a
     /// constant-time signature comparison against a dummy secret before rejecting.
@@ -2421,16 +2418,17 @@ impl GovState {
 
     /// THE CREDENTIAL READ (`records.secret`, AUTH-DOOR Q2): the secret of `(kind, public_id)` and
     /// whether it may authenticate now (the credential live, its key enabled and not revoked). An
-    /// unknown pair, or a secret in an unrecognized envelope, answers the fixed dummy secret, not
-    /// live, through the SAME steps (the lookup, the copy, the revocation check), so the reply's
-    /// cost does not say whether the pair exists. The one place this rule lives.
+    /// unknown pair, or a secret in an unrecognized envelope, answers an EMPTY secret, not live,
+    /// through the SAME steps (the lookup, the copy, the revocation check), so the reply's cost
+    /// does not say whether the pair exists. The verifying auth swaps in its own dummy secret when
+    /// the answer is not live and runs its full verification over it, so a reject costs what a bad
+    /// signature costs (no identifier-enumeration oracle). The one place this rule lives.
     pub fn credential_secret(
         &self,
         kind: &str,
         public_id: &str,
         now: u64,
     ) -> (busbar_contract::redacted::Secret<String>, bool) {
-        let dummy = crate::auth::DUMMY_SECRET;
         // Owned copies, out of the cache lock before the revocation check takes its own: two
         // allocations on either path.
         let (key, plain, enabled) = match self.lookup_credential(kind, public_id) {
@@ -2438,11 +2436,11 @@ impl GovState {
                 let plain = cred.plaintext().filter(|_| cred.meta.is_live(now));
                 (key.id.clone(), plain.map(str::to_string), key.enabled)
             }
-            None => (dummy.to_string(), None, false),
+            None => (String::new(), None, false),
         };
         let revoked = self.is_revoked_at(&key, now);
         let live = enabled && plain.is_some() && !revoked;
-        let secret = plain.unwrap_or_else(|| dummy.to_string());
+        let secret = plain.unwrap_or_default();
         (busbar_contract::redacted::Secret::new(secret), live)
     }
 
