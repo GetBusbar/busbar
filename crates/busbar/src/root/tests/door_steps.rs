@@ -5230,6 +5230,11 @@ mod upstream_ask_relay {
     }
 }
 
+/// A CREDENTIAL FROM THE ENVIRONMENT FOR A STYLE THAT TAKES ITS TOKEN ENDPOINT FROM IT (Q128 ruling
+/// (a)): 1.5.5's `api_key_env: VAR`, a key file's path or the service account inline.
+#[path = "credential_endpoint.rs"]
+mod credential_endpoint;
+
 /// `subscriptions/listen` ON THE HTTP CARRIER, A K6 SESSION (ARCHITECT round 5 Q-L3B-K6-HTTP (a)).
 #[cfg(all(linked_axis_plane_door, linked_axis_node))]
 #[path = "door_listen.rs"]
