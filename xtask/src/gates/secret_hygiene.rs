@@ -163,6 +163,9 @@ impl Parity {
 
 /// CHECK 3'S 1.5.5-PARITY ROWS — individually listed and counted, never a pattern (coordinator
 /// ruling on #1192). Every other Check-3 finding blocks.
+// qa-names: crates/busbar-auth-oidc/src/cache.rs -- xtask/src/gates/secret_hygiene.rs -- a git-pinned plugin file the scan reads from its checkout under the path the crate lived at in this tree (pinned_sources); it is never on disk here, and the parity row's own liveness (exactly one live hit) reds the day the message moves
+// qa-names: crates/busbar-secret-env/src/lib.rs -- xtask/src/gates/secret_hygiene.rs -- a git-pinned plugin file the scan reads from its checkout under the path the crate lived at in this tree (pinned_sources); it is never on disk here, and the parity row's own liveness (exactly one live hit) reds the day the message moves
+// qa-names: crates/busbar-secret-file/src/lib.rs -- xtask/src/gates/secret_hygiene.rs -- a git-pinned plugin file the scan reads from its checkout under the path the crate lived at in this tree (pinned_sources); it is never on disk here, and the parity row's own liveness (exactly one live hit) reds the day the message moves
 pub const PARITY_C3: &[Parity] = &[
     Parity {
         rule: "secret-subject-parameter",
