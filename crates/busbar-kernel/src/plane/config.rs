@@ -586,8 +586,8 @@ mod boot_validation_tests;
 /// A PLANE'S CONFIG SECTION, ASKED FOR ITS OWN SECRETS — so core enumerates a plane's credential
 /// references without naming that plane's credential-bearing types.
 ///
-/// Implemented by the type a plane's top-level config section deserializes into (`tools:` →
-/// `busbar_mcp`'s `ToolsCfg`, `agents:` → `busbar_kernel::a2a::config::AgentsCfg`). The composition
+/// Implemented by the type a plane's top-level config section deserializes into (for
+/// example a tool-definition section into that plane's own config type). The composition
 /// walk in `config_validate::secret_refs` gathers every plane's references by LOOPING this trait over
 /// the configured plane sections, rather than destructuring each plane's own config types itself: the
 /// section that owns a credential is the section that knows it is one.
