@@ -819,15 +819,24 @@ pub fn mount(
 /// the surface a cell drives is the one production serves (ruling (d), coordinator 2026-10-07: the
 /// generic `/api/v1/admin/trust` verbs were mounted at boot and absent from the cell's
 /// composition).
+///
+/// `retired_operator_key` is the slot the operator key held before #77(9)
+/// (`docs/design/BUSBAR-1.6.0.md` l.2279: no verb carries operator signatures, and
+/// `set_operator_key` does not exist). Nothing reads it. It stays in the call shape because the
+/// pinned door plane's root cells (`busbar-plane-a2a` `tests/root/mod.rs`) drive this one function
+/// with it, the way the v3 amendment record keeps its `operator_fingerprint` slot written empty so
+/// no stored shape moves; it leaves with the repin that drops it from that call.
 #[cfg(feature = "root-admin")]
 pub fn mount_node(
     admin_router: axum::Router,
     request_body_max_bytes: usize,
     app: &Arc<busbar_kernel::state::AppHandle>,
     book: &crate::root::durability::NodeBook,
+    retired_operator_key: Option<[u8; 32]>,
     late: &Arc<crate::root::serve::LateServices>,
     breaker: crate::root::adapters::BreakerPolicy,
 ) -> axum::Router {
+    let _ = retired_operator_key;
     mount(
         admin_router,
         crate::root::kernel::new_kernel(),

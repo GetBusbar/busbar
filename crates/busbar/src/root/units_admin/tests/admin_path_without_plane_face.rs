@@ -726,12 +726,10 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
                         busbar_contract::authz::Grants::of(busbar_contract::authz::Scope::Full),
                     )
                 });
-            let mut units =
-                crate::root::kernel::ProductionUnits::admin_over_book(dispatch, door, &book)
-                    .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
-                        ADirectoryThatMintedIt,
-                    )));
-            units
+            crate::root::kernel::ProductionUnits::admin_over_book(dispatch, door, &book)
+                .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+                    ADirectoryThatMintedIt,
+                )))
         },
     );
 
@@ -822,17 +820,16 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
         crate::root::kernel::new_kernel(),
         1 << 20,
         move |dispatch| {
-            let mut units = crate::root::kernel::ProductionUnits::admin_only_sharing(
+            crate::root::kernel::ProductionUnits::admin_only_sharing(
                 dispatch,
                 crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
                 held,
                 read,
                 None,
             )
-            .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
-                ADirectoryThatMintedIt,
-            )));
-            units
+            .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(
+                Arc::new(ADirectoryThatMintedIt),
+            ))
         },
     );
     let (unmounted_status, unmounted, _) = over(
