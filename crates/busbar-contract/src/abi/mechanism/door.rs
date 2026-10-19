@@ -102,7 +102,9 @@ pub struct Statement {
     pub kind_abi: u32,
     /// The most calls one instance holds in flight; the host clamps it.
     pub max_inflight: u32,
-    /// The plugin's name.
+    /// The plugin's name: the key its kind's registry holds it under, whichever door it arrives
+    /// by. A transport's registry key is its name, never one of its [`Statement::claims`]. The
+    /// other words config may call the plugin by are its [`REWRITE_ALIAS`] rewrites, never this.
     pub name: AbiStr,
     /// The plugin's version.
     pub version: AbiStr,
@@ -158,7 +160,9 @@ pub struct Statement {
     /// How many.
     pub answers_len: usize,
     /// The URL schemes it claims (a transport's claims; every other kind states none). Select reads
-    /// them off the signed rendering, so a dropped transport is chosen without being opened.
+    /// them off the signed rendering, so a dropped transport is chosen without being opened. Their
+    /// order states nothing, and no claim names the plugin (its key is [`Statement::name`]),
+    /// so a reader never keys a transport on its first claim.
     pub claims: *const AbiStr,
     /// How many.
     pub claims_len: usize,
