@@ -109,3 +109,61 @@ fn the_c_header_pins_every_structure() {
     let at = words.iter().position(|w| *w == "of").expect("`N of M`");
     assert_eq!(words[at - 1], words[at + 1], "{line}");
 }
+
+// ── item (LOW): the plane tail caps every list count ─────────────────────────────────────────────
+
+/// RED (u11 LOW): `check_tail` caps EVERY list the plane tail states at `STATEMENT_LIST_MAX`, so no
+/// caller (the loader's refusal-status read included) walks a plugin-stated count past its data.
+#[test]
+fn the_plane_tail_caps_every_list_count() {
+    use busbar_contract::abi::mechanism::check::{Rule, STATEMENT_LIST_MAX};
+    use busbar_contract::abi::plane::check::check_tail;
+    use busbar_contract::abi::plane::{PlaneTail, INGRESS_REQUEST_RESPONSE};
+    let base = PlaneTail {
+        ingress: INGRESS_REQUEST_RESPONSE,
+        ..PlaneTail::ZERO
+    };
+    assert_eq!(check_tail(&base), Ok(()));
+    let over = STATEMENT_LIST_MAX + 1;
+    let at = |t: PlaneTail, field: &str| {
+        let f = check_tail(&t).expect_err(field);
+        assert_eq!((f.rule, f.field), (Rule::OverMax, field), "{field}");
+    };
+    macro_rules! over {
+        ($ptr:ident, $len:ident, $field:literal) => {
+            at(
+                PlaneTail {
+                    $ptr: std::ptr::NonNull::dangling().as_ptr().cast_const(),
+                    $len: over,
+                    ..base
+                },
+                $field,
+            )
+        };
+    }
+    over!(dialects, dialects_len, "tail.dialects");
+    over!(dialect_auth, dialect_auth_len, "tail.dialect_auth");
+    over!(scope_kinds, scope_kinds_len, "tail.scope_kinds");
+    over!(op_classes, op_classes_len, "tail.op_classes");
+    over!(
+        billable_classes,
+        billable_classes_len,
+        "tail.billable_classes"
+    );
+    over!(route_cost, route_cost_len, "tail.route_cost");
+    over!(fee_units, fee_units_len, "tail.fee_units");
+    over!(record_kinds, record_kinds_len, "tail.record_kinds");
+    over!(egress_targets, egress_targets_len, "tail.egress_targets");
+    over!(record_chains, record_chains_len, "tail.record_chains");
+    over!(trust_keys, trust_keys_len, "tail.trust_keys");
+    over!(
+        refusal_statuses,
+        refusal_statuses_len,
+        "tail.refusal_statuses"
+    );
+    over!(
+        record_retentions,
+        record_retentions_len,
+        "tail.record_retentions"
+    );
+}
