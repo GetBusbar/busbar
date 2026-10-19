@@ -26,6 +26,8 @@
 //!     "pool": "<the pool an ATTEMPT names>",              // optional
 //!     "caller_ref": "<the caller's reference>",           // optional: on every piece
 //!     "host": { "entitled": [...], "trusted": [...] },     // optional: the kernel services served
+//!     // (top level, beside "plane") "far_ends": [...]       // optional: what the plane's own
+//!     //                                                    // needs reach, as the auth script's
 //!     "attempt": { "to_far_end": false },                  // optional: the ATTEMPT is taken, the
 //!                                                          // request rides the caller's body
 //!     "arrive_each": true,                                 // optional: every unit arrives first
@@ -143,8 +145,8 @@ use busbar_contract::abi::plane::{
 use serde_json::Value;
 
 use super::{
-    answered, called, close, crossings, dispatcher, input, json, load, on_ticket_frame, output,
-    ready_step, release, submit_on, validate, Fold, Leg, Recorder, Subject,
+    answered, bind_far, called, close, crossings, dispatcher, input, json, load, on_ticket_frame,
+    output, ready_step, release, submit_on, validate, Fold, Leg, Recorder, Subject,
 };
 use crate::dispatch::kinds::plane::{OwnedSnapshot, Plane};
 use crate::dispatch::{now_ns, Called, DispatchConfig, Dispatcher, Frame, Lent, Plugin};
@@ -1325,7 +1327,9 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let d = k.carried.host.clone().map_or_else(dispatcher, |h| {
         Arc::new(Dispatcher::with_services(DispatchConfig::default(), h))
     });
-    let p = load::<Plane>(s, leg, s.bind(&d, "plane")).expect("the plane door loads");
+    // The plane's own declared needs (a card it fetches, a callback it delivers) reach the far
+    // ends its inputs state (`far_ends`), as the auth script's do; naming none, the leg's table.
+    let p = load::<Plane>(s, leg, bind_far(&d, "plane", s)).expect("the plane door loads");
     // The loaded instance is admitted on what its Statement declares, as the kernel admits it.
     if let Some(h) = &k.carried.host {
         h.admit(&p.declared());
