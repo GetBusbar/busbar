@@ -133,7 +133,7 @@ fn rig_with(budget_cents: Option<u64>, fee: i64, mode: ExhaustionMode, rule: Fee
         key: key.clone(),
         cost: cost.clone(),
         pool: String::new(),
-        model: "m".into(),
+        lane: "m".into(),
         classes: Arc::from(vec![
             "input".to_string(),
             "output".to_string(),
@@ -530,7 +530,7 @@ fn a_plane_named_lane_is_the_units_ledger_lane_not_its_route_entry() {
     r.money.open(
         UnitKey::new(1),
         UnitMoney {
-            model: "tp\u{1f}srv".into(),
+            lane: "tp\u{1f}srv".into(),
             ..r.unit.clone()
         },
     );
@@ -586,7 +586,7 @@ fn a_plane_units_declared_class_counts_reach_its_metering_row() {
     r.money.open(
         UnitKey::new(1),
         UnitMoney {
-            model: "tp\u{1f}srv".into(),
+            lane: "tp\u{1f}srv".into(),
             classes: Arc::from(vec![
                 "calls".to_string(),
                 "bytes".to_string(),
@@ -1069,7 +1069,7 @@ fn a_session_whose_open_failed_is_refunded_its_per_session_fee() {
                 key: key(),
                 cost: cost.clone(),
                 pool: pool.clone(),
-                model: "m".into(),
+                lane: "m".into(),
                 classes: Arc::from(vec![
                     "input".to_string(),
                     "output".to_string(),
