@@ -222,8 +222,43 @@ pub unsafe fn render(st: &Statement) -> Result<Vec<u8>, TooLong> {
         for c in claims {
             o.str(*c, "claim")?;
         }
+        let flags = claim_flags(st);
+        if flags.iter().any(|f| *f != 0) {
+            o.len(flags.len(), "claim_flags")?;
+            for f in flags {
+                o.u32(f);
+            }
+        }
     }
     Ok(o.0)
+}
+
+/// A transport Statement's claim-row `flags`, row by row; empty for any other kind, or for a tail
+/// too short to state its rows.
+///
+/// # Safety
+///
+/// As [`render`]: a non-NULL kind tail is live data of its stated size, and its row list points at
+/// its stated count of live rows.
+unsafe fn claim_flags(st: &Statement) -> Vec<u32> {
+    use crate::abi::transport::{Claim, TransportTail};
+    if st.kind != super::KindCode::Transport as u32 || st.kind_tail.is_null() {
+        return Vec::new();
+    }
+    let covers =
+        core::mem::offset_of!(TransportTail, claim_rows_len) + core::mem::size_of::<usize>();
+    // SAFETY: the caller's contract (a non-NULL tail is live).
+    let size = unsafe { (*st.kind_tail).size } as usize;
+    if size < covers {
+        return Vec::new();
+    }
+    // SAFETY: a transport's kind tail is a `TransportTail` of at least `covers` bytes (checked), and
+    // the two fields read lie within them.
+    let tail = st.kind_tail.cast::<TransportTail>();
+    let (rows, len) = unsafe { ((*tail).claim_rows, (*tail).claim_rows_len) };
+    // SAFETY: the caller's contract.
+    let rows: &[Claim] = unsafe { items(rows, len) };
+    rows.iter().map(|r| r.flags).collect()
 }
 
 // ── reading a rendering back (every no-dlopen reader: `--validate`, `--list-plugins`, Discover) ───
@@ -465,7 +500,30 @@ pub fn read(bytes: &[u8]) -> Result<Read, Unreadable> {
     let trust_from = i.str("trust_from")?;
     let answers = i.strs("answers")?;
     let claims = i.strs("claims")?;
-    let claim_flags = vec![0; claims.len()];
+    // THE OPTIONAL TAIL FIELD, canonical (module docs): read only on a transport's Statement (on any
+    // other kind a byte past `claims` is refused at "the end" below), and refused when it spells
+    // "every flag zero", names another count than `claims`, or states a bit but `CLAIM_SECURE`.
+    let transport = kind == super::KindCode::Transport as u32;
+    let claim_flags = if !transport || i.at == bytes.len() {
+        vec![0; claims.len()]
+    } else {
+        let refused = Unreadable {
+            at: i.at,
+            what: "claim_flags",
+        };
+        let n = i.count("claim_flags")?;
+        let flags = (0..n)
+            .map(|_| i.u32("claim_flags"))
+            .collect::<Result<Vec<u32>, _>>()?;
+        let secure = crate::abi::transport::CLAIM_SECURE;
+        if n != claims.len()
+            || flags.iter().all(|f| *f == 0)
+            || flags.iter().any(|f| f & !secure != 0)
+        {
+            return Err(refused);
+        }
+        flags
+    };
     if i.at != bytes.len() {
         return Err(Unreadable {
             at: i.at,
