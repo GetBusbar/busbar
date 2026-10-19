@@ -1705,37 +1705,22 @@ pub const FACT_CONCURRENCY_CAP: u16 = 1;
 /// [`MemberFact::fact`], on a member: the largest request the member accepts, in the plane's own
 /// units (its context window). Read today at `model_egress.rs:101-102` and `:674`.
 pub const FACT_CONTEXT_WINDOW: u16 = 2;
-/// [`MemberFact::fact`], on a member: the seconds between two health probes of it. Read today at
-/// `model_egress.rs:156-180`, `:224-246` and `serve.rs:1638`, `:1859-1881`.
-pub const FACT_PROBE_INTERVAL: u16 = 3;
-/// [`MemberFact::fact`], on a member: the seconds one health probe of it may take (the same read
-/// sites as [`FACT_PROBE_INTERVAL`]).
-pub const FACT_PROBE_TIMEOUT: u16 = 4;
-/// [`MemberFact::fact`], on a member: how it is probed, [`PROBE_MODE_NONE`],
-/// [`PROBE_MODE_DEAD`] or [`PROBE_MODE_ACTIVE`]; any other value refuses the snapshot (the same
-/// read sites as [`FACT_PROBE_INTERVAL`]).
-pub const FACT_PROBE_MODE: u16 = 5;
 /// [`MemberFact::fact`], on a member or an entry: the milliseconds one attempt may take; a
 /// member's own value overrides its entry's. Read today at `model_egress.rs:92` and `:673`.
-pub const FACT_ATTEMPT_TIMEOUT_MS: u16 = 6;
+pub const FACT_ATTEMPT_TIMEOUT_MS: u16 = 3;
 /// [`MemberFact::fact`], on a member: the most requests the member serves in its life; not stated
 /// = no bound. Read today by the kernel at `crates/busbar-kernel/src/appbuild.rs:829`.
-pub const FACT_MAX_REQUESTS: u16 = 7;
+pub const FACT_MAX_REQUESTS: u16 = 4;
 /// [`MemberFact::fact`], on an entry: the failover budget, seconds of wall clock across one unit's
 /// attempts on the entry.
-pub const FACT_FAILOVER_TIMEOUT_SECS: u16 = 8;
+pub const FACT_FAILOVER_TIMEOUT_SECS: u16 = 5;
 /// [`MemberFact::fact`], on an entry: the most failover hops one unit takes on the entry.
-pub const FACT_FAILOVER_MAX_HOPS: u16 = 9;
+pub const FACT_FAILOVER_MAX_HOPS: u16 = 6;
 /// The last fact id. A new fact is the next number, appended above, and this moves to it; `0` is
-/// never a fact, and an id past this one is unknown and refuses the snapshot.
+/// never a fact, and an id past this one is unknown and refuses the snapshot. A member's health
+/// probing is not a fact: its provider's health settings stay core keys the kernel reads
+/// (coordinator ruling, step 2b).
 pub(crate) const FACT_LAST: u16 = FACT_FAILOVER_MAX_HOPS;
-
-/// [`FACT_PROBE_MODE`]'s value: the member is never probed.
-pub const PROBE_MODE_NONE: u64 = 1;
-/// [`FACT_PROBE_MODE`]'s value: the member is probed only while its breaker holds it down.
-pub const PROBE_MODE_DEAD: u64 = 2;
-/// [`FACT_PROBE_MODE`]'s value: the member is probed on its interval, up or down.
-pub const PROBE_MODE_ACTIVE: u64 = 3;
 
 /// The most routing entries one snapshot may state ([`PlaneSnapshot::routing`]).
 pub const MAX_ROUTE_ENTRIES: usize = 1024;

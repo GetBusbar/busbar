@@ -3651,7 +3651,7 @@ fn a_snapshots_routing_list_is_bounded_and_never_counted_over_null() {
 /// exclusion.
 #[test]
 fn a_routing_entry_with_known_facts_passes() {
-    static MEMBER_FACTS: [MemberFact; 7] = [
+    static MEMBER_FACTS: [MemberFact; 4] = [
         MemberFact {
             fact: FACT_CONCURRENCY_CAP,
             _reserved: [0; 3],
@@ -3661,21 +3661,6 @@ fn a_routing_entry_with_known_facts_passes() {
             fact: FACT_CONTEXT_WINDOW,
             _reserved: [0; 3],
             value: 128_000,
-        },
-        MemberFact {
-            fact: FACT_PROBE_INTERVAL,
-            _reserved: [0; 3],
-            value: 30,
-        },
-        MemberFact {
-            fact: FACT_PROBE_TIMEOUT,
-            _reserved: [0; 3],
-            value: 5,
-        },
-        MemberFact {
-            fact: FACT_PROBE_MODE,
-            _reserved: [0; 3],
-            value: PROBE_MODE_ACTIVE,
         },
         MemberFact {
             fact: FACT_ATTEMPT_TIMEOUT_MS,
@@ -3734,8 +3719,7 @@ fn a_routing_entry_with_known_facts_passes() {
     assert_eq!(check_snapshot(&sn, 7), Ok(()));
 }
 
-/// REDS, EACH WITH ITS DECLARED RULE: fact 0, an unknown fact, a probe mode outside its codes, a
-/// fact on the wrong side (a failover fact on a member, a member fact on an entry), a fact twice,
+/// REDS, EACH WITH ITS DECLARED RULE: fact 0, an unknown fact (7 and up), a fact on the wrong side (a failover fact on a member, a member fact on an entry), a fact twice,
 /// non-zero padding, weight 0, an unnamed lane or provider, an empty section, entry or path, an
 /// unnamed path segment, tag or exclusion, a NULL list with a count, a list over its cap, and one
 /// `(section, entry)` twice.
@@ -3750,21 +3734,11 @@ fn routing_reds_each_refuse_with_a_declared_rule() {
         one(member("a", f))
     }
     assert_eq!(facts(&[mf(0, 1)]), f(Rule::Missing, "member_fact.fact"));
-    assert_eq!(
-        facts(&[mf(FACT_FAILOVER_MAX_HOPS + 1, 1)]),
-        f(Rule::UnknownCode, "member_fact.fact")
-    );
+    assert_eq!(facts(&[mf(7, 1)]), f(Rule::UnknownCode, "member_fact.fact"));
     assert_eq!(
         facts(&[mf(u16::MAX, 1)]),
         f(Rule::UnknownCode, "member_fact.fact")
     );
-    for bad in [0, PROBE_MODE_ACTIVE + 1] {
-        assert_eq!(
-            facts(&[mf(FACT_PROBE_MODE, bad)]),
-            f(Rule::UnknownCode, "member_fact.value"),
-            "{bad}"
-        );
-    }
     assert_eq!(
         facts(&[mf(FACT_FAILOVER_TIMEOUT_SECS, 1)]),
         f(Rule::Contradiction, "route_member.facts")

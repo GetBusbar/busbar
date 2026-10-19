@@ -42,8 +42,7 @@ use super::{
 use super::{
     MemberFact, RouteMember, FACT_ATTEMPT_TIMEOUT_MS, FACT_CONCURRENCY_CAP, FACT_CONTEXT_WINDOW,
     FACT_FAILOVER_MAX_HOPS, FACT_FAILOVER_TIMEOUT_SECS, FACT_LAST, FACT_MAX_REQUESTS,
-    FACT_PROBE_INTERVAL, FACT_PROBE_MODE, FACT_PROBE_TIMEOUT, MAX_MEMBER_TAGS, MAX_ROUTE_ENTRIES,
-    MAX_ROUTE_FACTS, MAX_ROUTE_MEMBERS, MAX_ROUTE_PATH, PROBE_MODE_ACTIVE, PROBE_MODE_NONE,
+    MAX_MEMBER_TAGS, MAX_ROUTE_ENTRIES, MAX_ROUTE_FACTS, MAX_ROUTE_MEMBERS, MAX_ROUTE_PATH,
 };
 use crate::abi::hook::{
     signal, MessageView, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
@@ -1537,9 +1536,6 @@ const ENTRY_FACTS: &[u16] = &[
 const MEMBER_FACTS: &[u16] = &[
     FACT_CONCURRENCY_CAP,
     FACT_CONTEXT_WINDOW,
-    FACT_PROBE_INTERVAL,
-    FACT_PROBE_TIMEOUT,
-    FACT_PROBE_MODE,
     FACT_ATTEMPT_TIMEOUT_MS,
     FACT_MAX_REQUESTS,
 ];
@@ -1575,7 +1571,7 @@ fn route_member(m: &RouteMember) -> Result<(), Fault> {
 }
 
 /// One member's or entry's facts: at most [`MAX_ROUTE_FACTS`], each a known fact of this side,
-/// zero padding, a probe mode one of its codes, no fact twice.
+/// zero padding, no fact twice.
 fn facts(
     ptr: *const MemberFact,
     len: usize,
@@ -1598,9 +1594,6 @@ fn facts(
         }
         if !side.contains(&f.fact) {
             return Err(fault(Rule::Contradiction, field));
-        }
-        if f.fact == FACT_PROBE_MODE && !(PROBE_MODE_NONE..=PROBE_MODE_ACTIVE).contains(&f.value) {
-            return Err(fault(Rule::UnknownCode, "member_fact.value"));
         }
         if list[..i].iter().any(|g| g.fact == f.fact) {
             return Err(fault(Rule::Contradiction, "member_fact.fact"));
