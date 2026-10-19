@@ -1646,6 +1646,11 @@ fn no_deferral_reports_the_unwaived_markers_and_the_stale_waiver_together() {
         "scripts/no-deferral.waivers",
         "crates/busbar-core/src/no-such-file.rs:1\tplanted, matches nothing [retires: KP-36]\n",
     );
+    // A marker nobody waives, planted: the tree itself carries no unwaived one to stand in for it.
+    ov.set(
+        "crates/busbar-kernel/src/zz_planted_deferral.rs",
+        "pub fn planted() -> u8 { todo!() }\n",
+    );
     let reg = gates::find("no-deferral").expect("the gate is registered");
     let gate = (reg.build)();
     let rows = gates::execute(gate.as_ref(), &cx().with_overlay(ov)).rows;
@@ -1661,7 +1666,7 @@ fn no_deferral_reports_the_unwaived_markers_and_the_stale_waiver_together() {
     assert!(
         unwaived
             .detail
-            .contains("crates/busbar-contract/src/abi/hot/decl.rs:"),
+            .contains("crates/busbar-kernel/src/zz_planted_deferral.rs:"),
         "the over-count arm names the markers nobody waived: {}",
         unwaived.detail
     );

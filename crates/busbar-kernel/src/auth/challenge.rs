@@ -5,10 +5,10 @@
 //!
 //! ## Why this is not `unauthorized_response`
 //!
-//! The data plane's 401 shaper (`super::unauthorized_response`) deliberately impersonates the vendor
-//! whose dialect the caller spoke: an OpenAI SDK gets OpenAI's copy, a Bedrock SDK gets
-//! `AccessDeniedException`. That is right for a gateway pretending to be six vendors, and it is
-//! exactly wrong here. An audience-bound plane's caller is not an LLM SDK; it is an OAuth client
+//! The data plane's 401 (`super::unauthorized_response`) answers in the refusal dialect of the
+//! line the caller reached, so a client gets the refusal shape its own wire protocol uses. That is
+//! right for a gateway that speaks its callers' protocols, and it is exactly wrong here. An
+//! audience-bound plane's caller is not an LLM SDK; it is an OAuth client
 //! that has been TOLD, by RFC 6750 and RFC 9728, that a `401` carries a machine-readable challenge
 //! naming where to go and get a token. Hand it a vendor-shaped JSON body with no
 //! `WWW-Authenticate` header and the discovery loop simply does not close: the client has no way to

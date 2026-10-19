@@ -967,8 +967,7 @@ impl Default for TestApp {
 /// THE ROOT'S `register_seams`, IN A TEST BINARY: the parse-time section list (the test fold,
 /// [`crate::plane::config::default_plane_sections`]), first-wins. A plane's test-kit calls this where
 /// the composition root would have bound it, so a plane test that drives a wire leg without building
-/// a [`TestApp`] runs on the same binding a shipped binary does. The hostless-egress driver is no
-/// longer a binding: a plane is handed its App's on the build context (`BuildCtx::hostless`).
+/// a [`TestApp`] runs on the same binding a shipped binary does.
 pub fn install_root_seams() {
     crate::plane::config::install_plane_sections(crate::plane::config::default_plane_sections);
 }
@@ -2332,6 +2331,16 @@ pub fn install_operator_auth_row(door: AuthDoor) {
 pub use busbar_kernel_identity::operator::{
     install_row as install_operator_auth_row_as, AuthDoor, OperatorWords,
 };
+
+/// THE ROOT'S HOOK NAMES in a test binary of the composition root: `names` is the root's own
+/// generated list (`$OUT_DIR/linked_hook_names.rs`, the manifest's `linked-name` rows for the hook
+/// rows that build links), and the install record ([`crate::preflight::root_rows`]) reports them as
+/// the root's install record does, so the admin surface that binary serves, its `openapi.json`
+/// included, lists the hooks the shipped binary lists. A test build with no root hands in nothing
+/// and lists none. The first hand-in stands.
+pub fn install_root_hook_names(names: &'static [&'static str]) {
+    let _ = crate::preflight::TEST_ROOT_HOOK_NAMES.set(names);
+}
 
 /// The builtin-only `SecretResolver` (env/file sugar, no plugin modules) for a dependent crate's
 /// tests — `SecretResolver::builtins_only` itself stays crate-private; this is the one doorway.
