@@ -848,7 +848,7 @@ pub const CORE_NAMED_MAP_SECTIONS: [&str; 2] = [Kind::Auth.root(), Kind::Export.
 
 /// REPIN BRIDGE (arch u34; af24 review of 492d41f885), deleted in the first PR after the planes
 /// whose sections were 1.5.3 named maps repin with `SECTION_NAMED_MAP` set (tracked: status row
-/// "named-map bridge", lane-kernel-routing-from-plane). Until then a DOOR plane whose Statement
+/// 175, ✅ when this bridge is absent from the kernel on dev). Until then a DOOR plane whose Statement
 /// states `SECTION_NAMED_MAP` on NO section, and whose declaring section is one of these, keeps the
 /// named-definition surface it had. A plane that states the bit is never overridden or widened by
 /// this list. Read in exactly one place: [`crate::plane::door`]'s fold.

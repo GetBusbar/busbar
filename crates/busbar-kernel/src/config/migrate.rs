@@ -1779,12 +1779,29 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
 /// a released config must migrate byte-for-byte the same way across the two versions.
 fn migrate_unified_pools(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<String>) {
     for section in ["tool_pools", "agent_pools"] {
-        let Some(Value::Mapping(folded)) = take(root, section) else {
+        // A section present in another shape is LEFT EXACTLY AS WRITTEN with a TODO naming it
+        // (`Taken::Malformed`), never dropped (arch u28 LOW; the module's `Taken` contract).
+        let Taken::Got(folded) = take_mapping(root, section, "", todos) else {
             continue;
         };
-        // Ensure a `pools:` mapping exists to merge into.
-        if !matches!(root.get(Value::from("pools")), Some(Value::Mapping(_))) {
-            root.insert("pools".into(), Value::Mapping(Mapping::new()));
+        // A `pools:` the operator wrote in another shape is not ours to replace: both keys stay as
+        // written and the operator is told, rather than the folded pools landing in a mapping that
+        // overwrote it.
+        match root.get(Value::from("pools")) {
+            None => {
+                root.insert("pools".into(), Value::Mapping(Mapping::new()));
+            }
+            Some(Value::Mapping(_)) => {}
+            Some(other) => {
+                todos.push(format!(
+                    "pools: is not a mapping (`{}`), so `{section}:` could not be folded into it — \
+                     both were left EXACTLY as written. Fix `pools:` by hand and re-run \
+                     `--migrate-config`.",
+                    one_line(other)
+                ));
+                root.insert(section.into(), Value::Mapping(folded));
+                continue;
+            }
         }
         let Some(Value::Mapping(pools)) = root.get_mut(Value::from("pools")) else {
             // Unreachable given the insert above, but keep the section rather than dropping it.

@@ -2564,6 +2564,47 @@ fn migrate_folds_tool_and_agent_pools_into_pools() {
     );
 }
 
+/// A MALFORMED `tool_pools:`/`agent_pools:` section, or a `pools:` that is not a mapping, is never
+/// dropped or overwritten (arch u28 LOW): each is left EXACTLY as written, with a TODO naming it. RED
+/// before the fix: the section vanished with no todo, and a non-mapping `pools:` was replaced by `{}`.
+#[test]
+fn migrate_leaves_malformed_pool_sections_as_written_with_a_todo() {
+    let (out, doc) = migrate_to_value("providers: {}\nmodels: {}\ntool_pools: [oops]\n");
+    assert_eq!(
+        dig(&doc, &["tool_pools"]).unwrap(),
+        &serde_yaml::from_str::<serde_yaml::Value>("[oops]").unwrap(),
+        "a malformed section is left exactly as written"
+    );
+    assert!(
+        out.todos
+            .iter()
+            .any(|t| t.starts_with("tool_pools: is not a mapping")),
+        "the malformed section is named: {:?}",
+        out.todos
+    );
+
+    let (out, doc) = migrate_to_value(
+        "providers: {}\nmodels: {}\npools: keep-me\nagent_pools:\n  planner:\n    \
+         members: [planner-eu, planner-us]\n",
+    );
+    assert_eq!(
+        dig(&doc, &["pools"]).unwrap(),
+        &serde_yaml::Value::from("keep-me"),
+        "a non-mapping `pools:` is not overwritten"
+    );
+    assert!(
+        dig(&doc, &["agent_pools", "planner", "members"]).is_some(),
+        "the section that could not be folded stays where it was written"
+    );
+    assert!(
+        out.todos
+            .iter()
+            .any(|t| t.starts_with("pools: is not a mapping")),
+        "the operator is told: {:?}",
+        out.todos
+    );
+}
+
 /// Rich pool members (`{ model, weight, ... }`) are the 1.5.5 grammar AND the 1.6.0 grammar, so
 /// the migrator leaves them exactly as written: no bare-name rewrite, no lifted `weights:` map, no
 /// change line, no todo. This pins the byte-for-byte agreement with what the 1.5.5 binary emitted
