@@ -819,13 +819,6 @@ pub struct Located {
     /// The entry's protocol offer for the handshake (ALPN), most preferred first; empty = it makes
     /// none (THE DESIGN, connections: "the ALPN offer is the framer's").
     pub offer: Vec<Vec<u8>>,
-    /// The framer's own head lines on a request to the target (`LocateIn::defaults_buf`), in order:
-    /// each one a request that does not state it carries, added before the auth signs the head.
-    pub defaults: Vec<crate::compose::HeadWords>,
-    /// The framer's head states its body's length (`LocateOut::states_length`): `content-length` is
-    /// the framer's own line, written by the framer from the body length the host hands it,
-    /// before its auth call; the host adds no line of that name.
-    pub states_length: bool,
 }
 
 /// A protocol offer in the handshake's ProtocolNameList encoding (each name led by its one-byte
@@ -867,12 +860,10 @@ pub fn accept_offer(door: &dyn FramerDoor) -> Result<Vec<Vec<u8>>, Refused> {
 
 fn locate_as(door: &dyn FramerDoor, target: &str, accept: bool) -> Result<Located, Refused> {
     let (mut auth_cap, mut name_cap, mut alpn_cap) = (256_usize, 256_usize, 256_usize);
-    let mut defaults_cap = 256_usize;
     for _ in 0..2 {
         let mut authority = vec![0_u8; auth_cap];
         let mut name = vec![0_u8; name_cap];
         let mut alpn = vec![0_u8; alpn_cap];
-        let mut defaults = vec![0_u8; defaults_cap];
         let mut i: LocateIn = blank_in();
         i.target = abi(target.as_bytes());
         i.authority_buf = authority.as_mut_ptr();
@@ -882,20 +873,16 @@ fn locate_as(door: &dyn FramerDoor, target: &str, accept: bool) -> Result<Locate
         i.alpn_buf = alpn.as_mut_ptr();
         i.alpn_cap = alpn.len();
         i.accept = u32::from(accept);
-        i.defaults_buf = defaults.as_mut_ptr();
-        i.defaults_cap = defaults.len();
         let mut o: LocateOut = blank_out();
         let c = door.cross(Call::Locate(&mut i, &mut o));
         let short = o.authority_needed > auth_cap as u64
             || o.name_needed > name_cap as u64
-            || o.alpn_needed > alpn_cap as u64
-            || o.defaults_needed > defaults_cap as u64;
+            || o.alpn_needed > alpn_cap as u64;
         if c.outcome == Outcome::Failed && short {
             let grow = |needed: u64, cap: usize| usize::try_from(needed).unwrap_or(0).max(cap);
             auth_cap = grow(o.authority_needed, auth_cap);
             name_cap = grow(o.name_needed, name_cap);
             alpn_cap = grow(o.alpn_needed, alpn_cap);
-            defaults_cap = grow(o.defaults_needed, defaults_cap);
             continue;
         }
         ready(c)?;
@@ -910,19 +897,11 @@ fn locate_as(door: &dyn FramerDoor, target: &str, accept: bool) -> Result<Locate
                 outcome: Outcome::Fault,
                 error: "the framer's protocol offer is not a protocol list".into(),
             })?;
-        let lines = defaults
-            .get(..usize::try_from(o.defaults_written).unwrap_or(usize::MAX))
-            .ok_or_else(|| Refused {
-                outcome: Outcome::Fault,
-                error: "the framer's head lines overrun its buffer".into(),
-            })?;
         return Ok(Located {
             authority: text(&authority, o.authority_written),
             name: (o.has_name != 0).then(|| text(&name, o.name_written)),
             secure: o.secure != 0,
             offer: offered,
-            defaults: crate::framed_stream::field_lines(lines)?,
-            states_length: o.states_length != 0,
         });
     }
     Err(Refused {

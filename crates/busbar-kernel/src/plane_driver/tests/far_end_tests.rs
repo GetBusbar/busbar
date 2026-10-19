@@ -2722,8 +2722,9 @@ async fn an_answer_cut_after_its_head_ends_on_a_cut_piece_and_a_complete_one_doe
 /// the plane's fields, in the plane's order: no auth line, no `content-length`, no `host`, no
 /// framer default. Those are the transport's: the framer adds its own lines and the auth's as it
 /// begins the request. The kernel makes no outbound auth call; it records the attempt's binding
-/// for the framer's `auth.call`. Before, the kernel asked the framer for its stated lines
-/// (`PollConns::head_defaults`) and inserted them, and called the binding's `fields` itself.
+/// for the framer's `auth.call`. Before, the kernel asked the framer for its stated lines (through
+/// `locate`, a host buffer that is now gone) and inserted them, and called the binding's `fields`
+/// itself.
 #[tokio::test]
 async fn the_kernel_adds_no_head_line_and_makes_no_auth_call_on_the_dialled_side() {
     let r = rig(

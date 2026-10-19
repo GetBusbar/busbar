@@ -1180,20 +1180,10 @@ pub struct LocateIn {
     /// framed by this entry (`target` may be empty: a listener names no far end); `0` = the
     /// offer a dial to `target` makes, as before. THE ALPN OFFER IS THE FRAMER'S on both sides
     /// (`BUSBAR-1.6.0.md` l.477-478), and the two may differ (v1.5.5's client offered `h2,
-    /// http/1.1`, its listener `http/1.1` alone). A tail addition (pre-tag v1).
+    /// http/1.1`, its listener `http/1.1` alone).
     pub accept: u32,
     /// Alignment padding.
     pub _accept_reserved: u32,
-    /// HOST buffer for THE FRAMER'S OWN HEAD LINES on a request to `target`: the field lines its
-    /// wire adds to an outgoing head that does not state them (a default it would otherwise write
-    /// at `encode`). The host adds each the request does not carry to the head BEFORE the auth
-    /// kind signs it, so the auth signs the complete head and nothing is added after it (THE
-    /// DESIGN section 6, step 5); the framer then writes the head as handed and adds no line of
-    /// its own. Field lines, `name: value` CRLF each. Appended: a framer that predates it states
-    /// none, and adds its defaults at `encode` as before.
-    pub defaults_buf: *mut u8,
-    /// Its capacity.
-    pub defaults_cap: usize,
 }
 
 /// `locate`'s `out`.
@@ -1222,20 +1212,6 @@ pub struct LocateOut {
     pub alpn_written: u64,
     /// Short answer: the bytes `alpn_buf` needs.
     pub alpn_needed: u64,
-    /// Bytes of `defaults_buf` written ([`LocateIn::defaults_buf`]); `0` = the framer adds no line.
-    pub defaults_written: u64,
-    /// Short answer: the bytes `defaults_buf` needs.
-    pub defaults_needed: u64,
-    /// `1` = the framer's head states its body's length, on a line of the framer's OWN: the host
-    /// hands the framer the body's length, and the framer writes `content-length: <that length>`
-    /// into its head itself, with its other own lines, BEFORE its auth call, so the auth signs the
-    /// complete head and nothing is added after it (THE DESIGN, "Auth points and guest lists",
-    /// item 5). The host never adds that line, nor any other, to the head. `0` = the framer frames
-    /// its body its own way. A framer that predates the field reads `0` (the host zeroes its whole
-    /// `out` before every crossing). A tail addition.
-    pub states_length: u8,
-    /// Alignment padding.
-    pub _reserved: [u8; 7],
 }
 
 /// Every framer op's `out`.
