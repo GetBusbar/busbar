@@ -125,6 +125,10 @@ fn the_plane_tail_caps_every_list_count() {
     };
     assert_eq!(check_tail(&base), Ok(()));
     let over = STATEMENT_LIST_MAX + 1;
+    // A non-NULL, aligned pointer to nothing: the cap is judged before any element is read.
+    fn dangling<T>() -> *const T {
+        std::ptr::NonNull::<T>::dangling().as_ptr().cast_const()
+    }
     let at = |t: PlaneTail, field: &str| {
         let f = check_tail(&t).expect_err(field);
         assert_eq!((f.rule, f.field), (Rule::OverMax, field), "{field}");
@@ -133,7 +137,7 @@ fn the_plane_tail_caps_every_list_count() {
         ($ptr:ident, $len:ident, $field:literal) => {
             at(
                 PlaneTail {
-                    $ptr: std::ptr::NonNull::dangling().as_ptr().cast_const(),
+                    $ptr: dangling(),
                     $len: over,
                     ..base
                 },
