@@ -45,6 +45,134 @@ impl AuthCalls for OpenedLogin {
     }
 }
 
+/// A kind-neutral login door double for the REGISTRY row the build reads a Statement off: it never
+/// opens here (the build opens through the test's axis), so only its Statement matters.
+struct StatedLogin;
+
+impl busbar_contract::abi::sdk::auth_door::VerifyPlugin for StatedLogin {
+    fn open(_: &[u8], _: &[&[u8]]) -> Result<Self, &'static str> {
+        Ok(StatedLogin)
+    }
+    fn verify(
+        &self,
+        _: &busbar_contract::abi::sdk::auth_door::VerifyView<'_>,
+    ) -> busbar_contract::abi::sdk::auth_door::Answer {
+        busbar_contract::abi::sdk::auth_door::Verdict::Pass.into()
+    }
+}
+
+/// Its Statement names the `client_secret` secret reference.
+mod slotted {
+    use super::StatedLogin;
+    use busbar_contract::abi::auth::{AuthPoints, AuthTail};
+    use busbar_contract::abi::mechanism::call::AbiStr;
+    use busbar_contract::abi::mechanism::door::Statement;
+    use busbar_contract::abi::sdk::auth_door::{verify_tail, with_tail};
+    use busbar_contract::abi::sdk::door::{abi_str, statement};
+
+    const TAIL: &AuthTail = &verify_tail(0, AuthPoints::HEAD);
+    const SECRET_REFS: &[AbiStr] = &[abi_str("client_secret")];
+
+    busbar_contract::auth_verify_door!(
+        StatedLogin,
+        with_tail(
+            Statement {
+                secret_refs: SECRET_REFS.as_ptr(),
+                secret_refs_len: SECRET_REFS.len(),
+                ..statement("idp-plugin", "1.0.0", 8)
+            },
+            TAIL
+        )
+    );
+}
+
+/// Its Statement names no secret reference.
+mod unslotted {
+    use super::StatedLogin;
+    use busbar_contract::abi::auth::{AuthPoints, AuthTail};
+    use busbar_contract::abi::sdk::auth_door::{verify_tail, with_tail};
+    use busbar_contract::abi::sdk::door::statement;
+
+    const TAIL: &AuthTail = &verify_tail(0, AuthPoints::HEAD);
+
+    busbar_contract::auth_verify_door!(
+        StatedLogin,
+        with_tail(statement("idp-plugin", "1.0.0", 8), TAIL)
+    );
+}
+
+/// A registry holding `door` as the linked auth row `idp-plugin`.
+fn registry_of(
+    door: busbar_contract::abi::mechanism::door::DoorFn,
+) -> busbar_plugin_loader::PluginRegistry {
+    busbar_plugin_loader::PluginRegistry::empty()
+        .link(vec![busbar_plugin_loader::LinkedPlugin::auth_door(
+            "idp-plugin",
+            door,
+        )])
+        .expect("the linked door registers")
+}
+
+/// An axis that answers `idp-plugin` and records every `open` it is asked for.
+struct Recording {
+    opened: std::sync::Mutex<Vec<(String, String, serde_json::Value)>>,
+    door: std::sync::Arc<OpenedLogin>,
+}
+
+impl busbar_contract::auth_calls::AuthAxis for Recording {
+    fn linked_names(&self) -> Vec<String> {
+        Vec::new()
+    }
+    fn answers(&self, module: &str) -> bool {
+        module == "idp-plugin"
+    }
+    fn linked(&self, _: &str) -> bool {
+        false
+    }
+    fn operator(&self) -> Option<(String, String)> {
+        None
+    }
+    fn open(
+        &self,
+        module: &str,
+        label: &str,
+        settings: &serde_json::Value,
+    ) -> Result<std::sync::Arc<dyn AuthCalls>, String> {
+        self.opened
+            .lock()
+            .unwrap()
+            .push((module.to_string(), label.to_string(), settings.clone()));
+        Ok(self.door.clone())
+    }
+}
+
+impl Recording {
+    fn new() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            opened: std::sync::Mutex::new(Vec::new()),
+            door: std::sync::Arc::new(OpenedLogin),
+        })
+    }
+}
+
+/// One `identity-providers.idp` method on `idp-plugin` with a `browser_login` whose client secret
+/// resolves from the environment variable `env`.
+fn idp_with_secret(env: &str) -> crate::config::AuthCfg {
+    let mut cfg = crate::config::AuthCfg::default_none();
+    cfg.methods.insert(
+        "idp".into(),
+        crate::config::AuthMethodCfg {
+            module: "idp-plugin".into(),
+            browser_login: Some(crate::config::BrowserLoginCfg {
+                client_secret: Some(crate::config::SecretRef::env(env)),
+                client_id: Some("client-abc".into()),
+            }),
+            settings: serde_json::Map::new(),
+        },
+    );
+    cfg
+}
+
 #[test]
 fn browser_login_secret_required_for_redirect_absent_for_credential() {
     use busbar_contract::auth::LoginKind;
@@ -72,59 +200,12 @@ fn browser_login_secret_required_for_redirect_absent_for_credential() {
 #[tokio::test]
 async fn the_client_secret_is_lent_at_open() {
     const SECRET: &str = "REAL-SECRET-XYZ";
-    struct Recording {
-        opened: std::sync::Mutex<Vec<(String, String, serde_json::Value)>>,
-        door: std::sync::Arc<OpenedLogin>,
-    }
-    impl busbar_contract::auth_calls::AuthAxis for Recording {
-        fn linked_names(&self) -> Vec<String> {
-            Vec::new()
-        }
-        fn answers(&self, module: &str) -> bool {
-            module == "idp-plugin"
-        }
-        fn linked(&self, _: &str) -> bool {
-            false
-        }
-        fn operator(&self) -> Option<(String, String)> {
-            None
-        }
-        fn open(
-            &self,
-            module: &str,
-            label: &str,
-            settings: &serde_json::Value,
-        ) -> Result<std::sync::Arc<dyn AuthCalls>, String> {
-            self.opened.lock().unwrap().push((
-                module.to_string(),
-                label.to_string(),
-                settings.clone(),
-            ));
-            Ok(self.door.clone())
-        }
-    }
-    let axis = std::sync::Arc::new(Recording {
-        opened: std::sync::Mutex::new(Vec::new()),
-        door: std::sync::Arc::new(OpenedLogin),
-    });
+    let axis = Recording::new();
     std::env::set_var("BUSBAR_TEST_LOGIN_SECRET_LENT", SECRET);
-    let mut cfg = crate::config::AuthCfg::default_none();
-    cfg.methods.insert(
-        "idp".into(),
-        crate::config::AuthMethodCfg {
-            module: "idp-plugin".into(),
-            browser_login: Some(crate::config::BrowserLoginCfg {
-                client_secret: Some(crate::config::SecretRef::env(
-                    "BUSBAR_TEST_LOGIN_SECRET_LENT",
-                )),
-                client_id: Some("client-abc".into()),
-            }),
-            settings: serde_json::Map::new(),
-        },
-    );
+    let cfg = idp_with_secret("BUSBAR_TEST_LOGIN_SECRET_LENT");
     let _methods = LoginMethods::build_on(
         &cfg,
-        &busbar_plugin_loader::PluginRegistry::empty(),
+        &registry_of(slotted::door),
         &crate::config::secret::SecretResolver::builtins_only(),
         || Some(axis.clone() as std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>),
     )
@@ -140,6 +221,41 @@ async fn the_client_secret_is_lent_at_open() {
         "the secret is lent at open"
     );
     assert_eq!(opened[0].2["client_id"], "client-abc");
+}
+
+/// THE CLIENT SECRET IS LENT ONLY INTO A STATED SECRET SLOT (Q128 p9#2; THE DESIGN §6 item 7: IdP
+/// logins hold their own client secret). The loader lifts out of the settings only the keys a
+/// plugin's Statement names in `secret_refs`; a plugin that names no `client_secret` slot would be
+/// handed the resolved secret inline in its plain settings text. Such a method is refused at build
+/// and its plugin is never opened. RED before the fix: the build opened it with the secret in the
+/// plain settings and answered `Ok`.
+#[tokio::test]
+async fn a_login_plugin_stating_no_client_secret_slot_is_refused_the_secret() {
+    let axis = Recording::new();
+    std::env::set_var("BUSBAR_TEST_LOGIN_SECRET_UNSLOTTED", "UNSLOTTED-SECRET");
+    let cfg = idp_with_secret("BUSBAR_TEST_LOGIN_SECRET_UNSLOTTED");
+    let built = LoginMethods::build_on(
+        &cfg,
+        &registry_of(unslotted::door),
+        &crate::config::secret::SecretResolver::builtins_only(),
+        || Some(axis.clone() as std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>),
+    );
+    let Err(refusal) = built else {
+        panic!("a plugin stating no client_secret slot must not be lent the secret");
+    };
+    assert!(
+        refusal.contains("identity-providers.idp browser_login.client_secret")
+            && refusal.contains("states no `client_secret` secret reference"),
+        "{refusal}"
+    );
+    assert!(
+        !refusal.contains("UNSLOTTED-SECRET"),
+        "the refusal never carries the secret: {refusal}"
+    );
+    assert!(
+        axis.opened.lock().unwrap().is_empty(),
+        "the plugin is never opened over the secret"
+    );
 }
 
 /// NO AUTH AXIS AT ALL: a hosted-login method is refused in 1.5.5's words, byte for byte — "no
