@@ -1929,6 +1929,22 @@ pub struct ProviderFacts {
     /// Its `error_map`, as one JSON object; [`crate::abi::mechanism::call::BLOB_ABSENT`] when it
     /// states none.
     pub error_map: Blob,
+    /// Its `base_url` AS THE BOOT LINE SHOWS IT (step 2b), built by the kernel: its trailing `/`
+    /// trimmed as the previous release printed it, its `user:pass@` stripped. A display string,
+    /// never a credential; empty when the provider states none (printed empty, as the previous
+    /// release did).
+    pub base_url: AbiStr,
+}
+
+impl ProviderFacts {
+    /// THE EMPTY DECLARATION: no name, protocol, error map or base URL. A host builds its value as
+    /// `ProviderFacts { …, ..ProviderFacts::ZERO }`.
+    pub const ZERO: Self = Self {
+        name: AbiStr::ZERO,
+        protocol: AbiStr::ZERO,
+        error_map: Blob::ZERO,
+        base_url: AbiStr::ZERO,
+    };
 }
 
 /// The plane's `open` `in`: the lifecycle's, plus the deployment's public base URL.

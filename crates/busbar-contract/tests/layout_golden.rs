@@ -1551,7 +1551,11 @@ fn compute_layout() -> String {
             routing_len
         ]
     );
-    record!(s, pkind::ProviderFacts, [name, protocol, error_map]);
+    record!(
+        s,
+        pkind::ProviderFacts,
+        [name, protocol, error_map, base_url]
+    );
     record!(
         s,
         pkind::PlaneOpenIn,

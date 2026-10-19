@@ -801,6 +801,7 @@ pub fn provider_facts(
                     flags: 0,
                 },
             },
+            base_url: text(&d.base_url),
         })
         .collect()
 }

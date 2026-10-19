@@ -2819,6 +2819,7 @@ struct bb_plane_ProviderFacts {
     bb_mech_AbiStr name;
     bb_mech_AbiStr protocol;
     bb_mech_Blob error_map;
+    bb_mech_AbiStr base_url;
 };
 
 /* The plane's `open` `in`: the lifecycle's, plus the deployment's public base URL. */
@@ -5535,11 +5536,12 @@ BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, arrival_spans) == 144, "bb_plane_Plan
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, arrival_spans_len) == 152, "bb_plane_PlaneSnapshot.arrival_spans_len: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, routing) == 160, "bb_plane_PlaneSnapshot.routing: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, routing_len) == 168, "bb_plane_PlaneSnapshot.routing_len: offset");
-BB_ASSERT(sizeof(bb_plane_ProviderFacts) == 56, "bb_plane_ProviderFacts: size");
+BB_ASSERT(sizeof(bb_plane_ProviderFacts) == 72, "bb_plane_ProviderFacts: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_ProviderFacts) == 8, "bb_plane_ProviderFacts: alignment");
 BB_ASSERT(offsetof(bb_plane_ProviderFacts, name) == 0, "bb_plane_ProviderFacts.name: offset");
 BB_ASSERT(offsetof(bb_plane_ProviderFacts, protocol) == 16, "bb_plane_ProviderFacts.protocol: offset");
 BB_ASSERT(offsetof(bb_plane_ProviderFacts, error_map) == 32, "bb_plane_ProviderFacts.error_map: offset");
+BB_ASSERT(offsetof(bb_plane_ProviderFacts, base_url) == 56, "bb_plane_ProviderFacts.base_url: offset");
 BB_ASSERT(sizeof(bb_plane_PlaneOpenIn) == 216, "bb_plane_PlaneOpenIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneOpenIn) == 8, "bb_plane_PlaneOpenIn: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneOpenIn, open) == 0, "bb_plane_PlaneOpenIn.open: offset");

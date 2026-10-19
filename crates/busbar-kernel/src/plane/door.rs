@@ -556,6 +556,7 @@ fn build<const I: usize>(
                 p.error_map()
                     .map(|(k, v)| (k.to_string(), v.to_string()))
                     .collect(),
+                busbar_kernel_egress::trust::net::display_base_url(&p.base_url),
             )
         })
     });

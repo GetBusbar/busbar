@@ -406,6 +406,16 @@ pub fn redact_userinfo(url: &str) -> String {
     }
 }
 
+/// A PROVIDER'S `base_url` AS THE BOOT LINE SHOWS IT, the one spelling a plane is handed at open
+/// (`ProviderFacts::base_url`, step 2b): its trailing `/` trimmed, as v1.5.5 printed it
+/// (`crates/busbar/src/main.rs:2886-2888`, `provider_cfg.base_url.trim_end_matches('/')`; an empty
+/// `base_url` printed empty), and its `user:pass@` stripped ([`strip_userinfo`]; row 74, F25), so no
+/// credential reaches a plane or a log. Never a credential.
+#[must_use]
+pub fn display_base_url(base_url: &str) -> String {
+    strip_userinfo(base_url.trim_end_matches('/')).into_owned()
+}
+
 /// A provider BASE URL with its authority's userinfo removed: `scheme://user:pass@host:port/path`
 /// becomes `scheme://host:port/path`, and a URL with none comes back borrowed, untouched.
 ///

@@ -155,8 +155,8 @@ pub type FacingProbe = Arc<
 >;
 
 /// ONE PROVIDER'S DIALECT FACTS as a door plane is handed them at open (THE DESIGN section 4;
-/// `PlaneOpenIn::providers`), owned: its name, its resolved `protocol` and its `error_map` as one
-/// JSON object (`None` = it states none).
+/// `PlaneOpenIn::providers`), owned: its name, its resolved `protocol`, its `error_map` as one
+/// JSON object (`None` = it states none) and its `base_url` as the boot line shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DialectFacts {
     /// The provider's `providers:` key.
@@ -165,16 +165,20 @@ pub struct DialectFacts {
     pub protocol: String,
     /// Its `error_map`, as JSON; `None` = none stated.
     pub error_map: Option<Vec<u8>>,
+    /// Its `base_url` as the boot line shows it (`ProviderFacts::base_url`): the kernel's spelling,
+    /// trailing `/` trimmed and userinfo stripped; empty = none stated. Never a credential.
+    pub base_url: String,
 }
 
 /// THE ONE BUILDER OF A DOOR PLANE'S OPEN-TIME PROVIDER LIST, for its served instance and its probe
 /// alike: each provider `section`'s reserved model map references (`models.<m>.provider`), once, in
 /// the order first referenced, with the `protocol` and `error_map` `lookup` resolves it to (a name
 /// `lookup` does not know is skipped: the configuration's `resolve` refused it). An empty
-/// `error_map` is absent.
+/// `error_map` is absent. `lookup`'s third answer is the provider's base URL as the boot line shows
+/// it, which the kernel spells (`busbar_kernel_egress::trust::net::display_base_url`).
 pub fn dialect_facts(
     section: &serde_yaml::Value,
-    lookup: impl Fn(&str) -> Option<(String, std::collections::BTreeMap<String, String>)>,
+    lookup: impl Fn(&str) -> Option<(String, std::collections::BTreeMap<String, String>, String)>,
 ) -> Vec<DialectFacts> {
     use crate::section::{MODEL_PROVIDER_KEY, RESERVED_MODELS_KEY};
     let mut out: Vec<DialectFacts> = Vec::new();
@@ -188,7 +192,7 @@ pub fn dialect_facts(
         if out.iter().any(|f| f.name == name) {
             continue;
         }
-        let Some((protocol, error_map)) = lookup(name) else {
+        let Some((protocol, error_map, base_url)) = lookup(name) else {
             continue;
         };
         out.push(DialectFacts {
@@ -197,6 +201,7 @@ pub fn dialect_facts(
             error_map: (!error_map.is_empty())
                 .then(|| serde_json::to_vec(&error_map).ok())
                 .flatten(),
+            base_url,
         });
     }
     out
