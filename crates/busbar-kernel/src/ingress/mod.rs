@@ -22,7 +22,7 @@ use crate::state::App;
 // (`busbar_kernel::ingress::arrival::set_test_body_ingress(|| the retired engine crate::BODY_INGRESS)`, idempotent,
 // first-wins) from an integration-test target, exactly the posture an external `test-support`
 // consumer already used — so this neutral source names no dialect crate under any build surface.
-pub(crate) use busbar_kernel::ingress::arrival::{body_ingress_for, path_ingress_for};
+pub(crate) use busbar_kernel::ingress::arrival::body_ingress_for;
 
 /// enforce a virtual key's allowed-pools list against the resolved target pool. No-op
 /// when governance is off (`gov.key` is None) or the key allows all pools. Returns a 403 response

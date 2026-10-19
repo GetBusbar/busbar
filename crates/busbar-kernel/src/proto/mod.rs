@@ -332,40 +332,6 @@ pub use busbar_contract::protocol::{
 };
 pub use installed::*;
 
-use crate::ingress::arrival::{install_path_ingress, PathIngress};
-
-/// THE COMPOSITION ROOT'S ONE WRITE INTO BOTH PROTOCOL SEAMS — the declarations AND their path-model
-/// arrivals, registered together so the second seam [`install_protocols`] gained when `path_ingress`
-/// split off [`ProtocolDecl`] cannot drift from the first. Folds the two installs into one call and,
-/// before either lands, asserts the PARITY that keeps the split honest:
-///
-/// **Every declaration whose model is in the URL path (`has_model_in_url`) MUST register a
-/// `path_ingress` arrival.** A path-model protocol installed WITHOUT its arrival would resolve no
-/// arrival and SILENTLY fall through to the body-model branch — a wrong-behavior 404-shaped bug.
-/// Asserting it here makes that drift a LOUD PANIC at boot, and it is asserted BEFORE either install
-/// so a refused boot leaves both seams unwritten rather than one of the two.
-///
-/// # Panics
-/// - if a `has_model_in_url` decl has no registered arrival (the parity failure above).
-/// - if either underlying install was already called (two composition roots).
-pub fn install_protocols_with_path_ingress(
-    decls: Vec<&'static ProtocolDecl>,
-    path_ingress: Vec<(&'static str, PathIngress)>,
-) {
-    if let Some(name) = first_path_model_without_arrival(
-        &decls,
-        &path_ingress.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
-    ) {
-        panic!(
-            "protocol '{name}' declares has_model_in_url == true but registered no path_ingress \
-             arrival: a request naming its URL model would silently fall through to the body-model \
-             branch. Register its arrival alongside its declaration."
-        );
-    }
-    install_protocols(decls);
-    install_path_ingress(path_ingress);
-}
-
 #[cfg(test)]
 #[path = "../tests/proto.rs"]
 mod tests;

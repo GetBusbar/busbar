@@ -1773,7 +1773,6 @@ fn manifest_table(manifest: &str, table: &str) -> Vec<(String, String)> {
 const AXIS_ITEMS: &[(&str, &[&str])] = &[
     ("plane", &["PLANE_DECLARATION", "PLANE_HOOKS"]),
     ("protocols", &["PROTOCOLS"]),
-    ("path-ingress", &["PATH_INGRESS"]),
     ("body-ingress", &["BODY_INGRESS"]),
     ("protocol-seams", &["install_protocol_seams"]),
     ("diagnostics", &["DIAGNOSTICS"]),

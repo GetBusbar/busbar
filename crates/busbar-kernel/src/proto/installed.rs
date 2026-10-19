@@ -92,8 +92,7 @@ pub fn test_registered_protocols_len() -> usize {
 // carries none (every protocol is a plugin the composition root installs through `install_protocols`),
 // and core's OWN test binary names its shipped set in a `tests/` file the neutral-purity lint excludes,
 // which reaches this singleton through the [`set_test_builtins`] hook below — so the neutral source here
-// spells no protocol crate. `install_protocols_with_path_ingress` (which names the core-only `Arrival`)
-// stays in `busbar-core`.
+// spells no protocol crate.
 
 /// THE REGISTRY: the declarations, plus the aggregates that used to be three separate `OnceLock`
 /// sweeps. Built once; every field is derived from the declarations and from nothing else, so there
@@ -301,19 +300,6 @@ pub fn install_protocols(decls: Vec<&'static ProtocolDecl>) {
         "install_protocols called after the protocol registry was first read; register in main \
          before any config load or validation touches a protocol"
     );
-}
-
-/// THE BOOT PARITY RULE, as a pure function so a test can drive it without touching the process
-/// singletons: the NAME of the first declaration whose model is in the URL (`has_model_in_url`) that
-/// has NO arrival among `path_ingress_names`, or `None` when every URL-model protocol has one.
-pub fn first_path_model_without_arrival(
-    decls: &[&'static ProtocolDecl],
-    path_ingress_names: &[&str],
-) -> Option<&'static str> {
-    decls
-        .iter()
-        .find(|d| d.has_model_in_url && !path_ingress_names.contains(&d.name))
-        .map(|d| d.name)
 }
 
 /// THE BOOT FOLD: installed declarations ahead of built-ins, one entry per NAME, later same-name
