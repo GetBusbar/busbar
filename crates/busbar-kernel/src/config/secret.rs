@@ -103,6 +103,44 @@ pub fn path_reference(path: &str) -> Option<SecretRef> {
         .map(|s| s.reference(path))
 }
 
+/// THE DOCUMENT A CREDENTIAL CARRIES, for a style that takes its token endpoint from its credential
+/// (`busbar_contract::abi::auth::STYLE_ENDPOINT_FROM_CREDENTIAL`; Q128 ruling (a)). 1.5.5's
+/// `api_key_env: VAR` (v1.5.5 `egress_auth/jwt_bearer.rs:249-256`, `read_credential`), now
+/// `api_key: {env: VAR}`: a resolved value that starts with `{` after leading whitespace is the
+/// document inline and is handed back as it is; any other names its key FILE, which is read through
+/// the source whose declared sugar role is the path, handed to `read_file` as that `{ <path>: FILE }`
+/// reference (the caller's config-time resolver: the disk lane). The value is read only under the
+/// kernel's seal, and its path leaves the seal only as that reference. A file that cannot be read
+/// refuses in 1.5.5's words, without the path.
+///
+/// # Errors
+///
+/// No loaded secret plugin declares the path sugar, or the key file cannot be read.
+pub fn endpoint_document(
+    credential: busbar_contract::redacted::Secret<Vec<u8>>,
+    read_file: impl FnOnce(&SecretRef) -> Result<busbar_contract::secret::Resolved<Vec<u8>>, String>,
+) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
+    const UNREAD: &str = "could not read service-account key file named by this lane's credential";
+    let seal = crate::seal::lend();
+    let named = match std::str::from_utf8(credential.expose(&seal)) {
+        Ok(text) if !text.trim_start().starts_with('{') && !text.trim().is_empty() => text.trim(),
+        _ => return Ok(credential),
+    };
+    let file = path_reference(named).ok_or_else(|| {
+        format!("{UNREAD}: no loaded secret plugin declares the key-file path sugar")
+    })?;
+    read_file(&file)
+        .map(busbar_contract::secret::Resolved::sealed)
+        .map_err(|e| {
+            // The file source's refusal names the path; only its reason is 1.5.5's to show.
+            let why = e.split_once(" cannot resolve: ").map_or_else(
+                || e.replace(named, "<key file>"),
+                |(_, why)| why.to_string(),
+            );
+            format!("{UNREAD}: {why}")
+        })
+}
+
 /// A refusal's example reference over `var`: `{ <fill>: <var> }` through the fill sugar, else the
 /// canonical form.
 #[must_use]

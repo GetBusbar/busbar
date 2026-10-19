@@ -2540,6 +2540,15 @@ impl OutboundAuths {
         Ok(Vec::new())
     }
 
+    /// THE FLAGS `style` IS DECLARED WITH by the row that serves it: the first row stating it, the
+    /// one [`Self::serving`] binds (`abi::auth::STYLE_*`). `None` when no row states it.
+    #[must_use]
+    pub fn style_flags(&self, style: &str) -> Option<u32> {
+        self.facts()
+            .iter()
+            .find_map(|row| row.styles.iter().find(|s| s.name == style).map(|s| s.flags))
+    }
+
     /// THE OUTBOUND STYLES every auth row declares, linked first, then dropped in, in the host's
     /// one listing order (`busbar_contract::auth_calls::listed_styles`).
     ///
@@ -3587,21 +3596,32 @@ pub fn member_routes(
                 .map_err(|e| format!("provider '{}' credential: {e}", r.name))?
                 .sealed()
         };
-        // A service-account credential naming its key file is read here, at configuration time,
-        // through the secret kind's file source: the serving plugin is handed the JSON and opens no
-        // file (Q128 audit ruling (a)).
-        let credential = if r.style == SERVICE_ACCOUNT_STYLE {
-            busbar_kernel::config_validate::service_account_json(credential, |file| {
+        // A style that takes its token endpoint from its credential, as its serving row declares
+        // it (`STYLE_ENDPOINT_FROM_CREDENTIAL`), is handed the document the credential carries: a
+        // credential naming its key file is read here, at configuration time, through the secret
+        // kind's file source, so the serving plugin opens no file (Q128 audit ruling (a); 1.5.5's
+        // `api_key_env`). Any other style's credential is handed on unread, whatever its name.
+        let from_credential = reach.auths.style_flags(&r.style).is_some_and(|flags| {
+            flags & busbar_contract::abi::auth::STYLE_ENDPOINT_FROM_CREDENTIAL != 0
+        });
+        let credential = if from_credential {
+            busbar_kernel::config::secret::endpoint_document(credential, |file| {
                 reach.secrets.resolve_at_config(file, scope)
             })
-            .map_err(|e| format!("provider '{}' (jwt-bearer auth): {e}", r.name))?
+            .map_err(|e| format!("provider '{}' ({} auth): {e}", r.name, r.style))?
         } else {
             credential
         };
         // Revealed under the kernel's seal (Part 2 #54): its token endpoint, and the binding.
         let seal = busbar_kernel::seal::lend();
-        let settings =
-            sealed_params(&r.name, &r.style, r.provider, credential.expose(&seal))?.to_json();
+        let settings = sealed_params(
+            &r.name,
+            &r.style,
+            from_credential,
+            r.provider,
+            credential.expose(&seal),
+        )?
+        .to_json();
         let (auth, decl) = reach.auths.serving(&r.style, &settings)?.ok_or_else(|| {
             format!(
                 "member '{}': no linked or dropped-in auth plugin serves the style '{}'",
@@ -3754,15 +3774,13 @@ fn host_label<'h>(host: &'h str, after: &[&str]) -> Option<&'h str> {
     })
 }
 
-/// The `auth:` style whose credential names its own token endpoint: a service account's
-/// `token_uri` (RFC 7523; `jwt-bearer`, 1.5.5's `egress_auth/jwt_bearer.rs`).
-const SERVICE_ACCOUNT_STYLE: &str = "jwt-bearer";
-
 /// THE PARAMETERS PROVIDER `name`'s STYLE IS OPENED WITH AT THE SEAL: those it states, and, for
-/// a service-account credential, its `token_uri` — the target of the serving plugin's mint need —
-/// judged under the provider's metadata posture with 1.5.5's check and words (v1.5.5 `main.rs`:
-/// `provider '<p>' (jwt-bearer auth): <why>`). A credential that is no service account to read
-/// fills nothing: the serving plugin refuses it in its own words at `open_outbound`.
+/// a style that takes its token endpoint from its credential (`from_credential`: its serving row
+/// declares `STYLE_ENDPOINT_FROM_CREDENTIAL`), the `token_uri` the credential names — the target of
+/// the serving plugin's mint need — judged under the provider's metadata posture with 1.5.5's check
+/// and words (v1.5.5 `main.rs`: `provider '<p>' (jwt-bearer auth): <why>`). A credential that is
+/// no service account to read fills nothing: the serving plugin refuses it in its own words at
+/// `open_outbound`.
 ///
 /// # Errors
 ///
@@ -3770,11 +3788,12 @@ const SERVICE_ACCOUNT_STYLE: &str = "jwt-bearer";
 fn sealed_params(
     name: &str,
     style: &str,
+    from_credential: bool,
     provider: &ProviderRoute,
     credential: &[u8],
 ) -> Result<StyleParams, String> {
     let mut params = provider.params.clone();
-    if style != SERVICE_ACCOUNT_STYLE || credential.is_empty() {
+    if !from_credential || credential.is_empty() {
         return Ok(params);
     }
     let Ok(text) = std::str::from_utf8(credential) else {
@@ -3784,7 +3803,7 @@ fn sealed_params(
         return Ok(params);
     };
     busbar_kernel::config_validate::vet_token_uri(&token_uri, &provider.metadata)
-        .map_err(|e| format!("provider '{name}' (jwt-bearer auth): {e}"))?;
+        .map_err(|e| format!("provider '{name}' ({style} auth): {e}"))?;
     params.token_uri = Some(token_uri);
     Ok(params)
 }
