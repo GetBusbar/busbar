@@ -928,8 +928,8 @@ async fn test_metrics_requires_auth_in_chain_mode() {
     let auth_cfg = busbar_kernel::config::auth::AuthCfg::with_chain(vec![
         busbar_kernel::config::auth::AuthChainEntry::bare("test-groups-module"),
     ]);
-    // 1.6.0 item 144: an identified principal is admitted only under a governance key, so the
-    // scrapers' role is BOUND (no `allowed_pools` = every pool). The gate stays credential-based.
+    // The scrapers' role is BOUND (no `allowed_pools` = every pool), so the principal is admitted
+    // under a governance key. The gate stays credential-based.
     let mut roles = std::collections::BTreeMap::new();
     roles.insert(
         "metrics-scrapers".to_string(),

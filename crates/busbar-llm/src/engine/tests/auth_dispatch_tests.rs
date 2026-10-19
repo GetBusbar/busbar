@@ -169,9 +169,9 @@ async fn test_chain_accepts_all_carriers_and_native_401() {
     let server = MockServer::new(state).await;
 
     let auth_cfg = chain_cfg(&["test-groups-module"]);
-    // 1.6.0 item 144: an identified principal is admitted only under a governance key, so the
-    // chain-admitted role is BOUND (omitted `allowed_pools` = every pool). An unbound role earns no
-    // key and is refused — asserted below.
+    // The chain-admitted role is BOUND (omitted `allowed_pools` = every pool), so the module has a
+    // `role_bindings` table and an unbound role earns no key and is refused, as 1.5.5 refused it
+    // (v1.5.5 auth/mod.rs:1543) — asserted below.
     let app = TestApp::new()
         .lane(
             LaneSpec::new(
@@ -268,8 +268,8 @@ async fn test_chain_accepts_all_carriers_and_native_401() {
         "native error envelope must contain an `error` object: {env}"
     );
 
-    // A credential the chain IDENTIFIES but whose role is unbound earns no governance key → 401,
-    // same native envelope (item 144: never admitted ungoverned).
+    // A credential the chain IDENTIFIES but whose role is unbound under the module's bindings table
+    // earns no governance key → 401, same native envelope (1.5.5's guard, auth/mod.rs:1543).
     let r_unbound = client
         .post(&url)
         .header("x-api-key", "grp:unbound")
@@ -724,9 +724,8 @@ async fn test_governance_inert_without_admin_token_static_token_admitted() {
         "precondition: engine must be inert (no admin token)"
     );
 
-    // 1.6.0 item 144: an identified principal is admitted only under a governance key, so the
-    // chain-admitted role is BOUND (omitted `allowed_pools` = every pool). The chain, not the inert
-    // engine, still decides admission.
+    // The chain-admitted role is BOUND (omitted `allowed_pools` = every pool), so the principal is
+    // admitted under a governance key. The chain, not the inert engine, still decides admission.
     let app = TestApp::new()
         .lane(
             LaneSpec::new(
@@ -1047,9 +1046,8 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
     let static_token = "grp:static-chain";
     let auth_cfg = chain_cfg(&["test-groups-module"]);
 
-    // 1.6.0 item 144: an identified principal is admitted only under a governance key, so the
-    // chain-admitted role is BOUND (omitted `allowed_pools` = every pool). The chain, not the inert
-    // engine, still decides admission.
+    // The chain-admitted role is BOUND (omitted `allowed_pools` = every pool), so the principal is
+    // admitted under a governance key. The chain, not the inert engine, still decides admission.
     let app = TestApp::new()
         .lane(
             LaneSpec::new(
