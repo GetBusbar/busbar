@@ -1038,6 +1038,7 @@ fn view() -> HeadView {
         query: none(),
         fields: core::ptr::null(),
         fields_len: 0,
+        scheme: none(),
     }
 }
 
@@ -1273,6 +1274,22 @@ fn red_unit_hand_in_in_refuses_each_break() {
     assert_eq!(
         in_rule(check_unit_hand_in_in(&i)),
         fault(Rule::NullWithCount, "head_view.query")
+    );
+    // RED: the scheme is text by the same rule, a count never behind NULL.
+    let mut i = ok;
+    i.request.scheme.len = 5;
+    assert_eq!(
+        in_rule(check_unit_hand_in_in(&i)),
+        fault(Rule::NullWithCount, "head_view.scheme")
+    );
+    let mut i = ok;
+    i.request.scheme = AbiStr {
+        ptr: b"https".as_ptr(),
+        len: 5,
+    };
+    assert!(
+        check_unit_hand_in_in(&i).is_ok(),
+        "a scheme the wire states"
     );
     let mut i = ok;
     i.answer = core::ptr::null_mut();

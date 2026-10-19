@@ -239,6 +239,8 @@ pub struct HeadViewArgs<'a> {
     pub query: Option<&'a str>,
     /// The head's field lines, in order, as `(name, value)`.
     pub fields: &'a [(&'a str, &'a [u8])],
+    /// The scheme the request carries on its wire; `None` = the wire states none.
+    pub scheme: Option<&'a str>,
 }
 
 /// Where a name the auth handle answers for stripping sits.
@@ -315,6 +317,7 @@ fn view(args: &HeadViewArgs<'_>, fields: &[Field]) -> HeadView {
         query: args.query.map_or(NO_TEXT, text),
         fields: fields.as_ptr(),
         fields_len: fields.len(),
+        scheme: args.scheme.map_or(NO_TEXT, text),
     }
 }
 

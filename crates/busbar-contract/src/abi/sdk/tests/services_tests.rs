@@ -1655,7 +1655,53 @@ fn request() -> HeadViewArgs<'static> {
         authority: "a.example",
         query: Some("key=k"),
         fields: &[("x-credential", b"c")],
+        scheme: Some("https"),
     }
+}
+
+/// The scheme the last `sees_scheme` call's view carried: `None` = NULL.
+static SEEN_SCHEME: std::sync::Mutex<Option<Vec<u8>>> = std::sync::Mutex::new(None);
+
+/// An `auth.call` host that records the scheme its request view carries, then continues.
+extern "C" fn sees_scheme(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the wrapper hands a live `AuthCallIn` and `out`; the view's scheme is its own text,
+    // `len` bytes behind a non-NULL pointer.
+    unsafe {
+        let i = input.cast::<AuthCallIn>().read_unaligned();
+        let s = i.request.scheme;
+        *SEEN_SCHEME.lock().unwrap() =
+            (!s.ptr.is_null()).then(|| std::slice::from_raw_parts(s.ptr, s.len).to_vec());
+        answer_auth(input, out, FLOW_CONTINUE, &[])
+    }
+}
+
+/// RED (the request view's scheme): the scheme the request carries on its wire reaches the auth
+/// in the view; a wire that states none hands none.
+#[test]
+fn auth_call_hands_the_auth_the_scheme_the_request_carries() {
+    let t = auth_table(Some(sees_scheme));
+    let call = |request: &HeadViewArgs<'_>| {
+        match services(&t).auth_call::<Own>(
+            ticketed(0),
+            LINE_REF,
+            UnitRef::NONE,
+            POINT_HEAD,
+            1,
+            1,
+            request,
+            None,
+        ) {
+            Poll::Ready(r) => assert_eq!(r.expect("answered").flow, FLOW_CONTINUE),
+            Poll::Pending => panic!("did not pend"),
+        }
+        SEEN_SCHEME.lock().unwrap().take()
+    };
+    assert_eq!(call(&request()), Some(b"https".to_vec()));
+    let none = HeadViewArgs {
+        scheme: None,
+        ..request()
+    };
+    assert_eq!(call(&none), None, "a wire that states no scheme hands none");
 }
 
 #[test]

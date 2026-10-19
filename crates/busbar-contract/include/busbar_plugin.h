@@ -4005,6 +4005,7 @@ struct bb_hsvc_HeadView {
     bb_mech_AbiStr query;
     const bb_mech_Field *fields;
     size_t fields_len;
+    bb_mech_AbiStr scheme;
 };
 
 /* What [`op::AUTH_CALL`] and [`op::UNIT_HAND_IN`] answer beyond [`ServiceOut`]. */
@@ -6410,7 +6411,7 @@ BB_ASSERT(sizeof(bb_hsvc_UnitRef) == 16, "bb_hsvc_UnitRef: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_UnitRef) == 8, "bb_hsvc_UnitRef: alignment");
 BB_ASSERT(offsetof(bb_hsvc_UnitRef, id) == 0, "bb_hsvc_UnitRef.id: offset");
 BB_ASSERT(offsetof(bb_hsvc_UnitRef, mac) == 8, "bb_hsvc_UnitRef.mac: offset");
-BB_ASSERT(sizeof(bb_hsvc_HeadView) == 80, "bb_hsvc_HeadView: size");
+BB_ASSERT(sizeof(bb_hsvc_HeadView) == 96, "bb_hsvc_HeadView: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_HeadView) == 8, "bb_hsvc_HeadView: alignment");
 BB_ASSERT(offsetof(bb_hsvc_HeadView, method) == 0, "bb_hsvc_HeadView.method: offset");
 BB_ASSERT(offsetof(bb_hsvc_HeadView, target) == 16, "bb_hsvc_HeadView.target: offset");
@@ -6418,12 +6419,13 @@ BB_ASSERT(offsetof(bb_hsvc_HeadView, authority) == 32, "bb_hsvc_HeadView.authori
 BB_ASSERT(offsetof(bb_hsvc_HeadView, query) == 48, "bb_hsvc_HeadView.query: offset");
 BB_ASSERT(offsetof(bb_hsvc_HeadView, fields) == 64, "bb_hsvc_HeadView.fields: offset");
 BB_ASSERT(offsetof(bb_hsvc_HeadView, fields_len) == 72, "bb_hsvc_HeadView.fields_len: offset");
+BB_ASSERT(offsetof(bb_hsvc_HeadView, scheme) == 80, "bb_hsvc_HeadView.scheme: offset");
 BB_ASSERT(sizeof(bb_hsvc_AuthAnswer) == 24, "bb_hsvc_AuthAnswer: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_AuthAnswer) == 8, "bb_hsvc_AuthAnswer: alignment");
 BB_ASSERT(offsetof(bb_hsvc_AuthAnswer, size) == 0, "bb_hsvc_AuthAnswer.size: offset");
 BB_ASSERT(offsetof(bb_hsvc_AuthAnswer, flow) == 4, "bb_hsvc_AuthAnswer.flow: offset");
 BB_ASSERT(offsetof(bb_hsvc_AuthAnswer, unit) == 8, "bb_hsvc_AuthAnswer.unit: offset");
-BB_ASSERT(sizeof(bb_hsvc_AuthCallIn) == 224, "bb_hsvc_AuthCallIn: size");
+BB_ASSERT(sizeof(bb_hsvc_AuthCallIn) == 240, "bb_hsvc_AuthCallIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_AuthCallIn) == 8, "bb_hsvc_AuthCallIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_AuthCallIn, head) == 0, "bb_hsvc_AuthCallIn.head: offset");
 BB_ASSERT(offsetof(bb_hsvc_AuthCallIn, auth) == 24, "bb_hsvc_AuthCallIn.auth: offset");
@@ -6433,13 +6435,13 @@ BB_ASSERT(offsetof(bb_hsvc_AuthCallIn, _reserved) == 60, "bb_hsvc_AuthCallIn._re
 BB_ASSERT(offsetof(bb_hsvc_AuthCallIn, conn) == 64, "bb_hsvc_AuthCallIn.conn: offset");
 BB_ASSERT(offsetof(bb_hsvc_AuthCallIn, stream) == 72, "bb_hsvc_AuthCallIn.stream: offset");
 BB_ASSERT(offsetof(bb_hsvc_AuthCallIn, request) == 80, "bb_hsvc_AuthCallIn.request: offset");
-BB_ASSERT(offsetof(bb_hsvc_AuthCallIn, body) == 160, "bb_hsvc_AuthCallIn.body: offset");
-BB_ASSERT(offsetof(bb_hsvc_AuthCallIn, buf) == 184, "bb_hsvc_AuthCallIn.buf: offset");
-BB_ASSERT(offsetof(bb_hsvc_AuthCallIn, cap) == 192, "bb_hsvc_AuthCallIn.cap: offset");
-BB_ASSERT(offsetof(bb_hsvc_AuthCallIn, spans) == 200, "bb_hsvc_AuthCallIn.spans: offset");
-BB_ASSERT(offsetof(bb_hsvc_AuthCallIn, spans_cap) == 208, "bb_hsvc_AuthCallIn.spans_cap: offset");
-BB_ASSERT(offsetof(bb_hsvc_AuthCallIn, answer) == 216, "bb_hsvc_AuthCallIn.answer: offset");
-BB_ASSERT(sizeof(bb_hsvc_UnitHandInIn) == 168, "bb_hsvc_UnitHandInIn: size");
+BB_ASSERT(offsetof(bb_hsvc_AuthCallIn, body) == 176, "bb_hsvc_AuthCallIn.body: offset");
+BB_ASSERT(offsetof(bb_hsvc_AuthCallIn, buf) == 200, "bb_hsvc_AuthCallIn.buf: offset");
+BB_ASSERT(offsetof(bb_hsvc_AuthCallIn, cap) == 208, "bb_hsvc_AuthCallIn.cap: offset");
+BB_ASSERT(offsetof(bb_hsvc_AuthCallIn, spans) == 216, "bb_hsvc_AuthCallIn.spans: offset");
+BB_ASSERT(offsetof(bb_hsvc_AuthCallIn, spans_cap) == 224, "bb_hsvc_AuthCallIn.spans_cap: offset");
+BB_ASSERT(offsetof(bb_hsvc_AuthCallIn, answer) == 232, "bb_hsvc_AuthCallIn.answer: offset");
+BB_ASSERT(sizeof(bb_hsvc_UnitHandInIn) == 184, "bb_hsvc_UnitHandInIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_UnitHandInIn) == 8, "bb_hsvc_UnitHandInIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_UnitHandInIn, head) == 0, "bb_hsvc_UnitHandInIn.head: offset");
 BB_ASSERT(offsetof(bb_hsvc_UnitHandInIn, auth) == 24, "bb_hsvc_UnitHandInIn.auth: offset");
@@ -6449,7 +6451,7 @@ BB_ASSERT(offsetof(bb_hsvc_UnitHandInIn, _reserved) == 60, "bb_hsvc_UnitHandInIn
 BB_ASSERT(offsetof(bb_hsvc_UnitHandInIn, conn) == 64, "bb_hsvc_UnitHandInIn.conn: offset");
 BB_ASSERT(offsetof(bb_hsvc_UnitHandInIn, stream) == 72, "bb_hsvc_UnitHandInIn.stream: offset");
 BB_ASSERT(offsetof(bb_hsvc_UnitHandInIn, request) == 80, "bb_hsvc_UnitHandInIn.request: offset");
-BB_ASSERT(offsetof(bb_hsvc_UnitHandInIn, answer) == 160, "bb_hsvc_UnitHandInIn.answer: offset");
+BB_ASSERT(offsetof(bb_hsvc_UnitHandInIn, answer) == 176, "bb_hsvc_UnitHandInIn.answer: offset");
 BB_ASSERT(sizeof(bb_hsvc_RefusalAnswer) == 48, "bb_hsvc_RefusalAnswer: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_RefusalAnswer) == 8, "bb_hsvc_RefusalAnswer: alignment");
 BB_ASSERT(offsetof(bb_hsvc_RefusalAnswer, size) == 0, "bb_hsvc_RefusalAnswer.size: offset");

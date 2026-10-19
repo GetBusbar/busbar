@@ -2355,6 +2355,10 @@ fn get_view() -> HeadView {
         },
         fields: std::ptr::null(),
         fields_len: 0,
+        scheme: AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
     }
 }
 

@@ -1169,6 +1169,10 @@ pub struct HeadView {
     pub fields: *const Field,
     /// How many, at most [`MAX_SPANS`].
     pub fields_len: usize,
+    /// The scheme the request carries on its wire (a head that states its scheme, as a pseudo
+    /// field or a word of its own), as received; empty where the wire states none. A tail
+    /// addition (pre-tag v1).
+    pub scheme: AbiStr,
 }
 
 /// [`AuthAnswer::flow`]: the transport carries on with the request.
@@ -1365,6 +1369,7 @@ pub fn check_head_view(v: &HeadView) -> Result<(), Fault> {
     check::text(v.target, "head_view.target")?;
     check::text(v.authority, "head_view.authority")?;
     check::text(v.query, "head_view.query")?;
+    check::text(v.scheme, "head_view.scheme")?;
     check::listed(v.fields, v.fields_len, "head_view.fields")?;
     if v.fields_len as u64 > MAX_SPANS {
         return Err(fault(Rule::OverMax, "head_view.fields"));
