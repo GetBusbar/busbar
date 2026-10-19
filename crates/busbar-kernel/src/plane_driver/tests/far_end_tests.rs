@@ -28,8 +28,7 @@ use busbar_contract::abi::transport::{
 use busbar_contract::auth_calls::{AuthField, Fielding, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::caps::{Pass, Route};
 use busbar_contract::conn::{
-    ConnError, ConnId, Conns, HeadDefaults, InstanceId, NeedId, OpenDesc, Piece, PieceKind,
-    PollConns, Ticket,
+    ConnError, ConnId, Conns, InstanceId, NeedId, OpenDesc, Piece, PieceKind, PollConns, Ticket,
 };
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::{WireFault, WireStatusClass};
@@ -84,10 +83,6 @@ struct Table {
     broken: Mutex<std::collections::HashSet<u64>>,
     /// The connections whose stream FAILS once their scripted pieces are read.
     failing: Mutex<Vec<u64>>,
-    /// The head lines the framer states for every target (`PollConns::head_defaults`).
-    defaults: Mutex<Vec<(Vec<u8>, Vec<u8>)>>,
-    /// Whether the framer's head states the body's length (`HeadDefaults::states_length`).
-    states_length: std::sync::atomic::AtomicBool,
 }
 
 fn piece(kind: PieceKind, len: usize, status: Option<(u32, Option<u64>)>) -> Piece {
@@ -246,13 +241,6 @@ impl Conns for Table {
 }
 
 impl PollConns for Table {
-    fn head_defaults(&self, _: InstanceId, _: NeedId, _: &str) -> HeadDefaults {
-        HeadDefaults {
-            lines: self.defaults.lock().unwrap().clone(),
-            states_length: self.states_length.load(std::sync::atomic::Ordering::SeqCst),
-        }
-    }
-
     fn poll_read(
         &self,
         _: InstanceId,
@@ -2729,28 +2717,34 @@ async fn an_answer_cut_after_its_head_ends_on_a_cut_piece_and_a_complete_one_doe
     );
 }
 
-/// A FRAMER THAT STATES ITS OWN HEAD LINES AT LOCATE has them follow the plane's fields in the head
-/// it is handed, before it calls the auth (THE DESIGN section 6, step 5: nothing is added after the
-/// auth runs), in 1.5.5's order after the auth's lines, which the framer adds first (v1.5.5
-/// walk.rs:564-590; its goldens read `authorization, content-type, accept, host`). A default the
-/// request already carries is the request's, never doubled.
+/// RED (THE DESIGN §6, "Auth points and guest lists", item 5): THE KERNEL ADDS NO HEAD LINE ON THE
+/// DIALLED SIDE. A bound member's request with a non-empty body is handed to the open with exactly
+/// the plane's fields, in the plane's order: no auth line, no `content-length`, no `host`, no
+/// framer default. Those are the transport's: the framer adds its own lines and the auth's as it
+/// begins the request. The kernel makes no outbound auth call; it records the attempt's binding
+/// for the framer's `auth.call`. Before, the kernel asked the framer for its stated lines
+/// (`PollConns::head_defaults`) and inserted them, and called the binding's `fields` itself.
 #[tokio::test]
-async fn the_framers_own_head_lines_follow_the_planes_fields_in_the_head_that_goes_out() {
+async fn the_kernel_adds_no_head_line_and_makes_no_auth_call_on_the_dialled_side() {
     let r = rig(
         &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
         OnExhausted::Status503,
         None,
     );
-    *r.table.defaults.lock().unwrap() = vec![
-        (b"accept".to_vec(), b"*/*".to_vec()),
-        (b"host".to_vec(), b"a.test".to_vec()),
-    ];
     let t = token();
     let far = r.egress.unit(route());
     assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
-    assert!(far.send(&t, request()).await);
+    let mut req = request();
+    req.fields.push((b"x-plane".to_vec(), b"1".to_vec()));
+    req.body = b"{\"model\":\"m\"}".to_vec();
+    assert!(far.send(&t, req).await);
+    assert!(
+        recorded(&far).is_some(),
+        "the binding is recorded for the framer's auth call"
+    );
     let _ = drain(&far, &t).await;
     let opened = r.table.opened.lock().unwrap().clone();
+    assert_eq!(opened.len(), 1);
     let head: Vec<(&str, &[u8])> = opened[0]
         .1
         .iter()
@@ -2760,20 +2754,17 @@ async fn the_framers_own_head_lines_follow_the_planes_fields_in_the_head_that_go
         head,
         [
             ("content-type", b"application/json".as_slice()),
-            ("accept", b"*/*".as_slice()),
-            ("host", b"a.test".as_slice()),
-        ]
+            ("x-plane", b"1".as_slice()),
+        ],
+        "exactly the plane's fields reach the transport"
     );
-
-    // A default the request carries stays the request's.
-    let far = r.egress.unit(route());
-    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
-    let mut req = request();
-    req.fields
-        .push((b"Accept".to_vec(), b"text/plain".to_vec()));
-    assert!(far.send(&t, req).await);
-    let _ = drain(&far, &t).await;
-    let opened = r.table.opened.lock().unwrap().clone();
-    let head: Vec<&str> = opened[1].1.iter().map(|(n, _)| n.as_str()).collect();
-    assert_eq!(head, ["content-type", "Accept", "host"]);
+    assert_eq!(
+        opened[0].2, b"{\"model\":\"m\"}",
+        "the body as the plane stated it"
+    );
+    assert_eq!(
+        r.auth.calls.load(Ordering::SeqCst),
+        0,
+        "the kernel makes no outbound auth call"
+    );
 }
