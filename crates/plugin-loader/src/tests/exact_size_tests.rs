@@ -156,3 +156,72 @@ mod kind_tails {
         assert!(refused.to_string().contains("has no tail"), "{refused}");
     }
 }
+
+// ── item: the door and the Statement are each exactly one size ───────────────────────────────────
+
+mod door_and_statement {
+    use busbar_contract::abi::mechanism::door::{Door, Statement};
+    use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
+
+    /// A `'static` door stating `size` bytes, over a buffer longer than any door, with a Statement
+    /// stating `st_size` bytes over a buffer longer than any Statement.
+    fn door(size: usize, st_size: usize) -> *const Door {
+        let st_words = (std::mem::size_of::<Statement>() + 64) / 8;
+        let st_buf: &'static mut [u64] = Box::leak(vec![0_u64; st_words].into_boxed_slice());
+        let st = st_buf.as_mut_ptr().cast::<Statement>();
+        let words = (std::mem::size_of::<Door>() + 64) / 8;
+        let buf: &'static mut [u64] = Box::leak(vec![0_u64; words].into_boxed_slice());
+        let p = buf.as_mut_ptr().cast::<Door>();
+        // SAFETY: both buffers are 8-aligned, zeroed and longer than their structs.
+        unsafe {
+            st.write(Statement {
+                size: st_size as u32,
+                kind: KindCode::Export as u32,
+                kind_abi: KindCode::Export.abi_version(),
+                ..busbar_contract::abi::sdk::door::statement("sized", "1.0.0", 1)
+            });
+            p.write(Door {
+                magic: DOOR_MAGIC,
+                mechanism_version: MECHANISM_VERSION,
+                size: size as u32,
+                kind: KindCode::Export as u32,
+                kind_abi: KindCode::Export.abi_version(),
+                statement: st,
+                ops: std::ptr::null(),
+                ready: None,
+            });
+        }
+        p
+    }
+
+    /// RED (ruling 21): a door of any other size than `size_of::<Door>()` is refused, a door
+    /// ending before `ready` included (it never reads as "no ready").
+    #[test]
+    fn a_door_of_any_other_size_is_refused() {
+        let whole = std::mem::size_of::<Door>();
+        let st = std::mem::size_of::<Statement>();
+        assert!(crate::dispatch::load::read_door(door(whole, st), None).is_ok());
+        for size in [std::mem::offset_of!(Door, ready), whole + 8] {
+            assert!(
+                crate::dispatch::load::read_door(door(size, st), None).is_err(),
+                "a {size}-byte door (its one size is {whole}) is refused"
+            );
+        }
+    }
+
+    /// RED (ruling 21): a Statement of any other size than `size_of::<Statement>()` is refused.
+    #[test]
+    fn a_statement_of_any_other_size_is_refused() {
+        let whole = std::mem::size_of::<Door>();
+        let st = std::mem::size_of::<Statement>();
+        let read = |st_size: usize| {
+            // SAFETY: `door` answers a `'static` door over a live Statement.
+            let d = unsafe { door(whole, st_size).read() };
+            crate::dispatch::load::statement(&d).map(|_| ())
+        };
+        assert_eq!(read(st), Ok(()));
+        for size in [st - 8, st + 8] {
+            assert!(read(size).is_err(), "a {size}-byte Statement is refused");
+        }
+    }
+}
