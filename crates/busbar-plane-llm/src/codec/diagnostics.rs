@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE LLM PLANE'S OWN CODED DIAGNOSTICS (#83a O4): the fifteen codes only this plane's code emits —
-//! the nine cross-protocol IR normalizations, the two usage-tap faults a same-protocol tap reads
-//! before it decodes, the three event-stream framing guards, and the dropped provider-metadata
-//! report. The plane owns its constants exactly as every other plane does, and hands them to the
-//! host's catalog through [`DIAGNOSTICS`](crate::codec::diagnostics::DIAGNOSTICS) (`install_diagnostics` at the composition root).
+//! THE LLM PLANE'S OWN CODED DIAGNOSTICS (#83a O4): the thirty-one codes only this plane's code
+//! emits — the nine cross-protocol IR normalizations, the two usage-tap faults a same-protocol tap
+//! reads before it decodes, the three event-stream framing guards, the dropped provider-metadata
+//! report, and the sixteen lane-engine codes (the usage-tap reassembly cap, the two upstream
+//! transport interruptions, the lane breaker trip, the six cross-protocol response faults, the
+//! three rewrite-pass refusals, the two per-attempt timeouts and the restrict fallback with no
+//! eligible lane). The plane owns its constants exactly as every other plane does, and hands them
+//! to the host's catalog through [`DIAGNOSTICS`](crate::codec::diagnostics::DIAGNOSTICS)
+//! (`install_diagnostics` at the composition root); the host's own registry holds none of them.
 //!
 //! NUMBERING AND TEXT ARE FROZEN. Each constant keeps the `BUSBAR-NNNN`, slug, title, summary and
 //! action the host catalog publishes in `docs/diagnostics.md` / `docs/diagnostics.json`, so an
@@ -271,6 +275,275 @@ pub const PROTO_DROP_PROVIDER_METADATA: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// Same-protocol non-stream billing copy hit the reassembly cap; the tail (with usage) is kept.
+pub const USAGE_TAP_REASSEMBLY_CAP_EXCEEDED: Diagnostic = Diagnostic {
+    code: 5001,
+    class: Class::Proxy,
+    slug: "usage-tap-reassembly-cap-exceeded",
+    title: "Same-protocol non-stream body exceeded the usage-tap reassembly cap (tail retained)",
+    severity: Severity::BenignRecurring,
+    summary: "A same-protocol non-streaming JSON response body grew past the usage-tap reassembly \
+              cap, so busbar dropped the oldest bytes and retained only the TAIL (where every \
+              dialect's `usage` object sits) to still bill the request. The client receives the \
+              body verbatim regardless; only the internal billing copy is truncated.",
+    action: "None — self-heals; the trailing usage object still bills correctly for a recognized \
+             dialect. If BILLING_TRUNCATED_TOTAL climbs steadily, some upstream is returning \
+             unusually large bodies whose usage may undercount for an unrecognized dialect.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// Upstream transport error mid-stream, after the first byte already reached the client.
+pub const UPSTREAM_MIDSTREAM_TRANSPORT_ERROR: Diagnostic = Diagnostic {
+    code: 5002,
+    class: Class::Proxy,
+    slug: "upstream-midstream-transport-error",
+    title: "Mid-stream upstream transport error (generic interruption returned to the client)",
+    severity: Severity::BenignRecurring,
+    summary: "An upstream transport error occurred AFTER the first byte of a streaming response \
+              was already sent to the client. busbar returns a generic, vendor-neutral \
+              interruption frame in the client's ingress protocol rather than leaking the raw \
+              transport error, and records a compensating breaker transient.",
+    action: "None — self-heals per request; the circuit breaker already tracks the upstream \
+             fault. A sustained rate indicates a flaky upstream lane worth investigating via \
+             breaker telemetry.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// Upstream transport error before the first byte of a streaming response arrived.
+pub const UPSTREAM_PREFIRSTBYTE_TRANSPORT_ERROR: Diagnostic = Diagnostic {
+    code: 5003,
+    class: Class::Proxy,
+    slug: "upstream-prefirstbyte-transport-error",
+    title: "Pre-first-byte upstream transport error (body stream terminated generically)",
+    severity: Severity::BenignRecurring,
+    summary: "An upstream transport error occurred BEFORE the first byte of a streaming response \
+              arrived. busbar terminates the body stream with a generic message, refunds the \
+              request budget unit, and records a compensating breaker transient so the failed \
+              attempt counts against the lane.",
+    action: "None — self-heals; failover and the breaker handle it. Persistent occurrence on one \
+             lane points to an unhealthy upstream endpoint.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A (pool, lane) circuit breaker transitioned Closed→Open. Warn-once per logical trip.
+pub const LANE_BREAKER_TRIPPED: Diagnostic = Diagnostic {
+    code: 5004,
+    class: Class::Proxy,
+    slug: "lane-breaker-tripped",
+    title: "Lane circuit breaker tripped (Closed→Open)",
+    severity: Severity::BenignRecurring,
+    summary: "A circuit breaker for a (pool, lane) transitioned Closed→Open after accumulated \
+              failures crossed its threshold, so busbar stops sending traffic to that lane until \
+              the breaker's cooldown lets it probe for recovery. Emitted once per logical trip.",
+    action: "Traffic fails over to healthy lanes automatically. If a lane trips repeatedly, \
+             investigate that upstream's health, credentials, or rate limits.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A cross-protocol non-stream upstream body failed mid-transfer; success not recorded.
+pub const CROSSPROTO_NONSTREAM_MIDTRANSFER_FAILED: Diagnostic = Diagnostic {
+    code: 5010,
+    class: Class::Proxy,
+    slug: "crossproto-nonstream-midtransfer-failed",
+    title: "Cross-protocol non-stream upstream body failed mid-transfer",
+    severity: Severity::BenignRecurring,
+    summary: "On a cross-protocol non-streaming route, the upstream body failed mid-transfer, so \
+              busbar did not record success or usage, refunded the request budget, records a \
+              compensating breaker transient, and returns an ingress-native error.",
+    action: "None — self-heals; the breaker compensates. A sustained rate indicates a flaky \
+             upstream lane.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A cross-protocol success body exceeded busbar's translation cap; cannot translate.
+pub const CROSSPROTO_TRANSLATION_CAP_EXCEEDED: Diagnostic = Diagnostic {
+    code: 5011,
+    class: Class::Proxy,
+    slug: "crossproto-translation-cap-exceeded",
+    title: "Cross-protocol non-stream success body exceeded the translation cap",
+    severity: Severity::BenignRecurring,
+    summary:
+        "A cross-protocol non-streaming success body exceeded busbar's translation cap, so it \
+              cannot be translated into the client's protocol and the client receives a 500 with \
+              no completion. This is busbar's OWN cap, not an upstream fault, so tokens are not \
+              charged and the breaker success stands.",
+    action: "None — self-heals per request. If it recurs for legitimately large replies, raise \
+             the translated-body cap (`limits`) so those replies translate.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A binary/opaque cross-protocol upstream body failed the egress codec's read_response.
+pub const CROSSPROTO_BINARY_CODEC_FAILED: Diagnostic = Diagnostic {
+    code: 5012,
+    class: Class::Proxy,
+    slug: "crossproto-binary-codec-failed",
+    title: "Cross-protocol binary response failed the egress codec (read_response)",
+    severity: Severity::BenignRecurring,
+    summary: "A binary/opaque cross-protocol upstream response could not be decoded by the egress \
+              codec's `read_response`, so busbar returns an ingress-native 500 rather than leaking \
+              the upstream's native body. Often a broken or renamed upstream response field.",
+    action: "None — self-heals per request. If it recurs for one upstream, the provider may have \
+             changed its response shape; check for a busbar update covering that dialect.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A JSON 2xx cross-protocol upstream body was rejected by the egress codec.
+pub const CROSSPROTO_JSON_CODEC_FAILED: Diagnostic = Diagnostic {
+    code: 5013,
+    class: Class::Proxy,
+    slug: "crossproto-json-codec-failed",
+    title: "Cross-protocol JSON response failed the egress codec (read_response_value)",
+    severity: Severity::BenignRecurring,
+    summary: "A JSON 2xx cross-protocol upstream response was rejected by the egress codec's \
+              `read_response_value` (e.g. a missing expected field), so busbar returns an \
+              ingress-native 500 instead of leaking the upstream body. Same root-cause family as \
+              BUSBAR-5012.",
+    action: "None — self-heals per request. Recurrence for one upstream suggests a changed or \
+             renamed response field; check for a busbar update.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// Degraded-path cross-protocol response not translatable; ingress-native error returned.
+pub const CROSSPROTO_RESPONSE_NOT_TRANSLATABLE_DEGRADED: Diagnostic = Diagnostic {
+    code: 5014,
+    class: Class::Proxy,
+    slug: "crossproto-response-not-translatable-degraded",
+    title: "Degraded cross-protocol response not translatable (ingress-native error returned)",
+    severity: Severity::BenignRecurring,
+    summary: "On the degraded path, a cross-protocol upstream response could not be translated \
+              into the client's protocol, so busbar returns an ingress-native error rather than \
+              leaking the upstream's native wire format to a different-protocol client. This is a \
+              deliberate refusal to relay a foreign-format body, not a busbar fault.",
+    action: "None — self-heals per request; returning the native error is the correct, safe \
+             behavior.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// Cross-protocol response not translatable (would leak the upstream's native body).
+pub const CROSSPROTO_RESPONSE_NOT_TRANSLATABLE: Diagnostic = Diagnostic {
+    code: 5015,
+    class: Class::Proxy,
+    slug: "crossproto-response-not-translatable",
+    title: "Cross-protocol response not translatable (ingress-native error returned)",
+    severity: Severity::BenignRecurring,
+    summary: "A cross-protocol upstream response could not be translated into the client's \
+              protocol, so busbar returns an ingress-native error instead of leaking the \
+              upstream's native body to a different-protocol client. This is normal, safe \
+              operation — an open-relay refusal — not a fault.",
+    action: "None — self-heals per request; refusing to relay an untranslatable foreign body is \
+             the intended behavior.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A rewrite-gate hook rejected the request. Normal policy enforcement.
+pub const REWRITE_GATE_REJECTED: Diagnostic = Diagnostic {
+    code: 5016,
+    class: Class::Proxy,
+    slug: "rewrite-gate-rejected",
+    title: "Rewrite gate rejected the request",
+    severity: Severity::BenignRecurring,
+    summary: "A rewrite-gate hook rejected the request, so busbar returns the hook's clamped \
+              status and sanitized message in the client's native envelope. This is normal policy \
+              enforcement, not an error.",
+    action: "None — self-heals per request. The ROUTE_POLICY counters carry the volume; a client \
+             seeing rejections should adjust its request to satisfy the policy.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// Materializing the validated request body for the rewrite pass failed; fail-closed reject.
+pub const REWRITE_BODY_MATERIALIZE_FAILED: Diagnostic = Diagnostic {
+    code: 5017,
+    class: Class::Proxy,
+    slug: "rewrite-body-materialize-failed",
+    title: "Materializing the validated request body for the rewrite pass failed",
+    severity: Severity::Actionable,
+    summary: "busbar could not materialize the validated request body into a DOM for the rewrite \
+              pass, so it fails CLOSED and rejects the request rather than forwarding it \
+              un-rewritten. Unreachable in practice (the bytes already validated), but \
+              operator-visible if it ever fires.",
+    action: "Investigate — this indicates a serious internal inconsistency (validated bytes that \
+             no longer parse). Capture the request context and file a bug; the request was safely \
+             rejected, not mis-forwarded.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// Re-serializing a committed rewrite failed; reject rather than forward the un-rewritten body.
+pub const REWRITE_RESERIALIZE_FAILED: Diagnostic = Diagnostic {
+    code: 5018,
+    class: Class::Proxy,
+    slug: "rewrite-reserialize-failed",
+    title: "Re-serializing a committed rewrite failed (request rejected to protect the invariant)",
+    severity: Severity::Actionable,
+    summary: "A committed request rewrite could not be re-serialized into the retained bytes, so \
+              busbar rejects the request rather than risk a failover hop forwarding the ORIGINAL \
+              un-rewritten body. Protects the rewrite invariant (fail-closed) across failover. Not \
+              realistically reachable.",
+    action: "Investigate the rewrite hook and request that triggered it; a rewrite that produces \
+             an unserializable body is a bug. The request was safely rejected, never forwarded \
+             un-rewritten.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// No response headers within the per-attempt cap; failing over to the next lane.
+pub const ATTEMPT_TIMEOUT_FAILOVER: Diagnostic = Diagnostic {
+    code: 5025,
+    class: Class::Proxy,
+    slug: "attempt-timeout-failover",
+    title: "No response headers within the attempt cap; failing over",
+    severity: Severity::BenignRecurring,
+    summary: "An upstream attempt returned no response headers within its per-attempt \
+              time-to-headers cap, so busbar fails over to the next candidate lane. Expected under \
+              a slow lane; failover is normal operation.",
+    action: "None — self-heals via failover; telemetry counters carry the volume. If one lane \
+             times out constantly, investigate its latency or raise its `attempt_timeout_ms`.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// No response headers within the per-attempt cap on the degraded path.
+pub const ATTEMPT_TIMEOUT_DEGRADED: Diagnostic = Diagnostic {
+    code: 5030,
+    class: Class::Proxy,
+    slug: "attempt-timeout-degraded",
+    title: "No response headers within the attempt cap (degraded path)",
+    severity: Severity::BenignRecurring,
+    summary: "On the degraded routing path, an upstream attempt returned no response headers \
+              within its per-attempt cap, so busbar records a breaker transient and tries the next \
+              degraded candidate. Degraded-path sibling of BUSBAR-5025.",
+    action: "None — self-heals via the degraded candidate walk; telemetry counters carry the \
+             volume.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A compliance restrict left no eligible lane in the fallback pool; fail closed.
+pub const FALLBACK_RESTRICT_NO_ELIGIBLE_LANE: Diagnostic = Diagnostic {
+    code: 5031,
+    class: Class::Proxy,
+    slug: "fallback-restrict-no-eligible-lane",
+    title: "Compliance restrict left no eligible lane in the fallback pool (fail closed)",
+    severity: Severity::BenignRecurring,
+    summary: "A compliance restrict re-applied against a fallback pool left no eligible lane, so \
+              busbar fails closed (503) rather than spill to an ineligible upstream. Fail-closed \
+              is the correct behavior for a compliance restriction.",
+    action: "None — self-heals per request. If the fallback pool should serve this traffic, \
+             ensure its members carry the tags the restrict requires.",
+    since: "1.6.0",
+    retired: false,
+};
 /// Every code this plane defines, in catalog order, for the composition root's
 /// `install_diagnostics`.
 pub static DIAGNOSTICS: &[&Diagnostic] = &[
@@ -289,6 +562,22 @@ pub static DIAGNOSTICS: &[&Diagnostic] = &[
     &IR_DROP_UNMODELED_KEYS,
     &IR_TRUNCATE_STOP_SEQUENCES,
     &PROTO_DROP_PROVIDER_METADATA,
+    &USAGE_TAP_REASSEMBLY_CAP_EXCEEDED,
+    &UPSTREAM_MIDSTREAM_TRANSPORT_ERROR,
+    &UPSTREAM_PREFIRSTBYTE_TRANSPORT_ERROR,
+    &LANE_BREAKER_TRIPPED,
+    &CROSSPROTO_NONSTREAM_MIDTRANSFER_FAILED,
+    &CROSSPROTO_TRANSLATION_CAP_EXCEEDED,
+    &CROSSPROTO_BINARY_CODEC_FAILED,
+    &CROSSPROTO_JSON_CODEC_FAILED,
+    &CROSSPROTO_RESPONSE_NOT_TRANSLATABLE_DEGRADED,
+    &CROSSPROTO_RESPONSE_NOT_TRANSLATABLE,
+    &REWRITE_GATE_REJECTED,
+    &REWRITE_BODY_MATERIALIZE_FAILED,
+    &REWRITE_RESERIALIZE_FAILED,
+    &ATTEMPT_TIMEOUT_FAILOVER,
+    &ATTEMPT_TIMEOUT_DEGRADED,
+    &FALLBACK_RESTRICT_NO_ELIGIBLE_LANE,
 ];
 
 #[cfg(test)]
