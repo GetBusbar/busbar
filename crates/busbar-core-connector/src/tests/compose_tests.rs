@@ -767,6 +767,7 @@ fn one_streams_pending_auth_holds_only_that_stream_on_the_connection() {
             3,
             Some((Vec::new(), b"second".to_vec())),
             HeadWords::default(),
+            busbar_contract::abi::host::service::UnitRef::NONE,
             &mut std::task::Context::from_waker(waker),
         )
         .unwrap();
