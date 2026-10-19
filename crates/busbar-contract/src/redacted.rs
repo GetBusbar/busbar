@@ -52,6 +52,7 @@ pub struct Secret<T: Zeroize, O = Kernel>(pub(crate) T, PhantomData<fn() -> O>);
 
 /// The default OWNER of a [`Secret`]: the kernel. Uninhabited, and no [`OwnerSeal`]: a
 /// kernel-owned secret is read only through [`Secret::expose`], under a kernel seal.
+#[derive(Debug)]
 pub enum Kernel {}
 
 /// The supertrait that closes [`OwnerSeal`]: implemented only by [`own_seal!`](crate::own_seal)'s
@@ -110,6 +111,7 @@ pub trait OwnerSeal: __owner::Minted {}
 macro_rules! own_seal {
     ($name:ident) => {
         /// This crate's own seal over the secrets it holds (`busbar_contract::OwnerSeal`).
+        #[derive(Debug)]
         pub(crate) struct $name(());
 
         impl $name {
