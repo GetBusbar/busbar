@@ -160,6 +160,17 @@ impl Gate for PluginClosureDepsGate {
                     ),
                     vec![manifest, "busbar-kernel"],
                 ),
+                // A BUSBAR CRATE THE WORKSPACE DOES NOT HOLD (Q128 xtask #36): a git copy of a
+                // retired busbar crate is no member, and the walk that recorded members only
+                // never saw it. It is RED, by name.
+                (
+                    ROW_BUSBAR,
+                    "a plugin depending on a busbar crate outside the workspace is RED, naming it",
+                    with_dep(
+                        "busbar-planted-retired = { git = \"https://github.com/GetBusbar/busbar-planted-retired\", rev = \"0000000000000000000000000000000000000000\" }",
+                    ),
+                    vec![manifest, "busbar-planted-retired"],
+                ),
             ],
         );
         // OWNER RULING 2026-09-28 (PLUGIN LIBRARIES): a plugin's own third-party library choice is

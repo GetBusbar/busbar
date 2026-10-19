@@ -1209,8 +1209,98 @@ impl Gate for AbiLocationGate {
             )),
         }
 
+        // THE PINNED PLUGINS ARE READ WHERE CARGO FETCHED THEM (Q128 xtask #25). CI checks out no
+        // sibling, so a row that scanned local clones only passed on "scanned 0". Every plugin the
+        // registry names and the root pins is read from the checkout `cargo metadata` resolves for
+        // its rev; each case points the clone root at an empty directory, so no sibling stands in.
+        let empty_root = cx.scratch().join("abi-location-no-clones");
+        let no_clones = ledger.replace(
+            "root = \"..\"",
+            &format!("root = \"{}\"", empty_root.display()),
+        );
+        let real_metadata = cx.cargo_metadata_all_features("Cargo.toml").unwrap_or_default();
+
+        // A pinned checkout carrying a hand-written slot is RED, by repo, file and item.
+        let fake = cx.scratch().join("abi-location-pinned").join(PINNED_PLANT);
+        let crate_dir = fake.join(PINNED_PLANT.trim_start_matches("busbar-"));
+        let written = std::fs::create_dir_all(&empty_root)
+            .and_then(|()| std::fs::create_dir_all(crate_dir.join("src")))
+            .and_then(|()| std::fs::write(fake.join("Cargo.toml"), "[workspace]\n"))
+            .and_then(|()| {
+                std::fs::write(
+                    crate_dir.join("Cargo.toml"),
+                    format!("[package]\nname = \"{PINNED_PLANT}\"\n"),
+                )
+            })
+            .and_then(|()| {
+                std::fs::write(
+                    crate_dir.join("src/lib.rs"),
+                    "#[no_mangle]\npub extern \"C\" fn busbar_pinned_call() {}\n",
+                )
+            });
+        let mut slot = Overlay::new();
+        slot.set(LEDGER, no_clones.clone());
+        if let Some(meta) = metadata_moving(&real_metadata, PINNED_PLANT, Some(&crate_dir)) {
+            slot.set_command(METADATA_KEY, meta);
+        }
+        report.push(prove_rows_red(
+            cx,
+            self,
+            match &written {
+                Ok(()) => "a hand-written slot in a pinned plugin's checkout is RED".to_string(),
+                Err(e) => format!("the pinned plant could not be written: {e}"),
+            },
+            &[ROW_EXTERNAL],
+            slot,
+            &[&format!(
+                "{PINNED_PLANT}:{}/src/lib.rs:2 busbar_pinned_call",
+                PINNED_PLANT.trim_start_matches("busbar-")
+            )],
+        ));
+
+        // THE FLOOR: a registered plugin the root pins that was read nowhere is RED, by name, never
+        // a pass that scanned fewer plugins than the root links.
+        let mut unread = Overlay::new();
+        unread.set(LEDGER, no_clones);
+        if let Some(meta) = metadata_moving(&real_metadata, PINNED_PLANT, None) {
+            unread.set_command(METADATA_KEY, meta);
+        }
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a registered plugin the root pins whose source was read nowhere is RED",
+            &[ROW_EXTERNAL],
+            unread,
+            &[PINNED_PLANT],
+        ));
+
         report
     }
+}
+
+/// The registered, pinned plugin the self-test moves (its checkout replaced, or dropped).
+const PINNED_PLANT: &str = "busbar-hook-ranking";
+
+/// The overlay key a planted `cargo metadata` answer for the root manifest is read under.
+const METADATA_KEY: &str = "cargo-metadata:Cargo.toml";
+
+/// The `cargo metadata` answer `real` with `package`'s manifest moved to `dir/Cargo.toml`, or the
+/// package dropped when `dir` is `None`. `None` when the answer does not parse or names no such
+/// package: the case then plants the ledger alone, and goes green, which reports the plant.
+fn metadata_moving(real: &str, package: &str, dir: Option<&Path>) -> Option<String> {
+    let mut v: serde_json::Value = serde_json::from_str(real).ok()?;
+    let pkgs = v["packages"].as_array_mut()?;
+    let at = pkgs.iter().position(|p| p["name"] == package)?;
+    match dir {
+        Some(d) => {
+            pkgs[at]["manifest_path"] =
+                serde_json::Value::String(d.join("Cargo.toml").display().to_string());
+        }
+        None => {
+            pkgs.retain(|p| p["name"] != package);
+        }
+    }
+    serde_json::to_string(&v).ok()
 }
 
 fn external_row(cx: &Ctx, ledger: &Ledger) -> Row {

@@ -193,6 +193,85 @@ impl Gate for DenylistGate {
             });
         }
 
+        // A PURE CRATE THE RESOLVE GRAPH DOES NOT KNOW IS A RED SCAN ROW (Q128 xtask #5). The run
+        // printed a warning, walked no closure and still counted the crate, so the scan row read
+        // green over a crate whose dependencies nobody looked at. A hook crate planted at
+        // `crates/hook-planted`, which no `cargo metadata` answer resolves, is red, by name.
+        let mut unresolved = Overlay::new();
+        unresolved.set(
+            "crates/hook-planted/Cargo.toml",
+            "[package]\nname = \"busbar-hook-planted\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        );
+        unresolved.set("crates/hook-planted/src/lib.rs", "pub fn planted() {}\n");
+        report.push(prove_red(
+            cx,
+            self,
+            "a pure crate cargo metadata does not resolve is a red scan row, not a counted warning",
+            &[ROW_SCAN],
+            unresolved,
+            &["busbar-hook-planted"],
+        ));
+
+        // THE PINNED PURE PLUGINS' CLOSURES ARE WALKED (Q128 xtask #5). A pinned plane is laid by
+        // the base at `crates/<package>` while `cargo metadata` reports its manifest in cargo's
+        // checkout, so a match on the manifest path skipped it; a pinned hook or auth plugin is
+        // laid nowhere and was never listed. Each case plants the REAL resolve graph with one more
+        // normal edge from a pinned pure plugin to `reqwest` (BUSBAR-1.6.0.md l.2184:
+        // "source-denylist (hyper/reqwest/tokio-net out of plane closure)").
+        let real_metadata = cx.cargo_metadata("Cargo.toml").unwrap_or_default();
+        for (label, from) in [
+            (
+                "a pinned plane's closure reaching a banned crate is a red hits row",
+                "busbar-plane-mcp",
+            ),
+            (
+                "a pinned hook plugin's closure reaching a banned crate is a red hits row",
+                "busbar-hook-ranking",
+            ),
+            (
+                "a pinned auth plugin's closure reaching a banned crate is a red hits row",
+                "busbar-auth-header",
+            ),
+        ] {
+            let real = real_metadata.clone();
+            report.push(prove_red(
+                cx,
+                self,
+                label,
+                &[ROW_HITS],
+                move || metadata_with_edge(&real, from, "reqwest").unwrap_or_default(),
+                &[from, "reqwest"],
+            ));
+        }
+
+        // THE PINNED PURE PLUGINS' OWN SOURCE IS READ (Q128 xtask #5): `std::net` is no crate edge,
+        // so a pinned hook or auth plugin is judged by its source or not at all. A socket planted
+        // at `crates/<package>/src`, where the plugin is read, is a red hits row naming it.
+        for (label, plugin) in [
+            (
+                "a socket in a pinned hook plugin's own source is a red hits row",
+                "busbar-hook-ranking",
+            ),
+            (
+                "a socket in a pinned auth plugin's own source is a red hits row",
+                "busbar-auth-header",
+            ),
+        ] {
+            let mut socket = Overlay::new();
+            socket.set(
+                format!("crates/{plugin}/src/planted_socket.rs"),
+                "pub fn dial() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
+            );
+            report.push(prove_red(
+                cx,
+                self,
+                label,
+                &[ROW_HITS],
+                socket,
+                &[plugin, "std::net"],
+            ));
+        }
+
         // AN EDGE EXEMPTION CAN ITSELF BE WRONG, AND THE GATE HAS TO SAY SO.
         //
         // An exemption is the broader of the two exception shapes: it is keyed on `(dep, via)`, not
@@ -280,4 +359,37 @@ impl Gate for DenylistGate {
 
         report
     }
+}
+
+/// The overlay key a planted `cargo metadata` answer for the root manifest is read under
+/// ([`Ctx::cargo_metadata`]).
+const METADATA_KEY: &str = "cargo-metadata:Cargo.toml";
+
+/// The `cargo metadata` answer `real`, with one planted NORMAL edge `from -> to` in the resolve
+/// graph, as an overlay planting that answer. `None` when either package is absent from the answer:
+/// an empty overlay, which the harness reports as an inert plant rather than a proof.
+fn metadata_with_edge(real: &str, from: &str, to: &str) -> Option<Overlay> {
+    let mut v: serde_json::Value = serde_json::from_str(real).ok()?;
+    let id_of = |v: &serde_json::Value, name: &str| {
+        v["packages"]
+            .as_array()?
+            .iter()
+            .find(|p| p["name"] == name)
+            .and_then(|p| p["id"].as_str())
+            .map(str::to_string)
+    };
+    let from_id = id_of(&v, from)?;
+    let to_id = id_of(&v, to)?;
+    let node = v["resolve"]["nodes"]
+        .as_array_mut()?
+        .iter_mut()
+        .find(|n| n["id"] == from_id.as_str())?;
+    node["deps"].as_array_mut()?.push(serde_json::json!({
+        "name": to.replace('-', "_"),
+        "pkg": to_id,
+        "dep_kinds": [{ "kind": null, "target": null }],
+    }));
+    let mut ov = Overlay::new();
+    ov.set_command(METADATA_KEY, serde_json::to_string(&v).ok()?);
+    Some(ov)
 }

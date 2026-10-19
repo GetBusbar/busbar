@@ -224,11 +224,36 @@ impl Gate for DoorOnlyGate {
                 return report;
             }
         };
+        // A PINNED PLUGIN: one the binary links from its own repo and the workspace does not hold
+        // (Q128 xtask #29). The scan that read workspace members only never knew its name.
+        let pinned: &'static str = match one_abi::pinned_plugin_members(cx).and_then(|ps| {
+            let have: Vec<String> = one_abi::members(cx)?.into_iter().map(|m| m.name).collect();
+            Ok(ps.into_iter().find(|p| !have.contains(&p.name)))
+        }) {
+            Ok(Some(p)) => Box::leak(p.name.replace('-', "_").into_boxed_str()),
+            Ok(None) => {
+                let mut report = Report::new();
+                report.note_infra_failure(
+                    "door-only selftest: the binary links no pinned plugin to plant a path into",
+                );
+                return report;
+            }
+            Err(e) => {
+                let mut report = Report::new();
+                report.note_infra_failure(format!("door-only selftest: {e}"));
+                return report;
+            }
+        };
         let file = "crates/busbar-kernel/src/planted_door_only.rs";
         let mut path = Overlay::new();
         path.set(
             file,
             format!("pub fn planted() {{ {plugin}::carrier::Planted::go(); }}\n"),
+        );
+        let mut pinned_path = Overlay::new();
+        pinned_path.set(
+            file,
+            format!("pub fn planted() {{ {pinned}::carrier::Planted::go(); }}\n"),
         );
         let mut seam = Overlay::new();
         seam.set(
@@ -250,6 +275,12 @@ impl Gate for DoorOnlyGate {
                     "the kernel naming a plugin's Rust item is RED, naming the crate",
                     path,
                     vec![file, plugin],
+                ),
+                (
+                    ROW_PATH,
+                    "the kernel naming a PINNED plugin's Rust item is RED, naming the crate",
+                    pinned_path,
+                    vec![file, pinned],
                 ),
                 (
                     ROW_SEAM,

@@ -602,6 +602,35 @@ impl Gate for SecretAccessorSealGate {
             &["crates/a-fake/src/lib.rs"],
         ));
 
+        // EVERY PINNED PLUGIN IS IN THE POPULATION (Q128 xtask #38). A pinned transport's logic
+        // crate is laid by the base but is an rlib and no plane; a pinned hook is laid nowhere.
+        // Each is a plugin the binary links, so a reach planted where it is read is RED, by file.
+        for (label, plugin) in [
+            (
+                "a pinned transport logic crate reaching the raw accessor is RED",
+                "busbar-transport-tcp",
+            ),
+            (
+                "a pinned hook plugin reaching the raw accessor is RED",
+                "busbar-hook-ranking",
+            ),
+        ] {
+            let file = format!("crates/{plugin}/src/planted_reach.rs");
+            let mut ov = Overlay::new();
+            ov.set(
+                &file,
+                "fn sneak(v: &Secret<String>, s: &TestKernelSeal) -> usize {\n    v.expose(s).len()\n}\n",
+            );
+            report.push(prove_red(
+                cx,
+                self,
+                label,
+                &[ROW_REACH],
+                ov,
+                &[&format!("{file}:2")],
+            ));
+        }
+
         report
     }
 }
