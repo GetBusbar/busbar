@@ -1366,18 +1366,8 @@ fn compute_layout() -> String {
         s,
         tkind::RefuseIn,
         [
-            head,
-            framing,
-            stream,
-            has_stream,
-            _reserved,
-            bytes,
-            len,
-            sink,
-            status,
-            _reserved2,
-            head_sent,
-            _reserved3
+            head, framing, stream, has_stream, _reserved, bytes, len, sink, status, _reserved2,
+            head_sent, _reserved3
         ]
     );
     record!(
