@@ -113,28 +113,6 @@ pub enum BreakerState {
     HalfOpen,
 }
 
-/// A namespaced breaker-cell key for one caller-registered id, fixed-prefixed with `tool:` so a
-/// registration keyed this way can never collide with a bare-name key another caller uses directly,
-/// nor with a key built under a different fixed prefix (e.g. [`agent_key`]'s `agent:`). The id is
-/// the caller's own registration id, which is what every refusal names. Lives here (not only on
-/// core's `PlaneBreakers`) so a plane crate builds the key without reaching into `busbar-core`;
-/// core's `PlaneBreakers::tool_key` delegates to it so the ONE spelling of the prefix stays
-/// single-sourced.
-pub fn tool_key(server: &str) -> String {
-    format!("tool:{server}")
-}
-
-/// A namespaced breaker-cell key for one caller-registered id, fixed-prefixed with `agent:` so a
-/// registration keyed this way can never collide with a bare-name key another caller uses directly,
-/// nor with a key built under a different fixed prefix (e.g. [`tool_key`]'s `tool:`). The id is
-/// the caller's own registration id, which is what every refusal names. Lives here (not only on
-/// core's `PlaneBreakers`) so a plane crate builds the key without reaching into `busbar-core`;
-/// core's `PlaneBreakers::agent_key` delegates to it so the ONE spelling of the prefix stays
-/// single-sourced.
-pub fn agent_key(agent: &str) -> String {
-    format!("agent:{agent}")
-}
-
 /// Get current time in seconds since epoch — THE host wall clock (the kernel hands it to every codec
 /// it drives as `proto::CodecHostServices`; a plane reads time through the host it is handed, never
 /// here).

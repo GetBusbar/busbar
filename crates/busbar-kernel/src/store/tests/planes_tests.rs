@@ -24,7 +24,7 @@ fn signal(class: StatusClass) -> CanonicalSignal {
 fn transient_failures_trip_and_fast_fail() {
     set_now_for_test(1_000);
     let b = PlaneBreakers::new();
-    let key = busbar_kernel::store::tool_key("fs");
+    let key = "k:fs".to_string();
     assert!(b.try_admit(&key, 0).is_ok(), "a fresh cell admits");
     // Recorded without interleaved admissions. The cell stays ADMITTING throughout the first four:
     // on this plane a sub-threshold transient does not bench the member (see
@@ -50,9 +50,9 @@ fn transient_failures_trip_and_fast_fail() {
 fn hard_down_trips_immediately_and_only_its_own_cell() {
     set_now_for_test(2_000);
     let b = PlaneBreakers::new();
-    let fs = busbar_kernel::store::tool_key("fs");
-    let other_tool = busbar_kernel::store::tool_key("search");
-    let agent = busbar_kernel::store::agent_key("planner");
+    let fs = "k:fs".to_string();
+    let other_tool = "k:search".to_string();
+    let agent = "j:planner".to_string();
 
     let epoch = b.try_admit(&fs, 0).expect("closed cell admits");
     b.record_signal(&fs, 0, &signal(StatusClass::Auth));
@@ -60,25 +60,9 @@ fn hard_down_trips_immediately_and_only_its_own_cell() {
 
     assert!(matches!(b.state(&fs), BreakerState::Open { .. }));
     assert!(b.try_admit(&fs, 0).is_err(), "tripped target must refuse");
-    // The neighbours are untouched — the keyspace isolation the plane-qualified keys exist for.
+    // The neighbours are untouched: each key is its own cell.
     assert!(b.try_admit(&other_tool, 0).is_ok());
     assert!(b.try_admit(&agent, 0).is_ok());
-}
-
-/// The two plane prefixes cannot collide: a target registered under one plane prefix and one
-/// registered under the other that happen to share a bare name have DISTINCT cells.
-#[test]
-fn tool_and_agent_keys_never_collide() {
-    set_now_for_test(3_000);
-    let b = PlaneBreakers::new();
-    let tool = busbar_kernel::store::tool_key("planner");
-    let agent = busbar_kernel::store::agent_key("planner");
-    assert_ne!(tool, agent);
-    let epoch = b.try_admit(&tool, 0).expect("admits");
-    b.record_signal(&tool, 0, &signal(StatusClass::Auth));
-    b.release(&tool, 0, epoch);
-    assert!(b.try_admit(&tool, 0).is_err());
-    assert!(b.try_admit(&agent, 0).is_ok(), "the agent cell is its own");
 }
 
 /// RECOVERY IS A SINGLE-FLIGHT PROBE: once the cooldown expires exactly ONE caller is admitted
@@ -88,7 +72,7 @@ fn tool_and_agent_keys_never_collide() {
 fn half_open_probe_is_single_flight_and_success_closes() {
     set_now_for_test(10_000);
     let b = PlaneBreakers::new();
-    let key = busbar_kernel::store::agent_key("planner");
+    let key = "j:planner".to_string();
     for _ in 0..5 {
         b.record_signal(&key, 0, &signal(StatusClass::ServerError));
     }
@@ -118,7 +102,7 @@ fn half_open_probe_is_single_flight_and_success_closes() {
 fn failed_probe_reopens() {
     set_now_for_test(20_000);
     let b = PlaneBreakers::new();
-    let key = busbar_kernel::store::tool_key("fs");
+    let key = "k:fs".to_string();
     for _ in 0..5 {
         b.record_signal(&key, 0, &signal(StatusClass::ServerError));
     }
@@ -137,7 +121,7 @@ fn failed_probe_reopens() {
 fn abandoned_probe_release_unwedges_the_cell() {
     set_now_for_test(30_000);
     let b = PlaneBreakers::new();
-    let key = busbar_kernel::store::tool_key("fs");
+    let key = "k:fs".to_string();
     for _ in 0..5 {
         b.record_signal(&key, 0, &signal(StatusClass::ServerError));
     }
@@ -157,7 +141,7 @@ fn abandoned_probe_release_unwedges_the_cell() {
 fn client_fault_never_penalizes() {
     set_now_for_test(40_000);
     let b = PlaneBreakers::new();
-    let key = busbar_kernel::store::tool_key("fs");
+    let key = "k:fs".to_string();
     for _ in 0..20 {
         b.record_signal(&key, 0, &signal(StatusClass::ClientError));
     }
@@ -170,7 +154,7 @@ fn client_fault_never_penalizes() {
 fn retry_after_is_the_exact_cooldown() {
     set_now_for_test(50_000);
     let b = PlaneBreakers::new();
-    let key = busbar_kernel::store::agent_key("planner");
+    let key = "j:planner".to_string();
     b.record_signal(&key, 0, &signal(StatusClass::Auth));
     // Hard-down parks the cell with the sticky cooldown (default 1800s).
     let ra = b.retry_after_secs(&key, 0);
@@ -195,7 +179,7 @@ fn retry_after_is_the_exact_cooldown() {
 fn one_sub_threshold_transient_leaves_the_cell_admitting() {
     set_now_for_test(2_000);
     let b = PlaneBreakers::new();
-    let key = busbar_kernel::store::tool_key("fs");
+    let key = "k:fs".to_string();
     b.record_signal(&key, 0, &signal(StatusClass::ServerError));
     assert!(
         matches!(b.state(&key), BreakerState::Closed),

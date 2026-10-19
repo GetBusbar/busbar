@@ -173,11 +173,8 @@ impl PlaneBreakers {
         }
     }
 
-    // R5-store: `PlaneBreakers::{tool_key, agent_key}` DELETED. Both were one-line delegations to
-    // `busbar_kernel::store::{tool_key, agent_key}` — the prefix spellings had already moved down
-    // to the neutral substrate — and both had ZERO production callers in the whole workspace (they
-    // carried `#[allow(dead_code)]` for exactly that reason). The keyspace rule is unchanged and
-    // single-sourced where it now lives; every caller left names the substrate directly.
+    // The kernel builds no plane-qualified breaker key: a cell's key is the caller's own opaque
+    // string (Q128 arch u38 #28).
 
     /// ADMIT ONE DISPATCH against the target's cell — [`LaneRuntime::try_admit_breaker`], the same
     /// admission the primary plane's queue dispatch makes. `lane` is the member's position in its
