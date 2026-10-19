@@ -39,15 +39,12 @@ use crate::ctx::{Ctx, Overlay};
 /// The seven plugin kinds (DECISIONS #3), in the kind table's own spelling. Only a crate of one of
 /// these lives in a plugin repo; the infra families (kernel, contract, plugin-tooling, cleanliness)
 /// and the root never leave this tree.
-pub(super) const PLUGIN_KINDS: &[&str] = &[
-    "store",
-    "secret",
-    "auth",
-    "hooks",
-    "export",
-    "plane",
-    "transport",
-];
+///
+/// THE ONE LIST, NOT A COPY OF IT (Q128). This was a fourth hand-typed statement of the seven that
+/// `:truths` never compared, so a kind added to the taxonomy and not here would stop mounting its
+/// pinned crates with no row red (Law 8, l.2069: "a roster maintained by hand is a defect with a
+/// date on it"). It is `truths::PLUGIN_KINDS`, re-exported for the readers that name it here.
+pub(super) use super::truths::PLUGIN_KINDS;
 
 /// The suffix of a plugin repo's cdylib twin (`busbar-transport-tcp-plugin`).
 const CDYLIB_SUFFIX: &str = "-plugin";
@@ -398,6 +395,18 @@ fn build_plane_base(cx: &Ctx) -> Result<Overlay, String> {
     let rows = pinned_base_rows(cx)?;
     let mut ov = Overlay::new();
     if rows.is_empty() {
+        // A ROOT WHOSE PINS THE ROW READER DID NOT READ IS NOT A ROOT THAT PINS NONE (Q128). The
+        // reader knows one spelling of a workspace pin; when the root writes `git` at all, cargo is
+        // asked, and a base-kind package it resolves from git is refused below rather than lost.
+        let manifest = cx.read("Cargo.toml")?;
+        if !manifest.contains("git") {
+            return Ok(ov);
+        }
+        if let Ok(pinned) = pinned_packages(cx).as_ref() {
+            if let Some(why) = unread_pin(pinned, &rows) {
+                return Err(why);
+            }
+        }
         return Ok(ov);
     }
     let named = || {
@@ -413,6 +422,12 @@ fn build_plane_base(cx: &Ctx) -> Result<Overlay, String> {
             named()
         )
     })?;
+    // FAILS CLOSED IN BOTH DIRECTIONS (Q128): a row cargo cannot resolve is refused below, and a
+    // base-kind package cargo resolves from git that no row names is refused here — the row reader
+    // reads one spelling of a pin, and any other legal one would drop its crate from every base.
+    if let Some(why) = unread_pin(pinned, &rows) {
+        return Err(why);
+    }
     let overrides = plane_source_overrides()?;
     if let Some((stray, _)) = overrides
         .iter()
@@ -447,6 +462,26 @@ fn build_plane_base(cx: &Ctx) -> Result<Overlay, String> {
         }
     }
     Ok(ov)
+}
+
+/// A pinned package of the [`BASE_KINDS`] that `cargo metadata` resolves from git and the root
+/// manifest's rows ([`pinned_base_rows`]) do not name, as the refusal that names it.
+pub(super) fn unread_pin(pinned: &[Pinned], rows: &[(String, String)]) -> Option<String> {
+    pinned
+        .iter()
+        .find(|p| {
+            super::plugin_kind(&p.name).is_some_and(|k| BASE_KINDS.contains(&k))
+                && !rows.iter().any(|(n, _)| *n == p.name)
+        })
+        .map(|p| {
+            format!(
+                "the pinned crate `{}` resolves in cargo metadata from {} and the root manifest's \
+                 `[workspace.dependencies]` rows, as this reader reads them, do not name it: write \
+                 the pin as `name = {{ git = \"…\", rev = \"…\" }}` on one line, or the crate is \
+                 lost from every gate's base",
+                p.name, p.source
+            )
+        })
 }
 
 /// The pinned source of the crate the census reads at `dir` under `name`, when it is a mounted

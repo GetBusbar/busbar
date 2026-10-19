@@ -323,10 +323,7 @@ fn banned_set(name: &str) -> &'static str {
         Some(super::CLEANLINESS) => "a `core-*` crate",
         Some("secret") => "a secret implementation",
         Some(k) if PLUGIN_KINDS.contains(&k) => "another plugin",
-        Some(k) => match k {
-            "plugin-tooling" | "timing" => "not `busbar-contract`",
-            _ => "not `busbar-contract`",
-        },
+        Some(_) => "not `busbar-contract`",
         None => "not `busbar-contract` (and matches no kind)",
     }
 }

@@ -1200,6 +1200,19 @@ fn take_row(
     at: usize,
     errors: &mut Vec<String>,
 ) -> Option<Vec<String>> {
+    // A KEY WRITTEN TWICE IS A ROW WITH TWO ANSWERS (Q128). This reader took the first and the
+    // mint rule's (`base::row_keys`) the last, so a new row could load under one identity and be
+    // checked for minting under another — one the base already had. Refused, so no reader guesses.
+    for (i, (k, _)) in fields.iter().enumerate() {
+        if fields[..i].iter().any(|(seen, _)| seen == k) {
+            errors.push(format!(
+                "duplicate-field\t{REGISTRY_FILE}:{at}\t`[[{table}]]` declares `{k}` twice; a row \
+                 with two values for one field is not one row, and the reader that picks either \
+                 is the reader that can be steered"
+            ));
+            return None;
+        }
+    }
     let mut out = Vec::new();
     for key in want {
         match fields.iter().find(|(k, _)| k == key) {

@@ -185,14 +185,24 @@ fn asks(text: &str, want: fn(&str) -> bool) -> Vec<Ask> {
 }
 
 /// A plugin's own features a set of seeds switches on, through its `[features]` table.
+///
+/// A NAME THE TABLE DOES NOT LIST IS STILL A FEATURE THAT IS ON (Q128). Cargo gives every optional
+/// dependency an implicit feature of its own name, so `features = ["some-optional-dep"]` switches
+/// that dependency on with no `[features]` key for it; dropping every seed the table lacked meant a
+/// linked build switching on an optional dependency the cdylib does not was never `linked-only`
+/// (Law 8, l.2066-2069). It stays in the set and expands into nothing. `default` alone is a feature
+/// only when the table declares it, so a plugin with none is not `dropped-only default`.
 fn expand(table: &BTreeMap<String, Vec<String>>, seeds: &BTreeSet<String>) -> BTreeSet<String> {
     let mut on: BTreeSet<String> = BTreeSet::new();
     let mut todo: Vec<String> = seeds.iter().cloned().collect();
     while let Some(f) = todo.pop() {
-        if !table.contains_key(&f) || !on.insert(f.clone()) {
+        if (f == "default" && !table.contains_key(&f)) || !on.insert(f.clone()) {
             continue;
         }
-        for item in &table[&f] {
+        let Some(items) = table.get(&f) else {
+            continue;
+        };
+        for item in items {
             if !item.contains(':') && !item.contains('/') {
                 todo.push(item.clone());
             }
@@ -248,6 +258,29 @@ pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
         errors.push(format!(
             "the binary links {} plugin crate(s); the scan has gone blind",
             linked.len()
+        ));
+    }
+    // THE FLOOR IS THE BINARY'S OWN ASK, NOT A NUMBER (Q128). Three was far below the plugins the
+    // binary links, so losing most of the population still read as a scan (Law 8, l.2066-2069).
+    // Every plugin crate a non-plugin crate of the binary depends on must be a crate this scan
+    // reads; one it does not is a plugin the gate is blind to, named. A `-plugin` cdylib twin is
+    // the dropped-in build itself, never a linked member.
+    let read: BTreeSet<&str> = linked.iter().map(|m| m.name.as_str()).collect();
+    let unread: BTreeSet<&str> = edges
+        .iter()
+        .filter(|(from, _)| !one_abi::is_plugin_crate(from))
+        .flat_map(|(_, list)| list.iter())
+        .map(|a| a.pkg.as_str())
+        .filter(|pkg| {
+            one_abi::is_plugin_crate(pkg) && !pkg.ends_with("-plugin") && !read.contains(pkg)
+        })
+        .collect();
+    if !unread.is_empty() {
+        errors.push(format!(
+            "the binary depends on {} plugin crate(s) this scan does not read ({}); the scan has \
+             gone blind to them",
+            unread.len(),
+            unread.into_iter().collect::<Vec<_>>().join(", ")
         ));
     }
     for p in linked {
@@ -387,5 +420,36 @@ impl Gate for LinkedDroppedFeaturesGate {
                 ),
             ],
         )
+    }
+}
+
+#[cfg(test)]
+mod q128_tests {
+    use super::*;
+
+    /// A seed the `[features]` table does not list (Cargo's implicit feature for an optional
+    /// dependency) is ON; `default` is a feature only when the table declares it.
+    #[test]
+    fn a_seed_the_table_does_not_list_is_still_on() {
+        let mut table: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        table.insert("full".to_string(), vec!["optdep".to_string()]);
+        let on = expand(
+            &table,
+            &BTreeSet::from(["full".to_string(), "default".to_string()]),
+        );
+        assert!(on.contains("full"), "{on:?}");
+        assert!(
+            on.contains("optdep"),
+            "an implicit feature reached through `full`: {on:?}"
+        );
+        assert!(
+            !on.contains("default"),
+            "the table declares no `default`: {on:?}"
+        );
+        let asked = expand(&table, &BTreeSet::from(["optdep".to_string()]));
+        assert!(
+            asked.contains("optdep"),
+            "a seed the table lacks: {asked:?}"
+        );
     }
 }

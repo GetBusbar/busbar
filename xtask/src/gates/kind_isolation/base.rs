@@ -165,9 +165,15 @@ fn build(cx: &Ctx, commit: &str) -> Result<Base, String> {
 /// `[[dep]]` count, a reworded `why`) is not a new row, and a row that did not exist is a MINT,
 /// which is this module's subject. Reading whole rows would collapse the two and report the first
 /// as the second.
+///
+/// IT READS THE LEDGER THE WAY THE LOADER DOES (Q128), because a row the loader grants and this
+/// reader never sees is an allowance minted in the same change as its coupling. So a header is
+/// `[[` + the table name + `]]` with the name trimmed (`[[ cell ]]` is a `[[cell]]` row, as
+/// [`super::parse_registry`] reads it), any other `[` line closes the open row, and a key written
+/// twice keeps its FIRST value, as `take_row` would read it — a row that repeats a key is refused
+/// at load (`duplicate-field`) in any case, and so it can grant nothing either way.
 pub fn row_keys(text: &str, table: &str, id_fields: &[&str]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
-    let header = format!("[[{table}]]");
     let mut cur: Option<BTreeMap<String, String>> = None;
     let flush = |cur: &mut Option<BTreeMap<String, String>>, out: &mut BTreeSet<String>| {
         if let Some(fields) = cur.take() {
@@ -180,19 +186,25 @@ pub fn row_keys(text: &str, table: &str, id_fields: &[&str]) -> BTreeSet<String>
     };
     for raw in text.lines() {
         let t = raw.trim();
-        if t.starts_with("[[") {
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if t.starts_with('[') {
             flush(&mut cur, &mut out);
-            if t == header {
+            let head = t
+                .strip_prefix("[[")
+                .and_then(|s| s.strip_suffix("]]"))
+                .map(str::trim);
+            if head == Some(table) {
                 cur = Some(BTreeMap::new());
             }
             continue;
         }
-        if t.is_empty() || t.starts_with('#') {
-            continue;
-        }
         let Some(fields) = cur.as_mut() else { continue };
         if let Some((k, v)) = t.split_once('=') {
-            fields.insert(k.trim().to_string(), v.trim().trim_matches('"').to_string());
+            fields
+                .entry(k.trim().to_string())
+                .or_insert_with(|| v.trim().trim_matches('"').trim().to_string());
         }
     }
     flush(&mut cur, &mut out);

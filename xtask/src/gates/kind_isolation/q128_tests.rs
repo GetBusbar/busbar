@@ -363,3 +363,35 @@ fn the_real_tree_ships_no_test_support() {
     let found = test_support_ships(&cx, &crates);
     assert!(found.is_empty(), "{found:?}");
 }
+
+// ── part 24 finding 4 (LOW): a git pin the row reader cannot read is refused ─────────────────
+
+#[test]
+fn a_base_kind_pin_no_row_names_is_refused() {
+    let p = pinned::Pinned {
+        name: "busbar-transport-q128".to_string(),
+        dir: std::path::PathBuf::from("/nonexistent"),
+        source: "git+https://example.invalid/busbar-transport-q128?rev=0".to_string(),
+    };
+    assert!(
+        pinned::unread_pin(std::slice::from_ref(&p), &[]).is_some(),
+        "a transport cargo resolves from git and no row names is lost from every base"
+    );
+    let named = [("busbar-transport-q128".to_string(), "0".to_string())];
+    assert!(pinned::unread_pin(std::slice::from_ref(&p), &named).is_none());
+    let store = pinned::Pinned {
+        name: "busbar-store-q128".to_string(),
+        ..p
+    };
+    assert!(
+        pinned::unread_pin(&[store], &[]).is_none(),
+        "a store is no base kind"
+    );
+}
+
+// ── part 24 finding 3 (LOW): one list of the plugin kinds ─────────────────────────────────────
+
+#[test]
+fn the_pinned_mount_reads_the_one_list_of_plugin_kinds() {
+    assert!(std::ptr::eq(pinned::PLUGIN_KINDS, truths::PLUGIN_KINDS));
+}
