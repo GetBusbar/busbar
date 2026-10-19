@@ -320,6 +320,24 @@ pub(crate) fn transport_schemes() -> Vec<ClaimedScheme> {
         .unwrap_or_default()
 }
 
+/// THE OUTBOUND STYLES a provider's `auth:` may name (BUSBAR-1.6.0.md #50; arch-audit u29 F1): the
+/// ones this build's auth plugins declare, linked and dropped in, in the host's one listing order,
+/// each with its declared flags (its endpoint bits among them). Read off the plugins' Statements,
+/// nothing opened (Law 7). None when no auth axis is installed.
+pub fn declared_styles() -> Vec<busbar_contract::auth_calls::DeclaredStyle> {
+    linked_auth_axis()
+        .map(|axis| axis.outbound_styles())
+        .unwrap_or_default()
+}
+
+/// The declared flags of the outbound style `word` ([`declared_styles`]); `0` when none declares it.
+pub fn style_flags(word: &str) -> u32 {
+    declared_styles()
+        .into_iter()
+        .find(|s| s.name == word)
+        .map_or(0, |s| s.flags)
+}
+
 /// The rows this build LINKS onto the cold-kind axis, ahead of the plugins directory's: the root's
 /// stores and the root's hooks — a test build (no root) stands its
 /// fixture entries in. Registered through `PluginRegistry::link`, the admission a dropped-in row

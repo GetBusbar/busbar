@@ -3850,5 +3850,9 @@ fn registration_anchors(
 }
 
 #[cfg(test)]
+#[path = "tests/declared_styles.rs"]
+mod declared_styles_tests;
+
+#[cfg(test)]
 #[path = "tests/door_steps.rs"]
 pub(crate) mod tests;
