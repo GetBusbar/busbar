@@ -29,7 +29,7 @@ use crate::abi::store::OpId;
 use crate::kinds::{Head, RecordBytes};
 use crate::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecordRef,
-    PlaneSelector, RecordStoreResult, UsageDelta, UsageLedger, VirtualKey,
+    PlaneSelector, RecordStoreResult, Retention, UsageDelta, UsageLedger, VirtualKey,
 };
 
 mod op;
@@ -621,7 +621,8 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         kind: &str,
     ) -> Step<RecordStoreResult<Vec<String>>>;
 
-    /// `purge_plane_records_before` (slot 29).
+    /// `purge_plane_records_before` (slot 29): drop the `kind` rows older than `before` that
+    /// `retention`, the rule the host passes, says go ([`Retention::drops`]).
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.
@@ -630,6 +631,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         cx: &mut Op<'_>,
         kind: &str,
         before: u64,
+        retention: Retention,
     ) -> Step<RecordStoreResult<u64>>;
 
     /// `delete_plane_record` (slot 30); absent is `Ok`.

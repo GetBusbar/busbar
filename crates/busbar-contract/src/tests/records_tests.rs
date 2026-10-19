@@ -881,7 +881,11 @@ fn the_plane_record_verbs_default_to_accepting_and_keeping_nothing() {
         .list_plane_records("task_event", &PlaneSelector::Parent("t-1".into()))
         .unwrap()
         .is_empty());
-    assert_eq!(s.purge_plane_records_before("task", u64::MAX).unwrap(), 0);
+    assert_eq!(
+        s.purge_plane_records_before("task", u64::MAX, crate::records::Retention::TerminalOnly)
+            .unwrap(),
+        0
+    );
 }
 
 /// The neutral `PlaneRecord` ENVELOPE round-trips through serde unchanged — the one contract this

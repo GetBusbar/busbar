@@ -400,8 +400,9 @@ pub(crate) trait Hooks: Send + Sync + 'static {
         cx: &mut Op<'_>,
         kind: &str,
         before: u64,
+        retention: busbar_contract::records::Retention,
     ) -> Step<RecordStoreResult<u64>> {
-        <MemoryStore as StoreSlots>::purge_plane_records_before(inner, cx, kind, before)
+        <MemoryStore as StoreSlots>::purge_plane_records_before(inner, cx, kind, before, retention)
     }
 
     fn delete_plane_record(
@@ -794,8 +795,9 @@ impl<H: Hooks> StoreSlots for Wrapped<H> {
         cx: &mut Op<'_>,
         kind: &str,
         before: u64,
+        retention: busbar_contract::records::Retention,
     ) -> Step<RecordStoreResult<u64>> {
-        H::purge_plane_records_before(&self.0, cx, kind, before)
+        H::purge_plane_records_before(&self.0, cx, kind, before, retention)
     }
 
     fn delete_plane_record(

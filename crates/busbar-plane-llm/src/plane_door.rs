@@ -431,6 +431,8 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     metric_lanes: ptr::null(),
     metric_lanes_len: 0,
     stream_ceiling_secs: 0,
+    record_retentions: ptr::null(),
+    record_retentions_len: 0,
 };
 
 /// The Statement's extensions: the plane's provider keys ([`crate::meta::PROVIDER_KEYS`]) under the

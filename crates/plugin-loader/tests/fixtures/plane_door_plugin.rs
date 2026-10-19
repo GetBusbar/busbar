@@ -127,6 +127,8 @@ const TAIL: &PlaneTail = &PlaneTail {
     metric_lanes: std::ptr::null(),
     metric_lanes_len: 0,
     stream_ceiling_secs: 0,
+    record_retentions: std::ptr::null(),
+    record_retentions_len: 0,
 };
 
 /// Every generation's claims: the request door, and with a public URL the session door.

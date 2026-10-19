@@ -374,6 +374,7 @@ impl StoreSlots for Flat {
         _: &mut StoreOp<'_>,
         _: &str,
         _: u64,
+        _: busbar_contract::records::Retention,
     ) -> Step<RecordStoreResult<u64>> {
         unreachable!("the money witness reaches only open, session_remove and the money slots")
     }

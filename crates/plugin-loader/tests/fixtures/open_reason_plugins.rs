@@ -343,6 +343,7 @@ pub mod store {
             _: &mut Op<'_>,
             _: &str,
             _: u64,
+            _: busbar_contract::records::Retention,
         ) -> Step<RecordStoreResult<u64>> {
             unreachable!("the open-reason store never opens")
         }

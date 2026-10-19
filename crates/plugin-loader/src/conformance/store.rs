@@ -593,7 +593,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         }))
     });
     r.line("purge ev", 1, || {
-        ans(b.purge_plane_records_before("ev", 100))
+        ans(b.purge_plane_records_before("ev", 100, busbar_contract::records::Retention::Age))
     });
     r.line("delete t1", 1, || ans(b.delete_plane_record("task", "t1")));
     r.line("get t1 after", 1, || {
