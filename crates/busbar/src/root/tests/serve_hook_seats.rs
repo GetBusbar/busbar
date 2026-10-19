@@ -45,7 +45,6 @@ use crate::root::loader::dispatch::{
 };
 use crate::root::plane_node::{Node, NodeEndPost};
 
-
 // The words of the plane under proof that these cells read as data (`DRIVER_WORDS`: the plane's own
 // `tests/on_driver/words.txt`, from the manifest's driver-proofs row).
 include!(concat!(env!("OUT_DIR"), "/driver_words.rs"));
