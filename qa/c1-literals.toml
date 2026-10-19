@@ -17,11 +17,6 @@ item = "a2a (plane-a2a)"
 [[finding]]
 rule = "c1-literals:feature"
 file = "crates/busbar-kernel/Cargo.toml"
-item = "jsonrpc (jsonrpc-ingress)"
-
-[[finding]]
-rule = "c1-literals:feature"
-file = "crates/busbar-kernel/Cargo.toml"
 item = "mcp (plane-mcp)"
 
 [[finding]]
@@ -68,16 +63,6 @@ item = "ranking"
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/diagnostics/mod.rs"
 item = "streaming"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/governance/state.rs"
-item = "sigv4"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/ingress/protocol.rs"
-item = "jsonrpc"
 
 [[finding]]
 rule = "c1-literals:literal"

@@ -180,8 +180,8 @@ const STAND_IN: RootInstall = RootInstall {
     registry_build: Some(crate::test_support::registry_stand_in),
     plugins_fetch: Some(crate::test_support::fetch_stand_in),
     hook_axis: Some(crate::test_support::hook_axis_stand_in),
-    // A test build links no hook row of the root's: the operator surface lists none, as before the
-    // root's install record carried them.
+    // A test build links no hook row of the root's: the operator surface lists none, unless the
+    // root's own test binary hands its names in (`test_support::install_root_hook_names`).
     hook_names: &[],
     store_axis: Some(crate::test_support::store_axis_stand_in),
     secret_axis: Some(&crate::test_support::SecretsStandIn),
@@ -214,9 +214,26 @@ pub fn install_linked_rows(rows: RootInstall) {
 /// `stores`, the stores this build links.
 pub fn root_rows() -> RootInstall {
     #[cfg(any(test, feature = "test-support"))]
-    let _ = ROOT_ROWS.set(STAND_IN);
+    {
+        let _ = ROOT_ROWS.set(STAND_IN);
+        if let Some(hook_names) = TEST_ROOT_HOOK_NAMES.get().copied() {
+            return RootInstall {
+                hook_names,
+                ..ROOT_ROWS.get().copied().unwrap_or_default()
+            };
+        }
+    }
     ROOT_ROWS.get().copied().unwrap_or_default()
 }
+
+/// The hook names the composition root's OWN test binary hands in, in the root's words (its
+/// generated linked-hook list): a test build's install record reports them in place of the
+/// stand-in's none, whichever read came first, so a document that test binary renders names the
+/// hooks the shipped binary names ([`crate::test_support::install_root_hook_names`]). The first
+/// hand-in stands.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) static TEST_ROOT_HOOK_NAMES: std::sync::OnceLock<&'static [&'static str]> =
+    std::sync::OnceLock::new();
 
 /// THE ROOT'S DOOR onto the auth axis: its linked table's `auths` entries (the first install
 /// stands; the authenticate step holds them) and their names. Every admin auth module — the operator
