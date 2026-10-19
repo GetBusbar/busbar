@@ -17,13 +17,13 @@
 //! a node decides whether stopping is even the right thing to do when it cannot reach the store.
 
 use busbar_contract::caps::{
-    Abort, Canary, Consumption, Exit, Grant, Outcome, Posted, PostingFlags, QuantitySource,
-    ReasonCode, StepName, UnitEnd, Usage, UsageLine, WriteMoney,
+    Abort, Audit, Canary, Consumption, Exit, Grant, Outcome, Pass, Posted, PostingFlags,
+    QuantitySource, ReasonCode, StepName, UnitEnd, Usage, UsageLine, WriteMoney,
 };
 
 use crate::inflight::UnitSlot;
 use crate::slice::ConcurrencyGauge;
-use crate::teller::{settle_written, Evidence, Kernel, Written, KERNEL_ACCRUAL_CLASS};
+use crate::teller::{audit_pass, settle_written, Evidence, Kernel, Written, KERNEL_ACCRUAL_CLASS};
 use crate::Millis;
 
 /// What the sweep decided about one unit.
@@ -178,6 +178,25 @@ pub fn fleet_action(
     }
 }
 
+/// What the sweep settled for one unit: its sealed end, the one line it was posted from, and the
+/// unit's audit pass.
+///
+/// THE DESIGN §1 (`BUSBAR-1.6.0.md` l.190-197): "The audit step writes one fixed record, for every
+/// plane ... never optional"; §7 U14 (l.1061-1065): one audit record per unit, sealed at its one line.
+/// A unit the sweep settles never reached its own audit step, so the sweep hands its caller the pass
+/// that step would have been lent, beside the exact line the posting settled, and the caller seals
+/// the unit's one record from both where it writes the line. A settled unit and its pass come back
+/// together or not at all, so no swept unit settles without the means to seal its record.
+#[derive(Debug)]
+pub struct Swept {
+    /// The unit's sealed end: `Failed(at, TaskLost | Stalled)`, with its posting.
+    pub end: UnitEnd,
+    /// The one usage line the posting was settled from, as posted: the record's amount.
+    pub line: UsageLine,
+    /// The unit's audit pass, bound to the call its hold was opened under.
+    pub audit: Pass<Audit>,
+}
+
 /// Settle a unit the sweep found abandoned.
 ///
 /// This is the SECOND holder of a key to a hold cell, and there is no third. The exit path and this
@@ -188,6 +207,10 @@ pub fn fleet_action(
 /// The whole SLOT is what the sweep is given, because the slot is what the unit owns: its hold and
 /// its leases, reclaimed together or not at all. A verdict that says the unit is still running
 /// reclaims nothing of either, and an abandoned slot gives back both at its deadline.
+///
+/// What it settles comes back as a [`Swept`]: the end, the line, and the unit's audit pass, taken
+/// from the loop's one audit mint ([`crate::teller`]'s `audit_pass`) so the caller can seal the
+/// unit's one record beside its line.
 pub fn sweep_settle(
     kernel: &Kernel,
     slot: &UnitSlot,
@@ -195,7 +218,7 @@ pub fn sweep_settle(
     evidence: &Evidence,
     canary: &Canary,
     gauge: &ConcurrencyGauge,
-) -> Option<UnitEnd> {
+) -> Option<Swept> {
     match sweep_outcome(verdict) {
         None => None,
         Some(outcome) => {
@@ -214,18 +237,25 @@ pub fn sweep_settle(
             // handed a set that a gone task took with it.
             slot.leases().release_all(gauge);
             taken.map(|hold| {
+                // The unit's audit pass, from the loop's one audit mint, bound to the call the
+                // unit's hold was opened under: the record the caller seals with it is that unit's.
+                let audit = audit_pass(kernel.seal(), hold.call());
                 let Written { amount, flags, .. } = settle_written(&outcome, evidence);
                 // Estimated or reported is the settlement writer's answer, not the sweep's: a unit
                 // whose plane DID report before its task disappeared is settled at the figure it
                 // reported, unflagged, exactly as the writer says.
                 let estimated = flags.contains(PostingFlags::ESTIMATED);
-                let lines = vec![UsageLine {
-                    class: KERNEL_ACCRUAL_CLASS,
+                // Under the class the unit reported, as the exit writes it (THE DESIGN §7,
+                // `BUSBAR-1.6.0.md` l.1066-1070: the one line resolves reported classes); the
+                // kernel's own class only when the unit reported none.
+                let line = UsageLine {
+                    class: evidence.class.unwrap_or(KERNEL_ACCRUAL_CLASS),
                     quantity: amount,
                     source: QuantitySource::Count,
                     estimated,
-                }];
+                };
                 let token = Grant::<Consumption>::mint(kernel.seal());
+                let lines = vec![line.clone()];
                 let usage = if estimated {
                     Usage::estimate(&token, lines)
                 } else {
@@ -238,7 +268,11 @@ pub fn sweep_settle(
                 let posted =
                     Posted::settle(hold, u128::from(amount), &usage, &ledger).flagged(flags);
                 canary.settled();
-                UnitEnd::seal(&Grant::<Exit>::mint(kernel.seal()), outcome, Ok(posted))
+                Swept {
+                    end: UnitEnd::seal(&Grant::<Exit>::mint(kernel.seal()), outcome, Ok(posted)),
+                    line,
+                    audit,
+                }
             })
         }
     }
