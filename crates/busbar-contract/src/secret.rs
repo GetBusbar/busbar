@@ -150,6 +150,97 @@ pub trait SecretModule: Send + Sync + 'static {
 /// FAIL-CLOSED, exactly as the underlying resolver: an unknown module, an unset source, or an empty
 /// value is an `Err(String)`, never an empty secret. The error is a neutral `String` — a plane never
 /// sees an engine-only error type across this seam.
+///
+/// NO BARE VALUE CROSSES IT (Part 2 #54, owner-locked): every answer is a [`Resolved`], which the
+/// asking owner seals to itself ([`Resolved::sealed_to`]) and then reads only through the sealed
+/// accessor, so the owner that asked reads it and no other:
+///
+/// ```
+/// use busbar_contract::secret::{Resolved, SecretResolve};
+/// use busbar_contract::secret_ref::SecretRef;
+/// struct One;
+/// impl SecretResolve for One {
+///     fn resolve(&self, _: &SecretRef) -> Result<Resolved<Vec<u8>>, String> {
+///         Ok(Resolved::new(b"sk-live".to_vec()))
+///     }
+///     fn resolve_string(&self, _: &SecretRef) -> Result<Resolved<String>, String> {
+///         Ok(Resolved::new(String::from("sk-live")))
+///     }
+/// }
+/// mod a {
+///     busbar_contract::own_seal!(Own);
+/// }
+/// let seam: &dyn SecretResolve = &One;
+/// let key: busbar_contract::Secret<Vec<u8>, a::Own> =
+///     seam.resolve(&SecretRef::none()).unwrap().sealed_to();
+/// assert_eq!(key.expose_own(&a::Own::here()), b"sk-live");
+/// ```
+///
+/// A value resolved for one owner is not exposed by another (a mismatched seal type):
+///
+/// ```compile_fail,E0308
+/// use busbar_contract::secret::{Resolved, SecretResolve};
+/// use busbar_contract::secret_ref::SecretRef;
+/// struct One;
+/// impl SecretResolve for One {
+///     fn resolve(&self, _: &SecretRef) -> Result<Resolved<Vec<u8>>, String> {
+///         Ok(Resolved::new(b"sk-live".to_vec()))
+///     }
+///     fn resolve_string(&self, _: &SecretRef) -> Result<Resolved<String>, String> {
+///         Ok(Resolved::new(String::from("sk-live")))
+///     }
+/// }
+/// mod a {
+///     busbar_contract::own_seal!(Own);
+/// }
+/// mod b {
+///     busbar_contract::own_seal!(Own);
+/// }
+/// let seam: &dyn SecretResolve = &One;
+/// let key: busbar_contract::Secret<Vec<u8>, a::Own> =
+///     seam.resolve(&SecretRef::none()).unwrap().sealed_to();
+/// let _ = key.expose_own(&b::Own::here());
+/// ```
+///
+/// and an answer offers no read of its own, sealed or not (its material is private):
+///
+/// ```compile_fail,E0616
+/// use busbar_contract::secret::{Resolved, SecretResolve};
+/// use busbar_contract::secret_ref::SecretRef;
+/// struct One;
+/// impl SecretResolve for One {
+///     fn resolve(&self, _: &SecretRef) -> Result<Resolved<Vec<u8>>, String> {
+///         Ok(Resolved::new(b"sk-live".to_vec()))
+///     }
+///     fn resolve_string(&self, _: &SecretRef) -> Result<Resolved<String>, String> {
+///         Ok(Resolved::new(String::from("sk-live")))
+///     }
+/// }
+/// let seam: &dyn SecretResolve = &One;
+/// let _ = seam.resolve(&SecretRef::none()).unwrap().0;
+/// ```
+///
+/// A kernel-owned answer is read only under a kernel seal, never under a plugin's own:
+///
+/// ```compile_fail,E0599
+/// use busbar_contract::secret::{Resolved, SecretResolve};
+/// use busbar_contract::secret_ref::SecretRef;
+/// struct One;
+/// impl SecretResolve for One {
+///     fn resolve(&self, _: &SecretRef) -> Result<Resolved<Vec<u8>>, String> {
+///         Ok(Resolved::new(b"sk-live".to_vec()))
+///     }
+///     fn resolve_string(&self, _: &SecretRef) -> Result<Resolved<String>, String> {
+///         Ok(Resolved::new(String::from("sk-live")))
+///     }
+/// }
+/// mod a {
+///     busbar_contract::own_seal!(Own);
+/// }
+/// let seam: &dyn SecretResolve = &One;
+/// let key = seam.resolve(&SecretRef::none()).unwrap().sealed();
+/// let _ = key.expose_own(&a::Own::here());
+/// ```
 pub trait SecretResolve: Send + Sync {
     /// Resolve a reference to raw bytes (fail-closed). Some consumers — a raw-file loader, for
     /// instance — need the untrimmed bytes rather than a string.
