@@ -32,11 +32,11 @@ use super::{
     INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
     INGRESS_SUBSCRIPTION, MAX_METRIC_LANES, MAX_REFUSAL_TEXT, MECHANISM_PEER_KEY, MECHANISM_ROOT,
     PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT,
-    REFUSAL_ANY_DIALECT, REFUSED_UNSUPPORTED_ACTION, ROUTE_CARRIES_OWN_TOKEN, ROUTE_COUNTED,
-    ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_ONCE, ROUTE_POOL, ROUTE_PUBLIC, ROUTE_SCOPE,
-    ROUTE_SCOPE_LOCAL, ROUTE_SESSION, ROUTE_STREAM, SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK,
-    TAIL_HOOKS_GATED, TAIL_PROBES, TAIL_REFUSED_PIECE, TAP_FAULT_NONE, TRUST_ITEM_APPROVALS,
-    TRUST_PIN, TRUST_PRIVATE_REACH, UNITS_ESTIMATED, VERDICT_HARD,
+    REFUSAL_ANY_DIALECT, REFUSED_AFTER_ADMISSION, REFUSED_UNSUPPORTED_ACTION,
+    ROUTE_CARRIES_OWN_TOKEN, ROUTE_COUNTED, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_ONCE, ROUTE_POOL,
+    ROUTE_PUBLIC, ROUTE_SCOPE, ROUTE_SCOPE_LOCAL, ROUTE_SESSION, ROUTE_STREAM, SHAPE_PIECEWISE,
+    SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED, TAIL_PROBES, TAIL_REFUSED_PIECE, TAP_FAULT_NONE,
+    TRUST_ITEM_APPROVALS, TRUST_PIN, TRUST_PRIVATE_REACH, UNITS_ESTIMATED, VERDICT_HARD,
 };
 use crate::abi::hook::{
     signal, MessageView, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
@@ -203,8 +203,15 @@ pub fn check_arrive(
             if about_entry { 599 } else { 499 },
             "arrive.refusal_status",
         )?;
-        if out.refusal_flags & !REFUSED_UNSUPPORTED_ACTION != 0 {
+        if out.refusal_flags & !(REFUSED_UNSUPPORTED_ACTION | REFUSED_AFTER_ADMISSION) != 0 {
             return Err(fault(Rule::UnknownCode, "arrive.refusal_flags"));
+        }
+        // A refusal rendered after admission is one about an entry (rule 6): it names the entry,
+        // directly or as a pool, whose admission it waits for.
+        if out.refusal_flags & REFUSED_AFTER_ADMISSION != 0
+            && !(about_entry && (out.route == ROUTE_POOL || out.route == ROUTE_DIRECT))
+        {
+            return Err(fault(Rule::Contradiction, "arrive.refusal_flags"));
         }
     } else if out.refusal != 0 || out.refusal_status != 0 || out.refusal_flags != 0 {
         return Err(fault(Rule::Contradiction, "arrive.refusal"));

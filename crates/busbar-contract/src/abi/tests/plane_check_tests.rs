@@ -3227,6 +3227,76 @@ fn a_refused_arrival_may_name_the_entry_it_is_about() {
     );
 }
 
+/// A REFUSAL RENDERED AFTER ADMISSION (abi/plane "A refused arrival", rule 6, the
+/// [`REFUSED_AFTER_ADMISSION`] arm): accepted on a refused answer that names its entry directly or
+/// as a pool, alone or beside [`REFUSED_UNSUPPORTED_ACTION`]; a FAULT on a refused answer naming no
+/// entry, and on a ready answer. RED before the arm: the bit was an unknown code on every answer.
+#[test]
+fn a_refusal_after_admission_names_its_entry_and_only_refuses() {
+    let about = |route: u8, flags: u32| {
+        let mut o: ArriveOut = z();
+        o.refusal = 7;
+        o.refusal_status = 400;
+        o.refusal_flags = flags;
+        o.route = route;
+        o.pool = s("planner");
+        o
+    };
+    assert_eq!(
+        check_arrive(
+            Refused,
+            &about(ROUTE_DIRECT, REFUSED_AFTER_ADMISSION),
+            &[],
+            4,
+            &bounds()
+        ),
+        Ok(())
+    );
+    assert_eq!(
+        check_arrive(
+            Refused,
+            &about(
+                ROUTE_POOL,
+                REFUSED_AFTER_ADMISSION | REFUSED_UNSUPPORTED_ACTION
+            ),
+            &[],
+            4,
+            &bounds()
+        ),
+        Ok(())
+    );
+    // Naming no entry: no pool, or a route that is neither a pool nor a direct entry.
+    let mut o: ArriveOut = z();
+    o.refusal = 7;
+    o.refusal_status = 400;
+    o.refusal_flags = REFUSED_AFTER_ADMISSION;
+    assert_eq!(
+        check_arrive(Refused, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.refusal_flags"),
+        "a refusal about no entry has no admission to wait for"
+    );
+    assert_eq!(
+        check_arrive(
+            Refused,
+            &about(ROUTE_SCOPE, REFUSED_AFTER_ADMISSION),
+            &[],
+            4,
+            &bounds()
+        ),
+        f(Rule::Contradiction, "arrive.refusal_flags")
+    );
+    // A ready answer states no refusal, and so no order for one.
+    let mut o: ArriveOut = z();
+    o.route = ROUTE_POOL;
+    o.pool = s("planner");
+    o.refusal_flags = REFUSED_AFTER_ADMISSION;
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.refusal"),
+        "a ready answer carrying the bit is a fault"
+    );
+}
+
 /// THE ATTEMPT'S COUNTER LABELS (ARCHITECT ruling: one optional per-attempt tail): where an answer
 /// states them, each sits inside the arena it wrote; absent is a zero length.
 #[test]

@@ -133,7 +133,12 @@
 //!    [`ROUTE_POOL`] or [`ROUTE_DIRECT`] [`ArriveOut::route`], and its operation class and
 //!    dialect) is held: the kernel judges the caller's identity and its grant over that entry
 //!    first (a refusal there wins), then renders this refusal before admission, so nothing is
-//!    charged. Its status may be 400 to 599 (the entry, not the caller, may be at fault).
+//!    charged. Its status may be 400 to 599 (the entry, not the caller, may be at fault). With
+//!    [`REFUSED_AFTER_ADMISSION`] in [`ArriveOut::refusal_flags`] the refusal is held one step
+//!    further: after the caller's identity and its grant over the entry, the kernel runs the
+//!    entry's ADMISSION (its group limits and budget; a refusal there wins, in admission's own
+//!    status and words), and only then renders this refusal. That rendering refunds or releases
+//!    whatever admission held and runs no walk, no hook and no tap, so nothing is net-charged.
 //!
 //! [`RefusalOut::status`] lets the rendering name the status its dialect answers with; `0` keeps
 //! the one the kernel chose. The gate-rejected audit marker is the kernel's: it sets it from
@@ -519,6 +524,16 @@ pub const ROUTE_COUNTED: u8 = 8;
 /// the kernel and the root count the outcome and never read the plane's code or status to tell one
 /// refusal from another.
 pub const REFUSED_UNSUPPORTED_ACTION: u32 = 1;
+
+/// [`ArriveOut::refusal_flags`]: the refusal about an entry is rendered AFTER ADMISSION, not before
+/// it (see "A refused arrival", rule 6). Only on a REFUSED `arrive` that names its entry
+/// ([`ArriveOut::pool`] with a [`ROUTE_POOL`] or [`ROUTE_DIRECT`] [`ArriveOut::route`]): the kernel
+/// judges the caller's identity, then its grant over the entry, then the entry's admission (group
+/// limits and budget), a refusal at any of them winning; only then does it render this refusal,
+/// refunding or releasing what admission held, with no walk, no hook and no tap, so nothing is
+/// net-charged. On an answer that names no entry, or on any other outcome, it is a FAULT. Unset,
+/// the refusal is rendered before admission and nothing is charged.
+pub const REFUSED_AFTER_ADMISSION: u32 = 2;
 
 /// [`OnPieceIn::from`]: the piece is the caller's.
 pub const FROM_CALLER: u32 = 0;
@@ -1763,8 +1778,9 @@ pub struct ArriveOut {
     /// fault by definition; 400 to 599 for a refusal about an entry (see "A refused arrival",
     /// rule 6). `0` on every other outcome.
     pub refusal_status: u32,
-    /// On REFUSED: `REFUSED_*` bits, the refusal's neutral outcome ([`REFUSED_UNSUPPORTED_ACTION`]);
-    /// `0` on every other outcome. In what was padding.
+    /// On REFUSED: `REFUSED_*` bits, the refusal's neutral outcome ([`REFUSED_UNSUPPORTED_ACTION`])
+    /// and, on a refusal about an entry, its order ([`REFUSED_AFTER_ADMISSION`]); `0` on every
+    /// other outcome. In what was padding.
     pub refusal_flags: u32,
     /// This unit's CORRELATION KEY: a non-zero value the plane derives from the arrival (for
     /// example from its request identifier), naming the unit for a subsequent
