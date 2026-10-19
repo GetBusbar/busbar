@@ -1113,10 +1113,9 @@ fn a_tail_declares_its_record_retentions_and_a_bad_one_does_not_bind() {
         vec![rule(0, RETENTION_TERMINAL_ONLY)]
     );
     let older = std::mem::offset_of!(PlaneTail, record_retentions);
-    assert_eq!(
-        bind(good, older).expect("a tail ending before the list binds"),
-        Vec::new(),
-        "a tail ending before the list declares no rule"
+    assert!(
+        bind(good, older).is_err(),
+        "R9, one size (step 2b): a tail ending before the list is refused"
     );
     let unknown: &'static [RecordRetention] =
         Box::leak(Box::new([rule(0, RETENTION_TERMINAL_ONLY + 1)]));
@@ -1133,12 +1132,12 @@ fn a_tail_declares_its_record_retentions_and_a_bad_one_does_not_bind() {
     assert!(refused.contains("record_retention.kind_twice"), "{refused}");
 }
 
-/// THE STREAM CEILING IS A TAIL ADDITION (ARCHITECT ruling 2026-10-07, STREAM-CEILING): a tail of
-/// the whole size states its ceiling and the root is handed it; a tail whose `size` ends before the
-/// field still loads and states none (`0`), even when the memory past its size holds a value. RED:
-/// a frozen size equal to the grown tail refused the shorter tail, and no fact carried the ceiling.
+/// THE STREAM CEILING (ARCHITECT ruling 2026-10-07, STREAM-CEILING): a tail of the contract's size
+/// states its ceiling and the root is handed it. R9, ONE SIZE (step 2b): a tail whose `size` is not
+/// exactly `size_of::<PlaneTail>()`, shorter or longer, is refused at bind; nothing past a short
+/// tail's end is read as a value.
 #[test]
-fn a_tail_states_its_stream_ceiling_and_a_tail_ending_before_it_states_none() {
+fn a_tail_states_its_stream_ceiling_and_a_tail_of_another_size_is_refused() {
     use busbar_contract::abi::mechanism::door::{
         KindTailHead, Section, Statement, SECTION_DECLARING,
     };
@@ -1164,22 +1163,25 @@ fn a_tail_states_its_stream_ceiling_and_a_tail_ending_before_it_states_none() {
         st.kind_tail = &tail.head;
         st.sections = sections.as_ptr();
         st.sections_len = sections.len();
-        Plane::context(&st)
-            .expect("the tail binds")
-            .expect("a plane has a context")
-            .downcast::<PlaneFacts>()
-            .expect("the plane's facts")
-            .served
-            .stream_ceiling_secs
+        Plane::context(&st).map(|facts| {
+            facts
+                .expect("a plane has a context")
+                .downcast::<PlaneFacts>()
+                .expect("the plane's facts")
+                .served
+                .stream_ceiling_secs
+        })
     };
     assert_eq!(
         bind(size_of::<PlaneTail>()),
-        600,
+        Ok(600),
         "the whole tail states it"
     );
-    assert_eq!(
-        bind(std::mem::offset_of!(PlaneTail, stream_ceiling_secs)),
-        0,
-        "a tail ending before the field loads and states no ceiling"
-    );
+    for size in [
+        std::mem::offset_of!(PlaneTail, stream_ceiling_secs),
+        std::mem::offset_of!(PlaneTail, record_retentions),
+        size_of::<PlaneTail>() + 8,
+    ] {
+        assert!(bind(size).is_err(), "a {size}-byte tail is refused");
+    }
 }

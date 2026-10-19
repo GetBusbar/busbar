@@ -346,6 +346,13 @@ pub const TAIL_HOOKS_GATED: u32 = 1 << 2;
 /// and nothing it emits reaches the caller. Then the unit is refused as it is without the bit:
 /// `refusal` renders it. Without the bit no such piece is sent.
 pub const TAIL_REFUSED_PIECE: u32 = 1 << 3;
+/// [`PlaneTail::flags`]: the plane KEYS THE ROOT MAP. The root document's rate card is keyed by
+/// this plane's members, and the kernel guards this plane's door steps by the root's keys: the
+/// keyed charge at admission, and an anonymous arrival on a [`CLAIM_ANON_ON_OPEN_CHAIN`] claim.
+/// The kernel reads this bit, never the plane's section name, to know which plane the root map
+/// belongs to. Without it (a zeroed tail states `0`) the plane keys nothing of the root's and the
+/// kernel reads none of the root map for it: a zero never grants.
+pub const TAIL_KEYED_ROOT_MAP: u32 = 1 << 4;
 
 /// [`Claim::flags`]: the route takes no inbound credential; the kernel admits an arrival on it
 /// without verifying a caller. Without it, the route takes one.
@@ -366,6 +373,23 @@ pub const CLAIM_PATTERN: u32 = 1 << 2;
 /// route and takes no arrival (ARCHITECT ruling 2026-10-17). Never with [`CLAIM_OPEN`],
 /// [`CLAIM_EXACT`] or [`CLAIM_PATTERN`]. Bits 3 and 4 are taken by flags in flight.
 pub const CLAIM_RAW_AFFIX: u32 = 1 << 5;
+/// [`Claim::flags`]: the route ADMITS AN ANONYMOUS CALLER WHILE THE DEPLOYMENT'S FRONT-DOOR CHAIN
+/// IS OPEN (an empty auth chain and no keys, the previous release's open relay): the kernel admits
+/// an arrival with no credential on it as anonymous, with nothing held and no money. While the
+/// chain is closed the route takes a credential as any other route does. Without the bit (a zeroed
+/// claim states `0`) an arrival with no credential is REFUSED whatever the chain, unless the claim
+/// is [`CLAIM_OPEN`]: a zero never grants. The kernel reads this bit, never the plane's section
+/// name ([`claim_admits_anonymous`]). Never with [`CLAIM_RAW_AFFIX`], which takes no arrival.
+pub const CLAIM_ANON_ON_OPEN_CHAIN: u32 = 1 << 6;
+
+/// WHETHER AN ARRIVAL WITH NO CREDENTIAL IS ADMITTED, AS ANONYMOUS, on a claim stating `flags`: on
+/// a [`CLAIM_OPEN`] claim always; on a [`CLAIM_ANON_ON_OPEN_CHAIN`] claim only while the
+/// deployment's front-door chain is open (`chain_open`); on any other claim never. A zeroed claim
+/// admits no one, open chain or not.
+#[must_use]
+pub const fn claim_admits_anonymous(flags: u32, chain_open: bool) -> bool {
+    flags & CLAIM_OPEN != 0 || (chain_open && flags & CLAIM_ANON_ON_OPEN_CHAIN != 0)
+}
 
 /// [`ArriveIn::claim`]: the arrival is a health probe, not a snapshot claim. Only a plane whose
 /// tail states [`TAIL_PROBES`] is sent one.
@@ -1432,14 +1456,15 @@ impl TrustKey {
     };
 }
 
-/// THE PLANE'S STATEMENT TAIL: static facts, `'static` data.
+/// THE PLANE'S STATEMENT TAIL: static facts, `'static` data. Its head's `size` is exactly
+/// `size_of::<PlaneTail>()`: one size per contract, no shorter or longer one loads.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct PlaneTail {
     /// The tail head.
     pub head: KindTailHead,
-    /// [`TAIL_FALLBACK`] | [`TAIL_PROBES`] | [`TAIL_HOOKS_GATED`] | [`TAIL_REFUSED_PIECE`]; any
-    /// other bit refuses the load.
+    /// [`TAIL_FALLBACK`] | [`TAIL_PROBES`] | [`TAIL_HOOKS_GATED`] | [`TAIL_REFUSED_PIECE`] |
+    /// [`TAIL_KEYED_ROOT_MAP`]; any other bit refuses the load.
     pub flags: u32,
     /// `INGRESS_*` bits.
     pub ingress: u32,
@@ -1535,8 +1560,7 @@ pub struct PlaneTail {
     /// and a caller that stops reading it alike: when it passes, the unit is cut
     /// (`DeadlineExceeded`) and bills what it delivered (Part 2 #62). `0` = NO ceiling: the
     /// streamed answer runs to its own end and a stalled caller holds it until the caller goes, as
-    /// the previous release served it. A tail addition: a tail whose `size` ends before it
-    /// states `0`.
+    /// the previous release served it.
     pub stream_ceiling_secs: u64,
     /// THE LANE WORDS THE PLANE MAY STATE ON ITS ATTEMPTS' COUNTERS, declared once (beside the
     /// operator's entry names, the only other words [`OnPieceOut::metric_lane`] may carry): a
@@ -1547,8 +1571,7 @@ pub struct PlaneTail {
     pub metric_lanes_len: usize,
     /// THE RETENTION RULE OF EACH RECORD KIND THAT IS NOT PURGED BY AGE ([`RecordRetention`]): at
     /// most one entry per kind, each naming a kind of [`PlaneTail::record_kinds`]. A kind not listed
-    /// is purged by age. NULL/0 = none. A tail addition: a tail whose `size` ends before it lists
-    /// none.
+    /// is purged by age. NULL/0 = none.
     pub record_retentions: *const RecordRetention,
     /// How many.
     pub record_retentions_len: usize,
@@ -1632,7 +1655,8 @@ pub struct Claim {
     pub target: AbiStr,
     /// The transport claim it arrives over.
     pub carrier: AbiStr,
-    /// [`CLAIM_OPEN`] | [`CLAIM_EXACT`] | [`CLAIM_PATTERN`]; any other bit refuses the snapshot.
+    /// [`CLAIM_OPEN`] | [`CLAIM_EXACT`] | [`CLAIM_PATTERN`] | [`CLAIM_RAW_AFFIX`] |
+    /// [`CLAIM_ANON_ON_OPEN_CHAIN`]; any other bit refuses the snapshot.
     pub flags: u32,
     /// The dialect a refusal on this route wears before `arrive` has read the arrival: an index
     /// into [`PlaneTail::dialects`], opaque to the kernel, which carries it from the matched route

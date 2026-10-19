@@ -91,9 +91,33 @@ fn zero_transport_rows_are_refused() {
 }
 
 #[test]
-fn a_zero_plane_tail_states_no_ingress_and_is_refused() {
+fn a_zero_plane_tail_states_no_size_and_no_ingress_and_is_refused() {
     let got = refused(plane::check::check_tail(&plane::PlaneTail::ZERO));
+    assert!(got.contains("tail.size"), "{got}");
+    let sized = plane::PlaneTail {
+        head: KindTailHead {
+            size: size_of::<plane::PlaneTail>() as u32,
+            ..KindTailHead::ZERO
+        },
+        ..plane::PlaneTail::ZERO
+    };
+    let got = refused(plane::check::check_tail(&sized));
     assert!(got.contains("tail.ingress"), "{got}");
+}
+
+/// Step 2b: a zero tail keys no root map; a zero claim admits no anonymous caller, open chain or
+/// not.
+#[test]
+fn a_zero_plane_tail_or_claim_never_grants() {
+    assert_eq!(plane::PlaneTail::ZERO.flags & plane::TAIL_KEYED_ROOT_MAP, 0);
+    assert!(!plane::claim_admits_anonymous(
+        plane::Claim::ZERO.flags,
+        true
+    ));
+    assert!(!plane::claim_admits_anonymous(
+        plane::Claim::ZERO.flags,
+        false
+    ));
 }
 
 #[test]

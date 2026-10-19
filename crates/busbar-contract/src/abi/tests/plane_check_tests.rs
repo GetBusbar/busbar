@@ -1269,6 +1269,7 @@ fn every_snapshot_claim_and_route_is_named() {
 
 fn tail() -> PlaneTail {
     let mut t: PlaneTail = z();
+    t.head.size = size_of::<PlaneTail>() as u32;
     t.ingress = INGRESS_REQUEST_RESPONSE;
     t
 }
@@ -1282,9 +1283,9 @@ fn a_tail_with_unknown_bits_or_no_ingress_is_fault() {
     let mut t = tail();
     t.ingress = INGRESS_REQUEST_RESPONSE | (1 << 5);
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.ingress"));
-    // The first bit past the last one a tail may state (`TAIL_REFUSED_PIECE`, bit 3, is known).
+    // The first bit past the last one a tail may state (`TAIL_KEYED_ROOT_MAP`, bit 4, is known).
     let mut t = tail();
-    t.flags = TAIL_REFUSED_PIECE << 1;
+    t.flags = TAIL_KEYED_ROOT_MAP << 1;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.flags"));
     let mut t = tail();
     t.dispatch_shape = 2;
@@ -1869,7 +1870,7 @@ fn a_tail_may_declare_the_gate_first_hook_order() {
     let mut t = tail();
     t.flags = TAIL_HOOKS_GATED;
     assert_eq!(check_tail(&t), Ok(()));
-    t.flags = TAIL_REFUSED_PIECE << 1;
+    t.flags = TAIL_KEYED_ROOT_MAP << 1;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.flags"));
 }
 
@@ -1880,7 +1881,7 @@ fn a_tail_may_take_a_credential_refusal_as_a_piece() {
     let mut t = tail();
     t.flags = TAIL_REFUSED_PIECE | TAIL_HOOKS_GATED;
     assert_eq!(check_tail(&t), Ok(()));
-    t.flags = TAIL_REFUSED_PIECE << 1;
+    t.flags = TAIL_KEYED_ROOT_MAP << 1;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.flags"));
 }
 
@@ -3529,7 +3530,7 @@ fn a_raw_affix_target_is_a_prefix_a_star_and_a_suffix() {
         check_claims(&[claim("V", "/model/*/converse", CLAIM_RAW_AFFIX)], 0),
         Ok(())
     );
-    assert!(check_claims(&[claim("V", "/t", CLAIM_RAW_AFFIX << 1)], 0).is_err());
+    assert!(check_claims(&[claim("V", "/t", CLAIM_ANON_ON_OPEN_CHAIN << 1)], 0).is_err());
 }
 
 /// A RAW AFFIX MATCHES THE RAW PATH AS BYTES, so the previous release's rule (`starts_with` the
@@ -3947,4 +3948,83 @@ fn a_sections_entry_noun_is_text() {
         crate::abi::mechanism::check::check_statement_sections(&[sec]),
         f(Rule::NullWithCount, "section.entry_noun")
     );
+}
+
+// ── step 2b: the claim's anonymous admission and the tail's root map ──
+
+/// A CLAIM MAY STATE `CLAIM_ANON_ON_OPEN_CHAIN`: a known bit, beside the target bits, never with a
+/// raw affix (which takes no arrival). The bit past it is still unknown.
+#[test]
+fn a_claim_may_admit_anonymously_on_an_open_chain() {
+    let c = claim("V", "/t", CLAIM_ANON_ON_OPEN_CHAIN | CLAIM_EXACT);
+    assert_eq!(check_claims(&[c], 1), Ok(()));
+    let c = claim("V", "/t", CLAIM_ANON_ON_OPEN_CHAIN | CLAIM_OPEN);
+    assert_eq!(
+        check_claims(&[c], 1),
+        Ok(()),
+        "redundant, not contradictory"
+    );
+    // RED: never with a raw affix.
+    let c = claim("V", "/a/*/b", CLAIM_ANON_ON_OPEN_CHAIN | CLAIM_RAW_AFFIX);
+    assert_eq!(check_claims(&[c], 1), f(Rule::Contradiction, "claim.flags"));
+    assert!(check_claim_target("/a/*/b", CLAIM_ANON_ON_OPEN_CHAIN | CLAIM_RAW_AFFIX).is_err());
+    // RED: the bit past it.
+    let c = claim("V", "/t", CLAIM_ANON_ON_OPEN_CHAIN << 1);
+    assert_eq!(check_claims(&[c], 1), f(Rule::UnknownCode, "claim.flags"));
+}
+
+/// RULE 1, THE CLAIM: a zeroed claim never admits an anonymous caller, open chain or not, and the
+/// snapshot check refuses it (no verb). Only `CLAIM_OPEN` admits always; only
+/// `CLAIM_ANON_ON_OPEN_CHAIN` admits on an open chain, never on a closed one.
+#[test]
+fn a_zeroed_claim_never_admits_anonymously() {
+    let zeroed: Claim = z();
+    assert_eq!(zeroed.flags, 0);
+    assert!(!claim_admits_anonymous(zeroed.flags, true));
+    assert!(!claim_admits_anonymous(zeroed.flags, false));
+    assert!(!claim_admits_anonymous(Claim::ZERO.flags, true));
+    assert_eq!(check_claims(&[zeroed], 0), f(Rule::Missing, "claim.verb"));
+    assert!(claim_admits_anonymous(CLAIM_OPEN, false));
+    assert!(claim_admits_anonymous(CLAIM_ANON_ON_OPEN_CHAIN, true));
+    assert!(!claim_admits_anonymous(CLAIM_ANON_ON_OPEN_CHAIN, false));
+    assert!(!claim_admits_anonymous(CLAIM_EXACT | CLAIM_PATTERN, true));
+}
+
+/// A TAIL MAY STATE `TAIL_KEYED_ROOT_MAP`; the bit past it is still unknown.
+#[test]
+fn a_tail_may_key_the_root_map() {
+    let mut t = tail();
+    t.flags = TAIL_KEYED_ROOT_MAP | TAIL_FALLBACK | TAIL_PROBES;
+    assert_eq!(check_tail(&t), Ok(()));
+    t.flags = TAIL_KEYED_ROOT_MAP << 1;
+    assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.flags"));
+}
+
+/// RULE 1, THE TAIL: a zeroed tail keys no root map, and the load refuses it (its size is not the
+/// contract's).
+#[test]
+fn a_zeroed_tail_never_keys_the_root_map_and_is_refused() {
+    let zeroed: PlaneTail = z();
+    assert_eq!(zeroed.flags & TAIL_KEYED_ROOT_MAP, 0);
+    assert_eq!(PlaneTail::ZERO.flags & TAIL_KEYED_ROOT_MAP, 0);
+    assert_eq!(check_tail(&zeroed), f(Rule::Foreign, "tail.size"));
+    assert_eq!(check_tail(&PlaneTail::ZERO), f(Rule::Foreign, "tail.size"));
+}
+
+/// R9, ONE SIZE: a tail loads at exactly `size_of::<PlaneTail>()`; a shorter one (ending before
+/// `record_retentions` or `stream_ceiling_secs`) and a longer one are foreign.
+#[test]
+fn a_tail_of_another_size_is_foreign() {
+    assert_eq!(size_of::<PlaneTail>(), 440, "the one v1 size");
+    assert_eq!(check_tail(&tail()), Ok(()));
+    for size in [
+        0,
+        core::mem::offset_of!(PlaneTail, record_retentions),
+        core::mem::offset_of!(PlaneTail, stream_ceiling_secs),
+        size_of::<PlaneTail>() + 8,
+    ] {
+        let mut t = tail();
+        t.head.size = size as u32;
+        assert_eq!(check_tail(&t), f(Rule::Foreign, "tail.size"), "{size}");
+    }
 }

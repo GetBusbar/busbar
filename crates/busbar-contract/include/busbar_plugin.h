@@ -372,10 +372,12 @@ extern "C" {
 #define BB_PLANE_TAIL_PROBES UINT32_C(2) /* [`PlaneTail::flags`]: the plane answers health probes. A probe is a kernel-originated unit */
 #define BB_PLANE_TAIL_HOOKS_GATED UINT32_C(4) /* [`PlaneTail::flags`]: the plane's request-stage hooks run GATE-FIRST (spec Part 3 section 12 */
 #define BB_PLANE_TAIL_REFUSED_PIECE UINT32_C(8) /* [`PlaneTail::flags`]: the plane takes a unit's refusal as a piece first where the unit's hop */
+#define BB_PLANE_TAIL_KEYED_ROOT_MAP UINT32_C(16) /* [`PlaneTail::flags`]: the plane KEYS THE ROOT MAP. The root document's rate card is keyed by */
 #define BB_PLANE_CLAIM_OPEN UINT32_C(1) /* [`Claim::flags`]: the route takes no inbound credential; the kernel admits an arrival on it */
 #define BB_PLANE_CLAIM_EXACT UINT32_C(2) /* [`Claim::flags`]: the target matches exactly. Without it (and without [`CLAIM_PATTERN`]), the */
 #define BB_PLANE_CLAIM_PATTERN UINT32_C(4) /* [`Claim::flags`]: the target is a path pattern. Each `/`-separated segment is a literal, or a */
 #define BB_PLANE_CLAIM_RAW_AFFIX UINT32_C(32) /* [`Claim::flags`]: the target is a RAW AFFIX, spelled `<prefix>*<suffix>`. It matches a request */
+#define BB_PLANE_CLAIM_ANON_ON_OPEN_CHAIN UINT32_C(64) /* [`Claim::flags`]: the route ADMITS AN ANONYMOUS CALLER WHILE THE DEPLOYMENT'S FRONT-DOOR CHAIN */
 #define BB_PLANE_CLAIM_PROBE UINT32_C(0xffffffff) /* [`ArriveIn::claim`]: the arrival is a health probe, not a snapshot claim. Only a plane whose */
 #define BB_PLANE_INGRESS_REQUEST_RESPONSE UINT32_C(1) /* [`PlaneTail::ingress`]: a request expecting one reply. */
 #define BB_PLANE_INGRESS_RESPONSE_STREAM UINT32_C(2) /* [`PlaneTail::ingress`]: a request expecting a streamed reply. */
@@ -2691,7 +2693,7 @@ struct bb_plane_TrustKey {
     size_t mechanisms_len;
 };
 
-/* THE PLANE'S STATEMENT TAIL: static facts, `'static` data. */
+/* THE PLANE'S STATEMENT TAIL: static facts, `'static` data. Its head's `size` is exactly */
 struct bb_plane_PlaneTail {
     bb_mech_KindTailHead head;
     uint32_t flags;
