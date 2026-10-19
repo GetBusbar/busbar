@@ -3596,27 +3596,18 @@ fn test_hook_on_error_terminating_chain_ok() {
         );
     }
 
-    // A ranking-strategy fallback terminates the chain when the plugin is compiled in; when it
-    // is compiled out, naming one is a boot error (compliance-by-compilation).
+    // A ranking-strategy fallback terminates the chain when the build links a ranking row (a test
+    // build always links the kernel's ranking double). A build that links none refuses it at boot
+    // (compliance-by-compilation): the composition root's build without its `hooks-ranking`
+    // feature, proven where that build is made (`scripts/no-plugins-gate.sh`, RED-B).
     let mut cfg = hooks_test_cfg();
     let mut c = gate_hook("test-hook", 150);
     c.on_error = "cheapest".to_string();
     cfg.hooks.insert("c".to_string(), c);
-    let result = validate(&cfg);
-    #[cfg(feature = "hooks-ranking")]
-    if let Err(errs) = result {
+    if let Err(errs) = validate(&cfg) {
         assert!(
             !errs.iter().any(|e| e.contains("on_error")),
-            "a strategy fallback must be accepted when compiled in; got: {errs:?}"
-        );
-    }
-    #[cfg(not(feature = "hooks-ranking"))]
-    {
-        let errs = result.expect_err("a strategy fallback without the plugin must be rejected");
-        assert!(
-            errs.iter()
-                .any(|e| e.contains("WITHOUT the `hooks-ranking` feature")),
-            "{errs:?}"
+            "a strategy fallback must be accepted when a ranking row is linked; got: {errs:?}"
         );
     }
 }

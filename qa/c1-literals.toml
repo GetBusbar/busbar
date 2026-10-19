@@ -25,11 +25,6 @@ file = "crates/busbar-kernel/Cargo.toml"
 item = "openapi (openapi-schema)"
 
 [[finding]]
-rule = "c1-literals:feature"
-file = "crates/busbar-kernel/Cargo.toml"
-item = "ranking (hooks-ranking)"
-
-[[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/api.rs"
 item = "openapi"
