@@ -2554,6 +2554,7 @@ fn an_auth_handle_in_one_field_short_is_refused() {
         conn: 1,
         stream: 1,
         answer: &mut refusal,
+        request: get_view(),
     };
     let f = HOST_SLOTS.unit_refuse.unwrap();
     let mut o = blank();

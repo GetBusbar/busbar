@@ -756,6 +756,7 @@ fn a_dial_begin_with_a_foreign_stale_or_forged_binding_ref_is_refused() {
     };
     let mut i: BeginIn = z();
     i.side = SIDE_DIAL;
+    i.scheme = busbar_contract::abi::host::service::SCHEME_SECURE;
     assert_eq!(admit(&i, framer), None, "a binding with no auth");
     i.points = POINT_HEAD;
     i.auth = mint_auth_ref(framer, generation(), 9).expect("minted");
@@ -791,6 +792,33 @@ fn a_dial_begin_with_a_foreign_stale_or_forged_binding_ref_is_refused() {
         ),
         None
     );
+}
+
+/// RED: a `begin` whose scheme is undeclared (`0`, a zeroed `in`) or unknown is REFUSED before
+/// the crossing, on every side; a declared scheme is admitted.
+#[test]
+fn a_begin_with_an_undeclared_scheme_is_refused() {
+    use busbar_contract::abi::host::service::{SCHEME_PLAIN, SCHEME_SECURE};
+    use busbar_contract::abi::transport::{SIDE_ACCEPT, SIDE_ACCEPT_STREAM, SIDE_DIAL};
+    let admit = |i: &BeginIn| {
+        Transport::admit(
+            slot::BEGIN,
+            std::ptr::from_ref(i).cast(),
+            size_of::<BeginIn>(),
+            40,
+        )
+    };
+    for side in [SIDE_DIAL, SIDE_ACCEPT, SIDE_ACCEPT_STREAM] {
+        let mut i: BeginIn = z();
+        i.side = side;
+        assert_eq!(admit(&i), Some(Outcome::Refused), "an undeclared scheme");
+        i.scheme = SCHEME_SECURE + 1;
+        assert_eq!(admit(&i), Some(Outcome::Refused), "an unknown scheme");
+        for scheme in [SCHEME_PLAIN, SCHEME_SECURE] {
+            i.scheme = scheme;
+            assert_eq!(admit(&i), None, "a declared scheme");
+        }
+    }
 }
 
 /// RED (the opening body's length): an `emit` whose `body_len` breaks the contract (a length with

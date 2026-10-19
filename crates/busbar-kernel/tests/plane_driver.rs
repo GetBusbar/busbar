@@ -2158,7 +2158,7 @@ async fn a_refusal_after_admission_within_limits_is_the_planes_and_nets_no_charg
             key: key.clone(),
             cost: cost.clone(),
             pool: String::new(),
-            model: "m".into(),
+            lane: "m".into(),
             classes: Arc::from(vec![busbar_contract::plane::PER_REQUEST.to_string()]),
             arrived: AT,
             mode: ExhaustionMode::FinishUnit,

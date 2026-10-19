@@ -3430,7 +3430,8 @@ struct bb_hsvc_AuthRef {
 struct bb_transport_BeginIn {
     bb_mech_InHead head;
     uint32_t side;
-    uint32_t _reserved;
+    uint8_t scheme;
+    uint8_t _reserved[3];
     bb_mech_AbiStr target;
     const bb_transport_ConnFacts *facts;
     bb_transport_FramerSink sink;
@@ -4084,6 +4085,7 @@ struct bb_hsvc_UnitRefuseIn {
     uint64_t conn;
     uint64_t stream;
     bb_hsvc_RefusalAnswer *answer;
+    bb_hsvc_HeadView request;
 };
 
 /* THE HOST SERVICES TABLE: one [`ServiceFn`] per [`op`], in index order. A NULL slot is a service */
@@ -5993,7 +5995,8 @@ BB_ASSERT(sizeof(bb_transport_BeginIn) == 264, "bb_transport_BeginIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_BeginIn) == 8, "bb_transport_BeginIn: alignment");
 BB_ASSERT(offsetof(bb_transport_BeginIn, head) == 0, "bb_transport_BeginIn.head: offset");
 BB_ASSERT(offsetof(bb_transport_BeginIn, side) == 88, "bb_transport_BeginIn.side: offset");
-BB_ASSERT(offsetof(bb_transport_BeginIn, _reserved) == 92, "bb_transport_BeginIn._reserved: offset");
+BB_ASSERT(offsetof(bb_transport_BeginIn, scheme) == 92, "bb_transport_BeginIn.scheme: offset");
+BB_ASSERT(offsetof(bb_transport_BeginIn, _reserved) == 93, "bb_transport_BeginIn._reserved: offset");
 BB_ASSERT(offsetof(bb_transport_BeginIn, target) == 96, "bb_transport_BeginIn.target: offset");
 BB_ASSERT(offsetof(bb_transport_BeginIn, facts) == 112, "bb_transport_BeginIn.facts: offset");
 BB_ASSERT(offsetof(bb_transport_BeginIn, sink) == 120, "bb_transport_BeginIn.sink: offset");
@@ -6488,7 +6491,7 @@ BB_ASSERT(offsetof(bb_hsvc_RefusalAnswer, _reserved) == 6, "bb_hsvc_RefusalAnswe
 BB_ASSERT(offsetof(bb_hsvc_RefusalAnswer, fields) == 8, "bb_hsvc_RefusalAnswer.fields: offset");
 BB_ASSERT(offsetof(bb_hsvc_RefusalAnswer, fields_len) == 16, "bb_hsvc_RefusalAnswer.fields_len: offset");
 BB_ASSERT(offsetof(bb_hsvc_RefusalAnswer, body) == 24, "bb_hsvc_RefusalAnswer.body: offset");
-BB_ASSERT(sizeof(bb_hsvc_UnitRefuseIn) == 72, "bb_hsvc_UnitRefuseIn: size");
+BB_ASSERT(sizeof(bb_hsvc_UnitRefuseIn) == 160, "bb_hsvc_UnitRefuseIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_UnitRefuseIn) == 8, "bb_hsvc_UnitRefuseIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_UnitRefuseIn, head) == 0, "bb_hsvc_UnitRefuseIn.head: offset");
 BB_ASSERT(offsetof(bb_hsvc_UnitRefuseIn, unit) == 24, "bb_hsvc_UnitRefuseIn.unit: offset");
@@ -6497,6 +6500,7 @@ BB_ASSERT(offsetof(bb_hsvc_UnitRefuseIn, line) == 44, "bb_hsvc_UnitRefuseIn.line
 BB_ASSERT(offsetof(bb_hsvc_UnitRefuseIn, conn) == 48, "bb_hsvc_UnitRefuseIn.conn: offset");
 BB_ASSERT(offsetof(bb_hsvc_UnitRefuseIn, stream) == 56, "bb_hsvc_UnitRefuseIn.stream: offset");
 BB_ASSERT(offsetof(bb_hsvc_UnitRefuseIn, answer) == 64, "bb_hsvc_UnitRefuseIn.answer: offset");
+BB_ASSERT(offsetof(bb_hsvc_UnitRefuseIn, request) == 72, "bb_hsvc_UnitRefuseIn.request: offset");
 BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 264, "bb_hsvc_HostSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_HostSlots) == 8, "bb_hsvc_HostSlots: alignment");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, size) == 0, "bb_hsvc_HostSlots.size: offset");

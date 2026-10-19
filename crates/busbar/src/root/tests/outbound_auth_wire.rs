@@ -110,11 +110,13 @@ const STATEMENT: Statement = Statement {
     ..statement("tst", "0", 8)
 };
 
-/// One framing: the binding it was begun with and the authority it was begun for.
+/// One framing: the binding it was begun with, the authority it was begun for and the scheme the
+/// host declared for its connection (`BeginIn::scheme`).
 struct Bound {
     auth: AuthRef,
     points: u32,
     authority: String,
+    scheme: u8,
 }
 
 /// The framer's instance: the host services `open` handed it, and its framings.
@@ -222,6 +224,7 @@ slot!(Begin, BeginIn, FramerOut, |p, i, o| {
             auth: i.auth,
             points: i.points,
             authority,
+            scheme: i.scheme,
         },
     );
     o.set(|x| &x.framing, token);
@@ -292,13 +295,13 @@ slot!(Emit, EmitIn, FramerOut, |p, i, o| {
         o.error("emit: not this wire's message");
         return Outcome::Failed;
     };
-    let (auth, points, authority) = {
+    let (auth, points, authority, scheme) = {
         let framings = inst.framings.lock().expect("framings");
         let Some(b) = framings.get(&i.framing) else {
             o.error("emit: no such framing");
             return Outcome::Failed;
         };
-        (b.auth, b.points, b.authority.clone())
+        (b.auth, b.points, b.authority.clone(), b.scheme)
     };
     // The framer's own line: the head is final once it is here.
     if !body.is_empty() {
@@ -335,8 +338,8 @@ slot!(Emit, EmitIn, FramerOut, |p, i, o| {
                 authority: &authority,
                 query: None,
                 fields: &view,
-                // The dial is in the clear (this framer offers no connection security).
-                scheme: busbar_contract::abi::host::service::SCHEME_PLAIN,
+                // The scheme the host declared at begin, as it declared it.
+                scheme,
             },
             None,
         );
@@ -579,7 +582,10 @@ fn the_auth_signs_the_exact_head_that_goes_on_the_wire() {
         Arc::clone(&door),
         SIDE_DIAL,
         "tst://api.example:443/v1",
-        &Established::default(),
+        &Established {
+            scheme: Established::scheme_of(false),
+            ..Established::default()
+        },
         &[],
         &binding,
     )

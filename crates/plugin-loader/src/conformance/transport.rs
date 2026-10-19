@@ -377,6 +377,8 @@ fn cross(p: &Plugin<Transport>, framing: u64, op: Op<'_>, sink: &mut Sink) -> (C
         Op::Begin(side, target) => {
             let mut i: BeginIn = input();
             (i.side, i.sink) = (side, raw);
+            // The suite runs no connection security: its connections ride in the clear.
+            i.scheme = busbar_contract::abi::host::service::SCHEME_PLAIN;
             i.target = AbiStr {
                 ptr: target.as_ptr(),
                 len: target.len(),

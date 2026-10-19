@@ -431,10 +431,12 @@ impl HostWire {
         ))
     }
 
-    /// What a framing on this entry is told the handshake established: its claim.
+    /// What a framing on this entry is told the handshake established: its claim, and the clear
+    /// scheme on both sides (this wire secures nothing; a secure target is refused before dial).
     fn established(&self) -> Established {
         Established {
             claim: Some(self.key.to_owned()),
+            scheme: Established::scheme_of(false),
             ..Established::default()
         }
     }

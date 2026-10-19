@@ -388,7 +388,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oauth"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=071097e8ece6b4a79eab9069de4200ba7f6f4c16#071097e8ece6b4a79eab9069de4200ba7f6f4c16"
+source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=af22153f4e34ffec8c9d1ad5f0838d00a4aca58f#af22153f4e34ffec8c9d1ad5f0838d00a4aca58f"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -805,7 +805,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=a644de52561abb942ed212d6bb2a2de43f58f0b2#a644de52561abb942ed212d6bb2a2de43f58f0b2"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=eec60b165c7ff778bd69e61c01f14ecdeb0024ad#eec60b165c7ff778bd69e61c01f14ecdeb0024ad"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -824,7 +824,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-decisions"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=938d17974212f44f8fa31cfce8e8e89880bdf309#938d17974212f44f8fa31cfce8e8e89880bdf309"
+source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=186a9451e70b52ed55c993a878ba4de7dfb88c1f#186a9451e70b52ed55c993a878ba4de7dfb88c1f"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -848,7 +848,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-mcp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=7dd2c1c947347806280f4cf635555008dc2a5a0a#7dd2c1c947347806280f4cf635555008dc2a5a0a"
+source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=f766c31f4e94083c4d4898d0cc47a1b51e6f2e50#f766c31f4e94083c4d4898d0cc47a1b51e6f2e50"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -861,7 +861,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-streaming"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=55f953f3a450cfc4a1624f809dc4c69e06aa3243#55f953f3a450cfc4a1624f809dc4c69e06aa3243"
+source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=8c282f41b726513b6b63942a9fb285961b7f6aef#8c282f41b726513b6b63942a9fb285961b7f6aef"
 dependencies = [
  "busbar-contract",
  "bytes",

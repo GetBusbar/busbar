@@ -1457,8 +1457,9 @@ impl Services {
 
     /// `unit.refuse`: the refusal of a request, as the kernel owns and audits it (`cause` one of
     /// the `REFUSE_*`; `line` = `LINE_NONE` exactly for `REFUSE_NO_ROUTE`; `unit` none when there
-    /// is none). The kernel's answer is copied out before this returns, so nothing borrowed from
-    /// the kernel outlives the call. Never pends.
+    /// is none; `request` the request being refused, as decoded, whose method and target shape the
+    /// listener's 1.5.5 bytes for a refusal with no unit). The kernel's answer is copied out before
+    /// this returns, so nothing borrowed from the kernel outlives the call. Never pends.
     ///
     /// # Errors
     ///
@@ -1472,7 +1473,9 @@ impl Services {
         line: u32,
         conn: u64,
         stream: u64,
+        request: &HeadViewArgs<'_>,
     ) -> Result<RefusalCopy, ServiceError> {
+        let fields = view_fields(request);
         let mut answer = RefusalAnswer {
             size: 0,
             status: 0,
@@ -1489,6 +1492,7 @@ impl Services {
             conn,
             stream,
             answer: std::ptr::from_mut(&mut answer),
+            request: view(request, &fields),
         };
         let crossed = self.cross(
             op::UNIT_REFUSE,

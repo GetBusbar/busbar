@@ -788,9 +788,33 @@ pub struct Established {
     pub peer_key_pin: Option<String>,
     /// Whether the handshake presented busbar's client identity.
     pub client_identity: bool,
+    /// The connection's scheme as `begin` declares it (`BeginIn::scheme`, a `SCHEME_*` code):
+    /// `SCHEME_SECURE` when the connector runs connection security on it (a dial through the
+    /// security layer, a listener that terminated it), `SCHEME_PLAIN` when it rides in the clear.
+    /// The default, `SCHEME_UNDECLARED`, is refused at `begin`: a zero never grants.
+    pub scheme: u8,
 }
 
 impl Established {
+    /// The scheme code for a connection the connector does (`true`) or does not secure.
+    #[must_use]
+    pub const fn scheme_of(secured: bool) -> u8 {
+        if secured {
+            busbar_contract::abi::host::service::SCHEME_SECURE
+        } else {
+            busbar_contract::abi::host::service::SCHEME_PLAIN
+        }
+    }
+
+    /// A test's connection in the clear: the default with a declared scheme.
+    #[cfg(test)]
+    pub(crate) fn plain_for_test() -> Self {
+        Self {
+            scheme: busbar_contract::abi::host::service::SCHEME_PLAIN,
+            ..Self::default()
+        }
+    }
+
     fn facts(&self) -> ConnFacts {
         let text = |s: Option<&[u8]>| s.map_or(NO_TEXT, abi);
         ConnFacts {
@@ -1323,6 +1347,7 @@ impl Framing {
                     .collect();
                 let mut i: BeginIn = blank_in();
                 i.side = *side;
+                i.scheme = established.scheme;
                 i.target = abi(target.as_bytes());
                 i.facts = &facts;
                 if !fields.is_empty() {
