@@ -696,7 +696,8 @@ impl Connector<'_> {
     }
 
     /// Make a host service that NEVER pends through `pick`'s slot, on NO ticket: the host keeps no
-    /// stored result for it, so every entry of the op asks afresh, and it draws no handle from the
+    /// whole answer for it, so every entry of the op asks afresh (a short answer's result is held
+    /// for its one re-call within the same crossing only), and it draws no handle from the
     /// op's count (the replay rule is untouched).
     fn cross_now<I: ServiceIn>(
         &self,

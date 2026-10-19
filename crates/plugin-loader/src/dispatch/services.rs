@@ -311,11 +311,34 @@ pub(crate) unsafe fn serve(
         if may_pend(head.op) {
             return Answered::bare(Outcome::Refused, UNTICKETED);
         }
-        // A ticketless call is never stored: only a service that never pends gets here, and a
-        // re-call re-reads it.
+        // Only a service that never pends gets here. A whole answer is never held; a short one is
+        // held, within this crossing, for the one re-call it earned: the re-call reads it without
+        // the service acting again, and a second short answer is FAULT.
+        let op = head.op;
+        let earned = SHORTED.with(|s| {
+            let mut s = s.borrow_mut();
+            let top = s.last_mut()?;
+            let at = top.iter().position(|(o, _)| *o == op)?;
+            Some(top.swap_remove(at).1)
+        });
+        if let Some(stored) = earned {
+            // SAFETY: the caller's contract.
+            return unsafe { deliver(&stored, into) }
+                .unwrap_or_else(|_| Answered::bare(Outcome::Fault, SECOND_SHORT));
+        }
         return match body(None) {
             // SAFETY: the caller's contract.
-            Ran::Now(stored) => unsafe { deliver(&stored, into) }.unwrap_or_else(|short| short),
+            Ran::Now(stored) => match unsafe { deliver(&stored, into) } {
+                Ok(a) => a,
+                Err(short) => {
+                    SHORTED.with(|s| {
+                        if let Some(top) = s.borrow_mut().last_mut() {
+                            top.push((op, stored));
+                        }
+                    });
+                    short
+                }
+            },
             Ran::Later => Answered::fault(),
         };
     }
