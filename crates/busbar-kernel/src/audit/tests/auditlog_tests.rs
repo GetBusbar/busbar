@@ -483,7 +483,7 @@ fn old_store_audit_only_in_legacy_table_boots_migrates_and_verifies() {
 
 /// A tracing layer that records the `diag = "BUSBAR-NNNN"` field of every ERROR event, so a test can
 /// assert a coded diagnostic was actually EMITTED — not merely that an aggregate count rose. The peer
-/// of the calllog/journal restore tests' capture layer.
+/// of the journal restore tests' capture layer.
 #[derive(Clone, Default)]
 struct DiagCapture(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
 
@@ -758,9 +758,10 @@ fn parse_audit_suffix_still_reads_legacy_bodies() {
     assert_eq!(principal, "admin");
 }
 
-/// A record appended through the SEAM with the SAFE suffix (what [`emit_admin_hostless`]/[`mirror`]
-/// write) restores and reconstructs its EXACT typed fields — including a `|`-carrying value that
-/// would have forged a different record under the legacy suffix — via the same
+/// A record appended through the SEAM with the SAFE suffix (what [`emit_admin_hostless`] writes
+/// for a record a pipe join would not read back) restores and reconstructs its EXACT typed fields —
+/// including a `|`-carrying value that would have forged a different record under the legacy
+/// suffix — via the same
 /// [`audit_entry_from_body`] bridge a boot restore uses.
 #[test]
 fn a_safe_suffix_record_restores_with_exact_fields_despite_embedded_pipes() {
@@ -1070,4 +1071,292 @@ fn a_clean_restore_captures_no_unreadable_row_diagnostic() {
         cap.0.lock().unwrap().iter().all(|d| !d.contains("BUSBAR-2047")),
         "a clean restore must not report an unreadable audit row: capture state leaked between tests"
     );
+}
+
+// ── Q128 p12#1: what `GET /audit` serves for a record written today ─────────────────────────────
+
+/// The newest record `emit_admin_hostless` pushed for `resource` (each test names its own).
+fn served(resource: &str) -> AuditEntry {
+    AUDIT_LOG
+        .list_filtered(
+            0,
+            crate::audit_ring::MAX_AUDIT_ENTRIES,
+            None,
+            Some(resource),
+        )
+        .into_iter()
+        .next()
+        .expect("emit_admin_hostless pushed the record into the served read model")
+}
+
+/// THE LIVE WRITE PATH SERVES 1.5.5's HASH. A record whose `action`/`resource`/`outcome` carry no
+/// `|` is sealed over the 1.5.5 pipe join, so the `hash` `GET /audit` serves is exactly
+/// `sha256(prev_hash|seq|ts|action|resource|outcome|principal)` (v1.5.5
+/// `crates/busbar/src/admin/audit.rs:61-73`; THE DESIGN §7 "`GET /audit` is unchanged"), the record
+/// declares scheme 1, and recomputing it under that declared scheme gives the served hash.
+///
+/// RED before the fix: every live write was sealed over `prev_hash|seq` then the length-prefixed
+/// safe suffix and declared scheme 2, so the served hash was neither 1.5.5's formula nor what scheme
+/// 2 recomputes to.
+#[test]
+fn a_live_admin_record_serves_the_1_5_5_hash_under_the_scheme_it_declares() {
+    ensure_global_audit_stream_registered();
+    let resource = "q128-p12-1:plain";
+    // A `|` in the principal (the last field) still reads back exactly.
+    emit_admin_hostless(
+        1_700_000_777,
+        "test.write",
+        resource,
+        "applied",
+        "issuer|subject",
+    );
+    let e = served(resource);
+    assert_eq!(e.scheme, crate::audit_ring::AUDIT_SCHEME_PIPE);
+    let v155 = format!(
+        "{}|{}|{}|{}|{}|{}|{}",
+        e.prev_hash, e.seq, e.ts, e.action, e.resource, e.outcome, e.principal
+    );
+    assert_eq!(
+        e.hash,
+        busbar_contract::redacted::sha256_hex(v155.as_bytes()),
+        "the served hash is 1.5.5's formula"
+    );
+    assert_eq!(
+        digest(&e),
+        e.hash,
+        "the declared scheme recomputes the served hash"
+    );
+
+    let (suffix, scheme) = admin_suffix(e.ts, &e.action, &e.resource, &e.outcome, &e.principal);
+    assert_eq!(scheme, crate::audit_ring::AUDIT_SCHEME_PIPE);
+    let (ts, action, res, outcome, principal, read_scheme) = parse_audit_suffix(&suffix);
+    assert_eq!(
+        (
+            ts,
+            action.as_str(),
+            res.as_str(),
+            outcome.as_str(),
+            principal.as_str()
+        ),
+        (e.ts, "test.write", resource, "applied", "issuer|subject"),
+        "the pipe join reads back exactly when only the last field carries a `|`"
+    );
+    assert_eq!(read_scheme, crate::audit_ring::AUDIT_SCHEME_PIPE);
+}
+
+/// A record whose `resource` carries a `|` would not split back exactly from a pipe join, so it is
+/// sealed under the length-prefixed suffix — and the scheme it declares (2) recomputes to exactly
+/// the hash it was minted with.
+///
+/// RED before the fix: scheme 2 recomputed as one length-prefixed buffer over every field, a
+/// different byte stream from the one the seam sealed, so the served record read as tampered.
+#[test]
+fn a_live_admin_record_with_a_bar_in_a_field_recomputes_under_its_declared_scheme() {
+    ensure_global_audit_stream_registered();
+    let resource = "q128-p12-1:with|bar";
+    emit_admin_hostless(1_700_000_778, "test.write", resource, "applied", "admin");
+    let e = served(resource);
+    assert_eq!(e.scheme, crate::audit_ring::AUDIT_SCHEME_LENGTH_PREFIXED);
+    assert_eq!(
+        digest(&e),
+        e.hash,
+        "the declared scheme recomputes the served hash"
+    );
+    let mut sealed = frame_prelude(Framing::PipeSeparated, &e.prev_hash, None, e.seq);
+    sealed.extend_from_slice(&audit_suffix_safe(
+        e.ts,
+        &e.action,
+        &e.resource,
+        &e.outcome,
+        &e.principal,
+    ));
+    assert_eq!(e.hash, busbar_contract::redacted::sha256_hex(&sealed));
+}
+
+// ── Q128 p12#2: a failed boot restore does not fork the chain ───────────────────────────────────
+
+/// A store that answers every read with an error: the boot restore's read failing.
+struct UnreadableStore;
+
+impl PlaneStore for UnreadableStore {
+    fn upsert_plane_record(
+        &self,
+        _record: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> RecordStoreResult<()> {
+        Err(RecordStoreError("store down (test)".to_string()))
+    }
+    fn get_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
+        Err(RecordStoreError("store down (test)".to_string()))
+    }
+    fn append_plane_record(
+        &self,
+        _record: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> RecordStoreResult<()> {
+        Err(RecordStoreError("store down (test)".to_string()))
+    }
+    fn list_plane_records(
+        &self,
+        _kind: &str,
+        _selector: &PlaneSelector,
+    ) -> RecordStoreResult<Vec<Vec<u8>>> {
+        Err(RecordStoreError("store down (test)".to_string()))
+    }
+    fn list_plane_record_parents(&self, _kind: &str) -> RecordStoreResult<Vec<String>> {
+        Err(RecordStoreError("store down (test)".to_string()))
+    }
+    fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> RecordStoreResult<u64> {
+        Err(RecordStoreError("store down (test)".to_string()))
+    }
+    fn delete_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<()> {
+        Err(RecordStoreError("store down (test)".to_string()))
+    }
+    fn redeem_plane_token(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> RecordStoreResult<bool> {
+        Err(RecordStoreError("store down (test)".to_string()))
+    }
+    fn plane_token_live(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> RecordStoreResult<bool> {
+        Err(RecordStoreError("store down (test)".to_string()))
+    }
+}
+
+/// A boot restore that could not read the store leaves the chain unseeded; the next append must
+/// read the persisted tail back and continue it, never write a second seq-1 record beside it.
+///
+/// RED before the fix: the restore error was only logged, the journal had never evicted, so the
+/// append opened a fresh chain at seq 1 with an empty `prev_hash` and forked the durable log.
+#[test]
+fn a_failed_boot_restore_does_not_fork_the_chain_at_seq_one() {
+    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
+        std::sync::Arc::new(DualDurableStore::new());
+    let (ts, res) = (1_700_001_000u64, "hook:restore-failed");
+
+    // Process 1: two records persisted.
+    let h1 = AuditTestHarness::over(store.clone());
+    h1.emit_full(
+        ADMIN_LOG,
+        audit_suffix(ts, "hook.register", res, "applied", "admin"),
+    );
+    let (_s2, _p2, tail) = h1.emit_full(
+        ADMIN_LOG,
+        audit_suffix(ts + 1, "hook.delete", res, "applied", "admin"),
+    );
+
+    // Process 2: its boot restore cannot read the store.
+    let h2 = AuditTestHarness::over(store.clone());
+    assert!(
+        h2.log.restore_from_store(&UnreadableStore).is_err(),
+        "the restore read failed"
+    );
+
+    // The store answers again: the first append continues the persisted chain.
+    let (seq, prev_hash, _hash) = h2.emit_full(
+        ADMIN_LOG,
+        audit_suffix(ts + 2, "hook.register", res, "applied", "admin"),
+    );
+    assert_eq!(
+        (seq, prev_hash.as_str()),
+        (3, tail.as_str()),
+        "the append continued the persisted tail instead of forking a second seq 1"
+    );
+}
+
+// ── Q128 p12#3: a part-way legacy migration resumes ─────────────────────────────────────────────
+
+/// The frozen pre-cleave legacy rows (the same bytes `boot_verify_golden` pins).
+const LEGACY_1: &[u8] = br#"{"seq":1,"ts":1700000000,"action":"hook.register","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"","hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa"}"#;
+const LEGACY_2: &[u8] = br#"{"seq":2,"ts":1700000060,"action":"hook.delete","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa","hash":"33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264"}"#;
+
+/// A copy an earlier boot left part-way (legacy seq 1 copied, seq 2 not) is finished on the next
+/// boot, and the restored chain carries the whole legacy history.
+///
+/// RED before the fix: the idempotency gate saw a non-empty `plane_records` and skipped, so legacy
+/// seq 2 never reached the chain that is restored and served.
+#[test]
+fn a_part_way_legacy_migration_resumes_instead_of_skipping() {
+    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
+        std::sync::Arc::new(DualDurableStore::new());
+    let ad1: busbar_contract::records::AuditRecord =
+        crate::store::plane_view::decode(LEGACY_1).unwrap();
+    let ad2: busbar_contract::records::AuditRecord =
+        crate::store::plane_view::decode(LEGACY_2).unwrap();
+
+    // The earlier boot: only seq 1 made it across before the store failed.
+    store.append_audit(&ad1).unwrap();
+    assert_eq!(
+        migrate_legacy_table_to_plane_records(store.as_ref()).unwrap(),
+        1
+    );
+    store.append_audit(&ad2).unwrap();
+
+    // This boot finishes the copy.
+    assert_eq!(
+        migrate_legacy_table_to_plane_records(store.as_ref()).unwrap(),
+        1,
+        "the legacy record past the part-way copy is copied"
+    );
+    assert_eq!(
+        migrate_legacy_table_to_plane_records(store.as_ref()).unwrap(),
+        0,
+        "a finished copy is a no-op"
+    );
+
+    let h = AuditTestHarness::over(store.clone());
+    let plane = PlaneStoreView::narrow(store.clone());
+    let restored = h
+        .log
+        .restore_from_store(plane.as_ref())
+        .expect("plane_records read");
+    assert!(
+        restored.chain_breaks.is_empty(),
+        "{:?}",
+        restored.chain_breaks
+    );
+    assert_eq!(restored.records, 2, "the whole legacy history is restored");
+}
+
+/// `plane_records` that disagree with the legacy table at the seq they share (records written over
+/// a part-way copy) are never spliced onto it: the migration copies nothing and says so.
+#[test]
+fn a_legacy_migration_refuses_to_splice_onto_a_chain_that_disagrees() {
+    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
+        std::sync::Arc::new(DualDurableStore::new());
+    let h = AuditTestHarness::over(store.clone());
+    h.emit_full(
+        ADMIN_LOG,
+        audit_suffix(
+            1_700_002_000,
+            "hook.register",
+            "hook:other",
+            "applied",
+            "admin",
+        ),
+    );
+    store
+        .append_audit(&crate::store::plane_view::decode(LEGACY_1).unwrap())
+        .unwrap();
+    store
+        .append_audit(&crate::store::plane_view::decode(LEGACY_2).unwrap())
+        .unwrap();
+    assert!(
+        migrate_legacy_table_to_plane_records(store.as_ref()).is_err(),
+        "a disagreeing chain is reported, not silently skipped or spliced"
+    );
+    let rows = store
+        .list_plane_records(
+            KIND_AUDIT,
+            &busbar_contract::records::PlaneSelector::Parent(ADMIN_LOG.into()),
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 1, "nothing was copied");
 }
