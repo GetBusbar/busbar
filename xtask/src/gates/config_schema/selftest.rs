@@ -86,8 +86,37 @@ const T_DENY_OFF: &str = "BindingMode";
 /// from a row that is already red. The staleness itself stays RED on `:snapshot-drift` and on the
 /// first control. Falls back to the committed file only if the render cannot be made at all.
 fn snapshot(cx: &Ctx) -> Value {
-    let text = schema::render(cx).unwrap_or_else(|_| cx.read(schema::SNAPSHOT).unwrap_or_default());
+    let text = rendered(cx).unwrap_or_else(|_| cx.read(schema::SNAPSHOT).unwrap_or_default());
     serde_json::from_str(&text).unwrap_or_else(|_| json!({ "types": {} }))
+}
+
+/// [`schema::render`] of `cx`, TAKEN ONCE PER CONTEXT. Every baseline this file plants starts from
+/// the render of the battery's own unplanted context, and it used to be re-rendered for every one
+/// of them — roughly a hundred renders of one unchanged tree per battery, each a full walk of
+/// `crates/` and a read of the tracked source set. The key is the context's root and its whole
+/// overlay, exactly as [`crate::gates`]' shared baseline run is keyed, so a context that differs in
+/// any claim is rendered fresh.
+fn rendered(cx: &Ctx) -> Result<String, String> {
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+    static MEMO: Mutex<BTreeMap<String, Result<String, String>>> = Mutex::new(BTreeMap::new());
+    let key = format!(
+        "{}\u{3}{}",
+        cx.root().to_string_lossy(),
+        cx.overlay().map(|o| o.fingerprint()).unwrap_or_default()
+    );
+    if let Some(hit) = MEMO
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&key)
+    {
+        return hit.clone();
+    }
+    let taken = schema::render(cx);
+    MEMO.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(key, taken.clone());
+    taken
 }
 
 /// A FIXTURE OVERLAY ON WHICH `:snapshot-drift` IS GREEN: the committed snapshot replaced by the
@@ -96,7 +125,7 @@ fn snapshot(cx: &Ctx) -> Value {
 /// staleness stays RED on the first control and on `cargo xtask gate config-schema`.
 fn fresh_snapshot_base(cx: &Ctx) -> Overlay {
     let mut ov = Overlay::new();
-    if let Ok(fresh) = schema::render(cx) {
+    if let Ok(fresh) = rendered(cx) {
         ov.set(schema::SNAPSHOT, fresh);
     }
     ov
