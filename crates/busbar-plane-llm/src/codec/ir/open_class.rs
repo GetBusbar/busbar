@@ -35,6 +35,16 @@ pub const UNITEMIZED_TOKENS_CLASS: &str = "unitemized_tokens";
 /// when the answer carries no token usage.
 pub const IMAGES_CLASS: &str = "images";
 
+/// An image answer's reported INPUT token count (gpt-image-1 `usage.input_tokens`, a Gemini image
+/// model's `promptTokenCount`). Family `count`, not `token`: it spends no `tokens:` cap. An absent
+/// rate on a card entry prices it at 0 (`busbar_contract::records::ABSENT_RATE_IS_ZERO`, PENDING
+/// OWNER: 1.5.5 billed image tokens at nothing and recorded them on the residual row only).
+pub const IMAGE_INPUT_TOKENS_CLASS: &str = busbar_contract::records::UNIT_IMAGE_INPUT_TOKENS;
+
+/// An image answer's reported OUTPUT token count (gpt-image-1 `usage.output_tokens`, a Gemini image
+/// model's `candidatesTokenCount`), as [`IMAGE_INPUT_TOKENS_CLASS`].
+pub const IMAGE_OUTPUT_TOKENS_CLASS: &str = busbar_contract::records::UNIT_IMAGE_OUTPUT_TOKENS;
+
 /// The audio duration a transcription far end reported (whisper `usage.seconds`), in whole
 /// MILLISECONDS. The exact decimal (`busbar_contract::Count`, microsecond scale) is floored to the
 /// millisecond, integer only: a duration with three decimals or fewer (every provider's spelling)
@@ -93,10 +103,13 @@ pub const OPEN_CLASSES: &[(&str, &str)] = &[
     (GUARDRAIL_SENSITIVE_INFORMATION_POLICY_UNITS_CLASS, COUNT),
     (GUARDRAIL_TOPIC_POLICY_UNITS_CLASS, COUNT),
     (GUARDRAIL_WORD_POLICY_UNITS_CLASS, COUNT),
+    // Appended, so every earlier class keeps its tail index.
+    (IMAGE_INPUT_TOKENS_CLASS, COUNT),
+    (IMAGE_OUTPUT_TOKENS_CLASS, COUNT),
 ];
 
 /// The number of [`OPEN_CLASSES`], for the const tables that state them one by one.
-pub const OPEN_CLASS_COUNT: usize = 15;
+pub const OPEN_CLASS_COUNT: usize = 17;
 const _: () = assert!(OPEN_CLASSES.len() == OPEN_CLASS_COUNT);
 
 /// Bedrock's guardrail usage counts (`GuardrailUsage`), each with the open class it is ledgered

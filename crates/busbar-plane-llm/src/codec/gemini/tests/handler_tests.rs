@@ -358,17 +358,17 @@ fn image_response_usage_metadata_is_recorded_never_billed() {
     let resp = super::read_image_response(&wire).unwrap();
     match resp.billing() {
         Some(busbar_contract::billing::Billing::Tokens(t)) => {
-            assert_eq!((t.input, t.output), (0, 0), "no image token bills: {t:?}");
+            assert_eq!((t.input, t.output), (0, 0), "no image token rides a token tier: {t:?}");
             assert_eq!(
-                t.residual_units,
+                t.open_units,
                 std::collections::BTreeMap::from([
-                    ("image.input_tokens".to_string(), 20),
-                    ("image.output_tokens".to_string(), 10),
+                    ("image_input_tokens".to_string(), 20),
+                    ("image_output_tokens".to_string(), 10),
                 ])
             );
         }
         other => {
-            panic!("a token-reporting Gemini image answer is a zero token line, got {other:?}")
+            panic!("a token-reporting Gemini image answer ledgers the image token classes, got {other:?}")
         }
     }
 }

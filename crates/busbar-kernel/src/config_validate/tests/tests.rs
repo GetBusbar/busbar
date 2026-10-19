@@ -6475,6 +6475,45 @@ fn a_card_configuring_every_declared_class_passes_with_explicit_zero() {
     assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
 }
 
+/// The fallback plane's shape once it declares the image token classes (Q128 arch u55, PENDING
+/// OWNER), beside an ordinary open class.
+static IMAGE_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
+    declaration: crate::plane::registry::PlaneDeclaration {
+        key: "image-plane",
+        fallback: true,
+        config_section: "pools",
+        billable_classes: &[
+            bc("input", "token"),
+            bc("output", "token"),
+            bc("cache_read", "token"),
+            bc("cache_write", "token"),
+            bc("search_units", "count"),
+            bc(busbar_contract::records::UNIT_IMAGE_INPUT_TOKENS, "count"),
+            bc(busbar_contract::records::UNIT_IMAGE_OUTPUT_TOKENS, "count"),
+        ],
+        ..CLASS_PLANE.declaration
+    },
+    ..CLASS_PLANE
+};
+
+/// A 1.5.5 CARD STILL BOOTS when the plane declares the image token classes: an entry silent about
+/// them prices them at 0 (`ABSENT_RATE_IS_ZERO`, as an absent reserved tier), so the completeness
+/// check names only the ordinary open class it is silent about, and a card that configures that
+/// one passes. RED: the image classes named as missing, i.e. a 1.5.5 card refused at boot.
+#[test]
+fn a_card_silent_about_the_image_token_classes_is_complete() {
+    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&IMAGE_PLANE]);
+    let mut cfg = cost_cfg(&["m"]);
+    cfg.rate_card = Some(card_yaml("m: { input_utok: 3 }\n"));
+    let errs = validate(&cfg).expect_err("search_units is unconfigured");
+    let want = "pools.rate_card does not configure billable unit(s) search_units declared by this \
+                plane; add them (0 to make them free)";
+    assert!(errs.iter().any(|e| e == want), "{errs:?}");
+
+    cfg.rate_card = Some(card_yaml("m: { input_utok: 3, units: { search_units: 0 } }\n"));
+    assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
+}
+
 /// The SAME rule for a non-fallback plane, whose card is its own section's: missing classes refuse
 /// naming that section; a complete card passes; no card at all is billing off (#42) and passes.
 #[test]

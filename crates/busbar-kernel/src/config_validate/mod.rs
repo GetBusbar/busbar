@@ -1651,7 +1651,8 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         // EVERY DECLARED CLASS IS CONFIGURED (owner ruling Q29/Q35, generic): a plane whose section
         // carries a card (#42 "scoped per plane", #47 — the flat card is the fallback plane's) must
         // configure every billable class the plane declares, on any entry; an explicit 0 counts, and
-        // a reserved tier omitted in YAML is 0 by the 1.5.5 grammar. The kernel asks the plane and
+        // a reserved tier omitted in YAML is 0 by the 1.5.5 grammar, as is an image token class
+        // (`ABSENT_RATE_IS_ZERO`, PENDING OWNER: 1.5.5 billed image tokens at nothing). The kernel asks the plane and
         // names each class missing. A per-lane gap stays the run-time #42 refusal.
         //
         // A FEE UNIT IS NO PRICED CLASS (SEAM-L(m)): a plane served through its door declares its
@@ -1670,7 +1671,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                 .collect();
             let entry = on.iter().any(|(k, _)| !split_plane_lane(k).1.is_empty());
             let unset = |c: &&str| {
-                !(entry && busbar_contract::records::RESERVED_UNITS.contains(c)
+                !(entry && busbar_contract::records::ABSENT_RATE_IS_ZERO.contains(c)
                     || on.iter().any(|(_, r)| r.units.contains_key(*c)))
             };
             let declared = priced_classes(d);

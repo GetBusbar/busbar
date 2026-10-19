@@ -96,7 +96,7 @@ fn the_tail_is_one_the_contract_accepts() {
     assert_eq!(TAIL.dialects_len, DIALECTS.len());
     assert_eq!(TAIL.op_classes_len, 7);
     assert_eq!(
-        TAIL.billable_classes_len, 20,
+        TAIL.billable_classes_len, 22,
         "tokens in, out, cache read, cache write, the open classes, then the per-request fee unit"
     );
     // Every reported count's class (owner LEDGER-100), `search_units` first and in its own family.
@@ -118,6 +118,8 @@ fn the_tail_is_one_the_contract_accepts() {
             ("guardrail_sensitive_information_policy_units", "count"),
             ("guardrail_topic_policy_units", "count"),
             ("guardrail_word_policy_units", "count"),
+            ("image_input_tokens", "count"),
+            ("image_output_tokens", "count"),
         ]
     );
     // SAFETY: the tail's billable classes are a `'static` list of `billable_classes_len` entries.

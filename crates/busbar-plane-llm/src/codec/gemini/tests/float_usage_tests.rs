@@ -204,14 +204,14 @@ fn an_unreadable_image_count_is_recorded_as_unknown_and_the_answer_served() {
     );
     match resp.billing() {
         Some(busbar_contract::billing::Billing::Tokens(t)) => {
-            assert_eq!((t.input, t.output), (0, 0), "image tokens never bill");
+            assert_eq!((t.input, t.output), (0, 0), "image tokens ride no token tier");
             assert_eq!(
-                t.residual_units,
-                std::collections::BTreeMap::from([("image.output_tokens".to_string(), 5)]),
-                "the unknown count is left out of the record, never recorded as 0"
+                t.open_units,
+                std::collections::BTreeMap::from([("image_output_tokens".to_string(), 5)]),
+                "the unknown count is left out of the ledger, never ledgered as 0"
             );
         }
-        other => panic!("expected a zero token line, got {other:?}"),
+        other => panic!("expected the image token classes, got {other:?}"),
     }
     let written: serde_json::Value =
         serde_json::from_slice(&crate::codec::gemini::handler::write_image_response(&resp).bytes)
@@ -221,16 +221,16 @@ fn an_unreadable_image_count_is_recorded_as_unknown_and_the_answer_served() {
         "the Imagen body is `{{predictions}}` alone, as in 1.5.5; no usage (and so no 0) is written: {written}"
     );
 
-    // The same body, float-spelled, reads and is recorded: only an unreadable count is unknown.
+    // The same body, float-spelled, reads and is ledgered: only an unreadable count is unknown.
     let ok = br#"{"predictions":[{"bytesBase64Encoded":"aGk="}],"usageMetadata":{"promptTokenCount":27.0,"candidatesTokenCount":5}}"#;
     let resp = crate::codec::gemini::handler::read_image_response(ok)
         .expect("a float-spelled count reads");
     match resp.billing() {
         Some(busbar_contract::billing::Billing::Tokens(t)) => {
             assert_eq!((t.input, t.output), (0, 0));
-            assert_eq!(t.residual_units.get("image.input_tokens"), Some(&27));
+            assert_eq!(t.open_units.get("image_input_tokens"), Some(&27));
         }
-        other => panic!("expected a zero token line, got {other:?}"),
+        other => panic!("expected the image token classes, got {other:?}"),
     }
 }
 

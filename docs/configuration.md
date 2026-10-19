@@ -701,6 +701,9 @@ internal`; no figure moves, only the status and code the caller sees change.
 > double-bill the same cached input, so it is not a declared billable class; it is carried,
 > unbilled, as attribution only.) A plane with no `rate_card` of its own is unaffected (absent =
 > billing off, no refusal).
+> The LLM plane also declares `image_input_tokens` and `image_output_tokens` (the tokens a
+> gpt-image-1 or Gemini image answer reports); an entry silent about them prices them at 0, as 1.5.5
+> billed them, so they need no row unless you bill them.
 
 ---
 

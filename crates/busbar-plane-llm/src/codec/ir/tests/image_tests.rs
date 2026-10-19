@@ -30,14 +30,15 @@ fn billing_prefers_tokens_else_per_image() {
         }),
         ..Default::default()
     };
-    // Image tokens are recorded, never billed (1.5.5 billed no image token).
+    // Image tokens are ledgered under their own classes, never on a token tier (Q128 arch u55,
+    // PENDING OWNER; an absent rate prices them at 0).
     match tokenized.billing() {
         Some(Billing::Tokens(t)) => {
             assert_eq!((t.input, t.output), (0, 0));
-            assert_eq!(t.residual_units.get("image.input_tokens"), Some(&5));
-            assert_eq!(t.residual_units.get("image.output_tokens"), Some(&272));
+            assert_eq!(t.open_units.get("image_input_tokens"), Some(&5));
+            assert_eq!(t.open_units.get("image_output_tokens"), Some(&272));
         }
-        other => panic!("expected a zero token line, got {other:?}"),
+        other => panic!("expected the image token classes, got {other:?}"),
     }
 
     let per_image = ImageResp {
@@ -146,4 +147,44 @@ fn image_projection_covers_every_text_field() {
         .all(|i| i.screenable_text() == OPAQUE_CONTENT_MARKER));
     // Fields that are NOT caller free-text (geometry/quality/provenance) contribute nothing.
     assert!(!text.contains("gs://bucket"));
+}
+
+/// AN IMAGE ANSWER'S REPORTED TOKENS REACH THE UNITS THE DOOR REPORTS, under their own classes and
+/// on no token tier (Q128 arch u55, PENDING OWNER): the counts a gpt-image-1 answer states are the
+/// ledger lines `image_input_tokens` / `image_output_tokens`, and the four token tiers stay 0, so no
+/// `tokens:` cap moves. RED: a count left in the never-billed residual map, or one on a token tier.
+#[test]
+fn an_image_answers_tokens_reach_the_reported_units_under_their_classes() {
+    let answer = ImageResp {
+        usage: Some(super::ImageTokens {
+            input: Some(5),
+            output: Some(272),
+        }),
+        ..Default::default()
+    };
+    let Some(Billing::Tokens(t)) = answer.billing() else {
+        panic!("a token-reporting image answer is a token usage");
+    };
+    assert!(
+        t.residual_units.is_empty(),
+        "nothing is left unledgered: {t:?}"
+    );
+    let units = crate::exchange::reply::Units::of(Some(&t), std::collections::BTreeMap::new());
+    assert_eq!(
+        (
+            units.tokens_in,
+            units.tokens_out,
+            units.cache_read,
+            units.cache_write
+        ),
+        (0, 0, 0, 0),
+        "no token tier carries an image token"
+    );
+    assert_eq!(
+        units.open,
+        std::collections::BTreeMap::from([
+            ("image_input_tokens".to_string(), 5),
+            ("image_output_tokens".to_string(), 272),
+        ])
+    );
 }

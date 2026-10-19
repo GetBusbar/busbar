@@ -1026,6 +1026,10 @@ each dialect translates, field by field, is listed in the generated
   tool result as `functionResponse.response.error`, a `fileData.mimeType`, the caller's
   transcription prompt and temperature, and reads Vertex `createTime`, a `functionResponse.id` as
   the call id, and the image content-policy stops as safety stops.
+- An image answer that reports token usage (gpt-image-1, a Gemini image model) ledgers its input and
+  output tokens under `image_input_tokens` and `image_output_tokens`, beside no token tier and
+  counted against no `tokens:` cap; a rate-card entry silent about them prices them at 0, so a 1.5.5
+  card's charge is unchanged. 1.5.5 recorded them nowhere.
 - A buffered OpenAI chat response carries its citations as nested `url_citation` annotations, the
   shape the published Chat Completions schema defines.
 - On a same-dialect route the caller receives every upstream response header except hop-by-hop

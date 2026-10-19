@@ -245,6 +245,8 @@ const BILLABLE_CLASSES: &[BillableClass] = &[
     open_class(12),
     open_class(13),
     open_class(14),
+    open_class(15),
+    open_class(16),
     BillableClass {
         class: abi_str(FEE_CLASS),
         family: abi_str("request"),

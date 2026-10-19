@@ -292,6 +292,8 @@ is a ledger line under its own unit (owner ruling LEDGER-100). The LLM plane cou
 | `web_fetch_requests` | Anthropic `usage.server_tool_use.web_fetch_requests` |
 | `unitemized_tokens` | the tokens a provider's stated total (`total_tokens`, `totalTokenCount`, `totalTokens`) counts above the buckets it itemizes |
 | `images` | the images a per-image provider returned (dall-e, Imagen, Titan, SDXL) |
+| `image_input_tokens` | the input tokens an image answer reports (gpt-image-1 `usage`, a Gemini image model's `promptTokenCount`); an absent rate prices it at 0 |
+| `image_output_tokens` | the output tokens an image answer reports; an absent rate prices it at 0 |
 | `audio_ms` | a transcription's reported duration, in whole milliseconds |
 | `guardrail_*` (nine) | the Bedrock guardrail policy units, one unit per policy type |
 

@@ -567,6 +567,28 @@ pub const UNIT_CACHE_WRITE: &str = "cache_write";
 /// the migration folds the old `TierTokens` fields onto.
 pub const RESERVED_UNITS: [&str; 4] = [UNIT_INPUT, UNIT_OUTPUT, UNIT_CACHE_READ, UNIT_CACHE_WRITE];
 
+/// An image answer's reported INPUT token count, ledgered under its own class (never a token tier:
+/// it counts toward no `tokens:` cap and no scalar token view).
+pub const UNIT_IMAGE_INPUT_TOKENS: &str = "image_input_tokens";
+/// An image answer's reported OUTPUT token count, ledgered under its own class.
+pub const UNIT_IMAGE_OUTPUT_TOKENS: &str = "image_output_tokens";
+
+/// THE CLASSES AN ABSENT RATE PRICES AT 0: the reserved four (#77(5)'s scoped exception, "an absent
+/// reserved token tier on a rate-card entry prices at 0, as 1.5.5 read it") and the two image token
+/// classes, which 1.5.5 billed at nothing (PENDING OWNER: the image classes join the exception so a
+/// 1.5.5 card boots and prices them at 0 until an operator rates them). Every other class under
+/// `units:` an entry is silent about still refuses (#42). Used ONLY where an absent rate is judged
+/// (the boot completeness check and the card build); the token caps and token views read
+/// [`RESERVED_UNITS`] alone.
+pub const ABSENT_RATE_IS_ZERO: [&str; 6] = [
+    UNIT_INPUT,
+    UNIT_OUTPUT,
+    UNIT_CACHE_READ,
+    UNIT_CACHE_WRITE,
+    UNIT_IMAGE_INPUT_TOKENS,
+    UNIT_IMAGE_OUTPUT_TOKENS,
+];
+
 /// PER-PLUGIN PRICING IS UNREPRESENTABLE (DECISIONS #77(1)) — a COMPILE-TIME proof.
 ///
 /// The money-path durable records key money by `(principal, meter_class[, lane], units, timestamp)`

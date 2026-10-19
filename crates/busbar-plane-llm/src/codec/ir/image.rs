@@ -9,12 +9,14 @@
 //! `tier`) are PARALLEL optionals — never collapsed. Response images are additive [`ImageOutput`]
 //! (b64 AND url may coexist). Common cross-provider fields are typed; provider-unique knobs (Titan
 //! `controlMode`, SDXL `sampler`/`clip_guidance_preset`, per-prompt weights…) ride source-scoped
-//! `extra`. Billing: the token counts a gpt-image-1 or Gemini answer reports are RECORDED, never
-//! billed (1.5.5 billed no image tokens; see [`ImageResp::billing`]); else `Billing::Images`
-//! (per-image, no usage body).
+//! `extra`. Billing: the token counts a gpt-image-1 or Gemini answer reports are LEDGERED under the
+//! image token classes, never on a token tier, and an absent rate prices them at 0 (see
+//! [`ImageResp::billing`]); else `Billing::Images` (per-image, no usage body).
 
 use busbar_contract::billing::{Billing, TokenUsage};
 use busbar_contract::ir::SourceScopedExtra;
+
+use crate::codec::ir::open_class::{IMAGE_INPUT_TOKENS_CLASS, IMAGE_OUTPUT_TOKENS_CLASS};
 use busbar_contract::media::ImageOutput;
 
 /// Which image operation. Support is non-uniform per model → unsupported `(op, model)` = 404.
@@ -186,9 +188,9 @@ pub struct ImageResp {
 }
 
 /// The token counts an image answer reported (gpt-image-1 `usage`, a Gemini image model's
-/// `usageMetadata`). They are RECORDED, never billed (see [`ImageResp::billing`]). `None` is
+/// `usageMetadata`), ledgered under their own classes (see [`ImageResp::billing`]). `None` is
 /// UNKNOWN: the provider sent a count this build cannot read. An unknown count is left out of the
-/// record, never written as 0, and never refuses the answer (1.5.5 served it whatever the usage
+/// ledger, never written as 0, and never refuses the answer (1.5.5 served it whatever the usage
 /// said).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ImageTokens {
@@ -196,36 +198,29 @@ pub struct ImageTokens {
     pub output: Option<u64>,
 }
 
-/// The residual key an image answer's reported INPUT token count is recorded under.
-pub const IMAGE_INPUT_TOKENS_RESIDUAL: &str = "image.input_tokens";
-/// The residual key an image answer's reported OUTPUT token count is recorded under.
-pub const IMAGE_OUTPUT_TOKENS_RESIDUAL: &str = "image.output_tokens";
-
 impl ImageResp {
     /// Billing projection. An answer that reports token usage (gpt-image-1, a Gemini image model)
-    /// bills NO token: its counts are RECORDED on [`TokenUsage::residual_units`] (the settle's one
-    /// `usage.residual` audit row), never on the four billed tiers. 1.5.5 billed no image token on
-    /// any path: its OpenAI, Gemini and Bedrock image readers set neither `usage` nor `cost_basis`
-    /// (v1.5.5 `crates/busbar/src/handlers/openai.rs:731-758`, `handlers/gemini.rs:446-472`), and
-    /// no image handler tapped a same-dialect body (the only `taps_usage` overrides were
-    /// embeddings and chat). Billing the tokens would charge a key, and spend its `tokens:` caps,
-    /// where 1.5.5 charged nothing, and no owner ruling signs that (LEDGER-100 records a reported
-    /// unit; it does not sign a new charge). A per-image answer with no usage body bills its
-    /// `images` count (LEDGER-100, CHANGELOG 1.6.0 Upgrade).
+    /// LEDGERS its counts under the image token classes ([`IMAGE_INPUT_TOKENS_CLASS`],
+    /// [`IMAGE_OUTPUT_TOKENS_CLASS`]), never on the four token tiers, so no `tokens:` cap moves.
+    /// An absent rate prices them at 0 (`busbar_contract::records::ABSENT_RATE_IS_ZERO`), so a 1.5.5
+    /// card's money is unchanged. 1.5.5 billed no image token on any path (v1.5.5
+    /// `crates/busbar/src/handlers/openai.rs:731-758`, `handlers/gemini.rs:446-472`) and recorded
+    /// none; PENDING OWNER: ledgering them is the change this answers (Q128 arch u55). A per-image
+    /// answer with no usage body bills its `images` count.
     pub fn billing(&self) -> Option<Billing> {
         if let Some(u) = &self.usage {
-            let mut residual_units = std::collections::BTreeMap::new();
+            let mut open_units = std::collections::BTreeMap::new();
             for (class, n) in [
-                (IMAGE_INPUT_TOKENS_RESIDUAL, u.input),
-                (IMAGE_OUTPUT_TOKENS_RESIDUAL, u.output),
+                (IMAGE_INPUT_TOKENS_CLASS, u.input),
+                (IMAGE_OUTPUT_TOKENS_CLASS, u.output),
             ] {
                 // An unknown count (`None`) is left out, as a zero is: neither is a reported unit.
                 if let Some(n) = n.filter(|n| *n != 0) {
-                    residual_units.insert(class.to_string(), n);
+                    open_units.insert(class.to_string(), n);
                 }
             }
             Some(Billing::Tokens(TokenUsage {
-                residual_units,
+                open_units,
                 ..Default::default()
             }))
         } else {

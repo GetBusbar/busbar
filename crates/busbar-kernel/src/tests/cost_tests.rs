@@ -1148,3 +1148,44 @@ fn the_cost_model_and_the_cap_check_name_no_meter_class() {
         }
     }
 }
+
+/// AN IMAGE ANSWER'S TOKENS PRICE AT 0 ON A CARD SILENT ABOUT THEM, AND AT THE RATE AN OPERATOR
+/// GIVES THEM (Q128 arch u55, PENDING OWNER). A 1.5.5 card names no image class: the hit is priced,
+/// never refused (#42 would refuse an ordinary open class the entry is silent about), and the
+/// charge is 1.5.5's 0. A card that rates them charges them. RED: the silent card refusing the
+/// row, or charging anything.
+#[test]
+fn image_token_classes_price_at_zero_when_absent_and_at_their_rate_when_given() {
+    use busbar_contract::records::{UNIT_IMAGE_INPUT_TOKENS, UNIT_IMAGE_OUTPUT_TOKENS};
+    let usage = busbar_contract::billing::Usage {
+        usage_units: BTreeMap::from([
+            (UNIT_IMAGE_INPUT_TOKENS.to_string(), 1_000_000),
+            (UNIT_IMAGE_OUTPUT_TOKENS.to_string(), 2_000_000),
+        ]),
+    };
+    let silent = card(&[("gpt-image-1", 5.0, 40.0)]);
+    let cm = resolve_card_fee(Some(&silent), 0);
+    assert_eq!(
+        cm.price_usage_nanos("gpt-image-1", &usage),
+        Some(0),
+        "a 1.5.5 card prices the image tokens at 0, never refuses them"
+    );
+
+    let rated: BTreeMap<String, RateEntryCfg> = serde_yaml::from_str(
+        "gpt-image-1: { input_utok: 5, output_utok: 40, units: { image_input_tokens: 5, image_output_tokens: 40 } }\n",
+    )
+    .expect("a card parses");
+    let cm = resolve_card_fee(Some(&rated), 0);
+    // 1M x 5 utok + 2M x 40 utok = 5 + 80 units = 85 units = 85e9 nano-units.
+    assert_eq!(
+        cm.price_usage_nanos("gpt-image-1", &usage),
+        Some(85_000_000_000),
+        "a rated image class is charged at its rate"
+    );
+
+    // An ordinary open class the entry is silent about still refuses (#42).
+    let other = busbar_contract::billing::Usage {
+        usage_units: BTreeMap::from([("search_units".to_string(), 3)]),
+    };
+    assert_eq!(cm.price_usage_nanos("gpt-image-1", &other), None);
+}

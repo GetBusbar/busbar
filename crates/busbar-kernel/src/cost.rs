@@ -332,14 +332,28 @@ impl CostModel {
             }),
             per_request_fee,
         )
-        // THE OPEN CLASSES (item 123), exact integer nano-unit rates beside the reserved four.
+        // THE OPEN CLASSES (item 123), exact integer nano-unit rates beside the reserved four. An
+        // entry silent about an absent-is-zero open class (`ABSENT_RATE_IS_ZERO` beyond the reserved
+        // four: the image token classes, PENDING OWNER) prices it at 0, as the boot check accepted.
         .with_unit_rates(rate_card.into_iter().flatten().flat_map(|(model, r)| {
-            r.units.iter().map(move |(class, rate)| {
+            let configured = r.units.iter().map(move |(class, rate)| {
                 (
                     busbar_kernel_ledger::cost::LaneClass::new(model, class),
                     rate.nanos_per_unit(),
                 )
-            })
+            });
+            let absent_zero = busbar_contract::records::ABSENT_RATE_IS_ZERO
+                .iter()
+                .copied()
+                .filter(|c| !busbar_contract::records::RESERVED_UNITS.contains(c))
+                .filter(move |c| !r.units.contains_key(*c))
+                .map(move |class| {
+                    (
+                        busbar_kernel_ledger::cost::LaneClass::new(model, class),
+                        0u64,
+                    )
+                });
+            configured.chain(absent_zero)
         }));
         let (groups, group_idx) = Self::project_groups(groups_cfg);
         Self {

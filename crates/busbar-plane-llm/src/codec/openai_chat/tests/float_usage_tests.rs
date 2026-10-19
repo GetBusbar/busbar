@@ -165,14 +165,14 @@ fn an_unreadable_image_count_is_recorded_as_unknown_and_the_answer_served() {
     );
     match resp.billing() {
         Some(busbar_contract::billing::Billing::Tokens(t)) => {
-            assert_eq!((t.input, t.output), (0, 0), "image tokens never bill");
+            assert_eq!((t.input, t.output), (0, 0), "image tokens ride no token tier");
             assert_eq!(
-                t.residual_units,
-                std::collections::BTreeMap::from([("image.output_tokens".to_string(), 5)]),
-                "the unknown count is left out of the record, never recorded as 0"
+                t.open_units,
+                std::collections::BTreeMap::from([("image_output_tokens".to_string(), 5)]),
+                "the unknown count is left out of the ledger, never ledgered as 0"
             );
         }
-        other => panic!("expected a zero token line, got {other:?}"),
+        other => panic!("expected the image token classes, got {other:?}"),
     }
     let written: serde_json::Value = serde_json::from_slice(
         &crate::codec::openai_chat::handler::write_image_response(&resp).bytes,
@@ -193,17 +193,17 @@ fn an_unreadable_image_count_is_recorded_as_unknown_and_the_answer_served() {
         Some(&serde_json::json!(5))
     );
 
-    // The same body, float-spelled, reads and is recorded: only an unreadable count is unknown.
+    // The same body, float-spelled, reads and is ledgered: only an unreadable count is unknown.
     let ok = br#"{"data":[{"b64_json":"aGk="}],"usage":{"input_tokens":27.0,"output_tokens":5}}"#;
     let resp = crate::codec::openai_chat::handler::read_image_response(ok)
         .expect("a float-spelled count reads");
     match resp.billing() {
         Some(busbar_contract::billing::Billing::Tokens(t)) => {
             assert_eq!((t.input, t.output), (0, 0));
-            assert_eq!(t.residual_units.get("image.input_tokens"), Some(&27));
-            assert_eq!(t.residual_units.get("image.output_tokens"), Some(&5));
+            assert_eq!(t.open_units.get("image_input_tokens"), Some(&27));
+            assert_eq!(t.open_units.get("image_output_tokens"), Some(&5));
         }
-        other => panic!("expected a zero token line, got {other:?}"),
+        other => panic!("expected the image token classes, got {other:?}"),
     }
 }
 
@@ -231,14 +231,14 @@ fn an_absent_count_still_reads_as_zero_and_no_usage_object_still_reads() {
         .expect("absent output_tokens reads");
     match resp.billing() {
         Some(busbar_contract::billing::Billing::Tokens(t)) => {
-            assert_eq!((t.input, t.output), (0, 0), "image tokens never bill");
+            assert_eq!((t.input, t.output), (0, 0), "image tokens ride no token tier");
             assert_eq!(
-                t.residual_units,
-                std::collections::BTreeMap::from([("image.input_tokens".to_string(), 27)]),
-                "an absent count is zero, and a zero is not recorded"
+                t.open_units,
+                std::collections::BTreeMap::from([("image_input_tokens".to_string(), 27)]),
+                "an absent count is zero, and a zero is not ledgered"
             );
         }
-        other => panic!("expected a zero token line, got {other:?}"),
+        other => panic!("expected the image token classes, got {other:?}"),
     }
     // No `usage` object at all: unchanged, bills via the per-image cost basis.
     let wire = br#"{"data":[{"b64_json":"aGk="}]}"#;
