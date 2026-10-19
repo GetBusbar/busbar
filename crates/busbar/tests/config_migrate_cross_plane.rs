@@ -182,9 +182,11 @@ agents:
     .expect("provider defs parse");
     let resolve_pool = |members: &str, extra: &str| {
         let raw = format!("{base}pools:\n  p:\n    members: {members}\n{extra}");
-        let deploy: DeployCfg = deploy_from_yaml_str(&raw)
-            .unwrap_or_else(|e| panic!("the config parses: {e}\n{raw}"));
-        resolve(&deploy, &defs).map(|_| ()).map_err(|e| format!("{e:?}"))
+        let deploy: DeployCfg =
+            deploy_from_yaml_str(&raw).unwrap_or_else(|e| panic!("the config parses: {e}\n{raw}"));
+        resolve(&deploy, &defs)
+            .map(|_| ())
+            .map_err(|e| format!("{e:?}"))
     };
     for members in ["[search-eu, search-us]", "[planner-eu, planner-us]"] {
         // The control: what the plane honours resolves.
@@ -196,8 +198,14 @@ agents:
             ("    failover: { max_hops: 2 }\n", "`failover:`"),
             ("    on_exhausted: reject\n", "`on_exhausted:`"),
             ("    affinity: { mode: session }\n", "`affinity:`"),
-            ("    upstream_credentials: passthrough\n", "`upstream_credentials:`"),
-            ("    weights: { search-eu: 3, planner-eu: 3 }\n", "`weights:`"),
+            (
+                "    upstream_credentials: passthrough\n",
+                "`upstream_credentials:`",
+            ),
+            (
+                "    weights: { search-eu: 3, planner-eu: 3 }\n",
+                "`weights:`",
+            ),
             ("    tier: large\n", "`tier:`"),
             ("    attempt_timeout_ms: 500\n", "`attempt_timeout_ms:`"),
         ] {
@@ -207,7 +215,9 @@ agents:
                 "a pool of {members} must refuse {named}, naming it: {refused:?}"
             );
         }
-        let rich = members.replace("[", "[{ model: ").replacen(", ", ", weight: 3 }, ", 1);
+        let rich = members
+            .replace("[", "[{ model: ")
+            .replacen(", ", ", weight: 3 }, ", 1);
         let refused = resolve_pool(&rich, "");
         assert!(
             refused
