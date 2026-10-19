@@ -699,8 +699,9 @@ pub fn persisted_node(
     Ok(taken)
 }
 
-/// Write `bytes` to `path` in `dir` ATOMICALLY: a temporary file in the same directory, flushed to
-/// the medium, renamed over `path`, and the directory flushed so the rename is kept.
+/// Write `bytes` to `path` in `dir` ATOMICALLY AND DURABLY, through the one durable-write owner
+/// (`durable::create_dir_all`, then `durable::write`: a sibling temp fsynced, renamed over `path`,
+/// and the directory fsynced so the rename is kept).
 ///
 /// # Errors
 ///
@@ -710,20 +711,8 @@ fn write_atomically(
     path: &std::path::Path,
     bytes: &[u8],
 ) -> std::io::Result<()> {
-    use std::io::Write as _;
-    std::fs::create_dir_all(dir)?;
-    let tmp = dir.join(format!("{NODE_ID_FILE}.tmp"));
-    {
-        let mut file = std::fs::File::create(&tmp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-    }
-    std::fs::rename(&tmp, path)?;
-    // A directory that cannot be opened to flush (some platforms) still holds the renamed file.
-    if let Ok(d) = std::fs::File::open(dir) {
-        let _ = d.sync_all();
-    }
-    Ok(())
+    busbar_kernel::durable::create_dir_all(dir)?;
+    busbar_kernel::durable::write(path, bytes)
 }
 
 /// Every node the registry names: `(host, node id)`, in key order.
