@@ -1053,7 +1053,7 @@ fn a_linked_rows_refusals_print_its_key() {
         );
         let cfg = crate::test_support::cfg_with_provider_api_key(crate::config::SecretRef {
             module: word.to_string(),
-            ..crate::config::SecretRef::env("K")
+            ..crate::test_support::secrets::fill_ref("K")
         });
         let refused = crate::preflight::validate_secret_refs(&reg, &cfg).unwrap_err();
         assert!(
@@ -1098,13 +1098,15 @@ fn the_linked_secret_sources_are_plugins_on_the_secret_table() {
     let resolver = SecretResolver::builtins_only();
     assert_eq!(
         resolver
-            .resolve(&SecretRef::env(var))
+            .resolve(&crate::test_support::secrets::fill_ref(var))
             .map(crate::test_support::revealed)
             .unwrap(),
         b"hunter2"
     );
     let missing = resolver
-        .resolve(&SecretRef::env("BUSBAR_K5B_NO_SUCH_VARIABLE"))
+        .resolve(&crate::test_support::secrets::fill_ref(
+            "BUSBAR_K5B_NO_SUCH_VARIABLE",
+        ))
         .expect_err("an unset variable refuses");
     assert_eq!(
         missing,
@@ -1136,7 +1138,7 @@ fn the_linked_secret_sources_are_plugins_on_the_secret_table() {
         ))
     }));
     assert_eq!(
-        cold.resolve(&SecretRef::env(var))
+        cold.resolve(&crate::test_support::secrets::fill_ref(var))
             .map(crate::test_support::revealed)
             .unwrap(),
         b"hunter2"
@@ -1664,10 +1666,10 @@ fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
     std::env::set_var(&set_var, SENTINEL);
     std::env::remove_var(&unset_var);
 
-    let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(&unset_var));
+    let mut cfg = cfg_with_provider_api_key(crate::test_support::secrets::fill_ref(&unset_var));
     // A second, RESOLVING provider (the same fixture under another name), so the sentinel really is
     // resolvable during this boot and its absence from the error means something.
-    let resolving = cfg_with_provider_api_key(crate::config::SecretRef::env(&set_var))
+    let resolving = cfg_with_provider_api_key(crate::test_support::secrets::fill_ref(&set_var))
         .providers
         .remove("acme")
         .expect("fixture provider");
@@ -1792,7 +1794,7 @@ fn secret_ref_typo_module_still_fails_at_preflight() {
 #[test]
 fn secret_ref_builtin_modules_pass_with_empty_registry() {
     let reg = busbar_plugin_loader::PluginRegistry::empty();
-    let cfg = cfg_with_provider_api_key(crate::config::SecretRef::env("ACME_KEY"));
+    let cfg = cfg_with_provider_api_key(crate::test_support::secrets::fill_ref("ACME_KEY"));
     assert!(
         validate_secret_refs(&reg, &cfg).is_ok(),
         "a built-in env ref must pass the pre-flight with no plugins loaded"
@@ -1851,7 +1853,7 @@ fn secret_ref_wrong_kind_plugin_fails_at_preflight() {
 fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
     crate::snapshot::init();
     let cfg = || {
-        cfg_with_provider_api_key(crate::config::SecretRef::env(
+        cfg_with_provider_api_key(crate::test_support::secrets::fill_ref(
             "BUSBAR_TEST_NO_SUCH_KEY_SESSION_STORE",
         ))
     };
@@ -2513,7 +2515,7 @@ fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
     crate::snapshot::init();
     let rules: std::sync::Arc<dyn crate::appbuild::RootRules> = std::sync::Arc::new(Refusing);
     let build = |public_url: Option<&str>| {
-        let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(
+        let mut cfg = cfg_with_provider_api_key(crate::test_support::secrets::fill_ref(
             "BUSBAR_TEST_NO_SUCH_KEY_ROOT_RULES",
         ));
         cfg.public_url = public_url.map(str::to_string);
@@ -2562,7 +2564,7 @@ fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
 fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
     crate::snapshot::init();
     let planeless = || {
-        cfg_with_provider_api_key(crate::config::SecretRef::env(
+        cfg_with_provider_api_key(crate::test_support::secrets::fill_ref(
             "BUSBAR_TEST_NO_SUCH_KEY_PLANES",
         ))
     };

@@ -382,7 +382,7 @@ fn the_operator_token_ref_is_checked_by_shape_only() {
         .is_ok(),
         "a plugin-backed secret module is checked at plugin pre-flight, not here"
     );
-    let mut keyless = SecretRef::env("BUSBAR_ADMIN_TOKEN");
+    let mut keyless = busbar_kernel::test_support::secrets::fill_ref("BUSBAR_ADMIN_TOKEN");
     keyless.settings.clear();
     let errs = build(keyless).expect_err("an env ref without settings.key");
     let path = format!("auth.admin_auth.{}.token", config::operator_provider());
@@ -392,7 +392,10 @@ fn the_operator_token_ref_is_checked_by_shape_only() {
         "expected the env-shape error; got: {errs:?}"
     );
     assert!(
-        build(SecretRef::env("BUSBAR_ADMIN_TOKEN")).is_ok(),
+        build(busbar_kernel::test_support::secrets::fill_ref(
+            "BUSBAR_ADMIN_TOKEN"
+        ))
+        .is_ok(),
         "a well-formed env admin-token ref must validate"
     );
 }
@@ -411,11 +414,11 @@ fn cfg_with_credentials(
     );
     let mut admin_entry =
         busbar_kernel::config::AuthChainEntry::bare(busbar_kernel::config::operator_provider());
-    admin_entry.token = Some(busbar_kernel::config::SecretRef::file(
+    admin_entry.token = Some(busbar_kernel::test_support::secrets::path_ref(
         token_path.to_string_lossy().to_string(),
     ));
     cfg.auth = Some(busbar_kernel::config::AuthCfg {
-        signing_key: Some(busbar_kernel::config::SecretRef::file(
+        signing_key: Some(busbar_kernel::test_support::secrets::path_ref(
             key_path.to_string_lossy().to_string(),
         )),
         operator_pub: None,

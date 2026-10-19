@@ -11,7 +11,7 @@ use super::*;
 fn env_module_resolves_and_fails_closed() {
     let var = format!("BUSBAR_SECRET_TEST_{}", std::process::id());
     std::env::set_var(&var, "s3cret\n");
-    let r = SecretRef::env(&var);
+    let r = crate::test_support::secrets::fill_ref(&var);
     assert_eq!(
         SecretResolver::builtins_only()
             .resolve(&r)
@@ -39,7 +39,7 @@ fn env_module_resolves_and_fails_closed() {
 fn file_module_resolves_and_fails_closed() {
     let path = std::env::temp_dir().join(format!("busbar-secret-{}.txt", std::process::id()));
     std::fs::write(&path, b"file-secret\n").unwrap();
-    let r = SecretRef::file(path.to_string_lossy().into_owned());
+    let r = crate::test_support::secrets::path_ref(path.to_string_lossy().into_owned());
     assert_eq!(
         SecretResolver::builtins_only()
             .resolve(&r)
@@ -68,7 +68,7 @@ fn file_module_resolves_and_fails_closed() {
 #[test]
 fn env_whitespace_only_name_is_rejected() {
     for bad in ["", "   ", "\t\n"] {
-        let r = SecretRef::env(bad);
+        let r = crate::test_support::secrets::fill_ref(bad);
         let err = SecretResolver::builtins_only()
             .resolve(&r)
             .expect_err(&format!(
@@ -85,7 +85,7 @@ fn env_whitespace_only_name_is_rejected() {
 #[test]
 fn file_whitespace_only_path_is_rejected() {
     for bad in ["", "   ", "\t\n"] {
-        let r = SecretRef::file(bad);
+        let r = crate::test_support::secrets::path_ref(bad);
         let err = SecretResolver::builtins_only()
             .resolve(&r)
             .expect_err(&format!(
@@ -138,7 +138,7 @@ fn unknown_module_fails_closed() {
 #[test]
 fn malformed_builtin_refs_error_precisely() {
     let r = SecretRef {
-        module: SECRET_MODULE_ENV.to_string(),
+        module: crate::test_support::secrets::fill_word(),
         settings: serde_json::Map::new(),
     };
     assert!(SecretResolver::builtins_only()
@@ -146,7 +146,7 @@ fn malformed_builtin_refs_error_precisely() {
         .unwrap_err()
         .contains("settings.key"));
     let r = SecretRef {
-        module: SECRET_MODULE_FILE.to_string(),
+        module: crate::test_support::secrets::path_word(),
         settings: serde_json::Map::new(),
     };
     assert!(SecretResolver::builtins_only()
@@ -159,14 +159,18 @@ fn malformed_builtin_refs_error_precisely() {
 /// canonical form parses; mixed / unknown / empty forms are rejected.
 #[test]
 fn deserialize_accepts_canonical_and_sugar_rejects_malformed() {
-    let r: SecretRef = serde_yaml::from_str("{ env: MY_VAR }").unwrap();
-    assert_eq!(r, SecretRef::env("MY_VAR"));
-    assert_eq!(r.env_var(), Some("MY_VAR"));
-    let r: SecretRef = serde_yaml::from_str("{ file: /run/secrets/x }").unwrap();
-    assert_eq!(r, SecretRef::file("/run/secrets/x"));
-    assert_eq!(r.file_path(), Some("/run/secrets/x"));
+    let r: SecretRef = crate::test_support::secrets::read_ref("{ env: MY_VAR }").unwrap();
+    assert_eq!(r, crate::test_support::secrets::fill_ref("MY_VAR"));
+    assert_eq!(crate::test_support::secrets::fill_var(&r), Some("MY_VAR"));
+    let r: SecretRef = crate::test_support::secrets::read_ref("{ file: /run/secrets/x }").unwrap();
+    assert_eq!(r, crate::test_support::secrets::path_ref("/run/secrets/x"));
+    assert_eq!(
+        crate::test_support::secrets::path_of(&r),
+        Some("/run/secrets/x")
+    );
     let r: SecretRef =
-        serde_yaml::from_str("{ module: vault, settings: { path: kv/data/x } }").unwrap();
+        crate::test_support::secrets::read_ref("{ module: vault, settings: { path: kv/data/x } }")
+            .unwrap();
     assert_eq!(r.module, "vault");
     assert_eq!(
         r.settings.get("path").and_then(|v| v.as_str()),
@@ -184,7 +188,7 @@ fn deserialize_accepts_canonical_and_sugar_rejects_malformed() {
         "plain-string",
     ] {
         assert!(
-            serde_yaml::from_str::<SecretRef>(bad).is_err(),
+            crate::test_support::secrets::read_ref(bad).is_err(),
             "must reject: {bad}"
         );
     }

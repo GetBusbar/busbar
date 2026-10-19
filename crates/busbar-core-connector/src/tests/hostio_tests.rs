@@ -359,7 +359,7 @@ fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
             env: vec![("DECLARED".to_owned(), "yes".to_owned())],
             env_refs: vec![(
                 "WHOLE".to_owned(),
-                busbar_contract::secret_ref::SecretRef::env(VAR),
+                busbar_kernel::test_support::secrets::fill_ref(VAR),
             )],
         };
         let held = crate::spawn_env::HeldEnv::load(&program.env_refs, &scope());
@@ -381,7 +381,7 @@ fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
         let unresolved = Program {
             env_refs: vec![(
                 "MISSING".to_owned(),
-                busbar_contract::secret_ref::SecretRef::env("BUSBAR_HOSTIO_SPAWN_UNSET_VAR"),
+                busbar_kernel::test_support::secrets::fill_ref("BUSBAR_HOSTIO_SPAWN_UNSET_VAR"),
             )],
             ..program
         };
@@ -419,7 +419,7 @@ fn a_spawn_resolves_nothing_and_a_rotation_reaches_the_first_child_after_the_ref
             env: vec![("DECLARED".to_owned(), "yes".to_owned())],
             env_refs: vec![(
                 "ROTATED".to_owned(),
-                busbar_contract::secret_ref::SecretRef::env(VAR),
+                busbar_kernel::test_support::secrets::fill_ref(VAR),
             )],
         };
         let held = crate::spawn_env::HeldEnv::load(&program.env_refs, &scope());

@@ -1222,7 +1222,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                     diag_warn!(
                         CONFIG_PASSTHROUGH_UNUSED_APIKEY,
                         provider = %provider_name,
-                        api_key = %provider_cfg.api_key.describe(),
+                        api_key = %crate::config::secret::describe(&provider_cfg.api_key),
                         "upstream_credentials: passthrough with a NON-EMPTY configured api_key for \
                          this provider: under passthrough the upstream key is \
                          caller_token.unwrap_or(\"\"), so the configured api_key is NEVER forwarded \
@@ -1825,6 +1825,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     // the built-in `env`/`file` modules' required settings. The VALUE is never resolved here (CI
     // validates config structure without secrets present); resolution failures are boot-time
     // fail-closed errors.
+    let sugars = crate::config::secret::sugars();
     let mut check_secret = |what: String, r: &crate::config::SecretRef| {
         // `none` declares that there is NO credential here. That is meaningful for a provider
         // `api_key` (a keyless local upstream — ollama, vLLM) and meaningless everywhere else: a
@@ -1837,39 +1838,29 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                     "{what}: `none` declares that there is NO credential, which is only meaningful \
                      for a provider `api_key` (a keyless local upstream such as ollama or vLLM); \
                      {what} requires a real secret reference, e.g. \
-                     {what}: {{ env: MY_SECRET_VAR }}"
+                     {what}: {}",
+                    crate::config::secret::example_reference("MY_SECRET_VAR")
                 ));
             }
             // Nothing structural left to check: `none` names no module settings at all.
             return;
         }
-        // The built-in `env`/`file` modules need a NON-EMPTY key/path. The `{ env: "" }` /
-        // `{ file: "" }` sugar already rejects an empty value in the deserializer
-        // (contract secret_ref), but the CANONICAL `{ module: env, settings: { key: "" } }` form
-        // bypasses that arm — `env_var()`/`file_path()` return `Some("")`, not `None`. Left
-        // unchecked, such a config passes `--validate` as "ok" then fail-closes at boot
-        // (`std::env::var("")` → Err), so a clean validate would no longer imply a clean boot.
-        // Reject both the MISSING and the EMPTY cases here, mirroring the sugar check.
-        if r.module == crate::config::secret::SECRET_MODULE_ENV {
-            match r.env_var() {
+        // A module named by a declared SUGAR word needs its NON-EMPTY settings key (the key its
+        // Statement declares, `REWRITE_SUGAR`). The sugar spelling already rejects an empty value
+        // in the deserializer, but the CANONICAL `{ module: <word>, settings: { <key>: "" } }`
+        // form bypasses that arm. Left unchecked, such a config passes `--validate` as "ok" then
+        // fail-closes at boot, so a clean validate would no longer imply a clean boot. Reject both
+        // the MISSING and the EMPTY cases here, mirroring the sugar check, in what the Statement
+        // says the value names.
+        if let Some(sugar) = sugars.get(&r.module) {
+            match r.settings.get(&sugar.setting).and_then(|v| v.as_str()) {
                 None => errors.push(format!(
-                    "{what}: secret module 'env' requires settings.key (the environment variable \
-                     name)"
+                    "{what}: secret module '{}' requires settings.{} ({})",
+                    r.module, sugar.setting, sugar.names
                 )),
                 Some(v) if v.trim().is_empty() => errors.push(format!(
-                    "{what}: secret module 'env' requires a NON-EMPTY settings.key (the \
-                     environment variable name)"
-                )),
-                Some(_) => {}
-            }
-        } else if r.module == crate::config::secret::SECRET_MODULE_FILE {
-            match r.file_path() {
-                None => errors.push(format!(
-                    "{what}: secret module 'file' requires settings.path (the file to read)"
-                )),
-                Some(v) if v.trim().is_empty() => errors.push(format!(
-                    "{what}: secret module 'file' requires a NON-EMPTY settings.path (the file to \
-                     read)"
+                    "{what}: secret module '{}' requires a NON-EMPTY settings.{} ({})",
+                    r.module, sugar.setting, sugar.names
                 )),
                 Some(_) => {}
             }
@@ -2467,7 +2458,7 @@ fn validate_providers_with(
                 for e in outbound_credential_refusals("oauth-client-credentials", &cred, &params) {
                     errors.push(format!(
                         "provider '{provider_name}' oauth-client-credentials credential (from {}) is invalid: {e}",
-                        provider_cfg.api_key.describe()
+                        crate::config::secret::describe(&provider_cfg.api_key)
                     ));
                 }
             }
@@ -2544,7 +2535,7 @@ fn validate_providers_with(
                 for e in refusals {
                     errors.push(format!(
                         "provider '{provider_name}' jwt-bearer credential (from {}) is invalid: {e}",
-                        provider_cfg.api_key.describe()
+                        crate::config::secret::describe(&provider_cfg.api_key)
                     ));
                 }
             }
@@ -2634,7 +2625,13 @@ pub fn service_account_json(
         }
         _ => return Ok(credential),
     };
-    let file = busbar_contract::secret_ref::SecretRef::file(named.clone());
+    // The key file reads through the source whose declared sugar role is the path (its Statement's
+    // `REWRITE_SUGAR_ROLE`); with none declared, nothing reads it (fail-closed).
+    let file = crate::config::secret::path_reference(&named).ok_or_else(|| {
+        "could not read service-account key file named by this lane's credential: no loaded \
+         secret plugin declares the key-file path sugar"
+            .to_string()
+    })?;
     read_file(&file)
         .map(busbar_contract::secret::Resolved::sealed)
         .map_err(|e| {

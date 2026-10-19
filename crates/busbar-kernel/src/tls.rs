@@ -20,5 +20,10 @@ pub fn read_pem(
             &busbar_contract::config_time::ConfigScope::config_time(),
         )
         .map(busbar_contract::secret::Resolved::sealed)
-        .map_err(|e| format!("cannot resolve TLS {what} ({}): {e}", secret.describe()))
+        .map_err(|e| {
+            format!(
+                "cannot resolve TLS {what} ({}): {e}",
+                crate::config::secret::describe(&secret)
+            )
+        })
 }

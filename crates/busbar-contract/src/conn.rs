@@ -560,8 +560,8 @@ pub struct Program {
     pub args: Vec<String>,
     /// Its environment entries written as values, name and value, in the settings' order.
     pub env: Vec<(String, String)>,
-    /// Its environment entries written as SECRET REFERENCES (`{ env: X }`, `{ file: P }`, a
-    /// template), name and reference, in the settings' order. The host resolves each at the SPAWN,
+    /// Its environment entries written as SECRET REFERENCES (a declared sugar `{ <word>: X }`, the
+    /// canonical form, a template), name and reference, in the settings' order. The host resolves each at the SPAWN,
     /// never earlier: the reference is what a plane is handed and what the table holds, and the
     /// value exists only in the child's environment.
     pub env_refs: Vec<(String, crate::secret_ref::SecretRef)>,

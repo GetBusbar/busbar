@@ -852,7 +852,7 @@ fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
     // `app.cost` is the resolved cost model the read plan is derived from. Not a stand-in for one.
     let app = busbar_kernel::test_support::build_once(
         busbar_kernel::test_support::cfg_with_provider_api_key(
-            busbar_kernel::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_BOOT_BOOK"),
+            busbar_kernel::test_support::secrets::fill_ref("BUSBAR_TEST_NO_SUCH_KEY_BOOT_BOOK"),
         ),
         None,
     )
@@ -1002,7 +1002,7 @@ fn a_store_without_the_record_slots_refuses_the_boot_by_name() {
     busbar_kernel::snapshot::init();
     let app = busbar_kernel::test_support::build_once(
         busbar_kernel::test_support::cfg_with_provider_api_key(
-            busbar_kernel::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_NO_SLOTS"),
+            busbar_kernel::test_support::secrets::fill_ref("BUSBAR_TEST_NO_SUCH_KEY_NO_SLOTS"),
         ),
         None,
     )
@@ -1261,7 +1261,7 @@ fn one_seal_after_two_reloads() {
     let _env = data_dir_env(&dir.0);
     let cfg = || {
         busbar_kernel::test_support::cfg_with_provider_api_key(
-            busbar_kernel::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_ONE_SEAL"),
+            busbar_kernel::test_support::secrets::fill_ref("BUSBAR_TEST_NO_SUCH_KEY_ONE_SEAL"),
         )
     };
 

@@ -3497,7 +3497,7 @@ mod disposition_matrix_tests {
                 busbar_kernel::config::providers::ProviderCfg {
                     protocol: "anthropic".into(),
                     base_url: "https://api.example.com".into(),
-                    api_key: busbar_contract::secret_ref::SecretRef::env("API_KEY"),
+                    api_key: busbar_kernel::test_support::secrets::fill_ref("API_KEY"),
                     health: None,
                     error_map,
                     path: None,

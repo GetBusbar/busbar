@@ -26,7 +26,6 @@
 
 mod common;
 
-use busbar_contract::secret_ref::SECRET_MODULE_ENV;
 use busbar_kernel::auth::{AuthMiddleware, ChainVerdict};
 use busbar_kernel::config::{AuthCfg, AuthChainEntry, PluginsCfg};
 use std::path::{Path, PathBuf};
@@ -207,7 +206,7 @@ fn auth_plugin_setting_secret_ref_is_resolved_and_delivered() {
     let mut settings = settings();
     settings.insert(
         "ca_cert_pem".into(),
-        serde_json::json!({ SECRET_MODULE_ENV: var }),
+        serde_json::json!({ (busbar_kernel::test_support::secrets::fill_word()): var }),
     );
     let cfg = chain_with("ref-auth", settings);
     let registry = busbar_kernel::plugins_preflight(
@@ -283,7 +282,7 @@ fn auth_plugin_root_level_secret_marked_setting_resolves_and_authenticates() {
     let mut settings = settings();
     settings.insert(
         "audience".to_string(),
-        serde_json::json!({ SECRET_MODULE_ENV: var }),
+        serde_json::json!({ (busbar_kernel::test_support::secrets::fill_word()): var }),
     );
     let cfg = chain_with("sec-auth", settings);
 

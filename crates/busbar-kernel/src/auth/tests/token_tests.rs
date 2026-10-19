@@ -1795,7 +1795,7 @@ async fn the_client_secret_is_lent_at_open_and_rides_nothing_the_host_makes() {
         crate::config::AuthMethodCfg {
             module: "idp-plugin".into(),
             browser_login: Some(crate::config::BrowserLoginCfg {
-                client_secret: Some(crate::config::SecretRef::env(
+                client_secret: Some(crate::test_support::secrets::fill_ref(
                     "BUSBAR_TEST_LOGIN_SECRET_LENT",
                 )),
                 client_id: Some("client-abc".into()),

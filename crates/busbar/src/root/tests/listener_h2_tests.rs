@@ -38,8 +38,12 @@ fn identity(dir: &std::path::Path) -> (TlsCfg, String) {
     std::fs::write(&cert_file, &cert_pem).expect("write cert");
     std::fs::write(&key_file, signing_key.serialize_pem()).expect("write key");
     let tls = TlsCfg {
-        cert: SecretRef::file(cert_file.to_string_lossy().into_owned()),
-        key: SecretRef::file(key_file.to_string_lossy().into_owned()),
+        cert: busbar_kernel::test_support::secrets::path_ref(
+            cert_file.to_string_lossy().into_owned(),
+        ),
+        key: busbar_kernel::test_support::secrets::path_ref(
+            key_file.to_string_lossy().into_owned(),
+        ),
         client_ca: None,
     };
     (tls, cert_pem)

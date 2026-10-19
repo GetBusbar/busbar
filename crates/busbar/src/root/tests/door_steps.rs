@@ -956,7 +956,7 @@ fn a_members_base_url_userinfo_reaches_its_attempts_only_through_its_binding() {
             userinfo: crate::root::userinfo::UserinfoBasic::of(WRITTEN),
             protocol: "d".to_string(),
             error_map: Default::default(),
-            credential: busbar_contract::secret_ref::SecretRef::file(
+            credential: busbar_kernel::test_support::secrets::path_ref(
                 key_file.display().to_string(),
             ),
             style: Some(style.to_string()),
@@ -1371,7 +1371,7 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
                 userinfo: None,
                 protocol: "d".to_string(),
                 error_map: Default::default(),
-                credential: busbar_contract::secret_ref::SecretRef::file(
+                credential: busbar_kernel::test_support::secrets::path_ref(
                     key_file.display().to_string(),
                 ),
                 style: Some("oauth-client-credentials".to_string()),
@@ -1554,7 +1554,7 @@ fn jwt_bearer_routes(
             userinfo: None,
             protocol: "d".to_string(),
             error_map: Default::default(),
-            credential: busbar_contract::secret_ref::SecretRef::file(
+            credential: busbar_kernel::test_support::secrets::path_ref(
                 key_file.display().to_string(),
             ),
             style: Some("jwt-bearer".to_string()),
@@ -7040,7 +7040,7 @@ fn per_hop_over(
     auth: std::sync::Arc<CountingOpens>,
     secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve>,
 ) -> super::PerHop {
-    let secret = busbar_contract::secret_ref::SecretRef::file(path.display().to_string());
+    let secret = busbar_kernel::test_support::secrets::path_ref(path.display().to_string());
     let value = secrets
         .resolve_string(&secret)
         .expect("it resolves")

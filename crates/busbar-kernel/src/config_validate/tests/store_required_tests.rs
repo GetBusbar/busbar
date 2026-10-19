@@ -18,8 +18,9 @@ const NO_STORE: &str = "listen: \"127.0.0.1:8080\"\nproviders:\n  acme:\n    api
 /// Without the refusal arm in `validate` the config validates and the first assertion fails.
 #[test]
 fn a_config_without_a_store_block_is_refused() {
-    let mut cfg =
-        crate::test_support::cfg_with_provider_api_key(config::SecretRef::env("ACME_KEY"));
+    let mut cfg = crate::test_support::cfg_with_provider_api_key(
+        crate::test_support::secrets::fill_ref("ACME_KEY"),
+    );
     assert!(
         validate(&cfg).is_ok(),
         "the fixture validates with its store"

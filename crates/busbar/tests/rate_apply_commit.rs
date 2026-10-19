@@ -40,7 +40,7 @@ fn build(
     busbar_kernel::InstalledLimits,
 ) {
     let mut cfg = busbar_kernel::test_support::cfg_with_provider_api_key(
-        busbar_kernel::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_RATE_APPLY_COMMIT"),
+        busbar_kernel::test_support::secrets::fill_ref("BUSBAR_TEST_NO_SUCH_KEY_RATE_APPLY_COMMIT"),
     );
     cfg.per_request_fee = per_request_fee;
     busbar_kernel::build_app_from_config(

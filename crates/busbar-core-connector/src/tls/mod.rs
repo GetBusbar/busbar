@@ -102,7 +102,7 @@ fn load_cert_chain(
     resolver: &dyn busbar_contract::secret::SecretResolve,
     secret: &SecretRef,
 ) -> Result<Vec<CertificateDer<'static>>, String> {
-    let src = secret.describe();
+    let src = busbar_kernel::config::secret::describe(&secret);
     let pem = busbar_kernel::tls::read_pem(resolver, secret, "cert")?;
     // Read under the kernel's seal (Part 2 #54): parsed here, never held bare.
     let seal = busbar_kernel::seal::lend();
@@ -126,7 +126,7 @@ fn load_private_key(
     resolver: &dyn busbar_contract::secret::SecretResolve,
     secret: &SecretRef,
 ) -> Result<PrivateKeyDer<'static>, String> {
-    let src = secret.describe();
+    let src = busbar_kernel::config::secret::describe(&secret);
     let pem = busbar_kernel::tls::read_pem(resolver, secret, "key")?;
     // Read under the kernel's seal (Part 2 #54): parsed here, never held bare.
     let seal = busbar_kernel::seal::lend();
@@ -171,7 +171,7 @@ fn load_client_roots(
     resolver: &SecretResolver,
     secret: &SecretRef,
 ) -> Result<RootCertStore, String> {
-    let src = secret.describe();
+    let src = busbar_kernel::config::secret::describe(&secret);
     let pem = busbar_kernel::tls::read_pem(resolver, secret, "client_ca")?;
     // Read under the kernel's seal (Part 2 #54): parsed here, never held bare.
     let seal = busbar_kernel::seal::lend();
@@ -307,7 +307,7 @@ pub fn build_server_config(
                 .map_err(|e| {
                     format!(
                         "cannot build client-cert verifier from TLS client_ca ({}): {e}",
-                        ca.describe()
+                        busbar_kernel::config::secret::describe(&ca)
                     )
                 })?;
             builder.with_client_cert_verifier(verifier)
@@ -318,8 +318,8 @@ pub fn build_server_config(
     let mut config = builder.with_single_cert(certs, key).map_err(|e| {
         format!(
             "TLS cert/key are not a valid pair (cert {}, key {}): {e}",
-            tls.cert.describe(),
-            tls.key.describe()
+            busbar_kernel::config::secret::describe(&tls.cert),
+            busbar_kernel::config::secret::describe(&tls.key)
         )
     })?;
 

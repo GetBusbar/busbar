@@ -401,7 +401,7 @@ fn the_remaining_kinds_shapes_are_constructible() {
         state: ChallengeState(vec![2]),
         rounds_left: 1,
     };
-    let _ = SecretRef::file("fixture://key");
+    let _ = SecretRef::sugar("beta", "fixture://key");
     let _: Result<Head, StoreError> = Err(StoreError::Unavailable);
     let _ = Ack::Durable;
     let _: Option<AuthDecoration<'static>> = None;

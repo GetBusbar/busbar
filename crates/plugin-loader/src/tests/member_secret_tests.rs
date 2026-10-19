@@ -19,7 +19,7 @@
 //! crosses the hand-off and not one connector's internals. Plane-neutral: the plugin is the
 //! loader's own test door, its one need the member-program path.
 
-use busbar_contract::secret_ref::{SecretRef, SECRET_MODULE_FILE};
+use busbar_contract::secret_ref::{SecretRef, Sugar, Sugars};
 
 use super::*;
 
@@ -32,10 +32,11 @@ const SOURCE_WORDS: [&str; 3] = ["environment variable", "is unset", "no such fi
 /// variable it names. Empty when the text is clean.
 fn source_in(text: &str, secret: &SecretRef) -> Vec<String> {
     let lower = text.to_ascii_lowercase();
+    let sugars = fixture_sugars();
     let mut needles: Vec<String> = SOURCE_WORDS.iter().map(|w| (*w).to_string()).collect();
-    needles.push(format!("secret {SECRET_MODULE_FILE}"));
-    needles.push(secret.describe());
-    needles.extend(secret.env_var().map(str::to_string));
+    needles.extend(sugars.iter().map(|s| format!("secret {}", s.word)));
+    needles.push(sugars.describe(secret));
+    needles.extend(sugars.value_of(secret).map(|(_, v)| v.to_string()));
     needles
         .into_iter()
         .filter(|n| lower.contains(&n.to_ascii_lowercase()))
@@ -46,11 +47,28 @@ fn source_in(text: &str, secret: &SecretRef) -> Vec<String> {
 /// fixture, the real source) resolves it, its refusal the source's own text; any other module does
 /// not resolve.
 fn env_reference(r: &SecretRef) -> Result<String, String> {
-    if r.module != busbar_contract::secret_ref::SECRET_MODULE_ENV {
+    // The reference as the host binds it: the fixture's declared sugar, on its settings key.
+    let r = &fixture_sugars().canonical(r);
+    if r.module != fill().word {
         return Err(format!("{} does not resolve", r.describe()));
     }
     let bytes = crate::both_ways::secret_fixture::resolve(&r.settings).map_err(|e| e.message)?;
     String::from_utf8(bytes).map_err(|_| format!("{} is not UTF-8", r.describe()))
+}
+
+/// The sugars the linked secret fixture's Statement declares (the loader names no source).
+fn fixture_sugars() -> Sugars {
+    let row = crate::boot::Candidate::linked(crate::both_ways::secret_fixture::door::door)
+        .expect("the secret fixture states itself");
+    crate::boot::sugars_of(&[row]).expect("the secret fixture declares its sugar")
+}
+
+/// The fixture's fill sugar (`${VAR}`'s): the one its variable references spell.
+fn fill() -> Sugar {
+    fixture_sugars()
+        .with_role(busbar_contract::abi::mechanism::door::SUGAR_ROLE_FILL)
+        .cloned()
+        .expect("the secret fixture declares the fill sugar")
 }
 
 /// A connection table holding the connector's member-program contract: the members each
@@ -155,7 +173,7 @@ impl Conns for Members {
 fn a_member_whose_env_secret_does_not_resolve_reaches_the_plugin_as_a_fixed_class_refusal() {
     let var = format!("BUSBAR_LOADER_MEMBER_SECRET_SOURCE_{}", std::process::id());
     std::env::remove_var(&var);
-    let secret = SecretRef::env(&var);
+    let secret = fill().reference(var.clone());
     let operator = env_reference(&secret).expect_err("the variable is unset");
     assert!(
         !source_in(&operator, &secret).is_empty(),

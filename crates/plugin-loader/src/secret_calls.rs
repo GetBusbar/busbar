@@ -436,7 +436,7 @@ impl std::fmt::Debug for SecretRows {
 
 /// Whether config names `c` by `word` (its name or an alias).
 fn answers(c: &Candidate, word: &str) -> bool {
-    c.name == word || c.aliases.iter().any(|a| a == word)
+    c.answers(word)
 }
 
 impl SecretRows {
@@ -522,6 +522,11 @@ impl SecretRows {
             ));
         }
         self.linked.push(c);
+        // The sugars the linked rows declare: a word or role two of them claim refuses the link.
+        if let Err(e) = crate::boot::sugars_of(&self.linked) {
+            self.linked.pop();
+            return Err(e);
+        }
         Ok(self)
     }
 
@@ -566,6 +571,7 @@ impl SecretRows {
             .chain(secrets.iter().cloned())
             .collect();
         crate::boot::one_owner(&all)?;
+        crate::boot::sugars_of(&all)?;
         for line in crate::boot::both_doors(&all) {
             tracing::info!("{line}");
         }
@@ -641,6 +647,24 @@ impl SecretRows {
 }
 
 impl SecretAxis for SecretRows {
+    fn sugars(&self) -> busbar_contract::secret_ref::Sugars {
+        let all: Vec<Candidate> = self
+            .linked
+            .iter()
+            .cloned()
+            .chain(
+                self.dropped
+                    .read()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .iter()
+                    .cloned(),
+            )
+            .collect();
+        // Every row was admitted with its sugars declared ([`Self::link`],
+        // [`Self::admit_dropped`]); a set that no longer declares answers no sugar (fail-closed).
+        crate::boot::sugars_of(&all).unwrap_or_default()
+    }
+
     fn answers(&self, module: &str) -> bool {
         self.find(module).is_some()
     }

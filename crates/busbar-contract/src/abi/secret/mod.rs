@@ -15,9 +15,9 @@
 //! - `tick` (the shared lifecycle slot) renews vault leases; it grows no new `in`/`out` for
 //!   secret, so nothing is added here beyond the lifecycle's own [`TickIn`](super::mechanism::lifecycle::TickIn)/
 //!   [`TickOut`](super::mechanism::lifecycle::TickOut).
-//! - `{env: X}` and `{file: Y}` are Statement rewrites: the kernel resolves them into a plain
-//!   settings [`Blob`](super::mechanism::call::Blob) before calling `resolve`, so they name no new
-//!   wire shape here.
+//! - A one-key sugar `{<word>: X}` is a Statement rewrite (`REWRITE_SUGAR`, its `to` the settings
+//!   key): the kernel resolves it into a plain settings [`Blob`](super::mechanism::call::Blob)
+//!   before calling `resolve`, so it names no new wire shape here.
 //!
 //! ASSUMPTION (M3-SHAPES, noted for the SLOT-LOG; not an owner question — nothing in B.2 or the
 //! spec states a secret Statement tail): secret declares no `kind_tail` fields yet. A plugin's
@@ -90,8 +90,8 @@ pub struct Ops {
 pub struct ResolveIn {
     /// The head.
     pub head: InHead,
-    /// The settings naming what to resolve (a `{env: X}`/`{file: Y}` reference, or the plugin's
-    /// own settings shape, already rewritten by the kernel per the Statement rewrite rule).
+    /// The settings naming what to resolve (a sugar reference `{<word>: X}`, or the plugin's own
+    /// settings shape, already rewritten by the kernel per the Statement rewrite rule).
     pub settings: Blob,
 }
 
@@ -138,8 +138,8 @@ pub struct ResolveOut {
 pub struct CheckIn {
     /// The head.
     pub head: InHead,
-    /// The reference's `settings` object as config wrote it (JSON; a `{env: X}`/`{file: Y}` sugar
-    /// already rewritten per the Statement rewrite rule). Never secret material.
+    /// The reference's `settings` object as config wrote it (JSON; a `{<word>: X}` sugar already
+    /// rewritten per the Statement rewrite rule). Never secret material.
     pub settings: Blob,
     /// THE REASON BUFFER, the host's, lent for the call: a `check` that answers FAILED writes why
     /// into it (UTF-8, at most [`CheckIn::err_cap`] bytes, cut on a char boundary) and names those

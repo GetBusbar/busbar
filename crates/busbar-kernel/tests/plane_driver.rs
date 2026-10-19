@@ -3098,13 +3098,19 @@ fn failing_secrets() -> Vec<Failing> {
     )
     .expect("a module reference");
     [
-        (SecretRef::env(&var), vec![var.clone()]),
-        (SecretRef::file(&path), vec![path.clone()]),
+        (
+            busbar_kernel::test_support::secrets::fill_ref(&var),
+            vec![var.clone()],
+        ),
+        (
+            busbar_kernel::test_support::secrets::path_ref(&path),
+            vec![path.clone()],
+        ),
         (plugin, vec![module.clone()]),
     ]
     .into_iter()
     .map(|(secret, mut markers)| {
-        markers.push(secret.describe());
+        markers.push(busbar_kernel::config::secret::describe(&secret));
         Failing { secret, markers }
     })
     .collect()
@@ -3264,7 +3270,7 @@ async fn a_credential_that_cannot_be_presented_reaches_the_caller_as_a_fixed_cla
                     | UnitOutcome::Failed(StepName::Route, ReasonCode::BreakerOpen)
             ),
             "{}: {outcome:?}",
-            failing.secret.describe()
+            busbar_kernel::config::secret::describe(&failing.secret)
         );
         let rendered = units.take_rendered().expect("the terminal is rendered");
         let render = format!(

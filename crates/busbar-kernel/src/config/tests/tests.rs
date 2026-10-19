@@ -32,7 +32,7 @@ fn provider_def(protocol: &str, base_url: &str) -> ProviderDef {
 /// A minimal ProviderDeploy whose credential is `{ env: <var> }`.
 fn provider_deploy(env_var: &str) -> ProviderDeploy {
     ProviderDeploy {
-        api_key: SecretRef::env(env_var),
+        api_key: crate::test_support::secrets::fill_ref(env_var),
         protocol: None,
         base_url: None,
         error_map: None,
@@ -280,10 +280,18 @@ fn test_tls_typo_and_removed_keys_rejected_at_parse() {
     // The new SecretRef spelling parses and enables mTLS.
     let good = "cert: { file: /c.pem }\nkey: { env: TLS_KEY_PEM }\nclient_ca: { file: /ca.pem }";
     let cfg = serde_yaml::from_str::<TlsCfg>(good).expect("well-formed tls config parses");
-    assert_eq!(cfg.cert.file_path(), Some("/c.pem"));
-    assert_eq!(cfg.key.env_var(), Some("TLS_KEY_PEM"));
     assert_eq!(
-        cfg.client_ca.as_ref().and_then(|c| c.file_path()),
+        crate::test_support::secrets::path_of(&cfg.cert),
+        Some("/c.pem")
+    );
+    assert_eq!(
+        crate::test_support::secrets::fill_var(&cfg.key),
+        Some("TLS_KEY_PEM")
+    );
+    assert_eq!(
+        cfg.client_ca
+            .as_ref()
+            .and_then(|c| crate::test_support::secrets::path_of(c)),
         Some("/ca.pem")
     );
 }
@@ -452,7 +460,10 @@ models:
     let deploy: DeployCfg = serde_yaml::from_str(yaml).expect("config without pools must parse");
     assert!(deploy.pools.pools.is_empty());
     assert!(deploy.models.contains_key("widget"));
-    assert_eq!(deploy.providers["acme"].api_key.env_var(), Some("ACME_KEY"));
+    assert_eq!(
+        crate::test_support::secrets::fill_var(&deploy.providers["acme"].api_key),
+        Some("ACME_KEY")
+    );
 }
 
 /// A provider's `path` override flows from the catalog (and a deployment override wins) into
@@ -487,7 +498,10 @@ fn test_provider_path_override_resolves() {
         "config.yaml provider health must resolve into ProviderCfg"
     );
     // The secret REFERENCE (never a resolved value) is carried through.
-    assert_eq!(cfg.providers["zai-payg"].api_key.env_var(), Some("ZAI_KEY"));
+    assert_eq!(
+        crate::test_support::secrets::fill_var(&cfg.providers["zai-payg"].api_key),
+        Some("ZAI_KEY")
+    );
 }
 
 #[test]
@@ -527,9 +541,9 @@ fn admin_plane_boot_guard() {
             .insert("p".to_string(), provider_deploy("P_KEY"));
         deploy.admin_listen = admin_listen.to_string();
         deploy.admin_tls = client_ca.map(|ca| TlsCfg {
-            cert: SecretRef::file("cert.pem"),
-            key: SecretRef::file("key.pem"),
-            client_ca: Some(SecretRef::file(ca)),
+            cert: crate::test_support::secrets::path_ref("cert.pem"),
+            key: crate::test_support::secrets::path_ref("key.pem"),
+            client_ca: Some(crate::test_support::secrets::path_ref(ca)),
         });
         deploy.admin_require_mtls = require_mtls;
         resolve(&deploy, &defs)
@@ -1463,7 +1477,10 @@ fn test_resolve_provider_from_def() {
         .expect("z.ai should be in resolved providers");
     assert_eq!(provider_cfg.dialect(), CATALOG_PROTOCOL);
     assert_eq!(provider_cfg.base_url, "https://api.z.ai/api/model-1");
-    assert_eq!(provider_cfg.api_key.env_var(), Some("ZAI_KEY"));
+    assert_eq!(
+        crate::test_support::secrets::fill_var(&provider_cfg.api_key),
+        Some("ZAI_KEY")
+    );
     assert_eq!(error_class(provider_cfg, "1113"), Some("billing"));
     assert_eq!(error_class(provider_cfg, "1302"), Some("rate_limit"));
 }
@@ -1566,7 +1583,10 @@ fn test_resolve_override_wins() {
         provider_cfg.base_url, "https://override.example.com",
         "base_url override should win"
     );
-    assert_eq!(provider_cfg.api_key.env_var(), Some("CUSTOM_KEY"));
+    assert_eq!(
+        crate::test_support::secrets::fill_var(&provider_cfg.api_key),
+        Some("CUSTOM_KEY")
+    );
     assert_eq!(error_class(provider_cfg, "9999"), Some("client_error"));
 }
 
@@ -1711,7 +1731,9 @@ fn breaker_cfg_default_matches_serde_default_fns() {
 fn test_debug_of_full_config_never_shows_resolved_secrets() {
     std::env::set_var("BUSBAR_T_DEBUG_SECRET", "SECRET-resolved-value-zzz");
     let auth = crate::config::AuthDeployCfg {
-        signing_key: Some(SecretRef::env("BUSBAR_T_DEBUG_SECRET")),
+        signing_key: Some(crate::test_support::secrets::fill_ref(
+            "BUSBAR_T_DEBUG_SECRET",
+        )),
         operator_pub: None,
         chain: vec![KEYS_MODULE.to_string()],
         admin_auth: vec![crate::config::operator_provider().to_string()],
@@ -1728,14 +1750,16 @@ fn test_debug_of_full_config_never_shows_resolved_secrets() {
         crate::config::IdentityProviderCfg {
             module: crate::config::operator_provider().to_string(),
             max_admin_scope: None,
-            token: Some(SecretRef::env("BUSBAR_T_DEBUG_SECRET")),
+            token: Some(crate::test_support::secrets::fill_ref(
+                "BUSBAR_T_DEBUG_SECRET",
+            )),
             browser_login: None,
             settings: serde_json::Map::new(),
         },
     );
     deploy.tls = Some(TlsCfg {
-        cert: SecretRef::file("/run/secrets/cert.pem"),
-        key: SecretRef::env("BUSBAR_T_DEBUG_SECRET"),
+        cert: crate::test_support::secrets::path_ref("/run/secrets/cert.pem"),
+        key: crate::test_support::secrets::fill_ref("BUSBAR_T_DEBUG_SECRET"),
         client_ca: None,
     });
     deploy
@@ -1947,37 +1971,53 @@ limits:
 /// canonical `{ module, settings }` form.
 #[test]
 fn test_secret_ref_sugar_desugars_to_builtin_modules() {
-    let e: SecretRef = serde_yaml::from_str("env: MY_KEY").expect("env sugar parses");
-    assert_eq!(e, SecretRef::env("MY_KEY"));
+    let e: SecretRef =
+        crate::test_support::secrets::read_ref("env: MY_KEY").expect("env sugar parses");
+    assert_eq!(e, crate::test_support::secrets::fill_ref("MY_KEY"));
     assert_eq!(e.module, "env");
-    assert_eq!(e.env_var(), Some("MY_KEY"));
-    assert_eq!(e.file_path(), None);
-    assert_eq!(e.describe(), "env:MY_KEY");
+    assert_eq!(crate::test_support::secrets::fill_var(&e), Some("MY_KEY"));
+    assert_eq!(crate::test_support::secrets::path_of(&e), None);
+    assert_eq!(crate::config::secret::describe(&e), "env:MY_KEY");
 
-    let f: SecretRef =
-        serde_yaml::from_str("file: /run/secrets/tls.pem").expect("file sugar parses");
-    assert_eq!(f, SecretRef::file("/run/secrets/tls.pem"));
+    let f: SecretRef = crate::test_support::secrets::read_ref("file: /run/secrets/tls.pem")
+        .expect("file sugar parses");
+    assert_eq!(
+        f,
+        crate::test_support::secrets::path_ref("/run/secrets/tls.pem")
+    );
     assert_eq!(f.module, "file");
-    assert_eq!(f.file_path(), Some("/run/secrets/tls.pem"));
-    assert_eq!(f.env_var(), None);
-    assert_eq!(f.describe(), "file:/run/secrets/tls.pem");
+    assert_eq!(
+        crate::test_support::secrets::path_of(&f),
+        Some("/run/secrets/tls.pem")
+    );
+    assert_eq!(crate::test_support::secrets::fill_var(&f), None);
+    assert_eq!(
+        crate::config::secret::describe(&f),
+        "file:/run/secrets/tls.pem"
+    );
 }
 
 /// The canonical `{ module, settings }` form parses verbatim (third-party secret modules), with
 /// settings passed through opaquely; a missing `settings:` defaults to empty.
 #[test]
 fn test_secret_ref_canonical_form_parses() {
-    let v: SecretRef = serde_yaml::from_str("module: vault\nsettings:\n  path: kv/prod/api\n")
-        .expect("canonical form parses");
+    let v: SecretRef =
+        crate::test_support::secrets::read_ref("module: vault\nsettings:\n  path: kv/prod/api\n")
+            .expect("canonical form parses");
     assert_eq!(v.module, "vault");
     assert_eq!(
         v.settings.get("path").and_then(|p| p.as_str()),
         Some("kv/prod/api")
     );
-    assert_eq!(v.env_var(), None, "a non-env module has no env_var");
-    assert_eq!(v.describe(), "secret module 'vault'");
+    assert_eq!(
+        crate::test_support::secrets::fill_var(&v),
+        None,
+        "a non-env module has no env_var"
+    );
+    assert_eq!(crate::config::secret::describe(&v), "secret module 'vault'");
 
-    let bare: SecretRef = serde_yaml::from_str("module: vault").expect("settings default empty");
+    let bare: SecretRef =
+        crate::test_support::secrets::read_ref("module: vault").expect("settings default empty");
     assert!(bare.settings.is_empty());
 }
 
@@ -1986,38 +2026,38 @@ fn test_secret_ref_canonical_form_parses() {
 #[test]
 fn test_secret_ref_malformed_shapes_rejected() {
     // Canonical + sugar together.
-    let err = serde_yaml::from_str::<SecretRef>("module: env\nenv: FOO")
+    let err = crate::test_support::secrets::read_ref("module: env\nenv: FOO")
         .expect_err("module + sugar must error");
     assert!(err.to_string().contains("not both"), "{err}");
     // Two sugar keys.
-    let err = serde_yaml::from_str::<SecretRef>("env: FOO\nfile: /p")
+    let err = crate::test_support::secrets::read_ref("env: FOO\nfile: /p")
         .expect_err("two sugar keys must error");
     assert!(err.to_string().contains("exactly one"), "{err}");
     // Sugar + settings.
-    let err = serde_yaml::from_str::<SecretRef>("env: FOO\nsettings: { a: 1 }")
+    let err = crate::test_support::secrets::read_ref("env: FOO\nsettings: { a: 1 }")
         .expect_err("sugar with settings must error");
     assert!(err.to_string().contains("no `settings:`"), "{err}");
     // Unknown key.
     let err =
-        serde_yaml::from_str::<SecretRef>("keyring: FOO").expect_err("unknown key must error");
+        crate::test_support::secrets::read_ref("keyring: FOO").expect_err("unknown key must error");
     let msg = err.to_string();
     assert!(
         msg.contains("unknown field") && msg.contains("keyring"),
         "{msg}"
     );
     // Empty sugar value.
-    let err =
-        serde_yaml::from_str::<SecretRef>("env: \"\"").expect_err("empty sugar value must error");
+    let err = crate::test_support::secrets::read_ref("env: \"\"")
+        .expect_err("empty sugar value must error");
     assert!(err.to_string().contains("non-empty"), "{err}");
     // Empty module name.
-    let err =
-        serde_yaml::from_str::<SecretRef>("module: \"\"").expect_err("empty module must error");
+    let err = crate::test_support::secrets::read_ref("module: \"\"")
+        .expect_err("empty module must error");
     assert!(err.to_string().contains("non-empty"), "{err}");
     // Empty map: neither module nor sugar.
-    let err = serde_yaml::from_str::<SecretRef>("{}").expect_err("empty map must error");
+    let err = crate::test_support::secrets::read_ref("{}").expect_err("empty map must error");
     assert!(err.to_string().contains("needs `module:`"), "{err}");
     // A bare scalar is not a secret reference.
-    assert!(serde_yaml::from_str::<SecretRef>("\"sk-raw-secret\"").is_err());
+    assert!(crate::test_support::secrets::read_ref("\"sk-raw-secret\"").is_err());
 }
 
 /// Built-in resolution is FAIL-CLOSED: `env` resolves a set non-empty variable and errors on
@@ -2032,7 +2072,7 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
     assert_eq!(
             .map(crate::test_support::revealed)
         SecretResolver::builtins_only()
-            .resolve(&SecretRef::env("BUSBAR_T_SECRET_ENV_OK"))
+            .resolve(&crate::test_support::secrets::fill_ref("BUSBAR_T_SECRET_ENV_OK"))
             .unwrap(),
         b"s3cr3t-value".to_vec()
     );
@@ -2040,7 +2080,9 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
 
     // env: unset -> error naming the variable.
     let err = SecretResolver::builtins_only()
-        .resolve(&SecretRef::env("BUSBAR_T_SECRET_ENV_UNSET"))
+        .resolve(&crate::test_support::secrets::fill_ref(
+            "BUSBAR_T_SECRET_ENV_UNSET",
+        ))
         .unwrap_err();
     assert!(
         err.contains("BUSBAR_T_SECRET_ENV_UNSET") && err.contains("unset"),
@@ -2050,7 +2092,9 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
     // env: set but EMPTY -> fail-closed error, never an empty secret.
     std::env::set_var("BUSBAR_T_SECRET_ENV_EMPTY", "");
     let err = SecretResolver::builtins_only()
-        .resolve(&SecretRef::env("BUSBAR_T_SECRET_ENV_EMPTY"))
+        .resolve(&crate::test_support::secrets::fill_ref(
+            "BUSBAR_T_SECRET_ENV_EMPTY",
+        ))
         .unwrap_err();
     std::env::remove_var("BUSBAR_T_SECRET_ENV_EMPTY");
     assert!(err.contains("EMPTY"), "{err}");
@@ -2059,7 +2103,7 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
     let dir = std::env::temp_dir();
     let path = dir.join(format!("busbar-secret-test-{}", std::process::id()));
     std::fs::write(&path, "file-secret\n").unwrap();
-    let sref = SecretRef::file(path.to_str().unwrap());
+    let sref = crate::test_support::secrets::path_ref(path.to_str().unwrap());
     assert_eq!(
         SecretResolver::builtins_only()
             .resolve(&sref)
@@ -2076,7 +2120,7 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
     std::fs::remove_file(&path).unwrap();
 
     // file: missing -> error.
-    let missing = SecretRef::file("/nonexistent/busbar-secret-test");
+    let missing = crate::test_support::secrets::path_ref("/nonexistent/busbar-secret-test");
     assert!(SecretResolver::builtins_only().resolve(&missing).is_err());
 
     // unknown module -> fail-closed error naming the module.
@@ -2147,7 +2191,10 @@ fn test_identity_provider_definition_is_referenced_by_name_from_both_planes() {
 
     // The operator credential's `token:` lives on the DEFINITION now, not on a chain entry.
     assert_eq!(
-        auth.admin_auth[0].token.as_ref().and_then(|t| t.env_var()),
+        auth.admin_auth[0]
+            .token
+            .as_ref()
+            .and_then(|t| crate::test_support::secrets::fill_var(t)),
         Some("BUSBAR_T_AD_TOKEN")
     );
 }
@@ -2864,7 +2911,7 @@ fn test_resolve_projects_admin_auth_names() {
         cfg.auth
             .as_ref()
             .and_then(|a| a.admin_token_ref())
-            .and_then(|t| t.env_var()),
+            .and_then(|t| crate::test_support::secrets::fill_var(t)),
         Some("BUSBAR_ADMIN_TOKEN")
     );
 
@@ -2945,7 +2992,9 @@ test-idp-double:
     // module. (Optional so a Credential method can omit it; a Redirect method requires it — enforced
     // at build per login_kind.)
     assert_eq!(
-        bl.client_secret.as_ref().and_then(|s| s.env_var()),
+        bl.client_secret
+            .as_ref()
+            .and_then(|s| crate::test_support::secrets::fill_var(s)),
         Some("BUSBAR_OIDC_SECRET")
     );
     // Opaque module settings pass through, NOT swallowed into browser_login.

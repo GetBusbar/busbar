@@ -299,9 +299,12 @@ impl Candidate {
         self
     }
 
-    /// Every word config may name this candidate by: its name, then its aliases.
+    /// Every word config may name this candidate by: its name, its aliases, then the reference
+    /// keys its sugar declares (a sugar word names its plugin as a module too).
     fn words(&self) -> impl Iterator<Item = &str> {
-        std::iter::once(self.name.as_str()).chain(self.aliases.iter().map(String::as_str))
+        std::iter::once(self.name.as_str())
+            .chain(self.aliases.iter().map(String::as_str))
+            .chain(self.sugar.iter().map(String::as_str))
     }
 
     /// A compiled-in row's candidate: its row's rendering.
@@ -314,10 +317,38 @@ impl Candidate {
         Self::from_rendering(row.statement.clone(), None, Origin::Linked(row))
     }
 
-    /// Whether config names this plugin by `word` (its name or an alias).
-    fn answers(&self, word: &str) -> bool {
-        self.name == word || self.aliases.iter().any(|a| a == word)
+    /// Whether config names this plugin by `word` (its name, an alias or a sugar word).
+    pub(crate) fn answers(&self, word: &str) -> bool {
+        self.words().any(|w| w == word)
     }
+}
+
+/// THE SUGARS `candidates` DECLARE (owner law 2026-09-27: the secret sugar is a shorthand the
+/// plugins declare; the kernel resolves it generically): each candidate's Statement rewrites, read
+/// off its rendering, declared in turn. A plugin met twice (linked and dropped in, one plugin by the
+/// one-version rule) declares once.
+///
+/// # Errors
+///
+/// A rendering that does not read back, or what [`busbar_contract::secret_ref::Sugars::declare`]
+/// refuses: two plugins claiming one sugar word or one role, a sugar that is core grammar or names
+/// no settings key.
+pub fn sugars_of(candidates: &[Candidate]) -> Result<busbar_contract::secret_ref::Sugars, String> {
+    let mut sugars = busbar_contract::secret_ref::Sugars::default();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for c in candidates {
+        if !seen.insert(c.name.as_str()) {
+            continue;
+        }
+        let r: Read = read(&c.stated).map_err(|e| {
+            format!(
+                "plugin '{}': its Statement rendering does not read back at byte {}",
+                c.name, e.at
+            )
+        })?;
+        sugars.declare(&c.name, &r.rewrites)?;
+    }
+    Ok(sugars)
 }
 
 /// THE ONE-OWNER RULE over an axis's candidates, linked and dropped in alike (Q-P4-12 (ARCHITECT, BUSBAR-1.6.0.md:106 "it refuses at boot when two plugins claim the same thing")): two DIFFERENT

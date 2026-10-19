@@ -891,7 +891,7 @@ fn temp_pem(tag: &str, contents: &str) -> std::path::PathBuf {
 }
 
 fn file(path: &std::path::Path) -> busbar_kernel::config::SecretRef {
-    busbar_kernel::config::SecretRef::file(path.to_string_lossy().into_owned())
+    busbar_kernel::test_support::secrets::path_ref(path.to_string_lossy().into_owned())
 }
 
 /// A self-signed server cert for `localhost`/`127.0.0.1`: (cert_pem, key_pem).

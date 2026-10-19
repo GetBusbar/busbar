@@ -223,7 +223,7 @@ fn a_programs_env_refsironment_is_held_as_its_reference() {
         "command": "/usr/bin/server",
         (crate::conn::PROGRAM_ENV_KEY): {
             "PLAIN": "v",
-            "KEY": {(crate::secret_ref::SECRET_MODULE_ENV): "SECRET_VAR"},
+            "KEY": {"alpha": "SECRET_VAR"},
             "T": crate::secret_ref::SecretRef::template("Bearer ${SECRET_VAR}")
         }
     }))
@@ -234,7 +234,7 @@ fn a_programs_env_refsironment_is_held_as_its_reference() {
         vec![
             (
                 "KEY".to_owned(),
-                crate::secret_ref::SecretRef::env("SECRET_VAR")
+                crate::secret_ref::SecretRef::sugar("alpha", "SECRET_VAR")
             ),
             (
                 "T".to_owned(),
@@ -243,7 +243,7 @@ fn a_programs_env_refsironment_is_held_as_its_reference() {
         ]
     );
     let printed = format!("{p:?}");
-    assert!(printed.contains("KEY = env:SECRET_VAR"), "{printed}");
+    assert!(printed.contains("KEY = alpha:SECRET_VAR"), "{printed}");
     for bad in [
         serde_json::json!(7),
         serde_json::json!(["x"]),

@@ -3,30 +3,125 @@
 
 //! The SECRET REFERENCE type (CLEAN-CONFIG rule): every secret/external value in the config is
 //! `{ module: <secret-module>, settings: {…} }` - a reference to a SECRET MODULE (`kind: secret`
-//! plugin), never the secret itself. The built-in modules are `env` (settings.key names an
-//! environment variable) and `file` (settings.path names a file whose contents are the secret);
-//! third-party modules (vault, cloud secret managers, …) load through the plugin system.
+//! plugin), never the secret itself.
 //!
-//! Two ergonomic SUGAR spellings desugar to the built-ins so the common cases stay one-liners:
-//!
-//! ```yaml
-//! api_key: { env: SOME_API_KEY }               # ⇒ { module: env,  settings: { key: SOME_API_KEY } }
-//! cert:    { file: /run/secrets/tls-cert.pem } # ⇒ { module: file, settings: { path: /run/secrets/tls-cert.pem } }
-//! ```
+//! The one-key SUGAR spellings (`{ <word>: X }`) are what the loaded secret plugins' Statements
+//! declare (OWNER LAW 2026-09-27: the kernel knows zero plugin names; the sugar is a shorthand the
+//! plugins declare and the kernel resolves generically). The kernel reads every reference in its
+//! configuration against them ([`declared`], [`sugars`]): a word no loaded Statement declares is
+//! refused where it stands, and every refusal that lists the sugars lists the declared ones. This
+//! module names no plugin and no sugar word.
 //!
 //! A `SecretRef` holds NO secret material - only the module name and its opaque settings - so it is
 //! safe to derive `Debug`/`Clone` on it and on every struct embedding it. Resolution (turning the
 //! ref into bytes) happens at boot/first-use through the secret-resolver seam and is FAIL-CLOSED:
 //! an unknown module or a failed resolution is a hard error, never an empty secret.
 
-/// `SecretRef` (the `{module, settings}` + `env`/`file` sugar type) and its `Deserialize` impl now
-/// live in `busbar_contract::secret_ref` (DECISIONS #83) — it used to be defined here `pub(crate)`,
-/// unreachable from `busbar-plugin-pack` or any future schema-generation tooling. Re-exported so
-/// every call site in this crate is unchanged; `busbar` still owns
-/// `SecretResolver`/`resolve_settings`/the built-in
-/// `env`/`file` resolution, which are genuinely engine-specific (I/O, plugin dispatch) rather than
-/// part of the reference SHAPE.
-pub use busbar_contract::secret_ref::{SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_FILE};
+/// `SecretRef` and its readings live in `busbar_contract::secret_ref` (DECISIONS #83), re-exported
+/// so every call site in this crate is unchanged; `SecretResolver`/`resolve_settings` stay here.
+pub use busbar_contract::secret_ref::SecretRef;
+
+/// THE SUGARS THE LOADED SECRET PLUGINS DECLARE: the secret axis the composition root installed
+/// (its linked rows and the dropped-in ones it admitted; a test build's in-crate double). No axis,
+/// no sugar: nothing but the core grammar reads.
+#[must_use]
+pub fn sugars() -> busbar_contract::secret_ref::Sugars {
+    axis().map(|a| a.sugars()).unwrap_or_default()
+}
+
+/// Read a configuration's secret reference against the declared [`sugars`] — what every
+/// `SecretRef` field of the kernel's configuration is read with
+/// (`#[serde(deserialize_with = "crate::config::secret::declared")]`), so a refusal carries its
+/// path and line and column exactly as it did when the sugars were core grammar.
+///
+/// # Errors
+///
+/// The shape is not a secret reference, or it spells a sugar no loaded Statement declares.
+pub fn declared<'de, D>(deserializer: D) -> Result<SecretRef, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    SecretRef::deserialize_declared(deserializer, &sugars())
+}
+
+/// [`declared`] for an optional reference: `null` (or the key left out, with `#[serde(default)]`)
+/// is `None`.
+///
+/// # Errors
+///
+/// As [`declared`].
+pub fn declared_opt<'de, D>(deserializer: D) -> Result<Option<SecretRef>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct Opt;
+    impl<'de> serde::de::Visitor<'de> for Opt {
+        type Value = Option<SecretRef>;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("an optional secret reference")
+        }
+        fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_some<D2>(self, deserializer: D2) -> Result<Self::Value, D2::Error>
+        where
+            D2: serde::Deserializer<'de>,
+        {
+            declared(deserializer).map(Some)
+        }
+    }
+    deserializer.deserialize_option(Opt)
+}
+
+/// A reference's short display form for an error message, its declared sugar's reference read
+/// `<word>:<value>` whichever way it was spelled ([`busbar_contract::secret_ref::Sugars::describe`]).
+#[must_use]
+pub fn describe(secret: &SecretRef) -> String {
+    sugars().describe(secret)
+}
+
+/// The reference a config `${VAR}` names: `{ <fill>: VAR }`, through the sugar whose declared role
+/// is the fill ([`busbar_contract::abi::mechanism::door::SUGAR_ROLE_FILL`]). `None` when no loaded
+/// Statement declares one (nothing then resolves it: fail-closed).
+#[must_use]
+pub fn fill_reference(var: &str) -> Option<SecretRef> {
+    sugars()
+        .with_role(busbar_contract::abi::mechanism::door::SUGAR_ROLE_FILL)
+        .map(|s| s.reference(var))
+}
+
+/// The reference a credential naming a key FILE stands for: `{ <path>: FILE }`, through the sugar
+/// whose declared role is the path ([`busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH`]).
+/// `None` when no loaded Statement declares one.
+#[must_use]
+pub fn path_reference(path: &str) -> Option<SecretRef> {
+    sugars()
+        .with_role(busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH)
+        .map(|s| s.reference(path))
+}
+
+/// A refusal's example reference over `var`: `{ <fill>: <var> }` through the fill sugar, else the
+/// canonical form.
+#[must_use]
+pub fn example_reference(var: &str) -> String {
+    match sugars().with_role(busbar_contract::abi::mechanism::door::SUGAR_ROLE_FILL) {
+        Some(s) => format!("{{ {}: {var} }}", s.word),
+        None => "{ module: <secret-module>, settings: {…} }".to_string(),
+    }
+}
+
+/// The declared sugar words as a refusal lists the built-in sources: `` `a` <sep> `b` ``.
+#[must_use]
+pub fn sugar_words(sep: &str) -> String {
+    sugars()
+        .iter()
+        .map(|s| format!("`{}`", s.word))
+        .collect::<Vec<_>>()
+        .join(sep)
+}
 
 /// The reserved wrapper key that OPTS A PLUGIN SETTING OUT of secret-reference interpretation:
 /// `{ literal: <value> }` delivers `<value>` to the plugin verbatim. The escape hatch for the
@@ -135,12 +230,15 @@ impl SecretResolver {
         secret: &SecretRef,
         scope: Option<&busbar_contract::config_time::ConfigScope>,
     ) -> Result<busbar_contract::secret::Resolved<Vec<u8>>, String> {
-        let module = secret.module.as_str();
         // `none` declares the ABSENCE of a credential, so it is never looked up as a module: asking
         // for its bytes is a category error, refused rather than resolved to empty.
-        if module == busbar_contract::secret_ref::SECRET_MODULE_NONE {
+        if secret.is_none() {
             return Err(NONE_HAS_NO_VALUE.to_string());
         }
+        // A sugar read without the table (a plugin's own settings, handed back) lands on its
+        // declaring plugin's settings key here, as the configuration's own references already do.
+        let secret = &sugars().canonical(secret);
+        let module = secret.module.as_str();
         let settings = serde_json::Value::Object(secret.settings.clone()).to_string();
         if let Some(axis) = axis().filter(|a| a.linked(module)) {
             let shared = axis.shared(module)?;
@@ -154,23 +252,24 @@ impl SecretResolver {
         }
         let Some(f) = &self.plugin else {
             return Err(format!(
-                "secret module '{module}' is not a built-in (`env` / `file`) and the plugin \
-                 subsystem is not enabled, so no secret plugin can resolve {}; a secret that \
-                 cannot resolve is a hard error (fail-closed)",
-                secret.describe()
+                "secret module '{module}' is not a built-in ({}) and the plugin subsystem is not \
+                 enabled, so no secret plugin can resolve {}; a secret that cannot resolve is a \
+                 hard error (fail-closed)",
+                sugar_words(" / "),
+                describe(secret)
             ));
         };
         let bytes = f(module, &settings, scope).map_err(|e| {
             format!(
                 "secret module '{module}' (a kind: secret plugin) failed to resolve {}: {e}",
-                secret.describe()
+                describe(secret)
             )
         })?;
         if bytes.is_empty() {
             return Err(format!(
                 "secret module '{module}' resolved {} to an EMPTY value; a secret must be \
                  non-empty (fail-closed)",
-                secret.describe()
+                describe(secret)
             ));
         }
         Ok(bytes)
@@ -194,12 +293,12 @@ impl SecretResolver {
         bytes.into_text().map_err(|why| match why {
             busbar_contract::secret::NotText::NotUtf8 => format!(
                 "secret {} resolved to non-UTF-8 bytes where a text secret is required",
-                secret.describe()
+                describe(secret)
             ),
             busbar_contract::secret::NotText::Empty => format!(
                 "secret {} resolved to an empty value after trimming trailing newlines \
                  (fail-closed)",
-                secret.describe()
+                describe(secret)
             ),
         })
     }
@@ -244,7 +343,7 @@ pub(crate) fn classify_setting(value: &serde_json::Value) -> SettingShape<'_> {
                 return SettingShape::Verbatim(inner);
             }
         }
-        if let Ok(secret) = serde_json::from_value::<SecretRef>(value.clone()) {
+        if let Ok(secret) = SecretRef::from_value_declared(value.clone(), &sugars()) {
             return SettingShape::Reference(secret);
         }
     }
@@ -291,7 +390,7 @@ pub(crate) fn resolve_settings(
                 // reason.
                 tracing::info!(
                     setting = field.as_str(),
-                    reference = %secret.describe(),
+                    reference = %describe(&secret),
                     "plugin setting resolved as a SECRET REFERENCE; if this object was meant as \
                      literal plugin config, wrap it as `{{ literal: … }}` to pass it through verbatim"
                 );

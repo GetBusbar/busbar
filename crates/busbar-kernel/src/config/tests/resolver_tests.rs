@@ -12,13 +12,13 @@ fn resolver_builtins_resolve_without_plugin() {
     let var = format!("BUSBAR_RESOLVER_TEST_{}", std::process::id());
     std::env::set_var(&var, "abc\n");
     assert_eq!(
-        r.resolve(&SecretRef::env(&var))
+        r.resolve(&crate::test_support::secrets::fill_ref(&var))
             .map(crate::test_support::revealed)
             .unwrap(),
         b"abc\n"
     );
     assert_eq!(
-        r.resolve_string(&SecretRef::env(&var))
+        r.resolve_string(&crate::test_support::secrets::fill_ref(&var))
             .map(crate::test_support::revealed)
             .unwrap(),
         "abc"
@@ -88,7 +88,7 @@ fn resolver_delegates_to_plugin_and_fails_closed_on_empty_or_error() {
     let var = format!("BUSBAR_RESOLVER_PLUGIN_TEST_{}", std::process::id());
     std::env::set_var(&var, "envval");
     assert_eq!(
-        r.resolve_string(&SecretRef::env(&var))
+        r.resolve_string(&crate::test_support::secrets::fill_ref(&var))
             .map(crate::test_support::revealed)
             .unwrap(),
         "envval"

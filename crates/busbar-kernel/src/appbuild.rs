@@ -818,7 +818,7 @@ pub fn build_app_from_config(
                         diag_error!(
                             PROVIDER_API_KEY_UNRESOLVABLE,
                             provider = %mc.provider,
-                            reference = %provider_cfg.api_key.describe(),
+                            reference = %crate::config::secret::describe(&provider_cfg.api_key),
                             "provider api_key did not resolve: {e}"
                         );
                         format!(
@@ -826,7 +826,7 @@ pub fn build_app_from_config(
                              credential that cannot resolve refuses boot; if this upstream takes \
                              NO credential (a local ollama / vLLM), declare it: `api_key: none`",
                             mc.provider,
-                            provider_cfg.api_key.describe()
+                            crate::config::secret::describe(&provider_cfg.api_key)
                         )
                     })
                     // AUDIT POINT: the lane's carrier takes the credential's plaintext.

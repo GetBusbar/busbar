@@ -1128,11 +1128,14 @@ pub(crate) fn validate_secret_refs(
             }
             None => {
                 return Err(format!(
-                    "{what} references secret module '{}', which is not a built-in (`env` | `file`) \
-                     and no loadable `kind: secret` plugin is named or aliased '{}'. Fix the \
-                     spelling, install/trust the plugin (see --list-plugins), or use a built-in, \
-                     e.g.:\n\n    {what}: {{ env: MY_SECRET_VAR }}\n",
-                    r.module, r.module
+                    "{what} references secret module '{}', which is not a built-in ({}) and no \
+                     loadable `kind: secret` plugin is named or aliased '{}'. Fix the spelling, \
+                     install/trust the plugin (see --list-plugins), or use a built-in, \
+                     e.g.:\n\n    {what}: {}\n",
+                    r.module,
+                    config::secret::sugar_words(" | "),
+                    r.module,
+                    config::secret::example_reference("MY_SECRET_VAR")
                 ));
             }
         }

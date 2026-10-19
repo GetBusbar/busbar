@@ -5,7 +5,7 @@
 //! ([`super::plane_bound`]). Every test interpolates under its own section key and its own variable,
 //! so the process-wide ledger other tests write into never decides one of these.
 
-use busbar_contract::secret_ref::{SecretRef, SECRET_MODULE_ENV};
+use busbar_contract::secret_ref::SecretRef;
 use serde_json::json;
 
 use super::{plane_bound, plane_bound_bytes};
@@ -16,7 +16,7 @@ const ENV: &str = busbar_contract::conn::PROGRAM_KEYS[2];
 
 /// `{ env: VAR }`: the reference a plane is handed where `${VAR}` filled a whole credential value.
 fn env_ref(var: &str) -> serde_json::Value {
-    json!({ SECRET_MODULE_ENV: var })
+    json!({ (crate::test_support::secrets::fill_word()): var })
 }
 
 /// Interpolate `template` with `vars` set, as boot does, and parse it.
@@ -91,7 +91,7 @@ fn a_credential_field_filled_in_part_reaches_a_plane_as_a_template_reference() {
         serde_json::from_value(bound["reg"][ENV]["AUTH"].clone()).expect("a reference");
     let resolved = reference
         .resolve_template(&|r| {
-            r.env_var()
+            crate::test_support::secrets::fill_var(&r)
                 .and_then(|v| std::env::var(v).ok())
                 .map(busbar_contract::secret::Resolved::new)
                 .ok_or_else(|| "unresolved".to_string())

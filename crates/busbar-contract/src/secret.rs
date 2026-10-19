@@ -2,20 +2,19 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The SECRET-MODULE contract (`kind: secret` plugins). A secret module turns a config secret
-//! reference's opaque `settings` into the secret BYTES: the `env` plugin reads an environment
-//! variable (settings.key), the `file` plugin reads a file (settings.path), and a third-party module
-//! (vault, a cloud secret manager, a database) implements the same contract behind the plugin trust
-//! pipeline. The engine sees only the contract - never the implementation - and treats every
-//! failure as FAIL-CLOSED (an unresolvable secret refuses boot, never resolves empty).
+//! reference's opaque `settings` into the secret BYTES: a source reads a process variable, a file,
+//! a vault, a cloud secret manager or a database, each behind the plugin trust pipeline. The engine
+//! sees only the contract - never the implementation - and treats every failure as FAIL-CLOSED (an
+//! unresolvable secret refuses boot, never resolves empty).
 //!
 //! Moved here, module-path-only, from `busbar-api` (DECISIONS #83/#84; the per-kind trait is the
 //! contract's, #35(a)). The error is [`SecretModuleError`] here because [`crate::kinds::SecretError`]
 //! is a different type (#35 de-collision); its `Debug` keeps the historical `SecretError` label so
-//! every rendering is byte-identical. The `env`/`file` sources are ordinary secret-kind plugins in
-//! their own repos (`busbar-secret-env`, `busbar-secret-file`; THE DESIGN, "Plugins"), called through the
-//! secret kind table; the kernel reaches every loaded secret plugin through [`SecretAxis`] and
-//! [`SecretCalls`]. The [`SecretResolve`] seam followed the config secret reference it takes into
-//! this crate once that reference merged here, when `busbar-api` retired.
+//! every rendering is byte-identical. Every source is an ordinary secret-kind plugin in its own repo
+//! (THE DESIGN, "Plugins"), called through the secret kind table; the kernel reaches every loaded
+//! secret plugin through [`SecretAxis`] and [`SecretCalls`], and reads the sugar each declares off
+//! its Statement ([`SecretAxis::sugars`]). The [`SecretResolve`] seam followed the config secret
+//! reference it takes into this crate once that reference merged here, when `busbar-api` retired.
 
 use zeroize::Zeroize;
 
@@ -418,6 +417,11 @@ pub trait SecretCalls: Send + Sync {
 /// root admitted, linked or dropped in, by the `module` a reference spells (its Statement name or an
 /// alias). Installed once, in the root's rows; the kernel names nothing behind it.
 pub trait SecretAxis: Send + Sync {
+    /// The SUGARS the admitted secret plugins' Statements declare (owner law 2026-09-27: the
+    /// kernel resolves the sugar generically, from what the plugins declare): what the host reads
+    /// its configuration's secret references against.
+    fn sugars(&self) -> crate::secret_ref::Sugars;
+
     /// Whether a secret plugin answers `module`, linked or dropped in.
     fn answers(&self, module: &str) -> bool;
 

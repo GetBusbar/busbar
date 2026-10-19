@@ -267,12 +267,32 @@ impl MarkWord {
 /// [`Rewrite::class`]: `from` is another name config may give the plugin (a module alias). The
 /// registry holds it exclusive, beside the plugin's own name. `to` is absent.
 pub const REWRITE_ALIAS: u32 = 1;
-/// [`Rewrite::class`]: `from` is a reference key naming the plugin (the `k` in `{k: X}`). `to` is
-/// absent.
+/// [`Rewrite::class`]: `from` is a reference key naming the plugin (the `k` in `{k: X}`, a secret
+/// reference's SUGAR); `to` is the settings key the value lands under, so `{k: X}` is
+/// `{ module: k, settings: { <to>: X } }`. The registry holds `from` exclusive, beside the plugin's
+/// own name and aliases: two plugins declaring one reference key refuse the load.
 pub const REWRITE_SUGAR: u32 = 2;
 /// [`Rewrite::class`]: the setting key `from` is rewritten to the path `to` before the plugin's
 /// section reaches it (a flat key to a nested path).
 pub const REWRITE_KEY: u32 = 3;
+/// [`Rewrite::class`]: how a refusal text shows the value of the sugar `from` (a reference key this
+/// Statement declares, [`REWRITE_SUGAR`]): `to` is the placeholder word, `{ k: <to> }`. Absent = the
+/// sugar's settings key.
+pub const REWRITE_SUGAR_SHOWN: u32 = 4;
+/// [`Rewrite::class`]: what the value of the sugar `from` names, as the refusal of a reference that
+/// does not set it says (`requires settings.<key> (<to>)`). Absent = `the <key>`.
+pub const REWRITE_SUGAR_NAMES: u32 = 5;
+/// [`Rewrite::class`]: a role the core grammar gives the sugar `from`: `to` is one of
+/// [`SUGAR_ROLE_FILL`] or [`SUGAR_ROLE_PATH`]. EXCLUSIVE: two plugins claiming one role refuse the
+/// load.
+pub const REWRITE_SUGAR_ROLE: u32 = 6;
+
+/// [`REWRITE_SUGAR_ROLE`]: a config `${VAR}` at a credential position names the value of this
+/// sugar (the reference handed on in place of the filled value).
+pub const SUGAR_ROLE_FILL: &str = "fill";
+/// [`REWRITE_SUGAR_ROLE`]: the value of this sugar is a file path a credential may name in place of
+/// its material (a service account's key file).
+pub const SUGAR_ROLE_PATH: &str = "path";
 
 /// One live rewrite.
 #[repr(C)]

@@ -51,7 +51,7 @@ fn provider_def(protocol: &str, base_url: &str) -> ProviderDef {
 /// `src/config/tests/tests.rs::provider_deploy`.
 fn provider_deploy(env_var: &str) -> ProviderDeploy {
     ProviderDeploy {
-        api_key: SecretRef::env(env_var),
+        api_key: busbar_kernel::test_support::secrets::fill_ref(env_var),
         protocol: None,
         base_url: None,
         error_map: None,
@@ -112,8 +112,8 @@ fn resolve_provider_hook_and_core_fallback_agree() {
         assert_eq!(via_hook.table, via_fallback.table, "{key}");
         assert_eq!(via_hook.base_url, via_fallback.base_url, "{key}");
         assert_eq!(
-            via_hook.api_key.env_var(),
-            via_fallback.api_key.env_var(),
+            busbar_kernel::test_support::secrets::fill_var(&via_hook.api_key),
+            busbar_kernel::test_support::secrets::fill_var(&via_fallback.api_key),
             "{key}"
         );
         assert_eq!(

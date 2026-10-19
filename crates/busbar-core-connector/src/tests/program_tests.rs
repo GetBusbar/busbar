@@ -417,7 +417,7 @@ fn a_members_env_refsironment_resolves_at_the_declaration_and_is_held_for_the_sp
             env_refs: vec![
                 (
                     "WHOLE".to_owned(),
-                    busbar_contract::secret_ref::SecretRef::env(VAR),
+                    busbar_kernel::test_support::secrets::fill_ref(VAR),
                 ),
                 (
                     "TEMPLATED".to_owned(),
@@ -470,7 +470,7 @@ fn a_member_whose_env_refsironment_does_not_resolve_is_not_spawned() {
             env: Vec::new(),
             env_refs: vec![(
                 "MISSING".to_owned(),
-                busbar_contract::secret_ref::SecretRef::env("BUSBAR_CONNECTOR_SPAWN_UNSET_VAR"),
+                busbar_kernel::test_support::secrets::fill_ref("BUSBAR_CONNECTOR_SPAWN_UNSET_VAR"),
             )],
         };
         declare(&c, &[("unresolved", env)]).unwrap();

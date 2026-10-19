@@ -1802,7 +1802,18 @@ fn a_member_program_need_is_declared_with_each_registrations_program() {
                     env: vec![("PLAIN".into(), "v".into())],
                     env_refs: vec![(
                         "KEY".into(),
-                        busbar_contract::secret_ref::SecretRef::env(
+                        // Read without a table, as a plugin's own settings are: the sugar's
+                        // shape, its value under its own word.
+                        busbar_contract::secret_ref::SecretRef::sugar(
+                            crate::boot::sugars_of(&[crate::boot::Candidate::linked(
+                                crate::both_ways::secret_fixture::door::door
+                            )
+                            .expect("the secret fixture states")])
+                            .expect("it declares")
+                            .with_role(busbar_contract::abi::mechanism::door::SUGAR_ROLE_FILL)
+                            .expect("the fill sugar")
+                            .word
+                            .clone(),
                             "BUSBAR_LOADER_MEMBER_PROGRAM_SECRET"
                         ),
                     )],

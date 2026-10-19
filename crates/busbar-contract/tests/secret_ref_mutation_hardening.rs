@@ -42,7 +42,7 @@ use busbar_contract::SecretRef;
 #[test]
 fn secret_ref_settings_carry_only_the_reference_never_a_resolved_value() {
     let distinctive_marker = "SUPER_DISTINCTIVE_ENV_VAR_NAME_NOT_A_SECRET_VALUE";
-    let r = SecretRef::env(distinctive_marker);
+    let r = SecretRef::sugar("alpha", distinctive_marker);
     let debug = format!("{r:?}");
     // The reference NAME is expected verbatim — it is where to look, not what was found there.
     assert!(
@@ -50,9 +50,9 @@ fn secret_ref_settings_carry_only_the_reference_never_a_resolved_value() {
         "a SecretRef's settings must echo the reference name (env var / file path) in Debug — \
          that name is not secret material: {debug}"
     );
-    // `env_var()`/`file_path()` return the same reference name, confirming this crate has no
-    // separate "resolved secret value" field anywhere that Debug could instead be hiding.
-    assert_eq!(r.env_var(), Some(distinctive_marker));
+    // The sugar's parts return the same reference name, confirming this crate has no separate
+    // "resolved secret value" field anywhere that Debug could instead be hiding.
+    assert_eq!(r.sugar_parts(), Some(("alpha", distinctive_marker)));
     assert_eq!(
         r.settings.len(),
         1,
@@ -93,11 +93,11 @@ fn secret_ref_debug_output_never_contains_an_inline_literal_a_caller_tried_to_sm
 /// already expose.
 #[test]
 fn secret_ref_serialize_exposes_the_same_reference_data_as_debug_no_more_no_less() {
-    let r = SecretRef::file("/run/secrets/distinctive-marker-path");
+    let r = SecretRef::sugar("beta", "/run/secrets/distinctive-marker-path");
     let json = serde_json::to_value(&r).unwrap();
-    assert_eq!(json["module"], "file");
+    assert_eq!(json["module"], "beta");
     assert_eq!(
-        json["settings"]["path"],
+        json["settings"]["beta"],
         "/run/secrets/distinctive-marker-path"
     );
     // Exactly module + settings — no hidden third field a future change could smuggle a resolved

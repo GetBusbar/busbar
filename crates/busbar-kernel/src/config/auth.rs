@@ -68,7 +68,7 @@ pub struct IdentityProviderCfg {
     pub max_admin_scope: Option<String>,
     /// The operator ADMIN credential, for a provider whose `module` is the [`operator_provider`]
     /// (a secret reference). Meaningless on any other module (validated).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::secret::declared_opt")]
     pub token: Option<SecretRef>,
     /// HOSTED-LOGIN parameters (freeze blocker). The 1.5.2 `auth.methods:` block FOLDED into this
     /// definition: `browser_login` is inherently per-provider (a client id/secret belongs to ONE
@@ -265,7 +265,7 @@ pub struct BrowserLoginCfg {
     /// `== Credential` ⇒ must be ABSENT). Resolved and LENT to the plugin at `open` (the Statement's
     /// `client_secret` secret reference), which makes its own token exchange with it; the host keeps
     /// none of it.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::secret::declared_opt")]
     pub client_secret: Option<SecretRef>,
     /// The OAuth client id advertised on the authorize URL. Optional here (an IdP-specific plugin may
     /// carry its own); shown on the login button when present.
@@ -303,10 +303,10 @@ pub type AuthMethods = indexmap::IndexMap<String, AuthMethodCfg>;
 #[serde(deny_unknown_fields, default)]
 pub struct AuthDeployCfg {
     /// See [`AuthCfg::signing_key`].
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::secret::declared_opt")]
     pub signing_key: Option<SecretRef>,
     /// See [`AuthCfg::operator_pub`].
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::secret::declared_opt")]
     pub operator_pub: Option<SecretRef>,
     /// The DATA-PLANE authentication chain, as ordered PROVIDER NAMES. Empty (the default) is the
     /// open front door. `keys` is the built-in signed-key verifier, referenced bare.

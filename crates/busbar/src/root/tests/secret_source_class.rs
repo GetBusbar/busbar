@@ -42,10 +42,13 @@ async fn two_failing_sources_reach_the_caller_as_one_fixed_refusal() {
     let _one = PUBLISHING.lock().await;
     member_secrets_installed();
     let cases = [
-        ("tools-class-env", SecretRef::env(unset("TOOLS_CLASS_ENV"))),
+        (
+            "tools-class-env",
+            busbar_kernel::test_support::secrets::fill_ref(unset("TOOLS_CLASS_ENV")),
+        ),
         (
             "tools-class-file",
-            SecretRef::file(missing("tools-class-file")),
+            busbar_kernel::test_support::secrets::path_ref(missing("tools-class-file")),
         ),
     ];
     let mut answers = Vec::new();
@@ -79,8 +82,14 @@ async fn the_scan_catches_a_source_spliced_into_a_real_door_render() {
     member_secrets_installed();
     let fixed = busbar_contract::conn::ConnError::Refused.text();
     let cases = [
-        ("tools-red-env", SecretRef::env(unset("TOOLS_RED_ENV"))),
-        ("tools-red-file", SecretRef::file(missing("tools-red-file"))),
+        (
+            "tools-red-env",
+            busbar_kernel::test_support::secrets::fill_ref(unset("TOOLS_RED_ENV")),
+        ),
+        (
+            "tools-red-file",
+            busbar_kernel::test_support::secrets::path_ref(missing("tools-red-file")),
+        ),
     ];
     for (instance, secret) in &cases {
         let operator = refused_naming_its_source(secret);

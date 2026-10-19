@@ -210,7 +210,7 @@ impl busbar_contract::secret::SecretResolve for ConfigTimeOnly {
 fn settings_resolve_through_the_config_time_form_with_the_proof() {
     let settings = obj(&[(
         "licenseKey",
-        serde_json::json!({ (busbar_contract::secret_ref::SECRET_MODULE_ENV): "UNUSED" }),
+        serde_json::json!({ (crate::test_support::secrets::fill_word()): "UNUSED" }),
     )]);
     let out = resolve_settings(
         &settings,
@@ -228,7 +228,7 @@ fn the_kernel_resolver_answers_the_same_at_config_time_for_a_built_in() {
     let var = format!("BUSBAR_CONFIG_TIME_SAME_{}", std::process::id());
     std::env::set_var(&var, "SAME\n");
     let reference: SecretRef = serde_json::from_value(
-        serde_json::json!({ (busbar_contract::secret_ref::SECRET_MODULE_ENV): var }),
+        serde_json::json!({ (crate::test_support::secrets::fill_word()): var }),
     )
     .expect("an env reference");
     let resolver = SecretResolver::builtins_only();
