@@ -3641,6 +3641,13 @@ pub(crate) const V1_GET_PATHS: &[(&str, &str)] = &[
 // `busbar_kernel::api::set_request_body` beside `set_response_schema` — its one caller is a
 // plane's `openapi_schemas` contributor, which names the substrate twin directly.
 
+/// The second operator-credential line the 1.5.5 OpenAPI document names in its `adminToken`
+/// security scheme: descriptive bytes of the published document, not a line any door reads (the
+/// operator credential's plugin states where it reads).
+#[cfg(feature = "openapi-schema")]
+#[cfg_attr(not(test), allow(dead_code))]
+const OPENAPI_ADMIN_TOKEN_HEADER: &str = "x-admin-token";
+
 #[cfg(feature = "openapi-schema")]
 // Invoked from the openapi tests + the CI artifact/drift jobs (all test targets); a non-test
 // feature-on bin build has no caller, so allow it dead there.
@@ -5073,7 +5080,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         },
         "components": {
             "securitySchemes": {
-                "adminToken": {"type": "apiKey", "in": "header", "name": busbar_kernel::auth::X_ADMIN_TOKEN},
+                "adminToken": {"type": "apiKey", "in": "header", "name": OPENAPI_ADMIN_TOKEN_HEADER},
                 "bearerAuth": {"type": "http", "scheme": "bearer",
                                "description": "The same operator credential via Authorization: Bearer"}
             },
