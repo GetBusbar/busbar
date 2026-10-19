@@ -93,6 +93,15 @@ pub fn install() {
             record_boot: seam_record_boot,
         },
     );
+    // The closed verb table the per-verb allow-list names verbs from (#77(9) l.2279): the kernel
+    // validates `role_bindings.…verbs` against it and its admin gate resolves a request's verb with
+    // it, without naming this crate.
+    busbar_kernel::admin::seam::install_admin_verb_table(
+        busbar_kernel::admin::seam::AdminVerbTable {
+            rung_of: admin_codec::verbs::named_rung,
+            verb_at: admin_codec::verbs::name_at,
+        },
+    );
 }
 
 /// The boot-floor record the seam calls: this app's snapshot as version 0, so the history always has a
