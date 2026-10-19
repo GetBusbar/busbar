@@ -989,8 +989,72 @@ pub fn former_names(
 /// `deps.toml [git-sources]`: one finding per row that admits anything but ONE repository under
 /// https://github.com/GetBusbar/ at a full 40-hex commit, for named plugin repos, with a reason.
 pub fn gitsources(deps: &Json) -> Res<Vec<String>> {
-    let _ = deps;
-    Ok(Vec::new())
+    let rows = match deps.get("git-sources") {
+        Json::Null => return Ok(Vec::new()),
+        Json::Object(o) => o,
+        _ => return Err("plugin-gates: deps.toml [git-sources] is not a table".to_string()),
+    };
+    let mut out = Vec::new();
+    for (name, row) in rows.iter() {
+        let Some(fields) = row.as_object() else {
+            out.push(format!(
+                "GITSRC {name}: not a table (`git`, `rev`, `repos`, `reason`)"
+            ));
+            continue;
+        };
+        let s = |k: &str| row.get(k).as_str().unwrap_or("");
+        let git = s("git");
+        if !getbusbar_repo(git) {
+            out.push(format!(
+                "GITSRC {name}: `{git}` is not one repository under {GETBUSBAR}"
+            ));
+        }
+        let rev = s("rev");
+        if !full_sha(rev) {
+            out.push(format!(
+                "GITSRC {name}: rev `{rev}` is not a full 40-hex commit"
+            ));
+        }
+        let repos = row.get("repos").as_array().unwrap_or(&[]);
+        if repos.is_empty()
+            || repos
+                .iter()
+                .any(|r| r.as_str().is_none_or(|r| r.trim().is_empty()))
+        {
+            out.push(format!("GITSRC {name}: names no plugin repo"));
+        }
+        if s("reason").trim().is_empty() {
+            out.push(format!("GITSRC {name}: has no reason"));
+        }
+        for k in fields.keys() {
+            if !matches!(k, "git" | "rev" | "repos" | "reason") {
+                out.push(format!(
+                    "GITSRC {name}: `{k}` is not a [git-sources] key (git, rev, repos, reason)"
+                ));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The one GitHub organisation a `[git-sources]` row may name.
+const GETBUSBAR: &str = "https://github.com/GetBusbar/";
+
+/// `https://github.com/GetBusbar/<repo>`: one path segment of letters, digits, `-`, `_` and `.`,
+/// and not `.` or `..`.
+fn getbusbar_repo(git: &str) -> bool {
+    git.strip_prefix(GETBUSBAR).is_some_and(|r| {
+        !r.is_empty()
+            && r != "."
+            && r != ".."
+            && r.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    })
+}
+
+/// A full commit sha: 40 lowercase hex digits.
+fn full_sha(rev: &str) -> bool {
+    rev.len() == 40 && rev.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 // -- the deps.toml reader ------------------------------------------------------------------------
