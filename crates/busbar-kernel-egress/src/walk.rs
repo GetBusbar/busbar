@@ -296,7 +296,8 @@ impl Walk {
                     // `:1298-1300`; `engine/walk.rs:100`, `:202`, `:1126-1130`, `:1142-1146`), and
                     // as hook behaviour must (docs/design/BUSBAR-1.6.0.md, decision 63).
                     let kept = |walk: &mut Self| {
-                        walk.shaped(pool, shape, primary).map(|(members, _)| members)
+                        walk.shaped(pool, shape, primary)
+                            .map(|(members, _)| members)
                     };
                     match &pool.on_exhausted {
                         OnExhausted::Status503 => {
@@ -587,12 +588,7 @@ impl Drop for QueuedGuard<'_> {
 
 /// The shed for `pool`: refuse, with the wait its `members` justify (the ones the unit's hooks
 /// kept; none for a pool the walk does not have).
-fn pool_shed(
-    ports: &WalkPorts<'_>,
-    pool: &str,
-    members: &[Member],
-    token: &Pass<Route>,
-) -> Shed {
+fn pool_shed(ports: &WalkPorts<'_>, pool: &str, members: &[Member], token: &Pass<Route>) -> Shed {
     Shed::overloaded(retry_after_secs(
         ports.breaker,
         members,
