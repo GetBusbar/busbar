@@ -31,6 +31,7 @@ fn cand(kind: KindCode, name: &str, aliases: &[&str], sugar: &[&str], verbs: &[&
         sugar: sugar.iter().map(|s| s.to_string()).collect(),
         verbs: verbs.iter().map(|s| s.to_string()).collect(),
         schemes: Vec::new(),
+        secure: Vec::new(),
         needs: Vec::new(),
         stated: Vec::new(),
         origin: Origin::Dropped {
