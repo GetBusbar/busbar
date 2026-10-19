@@ -1424,7 +1424,7 @@ const RELEASE_PUBKEY: &str = "b18395a332803151b9cd40a71489a86a96d8bea3ee6a37a45f
 /// testing/shadow-oracle/plugin-digests.tsv row), verified against the release key that signed it.
 #[test]
 fn an_old_manifest_with_no_former_names_parses_and_verifies_unchanged() {
-    let text = include_str!("../../tests/fixtures/manifest_1_5_5_busbar_delta.json");
+    let text = include_str!("../../tests/fixtures/manifest_1_5_5_busbar_webrequest.json");
     let m: Manifest = serde_json::from_str(text).expect("a 1.5.5 manifest parses");
     assert!(m.former_names.is_empty());
     assert_eq!(m.name, "busbar-webrequest");

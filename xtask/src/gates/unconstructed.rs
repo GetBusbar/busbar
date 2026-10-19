@@ -536,6 +536,7 @@ fn declared_fn_name(code: &str) -> Option<&str> {
 /// Is `symbol` DEFINED in `built`, ONCE? The staleness anchor: a declaration about a capability
 /// that no longer exists is a row that outlived its subject, and a name that anchors two
 /// definitions anchors neither (LAW 8: a name is not a thing) — see [`definitions`].
+#[cfg(test)]
 fn defines(text: &str, symbol: &str) -> bool {
     definitions(text, symbol) == 1
 }
