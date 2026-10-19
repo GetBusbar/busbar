@@ -313,8 +313,14 @@ impl TestAppKit for TestApp {
     fn use_idp_chain(&mut self) {
         *self = std::mem::take(self).idp_chain();
     }
-    fn add_tool_pool(&mut self, name: &str, members: &[&str], repeatable: &[&str]) {
-        *self = std::mem::take(self).tool_pool(name, members, repeatable);
+    fn add_section_pool(
+        &mut self,
+        section: &'static str,
+        name: &str,
+        members: &[&str],
+        repeatable: &[&str],
+    ) {
+        *self = std::mem::take(self).section_pool(section, name, members, repeatable);
     }
     fn add_lane(&mut self, model: &str, protocol: &'static str, base_url: &str) {
         *self = std::mem::take(self).lane(crate::test_support::LaneSpec::new(

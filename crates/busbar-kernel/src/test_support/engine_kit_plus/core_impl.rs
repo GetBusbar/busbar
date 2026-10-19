@@ -71,9 +71,6 @@ impl TestAppKitPlus for TestApp {
     fn set_public_url(&mut self, url: &str) {
         *self = std::mem::take(self).public_url(url);
     }
-    fn add_agent_pool(&mut self, name: &str, members: &[&str]) {
-        *self = std::mem::take(self).agent_pool(name, members);
-    }
     fn build_plus(self: Box<Self>) -> Arc<dyn EngineAppPlus> {
         TestApp::build(*self)
     }

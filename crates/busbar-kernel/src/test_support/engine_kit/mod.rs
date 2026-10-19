@@ -247,8 +247,15 @@ pub trait TestAppKit: TestAppSeam {
     fn use_keys_chain(&mut self);
     /// The test-only identity-provider stand-in as the whole data-plane chain.
     fn use_idp_chain(&mut self);
-    /// Define a `tool_pools:` entry over registered server names.
-    fn add_tool_pool(&mut self, name: &str, members: &[&str], repeatable: &[&str]);
+    /// Define a failover pool of the named-map plane whose section is `section`, over that plane's
+    /// registered names.
+    fn add_section_pool(
+        &mut self,
+        section: &'static str,
+        name: &str,
+        members: &[&str],
+        repeatable: &[&str],
+    );
     /// Add one upstream LANE (`model` served by `protocol` at `base_url`) to the fallback plane.
     fn add_lane(&mut self, model: &str, protocol: &'static str, base_url: &str);
     /// The durable store the plane's write-through sinks (spent ledger, demotion record) land in.
@@ -274,8 +281,14 @@ pub trait TestAppKitExt: Sized {
     fn keys_chain(self) -> Self;
     /// Chaining twin of [`TestAppKit::use_idp_chain`].
     fn idp_chain(self) -> Self;
-    /// Chaining twin of [`TestAppKit::add_tool_pool`].
-    fn tool_pool(self, name: &str, members: &[&str], repeatable: &[&str]) -> Self;
+    /// Chaining twin of [`TestAppKit::add_section_pool`].
+    fn section_pool(
+        self,
+        section: &'static str,
+        name: &str,
+        members: &[&str],
+        repeatable: &[&str],
+    ) -> Self;
     /// Chaining twin of [`TestAppKit::add_lane`].
     fn lane(self, model: &str, protocol: &'static str, base_url: &str) -> Self;
     /// Chaining twin of [`TestAppKit::set_durable_store`].
@@ -311,8 +324,14 @@ impl TestAppKitExt for Box<dyn TestAppKit> {
         self.use_idp_chain();
         self
     }
-    fn tool_pool(mut self, name: &str, members: &[&str], repeatable: &[&str]) -> Self {
-        self.add_tool_pool(name, members, repeatable);
+    fn section_pool(
+        mut self,
+        section: &'static str,
+        name: &str,
+        members: &[&str],
+        repeatable: &[&str],
+    ) -> Self {
+        self.add_section_pool(section, name, members, repeatable);
         self
     }
     fn lane(mut self, model: &str, protocol: &'static str, base_url: &str) -> Self {

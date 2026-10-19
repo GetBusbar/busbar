@@ -60,15 +60,13 @@ pub trait EngineAppPlus: EngineApp {
 }
 
 /// THE TEST-APP BUILDER, widened: the deployment's public URL and its candidate pools of registered
-/// endpoints (the engine's `agent_pools:` section), and a `build` that hands back the widened App.
+/// endpoints (a named-map plane's failover pools), and a `build` that hands back the widened App.
 /// A [`TestAppKit`] (supertrait), so every base builder verb applies unchanged. A plane drives it
 /// through [`AppBuilder`], which owns the chaining shape.
 pub trait TestAppKitPlus: TestAppKit {
     /// The `public_url:` the deployment is reachable at — what a plane derives its served endpoint,
     /// its metadata document and its audience from.
     fn set_public_url(&mut self, url: &str);
-    /// Define one `agent_pools:` entry over registered endpoint names.
-    fn add_agent_pool(&mut self, name: &str, members: &[&str]);
     /// Build the App, widened.
     fn build_plus(self: Box<Self>) -> Arc<dyn EngineAppPlus>;
 }
@@ -135,10 +133,10 @@ impl AppBuilder {
         self.inner.set_public_url(url);
         self
     }
-    /// Chaining twin of [`TestAppKitPlus::add_agent_pool`].
+    /// Chaining twin of [`TestAppKit::add_section_pool`].
     #[must_use]
-    pub fn agent_pool(mut self, name: &str, members: &[&str]) -> Self {
-        self.inner.add_agent_pool(name, members);
+    pub fn section_pool(mut self, section: &'static str, name: &str, members: &[&str]) -> Self {
+        self.inner.add_section_pool(section, name, members, &[]);
         self
     }
     /// Chaining twin of [`TestAppKit::set_governance`].
