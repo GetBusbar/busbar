@@ -495,7 +495,7 @@ pub(crate) fn linked_source(
         door_builds.push_str(&format!(
             "fn __door_key_{n}() -> &'static str {{\n    \
              static KEY: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();\n    \
-             *KEY.get_or_init(|| crate::root::doors::name_of({e}::door))\n}}\n\
+             KEY.get_or_init(|| crate::root::doors::name_of({e}::door))\n}}\n\
              fn __door_composes_over_{n}() -> &'static [&'static str] {{\n    \
              static UNDER: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();\n    \
              UNDER.get_or_init(|| crate::root::doors::composes_over_of({e}::door))\n}}\n\

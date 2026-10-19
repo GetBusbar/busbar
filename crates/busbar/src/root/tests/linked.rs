@@ -111,7 +111,8 @@ fn a_linked_export_declares_stating_needs_boots() {
         panic!("a `needs` that is not a list must refuse the rows");
     };
     assert!(
-        refused.contains(first.name) && refused.contains("`needs`"),
+        refused.contains(&first.name().expect("a linked export door states its name"))
+            && refused.contains("`needs`"),
         "{refused}"
     );
 }

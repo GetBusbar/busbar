@@ -352,11 +352,11 @@ fn a_program_need_is_dialled_through_the_linked_line_framing_door() {
             }
         };
         let mut line_framed = Vec::new();
-        for (n, (key, _)) in (0u32..).zip(doors) {
+        for (n, door) in (0u32..).zip(doors) {
             let need = ReadNeed {
                 direction: DIRECTION_OUTBOUND,
                 egress_class: EGRESS_OPERATOR_INFRASTRUCTURE,
-                transport: (*key).to_owned(),
+                transport: crate::root::doors::name_of(*door).to_owned(),
                 auth: String::new(),
                 target_from: "settings.server".to_owned(),
                 trust_from: String::new(),
