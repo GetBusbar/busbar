@@ -157,6 +157,8 @@ mod inputs;
 mod matrix;
 mod pinned;
 pub(crate) use pinned::{plane_base, PLANE_SOURCE_ENV};
+#[cfg(test)]
+mod q128_tests;
 mod truths;
 
 pub use closure::ROW_CLOSURE;
