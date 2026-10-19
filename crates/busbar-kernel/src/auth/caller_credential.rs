@@ -84,6 +84,12 @@ impl CallerCredential {
     pub fn reveal_for_test(&self) -> &str {
         &self.0
     }
+
+    /// Where the credential's bytes live, for the test that proves a clone shares one buffer.
+    #[cfg(test)]
+    pub(crate) fn buffer_for_test(&self) -> *const u8 {
+        self.0.as_ptr()
+    }
 }
 
 impl std::fmt::Debug for CallerCredential {
@@ -106,3 +112,7 @@ pub fn present_caller(
     }
     credential.headers_for(key, ctx)
 }
+
+#[cfg(test)]
+#[path = "tests/caller_credential_tests.rs"]
+mod caller_credential_tests;
