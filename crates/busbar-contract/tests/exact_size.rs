@@ -69,3 +69,26 @@ fn the_plane_abi_states_no_shorter_size() {
         );
     }
 }
+
+// ── item: the superseded connection-table lowering is gone ───────────────────────────────────────
+
+const CONN: &str = include_str!("../src/abi/host/conn/mod.rs");
+
+/// RED (ruling 21 and the u10 audit): the test-only `ConnSlots` lowering, which read a short
+/// "headless" open descriptor as stating no head words, no longer ships; the connector table
+/// (`abi::host::conn::connector`) is the one connection table.
+#[test]
+fn the_headless_connection_lowering_is_gone() {
+    for needle in [
+        "OPEN_DESC_HEADLESS",
+        "ConnSlots",
+        "HostConns",
+        "ConnHost",
+        "WireOpenDesc",
+    ] {
+        assert!(
+            !CONN.contains(needle),
+            "abi/host/conn/mod.rs still ships `{needle}`"
+        );
+    }
+}
