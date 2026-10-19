@@ -80,6 +80,9 @@ pub mod gauntlet_kernel;
 #[cfg(any(test, feature = "test-harness"))]
 pub mod harness;
 pub mod hooks;
+#[cfg(all(test, linked_every_plane))]
+#[path = "tests/inbound.rs"]
+mod inbound_tests;
 pub mod kernel;
 pub mod keyset;
 pub mod ledger_identity;
