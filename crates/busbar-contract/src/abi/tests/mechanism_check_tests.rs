@@ -226,6 +226,18 @@ fn section(name: &'static str, flags: u32) -> Section {
     }
 }
 
+/// RED (Q128 contract u95 MEDIUM): the "may block, never run inline" mark is retired. No host
+/// reads it, and the design allows no kind to block a worker (THE DESIGN: no blocking on the hot
+/// path; the host's bounded disk lane is the one exception and no plugin may claim it), so a
+/// Statement stating it is refused at load rather than trusted to mean something.
+#[test]
+fn red_the_retired_blocking_mark_refuses_the_load() {
+    assert_eq!(
+        check_marks(1 << 3, &[]),
+        Err(fault(Rule::UnknownCode, "statement.marks"))
+    );
+}
+
 #[test]
 fn the_flag_marks_are_single_distinct_bits_and_an_unknown_bit_is_fault() {
     let m = [MARK_ONE_INSTANCE, MARK_EPHEMERAL, MARK_CATALOG, MARK_BLOCKS];
