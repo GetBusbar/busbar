@@ -1526,6 +1526,9 @@ static AUTH_CALLS: AtomicU8 = AtomicU8::new(0);
 const MINTED: UnitRef = UnitRef { id: 5, mac: 6 };
 const LINE_REF: AuthRef = AuthRef { id: 2, mac: 3 };
 
+/// One name an auth answers: the name, its value (outbound) or none (inbound), and its flags.
+type AnsweredName<'a> = (&'a [u8], Option<&'a [u8]>, u32);
+
 /// A scripted `auth.call` host: answers `spans` (name, value, flags) over one byte run, under the
 /// short-buffer rule, and the minted unit with `flow`.
 ///
@@ -1535,7 +1538,7 @@ unsafe fn answer_auth(
     input: *const c_void,
     out: *mut ServiceOut,
     flow: u32,
-    spans: &[(&[u8], Option<&[u8]>, u32)],
+    spans: &[AnsweredName<'_>],
 ) -> RawOutcome {
     AUTH_CALLS.fetch_add(1, Ordering::SeqCst);
     // SAFETY: the caller's contract.
