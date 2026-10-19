@@ -10,6 +10,7 @@ pub mod probe;
 pub mod project;
 pub mod refuse;
 pub mod reply;
+pub mod routing;
 pub mod shaping;
 pub mod webhook;
 

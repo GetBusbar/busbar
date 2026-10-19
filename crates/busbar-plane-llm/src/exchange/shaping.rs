@@ -22,6 +22,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use busbar_contract::abi::sdk::publish::RouteEntrySpec;
 use busbar_contract::ir::egress_prep::{LaneCaps, MaxOutputKey};
 use serde::Deserialize;
 use serde_json::Value;
@@ -150,6 +151,9 @@ pub struct Shaping {
     /// The translation cap the kernel handed in `limits.request_body_max_bytes`, if it handed one
     /// ([`Self::translate_cap`]).
     pub request_body_max_bytes: Option<usize>,
+    /// The generation's routing, as [`super::routing::of`] resolves it from the same settings: what
+    /// the snapshot publishes for the kernel's walk.
+    pub routing: Vec<RouteEntrySpec>,
 }
 
 #[derive(Deserialize)]
@@ -508,6 +512,7 @@ impl Shaping {
                 budgets.and_then(|b| b.high).unwrap_or(high),
             ],
             request_body_max_bytes: limits.as_ref().and_then(|l| l.request_body_max_bytes),
+            routing: super::routing::of(settings)?,
         })
     }
 

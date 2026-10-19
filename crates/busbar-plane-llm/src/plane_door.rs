@@ -707,13 +707,15 @@ pub fn webhook_claims(webhooks: Webhooks) -> Vec<ClaimSpec> {
 /// The dialect a Responses webhook unit and its refusals wear.
 const RESPONSES: &str = "responses";
 
-/// The generation's snapshot: the plane's claims, and its receivers' claims.
-fn snapshot(webhooks: Webhooks) -> SnapshotSpec {
+/// The generation's snapshot: the plane's claims, its receivers' claims, and the generation's
+/// routing as its tables resolve it (u26: the kernel's walk reads it, never `models:`/`pools:`).
+fn snapshot(webhooks: Webhooks, shaping: &Shaping) -> SnapshotSpec {
     SnapshotSpec {
         claims: claims()
             .into_iter()
             .chain(webhook_claims(webhooks))
             .collect(),
+        routing: shaping.routing.clone(),
         ..SnapshotSpec::default()
     }
 }
@@ -1300,6 +1302,7 @@ slot!(
             Ok(webhooks) => webhooks,
             Err(words) => return open_failed(open, &mut out, |o| &o.open.err_len, &words),
         };
+        let snapshot = snapshot(webhooks, &shaping);
         let door = LlmDoor {
             generations: Generations::new(),
             shapings: Mutex::new(BTreeMap::from([(open.generation, Arc::new(shaping))])),
@@ -1308,7 +1311,6 @@ slot!(
             services: open.host().and_then(|h| Services::of(&h)),
             webhooks,
         };
-        let snapshot = snapshot(door.webhooks);
         out.publish(|o| &o.snapshot, &door.generations, open.generation, &snapshot);
         instance.open(door);
         Outcome::Ready
@@ -1325,8 +1327,8 @@ slot!(
             Ok(shaping) => shaping,
             Err(words) => return out.fail(Refusal::refused(words)),
         };
+        let snapshot = snapshot(door.webhooks, &shaping);
         guard(&door.shapings).insert(input.generation, Arc::new(shaping));
-        let snapshot = snapshot(door.webhooks);
         out.publish(|o| &o.snapshot, &door.generations, input.generation, &snapshot);
         Outcome::Ready
     }
