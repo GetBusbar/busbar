@@ -114,19 +114,29 @@ fn text(error: Option<Vec<u8>>) -> Option<String> {
         .filter(|t| !t.is_empty())
 }
 
-/// Hand a lease back (ticket-less; a release never pends). `0` is none.
-fn release(plugin: &Plugin<Hook>, lease: u64) {
+/// How long the host waits for a hook to take a lease back.
+const RELEASE_BUDGET: Duration = Duration::from_secs(1);
+
+/// Hand `lease` back to `plugin` without holding the call that answered: the release is spawned on
+/// the runtime and crosses on a dispatcher ticket ([`Inner::release`]), never on the caller's
+/// thread (R1). The answer it was leased for is already copied out. `0` is none.
+fn release_later(inner: &Arc<Inner>, plugin: &Arc<Plugin<Hook>>, lease: u64) {
     if lease == 0 {
         return;
     }
-    let mut f = Frame::new(
-        ReleaseIn {
-            head: in_head(),
-            lease,
-        },
-        out_head(),
-    );
-    let _ = plugin.call(life::RELEASE, &mut f);
+    if let Ok(rt) = tokio::runtime::Handle::try_current() {
+        let (inner, plugin) = (Arc::clone(inner), Arc::clone(plugin));
+        drop(rt.spawn(async move { inner.release(&plugin, lease).await }));
+    }
+}
+
+/// `close` `plugin` OFF the calling thread (THE DESIGN R1: no hook crossing runs inline on a
+/// request worker): on the runtime's blocking lane when there is one, else here.
+fn close_off_worker(plugin: Arc<Plugin<Hook>>) {
+    match tokio::runtime::Handle::try_current() {
+        Ok(rt) => drop(rt.spawn_blocking(move || close(&plugin))),
+        Err(_) => close(&plugin),
+    }
 }
 
 /// `validate` `settings` (ticket-less; it never pends): `Ok` when READY, else the plugin's words.
@@ -221,7 +231,7 @@ impl Inner {
 
     /// The instance to call before `deadline`: the live one, or — once the trial window opens
     /// within `deadline` — a fresh one. `Err` says why there is none.
-    async fn live(&self, deadline: Instant) -> Result<Arc<Plugin<Hook>>, String> {
+    async fn live(self: &Arc<Self>, deadline: Instant) -> Result<Arc<Plugin<Hook>>, String> {
         loop {
             let (wait, retired, trial) = {
                 let mut state = self.lock();
@@ -268,11 +278,33 @@ impl Inner {
             // The faulted instance is closed, and the trial's fresh one bound and opened, with
             // the state lock let go.
             if let Some(p) = retired {
-                close(&p);
+                close_off_worker(p);
                 continue;
             }
             if let Some(window) = trial {
-                return self.trial(window);
+                // THE TRIAL CROSSES OFF THIS THREAD (R1): binding (a load, perhaps a `dlopen`) and
+                // `open` run on the runtime's blocking lane, and this call waits for them within
+                // its own budget; a wedged trial holds a blocking thread, never the request worker.
+                let me = Arc::clone(self);
+                let left = deadline.saturating_duration_since(Instant::now());
+                let run = tokio::task::spawn_blocking(move || me.trial(window));
+                return match tokio::time::timeout(left, run).await {
+                    Ok(Ok(answer)) => answer,
+                    Ok(Err(_)) => {
+                        *self.lock() = State::Quarantined {
+                            trial_at: Instant::now() + window,
+                            window,
+                        };
+                        Err(format!(
+                            "hook '{}' is quarantined: its trial did not finish",
+                            self.name
+                        ))
+                    }
+                    Err(_) => Err(format!(
+                        "hook '{}' is quarantined past the call's budget",
+                        self.name
+                    )),
+                };
             }
             tokio::time::sleep(wait).await;
         }
@@ -309,7 +341,7 @@ impl Inner {
 
     /// A trial (or any) call that ended in FAULT: an instance the watchdog faulted goes to
     /// quarantine at once; one that faulted only this answer stays live.
-    fn faulted(&self, plugin: &Plugin<Hook>) {
+    fn faulted(&self, plugin: &Arc<Plugin<Hook>>) {
         if !plugin.is_faulted() {
             return;
         }
@@ -329,15 +361,54 @@ impl Inner {
                 };
             }
         }
-        // Closed with the state lock let go (§11.13 M1).
-        close(plugin);
+        // Closed with the state lock let go (§11.13 M1), off the calling thread (R1).
+        close_off_worker(Arc::clone(plugin));
+    }
+
+    /// Hand a lease back to `plugin` on a dispatcher ticket, as every hook call crosses (R1: off the
+    /// calling thread, under the watchdog), bounded by [`RELEASE_BUDGET`]. `0` is none.
+    async fn release(&self, plugin: &Plugin<Hook>, lease: u64) {
+        if lease == 0 {
+            return;
+        }
+        let workers = self.dispatcher.workers().max(1);
+        let worker = self.next_worker.fetch_add(1, Ordering::Relaxed) % workers;
+        let Some(ticket) = self.dispatcher.mint(worker) else {
+            return;
+        };
+        let mut guard = Ticketed {
+            dispatcher: Arc::clone(&self.dispatcher),
+            ticket,
+            answered: false,
+        };
+        let deadline_ns =
+            now_ns().saturating_add(u64::try_from(RELEASE_BUDGET.as_nanos()).unwrap_or(u64::MAX));
+        let reply = self.dispatcher.submit_watched(
+            plugin,
+            ticket,
+            life::RELEASE,
+            Frame::new(
+                ReleaseIn {
+                    head: in_head(),
+                    lease,
+                },
+                out_head(),
+            ),
+            DeadlineClass::Call,
+            deadline_ns,
+            Arc::new(()) as Lent,
+            RELEASE_BUDGET,
+        );
+        if tokio::time::timeout(RELEASE_BUDGET, reply).await.is_ok() {
+            guard.answered = true;
+        }
     }
 
     /// SUBMIT op `s` with the frame `make` builds (re-built over `regrow` once after a SHORT
     /// answer), lending `lent` to the op, bounded by `budget`. `None` = no answer could be had
     /// (named).
     async fn submit<I, O>(
-        &self,
+        self: &Arc<Self>,
         s: u32,
         budget: Duration,
         lent: Lent,
@@ -610,7 +681,7 @@ impl HookInstance {
             };
             match inner.submit(s, budget, frame as Lent, make, regrow).await {
                 Ok(done) => {
-                    release(&done.plugin, done.lease);
+                    release_later(&inner, &done.plugin, done.lease);
                     let frame = current.lock().unwrap_or_else(|p| p.into_inner()).clone();
                     drop(done.lent);
                     Answered::Answer {
@@ -643,11 +714,11 @@ impl HookInstance {
                 .await
                 .ok()?;
             if done.outcome != Outcome::Ready {
-                release(&done.plugin, done.lease);
+                release_later(&inner, &done.plugin, done.lease);
                 return None;
             }
             let bytes = copy_blob(blob(&done.out));
-            release(&done.plugin, done.lease);
+            release_later(&inner, &done.plugin, done.lease);
             Some(bytes)
         })
     }
@@ -749,11 +820,11 @@ impl HookCalls for HookInstance {
                 .await
             {
                 Ok(done) if done.outcome == Outcome::Ready && done.out.acked_version == version => {
-                    release(&done.plugin, done.lease);
+                    release_later(&inner, &done.plugin, done.lease);
                     Ok(())
                 }
                 Ok(done) => {
-                    release(&done.plugin, done.lease);
+                    release_later(&inner, &done.plugin, done.lease);
                     Err(done.error.unwrap_or_else(|| {
                         format!("hook '{hook}' did not acknowledge settings version {version}")
                     }))
