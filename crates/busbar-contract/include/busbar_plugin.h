@@ -99,6 +99,7 @@ extern "C" {
 #define BB_MECH_MECHANISM_VERSION UINT32_C(2) /* The mechanism's version, stamped in every [`door::Door`]. v1.5.5 called it `TRANSPORT_VERSION` */
 #define BB_MECH_DOOR_MAGIC UINT64_C(0x4c50524142535542) /* ASCII `"BUSBARPL"`, little-endian: a door's first eight bytes. Deliberately not the retired */
 #define BB_MECH_DOOR_SYMBOL "busbar_plugin_door" /* The ONE symbol a plugin exports, NUL-terminated for `dlsym`. */
+#define BB_MECH_TAIL_CLAIM_FLAGS UINT32_C(1) /* THE OPTIONAL TAIL's tag of a transport's claim-row `flags` (module docs: the tagged fields after */
 
 /* store */
 #define BB_STORE_LIST_ITEMS_HARD_MAX UINT64_C(0x100000) /* The hard maximum of any store list's item count (`needed_items`, a leased list's length): */
