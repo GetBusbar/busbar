@@ -5111,6 +5111,24 @@
       "notes": "\u00a73.4 W42 (main.rs:393): --list-plugins falls back to the default plugins block (disabled) and lists nothing."
     },
     {
+      "id": "BOOT-I01",
+      "family": "boot.warning",
+      "mode": "boot",
+      "target": "providers",
+      "op": [
+        {
+          "providers_set": "cohere.base_url",
+          "value": "http://oracle-user:oracle-pass@127.0.0.1:9/"
+        }
+      ],
+      "expect": {
+        "exit": 0,
+        "stderr_contains": "  model m-cohere via cohere (http://oracle-user:oracle-pass@127.0.0.1:9) max unbounded",
+        "stdout_contains": null
+      },
+      "notes": "The model boot line of a provider whose base_url carries userinfo (u26, coordinator ruling 2 under OWNER-LOCKED #40: a plane never receives credential bytes). 1.5.5 printed the URL with its user:pass@ (main.rs:2886, the trailing / trimmed); 1.6.0 prints it stripped, forgiven by accepted-differences '#40 the model boot line'. Port 9 is never dialled at boot; /healthz answers from the other lanes."
+    },
+    {
       "id": "NEUT-U-top",
       "family": "neutrality",
       "mode": "both",

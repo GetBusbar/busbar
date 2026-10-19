@@ -3301,6 +3301,39 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       }
+    },
+    {
+      "id": "#40 the model boot line prints a provider's base_url without its userinfo",
+      "kind": "improvement",
+      "changelog": "1.6.0 Changed: the `model ... via <provider> (<base_url>)` boot line prints the provider's base URL without a `user:pass@` it carries; 1.5.5 printed the credential to stderr.",
+      "by": "ruling:#40 (registered under a standing ruling; no owner signature on this entry); BUSBAR-1.6.0.md Part 2 #40 (OWNER-LOCKED 2026-09-18: a plane never receives secret bytes), applied by the coordinator's u26 boot-line ruling 2026-10-19 (the plane prints the line from ProviderFacts.base_url, a display string the kernel strips; no restore branch, restoring would violate #40)",
+      "cells": "^boot\\.warning\\|BOOT-I01\\|boot$",
+      "expected_cells": 1,
+      "classes": [
+        "effects.stderr"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "(  model m-cohere via cohere \\(http://)127\\.0\\.0\\.1:",
+            "\\1oracle-user:oracle-pass@127.0.0.1:"
+          ]
+        ]
+      },
+      "rationale": "v1.5.5 crates/busbar/src/main.rs:2886-2890 printed `provider_cfg.base_url.trim_end_matches('/')` whole, so a base URL carrying `user:pass@` put the credential on stderr and in every captured boot log. In 1.6.0 the line is the plane's (u26, Law 1: the kernel writes no plane words) and the plane prints the display string the kernel hands it (ProviderFacts.base_url, `strip_userinfo` over the trimmed URL). #40 bars a plane from ever receiving credential bytes, so the unstripped URL cannot reach the printer. The transform puts the stripped userinfo back on the candidate's m-cohere line only, so the cell passes only when 1.6.0 prints exactly the stripped bytes and nothing else on stderr moves.",
+      "premise": {
+        "cell": "boot.warning|BOOT-I01|boot",
+        "status": 0
+      },
+      "signoff": {
+        "who": "ruling:#40",
+        "when": "2026-10-19",
+        "ruling": "BUSBAR-1.6.0.md Part 2 #40 (OWNER-LOCKED 2026-09-18); applied by the coordinator's u26 boot-line ruling 2026-10-19"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
     }
   ]
 }

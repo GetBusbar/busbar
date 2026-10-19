@@ -55,10 +55,10 @@
     }
   ],
   "counts": {
-    "total": 2591,
+    "total": 2592,
     "by_plane": {
       "a2a": 468,
-      "core": 1008,
+      "core": 1009,
       "llm": 203,
       "mcp": 912
     },
@@ -70,7 +70,7 @@
       "billing": 16,
       "boot.deprecated-env": 5,
       "boot.refusal": 223,
-      "boot.warning": 31,
+      "boot.warning": 32,
       "cli": 14,
       "concurrency": 3,
       "config": 1,
@@ -17029,6 +17029,21 @@
         "env": {}
       },
       "why": "expect exit 0; stderr \u220b [warn] config not readable (",
+      "needs_fixture": false
+    },
+    {
+      "id": "boot.warning|BOOT-I01|boot",
+      "plane": "core",
+      "family": "boot.warning",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [],
+        "mode": "boot",
+        "config": "mutation:BOOT-I01",
+        "env": {}
+      },
+      "why": "expect exit 0; stderr \u220b   model m-cohere via cohere (http://oracle-user:oracle-pass@127.0.0.1:9) max unbo",
       "needs_fixture": false
     },
     {

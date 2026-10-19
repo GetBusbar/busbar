@@ -80,6 +80,9 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 
 ### Security
 
+- 1.6.0 Changed: the `model ... via <provider> (<base_url>)` boot line prints the provider's base URL
+  without a `user:pass@` it carries; 1.5.5 printed the credential to stderr.
+
 - **Two admin key rotations could share one idempotency key, and the second was told the first's
   answer.** A rotate's replay key joined the key id and the `Idempotency-Key` header on a colon,
   and both halves are caller-supplied free text: rotating `a:b` under header `c` and rotating `a`

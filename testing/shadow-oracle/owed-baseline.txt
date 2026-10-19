@@ -481,6 +481,7 @@ boot.refusal|LAW0-HOOKWORD-nothing|validate
 boot.refusal|LAW0-HOOKWORD-reject|validate
 boot.refusal|LAW0-HOOKWORD-tokens|validate
 boot.refusal|LAW0-HOOKWORD-usage|validate
+boot.warning|BOOT-I01|boot
 boot.warning|BOOT-W01|validate
 boot.warning|BOOT-W02|validate
 boot.warning|BOOT-W03|validate
