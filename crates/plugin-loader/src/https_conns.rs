@@ -467,7 +467,7 @@ impl DeclaredConns for HttpsConns {
         target: Option<&str>,
         trust: Option<&str>,
     ) -> Result<(), ConnError> {
-        if self.unreached.iter().any(|s| *s == spec.transport) {
+        if self.unreached.contains(&spec.transport) {
             self.unreached_needs
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
