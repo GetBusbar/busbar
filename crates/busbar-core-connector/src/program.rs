@@ -340,6 +340,8 @@ impl Member {
                 opening: None,
                 head_words: (Vec::new(), Vec::new()),
                 anchors: None,
+                binding: crate::framer::AuthBinding::NONE,
+                unit: busbar_contract::abi::host::service::UnitRef::NONE,
             };
             match Connection::spawn(
                 &self.via,

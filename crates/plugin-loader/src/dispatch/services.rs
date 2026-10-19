@@ -23,13 +23,14 @@
 //!   (for the unit the crossing serves), `verify.lookup` / `verify.store` (the caller's own
 //!   single-flight verify cache), `disk.append` (to the destinations the caller was granted,
 //!   [`NO_DESTINATION`] otherwise) and `snapshot.read` (the host's metric families, laid out in the
-//!   caller's buffer by [`super::snapshot`], to the crossing the kernel granted them). Every slot of
-//!   the table is served but the auth handle's three (`auth.call`, `unit.hand_in`,
-//!   `unit.refuse`): each refuses an `in` that is not exactly its size, then VERIFIES its refs
-//!   ([`super::auth_handle`]: a ref of another owner, of another generation or with a forged mac is
-//!   REFUSED, as is any unit until the kernel's unit table is installed), then its contract check,
-//!   and past those answers REFUSED [`AUTH_HANDLE_NOT_SERVED`]: the kernel side of the handle is
-//!   another lane's.
+//!   caller's buffer by [`super::snapshot`], to the crossing the kernel granted them). The auth
+//!   handle's three (`auth.call`, `unit.hand_in`, `unit.refuse`) each refuse an `in` that is not
+//!   exactly its size, then VERIFY its refs ([`super::auth_handle`]: a ref of another owner, of
+//!   another generation or with a forged mac is REFUSED). `auth.call` on an OUTBOUND BINDING'S ref
+//!   is then served by the root's outbound server ([`super::auth_serve`]), which verifies the unit
+//!   and answers the auth fields that join the head; every other call refuses any unit until the
+//!   kernel's unit table is installed, then its contract check, and past those answers REFUSED
+//!   [`AUTH_HANDLE_NOT_SERVED`]: the handle's inbound side is another lane's.
 //! * **Who called.** The instance's [`Caller`], stated at bind, is handed to every service that is
 //!   scoped to its caller; an instance with none is REFUSED ([`NO_CALLER`]).
 //!
@@ -291,6 +292,23 @@ pub(crate) unsafe fn serve(
     into: Option<&ServiceBufs>,
     body: impl FnOnce(Option<Completer>) -> Ran,
 ) -> Answered {
+    // SAFETY: the caller's contract, for `into`.
+    unsafe { serve_with(store, route, head, |stored| deliver(stored, into), body) }
+}
+
+/// [`serve`], its stored result written into the caller's buffers by `put` (a service whose answer
+/// is not the common bytes-and-items shape: `auth.call`'s field spans and answer slot). `put`
+/// answers `Err` for the short FAILED.
+///
+/// # Safety
+/// `put` writes only into the caller's own buffers, within their capacities.
+pub(crate) unsafe fn serve_with(
+    store: &Arc<ServiceStore>,
+    route: &Waking,
+    head: &ServiceHead,
+    put: impl Fn(&Stored) -> Result<Answered, Answered>,
+    body: impl FnOnce(Option<Completer>) -> Ran,
+) -> Answered {
     if head.handle.ticket.is_none() {
         if may_pend(head.op) {
             return Answered::bare(Outcome::Refused, UNTICKETED);
@@ -298,8 +316,7 @@ pub(crate) unsafe fn serve(
         // A ticketless call is never stored: only a service that never pends gets here, and a
         // re-call re-reads it.
         return match body(None) {
-            // SAFETY: the caller's contract.
-            Ran::Now(stored) => unsafe { deliver(&stored, into) }.unwrap_or_else(|short| short),
+            Ran::Now(stored) => put(&stored).unwrap_or_else(|short| short),
             Ran::Later => Answered::fault(),
         };
     }
@@ -345,8 +362,7 @@ pub(crate) unsafe fn serve(
             if *shorts >= 2 {
                 return Answered::bare(Outcome::Fault, SECOND_SHORT);
             }
-            // SAFETY: the caller's contract.
-            match unsafe { deliver(stored, into) } {
+            match put(stored) {
                 Ok(a) => a,
                 Err(short) => {
                     *shorts += 1;
@@ -419,6 +435,15 @@ pub(crate) fn new_op(ctx: HostCtx, ticket: Ticket) {
     if let Some((served, _)) = served(ctx) {
         served.store.forget(ticket);
     }
+}
+
+/// The service store an instance's context routes to, and its waking: the store whether or not the
+/// route serves the kernel's services.
+fn stored(ctx: HostCtx) -> Option<(Arc<ServiceStore>, Waking)> {
+    let wake = super::handle::resolve(ctx)?;
+    let waking = Waking::of(wake)?;
+    let store = waking.route.upgrade()?.service_store()?;
+    Some((store, waking))
 }
 
 /// The caller an instance's context names; `None` before bind stated one.
@@ -1257,23 +1282,135 @@ fn refused_unit(u: &svc::UnitRef) -> Option<Answered> {
     (!u.is_none()).then(|| Answered::bare(Outcome::Refused, UNIT_UNVERIFIED))
 }
 
-/// `auth.call`: the exact size, the ref (owner, generation, mac), the unit, the `in`'s contract
-/// check, each refused in that order before anything else; then [`AUTH_HANDLE_NOT_SERVED`] (the
-/// kernel side of the handle is another lane's).
+/// `auth.call`: the exact size, then the ref (owner, generation, mac), each refused before anything
+/// else. A ref the root's OUTBOUND SERVER holds ([`super::auth_serve`]) is then held to the `in`'s
+/// contract check and served: the unit, the binding's handle, the scope, a passthrough member's
+/// credential and the waiver are the server's to resolve from the unit, and the answer is the auth
+/// fields that join the head (THE DESIGN §6, "Auth points and guest lists", item 5). Any other ref
+/// (an inbound line's) is held to the unit and the contract check, then answered
+/// [`AUTH_HANDLE_NOT_SERVED`]: the handle's inbound side is another lane's.
 extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    exact::<svc::AuthCallIn>(ctx, input, out, op::AUTH_CALL, |i, owner| {
-        if let Some(r) = refused_ref(owner, &i.auth).or_else(|| refused_unit(&i.unit)) {
-            return r;
-        }
-        match svc::check_auth_call_in(&i) {
-            // A request view that declares no scheme never grants: refused by name.
-            Err(f) if f.field == "head_view.scheme" && f.rule == check::Rule::Missing => {
-                return Answered::bare(Outcome::Refused, svc::SCHEME_UNDECLARED_REFUSED);
+    // The auth handle answers from the route's service store alone: a transport's route serves
+    // no other host service, and its `auth.call` is served all the same.
+    framed(
+        input,
+        out,
+        op::AUTH_CALL,
+        size_of::<svc::AuthCallIn>(),
+        |head| {
+            let Some((store, route)) = stored(ctx) else {
+                return Answered::bare(Outcome::Refused, "no host services are bound");
+            };
+            // SAFETY: the caller's non-NULL `in`, stating exactly an `AuthCallIn`.
+            let i = unsafe { input.cast::<svc::AuthCallIn>().read_unaligned() };
+            let owner = super::handle::instance_id(ctx).0;
+            if let Some(r) = refused_ref(owner, &i.auth) {
+                return r;
             }
-            Err(_) => return Answered::bare(Outcome::Refused, AUTH_IN_MALFORMED),
-            Ok(()) => {}
-        }
-        Answered::bare(Outcome::Refused, AUTH_HANDLE_NOT_SERVED)
+            let Some(server) =
+                super::auth_serve::server_of(ctx).filter(|s| s.serves(owner, i.auth.id))
+            else {
+                if let Some(r) = refused_unit(&i.unit) {
+                    return r;
+                }
+                if let Some(r) = auth_call_in_refused(&i) {
+                    return r;
+                }
+                return Answered::bare(Outcome::Refused, AUTH_HANDLE_NOT_SERVED);
+            };
+            if let Some(r) = auth_call_in_refused(&i) {
+                return r;
+            }
+            // SAFETY: the contract check held every range non-NULL for its count and within the
+            // caps; the caller's, live for the call; copied before any pend.
+            let Some(ask) = (unsafe { outbound_ask(&i, owner) }) else {
+                return Answered::fault();
+            };
+            let into = super::auth_serve::AuthInto::of(&i);
+            let put = |stored: &Stored| {
+                let answered = |d: super::auth_serve::Delivered| Answered {
+                    outcome: d.outcome,
+                    value: 0,
+                    len: d.len,
+                    items: d.items,
+                    needed_bytes: d.needed_bytes,
+                    needed_items: d.needed_items,
+                    error: d.error,
+                };
+                // SAFETY: the caller's `buf`, `spans` and `answer`, checked by its contract check.
+                unsafe { super::auth_serve::deliver(stored, &into, SHORT) }
+                    .map(answered)
+                    .map_err(answered)
+            };
+            // SAFETY: `put` writes only the caller's own buffers, within their capacities.
+            unsafe {
+                serve_with(&store, &route, &head, put, |completer| {
+                    let later = completer.map(|c| -> super::auth_serve::Answer {
+                        Box::new(move |a| c.complete(super::auth_serve::stored(&a)))
+                    });
+                    match server.serve(ask, later) {
+                        Some(a) => Ran::Now(super::auth_serve::stored(&a)),
+                        None => Ran::Later,
+                    }
+                })
+            }
+        },
+    )
+}
+
+/// An `auth.call` `in` its contract check refuses: a request view that declares no scheme never
+/// grants and is refused by name ([`svc::SCHEME_UNDECLARED_REFUSED`]); any other break is
+/// [`AUTH_IN_MALFORMED`]. `None` = it passes.
+fn auth_call_in_refused(i: &svc::AuthCallIn) -> Option<Answered> {
+    match svc::check_auth_call_in(i) {
+        Err(f) if f.field == "head_view.scheme" && f.rule == check::Rule::Missing => Some(
+            Answered::bare(Outcome::Refused, svc::SCHEME_UNDECLARED_REFUSED),
+        ),
+        Err(_) => Some(Answered::bare(Outcome::Refused, AUTH_IN_MALFORMED)),
+        Ok(()) => None,
+    }
+}
+
+/// An outbound `auth.call`'s request, copied out of the caller's `in`: its head words, its field
+/// lines in order, and the body at the body point. `None` = a range the checks should have refused.
+///
+/// # Safety
+/// `i` passed `check_auth_call_in`; its ranges are the caller's, live for the call.
+unsafe fn outbound_ask(i: &svc::AuthCallIn, owner: u64) -> Option<super::auth_serve::AuthAsk> {
+    let r = &i.request;
+    // SAFETY: checked by `check_head_view` (no NULL with a count, at most `MAX_SPANS`).
+    let lines = unsafe { super::validate::lent(r.fields, r.fields_len) }?;
+    let fields = lines
+        .iter()
+        .map(|f| {
+            Some((
+                bytes_of(f.name, "auth_call.request.field.name")?,
+                bytes_of(f.value, "auth_call.request.field.value")?,
+            ))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let body_point = i.point == busbar_contract::abi::auth::POINT_HEAD_BODY;
+    Some(super::auth_serve::AuthAsk {
+        owner,
+        binding: i.auth.id,
+        unit: i.unit,
+        point: i.point,
+        conn: i.conn,
+        stream: i.stream,
+        method: bytes_of(r.method, "auth_call.request.method")?,
+        target: bytes_of(r.target, "auth_call.request.target")?,
+        authority: bytes_of(r.authority, "auth_call.request.authority")?,
+        query: if r.query.ptr.is_null() {
+            None
+        } else {
+            Some(bytes_of(r.query, "auth_call.request.query")?)
+        },
+        fields,
+        body: if body_point {
+            Some(blob_of(i.body, "auth_call.body")?)
+        } else {
+            None
+        },
     })
 }
 

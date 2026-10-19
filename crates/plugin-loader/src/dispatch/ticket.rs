@@ -48,16 +48,21 @@ pub(crate) trait WakeRoute: Send + Sync {
         None
     }
 
-    /// The host's I/O this route's instances are served from; `None` = none.
-    fn io(&self) -> Option<std::sync::Arc<dyn busbar_contract::io_host::IoHost>> {
+    /// The store this route's instances' ticketed service results are held in, whether or not
+    /// the route serves the kernel's services: the host auth handle (`auth.call`) answers from it
+    /// on a route that serves no other (a transport's). `None` = none.
+    fn service_store(&self) -> Option<std::sync::Arc<super::services::ServiceStore>> {
+        self.services().map(|s| s.store)
+    }
+
+    /// The outbound server this route's instances' `auth.call` on an outbound binding's ref is
+    /// served by; `None` = none armed.
+    fn outbound(&self) -> Option<std::sync::Arc<dyn super::auth_serve::OutboundServer>> {
         None
     }
 
-    /// The seal the host lent this route's dispatcher (Part 2 #54); `None` = none, and a reveal of
-    /// a `Secret` its instances' services would make is refused.
-    fn seal(
-        &self,
-    ) -> Option<std::sync::Arc<dyn busbar_contract::plugin::KernelSeal + Send + Sync>> {
+    /// The host's I/O this route's instances are served from; `None` = none.
+    fn io(&self) -> Option<std::sync::Arc<dyn busbar_contract::io_host::IoHost>> {
         None
     }
 

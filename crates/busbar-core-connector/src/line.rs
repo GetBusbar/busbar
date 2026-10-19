@@ -197,6 +197,7 @@ impl Line {
         &self,
         opening: Option<Opening>,
         head_words: HeadWords,
+        unit: busbar_contract::abi::host::service::UnitRef,
     ) -> Result<u64, (u64, Failure)> {
         let waker = self.fan_waker();
         let mut s = self.state.lock().expect("line");
@@ -210,6 +211,7 @@ impl Line {
             stream,
             opening,
             head_words,
+            unit,
             &mut Context::from_waker(&waker),
         )
         .map_err(|f| (stream, f))?;

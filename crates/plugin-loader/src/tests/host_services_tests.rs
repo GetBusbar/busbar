@@ -400,6 +400,11 @@ impl WakeRoute for Route {
             provider: self.provider.clone(),
         })
     }
+
+    /// The outbound server this dispatcher double is armed with: the loader's test double.
+    fn outbound(&self) -> Option<Arc<dyn crate::dispatch::auth_serve::OutboundServer>> {
+        Some(Arc::clone(outbound()) as Arc<dyn crate::dispatch::auth_serve::OutboundServer>)
+    }
 }
 
 struct Double {
@@ -2692,4 +2697,273 @@ fn an_auth_call_whose_view_declares_no_scheme_is_refused_by_name() {
         AUTH_HANDLE_NOT_SERVED,
         "a declared scheme passes"
     );
+}
+
+// ── the outbound half of the auth handle ─────────────────────────────────────────────────────
+
+use crate::dispatch::auth_serve::double::{armed as outbound, OUTBOUND, OUT_UNIT, REFUSING};
+use crate::dispatch::auth_serve::OUTBOUND_REFUSED;
+
+/// How many asks the server was handed for `owner`.
+fn asked(owner: u64) -> usize {
+    outbound()
+        .asks
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|a| a.owner == owner)
+        .count()
+}
+
+/// An outbound call's `in` over the caller's `buf` and `spans`, one plane line in its head.
+fn outbound_in(
+    auth: AuthRef,
+    seq: u32,
+    answer: &mut AuthAnswer,
+    buf: &mut [u8],
+    spans: &mut [FieldSpan],
+    line: &[busbar_contract::abi::mechanism::call::Field],
+) -> AuthCallIn {
+    let mut i = auth_call_in(auth, answer);
+    i.head = head(op::AUTH_CALL, TICKET, seq, size_of::<AuthCallIn>());
+    i.unit = OUT_UNIT;
+    i.request.fields = line.as_ptr();
+    i.request.fields_len = line.len();
+    (i.buf, i.cap) = (buf.as_mut_ptr(), buf.len());
+    (i.spans, i.spans_cap) = (spans.as_mut_ptr(), spans.len());
+    i
+}
+
+fn no_span() -> FieldSpan {
+    FieldSpan {
+        name: Span { offset: 0, len: 0 },
+        value: Span { offset: 0, len: 0 },
+        flags: 0,
+        _reserved: 0,
+    }
+}
+
+fn content_type() -> [busbar_contract::abi::mechanism::call::Field; 1] {
+    [busbar_contract::abi::mechanism::call::Field {
+        name: text("content-type"),
+        value: text("application/json"),
+    }]
+}
+
+/// RED (#65, #74; THE DESIGN §6 item 5): an OUTBOUND binding's ref minted for framer A and
+/// presented by framer B, one of an older generation, and one with a flipped mac bit are each
+/// REFUSED before the root's server is asked anything; A's own ref, as minted, is served.
+#[test]
+fn a_foreign_stale_or_forged_outbound_ref_is_refused_before_its_server_is_asked() {
+    let _ = outbound();
+    let (a, b) = (double(), double());
+    let r = mint_auth_ref(owner(&a), generation(), OUTBOUND).expect("minted");
+    let line = content_type();
+    let (mut buf, mut spans) = (vec![0_u8; 64], vec![no_span(); 4]);
+    let stale = mint_auth_ref(owner(&a), generation().wrapping_sub(1), OUTBOUND).expect("minted");
+    let forged = AuthRef {
+        mac: r.mac ^ (1 << 17),
+        ..r
+    };
+    for (who, presented, what) in [
+        (&b, r, "foreign"),
+        (&a, stale, "stale"),
+        (&a, forged, "forged"),
+    ] {
+        let mut slot = answer_slot();
+        let i = outbound_in(presented, 0, &mut slot, &mut buf, &mut spans, &line);
+        let (ret, o) = call_auth(who.ctx, &i);
+        assert_eq!(ret.outcome(), Outcome::Refused, "{what}");
+        assert_eq!(error(&o), REF_NOT_MINTED, "{what}");
+        assert_eq!(slot.flow, 0, "{what}: nothing answered");
+    }
+    assert_eq!(
+        asked(owner(&a)) + asked(owner(&b)),
+        0,
+        "the server was never asked"
+    );
+    let mut slot = answer_slot();
+    let i = outbound_in(r, 0, &mut slot, &mut buf, &mut spans, &line);
+    let (ret, _) = call_auth(a.ctx, &i);
+    assert_eq!(
+        ret.outcome(),
+        Outcome::Ready,
+        "the owner's own ref is served"
+    );
+    assert_eq!(asked(owner(&a)), 1);
+}
+
+/// THE OUTBOUND ANSWER: the server is handed the head the framer is about to encode (its words and
+/// its lines) and the unit it presents; the framer gets the auth's line, a field span over its
+/// bytes with the auth's flags, and the answer naming the unit and CONTINUE. Nothing else: no
+/// verdict, no credential of the caller's.
+#[test]
+fn the_owners_outbound_ref_is_served_the_auth_fields_and_the_unit() {
+    let _ = outbound();
+    let d = double();
+    let r = mint_auth_ref(owner(&d), generation(), OUTBOUND).expect("minted");
+    let line = content_type();
+    let (mut buf, mut spans) = (vec![0_u8; 64], vec![no_span(); 4]);
+    let mut slot = answer_slot();
+    let i = outbound_in(r, 0, &mut slot, &mut buf, &mut spans, &line);
+    let (ret, o) = call_auth(d.ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert_eq!((o.items, o.value), (1, 0));
+    let s = spans[0];
+    let at = |sp: Span| &buf[sp.offset as usize..(sp.offset + sp.len) as usize];
+    assert_eq!(at(s.name), b"authorization");
+    assert_eq!(at(s.value), b"Bearer sk-out");
+    assert_eq!(s.flags, busbar_contract::abi::auth::FIELD_SENSITIVE);
+    assert_eq!((slot.flow, slot.unit), (svc::FLOW_CONTINUE, OUT_UNIT));
+    let asks = outbound().asks.lock().unwrap();
+    let ask = asks
+        .iter()
+        .find(|a| a.owner == owner(&d))
+        .expect("the server was asked");
+    assert_eq!(
+        (ask.binding, ask.unit, ask.point),
+        (OUTBOUND, OUT_UNIT, POINT_HEAD)
+    );
+    assert_eq!(
+        (
+            ask.method.as_slice(),
+            ask.target.as_slice(),
+            ask.authority.as_slice()
+        ),
+        (&b"GET"[..], &b"/v1"[..], &b"a.example"[..])
+    );
+    assert_eq!(ask.query, None);
+    assert_eq!(
+        ask.fields,
+        vec![(b"content-type".to_vec(), b"application/json".to_vec())]
+    );
+    assert!(ask.body.is_none(), "no body at the head point");
+}
+
+/// An outbound binding whose auth refuses is REFUSED in the server's words; nothing is written.
+#[test]
+fn an_outbound_refusal_is_refused_in_the_servers_words() {
+    let _ = outbound();
+    let d = double();
+    let r = mint_auth_ref(owner(&d), generation(), REFUSING).expect("minted");
+    let line = content_type();
+    let (mut buf, mut spans) = (vec![0_u8; 64], vec![no_span(); 4]);
+    let mut slot = answer_slot();
+    let i = outbound_in(r, 0, &mut slot, &mut buf, &mut spans, &line);
+    let (ret, o) = call_auth(d.ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), OUTBOUND_REFUSED);
+    assert_eq!(slot.flow, 0, "no answer written");
+    assert!(buf.iter().all(|b| *b == 0));
+}
+
+/// THE SHORT-BUFFER RULE on an outbound answer: a buffer too small is FAILED with the full sizes
+/// and nothing written; the one re-call on the same handle reads the STORED answer (the auth is
+/// asked once).
+#[test]
+fn an_outbound_answer_short_once_is_read_again_on_the_same_handle() {
+    let _ = outbound();
+    let d = double();
+    let r = mint_auth_ref(owner(&d), generation(), OUTBOUND).expect("minted");
+    let line = content_type();
+    let (mut tiny, mut one) = (vec![0_u8; 4], vec![no_span(); 1]);
+    let mut slot = answer_slot();
+    let i = outbound_in(r, 3, &mut slot, &mut tiny, &mut one, &line);
+    let (ret, o) = call_auth(d.ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Failed);
+    assert_eq!(
+        (o.needed_bytes, o.needed_items),
+        (("authorization".len() + "Bearer sk-out".len()) as u64, 1)
+    );
+    assert!(tiny.iter().all(|b| *b == 0), "nothing written");
+    let (mut buf, mut spans) = (vec![0_u8; 64], vec![no_span(); 4]);
+    let i = outbound_in(r, 3, &mut slot, &mut buf, &mut spans, &line);
+    let (ret, o) = call_auth(d.ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert_eq!(o.items, 1);
+    assert_eq!(asked(owner(&d)), 1, "the auth was asked once");
+}
+
+/// A TRANSPORT'S ROUTE: it serves no kernel host service (no provider), only the auth handle from
+/// its service store.
+struct TransportRoute {
+    store: Arc<ServiceStore>,
+}
+
+impl WakeRoute for TransportRoute {
+    fn wake(&self, _: Ticket, _: Option<&'static InstanceWake>) {}
+
+    fn service_store(&self) -> Option<Arc<ServiceStore>> {
+        Some(Arc::clone(&self.store))
+    }
+}
+
+/// RED (the transport's route, THE DESIGN l.291: a transport reaches `io.*`, the clock and the host
+/// auth handle): an instance on a route that serves NO kernel host service has its outbound
+/// `auth.call` served all the same, from the route's store; any other service there is refused as
+/// before. Before, the slot read the route's whole services and answered every framer's call
+/// "no host services are bound".
+#[test]
+fn a_transports_outbound_auth_call_is_served_on_a_route_with_no_other_service() {
+    let _ = outbound();
+    let route: Arc<dyn WakeRoute> = Arc::new(TransportRoute {
+        store: Arc::default(),
+    });
+    let wake: &'static InstanceWake = Box::leak(Box::default());
+    assert!(wake.route.set(Arc::downgrade(&route)).is_ok());
+    let ctx = crate::dispatch::handle::mint(wake).expect("the host mints a handle");
+    let me = crate::dispatch::handle::instance_id(ctx).0;
+    let r = mint_auth_ref(me, generation(), OUTBOUND).expect("minted");
+    let line = content_type();
+    let (mut buf, mut spans) = (vec![0_u8; 64], vec![no_span(); 4]);
+    let mut slot = answer_slot();
+    let i = outbound_in(r, 0, &mut slot, &mut buf, &mut spans, &line);
+    let (ret, o) = call_auth(ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Ready, "{}", error(&o));
+    assert_eq!(slot.unit, OUT_UNIT);
+    // OWNER-SCOPED on that route too (#65, #74): another instance's ref is refused before the
+    // server is asked.
+    let other = double();
+    let theirs = mint_auth_ref(owner(&other), generation(), OUTBOUND).expect("minted");
+    let mut slot = answer_slot();
+    let i = outbound_in(theirs, 1, &mut slot, &mut buf, &mut spans, &line);
+    let (ret, o) = call_auth(ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), REF_NOT_MINTED);
+    // The route still serves no other service.
+    let mut reading = ClockReading {
+        size: 0,
+        _reserved: 0,
+        wall_ns: 0,
+        mono_ns: 0,
+    };
+    let mut out = blank();
+    let i = svc::ClockNowIn {
+        head: head(op::CLOCK_NOW, Ticket::NONE, 0, size_of::<svc::ClockNowIn>()),
+        reading: &mut reading,
+    };
+    let ret = HOST_SLOTS.clock_now.unwrap()(ctx, std::ptr::from_ref(&i).cast(), &mut out);
+    assert_ne!(
+        ret.outcome(),
+        Outcome::Ready,
+        "no kernel service on a transport's route"
+    );
+    drop(route);
+}
+
+/// ONE ALLOCATOR, TWO SPACES: a line's id never sets the top bit and is never `0`; a binding's
+/// always sets it; each id names its space. RED arm: no line id and binding id ever coincide.
+#[test]
+fn a_line_id_and_a_binding_id_are_drawn_from_two_spaces() {
+    use crate::dispatch::auth_handle::{next_ref_id, space_of, RefSpace};
+    let lines: Vec<u64> = (0..64).map(|_| next_ref_id(RefSpace::Line)).collect();
+    let bindings: Vec<u64> = (0..64).map(|_| next_ref_id(RefSpace::Binding)).collect();
+    assert!(lines.iter().all(|&i| i != 0 && i & (1 << 63) == 0));
+    assert!(bindings.iter().all(|&i| i & (1 << 63) != 0));
+    assert!(lines.iter().all(|i| !bindings.contains(i)));
+    assert!(lines.iter().all(|&i| space_of(i) == Some(RefSpace::Line)));
+    assert!(bindings
+        .iter()
+        .all(|&i| space_of(i) == Some(RefSpace::Binding)));
+    assert_eq!(space_of(0), None);
 }

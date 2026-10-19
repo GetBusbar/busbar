@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
+use busbar_contract::abi::host::service::UnitRef;
 use busbar_contract::abi::mechanism::call::{AbiStr, Field, Outcome, Span};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::transport::{check::check_final_status, StatusRow, CLOSE_NORMAL};
@@ -96,6 +97,12 @@ pub trait FramerDoor: Send + Sync {
     fn facts(&self) -> &DoorFacts;
     /// One crossing: the op, answered into its `out`.
     fn cross(&self, call: Call<'_>) -> Crossed;
+    /// THE ENTRY'S OWNER IDENTITY: the identity the host verifies the auth handles it presents
+    /// for (the instance table's), so a dial's binding handle is minted for this entry alone.
+    /// `0` = an entry the host mints no handle for (it is begun with no auth).
+    fn owner(&self) -> u64 {
+        0
+    }
     /// A new side of a carried connection: a ticket the entry's carrier ops are driven on inline
     /// (`crate::carrier`). `None` = the entry is no carrier the host can drive.
     fn side(&self) -> Option<Box<dyn crate::carrier::Side>> {
@@ -673,6 +680,8 @@ enum Ticketed<'a> {
         text: bool,
         /// The opening body's length on a dialled request's head emit: `Some` = known.
         body_len: Option<u64>,
+        /// The stream's request unit (`EmitIn::unit`); NONE where it carries none.
+        unit: UnitRef,
     },
 }
 
@@ -703,6 +712,7 @@ impl Ticketed<'_> {
                 end_of_frame,
                 text,
                 body_len,
+                unit,
                 ..
             } => Ticketed::Emit {
                 stream,
@@ -710,6 +720,7 @@ impl Ticketed<'_> {
                 end_of_frame,
                 text,
                 body_len,
+                unit,
             },
         }
     }
@@ -1032,6 +1043,29 @@ enum Again {
     Refuse(Option<u64>, u32, bool),
 }
 
+/// WHERE A DIAL'S BINDING COMES FROM: the composition root's, armed on the connector
+/// ([`crate::Connector::arm_bindings`]). It holds each member's binding and mints its handle for
+/// the entry that will present it; the connector names no auth and mints nothing.
+pub trait BindingRefs: Send + Sync {
+    /// The binding a dial by `caller` on `need` to the registration `member` begins with
+    /// ([`AuthBinding::points`], [`AuthBinding::auth`]), its handle minted for the entry whose
+    /// owner identity is `owner` ([`FramerDoor::owner`]) at the current generation; `None` = the
+    /// member's binding holds no auth (or there is none). The connection's pool keys on it, so a
+    /// line begun with one binding's handle is never lent to another's exchange.
+    fn binding(
+        &self,
+        owner: u64,
+        caller: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        member: &str,
+    ) -> Option<AuthBinding>;
+
+    /// The ref of the request unit `unit` (`OpenDesc::unit`) for the entry whose owner identity
+    /// is `owner`: what the dialled stream's emit names (`EmitIn::unit`). `None` = no unit, or
+    /// none the host holds a live attempt for.
+    fn unit_ref(&self, owner: u64, unit: u64) -> Option<UnitRef>;
+}
+
 impl Framing {
     /// `begin`: open a framing on `side` (`SIDE_*`) for `target`, over what the handshake
     /// established.
@@ -1090,7 +1124,7 @@ impl Framing {
     ///
     /// # Errors
     ///
-    /// The entry refused to frame the connection.
+    /// The entry refused to frame the connection, or the host refused the binding's handle.
     pub fn begin_ticketed(
         door: Arc<dyn FramerDoor>,
         side: u32,
@@ -1319,10 +1353,13 @@ impl Framing {
                 end_of_frame,
                 text,
                 body_len,
+                unit,
             } => {
                 let mut i: EmitIn = blank_in();
                 i.framing = self.token;
                 i.stream = *stream;
+                // The stream's request unit, for a framer that calls its binding's auth at emit.
+                i.unit = *unit;
                 if fresh {
                     i.bytes = bytes.as_ptr();
                     i.len = bytes.len();
@@ -1565,6 +1602,26 @@ impl Framing {
         text: bool,
         body_len: Option<u64>,
     ) -> Result<Yielded, Refused> {
+        self.emit_unit(stream, bytes, end_of_frame, text, body_len, UnitRef::NONE)
+    }
+
+    /// [`Framing::emit_opening`] naming the stream's request `unit` (`EmitIn::unit`): a dialled
+    /// stream's unit, minted by the host for this entry, which the framer presents on its
+    /// `auth.call` at emit so the host resolves the request's auth context from it (THE DESIGN
+    /// §6, "Auth points and guest lists", items 5 and 7).
+    ///
+    /// # Errors
+    ///
+    /// The framer refused them; `stream` is held.
+    pub fn emit_unit(
+        &mut self,
+        stream: u64,
+        bytes: &[u8],
+        end_of_frame: bool,
+        text: bool,
+        body_len: Option<u64>,
+        unit: UnitRef,
+    ) -> Result<Yielded, Refused> {
         self.idle(Some(stream))?;
         let op = Ticketed::Emit {
             stream,
@@ -1572,6 +1629,7 @@ impl Framing {
             end_of_frame,
             text,
             body_len,
+            unit,
         };
         let ticket = self.take_ticket()?;
         Ok(self

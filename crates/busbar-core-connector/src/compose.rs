@@ -123,6 +123,28 @@ pub struct Dial {
     /// The destination's sealed trust anchors (the transport pin, ARCHITECT 2026-10-03): the far end's key pin the
     /// handshake is held to and the client identity it presents; `None` = none sealed.
     pub anchors: Option<Arc<crate::tls::client::Sealed>>,
+    /// THE BINDING the dial's framing begins with (`BeginIn::auth`, `BeginIn::points`): the
+    /// member's auth handle, minted for the framer that presents it, and its auth points. The
+    /// framer calls that auth through the host auth handle at those points;
+    /// [`framer::AuthBinding::NONE`] = no auth.
+    pub binding: framer::AuthBinding,
+    /// THE OPENING EXCHANGE'S REQUEST UNIT, minted for the entry (`EmitIn::unit`): what the
+    /// framer presents on its `auth.call` at the opening's emit. NONE = no unit.
+    pub unit: busbar_contract::abi::host::service::UnitRef,
+}
+
+/// `stream`'s unit as the connection keeps it: none for [`UnitRef::NONE`].
+///
+/// [`UnitRef::NONE`]: busbar_contract::abi::host::service::UnitRef::NONE
+fn unit_on(
+    stream: u64,
+    unit: busbar_contract::abi::host::service::UnitRef,
+) -> std::collections::HashMap<u64, busbar_contract::abi::host::service::UnitRef> {
+    let mut units = std::collections::HashMap::new();
+    if !unit.is_none() {
+        units.insert(stream, unit);
+    }
+    units
 }
 
 /// A message's head words, method and target; empty = none.
@@ -202,6 +224,11 @@ pub struct Connection {
     inbox: VecDeque<Got>,
     /// The first message, sent once the framing begins.
     opening: Option<Opening>,
+    /// The dial's binding, handed to the framing's begin (`SIDE_DIAL` only).
+    binding: framer::AuthBinding,
+    /// Each dialled stream's request unit (`EmitIn::unit`), by stream: the opening's and each
+    /// exchange opened on the connection since.
+    units: std::collections::HashMap<u64, busbar_contract::abi::host::service::UnitRef>,
     /// Its head words.
     head_words: HeadWords,
     /// Writes held back, in order: those the caller made before the framing began, and those on a
@@ -706,6 +733,8 @@ impl Connection {
             unflushed: false,
             inbox: VecDeque::new(),
             opening: dial.opening,
+            binding: dial.binding,
+            units: unit_on(EXCHANGE_STREAM, dial.unit),
             head_words: dial.head_words,
             early: Vec::new(),
             flushed: 0,
@@ -796,6 +825,8 @@ impl Connection {
             unflushed: false,
             inbox: VecDeque::new(),
             opening: dial.opening,
+            binding: dial.binding,
+            units: unit_on(EXCHANGE_STREAM, dial.unit),
             head_words: dial.head_words,
             early: Vec::new(),
             flushed: 0,
@@ -913,6 +944,8 @@ impl Connection {
             unflushed: false,
             inbox: VecDeque::new(),
             opening: None,
+            binding: framer::AuthBinding::NONE,
+            units: std::collections::HashMap::new(),
             head_words: HeadWords::default(),
             early: Vec::new(),
             flushed: 0,
@@ -1020,6 +1053,7 @@ impl Connection {
         stream: u64,
         opening: Option<Opening>,
         head_words: HeadWords,
+        unit: busbar_contract::abi::host::service::UnitRef,
         cx: &mut Context<'_>,
     ) -> Result<(), Failure> {
         match &self.phase {
@@ -1027,6 +1061,8 @@ impl Connection {
             Phase::Ended => return Err(Failure::Closed),
             _ => {}
         }
+        // The exchange's request unit, named by every emit on its stream.
+        self.units.extend(unit_on(stream, unit));
         let body_len = self.opening_body_len(opening.as_ref());
         let Some(message) = self.encode_opening(opening, head_words)? else {
             return Ok(());
@@ -1113,8 +1149,13 @@ impl Connection {
             }
         }
         if let Some(framing) = self.framing.as_mut() {
+            let unit = self
+                .units
+                .get(&stream)
+                .copied()
+                .unwrap_or(busbar_contract::abi::host::service::UnitRef::NONE);
             let y = framing
-                .emit_opening(stream, bytes, end, text, body_len)
+                .emit_unit(stream, bytes, end, text, body_len, unit)
                 .map_err(failed)?;
             return self.absorb(y);
         }
@@ -1710,19 +1751,27 @@ impl Connection {
     /// early writes.
     fn begin(&mut self) -> Result<(), Failure> {
         // A dial hands its opening head fields to the framing's begin too, for a wire that
-        // carries them on the connection's opening (ARCHITECT Q-L5B-WS-DIAL).
+        // carries them on the connection's opening (ARCHITECT Q-L5B-WS-DIAL): the plane's own
+        // lines, never an auth line. The binding's auth handle rides beside them, and the framer
+        // calls that auth itself at its points (THE DESIGN §6, "Auth points and guest lists").
         let opening: &[(String, Vec<u8>)] = match &self.opening {
             Some((fields, _)) if self.side == SIDE_DIAL => fields,
             _ => &[],
         };
+        let binding = if self.side == SIDE_DIAL {
+            self.binding
+        } else {
+            framer::AuthBinding::NONE
+        };
         // A carrier carried as itself has no framing to begin: it is open.
         if let Some(door) = self.door.as_ref() {
-            let (framing, y) = Framing::begin_ticketed(
+            let (framing, y) = Framing::begin_bound(
                 Arc::clone(door),
                 self.side,
                 &self.target,
                 &self.established,
                 opening,
+                &binding,
             )
             .map_err(|e| Failure::Refused(e.to_string()))?;
             let parked = framing.parked();

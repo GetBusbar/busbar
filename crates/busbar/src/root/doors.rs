@@ -47,6 +47,7 @@ pub fn dispatcher() -> &'static Dispatcher {
     ONE.get_or_init(|| {
         let d = Dispatcher::new(DispatchConfig::default());
         let _ = d.lend_seal(busbar_kernel::seal::lend());
+        crate::root::outbound_auth::arm_dispatcher(&d);
         Arc::new(d)
     })
 }
@@ -228,6 +229,12 @@ fn go_inline<I: InFrame, O: OutFrame>(
 impl FramerDoor for Dispatched {
     fn facts(&self) -> &DoorFacts {
         &self.facts
+    }
+
+    /// The instance's identity on the host's table: the owner every auth handle it presents is
+    /// minted and verified for.
+    fn owner(&self) -> u64 {
+        self.plugin.instance().0
     }
 
     fn side(&self) -> Option<Box<dyn Side>> {
