@@ -190,9 +190,8 @@ fn a_string_counted_with_a_null_pointer_is_fault() {
 use crate::abi::host::conn::connector::{Need, DIRECTION_INBOUND, KEEP_NAMED};
 use crate::abi::mechanism::call::Blob;
 use crate::abi::mechanism::door::{
-    MarkWord, Rewrite, Section, MARK_BLOCKS, MARK_CATALOG, MARK_EPHEMERAL, MARK_ONE_INSTANCE,
-    MARK_WORD_CARRIER, MARK_WORD_HOOK, REWRITE_ALIAS, REWRITE_KEY, REWRITE_SUGAR, SECTION_CONSUMED,
-    SECTION_DECLARING,
+    MarkWord, Rewrite, Section, MARK_CATALOG, MARK_EPHEMERAL, MARK_ONE_INSTANCE, MARK_WORD_CARRIER,
+    MARK_WORD_HOOK, REWRITE_ALIAS, REWRITE_KEY, REWRITE_SUGAR, SECTION_CONSUMED, SECTION_DECLARING,
 };
 use crate::abi::sdk::door::{abi_str, statement};
 
@@ -240,7 +239,7 @@ fn red_the_retired_blocking_mark_refuses_the_load() {
 
 #[test]
 fn the_flag_marks_are_single_distinct_bits_and_an_unknown_bit_is_fault() {
-    let m = [MARK_ONE_INSTANCE, MARK_EPHEMERAL, MARK_CATALOG, MARK_BLOCKS];
+    let m = [MARK_ONE_INSTANCE, MARK_EPHEMERAL, MARK_CATALOG];
     let mut seen = 0u64;
     for b in m {
         assert_eq!(b.count_ones(), 1);

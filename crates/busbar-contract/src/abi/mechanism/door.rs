@@ -160,10 +160,9 @@ pub const MARK_ONE_INSTANCE: u64 = 1;
 pub const MARK_EPHEMERAL: u64 = 1 << 1;
 /// [`Statement::marks`]: the plugin answers the kind's catalog (what the build offers).
 pub const MARK_CATALOG: u64 = 1 << 2;
-/// [`Statement::marks`]: a call may block on slow I/O and is never run inline on a worker.
-pub const MARK_BLOCKS: u64 = 1 << 3;
-/// Every [`Statement::marks`] bit; any other bit refuses the load.
-pub const MARKS_KNOWN: u64 = MARK_ONE_INSTANCE | MARK_EPHEMERAL | MARK_CATALOG | MARK_BLOCKS;
+/// Every [`Statement::marks`] bit; any other bit refuses the load (bit `1 << 3` is retired).
+/// No kind may claim to block a worker, so a Statement stating the retired bit is refused.
+pub const MARKS_KNOWN: u64 = MARK_ONE_INSTANCE | MARK_EPHEMERAL | MARK_CATALOG;
 
 /// [`MarkWord::class`]: a hook word (a strategy word such as a ranking order). EXCLUSIVE: two
 /// plugins claiming the same word refuse boot.

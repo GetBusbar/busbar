@@ -58,8 +58,7 @@ extern "C" {
 #define BB_MECH_MARK_ONE_INSTANCE UINT64_C(1) /* [`Statement::marks`]: at most one instance of the plugin may be configured. */
 #define BB_MECH_MARK_EPHEMERAL UINT64_C(2) /* [`Statement::marks`]: what the plugin holds is lost on restart (the memory store). */
 #define BB_MECH_MARK_CATALOG UINT64_C(4) /* [`Statement::marks`]: the plugin answers the kind's catalog (what the build offers). */
-#define BB_MECH_MARK_BLOCKS UINT64_C(8) /* [`Statement::marks`]: a call may block on slow I/O and is never run inline on a worker. */
-#define BB_MECH_MARKS_KNOWN UINT64_C(15) /* Every [`Statement::marks`] bit; any other bit refuses the load. */
+#define BB_MECH_MARKS_KNOWN UINT64_C(7) /* Every [`Statement::marks`] bit; any other bit refuses the load (bit `1 << 3` is retired). */
 #define BB_MECH_MARK_WORD_HOOK UINT32_C(1) /* [`MarkWord::class`]: a hook word (a strategy word such as a ranking order). EXCLUSIVE: two */
 #define BB_MECH_MARK_WORD_CARRIER UINT32_C(2) /* [`MarkWord::class`]: a carrier class the plugin consumes (an inbound credential carrier an auth */
 #define BB_MECH_MARK_WORD_ISSUED_ID_PREFIX UINT32_C(3) /* [`MarkWord::class`]: the literal prefix of the public id the host issues for the row's */
