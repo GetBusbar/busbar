@@ -495,11 +495,12 @@ impl Gate for DepWallGate {
         // Planted in an IN-TREE plane. The source rule reads the source of an in-tree root only
         // (`measure`: an external root carries no directory), and `busbar-plane-decisions` left
         // the tree for its own repository at a pin, so a plant there landed in a crate this rule
-        // does not read and the case went green. `busbar-plane-streaming` is a
-        // `[gate.plugin_kinds].plane` row that lives here, the same predicate's live subject.
+        // does not read and the case went green (`busbar-plane-streaming` has left the same way).
+        // `busbar-plane-llm` is the `[gate.plugin_kinds].plane` row that still lives here, the
+        // same predicate's live subject. The plant is an overlay; no llm source is touched.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-plane-streaming/src/planted_socket.rs",
+            "crates/busbar-plane-llm/src/planted_socket.rs",
             "pub fn dial() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
         );
         report.push(prove_red(
@@ -508,7 +509,7 @@ impl Gate for DepWallGate {
             "a plugin that names a socket path it was never pinned for is a new offender",
             &[ROW_NEW],
             ov,
-            &["new-offender", "busbar-plane-streaming", "std::net"],
+            &["new-offender", "busbar-plane-llm", "std::net"],
         ));
         // A DRAINED PIN: a pin for an offence the tree does not have must be struck.
         let mut ov = Overlay::new();
