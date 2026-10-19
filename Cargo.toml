@@ -107,7 +107,7 @@ busbar-auth-webhook-signature = { git = "https://github.com/GetBusbar/busbar-aut
 # axis (feature `hooks-ranking`). The root alone takes it: the kernel's test build links its in-crate
 # R-FIX3 double (`busbar_kernel::test_support::ranking_double`) instead, and the root's
 # `linked_hook_ranking` tests prove the double states what this door states.
-busbar-hook-ranking = { git = "https://github.com/GetBusbar/busbar-hook-ranking", rev = "dfebc6d7ba6187fdc55299fef3dd2da0fc4a8d72" }
+busbar-hook-ranking = { git = "https://github.com/GetBusbar/busbar-hook-ranking", rev = "a1eddb3b87f7879b488d64d6ae3e2407b48b71d1" }
 # THE STDIO TRANSPORT: the carrier of a spawned program's pipes (kind: transport), pulled at a pinned
 # rev; the logic crate the root links on the transport-door axis. Its dropped-in cdylib twin
 # (`busbar-transport-stdio-plugin`) and its gates live in that repo's plugin CI.

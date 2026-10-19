@@ -640,7 +640,7 @@ dependencies = [
 [[package]]
 name = "busbar-hook-ranking"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-hook-ranking?rev=dfebc6d7ba6187fdc55299fef3dd2da0fc4a8d72#dfebc6d7ba6187fdc55299fef3dd2da0fc4a8d72"
+source = "git+https://github.com/GetBusbar/busbar-hook-ranking?rev=a1eddb3b87f7879b488d64d6ae3e2407b48b71d1#a1eddb3b87f7879b488d64d6ae3e2407b48b71d1"
 dependencies = [
  "busbar-contract",
  "serde_json",
