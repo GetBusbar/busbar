@@ -5229,6 +5229,134 @@ pub fn selftest<'a>(
     ));
 }
 
+/// Q128 xtask part 10 (kind-isolation matrix): the HIGH/MEDIUM findings this module fixes, each
+/// shown failing on the code before the fix.
+#[cfg(test)]
+mod q128_tests {
+    use super::*;
+
+    fn core_kernel(name: &str) -> CrateInfo {
+        CrateInfo {
+            dir: format!("crates/{name}"),
+            manifest: format!("crates/{name}/Cargo.toml"),
+            name: name.to_string(),
+            kind: Some("kernel"),
+            family: Family::Neutral,
+            remainder: Vec::new(),
+            instance: None,
+            declared_keys: Vec::new(),
+            deps: Vec::new(),
+            dev_deps: Vec::new(),
+            ambiguous: Vec::new(),
+            pinned: None,
+        }
+    }
+
+    /// The census these cases judge: every armed crate, plus `busbar-kernel` and `extra`.
+    fn census_with(extra: &[&str]) -> Vec<CrateInfo> {
+        LAW0_ENFORCED_NEUTRAL_CRATES
+            .iter()
+            .chain(["busbar-kernel"].iter())
+            .chain(extra.iter())
+            .map(|n| core_kernel(*n))
+            .collect()
+    }
+
+    fn reg_of(rows: &[(&str, &str, usize)]) -> super::super::KindRegistry {
+        let mut reg = super::super::KindRegistry::default();
+        for (krate, axis, count) in rows {
+            reg.law0.push(super::super::Law0Ceiling {
+                krate: (*krate).to_string(),
+                axis: (*axis).to_string(),
+                count: *count,
+                cite: "planted".to_string(),
+            });
+        }
+        reg
+    }
+
+    fn counts_of(cells: &[(&str, &str, usize)]) -> Law0Counts {
+        cells
+            .iter()
+            .map(|(k, a, n)| (((*k).to_string(), (*a).to_string()), *n))
+            .collect()
+    }
+
+    /// F2 (MEDIUM): an ARMED crate is pinned at 0 on every axis, and the pin lived only in the
+    /// report-only matrix row. A `[[law0]]` row written for an armed crate at its own count made
+    /// the gating Law 0 row read the hits as "at ceiling" and pass.
+    #[test]
+    fn an_armed_crate_under_a_ledger_row_is_red_on_the_law0_row() {
+        let armed = LAW0_ENFORCED_NEUTRAL_CRATES[0];
+        let crates = census_with(&[]);
+        let rows = [(armed, "plane", 2), ("busbar-kernel", "plane", 3)];
+        let row = rule_law0(&crates, &reg_of(&rows), Some(&counts_of(&rows)));
+        assert_eq!(row.status, crate::ledger::Status::Fail, "{}", row.detail);
+        assert!(
+            row.detail
+                .contains(&format!("law0-armed\t{armed} \u{d7} plane")),
+            "{}",
+            row.detail
+        );
+    }
+
+    /// F2 (MEDIUM): a core-neutral crate drained to 0 on every axis and left off the armed list
+    /// was a `law0-unarmed` finding on the report-only matrix row alone, so nothing gated it.
+    #[test]
+    fn a_drained_crate_left_unarmed_is_red_on_the_law0_row() {
+        let crates = census_with(&["busbar-kernel-drained"]);
+        let rows = [("busbar-kernel", "plane", 3)];
+        let row = rule_law0(&crates, &reg_of(&rows), Some(&counts_of(&rows)));
+        assert_eq!(row.status, crate::ledger::Status::Fail, "{}", row.detail);
+        assert!(
+            row.detail.contains("law0-unarmed\tbusbar-kernel-drained"),
+            "{}",
+            row.detail
+        );
+    }
+
+    fn mcp_plan() -> Plan {
+        Plan {
+            needles: vec![Resolved {
+                kind: "plane",
+                word: "mcp".to_string(),
+                parts: vec!["mcp".to_string()],
+            }],
+            key: 0,
+        }
+    }
+
+    fn hits_in(text: &str) -> usize {
+        scan_fresh(
+            &mcp_plan(),
+            "crates/busbar-kernel",
+            "crates/busbar-kernel/src/a.rs",
+            text,
+        )
+        .iter()
+        .map(|h| h.by_segments.max(h.by_windows).max(h.by_decoded))
+        .sum()
+    }
+
+    /// F4 (MEDIUM): a name the compiler reads whole, written across two physical lines: a string
+    /// continuation (`"m\` + `cp"` is `"mcp"`) and a multi-line `concat!`. Every reading worked one
+    /// line at a time, so neither counted.
+    #[test]
+    fn a_name_split_across_lines_is_still_counted() {
+        assert_eq!(hits_in("pub const P: &str = \"mcp\";\n"), 1, "the control");
+        assert_eq!(
+            hits_in("pub const P: &str = \"m\\\n    cp\";\n"),
+            1,
+            "a string continuation"
+        );
+        assert_eq!(
+            hits_in("pub const P: &str = concat!(\n    \"m\",\n    \"cp\",\n);\n"),
+            1,
+            "a multi-line concat!"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
