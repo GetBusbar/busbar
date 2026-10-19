@@ -1038,7 +1038,8 @@ fn view() -> HeadView {
         query: none(),
         fields: core::ptr::null(),
         fields_len: 0,
-        scheme: none(),
+        scheme: SCHEME_PLAIN,
+        _scheme_reserved: [0; 7],
     }
 }
 
@@ -1275,21 +1276,18 @@ fn red_unit_hand_in_in_refuses_each_break() {
         in_rule(check_unit_hand_in_in(&i)),
         fault(Rule::NullWithCount, "head_view.query")
     );
-    // RED: the scheme is text by the same rule, a count never behind NULL.
+    // RED: the scheme is a code; one past the last, or a padding byte, is unknown.
     let mut i = ok;
-    i.request.scheme.len = 5;
+    i.request.scheme = SCHEME_SECURE + 1;
     assert_eq!(
         in_rule(check_unit_hand_in_in(&i)),
-        fault(Rule::NullWithCount, "head_view.scheme")
+        fault(Rule::UnknownCode, "head_view.scheme")
     );
     let mut i = ok;
-    i.request.scheme = AbiStr {
-        ptr: b"https".as_ptr(),
-        len: 5,
-    };
-    assert!(
-        check_unit_hand_in_in(&i).is_ok(),
-        "a scheme the wire states"
+    i.request._scheme_reserved[6] = 1;
+    assert_eq!(
+        in_rule(check_unit_hand_in_in(&i)),
+        fault(Rule::UnknownCode, "head_view._scheme_reserved")
     );
     let mut i = ok;
     i.answer = core::ptr::null_mut();
@@ -1346,6 +1344,57 @@ fn red_unit_refuse_in_refuses_each_break() {
 
 /// RED: the caller's check of an `auth.call` answer: the flow, the unit, the answer's exact size,
 /// every span inside the bytes written with a present name and known flags, counts within caps.
+/// RED (the upstream's scheme, rule 1: a zero never grants): an `auth.call` off the peer point
+/// whose view declares no scheme is refused, a wholly zeroed view first among them, and is never
+/// read as plain; at the peer point there is no request and no scheme to declare.
+#[test]
+fn red_an_auth_call_whose_view_declares_no_scheme_is_refused() {
+    use crate::abi::auth::{POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
+    let (mut buf, mut spans, mut a) = ([0_u8; 8], [no_span(); 1], blank_answer());
+    let ok = auth_call_in(POINT_HEAD, &mut buf, &mut spans, &mut a);
+    assert!(check_auth_call_in(&ok).is_ok(), "a declared scheme");
+    for scheme in [SCHEME_PLAIN, SCHEME_SECURE] {
+        let mut i = ok;
+        i.request.scheme = scheme;
+        assert!(check_auth_call_in(&i).is_ok(), "scheme {scheme}");
+    }
+    let mut zeroed = ok;
+    // Every byte of the view zero, as a transport that never set it hands it.
+    zeroed.request = HeadView {
+        method: none(),
+        target: none(),
+        authority: none(),
+        query: none(),
+        fields: core::ptr::null(),
+        fields_len: 0,
+        scheme: 0,
+        _scheme_reserved: [0; 7],
+    };
+    assert_eq!(zeroed.request.scheme, SCHEME_UNDECLARED);
+    assert_eq!(
+        in_rule(check_auth_call_in(&zeroed)),
+        fault(Rule::Missing, "head_view.scheme"),
+        "a zeroed view is refused, never read as plain"
+    );
+    let mut undeclared = ok;
+    undeclared.request.scheme = SCHEME_UNDECLARED;
+    for point in [POINT_HEAD, POINT_HEAD_BODY] {
+        undeclared.point = point;
+        undeclared.body = empty_blob();
+        assert_eq!(
+            in_rule(check_auth_call_in(&undeclared)),
+            fault(Rule::Missing, "head_view.scheme"),
+            "{point}"
+        );
+    }
+    let mut peer = zeroed;
+    peer.point = POINT_PEER;
+    assert!(
+        check_auth_call_in(&peer).is_ok(),
+        "the peer point has no request"
+    );
+}
+
 #[test]
 fn red_auth_call_answer_refuses_each_break() {
     use crate::abi::auth::{FIELD_QUERY, FIELD_SENSITIVE, POINT_HEAD, POINT_PEER};

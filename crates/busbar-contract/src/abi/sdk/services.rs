@@ -239,8 +239,9 @@ pub struct HeadViewArgs<'a> {
     pub query: Option<&'a str>,
     /// The head's field lines, in order, as `(name, value)`.
     pub fields: &'a [(&'a str, &'a [u8])],
-    /// The scheme the request carries on its wire; `None` = the wire states none.
-    pub scheme: Option<&'a str>,
+    /// The upstream's scheme as the host declared it for the stream (`SCHEME_*`); the default,
+    /// `SCHEME_UNDECLARED`, is refused off the peer point.
+    pub scheme: u8,
 }
 
 /// Where a name the auth handle answers for stripping sits.
@@ -317,7 +318,8 @@ fn view(args: &HeadViewArgs<'_>, fields: &[Field]) -> HeadView {
         query: args.query.map_or(NO_TEXT, text),
         fields: fields.as_ptr(),
         fields_len: fields.len(),
-        scheme: args.scheme.map_or(NO_TEXT, text),
+        scheme: args.scheme,
+        _scheme_reserved: [0; 7],
     }
 }
 

@@ -2005,7 +2005,16 @@ fn compute_layout() -> String {
     record!(
         s,
         hsvc::HeadView,
-        [method, target, authority, query, fields, fields_len, scheme]
+        [
+            method,
+            target,
+            authority,
+            query,
+            fields,
+            fields_len,
+            scheme,
+            _scheme_reserved
+        ]
     );
     record!(s, hsvc::AuthAnswer, [size, flow, unit]);
     record!(

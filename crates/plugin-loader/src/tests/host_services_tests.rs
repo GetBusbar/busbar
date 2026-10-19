@@ -2355,10 +2355,8 @@ fn get_view() -> HeadView {
         },
         fields: std::ptr::null(),
         fields_len: 0,
-        scheme: AbiStr {
-            ptr: std::ptr::null(),
-            len: 0,
-        },
+        scheme: busbar_contract::abi::host::service::SCHEME_SECURE,
+        _scheme_reserved: [0; 7],
     }
 }
 
@@ -2613,4 +2611,30 @@ fn a_unit_ref_verifies_only_for_its_own_request() {
     );
     assert!(mint_unit_ref(secret, 7, 40, 2, 0).is_none());
     assert!(mint_auth_ref(40, 7, 0).is_none());
+}
+
+/// RED (the upstream's scheme, rule 1: a zero never grants): an `auth.call` whose request view
+/// declares no scheme (a zeroed view's code) is REFUSED with its declared refusal, before the
+/// auth would run, and never read as plain; the same call with the scheme declared passes.
+#[test]
+fn an_auth_call_whose_view_declares_no_scheme_is_refused_by_name() {
+    use busbar_contract::abi::host::service::{
+        SCHEME_PLAIN, SCHEME_UNDECLARED, SCHEME_UNDECLARED_REFUSED,
+    };
+    let d = double();
+    let r = mint_auth_ref(owner(&d), generation(), 5).expect("minted");
+    let mut slot = answer_slot();
+    let mut i = auth_call_in(r, &mut slot);
+    i.request.scheme = SCHEME_UNDECLARED;
+    let (ret, o) = call_auth(d.ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), SCHEME_UNDECLARED_REFUSED);
+    i.request.scheme = SCHEME_PLAIN;
+    let (ret, o) = call_auth(d.ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(
+        error(&o),
+        AUTH_HANDLE_NOT_SERVED,
+        "a declared scheme passes"
+    );
 }
