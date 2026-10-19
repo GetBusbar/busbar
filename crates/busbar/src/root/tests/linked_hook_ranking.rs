@@ -176,8 +176,8 @@ fn cases() -> Vec<(&'static str, Vec<Row>, RoutingDecision)> {
         ("fastest", Vec::new(), RoutingDecision::Abstain),
         ("least_busy", Vec::new(), RoutingDecision::Abstain),
         ("usage", Vec::new(), RoutingDecision::Abstain),
-        // An infinity is a key like any other, ordered as 1.5.5 ordered it (v1.5.5
-        // `hooks-ranking/src/lib.rs:77-80`, `:99-102`): never dropped as absent.
+        // An infinity is a key like any other, ordered as 1.5.5 ordered it (the v1.5.5 ranking
+        // natives' `lib.rs:77-80`, `:99-102`): never dropped as absent.
         (
             "cheapest",
             vec![

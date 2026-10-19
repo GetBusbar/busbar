@@ -1,5 +1,5 @@
-//! Tests for the ranking double's rules: it ranks as 1.5.5 ranked (v1.5.5
-//! `crates/hooks-ranking/src/lib.rs:64-106`; hook behaviour is frozen at 1.5.5), including the keys
+//! Tests for the ranking double's rules: it ranks as 1.5.5 ranked (the v1.5.5 ranking natives'
+//! `lib.rs:64-106`; hook behaviour is frozen at 1.5.5), including the keys
 //! 1.5.5 never filtered: an infinity is ordered like any key and signed zeros tie; a `NaN` sorts
 //! after every number (the shipped door's total order, the coordinator's ruling of 2026-10-18). A
 //! direct child module, so `super::` reaches [`rank`](super::rank).
