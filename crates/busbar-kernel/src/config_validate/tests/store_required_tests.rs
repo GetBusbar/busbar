@@ -121,7 +121,10 @@ fn the_store_double_answers_to_the_migrated_store_module() {
     );
     let refusal = crate::config::store_required();
     assert!(
-        refusal.contains(&format!("store: {{module: {}}}", crate::config::migrated_store_module())),
+        refusal.contains(&format!(
+            "store: {{module: {}}}",
+            crate::config::migrated_store_module()
+        )),
         "{refusal}"
     );
 }

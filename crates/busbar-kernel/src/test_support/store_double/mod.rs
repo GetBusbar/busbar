@@ -26,7 +26,6 @@
 //! EPHEMERAL: every counter, key and credential is lost with the handle. Poison-recovering locks
 //! (the governance surface must never panic on a request).
 
-
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
     PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStore as Store,
