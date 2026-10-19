@@ -259,6 +259,7 @@ fn listening_plane(target_from: &str) -> Candidate {
         sugar: Vec::new(),
         verbs: vec!["agents".into()],
         schemes: Vec::new(),
+        secure: Vec::new(),
         needs: vec![ReadNeed {
             direction: DIRECTION_INBOUND,
             egress_class: 0,

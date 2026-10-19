@@ -34,6 +34,8 @@
 //! trust_from       str
 //! answers          list of str
 //! claims           list of str
+//! claim_flags      list of u32  OPTIONAL: present only on a transport's Statement whose claim
+//!                               rows state a non-zero `flags`; claim i's row's flags
 //!
 //! str   = u32 length, then the bytes
 //! list  = u32 count, then each item
@@ -43,6 +45,14 @@
 //! The fields follow [`Statement`]'s declaration order (`size` is not rendered: it is the layout's,
 //! not the plugin's). A field appended to the Statement is appended here in the same commit, and the
 //! golden (`abi/tests/rendering_tests.rs`) is regenerated with it.
+//!
+//! THE ONE KIND FACT RENDERED: a transport's claim-row `flags` (`abi::transport::CLAIM_SECURE`,
+//! BUSBAR-1.6.0.md #50), so a reader that must not open the plugin judges its claims as the same
+//! plugin compiled in is judged (Part 2 #2). The encoding is canonical: absent is the ONLY spelling of
+//! "every flag zero", so a rendering signed before the field existed is byte-identical to its door's
+//! rendering today, and every Statement has exactly one signed byte form. The reader refuses a
+//! present list that is all zero, on another kind, of another count, or stating any bit but
+//! `CLAIM_SECURE`.
 
 use super::call::{AbiStr, Blob};
 use super::door::{MarkWord, MetricFamily, Rewrite, Section, Statement};
@@ -310,6 +320,9 @@ pub struct Read {
     pub answers: Vec<String>,
     /// The URL schemes it claims.
     pub claims: Vec<String>,
+    /// Each claim's row `flags` (`abi::transport::CLAIM_SECURE`), parallel to `claims`; every one
+    /// `0` when the rendering states none.
+    pub claim_flags: Vec<u32>,
 }
 
 /// Why a rendering could not be read back: the byte offset and what was expected there.
@@ -452,6 +465,7 @@ pub fn read(bytes: &[u8]) -> Result<Read, Unreadable> {
     let trust_from = i.str("trust_from")?;
     let answers = i.strs("answers")?;
     let claims = i.strs("claims")?;
+    let claim_flags = vec![0; claims.len()];
     if i.at != bytes.len() {
         return Err(Unreadable {
             at: i.at,
@@ -480,6 +494,7 @@ pub fn read(bytes: &[u8]) -> Result<Read, Unreadable> {
         trust_from,
         answers,
         claims,
+        claim_flags,
     })
 }
 
