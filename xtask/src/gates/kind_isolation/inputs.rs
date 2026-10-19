@@ -643,7 +643,11 @@ fn build_script_reach(
                         resolve(&me.dir, &joined),
                     )
                 }
-                Some(p) => (p.to_string(), resolve(&here, p)),
+                // A macro reads at compile time, against the file that wrote it; a call reads at
+                // run time, and cargo runs a build script in its PACKAGE ROOT, so `read_dir("..")`
+                // in `tools/gen.rs` walks the crate's parent, not the crate.
+                Some(p) if marker.ends_with('!') => (p.to_string(), resolve(&here, p)),
+                Some(p) => (p.to_string(), resolve(&me.dir, p)),
             };
             let climbs = shown.starts_with('/') || !inside(&me.dir, &target);
             if !climbs {
