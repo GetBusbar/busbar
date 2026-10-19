@@ -2067,6 +2067,146 @@ fn a_declared_chain_the_host_cannot_keep_refuses_the_admit() {
     }
 }
 
+/// A plane store whose read of the operator's kept trust rulings parks, once armed, until the test releases it: the
+/// store-plugin crossing an admit makes (audit K4 #6).
+struct ParkingStore {
+    armed: std::sync::atomic::AtomicBool,
+    entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+}
+
+impl crate::plane::store::PlaneStore for ParkingStore {
+    fn upsert_plane_record(
+        &self,
+        _: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Ok(())
+    }
+    fn get_plane_record(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    fn append_plane_record(
+        &self,
+        _: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_plane_records(
+        &self,
+        kind: &str,
+        _: &busbar_contract::records::PlaneSelector,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
+        if kind != crate::plane::store::KIND_DEMOTION && self.armed.load(Ordering::SeqCst) {
+            if let Some(entered) = self.entered.lock().unwrap().take() {
+                entered.send(()).unwrap();
+            }
+            if let Some(release) = self.release.lock().unwrap().take() {
+                let _ = release.recv();
+            }
+        }
+        Ok(Vec::new())
+    }
+    fn list_plane_record_parents(
+        &self,
+        _: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn purge_plane_records_before(
+        &self,
+        _: &str,
+        _: u64,
+    ) -> busbar_contract::records::RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn delete_plane_record(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Ok(())
+    }
+    fn redeem_plane_token(
+        &self,
+        _: &str,
+        _: &str,
+        _: u64,
+        _: u64,
+    ) -> busbar_contract::records::RecordStoreResult<bool> {
+        Ok(false)
+    }
+    fn plane_token_live(
+        &self,
+        _: &str,
+        _: &str,
+        _: u64,
+        _: u64,
+    ) -> busbar_contract::records::RecordStoreResult<bool> {
+        Ok(false)
+    }
+}
+
+/// NO PLUGIN CODE RUNS UNDER A HOST LOCK (§11.13 M1; audit K4 #6): while an instance's first admit
+/// is parked in the store plugin reading the operator's kept trust rulings, a caller-scoped host
+/// service of another instance, on another thread, still answers.
+#[test]
+fn an_admit_parked_in_the_store_never_stalls_another_instances_host_service() {
+    use std::sync::mpsc::channel;
+    use std::time::Duration;
+    let (entered_tx, entered_rx) = channel();
+    let (release_tx, release_rx) = channel();
+    let store = Arc::new(ParkingStore {
+        armed: std::sync::atomic::AtomicBool::new(false),
+        entered: Mutex::new(Some(entered_tx)),
+        release: Mutex::new(Some(release_rx)),
+    });
+    let record = DemotionRecord::default();
+    record.set_sink(store.clone());
+    let s = Arc::new(
+        KernelServices::new()
+            .with_signer(Arc::new(FixedKey))
+            .with_demotions(Arc::new(record), SECTION_KEY),
+    );
+    s.admit(
+        "inst",
+        InstanceFacts {
+            signing: Some(Signing {
+                domain: "dom".into(),
+                kid_prefix: "p-".into(),
+            }),
+            ..InstanceFacts::default()
+        },
+    )
+    .unwrap();
+    store.armed.store(true, Ordering::SeqCst);
+    let admitting = {
+        let s = Arc::clone(&s);
+        std::thread::spawn(move || s.admit("other", InstanceFacts::default()))
+    };
+    entered_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the second admit reached the store's read of the kept trust rulings");
+    let (answer_tx, answer_rx) = channel();
+    {
+        let s = Arc::clone(&s);
+        std::thread::spawn(move || {
+            let _ = answer_tx.send(s.sign(&caller("inst"), b"data").outcome);
+        });
+    }
+    let answered = answer_rx.recv_timeout(Duration::from_secs(5));
+    release_tx.send(()).unwrap();
+    admitting.join().unwrap().unwrap();
+    assert_eq!(
+        answered,
+        Ok(Outcome::Ready),
+        "a host service of another instance answers while an admit is parked in the store plugin"
+    );
+}
+
 /// A REPLAYED APPROVAL IS REFUSED THROUGH `records.claim` (§11.12: the ONE path for approval
 /// redemption). The approval's nonce is claimed when it is redeemed; presenting the same approval
 /// again inside its window finds the claim taken, so the second redemption is refused.

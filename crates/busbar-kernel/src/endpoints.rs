@@ -106,8 +106,8 @@ pub async fn stats(
                 busbar_kernel::store::BreakerState::HalfOpen => "half_open",
             };
             json!({
-                "model": snap.model,
-                "provider": snap.provider,
+                "model": snap.member,
+                "provider": snap.route,
                 "max_concurrent": snap.max_concurrent,
                 // Alias of `max_concurrent` under a shorter field name (the lane's concurrency
                 // limit). Kept alongside `max_concurrent` for backward compatibility: an unbounded
