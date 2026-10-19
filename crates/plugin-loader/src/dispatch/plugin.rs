@@ -1059,6 +1059,13 @@ impl Instance {
             // the runtime that thread is inside.
             let acting = super::worker::worker_mark();
             let runtime = tokio::runtime::Handle::try_current().ok();
+            // Whether this lifecycle crossing is the facing probe's: decided on the caller's
+            // thread, which the crossing leaves.
+            let console_mode = super::services::console_mode(
+                super::services::in_probe_window(),
+                self.kind == KindCode::Plane,
+                s,
+            );
             let (input, output): (*const c_void, *mut c_void) =
                 (input.cast_const().cast(), out.cast());
             let routed = crate::ffi_thread::on_plugin_thread(|| {
@@ -1066,9 +1073,7 @@ impl Instance {
                 let _acting = super::worker::acting_for(acting);
                 let _unit = super::services::serving(unit);
                 // A plane's `open` and `refresh` may write its generation's console lines.
-                let _console = super::services::console(
-                    self.kind == KindCode::Plane && matches!(s, slot::OPEN | slot::REFRESH),
-                );
+                let _console = super::services::console(console_mode);
                 with_crossing(Some(self), || {
                     enter_lifecycle((self.op_name)(s), op, instance, input, output)
                 })
@@ -1081,7 +1086,7 @@ impl Instance {
             }
         } else {
             // No console line from any other crossing, a unit's serving included.
-            let _console = super::services::console(false);
+            let _console = super::services::console(super::services::CONSOLE_NONE);
             with_crossing(Some(self), || {
                 op(instance, input.cast_const().cast(), out.cast())
             })

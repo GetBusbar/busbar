@@ -1390,7 +1390,7 @@ mod plane_plugin {
     use super::*;
     use crate::abi::plane::{ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, RefusalIn, RefusalOut};
     use crate::abi::plane::{PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut};
-    use crate::abi::plane::{PlaneRefreshOut, PlaneSnapshot};
+    use crate::abi::plane::{PlaneRefreshIn, PlaneRefreshOut, PlaneSnapshot};
     use crate::abi::plane::{ProjectIn, ProjectOut, ServeIn, ServeOut};
 
     macro_rules! answers {
@@ -1412,7 +1412,6 @@ mod plane_plugin {
     answers!(Hydrate, GenIn, OutHead, Outcome::Ready);
     answers!(Start, GenIn, OutHead, Outcome::Ready);
     answers!(Project, ProjectIn, ProjectOut, Outcome::Ready);
-    answers!(Refresh, RefreshIn, PlaneRefreshOut, Outcome::Failed);
 
     /// The generation snapshot `open` publishes.
     pub const SNAPSHOT: &PlaneSnapshot = &PlaneSnapshot {
@@ -1466,6 +1465,38 @@ mod plane_plugin {
             PROVIDERS_READ.with(|n| n.set(input.providers_len));
             out.snapshot = SNAPSHOT;
             Outcome::Ready
+        }
+    }
+
+    std::thread_local! {
+        /// What this thread's last plane `refresh` read of its providers: each base URL, in order.
+        pub static REFRESH_PROVIDERS: std::cell::RefCell<Vec<String>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// `refresh`: the plane's own `in` (step 2b), read whole through the SDK: it notes each
+    /// provider's base URL it was handed, then answers FAILED (no snapshot).
+    pub struct Refresh;
+    impl Slot for Refresh {
+        type In = PlaneRefreshIn;
+        type Out = PlaneRefreshOut;
+        fn call(_: *mut c_void, input: &PlaneRefreshIn, _: &mut PlaneRefreshOut) -> Outcome {
+            let urls = if input.providers_len == 0 {
+                Vec::new()
+            } else {
+                // SAFETY: the host's list of `providers_len` facts, live for the call.
+                unsafe { std::slice::from_raw_parts(input.providers, input.providers_len) }
+                    .iter()
+                    .map(|p| {
+                        // SAFETY: a present string the host lent for the call.
+                        let b =
+                            unsafe { std::slice::from_raw_parts(p.base_url.ptr, p.base_url.len) };
+                        String::from_utf8_lossy(b).into_owned()
+                    })
+                    .collect()
+            };
+            REFRESH_PROVIDERS.with(|r| *r.borrow_mut() = urls);
+            Outcome::Failed
         }
     }
 
@@ -1738,4 +1769,50 @@ fn a_transport_plugin_wires_every_kind_op() {
     {
         assert!(s.is_some(), "transport kind op {i} is NULL");
     }
+}
+
+/// Step 2b, RED: A PLANE REFRESH'S PROVIDERS REACH THE PLANE INTACT. The plane's refresh slot is
+/// typed `PlaneRefreshIn`, so the SDK copies the host's whole `in` (not only its `RefreshIn`
+/// prefix) and the plane reads each provider's base URL byte for byte. Typed `RefreshIn`, the
+/// copy stopped before the list and the plane read past it.
+#[test]
+fn a_plane_refreshs_providers_reach_the_plane_intact() {
+    use crate::abi::plane::{Ops, PlaneRefreshIn, PlaneRefreshOut, ProviderFacts};
+    let text = |s: &'static str| crate::abi::mechanism::call::AbiStr {
+        ptr: s.as_ptr(),
+        len: s.len(),
+    };
+    let providers = [
+        ProviderFacts {
+            name: text("eng-a"),
+            protocol: text("one"),
+            base_url: text("https://a.example/v1"),
+            ..ProviderFacts::ZERO
+        },
+        ProviderFacts {
+            name: text("eng-b"),
+            protocol: text("two"),
+            base_url: text("http://b.example"),
+            ..ProviderFacts::ZERO
+        },
+    ];
+    // SAFETY: the macro's `'static` door and its plane table.
+    let t = unsafe { &*(*plane_plugin::door()).ops.cast::<Ops>() };
+    // SAFETY: plain data; all-zero is valid.
+    let mut input: PlaneRefreshIn = unsafe { std::mem::zeroed() };
+    input.refresh.head = in_head::<PlaneRefreshIn>(slot::REFRESH, Ticket::NONE);
+    input.refresh.generation = 2;
+    input.providers = providers.as_ptr();
+    input.providers_len = providers.len();
+    // SAFETY: as above.
+    let mut out: PlaneRefreshOut = unsafe { std::mem::zeroed() };
+    out.head = prefilled_head(size_of::<PlaneRefreshOut>());
+    assert_eq!(call(t.head.refresh, &input, &mut out), Outcome::Failed);
+    assert_eq!(
+        plane_plugin::REFRESH_PROVIDERS.with(|r| r.borrow().clone()),
+        vec![
+            "https://a.example/v1".to_string(),
+            "http://b.example".to_string()
+        ]
+    );
 }

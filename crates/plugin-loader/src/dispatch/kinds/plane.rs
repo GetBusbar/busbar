@@ -1024,6 +1024,9 @@ fn facing(
 ) -> Result<busbar_contract::plane_calls::DoorFacing, String> {
     use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON};
     use busbar_contract::abi::mechanism::lifecycle::{GenIn, OpenOut, RefreshIn};
+    // THE FACING PROBE'S WINDOW: its `open` and `refresh` are the ones whose console lines are
+    // written (once per generation, where the kernel builds it); a served instance's are dropped.
+    let _probe = crate::dispatch::services::probe_window();
     let blob = if settings.is_empty() {
         Blob {
             ptr: std::ptr::null(),
@@ -1254,6 +1257,19 @@ impl Kind for Plane {
     }
     type Ops = plane::Ops;
     const TIMEOUT: Outcome = Outcome::Failed;
+
+    /// A plane's `refresh` is lent exactly a [`plane::PlaneRefreshIn`] (R9, step 2b): the plane's
+    /// refresh slot reads that whole struct, so a frame of any other size is refused before it
+    /// crosses.
+    fn admit(
+        slot: u32,
+        _: *const busbar_contract::abi::mechanism::call::InHead,
+        in_size: usize,
+        _: u64,
+    ) -> Option<Outcome> {
+        (slot == life::REFRESH && in_size != size_of::<plane::PlaneRefreshIn>())
+            .then_some(Outcome::Refused)
+    }
 
     fn op_name(s: u32) -> &'static str {
         match s {
