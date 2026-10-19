@@ -627,6 +627,7 @@ extern "C" {
 #define BB_HCONN_REQUEST_END UINT32_C(3) /* [`RequestPiece::kind`]: the request is complete; nothing follows. */
 
 /* hsvc */
+#define BB_HSVC_SERVICE_OUT_V1 ((size_t)64) /* The size of the first [`ServiceOut`]: every caller lends at least this many bytes, and an */
 #define BB_HSVC_MAX_SPANS UINT64_C(1024) /* The most spans one result may carry. */
 #define BB_HSVC_OP_CLOCK_NOW UINT32_C(0) /* `clock.now`. */
 #define BB_HSVC_OP_RECORDS_GET UINT32_C(1) /* `records.get`. */
@@ -3671,11 +3672,12 @@ struct bb_hconn_ConnectorSlots {
     bb_hsvc_ServiceFn write_request;
 };
 
-/* Every service's `out`, in either table. The host writes it whole. */
+/* Every service's `out`, in either table. The caller states its `size`; the host writes */
 struct bb_hsvc_ServiceOut {
     uint32_t size;
     bb_mech_RawOutcome outcome;
-    uint8_t _reserved[3];
+    uint8_t exited;
+    uint8_t _reserved[2];
     uint64_t value;
     uint64_t len;
     uint64_t items;
@@ -6057,7 +6059,8 @@ BB_ASSERT(sizeof(bb_hsvc_ServiceOut) == 64, "bb_hsvc_ServiceOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_ServiceOut) == 8, "bb_hsvc_ServiceOut: alignment");
 BB_ASSERT(offsetof(bb_hsvc_ServiceOut, size) == 0, "bb_hsvc_ServiceOut.size: offset");
 BB_ASSERT(offsetof(bb_hsvc_ServiceOut, outcome) == 4, "bb_hsvc_ServiceOut.outcome: offset");
-BB_ASSERT(offsetof(bb_hsvc_ServiceOut, _reserved) == 5, "bb_hsvc_ServiceOut._reserved: offset");
+BB_ASSERT(offsetof(bb_hsvc_ServiceOut, exited) == 5, "bb_hsvc_ServiceOut.exited: offset");
+BB_ASSERT(offsetof(bb_hsvc_ServiceOut, _reserved) == 6, "bb_hsvc_ServiceOut._reserved: offset");
 BB_ASSERT(offsetof(bb_hsvc_ServiceOut, value) == 8, "bb_hsvc_ServiceOut.value: offset");
 BB_ASSERT(offsetof(bb_hsvc_ServiceOut, len) == 16, "bb_hsvc_ServiceOut.len: offset");
 BB_ASSERT(offsetof(bb_hsvc_ServiceOut, items) == 24, "bb_hsvc_ServiceOut.items: offset");

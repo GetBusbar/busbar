@@ -29,7 +29,8 @@ fn out(o: Outcome) -> ServiceOut {
     ServiceOut {
         size: core::mem::size_of::<ServiceOut>() as u32,
         outcome: RawOutcome::of(o),
-        _reserved: [0; 3],
+        exited: 0,
+        _reserved: [0; 2],
         value: 0,
         len: 0,
         items: 0,

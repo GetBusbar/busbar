@@ -1861,6 +1861,7 @@ fn compute_layout() -> String {
         [
             size,
             outcome,
+            exited,
             _reserved,
             value,
             len,

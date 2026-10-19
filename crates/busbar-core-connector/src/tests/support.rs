@@ -732,8 +732,9 @@ impl TestDoor {
             }
             Carry::Arrival(i, o) => (
                 "arrival",
-                io_crossed(io.ends(OWNER, i.conn), |(port, peer)| {
-                    let mut bytes: VecDeque<u8> = peer.into_bytes().into();
+                io_crossed(io.ends(OWNER, i.conn), |ends| {
+                    let port = ends.port;
+                    let mut bytes: VecDeque<u8> = ends.peer.into_bytes().into();
                     let n = bytes.len().min(i.peer_cap);
                     put(i.peer_buf, &mut bytes, n);
                     o.peer_written = n as u64;

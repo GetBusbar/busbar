@@ -62,7 +62,7 @@ use busbar_contract::abi::host::conn::connector::{
     REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES, UPGRADE_IN_V1_SIZE, UPGRADE_VERIFY_OFF,
     WITHIN_SEPARATOR,
 };
-use busbar_contract::abi::host::service::{ServiceHead, ServiceOut};
+use busbar_contract::abi::host::service::{lent_out, write_out, ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket};
 use busbar_contract::abi::transport::{fields, FrameSpan};
@@ -219,8 +219,8 @@ fn lent_seal(ctx: HostCtx) -> Option<Arc<dyn busbar_contract::plugin::KernelSeal
 }
 
 /// ONE SLOT'S FRAME: the `in` and `out` are there and the head is this service's and covers its
-/// `in`, then `body` with the caller's identity and table. A panic answers FAULT; the whole `out`
-/// is written.
+/// `in`, then `body` with the caller's identity and table. A panic answers FAULT; the `out` is
+/// written as far as the caller stated it, and one stated below the first is REFUSED.
 fn slot(
     ctx: HostCtx,
     input: *const c_void,
@@ -229,6 +229,18 @@ fn slot(
     in_size: usize,
     body: impl FnOnce(InstanceId, &Arc<dyn DeclaredConns>, ServiceHead) -> Answer,
 ) -> RawOutcome {
+    // THE CALLER'S `out`, as it states it: one below the first `ServiceOut` is REFUSED before the
+    // service runs, and nothing of it is written (an `out` grows by appending, so an older caller's
+    // smaller one is never overrun).
+    let lent = if out.is_null() {
+        0
+    } else {
+        // SAFETY: the caller's non-NULL `out`, its leading `size` readable.
+        match unsafe { lent_out(out) } {
+            Some(lent) => lent,
+            None => return RawOutcome::of(Outcome::Refused),
+        }
+    };
     let a = catch_unwind(AssertUnwindSafe(|| {
         if input.is_null() || out.is_null() {
             return Answer::with(Outcome::Fault, "");
@@ -255,7 +267,8 @@ fn slot(
         let o = ServiceOut {
             size: size_of::<ServiceOut>() as u32,
             outcome: RawOutcome::of(a.outcome),
-            _reserved: [0; 3],
+            exited: 0,
+            _reserved: [0; 2],
             value: a.value,
             len: a.len,
             items: 0,
@@ -270,8 +283,8 @@ fn slot(
                 len: a.error.len(),
             },
         };
-        // SAFETY: the caller's `out`, checked non-NULL.
-        unsafe { out.write_unaligned(o) };
+        // SAFETY: the caller's `out`, checked non-NULL, writable for the `lent` bytes it stated.
+        unsafe { write_out(out, o, lent) };
     }
     RawOutcome::of(a.outcome)
 }

@@ -51,16 +51,24 @@ pub struct ServiceHead {
     pub handle: CompletionHandle,
 }
 
-/// Every service's `out`, in either table. The host writes it whole.
+/// Every service's `out`, in either table. The caller states its `size`; the host writes
+/// `min(size, its own)` bytes of it ([`write_out`]), and refuses an `out` below
+/// [`SERVICE_OUT_V1`] before the service runs ([`lent_out`]), so an `out` may grow by appending
+/// and an older caller's smaller one is never overrun.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct ServiceOut {
-    /// `size_of::<ServiceOut>()`.
+    /// `size_of::<ServiceOut>()`: the caller's, as it lends it.
     pub size: u32,
     /// The outcome, mirrored from the return value (the return value is authoritative).
     pub outcome: RawOutcome,
+    /// `io.ends` on a spawned program's handle: `1` once the program itself has exited (its exit
+    /// code is then `value`), `0` while it runs. Every other service, and every other handle,
+    /// answers `0`. Claimed from the first padding byte, which every host has always written as
+    /// zero, so a caller on an older host reads `0`, "not exited", and falls back to its pipe.
+    pub exited: u8,
     /// Alignment padding.
-    pub _reserved: [u8; 3],
+    pub _reserved: [u8; 2],
     /// The service's scalar answer (a stream, a verdict, a handle), as each service states.
     pub value: u64,
     /// Bytes written (or moved, for the connector's `READ`/`WRITE`/`RANDOM`).
@@ -73,6 +81,40 @@ pub struct ServiceOut {
     pub needed_items: u64,
     /// For FAILED/REFUSED: the reason; never secret material. Valid for the process's life.
     pub error: AbiStr,
+}
+
+/// The size of the first [`ServiceOut`]: every caller lends at least this many bytes, and an
+/// `out` stating less is REFUSED with nothing written ([`lent_out`]).
+pub const SERVICE_OUT_V1: usize = 64;
+
+/// How many bytes of the caller's `out` the host may write: its stated `size` capped at the host's
+/// own `size_of::<ServiceOut>()`, or `None` for an `out` stating less than [`SERVICE_OUT_V1`],
+/// which the host REFUSES before the service runs and never writes.
+///
+/// # Safety
+///
+/// `out` is non-NULL and the caller's, its leading `size` readable.
+#[must_use]
+pub unsafe fn lent_out(out: *const ServiceOut) -> Option<usize> {
+    // SAFETY: the caller's `out`, its leading `u32` readable (the contract above).
+    let stated = unsafe { out.cast::<u32>().read_unaligned() } as usize;
+    (stated >= SERVICE_OUT_V1).then(|| stated.min(size_of::<ServiceOut>()))
+}
+
+/// Write `o` into the caller's `out`, the first `lent` bytes of it ([`lent_out`]); `o.size` is set
+/// to the bytes written. Nothing past `lent` is touched.
+///
+/// # Safety
+///
+/// `out` is non-NULL and the caller's, writable for `lent` bytes, and `lent` is at most
+/// `size_of::<ServiceOut>()`.
+pub unsafe fn write_out(out: *mut ServiceOut, mut o: ServiceOut, lent: usize) {
+    let lent = lent.min(size_of::<ServiceOut>());
+    o.size = lent as u32;
+    // SAFETY: `o` is a whole `ServiceOut` and `out` is writable for `lent <= size_of` bytes.
+    unsafe {
+        std::ptr::copy_nonoverlapping(std::ptr::from_ref(&o).cast::<u8>(), out.cast::<u8>(), lent);
+    }
 }
 
 /// One named range of a result's bytes: a key and a value, each a [`Span`] into the bytes

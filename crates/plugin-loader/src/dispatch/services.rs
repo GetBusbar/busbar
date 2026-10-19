@@ -436,7 +436,8 @@ fn later_of(completer: Option<Completer>) -> Option<Later> {
 }
 
 /// ONE SLOT'S FRAME: the `in` and `out` are there, the head is this service's and covers its `in`,
-/// a may-pend service has a ticket, then `body`. A panic answers FAULT; the whole `out` is written.
+/// a may-pend service has a ticket, then `body`. A panic answers FAULT; the
+/// `out` is written as far as the caller stated it, and one stated below the first is REFUSED.
 fn slot(
     ctx: HostCtx,
     input: *const c_void,
@@ -461,6 +462,18 @@ fn framed(
     in_size: usize,
     body: impl FnOnce(ServiceHead) -> Answered,
 ) -> RawOutcome {
+    // THE CALLER'S `out`, as it states it: one below the first `ServiceOut` is REFUSED before the
+    // service runs, and nothing of it is written (an `out` grows by appending, so an older caller's
+    // smaller one is never overrun).
+    let lent = if out.is_null() {
+        0
+    } else {
+        // SAFETY: the caller's non-NULL `out`, its leading `size` readable.
+        match unsafe { svc::lent_out(out) } {
+            Some(lent) => lent,
+            None => return RawOutcome::of(Outcome::Refused),
+        }
+    };
     let a = catch_unwind(AssertUnwindSafe(|| {
         if input.is_null() || out.is_null() {
             return Answered::fault();
@@ -480,7 +493,8 @@ fn framed(
         let o = ServiceOut {
             size: size_of::<ServiceOut>() as u32,
             outcome: RawOutcome::of(a.outcome),
-            _reserved: [0; 3],
+            exited: 0,
+            _reserved: [0; 2],
             value: a.value,
             len: a.len,
             items: a.items,
@@ -495,8 +509,8 @@ fn framed(
                 len: a.error.len(),
             },
         };
-        // SAFETY: the caller's `out`, checked non-NULL.
-        unsafe { out.write_unaligned(o) };
+        // SAFETY: the caller's `out`, checked non-NULL, writable for the `lent` bytes it stated.
+        unsafe { svc::write_out(out, o, lent) };
     }
     RawOutcome::of(a.outcome)
 }
