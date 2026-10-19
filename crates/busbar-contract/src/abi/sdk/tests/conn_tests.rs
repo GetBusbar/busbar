@@ -351,3 +351,29 @@ fn a_refusal_naming_an_unavailable_credential_reads_as_its_own_failure() {
         Poll::Ready(Err(ConnFailure::Refused(REFUSED_TEXT.to_string())))
     );
 }
+
+/// RED (owner ruling 21, one size per struct): host tables of any other size than
+/// `size_of::<HostTables>()`, shorter (ending before the io table) or longer, are refused whole: the
+/// SDK reads none of their tables, so a short one never reads as "no io" beside a live connector.
+#[test]
+fn host_tables_of_any_other_size_hand_no_table() {
+    let whole = std::mem::size_of::<HostTables>();
+    let io = std::ptr::NonNull::<crate::abi::host::io::IoSlots>::dangling().as_ptr();
+    for size in [std::mem::offset_of!(HostTables, io), whole + 8] {
+        let h = Host::of(&HostTables {
+            size: size as u32,
+            _reserved: 0,
+            ctx: HostCtx::NONE,
+            wake: None,
+            conns: &SLOTS,
+            services: services(),
+            io,
+        });
+        assert!(
+            !h.lends_connector(),
+            "a {size}-byte table lends a connector"
+        );
+        assert!(!h.io(TICKET).armed(), "a {size}-byte table lends io");
+        assert!(h.services().is_none(), "a {size}-byte table lends services");
+    }
+}

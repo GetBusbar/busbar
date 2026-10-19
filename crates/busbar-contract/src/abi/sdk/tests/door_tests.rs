@@ -392,34 +392,15 @@ struct Fenced<T> {
     fence: [u8; 32],
 }
 
+/// ONE SIZE PER `out` (owner ruling 21): a host `out` of the slot's one size gets the whole answer
+/// and the plugin's own size back. RED: an `out` shorter (a head only) or longer than the slot's is
+/// FAULT, only its head's outcome written, nothing past the head touched and the body never run.
 #[test]
-fn the_plugin_writes_at_most_min_of_host_out_size_and_its_own() {
-    // The host says its `out` is only an `OutHead`: `next_tick_ns` (past it) must stay untouched.
-    let mut host = Fenced {
-        out: TickOut {
-            head: prefilled_head(size_of::<OutHead>()),
-            next_tick_ns: 0xDEAD,
-        },
-        fence: [0xEE; 32],
-    };
+fn an_out_of_any_other_size_is_fault_with_only_its_outcome_written() {
     let input = TickIn {
         head: in_head::<TickIn>(slot::TICK, Ticket::NONE),
         now_ns: 9,
     };
-    assert_eq!(
-        call(table().head.tick, &input, &mut host.out),
-        Outcome::Ready
-    );
-    assert_eq!(host.out.head.outcome.outcome(), Outcome::Ready);
-    // The plugin writes back ITS OWN size (the host clamps); the bytes past the host's stay put.
-    assert_eq!(host.out.head.size as usize, size_of::<TickOut>());
-    assert_eq!(
-        host.out.next_tick_ns, 0xDEAD,
-        "wrote past the host's out.size"
-    );
-    assert_eq!(host.fence, [0xEE; 32]);
-
-    // A full-size host `out` gets the whole answer and the plugin's own size back.
     let mut host = Fenced {
         out: TickOut {
             head: prefilled_head(size_of::<TickOut>()),
@@ -435,20 +416,24 @@ fn the_plugin_writes_at_most_min_of_host_out_size_and_its_own() {
     assert_eq!(host.out.head.size as usize, size_of::<TickOut>());
     assert_eq!(host.fence, [0xEE; 32]);
 
-    // A host `out` larger than the plugin's own: only the plugin's own size is written back.
-    let mut host = Fenced {
-        out: TickOut {
-            head: prefilled_head(size_of::<TickOut>() + 32),
-            next_tick_ns: 0,
-        },
-        fence: [0xEE; 32],
-    };
-    assert_eq!(
-        call(table().head.tick, &input, &mut host.out),
-        Outcome::Ready
-    );
-    assert_eq!(host.out.head.size as usize, size_of::<TickOut>());
-    assert_eq!(host.fence, [0xEE; 32]);
+    for size in [size_of::<OutHead>(), size_of::<TickOut>() + 32] {
+        let mut host = Fenced {
+            out: TickOut {
+                head: prefilled_head(size),
+                next_tick_ns: 0xDEAD,
+            },
+            fence: [0xEE; 32],
+        };
+        host.out.head.outcome = RawOutcome::of(Outcome::Ready);
+        assert_eq!(
+            call(table().head.tick, &input, &mut host.out),
+            Outcome::Fault,
+            "a {size}-byte `out`"
+        );
+        assert_eq!(host.out.head.outcome.outcome(), Outcome::Fault);
+        assert_eq!(host.out.next_tick_ns, 0xDEAD, "the body wrote its answer");
+        assert_eq!(host.fence, [0xEE; 32]);
+    }
 }
 
 #[test]
@@ -506,16 +491,22 @@ fn a_bad_in_head_is_fault() {
     );
 }
 
+/// ONE SIZE PER `in` (owner ruling 21). RED: an `in` shorter than the slot's (a head only, its
+/// `settings.len` past it garbage) or longer is FAULT and never runs: a missing field never reads
+/// as zero.
 #[test]
-fn an_absent_in_tail_reads_as_zero() {
-    // The host's `in` is only a head: `settings.len` (garbage past it) must read as 0.
-    let mut input = validate_in(PANIC_LEN, slot::VALIDATE);
-    input.head.size = size_of::<InHead>() as u32;
-    let mut out = prefilled_head(size_of::<OutHead>());
-    assert_eq!(
-        call(table().head.validate, &input, &mut out),
-        Outcome::Ready
-    );
+fn an_in_of_any_other_size_is_fault() {
+    for size in [size_of::<InHead>(), size_of::<ValidateIn>() + 8] {
+        let mut input = validate_in(PANIC_LEN, slot::VALIDATE);
+        input.head.size = size as u32;
+        let mut out = prefilled_head(size_of::<OutHead>());
+        assert_eq!(
+            call(table().head.validate, &input, &mut out),
+            Outcome::Fault,
+            "a {size}-byte `in`"
+        );
+        assert_eq!(out.outcome.outcome(), Outcome::Fault);
+    }
 }
 
 #[test]
@@ -1513,11 +1504,10 @@ mod plane_plugin {
     }
 }
 
-/// THE APPEND RULE ON `PlaneOpenIn::providers`: a host whose `open` `in` ends before the list (its
-/// `size` says so) hands none, whatever bytes lie past its `size`; a host that states the whole `in`
-/// hands its count.
+/// `PlaneOpenIn::providers` at the `in`'s ONE size (owner ruling 21): a host that states the whole
+/// `in` hands its count. RED: an `in` ending before the list is FAULT, never read as handing none.
 #[test]
-fn a_plane_open_in_that_ends_before_the_providers_hands_none() {
+fn a_plane_open_in_that_ends_before_the_providers_is_fault() {
     use crate::abi::plane::{Ops, PlaneOpenIn, PlaneOpenOut, ProviderFacts};
     // SAFETY: the macro's `'static` door and its plane table.
     let t = unsafe { &*(*plane_plugin::door()).ops.cast::<Ops>() };
@@ -1531,13 +1521,14 @@ fn a_plane_open_in_that_ends_before_the_providers_hands_none() {
     out.open.head = prefilled_head(size_of::<PlaneOpenOut>());
     assert_eq!(call(t.head.open, &input, &mut out), Outcome::Ready);
     assert_eq!(plane_plugin::PROVIDERS_READ.with(std::cell::Cell::get), 3);
+    plane_plugin::PROVIDERS_READ.with(|c| c.set(0));
     input.open.head.size = std::mem::offset_of!(PlaneOpenIn, providers) as u32;
     out.open.head = prefilled_head(size_of::<PlaneOpenOut>());
-    assert_eq!(call(t.head.open, &input, &mut out), Outcome::Ready);
+    assert_eq!(call(t.head.open, &input, &mut out), Outcome::Fault);
     assert_eq!(
         plane_plugin::PROVIDERS_READ.with(std::cell::Cell::get),
         0,
-        "an `in` that ends before the list hands none"
+        "an `in` that ends before the list never runs"
     );
 }
 
