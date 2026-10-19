@@ -706,6 +706,65 @@ fn a_plugin_named_need_to_the_metadata_address_is_refused() {
     });
 }
 
+/// RED (Q128 arch u22 HIGH 2; THE DESIGN §5 egress table, `provider`: "allow-list +
+/// `allow_metadata_hosts`", and the DESTINATION GUARD, checked in ONE place): a provider need whose
+/// 1.5.5 carve-out (`allow_metadata_hosts: ["169.254.169.254"]`, as 1.5.5 documented it for IMDS)
+/// names a metadata address is DIALLED there: the guard admits it and the connector dials the
+/// address the judgement pinned (here the loopback far end standing in for the metadata service).
+/// The same open from a need in another class, and to a metadata address no carve-out names, is
+/// refused by the same guard. RED on the endpoint check that refused every metadata host ahead of
+/// the guard, so its carve-outs reached no dial.
+#[test]
+fn a_provider_carve_out_reaches_its_metadata_address_on_the_dial() {
+    worker().block_on(async {
+        let (_listening, far) = far_end().await;
+        let stand_in: std::net::SocketAddr = far.parse().unwrap();
+        let guard = crate::guard::Guard::from_config(&busbar_kernel::config::Destinations {
+            block_private_addresses: true,
+            legacy_allow: vec!["169.254.169.254".to_owned()],
+            ..busbar_kernel::config::Destinations::default()
+        })
+        .expect("the carve-out");
+        let judge = move |dest: &str, class: u32, _: crate::Judged| {
+            let at = crate::socket::address_of(dest)?;
+            Some(
+                guard
+                    .judge_answer(&at.ip().to_string(), &[at.ip()], class)
+                    .map(|()| stand_in)
+                    .map_err(|r| r.verdict),
+            )
+        };
+        let view = Transports::new(vec![Entry {
+            door: Arc::new(TestDoor::identity("bytes")),
+            alpn: Vec::new(),
+        }])
+        .unwrap();
+        let c = Connector::serving(view, Arc::new(judge), None, Arc::new(|_, _| {}));
+        c.declare_need(
+            OWNER,
+            NeedId(0),
+            "bytes",
+            busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER,
+        )
+        .expect("a provider need declares");
+        c.declare_need(OWNER, NeedId(1), "bytes", crate::DEFAULT_CLASS)
+            .expect("a default-class need declares");
+        let id = open_in(&c, 0, "169.254.169.254:80")
+            .expect("the provider's carve-out reaches its metadata address");
+        c.close(OWNER, id).unwrap();
+        assert_eq!(
+            open_in(&c, 1, "169.254.169.254:80"),
+            Err(ConnError::Refused),
+            "no carve-out speaks for another class"
+        );
+        assert_eq!(
+            open_in(&c, 0, "100.100.100.200:80"),
+            Err(ConnError::Refused),
+            "a carve-out admits only what it names"
+        );
+    });
+}
+
 /// RED (ARCHITECT rule 15.3: ports `execute_hop_does_not_follow_redirect`, deleted with the
 /// core-run login hop): THE CONNECTOR NEVER FOLLOWS AN ANSWER. A far end answering a `302` whose
 /// `Location` names another listener hands that answer to the need's owner through the table, byte
