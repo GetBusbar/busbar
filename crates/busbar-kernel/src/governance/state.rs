@@ -1816,14 +1816,16 @@ impl GovState {
     ///   in-flight admitted request (as with TPM, a hard token cap would need admit-time
     ///   reservation - out of scope).
     ///
-    /// SYNCHRONOUS and INFALLIBLE (in-memory cells; no store round-trip, no await). The flat fee
-    /// is charged HERE (as +1 request per bucket; spend derives), so the caller must NOT re-charge
+    /// SYNCHRONOUS and INFALLIBLE (in-memory cells, no await; the one store read is below). The
+    /// flat fee is charged HERE (as +1 request per bucket; spend derives), so the caller must NOT re-charge
     /// in `finish`; a non-2xx outcome refunds the grant's [`FeeCharge`] via
     /// [`GovState::refund_charge`]. This allocates a handful of chain-sized scratch `Vec`s per call
     /// (`chain_for`'s two Vecs, the collected bucket slice, the shard-index/order/guard Vecs sized
     /// to the chain depth, the grant's charged cells) — there are no fixed
-    /// scratch arrays; every one of these is a fresh heap allocation. What IS true: no store
-    /// round-trip and no `await` anywhere on this path.
+    /// scratch arrays; every one of these is a fresh heap allocation. What IS true: no `await`
+    /// anywhere on this path, and no store round-trip except one case: a sealed `adjust` whose
+    /// principal's key the key cache no longer holds (a deleted key) is read from the store, before
+    /// any shard lock is taken, to learn whether it lands on a capped bucket (Q51).
     ///
     /// PER-PLANE FEES (#47): a `pool` qualified `"<plane>\u{1f}<pool>"` is a request of THAT plane
     /// — the pool predicate reads the unqualified part — and it charges that plane's own
