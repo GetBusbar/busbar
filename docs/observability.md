@@ -209,16 +209,20 @@ a per-call-site literal. The request path's spans, with 1.5.5's names and fields
 
 | Span | Fields | Opened by |
 |---|---|---|
-| `gemini_ingress` | none | an arrival the llm plane reads as Gemini (its models surfaces, and a path ending in a Gemini action verb such as `:generateContent`) |
-| `bedrock_converse`, `bedrock_converse_stream` | none | an arrival on a path ending in `/converse` or `/converse-stream` |
-| `named`, `adhoc` | `pool`; `provider`, `model` | the `/{name}/v1/messages` and `/{provider}/{model}/v1/messages` conveniences |
-| `forward` | `pool`, `ingress`, `op`, `request_id` | every unit, beneath its entry span where it has one |
+| `named` | `pool` | an arrival on `/{pool}/v1/messages` |
+| `adhoc` | `provider`, `model` | an arrival on `/{provider}/{model}/v1/messages` |
+| `gemini_ingress` | none | an arrival read as Gemini: an `x-goog-api-key` field, a Gemini action verb in the path (`:generateContent` and the rest), or a path under `/v1/models/` or `/v1beta/models/` |
+| `bedrock_converse`, `bedrock_converse_stream` | none | an arrival read as Bedrock (a SigV4 `authorization` field, or a `/converse` path) whose path ends in `/converse` or `/converse-stream` |
+| `forward` | `pool`, `ingress`, `op`, `request_id` | every dispatched unit, once it is admitted, beneath its entry span where it has one |
 | `forward_once` | `lane` | each dispatch of an exhaustion terminal (a fallback pool's member, the least-bad bypass, a queued slot), beneath `forward` |
 
-The kernel names no dialect: an entry span's name is data the plane states on its claims
-(`PlaneSnapshot::arrival_spans`), either on a routed claim or on a raw-affix claim that states which
-span an arrival on a path it matches opens. The kernel builds one callsite per name when it binds
-the routes and opens the span around the arrival; `forward` and `forward_once` are the kernel's own.
+The entry is chosen as 1.5.5 chose it: head fields first (`authorization` with SigV4, then
+`anthropic-version`, `anthropic-beta`, `x-goog-api-key`, `x-api-key`), then the path. A request read
+as Anthropic opens no entry span. The kernel names no dialect: each entry span's name and the
+request shape that opens it are data the plane states as entry-fact claims (`CLAIM_ENTRY`, with
+`PlaneSnapshot::arrival_spans`). The kernel builds one callsite per name when it binds the routes
+and opens the span around the arrival. `forward` and `forward_once` are the kernel's own. A field
+keeps its type on the way to the collector: `lane` is an integer.
 
 `HOTPATH_LEVEL` is `DEBUG`, not the `tracing::Level::TRACE` variant, because it pairs with the
 OTHER half of the one-spot policy: `observability::log_levels()`, which builds the stderr and OTLP

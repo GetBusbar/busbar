@@ -303,11 +303,12 @@ fn unsafe_free_sigterm(pid: u32) {
 
 // ── status row 173: the request path's spans, as 1.5.5 named them ─────────────────────────────────
 
-/// One request of the fixture: the entry span it opens, the `ingress` its `forward` carries, its
-/// path and its body.
+/// One request of the fixture: the entry span it opens, the `ingress` its `forward` carries, the
+/// head fields it adds, its path and its body.
 struct Row {
     entry: Option<&'static str>,
     ingress: Option<&'static str>,
+    head: Vec<(&'static str, &'static str)>,
     path: &'static str,
     body: &'static str,
 }
@@ -319,16 +320,44 @@ fn rows() -> Vec<Row> {
         .lines()
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .map(|l| {
-            let f: Vec<&'static str> = l.splitn(4, '\t').collect();
-            assert_eq!(f.len(), 4, "a fixture row has four fields: {l}");
+            let f: Vec<&'static str> = l.splitn(5, '\t').collect();
+            assert_eq!(f.len(), 5, "a fixture row has five fields: {l}");
+            let head = some(f[2])
+                .map(|h| {
+                    h.split(';')
+                        .filter_map(|kv| kv.split_once(": "))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             Row {
                 entry: some(f[0]),
                 ingress: some(f[1]),
-                path: f[2],
-                body: f[3],
+                head,
+                path: f[3],
+                body: f[4],
             }
         })
         .collect()
+}
+
+/// One HTTP/1.1 POST carrying `head` over a fresh connection: the status, or `None` before the
+/// listener is up.
+fn post_with(port: u16, path: &str, head: &[(&str, &str)], body: &str) -> Option<u16> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .ok()?;
+    let fields: String = head.iter().map(|(n, v)| format!("{n}: {v}\r\n")).collect();
+    let req = format!(
+        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\ncontent-type: application/json\r\n{fields}\
+         content-length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(req.as_bytes()).ok()?;
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).ok()?;
+    let text = String::from_utf8_lossy(&raw).into_owned();
+    text.lines().next()?.split_whitespace().nth(1)?.parse().ok()
 }
 
 /// A span's attribute, as the string the sink wrote.
@@ -342,35 +371,38 @@ fn attribute(span: &Span, key: &str) -> Option<String> {
         })
 }
 
-/// The `forward` spans whose parent is `entry`, in its trace.
-fn forwards_under<'a>(spans: &'a [Span], entry: &Span) -> Vec<&'a Span> {
-    spans
-        .iter()
-        .filter(|s| {
-            s.name == "forward" && s.parent_span_id == entry.span_id && s.trace_id == entry.trace_id
-        })
-        .collect()
+/// Whether `span`'s parent, in its trace, is one of `spans` named one of `names`.
+fn under(spans: &[Span], span: &Span, names: &[&str]) -> bool {
+    spans.iter().any(|p| {
+        names.contains(&p.name.as_str())
+            && p.span_id == span.parent_span_id
+            && p.trace_id == span.trace_id
+    })
 }
 
 /// **THE REQUEST PATH'S SPANS REACH THE OTLP COLLECTOR AS 1.5.5 NAMED THEM** (status row 173;
 /// v1.5.5 `docs/observability.md` l.162-174). 1.5.5 opened, at the hot-path level (DEBUG, the OTLP
-/// floor), an ingress entry span with no field around the requests of the dialects it gave one
-/// to, and beneath it the unit's `forward` span carrying `pool`, `ingress` and `op` (v1.5.5
-/// `proxy/engine/mod.rs:120`).
+/// floor), an ingress entry span with no field, chosen by the request's head fields first and its
+/// path's shape then (v1.5.5 `proto/detect.rs`), and beneath it, for a request it dispatched, the
+/// unit's `forward` span carrying `pool`, `ingress` and `op` (v1.5.5 `proxy/engine/mod.rs:120`).
 ///
 /// The real binary boots with one `module: otlp` instance pointed at a loopback collector this test
 /// stands up and serves one request per row of `fixtures/otlp_request_spans.txt` (their upstream
 /// refuses; the spans close anyway). The rows are test data: which entry span each request opens
 /// and which `ingress` its `forward` carries are the plane's words, never this crate's. The
-/// collector must receive, for each row:
+/// collector must receive:
 ///
-/// - its entry span, once, with no attribute, and a `forward` beneath it in its trace;
-/// - for a row naming none, a `forward` under no entry span;
-/// - for a row naming an `ingress`, that `forward` carrying it and `op = chat`.
+/// - each entry span exactly as many times as rows name it, every one with no attribute: a row
+///   whose head field alone decides its entry opens it, and a row whose head field ends the
+///   reading opens none, however its path reads;
+/// - for a row naming its entry and its `ingress`, a `forward` beneath that entry carrying it and
+///   `op = chat`;
+/// - for a row naming no entry and an `ingress`, a `forward` carrying it under no entry span.
 ///
-/// RED: with the plane stating no entry span, none reaches the collector and no `forward` has one
-/// above it; with the traces producer reading only the fields a span opened with, `forward`
-/// carries neither `ingress` nor `op`.
+/// RED: with the plane stating no entry span, none reaches the collector; with the head fields
+/// unread, the header-only row opens no entry and the header-stop row opens one; with the traces
+/// producer reading only the fields a span opened with, `forward` carries neither `ingress` nor
+/// `op`.
 #[test]
 fn the_request_paths_spans_reach_the_collector_as_1_5_5_named_them() {
     let dir = fixture_dir();
@@ -397,8 +429,11 @@ fn the_request_paths_spans_reach_the_collector_as_1_5_5_named_them() {
     // One request per row. Their upstream refuses: the request path's spans open and close
     // regardless.
     let rows = rows();
-    let entries: Vec<&str> = rows.iter().filter_map(|r| r.entry).collect();
+    let mut entries: Vec<&str> = rows.iter().filter_map(|r| r.entry).collect();
+    entries.sort_unstable();
+    entries.dedup();
     assert!(!entries.is_empty(), "the fixture names an entry span");
+    let named = |name: &str| rows.iter().filter(|r| r.entry == Some(name)).count();
     let deadline = Instant::now() + Duration::from_secs(60);
     for row in &rows {
         loop {
@@ -406,18 +441,22 @@ fn the_request_paths_spans_reach_the_collector_as_1_5_5_named_them() {
                 panic!("busbar exited ({status}) before serving:\n{}", read_log());
             }
             assert!(Instant::now() < deadline, "no data door:\n{}", read_log());
-            if request(data_port, "POST", row.path, row.body).is_some() {
+            if post_with(data_port, row.path, &row.head, row.body).is_some() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(100));
         }
     }
 
-    // Delivery is off the request path, batched: wait for every entry and one forward per row.
+    // Delivery is off the request path, batched: wait for every entry span and every forward a
+    // row names.
     let spans = || common::otlp::spans(&common::otlp::requests(&seen, None));
+    let forwards = rows.iter().filter(|r| r.ingress.is_some()).count();
     let heard = |spans: &[Span]| {
-        entries.iter().all(|e| spans.iter().any(|s| s.name == *e))
-            && spans.iter().filter(|s| s.name == "forward").count() >= rows.len()
+        entries
+            .iter()
+            .all(|e| spans.iter().filter(|s| s.name == *e).count() >= named(*e))
+            && spans.iter().filter(|s| s.name == "forward").count() >= forwards
     };
     let deadline = Instant::now() + Duration::from_secs(30);
     while !heard(&spans()) {
@@ -430,61 +469,43 @@ fn the_request_paths_spans_reach_the_collector_as_1_5_5_named_them() {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+    // A stray entry span (a header that should have ended the reading) arrives with the rest.
+    std::thread::sleep(Duration::from_secs(2));
     let spans = spans();
     let _ = std::fs::remove_dir_all(&dir);
 
-    // EACH ROW: its entry span, once, with no attribute (1.5.5's `skip_all`) and a `forward`
-    // beneath it; or, naming none, a `forward` under no entry span. Its `forward` carries the
-    // row's `ingress` and the operation's name.
-    for row in &rows {
-        let forward = match row.entry {
-            Some(entry) => {
-                let opened: Vec<&Span> = spans.iter().filter(|s| s.name == entry).collect();
-                assert_eq!(opened.len(), 1, "one request, one `{entry}`: {opened:?}");
-                assert!(
-                    opened[0].attributes.is_empty(),
-                    "`{entry}` carries no attribute: {:?}",
-                    opened[0].attributes
-                );
-                let forwards = forwards_under(&spans, opened[0]);
-                assert_eq!(
-                    forwards.len(),
-                    1,
-                    "the unit's `forward` opens beneath `{entry}`: {spans:?}"
-                );
-                forwards[0]
-            }
-            None => {
-                let ingress = row.ingress.expect("a row with no entry names its ingress");
-                let plain: Vec<&Span> = spans
-                    .iter()
-                    .filter(|s| {
-                        s.name == "forward" && attribute(s, "ingress").as_deref() == Some(ingress)
-                    })
-                    .collect();
-                assert_eq!(plain.len(), 1, "{} {spans:?}", row.path);
-                assert!(
-                    !spans.iter().any(|s| entries.contains(&s.name.as_str())
-                        && s.span_id == plain[0].parent_span_id
-                        && s.trace_id == plain[0].trace_id),
-                    "no entry span above {}'s `forward`: {:?}",
-                    row.path,
-                    plain[0]
-                );
-                plain[0]
-            }
-        };
-        if let Some(ingress) = row.ingress {
-            assert_eq!(
-                (
-                    attribute(forward, "ingress").as_deref(),
-                    attribute(forward, "op").as_deref()
-                ),
-                (Some(ingress), Some("chat")),
-                "1.5.5's `ingress` and `op` on {}'s `forward`: {:?}",
-                row.path,
-                forward.attributes
+    // EACH ENTRY SPAN: as many as the rows name, each with no attribute (1.5.5's `skip_all`).
+    for entry in &entries {
+        let opened: Vec<&Span> = spans.iter().filter(|s| s.name == *entry).collect();
+        assert_eq!(
+            opened.len(),
+            named(*entry),
+            "`{entry}` opens once per row naming it, and for no other row: {spans:?}"
+        );
+        for span in opened {
+            assert!(
+                span.attributes.is_empty(),
+                "`{entry}` carries no attribute: {:?}",
+                span.attributes
             );
         }
+    }
+    // EACH ROW NAMING ITS `ingress`: its `forward`, beneath its entry span or under none.
+    for row in rows.iter().filter(|r| r.ingress.is_some()) {
+        let ingress = row.ingress;
+        let found = spans.iter().any(|s| {
+            s.name == "forward"
+                && attribute(s, "ingress").as_deref() == ingress
+                && attribute(s, "op").as_deref() == Some("chat")
+                && match row.entry {
+                    Some(entry) => under(&spans, s, &[entry]),
+                    None => !under(&spans, s, &entries),
+                }
+        });
+        assert!(
+            found,
+            "{}: a `forward` carrying 1.5.5's `ingress` {ingress:?} and `op`, beneath {:?}: {spans:?}",
+            row.path, row.entry
+        );
     }
 }
