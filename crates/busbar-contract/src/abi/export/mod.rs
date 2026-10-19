@@ -588,6 +588,18 @@ pub struct MetricFamily {
     pub samples: Vec<MetricSample>,
 }
 
+impl MetricFamily {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `MetricFamily { …, ..MetricFamily::ZERO }` so a field appended later reads as not
+    /// declared.
+    pub const ZERO: Self = Self {
+        name: String::new(),
+        kind: String::new(),
+        help: None,
+        samples: Vec::new(),
+    };
+}
+
 /// One SAMPLE line of a [`MetricFamily`] (K9a S6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetricSample {
@@ -599,6 +611,17 @@ pub struct MetricSample {
     pub labels: Vec<(String, String)>,
     /// The value, in the recorder's own spelling.
     pub value: String,
+}
+
+impl MetricSample {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `MetricSample { …, ..MetricSample::ZERO }` so a field appended later reads as not
+    /// declared.
+    pub const ZERO: Self = Self {
+        name: String::new(),
+        labels: Vec::new(),
+        value: String::new(),
+    };
 }
 
 /// The point of the configuration's VALIDATION a sink's `check` is asked at — so a
@@ -850,18 +873,6 @@ pub struct Route {
     pub auth: u32,
     /// Alignment padding.
     pub _reserved: u32,
-}
-
-impl Route {
-    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `Route { …, ..Route::ZERO }` so a field appended later reads as not
-    /// declared.
-    pub const ZERO: Self = Self {
-        path: AbiStr::ZERO,
-        method: AbiStr::ZERO,
-        auth: 0,
-        _reserved: 0,
-    };
 }
 
 /// The export kind's Statement tail: the streams this instance carries and the routes it serves.

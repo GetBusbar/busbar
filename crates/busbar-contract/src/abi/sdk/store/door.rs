@@ -84,16 +84,15 @@ pub const DIAG_IDS: [AbiStr; 2] = [abi_str(DIAG_OPID_CONFLICT), abi_str(DIAG_CAP
 const OPID_CONFLICT_TEXT: &str =
     "STORE_OPID_CONFLICT: the op_id was already used with different value fields";
 const DIAG_OPID: &[Diag] = &[Diag {
-    id_idx: 0,
     severity: SEVERITY_WARN,
-    _reserved: [0; 3],
     text: abi_str(OPID_CONFLICT_TEXT),
+    ..Diag::ZERO
 }];
 const DIAG_CAP: &[Diag] = &[Diag {
     id_idx: 1,
     severity: SEVERITY_WARN,
-    _reserved: [0; 3],
     text: abi_str("a cap was pushed again at its config_gen with a different value"),
+    ..Diag::ZERO
 }];
 
 /// The Statement tail of a store `B` (`abi::store::StoreTail`), for [`store_door!`](crate::store_door).
@@ -103,11 +102,11 @@ pub const fn tail<B: StoreSlots>() -> StoreTail {
     StoreTail {
         head: crate::abi::mechanism::door::KindTailHead {
             size: std::mem::size_of::<StoreTail>() as u32,
-            _reserved: 0,
+            ..crate::abi::mechanism::door::KindTailHead::ZERO
         },
         durable_plane: B::TAIL.durable_plane as u8,
         fork_refusal: B::TAIL.fork_refusal as u8,
-        _reserved: [0; 6],
+        ..StoreTail::ZERO
     }
 }
 
@@ -594,7 +593,7 @@ fn span_blob((ptr, len): (*const u8, usize)) -> Blob {
         ptr,
         len,
         fmt: BLOB_OCTETS,
-        flags: 0,
+        ..Blob::ZERO
     }
 }
 

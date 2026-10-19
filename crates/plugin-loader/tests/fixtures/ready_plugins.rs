@@ -282,12 +282,11 @@ pub mod export {
     const TAIL: busbar_contract::abi::export::Tail = busbar_contract::abi::export::Tail {
         head: busbar_contract::abi::mechanism::door::KindTailHead {
             size: std::mem::size_of::<busbar_contract::abi::export::Tail>() as u32,
-            _reserved: 0,
+            ..busbar_contract::abi::mechanism::door::KindTailHead::ZERO
         },
         streams: STREAMS.as_ptr(),
         streams_len: STREAMS.len(),
-        routes: std::ptr::null(),
-        routes_len: 0,
+        ..busbar_contract::abi::export::Tail::ZERO
     };
 
     /// Its Statement: the name, and the export tail.
