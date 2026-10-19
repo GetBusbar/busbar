@@ -12,7 +12,7 @@
 //! the top of the loader's `supported_abi(kind)` at the pin, min = max.
 //!
 //! Output is byte-for-byte the Python's, including where Python's `repr` leaks into a finding (the
-//! `sorted(missing)` list of CDEP, the parsed `contract_abi` of DECLARES).
+//! `sorted(missing)` list of CDEP, a stated `contract_abi` of DECLARES).
 //!
 //! READERS. JSON metadata is `serde_json::Value`; `declares.json` goes through the order-preserving
 //! [`crate::json_lite`] because its key order is printed. `Cargo.lock` is read by
@@ -900,31 +900,15 @@ fn arm(reg: &str, key: &str) -> Option<String> {
     None
 }
 
-/// Python `got == {"min": want, "max": want}` (`True == 1`, `3.0 == 3`).
-fn abi_matches(got: &Json, want: u64) -> bool {
-    let eq = |v: &Json| match v {
-        Json::Int(i) => i128::from(*i) == i128::from(want),
-        Json::Float(f) => *f == want as f64,
-        Json::Bool(b) => u64::from(*b) == want,
-        _ => false,
-    };
-    match got {
-        Json::Object(o) => {
-            o.len() == 2 && o.get("min").is_some_and(eq) && o.get("max").is_some_and(eq)
-        }
-        _ => false,
-    }
-}
-
 /// The DECLARES finding for a declares.json that states a contract-ABI range at all.
 pub const STATED_RANGE: &str = "DECLARES states a contract_abi range; a plugin declares its kind's ABI version, never a range (THE DESIGN §2). Re-render it with busbar-release plugin sync.";
 
 /// declares.json states no contract-ABI range (THE DESIGN §2 l.237-240, §9 l.1164-1165: a plugin
-/// declares its kind's ABI version, never a range). THE ORDERED STEP, agreed with the fleet: while
-/// the fleet's re-render strips the field from every repo, a file WITHOUT it passes and a file that
-/// still states it must state the kind's current contract ABI at the pin, min = max, as before.
-/// The next step refuses a stated range outright.
-pub fn declares(root: &Path, kind: &str, text: &str) -> Res<Vec<String>> {
+/// declares its kind's ABI version, never a range). THE ORDERED STEP 2, agreed with the fleet: the
+/// fleet's re-render has stripped the field from every repo, so a file that still states it, in any
+/// shape and at any value, is refused ([`STATED_RANGE`]). `_root` and `_kind` are kept for the
+/// callers' one signature across the steps.
+pub fn declares(_root: &Path, _kind: &str, text: &str) -> Res<Vec<String>> {
     let doc = match json_lite::parse(text) {
         Ok(d) => d,
         Err(e) => return Ok(vec![format!("DECLARES declares.json is not JSON: {e}")]),
@@ -932,15 +916,8 @@ pub fn declares(root: &Path, kind: &str, text: &str) -> Res<Vec<String>> {
     let Json::Object(obj) = &doc else {
         return Err("plugin-gates: declares.json is not a JSON object".to_string());
     };
-    let Some(got) = obj.get("contract_abi").cloned() else {
-        return Ok(Vec::new());
-    };
-    let want = kind_abi(root, kind)?;
-    if !abi_matches(&got, want) {
-        return Ok(vec![format!(
-            "DECLARES contract_abi is {}; busbar at the pin speaks {kind} v{want} (min = max = {want}). Re-render it with busbar-release plugin sync.",
-            py_str(&got)
-        )]);
+    if obj.get("contract_abi").is_some() {
+        return Ok(vec![STATED_RANGE.to_string()]);
     }
     Ok(Vec::new())
 }
