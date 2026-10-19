@@ -435,7 +435,7 @@ pub fn scan(cx: &Ctx, a: &Addresses, corpus: Option<&Corpus>, t: &Tables, f: &mu
 ///   modules `plane.rs` (decisions+llm), `plane_door.rs` (decisions+llm), `relay.rs` (a2a+llm);
 ///   symbols `Answer` (llm+mcp+streaming), `answer` (llm+mcp), `answered` (a2a+llm),
 ///   `arrive` (decisions+llm+mcp+streaming), `Arrived` (decisions+llm), `billable` (decisions+llm),
-///   `billed_count` (llm+streaming), `Catalogue` (llm+mcp), `decode` (a2a+llm),
+///   `billed_count` (llm+streaming), `decode` (a2a+llm),
 ///   `Dialect` (a2a+llm+streaming), `dialect_for` (llm+streaming), `Direction` (a2a+llm),
 ///   `End` (llm+mcp), `envelope` (llm+mcp), `error_body` (decisions+llm), `Event` (a2a+llm),
 ///   `event` (a2a+llm), `far_answer` (llm+mcp), `far_end` (decisions+llm), `guard` (llm+mcp),
@@ -455,10 +455,14 @@ pub fn scan(cx: &Ctx, a: &Addresses, corpus: Option<&Corpus>, t: &Tables, f: &mu
 /// again. #1161's own new code adds no pair: its one new plane-llm file (`exchange/catalog.rs`)
 /// names its listing `ModelsCatalogAnswer` / `render_listing`, so it duplicates nothing.
 ///
+/// LOWERED 97 -> 96: `Catalogue` (llm+mcp) DRAINED by Q128 p17 (security): the llm plane's arrival
+/// no longer consults a catalogue before the caller is authenticated, so its `Catalogue` trait is
+/// deleted and the name pairs nothing.
+///
 /// MANDATORY DRAIN (owner: lane a29e9b3, busbar-llm retirement): the busbar-plane-llm extraction
 /// (status row 106, the #1072 recipe) re-lowers UNLEDGERED_ARMED to the measure after extraction in
 /// the SAME PR, and the plugin repo's own plane-dup run carries these names from then on.
-pub const UNLEDGERED_ARMED: usize = 97;
+pub const UNLEDGERED_ARMED: usize = 96;
 
 /// [`ROW_UNLEDGERED`], judged against [`UNLEDGERED_ARMED`]. A tree with none is clean.
 fn unledgered_row(unledgered: &[String]) -> Row {

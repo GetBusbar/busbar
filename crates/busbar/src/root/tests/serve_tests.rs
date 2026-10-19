@@ -6937,31 +6937,33 @@ mod pools_door_refusals {
         let _published = Withdrawn(instance);
         let (rig, far) = keyed(instance).await;
         let mut answers = Vec::new();
-        for provider in ["oai1", "no-such-provider"] {
+        // A configured model under the wrong provider, the same model under a provider nobody
+        // configured, and a model nobody configured: an anonymous caller tells none of them apart.
+        for (provider, model) in [("oai1", "m0"), ("no-such-provider", "m0"), ("oai1", "zzz")] {
             let (status, _, body) = rig
                 .send_bare(
                     "POST",
-                    &format!("/{provider}/m0{}", door_word("messages_path")),
-                    Some(serde_json::json!({"model": "m0", "messages": [], "max_tokens": 16})),
+                    &format!("/{provider}/{model}{}", door_word("messages_path")),
+                    Some(serde_json::json!({"model": model, "messages": [], "max_tokens": 16})),
                     &[],
                 )
                 .await;
             assert_eq!(
                 status,
                 401,
-                "{provider}: {}",
+                "{provider}/{model}: {}",
                 String::from_utf8_lossy(&body)
             );
             let answer = json_of(&body);
             assert_eq!(
                 answer["error"]["type"], "authentication_error",
-                "{provider}: {answer}"
+                "{provider}/{model}: {answer}"
             );
             answers.push(answer["error"].clone());
         }
-        assert_eq!(
-            answers[0], answers[1],
-            "the two probes read the same refusal"
+        assert!(
+            answers.iter().all(|a| *a == answers[0]),
+            "the three probes read the same refusal: {answers:?}"
         );
         assert_eq!(far.served(), 0, "nothing is dialled");
     }
