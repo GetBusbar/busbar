@@ -90,8 +90,9 @@ pub struct IdentityOut {
     /// refuses the request (replay). Absent or empty = no claim. The plane never sees it. Appended
     /// last (a pre-tag layout edit).
     pub replay_key: Span,
-    /// How long the replay claim stands, seconds. Read only when [`Self::replay_key`] is present
-    /// and non-empty.
+    /// How long the replay claim stands, seconds: non-zero exactly when [`Self::replay_key`] is
+    /// present and non-empty. A key with a zero TTL, or a TTL with no key, refuses the identity
+    /// (`check_identify`): a zero never grants.
     pub replay_ttl_secs: u64,
     /// The credential the identity was verified from, as the kernel holds it on the unit for the
     /// `caller-credential` style (THE DESIGN, "Auth points and guest lists", step 4). SECRET:
