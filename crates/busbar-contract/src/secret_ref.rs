@@ -675,180 +675,223 @@ impl RefVisitor<'_> {
     }
 }
 
+/// THE ONE VISITOR: the declared reading ([`SecretRef::deserialize_declared`]) and the
+/// context-free one ([`SecretRef`]'s `Deserialize`) both drive it.
+impl<'de> Visitor<'de> for RefVisitor<'_> {
+    type Value = SecretRef;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut forms = vec!["{ module: <secret-module>, settings: {…} }".to_string()];
+        match self.sugars {
+            Some(sugars) => forms.extend(sugars.forms()),
+            None => forms.push("{ <sugar>: <value> }".to_string()),
+        }
+        write!(
+            f,
+            "a secret reference map: {}, or the bare scalar `none`",
+            forms.join(", ")
+        )
+    }
+
+    // A bare scalar here is almost always a LITERAL SECRET pasted inline (the exact mistake this
+    // type exists to prevent). Reject it with a message that NEVER echoes the value — serde's
+    // default invalid-type error would print the value verbatim into boot logs.
+    //
+    // The ONE exception is the reserved word `none`: the explicit "this upstream takes no
+    // credential" declaration (see [`SECRET_MODULE_NONE`]). It is a SCALAR and only a scalar — it
+    // names no source, so a `{ none: … }` map form would invite settings that mean nothing. A real
+    // secret that happened to be the literal string `none` would fail CLOSED here (no credential
+    // presented), never leak.
+    fn visit_str<E>(self, v: &str) -> Result<SecretRef, E>
+    where
+        E: de::Error,
+    {
+        if v == SECRET_MODULE_NONE {
+            return Ok(SecretRef::none());
+        }
+        Err(self.inline_literal())
+    }
+
+    // Every OTHER scalar form, for the same reason and with the same non-echoing message. A secret
+    // is not always quoted: `api_key: 483920175534` and `api_key: true` are perfectly ordinary
+    // YAML, and each one landed on serde's default `invalid type` error — which prints the value it
+    // received. The one path this type exists to keep a secret off (the boot log) is exactly where
+    // it went, and unquoted is the spelling nobody thinks to check.
+    fn visit_u64<E>(self, _v: u64) -> Result<SecretRef, E>
+    where
+        E: de::Error,
+    {
+        Err(self.inline_literal())
+    }
+
+    fn visit_i64<E>(self, _v: i64) -> Result<SecretRef, E>
+    where
+        E: de::Error,
+    {
+        Err(self.inline_literal())
+    }
+
+    fn visit_f64<E>(self, _v: f64) -> Result<SecretRef, E>
+    where
+        E: de::Error,
+    {
+        Err(self.inline_literal())
+    }
+
+    fn visit_bool<E>(self, _v: bool) -> Result<SecretRef, E>
+    where
+        E: de::Error,
+    {
+        Err(self.inline_literal())
+    }
+
+    fn visit_bytes<E>(self, _v: &[u8]) -> Result<SecretRef, E>
+    where
+        E: de::Error,
+    {
+        Err(self.inline_literal())
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<SecretRef, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut module: Option<String> = None;
+        let mut settings: Option<serde_json::Map<String, serde_json::Value>> = None;
+        let mut sugar: Option<(String, String)> = None;
+
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "module" => {
+                    if module.is_some() {
+                        return Err(de::Error::duplicate_field("module"));
+                    }
+                    // Read as an untyped value and check the shape ourselves: a typed
+                    // `next_value::<String>()` on a mismatched scalar makes serde echo the scalar
+                    // verbatim into the boot log, and this deserializer NEVER echoes what it was
+                    // handed. A non-string `module:` names no module — refuse without printing the
+                    // value.
+                    match map.next_value::<serde_json::Value>()? {
+                        serde_json::Value::String(s) => module = Some(s),
+                        _ => {
+                            return Err(de::Error::custom(
+                                "a secret reference `module:` must be a string naming a secret \
+                                 module (the value is not echoed)",
+                            ))
+                        }
+                    }
+                }
+                "settings" => {
+                    if settings.is_some() {
+                        return Err(de::Error::duplicate_field("settings"));
+                    }
+                    // Untyped-then-shape-check: `settings:` given as a scalar is a pasted
+                    // credential in the wrong slot; a typed `next_value::<Map>()` would echo it.
+                    // Refuse with the shared non-echoing message.
+                    match map.next_value::<serde_json::Value>()? {
+                        serde_json::Value::Object(m) => settings = Some(m),
+                        _ => return Err(self.inline_literal()),
+                    }
+                }
+                word if self.is_sugar(word) => {
+                    if let Some((first, _)) = &sugar {
+                        return Err(self.refuse(Refusal::Two {
+                            first,
+                            second: word,
+                        }));
+                    }
+                    // Untyped-then-shape-check: a non-string sugar value (e.g. an unquoted YAML
+                    // number/bool, or a nested map holding a literal) must not be echoed.
+                    match map.next_value::<serde_json::Value>()? {
+                        serde_json::Value::String(s) => sugar = Some((word.to_string(), s)),
+                        _ => return Err(self.refuse(Refusal::NotText { word })),
+                    }
+                }
+                other => return Err(de::Error::custom(self.unknown(other))),
+            }
+        }
+
+        match (module, sugar) {
+            (Some(_), Some((word, _))) => Err(self.refuse(Refusal::Both { word: &word })),
+            (Some(module), None) => {
+                if module.trim().is_empty() {
+                    return Err(de::Error::custom(
+                        "a secret reference `module:` must be non-empty",
+                    ));
+                }
+                Ok(SecretRef {
+                    module,
+                    settings: settings.unwrap_or_default(),
+                })
+            }
+            (None, Some((word, value))) => {
+                if settings.is_some() {
+                    return Err(self.refuse(Refusal::WithSettings { word: &word }));
+                }
+                if value.trim().is_empty() {
+                    return Err(self.refuse(Refusal::Blank { word: &word }));
+                }
+                Ok(match self.sugars.and_then(|s| s.get(&word)) {
+                    Some(declared) => declared.reference(value),
+                    None => SecretRef::sugar(word, value),
+                })
+            }
+            (None, None) => Err(self.needs()),
+        }
+    }
+}
+
 /// The CONTEXT-FREE reading (see the module docs): what a plugin reads its own settings with.
 impl<'de> Deserialize<'de> for SecretRef {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        // THE ONE VISITOR's reading, written here beside the impl it serves (the declared reading,
-        // [`SecretRef::deserialize_declared`], drives the same `Visitor`): the scalar forms it
-        // refuses and the canonical keys it reads are this impl's.
-        impl<'de> Visitor<'de> for RefVisitor<'_> {
+        // The one visitor with no table, its scalar refusals stated here, where this impl's own
+        // reading of each form is read: every scalar but the bare `none` is an inline literal,
+        // refused without echoing it; a map is the one visitor's.
+        struct Free;
+
+        impl<'de> Visitor<'de> for Free {
             type Value = SecretRef;
 
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                let mut forms = vec!["{ module: <secret-module>, settings: {…} }".to_string()];
-                match self.sugars {
-                    Some(sugars) => forms.extend(sugars.forms()),
-                    None => forms.push("{ <sugar>: <value> }".to_string()),
-                }
-                write!(
-                    f,
-                    "a secret reference map: {}, or the bare scalar `none`",
-                    forms.join(", ")
-                )
+                RefVisitor { sugars: None }.expecting(f)
             }
 
-            // A bare scalar here is almost always a LITERAL SECRET pasted inline (the exact mistake this
-            // type exists to prevent). Reject it with a message that NEVER echoes the value — serde's
-            // default invalid-type error would print the value verbatim into boot logs.
-            //
-            // The ONE exception is the reserved word `none`: the explicit "this upstream takes no
-            // credential" declaration (see [`SECRET_MODULE_NONE`]). It is a SCALAR and only a scalar — it
-            // names no source, so a `{ none: … }` map form would invite settings that mean nothing. A real
-            // secret that happened to be the literal string `none` would fail CLOSED here (no credential
-            // presented), never leak.
-            fn visit_str<E>(self, v: &str) -> Result<SecretRef, E>
-            where
-                E: de::Error,
-            {
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<SecretRef, E> {
                 if v == SECRET_MODULE_NONE {
                     return Ok(SecretRef::none());
                 }
-                Err(self.inline_literal())
+                Err(RefVisitor { sugars: None }.inline_literal())
             }
 
-            // Every OTHER scalar form, for the same reason and with the same non-echoing message. A secret
-            // is not always quoted: `api_key: 483920175534` and `api_key: true` are perfectly ordinary
-            // YAML, and each one landed on serde's default `invalid type` error — which prints the value it
-            // received. The one path this type exists to keep a secret off (the boot log) is exactly where
-            // it went, and unquoted is the spelling nobody thinks to check.
-            fn visit_u64<E>(self, _v: u64) -> Result<SecretRef, E>
-            where
-                E: de::Error,
-            {
-                Err(self.inline_literal())
+            fn visit_u64<E: de::Error>(self, _v: u64) -> Result<SecretRef, E> {
+                Err(RefVisitor { sugars: None }.inline_literal())
             }
 
-            fn visit_i64<E>(self, _v: i64) -> Result<SecretRef, E>
-            where
-                E: de::Error,
-            {
-                Err(self.inline_literal())
+            fn visit_i64<E: de::Error>(self, _v: i64) -> Result<SecretRef, E> {
+                Err(RefVisitor { sugars: None }.inline_literal())
             }
 
-            fn visit_f64<E>(self, _v: f64) -> Result<SecretRef, E>
-            where
-                E: de::Error,
-            {
-                Err(self.inline_literal())
+            fn visit_f64<E: de::Error>(self, _v: f64) -> Result<SecretRef, E> {
+                Err(RefVisitor { sugars: None }.inline_literal())
             }
 
-            fn visit_bool<E>(self, _v: bool) -> Result<SecretRef, E>
-            where
-                E: de::Error,
-            {
-                Err(self.inline_literal())
+            fn visit_bool<E: de::Error>(self, _v: bool) -> Result<SecretRef, E> {
+                Err(RefVisitor { sugars: None }.inline_literal())
             }
 
-            fn visit_bytes<E>(self, _v: &[u8]) -> Result<SecretRef, E>
-            where
-                E: de::Error,
-            {
-                Err(self.inline_literal())
+            fn visit_bytes<E: de::Error>(self, _v: &[u8]) -> Result<SecretRef, E> {
+                Err(RefVisitor { sugars: None }.inline_literal())
             }
 
-            fn visit_map<A>(self, mut map: A) -> Result<SecretRef, A::Error>
-            where
-                A: MapAccess<'de>,
-            {
-                let mut module: Option<String> = None;
-                let mut settings: Option<serde_json::Map<String, serde_json::Value>> = None;
-                let mut sugar: Option<(String, String)> = None;
-
-                while let Some(key) = map.next_key::<String>()? {
-                    match key.as_str() {
-                        "module" => {
-                            if module.is_some() {
-                                return Err(de::Error::duplicate_field("module"));
-                            }
-                            // Read as an untyped value and check the shape ourselves: a typed
-                            // `next_value::<String>()` on a mismatched scalar makes serde echo the scalar
-                            // verbatim into the boot log, and this deserializer NEVER echoes what it was
-                            // handed. A non-string `module:` names no module — refuse without printing the
-                            // value.
-                            match map.next_value::<serde_json::Value>()? {
-                                serde_json::Value::String(s) => module = Some(s),
-                                _ => {
-                                    return Err(de::Error::custom(
-                                        "a secret reference `module:` must be a string naming a secret \
-                                         module (the value is not echoed)",
-                                    ))
-                                }
-                            }
-                        }
-                        "settings" => {
-                            if settings.is_some() {
-                                return Err(de::Error::duplicate_field("settings"));
-                            }
-                            // Untyped-then-shape-check: `settings:` given as a scalar is a pasted
-                            // credential in the wrong slot; a typed `next_value::<Map>()` would echo it.
-                            // Refuse with the shared non-echoing message.
-                            match map.next_value::<serde_json::Value>()? {
-                                serde_json::Value::Object(m) => settings = Some(m),
-                                _ => return Err(self.inline_literal()),
-                            }
-                        }
-                        word if self.is_sugar(word) => {
-                            if let Some((first, _)) = &sugar {
-                                return Err(self.refuse(Refusal::Two {
-                                    first,
-                                    second: word,
-                                }));
-                            }
-                            // Untyped-then-shape-check: a non-string sugar value (e.g. an unquoted YAML
-                            // number/bool, or a nested map holding a literal) must not be echoed.
-                            match map.next_value::<serde_json::Value>()? {
-                                serde_json::Value::String(s) => sugar = Some((word.to_string(), s)),
-                                _ => return Err(self.refuse(Refusal::NotText { word })),
-                            }
-                        }
-                        other => return Err(de::Error::custom(self.unknown(other))),
-                    }
-                }
-
-                match (module, sugar) {
-                    (Some(_), Some((word, _))) => Err(self.refuse(Refusal::Both { word: &word })),
-                    (Some(module), None) => {
-                        if module.trim().is_empty() {
-                            return Err(de::Error::custom(
-                                "a secret reference `module:` must be non-empty",
-                            ));
-                        }
-                        Ok(SecretRef {
-                            module,
-                            settings: settings.unwrap_or_default(),
-                        })
-                    }
-                    (None, Some((word, value))) => {
-                        if settings.is_some() {
-                            return Err(self.refuse(Refusal::WithSettings { word: &word }));
-                        }
-                        if value.trim().is_empty() {
-                            return Err(self.refuse(Refusal::Blank { word: &word }));
-                        }
-                        Ok(match self.sugars.and_then(|s| s.get(&word)) {
-                            Some(declared) => declared.reference(value),
-                            None => SecretRef::sugar(word, value),
-                        })
-                    }
-                    (None, None) => Err(self.needs()),
-                }
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<SecretRef, A::Error> {
+                RefVisitor { sugars: None }.visit_map(map)
             }
         }
 
-        deserializer.deserialize_any(RefVisitor { sugars: None })
+        deserializer.deserialize_any(Free)
     }
 }
 

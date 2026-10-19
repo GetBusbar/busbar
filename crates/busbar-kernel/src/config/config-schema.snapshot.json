@@ -2634,16 +2634,7 @@
       "wire_keys": []
     },
     "manual-de SecretRef": {
-      "fields": {
-        "module": {
-          "optional": false,
-          "type": "String"
-        },
-        "settings": {
-          "optional": false,
-          "type": "serde_json::Map<String, serde_json::Value>"
-        }
-      },
+      "fields": {},
       "kind": "manual",
       "refused": [
         "bool",
@@ -2652,10 +2643,7 @@
         "i64",
         "u64"
       ],
-      "wire_keys": [
-        "module",
-        "settings"
-      ]
+      "wire_keys": []
     },
     "manual-de SplitDocument": {
       "fields": {},
