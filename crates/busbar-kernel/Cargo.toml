@@ -142,9 +142,6 @@ arc-swap = { workspace = true }
 httpdate = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
-# W4.b P2 (absorbed from busbar-substrate): the client WS handshake for the neutral full-duplex
-# WEBSOCKET transport, OPTIONAL behind the `runtime` capability — OFF in a default/shipped build.
-tokio-tungstenite = { workspace = true, optional = true }
 # W4.b P2 (absorbed from busbar-substrate): the egress differential-harness fixtures + the relocated
 # plane_host identity/trust_anchor registry tests mint throw-away certs with rcgen; OPTIONAL, pulled
 # only by `test-support`. (A dev-dependency copy below still serves plain `cargo test -p`.)
@@ -197,11 +194,11 @@ plane-a2a = ["card-signing", "jsonrpc-ingress", "relay"]
 # this capability is compiled out entirely — byte-identical assembly, strong-form deletable.
 duplex-ws  = ["runtime"]
 # The neutral capability markers. `dispatch`/`relay` gate the `#[cfg]`/dead-code-allowance sites in
-# this crate's engine source; `runtime` arms the full-duplex WS transport (client handshake +
-# `axum/ws`). All three gate this crate's sites alone: the contract's channel axis is ungated.
+# this crate's engine source; `runtime` arms the full-duplex WS transport (the
+# `axum/ws` acceptor). All three gate this crate's sites alone: the contract's channel axis is ungated.
 dispatch = []
 relay = []
-runtime = ["dep:tokio-tungstenite", "axum/ws"]
+runtime = ["axum/ws"]
 # ── NEUTRAL CAPABILITY MARKERS (plane-purity) ──────────────────────────────────────────────────────
 # The neutral crates must name NO plane token in source (enforced by the plane-purity
 # lint). These pure markers stand in for the `#[cfg(feature = "plane-mcp"/"plane-a2a")]` gates that
@@ -256,6 +253,9 @@ busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 # doubles here, and the real-plugin proofs live with the composition root, `crates/busbar/tests`.)
 metrics-exporter-prometheus = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+# The far side of the WS-accept seam's session tests (`tests/router_session_tests.rs`): a test client
+# only. The kernel dials no WebSocket; an upstream duplex rides the connector (row 130 E3).
+tokio-tungstenite = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 axum = { workspace = true, features = ["http1"] }
 http-body-util = { workspace = true }
