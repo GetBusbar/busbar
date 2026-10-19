@@ -50,6 +50,21 @@ pub struct Request {
     pub timeout_ms: u64,
 }
 
+/// A request is WIPED when it is dropped: its body (a token exchange's form carries a client secret,
+/// a code, a verifier) and its fields are zeroized, not freed as they were.
+impl Drop for Request {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.method.zeroize();
+        self.target.zeroize();
+        for (name, value) in &mut self.fields {
+            name.zeroize();
+            value.zeroize();
+        }
+        self.body.zeroize();
+    }
+}
+
 /// The far end's reply to an [`exchange`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExchangeResponse {
@@ -86,6 +101,21 @@ enum Sending {
         timeout_ms: u64,
     },
     Raw(Box<[u8]>),
+}
+
+/// What an exchange sends is WIPED when the exchange is dropped: the head (it may carry a
+/// credential field) and the body (it may carry a secret form).
+impl Drop for Sending {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        match self {
+            Sending::Framed { head, body, .. } => {
+                head.zeroize();
+                body.zeroize();
+            }
+            Sending::Raw(bytes) => bytes.zeroize(),
+        }
+    }
 }
 
 /// An [`exchange`]'s (or a [`send_and_ack`]'s) state across its op's PENDING entries: what it sends
@@ -195,7 +225,16 @@ impl Exchange {
     /// A field is a pseudo-field (its name starts with `:`), or a name or value carries a line
     /// break: REFUSED, nothing sent.
     pub fn request(request: Request) -> Result<Self, ConnFailure> {
-        let mut head = Vec::new();
+        // Sized whole up front, so building it never leaves a grown-out copy behind unwiped; the
+        // working buffer is wiped once the sent copy is taken.
+        let whole = request.method.len()
+            + request.target.len()
+            + request
+                .fields
+                .iter()
+                .map(|(n, v)| n.len() + fields::SEPARATOR.len() + v.len() + fields::LINE_END.len())
+                .sum::<usize>();
+        let mut head = zeroize::Zeroizing::new(Vec::with_capacity(whole));
         head.extend_from_slice(&request.method);
         head.extend_from_slice(&request.target);
         let block_at = head.len();
@@ -227,9 +266,9 @@ impl Exchange {
             timeout_ms: request.timeout_ms,
         });
         Ok(Self::over(Sending::Framed {
-            head: head.into_boxed_slice(),
+            head: head.as_slice().into(),
             head_piece,
-            body: request.body.into_boxed_slice(),
+            body: request.body.as_slice().into(),
             body_piece: piece(REQUEST_BODY),
             end_piece: piece(REQUEST_END),
             timeout_ms: request.timeout_ms,
@@ -239,7 +278,8 @@ impl Exchange {
     /// An exchange sending `bytes` as they are, over any transport ([`send_and_ack`]).
     #[must_use]
     pub fn send(bytes: Vec<u8>) -> Self {
-        Self::over(Sending::Raw(bytes.into_boxed_slice()))
+        let bytes = zeroize::Zeroizing::new(bytes);
+        Self::over(Sending::Raw(bytes.as_slice().into()))
     }
 
     /// THE FIELDS THIS EXCHANGE FRAMES, read back off the head it sends: `(name, value)`, in
