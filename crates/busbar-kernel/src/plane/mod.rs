@@ -92,7 +92,6 @@
 pub mod approvals;
 pub mod config;
 pub mod door;
-pub mod observe;
 pub(crate) mod quarantine;
 /// The durable demotion record, which the root attaches to the kernel's host services.
 pub use quarantine::DemotionRecord;
@@ -899,10 +898,6 @@ pub(crate) fn isolated_three_plane_test_registry() -> registry::TestRegistryIsol
 mod sections_tests;
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
-
-// The NEUTRAL plane-observe response marker `Counted` — the one type a plane's handler and core's
-// `plane::observe` boundary both name. It carries nothing and names no engine type, so it lives
-// here; core re-exports it from `busbar_kernel::plane::observe` so its middleware reads the same type.
 
 // The plane store seam's narrowing adapter: the `PlaneStore` trait a plane persists through and the
 // `PlaneStoreView` that narrows a real `busbar_contract::records::RecordStore` to it. Both name only `busbar_contract` leaf
