@@ -676,8 +676,7 @@ fn a_doors_probe_is_handed_each_providers_base_url_stripped_and_trimmed() {
     );
     let ctx = BuildCtx {
         endpoint_slot: None,
-        agent_defs: &(),
-        tool_defs: &section,
+        section: Some(&section),
         public_url: None,
         prior: None,
         providers: Some(&providers),
