@@ -994,6 +994,30 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                         ));
                     }
                 }
+                // Rule (verbs, #77(9) l.2279): the per-verb allow-list is `"*"` or a list of the
+                // closed admin table's operation names. Any other shape, and any name the table
+                // does not declare, is refused: an allow-list entry that grants nothing must never
+                // sit inert while the operator believes it granted.
+                match binding.verb_grant() {
+                    None | Some(Ok(crate::config::VerbGrant::All)) => {}
+                    Some(Err(shape)) => errors.push(format!(
+                        "role_bindings.{module}.{role}.verbs must be \"{all}\" or a list of admin \
+                         verb names, not {shape}",
+                        all = crate::config::ALL_ADMIN_VERBS
+                    )),
+                    Some(Ok(crate::config::VerbGrant::Named(names))) => {
+                        for name in names {
+                            if crate::admin::seam::admin_verb_rung(&name).is_none() {
+                                errors.push(format!(
+                                    "role_bindings.{module}.{role}.verbs names unknown admin verb \
+                                     '{name}': expected \"{all}\" or operation names from the \
+                                     admin verb table (e.g. get_keys, post_keys)",
+                                    all = crate::config::ALL_ADMIN_VERBS
+                                ));
+                            }
+                        }
+                    }
+                }
                 if let Some(group) = binding.group.as_deref() {
                     if !cfg.groups.contains_key(group) {
                         errors.push(format!(

@@ -182,10 +182,6 @@
           "optional": true,
           "type": "String"
         },
-        "operator_pub": {
-          "optional": true,
-          "type": "SecretRef"
-        },
         "policy": {
           "optional": true,
           "type": "AuthPolicyCfg"
@@ -2126,6 +2122,10 @@
         "group": {
           "optional": true,
           "type": "String"
+        },
+        "verbs": {
+          "optional": true,
+          "type": "serde_json::Value"
         }
       },
       "kind": "struct",

@@ -16,6 +16,7 @@ fn binding(
         allowed_pools: allowed_pools.map(|ps| ps.iter().map(|p| p.to_string()).collect()),
         group: group.map(str::to_string),
         admin_scope: admin_scope.map(str::to_string),
+        verbs: None,
     }
 }
 
@@ -3531,4 +3532,198 @@ fn the_gate_strips_the_styles_lines_and_the_operator_credentials() {
     consumed.strip(&mut headers);
     let kept: Vec<String> = headers.keys().map(|n| n.as_str().to_string()).collect();
     assert_eq!(kept, ["x-trace"]);
+}
+
+// ── #77(9) l.2279: the per-verb allow-list on a role binding ────────────────────────────────────
+
+/// An app whose admin chain is the `test-scope-module` stand-in (`grp:<role>` identifies a principal
+/// carrying exactly that role), ceilinged at `cap`, binding `ops` to `ops` — with the closed admin
+/// verb table's kind-neutral double registered, so a `verbs:` name has a rung.
+fn verbs_app(ops: crate::config::RoleBindingCfg, cap: &str) -> std::sync::Arc<crate::state::App> {
+    crate::test_support::install_admin_verb_table_double();
+    let mut app = crate::test_support::TestApp::new()
+        .admin_chain(vec!["test-scope-module".to_string()])
+        .role_bindings(bindings_for("test-scope-module", &[("ops", ops)]))
+        .build();
+    let a = std::sync::Arc::get_mut(&mut app).expect("unshared App Arc");
+    a.auth_scope_caps
+        .insert("test-scope-module".to_string(), cap.to_string());
+    app
+}
+
+/// A binding parsed off its config text, as an operator writes it under
+/// `auth.role_bindings.<provider>.<role>:`.
+fn verbs_binding(yaml: &str) -> crate::config::RoleBindingCfg {
+    serde_yaml::from_str(yaml).expect("`verbs:` is a role-binding key")
+}
+
+/// THE DOOR READS THE ALLOW-LIST. A role granting verbs BY NAME is identified WITH its list: the
+/// matrix holds every rung a named verb needs (here `full`, for one mutation), and the list holds
+/// exactly the names. RED before #77(9)'s allow-list: `RoleBindingCfg` had no `verbs`, so the door
+/// had nothing to read and the principal, holding no `admin_scope`, earned no grant at all.
+#[test]
+fn a_role_granting_verbs_by_name_is_identified_with_its_allow_list() {
+    use busbar_contract::authz::{Grants, Scope};
+    crate::snapshot::init();
+    let app = verbs_app(verbs_binding("verbs: [post_config_apply]"), "full");
+    let door = admin_door(
+        &app,
+        "POST",
+        "/api/v1/admin/config/apply",
+        &admin_headers(Some("grp:ops"), None),
+    );
+    let AdminDoor::Listed(principal, grants, list) = door else {
+        panic!("a role granting verbs by name is identified with its list, got {door:?}");
+    };
+    assert_eq!(principal.id, "test:ops");
+    assert_eq!(
+        grants,
+        Grants::of(Scope::Full),
+        "the matrix reaches the named verb's rung"
+    );
+    assert_eq!(list.rungs, Grants::default(), "no rung is held whole");
+    assert!(
+        list.admits(Some("post_config_apply"), Scope::Full),
+        "the named verb is admitted"
+    );
+    assert!(
+        !list.admits(Some("post_keys"), Scope::Full),
+        "a mutation the list does not name is not"
+    );
+    assert!(
+        !list.admits(Some("get_keys"), Scope::ReadOnly),
+        "nor is a read the list does not name: a named list is not a rung"
+    );
+    assert!(
+        !list.admits(None, Scope::ReadOnly),
+        "and a path the table names no verb for is no verb"
+    );
+}
+
+/// `verbs: "*"` IS `admin_scope: full`: the same door verdict, value for value — an `Identified`
+/// principal holding the full rung, no list. RED before the allow-list: the key did not parse.
+#[test]
+fn verbs_star_is_exactly_admin_scope_full() {
+    crate::snapshot::init();
+    let star = verbs_app(verbs_binding("verbs: \"*\""), "full");
+    let full = verbs_app(binding(None, None, Some("full")), "full");
+    let headers = admin_headers(Some("grp:ops"), None);
+    for (method, path) in [
+        ("POST", "/api/v1/admin/config/apply"),
+        ("GET", "/api/v1/admin/keys"),
+    ] {
+        let by_star = admin_door(&star, method, path, &headers);
+        assert!(matches!(by_star, AdminDoor::Identified(..)), "{by_star:?}");
+        assert_eq!(
+            by_star,
+            admin_door(&full, method, path, &headers),
+            "{method} {path}: `verbs: \"*\"` must be exactly `admin_scope: full`"
+        );
+    }
+}
+
+/// A binding with NO `verbs` key is judged exactly as before: `read-only` and `full` stay the
+/// 1.5.5 shorthands, an `Identified` verdict with the rung, never a list.
+#[test]
+fn a_binding_without_verbs_is_judged_by_its_rung_alone() {
+    use busbar_contract::authz::{Grants, Scope};
+    crate::snapshot::init();
+    let headers = admin_headers(Some("grp:ops"), None);
+    for (scope, rung) in [("read-only", Scope::ReadOnly), ("full", Scope::Full)] {
+        let app = verbs_app(binding(None, None, Some(scope)), "full");
+        let door = admin_door(&app, "POST", "/api/v1/admin/config/apply", &headers);
+        let AdminDoor::Identified(_, grants) = door else {
+            panic!("{scope}: a binding with no `verbs` key is never listed, got {door:?}");
+        };
+        assert_eq!(grants, Grants::of(rung), "{scope}");
+    }
+}
+
+/// The provider's `max_admin_scope:` caps a NAMED verb exactly as it caps an `admin_scope`: under a
+/// `read-only` ceiling a named mutation is dropped and only the named read stays held.
+#[test]
+fn the_providers_ceiling_caps_a_named_verb() {
+    use busbar_contract::authz::{Grants, Scope};
+    crate::snapshot::init();
+    let app = verbs_app(
+        verbs_binding("verbs: [get_keys, post_config_apply]"),
+        "read-only",
+    );
+    let door = admin_door(
+        &app,
+        "GET",
+        "/api/v1/admin/keys",
+        &admin_headers(Some("grp:ops"), None),
+    );
+    let AdminDoor::Listed(_, grants, list) = door else {
+        panic!("the named read survives the ceiling, got {door:?}");
+    };
+    assert_eq!(grants, Grants::of(Scope::ReadOnly));
+    assert!(list.admits(Some("get_keys"), Scope::ReadOnly));
+    assert!(
+        !list.admits(Some("post_config_apply"), Scope::Full),
+        "a named mutation above the provider's ceiling is not held"
+    );
+}
+
+/// THE ADMIN GATE ENFORCES THE LIST, at the one chokepoint every admin path crosses: the named
+/// mutation passes authorization (no admin surface is mounted in this binary, so it then falls
+/// through — anything but 401/403), a mutation the list does not name is the 403 a missing rung
+/// gets, in its envelope. RED before the allow-list: the `verbs` key did not exist, so the
+/// principal held no grant and the named mutation was refused too.
+#[tokio::test]
+async fn the_admin_gate_admits_only_the_listed_verbs() {
+    crate::snapshot::init();
+    let app = verbs_app(verbs_binding("verbs: [post_config_apply]"), "full");
+    let (base, handle) = serve_app(app).await;
+    let client = reqwest::Client::new();
+    let listed = client
+        .post(format!("{base}/api/v1/admin/config/apply"))
+        .bearer_auth("grp:ops")
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(
+        listed.status().as_u16(),
+        401,
+        "the listed role authenticates"
+    );
+    assert_ne!(
+        listed.status().as_u16(),
+        403,
+        "the listed verb must pass authorization, got {}",
+        listed.status()
+    );
+    for (method, path) in [
+        (reqwest::Method::POST, "/api/v1/admin/keys"),
+        (reqwest::Method::GET, "/api/v1/admin/keys"),
+    ] {
+        let refused = client
+            .request(method.clone(), format!("{base}{path}"))
+            .bearer_auth("grp:ops")
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            refused.status().as_u16(),
+            403,
+            "{method} {path}: a verb the list does not name is refused"
+        );
+        let needed = if method == reqwest::Method::GET {
+            "read-only"
+        } else {
+            "full"
+        };
+        assert_eq!(
+            refused.text().await.unwrap(),
+            format!(
+                "{{\"error\":{{\"code\":\"forbidden\",\"message\":\"this endpoint requires the \
+                 `{needed}` admin scope\"}}}}"
+            ),
+            "{method} {path}: the refusal is the existing scope refusal, byte for byte"
+        );
+    }
+    handle.abort();
 }

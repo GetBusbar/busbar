@@ -770,14 +770,6 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         .filter_map(|capture| capture(&cfg))
         .collect();
 
-    // D38: the fleet's SEALED OPERATOR KEY reference (`auth.operator_pub`), captured from the
-    // resolved `auth:` block BEFORE `cfg` is consumed by `build_app_from_config`. It is resolved to
-    // its raw 32 ed25519 bytes below — once the secret resolver the build produces exists — and
-    // sealed into the admin plane's production posture view. Absent (the default) it stays `None`,
-    // which the posture view reads as `OperatorState::Unset`: the amend ceremony gate refuses exactly
-    // as the release without this field, byte for byte.
-    #[cfg(feature = "root-admin")]
-    let boot_operator_auth = cfg.auth.clone();
     // The operator's data chain (`auth.chain`), the auth of every data-listener guest-list line
     // (THE DESIGN §6), captured for the door planes' lines before `cfg` is consumed.
     let data_chain: Vec<String> = cfg
@@ -1021,16 +1013,6 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // Grab the secret resolver before `app` is moved into the router builder - the TLS listeners
     // resolve cert/key/CA references through it below.
     let tls_secret_resolver = app.secret_resolver.clone();
-    // D38: resolve the sealed operator public key to its raw 32 ed25519 bytes through the SAME secret
-    // seam every key is resolved through (built-in env/file + kind:secret plugins). FAIL-CLOSED on a
-    // configured-but-unresolvable / malformed key — a fleet that MEANT to seal one must not come up
-    // silently ungated. `None` (absent) ⇒ `OperatorState::Unset` in the posture view below.
-    #[cfg(feature = "root-admin")]
-    let operator_key = busbar_kernel::preflight::resolve_operator_public_key(
-        boot_operator_auth.as_ref(),
-        &tls_secret_resolver,
-    )
-    .unwrap_or_else(|e| die(e));
     // THE PROCESS'S ONE BOOK IS OPENED BEFORE THE ROUTERS ARE BUILT (ARCHITECT Q-SW7, 2026-10-02):
     // the door planes' data routes are the router's construction (Q-SW1) and their units settle onto
     // this same one book, so it is opened from the boot `app` and opened once; nothing below opens
@@ -1242,7 +1224,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             req_body_max,
             &app_handle,
             book,
-            operator_key,
+            None,
             &late_services,
             breaker_policy,
         ),

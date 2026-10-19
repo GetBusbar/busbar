@@ -1655,6 +1655,7 @@ fn test_validate_rejects_bad_chain_and_role_binding_scopes() {
                 allowed_pools: None,
                 group: None,
                 admin_scope: Some("readonly".to_string()), // typo (it's read-only)
+                verbs: None,
             },
         )]),
     );
@@ -1687,6 +1688,58 @@ fn test_validate_rejects_bad_chain_and_role_binding_scopes() {
     );
 }
 
+/// #77(9) l.2279 — THE PER-VERB ALLOW-LIST FAILS CLOSED AT VALIDATION. `role_bindings.<m>.<role>.verbs`
+/// parses off the config text (`"*"` or a list of names), and a name the closed admin verb table
+/// does not declare, or a value of any other shape, is refused naming the binding — never left to
+/// sit inert while the operator believes it granted. RED before the allow-list: `verbs` was an
+/// unknown `role_bindings` key, so the first parse below failed.
+#[test]
+fn a_verb_allow_list_naming_an_unknown_verb_is_refused_at_validation() {
+    crate::test_support::install_admin_verb_table_double();
+    let errors_for = |yaml: &str| -> Vec<String> {
+        let binding: config::RoleBindingCfg =
+            serde_yaml::from_str(yaml).expect("`verbs:` is a role-binding key");
+        let (providers, models, pools) = valid_maps();
+        let mut cfg = make_root_cfg(providers, models, pools);
+        let mut auth = config::AuthCfg::default_none();
+        auth.chain = vec![config::AuthChainEntry::bare("keys")];
+        auth.role_bindings.insert(
+            "keys".to_string(),
+            std::collections::BTreeMap::from([("ops".to_string(), binding)]),
+        );
+        cfg.auth = Some(auth);
+        validate(&cfg)
+            .err()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| e.contains("role_bindings.keys.ops.verbs"))
+            .collect()
+    };
+
+    let unknown = errors_for("verbs: [get_keys, not_a_verb]");
+    assert_eq!(
+        unknown.len(),
+        1,
+        "exactly the unknown name is refused: {unknown:?}"
+    );
+    assert!(
+        unknown[0].contains("unknown admin verb 'not_a_verb'") && unknown[0].contains("\"*\""),
+        "the refusal names the verb and the valid forms: {unknown:?}"
+    );
+    let shape = errors_for("verbs: full");
+    assert!(
+        shape.len() == 1 && shape[0].contains("must be \"*\" or a list of admin verb names"),
+        "a scalar other than `*` is refused: {shape:?}"
+    );
+    for valid in ["verbs: \"*\"", "verbs: [get_keys, post_keys]", "verbs: []"] {
+        assert_eq!(
+            errors_for(valid),
+            Vec::<String>::new(),
+            "{valid} is a valid allow-list"
+        );
+    }
+}
+
 /// 1.5.2 scope collapse: the delegated `mint` token (and its `hooks-register` sibling) are RETIRED —
 /// a `role_bindings.<m>.<role>.admin_scope: mint` (or a `max_admin_scope: mint`) is now an UNKNOWN
 /// scope token, failing validation with the two-rung guidance.
@@ -1706,6 +1759,7 @@ fn validate_admin_scope_mint_now_errors() {
                 allowed_pools: None,
                 group: None,
                 admin_scope: Some("mint".to_string()),
+                verbs: None,
             },
         )]),
     );
@@ -5100,6 +5154,7 @@ fn test_validate_role_binding_group_must_exist() {
         allowed_pools: None,
         group: Some("squad".to_string()),
         admin_scope: None,
+        verbs: None,
     };
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);

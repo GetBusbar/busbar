@@ -967,6 +967,9 @@ impl Checkpoints {
     /// One tick: bump the epoch, then hand each running unit's checkpoint to the node's book
     /// ([`PlaneMoney::flush_checkpoints`]). Answers how many were journaled.
     fn tick(&self) -> usize {
+        // THE NODE'S LEASE ON ITS HOST NAME, refreshed on this same tick (Q128): a node with no data
+        // directory keeps journaling under its host's id only while it holds it.
+        crate::root::durability::refresh_held_lease();
         self.epoch.bump();
         self.money
             .iter()

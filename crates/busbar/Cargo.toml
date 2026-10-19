@@ -47,11 +47,6 @@ hex = { workspace = true }
 # The deployment keyset (spec #82(a); BUSBAR-1.6.0.md THE DESIGN, §2, PB-13): `root::keyset` mints the one
 # ed25519 seed that signs the audit chain and the ledger's checkpoints from the OS CSPRNG.
 getrandom = { workspace = true }
-# The operator-signature verifier for the D38 `amend_rate_history` effect: the sealed operator key
-# arrives (through the posture seam) as raw ed25519 bytes, and this parses them and checks the
-# detached signature with the inherent STRICT verify. Composition-root knowledge, used only by the
-# admin verb's effect half.
-ed25519-dalek = { workspace = true }
 # THE LLM PLANE, through its memory-ABI door: the edge `plane-llm` carries through its door row
 # (`plane-llm-door`, see that feature). Every llm arrival is served through the plane driver.
 busbar-plane-llm = { path = "../busbar-plane-llm", optional = true }
@@ -561,6 +556,9 @@ planes = ["door:busbar-plane-llm", "door:busbar-plane-mcp", "door:busbar-plane-a
 operator-auth = ["busbar-auth-admin-tokens-plugin"]
 
 [dev-dependencies]
+# The tests' own ed25519 keys (credential and keyset cells). No production path verifies an
+# operator signature (#77(9)), so it is a test dependency only.
+ed25519-dalek = { workspace = true }
 # Independent RustCrypto witness: the tests check ring-computed digests against it byte for byte.
 sha2 = { workspace = true }
 # `tests/plane_integration.rs` reads a plane's admission audience as a URL.
