@@ -361,6 +361,15 @@ pub const FRAMING_DATAGRAM: u32 = 1;
 /// the head after the auth has run is a rule every transport keeps, proven by a RED in its own
 /// suite, not a fact one states.)
 pub const FACT_DECODES_PAYLOAD: u32 = 2;
+/// [`TransportTail::facts`]: the transport accepts: its framer begins on the accepting side.
+/// A zero declares nothing: a tail that states no op bit declares no op.
+pub const FACT_ACCEPTS: u32 = 4;
+/// [`TransportTail::facts`]: the transport dials: its framer begins on the dialling side.
+pub const FACT_DIALS: u32 = 8;
+/// [`TransportTail::facts`]: the transport detaches a live connection for a hand-off.
+pub const FACT_DETACHES: u32 = 16;
+/// [`TransportTail::facts`]: the transport adopts a connection handed to it.
+pub const FACT_ADOPTS: u32 = 32;
 
 /// THE OFFERED-POINTS RECORD: the key under which a transport's Statement `extensions` states
 /// the auth points it offers (THE DESIGN, "Auth points and guest lists"; the blob's bytes are
@@ -1262,8 +1271,20 @@ pub struct BeginIn {
     pub head: InHead,
     /// [`SIDE_ACCEPT`] | [`SIDE_DIAL`] | [`SIDE_ACCEPT_STREAM`].
     pub side: u32,
+    /// THE CONNECTION'S SCHEME, as a code
+    /// ([`SCHEME_*`](crate::abi::host::service::SCHEME_PLAIN)), set by the HOST on every side:
+    /// on [`SIDE_DIAL`] from the route's upstream (whether the dial runs the connector's
+    /// connection security), on [`SIDE_ACCEPT`] and [`SIDE_ACCEPT_STREAM`] from the listener
+    /// (whether the connector terminated connection security on it). The framer copies it into
+    /// every request view it builds for its auth call
+    /// ([`HeadView::scheme`](crate::abi::host::service::HeadView::scheme)); the host does not fill
+    /// that view's scheme itself. [`SCHEME_UNDECLARED`](crate::abi::host::service::SCHEME_UNDECLARED)
+    /// (`0`, a zeroed `in`) or an unknown code is REFUSED at `begin`
+    /// ([`check::check_begin_scheme`]): a zero never grants, and is never read as plain. Carved
+    /// from what was alignment padding; every other offset is unchanged.
+    pub scheme: u8,
     /// Alignment padding.
-    pub _reserved: u32,
+    pub _reserved: [u8; 3],
     /// The target ([`SIDE_ACCEPT_STREAM`]: the stream's path and query).
     pub target: AbiStr,
     /// What connection security established.

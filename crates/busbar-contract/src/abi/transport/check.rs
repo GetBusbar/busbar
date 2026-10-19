@@ -15,12 +15,13 @@ pub use crate::abi::mechanism::check::{Fault, Rule};
 use super::{
     AcceptOut, ArrivalOut, Claim, ConnFacts, EmitIn, FaultRow, FinishIn, FramePiece, FrameSpan,
     FramerOut, HeadSlots, IoOut, ListenOut, LocateOut, SettingDecl, StatusRow, TransportTail,
-    CANCEL_COMPLETED, CANCEL_NOTHING_MOVED, FACT_DECODES_PAYLOAD, FAULT_CALLER, FAULT_HEALTHY,
-    FRAMING_DATAGRAM, FRAMING_STREAM, MAX_ADDR, PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME,
-    PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_DECLARED_LEN, PIECE_HAS_RETRY_AFTER,
-    PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE, ROLE_CARRIER, ROLE_FRAMER, SETTING_FLAG,
-    SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER, STATUS_SUCCESS, UNIT0_HANDSHAKE, YIELD_ENDED,
-    YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
+    CANCEL_COMPLETED, CANCEL_NOTHING_MOVED, FACT_ACCEPTS, FACT_ADOPTS, FACT_DECODES_PAYLOAD,
+    FACT_DETACHES, FACT_DIALS, FAULT_CALLER, FAULT_HEALTHY, FRAMING_DATAGRAM, FRAMING_STREAM,
+    MAX_ADDR, PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE,
+    PIECE_HAS_DECLARED_LEN, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE,
+    ROLE_CARRIER, ROLE_FRAMER, SETTING_FLAG, SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER,
+    STATUS_SUCCESS, UNIT0_HANDSHAKE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    YIELD_STREAM_FULL,
 };
 use super::{AuthPoints, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
 use super::{
@@ -578,7 +579,7 @@ pub fn check_tail(t: &TransportTail) -> Result<(), Fault> {
     )?;
     bits(
         u64::from(t.facts),
-        u64::from(FACT_DECODES_PAYLOAD),
+        u64::from(FACT_DECODES_PAYLOAD | FACT_ACCEPTS | FACT_DIALS | FACT_DETACHES | FACT_ADOPTS),
         "tail.facts",
     )?;
     if t.claim_rows_len == 0 {
@@ -951,6 +952,27 @@ pub const fn check_binding(i: &super::BeginIn) -> Result<(), Fault> {
     }
     if (i.points == 0) != i.auth.is_none() {
         return Err(fault(Rule::Contradiction, "begin.auth"));
+    }
+    Ok(())
+}
+
+/// A `begin`'s scheme ([`super::BeginIn::scheme`]), on every side: a declared code,
+/// [`SCHEME_PLAIN`](crate::abi::host::service::SCHEME_PLAIN) or
+/// [`SCHEME_SECURE`](crate::abi::host::service::SCHEME_SECURE). A zero never grants: the framer
+/// copies the scheme into every request view it builds for its auth call, so an undeclared one is
+/// refused here, before the crossing, rather than read as plain.
+///
+/// # Errors
+///
+/// [`Rule::Missing`] for [`SCHEME_UNDECLARED`](crate::abi::host::service::SCHEME_UNDECLARED);
+/// [`Rule::UnknownCode`] for a code above `SCHEME_SECURE`.
+pub const fn check_begin_scheme(i: &super::BeginIn) -> Result<(), Fault> {
+    use crate::abi::host::service::{SCHEME_SECURE, SCHEME_UNDECLARED};
+    if i.scheme == SCHEME_UNDECLARED {
+        return Err(fault(Rule::Missing, "begin.scheme"));
+    }
+    if i.scheme > SCHEME_SECURE {
+        return Err(fault(Rule::UnknownCode, "begin.scheme"));
     }
     Ok(())
 }

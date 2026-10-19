@@ -1108,6 +1108,7 @@ fn refuse_in(cause: u32, line: u32, answer: &mut RefusalAnswer) -> UnitRefuseIn 
         conn: 1,
         stream: 1,
         answer,
+        request: view(),
     }
 }
 
@@ -1300,7 +1301,8 @@ fn red_unit_hand_in_in_refuses_each_break() {
 }
 
 /// RED: each arm of the host's check of a `unit.refuse` `in`: an unknown cause, a line that
-/// disagrees with the cause, a unit with no line, no answer slot.
+/// disagrees with the cause, a unit with no line, no answer slot, and a request with no method or a
+/// malformed one (the refusal with no unit is shaped by the request, so it is always named).
 #[test]
 fn red_unit_refuse_in_refuses_each_break() {
     let mut a = refusal(0);
@@ -1341,6 +1343,18 @@ fn red_unit_refuse_in_refuses_each_break() {
     assert_eq!(
         in_rule(check_unit_refuse_in(&i)),
         fault(Rule::Missing, "unit_refuse.answer")
+    );
+    let mut i = refuse_in(REFUSE_NO_ROUTE, LINE_NONE, &mut a);
+    i.request.method = none();
+    assert_eq!(
+        in_rule(check_unit_refuse_in(&i)),
+        fault(Rule::Missing, "unit_refuse.request.method")
+    );
+    let mut i = refuse_in(REFUSE_NO_ROUTE, LINE_NONE, &mut a);
+    i.request.scheme = SCHEME_SECURE + 1;
+    assert_eq!(
+        in_rule(check_unit_refuse_in(&i)),
+        fault(Rule::UnknownCode, "head_view.scheme")
     );
 }
 

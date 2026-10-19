@@ -1342,6 +1342,7 @@ fn compute_layout() -> String {
         [
             head,
             side,
+            scheme,
             _reserved,
             target,
             facts,
@@ -2080,7 +2081,7 @@ fn compute_layout() -> String {
     record!(
         s,
         hsvc::UnitRefuseIn,
-        [head, unit, cause, line, conn, stream, answer]
+        [head, unit, cause, line, conn, stream, answer, request]
     );
     record!(s, hsvc::ConsoleLineIn, [head, line]);
 

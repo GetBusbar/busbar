@@ -1436,6 +1436,12 @@ pub struct RefusalAnswer {
 /// Never pends. The bytes come from the line's claimant under the line's refusal dialect or, with
 /// no line, from the listener's default. The host verifies a non-zero `unit` first and refuses an
 /// `in` that breaks [`check_unit_refuse_in`] or is not exactly this size.
+///
+/// `request` is the request being refused, as the transport decoded it. A refusal with no unit (no
+/// route, a method miss, a body over the gate before any verdict) is answered with the listener's
+/// 1.5.5 bytes, and those are shaped by the request's method and target (THE DESIGN, the inbound
+/// refusal answers, item 4, "the listener's 1.5.5 default"), so the kernel reads them here and
+/// nowhere else.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct UnitRefuseIn {
@@ -1453,6 +1459,9 @@ pub struct UnitRefuseIn {
     pub stream: u64,
     /// Where the host writes the [`RefusalAnswer`].
     pub answer: *mut RefusalAnswer,
+    /// The request being refused, as decoded (a tail addition, pre-tag v1). Its `scheme` is the
+    /// one the transport states for the connection.
+    pub request: HeadView,
 }
 
 /// A [`HeadView`]: no string or list is a count behind NULL, and at most [`MAX_SPANS`] fields.
@@ -1541,13 +1550,15 @@ pub fn check_unit_hand_in_in(i: &UnitHandInIn) -> Result<(), Fault> {
 }
 
 /// The host's check of a `unit.refuse` `in`, after its exact size: a known cause, [`LINE_NONE`]
-/// exactly for [`REFUSE_NO_ROUTE`], no unit without a line, and an answer slot.
+/// exactly for [`REFUSE_NO_ROUTE`], no unit without a line, an answer slot, and the request being
+/// refused ([`check_head_view`], with its method named).
 ///
 /// # Errors
 ///
 /// [`Rule::UnknownCode`] for an unknown cause; [`Rule::Contradiction`] for a line that disagrees
-/// with the cause or a unit with no line; [`Rule::Missing`] for no answer slot.
-pub const fn check_unit_refuse_in(i: &UnitRefuseIn) -> Result<(), Fault> {
+/// with the cause or a unit with no line; [`Rule::Missing`] for no answer slot or no request
+/// method; the [`check_head_view`] faults for a malformed request.
+pub fn check_unit_refuse_in(i: &UnitRefuseIn) -> Result<(), Fault> {
     if i.cause < REFUSE_NO_ROUTE || i.cause > REFUSE_CHECK_FAILED {
         return Err(fault(Rule::UnknownCode, "unit_refuse.cause"));
     }
@@ -1559,6 +1570,10 @@ pub const fn check_unit_refuse_in(i: &UnitRefuseIn) -> Result<(), Fault> {
     }
     if i.answer.is_null() {
         return Err(fault(Rule::Missing, "unit_refuse.answer"));
+    }
+    check_head_view(&i.request)?;
+    if i.request.method.len == 0 {
+        return Err(fault(Rule::Missing, "unit_refuse.request.method"));
     }
     Ok(())
 }
