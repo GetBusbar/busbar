@@ -334,6 +334,17 @@ pub struct Durability {
     resumed: bool,
 }
 
+/// [`Durability::chain`] over a borrowed journal and the lane its chain is kept through, if any.
+fn chain_of(
+    journal: &Journal,
+    store_kept: Option<&JournalLane>,
+) -> std::io::Result<Result<Vec<JournalRecord>, busbar_kernel_wal::JournalBreak>> {
+    match store_kept {
+        Some(lane) => store_chain::whole_chain(journal, lane),
+        None => journal.replay(),
+    }
+}
+
 /// Where the book reads the dated rate-card history a replay prices against: a snapshot pinned
 /// at the moment of the read.
 pub type HistorySource = Box<dyn Fn() -> Option<PinnedHistory> + Send + Sync>;
@@ -365,6 +376,26 @@ impl Durability {
     #[must_use]
     pub fn keeps_chain(&self) -> bool {
         self.on_disk() || self.resumed
+    }
+
+    /// THE WHOLE CHAIN, read back oldest first and verified: every chain read after boot goes
+    /// through here. On a disk, and on a journal with no store behind it, that is the log's own
+    /// replay. On a journal RESUMED from the configured store it is the store's chain joined to
+    /// what the node has not handed it yet ([`store_chain::whole_chain`]): the memory log keeps
+    /// only its newest segment resident, so its own replay is a suffix once the chain outgrows one.
+    ///
+    /// # Errors
+    ///
+    /// The chain could not be read back.
+    pub fn chain(
+        &self,
+    ) -> std::io::Result<Result<Vec<JournalRecord>, busbar_kernel_wal::JournalBreak>> {
+        chain_of(&self.journal, self.store_kept())
+    }
+
+    /// The lane the chain is kept through, on a journal resumed from the store.
+    fn store_kept(&self) -> Option<&JournalLane> {
+        self.lane.as_ref().filter(|_| self.resumed)
     }
 
     /// The host's lane to the configured store, on a book built over one.
@@ -493,7 +524,7 @@ impl Durability {
     /// treating one as the other there is how a deployment re-opens balances it already opened.
     #[must_use]
     pub fn migration_marker(&self) -> Option<MigrationMarker> {
-        let replayed = self.journal.replay().ok()?.ok()?;
+        let replayed = self.chain().ok()?.ok()?;
         replayed
             .iter()
             .filter(|r| r.class == RecordClass::Migration)
@@ -572,7 +603,7 @@ impl Durability {
     /// has not confirmed is moved between those two and has not left the book.
     #[must_use]
     pub fn reconcile_with_journal(&self) -> Vec<JournalDisagreement> {
-        let records = match self.journal.replay() {
+        let records = match self.chain() {
             Ok(Ok(records)) => records,
             Ok(Err(broken)) => {
                 return vec![JournalDisagreement::Unreadable(format!(
@@ -632,7 +663,7 @@ impl Durability {
     /// nothing; [`Durability::reconcile_with_journal`] is the read that says why.
     #[must_use]
     pub fn read_back(&self) -> Vec<Posting> {
-        let Ok(Ok(records)) = self.journal.replay() else {
+        let Ok(Ok(records)) = self.chain() else {
             return Vec::new();
         };
         let pinned = (self.history)();
@@ -1310,6 +1341,7 @@ impl Durability {
     ) -> JournalMigrationRecords<'a> {
         JournalMigrationRecords {
             journal: &mut self.journal,
+            store_kept: self.lane.as_ref().filter(|_| self.resumed),
             token,
             at,
         }
@@ -1326,6 +1358,7 @@ impl Durability {
         (
             JournalMigrationRecords {
                 journal: &mut self.journal,
+                store_kept: self.lane.as_ref().filter(|_| self.resumed),
                 token,
                 at,
             },
@@ -2443,6 +2476,9 @@ pub fn migration_marker_from(body: &[u8]) -> Option<MigrationMarker> {
 /// second path while the migration step holds this one.
 pub struct JournalMigrationRecords<'a> {
     journal: &'a mut Journal,
+    /// The lane the chain is kept through, on a journal resumed from the store: the marker is read
+    /// off the whole chain, never the resident suffix ([`Durability::chain`]).
+    store_kept: Option<&'a JournalLane>,
     token: &'a Grant<DurableWrite>,
     at: StepName,
 }
@@ -2462,9 +2498,7 @@ impl MigrationRecords for JournalMigrationRecords<'_> {
     /// this trait's read returns a result: answering "no marker" to a chain nobody could read is how
     /// a deployment silently re-opens balances it already opened.
     fn read_marker(&self) -> Result<Option<MigrationMarker>, MigrationError> {
-        let replayed = self
-            .journal
-            .replay()
+        let replayed = chain_of(self.journal, self.store_kept)
             .map_err(|e| MigrationError::RecordsUnavailable(e.to_string()))?
             .map_err(|e| MigrationError::RecordsUnavailable(e.to_string()))?;
         Ok(replayed
@@ -2656,33 +2690,35 @@ pub fn build_on_store(
             )))
         })?),
     };
-    let mut durability = build_inner(
+    let shipper = lane.shipper();
+    build_inner(
         cfg,
         node,
-        lane.shipper(),
-        Some(resume.unwrap_or_default()),
+        shipper,
+        Some((lane, resume.unwrap_or_default())),
         legacy_rows,
         history,
         cards,
-    )?;
-    durability.lane = Some(lane);
-    Ok(durability)
+    )
 }
 
-/// The one construction every builder above shares. `resume` is `Some` on a book over the
-/// configured store: with no data directory its journal is seeded with those records (the chain
-/// the store kept, possibly none) and keeps every record at its bound.
+/// The one construction every builder above shares. `over_store` is `Some` on a book over the
+/// configured store: the lane to it, and with no data directory the records its journal is seeded
+/// with (the chain the store kept, possibly none); that journal keeps every record at its bound.
+/// The lane is on the book before anything below reads the chain back ([`Durability::chain`]).
 fn build_inner(
     cfg: &DurabilityConfig,
     node: u64,
     shipper: Box<dyn Shipper<busbar_kernel_wal::Record>>,
-    resume: Option<Vec<busbar_kernel_wal::Record>>,
+    over_store: Option<(JournalLane, Vec<busbar_kernel_wal::Record>)>,
     legacy_rows: Box<dyn LegacyRows>,
     history: HistorySource,
     cards: Option<&'static crate::root::kernel::RootHistory>,
 ) -> Result<Durability, OpenError> {
     // The journal is handed the root's wall clock: the log unit reads none of its own.
     let clock = busbar_kernel::store::now_ms;
+    let (lane, resume) =
+        over_store.map_or((None, None), |(lane, records)| (Some(lane), Some(records)));
     let resumed = cfg.data_dir.is_none() && resume.is_some();
     let journal = match (cfg.data_dir.as_deref(), &resume) {
         // No disk, and the store is where the chain is kept: resume it. Nothing is opened and
@@ -2733,7 +2769,7 @@ fn build_inner(
         cards_from: None,
         amendments_through: None,
         cadence: None,
-        lane: None,
+        lane,
         resumed,
         counted: Vec::new(),
         uncounted: std::collections::BTreeSet::new(),

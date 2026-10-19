@@ -705,6 +705,20 @@ pub fn dispatcher() -> Arc<Dispatcher> {
     d
 }
 
+/// A dispatcher of the leg's own serving `provider`'s host services, registered with the fold
+/// running on this thread exactly as [`dispatcher`]'s is ([`woken`]).
+#[must_use]
+pub fn dispatcher_serving(
+    provider: Arc<dyn busbar_contract::services::HostServices>,
+) -> Arc<Dispatcher> {
+    let d = Arc::new(Dispatcher::with_services(
+        DispatchConfig::default(),
+        provider,
+    ));
+    FOLD_DISPATCHERS.with(|f| f.borrow_mut().push(Arc::clone(&d)));
+    d
+}
+
 /// A test's restated door, written in plain Rust; [`test_door`] is its [`DoorFn`].
 #[cfg(test)]
 pub(crate) trait TestDoor {
