@@ -593,7 +593,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         }))
     });
     r.line("purge ev", 1, || {
-        ans(b.purge_plane_records_before("ev", 100, busbar_contract::records::Retention::Age))
+        ans(b.purge_plane_records("ev", 100, busbar_contract::records::Retention::Age))
     });
     // THE KIND'S RETENTION RULE (coordinator ruling (b)): the rule is the one the purge is handed,
     // never one the store infers from the kind's name. Under `TerminalOnly` an old ACTIVE row is
@@ -605,17 +605,13 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         ans(b.append_plane_record(plane("rt", "r", Some("p"), 2, b"terminal").view()))
     });
     r.line("purge rt terminal-only", 1, || {
-        ans(b.purge_plane_records_before(
-            "rt",
-            100,
-            busbar_contract::records::Retention::TerminalOnly,
-        ))
+        ans(b.purge_plane_records("rt", 100, busbar_contract::records::Retention::TerminalOnly))
     });
     r.line("list rt kept", 1, || {
         bodies(b.list_plane_records("rt", &PlaneSelector::Parent("p".into())))
     });
     r.line("purge rt age", 1, || {
-        ans(b.purge_plane_records_before("rt", 100, busbar_contract::records::Retention::Age))
+        ans(b.purge_plane_records("rt", 100, busbar_contract::records::Retention::Age))
     });
     r.line("list rt aged", 1, || {
         bodies(b.list_plane_records("rt", &PlaneSelector::Parent("p".into())))
