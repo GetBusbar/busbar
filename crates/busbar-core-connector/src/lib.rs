@@ -2375,14 +2375,13 @@ impl Conns for Connector {
             return self.slab.insert(caller, need, held);
         }
         // A UNIX-DOMAIN TARGET (`unix:/path`; ARCHITECT ruling 2026-10-03 12:10Z, VALKEY-UNIX):
-        // served to an operator-infrastructure (or loopback-allowed) need as a raw stream, every
-        // other class refused; there is no address to resolve or judge. A need whose config names
-        // its target dials that path and no other.
+        // served to an operator-infrastructure need as a raw stream, every other class refused
+        // (loopback-allowed included: there is no address to judge, so its loopback rule and
+        // the node's own ports could not hold). A need whose config names its target dials that
+        // path and no other.
         if let Some(path) = socket::unix_path(target) {
-            if !matches!(
-                egress_class,
-                EGRESS_OPERATOR_INFRASTRUCTURE | EGRESS_LOOPBACK_ALLOWED
-            ) || declared_target.as_deref().is_some_and(|d| d != target)
+            if egress_class != EGRESS_OPERATOR_INFRASTRUCTURE
+                || declared_target.as_deref().is_some_and(|d| d != target)
             {
                 return Err(ConnError::Refused);
             }

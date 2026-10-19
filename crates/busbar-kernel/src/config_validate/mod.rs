@@ -944,6 +944,18 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             }
         }
         for (role, ceiling) in &policy.mint_ceilings {
+            // A role's binding modes narrow the block-level list, never widen it: a mode the
+            // deployment forbids cannot be granted to a delegated minter.
+            if let (Some(block), Some(modes)) = (&policy.binding_modes, &ceiling.binding_modes) {
+                for mode in modes.iter().filter(|m| !block.contains(m)) {
+                    errors.push(format!(
+                        "auth.policy.mint_ceilings.{role}.binding_modes names '{}', which \
+                         auth.policy.binding_modes does not allow; a per-role ceiling cannot \
+                         widen the deployment-wide binding modes",
+                        mode.as_str()
+                    ));
+                }
+            }
             if let Some(ttl) = ceiling.max_ttl.as_deref() {
                 if let Some(c) = parse_policy_ttl(
                     &format!("auth.policy.mint_ceilings.{role}.max_ttl"),
