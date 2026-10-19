@@ -759,3 +759,147 @@ fn an_instance_debug_never_shows_its_settings() {
         assert!(!shown.contains(leak), "`{leak}` printed: {shown}");
     }
 }
+
+/// The threads the recording door's `release` and `open` ran on.
+static RELEASED_ON: std::sync::Mutex<Vec<std::thread::ThreadId>> =
+    std::sync::Mutex::new(Vec::new());
+static OPENED_ON: std::sync::Mutex<Vec<std::thread::ThreadId>> = std::sync::Mutex::new(Vec::new());
+/// The fixture's own `open`, which the recording door forwards to.
+static REAL_OPEN: std::sync::OnceLock<Option<busbar_contract::abi::mechanism::call::Op>> =
+    std::sync::OnceLock::new();
+/// The status blob the recording door leases.
+static STATUS: &[u8] = b"{}";
+
+type Raw = busbar_contract::abi::mechanism::call::RawOutcome;
+
+extern "C" fn recorded_release(
+    _: *mut std::ffi::c_void,
+    _: *const std::ffi::c_void,
+    _: *mut std::ffi::c_void,
+) -> Raw {
+    RELEASED_ON
+        .lock()
+        .unwrap()
+        .push(std::thread::current().id());
+    Raw::of(busbar_contract::abi::mechanism::call::Outcome::Ready)
+}
+
+extern "C" fn recorded_open(
+    instance: *mut std::ffi::c_void,
+    input: *const std::ffi::c_void,
+    out: *mut std::ffi::c_void,
+) -> Raw {
+    OPENED_ON.lock().unwrap().push(std::thread::current().id());
+    let open = REAL_OPEN
+        .get()
+        .copied()
+        .flatten()
+        .expect("the fixture opens");
+    open(instance, input, out)
+}
+
+/// `status` answering a leased blob, so the host releases a lease after it.
+extern "C" fn leased_status(
+    _: *mut std::ffi::c_void,
+    _: *const std::ffi::c_void,
+    out: *mut std::ffi::c_void,
+) -> Raw {
+    use busbar_contract::abi::mechanism::call::{Blob, Outcome, BLOB_JSON};
+    let ready = Raw::of(Outcome::Ready);
+    // SAFETY: the host hands a `StatusOut` for `status`.
+    let o = unsafe { &mut *out.cast::<busbar_contract::abi::hook::StatusOut>() };
+    o.head.outcome = ready;
+    o.head.lease = 7;
+    o.status = Blob {
+        ptr: STATUS.as_ptr(),
+        len: STATUS.len(),
+        fmt: BLOB_JSON,
+        flags: 0,
+    };
+    ready
+}
+
+/// The conforming fixture's door, its `open` and `release` recorded and its `status` leased.
+extern "C" fn recording_door() -> *const busbar_contract::abi::mechanism::door::Door {
+    static AT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let at = *AT.get_or_init(|| {
+        // SAFETY: the fixture's door and its hook table are `'static` plain data.
+        let base = unsafe { *hook_door_plugin::conforming::door() };
+        // SAFETY: as above; a hook door's table is the hook `Ops`.
+        let mut ops = unsafe { *base.ops.cast::<busbar_contract::abi::hook::Ops>() };
+        let _ = REAL_OPEN.set(ops.head.open);
+        ops.head.open = Some(recorded_open);
+        ops.head.release = Some(recorded_release);
+        ops.status = Some(leased_status);
+        let ops: &'static busbar_contract::abi::hook::Ops = Box::leak(Box::new(ops));
+        let door = busbar_contract::abi::mechanism::door::Door {
+            ops: std::ptr::from_ref(ops).cast(),
+            ..base
+        };
+        std::ptr::from_ref(Box::leak(Box::new(door))) as usize
+    });
+    at as *const busbar_contract::abi::mechanism::door::Door
+}
+
+/// RED (Q128 plugin-loader u71 MEDIUM): no hook crossing runs inline on the thread that awaits the
+/// call (THE DESIGN R1: every hook call runs on an off-worker lane; a crossing watchdog plus
+/// worker replacement contains a wedged one). A lease's `release` after an answer, and the `open`
+/// of a quarantine's trial, cross on a thread that is not the caller's, so a hook wedged in either
+/// never freezes the request worker it was polled on.
+#[tokio::test]
+async fn red_a_hooks_release_and_trial_open_never_cross_on_the_callers_thread() {
+    use busbar_contract::hook_calls::HookCalls;
+    let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let load = {
+        let d = Arc::clone(&d);
+        move || {
+            let row = crate::dispatch::LinkedRow::of(recording_door).map_err(|e| e.to_string())?;
+            crate::dispatch::load_linked::<super::Hook>(
+                &row,
+                crate::dispatch::Bind {
+                    instance: Arc::from("hooks.lane"),
+                    max_inflight_cap: super::MAX_INFLIGHT_CAP,
+                    sink: Arc::new(crate::dispatch::NoSink),
+                    dispatcher: d.adopter(),
+                    conns: crate::dispatch::ConnTable::NoNeeds,
+                },
+            )
+            .map_err(|e| e.to_string())
+        }
+    };
+    let plugin = load().expect("the recording door loads");
+    let inst = super::HookInstance::open(
+        plugin,
+        Arc::clone(&d),
+        br#"{"reject_over_messages": 3}"#,
+        load,
+    )
+    .expect("the hook opens");
+    let me = std::thread::current().id();
+
+    let status = inst.status(BUDGET).await;
+    assert_eq!(status.as_deref(), Some(STATUS));
+    let wait = std::time::Instant::now() + Duration::from_secs(5);
+    while RELEASED_ON.lock().unwrap().is_empty() && std::time::Instant::now() < wait {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let released = RELEASED_ON.lock().unwrap().clone();
+    assert!(!released.is_empty(), "the lease was released");
+    assert!(
+        released.iter().all(|t| *t != me),
+        "a release crossed on the caller's thread"
+    );
+
+    *inst.inner.lock() = super::State::Quarantined {
+        trial_at: std::time::Instant::now(),
+        window: super::QUARANTINE_FIRST,
+    };
+    let before = OPENED_ON.lock().unwrap().len();
+    let _ = inst.status(BUDGET).await;
+    let opened = OPENED_ON.lock().unwrap()[before..].to_vec();
+    assert!(!opened.is_empty(), "the trial opened a fresh instance");
+    assert!(
+        opened.iter().all(|t| *t != me),
+        "the trial's open crossed on the caller's thread"
+    );
+}
