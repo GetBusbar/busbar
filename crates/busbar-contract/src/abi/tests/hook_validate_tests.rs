@@ -964,3 +964,34 @@ fn a_zeroed_hook_route_is_refused_at_load() {
         );
     }
 }
+
+/// RED (a zero never grants): a hook tail that leaves its class zero declared neither a gate nor a
+/// tap, and is refused at load by name; it is never read as a gate (fire-and-wait, the class that
+/// may block the chain). A class past the last is refused; both declared classes pass.
+#[test]
+fn a_zeroed_hook_class_is_refused_at_load() {
+    use super::super::{Tail, CLASS_GATE, CLASS_TAP, CLASS_UNDECLARED, PROMPT_NO, USER_NO};
+    use crate::abi::sdk::hook::tail;
+    assert_eq!(CLASS_UNDECLARED, 0, "zero is the undeclared class");
+    assert_ne!(CLASS_GATE, 0, "a gate is never zero");
+    assert_ne!(CLASS_TAP, 0, "a tap is never zero");
+    assert_eq!(
+        check_tail(&Tail::ZERO),
+        red(Rule::Missing, "tail.kind_class.undeclared")
+    );
+    assert_eq!(
+        check_tail(&tail(CLASS_UNDECLARED, PROMPT_NO, USER_NO)),
+        red(Rule::Missing, "tail.kind_class.undeclared")
+    );
+    assert_eq!(
+        check_tail(&tail(3, PROMPT_NO, USER_NO)),
+        red(Rule::UnknownCode, "tail.kind_class")
+    );
+    for class in [CLASS_GATE, CLASS_TAP] {
+        assert_eq!(
+            check_tail(&tail(class, PROMPT_NO, USER_NO)),
+            Ok(()),
+            "class {class}"
+        );
+    }
+}
