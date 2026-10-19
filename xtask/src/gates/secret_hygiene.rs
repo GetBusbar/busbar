@@ -14,7 +14,13 @@
 //!   Rule A (secret-named binding), B (decoder error on secret input), C (secret-subject
 //!   parameter).
 //!
-//! Plus the instrument's own rows: the scan-root FLOOR (zero files scanned is RED), the ALLOWLIST
+//! THE DENOMINATOR (Law 8): every production `.rs` under `crates/` (the plane and transport pins
+//! the base layer lays there included), RECONCILED against the tracked set, plus every git-pinned
+//! `busbar-*` plugin crate the binary links, read from its checkout ([`pinned_sources`]).
+//!
+//! Plus the instrument's own rows: the scan FLOOR (zero files, a tracked file the walk did not
+//! read, a read file nothing tracks, a crate that contributed nothing, or a pinned plugin crate
+//! that would not resolve or read is RED), the ALLOWLIST
 //! liveness (a row whose path-prefix names nothing is RED), and `scan-complete` (a lexer that lost
 //! string state, or a file that would not read, is a broken instrument and not a count).
 //!
@@ -31,7 +37,11 @@
 
 use std::collections::HashSet;
 
-use crate::ctx::{Ctx, Overlay, WalkError, WalkSpec};
+use std::collections::BTreeMap;
+use std::path::Path;
+use std::sync::{Arc, Mutex, OnceLock};
+
+use crate::ctx::{Coverage, Ctx, Overlay, WalkError, WalkSpec};
 use crate::gates::{
     prove_green, prove_red_by_configuration, prove_rows_green, prove_rows_red, Gate, Report,
 };
@@ -385,6 +395,105 @@ fn is_vec_u8(t: &[u8]) -> bool {
     false
 }
 
+/// Type names that hold a secret's value as bare text or bytes, whatever wraps them.
+const BARE_NAMES: &[&[u8]] = &[b"str", b"Bytes", b"BytesMut"];
+
+/// The wrappers that make a secret-named field safe (Part 2 #54).
+const WRAPPERS: &[&[u8]] = &[b"Secret", b"Zeroizing", b"SecretRef"];
+
+/// The identifier tokens of `t`, in order.
+fn idents(t: &[u8]) -> Vec<&[u8]> {
+    t.split(|c| !is_ident(*c))
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+/// A field's TYPE: `t` cut at the first `,` outside every `<>`, `()` and `[]`, so a second field
+/// or a trailing attribute on the same line is never read as part of it.
+fn field_type(t: &[u8]) -> &[u8] {
+    let mut depth: i64 = 0;
+    for (i, c) in t.iter().enumerate() {
+        match *c {
+            b'<' | b'(' | b'[' => depth += 1,
+            b'>' | b')' | b']' => depth -= 1,
+            b',' if depth <= 0 => return &t[..i],
+            _ => {}
+        }
+    }
+    t
+}
+
+/// `[u8; N]`, `[u8]` (behind `&`, `Box`, `Arc`, `Rc`): a byte sequence spelled as a slice or array.
+fn is_u8_seq(t: &[u8]) -> bool {
+    let blanks = |mut j: usize| {
+        while matches!(t.get(j), Some(b' ' | b'\t')) {
+            j += 1;
+        }
+        j
+    };
+    for (p, c) in t.iter().enumerate() {
+        if *c != b'[' {
+            continue;
+        }
+        let j = blanks(p + 1);
+        if t[j..].starts_with(b"u8") && matches!(t.get(blanks(j + 2)), Some(b';' | b']')) {
+            return true;
+        }
+    }
+    false
+}
+
+/// THE BARE ROSTER (Part 2 #53/#54: secret material is `Secret<T>`; no bare string or byte
+/// holder survives). A type is bare when it holds the value as text or bytes in ANY of the
+/// spellings Rust has for that: `String` (and every type whose name carries it), `str` behind any
+/// pointer (`&str`, `Arc<str>`, `Box<str>`, `Rc<str>`, `Cow<str>`), `Vec<u8>`, a `u8` array or
+/// slice (`[u8; N]`, `Box<[u8]>`, `&[u8]`), and `Bytes`/`BytesMut`. The roster was String, `&str`
+/// and `Vec<u8>` alone (Q128 xtask p2 #4): the other spellings read as typed.
+fn is_bare(t: &[u8]) -> bool {
+    index_of(t, b"String") > 0
+        || is_ref_str(t)
+        || is_vec_u8(t)
+        || is_u8_seq(t)
+        || idents(t).iter().any(|w| BARE_NAMES.contains(w))
+}
+
+/// The type is wrapped: one of its type names IS `Secret` (Part 2 #54; was `Redacted<T>`),
+/// `Zeroizing` or `SecretRef`, as a whole name. A longer name that merely contains one
+/// (`NotASecretString`) is not a wrapper (Q128 xtask p2 #4: this was a substring test).
+fn is_wrapped(t: &[u8]) -> bool {
+    idents(t).iter().any(|w| WRAPPERS.contains(w))
+}
+
+/// The identifier after the LAST `kw` followed by blanks on `code`, the awk
+/// `sub(/.*kw[ \t]+/, "", sn)` then the leading identifier.
+fn decl_name(code: &[u8], kw: &[u8]) -> Vec<u8> {
+    let mut sn: &[u8] = code;
+    let mut last = None;
+    let mut from = 0;
+    while let Some(p) = code[from..].windows(kw.len()).position(|x| x == kw) {
+        let a = from + p;
+        if matches!(at(code, a + kw.len() + 1), b' ' | b'\t') {
+            last = Some(a + kw.len());
+        }
+        from = a + 1;
+    }
+    if let Some(e) = last {
+        sn = &code[skip_ws(code, e + 1) - 1..];
+    }
+    sn.iter().copied().take_while(|c| is_ident(*c)).collect()
+}
+
+/// What a brace frame was opened by.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Frame {
+    /// A `struct` body, or an enum's struct-variant body: its lines are FIELDS.
+    Fields,
+    /// An `enum` body: its lines are variants, and a variant that opens a brace opens a
+    /// [`Frame::Fields`] (Q128 xtask p2 #4: an enum's struct-variant fields went unread).
+    Enum,
+    Other,
+}
+
 struct FieldScan<'a> {
     strong: Vec<&'static [u8]>,
     context: Vec<&'static [u8]>,
@@ -404,8 +513,10 @@ impl FieldScan<'_> {
 
     fn file(&mut self, name: &str, text: &str, out: &mut Vec<Hit>) {
         let mut inblk = false;
-        let mut stack: Vec<Option<Vec<u8>>> = Vec::new(); // Some(name) for a struct frame
-        let mut is_struct: Vec<bool> = Vec::new();
+        // Each frame: what opened it, and the declaring name (a struct's, or an enum's name joined
+        // with the variant's) that the context needles are judged against.
+        let mut stack: Vec<Option<Vec<u8>>> = Vec::new();
+        let mut kinds: Vec<Frame> = Vec::new();
         let mut testmod = false;
         let mut tdepth: i64 = 0;
         for (idx, raw) in records(text).into_iter().enumerate() {
@@ -434,27 +545,29 @@ impl FieldScan<'_> {
                 self.pendtest = false;
             }
 
-            let mut bt_struct = false;
-            if word_followed(&code, "struct") {
-                bt_struct = true;
-                let mut sn: &[u8] = &code;
-                // sub(/.*struct[ \t]+/, "", sn): the LAST `struct` followed by blanks.
-                let mut last = None;
-                let mut from = 0;
-                while let Some(p) = code[from..].windows(6).position(|x| x == b"struct") {
-                    let a = from + p;
-                    if matches!(at(&code, a + 7), b' ' | b'\t') {
-                        last = Some(a + 6);
-                    }
-                    from = a + 1;
-                }
-                if let Some(e) = last {
-                    sn = &code[skip_ws(&code, e + 1) - 1..];
-                }
-                self.pend_sn = sn.iter().copied().take_while(|c| is_ident(*c)).collect();
-            }
             let depth = stack.len();
-            if depth >= 1 && is_struct[depth - 1] {
+            let opens = if word_followed(&code, "struct") {
+                self.pend_sn = decl_name(&code, b"struct");
+                Frame::Fields
+            } else if word_followed(&code, "enum") {
+                self.pend_sn = decl_name(&code, b"enum");
+                Frame::Enum
+            } else if depth >= 1 && kinds[depth - 1] == Frame::Enum {
+                // A struct variant `Bearer {`: its body is a field frame named for the enum AND
+                // the variant, so `enum Cred { Bearer { token: .. } }` reads as a *Cred* frame.
+                let variant: Vec<u8> = trim_b(&code)
+                    .iter()
+                    .copied()
+                    .take_while(|c| is_ident(*c))
+                    .collect();
+                let mut sn = stack[depth - 1].clone().unwrap_or_default();
+                sn.extend_from_slice(&variant);
+                self.pend_sn = sn;
+                Frame::Fields
+            } else {
+                Frame::Other
+            };
+            if depth >= 1 && kinds[depth - 1] == Frame::Fields {
                 let mut line: &[u8] = &code;
                 while !line.is_empty() && matches!(line[0], b' ' | b'\t') {
                     line = &line[1..];
@@ -478,6 +591,9 @@ impl FieldScan<'_> {
                     let fname = &line[..e];
                     let k = skip_ws(line, e + 1);
                     if at(line, k) == b':' {
+                        // The bare test reads the rest of the line, as it always has; the
+                        // wrapper must be in the field's OWN type, so a wrapper named by a second
+                        // field on the line does not cover this one.
                         let ftype = &line[skip_ws(line, k + 1) - 1..];
                         let mut needle = self.strong.iter().any(|s| tailmatch(fname, s));
                         if !needle {
@@ -490,14 +606,10 @@ impl FieldScan<'_> {
                                 .any(|r| index_of(&sname, r.as_bytes()) > 0);
                         }
                         if needle {
-                            let bare = index_of(ftype, b"String") > 0
-                                || is_ref_str(ftype)
-                                || is_vec_u8(ftype);
-                            // `Secret<T>` (Part 2 #54; was `Redacted<T>`), and `SecretRef`.
-                            let wrapped = index_of(ftype, b"Secret") > 0
-                                || index_of(ftype, b"Zeroizing") > 0
-                                || index_of(ftype, b"SecretRef") > 0;
-                            if bare && !wrapped && !self.allowlisted(name, fname) {
+                            if is_bare(ftype)
+                                && !is_wrapped(field_type(ftype))
+                                && !self.allowlisted(name, fname)
+                            {
                                 out.push(Hit {
                                     rule: lossy(fname),
                                     loc: format!("{name}:{fnr}"),
@@ -512,18 +624,18 @@ impl FieldScan<'_> {
             let net = no - ncl;
             if net > 0 {
                 for _ in 0..net {
-                    stack.push(if bt_struct {
-                        Some(self.pend_sn.clone())
-                    } else {
+                    stack.push(if opens == Frame::Other {
                         None
+                    } else {
+                        Some(self.pend_sn.clone())
                     });
-                    is_struct.push(bt_struct);
+                    kinds.push(opens);
                 }
             } else if net < 0 {
                 for _ in 0..-net {
                     if !stack.is_empty() {
                         stack.pop();
-                        is_struct.pop();
+                        kinds.pop();
                     }
                 }
             }
@@ -1551,12 +1663,149 @@ pub fn scan_msgs(files: &[(String, String)]) -> Vec<Hit> {
     m.out
 }
 
+// ── THE GIT-PINNED PLUGIN SOURCES ──────────────────────────────────────────────────────────────────
+
+/// The pinned plugin crates the scan reads from their checkouts, and their production `.rs`.
+pub struct PinnedSources {
+    /// `<package> (<source>)`, one per crate read here.
+    pub packages: Vec<String>,
+    /// `(crates/<package>/<path in the crate>, text)`: the path the crate lived at in this tree.
+    pub files: Vec<(String, String)>,
+}
+
+type PinnedResult = Arc<Result<PinnedSources, String>>;
+
+static PINNED_MEMO: OnceLock<Mutex<BTreeMap<String, PinnedResult>>> = OnceLock::new();
+
+/// THE GIT-PINNED PLUGIN SOURCES THAT SHIP IN THE BINARY (Part 2 #53: "a bare/unwrapped secret
+/// fails the ship gate"; Law 8: the scan's denominator is the code that ships, not the code that
+/// happens to sit under `crates/`).
+///
+/// DERIVED, NOT LISTED: every `git+` package named `busbar-*` that `cargo metadata --all-features`
+/// resolves over the root manifest, read from the checkout cargo fetched for the pinned rev. A
+/// crate this context already shows at `crates/<package>` (on disk, or laid by the base layer — the
+/// plane and transport pins) is read by the walk and skipped here; every other one (auth, secret,
+/// export, store, hook, and every `-plugin` twin) is read here, under the path it lived at.
+///
+/// FAILS CLOSED: `cargo metadata` that does not answer, or a pinned crate that reads no production
+/// `.rs`, is an `Err` naming it — never a smaller scan. Memoised per root and planted answer.
+pub fn pinned_sources(cx: &Ctx) -> PinnedResult {
+    let key = format!(
+        "{}\u{0}{}",
+        cx.root().display(),
+        cx.overlay_command("cargo-metadata:Cargo.toml")
+            .unwrap_or_default()
+    );
+    let memo = PINNED_MEMO.get_or_init(Default::default);
+    if let Some(hit) = memo.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return Arc::clone(hit);
+    }
+    let built = Arc::new(read_pinned(cx));
+    memo.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, Arc::clone(&built));
+    built
+}
+
+fn read_pinned(cx: &Ctx) -> Result<PinnedSources, String> {
+    let meta = cx.cargo_metadata_all_features("Cargo.toml").map_err(|e| {
+        format!(
+            "the git-pinned plugin sources cannot be listed: cargo metadata does not answer ({e})"
+        )
+    })?;
+    let meta: serde_json::Value = serde_json::from_str(&meta).map_err(|e| {
+        format!("the git-pinned plugin sources cannot be listed: cargo metadata is not JSON ({e})")
+    })?;
+    let mut out = PinnedSources {
+        packages: Vec::new(),
+        files: Vec::new(),
+    };
+    let mut seen: Vec<String> = Vec::new();
+    for p in meta["packages"].as_array().into_iter().flatten() {
+        let source = p["source"].as_str().unwrap_or("");
+        let name = p["name"].as_str().unwrap_or("");
+        if !source.starts_with("git+")
+            || !name.starts_with("busbar-")
+            || seen.iter().any(|n| n == name)
+        {
+            continue;
+        }
+        seen.push(name.to_string());
+        let at = format!("crates/{name}");
+        if cx.is_dir(&at) {
+            continue;
+        }
+        let Some(dir) = p["manifest_path"]
+            .as_str()
+            .and_then(|m| Path::new(m).parent())
+        else {
+            return Err(format!(
+                "the git-pinned plugin crate `{name}` ({source}) has no manifest path in cargo metadata"
+            ));
+        };
+        let mut files: Vec<(String, String)> = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            let rd = std::fs::read_dir(&d).map_err(|e| {
+                format!(
+                    "the git-pinned plugin crate `{name}`: {} would not list: {e}",
+                    d.display()
+                )
+            })?;
+            for e in rd.flatten() {
+                let path = e.path();
+                let leaf = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if leaf.starts_with('.') || leaf == "target" {
+                    continue;
+                }
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|x| x.to_str()) != Some("rs") {
+                    continue;
+                }
+                let rel = path
+                    .strip_prefix(dir)
+                    .map(|r| r.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_default();
+                let shown = format!("{at}/{rel}");
+                if shown.contains("/tests/") || is_test_file(&shown) {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).map_err(|e| {
+                    format!(
+                        "the git-pinned plugin crate `{name}`: {} would not read: {e}",
+                        path.display()
+                    )
+                })?;
+                files.push((shown, text));
+            }
+        }
+        if files.is_empty() {
+            return Err(format!(
+                "the git-pinned plugin crate `{name}` ({source}) at {}: no production .rs file \
+                 reads — a pinned crate scanned as zero files carries no finding",
+                dir.display()
+            ));
+        }
+        files.sort();
+        out.packages.push(format!("{name} ({source})"));
+        out.files.extend(files);
+    }
+    out.packages.sort();
+    Ok(out)
+}
+
 // ── THE GATE ─────────────────────────────────────────────────────────────────────────────────────
 
 pub struct SecretHygieneGate {
     roots: &'static [&'static str],
     allow_c1: &'static [Allow],
     allow_c3: &'static [Allow],
+    /// Read the git-pinned busbar plugin sources too ([`pinned_sources`]). The shipped gate does;
+    /// the self-test's sandbox twins, whose roots are fixtures, do not.
+    pinned: bool,
     /// Distinguishes the self-test's mis-configured twins from the shipped gate.
     tag: &'static str,
 }
@@ -1567,6 +1816,7 @@ impl SecretHygieneGate {
             roots: &["crates"],
             allow_c1: ALLOWLIST_C1,
             allow_c3: ALLOWLIST_C3,
+            pinned: true,
             tag: "",
         }
     }
@@ -1579,6 +1829,11 @@ struct Scan {
     /// The instrument could not finish (an unreadable file).
     broken: Option<String>,
     nfiles: usize,
+    /// The walk reconciled against the tracked set, in one sentence ([`Coverage::census`]).
+    census: String,
+    /// The git-pinned plugin crates read from their checkouts, and how many files they gave.
+    pinned: Vec<String>,
+    npinned: usize,
     c1: Vec<Hit>,
     c2: Vec<Hit>,
     c3: Vec<Hit>,
@@ -1586,12 +1841,17 @@ struct Scan {
 }
 
 impl SecretHygieneGate {
-    fn scan(&self, cx: &Ctx) -> Scan {
-        let mut sc = Scan::default();
-        let spec = WalkSpec::new(self.roots.iter().copied())
+    /// The walk, and the tracked set it is reconciled against, are both cut by this one spec.
+    fn spec(&self) -> WalkSpec {
+        WalkSpec::new(self.roots.iter().copied())
             .ext("rs")
             .exclude(["/tests/"])
-            .allow_empty();
+            .allow_empty()
+    }
+
+    fn scan(&self, cx: &Ctx) -> Scan {
+        let mut sc = Scan::default();
+        let spec = self.spec();
         let files = match cx.walk(&spec) {
             Ok(f) => f,
             Err(WalkError::MissingRoot { root }) => {
@@ -1605,7 +1865,7 @@ impl SecretHygieneGate {
                 return sc;
             }
         };
-        let files: Vec<(String, String)> = files
+        let mut files: Vec<(String, String)> = files
             .into_iter()
             .map(|f| (f.rel_str(), f.text))
             .filter(|(rel, _)| !is_test_file(rel))
@@ -1618,7 +1878,68 @@ impl SecretHygieneGate {
             ));
             return sc;
         }
-        sc.nfiles = files.len();
+
+        // THE WALK IS RECONCILED AGAINST THE TRACKED SET (Law 8, docs/design/BUSBAR-1.6.0.md:
+        // "coverage is computed as the union of those lists reconciled against the whole"). The
+        // floor was "not zero", so a walk narrowed to one file certified the tree clean (Q128 xtask
+        // p2 #2). A tracked file the walk did not read, or a read file nothing tracks, is refused
+        // BY NAME; there is no count to re-pin.
+        let whole: Vec<String> = match cx.tracked(&spec) {
+            Ok(w) => w.into_iter().filter(|p| !is_test_file(p)).collect(),
+            Err(e) => {
+                sc.broken = Some(format!(
+                    "the tracked set under `{}` would not read, so the scan cannot be reconciled: {e}",
+                    self.roots.join(" ")
+                ));
+                return sc;
+            }
+        };
+        let coverage = Coverage::of(files.iter().map(|(rel, _)| rel.clone()), whole);
+        if !coverage.is_whole() {
+            sc.floor = Some(format!(
+                "the scan is not the tracked set: {} — a walk that skipped a tracked file certifies \
+                 a tree it did not read (Law 8)",
+                coverage.census()
+            ));
+            return sc;
+        }
+        sc.census = coverage.census();
+
+        // A CRATE THAT CONTRIBUTED NOTHING: a manifest beside a `src/` that gave no file. The
+        // reconciliation catches a file the walk went blind to; this catches a crate whose whole
+        // source left the tree while its manifest stayed.
+        match self.drained(cx, &files) {
+            Ok(d) if d.is_empty() => {}
+            Ok(d) => {
+                sc.floor = Some(format!(
+                    "{} — a crate scanned as zero files carries no finding",
+                    d.join(" | ")
+                ));
+                return sc;
+            }
+            Err(e) => {
+                sc.broken = Some(e);
+                return sc;
+            }
+        }
+
+        // THE GIT-PINNED PLUGIN SOURCES the binary links (Part 2 #53; Q128 xtask p2 #3): after the
+        // plugin split the auth, secret and export crates that hold client secrets, bearer tokens,
+        // SigV4 keys and resolved secret values live in their own repos, outside `crates/`.
+        if self.pinned {
+            match pinned_sources(cx).as_ref() {
+                Ok(p) => {
+                    sc.pinned = p.packages.clone();
+                    sc.npinned = p.files.len();
+                    files.extend(p.files.iter().cloned());
+                }
+                Err(e) => {
+                    sc.floor = Some(e.clone());
+                    return sc;
+                }
+            }
+        }
+        sc.nfiles = files.len() - sc.npinned;
         sc.c1 = scan_fields(&files, self.allow_c1);
         sc.c2 = scan_sinks(&files);
         let (warns, c3): (Vec<Hit>, Vec<Hit>) = scan_msgs(&files)
@@ -1627,6 +1948,40 @@ impl SecretHygieneGate {
         sc.warns = warns;
         sc.c3 = c3;
         sc
+    }
+
+    /// The crates under a root (`<root>/<name>/Cargo.toml`) with a `src/` that gave the scan no
+    /// file.
+    fn drained(&self, cx: &Ctx, files: &[(String, String)]) -> Result<Vec<String>, String> {
+        let manifests = cx
+            .walk(
+                &WalkSpec::new(self.roots.iter().copied())
+                    .ext("toml")
+                    .allow_empty(),
+            )
+            .map_err(|e| format!("the crate manifests would not list: {e}"))?;
+        let mut out: Vec<String> = Vec::new();
+        for m in manifests {
+            let rel = m.rel_str();
+            let Some(dir) = rel.strip_suffix("/Cargo.toml") else {
+                continue;
+            };
+            if !self.roots.iter().any(|r| {
+                dir.strip_prefix(&format!("{r}/"))
+                    .is_some_and(|n| !n.contains('/'))
+            }) {
+                continue;
+            }
+            let src = format!("{dir}/src");
+            if cx.exists(&src) && !files.iter().any(|(f, _)| f.starts_with(&format!("{src}/"))) {
+                out.push(format!(
+                    "{dir}: has a src/ and contributed no production .rs to the scan"
+                ));
+            }
+        }
+        out.sort();
+        out.dedup();
+        Ok(out)
     }
 
     /// The allowlist liveness problems: an empty prefix, or a prefix that names nothing.
@@ -1746,7 +2101,7 @@ impl Gate for SecretHygieneGate {
         }
         let mut rows = Vec::new();
 
-        let floor_title = "the scan read at least one production .rs file under every root";
+        let floor_title = "the scan read exactly the tracked production .rs under every root, every crate contributed, and every git-pinned plugin crate was read";
         rows.push(match &sc.floor {
             Some(why) => Row::fail(ROW_FLOOR, floor_title, why.clone()),
             None if sc.broken.is_some() => Row::fail(
@@ -1758,9 +2113,20 @@ impl Gate for SecretHygieneGate {
                 ROW_FLOOR,
                 floor_title,
                 format!(
-                    "{} production .rs file(s) under `{}`",
+                    "{} production .rs file(s) under `{}` ({}){}",
                     sc.nfiles,
-                    self.roots.join(" ")
+                    self.roots.join(" "),
+                    sc.census,
+                    if self.pinned {
+                        format!(
+                            "; plus {} production .rs file(s) of {} git-pinned plugin crate(s) read from their checkouts: {}",
+                            sc.npinned,
+                            sc.pinned.len(),
+                            sc.pinned.join(", ")
+                        )
+                    } else {
+                        String::new()
+                    }
                 ),
             ),
         });
@@ -1859,12 +2225,14 @@ static SANDBOX: SecretHygieneGate = SecretHygieneGate {
     roots: &[SANDBOX_ROOT],
     allow_c1: SANDBOX_ALLOW,
     allow_c3: &[],
+    pinned: false,
     tag: "sandbox",
 };
 static MISSING_ROOT: SecretHygieneGate = SecretHygieneGate {
     roots: &["selftest-missing-root"],
     allow_c1: ALLOWLIST_C1,
     allow_c3: ALLOWLIST_C3,
+    pinned: false,
     tag: "missing-root",
 };
 /// A root that exists and holds only a `tests/` file, which the scan drops.
@@ -1872,6 +2240,7 @@ static TESTS_ONLY: SecretHygieneGate = SecretHygieneGate {
     roots: &["crates/busbar-contract/src/tests"],
     allow_c1: ALLOWLIST_C1,
     allow_c3: ALLOWLIST_C3,
+    pinned: false,
     tag: "tests-only",
 };
 // qa-names: crates/busbar-this-crate-does-not-exist/src/x.rs -- xtask/src/gates/secret_hygiene.rs -- the self-test's PLANTED stale allowlist row; it names a path that must not exist, that is the proof the liveness row goes RED
@@ -1883,12 +2252,14 @@ static STALE_ALLOW: SecretHygieneGate = SecretHygieneGate {
         "token",
     )],
     allow_c3: &[],
+    pinned: false,
     tag: "stale-allow",
 };
 static EMPTY_PREFIX_ALLOW: SecretHygieneGate = SecretHygieneGate {
     roots: &["selftest-missing-root"],
     allow_c1: &[allow("token", "", "token")],
     allow_c3: &[],
+    pinned: false,
     tag: "empty-prefix-allow",
 };
 
