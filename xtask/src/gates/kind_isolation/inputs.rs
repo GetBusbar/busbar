@@ -1812,3 +1812,143 @@ mod tests {
         assert_eq!(feature_names(m), vec!["llm-serve", "default"]);
     }
 }
+
+/// THE Q128 CASES ON THIS ROW (part 25, findings 2 and 3), each asked of [`rule_inputs`] over the
+/// real tree with one plant laid on top.
+#[cfg(test)]
+mod q128_tests {
+    use super::super::{assign_instances, census, load_registry, pinned, vocabularies};
+    use super::*;
+    use crate::ctx::Overlay;
+
+    const WIRE: &str = "crates/busbar-transport-stdio";
+
+    /// `plant` over the workspace, with the pinned mount laid back beneath it as the gate's `run`
+    /// does.
+    fn planted(plant: Overlay) -> Ctx {
+        let ws = pinned::with_pinned(&Ctx::workspace().expect("the workspace opens"));
+        pinned::with_pinned(&ws.with_overlay(plant))
+    }
+
+    fn inputs_row(cx: &Ctx) -> Row {
+        let mut crates = census(cx).expect("the census reads");
+        let (planes, ports) = vocabularies(&crates);
+        assign_instances(&mut crates, &planes, &ports);
+        let reg = load_registry(cx).expect("the registry reads");
+        rule_inputs(cx, &crates, &planes, &reg)
+    }
+
+    fn wire_manifest(cx: &Ctx) -> String {
+        cx.read(format!("{WIRE}/Cargo.toml"))
+            .expect("the wire's manifest reads")
+    }
+
+    fn assert_names(row: &Row, naming: &[&str]) {
+        for n in naming {
+            assert!(
+                row.detail.contains(n),
+                "{} did not name `{n}`: {}",
+                row.id,
+                row.detail
+            );
+        }
+    }
+
+    // ── finding 2 (MEDIUM): a test-only edge does not cover shipped source ───────────────────
+
+    /// A wire's SHIPPED `src/` compiling a plane's file is the plane in the release artifact; a
+    /// `[dev-dependencies]` row on that plane is a test edge and covers no shipped splice (Law 2,
+    /// l.1888-1890; this module's own rule: the edge must be "written down").
+    #[test]
+    fn a_dev_dependency_does_not_cover_a_splice_in_shipped_source() {
+        let base = planted(Overlay::new());
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{WIRE}/Cargo.toml"),
+            format!(
+                "{}\n\n[dev-dependencies]\nbusbar-plane-llm = {{ path = \"../busbar-plane-llm\" }}\n",
+                wire_manifest(&base).trim_end()
+            ),
+        );
+        ov.set(
+            format!("{WIRE}/src/q128_spliced.rs"),
+            "#[path = \"../../busbar-plane-llm/src/lib.rs\"]\nmod spliced;\n",
+        );
+        let row = inputs_row(&planted(ov));
+        assert_names(
+            &row,
+            &[
+                "path-include",
+                "crates/busbar-transport-stdio/src/q128_spliced.rs:1",
+                "busbar-plane-llm",
+            ],
+        );
+    }
+
+    // ── finding 3 (MEDIUM): the build script's reads, in every spelling ──────────────────────
+
+    /// The sibling walk spelled with the crate directory, the idiom the module header names: the
+    /// first literal is `CARGO_MANIFEST_DIR`, and the path is the one after it.
+    #[test]
+    fn a_build_script_walking_out_through_the_crate_directory_is_reported() {
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{WIRE}/build.rs"),
+            "fn main() {\n    let _ = std::fs::read_dir(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/..\"));\n}\n",
+        );
+        let row = inputs_row(&planted(ov));
+        assert_names(
+            &row,
+            &[
+                "build-script-reach",
+                "crates/busbar-transport-stdio/build.rs:2",
+            ],
+        );
+    }
+
+    /// A read whose path sits on the next line, as rustfmt writes a long argument.
+    #[test]
+    fn a_build_script_read_spread_over_lines_is_reported() {
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{WIRE}/build.rs"),
+            "fn main() {\n    let _ = std::fs::read_to_string(\n        \"../busbar-plane-llm/src/lib.rs\",\n    );\n}\n",
+        );
+        let row = inputs_row(&planted(ov));
+        assert_names(
+            &row,
+            &[
+                "build-script-reach",
+                "crates/busbar-transport-stdio/build.rs:2",
+                "busbar-plane-llm",
+            ],
+        );
+    }
+
+    /// A build script at the path the manifest's `build` key names is a build script.
+    #[test]
+    fn a_build_script_the_manifest_names_elsewhere_is_held_to_the_same_rule() {
+        let base = planted(Overlay::new());
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{WIRE}/Cargo.toml"),
+            wire_manifest(&base).replacen(
+                "[package]\n",
+                "[package]\nbuild = \"tools/gen.rs\"\n",
+                1,
+            ),
+        );
+        ov.set(
+            format!("{WIRE}/tools/gen.rs"),
+            "fn main() {\n    let _ = std::fs::read_dir(\"..\");\n}\n",
+        );
+        let row = inputs_row(&planted(ov));
+        assert_names(
+            &row,
+            &[
+                "build-script-reach",
+                "crates/busbar-transport-stdio/tools/gen.rs:2",
+            ],
+        );
+    }
+}
