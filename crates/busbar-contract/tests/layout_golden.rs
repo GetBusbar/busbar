@@ -1373,7 +1373,10 @@ fn compute_layout() -> String {
             lane,
             status,
             _status_reserved,
-            unit
+            unit,
+            body_len,
+            body_len_known,
+            _body_len_reserved
         ]
     );
     record!(

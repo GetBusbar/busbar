@@ -48,14 +48,24 @@
 //! continuing where it stopped. A framer that answers any byte or piece twice is wrong.
 //!
 //! A FRAMER PENDS ONLY ON A TICKETED AUTH CALL. `begin`, `ingest` and `emit` are TICKETED ops (their
-//! contracts state `may_pend`): each runs on its framing's own ticket and may call the host's auth
-//! service, which may pend. The service then answers NOT-READY on the call's handle `(ticket,
-//! seq)`, and the op answers PENDING. On the ticket's wake the host RE-ISSUES the same op on the same
-//! ticket (a resume), the framer re-issues the same handle, and the service answers its STORED
-//! result: one real auth call across the not-ready, never two. Until then the op yields nothing and
-//! the host crosses no other op of that framing. A pending answer parks only its own stream (its
-//! framing): the connection's other framings, and every other connection, keep flowing. Every other
-//! framer op never pends, and `encode` never calls the auth service.
+//! contracts state `may_pend`, deadline class Stream): each runs on a ticket of its own and may call
+//! the host's auth service, which may pend. The service then answers NOT-READY on the call's handle
+//! `(ticket, seq)`, and the op answers PENDING. On the ticket's wake the host RE-ISSUES the same op
+//! on the same ticket (a resume), the framer re-issues the same handle, and the service answers its
+//! STORED result: one real auth call across the not-ready, never two. Until then the op yields
+//! nothing. A resume carries NO NEW BYTES (an `ingest` or `emit` of length `0`, as a `YIELD_MORE`
+//! re-call): the framer took the op's bytes whole when it first crossed and holds what it could not
+//! finish. Every other framer op never pends, and `encode` never calls the auth service.
+//!
+//! A PENDING ANSWER PARKS ONLY ITS OWN STREAM; the connection's other streams keep flowing. The
+//! host gives each parked op its own ticket and crosses every later op on another: a parked `begin`
+//! holds the whole framing (no other op crosses it until it completes); a parked `emit` holds its
+//! stream (the host emits nothing more on that stream until it completes) and no other; a parked
+//! `ingest` holds nothing of the host's: the host keeps reading and hands the far end's next bytes
+//! to a fresh `ingest` on another ticket, and the framer holds back only the stream whose auth it
+//! waits on, answering that stream's pieces when the parked op resumes and every other stream's as
+//! they come. `timer`, `refuse` and `finish` keep crossing too; `detach` waits until nothing is
+//! parked.
 //!
 //! A STREAM'S OWN BACKPRESSURE. A framer that queues a stream's emitted bytes until the far end is
 //! ready for them (a multiplexed wire whose peer grants room stream by stream) answers an `emit`
@@ -1242,6 +1252,19 @@ pub struct EmitIn {
     ///
     /// [`UnitRef::NONE`]: crate::abi::host::service::UnitRef::NONE
     pub unit: crate::abi::host::service::UnitRef,
+    /// THE OPENING BODY'S LENGTH, on a DIALLED stream ([`SIDE_DIAL`]): on the emit that carries the
+    /// request's head (the op before its auth call), the length of the body the request opens with,
+    /// when the host holds it whole ([`body_len_known`](Self::body_len_known) `1`), so a framer
+    /// whose head states its body's length writes that line itself, before its auth call. A
+    /// streamed body states no length (`body_len_known` `0`, `body_len` `0`), and the framer
+    /// states none, as 1.5.5 did. `0` on every other emit, on its re-calls and resumes alike, and
+    /// on an accepting side ([`check::check_emit_body_len`]). A tail addition (pre-tag v1).
+    pub body_len: u64,
+    /// `1` = [`body_len`](Self::body_len) is the opening body's length; `0` = no length is stated
+    /// (a streamed body, or an emit that carries no request head). No other value.
+    pub body_len_known: u32,
+    /// Alignment padding.
+    pub _body_len_reserved: u32,
 }
 
 /// `encode`'s `in`. The rendered bytes go into `sink.wire`.

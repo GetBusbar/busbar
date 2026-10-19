@@ -281,65 +281,8 @@ fn a_framer_that_owes_more_forever_and_writes_nothing_faults() {
     );
 }
 
-/// THE HOST'S AUTH SERVICE, doubled as the mechanism keeps it: a call runs ONCE per handle
-/// `(ticket, seq)` and stores its result; a not-ready call answers NOT_READY and its completion
-/// wakes the ticket; a re-issued handle reads the stored result; a NEW op on the ticket forgets the
-/// ticket's results (its handles count from 0 again), so only a resume reads them.
-#[derive(Default)]
-struct AuthHost {
-    /// `None` = running, `Some` = the stored answer.
-    stored: std::sync::Mutex<std::collections::HashMap<(Ticket, u32), Option<u64>>>,
-    /// How many times the auth itself ran.
-    real_calls: std::sync::atomic::AtomicUsize,
-    /// The waker the ticket's holder registered.
-    waker: std::sync::Mutex<Option<std::task::Waker>>,
-}
-
+use crate::support::{AuthHost, AuthTicket, PendingDoor};
 use busbar_contract::abi::mechanism::ticket::Ticket;
-
-impl AuthHost {
-    fn new_op(&self, t: Ticket) {
-        self.stored.lock().unwrap().retain(|(k, _), _| *k != t);
-    }
-
-    /// `auth.call` on `(t, seq)`: `Some` = READY with the stored answer, `None` = NOT_READY.
-    fn call(&self, t: Ticket, seq: u32) -> Option<u64> {
-        let mut m = self.stored.lock().unwrap();
-        if let Some(r) = m.get(&(t, seq)) {
-            return *r;
-        }
-        self.real_calls
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        m.insert((t, seq), None);
-        None
-    }
-
-    /// The auth answers: every running call stores `answer`, and the ticket's wake fires.
-    fn complete(&self, answer: u64) {
-        for v in self.stored.lock().unwrap().values_mut() {
-            v.get_or_insert(answer);
-        }
-        if let Some(w) = self.waker.lock().unwrap().take() {
-            w.wake();
-        }
-    }
-}
-
-/// The framing's ticket, its registered waker held by the auth double.
-struct AuthTicket {
-    ticket: Ticket,
-    host: Arc<AuthHost>,
-}
-
-impl crate::carrier::Side for AuthTicket {
-    fn ticket(&self) -> Ticket {
-        self.ticket
-    }
-
-    fn register(&self, waker: &std::task::Waker) {
-        *self.host.waker.lock().unwrap() = Some(waker.clone());
-    }
-}
 
 /// A framer whose dial `begin` calls the auth service (handle seq 0) on its framing's ticket: it
 /// answers PENDING while the auth is not ready, and READY (framing token 42) once the call answers.
@@ -478,5 +421,357 @@ fn a_ticketed_begin_whose_auth_pends_resumes_on_the_wake_with_one_auth_call() {
         door.resumes.load(Ordering::SeqCst),
         2,
         "each re-drive is a resume"
+    );
+}
+
+/// A noop task context.
+fn noop_cx() -> std::task::Context<'static> {
+    std::task::Context::from_waker(std::task::Waker::noop())
+}
+
+/// RED (A PENDING ANSWER PARKS ONLY ITS OWN STREAM, emit): two streams on one dialled framing.
+/// The first stream's head emit calls the auth, which pends: the emit parks on ITS OWN ticket and
+/// holds that stream alone. The second stream's request goes out and its answer comes in while
+/// the first waits; then the first resumes on its ticket, carrying no new bytes, and goes out with
+/// exactly one auth call.
+#[test]
+fn one_streams_pending_auth_parks_only_that_stream_and_resumes_with_one_auth_call() {
+    let door = Arc::new(PendingDoor::new(TestDoor::identity("bytes"), 1));
+    let (mut f, _) =
+        Framing::begin_ticketed(door.clone(), SIDE_DIAL, "t", &Established::default(), &[])
+            .unwrap();
+    let y = f.emit_opening(1, b"first ", true, false, Some(0)).unwrap();
+    assert_eq!(
+        y,
+        Yielded::default(),
+        "the first stream's head waits on its auth"
+    );
+    assert!(f.parked() && f.holds(1) && !f.holds(3) && !f.begin_parked());
+    assert!(
+        f.emit(1, b"more", true, false).is_err(),
+        "its stream is held"
+    );
+    let y = f.emit_opening(3, b"second", true, false, Some(0)).unwrap();
+    assert_eq!(
+        y.wire, b"second",
+        "the second stream's request goes out now"
+    );
+    let y = f.ingest(b"answer", false).unwrap();
+    assert_eq!(
+        y.pieces
+            .iter()
+            .flat_map(|p| p.bytes.clone())
+            .collect::<Vec<_>>(),
+        b"answer",
+        "the far end's answer comes in while the first stream waits"
+    );
+    assert!(
+        f.poll_parked(&mut noop_cx()).is_pending(),
+        "the auth is not ready"
+    );
+    door.host.complete(9);
+    match f.poll_parked(&mut noop_cx()) {
+        std::task::Poll::Ready(Ok(y)) => assert_eq!(y.wire, b"first ", "the first goes out"),
+        other => panic!("the resumed emit completes: {other:?}"),
+    }
+    assert!(!f.parked() && !f.holds(1));
+    assert_eq!(
+        door.host.calls(),
+        1,
+        "exactly one auth call across the not-ready"
+    );
+    let on = door.on.lock().unwrap().clone();
+    let first: Vec<_> = on
+        .iter()
+        .filter(|(op, _, _)| *op == "emit")
+        .map(|(_, t, resume)| (*t, *resume))
+        .collect();
+    assert_eq!(
+        first.len(),
+        4,
+        "the first emit, the second, two resumes: {on:?}"
+    );
+    let (parked_on, _) = first[0];
+    assert_ne!(
+        parked_on, first[1].0,
+        "the second stream crossed on another ticket"
+    );
+    assert!(
+        first[2..]
+            .iter()
+            .all(|&(t, resume)| t == parked_on && resume),
+        "each re-drive is a resume on the parked op's own ticket"
+    );
+    assert_eq!(
+        door.emitted.lock().unwrap().as_slice(),
+        &[(1, 0, 1), (3, 0, 1)],
+        "each head emit states its opening body's length, known"
+    );
+}
+
+/// A MULTIPLEXING ACCEPTING FRAMER double: each byte an `ingest` carries names the stream a
+/// request head arrives on (`'1'`, `'3'`), yielded as one piece on that stream. A head on stream
+/// `1` calls the auth (handle seq `0`) on the op's ticket: while the auth is not ready the framer
+/// holds what it took and answers PENDING; its resume, carrying no bytes, yields what it held once
+/// the auth answers.
+struct MuxDoor {
+    facts: DoorFacts,
+    host: Arc<AuthHost>,
+    next: std::sync::atomic::AtomicU32,
+    held: std::sync::Mutex<HashMap<Ticket, Vec<u8>>>,
+    /// The bytes every resumed ingest carried.
+    resumed: std::sync::Mutex<Vec<usize>>,
+}
+
+impl MuxDoor {
+    fn new() -> Self {
+        Self {
+            facts: DoorFacts {
+                name: "mux".into(),
+                claims: vec!["mux"],
+                role: busbar_contract::abi::transport::ROLE_FRAMER,
+                composes_over: Vec::new(),
+                ported: false,
+                status_rows: Vec::new(),
+                duplex: Vec::new(),
+                datagram: false,
+            },
+            host: Arc::new(AuthHost::default()),
+            next: std::sync::atomic::AtomicU32::new(1),
+            held: std::sync::Mutex::new(HashMap::new()),
+            resumed: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+}
+
+/// One piece per byte of `heads`, on the stream it names, each ending its frame.
+fn mux_heads(sink: &FramerSink, o: &mut FramerOut, heads: &[u8]) {
+    for (n, &b) in heads.iter().enumerate() {
+        // SAFETY: the host's buffers; the test's heads fit them.
+        unsafe {
+            sink.frame.add(n).write(b);
+            sink.pieces.add(n).write(FramePiece {
+                stream: u64::from(b - b'0'),
+                offset: n as u64,
+                len: 1,
+                code: 0,
+                status_class: 0,
+                flags: PIECE_END_OF_FRAME,
+                fault: 0,
+                retry_after_secs: 0,
+                declared_len: 0,
+            });
+        }
+    }
+    o.yielded.frame_len = heads.len() as u64;
+    o.yielded.pieces_len = heads.len() as u32;
+}
+
+impl FramerDoor for MuxDoor {
+    fn facts(&self) -> &DoorFacts {
+        &self.facts
+    }
+
+    fn cross(&self, call: Call<'_>) -> Crossed {
+        if let Call::Begin(_, o) = call {
+            o.framing = 5;
+        }
+        Crossed {
+            outcome: Outcome::Ready,
+            error: None,
+        }
+    }
+
+    fn framing_side(&self) -> Option<Box<dyn crate::carrier::Side>> {
+        Some(Box::new(AuthTicket {
+            ticket: Ticket {
+                slot: self.next.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+                generation: 1,
+            },
+            host: Arc::clone(&self.host),
+        }))
+    }
+
+    fn cross_on(&self, side: &dyn crate::carrier::Side, resume: bool, call: Call<'_>) -> Crossed {
+        let (i, o) = match call {
+            Call::Ingest(i, o) => (i, o),
+            other => return self.cross(other),
+        };
+        let t = side.ticket();
+        let pending = Crossed {
+            outcome: Outcome::Pending,
+            error: None,
+        };
+        let ready = Crossed {
+            outcome: Outcome::Ready,
+            error: None,
+        };
+        if resume {
+            self.resumed.lock().unwrap().push(i.len);
+            if self.host.call(t, 0).is_none() {
+                return pending;
+            }
+            let held = self.held.lock().unwrap().remove(&t).unwrap_or_default();
+            mux_heads(&i.sink, o, &held);
+            return ready;
+        }
+        self.host.new_op(t);
+        let bytes = if i.bytes.is_null() {
+            Vec::new()
+        } else {
+            // SAFETY: the host's bytes, `len` of them, lent for the call.
+            unsafe { std::slice::from_raw_parts(i.bytes, i.len) }.to_vec()
+        };
+        if bytes.contains(&b'1') && self.host.call(t, 0).is_none() {
+            self.held.lock().unwrap().insert(t, bytes);
+            return pending;
+        }
+        mux_heads(&i.sink, o, &bytes);
+        ready
+    }
+}
+
+/// RED (A PENDING ANSWER PARKS ONLY ITS OWN STREAM, ingest): on one accepted connection the first
+/// stream's head arrives and its auth pends: that ingest parks on its own ticket. The second
+/// stream's head arrives next and is read, ingested on another ticket and handed up before the
+/// first resumes; then the first resumes (carrying no bytes: the framer took them) and its head is
+/// handed up, with exactly one auth call.
+#[test]
+fn a_pending_ingest_holds_only_its_stream_and_the_next_streams_head_is_handed_up_first() {
+    let door = Arc::new(MuxDoor::new());
+    let (mut f, _) =
+        Framing::begin_ticketed(door.clone(), SIDE_ACCEPT, "", &Established::default(), &[])
+            .unwrap();
+    let y = f.ingest(b"1", false).unwrap();
+    assert!(
+        y.pieces.is_empty() && f.parked(),
+        "the first stream's auth pends"
+    );
+    assert!(!f.begin_parked(), "the framing itself is not held");
+    let y = f.ingest(b"3", false).unwrap();
+    assert_eq!(
+        y.pieces.iter().map(|p| p.stream).collect::<Vec<_>>(),
+        [3_u64],
+        "the second stream's head is handed up while the first waits"
+    );
+    assert!(f.timer().is_ok(), "the framing's own ops keep crossing");
+    assert!(f.poll_parked(&mut noop_cx()).is_pending());
+    door.host.complete(1);
+    match f.poll_parked(&mut noop_cx()) {
+        std::task::Poll::Ready(Ok(y)) => assert_eq!(
+            y.pieces.iter().map(|p| p.stream).collect::<Vec<_>>(),
+            [1_u64],
+            "the first stream's head, once its auth answered"
+        ),
+        other => panic!("the resumed ingest completes: {other:?}"),
+    }
+    assert!(!f.parked());
+    assert_eq!(
+        door.host.calls(),
+        1,
+        "exactly one auth call across the not-ready"
+    );
+    assert!(
+        door.resumed.lock().unwrap().iter().all(|&n| n == 0),
+        "a resumed ingest carries no new bytes"
+    );
+}
+
+/// THE OPENING BODY'S LENGTH (`EmitIn::body_len`): stated on a dialled framing's head emit when
+/// known; never on a plain emit, and never on an accepting framing.
+#[test]
+fn a_dialled_head_emit_states_its_body_length_and_nothing_else_does() {
+    let door = Arc::new(PendingDoor::new(TestDoor::identity("bytes"), 99));
+    let (mut f, _) =
+        Framing::begin_ticketed(door.clone(), SIDE_DIAL, "t", &Established::default(), &[])
+            .unwrap();
+    f.emit_opening(1, b"head", true, false, Some(4096)).unwrap();
+    f.emit(1, b"body", true, false).unwrap();
+    f.emit_opening(3, b"head", true, false, None).unwrap();
+    let (mut accepted, _) =
+        Framing::begin_ticketed(door.clone(), SIDE_ACCEPT, "", &Established::default(), &[])
+            .unwrap();
+    accepted
+        .emit_opening(1, b"answer", true, false, Some(10))
+        .unwrap();
+    assert_eq!(
+        door.emitted.lock().unwrap().as_slice(),
+        &[(1, 4096, 1), (1, 0, 0), (3, 0, 0), (1, 0, 0)],
+        "known on the dialled head; streamed, plain and accepting emits state none"
+    );
+}
+
+/// RED (NO TICKET-LESS PATH FOR AN AUTH-CALLING FRAMER): a framing whose binding has auth points is
+/// never begun ticket-less, whichever way it is asked for, and nothing crosses; on tickets, a dial
+/// hands the binding to `begin` (`BeginIn::points`, `BeginIn::auth`).
+#[test]
+fn a_binding_with_auth_points_is_refused_ticket_less() {
+    use busbar_contract::abi::host::service::AuthRef;
+    use busbar_contract::abi::transport::POINT_HEAD;
+    let dial = AuthBinding {
+        points: POINT_HEAD,
+        auth: AuthRef { id: 3, mac: 4 },
+        line_points: 0,
+    };
+    let lines = AuthBinding {
+        line_points: POINT_HEAD,
+        ..AuthBinding::NONE
+    };
+    let refused = |r: Result<(Framing, Yielded), Refused>| match r {
+        Err(e) => {
+            assert_eq!(e.outcome, Outcome::Refused);
+            assert_eq!(e.error, TICKET_LESS_AUTH, "the refusal names the rule");
+        }
+        Ok(_) => panic!("an auth-calling binding was begun ticket-less"),
+    };
+    let door = Arc::new(TestDoor::identity("bytes"));
+    let est = Established::default();
+    refused(Framing::begin_ticketless(
+        door.clone(),
+        SIDE_DIAL,
+        "t",
+        &est,
+        &[],
+        &dial,
+    ));
+    refused(Framing::begin_ticketless(
+        door.clone(),
+        SIDE_ACCEPT,
+        "",
+        &est,
+        &[],
+        &lines,
+    ));
+    // An entry that gives no ticket is ticket-less too.
+    refused(Framing::begin_bound(
+        door.clone(),
+        SIDE_DIAL,
+        "t",
+        &est,
+        &[],
+        &dial,
+    ));
+    assert_eq!(door.count("begin"), 0, "nothing crossed");
+    match crate::framed_stream::FramedStream::open_bound(door.clone(), "bytes", "/s", &[], &lines) {
+        Err(e) => assert_eq!(e.error, TICKET_LESS_AUTH),
+        Ok(_) => panic!("a stream with auth lines was framed ticket-less"),
+    }
+    assert_eq!(door.count("begin"), 0, "nothing crossed");
+    match crate::wire::HostWire::new(door.clone()).and_then(|w| w.bound(&dial)) {
+        Err(e) => assert_eq!(e, TICKET_LESS_AUTH),
+        Ok(_) => panic!("a ticket-less wire took an auth-calling binding"),
+    }
+    assert!(
+        Framing::begin_ticketless(door.clone(), SIDE_DIAL, "t", &est, &[], &AuthBinding::NONE)
+            .is_ok(),
+        "a binding with no auth is framed ticket-less as before"
+    );
+    // On tickets the dial's binding reaches the framer's begin.
+    let ticketed = Arc::new(PendingDoor::new(TestDoor::identity("bytes"), 99));
+    let (f, _) = Framing::begin_bound(ticketed.clone(), SIDE_DIAL, "t", &est, &[], &dial).unwrap();
+    assert!(!f.parked());
+    assert_eq!(
+        ticketed.begun.lock().unwrap().as_slice(),
+        &[(POINT_HEAD, AuthRef { id: 3, mac: 4 })]
     );
 }

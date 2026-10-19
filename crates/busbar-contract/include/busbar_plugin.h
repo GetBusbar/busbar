@@ -3459,6 +3459,9 @@ struct bb_transport_EmitIn {
     uint32_t status;
     uint32_t _status_reserved;
     bb_hsvc_UnitRef unit;
+    uint64_t body_len;
+    uint32_t body_len_known;
+    uint32_t _body_len_reserved;
 };
 
 /* `encode`'s `in`. The rendered bytes go into `sink.wire`. */
@@ -5984,7 +5987,7 @@ BB_ASSERT(offsetof(bb_transport_IngestIn, end) == 112, "bb_transport_IngestIn.en
 BB_ASSERT(offsetof(bb_transport_IngestIn, _reserved) == 116, "bb_transport_IngestIn._reserved: offset");
 BB_ASSERT(offsetof(bb_transport_IngestIn, sink) == 120, "bb_transport_IngestIn.sink: offset");
 BB_ASSERT(offsetof(bb_transport_IngestIn, lane) == 200, "bb_transport_IngestIn.lane: offset");
-BB_ASSERT(sizeof(bb_transport_EmitIn) == 248, "bb_transport_EmitIn: size");
+BB_ASSERT(sizeof(bb_transport_EmitIn) == 264, "bb_transport_EmitIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_EmitIn) == 8, "bb_transport_EmitIn: alignment");
 BB_ASSERT(offsetof(bb_transport_EmitIn, head) == 0, "bb_transport_EmitIn.head: offset");
 BB_ASSERT(offsetof(bb_transport_EmitIn, framing) == 88, "bb_transport_EmitIn.framing: offset");
@@ -5999,6 +6002,9 @@ BB_ASSERT(offsetof(bb_transport_EmitIn, lane) == 216, "bb_transport_EmitIn.lane:
 BB_ASSERT(offsetof(bb_transport_EmitIn, status) == 224, "bb_transport_EmitIn.status: offset");
 BB_ASSERT(offsetof(bb_transport_EmitIn, _status_reserved) == 228, "bb_transport_EmitIn._status_reserved: offset");
 BB_ASSERT(offsetof(bb_transport_EmitIn, unit) == 232, "bb_transport_EmitIn.unit: offset");
+BB_ASSERT(offsetof(bb_transport_EmitIn, body_len) == 248, "bb_transport_EmitIn.body_len: offset");
+BB_ASSERT(offsetof(bb_transport_EmitIn, body_len_known) == 256, "bb_transport_EmitIn.body_len_known: offset");
+BB_ASSERT(offsetof(bb_transport_EmitIn, _body_len_reserved) == 260, "bb_transport_EmitIn._body_len_reserved: offset");
 BB_ASSERT(sizeof(bb_transport_EncodeIn) == 232, "bb_transport_EncodeIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_EncodeIn) == 8, "bb_transport_EncodeIn: alignment");
 BB_ASSERT(offsetof(bb_transport_EncodeIn, head) == 0, "bb_transport_EncodeIn.head: offset");
