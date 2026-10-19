@@ -107,12 +107,6 @@
 //! the top of this file is a record of. One envelope, one file; the module's own name (`jsonrpc`)
 //! is what is true about it.
 
-// Shared plane infrastructure: these JSON-RPC HTTP answers serve the MCP (server) and A2A
-// (receiving) planes and nothing else. With BOTH planes compiled out they have no caller, so
-// its items read dead — scoped to exactly that config so a real single-plane build still lints every
-// item its plane leaves unused (those carry their own per-plane attrs below).
-#![cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
-
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::Value;
@@ -129,9 +123,6 @@ pub use busbar_contract::jsonrpc::*;
 /// `400` rather than `200`-with-an-error-object: the request was malformed at the transport's own
 /// level, and a `200` there tells every proxy, cache and dashboard between the peers that the call
 /// succeeded.
-// MCP-only: the MCP server answers a malformed envelope with this `400`; the A2A receiving role
-// takes a different refusal path, so with `plane-mcp` off (and A2A on) it has no caller.
-#[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
 pub fn refused(invalid: &Invalid) -> Response {
     (
         StatusCode::BAD_REQUEST,
@@ -178,9 +169,6 @@ pub fn transport_refusal(status: StatusCode, message: &str) -> Response {
 }
 
 /// A body that is not JSON at all: `-32700`, `id` Null, per section 5's *"e.g. Parse error"*.
-// MCP-only: emitted only by the MCP server role (it reaches `PARSE_ERROR` above), so with
-// `plane-mcp` off (and A2A on) it has no caller.
-#[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
 pub fn parse_error() -> Response {
     refused(&Invalid {
         code: PARSE_ERROR,
