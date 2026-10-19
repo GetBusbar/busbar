@@ -37,8 +37,15 @@
 //! "host": {
 //!   "entitled": [ { "target": "<scope kind>:<name>", "units": [<unit>, ...] }, ... ],  // units optional
 //!   "trusted":  [ ["<counterparty>", "<item>" | null, "none" | "not_approved" | ...], ... ],
-//!   "resolve":  { "<name>": ["<address>", ...], ... } }                                // optional
+//!   "resolve":  { "<name>": ["<address>", ...], ... },                                 // optional
+//!   "records":  [ { "kind": "<kind>", "key": "<key>", "value": "<text>" | <JSON> }, ... ] } // optional
 //! ```
+//!
+//! `records` are what the instance's store already holds when it is loaded (an instance opened again
+//! over records an earlier one wrote, as the kernel's store keeps them across opens): each row is
+//! read back by `records.get` / `records.list` exactly as a kept write is, a JSON value as its
+//! serialized bytes. A row of a kind the Statement does not declare is never read, as the kernel
+//! refuses the kind.
 
 use std::collections::{BTreeMap, HashSet};
 use std::net::IpAddr;
@@ -203,13 +210,39 @@ impl Host {
                 (norm(name), addrs)
             })
             .collect();
+        let rows = v["records"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|r| {
+                let field = |name: &str| {
+                    r[name].as_str().unwrap_or_else(|| {
+                        panic!("conformance.json: plane.host.records[].{name} must be a string")
+                    })
+                };
+                let value = match &r["value"] {
+                    Value::String(text) => text.as_bytes().to_vec(),
+                    Value::Null => {
+                        panic!("conformance.json: plane.host.records[].value is required")
+                    }
+                    json => serde_json::to_vec(json).expect("a JSON value serializes"),
+                };
+                (
+                    (field("kind").to_string(), field("key").as_bytes().to_vec()),
+                    value,
+                )
+            })
+            .collect();
         Some(Self {
             entitled,
             trusted,
             resolve,
             secure_scheme: FramedFacts::stand_in().secure_scheme,
             drawn: AtomicU64::new(0),
-            kept: Mutex::default(),
+            kept: Mutex::new(Kept {
+                rows,
+                ..Kept::default()
+            }),
         })
     }
 
