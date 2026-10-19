@@ -133,8 +133,8 @@ impl PlaneBreakers {
             health: HealthState::new(
                 (0..MAX_POOL_MEMBERS)
                     .map(|_| LaneData {
-                        model: "plane-target".to_string(),
-                        provider: "plane".to_string(),
+                        member: "plane-target".to_string(),
+                        route: "plane".to_string(),
                         max: 1,
                         sem: Arc::new(tokio::sync::Semaphore::new(1)),
                         limited: false,
@@ -146,10 +146,6 @@ impl PlaneBreakers {
                         ok: 0,
                         err: 0,
                         client_fault: 0,
-                        upstream_model: None,
-                        attempt_timeout_ms: None,
-                        reasoning: false,
-                        prompt_caching: false,
                     })
                     .collect(),
             ),

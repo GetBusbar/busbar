@@ -51,8 +51,8 @@ fn seed_outcome(store: &HealthState, lane: usize, t: u64, is_error: bool) {
 
 fn make_lane_data(id: usize, max_permits: usize) -> LaneData {
     LaneData {
-        model: format!("model-{}", id),
-        provider: format!("provider-{}", id),
+        member: format!("model-{}", id),
+        route: format!("provider-{}", id),
         max: max_permits,
         sem: Arc::new(Semaphore::new(max_permits)),
         limited: false,
@@ -64,10 +64,6 @@ fn make_lane_data(id: usize, max_permits: usize) -> LaneData {
         ok: 0,
         err: 0,
         client_fault: 0,
-        upstream_model: None,
-        attempt_timeout_ms: None,
-        reasoning: false,
-        prompt_caching: false,
     }
 }
 
@@ -89,7 +85,7 @@ fn test_health_state_follows_identity_across_rebuild() {
     a.record_latency_in("p", 1, 123.0);
     let snaps = a.export_health();
     assert_eq!(snaps.len(), 2);
-    let s1 = snaps.iter().find(|s| s.model == "model-1").unwrap();
+    let s1 = snaps.iter().find(|s| s.member == "model-1").unwrap();
     assert!(
         !s1.cells.is_empty(),
         "the tripped pool cell must be exported"
@@ -119,7 +115,7 @@ fn test_health_state_follows_identity_across_rebuild() {
     assert_eq!(b.lane_latency_ms(0), None, "no inherited latency");
     // model-0's snapshot had no surviving lane — dropped without error.
     let b_snaps = b.export_health();
-    assert!(b_snaps.iter().all(|s| s.model != "model-0"));
+    assert!(b_snaps.iter().all(|s| s.member != "model-0"));
 
     // And the carried state keeps EVOLVING normally: cooldown expiry recovers the lane.
     set_now_for_test(1000 + 24 * 3600);
@@ -4001,4 +3997,40 @@ fn test_swrr_slot_resolved_once_spans_a_mid_selection_reset() {
         "per-step re-resolution corrupts the accumulator to -total across the same interleaving \
          — the exact skew the single-resolution rule in select_weighted_for exists to prevent"
     );
+}
+
+/// **THE BREAKER STORE NAMES NO PLANE'S LANE VOCABULARY** (audit K4#5; BUSBAR-1.6.0.md l.166-167:
+/// "Nothing in the kernel parses or understands ... a plane concept"). A lane is keyed by the
+/// member it serves and the route it dials, and carries only what the breaker reads: no model,
+/// no provider, no capability flag of one plane, and no key helper named after another plane's
+/// verb. A source witness: what has to stay true is the store's own field and item names.
+#[test]
+fn the_breaker_store_names_no_planes_lane_vocabulary() {
+    for (file, src) in [
+        ("store/vocab.rs", include_str!("../vocab.rs")),
+        (
+            "store/in_memory/mod.rs",
+            include_str!("../in_memory/mod.rs"),
+        ),
+        (
+            "store/in_memory/availability.rs",
+            include_str!("../in_memory/availability.rs"),
+        ),
+    ] {
+        for name in [
+            "pub model:",
+            "pub provider:",
+            "pub(crate) model:",
+            "pub(crate) provider:",
+            "upstream_model",
+            "attempt_timeout_ms",
+            "pub(crate) reasoning:",
+            "prompt_caching",
+        ] {
+            assert!(
+                !src.contains(name),
+                "{file} carries `{name}`: one plane's lane vocabulary in the kernel's breaker store"
+            );
+        }
+    }
 }
