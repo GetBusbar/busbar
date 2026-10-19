@@ -1959,6 +1959,9 @@ extern "C" fn unit_refuse(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
         let Some(host) = host else {
             return Answered::bare(Outcome::Refused, AUTH_HANDLE_NOT_SERVED);
         };
+        let Some(request) = head_copy(&i.request) else {
+            return Answered::bare(Outcome::Refused, AUTH_IN_MALFORMED);
+        };
         let bytes = match host.refuse(RefuseAsk {
             owner,
             generation: super::auth_handle::generation(),
@@ -1967,8 +1970,7 @@ extern "C" fn unit_refuse(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
             line: i.line,
             conn: i.conn,
             stream: i.stream,
-            // RED: the request is not passed on.
-            request: HeadCopy::default(),
+            request,
         }) {
             Ok(b) => b,
             Err(e) => return Answered::bare(Outcome::Refused, e),
