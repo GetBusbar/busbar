@@ -11,8 +11,8 @@
 //!
 //! `src/codec/` IS EXCLUDED FROM EVERY SCAN BELOW. It is the dialect codecs, which were not written
 //! to these four properties as a rule. These checks are about
-//! THIS PLANE's own adapter prose and structure — `claims.rs`, `dialect.rs`, `meta.rs`, `plane.rs`,
-//! `lib.rs` — never about the codec it wraps, which the plane calls read-only and never edits.
+//! THIS PLANE's own adapter prose and structure — `claims.rs`, `dialect.rs`, `meta.rs`,
+//! `plane_door.rs`, `lib.rs` — never about the codec it wraps, which the plane calls read-only and never edits.
 
 use std::path::{Path, PathBuf};
 
@@ -35,7 +35,7 @@ fn manifest() -> String {
 ///
 /// ONE NAMED EXCEPTION: `test-support`, EMPTY, carried in unchanged by the codec fold (owner ruling
 /// R7, 2026-09-27, THE DESIGN section 9/#39) — it gates `codec`'s own test-only constructors, never
-/// anything this crate's own `plane.rs`/`dialect.rs`/`lib.rs` read. A second feature, or a non-empty
+/// anything this crate's own `plane_door.rs`/`dialect.rs`/`lib.rs` read. A second feature, or a non-empty
 /// one, is not this exception and must fail below.
 #[test]
 fn the_crate_declares_no_features() {
@@ -56,11 +56,17 @@ fn the_crate_declares_no_features() {
 }
 
 /// The registered plane itself is never behind a `#[cfg(feature = …)]`: the one named exception
-/// above may gate codec test helpers, but never `LlmPlane`, `Upstream` or their impls.
+/// above may gate codec test helpers, but never `LlmPlane` or its impls.
 #[test]
 fn the_plane_type_itself_is_never_feature_gated() {
     let mut offenders = Vec::new();
-    for name in ["lib.rs", "plane.rs", "dialect.rs", "claims.rs", "meta.rs"] {
+    for name in [
+        "lib.rs",
+        "plane_door.rs",
+        "dialect.rs",
+        "claims.rs",
+        "meta.rs",
+    ] {
         let text = std::fs::read_to_string(src_dir().join(name)).expect("plane file is readable");
         for (n, line) in text.lines().enumerate() {
             if line.trim_start().starts_with("#[cfg(feature")

@@ -1,65 +1,49 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! AN IDENTIFIER THE PLANE MINTS IS THE HOST'S BYTES. The `Plane` surface reaches a codec through
-//! the context, and the context carries the host's codec services (`Ctx::host`): a context cannot
-//! be built without one, so there is no path on which a minted identifier is drawn from nothing and
-//! zero-filled. A host whose entropy is a known non-zero pattern must show up in the identifier.
+//! AN IDENTIFIER THE PLANE MINTS IS THE HOST'S BYTES. The door reaches a codec through the host it
+//! is handed (`busbar_contract::codec::CodecHost`), so there is no path on which a minted identifier
+//! is drawn from nothing and zero-filled. A host whose entropy is a known non-zero pattern must show
+//! up in the identifier the served whole-answer translation (`exchange::reply::whole::translate`)
+//! writes.
 
-mod harness;
+use busbar_contract::operation::OpVerb;
+use busbar_plane_llm::exchange::reply::whole::{self, WholeCtx, WholeEnd};
 
-use busbar_contract::bounded::Labels;
-use busbar_contract::ids::LaneId;
-use busbar_contract::plane::{Plane, Progress};
-use busbar_contract::wire::FrameCursor;
-use busbar_plane_llm::{LlmPlane, Upstream};
+/// A host whose entropy is one repeated, non-zero byte, and which holds no clock.
+struct PatternHost(u8);
 
-/// One Bedrock lane and one OpenAI lane: a Bedrock answer carries no id, so an OpenAI caller's
-/// answer must mint one.
-const UPSTREAMS: &[Upstream] = &[
-    Upstream {
-        lane: LaneId::new("lane-bedrock"),
-        host: "bedrock.invalid",
-        dialect: "bedrock",
-        model: "anthropic.claude-sonnet-4-5",
-        caps: busbar_contract::ir::egress_prep::LaneCaps::NONE,
-    },
-    Upstream {
-        lane: LaneId::new("lane-openai"),
-        host: "openai.invalid",
-        dialect: "openai",
-        model: "gpt-4o-mini",
-        caps: busbar_contract::ir::egress_prep::LaneCaps::NONE,
-    },
-];
+impl busbar_contract::codec::CodecHost for PatternHost {
+    fn fill_entropy(&self, out: &mut [u8]) -> bool {
+        out.fill(self.0);
+        true
+    }
+
+    fn wall_clock_now(&self) -> Option<u64> {
+        None
+    }
+}
 
 /// A Bedrock Converse answer with no identifier of its own.
 const BEDROCK_ANSWER: &str = r#"{"output":{"message":{"role":"assistant","content":[{"text":"Hello there!"}]}},"stopReason":"end_turn","usage":{"inputTokens":10,"outputTokens":5,"totalTokens":15}}"#;
 
-/// The id an OpenAI caller reads for that answer, when the context hands `host`.
+/// The id an OpenAI caller reads for that answer, when the door hands `host`.
 fn minted_id(host: &dyn busbar_contract::codec::CodecHost) -> String {
-    let plane = LlmPlane::new(UPSTREAMS);
-    let arena = harness::LeakPlaneAlloc;
-    let config = harness::EmptyConfig;
-    let transport = harness::HttpStack::new(harness::path_for("openai"), &[]);
-    let labels = Labels::new();
-    let ctx = harness::ctx_with_host(&arena, &config, &transport, &labels, host);
-    let dest = harness::destination("bedrock.invalid", LaneId::new("lane-bedrock"));
-    let frames = vec![harness::frame(BEDROCK_ANSWER.as_bytes())];
-    let mut cursor = FrameCursor::new(&frames);
-    let response = match plane
-        .decode_response(&mut cursor, &dest, None, &ctx)
-        .expect("a Bedrock answer reads")
-    {
-        Progress::Terminal { r, .. } => r,
-        other => panic!("a whole answer is terminal, got {other:?}"),
+    let ctx = WholeCtx {
+        ingress: "openai",
+        egress: "bedrock",
+        operation: OpVerb::CHAT,
+        model: "anthropic.claude-sonnet-4-5",
+        wants_stream: false,
+        json_array: false,
+        request: None,
+        now_s: 1_752_000_000,
+        elapsed_ms: None,
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     };
-    let written = plane
-        .encode_response(&response, None, &ctx)
-        .expect("an OpenAI caller can read it")
-        .as_slice()
-        .to_vec();
-    let v: serde_json::Value = serde_json::from_slice(&written).expect("a document");
+    let w = whole::translate(host, &ctx, 200, BEDROCK_ANSWER.as_bytes());
+    assert_eq!(w.end, WholeEnd::Delivered, "{:?}", w.refused);
+    let v: serde_json::Value = serde_json::from_slice(&w.answer.body).expect("a document");
     v["id"]
         .as_str()
         .expect("an OpenAI answer always carries an id")
@@ -69,7 +53,7 @@ fn minted_id(host: &dyn busbar_contract::codec::CodecHost) -> String {
 #[test]
 fn a_minted_identifier_carries_the_hosts_entropy() {
     for pattern in [0x2A_u8, 0x41] {
-        let id = minted_id(&harness::PatternHost(pattern));
+        let id = minted_id(&PatternHost(pattern));
         let token = id
             .strip_prefix("chatcmpl-")
             .unwrap_or_else(|| panic!("the native prefix, got {id:?}"));

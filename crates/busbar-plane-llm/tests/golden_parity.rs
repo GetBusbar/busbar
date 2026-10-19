@@ -1,136 +1,147 @@
-//! The bytes this plane produces are the bytes the existing codec produces.
+//! The bytes the plane's door produces are the bytes the codec's frozen outputs record.
 //!
-//! The frozen outputs under the codec crate's own golden directory are read here and never written.
-//! They are the reference: if a byte moves, this plane has changed a wire format, and a plane that
-//! changes a wire format has broken every client of it.
+//! The frozen outputs under the codec module's own golden directory are read here and never
+//! written. They are the reference: if a byte moves, this plane has changed a wire format, and a
+//! plane that changes a wire format has broken every client of it.
+//!
+//! Both directions are driven through the exchange steps the door runs for a unit, and nothing
+//! else: a request through `exchange::attempt::translate_request` (the body the door sends a far end
+//! of another dialect), an answer through `exchange::reply::whole::translate` (the whole answer the
+//! door hands the caller). Parity proven on any other surface would be parity of a path that serves
+//! nothing.
 //!
 //! The INPUT bodies below are restated rather than shared, because they live in a test module of
-//! the codec crate and a test module is not a surface another crate can name. They are copies, and
-//! the copy is checked in the only way that matters: a copy that drifted would stop reproducing the
+//! the codec and a test module is not a surface another crate can name. They are copies, and the
+//! copy is checked in the only way that matters: a copy that drifted would stop reproducing the
 //! frozen output, which is exactly what this file asserts.
 //!
 //! ## What is compared
 //!
-//! Every frozen request output is compared byte-for-byte, with no normalization at all. So is every
-//! frozen answer output, with one exception the frozen file itself declares: the identity the
-//! client-facing writer MINTS. A minted token cannot be frozen, so the frozen file records a
-//! placeholder in its place, and the comparison reads that placeholder back after asserting the
-//! produced token has the dialect's native shape. The creation time, the elapsed figure and the
-//! tool-call identities used to be normalized here too; they are exact now, because the plane runs
-//! the same answer-normalization pass the reference forward path runs and is handed the two values
-//! it cannot observe — the creation time and the elapsed figure — as inputs.
+//! Every frozen request output is compared byte-for-byte, with one exception the far end's lane
+//! declares rather than this file: a far end of the gemini dialect reached without a path base (its
+//! AI Studio surface) is sent a `thoughtSignature` sentinel on every replayed function call that
+//! carries none, because that backend refuses the request otherwise. The frozen outputs were written
+//! without the fill, so the comparison asserts each filled signature is exactly the sentinel and on
+//! a function call, removes it, and compares every other byte. Every frozen answer output is
+//! compared exactly, with one exception the frozen file itself declares: the identity the
+//! client-facing writer MINTS, recorded there as a placeholder.
 
-mod harness;
-
-use busbar_contract::bounded::Labels;
-use busbar_contract::ids::LaneId;
-use busbar_contract::plane::{Ingress, Plane};
-use busbar_contract::wire::FrameCursor;
-use busbar_plane_llm::{LlmPlane, Upstream};
+use busbar_contract::ir::egress_prep::LaneCaps;
+use busbar_contract::operation::OpVerb;
+use busbar_plane_llm::codec::chat_handle::GEMINI_SKIP_THOUGHT_SIGNATURE;
+use busbar_plane_llm::exchange::attempt::translate_request as door_translate_request;
+use busbar_plane_llm::exchange::reply::whole::{self, WholeCtx, WholeEnd};
+use busbar_plane_llm::exchange::shaping::{
+    FarShape, DEFAULT_MAX_TOKENS, DEFAULT_REASONING_BUDGETS,
+};
 
 /// The model the lane rewrites every outbound request to name.
 const LANE_MODEL: &str = "gpt-4o-mini";
 
-/// The Bedrock lane's model (see its `Upstream` entry).
+/// The Bedrock lane's model: a CLAUDE model id, because the Bedrock writer sends Claude's
+/// `thinking` only to a model that names Claude (BED-06), which is what the frozen Bedrock goldens
+/// record. Bedrock carries the model in the URL, so no body byte names it.
 const BEDROCK_LANE_MODEL: &str = "anthropic.claude-sonnet-4-5";
 
-/// One configured upstream per dialect, each on its own lane.
-const UPSTREAMS: &[Upstream] = &[
-    Upstream {
-        lane: LaneId::new("lane-anthropic"),
-        host: "anthropic.invalid",
-        dialect: "anthropic",
-        model: LANE_MODEL,
-        caps: busbar_contract::ir::egress_prep::LaneCaps::NONE,
-    },
-    Upstream {
-        lane: LaneId::new("lane-openai"),
-        host: "openai.invalid",
-        dialect: "openai",
-        model: LANE_MODEL,
-        caps: busbar_contract::ir::egress_prep::LaneCaps::NONE,
-    },
-    Upstream {
-        lane: LaneId::new("lane-gemini"),
-        host: "gemini.invalid",
-        dialect: "gemini",
-        model: LANE_MODEL,
-        caps: busbar_contract::ir::egress_prep::LaneCaps::NONE,
-    },
-    Upstream {
-        lane: LaneId::new("lane-bedrock"),
-        host: "bedrock.invalid",
-        dialect: "bedrock",
-        // A CLAUDE model id: the plane now writes for the lane's model, and the Bedrock writer sends
-        // Claude's `thinking` only to a model that names Claude (BED-06) — which is what the frozen
-        // Bedrock goldens record. Bedrock carries the model in the URL, so no body byte names it.
-        model: BEDROCK_LANE_MODEL,
-        caps: busbar_contract::ir::egress_prep::LaneCaps::NONE,
-    },
-    Upstream {
-        lane: LaneId::new("lane-responses"),
-        host: "responses.invalid",
-        dialect: "responses",
-        model: LANE_MODEL,
-        caps: busbar_contract::ir::egress_prep::LaneCaps::NONE,
-    },
-    Upstream {
-        lane: LaneId::new("lane-cohere"),
-        host: "cohere.invalid",
-        dialect: "cohere",
-        model: LANE_MODEL,
-        caps: busbar_contract::ir::egress_prep::LaneCaps::NONE,
-    },
-];
+/// The host the door is handed: a fixed entropy pattern and no clock (the creation time is an
+/// input of the answer step, never a clock read).
+struct FixedHost;
 
-/// The lane that reaches one dialect.
-fn lane_for(dialect: &str) -> LaneId {
-    UPSTREAMS
-        .iter()
-        .find(|u| u.dialect == dialect)
-        .map(|u| u.lane)
-        .expect("every dialect has a configured lane")
+impl busbar_contract::codec::CodecHost for FixedHost {
+    fn fill_entropy(&self, out: &mut [u8]) -> bool {
+        out.fill(0x5A);
+        true
+    }
+
+    fn wall_clock_now(&self) -> Option<u64> {
+        None
+    }
 }
 
-/// The host that reaches one dialect.
-fn host_for(dialect: &str) -> &'static str {
-    UPSTREAMS
-        .iter()
-        .find(|u| u.dialect == dialect)
-        .map(|u| u.host)
-        .expect("every dialect has a configured host")
-}
+const HOST: &dyn busbar_contract::codec::CodecHost = &FixedHost;
 
 /// Where the folded-in codec module keeps its frozen outputs.
 fn golden_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/codec/tests/proto/golden")
 }
 
-/// One request, taken in through the plane's decode step and back out through its egress step.
-fn translate_request(ingress: &str, egress: &str, body: &str) -> Vec<u8> {
-    let plane = LlmPlane::new(UPSTREAMS);
-    let arena = harness::LeakPlaneAlloc;
-    let config = harness::EmptyConfig;
-    let transport = harness::HttpStack::new(harness::path_for(ingress), &[]);
-    let labels = Labels::new();
-    let ctx = harness::ctx(&arena, &config, &transport, &labels);
-
-    let frames = vec![harness::frame(body.as_bytes())];
-    let mut cursor = FrameCursor::new(&frames);
-    let draft = match plane
-        .decode_ingress(&mut cursor, None, &ctx)
-        .expect("the corpus body is this dialect's shape")
-    {
-        Ingress::OneShot(draft) => draft,
-        other => panic!("a whole request body must decode as one complete unit, got {other:?}"),
+/// One request, translated for a far end of `egress` by the step the door runs for that hop.
+fn translate_request(ingress: &str, egress: &'static str, body: &str) -> Vec<u8> {
+    let far = FarShape {
+        dialect: egress,
+        wire_model: if egress == "bedrock" {
+            BEDROCK_LANE_MODEL
+        } else {
+            LANE_MODEL
+        },
+        default_max_tokens: None,
+        prompt_caching: true,
+        caps: LaneCaps::NONE,
+        path_base: None,
     };
+    let parsed: serde_json::Value = serde_json::from_str(body).expect("the corpus body is JSON");
+    let t = door_translate_request(
+        HOST,
+        ingress,
+        OpVerb::CHAT,
+        far,
+        DEFAULT_MAX_TOKENS,
+        DEFAULT_REASONING_BUDGETS,
+        true,
+        Some(parsed),
+        "application/json",
+        body.as_bytes(),
+    );
+    match t.outcome {
+        Ok(translated) => translated.bytes.into_owned(),
+        Err(refused) => panic!("the door refused the {ingress}->{egress} request: {refused:?}"),
+    }
+}
 
-    let unit = harness::unit(draft.op, draft.body_ir, draft.facts);
-    let dest = harness::destination(host_for(egress), lane_for(egress));
-    let out = plane
-        .encode_egress(&unit, &dest, None, &ctx)
-        .expect("the unit is expressible for this destination");
-    out.body.as_slice().to_vec()
+/// The produced request with the gemini AI Studio lane's `thoughtSignature` fill taken back out,
+/// after asserting every filled signature is the sentinel and sits on a function call. Bytes a far
+/// end of any other dialect is sent are returned untouched.
+fn without_signature_fill(egress: &str, produced: Vec<u8>) -> Vec<u8> {
+    if egress != "gemini" {
+        return produced;
+    }
+    let mut v: serde_json::Value =
+        sonic_rs::from_slice(&produced).expect("a gemini request is a document");
+    let mut filled = 0usize;
+    if let Some(contents) = v
+        .get_mut("contents")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for turn in contents {
+            let Some(parts) = turn
+                .get_mut("parts")
+                .and_then(serde_json::Value::as_array_mut)
+            else {
+                continue;
+            };
+            for part in parts {
+                let Some(obj) = part.as_object_mut() else {
+                    continue;
+                };
+                if let Some(sig) = obj.remove("thoughtSignature") {
+                    assert_eq!(
+                        sig.as_str(),
+                        Some(GEMINI_SKIP_THOUGHT_SIGNATURE),
+                        "a filled signature is the sentinel"
+                    );
+                    assert!(
+                        obj.contains_key("functionCall"),
+                        "a signature is filled on a function call only"
+                    );
+                    filled += 1;
+                }
+            }
+        }
+    }
+    if filled == 0 {
+        return produced;
+    }
+    sonic_rs::to_vec(&v).expect("serializes")
 }
 
 /// Compare one produced body to the frozen output of the same translation.
@@ -318,7 +329,7 @@ fn every_frozen_request_translation_reproduces() {
                 continue;
             }
             compared += 1;
-            let actual = translate_request(ingress, egress, body);
+            let actual = without_signature_fill(egress, translate_request(ingress, *egress, body));
             let (expected, actual) = against_golden(&name, &actual);
             if expected != actual {
                 differing.push(format!(
@@ -354,11 +365,11 @@ fn every_frozen_request_translation_reproduces() {
 //
 // Three of the four members that used to be normalized here are exact:
 //
-//   * the creation time. The plane runs the same answer-normalization pass the reference forward
-//     path runs, and hands it the creation time as an INPUT, from the context's clock. Nothing
-//     reads a system clock, so the answer is the same answer every time it is built.
-//   * the elapsed time stamped into the answer's metrics. It reaches the plane as a transport fact,
-//     because the thing that made the call is the thing that can measure it.
+//   * the creation time. The door's answer step runs the answer-normalization pass with the
+//     creation time as an INPUT (`WholeCtx::now_s`). Nothing reads a system clock, so the answer
+//     is the same answer every time it is built.
+//   * the elapsed time stamped into the answer's metrics, an input too (`WholeCtx::elapsed_ms`):
+//     the door measures it from the attempt's start, which the answer step cannot observe.
 //   * tool-call identities. The same pass rewrites them, so an identity minted by one vendor is
 //     recognisable when it comes back through another — and the rewrite is a pure function of the
 //     identity it rewrites, so it reproduces.
@@ -472,35 +483,30 @@ fn comparable(ingress: &str, frozen_bytes: &[u8], produced: &[u8]) -> (String, S
     )
 }
 
-/// One answer, taken in through the plane's response decoder and back out through its encoder.
+/// One answer of a far end of `egress`, translated for a caller of `ingress` by the step the door
+/// runs for a whole answer. The elapsed figure the frozen output stamps is handed in, as the door
+/// hands the time from the attempt's start.
 fn translate_response(egress: &str, ingress: &str, body: &str) -> Vec<u8> {
-    use busbar_contract::plane::Progress;
-    let plane = LlmPlane::new(UPSTREAMS);
-    let arena = harness::LeakPlaneAlloc;
-    let config = harness::EmptyConfig;
-    // The elapsed figure the frozen output stamps, published the way a real transport publishes
-    // it: as a fact. The plane does not measure it and does not invent it.
-    let transport = harness::HttpStack::new(
-        harness::path_for(ingress),
-        &[(busbar_plane_llm::meta::TRANSPORT_FACT_ELAPSED_MS, "123")],
-    );
-    let labels = Labels::new();
-    let ctx = harness::ctx(&arena, &config, &transport, &labels);
-    let dest = harness::destination(host_for(egress), lane_for(egress));
-    let frames = vec![harness::frame(body.as_bytes())];
-    let mut cursor = FrameCursor::new(&frames);
-    let response = match plane
-        .decode_response(&mut cursor, &dest, None, &ctx)
-        .expect("the corpus answer is this dialect's shape")
-    {
-        Progress::Terminal { r, .. } => r,
-        other => panic!("a whole answer must be terminal, got {other:?}"),
+    let ctx = WholeCtx {
+        ingress,
+        egress,
+        operation: OpVerb::CHAT,
+        model: "",
+        wants_stream: false,
+        json_array: false,
+        request: None,
+        now_s: 1_752_000_000,
+        elapsed_ms: Some(123),
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     };
-    plane
-        .encode_response(&response, None, &ctx)
-        .expect("the answer is expressible")
-        .as_slice()
-        .to_vec()
+    let w = whole::translate(HOST, &ctx, 200, body.as_bytes());
+    assert_eq!(
+        w.end,
+        WholeEnd::Delivered,
+        "the door did not deliver the {egress}->{ingress} answer: {:?}",
+        w.refused
+    );
+    w.answer.body
 }
 
 /// Answers in the anthropic dialect.

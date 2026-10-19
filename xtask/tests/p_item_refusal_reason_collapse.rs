@@ -20,6 +20,10 @@
 //! kernel's plane driver answers a refused arrival), and the unserved `Plane` impl that held
 //! `refusal_words` is deleted (plane-mcp finding 12).
 //!
+//! Nor is the llm plane's old trait adapter (`busbar-plane-llm/src/plane.rs`, with its
+//! `refusal_shape` and `refusal_message`): it was never dispatched and is deleted (Q128 finding 7);
+//! the door renders every refusal through `exchange/refuse.rs`, scanned below.
+//!
 //! This file reads the renderers' source and proves none of them holds a reason match of its own,
 //! so no renderer can drift from the others again. It lives here, beside the gates, because it
 //! names every plane's renderer and the tree's crates may not name one another's planes.
@@ -34,10 +38,6 @@ const RENDERERS: &[(&str, &[&str])] = &[
     (
         "crates/busbar-plane-llm/src/exchange/refuse.rs",
         &["kind_of", "kind_of_status", "is_authentication"],
-    ),
-    (
-        "crates/busbar-plane-llm/src/plane.rs",
-        &["refusal_shape", "refusal_message"],
     ),
     (
         "crates/busbar-plane-streaming/src/door.rs",

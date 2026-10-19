@@ -53,7 +53,7 @@ test-support = []
 [dependencies]
 # THE CONTRACT. The one busbar crate a plugin manifest may name without argument.
 busbar-contract = { path = "../busbar-contract" }
-# THE CODECS. Read-only from `plane.rs`/`dialect.rs`: this crate calls the dialect readers, writers,
+# THE CODECS. Read-only from the exchange steps and `dialect.rs`: this crate calls the dialect readers, writers,
 # translator and error-envelope builders and edits none of them. Folded IN as the `codec` module
 # (owner ruling R7, 2026-09-27, THE DESIGN section 9/#39: no `busbar-*-codec` crate) rather than named as a
 # separate crate — the fold is a pure move, so the dependencies the codecs themselves needed
@@ -72,10 +72,6 @@ bytes = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-# The TEST-ONLY seal (#65). `busbar_contract::plugin::TestKernelSeal` is the one blessed
-# fixture implementor of the SEALED `KernelSeal` trait; this crate's test harnesses used to
-# forge their own. Dev-only and feature-gated, so it is absent from every release build.
-busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 # The codec module's own test host (`codec::test_host`), and the entropy source it arms — the same
 # ones the codec's tests used before the fold.
 serde_json = { workspace = true }

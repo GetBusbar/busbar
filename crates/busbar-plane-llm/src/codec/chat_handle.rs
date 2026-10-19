@@ -279,8 +279,8 @@ pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
 }
 
 /// The members the caller's request holds in `extra` do not cross a TRANSLATE attempt: each is
-/// dropped through the one drop path, named by its wire path, and `extra` is emptied. Both hosts
-/// (the exchange seam and the plane's own crossing, design F7) call this one function.
+/// dropped through the one drop path, named by its wire path, and `extra` is emptied. The exchange
+/// seam's request preparation ([`chat_prepare_for_egress`]) is its one caller.
 pub fn drop_request_extra(ir: &mut IrRequest, ingress_protocol: &str) {
     // OpenAI `messages[].name` — the per-message participant name, parked by the OpenAI
     // Chat reader under its own sentinel (see `MESSAGE_NAMES_SENTINEL`). No other
@@ -343,21 +343,10 @@ pub fn drop_request_extra(ir: &mut IrRequest, ingress_protocol: &str) {
     ir.extra.clear();
 }
 
-/// What a TRANSLATE attempt's REQUEST drops before the far end's writer runs, for a host that does
-/// not run [`chat_prepare_for_egress`] (the plane's own crossing, design F7): the caller's content
-/// blocks the reader does not model are named (the reader put nothing in their place), and every
-/// `extra` member is dropped. Call inside a [`drops::scope`].
-pub fn drop_untranslatable_request(ir: &mut IrRequest, ingress_protocol: &str, body: &Value) {
-    super::proto_codec::with_reader(ingress_protocol, |r| {
-        drops::note_unmodelled_blocks(r.request_blocks(), body, drops::UNMODELLED_REQUEST_BLOCK);
-    });
-    drop_request_extra(ir, ingress_protocol);
-}
-
 /// What a TRANSLATE attempt's ANSWER drops: the far end's vendor-scoped response metadata, its
 /// content blocks the far end's reader does not model, and every other member the far end's dialect
-/// does not carry (the answer walk), each named by its wire path. Both hosts
-/// call this one function inside a [`drops::scope`].
+/// does not carry (the answer walk), each named by its wire path. Called inside a
+/// [`drops::scope`].
 pub fn drop_untranslatable_response(egress_protocol: &str, body: &Value) {
     crate::codec::dialect::drop_untranslatable_response_metadata(egress_protocol, body);
     super::proto_codec::with_reader(egress_protocol, |r| {

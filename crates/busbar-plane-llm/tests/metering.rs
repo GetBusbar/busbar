@@ -1,302 +1,183 @@
-//! The metering step returns locators, and the quantities in them are already normalized.
+//! What the door counts of an answer, by class, and that the counts are already normalized.
 //!
-//! Two things are asserted here and they are the two that decide a bill.
+//! Two things are asserted here and they are the two that decide a bill, on the path the plane's
+//! door serves (the arrival, the far end's answer read through the reply, and the counts it reports
+//! to the kernel, `plane_door::counts`).
 //!
-//! The plane returns no total, no price and no decision — only which class, where the number is,
-//! and the number the codec already read. That is the whole of what a plane is allowed to say about
-//! money.
-//!
-//! And the four classes partition the input once. Some dialects report a cached count INSIDE their
-//! input total and some report it beside; a plane that added the two families together for the
-//! first kind would bill the cached prefix twice. The codec's reader is where that is settled, and
-//! the case below is the one where getting it wrong is worth eighty tokens a request.
+//! The door reports the far end's own counts by class and nothing else: no total, no price and no
+//! decision. And the four token classes partition the input once. Some dialects report a cached
+//! count INSIDE their input total and some report it beside; a plane that added the two families
+//! together for the first kind would bill the cached prefix twice. The case below is the one where
+//! getting it wrong is worth eighty tokens a request.
 
-mod harness;
+use busbar_contract::plane::PlaneMeta;
+use busbar_plane_llm::exchange::arrive::arrive;
+use busbar_plane_llm::exchange::attempt::stream_intent;
+use busbar_plane_llm::exchange::handler_of;
+use busbar_plane_llm::exchange::reply::{At, Reply, ReplyCtx};
+use busbar_plane_llm::exchange::shaping::Shaping;
+use busbar_plane_llm::plane_door::{counts, TOKEN_CLASSES};
+use busbar_plane_llm::LlmPlane;
 
-use busbar_contract::bounded::Labels;
-use busbar_contract::ids::LaneId;
-use busbar_contract::plane::{Plane, Progress};
-use busbar_contract::wire::FrameCursor;
-use busbar_plane_llm::{LlmPlane, Upstream};
+/// The host the door is handed: a fixed entropy pattern and no clock.
+struct FixedHost;
 
-/// One configured upstream, speaking the dialect the answers below are written in.
-const UPSTREAMS: &[Upstream] = &[Upstream {
-    lane: LaneId::new("lane-openai"),
-    host: "openai.invalid",
-    dialect: "openai",
-    model: "gpt-4o-mini",
-    caps: busbar_contract::ir::egress_prep::LaneCaps::NONE,
-}];
+impl busbar_contract::codec::CodecHost for FixedHost {
+    fn fill_entropy(&self, out: &mut [u8]) -> bool {
+        out.fill(7);
+        true
+    }
 
-/// The request that opens the unit.
-const REQUEST: &str =
-    r#"{"model":"gpt-4o-mini","max_tokens":32,"messages":[{"role":"user","content":"Hello"}]}"#;
+    fn wall_clock_now(&self) -> Option<u64> {
+        None
+    }
+}
 
-/// Meter one answer and return the lines as (class, quantity) pairs.
-fn meter(answer: &str) -> Vec<(String, Option<u64>)> {
-    let plane = LlmPlane::new(UPSTREAMS);
-    let arena = harness::LeakPlaneAlloc;
-    let config = harness::EmptyConfig;
-    let transport = harness::HttpStack::new(harness::path_for("openai"), &[]);
-    let labels = Labels::new();
-    let ctx = harness::ctx(&arena, &config, &transport, &labels);
-    let dest = harness::destination("openai.invalid", LaneId::new("lane-openai"));
+const HOST: &dyn busbar_contract::codec::CodecHost = &FixedHost;
 
-    let request = vec![harness::frame(REQUEST.as_bytes())];
-    let mut cursor = FrameCursor::new(&request);
-    let draft = match plane
-        .decode_ingress(&mut cursor, None, &ctx)
-        .expect("decodes")
-    {
-        busbar_contract::plane::Ingress::OneShot(draft) => draft,
-        other => panic!("expected one complete unit, got {other:?}"),
+/// The generation the door holds: one far end speaking `dialect`, under the pool `p`.
+fn generation(dialect: &str) -> Shaping {
+    Shaping::from_settings(&serde_json::json!({
+        "providers": { "far": { "protocol": dialect, "base_url": "https://far.invalid" } },
+        "models": { "m": { "provider": "far" } },
+        "pools": { "p": { "members": ["m"] } }
+    }))
+    .expect("a well-formed generation reads")
+}
+
+/// One caller of `dialect` at `path` with `request`, answered by a far end of the same dialect with
+/// `answer` under `content_type`: the counts the door reports at the answer's end, by class name.
+fn metered(
+    dialect: &str,
+    path: &str,
+    request: &[u8],
+    content_type: &[u8],
+    answer: &[u8],
+) -> Vec<(&'static str, u64)> {
+    let shaping = generation(dialect);
+    let caller: &[(&[u8], &[u8])] = &[(b"content-type", b"application/json")];
+    let arrived = arrive("POST", path, caller, request, &shaping).expect("the request arrives");
+    let lane = shaping.lane("m").expect("the member's lane");
+    let ctx = ReplyCtx {
+        arrived: &arrived,
+        lane,
+        intent: handler_of(&arrived)
+            .map(|h| stream_intent(h, arrived.parsed.as_ref()))
+            .unwrap_or_default(),
+        passthrough: false,
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     };
-    let unit = harness::unit(draft.op, draft.body_ir, draft.facts);
-
-    let frames = vec![harness::frame(answer.as_bytes())];
-    let mut answers = FrameCursor::new(&frames);
-    let response = match plane
-        .decode_response(&mut answers, &dest, None, &ctx)
-        .expect("reads the answer")
-    {
-        Progress::Terminal { r, .. } => r,
-        other => panic!("a whole answer must be terminal, got {other:?}"),
+    let head: &[(&[u8], &[u8])] = &[(b"content-type", content_type)];
+    let mut reply = Reply::new(HOST, &ctx, 200, head);
+    let at = At {
+        now_s: 1_752_000_000,
+        elapsed_ms: Some(1),
     };
-    plane
-        .meter(&unit, &response, &ctx)
-        .lines
-        .as_slice()
+    let piece = reply.feed(HOST, &ctx, answer, true, at);
+    assert!(piece.done, "a whole answer ends on its last piece");
+    counts(&piece.units)
         .iter()
-        .map(|l| (l.class.as_str().to_string(), l.quantity))
+        .map(|c| {
+            let class = usize::try_from(c.class).expect("a class index");
+            (
+                *TOKEN_CLASSES
+                    .get(class)
+                    .unwrap_or_else(|| panic!("a token answer reports a token class, got {class}")),
+                c.amount,
+            )
+        })
         .collect()
 }
 
-/// Meter one STREAMED answer frame and return the lines as (class, quantity) pairs.
-///
-/// The same walk as [`meter`], except the answer arrives as a server-sent event rather than as a
-/// whole document. Nothing else about the unit changes: same request, same upstream, same dialect.
-fn meter_event(event: &str) -> Vec<(String, Option<u64>)> {
-    let plane = LlmPlane::new(UPSTREAMS);
-    let arena = harness::LeakPlaneAlloc;
-    let config = harness::EmptyConfig;
-    let transport = harness::HttpStack::new(harness::path_for("openai"), &[]);
-    let labels = Labels::new();
-    let ctx = harness::ctx(&arena, &config, &transport, &labels);
-    let dest = harness::destination("openai.invalid", LaneId::new("lane-openai"));
-
-    let request = vec![harness::frame(REQUEST.as_bytes())];
-    let mut cursor = FrameCursor::new(&request);
-    let draft = match plane
-        .decode_ingress(&mut cursor, None, &ctx)
-        .expect("decodes")
-    {
-        busbar_contract::plane::Ingress::OneShot(draft) => draft,
-        other => panic!("expected one complete unit, got {other:?}"),
-    };
-    let unit = harness::unit(draft.op, draft.body_ir, draft.facts);
-
-    let frames = vec![harness::frame(event.as_bytes())];
-    let mut answers = FrameCursor::new(&frames);
-    let response = match plane
-        .decode_response(&mut answers, &dest, None, &ctx)
-        .expect("reads the answer")
-    {
-        Progress::Terminal { r, .. } | Progress::Frame { r, .. } => r,
-        other => panic!("an answer frame must carry a response, got {other:?}"),
-    };
-    plane
-        .meter(&unit, &response, &ctx)
-        .lines
-        .as_slice()
-        .iter()
-        .map(|l| (l.class.as_str().to_string(), l.quantity))
-        .collect()
-}
+const OPENAI_REQUEST: &[u8] =
+    br#"{"model":"p","max_tokens":32,"messages":[{"role":"user","content":"Hello"}]}"#;
 
 /// A cached prefix is counted once, not twice.
 ///
 /// This dialect's wire total INCLUDES the cached count: a hundred prompt tokens of which eighty
-/// were served from a cache. The two lines must read twenty and eighty, not a hundred and eighty.
+/// were served from a cache. Input and cache read must be twenty and eighty, not a hundred and
+/// eighty.
 #[test]
 fn a_cached_prefix_is_counted_once() {
-    let answer = r#"{"id":"chatcmpl-1","object":"chat.completion","created":1752000000,"model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110,"prompt_tokens_details":{"cached_tokens":80}}}"#;
-    let lines = meter(answer);
+    let answer = br#"{"id":"chatcmpl-1","object":"chat.completion","created":1752000000,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110,"prompt_tokens_details":{"cached_tokens":80}}}"#;
     assert_eq!(
-        lines,
+        metered(
+            "openai",
+            "/v1/chat/completions",
+            OPENAI_REQUEST,
+            b"application/json",
+            answer
+        ),
         vec![
-            ("input".to_string(), Some(20)),
-            ("output".to_string(), Some(10)),
-            ("cache_read".to_string(), Some(80)),
+            ("input", 20),
+            ("output", 10),
+            ("cache_read", 80),
+            ("cache_write", 0)
         ],
         "the cached prefix was not subtracted from the wire input total"
     );
 }
 
-/// An answer with no cache accounting reports two lines, not four zeros.
-///
-/// A class the upstream said nothing about is absent, because "not reported" and "reported as zero"
-/// are different facts and the settlement treats them differently.
-#[test]
-fn an_unreported_class_is_absent_rather_than_zero() {
-    let answer = r#"{"id":"chatcmpl-2","object":"chat.completion","created":1752000000,"model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":4,"total_tokens":16}}"#;
-    let lines = meter(answer);
-    assert_eq!(
-        lines,
-        vec![
-            ("input".to_string(), Some(12)),
-            ("output".to_string(), Some(4)),
-        ]
-    );
-}
-
-/// Every line names where its number was found, and every class is one the plane declared.
-#[test]
-fn every_line_is_a_locator_for_a_declared_class() {
-    use busbar_contract::plane::PlaneMeta;
-    let plane = LlmPlane::new(UPSTREAMS);
-    let arena = harness::LeakPlaneAlloc;
-    let config = harness::EmptyConfig;
-    let transport = harness::HttpStack::new(harness::path_for("openai"), &[]);
-    let labels = Labels::new();
-    let ctx = harness::ctx(&arena, &config, &transport, &labels);
-    let dest = harness::destination("openai.invalid", LaneId::new("lane-openai"));
-
-    let request = vec![harness::frame(REQUEST.as_bytes())];
-    let mut cursor = FrameCursor::new(&request);
-    let draft = match plane
-        .decode_ingress(&mut cursor, None, &ctx)
-        .expect("decodes")
-    {
-        busbar_contract::plane::Ingress::OneShot(draft) => draft,
-        other => panic!("expected one complete unit, got {other:?}"),
-    };
-    let unit = harness::unit(draft.op, draft.body_ir, draft.facts);
-
-    let answer = r#"{"id":"chatcmpl-3","object":"chat.completion","created":1752000000,"model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110,"prompt_tokens_details":{"cached_tokens":80}}}"#;
-    let frames = vec![harness::frame(answer.as_bytes())];
-    let mut answers = FrameCursor::new(&frames);
-    let response = match plane
-        .decode_response(&mut answers, &dest, None, &ctx)
-        .expect("reads the answer")
-    {
-        Progress::Terminal { r, .. } => r,
-        other => panic!("a whole answer must be terminal, got {other:?}"),
-    };
-
-    let declared: Vec<&str> = <LlmPlane as PlaneMeta>::METER_CLASSES
-        .iter()
-        .map(|c| c.key.as_str())
-        .collect();
-    for line in plane.meter(&unit, &response, &ctx).lines.as_slice() {
-        assert!(
-            declared.contains(&line.class.as_str()),
-            "the metering step named the undeclared class {}",
-            line.class
-        );
-        assert!(
-            line.location.is_some(),
-            "the {} line says no place its number came from",
-            line.class
-        );
-        assert!(
-            line.lane.is_none(),
-            "the answer named no lane, so no line may claim one"
-        );
-    }
-}
-
-/// A streamed answer bills the tokens it reported.
-///
-/// The usage figures of a streamed answer ride in the final event's data payload, not in a bare
-/// document. The metering step used to hand the whole event frame -- `data:` line and all -- to a
-/// JSON parser, which failed, and a failed parse returned no lines at all: every streamed request
-/// metered zero and settled free.
+/// A streamed answer bills the tokens its usage frame reports, partitioned the same way.
 #[test]
 fn a_streamed_usage_frame_meters_the_tokens_it_reports() {
-    let event = "data: {\"id\":\"chatcmpl-4\",\"object\":\"chat.completion.chunk\",\"created\":1752000000,\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":10,\"total_tokens\":110,\"prompt_tokens_details\":{\"cached_tokens\":80}}}\n\n";
-    let lines = meter_event(event);
+    let request = br#"{"model":"p","max_tokens":32,"stream":true,"messages":[{"role":"user","content":"Hello"}]}"#;
+    let answer = concat!(
+        "data: ",
+        r#"{"id":"chatcmpl-4","object":"chat.completion.chunk","created":1752000000,"model":"m","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}"#,
+        "\n\n",
+        "data: ",
+        r#"{"id":"chatcmpl-4","object":"chat.completion.chunk","created":1752000000,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110,"prompt_tokens_details":{"cached_tokens":80}}}"#,
+        "\n\n",
+        "data: [DONE]\n\n",
+    )
+    .as_bytes();
     assert_eq!(
-        lines,
+        metered(
+            "openai",
+            "/v1/chat/completions",
+            request,
+            b"text/event-stream",
+            answer
+        ),
         vec![
-            ("input".to_string(), Some(20)),
-            ("output".to_string(), Some(10)),
-            ("cache_read".to_string(), Some(80)),
+            ("input", 20),
+            ("output", 10),
+            ("cache_read", 80),
+            ("cache_write", 0)
         ],
-        "a streamed answer metered nothing"
+        "a streamed answer did not meter the tokens its usage frame reports"
     );
 }
 
-/// The end-of-stream marker is not a document, and it meters nothing rather than failing.
+/// Every class the plane DECLARES is a class the door reports, and it reports no other.
+///
+/// The direction that costs money: a declared class is what an operator prices in the rate card;
+/// a class the door never reports posts nothing, so the class prices at nothing and the invoice is
+/// short by whatever it was worth. The dialect below states its two cache counts BESIDE its input
+/// total, so one answer of its shape exercises every class the plane can name.
 #[test]
-fn the_end_of_stream_marker_meters_nothing() {
-    assert!(meter_event("data: [DONE]\n\n").is_empty());
-}
-
-/// One configured upstream speaking the dialect that reports all four classes at once.
-///
-/// This dialect states its two cache counts BESIDE its input total rather than inside it, so a
-/// single answer of its shape exercises every class the plane can name. The other dialects report a
-/// subset of the same four; none of them reports a fifth.
-const ADDITIVE_UPSTREAMS: &[Upstream] = &[Upstream {
-    lane: LaneId::new("lane-anthropic"),
-    host: "anthropic.invalid",
-    dialect: "anthropic",
-    model: "claude",
-    caps: busbar_contract::ir::egress_prep::LaneCaps::NONE,
-}];
-
-/// Every class the plane DECLARES is a class the metering step emits.
-///
-/// The companion of [`every_line_is_a_locator_for_a_declared_class`], and the direction that costs
-/// money. A declared class is what an operator prices in the rate card; a class the plane never
-/// reports posts NO line — not a zero line, no line — so the class prices at nothing, the invoice is
-/// short by whatever it was worth, and nothing anywhere reports a discrepancy. Four classes were
-/// declared for the non-chat operations and not one of them was ever emitted by any decode path.
-///
-/// So the two sets are asserted EQUAL. A class added to the declaration without a decode path that
-/// reads it fails here, which is the moment to notice rather than the invoice.
-#[test]
-fn every_declared_class_is_a_class_the_metering_step_emits() {
-    use busbar_contract::plane::PlaneMeta;
-    let plane = LlmPlane::new(ADDITIVE_UPSTREAMS);
-    let arena = harness::LeakPlaneAlloc;
-    let config = harness::EmptyConfig;
-    let transport = harness::HttpStack::new(harness::path_for("anthropic"), &[]);
-    let labels = Labels::new();
-    let ctx = harness::ctx(&arena, &config, &transport, &labels);
-    let dest = harness::destination("anthropic.invalid", LaneId::new("lane-anthropic"));
-
+fn every_declared_class_is_a_class_the_door_reports() {
     let request =
-        br#"{"model":"claude","max_tokens":32,"messages":[{"role":"user","content":"Hello"}]}"#;
-    let request = vec![harness::frame(request)];
-    let mut cursor = FrameCursor::new(&request);
-    let draft = match plane
-        .decode_ingress(&mut cursor, None, &ctx)
-        .expect("decodes")
-    {
-        busbar_contract::plane::Ingress::OneShot(draft) => draft,
-        other => panic!("expected one complete unit, got {other:?}"),
-    };
-    let unit = harness::unit(draft.op, draft.body_ir, draft.facts);
-
-    let answer = br#"{"id":"msg_1","type":"message","role":"assistant","model":"claude","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":20,"output_tokens":10,"cache_read_input_tokens":80,"cache_creation_input_tokens":40}}"#;
-    let frames = vec![harness::frame(answer)];
-    let mut answers = FrameCursor::new(&frames);
-    let response = match plane
-        .decode_response(&mut answers, &dest, None, &ctx)
-        .expect("reads the answer")
-    {
-        Progress::Terminal { r, .. } => r,
-        other => panic!("a whole answer must be terminal, got {other:?}"),
-    };
-
-    let mut emitted: Vec<&str> = plane
-        .meter(&unit, &response, &ctx)
-        .lines
-        .as_slice()
-        .iter()
-        .map(|line| line.class.as_str())
-        .collect();
+        br#"{"model":"p","max_tokens":32,"messages":[{"role":"user","content":"Hello"}]}"#;
+    let answer = br#"{"id":"msg_1","type":"message","role":"assistant","model":"m","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":20,"output_tokens":10,"cache_read_input_tokens":80,"cache_creation_input_tokens":40}}"#;
+    let reported = metered(
+        "anthropic",
+        "/v1/messages",
+        request,
+        b"application/json",
+        answer,
+    );
+    assert_eq!(
+        reported,
+        vec![
+            ("input", 20),
+            ("output", 10),
+            ("cache_read", 80),
+            ("cache_write", 40)
+        ]
+    );
+    let mut emitted: Vec<&str> = reported.iter().map(|(class, _)| *class).collect();
     emitted.sort_unstable();
     let mut declared: Vec<&str> = <LlmPlane as PlaneMeta>::METER_CLASSES
         .iter()
@@ -305,7 +186,7 @@ fn every_declared_class_is_a_class_the_metering_step_emits() {
     declared.sort_unstable();
     assert_eq!(
         declared, emitted,
-        "a class is declared that no answer can make the plane report, or reported that none declares"
+        "a class is declared that no answer can make the door report, or reported that none declares"
     );
 }
 
@@ -320,8 +201,7 @@ fn every_declared_class_is_a_class_the_metering_step_emits() {
 /// while the list spelled its own `tokens_in`/`tokens_out`, names no card prices and no tier carries.
 #[test]
 fn the_meter_classes_are_the_doors_billable_classes_by_their_1_5_5_names() {
-    use busbar_contract::plane::PlaneMeta;
-    use busbar_plane_llm::plane_door::{TAIL, TOKEN_CLASSES};
+    use busbar_plane_llm::plane_door::TAIL;
     let declared: Vec<(&str, &str)> = <LlmPlane as PlaneMeta>::METER_CLASSES
         .iter()
         .map(|c| (c.key.as_str(), c.family))

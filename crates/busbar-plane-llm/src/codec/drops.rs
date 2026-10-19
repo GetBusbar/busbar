@@ -865,8 +865,8 @@ pub fn note_unmapped(carried: &Carried, root: &str, body: &Value) {
     }
 }
 
-/// Read ONE far-end stream frame on a TRANSLATE attempt, for either host (the engine's stream
-/// translator, the plane's own crossing; design F7): the far end's `reader` decodes it, and the
+/// Read ONE far-end stream frame on a TRANSLATE attempt (the stream translator's step, design F7):
+/// the far end's `reader` decodes it, and the
 /// drop walk names what the caller's dialect will not get, once per path per STREAM (the paths
 /// already dropped ride `state.dropped`, read for the audit at the stream's end).
 pub fn read_stream_frame(

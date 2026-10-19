@@ -274,15 +274,3 @@ pub const DIALECTS: &[Dialect] = &[
 pub fn dialect(name: &str) -> Option<&'static Dialect> {
     DIALECTS.iter().find(|d| d.name == name)
 }
-
-/// Whether a dialect refuses a request that names no response ceiling.
-///
-/// Read off the codec crate's own declaration rather than restated here, so the two cannot drift:
-/// this is the fact the request writer acts on, asked at its source.
-#[must_use]
-pub fn requires_max_response(name: &str) -> bool {
-    crate::codec::DECLS
-        .iter()
-        .find(|d| d.name == name)
-        .is_some_and(|d| d.requires_max_tokens)
-}
