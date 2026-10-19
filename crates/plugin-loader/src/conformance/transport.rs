@@ -559,6 +559,10 @@ pub(super) fn locate(
     (i.authority_buf, i.authority_cap) = (authority.as_mut_ptr(), authority.len());
     (i.name_buf, i.name_cap) = (name.as_mut_ptr(), name.len());
     (i.alpn_buf, i.alpn_cap) = (alpn.as_mut_ptr(), alpn.len());
+    // The framer's own head lines, lent AMPLE as the host lends them: a framer that states lines
+    // answers SHORT on a buffer that cannot hold them, and this probe pins the authority alone.
+    let mut defaults = vec![0_u8; AMPLE];
+    (i.defaults_buf, i.defaults_cap) = (defaults.as_mut_ptr(), defaults.len());
     let mut f: Frame<LocateIn, LocateOut> = Frame::new(i, output());
     let c = p.call(slot::LOCATE, &mut f);
     let line = locate_line(&c, &f.out, &authority);
@@ -607,6 +611,8 @@ fn relocate(
     (i.authority_buf, i.authority_cap) = (authority.as_mut_ptr(), authority.len());
     (i.name_buf, i.name_cap) = (name.as_mut_ptr(), name.len());
     (i.alpn_buf, i.alpn_cap) = (alpn.as_mut_ptr(), alpn.len());
+    let mut defaults = vec![0_u8; AMPLE];
+    (i.defaults_buf, i.defaults_cap) = (defaults.as_mut_ptr(), defaults.len());
     let mut f: Frame<LocateIn, LocateOut> = Frame::new(i, output());
     let c = p.recall(token, slot::LOCATE, &mut f);
     locate_line(&c, &f.out, &authority)
