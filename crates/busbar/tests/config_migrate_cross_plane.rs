@@ -150,12 +150,8 @@ agent_pools:
 fn a_plane_pool_refuses_each_field_its_plane_does_not_honour() {
     register_planes();
     let base = r#"
-providers:
-  acme:
-    api_key: { env: BUSBAR_T_POOL_FIELDS_ACME }
-models:
-  fast-a:
-    provider: acme
+providers: {}
+models: {}
 hooks:
   audit:
     kind: gate
@@ -176,10 +172,7 @@ agents:
     url: "https://a2.example/card"
     pin: { mechanism: unpinned }
 "#;
-    let defs: std::collections::HashMap<String, ProviderDef> = serde_yaml::from_str(
-        "acme:\n  protocol: anthropic\n  base_url: https://api.acme.example\n",
-    )
-    .expect("provider defs parse");
+    let defs: std::collections::HashMap<String, ProviderDef> = std::collections::HashMap::new();
     let resolve_pool = |members: &str, extra: &str| {
         let raw = format!("{base}pools:\n  p:\n    members: {members}\n{extra}");
         let deploy: DeployCfg =
