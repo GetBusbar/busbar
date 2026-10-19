@@ -1243,3 +1243,36 @@ fn a_begin_line_table_is_checked() {
         f(Rule::Missing, "route.methods")
     );
 }
+
+/// RED: a `begin`'s binding: on the dial side a valid point set with a handle exactly when it is
+/// not empty; on an accepting side neither.
+#[test]
+fn a_begin_binding_is_checked() {
+    use crate::abi::host::service::AuthRef;
+    let bound = AuthRef { id: 3, mac: 1 };
+    let mut i: BeginIn = z();
+    i.side = SIDE_DIAL;
+    assert_eq!(check_binding(&i), Ok(()), "a binding with no auth");
+    i.points = POINT_HEAD;
+    i.auth = bound;
+    assert_eq!(check_binding(&i), Ok(()));
+    i.points = POINT_HEAD_BODY;
+    assert_eq!(check_binding(&i), Ok(()));
+    i.auth = AuthRef::NONE;
+    assert_eq!(check_binding(&i), f(Rule::Contradiction, "begin.auth"));
+    i.points = 0;
+    i.auth = bound;
+    assert_eq!(check_binding(&i), f(Rule::Contradiction, "begin.auth"));
+    i.points = POINT_FRAME;
+    assert_eq!(check_binding(&i).unwrap_err().rule, Rule::UnknownCode);
+    for side in [SIDE_ACCEPT, SIDE_ACCEPT_STREAM] {
+        let mut a: BeginIn = z();
+        a.side = side;
+        assert_eq!(check_binding(&a), Ok(()));
+        a.auth = bound;
+        assert_eq!(check_binding(&a), f(Rule::Contradiction, "begin.auth"));
+        a.auth = AuthRef::NONE;
+        a.points = POINT_HEAD;
+        assert_eq!(check_binding(&a), f(Rule::Contradiction, "begin.auth"));
+    }
+}

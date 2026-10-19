@@ -504,7 +504,7 @@ use crate::abi::plane::{
     ArriveIn, OnPieceIn, OutField, PlaneCancelIn, PlaneDriveIn, PlaneOpenIn, ProjectIn,
     ProviderFacts, RecordWrite, RefusalIn, ServeIn, UnitCount,
 };
-use crate::abi::transport::route::{FieldPredicate, LineEntry, RouteMatch};
+use crate::abi::transport::route::{FieldPredicate, LineEntry, RouteMatch, RouteView};
 use crate::abi::transport::{
     AcceptIn, AdoptIn, ArrivalIn, BeginIn, ConnFacts, DatagramLane, DatagramPath, DatagramRoute,
     Destination, DialIn, EmitIn, EncodeIn, FinishIn, FramePiece, FramerSink, FramingIn, HeadSlots,
@@ -704,3 +704,31 @@ lend! {
 #[cfg(test)]
 #[path = "tests/lent_tests.rs"]
 mod tests;
+
+impl<'a> Lent<'a, LineEntry> {
+    /// The line's route as the route vocabulary reads it ([`RouteView`]): what an accepting
+    /// transport matches a decoded head against, in table order (`path_and_fields_match`, then
+    /// `admits` for the method). `None` when the host lent a path or a predicate name that is not
+    /// UTF-8.
+    #[must_use]
+    pub fn route_view(self) -> Option<RouteView<'a>> {
+        let route = self.field(|l| &l.route);
+        let path = route.field(|r| &r.path).as_str().ok()?;
+        let fields = route
+            .fields()
+            .iter()
+            .map(|p| {
+                let name = p.field(|f| &f.name).as_str().ok()?;
+                Some((p.get().op, name, p.field(|f| &f.value).bytes()))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let r = route.get();
+        Some(RouteView {
+            methods: r.methods,
+            path_form: r.path_form,
+            path,
+            fields,
+            rung: r.rung,
+        })
+    }
+}

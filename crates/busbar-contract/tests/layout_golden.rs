@@ -1335,7 +1335,22 @@ fn compute_layout() -> String {
     record!(
         s,
         tkind::BeginIn,
-        [head, side, _reserved, target, facts, sink, fields, fields_len, lane, lines, lines_len]
+        [
+            head,
+            side,
+            _reserved,
+            target,
+            facts,
+            sink,
+            fields,
+            fields_len,
+            lane,
+            lines,
+            lines_len,
+            points,
+            _points_reserved,
+            auth
+        ]
     );
     record!(
         s,

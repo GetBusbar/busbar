@@ -913,6 +913,29 @@ pub unsafe fn check_lines(i: &super::BeginIn) -> Result<(), Fault> {
     Ok(())
 }
 
+/// A `begin`'s binding: on [`super::SIDE_DIAL`] a valid point set with a handle exactly when it
+/// is not empty; on an accepting side no points and no handle.
+///
+/// # Errors
+///
+/// [`Rule::Contradiction`] for points or a handle on an accepting side, or a handle that disagrees
+/// with the points; the point set's own rules.
+pub const fn check_binding(i: &super::BeginIn) -> Result<(), Fault> {
+    if i.side != super::SIDE_DIAL {
+        if i.points != 0 || !i.auth.is_none() {
+            return Err(fault(Rule::Contradiction, "begin.auth"));
+        }
+        return Ok(());
+    }
+    if let Err(e) = crate::abi::auth::check_points(i.points, false) {
+        return Err(e);
+    }
+    if (i.points == 0) != i.auth.is_none() {
+        return Err(fault(Rule::Contradiction, "begin.auth"));
+    }
+    Ok(())
+}
+
 /// Every field predicate's shape: a known op and well-formed strings.
 ///
 /// # Errors

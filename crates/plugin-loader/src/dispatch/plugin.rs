@@ -1783,6 +1783,12 @@ impl<K: Kind> Plugin<K> {
         if let Some(o) = inst.refuse(s, size_of::<I>(), size_of::<O>()) {
             return Called::from(Crossed::host(o));
         }
+        // THE KIND'S ADMISSION of the `in` (its kernel-MAC'd refs, verified for this instance)
+        // before anything is acquired or crossed.
+        let owner = super::handle::instance_id(inst.ctx()).0;
+        if let Some(o) = K::admit(s, frame.heads().0.cast_const(), size_of::<I>(), owner) {
+            return Called::from(Crossed::host(o));
+        }
         let lifecycle = is_lifecycle(s);
         if lifecycle && !inst.enter_lifecycle() {
             return Called::from(Crossed::host(Outcome::Refused));

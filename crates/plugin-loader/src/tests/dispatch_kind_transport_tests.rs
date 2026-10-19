@@ -736,3 +736,59 @@ fn a_dropped_in_transports_offered_points_are_read_off_its_statement() {
         "a short record refuses the load"
     );
 }
+
+/// RED (#65, #74): a dial's `begin` carrying the binding's auth handle is admitted only for the
+/// framer it was minted for, at the published generation, with its mac as minted; a malformed
+/// binding is refused too. Every refusal is before the crossing.
+#[test]
+fn a_dial_begin_with_a_foreign_stale_or_forged_binding_ref_is_refused() {
+    use crate::dispatch::auth_handle::{generation, mint_auth_ref};
+    use busbar_contract::abi::host::service::AuthRef;
+    use busbar_contract::abi::transport::{POINT_HEAD, SIDE_ACCEPT, SIDE_DIAL};
+    let (framer, other) = (40, 41);
+    let admit = |i: &BeginIn, owner: u64| {
+        Transport::admit(
+            slot::BEGIN,
+            std::ptr::from_ref(i).cast(),
+            size_of::<BeginIn>(),
+            owner,
+        )
+    };
+    let mut i: BeginIn = z();
+    i.side = SIDE_DIAL;
+    assert_eq!(admit(&i, framer), None, "a binding with no auth");
+    i.points = POINT_HEAD;
+    i.auth = mint_auth_ref(framer, generation(), 9).expect("minted");
+    assert_eq!(admit(&i, framer), None, "the framer's own handle");
+    assert_eq!(admit(&i, other), Some(Outcome::Refused), "another owner's");
+    let mut stale = i;
+    stale.auth = mint_auth_ref(framer, generation().wrapping_sub(1), 9).expect("minted");
+    assert_eq!(admit(&stale, framer), Some(Outcome::Refused), "stale");
+    let mut forged = i;
+    forged.auth.mac ^= 1 << 17;
+    assert_eq!(admit(&forged, framer), Some(Outcome::Refused), "forged");
+    let mut unbound = i;
+    unbound.auth = AuthRef::NONE;
+    assert_eq!(
+        admit(&unbound, framer),
+        Some(Outcome::Refused),
+        "points with no handle"
+    );
+    let mut accept = i;
+    accept.side = SIDE_ACCEPT;
+    assert_eq!(
+        admit(&accept, framer),
+        Some(Outcome::Refused),
+        "a handle on accept"
+    );
+    // Only `begin` is judged, and only a frame that holds a `BeginIn`.
+    assert_eq!(
+        Transport::admit(
+            slot::INGEST,
+            std::ptr::from_ref(&forged).cast(),
+            size_of::<BeginIn>(),
+            framer
+        ),
+        None
+    );
+}

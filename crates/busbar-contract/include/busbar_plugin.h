@@ -3402,6 +3402,12 @@ struct bb_transport_FramerOut {
     bb_transport_DatagramYield datagram;
 };
 
+/* One auth handle a transport presents: an inbound guest-list line's or an outbound binding's. */
+struct bb_hsvc_AuthRef {
+    uint64_t id;
+    uint64_t mac;
+};
+
 /* `begin`'s `in` (the framer's `open`). */
 struct bb_transport_BeginIn {
     bb_mech_InHead head;
@@ -3415,6 +3421,9 @@ struct bb_transport_BeginIn {
     const bb_transport_DatagramLane *lane;
     const bb_transport_LineEntry *lines;
     size_t lines_len;
+    uint32_t points;
+    uint32_t _points_reserved;
+    bb_hsvc_AuthRef auth;
 };
 
 /* `ingest`'s `in`. */
@@ -3525,12 +3534,6 @@ struct bb_transport_RouteMatch {
     size_t fields_len;
     uint32_t rung;
     uint32_t _reserved;
-};
-
-/* One auth handle a transport presents: an inbound guest-list line's or an outbound binding's. */
-struct bb_hsvc_AuthRef {
-    uint64_t id;
-    uint64_t mac;
 };
 
 /* One line of an accepting transport's guest list, as the kernel lends it in `BeginIn::lines`. */
@@ -5954,7 +5957,7 @@ BB_ASSERT(offsetof(bb_transport_FramerOut, head) == 0, "bb_transport_FramerOut.h
 BB_ASSERT(offsetof(bb_transport_FramerOut, yielded) == 96, "bb_transport_FramerOut.yielded: offset");
 BB_ASSERT(offsetof(bb_transport_FramerOut, framing) == 136, "bb_transport_FramerOut.framing: offset");
 BB_ASSERT(offsetof(bb_transport_FramerOut, datagram) == 144, "bb_transport_FramerOut.datagram: offset");
-BB_ASSERT(sizeof(bb_transport_BeginIn) == 240, "bb_transport_BeginIn: size");
+BB_ASSERT(sizeof(bb_transport_BeginIn) == 264, "bb_transport_BeginIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_BeginIn) == 8, "bb_transport_BeginIn: alignment");
 BB_ASSERT(offsetof(bb_transport_BeginIn, head) == 0, "bb_transport_BeginIn.head: offset");
 BB_ASSERT(offsetof(bb_transport_BeginIn, side) == 88, "bb_transport_BeginIn.side: offset");
@@ -5967,6 +5970,9 @@ BB_ASSERT(offsetof(bb_transport_BeginIn, fields_len) == 208, "bb_transport_Begin
 BB_ASSERT(offsetof(bb_transport_BeginIn, lane) == 216, "bb_transport_BeginIn.lane: offset");
 BB_ASSERT(offsetof(bb_transport_BeginIn, lines) == 224, "bb_transport_BeginIn.lines: offset");
 BB_ASSERT(offsetof(bb_transport_BeginIn, lines_len) == 232, "bb_transport_BeginIn.lines_len: offset");
+BB_ASSERT(offsetof(bb_transport_BeginIn, points) == 240, "bb_transport_BeginIn.points: offset");
+BB_ASSERT(offsetof(bb_transport_BeginIn, _points_reserved) == 244, "bb_transport_BeginIn._points_reserved: offset");
+BB_ASSERT(offsetof(bb_transport_BeginIn, auth) == 248, "bb_transport_BeginIn.auth: offset");
 BB_ASSERT(sizeof(bb_transport_IngestIn) == 208, "bb_transport_IngestIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_IngestIn) == 8, "bb_transport_IngestIn: alignment");
 BB_ASSERT(offsetof(bb_transport_IngestIn, head) == 0, "bb_transport_IngestIn.head: offset");
