@@ -55,6 +55,10 @@ pub mod tree;
 #[path = "construction/lean_core_tests.rs"]
 mod lean_core_tests;
 
+#[cfg(test)]
+#[path = "construction/q128_tests.rs"]
+mod q128_tests;
+
 use std::collections::BTreeMap;
 
 use crate::ctx::Ctx;

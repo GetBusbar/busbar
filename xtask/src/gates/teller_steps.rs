@@ -2234,3 +2234,41 @@ mod root_gating_tests {
         assert!(lines.iter().any(|l| l.starts_with("GREEN: ")), "{lines:?}");
     }
 }
+
+#[cfg(test)]
+mod q128_owed_tests {
+    use super::*;
+
+    /// Q128 p13 MEDIUM 1. A gating gap opened and owed in ONE change: the owed list is read from
+    /// the matrix under judgement, so the gap it names is excused by the edit that made it. Held
+    /// to the base (where the list owes nothing), the new entry is RED.
+    #[test]
+    fn q128_an_owed_gap_minted_in_the_change_is_red() {
+        let cx = Ctx::workspace().expect("workspace");
+        let committed = cx.read(LEDGER_REL).expect("the matrix");
+        let doc = json_lite::parse(&committed).expect("the matrix parses");
+        let mut plant = Plant { doc };
+        plant.set_cell_field("llm", "meter", "cell", Json::Str("none".into()));
+        plant.set_cell_field("llm", "meter", "status", Json::Str("none".into()));
+        plant.owe("llm.meter", "anyone");
+        let mut ov = Overlay::new();
+        ov.set(
+            LEDGER_REL,
+            format!("{}\n", json_lite::dump_python(&plant.doc)),
+        );
+        let base = "zz-q128-teller-base";
+        ov.set_command(
+            crate::gates::construction::ceilings::BASE_PIN_KEY,
+            base.to_string(),
+        );
+        ov.set_command(format!("git-show:{base}:{LEDGER_REL}"), committed);
+        let verdict = TellerStepsGate.run(&cx.with_overlay(ov));
+        let row = verdict
+            .rows
+            .iter()
+            .find(|r| r.id == ROW_GATING)
+            .expect("the gating row");
+        assert_ne!(row.status, crate::ledger::Status::Pass, "{}", row.detail);
+        assert!(row.detail.contains("llm.meter"), "{}", row.detail);
+    }
+}
