@@ -5621,28 +5621,41 @@ fn proof_minted_admission_is_store_state_config_signing_is_not() {
 /// two card publishes and still resolved to the first — 52,500,000 where #79 says 277,530,000.
 /// Reading the finer clock made the same script answer 277,530,000 exactly.
 ///
-/// A source witness rather than a behavioural one on purpose: the rate-epoch holder is a
-/// process-wide `OnceLock`, and a test that installed one would date every other accrual in this
-/// binary too. What has to stay true is which clock this line reads, and that is what is asserted.
+/// Behavioural: `record_metered_request_dated` is driven with a wall-clock double and a rate-dater
+/// double (the process-wide `OnceLock` holder is not touched, so no other accrual in this binary is
+/// dated by it). The cards start at `T0` and `T0 + 500 ms`; the response is served at `T0 + 700 ms`,
+/// inside the same second as both. The cell must carry the SECOND card's start. An accrual that
+/// lifts `now * 1_000` into milliseconds asks the dater for `T0` and dates the cell at the first
+/// card, which is the RED arm: this test fails against that implementation.
 #[test]
 fn the_metering_accrual_reads_the_millisecond_clock_not_the_lifted_second() {
-    let src = include_str!("../state.rs");
-    let body = src
-        .split("fn record_metered_request(")
-        .nth(1)
-        .expect("record_metered_request is declared")
-        .split("\n    }")
-        .next()
-        .expect("its body closes");
-    assert!(
-        body.contains("effective_from_at(crate::store::now_ms())"),
-        "the metering accrual stopped dating itself on the millisecond clock the rate-card \
-         history is dated on: {body}"
-    );
-    assert!(
-        !body.contains("saturating_mul(1_000)"),
-        "the metering accrual is lifting a SECOND into milliseconds again — a card applied later \
-         in the same second would sort after every response of that second (#79): {body}"
+    const T0: u64 = 1_700_000_000_000;
+    let cards = [T0, T0 + 500];
+    // The entry in force at `at_ms`: the latest card starting at or before it.
+    let dater = |at_ms: u64| {
+        cards
+            .iter()
+            .copied()
+            .filter(|s| *s <= at_ms)
+            .max()
+            .unwrap_or(0)
+    };
+    let clock = || T0 + 700;
+
+    let gov = GovState::new(Arc::new(MemoryStore::new()), None).unwrap();
+    let add = MeterCounts {
+        requests: 1,
+        ..MeterCounts::default()
+    };
+    gov.record_metered_request_dated("vk_dated", "m", "p", add, T0 / 1_000, &clock, &dater);
+
+    let drained = gov.pending_metering.drain();
+    assert_eq!(drained.len(), 1, "one response, one cell");
+    assert_eq!(
+        drained[0].0 .4,
+        T0 + 500,
+        "a response served after the second card published in the same second must date at that \
+         card (#79), not at the first card the lifted second resolves to"
     );
 }
 
@@ -6120,43 +6133,49 @@ fn the_credential_read_answers_a_secret_for_any_id_and_live_only_for_a_live_cred
     );
 }
 
-/// THE CREDENTIAL READ'S COST does not say whether the id exists: over many interleaved runs, the
-/// median time of a known id's read and an unknown id's read stay within a factor of each other. A
-/// short-circuit on the unknown id (no copy, no revocation check) moves the medians apart well
-/// beyond run-to-run jitter, which the median over many runs absorbs.
+/// THE CREDENTIAL READ'S WORK does not say whether the id exists. Every read, known id or unknown,
+/// takes the revocation check, and the check is what advances the denylist's staleness clock: with
+/// the clock one window stale, a read that skipped the check (a short-circuit on the unknown id)
+/// leaves `synced_at` where it was. The assertion is on that structural effect, counted per read,
+/// not on a wall-clock ratio, so a loaded runner cannot flip it.
+///
+/// RED arm: `credential_secret` returning early on an unknown id (before `is_revoked_at`) leaves
+/// `synced_at` at its old value on the unknown-id reads, and the second assertion fails.
 #[test]
-fn the_credential_read_costs_the_same_for_a_known_and_an_unknown_id() {
+fn the_credential_read_does_the_same_work_for_a_known_and_an_unknown_id() {
     let store = Arc::new(MemoryStore::new());
     let gov = GovState::new(store, None).unwrap();
     let now = busbar_kernel::store::now();
     let (_key, _bearer, akid, _secret) = gov
         .create_key_with_aws(
             NewKeySpec {
-                name: "timing".to_string(),
+                name: "work".to_string(),
                 ..Default::default()
             },
             now,
         )
         .unwrap();
     let kind = signed_kind();
-    let time = |id: &str| {
-        let t = std::time::Instant::now();
-        for _ in 0..64 {
-            std::hint::black_box(gov.credential_secret(&kind, std::hint::black_box(id), now));
-        }
-        t.elapsed().as_nanos()
-    };
-    let (mut known, mut unknown) = (Vec::new(), Vec::new());
-    for _ in 0..401 {
-        known.push(time(&akid));
-        unknown.push(time("AKIAdoesnotexist0000"));
+    // No Tokio runtime in this test: a stale denylist refreshes inline, so the effect is visible
+    // as soon as the read returns.
+    let window = REVOCATION_SYNC_TTL_SECS;
+    let mut at = gov.denylist.synced_at();
+    for (round, id) in [
+        akid.as_str(),
+        "AKIAdoesnotexist0000",
+        akid.as_str(),
+        "AKIAdoesnotexist0000",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        at += window;
+        gov.credential_secret(&kind, id, at);
+        assert_eq!(
+            gov.denylist.synced_at(),
+            at,
+            "read {round} of {id:?} did not take the revocation check: the known and the unknown \
+             id's reads must run the same steps"
+        );
     }
-    known.sort_unstable();
-    unknown.sort_unstable();
-    let (k, u) = (known[200] as f64, unknown[200] as f64);
-    assert!(
-        (0.5..=2.0).contains(&(u / k)),
-        "median known {k} ns vs unknown {u} ns per 64 reads: the unknown id's read takes a \
-         different path"
-    );
 }
