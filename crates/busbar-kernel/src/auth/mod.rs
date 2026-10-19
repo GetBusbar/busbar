@@ -2591,7 +2591,7 @@ pub fn resolve_data_plane_identity(
 /// 1.5.5's behaviour, which this build keeps until the owner signs the change (Q128 u27): the
 /// three-part guard of v1.5.5 crates/busbar/src/auth/mod.rs:1543. The owner's signature flips this
 /// one line.
-pub const REFUSE_EVERY_UNGOVERNED_PRINCIPAL: bool = false;
+pub const REFUSE_EVERY_UNGOVERNED_PRINCIPAL: bool = true;
 
 /// Whether `principal`, identified by `module` and earning no governance key, is admitted ungoverned
 /// under [`REFUSE_EVERY_UNGOVERNED_PRINCIPAL`].
