@@ -129,7 +129,10 @@ pub const HITS_OUT_ENV: &str = "PLANE_PURITY_HITS_OUT";
 /// named_map_tests.rs`, `kernel-wal/src/tests/quarantine_numbering.rs`, `kernel/src/auth/{admit.rs,
 /// tests/admit_tests.rs}`, `kernel/src/plane_driver/slots.rs`, `kernel/src/tests/clock_tests.rs`,
 /// `kernel/src/tests/members/wal/store_debt_tests.rs`. 1134 - 34 + 9 = 1109.
-pub const NEUTRAL_FLOOR: usize = 1109;
+///
+/// TIGHTENED 1109 -> 1110, the walk's measured value on this branch (Law 9: the floor pins at
+/// today's measure).
+pub const NEUTRAL_FLOOR: usize = 1110;
 
 /// THE PLANE WALK'S FLOOR: the `.rs` files the plane population (in-tree and pinned planes) held on
 /// dev, measured (606 on f49c8bf98c, the RED branch's `plane_files`). Same rule as
@@ -962,6 +965,35 @@ impl Gate for PlanePurityGate {
                 "planted_plane_purity.rs:2",
                 "planted_plane_purity.rs:3",
             ],
+        ));
+
+        // A STRING IS NOT A REACH, AND A STRING THAT ENDS DOES NOT HIDE THE CODE AFTER IT. The
+        // continuation lines of a multi-line `"…"` and of a raw `r#"…"#` are literal text, so the
+        // crate words in their prose bind nothing; the `use … as` on the line after each closes is
+        // code and is still the reach it always was. Lines 5 and 9 must be named; the green control
+        // below plants the strings alone and must name nothing.
+        report.push(create(
+            cx,
+            self,
+            "a backwards reach on the line after a multi-line string and a raw string closes",
+            &[ROW_BACKWARDS],
+            &plane_at,
+            "pub const H: &str =\n    \"serve on stdin\n        busbar as a child process\n        busbar_kernel::teller as t\";\nuse busbar_kernel as k;\npub const R: &str = r#\"a \" quote\n        busbar as a child process\n        busbar_kernel::teller::run_unit\"#;\nuse busbar_kernel_ledger as l;\n",
+            &[
+                ROW_BACKWARDS,
+                "planted_plane_purity.rs:5",
+                "planted_plane_purity.rs:9",
+            ],
+        ));
+
+        // ITS CONTROL: the same strings with no code after them are no reach at all.
+        report.push(green_with(
+            cx,
+            self,
+            "crate words inside a multi-line string and a raw string are not a backwards reach",
+            &[ROW_BACKWARDS],
+            &plane_at,
+            "pub const H: &str =\n    \"serve on stdin\n        busbar as a child process\n        busbar_kernel::teller as t\";\npub const R: &str = r#\"a \" quote\n        busbar as a child process\n        busbar_kernel::teller::run_unit\"#;\n",
         ));
 
         // THE CONTROL: the contract is the one crate a plane may name. A rule that fired on every
@@ -1933,7 +1965,11 @@ fn legacy_strict_rows(cx: &Ctx, runs: &[LegacyRun]) -> Result<Vec<Row>, String> 
     };
     let ceilings = PlanePurityStrictGate::ceilings(cx)?;
     let text = cx.read(strict::STRICT_TOML)?;
-    let (cats, reach) = parse_strict_tables(run)?;
+    let plane_keys: Vec<String> = crate::gates::kind_isolation::plane_kind_src_roots(cx)?
+        .iter()
+        .map(|root| reach_key(root))
+        .collect();
+    let (cats, reach) = parse_strict_tables(run, &plane_keys)?;
     Ok(strict_rows(
         &ceilings,
         &cats,
@@ -1943,10 +1979,12 @@ fn legacy_strict_rows(cx: &Ctx, runs: &[LegacyRun]) -> Result<Vec<Row>, String> 
 }
 
 /// Scrape the two fixed-format `  <NAME>   <n>` tables the strict report prints. The category
-/// names are fixed; every other `<name> <n>` line but the `TOTAL` row is a plane crate's
-/// test-reach — the plane population is the tree's, not a roster this reader could hold it to. A
-/// name that appears twice is a refusal.
-fn parse_strict_tables(run: &LegacyRun) -> Result<StrictTables, String> {
+/// names are fixed; the test-reach rows are the DERIVED plane population's (`plane_keys`, one
+/// [`reach_key`] per crate of `plane_kind_src_roots`), and the table must carry EXACTLY those: one
+/// row per key, no key missing. A short table compared against ceilings reads as every ceiling met,
+/// so "not empty" is no floor; the count is the population's. A name that appears twice is a
+/// refusal.
+fn parse_strict_tables(run: &LegacyRun, plane_keys: &[String]) -> Result<StrictTables, String> {
     let mut cats: BTreeMap<String, u64> = BTreeMap::new();
     let mut reach: BTreeMap<String, u64> = BTreeMap::new();
     for line in run.stdout.lines() {
@@ -1963,20 +2001,24 @@ fn parse_strict_tables(run: &LegacyRun) -> Result<StrictTables, String> {
                     "parity: the strict report named category {name} twice"
                 ));
             }
-        } else if name != "TOTAL" && reach.insert(name.to_string(), n).is_some() {
+        } else if plane_keys.iter().any(|k| k == name)
+            && reach.insert(name.to_string(), n).is_some()
+        {
             return Err(format!(
                 "parity: the strict report named plane {name} twice"
             ));
         }
     }
-    if cats.len() != scanner::CATEGORIES.len() || reach.is_empty() {
+    if cats.len() != scanner::CATEGORIES.len() || plane_keys.is_empty() || reach.len() != plane_keys.len()
+    {
         return Err(format!(
-            "parity: the strict report carried {} of {} categories and {} plane crate(s) \
+            "parity: the strict report carried {} of {} categories and {} of {} plane crate(s) \
              (exit {:?}). A short table compared against ceilings reads as every ceiling met. \
              stderr: {}",
             cats.len(),
             scanner::CATEGORIES.len(),
             reach.len(),
+            plane_keys.len(),
             run.code,
             run.stderr.trim()
         ));

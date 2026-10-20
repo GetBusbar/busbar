@@ -208,7 +208,16 @@ fn scan_file(
             // `busbar-kernel` absorbed (673ecdaaa), so it matched nothing and a plane's kernel reach
             // read as clean. THE CRATE IS NAMED, NOT ONLY ITS PATHS — the two spellings that bind a
             // crate with no `::` on the line walk straight through a path-only rule.
-            if reaches_past_wall(&code, &vocab.wall_idents) {
+            //
+            // READ OFF THE BLANKED LINE (`counted`), not `code`. A reach is CODE: a `"…"` holding
+            // `busbar as a child process` names nothing, and `strip` resets its in-string flag at
+            // every line, so the second line of a multi-line string (or of a raw string) read as
+            // code and its prose as a crate binding. `counted` comes from the one lexer
+            // (`crate::scan::blank_code`), whose state carries quoted, raw and byte strings and
+            // nested block comments across lines; it keeps the line's code and blanks every
+            // literal and comment, so a reach written outside a string is still read exactly as
+            // before.
+            if reaches_past_wall(&counted, &vocab.wall_idents) {
                 emit("BACKWARDS", false);
             }
         } else {
