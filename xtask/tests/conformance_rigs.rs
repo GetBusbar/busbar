@@ -12,11 +12,13 @@ use xtask::conformance_record::{
     rsa_jwk_from_pkcs8, suite_client_key, OidfClient, OidfSubject, AS_KEY_ID, OIDF_RESOURCE_PATH,
 };
 use xtask::conformance_record::{
-    b64url, decide_h2, decide_jev, decide_oidf, decide_slsa, decide_tls, discriminates, es256_jwk,
-    governance_observed, is_jev_refusal, jev_battery_command, judge_jev_ledger, junit_cases,
-    module_results, provenance_commit, rig_for, tests_passed, CaseResult, H2Run, JevRun, OidfRun,
-    SlsaRun, Status, TlsRun, JEV_PLANE, NEGATIVE_PAIRS, OIDF_SUITES, REPORTED_UNITS,
+    b64url, decide_h2, decide_jev, decide_oidf, decide_slsa, decide_tls, dev_bin_assets,
+    discriminates, es256_jwk, governance_observed, is_jev_refusal, jev_battery_command,
+    judge_jev_ledger, junit_cases, module_results, provenance_commit, rig_for, tests_passed,
+    CaseResult, H2Run, JevRun, OidfRun, SlsaRun, Status, TlsRun, JEV_PLANE, NEGATIVE_PAIRS,
+    OIDF_SUITES, REPORTED_UNITS,
 };
+use xtask::conformance_record::{voice_config_command, VOICE_PLANE};
 
 fn registry_ids() -> Vec<String> {
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -106,6 +108,42 @@ fn the_jev_battery_runs_in_the_pinned_planes_own_workspace() {
             "--target-dir",
             "/work/target",
         ]
+    );
+}
+
+/// The streaming plane lives in its own repo (row 106; BUSBAR-1.6.0.md #68: the MUST set covers
+/// every plane wherever its crate lives): the voice rig's `streams:` grammar leg runs in the
+/// workspace the lock pins it at, never as `-p` of this workspace, which holds no such member. RED
+/// ARM: `cargo test -p busbar-plane-streaming --lib config::` in this workspace names a package it
+/// does not have, and the leg exits 101.
+#[test]
+fn the_voice_config_leg_runs_in_the_pinned_planes_own_workspace() {
+    assert_eq!(VOICE_PLANE, "busbar-plane-streaming");
+    let manifest = std::path::Path::new("/git/checkouts/busbar-plane-streaming/4d88a2b/Cargo.toml");
+    let cmd = voice_config_command(manifest, std::path::Path::new("/work/target"));
+    assert_eq!(
+        cmd,
+        [
+            "cargo",
+            "test",
+            "--locked",
+            "--manifest-path",
+            "/git/checkouts/busbar-plane-streaming/4d88a2b/Cargo.toml",
+            "-p",
+            VOICE_PLANE,
+            "--lib",
+            "config::",
+            "--target-dir",
+            "/work/target",
+        ]
+    );
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask/ has a parent");
+    let members = std::fs::read_to_string(root.join("Cargo.toml")).expect("the root manifest");
+    assert!(
+        !members.contains("\"crates/busbar-plane-streaming\""),
+        "RED ARM: the plane is a workspace member again, and `-p` would find it here"
     );
 }
 
@@ -1041,4 +1079,25 @@ fn the_mcp_rig_pins_a_node_its_toolchain_accepts_on_every_runner_platform() {
         v[0] == 22 && v[1] >= 12,
         "{MCP_NODE_VERSION} is outside >=22.12 <23"
     );
+}
+
+/// THE ATTESTED BUILD THE RIG FETCHES (ARCHITECT ruling 2026-10-17, A1): busbar's own Actions run on
+/// each push to dev publishes, on busbar-release's dev-bin, the binary and its in-toto provenance
+/// under these names; the rig asks for exactly HEAD's pair on its own architecture, and verifies
+/// it against busbar's repository and branch.
+#[test]
+fn the_slsa_rig_fetches_heads_attested_pair_from_dev_bin() {
+    let head = "0123456789abcdef0123456789abcdef01234567";
+    assert_eq!(
+        dev_bin_assets("aarch64", head),
+        (
+            format!("busbar-linux-aarch64-{head}"),
+            format!("busbar-linux-aarch64-{head}.intoto.jsonl"),
+        )
+    );
+    assert_eq!(
+        xtask::conformance_record::SOURCE_URI,
+        "github.com/GetBusbar/busbar"
+    );
+    assert_eq!(xtask::conformance_record::SOURCE_BRANCH, "dev");
 }

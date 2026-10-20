@@ -162,6 +162,57 @@ fn parse_uses_flow(t: &str) -> Option<(String, Option<String>)> {
     Some((value.to_string(), comment))
 }
 
+/// ONE CALL R14 READS BY TAG: a reusable workflow called at exactly `tag`, whose trailing comment
+/// must be exactly `# <sha>`, the commit that tag names when the entry was recorded.
+pub struct TagPinned {
+    /// The reusable workflow, `owner/repo/.github/workflows/<file>`.
+    pub path: &'static str,
+    /// The one tag it may be called at.
+    pub tag: &'static str,
+    /// The commit that tag names, which the call's trailing comment must state.
+    pub sha: &'static str,
+    /// Why this call cannot be a sha.
+    pub why: &'static str,
+}
+
+/// R14'S NAMED TAG-PINNED CALLS: a list of one, the OWNER's decision (an exception to R14 is a Law 9
+/// question, never a gate author's). Anything else that is not a sha stays red: another path,
+/// another tag, a missing or different sha comment, or this path called by sha.
+pub const R14_TAG_PINNED: &[TagPinned] = &[TagPinned {
+    path: "slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml",
+    tag: "v2.1.0",
+    sha: "f7dd8c54c2067bafc12ca7a55595d5ee9b75204a",
+    why: "slsa-verifier trusts the SLSA generic generator only under its builder id \
+          `.../generator_generic_slsa3.yml@refs/tags/vX.Y.Z`; a call by sha mints provenance \
+          slsa-verifier refuses, so the conformance suite `slsa-verifier` could never verify \
+          busbar's dev builds (.github/workflows/slsa-dev-provenance.yml, ARCHITECT ruling \
+          2026-10-17 A1). The trailing sha comment, checked against this entry, keeps a re-pointed \
+          tag red.",
+}];
+
+/// How R14 reads a call to a path [`R14_TAG_PINNED`] names: `None` when the path is not named
+/// (the ordinary rule applies), `Some(None)` when the call is exactly the entry, and
+/// `Some(Some(why))` when it is the named path in any other form.
+pub fn tag_pinned_call(reference: &str, comment: Option<&str>) -> Option<Option<String>> {
+    let (path, at) = reference.rsplit_once('@')?;
+    let e = R14_TAG_PINNED.iter().find(|e| e.path == path)?;
+    let stated = comment.map(|c| c.trim_start_matches('#').trim());
+    if at == e.tag && stated == Some(e.sha) {
+        return Some(None);
+    }
+    Some(Some(format!(
+        "`uses: {reference}` names R14's one tag-pinned call ({path}), which is allowed only at \
+         tag {} with the trailing comment `# {}` (the commit that tag named when the owner \
+         recorded it){}. Any other tag or sha comment is a re-pointed or unreviewed generator.",
+        e.tag,
+        e.sha,
+        stated.map_or_else(
+            || " and it states none".to_string(),
+            |c| format!(" and it states `{c}`")
+        ),
+    )))
+}
+
 fn is_sha40(s: &str) -> bool {
     s.len() == 40
         && s.chars()
@@ -608,6 +659,14 @@ pub fn check(cx: &Ctx) -> Result<Vec<Finding>, String> {
             };
             if reference.starts_with("./") || reference.starts_with("docker://") {
                 continue;
+            }
+            match tag_pinned_call(&reference, comment.as_deref()) {
+                Some(None) => continue,
+                Some(Some(why)) => {
+                    bad.push(Finding::new("R14", format!("{name}: {why}")));
+                    continue;
+                }
+                None => {}
             }
             let Some((_, at)) = reference.rsplit_once('@') else {
                 bad.push(Finding::new(
@@ -1075,6 +1134,35 @@ fn mutations() -> Vec<Mutation> {
             apply: |_| {
                 "jobs:\n  a:\n    steps:\n      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { fetch-depth: 0 } }\n"
                     .to_string()
+            },
+            creates: true,
+        },
+        // R14'S ONE TAG-PINNED CALL ACCEPTS EXACTLY ITSELF: each plant is the entry's path (or a
+        // sibling) in one wrong form, and each must be red.
+        Mutation {
+            label: "R14 the tag-pinned generator is called at another tag",
+            file: "zz-planted-tag-pinned.yml",
+            rule: "R14",
+            apply: |_| {
+                "jobs:\n  p:\n    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.0.0 # f7dd8c54c2067bafc12ca7a55595d5ee9b75204a\n".to_string()
+            },
+            creates: true,
+        },
+        Mutation {
+            label: "R14 the tag-pinned generator states another sha",
+            file: "zz-planted-tag-pinned.yml",
+            rule: "R14",
+            apply: |_| {
+                "jobs:\n  p:\n    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0 # 0000000000000000000000000000000000000000\n".to_string()
+            },
+            creates: true,
+        },
+        Mutation {
+            label: "R14 a different reusable workflow of the same repository is called by tag",
+            file: "zz-planted-tag-pinned.yml",
+            rule: "R14",
+            apply: |_| {
+                "jobs:\n  p:\n    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.1.0 # f7dd8c54c2067bafc12ca7a55595d5ee9b75204a\n".to_string()
             },
             creates: true,
         },

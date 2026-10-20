@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/governance/mod.rs`.
+//! Tests for `crates/busbar-kernel/src/governance/mod.rs`.
 
 use super::*;
 
@@ -50,4 +50,45 @@ fn prune_dead_models_drops_only_zero_token_fully_flushed_entries() {
     // A re-appearing model is re-interned on the next accrue (prune is not permanent).
     cell.accrue("dead-model", 0, &tok(3));
     assert!(cell.models.iter().any(|m| &*m.model == "dead-model"));
+}
+
+/// A FEE-LANE SEGMENT PRUNED WHILE ITS FLUSH IS IN FLIGHT STILL WRITES ITS REFUND. A plane's fee
+/// unit accrues (+1), a flush snapshots it, a refund takes it back to empty, and the sweep prunes
+/// the now-empty segment before the write is acknowledged. When the ack lands, the store holds the
+/// +1, so the cell must still owe the store a -1. RED: the ack found no segment and advanced
+/// nothing, so the cell's unflushed delta was empty and the store kept one extra fee unit.
+#[test]
+fn a_segment_pruned_mid_flush_still_flushes_its_refund() {
+    let unit = "per_request";
+    let one: std::collections::BTreeMap<String, u64> = [(unit.to_string(), 1)].into();
+    let mut cell = BudgetCell::fresh(0);
+    cell.accrue("fee-lane-double", 7, &one);
+    // The flush snapshots the segment and writes it off the lock.
+    let snapshot = cell.models.clone();
+    cell.dirty = false;
+    // Meanwhile: the refund takes the unit back, and the sweep prunes the empty segment.
+    if let Some(m) = cell
+        .models
+        .iter_mut()
+        .find(|m| &*m.model == "fee-lane-double")
+    {
+        m.cur.remove(unit);
+    }
+    cell.prune_dead_models();
+    assert!(cell.models.is_empty(), "the refunded segment looked dead");
+    // The write lands and is acknowledged.
+    cell.advance_model_baselines(&snapshot);
+    assert!(cell.dirty, "the restored segment owes the store a write");
+    let delta = cell.unflushed();
+    let lane = delta
+        .models
+        .iter()
+        .find(|m| m.model == "fee-lane-double")
+        .expect("the segment's refund is still to be written");
+    assert_eq!(lane.usage_units.get(unit), Some(&-1));
+    // Once that refund is acknowledged the segment is dead for good.
+    let settled = cell.models.clone();
+    cell.advance_model_baselines(&settled);
+    cell.prune_dead_models();
+    assert!(cell.models.is_empty());
 }

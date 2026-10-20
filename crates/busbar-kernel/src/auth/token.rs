@@ -619,7 +619,7 @@ async fn issue_and_render(
     let SelfMint {
         principal,
         team,
-        pools,
+        granted_pools: pools,
         ttl,
     } =
         match admit_self_mint(
