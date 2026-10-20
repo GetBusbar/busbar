@@ -10284,7 +10284,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "A back-dated rate-card correction; answers 200 {history_seq,effective_from,effective_until,amended_at,operator_fingerprint,reason_sha256}. A plain scoped verb ("
+      "why": "A back-dated rate-card correction; answers 200 {history_seq,effective_from,effective_until,amended_at,reason_sha256}. A plain scoped verb (#77(9)): the oracle's"
     },
     {
       "id": "admin.ops|PostLedgerAmendRateHistory|unauth",

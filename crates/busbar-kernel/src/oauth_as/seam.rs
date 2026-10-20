@@ -74,9 +74,10 @@ pub struct AsPlaneSeam {
     /// sessions, an ephemeral key) carries across the generation swap. And the deployment's
     /// configured store (its typed records and its single-use claims; `None` without one): the
     /// server keeps what it holds there, under the kernel's own record kinds, so every node on one
-    /// store serves one authorization server (THE DESIGN §1, "Nodes share one store"). Also spawns the
-    /// plane's own expired-record sweeper, mirroring what `appbuild.rs` did inline before the
-    /// extraction — the seam owns the whole "how do I come alive" act, not just allocation.
+    /// store serves one authorization server (THE DESIGN §1, "Nodes share one store"). Also hands
+    /// the plane's expired-record sweep to the kernel's one clock ([`crate::tick::on_clock`]),
+    /// starting no task of its own — the seam owns the whole "how do I come alive" act, not just
+    /// allocation.
     /// Returns the type-erased object `App::oauth_as` stores, or the plane's own build error
     /// rendered to a string (boot refuses with it exactly as it did when this call was inline).
     pub build: AsPlaneBuildFn,
@@ -116,4 +117,28 @@ pub fn install_as_plane_seam(seam: AsPlaneSeam) {
 /// Read the registered seam, or `None` when this binary never linked `busbar-core-oauth2`.
 pub(crate) fn seam() -> Option<&'static AsPlaneSeam> {
     SEAM.get()
+}
+
+/// THE WORK HANDED TO THE KERNEL'S ONE CLOCK (`crate::tick::on_clock`), held weakly: the
+/// authorization server's expired-record sweep, one per live generation. The owner keeps the work
+/// alive, never the clock, so letting a generation go takes its sweep off the clock.
+static CLOCK_WORK: std::sync::Mutex<Vec<std::sync::Weak<dyn crate::tick::ClockWork>>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Hold `work` on the clock (`crate::tick::on_clock`).
+pub(crate) fn hold_clock_work(work: std::sync::Weak<dyn crate::tick::ClockWork>) {
+    let mut held = CLOCK_WORK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    held.retain(|w| w.strong_count() > 0);
+    held.push(work);
+}
+
+/// Every live work on the clock, for one beat (`crate::tick::beat`); work let go leaves here.
+pub(crate) fn clock_work() -> Vec<Arc<dyn crate::tick::ClockWork>> {
+    let mut held = CLOCK_WORK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    held.retain(|w| w.strong_count() > 0);
+    held.iter().filter_map(std::sync::Weak::upgrade).collect()
 }

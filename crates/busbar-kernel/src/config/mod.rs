@@ -938,7 +938,7 @@ fn check_failover_pool(
         ));
     }
     // The plane breaker store's lane table is FIXED (process-lifetime, sized
-    // `store::MAX_POOL_MEMBERS`; see `store/planes.rs` for why it cannot track config), so a pool
+    // `store::MAX_POOL_MEMBERS`; see `store/breaker_admission.rs` for why it cannot track config), so a pool
     // must fit it — refused here, where the operator can act, rather than indexed past at dispatch.
     if def.members.len() > crate::store::MAX_POOL_MEMBERS {
         errors.push(format!(

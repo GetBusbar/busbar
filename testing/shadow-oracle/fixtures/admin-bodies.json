@@ -2397,7 +2397,7 @@
    "method": "POST",
    "mutating": true,
    "not_found": null,
-   "notes": "A back-dated rate-card correction; answers 200 {history_seq,effective_from,effective_until,amended_at,operator_fingerprint,reason_sha256}. A plain scoped verb (#77(9)): the oracle's full-scope admin token is admitted with no operator key. The body's `operator_fingerprint` and `signature` are not read; the per_request_fee correction applies over the opening rate-card entry. Baseline: [200]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "notes": "A back-dated rate-card correction; answers 200 {history_seq,effective_from,effective_until,amended_at,reason_sha256}. A plain scoped verb (#77(9)): the oracle's full-scope admin token is admitted with no operator key. The body's `operator_fingerprint` and `signature` are not read; the per_request_fee correction applies over the opening rate-card entry. Baseline: [200]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
    "ok": {
     "body": {
      "effective_from": 0,
