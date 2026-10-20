@@ -475,7 +475,7 @@ fn saturated(node: &Node, lane: DestinationId) -> Permit {
     node.capacity.saturate(lane)
 }
 
-/// F25 row 522: rehomed from crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs::least_bad_still_serves_the_only_member_after_it_was_tried.
+/// F25 row 522: rehomed from the retired engine crate's src/engine/tests/on_exhausted_tests.rs::least_bad_still_serves_the_only_member_after_it_was_tried.
 /// A single-member pool under least_bad whose member's breaker is Open: the ordered walk passes it
 /// over (so the request's exclusion record holds every member), and the last resort still
 /// overrides the breaker for that member, which serves 200.
@@ -497,7 +497,7 @@ fn least_bad_still_serves_the_only_member_after_it_was_tried() {
     );
 }
 
-/// F25 row 181: rehomed from crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_forward_once_records_success_and_spends_budget.
+/// F25 row 181: rehomed from the retired engine crate's src/engine/tests/forward_pool_integration_tests.rs::test_forward_once_records_success_and_spends_budget.
 /// A lane with two units of lifetime budget, five failures and a 600 s cooldown behind it, served
 /// through least_bad: the 2xx is recorded as one success against the lane (its window gains one
 /// success, its error count stays 5) and spends exactly one unit (2 to 1).
@@ -548,7 +548,7 @@ fn test_forward_once_records_success_and_spends_budget() {
     );
 }
 
-/// F25 row 34: rehomed from crates/busbar-llm/src/engine/engine_tests/send_envelope_tests.rs::a_black_holed_stream_send_on_the_degraded_walk_times_out_at_the_ceiling.
+/// F25 row 34: rehomed from the retired engine crate's src/engine/engine_tests/send_envelope_tests.rs::a_black_holed_stream_send_on_the_degraded_walk_times_out_at_the_ceiling.
 /// The black hole on the DEGRADED walk: the only member's breaker is Open and least_bad licensed,
 /// so the dispatch is the last resort's. Its streamed send, whose head never comes, resolves at the
 /// stream ceiling (300 s, never the walk's 120 s budget, as 1.5.5 ran a streamed request), never
@@ -609,7 +609,7 @@ fn spill_world(lanes: &[&'static str], primary: usize) -> Node {
     node
 }
 
-/// F25 row 526: rehomed from crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs::at_capacity_fallback_spills_to_fast_member.
+/// F25 row 526: rehomed from the retired engine crate's src/engine/tests/on_exhausted_tests.rs::at_capacity_fallback_spills_to_fast_member.
 /// A breaker-healthy primary at capacity under fallback_pool SPILLS at once to the overflow pool's
 /// free member, which serves 200; the saturated primary is never dispatched to (it serves zero).
 #[test]
@@ -643,7 +643,7 @@ fn at_capacity_fallback_spills_to_fast_member() {
     assert_eq!(node.conns.dialled(), vec!["b".to_string()]);
 }
 
-/// F25 row 528: rehomed from crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs::at_capacity_bounded_burst_all_spill_not_serialized.
+/// F25 row 528: rehomed from the retired engine crate's src/engine/tests/on_exhausted_tests.rs::at_capacity_bounded_burst_all_spill_not_serialized.
 /// A burst of 4 concurrent requests on a pool whose single slot is held: every one spills to the
 /// roomy overflow member and is served 200 there, side by side (each answer takes 200 ms and the
 /// whole burst takes 200 ms), and the saturated slot serves none of them.
@@ -692,7 +692,7 @@ fn at_capacity_bounded_burst_all_spill_not_serialized() {
     assert_eq!(node.conns.dialled(), vec!["b".to_string(); N]);
 }
 
-/// F25 row 529: rehomed from crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs::at_capacity_all_members_busy_two_member_pool_spills.
+/// F25 row 529: rehomed from the retired engine crate's src/engine/tests/on_exhausted_tests.rs::at_capacity_all_members_busy_two_member_pool_spills.
 /// A two-member primary with BOTH members at capacity is exhausted and spills: the overflow member
 /// serves 200, neither primary member is dispatched to.
 #[test]
@@ -723,7 +723,7 @@ fn at_capacity_all_members_busy_two_member_pool_spills() {
     assert_eq!(node.conns.dialled(), vec!["c".to_string()]);
 }
 
-/// F25 row 531: rehomed from crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs::at_capacity_fallback_chain_spills_through_to_third_pool.
+/// F25 row 531: rehomed from the retired engine crate's src/engine/tests/on_exhausted_tests.rs::at_capacity_fallback_chain_spills_through_to_third_pool.
 /// A fallback chain A to B to C, A and B each at capacity: the at-capacity exhaustion cascades
 /// through the whole chain and C's member serves 200; A's and B's members serve nothing.
 #[test]
@@ -762,7 +762,7 @@ fn at_capacity_fallback_chain_spills_through_to_third_pool() {
     assert_eq!(node.conns.dialled(), vec!["c".to_string()]);
 }
 
-/// F25 row 532: rehomed from crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs::at_capacity_self_referential_fallback_stays_503.
+/// F25 row 532: rehomed from the retired engine crate's src/engine/tests/on_exhausted_tests.rs::at_capacity_self_referential_fallback_stays_503.
 /// A SATURATED pool whose on_exhausted names ITSELF as its fallback stops at the visited-pool loop
 /// guard: a 503 shed with the at-capacity floor, at once, without parking and without dispatching.
 #[test]
@@ -795,7 +795,7 @@ fn at_capacity_self_referential_fallback_stays_503() {
     assert!(node.conns.dialled().is_empty(), "never dispatched");
 }
 
-/// F25 row 533: rehomed from crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs::at_capacity_fallback_to_also_exhausted_pool_cascades_to_503.
+/// F25 row 533: rehomed from the retired engine crate's src/engine/tests/on_exhausted_tests.rs::at_capacity_fallback_to_also_exhausted_pool_cascades_to_503.
 /// A saturated primary spilling into a pool that is itself at capacity (no further on_exhausted)
 /// cascades to the 503 shed with its Retry-After, at once, dispatching nothing.
 #[test]
@@ -819,7 +819,7 @@ fn at_capacity_fallback_to_also_exhausted_pool_cascades_to_503() {
     assert!(node.conns.dialled().is_empty());
 }
 
-/// F25 row 483: rehomed from crates/busbar-llm/src/engine/tests/lane_availability_proptest_tests.rs::bug1_witness_fallback_spills_served_by_fallback_not_primary.
+/// F25 row 483: rehomed from the retired engine crate's src/engine/tests/lane_availability_proptest_tests.rs::bug1_witness_fallback_spills_served_by_fallback_not_primary.
 /// The park-then-serve witness: a breaker-HEALTHY primary at capacity under fallback_pool MUST
 /// spill, served 200 by the fallback with the primary serving zero. The primary's slot here frees
 /// the moment anything waits for it, so a walk that parked instead of spilling would be served by
@@ -851,7 +851,7 @@ fn bug1_witness_fallback_spills_served_by_fallback_not_primary() {
     assert_eq!(*node.telemetry.queue_parks.lock().unwrap(), 0);
 }
 
-/// F25 row 484: rehomed from crates/busbar-llm/src/engine/tests/lane_availability_proptest_tests.rs::budget_contract_holds_under_full_saturation_for_every_policy.
+/// F25 row 484: rehomed from the retired engine crate's src/engine/tests/lane_availability_proptest_tests.rs::budget_contract_holds_under_full_saturation_for_every_policy.
 /// Under FULL saturation (the primary's and the fallback's single slots both held) every
 /// on_exhausted policy sheds 503 with the at-capacity floor inside the 2 s failover budget: at once
 /// for reject, least_bad and fallback_pool, at the queue's own 50 ms bound for queue.
@@ -1167,7 +1167,7 @@ fn run_world(world: &World) -> &'static str {
     branch
 }
 
-/// F25 row 480: rehomed from crates/busbar-llm/src/engine/tests/lane_availability_proptest_tests.rs::strengthened_lane_availability_invariant.
+/// F25 row 480: rehomed from the retired engine crate's src/engine/tests/lane_availability_proptest_tests.rs::strengthened_lane_availability_invariant.
 /// The strengthened lane-availability invariant over 512 seeded worlds: a primary pool of 1 to 5
 /// and a fallback pool of 1 to 4 members, each dead or not, out of budget or not, its cell Closed,
 /// Open (active), Open (expired) or HalfOpen, unbounded, bounded with a free slot or saturated, under
@@ -1307,7 +1307,7 @@ fn the_wait_sheds_when_no_slot_frees_and_the_gauge_balances() {
     drop(held);
 }
 
-/// F25 row 546: rehomed from crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs::queue_won_permit_but_breaker_now_open_never_dispatches.
+/// F25 row 546: rehomed from the retired engine crate's src/engine/tests/on_exhausted_tests.rs::queue_won_permit_but_breaker_now_open_never_dispatches.
 /// A request parked in the queue wins the member's freed slot, but the member's breaker tripped
 /// Open while it waited: the breaker re-check on the won member refuses it, the request is never
 /// dispatched, and it ends in the 503 shed at once (the wait does not run on to its bound).
