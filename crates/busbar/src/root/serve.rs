@@ -4588,7 +4588,7 @@ mod money_tests;
 
 #[cfg(all(test, linked_driver_proofs, linked_section_pools))]
 #[path = "tests/serve_hook_seats.rs"]
-mod hook_seat_tests;
+pub(crate) mod hook_seat_tests;
 
 #[cfg(all(test, linked_section_pools))]
 #[path = "tests/serve_door_far.rs"]

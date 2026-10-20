@@ -696,25 +696,24 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
              RouteAuth::None — the bypass set this names is not the one the router built"
         );
     }
-    // THE BODY-INGRESS CONVENIENCE ROUTES (1.5.5 surface): the kernel mounts them only where a
-    // plane installed body ingress (`busbar_kernel::ingress::arrival::any_body_ingress`), and this
-    // app's linked planes install it, as the default build's boot does. So both are mounted here,
-    // each guarded (a key's bar, never `RouteAuth::None`), and the walk below must reach both: an
-    // anonymous caller refused, a keyed caller admitted.
+    // THE BODY-INGRESS CONVENIENCE ROUTES (1.5.5 surface, `/{name}/v1/messages`,
+    // `/{provider}/{model}/v1/messages`): OBSERVATION POINT MOVED (DEV-GREEN row 83, ARCHITECT
+    // option (a) on #1161). No plane installs a kernel body-model arrival any more, so the kernel's
+    // router mounts neither path: the door that serves the `pools` map serves both through its `/`
+    // claim, mounted by the composition root. The confinement this walk held on them (an
+    // audience-bound token buys nothing there, its plain sibling is admitted) is walked where that
+    // door is mounted: `root::door_steps::tests::door_boundary::
+    // an_audience_bound_token_is_confined_to_its_door_plane_through_the_composition`, over every
+    // guarded route of the door's data router. Here, the kernel's half: it mounts neither.
     assert!(
-        busbar_kernel::ingress::arrival::any_body_ingress(),
-        "the linked planes installed no body ingress, so the convenience routes are not mounted \
-         and this walk proves nothing about them"
+        !busbar_kernel::ingress::arrival::any_body_ingress(),
+        "a kernel body-model arrival is installed again: the convenience routes would be the \
+         kernel's, and this walk would owe them the confinement assertions"
     );
     for pattern in BODY_INGRESS_ROUTES {
         assert!(
-            core_routes
-                .iter()
-                .any(|(path, method, auth)| path == pattern
-                    && method == "POST"
-                    && *auth != busbar_contract::abi::mechanism::route::RouteAuth::None),
-            "{pattern} is a body-ingress convenience route, mounted guarded on POST wherever body \
-             ingress is installed; the router built none: {core_routes:?}"
+            !core_routes.iter().any(|(path, _, _)| path == pattern),
+            "{pattern} is the pools door's (its `/` claim), never a kernel route: {core_routes:?}"
         );
     }
     let boot_plugin_paths: Vec<String> = busbar_kernel::boot_route_paths_of(&app);
@@ -766,7 +765,6 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     .to_string();
 
     let mut checked = 0usize;
-    let mut body_walked: Vec<String> = Vec::new();
     let mut door_checked = 0usize;
     for route in &core_routes {
         let path = concrete(&route.0);
@@ -900,28 +898,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
             route.1,
             path
         );
-        if BODY_INGRESS_ROUTES.contains(&route.0.as_str()) {
-            assert_eq!(
-                anon, 401,
-                "an anonymous caller is refused on the convenience route {} {}",
-                route.1, path
-            );
-            assert!(
-                plain.status() != 401 && plain.status() != 403,
-                "a keyed caller is admitted on the convenience route {} {}: {}",
-                route.1,
-                path,
-                plain.status()
-            );
-            body_walked.push(route.0.clone());
-        }
         checked += 1;
-    }
-    for pattern in BODY_INGRESS_ROUTES {
-        assert!(
-            body_walked.iter().any(|p| p == pattern),
-            "the convenience route {pattern} was never walked: {body_walked:?}"
-        );
     }
     assert_eq!(
         door_checked,

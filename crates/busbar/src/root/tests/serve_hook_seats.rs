@@ -466,7 +466,7 @@ struct Ran {
 /// HOW A RIG IS BUILT: the far ends of its pool `p`'s members (each a model `m<i>` on a provider
 /// of its own, at `weight`), the gate's verdict, and the key's all-time budget.
 #[derive(Clone, Copy, Default)]
-pub(super) struct RigOpts<'a> {
+pub(crate) struct RigOpts<'a> {
     /// Each member's far-end port and weight, in order.
     pub members: &'a [(u16, u32)],
     /// The global gate rejects with 451.
@@ -539,9 +539,15 @@ fn indented(text: &str, by: usize) -> String {
 
 /// THE POOLS DOOR, SERVED END TO END, as production composes it: the data router built with the
 /// door's claims, a keyed caller's token, the generation's App and the node's book.
-pub(super) struct DoorRig {
+pub(crate) struct DoorRig {
     /// The data router.
     pub router: axum::Router,
+    /// Every route the door mounts on that router: `(path, method, auth)`, as built.
+    pub door_table: Vec<(
+        String,
+        String,
+        busbar_contract::abi::mechanism::route::RouteAuth,
+    )>,
     /// The caller's bearer token.
     pub token: String,
     /// The generation.
@@ -764,7 +770,7 @@ impl DoorRig {
 /// BUILD THE RIG: the door serving the `pools` map, linked and bound through the loader's one load
 /// on the process connector, over `opts`' far ends, its egress the model-serving walk over the
 /// kernel's lane cells, its hooks the kernel's stage with the four probed seats installed.
-pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
+pub(crate) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
     try_rig(instance, opts)
         .await
         .unwrap_or_else(|e| panic!("the door serving the pools map composes: {e}"))
@@ -772,7 +778,7 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
 
 /// [`rig`], the composition's refusal answered rather than panicked on: what the root's boot dies
 /// on.
-pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result<DoorRig, String> {
+pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result<DoorRig, String> {
     // The registry rows that own the `pools:`/`models:` sections the deployment writes.
     install_door_seams();
     busbar_kernel::snapshot::init();
@@ -1180,10 +1186,15 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         &busbar_kernel::base_data_core_lines(&app),
     )
     .expect("its claims mount");
+    let door_table = doors
+        .iter()
+        .map(|d| (d.path.clone(), d.method.as_str().to_string(), d.auth))
+        .collect();
     let (router, _admin, _handle) =
         busbar_kernel::build_split_routers_serving(Arc::clone(&app), doors, 1 << 20, 0, false);
     Ok(DoorRig {
         router,
+        door_table,
         token: token.expose(&busbar_kernel::seal::lend()).to_string(),
         app,
         book: Arc::clone(&book.durability),

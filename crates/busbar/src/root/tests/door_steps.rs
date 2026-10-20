@@ -4319,6 +4319,131 @@ pub(crate) mod door_boundary {
         }
     }
 
+    /// THE MODEL PLANE'S HALF OF THE BOUNDARY: the door that serves the `pools` map, composed as
+    /// production composes it ([`crate::root::serve::hook_seat_tests::rig`]), its key minted on the
+    /// same signing secret as this module's rig. A sibling of that key bound to `audience` (the tool
+    /// door's resource) is no credential on any guarded route of that router; its plain sibling is
+    /// admitted on each. Returns how many guarded routes were walked.
+    #[cfg(linked_driver_proofs)]
+    async fn llm_door_walk(audience: &str) -> usize {
+        use crate::root::serve::hook_seat_tests::{rig as pools_rig, RigOpts};
+        let instance = "door-boundary-pools";
+        let _published = Published(instance);
+        let rig = pools_rig(
+            instance,
+            RigOpts {
+                members: &[(1, 1)],
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
+        let verifier = TokenVerifier::single(signer.kid(), signer.verifying_key());
+        let generation = verifier
+            .verify(&rig.token, 1_700_000_000, None)
+            .expect("plain claims")
+            .generation;
+        let bound = signer.mint_for_audience(
+            &rig.key_id,
+            4_000_000_000,
+            generation.as_deref(),
+            audience,
+            Some("client-1"),
+        );
+        // A route pattern as one concrete request path: a capture is any non-empty segment, and a
+        // pattern this cannot render PANICS rather than being skipped.
+        fn concrete(pattern: &str) -> String {
+            let mut out = String::new();
+            for seg in pattern.split('/').skip(1) {
+                out.push('/');
+                if seg.starts_with('{') && seg.ends_with('}') {
+                    out.push_str(match seg {
+                        "{name}" => "p",
+                        "{provider}" => "oai0",
+                        "{model}" => "m0",
+                        s if s.starts_with("{*") => "probe",
+                        other => panic!(
+                            "route pattern segment {other} has no fixture value: give it one, \
+                             never skip the route"
+                        ),
+                    });
+                } else {
+                    out.push_str(seg);
+                }
+            }
+            if out.is_empty() {
+                "/".to_string()
+            } else {
+                out
+            }
+        }
+        let body = serde_json::json!({
+            "model": "p",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 16
+        });
+        let mut routes = busbar_kernel::base_data_route_method_view(&rig.app);
+        routes.extend(rig.door_table.iter().cloned());
+        let mut walked = 0usize;
+        for (pattern, verb, auth) in &routes {
+            if *auth == RouteAuth::None {
+                continue;
+            }
+            let path = concrete(pattern);
+            let (anon, _, _) = rig.send_bare(verb, &path, Some(body.clone()), &[]).await;
+            let header = format!("Bearer {bound}");
+            let (with_bound, _, _) = rig
+                .send_bare(
+                    verb,
+                    &path,
+                    Some(body.clone()),
+                    &[("authorization", header.as_str())],
+                )
+                .await;
+            assert_eq!(
+                with_bound, anon,
+                "an audience-bound door token is no credential on {verb} {path}"
+            );
+            let (plain, _, _) = rig.send(verb, &path, Some(body.clone())).await;
+            assert_ne!(
+                plain, anon,
+                "the plain sibling is admitted on {verb} {path}"
+            );
+            walked += 1;
+        }
+        // THE 1.5.5 CONVENIENCE PATHS (`/{name}/v1/messages`, `/{provider}/{model}/v1/messages`),
+        // served through the door's `/` claim: an anonymous caller is refused 401, the bound
+        // sibling is no credential, and a keyed caller is admitted (moved here, unchanged, from the
+        // kernel's walk in `crates/busbar/tests/plane_integration.rs`, whose router no longer mounts
+        // them).
+        for path in ["/p/v1/messages", "/oai0/m0/v1/messages"] {
+            let (anon, _, _) = rig.send_bare("POST", path, Some(body.clone()), &[]).await;
+            assert_eq!(
+                anon, 401,
+                "an anonymous caller is refused on the convenience route POST {path}"
+            );
+            let header = format!("Bearer {bound}");
+            let (with_bound, _, _) = rig
+                .send_bare(
+                    "POST",
+                    path,
+                    Some(body.clone()),
+                    &[("authorization", header.as_str())],
+                )
+                .await;
+            assert_eq!(
+                with_bound, anon,
+                "an audience-bound door token is no credential on POST {path}"
+            );
+            let (plain, _, _) = rig.send("POST", path, Some(body.clone())).await;
+            assert!(
+                plain != 401 && plain != 403,
+                "a keyed caller is admitted on the convenience route POST {path}: {plain}"
+            );
+        }
+        walked
+    }
+
     /// THE PLANE-BOUNDARY RATCHET (1.6.0), driven by the ROUTER TABLE rather than by a hand-listed
     /// sample: an access token minted for the door plane's resource is admissible on that plane and
     /// nowhere else. The walk covers every core route the kernel mounts and every route the
@@ -4329,6 +4454,9 @@ pub(crate) mod door_boundary {
     /// here; `declared_public` is the mirror ratchet: a route mounted `RouteAuth::None` answers
     /// everyone, so adding one must be a deliberate act that shows up here. The test's NAME is pinned
     /// by `qa/design-bindings.json` (PB-33) and the structure-lint choke-point table.
+    // Its model-plane half walks the door that serves the `pools` map, composed by the driver-proofs
+    // rig, so the cell is compiled where that rig is.
+    #[cfg(linked_driver_proofs)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_audience_bound_token_is_confined_to_its_door_plane_through_the_composition() {
         let _one = PUBLISHING.lock().await;
@@ -4531,10 +4659,15 @@ pub(crate) mod door_boundary {
             door_checked > 0,
             "the door's half of the boundary was asserted"
         );
-        // The kernel's own guarded routes (`/stats`, `/v1/models`, `/v1beta/models`): the convenience
-        // body-ingress routes are a plane's and mount only where a plane installs body ingress (the
-        // kernel owns no route that exists for one plugin, BUSBAR-1.6.0.md l.4093), which this rig
-        // does not; a door claims its own paths and is walked in the door arm above.
+        // THE MODEL PLANE'S ROUTES, served by the door that serves the `pools` map: the 1.5.5
+        // convenience paths (`/{name}/v1/messages`, `/{provider}/{model}/v1/messages`) and the
+        // list-models routes (`/v1/models`, `/v1beta/models`, ARCHITECT 2026-10-16 3b C) are that
+        // door's claims, its `/` claim catching every path no more specific claim takes (DEV-GREEN
+        // row 83). The same binding's audience-bound sibling buys exactly nothing on any of them, and
+        // its plain sibling is admitted: walked over the data router built with that door's claims.
+        checked += llm_door_walk(&audience).await;
+        // The guarded routes beside the door's own: the kernel's (`/stats`) and the model plane's
+        // door's. The convenience and list-models routes are that door's claims, walked above.
         assert!(
             checked >= 3,
             "the walk covered only {checked} guarded core routes — it is not seeing the router"
