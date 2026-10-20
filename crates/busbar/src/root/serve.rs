@@ -1876,7 +1876,7 @@ fn arm_probes(
     egress: Option<&DoorEgress<'_>>,
     schedule: &Arc<busbar_kernel::probe::ProbeSchedule>,
 ) {
-    #[cfg(linked_axis_node)]
+    #[cfg(linked_section_pools)]
     {
         let (Some(sealed), Some(models)) = (&live.egress, egress.and_then(|e| e.reach.models))
         else {
@@ -1912,7 +1912,7 @@ fn arm_probes(
         busbar_kernel::probe::spawn_probers(&target, schedule, &members);
         live.probes = Some(target);
     }
-    #[cfg(not(linked_axis_node))]
+    #[cfg(not(linked_section_pools))]
     let _ = (driver, served_facts, live, egress, schedule);
 }
 
@@ -2201,6 +2201,7 @@ pub type DataMounts = (
     Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
     Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
     Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
+    Option<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
 );
 
 /// [`data_routes`], and the door planes' session routes beside them (ARCHITECT Q-L5B-SESSION-SERVE;
@@ -2222,7 +2223,7 @@ pub fn data_mounts(
     offers: &[TransportOffer],
 ) -> Result<DataMounts, String> {
     if served.planes.iter().all(|p| p.snapshot.claims.is_empty()) {
-        return Ok((Vec::new(), Vec::new(), Vec::new()));
+        return Ok((Vec::new(), Vec::new(), Vec::new(), None));
     }
     door_mounts(
         served,
@@ -2235,7 +2236,7 @@ pub fn data_mounts(
     .and_then(|m| {
         // THE ROUTES AND THEIR REFUSALS PAIR, or the boot is refused (ARCHITECT 2026-10-06).
         busbar_kernel::plane_routes::pair_door_refusals(&m.routes, &m.sessions, &m.refusals)?;
-        Ok((m.routes, m.sessions, m.refusals))
+        Ok((m.routes, m.sessions, m.refusals, m.refuse_by_path))
     })
 }
 
@@ -2450,11 +2451,7 @@ fn claim_line(
             // segment (`CLAIM_PATTERN`); any other is its target's whole subtree, at any depth (the
             // guest list's tail pattern, which matches what remains, including nothing).
             path_form: if exact { PATH_EXACT } else { PATH_PATTERN },
-            path: if exact || pattern {
-                claim.target.clone()
-            } else {
-                format!("{}/{{*{SUBTREE}}}", claim.target.trim_end_matches('/'))
-            },
+            path: line_path(claim, exact || pattern),
             fields: Vec::new(),
             rung,
         },
@@ -2470,6 +2467,60 @@ fn claim_line(
         offered: offered_by(offers, &claim.carrier),
     };
     Ok((line, method))
+}
+
+/// A claim's guest-line path: an exact or pattern claim is its target; any other is its target's
+/// whole subtree, at any depth (the tail pattern, which matches what remains, including nothing).
+fn line_path(
+    claim: &crate::root::loader::dispatch::kinds::plane::OwnedClaim,
+    as_written: bool,
+) -> String {
+    if as_written {
+        claim.target.clone()
+    } else {
+        format!("{}/{{*{SUBTREE}}}", claim.target.trim_end_matches('/'))
+    }
+}
+
+/// THE SIGNED PATHS of a plane's claims (`CLAIM_SIGNED_INGRESS`; ARCHITECT rulings 2026-10-16, 3b A,
+/// and 2026-10-17): each flagged claim's raw-affix target, whatever its verb. The contract refuses
+/// the flag on any claim but a raw affix; one that slipped through signs nothing here.
+fn signed_paths(
+    claims: &[crate::root::loader::dispatch::kinds::plane::OwnedClaim],
+) -> Arc<[String]> {
+    use busbar_contract::abi::plane::{CLAIM_RAW_AFFIX, CLAIM_SIGNED_INGRESS};
+    claims
+        .iter()
+        .filter(|c| {
+            c.flags & (CLAIM_SIGNED_INGRESS | CLAIM_RAW_AFFIX)
+                == CLAIM_SIGNED_INGRESS | CLAIM_RAW_AFFIX
+        })
+        .map(|c| c.target.clone())
+        .collect::<Vec<_>>()
+        .into()
+}
+
+/// Whether a claim writes a guest line: every claim but a raw affix (`CLAIM_RAW_AFFIX`), which
+/// states a fact about paths and mounts no route (ARCHITECT ruling 2026-10-17).
+fn routed(claim: &crate::root::loader::dispatch::kinds::plane::OwnedClaim) -> bool {
+    claim.flags & busbar_contract::abi::plane::CLAIM_RAW_AFFIX == 0
+}
+
+/// Where the data router mounts a guest line's path: the path itself, or for a pattern with a
+/// `{name+}` placeholder (which the router's own path syntax has no form for), the literal prefix
+/// before it and that prefix's subtree; the guest list still matches the pattern.
+fn mount_paths(path: &str) -> Option<Vec<String>> {
+    let segs: Vec<&str> = path.split('/').collect();
+    let at = segs
+        .iter()
+        .position(|s| s.starts_with('{') && s.ends_with("+}"))?;
+    let prefix = segs[..at].join("/");
+    let target = if prefix.is_empty() {
+        "/".to_string()
+    } else {
+        prefix.clone()
+    };
+    Some(vec![target, format!("{prefix}/{{*{SUBTREE}}}")])
 }
 
 /// One claim's route: the plane it is of and the claim's index in its snapshot.
@@ -2506,6 +2557,9 @@ pub struct DoorMounts {
     pub sessions: Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
     /// The request routes' unit-less refusals (their `401`, worded by their plane).
     pub refusals: Vec<PlaneRefusalSpec>,
+    /// The kernel-shaped refusals' rendering by the door plane that owns a path (ARCHITECT ruling
+    /// 2026-10-16, 3b B); `None` when no plane claims a path.
+    pub refuse_by_path: Option<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
 }
 
 impl std::fmt::Debug for DoorMounts {
@@ -2542,6 +2596,7 @@ pub fn door_mounts(
             routes: public,
             sessions: Vec::new(),
             refusals: Vec::new(),
+            refuse_by_path: None,
         });
     }
     let mut upgraded: std::collections::HashSet<DoorClaim> = std::collections::HashSet::new();
@@ -2550,8 +2605,8 @@ pub fn door_mounts(
     for (p, plane) in served.planes.iter().enumerate() {
         for (i, claim) in plane.snapshot.claims.iter().enumerate() {
             // A claim over the line carrier is served on the process's own stdin/stdout
-            // ([`lines`]), never on the data listener.
-            if lines::carrier() == Some(claim.carrier.as_str()) {
+            // ([`lines`]), never on the data listener; a raw affix is served nowhere.
+            if !routed(claim) || lines::carrier() == Some(claim.carrier.as_str()) {
                 continue;
             }
             let rung =
@@ -2609,7 +2664,9 @@ pub fn door_mounts(
             LineAuth::Chain(..) => RouteAuth::Key,
         };
         let tail = format!("/{{*{SUBTREE}}}");
-        let paths = if line.route.path_form == PATH_EXACT || !line.route.path.ends_with(&tail) {
+        let paths = if let Some(paths) = mount_paths(&line.route.path) {
+            paths
+        } else if line.route.path_form == PATH_EXACT || !line.route.path.ends_with(&tail) {
             vec![line.route.path.clone()]
         } else {
             let target = line.route.path.trim_end_matches(&tail).to_string();
@@ -2717,6 +2774,12 @@ pub fn door_mounts(
     // the kernel's auth decides there through its plane's `refusal`, in the claim's refusal dialect,
     // for the request target. The decision stays the kernel's; no unit opens, nothing is charged.
     // Keyed by the door route's own identity (`DoorRouteId`), request and session routes alike.
+    let signed: Vec<Arc<[String]>> = routes
+        .served
+        .planes
+        .iter()
+        .map(|p| signed_paths(&p.snapshot.claims))
+        .collect();
     let refusals: Vec<PlaneRefusalSpec> = requests
         .iter()
         .chain(&session_mounts)
@@ -2728,6 +2791,7 @@ pub fn door_mounts(
                     path: path.clone(),
                     method: *method,
                 },
+                signed_ingress: Arc::clone(&signed[plane]),
                 refuse: Arc::new(move |reason: ReasonCode, target: &str| {
                     let served = &routes.served.planes[plane];
                     let dialect = served
@@ -2747,6 +2811,35 @@ pub fn door_mounts(
             }
         })
         .collect();
+    // THE KERNEL-SHAPED REFUSALS (ARCHITECT ruling 2026-10-16, 3b B): a method no route at a path
+    // takes, a body over the cap, a request handler that panicked. The kernel decides the reason,
+    // the status and the words; the plane whose line the guest list matches for the path, whatever
+    // the verb (its own reading, the one the router mounts by), renders the body through its
+    // `refusal`, in the line's refusal dialect, for the target. A failed render is `None`: the
+    // kernel answers its own.
+    let refuse_by_path: busbar_kernel::plane_routes::PlaneRefuseByPathFn = {
+        let routes = Arc::clone(&routes);
+        Arc::new(move |r: &busbar_kernel::plane_routes::KernelRefusal<'_>| {
+            let Matched::MethodMiss(line) = routes.guests.matched("", r.path, &[]) else {
+                return None;
+            };
+            let Claimant::Plane(instance) = &line.claimant else {
+                return None;
+            };
+            let (plane, _) = *routes.of_line.get(&(instance.clone(), line.route.rung))?;
+            let rendered = routes.served.planes[plane].driver.refuse_kernel(
+                r.reason,
+                u32::from(r.status),
+                r.text,
+                line.dialect,
+                r.target.as_bytes(),
+            )?;
+            Some(stated(
+                (rendered.status, rendered.fields),
+                Body::from(rendered.body),
+            ))
+        })
+    };
     let routes_of = requests
         .into_iter()
         .map(|(path, method, auth, (plane, claim))| {
@@ -2767,6 +2860,33 @@ pub fn door_mounts(
                                     scopes_supported: &doc.scopes_supported,
                                 },
                             )
+                        })
+                    }),
+                };
+            }
+            // A CATALOG ROUTE (ARCHITECT ruling 2026-10-16, 3b C): the kernel's names for the caller,
+            // rendered by the plane's pure `catalog`; no unit, no audit record, nothing metered.
+            let catalog = routes.served.planes[plane]
+                .snapshot
+                .claims
+                .get(claim as usize)
+                .is_some_and(|c| c.flags & busbar_contract::abi::plane::CLAIM_CATALOG != 0);
+            if catalog {
+                let routes = Arc::clone(&routes);
+                return PlaneRouteSpec {
+                    path,
+                    method,
+                    auth,
+                    handler: Arc::new(move |ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                        let routes = Arc::clone(&routes);
+                        Box::pin(async move {
+                            match DoorRequest::of(ctx) {
+                                Some(req) => routes.catalog(plane, &req),
+                                None => stated(
+                                    (refusal_status(ReasonCode::PlanePanic), Vec::new()),
+                                    Body::empty(),
+                                ),
+                            }
                         })
                     }),
                 };
@@ -2797,6 +2917,7 @@ pub fn door_mounts(
         routes: routes_of,
         sessions,
         refusals,
+        refuse_by_path: Some(refuse_by_path),
     })
 }
 
@@ -2817,7 +2938,7 @@ pub(crate) fn line_routes(
     let mut of_line = std::collections::HashMap::new();
     for (p, plane) in served.planes.iter().enumerate() {
         for (i, claim) in plane.snapshot.claims.iter().enumerate() {
-            if lines::carrier() == Some(claim.carrier.as_str()) {
+            if !routed(claim) || lines::carrier() == Some(claim.carrier.as_str()) {
                 continue;
             }
             let rung =
@@ -2980,6 +3101,36 @@ type BoundParent = (
 );
 
 impl DataRoutes {
+    /// ONE CATALOG ROUTE'S ANSWER (ARCHITECT ruling 2026-10-16, 3b C; `abi::plane::CLAIM_CATALOG`):
+    /// the names the generation lists for the caller (`endpoints::catalog_names`, the kernel's
+    /// visibility rule) rendered by the plane's pure `catalog` for the request head. No unit is
+    /// minted, no audit record written and nothing metered, as 1.5.5's list-models route.
+    fn catalog(&self, plane: usize, req: &DoorRequest) -> Response {
+        let names = busbar_kernel::endpoints::catalog_names(&req.app, &req.gov);
+        let target = req
+            .uri
+            .path_and_query()
+            .map_or_else(|| req.uri.path().to_string(), |t| t.as_str().to_string());
+        let head: Vec<(Vec<u8>, Vec<u8>)> = req
+            .headers
+            .iter()
+            .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
+            .collect();
+        let rendered = self.served.planes[plane].driver.catalog_unitless(
+            req.method.as_str().as_bytes(),
+            target.as_bytes(),
+            &head,
+            &names,
+        );
+        match rendered {
+            Some(r) => stated((r.status, r.fields), Body::from(r.body)),
+            None => stated(
+                (refusal_status(ReasonCode::PlanePanic), Vec::new()),
+                Body::empty(),
+            ),
+        }
+    }
+
     /// ONE DUPLEX SESSION ARRIVAL (K6; ARCHITECT Q-L5B-SESSION-SERVE 2026-10-03, TRANSITIONAL with
     /// the session routes): the caller's head delivered once at `arrive`, as a request's is; the
     /// session's unit opened on the node (its steps to the door, one admission) on its own task,
@@ -3641,7 +3792,15 @@ impl DataRoutes {
             .map(|r| r.status)
             .or_else(|| caller.stated())
             .unwrap_or_else(|| refusal_status(ReasonCode::PlanePanic));
-        served.money.settle_end(unit, status);
+        // How the answer ended, not only the status its head carried: a stream its far end cut is
+        // no delivered response, and meters nothing (status row 183).
+        served.money.settle_end_as(
+            unit,
+            busbar_kernel::plane_driver::UnitEnd {
+                caller_status: status,
+                cut: steps.stream_cut(),
+            },
+        );
         // THE REQUEST FAMILIES of the plane serving the `pools` map (the flat card's plane), as the
         // previous release's `ingress::finish_inner` emitted them: for every request its dialect
         // read (decoded, or refused for its body; a path it does not serve, or a verb it does not
@@ -4472,38 +4631,38 @@ pub(crate) mod planes_tests;
 // plane doors. Cells that reach the door_steps helpers needing the default build's linked auth rows
 // are gated with the node-axis plane that carries that build, as are the capability cells of the
 // door serving the `pools` map.
-#[cfg(all(test, linked_axis_node))]
+#[cfg(all(test, linked_section_pools))]
 #[path = "tests/serve_tests.rs"]
 mod door_tests;
 
 // The door planes' own root cells (each plane crate's `tests/root/`, one module per enabled
 // `[package.metadata.busbar.door-cells]` row), compiled here beside the rig they drive.
-#[cfg(all(test, linked_axis_node))]
+#[cfg(all(test, linked_section_pools))]
 include!(concat!(env!("OUT_DIR"), "/door_cells.rs"));
 
 #[cfg(test)]
 #[path = "tests/serve_money.rs"]
 mod money_tests;
 
-#[cfg(all(test, linked_driver_proofs, linked_axis_node))]
+#[cfg(all(test, linked_driver_proofs, linked_section_pools))]
 #[path = "tests/serve_hook_seats.rs"]
-mod hook_seat_tests;
+pub(crate) mod hook_seat_tests;
 
-#[cfg(all(test, linked_axis_node))]
+#[cfg(all(test, linked_section_pools))]
 #[path = "tests/serve_door_far.rs"]
 mod door_far_tests;
 
-#[cfg(all(test, linked_axis_node))]
+#[cfg(all(test, linked_section_pools))]
 #[path = "tests/serve_framed.rs"]
 mod framed_tests;
 
 // A secret reference that does not resolve, scanned for its source across every linked door plane's
 // caller-facing renders (coordinator ruling 2026-10-07).
-#[cfg(all(test, linked_axis_node, linked_axis_plane_door))]
+#[cfg(all(test, linked_section_pools, linked_axis_plane_door))]
 #[path = "tests/secret_source.rs"]
 mod secret_source_tests;
 
 // The door planes' own root cells, held to the linked roster and to the capability-equality ledger.
-#[cfg(all(test, linked_axis_node))]
+#[cfg(all(test, linked_section_pools))]
 #[path = "tests/door_cells.rs"]
 mod door_cells_tests;

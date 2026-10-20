@@ -17,12 +17,12 @@ use crate::state::App;
 // wrote it via `install_body_ingress`) or the test hook (`set_test_body_ingress`). Core's OWN
 // `#[cfg(test)]` binary used to auto-seed the test hook here with the extracted dialects'
 // `BODY_INGRESS` slice — the A6/HostCtx dev-dependency-cycle cleanup removed that (it named
-// `busbar_llm` directly, which only type-checks with ONE `busbar_kernel` in the graph): a test that
+// the retired engine crate directly, which only type-checks with ONE `busbar_kernel` in the graph): a test that
 // needs a real body-model arrival now registers it itself
-// (`busbar_kernel::ingress::arrival::set_test_body_ingress(|| busbar_llm::BODY_INGRESS)`, idempotent,
+// (`busbar_kernel::ingress::arrival::set_test_body_ingress(|| the retired engine crate::BODY_INGRESS)`, idempotent,
 // first-wins) from an integration-test target, exactly the posture an external `test-support`
 // consumer already used — so this neutral source names no dialect crate under any build surface.
-pub(crate) use busbar_kernel::ingress::arrival::{body_ingress_for, path_ingress_for};
+pub(crate) use busbar_kernel::ingress::arrival::body_ingress_for;
 
 /// enforce a virtual key's allowed-pools list against the resolved target pool. No-op
 /// when governance is off (`gov.key` is None) or the key allows all pools. Returns a 403 response

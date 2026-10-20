@@ -156,11 +156,22 @@ NAMED_NOUNS="streams agents tools"
 section_nouns() {
   local k dir declfile noun ref refcrate out=""
   for k in $PLANE_KEYS; do
-    dir="crates/busbar-${k}/src"
+    dir="$(plane_key_src "$k")"
     # The noun is read from the file that DECLARES the plane's `pub const PLANE_DECL`, never a test
     # fixture that restates a section_section for a different plane.
     declfile="$(grep -rlE 'pub const PLANE_DECL' "$dir" 2>/dev/null | grep -vE '/tests/|(^|[/_])tests?\.rs$' | head -1)"
-    [ -n "$declfile" ] || continue
+    if [ -z "$declfile" ]; then
+      # A DOOR PLANE declares no PlaneDecl (llm since DEV-GREEN row 83): its config noun is the ONE
+      # section its door Statement marks SECTION_DECLARING, `section(<path>::<CONST>, SECTION_DECLARING)`,
+      # whose literal is read off the plane's own sources.
+      ref="$(grep -rhoE 'section\([A-Za-z_][A-Za-z0-9_:]*,[[:space:]]*SECTION_DECLARING\)' "$dir" 2>/dev/null \
+             | head -1 | sed -E 's/^section\(([A-Za-z0-9_:]+),.*/\1/')"
+      [ -n "$ref" ] || continue
+      noun="$(grep -rhoE "const[[:space:]]+${ref##*::}:[[:space:]]*&('static[[:space:]]+)?str[[:space:]]*=[[:space:]]*\"[a-z_]+\"" \
+                "$dir" 2>/dev/null | head -1 | sed -E 's/.*"([a-z_]+)".*/\1/')"
+      [ -n "$noun" ] && out="${out:+$out }$noun"
+      continue
+    fi
     noun="$(grep -hoE 'config_section:[[:space:]]*"[a-z_]+"' "$declfile" 2>/dev/null \
             | head -1 | sed -E 's/.*"([a-z_]+)".*/\1/')"
     if [ -z "$noun" ]; then
@@ -298,6 +309,7 @@ run_report() {
   note "scanned roots: $CORE_ROOTS  (non-test, comment-stripped, frozen migrator excluded)"
 
   require_root
+  require_plane_key_roots || { red "plane-config-noun gate: FAIL — a PLANE_KEYS root is not on disk"; exit 1; }
   require_files "$(core_files | grep -c . || true)"
   require_nouns "$nouns"
 
@@ -361,6 +373,12 @@ FIX
   # drives require_nouns ITSELF — the function the run path calls — rather than re-implementing its
   # arithmetic as a `-ge 4`, which is how the floor came to exist only in the self-test in the first
   # place: a check that lives in one branch and not the other proves nothing about the branch CI runs.
+  # RED: a PLANE_KEYS root that is not on disk is refused (row 115), never read as a plane with no noun.
+  if ( PLANE_KEYS="selftest-nonexistent-key" require_plane_key_roots ) >/dev/null 2>&1; then
+    fail=1; note "FAILED: a PLANE_KEYS root that is not on disk was accepted"
+  else
+    note "RED key-roots: a PLANE_KEYS root that is not on disk is refused"
+  fi
   local nouns; nouns="$(section_nouns)"
   local ncount; ncount="$(printf '%s' "$nouns" | wc -w | tr -d ' ')"
   if ( require_nouns "$nouns" ) >/dev/null 2>&1; then
