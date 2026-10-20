@@ -443,3 +443,36 @@ fn a_token_lifetime_out_of_range_is_refused() {
         );
     }
 }
+
+/// AN ABSOLUTE URL IS READ WHERE THE DIALLING STACK READS IT. A browser and every HTTP client end a
+/// web URL's authority at a `\` as at a `/`: `https://as.example\@evil.example` is the server
+/// `as.example` with the path `/@evil.example`, not the server the text after the `@` names. An
+/// issuer or a redirect URI is compared byte for byte, so one whose authority two readers split
+/// differently is refused at boot. RED before the one authority split: the authority ran to the
+/// first `/`, and both were accepted.
+#[test]
+fn an_absolute_url_split_differently_by_the_dialling_stack_is_refused_at_boot() {
+    for bad in [
+        "https://as.example\\@evil.example",
+        "https://\\@evil.example/as",
+    ] {
+        assert!(
+            matches!(
+                AsIdentity::from_cfg(&cfg(bad)),
+                Err(AsCfgError::IssuerNotAbsolute(_))
+            ),
+            "{bad}"
+        );
+    }
+    for bad in [
+        "https://client.example\\@evil.example/cb",
+        "https://\\@evil.example/cb",
+    ] {
+        let mut c = client(public_jwk());
+        c["redirect_uris"] = serde_json::json!([bad]);
+        assert!(
+            matches!(with_client(c), Err(AsCfgError::StaticClient { .. })),
+            "{bad}"
+        );
+    }
+}

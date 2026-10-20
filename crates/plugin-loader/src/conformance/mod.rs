@@ -348,15 +348,49 @@ impl Subject {
     /// ([`crate::https_conns::HttpsConns`]): each `{ "url", "cert_pem", "status", "body" }` is served
     /// at its exact URL, to a need trusting `cert_pem` (its `trust_from`), or to any need when
     /// `cert_pem` is `null` (a far end chaining to the public roots); every other URL is refused as
-    /// unreachable. `None` when the inputs name none (the instance is handed no table).
+    /// unreachable. `None` when the inputs name no far end (the instance is handed no table).
     ///
     /// # Panics
-    /// When a far end names no `url`.
+    /// When a far end names no `url`, or `inputs.unreached_schemes` is named (the plane suite's
+    /// alone: [`Subject::far_table`]).
     #[must_use]
     pub fn far_ends(&self) -> Option<Arc<dyn busbar_contract::conn::DeclaredConns>> {
+        assert!(
+            self.inputs.get("unreached_schemes").is_none(),
+            "conformance.json: unreached_schemes is read by the plane suite only, which asserts \
+             after its fold that no open touched one"
+        );
+        self.far_table()
+            .map(|t| t as Arc<dyn busbar_contract::conn::DeclaredConns>)
+    }
+
+    /// [`Subject::far_ends`]' table, kept whole: with every scheme `inputs.unreached_schemes`
+    /// names ([`crate::https_conns::judge_unreached`]: named, reasoned, covered by a cited test
+    /// cell of the plugin's own repo, and named by a declared need) answering the load's scheme
+    /// match ([`HttpsConns::unreached`](crate::https_conns::HttpsConns::unreached)), and every open
+    /// on one counted, so the fold can assert none was made.
+    ///
+    /// # Panics
+    /// When a far end names no `url`, or an unreached scheme is refused.
+    #[must_use]
+    pub fn far_table(&self) -> Option<Arc<crate::https_conns::HttpsConns>> {
         let ends = self.inputs.get("far_ends")?.as_array()?;
-        let table =
-            crate::https_conns::HttpsConns::framing(crate::stand_in::FramedFacts::stand_in());
+        let facts = crate::stand_in::FramedFacts::stand_in();
+        let unreached = match self.inputs.get("unreached_schemes") {
+            None => Vec::new(),
+            Some(value) => {
+                let transports: Vec<String> =
+                    self.needs().into_iter().map(|n| n.transport).collect();
+                crate::https_conns::judge_unreached(
+                    value,
+                    &facts.transport,
+                    &transports,
+                    &repo_root(),
+                )
+                .unwrap_or_else(|why| panic!("conformance.json: {why}"))
+            }
+        };
+        let table = crate::https_conns::HttpsConns::framing(facts).unreached(unreached);
         for e in ends {
             let url = e["url"]
                 .as_str()
@@ -705,6 +739,20 @@ pub fn dispatcher() -> Arc<Dispatcher> {
     d
 }
 
+/// A dispatcher of the leg's own serving `provider`'s host services, registered with the fold
+/// running on this thread exactly as [`dispatcher`]'s is ([`woken`]).
+#[must_use]
+pub fn dispatcher_serving(
+    provider: Arc<dyn busbar_contract::services::HostServices>,
+) -> Arc<Dispatcher> {
+    let d = Arc::new(Dispatcher::with_services(
+        DispatchConfig::default(),
+        provider,
+    ));
+    FOLD_DISPATCHERS.with(|f| f.borrow_mut().push(Arc::clone(&d)));
+    d
+}
+
 /// A test's restated door, written in plain Rust; [`test_door`] is its [`DoorFn`].
 #[cfg(test)]
 pub(crate) trait TestDoor {
@@ -778,6 +826,17 @@ pub fn bind(d: &Dispatcher, instance: &str) -> Bind {
         sink: Arc::new(NoSink),
         dispatcher: d.adopter(),
         conns: ConnTable::NoNeeds,
+    }
+}
+
+/// The plugin repo's root, a cited cell's path is read under: the crate's directory
+/// (`CARGO_MANIFEST_DIR` at test run) when the workspace is the crate, otherwise its parent (the
+/// workspace a plugin's `-plugin` crate sits in).
+fn repo_root() -> PathBuf {
+    let dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap_or_default());
+    match dir.parent() {
+        Some(parent) if parent.join("Cargo.toml").is_file() => parent.to_path_buf(),
+        _ => dir,
     }
 }
 

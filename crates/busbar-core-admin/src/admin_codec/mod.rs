@@ -31,18 +31,17 @@
 //! chain records) is stated there, on the admin path, rather than inherited by pretending an
 //! operator's request is somebody's traffic.
 //!
-//! What this module still declares about the admin surface — [`meta`]'s `PlaneMeta` row and
-//! [`claims::CLAIMS`] — is DATA: the key the surface is registered under, the one path pattern it
-//! answers for, and the operation/content classes its units seal under. A declaration is not an
-//! entry face; nothing dispatches through it. It is not dead weight either: the claim is what makes
+//! What this module still declares about the admin surface — [`KEY`] and [`claims::CLAIMS`] — is
+//! DATA: the key its claimant line is sealed under and the one path pattern it answers for. It is
+//! a cleanliness crate's route, not a plugin: it implements no plugin face and no plane's
+//! declaration row, and nothing dispatches through it. It is not dead weight either: the claim is what makes
 //! a second plane claiming `/api/v1/admin/*` on `http` a BOOT REFUSAL rather than a race decided at
 //! the first request (`root::registry::seal` -> `seal_claims`).
 //!
 //! **And there is no `SessionPlane` half.** The one claim is plain HTTP request/response — the
 //! registry requires `SessionPlane` only when a claimed transport declares itself session-shaped,
 //! and `http` does not — so there is no session for a fact to attach to and nothing here caches a
-//! credential across requests. `meta`'s empty `SESSION_FACTS` and `claims`'s note both point here
-//! for that reason.
+//! credential across requests. `claims`'s note points here for that reason.
 //!
 //! ## What this module is NOT, continued — an explicit scope boundary
 //!
@@ -70,46 +69,14 @@
 
 pub mod claims;
 pub mod generated;
-pub mod meta;
 pub mod refusal;
 #[cfg(test)]
 mod tests;
 pub mod verbs;
 
-use busbar_contract::plugin::{AbiVersion, Kind, Plugin};
-
-/// The admin surface, as the registry names it.
-///
-/// A NAME AND A DECLARATION, NOT AN ENTRY FACE. It carries [`Plugin`] (so the boot registry can
-/// hold it under one key) and `meta`'s `PlaneMeta` row (so the claim table can read what the
-/// surface answers for), and it carries no `Plane`: a `Plane` is how TRAFFIC enters the dispatch
-/// loop, and this surface serves operators on their own listener. See the module doc comment.
-///
-/// No fields, and none it could grow: everything it answers is a constant of the closed table, and
-/// nothing about one operator's request outlives that request here. The zero-size test in `tests`
-/// asserts that structurally rather than by comment.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct AdminPlane;
-
-impl AdminPlane {
-    /// A new handle on the admin surface. There is nothing to configure: see
-    /// `meta::CONFIG_SCHEMA`.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self
-    }
-}
-
-impl Plugin for AdminPlane {
-    fn key(&self) -> &'static str {
-        <Self as busbar_contract::plane::PlaneMeta>::KEY
-    }
-
-    fn kind(&self) -> Kind {
-        Kind::Plane
-    }
-
-    fn abi(&self) -> AbiVersion {
-        AbiVersion(1)
-    }
-}
+/// The key the admin surface's one claimant line is sealed under in the claim-precedence table
+/// (`root::registry::plane_claims`): a cleanliness crate's route (THE DESIGN, Auth, step 3: a claimant
+/// is "a plane, a plugin's inbound need, or a cleanliness crate's route (admin, oauth2)"), never a
+/// plugin. The surface registers nothing in the plugin registry: THE DESIGN, Cleanliness crates, "Exactly three crates are
+/// compiled in and are never plugins".
+pub const KEY: &str = "admin";
