@@ -1437,7 +1437,7 @@ mod no_shared_state {
 /// hand the instance a table over which that far end is reached and answers.
 mod hook_far_ends {
     use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
-    use busbar_contract::conn::{Conns, InstanceId, NeedId, OpenDesc, PieceKind};
+    use busbar_contract::conn::{InstanceId, NeedId, OpenDesc, PieceKind};
 
     use super::super::{dispatcher, hook, Subject};
     use crate::dispatch::ConnTable;
