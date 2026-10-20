@@ -80,13 +80,11 @@ impl tracing::field::Visit for Fields {
         self.fact(field, Value::from(value));
     }
 
-    // A NUMBER STAYS A NUMBER (status row 173): the previous release's exporter wrote a span's
-    // integer, boolean and float fields as typed attributes (`lane = i` an integer, v1.5.5
-    // `proxy/engine/walk.rs:382`), never their text.
-    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
-        self.fact(field, Value::from(value));
-    }
-
+    // A FIELD KEEPS THE TYPE THE PREVIOUS RELEASE'S EXPORTER GAVE IT (status row 173;
+    // tracing-opentelemetry 0.33, v1.5.5 `crates/busbar/Cargo.toml:149`): an `i64`, a `bool` and an
+    // `f64` are typed values; a `u64` is its text, as 0.33's attribute visitor wrote it (it has no
+    // `record_u64`, so `tracing`'s default sends a `u64` through `record_debug`: `lane = i`, a
+    // `usize`, went out as a string).
     fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
         self.fact(field, Value::from(value));
     }

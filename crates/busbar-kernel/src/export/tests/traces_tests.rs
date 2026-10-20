@@ -142,8 +142,8 @@ fn a_value_recorded_after_the_span_opened_is_one_of_its_facts() {
     assert_eq!(field(facts, ExportField::Op), Some(&Value::from("chat")));
     assert_eq!(
         field(facts, ExportField::Lane),
-        Some(&Value::from(3_u64)),
-        "an integer field is an integer fact, as 1.5.5 exported it, never its text"
+        Some(&Value::from("3")),
+        "a `u64` field is its text, as 1.5.5's exporter wrote it (0.33 has no `record_u64`)"
     );
     assert_eq!(
         facts

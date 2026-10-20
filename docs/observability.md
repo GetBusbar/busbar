@@ -222,7 +222,8 @@ as Anthropic opens no entry span. The kernel names no dialect: each entry span's
 request shape that opens it are data the plane states as entry-fact claims (`CLAIM_ENTRY`, with
 `PlaneSnapshot::arrival_spans`). The kernel builds one callsite per name when it binds the routes
 and opens the span around the arrival. `forward` and `forward_once` are the kernel's own. A field
-keeps its type on the way to the collector: `lane` is an integer.
+keeps the type tracing-opentelemetry 0.33 gave it: an `i64`, `bool` or `f64` field is typed, and a
+`u64` field (`lane`, `request_id`) is its text, as 1.5.5 wrote it.
 
 `HOTPATH_LEVEL` is `DEBUG`, not the `tracing::Level::TRACE` variant, because it pairs with the
 OTHER half of the one-spot policy: `observability::log_levels()`, which builds the stderr and OTLP
