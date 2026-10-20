@@ -113,8 +113,9 @@ pub(crate) struct AppSlots {
     /// plane's v1.5.4-identical series); the mounted planes emit their own `busbar_plane_*`
     /// families from `request_finished` instead.
     banked_plane: &'static str,
-    /// pool label (ingress convention: pools ∪ models ∪ "unresolved") → per-protocol request
-    /// families, indexed by position in `proto::KNOWN_PROTOCOLS`.
+    /// pool label (ingress convention: pools ∪ models ∪ "unresolved") → per-dialect request
+    /// families, indexed by position in the banked plane's declared dialects
+    /// ([`declared_dialects`]).
     request: HashMap<Box<str>, Box<[RequestFamily]>>,
     /// engine pool label (pools ∪ models, matching `proxy::metric_pool_label`) → lane idx → family.
     lane: HashMap<Box<str>, HashMap<usize, LaneFamily>>,
@@ -156,7 +157,7 @@ impl AppSlots {
 
         let mut request = HashMap::with_capacity(ingress_labels.len());
         for pool in &ingress_labels {
-            let families: Box<[RequestFamily]> = crate::proto::known_protocols()
+            let families: Box<[RequestFamily]> = declared_dialects(plane)
                 .iter()
                 .map(|proto| RequestFamily {
                     requests: std::array::from_fn(|oi| {
@@ -246,7 +247,7 @@ impl AppSlots {
         if plane != self.banked_plane {
             return None;
         }
-        let proto_idx = crate::proto::known_protocols()
+        let proto_idx = declared_dialects(self.banked_plane)
             .iter()
             .position(|p| *p == ingress_protocol)?;
         self.request.get(pool).map(|fams| &fams[proto_idx])
@@ -435,16 +436,17 @@ pub fn pool_queued_on(pool_label: &str, depth: i64) {
         .set(depth as f64);
 }
 
-/// `busbar_translations_total` for one cross-protocol hop. Both names come from the fixed protocol
-/// vocabulary, so the slots are config-independent: one process-lifetime table over
-/// `KNOWN_PROTOCOLS × KNOWN_PROTOCOLS` (from ≠ to), resolved by a short linear scan (≤30 static-str
-/// compares — no hash, no allocation). Unknown (plugin) protocol names fall back to the macro.
+/// `busbar_translations_total` for one cross-protocol hop. Both names come from the fallback plane's
+/// declared dialects ([`declared_dialects`]), so the slots are config-independent: one
+/// process-lifetime table over `dialects × dialects` (from ≠ to), resolved by a short linear scan
+/// (≤30 static-str compares — no hash, no allocation). Any other name falls back to the macro.
 pub fn translation(from: &str, to: &str) {
     static SLOTS: OnceLock<Vec<(&'static str, &'static str, CounterSlot)>> = OnceLock::new();
     let table = SLOTS.get_or_init(|| {
         let mut v = Vec::new();
-        for f in crate::proto::known_protocols() {
-            for t in crate::proto::known_protocols() {
+        let dialects = declared_dialects(crate::plane::fallback_key());
+        for f in dialects {
+            for t in dialects {
                 if f != t {
                     v.push((
                         *f,
@@ -471,6 +473,15 @@ pub fn translation(from: &str, to: &str) {
         )
         .increment(1),
     }
+}
+
+/// THE DIALECT NAMES `plane` DECLARES (its registry row's `wire_format_names`: a door plane's are
+/// its Statement tail's `dialects`), in its order — the `ingress_protocol` / `from` / `to` label
+/// vocabulary the bank registers its families over. Read as declared data, never off a codec list
+/// (ARCHITECT ruling 2026-10-16 item 4; BUSBAR-1.6.0.md #49: the kernel knows no plane strings). A key
+/// no plane registers declares none.
+fn declared_dialects(plane: &str) -> &'static [&'static str] {
+    crate::plane::registry::plane_decl_for(plane).map_or(&[], |d| (d.wire_format_names)())
 }
 
 #[cfg(test)]

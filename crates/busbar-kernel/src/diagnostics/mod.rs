@@ -2100,34 +2100,24 @@ pub const TRUST_VERIFY_REFUSED_ON_DRIFT: Diagnostic = Diagnostic {
     code: 7097,
     class: Class::Plane,
     slug: "trust-verify-refused-on-drift",
-    title: "Verify-on-call refused a call because the upstream's advertised surface drifted",
+    title: "Verify-on-call refused a call because the upstream's advertised surface drifted — RETIRED",
     severity: Severity::BenignRecurring,
-    summary: "On the request path, verify-on-call re-fetched the upstream's advertised surface (a \
-              tool's name+args+description, or an agent card) within `verify_ttl` and found \
-              it DRIFTED from the fingerprint the operator approved, so the call was refused BEFORE \
-              dispatch. The refusal itself is the signal; this is a warn-once-per-subject note so \
-              persistent drift does not spam.",
-    action: "Review the change on the trust surface and re-approve the new fingerprint if it is \
-             legitimate, or investigate the upstream if it is not.",
+    summary: "RETIRED. Nothing emits this code: the verify-on-call gate that refused a drifted call is deleted (Q128 p8#3); a registration whose upstream drifted is demoted by the trust book (BUSBAR-4019).",
+    action: "Nothing emits this code. See BUSBAR-4019.",
     since: "1.6.0",
-    retired: false,
+    retired: true,
 };
 
 pub const TRUST_VERIFY_UNREACHABLE: Diagnostic = Diagnostic {
     code: 7098,
     class: Class::Plane,
     slug: "trust-verify-unreachable",
-    title: "Verify-on-call could not reach an upstream to re-verify, and refused fail-closed",
+    title: "Verify-on-call could not reach an upstream to re-verify, and refused fail-closed — RETIRED",
     severity: Severity::Actionable,
-    summary: "On the request path, verify-on-call needed to re-verify an upstream whose recorded \
-              observation was older than `verify_ttl`, and the re-fetch FAILED (unreachable or \
-              unverifiable). The call was REFUSED fail-closed rather than served against a snapshot \
-              older than the operator's bound. Latched per subject.",
-    action: "Restore reachability to the named upstream. Calls to it are refused until a re-fetch \
-             succeeds within `verify_ttl`; a larger `verify_ttl` widens the drift-serving window \
-             and is an explicit, documented security downgrade.",
+    summary: "RETIRED. Nothing emits this code: the verify-on-call gate that re-fetched a stale observation is deleted (Q128 p8#3).",
+    action: "Nothing emits this code.",
     since: "1.6.0",
-    retired: false,
+    retired: true,
 };
 
 /// The abandonment sweep could not settle an idle active task as canceled — a store outage.

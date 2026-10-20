@@ -412,8 +412,10 @@ fn old_store_audit_only_in_legacy_table_boots_migrates_and_verifies() {
     let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
         std::sync::Arc::new(DualDurableStore::new());
     // Seed the LEGACY table only — plane_records is empty, exactly like an OLD store on first boot.
-    let ad1: busbar_contract::records::AuditRecord = crate::plane::store::decode(AD_1).unwrap();
-    let ad2: busbar_contract::records::AuditRecord = crate::plane::store::decode(AD_2).unwrap();
+    let ad1: busbar_contract::records::AuditRecord =
+        crate::store::plane_view::decode(AD_1).unwrap();
+    let ad2: busbar_contract::records::AuditRecord =
+        crate::store::plane_view::decode(AD_2).unwrap();
     store.append_audit(&ad1).unwrap();
     store.append_audit(&ad2).unwrap();
     assert!(
@@ -1417,8 +1419,10 @@ const LEGACY_2: &[u8] = br#"{"seq":2,"ts":1700000060,"action":"hook.delete","res
 fn a_part_way_legacy_migration_resumes_instead_of_skipping() {
     let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
         std::sync::Arc::new(DualDurableStore::new());
-    let ad1: busbar_contract::records::AuditRecord = crate::plane::store::decode(LEGACY_1).unwrap();
-    let ad2: busbar_contract::records::AuditRecord = crate::plane::store::decode(LEGACY_2).unwrap();
+    let ad1: busbar_contract::records::AuditRecord =
+        crate::store::plane_view::decode(LEGACY_1).unwrap();
+    let ad2: busbar_contract::records::AuditRecord =
+        crate::store::plane_view::decode(LEGACY_2).unwrap();
 
     // The earlier boot: only seq 1 made it across before the store failed.
     store.append_audit(&ad1).unwrap();
@@ -1472,10 +1476,10 @@ fn a_legacy_migration_refuses_to_splice_onto_a_chain_that_disagrees() {
         ),
     );
     store
-        .append_audit(&crate::plane::store::decode(LEGACY_1).unwrap())
+        .append_audit(&crate::store::plane_view::decode(LEGACY_1).unwrap())
         .unwrap();
     store
-        .append_audit(&crate::plane::store::decode(LEGACY_2).unwrap())
+        .append_audit(&crate::store::plane_view::decode(LEGACY_2).unwrap())
         .unwrap();
     assert!(
         migrate_legacy_table_to_plane_records(store.as_ref()).is_err(),
