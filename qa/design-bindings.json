@@ -812,7 +812,7 @@
     },
     {
      "kind": "test",
-     "ref": "a_dispatch_record_is_written_on_the_book_under_its_units_facts",
+     "ref": "crates/busbar/src/root/tests/plane_node_money.rs::a_dispatch_record_is_written_on_the_book_under_its_units_facts",
      "proves": "finish_admitted never refunds an uncharged admit",
      "source": "curated",
      "status": "mapped"
@@ -4043,7 +4043,7 @@
     },
     {
      "kind": "test",
-     "ref": "a_reranks_search_units_reach_the_price_on_both_books",
+     "ref": "crates/busbar/src/root/tests/plane_node_money.rs::a_reranks_search_units_reach_the_price_on_both_books",
      "proves": "search units are priced by a present card, refused by a card silent about them (#42), read 0 with no card",
      "source": "curated",
      "status": "mapped"
