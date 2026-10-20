@@ -1592,8 +1592,8 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       },
-      "cells": "^(crosscut\\.traps\\|exhausted\\-retry\\-after\\-floor|documented\\|changelog\\|retry\\-after\\-floor|llm\\|anthropic\\|anthropic\\|request\\|upstream_down|llm\\|anthropic\\|cohere\\|request\\|upstream_down|llm\\|anthropic\\|gemini\\|request\\|upstream_down|llm\\|anthropic\\|openai\\|request\\|upstream_down|llm\\|bedrock\\|anthropic\\|request\\|upstream_down|llm\\|bedrock\\|cohere\\|request\\|upstream_down|llm\\|bedrock\\|gemini\\|request\\|upstream_down|llm\\|bedrock\\|openai\\|request\\|upstream_down|llm\\|cohere\\|anthropic\\|request\\|upstream_down|llm\\|cohere\\|cohere\\|request\\|upstream_down|llm\\|cohere\\|gemini\\|request\\|upstream_down|llm\\|cohere\\|openai\\|request\\|upstream_down|llm\\|gemini\\|anthropic\\|request\\|upstream_down|llm\\|gemini\\|cohere\\|request\\|upstream_down|llm\\|gemini\\|gemini\\|request\\|upstream_down|llm\\|gemini\\|openai\\|request\\|upstream_down|llm\\|openai\\|anthropic\\|request\\|upstream_down|llm\\|openai\\|cohere\\|request\\|upstream_down|llm\\|openai\\|gemini\\|request\\|upstream_down|llm\\|openai\\|openai\\|request\\|upstream_down|llm\\|responses\\|anthropic\\|request\\|upstream_down|llm\\|responses\\|cohere\\|request\\|upstream_down|llm\\|responses\\|gemini\\|request\\|upstream_down|llm\\|responses\\|openai\\|request\\|upstream_down|route\\.failover\\|fo\\|all\\-down|route\\.failover\\|fo\\|all\\-down\\-stream|route\\.failover\\|fo\\|primary\\-429|route\\.failover\\|fo\\|primary\\-5xx|route\\.failover\\|fo\\|primary\\-cut\\-body|route\\.failover\\|fo\\|primary\\-cut\\-stream|route\\.failover\\|fo\\|primary\\-down|route\\.failover\\|fo\\|second\\-request\\-after\\-trip)$",
-      "expected_cells": 34,
+      "cells": "^(crosscut\\.traps\\|exhausted\\-retry\\-after\\-floor|documented\\|changelog\\|retry\\-after\\-floor|llm\\|anthropic\\|anthropic\\|request\\|upstream_down|llm\\|anthropic\\|cohere\\|request\\|upstream_down|llm\\|anthropic\\|gemini\\|request\\|upstream_down|llm\\|anthropic\\|openai\\|request\\|upstream_down|llm\\|bedrock\\|anthropic\\|request\\|upstream_down|llm\\|bedrock\\|cohere\\|request\\|upstream_down|llm\\|bedrock\\|gemini\\|request\\|upstream_down|llm\\|bedrock\\|openai\\|request\\|upstream_down|llm\\|cohere\\|anthropic\\|request\\|upstream_down|llm\\|cohere\\|cohere\\|request\\|upstream_down|llm\\|cohere\\|gemini\\|request\\|upstream_down|llm\\|cohere\\|openai\\|request\\|upstream_down|llm\\|gemini\\|anthropic\\|request\\|upstream_down|llm\\|gemini\\|cohere\\|request\\|upstream_down|llm\\|gemini\\|gemini\\|request\\|upstream_down|llm\\|gemini\\|openai\\|request\\|upstream_down|llm\\|openai\\|anthropic\\|request\\|upstream_down|llm\\|openai\\|cohere\\|request\\|upstream_down|llm\\|openai\\|gemini\\|request\\|upstream_down|llm\\|openai\\|openai\\|request\\|upstream_down|llm\\|responses\\|anthropic\\|request\\|upstream_down|llm\\|responses\\|cohere\\|request\\|upstream_down|llm\\|responses\\|gemini\\|request\\|upstream_down|llm\\|responses\\|openai\\|request\\|upstream_down|route\\.failover\\|fo\\|all\\-down|route\\.failover\\|fo\\|all\\-down\\-stream|route\\.failover\\|fo\\|primary\\-429|route\\.failover\\|fo\\|primary\\-5xx|route\\.failover\\|fo\\|primary\\-cut\\-body|route\\.failover\\|fo\\|primary\\-cut\\-stream|route\\.failover\\|fo\\|primary\\-down|route\\.failover\\|fo\\|second\\-request\\-after\\-trip|llm\\|openai\\|openai\\|request\\|stream_upstream_cut|llm\\|cohere\\|cohere\\|request\\|stream_upstream_cut|llm\\|gemini\\|gemini\\|request\\|stream_upstream_error@fixture)$",
+      "expected_cells": 37,
       "classes": [
         "effects.metrics"
       ],
@@ -1609,7 +1609,7 @@
           }
         ]
       },
-      "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): on each of these 34 cells the ONLY effects.metrics difference from 1.5.5 is busbar_lane_state{pool,lane} for the tripped lane reading 2 where 1.5.5 read 1 (every other metrics path is identical). route.failover|fo|primary-cut-body JOINS the list on this measurement: its spend series no longer moves since the cut-body billing fix landed, so lane_state 1 -> 2 is now its only metrics difference; any cell whose metrics move in any other path stays unnamed. Owner ruling Q40 as ruled in Q47: the gauge reads the pool's own cell, 2 when tripped, 1 only on a real half-open probe. SCOPE is the enumerated cell ids, not a family. PREMISE (evaluated, and bounded by what the runner's premise grammar can see — it reads status/body, never effects): the build serves the documented three-state per-(pool,lane) gauge and a HEALTHY lane still reads 0 on the scrape, so the forgiveness cannot cover a build whose healthy lanes moved. First registered from P3A-register's measurement of 05c826a66 (33 cells)."
+      "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): on each of these 34 cells the ONLY effects.metrics difference from 1.5.5 is busbar_lane_state{pool,lane} for the tripped lane reading 2 where 1.5.5 read 1 (every other metrics path is identical). route.failover|fo|primary-cut-body JOINS the list on this measurement: its spend series no longer moves since the cut-body billing fix landed, so lane_state 1 -> 2 is now its only metrics difference; any cell whose metrics move in any other path stays unnamed. Owner ruling Q40 as ruled in Q47: the gauge reads the pool's own cell, 2 when tripped, 1 only on a real half-open probe. SCOPE is the enumerated cell ids, not a family. PREMISE (evaluated, and bounded by what the runner's premise grammar can see — it reads status/body, never effects): the build serves the documented three-state per-(pool,lane) gauge and a HEALTHY lane still reads 0 on the scrape, so the forgiveness cannot cover a build whose healthy lanes moved. First registered from P3A-register's measurement of 05c826a66 (33 cells). WIDENED 2026-10-20 (OWNER ruling Q40, via the metrics lane, PR #1292): the same lane_state 1 -> 2 is the metrics difference on llm|openai|openai|request|stream_upstream_cut, llm|cohere|cohere|request|stream_upstream_cut, llm|gemini|gemini|request|stream_upstream_error@fixture (+3). The two anthropic cells (stream_upstream_cut, stream_upstream_error@fixture) are not listed until a candidate record shows lane_state to be their metrics difference."
     },
     {
       "id": "Q41 an audit entry carries its record's scheme (served read)",
@@ -3325,6 +3325,51 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       }
+    },
+    {
+      "id": "P-1 the dispatcher's two bb_* plugin-health counter families are added to /metrics",
+      "kind": "improvement",
+      "changelog": "**`/metrics` carries two plugin-health counters.**",
+      "by": "owner (Matthew Jackson), OWNER 2026-10-20 parity principle (additive /metrics families)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-20",
+        "ruling": "OWNER 2026-10-20 parity principle (additive /metrics families): new families may be added; every family, name, label and value a 1.5.5 user scrapes stays byte-identical"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^(ops\\.scrape\\|metrics\\|key|neutrality\\|metrics-series|crosscut\\.traps\\|request-duration-quantiles)$",
+      "expected_cells": 3,
+      "classes": [
+        "body"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "(?m)^# (HELP|TYPE) bb_(deadline_without_wake|plugin_quarantined)_total[^\\n]*\\n",
+            ""
+          ],
+          [
+            "(?m)^bb_(deadline_without_wake|plugin_quarantined)_total [0-9]+\\n",
+            ""
+          ]
+        ]
+      },
+      "premise": {
+        "all": [
+          {
+            "cell": "ops.scrape|metrics|key",
+            "body_contains": "# HELP bb_deadline_without_wake_total "
+          },
+          {
+            "cell": "ops.scrape|metrics|key",
+            "body_contains": "# HELP bb_plugin_quarantined_total "
+          }
+        ]
+      },
+      "rationale": "The dispatcher's bb_deadline_without_wake_total and bb_plugin_quarantined_total (THE DESIGN A.4.3 / A.8; 05c4f18209, coordinator ruling 2026-10-14) are two NEW counter families on /metrics, each one HELP line, one TYPE line and one unlabelled sample. The transform removes exactly those lines and nothing else, so any change to a family 1.5.5 served (its name, labels, HELP, TYPE or value) still diverges. Owner 2026-10-20 parity principle: an added family breaks no 1.5.5 scrape or dashboard."
     }
   ]
 }
