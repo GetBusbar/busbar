@@ -892,6 +892,9 @@ fn open_tail(
 ///
 /// ## Where a quarantine sits in the log
 ///
+/// A segment that kept a record: its index, the identity of its first record and of its last.
+type KeptSegment = (u64, (u64, u64), (u64, u64));
+
 /// A scan names the records on either side of a hole only inside its own segment. A hole at the
 /// start of a segment follows the last record of the segment before; a remainder at the end of one
 /// is followed by the first record of the next. Those are filled in here, from the records each
@@ -905,7 +908,7 @@ fn quarantine_below(
     mut quarantined: Vec<Quarantine>,
 ) -> Result<Vec<Quarantine>, OpenError> {
     // Each segment that kept a record: its index, its first record and its last.
-    let mut kept: Vec<(u64, (u64, u64), (u64, u64))> = Vec::new();
+    let mut kept: Vec<KeptSegment> = Vec::new();
     for index in 0..tail_index {
         let Some(backend) = factory.existing(index)? else {
             continue;
