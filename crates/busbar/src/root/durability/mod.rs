@@ -2953,3 +2953,7 @@ fn build_inner(
 #[cfg(test)]
 #[path = "../tests/durability.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/durability_boot_reads.rs"]
+mod boot_reads;
