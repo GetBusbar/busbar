@@ -65,7 +65,11 @@ fn plane() -> Plane {
             .filter(|(f, _)| *f == name)
             .map(|(_, v)| *v)
             .collect();
-        assert_eq!(found.len(), 1, "unloaded_plane.txt: exactly one `{name}` row");
+        assert_eq!(
+            found.len(),
+            1,
+            "unloaded_plane.txt: exactly one `{name}` row"
+        );
         found[0]
     };
     assert_eq!(rows.len(), 4, "unloaded_plane.txt lost or gained a row");
