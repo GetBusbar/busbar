@@ -1814,7 +1814,10 @@ models:
         DEFAULT_MAX_HONORED_RETRY_AFTER_SECS
     );
     assert_eq!(l.default_max_tokens, DEFAULT_DEFAULT_MAX_TOKENS);
-    assert_eq!(l.default_max_tokens, crate::config::limits::DEFAULT_MAX_TOKENS);
+    assert_eq!(
+        l.default_max_tokens,
+        crate::config::limits::DEFAULT_MAX_TOKENS
+    );
     // The webhook sink's in-flight bound and delivery deadline are its own settings, checked by the
     // sink (`busbar-export-webhook`), never projected onto `LimitsResolved`.
     assert_eq!(l.key_gauge_limit, DEFAULT_KEY_GAUGE_LIMIT);
