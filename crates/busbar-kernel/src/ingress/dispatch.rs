@@ -27,9 +27,7 @@ pub(crate) async fn protocol_dispatch(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
     OriginalUri(uri): OriginalUri,
     method: axum::http::Method,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
-    consumed: Option<axum::extract::Extension<crate::auth::ConsumedCredentials>>,
-    mut headers: HeaderMap,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     let path = uri.path().to_string();
@@ -71,41 +69,8 @@ pub(crate) async fn protocol_dispatch(
             }
         }
     }
-    // THE BODY-MODEL ARRIVAL, resolved by protocol name off the core-owned side-table a plane
-    // registered it in. A dialect whose model rides the URL has no kernel arrival: recognising a
-    // model in the URL is the plane's own logic, and its door claims and serves those paths
-    // (ARCHITECT 2026-10-16 ruling 3 item 1). The arrival is a `fn` pointer to a BOXED future, so
-    // its size stays on the requests that take it rather than inflating every request's future.
-    // No plane linked (core booted plane-agnostic) → the honest no-handler 404 below.
-    let ingress = crate::ingress::body_ingress_for(proto);
-    if let Some(ingress) = ingress {
-        // Mint the neutral arrival the dialect crate receives: its own URL-parsing reads
-        // `path`/`uri`/`headers`/`body` directly, and it reaches core's resolution/forward pipeline
-        // through `host`, threading the core-only `App`/`GovCtx`/`CallerToken` back opaquely as `ctx`
-        // — so it names no `busbar_kernel::` item and core names no dialect.
-        let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(
-            crate::ingress::arrival_host::ArrivalPayload {
-                host: crate::plane_host::engine_host(&app),
-                gov,
-                caller_token: consumed.as_ref().and_then(|c| c.caller.clone()),
-            },
-        );
-        // Identified (above, off the request as it arrived), the plane never sees the credential
-        // the gate consumed — it carries the ref in the payload instead (#65, #40(b)).
-        crate::auth::ConsumedCredentials::strip_from(consumed.as_deref(), &mut headers);
-        // The plane ANSWERS (#28); this handler is the outer one that serves the answer.
-        return ingress(busbar_kernel::ingress::arrival::Arrival {
-            host: std::sync::Arc::new(crate::ingress::arrival_host::CoreArrivalHost),
-            ctx,
-            path,
-            model_hint: None,
-            uri,
-            headers,
-            body,
-        })
-        .await
-        .into_response();
-    }
+    // No body-model arrival is served by the kernel (a plane serves its own paths through its
+    // door, spec Part 3 section 12): the honest no-handler 404.
     crate::fallback_error_response(
         &app.planes,
         &path,

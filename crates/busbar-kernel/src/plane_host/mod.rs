@@ -314,26 +314,6 @@ impl busbar_kernel::plane_host::JournalHost for EngineHostImpl {
     }
 }
 
-impl busbar_kernel::plane_host::MountHost for EngineHostImpl {
-    fn arrival_envelope_dialect(&self, path: &str) -> &'static str {
-        // Pure snapshot mount-table read — the host-driven form of the dropped `ArrivalPayload::app`
-        // reach `envelope_dialect(app.planes.ingress_of(path))`.
-        crate::ingress::native::envelope_dialect(self.app.planes.ingress_of(path))
-    }
-
-    fn arrival_fallback_error(
-        &self,
-        path: &str,
-        status: axum::http::StatusCode,
-        kind: &str,
-        message: &str,
-    ) -> axum::response::Response {
-        // Pure snapshot mount-table read — the host-driven form of the dropped `ArrivalPayload::app`
-        // reach `fallback_error_response(&app.planes, …)`.
-        crate::fallback_error_response(&self.app.planes, path, status, kind, message)
-    }
-}
-
 impl busbar_kernel::plane_host::RegistryHost for EngineHostImpl {
     fn next_request_id(&self) -> u64 {
         self.app.next_request_id()
@@ -603,124 +583,6 @@ impl busbar_kernel::plane_host::AdmissionHost for EngineHostImpl {
         pool: &[u8],
     ) -> busbar_kernel::plane_host::GovAdmit {
         govern_admit_reason_over(&self.app, scope, caller, pool)
-    }
-
-    fn destination_guard(
-        &self,
-        gov: &busbar_contract::records::PlaneRequestCtx,
-        proto: &'static str,
-        pool: &str,
-        started: std::time::Instant,
-        charged_at: u64,
-    ) -> Result<(), Box<axum::response::Response>> {
-        crate::ingress::destination_guard(&self.app, gov, proto, pool, started, charged_at)
-    }
-
-    fn admission_door(
-        &self,
-        gov: &busbar_contract::records::PlaneRequestCtx,
-        proto: &'static str,
-        pool: &str,
-        started: std::time::Instant,
-        charged_at: u64,
-    ) -> Result<
-        (
-            Option<busbar_kernel::plane_host::AdmitHandle>,
-            Option<String>,
-        ),
-        Box<axum::response::Response>,
-    > {
-        // Byte-identical to the in-place door (`GovCtx` IS `PlaneRequestCtx`); the produced `AdmitGrant`
-        // is wrapped in the opaque `AdmitHandle` the plane's sink holds Drop-only. The `Arc::new` here
-        // mirrors the engine's own `admit.map(Arc::new)` at the sink-build site.
-        crate::ingress::admission_door(&self.app, gov, proto, pool, started, charged_at).map(
-            |(admit, downgraded)| {
-                (
-                    admit.map(|a| {
-                        busbar_kernel::plane_host::AdmitHandle(
-                            Arc::new(a) as Arc<dyn std::any::Any + Send + Sync>
-                        )
-                    }),
-                    downgraded,
-                )
-            },
-        )
-    }
-
-    fn admission_check(
-        &self,
-        gov: &busbar_contract::records::PlaneRequestCtx,
-        proto: &'static str,
-        pool: &str,
-        charged_at: u64,
-    ) -> Result<
-        (
-            Option<busbar_kernel::plane_host::AdmitHandle>,
-            Option<String>,
-        ),
-        Box<axum::response::Response>,
-    > {
-        // The door's own body, minus the `finish_rejected` the door wraps its refusing arm in: same
-        // buckets, same charge, same downgrade, same bytes. The grant is wrapped in the opaque
-        // handle exactly as `admission_door` wraps it, so the two seams differ in nothing but which
-        // side of them posts the refusal.
-        crate::ingress::admit_check(&self.app, gov, proto, pool, charged_at).map(
-            |(admit, downgraded)| {
-                (
-                    admit.map(|a| {
-                        busbar_kernel::plane_host::AdmitHandle(
-                            Arc::new(a) as Arc<dyn std::any::Any + Send + Sync>
-                        )
-                    }),
-                    downgraded,
-                )
-            },
-        )
-    }
-
-    fn finish_admitted(
-        &self,
-        gov: &busbar_contract::records::PlaneRequestCtx,
-        ingress_protocol: &str,
-        pool: &str,
-        started: std::time::Instant,
-        charged_at: u64,
-        resp: axum::response::Response,
-        charged: Option<&busbar_kernel::plane_host::AdmitHandle>,
-    ) -> axum::response::Response {
-        // The handle is the grant `admission_check`/`admission_door` wrapped: its charge is what a
-        // non-2xx end refunds.
-        let grant = charged.and_then(|h| h.0.downcast_ref::<crate::governance::AdmitGrant>());
-        crate::ingress::finish_admitted(
-            &self.app,
-            gov,
-            ingress_protocol,
-            pool,
-            started,
-            charged_at,
-            resp,
-            grant.map(crate::governance::AdmitGrant::charge),
-        )
-    }
-
-    fn finish_rejected(
-        &self,
-        gov: &busbar_contract::records::PlaneRequestCtx,
-        ingress_protocol: &str,
-        pool: &str,
-        started: std::time::Instant,
-        charged_at: u64,
-        resp: axum::response::Response,
-    ) -> axum::response::Response {
-        crate::ingress::finish_rejected(
-            &self.app,
-            gov,
-            ingress_protocol,
-            pool,
-            started,
-            charged_at,
-            resp,
-        )
     }
 
     fn plane_audience_bound(&self, plane_key: &str) -> bool {
@@ -1947,31 +1809,6 @@ pub trait JournalHost: Send + Sync {
     }
 }
 
-/// The MOUNT slice: the pure mount-table reads that shape an arrival's dialect and its pre-collapse
-/// fallback error. Split off `EngineHost` as a supertrait; both are pure snapshot reads, no `HostCtx`.
-pub trait MountHost: Send + Sync {
-    /// The mount-aware dialect an answer to `path` is SHAPED in — the host-driven form of
-    /// `busbar_kernel::ingress::native::envelope_dialect(App::planes.ingress_of(path))`. A pure snapshot
-    /// mount-table read, no `HostCtx`.
-    ///
-    /// WEDGE 3 (App-retype — THE FLIP): the seam core's `ArrivalHost` impl reads instead of the dropped
-    /// `ArrivalPayload::app`; the neutral `ArrivalPayload` now carries only the host, so this mount read
-    /// crosses the host seam like every other.
-    fn arrival_envelope_dialect(&self, path: &str) -> &'static str;
-
-    /// The pre-collapse fallback error SHAPE by `path` — the host-driven form of
-    /// `busbar_kernel::fallback_error_response(&App::planes, path, status, kind, message)`. Renders the
-    /// unmatched-path/404 envelope in the dialect the deployment mounted `path` under; a pure snapshot
-    /// mount-table read, no `HostCtx`. The twin of [`arrival_envelope_dialect`](Self::arrival_envelope_dialect).
-    fn arrival_fallback_error(
-        &self,
-        path: &str,
-        status: axum::http::StatusCode,
-        kind: &str,
-        message: &str,
-    ) -> axum::response::Response;
-}
-
 /// The REGISTRY slice: the per-generation registry/snapshot reads a plane pulls off the bound (or
 /// live) snapshot — its type-erased runtime slot, its type-erased defs, the request-id counter, the
 /// neutral secret resolver. Split off `EngineHost` as a supertrait.
@@ -2288,8 +2125,8 @@ pub trait IdentityHost: Send + Sync {
     }
 }
 
-/// The ADMISSION slice: the request-admission gauntlet seams — the governance admit-reason, the destination guard, the budget-admission door, the audience-bound
-/// mount read, and the post-admission/not-charged finishes. Split off `EngineHost` as a supertrait.
+/// The ADMISSION slice: the governance admit-reason and the audience-bound mount read. Split off
+/// `EngineHost` as a supertrait.
 pub trait AdmissionHost: Send + Sync {
     /// Admit one unit of work for `caller` (the request's middleware-resolved context, DEC-SERVE G1b)
     /// over the host `govern_admit_reason` seam, REGISTERING the RAII grant in `scope`'s arena on
@@ -2301,92 +2138,6 @@ pub trait AdmissionHost: Send + Sync {
         caller: &PlaneRequestCtx,
         pool: &[u8],
     ) -> GovAdmit;
-
-    /// STAGE 2 pre-admission DESTINATION guard through the host: the pool ACL, the fallback-pool ACL,
-    /// and the all-or-nothing unpriced-model gate. `Ok(())` admits; `Err` is the already-finished,
-    /// protocol-native rejection response (finished via the not-charged terminal). Identical to
-    /// `busbar_kernel::ingress::destination_guard` over the bound snapshot + `gov` scope.
-    fn destination_guard(
-        &self,
-        gov: &PlaneRequestCtx,
-        proto: &'static str,
-        pool: &str,
-        started: std::time::Instant,
-        charged_at: u64,
-    ) -> Result<(), Box<axum::response::Response>>;
-
-    /// STAGE 3–4 budget-admission door: charge the chain buckets for one request under `gov` on
-    /// `pool`, returning the ADMISSION grant (as the opaque [`AdmitHandle`] the sink holds Drop-only)
-    /// and any budget DOWNGRADE re-pool, or the already-finished not-charged rejection. Identical to
-    /// `busbar_kernel::ingress::admission_door` over the bound snapshot; the returned `AdmitHandle`
-    /// wraps the SAME `AdmitGrant` the in-place door produced, so `.is_some()` (charged?) and the
-    /// gauge-releasing `Drop` are byte-identical. No `HostCtx` on this path.
-    ///
-    /// WEDGE 2 (App-retype): additive — the seam the wedge-3 `native_ingress::drive` flip targets
-    /// (a host is already minted there). The `AdmitGrant`→[`AdmitHandle`] carrier-field retype
-    /// (`response_body.rs` / `native_ingress.rs`) rides the same wedge-3 governance flip.
-    fn admission_door(
-        &self,
-        gov: &PlaneRequestCtx,
-        proto: &'static str,
-        pool: &str,
-        started: std::time::Instant,
-        charged_at: u64,
-    ) -> Result<(Option<AdmitHandle>, Option<String>), Box<axum::response::Response>>;
-
-    /// THE SAME DOOR, WITHOUT THE TERMINAL — the check-and-charge on its own.
-    ///
-    /// [`admission_door`](Self::admission_door) is exactly this call followed by
-    /// `finish_rejected` on the refusing arm, which is right for a caller whose refusal ends there
-    /// and wrong for one whose terminal is a step of its own: posting the refusal at the door and
-    /// then posting it again at the terminal would put two links on one unit's chain. So a plane
-    /// that owns an Audit step takes this one and hands the refusal — bytes, not a posted record —
-    /// to that step, and a unit posts exactly one link whichever way it ended.
-    ///
-    /// Identical to `busbar_kernel::ingress::admit_check` over the bound snapshot: the same buckets,
-    /// the same charge, the same downgrade re-pool, and on the refusing arm the same
-    /// protocol-native bytes the door would have finished. The label the terminal records those
-    /// bytes under is [`pool_label`](EngineHost::pool_label) of the same `pool`, which is what the
-    /// door computes for itself before it finishes.
-    fn admission_check(
-        &self,
-        gov: &PlaneRequestCtx,
-        proto: &'static str,
-        pool: &str,
-        charged_at: u64,
-    ) -> Result<(Option<AdmitHandle>, Option<String>), Box<axum::response::Response>>;
-
-    /// POST-ADMISSION finish through the host: emit the per-request metric family + request-log
-    /// webhook and, on a NON-2xx outcome, REFUND the flat per-request fee IFF it actually landed at
-    /// admission (`charged`: the admission's own handle, `None` when nothing was charged) — from
-    /// exactly the cells that admission's charge reached. Identical to
-    /// `busbar_kernel::ingress::finish_admitted` over the bound snapshot + `gov` scope.
-    #[allow(clippy::too_many_arguments)]
-    fn finish_admitted(
-        &self,
-        gov: &PlaneRequestCtx,
-        ingress_protocol: &str,
-        pool: &str,
-        started: std::time::Instant,
-        charged_at: u64,
-        resp: axum::response::Response,
-        charged: Option<&AdmitHandle>,
-    ) -> axum::response::Response;
-
-    /// NOT-CHARGED (pre-charge turn-away) finish through the host: emit metrics + the webhook with NO
-    /// refund, for a request rejected BEFORE the admission charge ever ran (governance guard denial or
-    /// a pre-routing failure). Identical to `busbar_kernel::ingress::finish_rejected` over the bound
-    /// snapshot + `gov` scope.
-    #[allow(clippy::too_many_arguments)]
-    fn finish_rejected(
-        &self,
-        gov: &PlaneRequestCtx,
-        ingress_protocol: &str,
-        pool: &str,
-        started: std::time::Instant,
-        charged_at: u64,
-        resp: axum::response::Response,
-    ) -> axum::response::Response;
 
     /// Whether the plane identified by the opaque registry `plane_key` is mounted under an
     /// AUDIENCE-BOUND door — the deployment gate a request path reads before it trusts an inbound
@@ -2409,7 +2160,7 @@ pub trait AdmissionHost: Send + Sync {
 /// ## M4 — `EngineHost` is the SUM of the capability slices
 ///
 /// The residual flat method set has been cut into cohesive capability SUPERTRAITS ([`ClockHost`],
-/// [`TelemetryHost`], [`JournalHost`], [`MountHost`], [`RegistryHost`], [`HookConfigHost`],
+/// [`TelemetryHost`], [`JournalHost`], [`RegistryHost`], [`HookConfigHost`],
 /// [`BudgetHost`], [`IdentityHost`], [`AdmissionHost`]), alongside the earlier braking slices
 /// ([`BreakerHost`], [`LanePoolHost`]). Every slice is PLANE-FACING and pricing-blind; the kernel's
 /// pricing ([`MeteringHost`]) is deliberately NOT one of them, so a plane-side host implements the
@@ -2423,7 +2174,6 @@ pub trait EngineHost:
     + ClockHost
     + TelemetryHost
     + JournalHost
-    + MountHost
     + RegistryHost
     + HookConfigHost
     + BudgetHost
@@ -2449,7 +2199,6 @@ const _: () = {
         fn _needs_clock<U: ClockHost + ?Sized>() {}
         fn _needs_telemetry<U: TelemetryHost + ?Sized>() {}
         fn _needs_journal<U: JournalHost + ?Sized>() {}
-        fn _needs_mount<U: MountHost + ?Sized>() {}
         fn _needs_registry<U: RegistryHost + ?Sized>() {}
         fn _needs_hook_config<U: HookConfigHost + ?Sized>() {}
         fn _needs_budget<U: BudgetHost + ?Sized>() {}
@@ -2460,7 +2209,6 @@ const _: () = {
         _needs_clock::<T>();
         _needs_telemetry::<T>();
         _needs_journal::<T>();
-        _needs_mount::<T>();
         _needs_registry::<T>();
         _needs_hook_config::<T>();
         _needs_budget::<T>();
