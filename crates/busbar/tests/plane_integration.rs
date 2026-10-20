@@ -95,12 +95,10 @@ fn built_planes(cfg: &RootCfg) -> Vec<(&'static PlaneDecl, Arc<dyn std::any::Any
         .filter_map(|decl| {
             let ctx = BuildCtx {
                 endpoint_slot: cfg.endpoint_resources.get(decl.config_section).cloned(),
-                agent_defs: cfg.agent_defs.as_any(),
-                tool_defs: cfg.tool_defs.as_any(),
+                plane_defs: &cfg.plane_defs,
                 public_url: cfg.public_url.as_deref(),
                 prior: None,
                 providers: None,
-                hostless: busbar_kernel::plane::registry::EgressDriver::core(),
             };
             (decl.build)(&ctx).map(|obj| (decl, obj))
         })
@@ -158,7 +156,7 @@ fn jsonrpc_mount(decl: &'static PlaneDecl, sections: &str) -> String {
 /// door arm judged, by the composition root at the data router's construction (ARCHITECT
 /// Q-L3B-KHARNESS), so the kernel's router mounts none of them.
 fn served_by_root(slot: &Arc<dyn std::any::Any + Send + Sync>) -> bool {
-    slot.downcast_ref::<busbar_kernel::plane::door::DoorSlot>()
+    slot.downcast_ref::<busbar_kernel::plane_driver::door::DoorSlot>()
         .is_some()
 }
 
@@ -328,8 +326,8 @@ fn plane_slot_is_none_when_the_plane_is_not_configured() {
         "fixture control: no endpoint door configured"
     );
     assert!(
-        cfg.agent_defs.def_names().is_empty(),
-        "fixture control: no agents: entries"
+        cfg.plane_defs.values().all(|d| d.def_names().is_empty()),
+        "fixture control: no plane entries"
     );
     assert!(
         cfg.plane_sections.is_empty(),

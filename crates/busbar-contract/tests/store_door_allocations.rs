@@ -28,7 +28,7 @@ use std::mem::size_of;
 use std::ptr;
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead, Outcome};
-use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
+use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, ReleaseIn};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::sdk::conn::Host;
 use busbar_contract::abi::sdk::store::{
@@ -37,9 +37,10 @@ use busbar_contract::abi::sdk::store::{
 };
 use busbar_contract::abi::store::{
     slot, AppendPlaneRecordIn, GetPlaneRecordIn, HostBlobs, HostBuf, HostBytesOut, HostListOut,
-    HostRecords, HostSessions, KindIdIn, ListPlaneRecordsIn, OpId, Ops, PlaneRecordRow,
-    RecordEntry, RecordGetIn, RecordPutIn, RecordScanIn, SessionRow, SessionsForIn, TokenIn,
-    UpsertPlaneRecordIn, VerdictOut, DISPOSITION_ACTIVE, SELECT_ALL, SELECT_PARENT,
+    HostRecords, HostSessions, IdIn, KindIdIn, LeasedBlobOut, LeasedListOut, ListPlaneRecordsIn,
+    OpId, Ops, PlaneRecordRow, RecordEntry, RecordGetIn, RecordPutIn, RecordScanIn, SessionRow,
+    SessionsForIn, TokenIn, UpsertPlaneRecordIn, VerdictOut, DISPOSITION_ACTIVE, SELECT_ALL,
+    SELECT_PARENT,
 };
 use busbar_contract::kinds::{Head, RecordBytes};
 use busbar_contract::records::{
@@ -52,6 +53,8 @@ use busbar_contract::records::{
 thread_local! {
     static ARMED: Cell<bool> = const { Cell::new(false) };
     static COUNT: Cell<u64> = const { Cell::new(0) };
+    /// This thread's allocations of a store wire read buffer's size or more, armed or not.
+    static READ_SIZED: Cell<u64> = const { Cell::new(0) };
 }
 
 fn note() {
@@ -62,6 +65,12 @@ fn note() {
     });
 }
 
+fn note_size(layout: Layout) {
+    if layout.size() >= busbar_contract::abi::sdk::store::wire::READ_CHUNK {
+        let _ = READ_SIZED.try_with(|c| c.set(c.get() + 1));
+    }
+}
+
 /// `System`, counting this thread's allocations while armed.
 struct Witness;
 
@@ -70,11 +79,13 @@ struct Witness;
 unsafe impl GlobalAlloc for Witness {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         note();
+        note_size(layout);
         // SAFETY: forwarded verbatim; the caller's obligations on `layout` are unchanged.
         unsafe { System.alloc(layout) }
     }
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         note();
+        note_size(layout);
         // SAFETY: as `alloc`.
         unsafe { System.alloc_zeroed(layout) }
     }
@@ -288,10 +299,18 @@ impl StoreSlots for Canned {
         unreachable!("not a request-path slot")
     }
     fn get_key(&self, _: &mut StoreOp<'_>, _: &str) -> Step<RecordStoreResult<Option<VirtualKey>>> {
-        unreachable!("not a request-path slot")
+        // Off the request path; answered so the release test below holds a real lease.
+        Step::Ready(Ok(Some(VirtualKey::default())))
     }
-    fn list_keys(&self, _: &mut StoreOp<'_>) -> Step<RecordStoreResult<Vec<VirtualKey>>> {
-        unreachable!("not a request-path slot")
+    fn list_keys(&self, cx: &mut StoreOp<'_>) -> Step<RecordStoreResult<Vec<VirtualKey>>> {
+        // Off the request path; a wire op that asks one read, so the read-buffer test below has
+        // an op that reaches the wire driver's read.
+        busbar_contract::abi::sdk::store::wire::drive(cx, |w| {
+            Box::pin(async move {
+                let _ = w.fill().await;
+                Ok(Vec::new())
+            })
+        })
     }
     fn delete_key(&self, _: &mut StoreOp<'_>, _: &str) -> Step<RecordStoreResult<()>> {
         unreachable!("not a request-path slot")
@@ -966,5 +985,76 @@ fn the_store_doors_request_path_slots_allocate_nothing() {
         allocating.is_empty(),
         "the store door allocated on the request path:\n  {}",
         allocating.join("\n  ")
+    );
+}
+
+// ── the wire driver's read buffer ────────────────────────────────────────────────────────────
+
+fn list_keys(instance: *mut c_void) -> Outcome {
+    let input = in_head::<InHead>(slot::LIST_KEYS);
+    let mut out: LeasedListOut = zeroed();
+    out.head = out_head::<LeasedListOut>();
+    call(ops().list_keys, instance, &input, &mut out)
+}
+
+/// A STORE OP'S READ BUFFER IS REUSED, NOT MADE PER OP (THE DESIGN, the plugin ABI: "no
+/// allocation and no blocking on the hot path"). The first wire op that reads makes the buffer;
+/// the next op on the instance reads into the same one, so it allocates no read-sized block.
+#[test]
+fn two_consecutive_wire_ops_allocate_one_read_buffer() {
+    let instance = open();
+    let before = READ_SIZED.with(Cell::get);
+    assert_eq!(list_keys(instance), Outcome::Ready);
+    let first = READ_SIZED.with(Cell::get) - before;
+    assert_eq!(list_keys(instance), Outcome::Ready);
+    let second = READ_SIZED.with(Cell::get) - before - first;
+    assert_eq!(first, 1, "the first op that reads makes one read buffer");
+    assert_eq!(second, 0, "the second op made a read buffer of its own");
+}
+
+// ── release: the one lease rule ─────────────────────────────────────────────────────────────
+
+fn release(instance: *mut c_void, lease: u64) -> Outcome {
+    let input = ReleaseIn {
+        head: in_head::<ReleaseIn>(life::RELEASE),
+        lease,
+    };
+    let mut out = out_head::<OutHead>();
+    call(ops().head.release, instance, &input, &mut out)
+}
+
+/// RELEASING AN UNKNOWN LEASE IS REFUSED (THE DESIGN §11, KIND-SHARE: "releasing an unknown lease
+/// is REFUSED"). The store door answers the host's release of a lease it holds READY, and a
+/// release of one it never handed out, or one already released, REFUSED: a host double or wrong
+/// release is a host bug the door names rather than accepts.
+#[test]
+fn the_store_door_refuses_a_release_of_a_lease_it_does_not_hold() {
+    let instance = open();
+    let t = ops();
+
+    let input = IdIn {
+        head: in_head::<IdIn>(slot::GET_KEY),
+        id: s(b"k"),
+    };
+    let mut out: LeasedBlobOut = zeroed();
+    out.head = out_head::<LeasedBlobOut>();
+    assert_eq!(call(t.get_key, instance, &input, &mut out), Outcome::Ready);
+    let lease = out.head.lease;
+    assert_ne!(lease, 0, "a found record is answered under a lease");
+
+    assert_eq!(
+        release(instance, lease.wrapping_add(1000)),
+        Outcome::Refused,
+        "a lease the door never handed out is refused"
+    );
+    assert_eq!(
+        release(instance, lease),
+        Outcome::Ready,
+        "a held lease is released"
+    );
+    assert_eq!(
+        release(instance, lease),
+        Outcome::Refused,
+        "a lease already released is refused"
     );
 }

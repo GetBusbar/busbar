@@ -8,10 +8,8 @@ fn make_root_cfg(
     pools: HashMap<String, config::PoolCfg>,
 ) -> RootCfg {
     config::RootCfg {
-        tool_defs: crate::plane::config::ToolsSection::default().0,
-        agent_defs: crate::plane::config::AgentsSection::default().0,
-        tool_pools: Default::default(),
-        agent_pools: Default::default(),
+        plane_defs: Default::default(),
+        plane_pools: Default::default(),
         plane_sections: Default::default(),
         listen: crate::config::DEFAULT_LISTEN_ADDR.into(),
         // No endpoint plane configured.
@@ -1623,6 +1621,7 @@ fn test_validate_rejects_bad_chain_and_role_binding_scopes() {
                 allowed_pools: None,
                 group: None,
                 admin_scope: Some("readonly".to_string()), // typo (it's read-only)
+                verbs: None,
             },
         )]),
     );
@@ -1655,6 +1654,58 @@ fn test_validate_rejects_bad_chain_and_role_binding_scopes() {
     );
 }
 
+/// #77(9) l.2279 — THE PER-VERB ALLOW-LIST FAILS CLOSED AT VALIDATION. `role_bindings.<m>.<role>.verbs`
+/// parses off the config text (`"*"` or a list of names), and a name the closed admin verb table
+/// does not declare, or a value of any other shape, is refused naming the binding — never left to
+/// sit inert while the operator believes it granted. RED before the allow-list: `verbs` was an
+/// unknown `role_bindings` key, so the first parse below failed.
+#[test]
+fn a_verb_allow_list_naming_an_unknown_verb_is_refused_at_validation() {
+    crate::test_support::install_admin_verb_table_double();
+    let errors_for = |yaml: &str| -> Vec<String> {
+        let binding: config::RoleBindingCfg =
+            serde_yaml::from_str(yaml).expect("`verbs:` is a role-binding key");
+        let (providers, models, pools) = valid_maps();
+        let mut cfg = make_root_cfg(providers, models, pools);
+        let mut auth = config::AuthCfg::default_none();
+        auth.chain = vec![config::AuthChainEntry::bare("keys")];
+        auth.role_bindings.insert(
+            "keys".to_string(),
+            std::collections::BTreeMap::from([("ops".to_string(), binding)]),
+        );
+        cfg.auth = Some(auth);
+        validate(&cfg)
+            .err()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| e.contains("role_bindings.keys.ops.verbs"))
+            .collect()
+    };
+
+    let unknown = errors_for("verbs: [get_keys, not_a_verb]");
+    assert_eq!(
+        unknown.len(),
+        1,
+        "exactly the unknown name is refused: {unknown:?}"
+    );
+    assert!(
+        unknown[0].contains("unknown admin verb 'not_a_verb'") && unknown[0].contains("\"*\""),
+        "the refusal names the verb and the valid forms: {unknown:?}"
+    );
+    let shape = errors_for("verbs: full");
+    assert!(
+        shape.len() == 1 && shape[0].contains("must be \"*\" or a list of admin verb names"),
+        "a scalar other than `*` is refused: {shape:?}"
+    );
+    for valid in ["verbs: \"*\"", "verbs: [get_keys, post_keys]", "verbs: []"] {
+        assert_eq!(
+            errors_for(valid),
+            Vec::<String>::new(),
+            "{valid} is a valid allow-list"
+        );
+    }
+}
+
 /// 1.5.2 scope collapse: the delegated `mint` token (and its `hooks-register` sibling) are RETIRED —
 /// a `role_bindings.<m>.<role>.admin_scope: mint` (or a `max_admin_scope: mint`) is now an UNKNOWN
 /// scope token, failing validation with the two-rung guidance.
@@ -1674,6 +1725,7 @@ fn validate_admin_scope_mint_now_errors() {
                 allowed_pools: None,
                 group: None,
                 admin_scope: Some("mint".to_string()),
+                verbs: None,
             },
         )]),
     );
@@ -4191,15 +4243,21 @@ fn priced_entry() -> config::RateEntryCfg {
 /// A `tools:` section the operator actually WROTE content for, through the same neutral
 /// type-erased seam `DeployCfg` deserializes it through — so this reads the same in a build with
 /// the owning plane compiled in (a parsed registry) and one with it compiled out (a raw capture).
-fn present_tools_section() -> Box<dyn busbar_kernel::plane::config::PlaneCfg> {
-    let section: crate::plane::config::ToolsSection =
+fn present_tools_section() -> Box<dyn busbar_kernel::config::plane_sections::PlaneCfg> {
+    let key = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
+    let written: serde_yaml::Value =
         serde_yaml::from_str("a-tool-server:\n  url: \"https://tools.example.com/rpc\"\n")
-            .expect("a one-registration tools section must parse");
+            .expect("yaml");
+    let section = crate::config::plane_sections::DeclaredSections::parse(key, written)
+        .expect("a one-registration tools section must parse")
+        .0
+        .remove(key)
+        .expect("the section is carried");
     assert!(
-        section.0.is_present(),
+        section.is_present(),
         "the fixture must be a section the operator wrote content for"
     );
-    section.0
+    section
 }
 
 /// A zeroed rate card over the given CONFIG model names.
@@ -4650,7 +4708,10 @@ fn test_validate_allows_a_flat_card_beside_a_plane_with_no_card_of_its_own() {
         "claude-sonnet".to_string(),
         priced_entry(),
     )]));
-    cfg.tool_defs = present_tools_section();
+    cfg.plane_defs.insert(
+        busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
+        present_tools_section(),
+    );
     assert!(
         validate(&cfg).is_ok(),
         "a plane with no card of its own is unbilled, not refused: {:?}",
@@ -4694,7 +4755,10 @@ fn test_validate_holds_a_plane_card_to_the_card_shape_and_leaves_the_flat_plane_
 fn test_validate_allows_a_non_fallback_plane_when_billing_is_off() {
     let mut cfg = cost_cfg(&["claude-sonnet"]);
     assert!(cfg.rate_card.is_none(), "the fixture starts billing-off");
-    cfg.tool_defs = present_tools_section();
+    cfg.plane_defs.insert(
+        busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
+        present_tools_section(),
+    );
     assert!(
         validate(&cfg).is_ok(),
         "billing off must never refuse a configured plane: {:?}",
@@ -4980,6 +5044,7 @@ fn test_validate_role_binding_group_must_exist() {
         allowed_pools: None,
         group: Some("squad".to_string()),
         admin_scope: None,
+        verbs: None,
     };
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
@@ -5982,6 +6047,34 @@ fn test_auth_policy_ceiling_max_ttl_rules() {
     );
 }
 
+/// A per-role ceiling's binding modes must sit inside the block-level list: a role cannot be granted
+/// a mode the deployment forbids. RED: validation checked only a role's `max_ttl` against the block,
+/// so this config passed and the role then minted the forbidden mode.
+#[test]
+fn test_auth_policy_role_modes_outside_the_block_modes_fail() {
+    let mut ceilings = std::collections::BTreeMap::new();
+    ceilings.insert(
+        "app-admin".to_string(),
+        config::MintCeilingCfg {
+            binding_modes: Some(vec![config::BindingMode::TimeBound]),
+            ..Default::default()
+        },
+    );
+    let policy = config::AuthPolicyCfg {
+        binding_modes: Some(vec![config::BindingMode::UserBound]),
+        mint_ceilings: ceilings,
+        ..Default::default()
+    };
+    let errs = policy_errors(&root_with_auth_policy(policy));
+    assert!(
+        errs.iter().any(
+            |e| e.contains("auth.policy.mint_ceilings.app-admin.binding_modes")
+                && e.contains("'time-bound'")
+        ),
+        "a role mode outside the block modes must fail validation: {errs:?}"
+    );
+}
+
 /// A well-formed policy block adds NO `auth.policy` validation error.
 #[test]
 fn test_auth_policy_valid_block_passes() {
@@ -5996,7 +6089,10 @@ fn test_auth_policy_valid_block_passes() {
     );
     let policy = config::AuthPolicyCfg {
         self_mint: Some(true),
-        binding_modes: Some(vec![config::BindingMode::Both]),
+        binding_modes: Some(vec![
+            config::BindingMode::TimeBound,
+            config::BindingMode::Both,
+        ]),
         default_ttl: Some("24h".to_string()),
         max_ttl: Some("90d".to_string()),
         mint_ceilings: ceilings,
@@ -6352,7 +6448,7 @@ fn a_non_fallback_planes_card_is_held_to_the_same_rule() {
 }
 
 /// A plane served through its DOOR: its fee unit rides among its billable classes (the door's
-/// tail holds `fee_units ⊆ billable_classes`), exactly as `plane::door::fold` builds the row.
+/// tail holds `fee_units ⊆ billable_classes`), exactly as `plane_driver::door::fold` builds the row.
 static DOOR_FEE_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
     declaration: crate::plane::registry::PlaneDeclaration {
         key: "door-fee-plane",
@@ -6546,4 +6642,41 @@ fn a_fee_unit_declared_as_a_class_is_neither_owed_nor_priced_by_the_card() {
     let want = "live.rate_card configures unit(s) per_session not declared by this plane \
                 (declared: calls); remove them or fix the name";
     assert!(errs.iter().any(|e| e == want), "{errs:?}");
+}
+
+/// Q128 audit ruling (a), restating its M4: a `jwt-bearer` credential naming its key file is
+/// read by the HOST, through the secret kind's file source, and the plugin is handed the JSON. One
+/// that is the JSON inline is handed over untouched, with no file opened.
+#[test]
+fn a_service_account_key_file_is_read_through_the_file_source_at_config_time() {
+    let json = br#"{"client_email":"a@b","private_key":"k"}"#.to_vec();
+    let mut asked = Vec::new();
+    let read = super::service_account_json(b"/keys/sa.json\n".to_vec(), |file| {
+        asked.push(file.file_path().map(str::to_string));
+        Ok(json.clone())
+    })
+    .expect("the key file reads");
+    assert_eq!(read, json);
+    assert_eq!(asked, vec![Some("/keys/sa.json".to_string())]);
+
+    let inline = super::service_account_json(json.clone(), |_| {
+        panic!("an inline service account opens no file")
+    })
+    .expect("inline");
+    assert_eq!(inline, json);
+}
+
+/// RED: a key file that cannot be read refuses in 1.5.5's words, and the credential (the path it
+/// names) is never rendered.
+#[test]
+fn an_unreadable_service_account_key_file_refuses_in_1_5_5s_words_without_the_path() {
+    let refused = super::service_account_json(b"/keys/secret-name.json".to_vec(), |_| {
+        Err("secret file:/keys/secret-name.json cannot resolve: No such file or directory (os error 2)".to_string())
+    })
+    .expect_err("an unreadable key file refuses");
+    assert_eq!(
+        refused,
+        "could not read service-account key file named by this lane's credential: No such file or directory (os error 2)"
+    );
+    assert!(!refused.contains("secret-name"), "{refused}");
 }

@@ -731,8 +731,9 @@ impl std::fmt::Debug for Journal {
 
 impl Journal {
     /// A journal over a memory-buffered log shipping through `shipper` — the default, and the shape a
-    /// deployment that names no data directory runs. It starts a fresh chain each process: what such
-    /// a node keeps across a restart is what the previous release kept, not the journal.
+    /// deployment that names no data directory and no store runs. It starts a fresh chain each
+    /// process; a node over a configured store resumes the store's chain through
+    /// [`Journal::memory_resumed`] instead.
     #[must_use]
     pub fn memory_buffered_to(node: u64, shipper: Box<dyn Shipper<Record>>, clock: Clock) -> Self {
         Journal::over(Wal::memory_buffered_to(shipper, clock), node)

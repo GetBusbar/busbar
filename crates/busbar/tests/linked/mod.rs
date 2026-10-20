@@ -70,7 +70,7 @@ fn door_rows() -> &'static [&'static PlaneDecl] {
 
 /// A door plane's registry row: a probe of the door bound through the loader's one load
 /// (`linked_probe`), its facts read as a registration and folded by the kernel
-/// (`plane::door::fold`) — the path the composition root folds every door candidate by
+/// (`plane_driver::door::fold`) — the path the composition root folds every door candidate by
 /// (`root::linked::door_rows`).
 fn fold_door(
     label: &str,
@@ -79,7 +79,7 @@ fn fold_door(
     use busbar_plugin_loader::dispatch::kinds::plane::{linked_probe, registration};
     let reg = registration(linked_probe(door, label))
         .unwrap_or_else(|e| panic!("the test-linked door `{label}` binds: {e}"));
-    busbar_kernel::plane::door::fold(reg)
+    busbar_kernel::plane_driver::door::fold(reg)
         .unwrap_or_else(|e| panic!("the test-linked door `{label}` folds: {e}"))
 }
 

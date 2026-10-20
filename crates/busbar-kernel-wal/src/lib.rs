@@ -54,11 +54,13 @@
 //! empty afterwards.
 //!
 //! In that mode the log does not outlive the process, and shipping is part of committing: a batch
-//! the bound shipper refuses is reported as a durability loss. The shipped build's shipper (the
-//! store adapter) refuses nothing and keeps only a count and the last identity, so a memory-buffered
-//! node's restart keeps what the previous release kept — the settlement rows on its store — and not
-//! the log. With a data directory the local log is the record, so a shipping failure is catch-up
-//! work and does not fail the commit. Two postures, one code path, both said out loud.
+//! the bound shipper refuses is reported as a durability loss and retained. Over a configured store
+//! the composition root binds a shipper that hands each batch to the store's records and refuses
+//! when its own bounded queue is full, and a restart RESUMES the chain the store kept
+//! ([`Wal::memory_seeded`]); with no store behind the shipper the chain lives as long as the
+//! process. With a data directory the local log is the record, so a shipping failure is catch-up
+//! work and does not fail the commit: what the store is still owed is offered again, read back from
+//! the segments once it no longer fits in memory. Two postures, one code path, both said out loud.
 //!
 //! ## On unsafe code
 //!

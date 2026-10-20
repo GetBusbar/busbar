@@ -22,6 +22,8 @@ mod served_surface;
 mod service;
 
 include!(concat!(env!("OUT_DIR"), "/test_operator_auth.rs"));
+// `LINKED_HOOK_NAMES`: the root's own generated list of the hook rows this build links, as the
+// admin surface prints them (`main.rs` includes the same file onto the root's install record).
 include!(concat!(env!("OUT_DIR"), "/linked_hook_names.rs"));
 
 // The served-surface reconciliation reads the plane-complete document through its sibling's helper.
@@ -32,12 +34,17 @@ use openapi::openapi_doc_seamed;
 #[allow(unused_imports)]
 use busbar_core_admin::{admin_codec, restart, v1, verb, witness};
 
-/// Install the process-wide test environment exactly once: the operator credential's registry row,
-/// every test-linked plane (`linked::install`), then the admin mount seam — the order
-/// busbar-core-admin's own test environment installs them in.
+/// Install the process-wide test environment exactly once: the root's linked hook names, then the
+/// operator credential's registry row, every test-linked plane (`linked::install`) and the admin
+/// mount seam — the order busbar-core-admin's own test environment installs those three in.
 pub(crate) fn ensure_seam() {
     static SEAM_ONCE: std::sync::Once = std::sync::Once::new();
     SEAM_ONCE.call_once(|| {
+        // The root's hook names, as the root's install record carries them
+        // (`root::linked::register_stores`), before anything renders the admin surface: the
+        // document this binary renders lists the hooks the shipped binary lists (1.5.5's served
+        // `build.hook_plugins` description), not a root-less test build's none.
+        busbar_kernel::test_support::install_root_hook_names(LINKED_HOOK_NAMES);
         // The operator credential's test registry row, before anything resolves the auth axis, in
         // the root's own words (`root::auth_bindings::operator_auth_module`; ARCHITECT
         // 2026-09-30, KERNEL-AUTH-ZERO Q2).
@@ -52,8 +59,6 @@ pub(crate) fn ensure_seam() {
         }
         linked::install();
         busbar_core_admin::install();
-        // The linked hook rows' names, as the composition root hands them in.
-        busbar_core_admin::v1::service::install_hook_plugins(LINKED_HOOK_NAMES);
     });
 }
 
