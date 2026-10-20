@@ -2487,7 +2487,7 @@ pub(crate) mod tool_door {
                 }),
             ));
             // The transport doors bind on this dispatcher and reach its host services (the clock
-            // the stdio carrier supervises a member's program by), as main.rs hands the process's
+            // the program carrier supervises a member's program by), as main.rs hands the process's
             // one dispatcher to `root::doors` before any door binds.
             crate::root::doors::install_dispatcher(Arc::clone(&dispatcher));
             crate::root::connector::install_io(&dispatcher);
@@ -6635,12 +6635,17 @@ pub(crate) mod program_member {
 
     /// The section: one registration that is the program above, its one tool approved.
     fn section() -> serde_yaml::Value {
+        section_running(script())
+    }
+
+    /// The section: one registration whose program is `/bin/sh -c <script>`, its one tool approved.
+    pub(crate) fn section_running(script: String) -> serde_yaml::Value {
         let mut fs = serde_yaml::Mapping::new();
         fs.insert("transport".into(), "stdio".into());
         fs.insert("command".into(), "/bin/sh".into());
         fs.insert(
             "args".into(),
-            serde_yaml::Value::Sequence(vec!["-c".into(), script().into()]),
+            serde_yaml::Value::Sequence(vec!["-c".into(), script.into()]),
         );
         fs.insert(
             "pin".into(),
@@ -6721,45 +6726,23 @@ pub(crate) mod program_member {
     }
 }
 
-/// THE STDIO SUPERVISOR, END TO END (THE DESIGN §2, l.388: "the stdio supervisor is the stdio
-/// transport's"; 1.5.5's crash-loop policy): a registration whose program ends at once, called over
-/// and over through the composed door and the real connector for longer than the whole backoff
-/// (100 + 200 + 400 + 800 ms), is spawned exactly five times: the fifth end inside a minute stops
-/// its restarts and every later call is refused without a spawn. The policy lives in the stdio
-/// carrier, keyed by the member's supervision key the connector hands each spawn. RED with the
-/// connector's own supervisor deleted and the carrier's absent: every call spawns the program anew.
-#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+/// THE PROGRAM'S SUPERVISOR, END TO END (THE DESIGN §2, l.388: the program's supervisor is its
+/// carrier transport's; 1.5.5's crash-loop policy): a registration whose program ends at once,
+/// called over and over through the composed door and the real connector for longer than the whole
+/// backoff (100 + 200 + 400 + 800 ms), is spawned exactly five times: the fifth end inside a minute
+/// stops its restarts and every later call is refused without a spawn. The policy lives in the
+/// program's carrier, keyed by the member's supervision key the connector hands each spawn. RED
+/// with the connector's own supervisor deleted and the carrier's absent: every call spawns the
+/// program anew.
+#[cfg(all(linked_axis_plane_door, linked_section_pools, linked_axis_node))]
 mod program_member_supervised {
-    use super::tool_door::{rig_tools, send, tool_digest, CALL};
+    use super::program_member::section_running;
+    use super::tool_door::{rig_tools, send, CALL};
     use crate::root::serve::planes_tests::{Published, PUBLISHING};
 
     /// The section: one registration whose program appends a line to `spawns` and ends.
     fn section(spawns: &std::path::Path) -> serde_yaml::Value {
-        let mut fs = serde_yaml::Mapping::new();
-        fs.insert("transport".into(), "stdio".into());
-        fs.insert("command".into(), "/bin/sh".into());
-        fs.insert(
-            "args".into(),
-            serde_yaml::Value::Sequence(vec![
-                "-c".into(),
-                format!("echo spawned >> '{}'; exit 1", spawns.display()).into(),
-            ]),
-        );
-        fs.insert(
-            "pin".into(),
-            serde_yaml::from_str("{ mechanism: pinned_pubkey, key: \"sha256/K=\" }").unwrap(),
-        );
-        fs.insert(
-            "tools_allow".into(),
-            serde_yaml::from_str(&format!(
-                "{{ read_file: {{ schema_hash: \"{}\" }} }}",
-                tool_digest()
-            ))
-            .unwrap(),
-        );
-        let mut tools = serde_yaml::Mapping::new();
-        tools.insert("fs".into(), serde_yaml::Value::Mapping(fs));
-        serde_yaml::Value::Mapping(tools)
+        section_running(format!("echo spawned >> '{}'; exit 1", spawns.display()))
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

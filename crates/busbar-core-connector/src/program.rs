@@ -22,10 +22,10 @@
 //! * Closing a lease leaves the program running. A program that ends (its output closed, a failed
 //!   pipe, or found exited when a lease opens) ends every lease of its generation, and the next
 //!   open spawns it anew: the next generation. A program that keeps ending is restarted under
-//!   backoff and stopped after a burst of ends by THE CARRIER that runs it (THE DESIGN §2: "the
-//!   stdio supervisor is the stdio transport's"): each spawn names the member's supervision key
-//!   (`DialIn::supervision_key`), and a dial the carrier's policy holds down is REFUSED, so a binary
-//!   that always fails becomes a refusal, not a fork loop.
+//!   backoff and stopped after a burst of ends by THE CARRIER that runs it (THE DESIGN §2 l.388:
+//!   the program's supervisor is its carrier transport's): each spawn names the member's
+//!   supervision key (`DialIn::supervision_key`), and a dial the carrier's policy holds down is
+//!   REFUSED, so a binary that always fails becomes a refusal, not a fork loop.
 //! * A member RETIRED by a re-declaration (its registration gone, or its program changed) admits
 //!   no new lease; its program is killed once its last lease closes (at once when it has none).
 
