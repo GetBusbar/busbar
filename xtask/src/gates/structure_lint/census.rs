@@ -114,11 +114,11 @@ pub fn table(a: &Addresses) -> Vec<CensusRow> {
         r("wire-word-header-name", "WIRE-WORD-RESPELT", r#""mcp-name""#, 1, tree.clone(),
           "the target-name header is required inbound on the three addressed methods and emitted outbound from one constant"),
 
-        // ── THE ONE TRUST COMPARISON. A SECOND `fn serves` is two answers to one question, and the
-        //    failure mode of a second answer is silent drift in the fail-OPEN direction, discovered
-        //    as an in-flight call that served after the operator quarantined it.
-        r("trust-serve-decision", "TRUST-DECISION-RESPELT", r"fn[[:space:]]+serves[[:space:]]*\(", 1, tree_and_substrate.clone(),
-          "there is exactly ONE may-this-serve comparison in busbar; a second is two answers to one question and they diverge the first time either is fixed, and zero means the dispatch gate was routed somewhere this row cannot see"),
+        // ── THE ONE TRUST COMPARISON — ROW DELETED WITH ITS SUBJECT. It counted `fn serves`, the
+        //    generic lifecycle's `Approval::serves`, which had no production construction site and
+        //    left the tree (Q128 p8#3, THE DESIGN l.1934-1937: a capability never constructed does
+        //    not ship). The one may-this-serve answer is the kernel's Approve, `TrustBook::judge`,
+        //    held by choke row I and its class test.
 
         // ── THE VALIDATOR'S REFUSAL WORDS HAVE ONE HOME, and these rows are here because this unit
         //    ALREADY got it wrong once: the validator defined its own `reason` module carrying the
@@ -144,8 +144,9 @@ pub fn table(a: &Addresses) -> Vec<CensusRow> {
         r("refusal-word-not-repeatable", "REFUSAL-WORD-RESPELT", r#""not_repeatable""#, 1, refusal_scope.clone(),
           "the safety rule's refusal has one spelling; it is the one outcome an operator may deliberately want to change, and a second copy is a change they would make in one place and not the other"),
 
-        r("the-one-ordered-request-validator", "VALIDATOR-RESPELT", r"fn[[:space:]]+validate_request[^a-zA-Z0-9_]", 1, tree_and_substrate.clone(),
-          "there is exactly ONE ordered request validator in busbar and every protocol reaches it; a second is a protocol that has acquired its own order, and zero means the order was inlined back into a plane where nothing owns it"),
+        // ── THE ONE ORDERED REQUEST VALIDATOR — ROW DELETED WITH ITS SUBJECT. `fn validate_request`
+        //    had no production caller and left the tree (Q128 p8#3); its identity-then-grant half,
+        //    `validate_visibility`, is the one that runs.
 
         // ── THE ONE GENERATION SOURCE. A generation only has to be DIFFERENT after a change, so a
         //    second counter buys nothing and adds a second thing to keep monotonic.
