@@ -264,9 +264,16 @@ pub fn ports_only(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
             let current: i64 = per_file.iter().map(|(_, n)| *n as i64).sum();
             let mut top = per_file.clone();
             top.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+            // A RED ROW NAMES EVERY FILE IT COUNTED. It used to name the five largest, so the reach
+            // that crossed the ceiling went unnamed whenever it landed in a file smaller than the
+            // fifth: a new test file with 40 kernel lines sat under five llm test files of 54 to
+            // 217 and the row said only that the count rose. The reader of a red ratchet needs the
+            // file that grew, and nothing short of the whole list is sure to hold it. A green row
+            // keeps the five as a summary.
+            let shown = if current > ceiling { top.len() } else { 5 };
             let offenders: Vec<String> = top
                 .iter()
-                .take(5)
+                .take(shown)
                 .map(|(rel, n)| format!("{n} in {rel}"))
                 .collect();
             let kind = if rid == "ports-only" {

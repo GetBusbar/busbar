@@ -3687,12 +3687,14 @@ pub fn sealed_settings(
     Ok(serde_json::Value::Object(sealed))
 }
 
-/// The host of `base_url`: after its scheme, before its port, path, query or fragment.
+/// The host of `base_url`, the one the request dials: its authority read by the one split
+/// ([`busbar_contract::net::url_authority`]), before its port.
 fn base_url_host(base_url: &str) -> &str {
-    let rest = base_url.split_once("://").map_or(base_url, |(_, r)| r);
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let authority = authority.rsplit_once('@').map_or(authority, |(_, a)| a);
-    authority.split(':').next().unwrap_or("")
+    busbar_contract::net::url_authority(base_url)
+        .host_port
+        .split(':')
+        .next()
+        .unwrap_or("")
 }
 
 /// The dotted label of `host` right after the first of `after`, when it reads as a dashed name
