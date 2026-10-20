@@ -1089,46 +1089,56 @@ fn served(resource: &str) -> AuditEntry {
         .expect("emit_admin_hostless pushed the record into the served read model")
 }
 
-/// THE LIVE WRITE PATH SERVES 1.5.5's HASH. A record whose `action`/`resource`/`outcome` carry no
-/// `|` is sealed over the 1.5.5 pipe join, so the `hash` `GET /audit` serves is exactly
-/// `sha256(prev_hash|seq|ts|action|resource|outcome|principal)` (v1.5.5
-/// `crates/busbar/src/admin/audit.rs:61-73`; THE DESIGN §7 "`GET /audit` is unchanged"), the record
-/// declares scheme 1, and recomputing it under that declared scheme gives the served hash.
+/// A NEW AUDIT ENTRY CARRIES SCHEME 2 (owner ruling Q41 via Q47; the shadow oracle's signed
+/// premise `admin.ops|GetAudit|ok` `/items/0/scheme == 2`). A record whose `action`/`resource`/
+/// `outcome` carry no `|` is still sealed under the length-prefixed suffix: the served `AuditEntry`
+/// declares scheme 2 (what its published `scheme` doc promises: "`link` always writes
+/// `AUDIT_SCHEME_LENGTH_PREFIXED` on a FRESH entry; nothing mints scheme 1 going forward"), the
+/// served `hash` is exactly the seam's `prev_hash|seq` prelude then the safe suffix, recomputing
+/// under the declared scheme gives that hash, and the stored suffix reads back as scheme 2.
 ///
-/// RED before the fix: every live write was sealed over `prev_hash|seq` then the length-prefixed
-/// safe suffix and declared scheme 2, so the served hash was neither 1.5.5's formula nor what scheme
-/// 2 recomputes to.
+/// RED before the fix: a pipe-free record was sealed over the 1.5.5 pipe join and declared scheme
+/// 1, so `GET /audit` served `scheme: 1` and the oracle's Q41 premise failed.
 #[test]
-fn a_live_admin_record_serves_the_1_5_5_hash_under_the_scheme_it_declares() {
+fn a_new_admin_audit_entry_carries_scheme_two() {
     ensure_global_audit_stream_registered();
-    let resource = "q128-p12-1:plain";
-    // A `|` in the principal (the last field) still reads back exactly.
+    let resource = "q41:plain";
+    // A `|` in the principal (the last field) is no exception either.
     emit_admin_hostless(
         1_700_000_777,
-        "test.write",
+        "key.create",
         resource,
         "applied",
         "issuer|subject",
     );
     let e = served(resource);
-    assert_eq!(e.scheme, crate::audit_ring::AUDIT_SCHEME_PIPE);
-    let v155 = format!(
-        "{}|{}|{}|{}|{}|{}|{}",
-        e.prev_hash, e.seq, e.ts, e.action, e.resource, e.outcome, e.principal
+    assert_eq!(
+        e.scheme,
+        crate::audit_ring::AUDIT_SCHEME_LENGTH_PREFIXED,
+        "a new audit entry carries scheme 2 (Q41)"
     );
     assert_eq!(
-        e.hash,
-        busbar_contract::redacted::sha256_hex(v155.as_bytes()),
-        "the served hash is 1.5.5's formula"
+        serde_json::to_value(&e).expect("serialize")["scheme"],
+        serde_json::json!(2),
+        "GET /audit serves `scheme: 2` on a new entry (Q41)"
     );
     assert_eq!(
         digest(&e),
         e.hash,
         "the declared scheme recomputes the served hash"
     );
+    let mut sealed = frame_prelude(Framing::PipeSeparated, &e.prev_hash, None, e.seq);
+    sealed.extend_from_slice(&audit_suffix_safe(
+        e.ts,
+        &e.action,
+        &e.resource,
+        &e.outcome,
+        &e.principal,
+    ));
+    assert_eq!(e.hash, busbar_contract::redacted::sha256_hex(&sealed));
 
     let (suffix, scheme) = admin_suffix(e.ts, &e.action, &e.resource, &e.outcome, &e.principal);
-    assert_eq!(scheme, crate::audit_ring::AUDIT_SCHEME_PIPE);
+    assert_eq!(scheme, crate::audit_ring::AUDIT_SCHEME_LENGTH_PREFIXED);
     let (ts, action, res, outcome, principal, read_scheme) = parse_audit_suffix(&suffix);
     assert_eq!(
         (
@@ -1138,10 +1148,10 @@ fn a_live_admin_record_serves_the_1_5_5_hash_under_the_scheme_it_declares() {
             outcome.as_str(),
             principal.as_str()
         ),
-        (e.ts, "test.write", resource, "applied", "issuer|subject"),
-        "the pipe join reads back exactly when only the last field carries a `|`"
+        (e.ts, "key.create", resource, "applied", "issuer|subject"),
+        "the sealed suffix reads back exactly"
     );
-    assert_eq!(read_scheme, crate::audit_ring::AUDIT_SCHEME_PIPE);
+    assert_eq!(read_scheme, crate::audit_ring::AUDIT_SCHEME_LENGTH_PREFIXED);
 }
 
 /// A record whose `resource` carries a `|` would not split back exactly from a pipe join, so it is
