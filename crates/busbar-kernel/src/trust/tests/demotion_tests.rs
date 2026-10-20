@@ -21,9 +21,9 @@
 //! kept. That a store crossing the plugin C ABI answers these verbs exactly as it answers linked is
 //! the loader's both-ways fold (its `store_conformance_tests`).
 
-use crate::plane::quarantine::{DemotionRecord, DemotionRow};
 use crate::store::plane_view::{decode, KIND_DEMOTION};
 use crate::test_support::durable_store::{durable_cfg, open_durable};
+use crate::trust::demotion::{DemotionRecord, DemotionRow};
 use busbar_contract::records::{PlaneSelector, RecordStore, RecordStoreResult};
 
 /// TEST-ONLY named-vocabulary demotion-store extension — the demotion twin of the call-log test-ext,
@@ -71,7 +71,7 @@ fn a_recorded_demotion_is_found_by_a_second_handle_on_the_same_store() {
         file.display(),
         std::fs::read_to_string(&file).unwrap_or_else(|_| "<no file at all>".into())
     );
-    assert_eq!(rows[0].server, "fs");
+    assert_eq!(rows[0].upstream, "fs");
     assert_eq!(
         rows[0].reason, "quarantined",
         "the operator-facing word is carried, or a restored demotion cannot say why it is there"
@@ -125,7 +125,7 @@ fn clearing_a_demotion_is_durable_so_a_worked_remedy_survives_the_next_restart()
         "clearing one server must not clear the others: {rows:?}"
     );
     assert_eq!(
-        rows[0].server, "git",
+        rows[0].upstream, "git",
         "the one that was cleared is gone and the one that was not is still demoted"
     );
 }
@@ -153,7 +153,7 @@ fn clearing_an_absent_record_is_a_no_op() {
 /// `Pending` do not serve for reasons that already live in config and have nothing to do with drift.
 #[test]
 fn only_a_drift_demotion_writes_and_only_an_agreeing_observation_clears() {
-    use crate::plane::quarantine::settle;
+    use crate::trust::demotion::settle;
     use crate::trust::TrustState;
 
     let (_file, cfg) = durable_cfg("demotion-settle");

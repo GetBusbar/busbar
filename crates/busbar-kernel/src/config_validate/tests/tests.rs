@@ -8,10 +8,8 @@ fn make_root_cfg(
     pools: HashMap<String, config::PoolCfg>,
 ) -> RootCfg {
     config::RootCfg {
-        tool_defs: crate::plane::config::ToolsSection::default().0,
-        agent_defs: crate::plane::config::AgentsSection::default().0,
-        tool_pools: Default::default(),
-        agent_pools: Default::default(),
+        plane_defs: Default::default(),
+        plane_pools: Default::default(),
         plane_sections: Default::default(),
         listen: crate::config::DEFAULT_LISTEN_ADDR.into(),
         // No endpoint plane configured.
@@ -4245,15 +4243,21 @@ fn priced_entry() -> config::RateEntryCfg {
 /// A `tools:` section the operator actually WROTE content for, through the same neutral
 /// type-erased seam `DeployCfg` deserializes it through — so this reads the same in a build with
 /// the owning plane compiled in (a parsed registry) and one with it compiled out (a raw capture).
-fn present_tools_section() -> Box<dyn busbar_kernel::plane::config::PlaneCfg> {
-    let section: crate::plane::config::ToolsSection =
+fn present_tools_section() -> Box<dyn busbar_kernel::config::plane_sections::PlaneCfg> {
+    let key = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
+    let written: serde_yaml::Value =
         serde_yaml::from_str("a-tool-server:\n  url: \"https://tools.example.com/rpc\"\n")
-            .expect("a one-registration tools section must parse");
+            .expect("yaml");
+    let section = crate::config::plane_sections::DeclaredSections::parse(key, written)
+        .expect("a one-registration tools section must parse")
+        .0
+        .remove(key)
+        .expect("the section is carried");
     assert!(
-        section.0.is_present(),
+        section.is_present(),
         "the fixture must be a section the operator wrote content for"
     );
-    section.0
+    section
 }
 
 /// A zeroed rate card over the given CONFIG model names.
@@ -4704,7 +4708,10 @@ fn test_validate_allows_a_flat_card_beside_a_plane_with_no_card_of_its_own() {
         "claude-sonnet".to_string(),
         priced_entry(),
     )]));
-    cfg.tool_defs = present_tools_section();
+    cfg.plane_defs.insert(
+        busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
+        present_tools_section(),
+    );
     assert!(
         validate(&cfg).is_ok(),
         "a plane with no card of its own is unbilled, not refused: {:?}",
@@ -4748,7 +4755,10 @@ fn test_validate_holds_a_plane_card_to_the_card_shape_and_leaves_the_flat_plane_
 fn test_validate_allows_a_non_fallback_plane_when_billing_is_off() {
     let mut cfg = cost_cfg(&["claude-sonnet"]);
     assert!(cfg.rate_card.is_none(), "the fixture starts billing-off");
-    cfg.tool_defs = present_tools_section();
+    cfg.plane_defs.insert(
+        busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
+        present_tools_section(),
+    );
     assert!(
         validate(&cfg).is_ok(),
         "billing off must never refuse a configured plane: {:?}",
@@ -6438,7 +6448,7 @@ fn a_non_fallback_planes_card_is_held_to_the_same_rule() {
 }
 
 /// A plane served through its DOOR: its fee unit rides among its billable classes (the door's
-/// tail holds `fee_units ⊆ billable_classes`), exactly as `plane::door::fold` builds the row.
+/// tail holds `fee_units ⊆ billable_classes`), exactly as `plane_driver::door::fold` builds the row.
 static DOOR_FEE_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
     declaration: crate::plane::registry::PlaneDeclaration {
         key: "door-fee-plane",

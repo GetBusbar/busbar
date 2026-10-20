@@ -57,8 +57,6 @@ fn provider_deploy(env_var: &str) -> ProviderDeploy {
 /// providers/models are required in YAML).
 pub(crate) fn base_deploy() -> DeployCfg {
     DeployCfg {
-        tools: Default::default(),
-        agents: Default::default(),
         declared: Default::default(),
         listen: DEFAULT_LISTEN_ADDR.into(),
         // Left at its type default (unset).
@@ -599,7 +597,7 @@ fn admin_require_mtls_defaults_on_and_the_retired_key_loud_fails() {
 /// NEVER panic the process, and it must never silently default/skip the section (DECISIONS #42: an
 /// unknown is refused, never defaulted).
 ///
-/// RED before the fix: `PoolsCfg::deserialize` → `plane::config::split_section_for_plane` called
+/// RED before the fix: `PoolsCfg::deserialize` → `config::plane_sections::split_section_for_plane` called
 /// `super::plane_decl(fallback_key())` — the PANICKING lookup — with `fallback_key()`'s own
 /// documented, honest empty-string answer for "no fallback plane registered", so this exact
 /// scenario (a build with a registered plane count of zero) crashed the process instead of
@@ -1816,7 +1814,10 @@ models:
         DEFAULT_MAX_HONORED_RETRY_AFTER_SECS
     );
     assert_eq!(l.default_max_tokens, DEFAULT_DEFAULT_MAX_TOKENS);
-    assert_eq!(l.default_max_tokens, crate::proto::DEFAULT_MAX_TOKENS);
+    assert_eq!(
+        l.default_max_tokens,
+        crate::config::limits::DEFAULT_MAX_TOKENS
+    );
     // The webhook sink's in-flight bound and delivery deadline are its own settings, checked by the
     // sink (`busbar-export-webhook`), never projected onto `LimitsResolved`.
     assert_eq!(l.key_gauge_limit, DEFAULT_KEY_GAUGE_LIMIT);
@@ -3593,7 +3594,7 @@ fn root_settings_doc_lists_only_fields_that_exist() {
 
 // ══ THE FAILOVER POOLS' CROSS-REFERENCES ═════════════════════════════════════════════════════════
 //
-// `tool_pools:`/`agent_pools:` are OPT-IN, so the first thing checked is that saying nothing changes
+// A plane's pools (`<section>.pools`) are OPT-IN, so the first thing checked is that saying nothing changes
 // nothing; the rest is the one shared check refusing what an operator cannot have meant.
 
 /// THE DEFAULT IS UNCHANGED. A config that says nothing about failover resolves exactly as it always
@@ -3603,12 +3604,8 @@ fn failover_pools_are_absent_by_default() {
     let deploy = base_deploy();
     let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
     assert!(
-        cfg.tool_pools.is_empty(),
-        "no tool-plane failover unless asked for"
-    );
-    assert!(
-        cfg.agent_pools.is_empty(),
-        "no agent-plane failover unless asked for"
+        cfg.plane_pools.is_empty(),
+        "no plane failover unless asked for"
     );
 }
 
@@ -3628,22 +3625,22 @@ fn failover_pools_are_absent_by_default() {
 /// turned into the answer, and a default that drifted here would be invisible there.
 #[test]
 fn nothing_is_repeatable_unless_the_operator_names_it() {
-    let pool = crate::failover::CandidatePoolCfg {
+    let pool = crate::config::pools::CandidatePoolCfg {
         members: vec!["a".into(), "b".into()],
         repeatable: vec!["search_code".into()],
     };
     assert_eq!(
         pool.repeatability("search_code"),
-        crate::failover::Repeatable::Yes
+        crate::config::pools::Repeatable::Yes
     );
     assert_eq!(
         pool.repeatability("send_email"),
-        crate::failover::Repeatable::No,
+        crate::config::pools::Repeatable::No,
         "an operation nobody spoke about is NEVER repeated"
     );
     assert_eq!(
-        crate::failover::CandidatePoolCfg::default().repeatability("search_code"),
-        crate::failover::Repeatable::No,
+        crate::config::pools::CandidatePoolCfg::default().repeatability("search_code"),
+        crate::config::pools::Repeatable::No,
         "and an empty declaration repeats nothing at all"
     );
 }
@@ -3811,7 +3808,7 @@ fn test_auth_policy_rejects_bad_input_at_parse() {
 const NEUTRAL_SECTION: &str = "neutral_section";
 
 /// A NEUTRAL plane that DECLARES AND OWNS a singular section of its own ([`NEUTRAL_SECTION`]) — the
-/// map carrier `plane::config::DeclaredSections` holds it — all hooks stubbed, so the
+/// map carrier `config::plane_sections::DeclaredSections` holds it — all hooks stubbed, so the
 /// pre-pass, which lifts only the sections a REGISTERED plane declares, lifts it. With no
 /// `parse_section` hook the value is captured raw.
 static NEUTRAL_SECTION_PLANE: crate::plane::registry::PlaneDecl =
@@ -4066,9 +4063,9 @@ static PLANE_SAW: std::sync::Mutex<Vec<serde_yaml::Value>> = std::sync::Mutex::n
 
 fn record_plane_section(
     v: &serde_yaml::Value,
-) -> Result<Box<dyn busbar_kernel::plane::config::PlaneCfg>, String> {
+) -> Result<Box<dyn busbar_kernel::config::plane_sections::PlaneCfg>, String> {
     PLANE_SAW.lock().unwrap().push(v.clone());
-    Ok(Box::<crate::plane::config::RawPlaneSection>::default())
+    Ok(Box::<crate::config::plane_sections::RawPlaneSection>::default())
 }
 
 /// A stub plane owning the registry section a card is authored in, whose `parse_section` records

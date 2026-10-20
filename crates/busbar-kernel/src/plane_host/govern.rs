@@ -4,30 +4,24 @@
 //! The GOVERNANCE family of the plane host-vtable, wired over core's REAL primitives:
 //! `govern_admit` (admission + the RAII [`AdmitGrant`](crate::governance::AdmitGrant) registered in
 //! the dispatch arena), `meter_charge` (the money-scalar settlement + the write-behind metering
-//! time-series), and `auth_resolve` (a credential REF → a host-side reference, never plaintext).
+//! time-series).
 //!
-//! These are the BODIES the three vtable slots delegate to. Each vtable fn owns the boundary
+//! These are the BODIES the vtable slots delegate to. Each vtable fn owns the boundary
 //! discipline (recover the [`HostState`] first, run inside `catch_unwind`, fail-closed, write any
 //! out-param only on `Ok`); this module owns the translation from the borrowed `#[repr(C)]` POD to
 //! the real core primitive and back.
 //!
 //! ## Whose identity
 //!
-//! The hot PODs the plane hands back ([`Facts`], [`Usage`], [`AuthQuery`]) carry the SHAPE of a
+//! The hot PODs the plane hands back ([`Facts`], [`Usage`]) carry the SHAPE of a
 //! request, never who it is for: admission and billing resolve the caller from the handle the HOST
 //! minted ([`HostState`]'s caller, stamped from the auth middleware's context — DEC-SERVE G1/G1b),
 //! so an identity word a plane writes into a POD tail is never read as a key.
 
 use super::HostState;
 use crate::governance::{AdmitGrant, LimitBlocked};
-use busbar_contract::abi::hot::{
-    AuthQuery, AuthResolved, Decision, Facts, MeterOutcome, Usage, UsageComponent, POD_VERSION,
-};
+use busbar_contract::abi::hot::{Decision, Facts, MeterOutcome, Usage, UsageComponent};
 use busbar_contract::abi::read_sized_field;
-
-/// Default bounded lifetime stamped onto a resolved credential reference until the real
-/// credential-store lookup (Phase 2) supplies the mint's true expiry.
-const DEFAULT_AUTH_TTL_SECS: u64 = 300;
 
 /// The unattributed model/provider a metering row is recorded under until Phase 2 resolves the real
 /// attribution from the request. Kept explicit (not `""`) so a stray row is legible in the store.
@@ -268,51 +262,6 @@ fn token_usage_for(component: UsageComponent, amount: u64) -> Option<crate::bill
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// auth_resolve — a credential REF → a host-side reference (NEVER plaintext).
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
-/// Resolve a borrowed [`AuthQuery`] to an [`AuthResolved`], or `None` to refuse. A query naming no
-/// credential (`credential_ref == 0`) has nothing to resolve and is refused. Establishes the caller
-/// principal through the real [`AuthPrincipal`](crate::auth::AuthPrincipal) primitive and hands back
-/// an OPAQUE host-side reference with a bounded expiry — never a secret. Called from inside the slot's
-/// `catch_unwind`, which writes the out-param only on the `Ok`/`Some` path.
-pub(super) fn resolve_auth(_state: &HostState, query: &AuthQuery) -> Option<AuthResolved> {
-    if query.credential_ref == 0 {
-        return None;
-    }
-    // Establish the caller principal through the real `AuthPrincipal` primitive (anonymous unless the
-    // query's audience scopes it) — the seam a Phase-2 credential-store lookup resolves through.
-    let audience = borrowed_str(query.audience_ptr, query.audience_len);
-    let principal = if audience.is_empty() {
-        crate::auth::AuthPrincipal(None)
-    } else {
-        crate::auth::AuthPrincipal(Some(crate::auth::Principal::from_id(audience.clone())))
-    };
-    let _actor_id = principal.actor_id();
-    let now = busbar_kernel::store::now_ms() / 1_000;
-    let expires_unix = now.saturating_add(DEFAULT_AUTH_TTL_SECS);
-    // MINT a fresh, short-lived, host-owned credential reference (the CLUSTER-3 (d) decision: a NEW
-    // per-hop `resolved_ref`, DISTINCT from the input `credential_ref`; the host owns its expiry). The
-    // resolved PLAINTEXT stays host-side in `super::creds` — the plane gets back only the opaque ref,
-    // which it carries to `egress_open` where the host reads the secret back and injects it. Phase 2:
-    // the real host credential store resolves `(credential_ref, audience)` to the provider secret; the
-    // host-derived placeholder here keeps the plaintext off the plane while that lookup is wired.
-    let secret = format!("hostcred:{}:{}", query.credential_ref, audience).into_bytes();
-    // FFI-F5: BIND the mint to the destination the plane named (`audience`), so `egress_open` injects
-    // this secret ONLY on a hop to that destination — never a plane-chosen attacker host.
-    let resolved_ref = super::creds::mint(secret, audience, expires_unix, now);
-    Some(AuthResolved {
-        size: core::mem::size_of::<AuthResolved>() as u32,
-        version: POD_VERSION,
-        _reserved: 0,
-        _reserved2: 0,
-        // An OPAQUE host-side reference (NEVER a secret): a fresh mint, distinct from the input ref.
-        resolved_ref,
-        expires_unix,
-    })
-}
-
-// ─────────────────────────────────────────────────────────────────────────────────────────────
 // Shared POD helpers.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -323,7 +272,7 @@ fn borrowed_str(ptr: *const u8, len: usize) -> String {
         return String::new();
     }
     // SAFETY: per the ABI borrow discipline a non-null `(ptr, len)` is a live, initialized byte range
-    // for the duration of the host call (see the POD field docs on `Facts`/`AuthQuery`).
+    // for the duration of the host call (see the POD field docs on `Facts`).
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     String::from_utf8_lossy(bytes).into_owned()
 }
