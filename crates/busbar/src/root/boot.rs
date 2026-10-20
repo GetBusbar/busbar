@@ -666,9 +666,18 @@ pub type DoorPlane = std::sync::Arc<
 /// dropped alike, bound through the loader's one load on that dispatcher, each to its own log sink
 /// under the configured `plugins.logs`, each declaring its needs on the process's one connection
 /// table (`root::connector::the()`). A plane that will not bind refuses the boot (exit 2).
-pub fn load_door_planes() {
+///
+/// LAW 7: only a plane the configuration uses is bound — one that owns a section among `sections`,
+/// the keys the boot composes its door planes over (the document's plane sections and the
+/// kernel-owned sections it hands them, `pools` whenever `models` is), so a plane is bound exactly
+/// when the composition can open it.
+pub fn load_door_planes<'s>(sections: impl IntoIterator<Item = &'s str>) {
     let doors = DOOR_CANDIDATES.get().map_or(&[][..], Vec::as_slice);
-    let used = crate::root::loader::boot::used_planes(&plan(&config_path()), doors);
+    let uses = Uses {
+        roots: sections.into_iter().map(str::to_string).collect(),
+        ..Uses::default()
+    };
+    let used = crate::root::loader::boot::used_planes(&uses, doors);
     // The process's ONE connection table: a plane that declares a need is declared on it.
     let conns: std::sync::Arc<dyn busbar_contract::conn::DeclaredConns> =
         crate::root::connector::the().clone();

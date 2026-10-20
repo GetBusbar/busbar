@@ -748,7 +748,14 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // The planes that state themselves through a door bind on the process's one dispatcher (built
     // full-size as `main()`'s first act), linked and dropped alike, each declaring its needs on the
     // one connector just built.
-    root::boot::load_door_planes();
+    // Law 7: a plane binds only when the sections its composition reads are written.
+    root::boot::load_door_planes(
+        deploy
+            .door_sections()
+            .keys()
+            .chain(root::door_steps::kernel_sections(&cfg).keys())
+            .copied(),
+    );
     // THE EXPORT AXIS'S SINKS, opened once on the same dispatcher, each declaring its needs on the
     // one connector just built — before the first app is built, so the routes they declare are in
     // the boot route table (restart-to-apply, as every built-in PUSH sink is). A configured sink
