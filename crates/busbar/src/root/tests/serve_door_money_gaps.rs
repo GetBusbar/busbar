@@ -282,10 +282,12 @@ const FIRST_FRAME: &str = r#"{"id":"chatcmpl-root","object":"chat.completion.chu
 /// under a 200 status line and neither completes, so the caller holds the cut (the one relayed
 /// frame, no terminator) or nothing; the unit's report (on the door, the counts its line on the
 /// node's book carries) names the lane that served it (`m0`) and bills what streamed before the end,
-/// zero tokens; and the key's ledger holds no tokens and no metering row.
+/// zero tokens; and the key's ledger holds no tokens. The plane ledgered nothing, so nothing bills:
+/// the 2xx end's one metering row carries no token (owner ruling 2026-10-20: the plane's ledger is
+/// final, cut or not; a cut does not drop the row).
 ///
 /// RED: no report, a report keyed to another lane, tokens that never streamed, a terminator the far
-/// end never reached, or a metering row for an answer that never completed.
+/// end never reached, or a metering row carrying a token that never streamed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_doors_report_carries_the_end_a_status_line_cannot() {
     use http_body_util::BodyExt as _;
@@ -362,10 +364,11 @@ async fn the_pools_doors_report_carries_the_end_a_status_line_cannot() {
             "{label}: the request unit still counts (oracle cell \
              `route.failover|fo|primary-cut-stream`, golden usage {{\"requests\":1}})"
         );
-        assert_eq!(
-            metering_rows(&rig, charged_at),
-            Vec::<String>::new(),
-            "{label}: no metering row"
+        let rows = metering_rows(&rig, charged_at);
+        assert_eq!(rows.len(), 1, "{label}: one metering row: {rows:?}");
+        assert!(
+            rows[0].starts_with("m0/") && rows[0].contains(" in=0 out=0 cr=0 cw=0 "),
+            "{label}: and it carries no token, as the plane ledgered none: {rows:?}"
         );
     }
 }
