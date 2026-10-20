@@ -16,9 +16,10 @@
 //! fixture that keeps maps of its units, not a plane under measurement.
 //!
 //! WHY IT EXISTS BESIDE `hot-path-alloc`: that gate's instrument
-//! (`crates/busbar-kernel/benches/plane_host_vtable_alloc.rs`) counts the HOT lane's
-//! `PlaneHostVtable` POD batch, which row 84 deletes with `abi/hot`. This is the door lane's
-//! witness, the one the request path crosses, and `hot-path-alloc:door-ready-zero` holds it.
+//! (`crates/busbar-kernel/benches/plane_host_vtable_alloc.rs`) counts a plugin's call batch into
+//! the host-services table (`HostSlots`), which replaced the HOT lane row 84 deleted. This is the
+//! door lane's witness, the one the request path crosses, and `hot-path-alloc:door-ready-zero`
+//! holds it.
 //!
 //! The ops are taken from the contract table, not listed by hand: a request-path op the kind adds
 //! without a measured case here is RED ([`every_request_path_op_is_measured`]).

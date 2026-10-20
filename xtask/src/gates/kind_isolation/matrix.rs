@@ -147,8 +147,12 @@ pub const ROW_MATRIX: &str = "kind-isolation:matrix";
 pub const LEDGER: &str = "qa/kind-isolation.toml";
 
 /// A scan set below this is not a tree this row can be a row over. EVERY file under `crates/`
-/// whose extension is not on [`BINARY_EXTS`], which is 1 707 of them today.
-const MIN_SCANNED: usize = 600;
+/// whose extension is not on [`BINARY_EXTS`]: the floor is the count this tree TRACKS there, 2 094
+/// at dev f49c8bf98c (`git ls-files crates`, 2 096 paths, less the 2 on the binary list), which is
+/// at or under every scan of it, because the scan also reads the pinned plugin crates laid at
+/// `crates/<package>` (about 560 files more). It was 600, a third of the tree; Law 9 pins a census
+/// floor at today's measured value.
+const MIN_SCANNED: usize = 2094;
 
 /// THE MERGE-BASE READING'S DENOMINATOR, carried as an overlay command that only
 /// [`read_law0_base`] sets: the number of text files the base commit itself tracks under `crates/`.
@@ -209,9 +213,14 @@ pub(super) fn instance_axes() -> Vec<&'static str> {
 /// neutral crate of the tree is refused (a typo would pin nothing), and a core-neutral crate that
 /// measures 0 everywhere but is not listed is refused (a drained crate is armed in the commit
 /// that drained it).
+///
+/// The list is judged on the GATING row, [`rule_law0`] (Q128): it was read only on the report-only
+/// matrix row, so `busbar-kernel-scope`, drained to 0 by the Q128 kernel-scope lane, stood unarmed
+/// with nothing red. It is armed here.
 const LAW0_ENFORCED_NEUTRAL_CRATES: &[&str] = &[
     "busbar-kernel-audit",
     "busbar-kernel-identity",
+    "busbar-kernel-scope",
     "busbar-kernel-wal",
 ];
 
@@ -1092,6 +1101,12 @@ fn dialect_wire_paths(
         .table("dialect")
         .get_one("wire")
         .map(String::from)?;
+    // THE LOCK IS A BARE NAME UNDER [`WIRE_LOCK_DIR`]. A `wire` that is a path (`../../crates/…`)
+    // would let a dialect map point at a lock it wrote itself and mask any key it likes; such a
+    // file masks nothing.
+    if !is_bare_lock_name(&wire) {
+        return Some(BTreeSet::new());
+    }
     let paths = locks.entry(wire.clone()).or_insert_with(|| {
         cx.read(format!("{WIRE_LOCK_DIR}/{wire}.wire.json"))
             .ok()
@@ -1100,6 +1115,15 @@ fn dialect_wire_paths(
             .unwrap_or_default()
     });
     Some(paths.clone())
+}
+
+/// Whether a dialect map's `[dialect] wire` names a lock by a bare name (`[a-z0-9_-]+`), never a
+/// path out of [`WIRE_LOCK_DIR`].
+fn is_bare_lock_name(wire: &str) -> bool {
+    !wire.is_empty()
+        && wire
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
 }
 
 /// A dialect mapping file's quoted map KEYS that are exactly a path in `paths` (its wire lock),
@@ -2088,7 +2112,15 @@ fn scan_needles(
         // THE OTHER TWO READINGS OF THE SAME LINE, each computed only when the line carries the
         // thing it is about — a line with no backslash and no `concat!` has nothing to decode, and
         // an ASCII line has nothing to fold.
-        let decoded = decoded_line(raw).map(|t| {
+        let decoded_text = decoded_line(raw);
+        // THE FOLD READS THE DECODED LINE TOO: `"v\u{43e}ice"` decodes to a Cyrillic `о` that no
+        // raw-line fold ever sees. The raw line is still folded on its own, because the decode's
+        // literal join can run a homoglyph name into its neighbour.
+        let folded_dec = decoded_text.as_deref().and_then(folded_line).map(|t| {
+            let c: Vec<char> = t.chars().collect();
+            (line_segments(&t), c, t.to_ascii_lowercase())
+        });
+        let decoded = decoded_text.map(|t| {
             let c: Vec<char> = t.chars().collect();
             (line_segments(&t), c, t.to_ascii_lowercase())
         });
@@ -2105,6 +2137,7 @@ fn scan_needles(
             Some(&chars),
             decoded.as_ref().map(|d| &d.1),
             folded.as_ref().map(|f| &f.1),
+            folded_dec.as_ref().map(|f| &f.1),
         ]
         .into_iter()
         .flatten()
@@ -2143,10 +2176,12 @@ fn scan_needles(
                 .filter(|(_, _, lower)| has_parts(lower, &n.parts))
                 .map(|(s, c, _)| count_by_segments(s, &n.parts).max(count_by_windows(c, &n.parts)))
                 .unwrap_or(0);
-            let by_folded = folded
-                .as_ref()
+            let by_folded = [folded.as_ref(), folded_dec.as_ref()]
+                .into_iter()
+                .flatten()
                 .filter(|(_, _, lower)| has_parts(lower, &n.parts))
                 .map(|(s, c, _)| count_by_segments(s, &n.parts).max(count_by_windows(c, &n.parts)))
+                .max()
                 .unwrap_or(0);
             let plain = by_segments.max(by_windows).max(by_decoded);
             if plain == 0 && by_folded == 0 {
@@ -2161,6 +2196,137 @@ fn scan_needles(
                     confusable: by_folded > plain,
                 });
             }
+        }
+    }
+
+    // THE LINES THE COMPILER JOINS ([`joined_runs`]): a name split by a string continuation
+    // (`"m\` + `cp"`) or across a multi-line `concat!("m",` + `"cp")` is on no one line. Each run
+    // is read whole, and what it finds OVER the sum of its own lines' readings is the split name,
+    // filed on the run's first line as a decoded-reading hit, so a name already counted on one of
+    // its lines is never counted twice.
+    let body: Vec<&str> = text.lines().collect();
+    for (first, last, joined) in joined_runs(&body) {
+        let jchars: Vec<char> = joined.chars().collect();
+        let jdec: Option<Vec<char>> = decoded_line(&joined).map(|d| d.chars().collect());
+        let mut candidates: Vec<usize> = Vec::new();
+        for c in [Some(&jchars), jdec.as_ref()].into_iter().flatten() {
+            for b in line_buckets(c) {
+                if let Some(idxs) = by_bucket.get(&b) {
+                    candidates.extend(idxs);
+                }
+            }
+        }
+        candidates.sort_unstable();
+        candidates.dedup();
+        for i in candidates {
+            let n = &plan.needles[i];
+            let whole = reading_count(&joined, &n.parts);
+            if whole == 0 {
+                continue;
+            }
+            let own: usize = body[first..=last]
+                .iter()
+                .map(|l| reading_count(l, &n.parts))
+                .sum();
+            let seam = whole.saturating_sub(own);
+            if seam == 0 {
+                continue;
+            }
+            let Some(v) = out.get_mut(&n.word) else {
+                continue;
+            };
+            let line = first + 1;
+            match v.iter_mut().find(|h| h.line == line) {
+                Some(h) => {
+                    h.by_decoded = h.by_segments.max(h.by_windows).max(h.by_decoded) + seam;
+                }
+                None => {
+                    let at = v.iter().position(|h| h.line > line).unwrap_or(v.len());
+                    v.insert(
+                        at,
+                        WordHit {
+                            line,
+                            by_segments: 0,
+                            by_windows: 0,
+                            by_decoded: seam,
+                            confusable: false,
+                        },
+                    );
+                }
+            }
+        }
+    }
+    out
+}
+
+/// One line's count of a needle, the higher of its raw and decoded readings, each the higher of
+/// the two scanners: what [`scan_needles`] counts on a line, before the fold.
+fn reading_count(raw: &str, parts: &[String]) -> usize {
+    let has = |lower: &str| parts.iter().all(|p| lower.contains(p.as_str()));
+    let read = |t: &str| -> usize {
+        if !has(&t.to_ascii_lowercase()) {
+            return 0;
+        }
+        let c: Vec<char> = t.chars().collect();
+        count_by_segments(&line_segments(t), parts).max(count_by_windows(&c, parts))
+    };
+    let raw_count = read(raw);
+    decoded_line(raw).map_or(raw_count, |d| raw_count.max(read(&d)))
+}
+
+/// The longest run of physical lines the compiler reads as one: past this a run is read in pieces.
+const MAX_JOINED_RUN: usize = 256;
+
+/// How `a` joins the line `b` after it, if it does: `Some(true)` for a string continuation (`a`
+/// ends in an odd run of backslashes; the compiler drops the backslash, the newline and `b`'s
+/// leading whitespace), `Some(false)` for adjacent literals (`a` ends a literal, optionally with a
+/// comma, and `b` opens one: `concat!("m",` + `"cp")`).
+fn line_join(a: &str, b: &str) -> Option<bool> {
+    let a = a.trim_end();
+    let b = b.trim_start();
+    if a.is_empty() || b.is_empty() {
+        return None;
+    }
+    let slashes = a.len() - a.trim_end_matches('\\').len();
+    if slashes % 2 == 1 {
+        return Some(true);
+    }
+    let a = a.strip_suffix(',').unwrap_or(a).trim_end();
+    (a.ends_with('"') && b.starts_with('"')).then_some(false)
+}
+
+/// THE LOGICAL LINES OF A FILE THAT SPAN MORE THAN ONE PHYSICAL LINE, as `(first, last, joined)`
+/// with `first` and `last` indices into `lines`: a string continuation joined the way the compiler
+/// joins it, and adjacent literals across a line break joined by one space (which
+/// [`decoded_line`]'s literal join then closes). Every reading that works one line at a time reads
+/// these as well; see [`scan_needles`] and the instance axes' literals.
+fn joined_runs(lines: &[&str]) -> Vec<(usize, usize, String)> {
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i + 1 < lines.len() {
+        let mut j = i;
+        let mut acc = String::new();
+        while j + 1 < lines.len() && j - i < MAX_JOINED_RUN {
+            let Some(continued) = line_join(lines[j], lines[j + 1]) else {
+                break;
+            };
+            if j == i {
+                acc.push_str(lines[i]);
+            }
+            acc.truncate(acc.trim_end().len());
+            if continued {
+                acc.pop();
+            } else {
+                acc.push(' ');
+            }
+            acc.push_str(lines[j + 1].trim_start());
+            j += 1;
+        }
+        if j > i {
+            out.push((i, j, acc));
+            i = j + 1;
+        } else {
+            i += 1;
         }
     }
     out
@@ -2289,8 +2455,9 @@ fn folded_line(raw: &str) -> Option<String> {
     folded_any.then_some(out)
 }
 
-/// The Cyrillic and Greek letters that are DRAWN as a Latin `a`–`z`, plus the Latin-1 accented
-/// letters, plus the contiguous fullwidth and mathematical alphabets.
+/// The Cyrillic and Greek letters that are DRAWN as a Latin `a`–`z`, plus the Latin-1 and
+/// Latin Extended-A accented letters in both cases, plus the contiguous fullwidth (letters and
+/// digits) and mathematical alphabets.
 fn fold_char(c: char) -> Option<char> {
     let u = c as u32;
     // Fullwidth Latin: `Ａ`–`Ｚ`, `ａ`–`ｚ`.
@@ -2299,6 +2466,10 @@ fn fold_char(c: char) -> Option<char> {
     }
     if (0xFF41..=0xFF5A).contains(&u) {
         return char::from_u32(u - 0xFF41 + u32::from(b'a'));
+    }
+    // Fullwidth digits: `ａ２ａ` is `a2a`.
+    if (0xFF10..=0xFF19).contains(&u) {
+        return char::from_u32(u - 0xFF10 + u32::from(b'0'));
     }
     // Mathematical Alphanumeric Symbols: blocks of 52, upper then lower. The block has holes
     // (letter-like symbols live elsewhere); a hole folds to a letter that is not quite the right
@@ -2336,12 +2507,12 @@ const HOMOGLYPHS: &[(char, char)] = &[
     ('\u{03B6}', 'z'), ('\u{03B7}', 'n'), ('\u{03B9}', 'i'), ('\u{03BA}', 'k'),
     ('\u{03BC}', 'u'), ('\u{03BD}', 'v'), ('\u{03BF}', 'o'), ('\u{03C1}', 'p'),
     ('\u{03C3}', 'o'), ('\u{03C4}', 't'), ('\u{03C5}', 'u'), ('\u{03C7}', 'x'),
-    ('\u{03C9}', 'w'), ('\u{03BF}', 'o'),
+    ('\u{03C9}', 'w'),
     // Greek, upper case.
     ('\u{0391}', 'a'), ('\u{0392}', 'b'), ('\u{0395}', 'e'), ('\u{0396}', 'z'),
     ('\u{0397}', 'h'), ('\u{0399}', 'i'), ('\u{039A}', 'k'), ('\u{039C}', 'm'),
     ('\u{039D}', 'n'), ('\u{039F}', 'o'), ('\u{03A1}', 'p'), ('\u{03A4}', 't'),
-    ('\u{03A5}', 'y'), ('\u{03A7}', 'x'), ('\u{0392}', 'b'),
+    ('\u{03A5}', 'y'), ('\u{03A7}', 'x'),
     // Latin, precomposed — the accents an editor writes without being asked.
     ('\u{00E0}', 'a'), ('\u{00E1}', 'a'), ('\u{00E2}', 'a'), ('\u{00E3}', 'a'),
     ('\u{00E4}', 'a'), ('\u{00E5}', 'a'), ('\u{00E7}', 'c'), ('\u{00E8}', 'e'),
@@ -2352,6 +2523,17 @@ const HOMOGLYPHS: &[(char, char)] = &[
     ('\u{00FB}', 'u'), ('\u{00FC}', 'u'), ('\u{00FD}', 'y'), ('\u{00FF}', 'y'),
     ('\u{0107}', 'c'), ('\u{010D}', 'c'), ('\u{0111}', 'd'), ('\u{0142}', 'l'),
     ('\u{0144}', 'n'), ('\u{0161}', 's'), ('\u{017E}', 'z'), ('\u{0131}', 'i'),
+    // Latin, precomposed, upper case: `VÖICE` is `voice` to a reader as surely as `vöice` is.
+    // U+00D7 (the multiplication sign) is not a letter and is not here.
+    ('\u{00C0}', 'a'), ('\u{00C1}', 'a'), ('\u{00C2}', 'a'), ('\u{00C3}', 'a'),
+    ('\u{00C4}', 'a'), ('\u{00C5}', 'a'), ('\u{00C7}', 'c'), ('\u{00C8}', 'e'),
+    ('\u{00C9}', 'e'), ('\u{00CA}', 'e'), ('\u{00CB}', 'e'), ('\u{00CC}', 'i'),
+    ('\u{00CD}', 'i'), ('\u{00CE}', 'i'), ('\u{00CF}', 'i'), ('\u{00D1}', 'n'),
+    ('\u{00D2}', 'o'), ('\u{00D3}', 'o'), ('\u{00D4}', 'o'), ('\u{00D5}', 'o'),
+    ('\u{00D6}', 'o'), ('\u{00D8}', 'o'), ('\u{00D9}', 'u'), ('\u{00DA}', 'u'),
+    ('\u{00DB}', 'u'), ('\u{00DC}', 'u'), ('\u{00DD}', 'y'), ('\u{0178}', 'y'),
+    ('\u{0106}', 'c'), ('\u{010C}', 'c'), ('\u{0110}', 'd'), ('\u{0141}', 'l'),
+    ('\u{0143}', 'n'), ('\u{0160}', 's'), ('\u{017D}', 'z'), ('\u{0130}', 'i'),
 ];
 
 /// The ledger in its two halves, projected out of the ONE registry reader in the parent module.
@@ -2500,31 +2682,13 @@ fn minted_rows(cx: &Ctx) -> Vec<String> {
         ),
     ] {
         let was = super::base::row_keys(&base.registry, table, ids);
-        // A WHOLE COLUMN THAT DID NOT EXIST IS THE RULE ARRIVING, NOT A NEW EDGE.
-        //
-        // Every key here is `<row> \u{d7} <column>` — a crate and the kind it names, or an edge's two
-        // ends — and the mint rule is about the ROW: a second `[[cell]]` in a column that already
-        // has some is a coupling somebody grew, and it is refused. A column with NO row at the base
-        // at all is a different event: it is the commit that taught this rule to measure something
-        // it could not measure before, and every cell of it is a FIRST measurement by construction.
-        // The `dialect` column arrived exactly that way — the vendor names were unmeasurable until
-        // the vocabulary was derived from the DIALECT list rather than from a census with no dialect
-        // crate in it — and refusing 25 rows there is refusing the instrument, the same reason
-        // `registry_present` above exempts the branch that adds the ledger itself. The carve-out is
-        // narrow on purpose: it fires once per column, ever, and every later row in that column is
-        // a mint like any other.
-        let columns: std::collections::BTreeSet<&str> = was
-            .iter()
-            .filter_map(|k| k.rsplit_once(" \u{d7} ").map(|(_, col)| col))
-            .collect();
+        // NO COLUMN IS EXEMPT. A carve-out once let every row of a column with no row at the
+        // merge-base through, for the commit that taught the rule the `dialect` column (since
+        // removed). Keyed on the base's rows, it fired again for any column drained to empty, so a
+        // branch could mint any number of rows there (Law 9: refuse every rise). Every row the
+        // merge-base ledger lacks is a mint.
         for key in super::base::row_keys(&now, table, ids) {
             if was.contains(&key) {
-                continue;
-            }
-            if key
-                .rsplit_once(" \u{d7} ")
-                .is_some_and(|(_, col)| !columns.contains(col))
-            {
                 continue;
             }
             out.push(format!(
@@ -2605,6 +2769,46 @@ fn law0_arming(armed: &[&str], crates: &[CrateInfo], measured: &Law0Counts) -> V
                 c.name
             ));
         }
+    }
+    out
+}
+
+/// THE ARMED LIST AS [`ROW_LAW0`] JUDGES IT: `(cell, hits off the armed zero, finding)`.
+///
+/// * `law0-armed`: a crate on `armed` with hits on an axis. It is pinned at 0 whatever its
+///   `[[law0]]` row says; the hits off its ceiling are already the cell's figure, and the hits a
+///   row hides under it (`min(now, row)`) are added here, so a row written over an armed crate's
+///   hits is never a way back to green.
+/// * `law0-armed-unknown` / `law0-unarmed` ([`law0_arming`]), each on a `<crate> × armed` cell
+///   of figure 1: the list against the measurement, both directions.
+fn law0_armed(
+    armed: &[&str],
+    crates: &[CrateInfo],
+    measured: &Law0Counts,
+    ceilings: &BTreeMap<(String, String), usize>,
+) -> Vec<((String, String), usize, String)> {
+    let mut out = Vec::new();
+    for (key, &now) in measured {
+        if now == 0 || !armed.contains(&key.0.as_str()) {
+            continue;
+        }
+        let row = ceilings.get(key).copied();
+        out.push((
+            key.clone(),
+            row.map_or(0, |c| now.min(c)),
+            format!(
+                "law0-armed\t{} \u{d7} {}\t{now} hit(s) in a crate LAW0_ENFORCED_NEUTRAL_CRATES \
+                 pins at 0 on every axis{}: an armed crate's ceiling is 0 and no `[[law0]]` row \
+                 raises it. Drain the names",
+                key.0,
+                key.1,
+                row.map_or_else(String::new, |c| format!(" (its `[[law0]]` row says {c})"))
+            ),
+        ));
+    }
+    for finding in law0_arming(armed, crates, measured) {
+        let name = finding.split('\t').nth(1).unwrap_or("").to_string();
+        out.push(((name, "armed".to_string()), 1, finding));
     }
     out
 }
@@ -2692,6 +2896,16 @@ pub fn rule_law0(
     crates: &[CrateInfo],
     registry: &super::KindRegistry,
     law0: Option<&Law0Counts>,
+) -> Row {
+    judge_law0(crates, registry, law0, LAW0_ENFORCED_NEUTRAL_CRATES)
+}
+
+/// [`rule_law0`] over an explicit armed list: the gate's is [`LAW0_ENFORCED_NEUTRAL_CRATES`].
+fn judge_law0(
+    crates: &[CrateInfo],
+    registry: &super::KindRegistry,
+    law0: Option<&Law0Counts>,
+    armed: &[&str],
 ) -> Row {
     let Some(measured) = law0 else {
         return Row::fail(
@@ -2782,6 +2996,36 @@ pub fn rule_law0(
             },
         );
         offenders.extend(finding);
+    }
+    // THE ARMED LIST, ON THE GATING ROW (Q128). It was judged only on the report-only matrix row,
+    // so an armed crate under a `[[law0]]` row written at its own count, and a crate drained to 0
+    // and left off the list, failed nothing (BUSBAR-1.6.0.md DoD 2: "ceiling 0 and ARMED, with no
+    // ratchet row able to raise it"; Part 1: "a gate that cannot be shown failing is not evidence").
+    for (key, hidden, finding) in law0_armed(armed, crates, measured, &ceilings) {
+        off += hidden;
+        match cells.get_mut(&key) {
+            Some(cell) => {
+                cell.detail = if cell.status == crate::ledger::Status::Pass {
+                    finding.clone()
+                } else {
+                    format!("{} | {finding}", cell.detail)
+                };
+                cell.status = crate::ledger::Status::Fail;
+            }
+            None => {
+                cells.insert(
+                    key.clone(),
+                    crate::ledger::Cell {
+                        key: format!("{} \u{d7} {}", key.0, key.1),
+                        status: crate::ledger::Status::Fail,
+                        figure: Some(hidden as u64),
+                        ceiling: Some(0),
+                        detail: finding.clone(),
+                    },
+                );
+            }
+        }
+        offenders.push(finding);
     }
     // A duplicated `[[law0]]` row is a finding on its crate × axis cell.
     for (key, finding) in duplicates {
@@ -5229,6 +5473,211 @@ pub fn selftest<'a>(
     ));
 }
 
+/// Q128 xtask part 10 (kind-isolation matrix): the HIGH/MEDIUM findings this module fixes, each
+/// shown failing on the code before the fix.
+#[cfg(test)]
+mod q128_tests {
+    use super::*;
+
+    fn core_kernel(name: &str) -> CrateInfo {
+        CrateInfo {
+            dir: format!("crates/{name}"),
+            manifest: format!("crates/{name}/Cargo.toml"),
+            name: name.to_string(),
+            kind: Some("kernel"),
+            family: Family::Neutral,
+            remainder: Vec::new(),
+            instance: None,
+            declared_keys: Vec::new(),
+            deps: Vec::new(),
+            dev_deps: Vec::new(),
+            ambiguous: Vec::new(),
+            pinned: None,
+        }
+    }
+
+    /// The census these cases judge: every armed crate, plus `busbar-kernel` and `extra`.
+    fn census_with(extra: &[&str]) -> Vec<CrateInfo> {
+        LAW0_ENFORCED_NEUTRAL_CRATES
+            .iter()
+            .chain(["busbar-kernel"].iter())
+            .chain(extra.iter())
+            .map(|n| core_kernel(n))
+            .collect()
+    }
+
+    fn reg_of(rows: &[(&str, &str, usize)]) -> super::super::KindRegistry {
+        let mut reg = super::super::KindRegistry::default();
+        for (krate, axis, count) in rows {
+            reg.law0.push(super::super::Law0Ceiling {
+                krate: (*krate).to_string(),
+                axis: (*axis).to_string(),
+                count: *count,
+                cite: "planted".to_string(),
+            });
+        }
+        reg
+    }
+
+    fn counts_of(cells: &[(&str, &str, usize)]) -> Law0Counts {
+        cells
+            .iter()
+            .map(|(k, a, n)| (((*k).to_string(), (*a).to_string()), *n))
+            .collect()
+    }
+
+    /// F2 (MEDIUM): an ARMED crate is pinned at 0 on every axis, and the pin lived only in the
+    /// report-only matrix row. A `[[law0]]` row written for an armed crate at its own count made
+    /// the gating Law 0 row read the hits as "at ceiling" and pass.
+    #[test]
+    fn an_armed_crate_under_a_ledger_row_is_red_on_the_law0_row() {
+        let armed = LAW0_ENFORCED_NEUTRAL_CRATES[0];
+        let crates = census_with(&[]);
+        let rows = [(armed, "plane", 2), ("busbar-kernel", "plane", 3)];
+        let row = rule_law0(&crates, &reg_of(&rows), Some(&counts_of(&rows)));
+        assert_eq!(row.status, crate::ledger::Status::Fail, "{}", row.detail);
+        assert!(
+            row.detail
+                .contains(&format!("law0-armed\t{armed} \u{d7} plane")),
+            "{}",
+            row.detail
+        );
+    }
+
+    /// F2 (MEDIUM): a core-neutral crate drained to 0 on every axis and left off the armed list
+    /// was a `law0-unarmed` finding on the report-only matrix row alone, so nothing gated it.
+    #[test]
+    fn a_drained_crate_left_unarmed_is_red_on_the_law0_row() {
+        let crates = census_with(&["busbar-kernel-drained"]);
+        let rows = [("busbar-kernel", "plane", 3)];
+        let row = rule_law0(&crates, &reg_of(&rows), Some(&counts_of(&rows)));
+        assert_eq!(row.status, crate::ledger::Status::Fail, "{}", row.detail);
+        assert!(
+            row.detail.contains("law0-unarmed\tbusbar-kernel-drained"),
+            "{}",
+            row.detail
+        );
+    }
+
+    fn mcp_plan() -> Plan {
+        Plan {
+            needles: vec![Resolved {
+                kind: "plane",
+                word: "mcp".to_string(),
+                parts: vec!["mcp".to_string()],
+            }],
+            key: 0,
+        }
+    }
+
+    fn hits_in(text: &str) -> usize {
+        scan_fresh(
+            &mcp_plan(),
+            "crates/busbar-kernel",
+            "crates/busbar-kernel/src/a.rs",
+            text,
+        )
+        .iter()
+        .map(|h| h.by_segments.max(h.by_windows).max(h.by_decoded))
+        .sum()
+    }
+
+    /// F4 (MEDIUM): a name the compiler reads whole, written across two physical lines: a string
+    /// continuation (`"m\` + `cp"` is `"mcp"`) and a multi-line `concat!`. Every reading worked one
+    /// line at a time, so neither counted.
+    #[test]
+    fn a_name_split_across_lines_is_still_counted() {
+        assert_eq!(hits_in("pub const P: &str = \"mcp\";\n"), 1, "the control");
+        assert_eq!(
+            hits_in("pub const P: &str = \"m\\\n    cp\";\n"),
+            1,
+            "a string continuation"
+        );
+        assert_eq!(
+            hits_in("pub const P: &str = concat!(\n    \"m\",\n    \"cp\",\n);\n"),
+            1,
+            "a multi-line concat!"
+        );
+        // A name already whole on one of the run's lines is not counted again for the run.
+        assert_eq!(
+            hits_in("pub const P: &[&str] = &[\n    \"mcp\",\n    \"x\",\n];\n"),
+            1,
+            "a list"
+        );
+    }
+
+    /// F5 (LOW): the fold covers upper-case accented Latin and fullwidth digits, and reads the
+    /// decoded line, so `"v\u{43e}ice"` written as an escape is a homoglyph like the raw one.
+    #[test]
+    fn the_fold_reads_capitals_digits_and_the_decoded_line() {
+        assert_eq!(fold_char('\u{00D6}'), Some('o'));
+        assert_eq!(fold_char('\u{0141}'), Some('l'));
+        assert_eq!(fold_char('\u{FF12}'), Some('2'));
+        assert_eq!(
+            fold_char('\u{00D7}'),
+            None,
+            "the multiplication sign is no letter"
+        );
+        assert_eq!(folded_line("V\u{00D6}ICE").as_deref(), Some("VoICE"));
+        let plan = Plan {
+            needles: vec![Resolved {
+                kind: "plane",
+                word: "voice".to_string(),
+                parts: vec!["voice".to_string()],
+            }],
+            key: 0,
+        };
+        let hits = scan_fresh(
+            &plan,
+            "crates/busbar-kernel",
+            "crates/busbar-kernel/src/a.rs",
+            "pub const P: &str = \"v\\u{43e}ice\";\n",
+        );
+        assert!(hits.iter().any(|h| h.confusable), "an escaped homoglyph");
+    }
+
+    /// F9 (NIT): one entry per character in the hand-written half of the fold.
+    #[test]
+    fn the_homoglyph_table_has_no_duplicate() {
+        let mut seen = BTreeSet::new();
+        for (from, _) in HOMOGLYPHS {
+            assert!(seen.insert(*from), "{from:?} twice");
+        }
+    }
+
+    /// F8 (LOW): a dialect map's `wire` names a lock by a bare name, never a path.
+    #[test]
+    fn a_wire_lock_name_is_bare() {
+        assert!(is_bare_lock_name("openai"));
+        assert!(is_bare_lock_name("openai_chat-2"));
+        assert!(!is_bare_lock_name("../../../crates/busbar-plane-llm/x"));
+        assert!(!is_bare_lock_name("wire/openai"));
+        assert!(!is_bare_lock_name(""));
+    }
+
+    #[test]
+    fn the_compiler_joined_runs_are_the_ones_it_joins() {
+        let lines = [
+            "let a = \"m\\",
+            "    cp\";",
+            "let b = 1;",
+            "x(\"o\",",
+            "  \"t\",",
+            "  \"lp\")",
+        ];
+        let runs = joined_runs(&lines);
+        assert_eq!(
+            runs,
+            vec![
+                (0, 1, "let a = \"mcp\";".to_string()),
+                (3, 5, "x(\"o\", \"t\", \"lp\")".to_string()),
+            ]
+        );
+        // An escaped backslash ends no line in a continuation.
+        assert!(joined_runs(&["let a = \"\\\\", "b"]).is_empty());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5301,6 +5750,18 @@ mod tests {
             unarmed[0].starts_with("law0-unarmed\tbusbar-kernel-wal"),
             "{unarmed:?}"
         );
+    }
+
+    /// THE CELL JUDGE ON A ONE-CRATE CENSUS. These cases plant a census of `busbar-kernel` alone,
+    /// which the armed list's crates are not in, so they judge the cells against an empty armed
+    /// list; the list itself is judged by the cases in `q128_tests`, through the gate's own
+    /// [`super::rule_law0`].
+    fn rule_law0(
+        crates: &[CrateInfo],
+        registry: &super::super::KindRegistry,
+        law0: Option<&Law0Counts>,
+    ) -> Row {
+        judge_law0(crates, registry, law0, &[])
     }
 
     fn law0_reg(rows: &[(&str, &str, usize)]) -> super::super::KindRegistry {

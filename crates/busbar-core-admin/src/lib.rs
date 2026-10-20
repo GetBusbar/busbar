@@ -52,7 +52,6 @@ pub mod idempotency;
 // THE PLANE TRUST VERB ENVELOPE (moved from the kernel's `admin::planeverbs`, P2 D4): the core-admin
 // backing [`install`] binds into the kernel's `admin_verbs` seam.
 pub mod planeverbs;
-pub mod posture;
 pub mod rate;
 pub mod refusal;
 /// The handles the composition root's admin tests drive this crate through: `cfg(test)` or
@@ -68,12 +67,11 @@ pub mod witness;
 
 pub use admin_state::{AdminState, AppAdmin};
 pub use governance::{Governance, GovernanceError};
-pub use posture::{ApprovalState, DualControl, OperatorState, PostureCtx};
 pub use rate::ConfigClassRule;
 pub use refusal::{ReasonCode, Refusal, RefusalStep};
 pub use verb::{
-    verb_name, KernelVerb, VerbScope, AUDIT_VERBS, IRREDUCIBLE_VERBS, LEDGER_VERBS, LEGACY_VERBS,
-    NAMED_SURFACES, NEW_VERBS, READ_ONLY_NEW_VERBS,
+    verb_name, KernelVerb, VerbScope, AUDIT_VERBS, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES,
+    NEW_VERBS, READ_ONLY_NEW_VERBS,
 };
 pub use verbs::{required_scope, Verbs};
 
@@ -93,6 +91,15 @@ pub fn install() {
         busbar_kernel::admin::seam::AdminMountSeam {
             mount: seam_mount,
             record_boot: seam_record_boot,
+        },
+    );
+    // The closed verb table the per-verb allow-list names verbs from (#77(9) l.2279): the kernel
+    // validates `role_bindings.…verbs` against it and its admin gate resolves a request's verb with
+    // it, without naming this crate.
+    busbar_kernel::admin::seam::install_admin_verb_table(
+        busbar_kernel::admin::seam::AdminVerbTable {
+            rung_of: admin_codec::verbs::named_rung,
+            verb_at: admin_codec::verbs::name_at,
         },
     );
 }
