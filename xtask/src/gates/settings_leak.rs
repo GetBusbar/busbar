@@ -83,7 +83,8 @@ pub const ROW_NO_RAW_BAG: &str = "settings-leak:no-raw-bag";
 const FIXED_ROOTS: &[&str] = &[
     "crates/busbar-kernel/src",
     "crates/busbar/src",
-    "crates/busbar-llm/src",
+    // The LLM plane's home since the retired engine crate's deletion (DEV-GREEN row 83).
+    "crates/busbar-plane-llm/src",
 ];
 
 /// The planes whose source must be in the scan whatever crate they end up in.

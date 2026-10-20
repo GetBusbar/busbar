@@ -1911,3 +1911,62 @@ fn the_usage_ask_edits_an_existing_stream_options_in_place_byte_for_byte() {
         );
     }
 }
+
+/// A CROSS-DIALECT REQUEST LIFTS THE SYSTEM TURN: an openai caller's `system` message, sent to an
+/// anthropic member, reaches the far end as the top-level `system` and is gone from `messages`; the
+/// user turn survives. Rehomes
+/// crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_cross_protocol_openai_to_anthropic.
+#[test]
+fn a_cross_dialect_request_lifts_the_system_turn_out_of_the_messages() {
+    let h = head(&[("content-type", "application/json")]);
+    let a = arrived(
+        "/v1/chat/completions",
+        &h,
+        r#"{"model":"claude","messages":[{"role":"system","content":"sys"},{"role":"user","content":"hi"}]}"#,
+    );
+    let r = build(HOST, &a, &h, &shaping(), "p", "claude").expect("built");
+    let v: Value = busbar_plane_llm::codec::json::parse(&r.body).expect("json");
+    assert!(v.get("system").is_some(), "{v}");
+    let messages = v["messages"].as_array().expect("messages");
+    assert!(!messages.iter().any(|m| m["role"] == "system"), "{v}");
+    assert!(messages.iter().any(|m| m["role"] == "user"), "{v}");
+}
+
+/// AN OMITTED `max_tokens` IS FILLED, AN EXPLICIT ONE KEPT: an openai caller that omits
+/// `max_tokens`, sent to an anthropic member with no default of its own, reaches the far end with
+/// the node's fallback (4096); a caller's explicit value survives even where the member states a
+/// default. Rehomes
+/// crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_openai_omits_max_tokens_injects_fallback_for_anthropic
+/// and ::test_openai_explicit_max_tokens_preserved_over_lane_default.
+#[test]
+fn an_omitted_max_tokens_is_filled_and_an_explicit_one_is_kept() {
+    let shaping = Shaping::from_settings(&json!({
+        "providers": { "ant": { "protocol": "anthropic", "base_url": "https://anthropic.example" } },
+        "models": {
+            "bare": { "provider": "ant" },
+            "defaulted": { "provider": "ant", "default_max_tokens": 1234 }
+        },
+        "pools": { "p": { "members": ["bare", "defaulted"] } }
+    }))
+    .expect("reads");
+    let h = head(&[("content-type", "application/json")]);
+    let sent = |model: &str, body: &str| -> Value {
+        let a = arrived("/v1/chat/completions", &h, body);
+        let r = build(HOST, &a, &h, &shaping, "p", model).expect("built");
+        busbar_plane_llm::codec::json::parse(&r.body).expect("json")
+    };
+    let omitted = sent(
+        "bare",
+        r#"{"model":"bare","messages":[{"role":"user","content":"hi"}]}"#,
+    );
+    assert_eq!(
+        omitted["max_tokens"],
+        u64::from(busbar_plane_llm::exchange::shaping::DEFAULT_MAX_TOKENS),
+        "{omitted}"
+    );
+    let explicit = sent(
+        "defaulted",
+        r#"{"model":"defaulted","messages":[{"role":"user","content":"hi"}],"max_tokens":7}"#,
+    );
+    assert_eq!(explicit["max_tokens"], 7, "{explicit}");
+}
