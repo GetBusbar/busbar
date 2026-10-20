@@ -962,10 +962,7 @@ pub fn book(
     let durability = Arc::new(std::sync::Mutex::new(durability));
     // Every amendment sealed from here on goes on the book it was rebuilt from.
     super::durability::bind_amendments(&durability);
-    Ok(super::durability::NodeBook {
-        durability,
-        rows,
-    })
+    Ok(super::durability::NodeBook { durability, rows })
 }
 
 /// The boot's refusal of a store that offers no record slots: it cannot keep the journal.

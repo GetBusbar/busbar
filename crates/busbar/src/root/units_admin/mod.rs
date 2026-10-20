@@ -3633,12 +3633,7 @@ impl RegisteredUnits for AdminPlane {
         ctx: &UnitCtx,
         _destinations: &[busbar_contract::caps::VerifiedDestination],
     ) -> SeatVerdict<Route> {
-        route(
-            &root.admin,
-            &root.admin_token,
-            token,
-            ctx,
-        )
+        route(&root.admin, &root.admin_token, token, ctx)
     }
 
     fn meter(
