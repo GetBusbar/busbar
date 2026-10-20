@@ -220,6 +220,7 @@ static DOOR: Shared<Door> = Shared(Door {
     statement: &STATEMENT.0 as *const Statement,
     ops: &OPS.0 as *const OpsHead,
     ready: None,
+    layout: KIND.layout_fingerprint(),
 });
 
 /// THE DOOR: the `DoorFn` a compiled-in row holds.

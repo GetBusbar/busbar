@@ -32,6 +32,18 @@
 //!   (`STORE_ABI`, `ABI_MINOR`, `UNIT_MAP_ABI`, …), is `POD_VERSION`, or whose type is
 //!   `AbiVersion`. `CAPABILITIES`/`REACHABILITY` are not `ABI` segments and are not counted.
 //!
+//! ## EVERY KIND STATES ITS LAYOUT FINGERPRINT (status row 188)
+//!
+//! A kind's version number does not move with its layout (a field inserted into the hook
+//! `RequestView` moved every later field of `DecideIn` by 24 bytes under the same hook ABI
+//! version, and a hook built before it loaded and wrote host memory at the old offsets). So every
+//! kind folder `abi/<kind>/` states, in its `mod.rs`, `pub const LAYOUT_FINGERPRINT: u64` (the
+//! number a door carries and the loader holds it to) and `pub const LAYOUT_SHAPES` (what the
+//! number is the fold of, `busbar-contract/tests/layout_fingerprint.rs`), and LAYOUT_SHAPES names
+//! every `#[repr(C)]` type the folder defines in production code: a shape left out of the list is
+//! a shape the fingerprint does not see. `abi-location:kind-fingerprint` is red on a kind folder
+//! missing either constant and on a C-layout type its shapes do not name.
+//!
 //! ## WHERE A SHAPE MAY STILL BE WRITTEN OUTSIDE `abi/`
 //!
 //! Only as a TEST DOUBLE: under a `tests/` directory, under `benches/` (a bench harness is a test
@@ -76,6 +88,18 @@ pub const ROW_EXTERN: &str = "abi-location:extern-fn";
 pub const ROW_CONST: &str = "abi-location:version-const";
 pub const ROW_LEDGER: &str = "abi-location:ledger";
 pub const ROW_EXTERNAL: &str = "abi-location:external-plugins";
+pub const ROW_FINGERPRINT: &str = "abi-location:kind-fingerprint";
+
+/// The kind folders under [`ONE_HOME`], each of which states its layout fingerprint.
+pub const KIND_DIRS: [&str; 7] = [
+    "store",
+    "secret",
+    "auth",
+    "hook",
+    "export",
+    "plane",
+    "transport",
+];
 
 pub const LEDGER: &str = "qa/abi-location.toml";
 /// THE ONE HOME. Everything under it is the ABI; nothing outside it may define a piece of it.
@@ -914,10 +938,17 @@ impl Gate for AbiLocationGate {
     }
 
     fn owed(&self) -> Vec<String> {
-        [ROW_REPR_C, ROW_EXTERN, ROW_CONST, ROW_LEDGER, ROW_EXTERNAL]
-            .iter()
-            .map(|s| (*s).to_string())
-            .collect()
+        [
+            ROW_REPR_C,
+            ROW_EXTERN,
+            ROW_CONST,
+            ROW_LEDGER,
+            ROW_EXTERNAL,
+            ROW_FINGERPRINT,
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect()
     }
 
     fn run(&self, cx: &Ctx) -> Verdict {
@@ -1049,6 +1080,7 @@ impl Gate for AbiLocationGate {
         }
 
         rows.push(external_row(cx, &ledger));
+        rows.push(fingerprint_row(cx));
         Verdict::of(rows)
     }
 
@@ -1186,6 +1218,40 @@ impl Gate for AbiLocationGate {
             &[ROW_REPR_C, ROW_EXTERN, ROW_CONST],
         ));
 
+        // A KIND WITHOUT ITS FINGERPRINT, AND A SHAPE ITS FINGERPRINT DOES NOT SEE: the hook folder
+        // with its LAYOUT_FINGERPRINT struck, and a C-layout struct planted in the secret folder
+        // that the secret kind's LAYOUT_SHAPES does not name.
+        let hook = format!("{ONE_HOME}hook/mod.rs");
+        let secret = format!("{ONE_HOME}secret/validate.rs");
+        let mut ov = Overlay::new();
+        ov.set(
+            &hook,
+            cx.read(&hook).unwrap_or_default().replace(
+                "pub const LAYOUT_FINGERPRINT: u64",
+                "pub const STRUCK_FINGERPRINT: u64",
+            ),
+        );
+        ov.set(
+            &secret,
+            format!(
+                "{}\n/// planted\n#[repr(C)]\n#[derive(Clone, Copy)]\npub struct PlantedUnseenPod {{\n    pub a: u32,\n}}\n",
+                cx.read(&secret).unwrap_or_default()
+            ),
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a kind folder without LAYOUT_FINGERPRINT, and a #[repr(C)] struct a kind's \
+             LAYOUT_SHAPES does not name, are RED",
+            &[ROW_FINGERPRINT],
+            ov,
+            &[
+                "hook: no `pub const LAYOUT_FINGERPRINT: u64`",
+                "secret",
+                "PlantedUnseenPod",
+            ],
+        ));
+
         // THE LEDGER CANNOT OUTLIVE ITS DEBT: a row naming a shape the tree does not hold is RED.
         let ledger = cx.read(LEDGER).unwrap_or_default();
         let mut ov = Overlay::new();
@@ -1287,6 +1353,96 @@ impl Gate for AbiLocationGate {
         ));
 
         report
+    }
+}
+
+/// The type names a kind's `LAYOUT_SHAPES` lists: each `layout_shape!(path::Name => …)`'s last
+/// path segment, read from the constant's own text in the folder's `mod.rs`.
+fn listed_shapes(module: &str) -> Option<BTreeSet<String>> {
+    let at = module.find("pub const LAYOUT_SHAPES")?;
+    let body = &module[at..];
+    let body = &body[..body.find("\n];")?];
+    let mut out = BTreeSet::new();
+    for piece in body.split("layout_shape!(").skip(1) {
+        let path = piece.split("=>").next().unwrap_or_default().trim();
+        if let Some(name) = path.rsplit("::").next().filter(|n| !n.is_empty()) {
+            out.insert(name.to_string());
+        }
+    }
+    Some(out)
+}
+
+/// [`ROW_FINGERPRINT`]: every kind folder states `LAYOUT_FINGERPRINT` and `LAYOUT_SHAPES`, and its
+/// shapes name every C-layout type the folder defines in production code.
+fn fingerprint_row(cx: &Ctx) -> Row {
+    let mut problems = Vec::new();
+    let mut shapes = 0usize;
+    for kind in KIND_DIRS {
+        let dir = format!("{ONE_HOME}{kind}/");
+        let module = match cx.read(format!("{dir}mod.rs")) {
+            Ok(text) => text,
+            Err(e) => {
+                problems.push(format!("{kind}: {dir}mod.rs could not be read ({e})"));
+                continue;
+            }
+        };
+        if !module.contains("pub const LAYOUT_FINGERPRINT: u64") {
+            problems.push(format!(
+                "{kind}: no `pub const LAYOUT_FINGERPRINT: u64` in {dir}mod.rs"
+            ));
+        }
+        let Some(listed) = listed_shapes(&module) else {
+            problems.push(format!(
+                "{kind}: no `pub const LAYOUT_SHAPES` in {dir}mod.rs"
+            ));
+            continue;
+        };
+        let files = match cx.walk(&WalkSpec::new([dir.clone()]).ext("rs").exclude(["/tests/"])) {
+            Ok(files) => files,
+            Err(e) => {
+                problems.push(format!("{kind}: {dir} could not be walked ({e})"));
+                continue;
+            }
+        };
+        let mut unseen = BTreeSet::new();
+        for f in &files {
+            let rel = f.rel_str();
+            let rel = rel.strip_prefix("./").unwrap_or(&rel).to_string();
+            for found in scan_file("", &rel, &f.text, &BTreeSet::new()) {
+                if found.shape != Shape::ReprC {
+                    continue;
+                }
+                shapes += 1;
+                if !listed.contains(&found.item) {
+                    unseen.insert(format!("{} ({}:{})", found.item, found.file, found.line));
+                }
+            }
+        }
+        if !unseen.is_empty() {
+            problems.push(format!(
+                "{kind}: LAYOUT_SHAPES does not name {}",
+                unseen.into_iter().collect::<Vec<_>>().join(", ")
+            ));
+        }
+    }
+    if problems.is_empty() {
+        Row::pass(
+            ROW_FINGERPRINT,
+            "every kind states its layout fingerprint over every C-layout type it defines",
+            format!(
+                "{} kinds; {shapes} #[repr(C)] types in their folders, each in its kind's LAYOUT_SHAPES",
+                KIND_DIRS.len()
+            ),
+        )
+    } else {
+        Row::fail(
+            ROW_FINGERPRINT,
+            "a kind's layout fingerprint is missing or does not see one of its shapes",
+            format!(
+                "{} — state it in abi/<kind>/mod.rs and list the shape (status row 188)",
+                problems.join(" | ")
+            ),
+        )
     }
 }
 

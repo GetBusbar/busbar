@@ -252,7 +252,8 @@ fn compute_layout() -> String {
             kind_abi,
             statement,
             ops,
-            ready
+            ready,
+            layout
         ]
     );
     record!(

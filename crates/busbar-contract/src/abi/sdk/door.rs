@@ -625,6 +625,7 @@ pub const fn door<T: KindOps>(
         statement,
         ops: ptr::from_ref(ops).cast::<OpsHead>(),
         ready,
+        layout: T::KIND.layout_fingerprint(),
     }
 }
 

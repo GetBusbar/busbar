@@ -16,7 +16,10 @@ use crate::abi::host::conn::connector::Need;
 ///
 /// The loader checks, in order: the manifest's mechanism version (before `dlopen`), that the symbol
 /// exists, then `magic == DOOR_MAGIC`, `mechanism_version == MECHANISM_VERSION` and `kind_abi ==`
-/// the host's version for `kind`. Older and newer are both refused.
+/// the host's version for `kind`. Older and newer are both refused. Once the Statement is read,
+/// `layout` must be the host's layout fingerprint for `kind`
+/// ([`super::KindCode::layout_fingerprint`]), or the door is refused naming the kind and both
+/// numbers.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Door {
@@ -39,6 +42,12 @@ pub struct Door {
     /// A door whose `size` ends before this field has none: the host reads it only when `size`
     /// covers it.
     pub ready: Option<Op>,
+    /// APPEND-ONLY TAIL: the kind's layout fingerprint as the plugin was built
+    /// ([`super::KindCode::layout_fingerprint`], `abi/<kind>/`'s `LAYOUT_FINGERPRINT`). The loader
+    /// refuses a door whose number is not the host's: it was built against other shapes of its
+    /// kind and would read and write them at the wrong offsets. A door whose `size` ends before
+    /// this field predates it, states `0` and is refused the same.
+    pub layout: u64,
 }
 
 /// The door function: the ONE symbol a plugin exports. `extern "C"`: a panic escaping it aborts.

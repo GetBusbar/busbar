@@ -402,6 +402,7 @@ static DOOR: Shared<Door> = Shared(Door {
     statement: &STATEMENT.0 as *const Statement,
     ops: &OPS.0 as *const Ops as *const OpsHead,
     ready: None,
+    layout: KindCode::Plane.layout_fingerprint(),
 });
 
 /// The claims: every path under `/call` for POST, `/open`, a claim that takes no inbound

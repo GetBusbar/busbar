@@ -69,6 +69,36 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 /// The export kind's ABI version: v1.5.5 shipped `2` (`EXPORT_ABI_VERSION`), so 1.6.0 ships `3`.
 pub const ABI_VERSION: u32 = 3;
 
+/// The export kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
+/// [`LAYOUT_SHAPES`], the size, alignment and field offsets of every `#[repr(C)]` struct crossing
+/// the export table. A door states it as built
+/// ([`Door::layout`](crate::abi::mechanism::door::Door::layout)) and the loader refuses another;
+/// `tests/layout_fingerprint.rs` holds it to its fold.
+pub const LAYOUT_FINGERPRINT: u64 = 0x95a37b669466aab6;
+
+/// The export kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
+/// crossing its table, each with every field. A struct `abi/export/` gains is listed here (gate
+/// `abi-location`).
+pub const LAYOUT_SHAPES: &[&[u64]] = &[
+    crate::layout_shape!(Ops => head, deliver, scrape, status, check, serve),
+    crate::layout_shape!(DeliverIn => head, op_id, stream, _reserved, batch),
+    crate::layout_shape!(ScrapeLabel => key, value),
+    crate::layout_shape!(ScrapeSample => name, labels, labels_len, value),
+    crate::layout_shape!(ScrapeFamily => name, help, unit, kind, _reserved, samples, samples_len),
+    crate::layout_shape!(ScrapeIn => head, families, families_len, buf, cap),
+    crate::layout_shape!(ScrapeOut => head, written, needed),
+    crate::layout_shape!(StatusOut => head, status),
+    crate::layout_shape!(CheckInstance => name, settings),
+    crate::layout_shape!(CheckIn => head, phase, _reserved, instances, instances_len),
+    crate::layout_shape!(CheckOut => head, findings),
+    crate::layout_shape!(ServeIn => head, method, path, query, headers, headers_len, body),
+    crate::layout_shape!(ServeOut =>
+        head, status_code, _reserved, headers_out, headers_out_len, body
+    ),
+    crate::layout_shape!(Route => path, method, auth, _reserved),
+    crate::layout_shape!(Tail => head, streams, streams_len, routes, routes_len),
+];
+
 /// [`InHead::op`] values the export kind adds after the shared lifecycle, in table order.
 ///
 /// # Examples

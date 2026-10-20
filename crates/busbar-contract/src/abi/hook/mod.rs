@@ -146,6 +146,76 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 /// The hook kind's ABI version: v1.5.5 shipped `1` (`HOOK_ABI_VERSION`), so 1.6.0 ships `2`.
 pub const ABI_VERSION: u32 = 2;
 
+/// The hook kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
+/// [`LAYOUT_SHAPES`], the size, alignment and field offsets of every `#[repr(C)]` struct crossing
+/// the hook table. A door states it as built
+/// ([`Door::layout`](crate::abi::mechanism::door::Door::layout)) and the loader refuses another;
+/// `tests/layout_fingerprint.rs` holds it to its fold.
+pub const LAYOUT_FINGERPRINT: u64 = 0xe66698e71abe2054;
+
+/// The hook kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
+/// crossing its table, each with every field. A struct `abi/hook/` gains is listed here (gate
+/// `abi-location`).
+pub const LAYOUT_SHAPES: &[&[u64]] = &[
+    crate::layout_shape!(Ops =>
+        head, decide, transform, notify, configure, status, describe, serve
+    ),
+    crate::layout_shape!(SignalValue =>),
+    crate::layout_shape!(SignalEntry => id, tag, value),
+    crate::layout_shape!(RequestView =>
+        request_id, pool, ingress_dialect, message_count, total_chars, max_tokens, flags, signals,
+        signals_len, session
+    ),
+    crate::layout_shape!(CandidateStatic =>
+        idx, _reserved, model, provider, weight, _reserved3, context_max, tier, cost_per_mtok, tags,
+        tags_len, present, _reserved2
+    ),
+    crate::layout_shape!(CandidateDynamic =>
+        latency_ms, available_concurrency, budget_remaining, rate_headroom, signals, signals_len,
+        present, _reserved
+    ),
+    crate::layout_shape!(PromptView => system, message_count, body, messages, messages_len),
+    crate::layout_shape!(MessageView => role, text),
+    crate::layout_shape!(UserView => key_id, key_name, user),
+    crate::layout_shape!(BudgetBucketState =>
+        bucket_id, budget_group, pool, spend_micros_at_current_rate, remaining_micros, window_start,
+        budget_period, present, _reserved
+    ),
+    crate::layout_shape!(DecideIn =>
+        head, request, candidates, candidate_dynamics, candidates_len, prompt, user,
+        budget_remaining, budget, budget_len, present, _reserved, order_buf, order_cap,
+        reject_message_buf, reject_message_cap, restrict_tags_buf, restrict_tags_cap, rewrite_buf,
+        rewrite_cap
+    ),
+    crate::layout_shape!(DecideOut =>
+        head, verbs, reject_status, _reserved, reject_message_written, reject_message_needed,
+        restrict_tags_written, restrict_tags_needed, order_written, order_needed
+    ),
+    crate::layout_shape!(TransformOut =>
+        head, verbs, reject_status, _reserved, reject_message_written, reject_message_needed,
+        rewrite_written, rewrite_needed
+    ),
+    crate::layout_shape!(StageView =>
+        request_id, pool, ingress_dialect, message_count, total_chars, remaining_candidates, model,
+        previous_failure, outcome, max_tokens, flags, at, attempt_number, status, _reserved,
+        stage_present, _reserved2
+    ),
+    crate::layout_shape!(NotifyIn => head, stage, signals, signals_len, prompt, present, _reserved),
+    crate::layout_shape!(ConfigureIn => head, version, settings, name),
+    crate::layout_shape!(ConfigureOut => head, acked_version),
+    crate::layout_shape!(StatusOut => head, status),
+    crate::layout_shape!(DescribeOut => head, describe),
+    crate::layout_shape!(ServeIn => head, method, path, query, headers, headers_len, body),
+    crate::layout_shape!(ServeOut =>
+        head, status_code, _reserved, headers_out, headers_out_len, body
+    ),
+    crate::layout_shape!(Route => path, method, auth, _reserved),
+    crate::layout_shape!(Tail =>
+        head, kind_class, prompt_access, user_access, infallible, _reserved, requested_signals,
+        requested_signals_len, routes, routes_len
+    ),
+];
+
 /// [`InHead::op`] values the hook kind adds after the shared lifecycle, in table order.
 ///
 /// # Examples
