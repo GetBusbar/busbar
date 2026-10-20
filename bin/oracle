@@ -408,7 +408,8 @@ token_word() {
 }
 judge_pin_text() {  # judge_pin_text <repo> — the BASE pin's text (see above)
   local repo="$1" rel="testing/shadow-oracle/oracle-rust.pin"
-  if [ -n "${MODERNCI_TO_SHA:-}" ] && git -C "$repo" cat-file -e "$MODERNCI_TO_SHA:$rel" 2>/dev/null; then
+  # MEASUREMENT BRANCH ONLY (never lands): judge with THIS tree's pin, the moved one under measure.
+  if false; then
     git -C "$repo" show "$MODERNCI_TO_SHA:$rel"
   else
     cat "$repo/$rel"
