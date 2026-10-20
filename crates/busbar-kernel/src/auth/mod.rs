@@ -1699,7 +1699,7 @@ pub fn dry_run_admin_scope(
     // A DRY RUN claims no replay: it asks what the caller WOULD earn, and the live door already
     // claimed this request's.
     match probe_admin_door(app, "GET", "/", headers, false) {
-        AdminDoor::Identified(_, grants) => grants,
+        AdminDoor::Identified(_, grants) | AdminDoor::Listed(_, grants, _) => grants,
         // `Open` is unreachable past the early return above, and is no earned grant if reached.
         AdminDoor::Open | AdminDoor::Denied => busbar_contract::authz::Grants::default(),
     }
@@ -1716,6 +1716,11 @@ pub enum AdminDoor {
     /// Identified: who the chain identified, and the grants it earns (empty = authenticated, not
     /// authorized).
     Identified(Principal, busbar_contract::authz::Grants),
+    /// Identified, and holding admin verbs BY NAME (`role_bindings.<provider>.<role>.verbs: [ … ]`,
+    /// #77(9) l.2279): the grants are every rung the principal reaches — the two-rung matrix the
+    /// gate compares first — and the allow-list is what the verb itself must then be on. A
+    /// principal whose bindings name no verb is [`AdminDoor::Identified`], the 1.5.5 grant.
+    Listed(Principal, busbar_contract::authz::Grants, VerbAllowList),
     /// Refused, a module error (fail-closed `Reject`) included: 1.5.5 had no other verdict.
     Denied,
 }
@@ -1788,7 +1793,17 @@ async fn judge_admin_door(
             module, principal, ..
         } => {
             let grants = admin_scope_for(app, Some(&module), Some(&principal));
-            AdminDoor::Identified(principal, cap.map_or(grants, |c| grants.capped_by(c)))
+            let rungs = cap.map_or(grants, |c| grants.capped_by(c));
+            let named = admin_verbs_named(app, &module, &principal, cap);
+            if named.is_empty() {
+                return AdminDoor::Identified(principal, rungs);
+            }
+            // Every rung a named verb needs joins the matrix the gate compares first; the list
+            // then narrows what that reach admits (`VerbAllowList::admits`).
+            let reach = (named.iter())
+                .filter_map(|verb| crate::admin::seam::admin_verb_rung(verb.as_str()))
+                .fold(rungs, busbar_contract::authz::Grants::with);
+            AdminDoor::Listed(principal, reach, VerbAllowList { rungs, named })
         }
     }
 }
@@ -1870,12 +1885,71 @@ fn admin_scope_for(
     let Some(table) = module.and_then(|m| app.role_bindings.get(m)) else {
         return Grants::default();
     };
+    // `verbs: "*"` is exactly `admin_scope: full` (#77(9) l.2279); a NAMED list is not a rung and
+    // is read by [`admin_verbs_named`].
+    let all = |b: &crate::config::RoleBindingCfg| {
+        matches!(b.verb_grant(), Some(Ok(crate::config::VerbGrant::All))).then_some(Scope::Full)
+    };
     p.roles
         .iter()
         .filter_map(|role| table.get(role))
-        .filter_map(|b| b.admin_scope.as_deref())
-        .filter_map(Scope::parse)
+        .flat_map(|b| [b.admin_scope.as_deref().and_then(Scope::parse), all(b)])
+        .flatten()
         .fold(Grants::default(), Grants::with)
+}
+
+/// THE PER-VERB ALLOW-LIST an identified admin principal holds beside its rung grants (#77(9),
+/// OWNER-LOCKED, `docs/design/BUSBAR-1.6.0.md` l.2279: "Each verb is a plain scoped verb authorized
+/// by the per-verb allow-list on the admin token (`verbs: [ … ]` or `verbs: "*"`; `read-only` and
+/// `full` stay the 1.5.5 shorthands)"). Built only for a principal some bound role grants verbs BY
+/// NAME; every other principal is judged on its rungs alone, as 1.5.5 judged it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct VerbAllowList {
+    /// The rungs held WHOLE — `admin_scope:` (the 1.5.5 shorthands) or `verbs: "*"`, capped by the
+    /// identifying provider's `max_admin_scope:`: every verb such a rung reaches is admitted.
+    pub rungs: busbar_contract::authz::Grants,
+    /// The verbs held BY NAME (`verbs: [ … ]`), each admitted whatever rung it needs; a name above
+    /// the provider's ceiling, or one the closed table does not declare, is never here.
+    pub named: std::collections::BTreeSet<String>,
+}
+
+impl VerbAllowList {
+    /// Whether this allow-list admits the verb `verb` (`None` = the request names no verb of the
+    /// closed table), which requires the rung `needed`: a rung held whole reaches it, or the verb
+    /// is held by name.
+    #[must_use]
+    pub fn admits(&self, verb: Option<&str>, needed: busbar_contract::authz::Scope) -> bool {
+        self.rungs.allows(needed) || verb.is_some_and(|v| self.named.contains(v))
+    }
+}
+
+/// The verbs a role principal holds BY NAME: the union of the `verbs: [ … ]` lists its bound roles
+/// grant under `role_bindings.<module>` (nested by module, an unbound role granting nothing, as
+/// [`admin_scope_for`] reads `admin_scope`). The operator credential and a roleless principal hold
+/// none. A name the closed table does not declare is dropped (fail closed), and so is one whose
+/// rung the identifying provider's ceiling (`cap`) does not reach: `max_admin_scope:` caps a named
+/// verb exactly as it caps an `admin_scope`.
+fn admin_verbs_named(
+    app: &crate::state::App,
+    module: &str,
+    principal: &Principal,
+    cap: Option<busbar_contract::authz::Scope>,
+) -> std::collections::BTreeSet<String> {
+    let Some(table) = app.role_bindings.get(module) else {
+        return std::collections::BTreeSet::new();
+    };
+    (principal.roles.iter())
+        .filter_map(|role| table.get(role))
+        .filter_map(|b| match b.verb_grant() {
+            Some(Ok(crate::config::VerbGrant::Named(names))) => Some(names),
+            _ => None,
+        })
+        .flatten()
+        .filter(|verb| {
+            crate::admin::seam::admin_verb_rung(verb.as_str())
+                .is_some_and(|rung| cap.is_none_or(|c| c.allows(rung)))
+        })
+        .collect()
 }
 
 /// A 403 in the frozen admin error envelope (`{"error":{"code":"forbidden","message":…}}`),
@@ -2198,18 +2272,28 @@ pub(crate) async fn auth_middleware(
         // the operator token; `role_bindings:` for group-carrying principals, unmapped groups grant
         // nothing), CAPPED by the identifying module's `max_admin_scope:` ceiling. An identified
         // principal with NO grant is 403, never 401 — authenticated but not authorized.
-        let (principal, scope) = match door {
-            AdminDoor::Identified(principal, grants) => (Some(principal), grants),
+        let (principal, scope, listed) = match door {
+            AdminDoor::Identified(principal, grants) => (Some(principal), grants, None),
+            AdminDoor::Listed(principal, grants, list) => (Some(principal), grants, Some(list)),
             // The explicit `admin_auth: []` OPEN posture (dev): anonymous, full authority —
             // symmetric with the data plane's empty chain. The default config never lands here.
-            AdminDoor::Open => (None, admin_scope_for(&app, None, None)),
+            AdminDoor::Open => (None, admin_scope_for(&app, None, None), None),
             // The ADMIN plane 401 speaks the frozen v1 envelope ({error:{code:"unauthorized"}})
             // — tooling branches on the SAME `code` seam as every other admin error, never a
             // protocol-shaped body (that shaping is for the DATA plane, whose SDKs parse it).
             AdminDoor::Denied => return Err(admin_unauthorized_response()),
         };
         let required = crate::admin::gate::required_scope(req.method(), &path);
-        if !scope.allows(required) {
+        // A principal holding verbs BY NAME is admitted only to a verb its allow-list reaches
+        // (#77(9) l.2279), refused in the same envelope as a rung it does not hold. A path the
+        // closed verb table does not declare is no verb, so only a rung held whole reaches it.
+        let verb_listed = listed.as_ref().is_none_or(|list| {
+            list.admits(
+                crate::admin::seam::admin_verb_at(req.method().as_str(), &path),
+                required,
+            )
+        });
+        if !scope.allows(required) || !verb_listed {
             // Denied authorization is AUDITED (a credential probing beyond its scope is exactly what
             // an operator wants to see) — but at most once per (principal, window). The durable
             // write-through is a blocking store round-trip under a process-global lock, and this path

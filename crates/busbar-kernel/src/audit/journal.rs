@@ -57,7 +57,7 @@ use std::thread::ThreadId;
 use indexmap::IndexMap;
 
 use crate::audit::{Chain, ChainBreak, ChainedRecord};
-use crate::plane::store::{encode, PlaneStore};
+use crate::store::plane_view::{encode, PlaneStore};
 use busbar_contract::records::{
     PlaneDisposition, PlaneRecord, PlaneSelector, RecordStoreError, RecordStoreResult,
 };

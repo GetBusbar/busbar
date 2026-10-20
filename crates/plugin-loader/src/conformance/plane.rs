@@ -26,6 +26,8 @@
 //!     "pool": "<the pool an ATTEMPT names>",              // optional
 //!     "caller_ref": "<the caller's reference>",           // optional: on every piece
 //!     "host": { "entitled": [...], "trusted": [...] },     // optional: the kernel services served
+//!     // (top level, beside "plane") "far_ends": [...]       // optional: what the plane's own
+//!     //                                                    // needs reach, as the auth script's
 //!     "attempt": { "to_far_end": false },                  // optional: the ATTEMPT is taken, the
 //!                                                          // request rides the caller's body
 //!     "arrive_each": true,                                 // optional: every unit arrives first
@@ -92,12 +94,9 @@
 //! service, so a plane that gates what a caller may see and call on the kernel's answers runs its
 //! gating here. Stating none, the dispatcher serves what it serves today.
 //!
-//! THE FAR ENDS (the inputs' top-level `far_ends`, as every kind's suite reads them): the plane's
-//! declared needs are bound to a connection table that answers each declared URL with its stated
-//! status, fields and body, and refuses a dial to any URL it does not declare as unreachable. So a
-//! plane that gathers its own state over its connection needs (`dial`, `exchange`) gathers it from
-//! the declared far ends, and a plane that dials anything else is refused, as an unreachable far
-//! end refuses it. Stating none, the needs are bound as they are today.
+//! THE FAR ENDS (the inputs' top-level `far_ends`): the plane's declared needs reach the URLs the
+//! table declares, each answering its stated status and body, and a dial to any URL it does not
+//! declare is refused as an unreachable far end refuses it.
 //!
 //! `serve_first`: each request is crossed on the plane's `serve` op after `start` (steps `serve
 //! first #<n>`, in order), on a request ticket with its buffers lent, as an operator's admin call
@@ -1388,8 +1387,19 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let d = k.carried.host.clone().map_or_else(dispatcher, |h| {
         Arc::new(Dispatcher::with_services(DispatchConfig::default(), h))
     });
-    // Its declared needs reach the far ends the inputs state (`far_ends`), when they state any.
-    let p = load::<Plane>(s, leg, super::bind_far(&d, "plane", s)).expect("the plane door loads");
+    // The plane's own declared needs (a card it fetches, a callback it delivers) reach the far
+    // ends its inputs state (`far_ends`), as the auth script's do; naming none, the leg's table.
+    let far = s.far_table();
+    let bound = match &far {
+        Some(table) => crate::dispatch::Bind {
+            conns: crate::dispatch::ConnTable::Host(
+                Arc::clone(table) as Arc<dyn busbar_contract::conn::DeclaredConns>
+            ),
+            ..super::bind(&d, "plane")
+        },
+        None => s.bind(&d, "plane"),
+    };
+    let p = load::<Plane>(s, leg, bound).expect("the plane door loads");
     // The loaded instance is admitted on what its Statement declares, as the kernel admits it.
     if let Some(h) = &k.carried.host {
         h.admit(&p.declared());
@@ -1619,6 +1629,17 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     }
     let fold = r.fold();
     contract(&fold, s.kind_inputs("plane"));
+    // AN UNREACHED SCHEME WAS NEVER TOUCHED (row 114): the claim conformance.json states is that
+    // no open of this fold rode one; an open that did is the scheme reached, not unreached.
+    if let Some(table) = &far {
+        let tried = table.unreached_opens();
+        assert!(
+            tried.is_empty(),
+            "the fold opened a need over an unreached scheme {tried:?}: conformance.json says the \
+             suite never reaches it, so either the plane reached it (the claim is wrong) or the \
+             scheme is exercised here and needs a far end, not an unreached entry"
+        );
+    }
     let unreported = unreported_classes(&fold, &billable);
     assert!(
         unreported.is_empty(),

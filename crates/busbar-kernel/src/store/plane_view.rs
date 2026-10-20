@@ -6,8 +6,7 @@
 //!
 //! [`busbar_contract::records::RecordStore`] is ONE trait that carries two unrelated authorities at once: the durable
 //! governance AUDIT CHAIN (`append_audit`/`list_audit`/`list_audit_tail`) and the per-plane durable
-//! state (one plane's task table, another plane's per-call log and demotion record, the spent-approval
-//! ledger). Handing a plane an `Arc<dyn Store>` to persist its rows would, by the same handle, let it
+//! state (a plane's own kind-tagged rows, the demotion record, the spent-approval ledger). Handing a plane an `Arc<dyn Store>` to persist its rows would, by the same handle, let it
 //! append audit records and forge a record's `prev_hash`/`hash` — the one thing the chain exists to
 //! make impossible.
 //!
@@ -35,38 +34,24 @@
 
 use busbar_contract::records::{PlaneRecordRef, RecordStoreError, RecordStoreResult};
 
-// THE NARROWING ADAPTER — the `PlaneStore` trait a plane persists through and the `PlaneStoreView`
-// that narrows a real `busbar_contract::records::RecordStore` to it — lives in the neutral substrate so a plane crate
-// holds an `Arc<dyn PlaneStore>` without naming core. Re-exported here so every in-core call site is
-// unchanged.
-
 // ── THE KIND TAG CONSTANTS (the neutral on-wire `PlaneRecord.kind` vocabulary) ───────────────────
 //
-// One constant per plane concept, so a consumer names a `kind` in exactly one place and a typo is a
-// missing symbol rather than a silently-inert string. These are the on-wire tags a store branches on;
-// they are neutral strings that name no Rust plane type, and the stores key their retention on them
-// verbatim (a `task` purges only terminal rows). A plane crate mirrors the constant it owns (e.g. `busbar_mcp`'s
-// `KIND_CALL`, the agent plane's `KIND_TASK`) so the tag it writes and the tag core reads agree.
+// One constant per kind the KERNEL itself writes, so a consumer names a `kind` in exactly one place
+// and a typo is a missing symbol rather than a silently-inert string. These are the on-wire tags a
+// store branches on; they name no plane. A plane's own kinds are the plane's constants, declared in
+// its own crate, never here.
 
-/// One plane's task row kind.
-pub const KIND_TASK: &str = "task";
-/// That same plane's per-task provenance event kind.
-pub const KIND_TASK_EVENT: &str = "task_event";
-/// Another plane's per-call log record kind.
-pub const KIND_CALL: &str = "call";
 /// The administrative AUDIT chain record kind — the neutral store tag the administrative mutation
 /// log's durable journal seam persists its hash-chained records under.
 pub const KIND_AUDIT: &str = "audit";
 /// The `usage.residual` row kind: one per-principal hash chain of the usage counts no billing class
 /// records (MONEY LAW). Durable and never purged; see [`crate::residual_log`].
 pub const KIND_RESIDUAL: &str = "usage_residual";
-/// That same plane's demotion record kind.
+/// The trust demotion record kind.
 pub const KIND_DEMOTION: &str = "demotion";
 /// The operator's trust decisions (the core-admin `/admin/trust` approve and revoke), one row per
 /// trust key, replayed at admit: core-neutral, every plane's.
 pub const KIND_TRUST_DECISION: &str = "trust_decision";
-/// The spent-approval ledger kind (a single-use token).
-pub(crate) const KIND_ASK: &str = "ask";
 
 /// Serialize a typed plane row into an opaque [`PlaneRecord::body`](busbar_contract::records::PlaneRecord::body). `serde_json`, matching the store
 /// plugins' decode, so the bytes round-trip identically across the plugin ABI. Generic over any
@@ -83,10 +68,9 @@ pub fn decode<T: serde::de::DeserializeOwned>(body: &[u8]) -> RecordStoreResult<
 }
 
 #[cfg(test)]
-#[path = "tests/store_seam_tests.rs"]
-mod store_seam_tests;
+#[path = "tests/plane_view_tests.rs"]
+mod plane_view_tests;
 
-// ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 use busbar_contract::records::{PlaneSelector, RecordStore, Retention};
 use std::sync::Arc;
 
@@ -99,11 +83,11 @@ use std::sync::Arc;
 /// forwards to them one-to-one (see [`PlaneStoreView`]); the mirroring is deliberate and is NOT a
 /// modification of `Store` — this is an additional, strictly-narrower trait owned by core.
 pub trait PlaneStore: Send + Sync + 'static {
-    /// See [`RecordStore::upsert_plane_record`] — the neutral upsert (kind `task` / `demotion`).
+    /// See [`RecordStore::upsert_plane_record`] — the neutral upsert.
     fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()>;
-    /// See [`RecordStore::get_plane_record`] — the neutral point read (kind `task`).
+    /// See [`RecordStore::get_plane_record`] — the neutral point read.
     fn get_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<Option<Vec<u8>>>;
-    /// See [`RecordStore::append_plane_record`] — the neutral append (kind `task_event` / `call`).
+    /// See [`RecordStore::append_plane_record`] — the neutral append.
     fn append_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()>;
     /// See [`RecordStore::list_plane_records`] — the neutral list (kind × selector).
     fn list_plane_records(
@@ -111,9 +95,10 @@ pub trait PlaneStore: Send + Sync + 'static {
         kind: &str,
         selector: &PlaneSelector,
     ) -> RecordStoreResult<Vec<Vec<u8>>>;
-    /// See [`RecordStore::list_plane_record_parents`] — the neutral parent enumeration (kind `call`).
+    /// See [`RecordStore::list_plane_record_parents`] — the neutral parent enumeration.
     fn list_plane_record_parents(&self, kind: &str) -> RecordStoreResult<Vec<String>>;
-    /// See [`RecordStore::purge_plane_records_before`] — the neutral retention purge, by age.
+    /// See [`RecordStore::purge_plane_records_before`] — the neutral retention purge (honoring the
+    /// store's terminal-only-vs-all-older split per kind).
     fn purge_plane_records_before(&self, kind: &str, before: u64) -> RecordStoreResult<u64>;
     /// See [`RecordStore::purge_plane_records`] — the neutral retention purge under the rule the
     /// kind's owner declared ([`Retention`]). DEFAULTED as the contract's: [`Retention::Age`] is
@@ -129,9 +114,9 @@ pub trait PlaneStore: Send + Sync + 'static {
             Retention::TerminalOnly => Ok(0),
         }
     }
-    /// See [`RecordStore::delete_plane_record`] — the neutral delete (kind `demotion`).
+    /// See [`RecordStore::delete_plane_record`] — the neutral delete.
     fn delete_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<()>;
-    /// See [`RecordStore::redeem_plane_token`] — the neutral single-use test-and-set (kind `ask`).
+    /// See [`RecordStore::redeem_plane_token`] — the neutral single-use test-and-set.
     fn redeem_plane_token(
         &self,
         kind: &str,
@@ -139,7 +124,7 @@ pub trait PlaneStore: Send + Sync + 'static {
         expires_at: u64,
         now: u64,
     ) -> RecordStoreResult<bool>;
-    /// See [`RecordStore::plane_token_live`] — the neutral MULTI-USE capability check (kind `push_config`):
+    /// See [`RecordStore::plane_token_live`] — the neutral MULTI-USE capability check:
     /// live while the record is present, still `Active`, and inside its deadline. Spends nothing.
     fn plane_token_live(
         &self,

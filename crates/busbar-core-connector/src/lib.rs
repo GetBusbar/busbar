@@ -2177,9 +2177,10 @@ impl Connector {
                 .get(&(caller, need, desc.member.to_owned()))
                 .is_some_and(|at| at.eq_ignore_ascii_case(planned.authority()));
         // A TARGET THE NEED'S CONFIG NAMES IS THE OPERATOR'S OWN (THE DESIGN §5 egress-class
-        // table, owner-signed 2026-09-27): in a request-data class its address is judged as
-        // operator infrastructure. A provider need keeps its class: it is refused a private
-        // address unless allowlisted (ARCHITECT ruling CRATES-14, `guard::judged_class`).
+        // table, owner-signed 2026-09-27) in the egress default class only: its address is judged
+        // as operator infrastructure. An open-web need keeps its class (public https only, Q128
+        // ruling 14), and a provider need is refused a private address unless allowlisted
+        // (ARCHITECT ruling CRATES-14, `guard::judged_class`).
         let judged_class = guard::judged_class(egress_class, declared_target.is_some());
         // THE DECLARED TARGET (1.5.5's per-module target guarantee, on every need): a need whose
         // config names its target dials that target and no other.
