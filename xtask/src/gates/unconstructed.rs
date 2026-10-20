@@ -66,10 +66,14 @@
 //! * **An UNDECLARED capability with no production construction site is RED**, naming the
 //!   capability and printing every mention it rejected, with the reason each was rejected — so the
 //!   reader sees *five mentions, none of them a call* rather than a bare absence.
-//! * **A DECLARED-UNSHIPPED one is a TRACKED ROW**: it passes, and it prints its reason and its
-//!   switch on every run. That is the [`crate::gates::reachability`] `[[dormant]]` bargain, for the
-//!   same reason — the three findings above were all *known* to somebody and written down nowhere a
-//!   machine reads.
+//! * **A DECLARED-UNSHIPPED one is a TRACKED ROW ON THE DEV LINE**: it passes there, and it prints
+//!   its reason and its switch on every run. That is the [`crate::gates::reachability`]
+//!   `[[dormant]]` bargain, for the same reason — the three findings above were all *known* to
+//!   somebody and written down nowhere a machine reads. **A release posture refuses it**: for a
+//!   shipping target (ship-ready's, `qa` and `main`) or a posture nobody could read, every
+//!   declared-unshipped row is RED, because "a built type or verb with no production construction
+//!   site is either wired or deleted before the cut" (BUSBAR-1.6.0.md, What this means for the
+//!   gates). The posture is ship-ready's: `XTASK_SHIP_TARGET`, else the branch.
 //!
 //! and the ledger cannot outlive the debt: [`ROW_STALE`] reds when a declared-unshipped capability
 //! ACQUIRES a production site (strike the row in the commit that wires it), and [`ROW_DEAD_SYMBOL`]
@@ -114,7 +118,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ctx::{Ctx, Overlay, WalkSpec};
-use crate::gates::ship_ready::Posture;
+use crate::gates::ship_ready::{self, Posture};
 use crate::gates::{
     prove_green, prove_rows_green, prove_rows_red, Case, CasePlan, Expect, Gate, Report,
 };
@@ -167,6 +171,11 @@ pub const ROW_DEAD_SYMBOL: &str = "unconstructed:dead-symbol";
 /// never a sentence in the file the gate reads. And the list cannot outlive its facts: an id here
 /// that [`DECLARATIONS`] no longer declares `unshipped` reds [`ROW_STALE`], so the list only
 /// shrinks as the debts drain. Armed 2026-09-23 at the eighteen the file declares today.
+///
+/// AND IT IS A DEV-LINE LEDGER ONLY (XH2#1). Its rows used to pass under every posture, the cut
+/// included, so a release move was green on this gate while every capability named here shipped
+/// built and unconstructed. For a release posture ([`refuses_register`]) each of them is RED: the
+/// register drains to empty, by wiring or by deletion, before the cut.
 pub const KNOWN_UNSHIPPED: &[&str] = &[
     // `audit-chain-signing` STRUCK 2026-09-26 (KEYSET; spec #82(a), BUSBAR-1.6.0.md THE DESIGN, §2/PB-13,
     // architect ruling "#82(a) key source", owner flag Q78): the root binds the deployment keyset
@@ -217,9 +226,25 @@ pub const KNOWN_UNSHIPPED: &[&str] = &[
 /// The words a release posture's refusal of a declared-unshipped row carries.
 const RELEASE_REFUSAL: &str = "RELEASE POSTURE";
 
-/// The gate's verdict for `posture`.
-fn run_at(cx: &Ctx, _posture: &Posture) -> Verdict {
-    UnconstructedGate.run(cx)
+/// Does `posture` refuse every declared-unshipped row? A release line does: the register is a
+/// dev-line ledger of debts being drained, and "a built type or verb with no production
+/// construction site is either wired or deleted before the cut" (BUSBAR-1.6.0.md, What this means
+/// for the gates). A posture nobody could read refuses too, for ship-ready's reason: not knowing
+/// whether this is a release line is not knowing it is not one. The release targets are
+/// ship-ready's, read from the one place they are written.
+fn refuses_register(posture: &Posture) -> bool {
+    match posture {
+        Posture::Named(t) => ship_ready::is_shipping(t),
+        Posture::Unknown(_) => true,
+    }
+}
+
+/// How a posture reads in a row's detail.
+fn posture_label(posture: &Posture) -> String {
+    match posture {
+        Posture::Named(t) => format!("target `{t}`"),
+        Posture::Unknown(why) => format!("an UNREADABLE posture ({why})"),
+    }
 }
 
 /// The per-capability row id.
@@ -245,7 +270,8 @@ struct Capability {
     /// The roots a production construction site must appear under.
     scope: Vec<String>,
     why: String,
-    /// `true` when this capability is KNOWN not to ship. It passes and prints.
+    /// `true` when this capability is KNOWN not to ship. It passes and prints on the dev line, and
+    /// is RED for a release posture.
     unshipped: bool,
     /// The event that retires an `unshipped` row. Required when `unshipped`.
     switch: String,
@@ -611,26 +637,424 @@ impl Gate for UnconstructedGate {
         ids
     }
 
-    /// THE REVIEWED DECLARED-UNSHIPPED ROWS, and only those.
-    ///
-    /// A row for a capability declared `unshipped` AND named in [`KNOWN_UNSHIPPED`] PASSES whether
-    /// a construction site is found or not — that is the whole bargain — so no plant over the tree
-    /// can drive it RED. It is still exercised by the green case, still reconciled, and the day it
-    /// acquires a site [`ROW_STALE`] reds instead. An `unshipped` row the register does NOT name is
-    /// not informational: it is red, and the self-test proves it.
-    fn informational(&self) -> Vec<String> {
-        match Ctx::workspace().and_then(|cx| declarations(&cx)) {
-            Ok(caps) => caps
-                .iter()
-                .filter(|c| c.unshipped && !c.id.is_empty())
-                .filter(|c| KNOWN_UNSHIPPED.contains(&c.id.as_str()))
-                .map(|c| row_site(&c.id))
-                .collect(),
-            Err(_) => Vec::new(),
-        }
+    fn run(&self, cx: &Ctx) -> Verdict {
+        Self::run_at(cx, &ship_ready::posture(cx))
     }
 
-    fn run(&self, cx: &Ctx) -> Verdict {
+    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
+        let mut report = Report::new();
+
+        // THE PLANTS ARE OVER THE REAL TREE, not a fixture tree. This gate's entire subject is THIS
+        // repository's composition root, and a fixture would prove the predicate without proving it
+        // is about anything. Every plant below edits one real file IN AN OVERLAY, which lives in
+        // this process and writes no byte to disk.
+        const DURABILITY: &str = "crates/busbar/src/root/durability/mod.rs";
+        const SETTLE: &str = "crates/busbar-kernel-ledger/src/settle.rs";
+        const REAL_SITE: &str = "ledger: Ledger::dual_writing(legacy_rows),";
+
+        let real = cx.read(DURABILITY).unwrap_or_default();
+        let decls = cx.read(DECLARATIONS).unwrap_or_default();
+
+        // ── THE ONE STANDING RED THESE CONTROLS MUST NOT STAND ON (item 89). ────────────────
+        // `money-one-function-view` is declared `unshipped` and HAS a production construction
+        // site today, so `stale-declaration` is RED on the real tree. That is a money row, PARKED
+        // for its owner, and this selftest does not answer it: `gate unconstructed` stays RED on
+        // it. But every control that covers `stale-declaration` (and the whole-gate green arm)
+        // would then be planting into a row that is already red — PROOF IMPOSSIBLE, and the
+        // harness said so. So those controls run over a FIXTURE: the real tree with that one
+        // site's needle masked, i.e. the tree as the declaration still describes it. Everything
+        // else those controls read is the real tree, and every other control is unchanged.
+        let masked = parked_money_masked(cx);
+        let base = cx.with_overlay(masked.clone());
+        let on_base = |path: &str, content: String| {
+            let mut ov = masked.clone();
+            ov.set(path, content);
+            ov
+        };
+
+        // EVERY CONTROL BUT 14 RUNS ON THE DEV LINE, pinned, not on whatever this checkout is: the
+        // posture is not a fact of the tree, and a detached checkout is an unreadable posture that
+        // reds the register (control 14). The posture decides only the register's rows.
+        //
+        // ── CONTROL 1 — THE GREEN ARM. ──────────────────────────────────────────────────────
+        // The unplanted tree must be green, or every RED below proves only that the gate is red
+        // about everything. It covers EVERY owed row, the register's rows on the dev line among
+        // them; control 14 is their RED arm.
+        let owed: Vec<String> = self.owed();
+        report.push(prove_green(
+            &base,
+            &AT_DEV_LINE,
+            "the real tree, with the one parked money site masked, is GREEN: every declared \
+             capability is constructed, or declared unshipped and still unconstructed on the dev line",
+            &owed.iter().map(String::as_str).collect::<Vec<_>>(),
+        ));
+
+        // ── CONTROL 2 — THE RED ARM: REMOVE A REAL CONSTRUCTION SITE. ───────────────────────
+        // `Ledger::dual_writing` IS constructed on HEAD. Take that one call away — the exact edit
+        // a refactor would make — and the gate must go RED naming that capability. This is what
+        // makes control 1's green a measurement rather than a default.
+        let gone = real.replace(REAL_SITE, "ledger: Ledger::new(),");
+        report.push(prove_rows_red(
+            cx,
+            &AT_DEV_LINE,
+            "removing the real `Ledger::dual_writing` construction site reds its row, BY NAME",
+            &[&row_site("ledger-dual-write")],
+            {
+                let mut ov = Overlay::new();
+                ov.set(DURABILITY, gone.clone());
+                ov
+            },
+            &["NO PRODUCTION CONSTRUCTION SITE", "dual_writing"],
+        ));
+
+        // ── CONTROL 3 — DECORATION IS NOT CONSTRUCTION. ─────────────────────────────────────
+        // The call is replaced by four disguises at once, all naming the capability in full: a doc
+        // comment, a commented-out call, a string literal, and a trailing comment. The row must
+        // STAY RED. A gate that passed this would be satisfied by a MENTION — which is exactly what
+        // the three proven instances looked like from a distance.
+        let decorated = format!(
+            "{}\n",
+            gone.replace(
+                "ledger: Ledger::new(),",
+                "ledger: Ledger::new(), // Ledger::dual_writing(legacy_rows) is the strong form\n\
+                 /// This node uses Ledger::dual_writing(legacy_rows) for reconciliation.\n\
+                 // let _ = Ledger::dual_writing(legacy_rows);\n\
+                 // const NOTE: &str = \"Ledger::dual_writing(legacy_rows)\";",
+            )
+        );
+        report.push(prove_rows_red(
+            cx,
+            &AT_DEV_LINE,
+            "a doc comment, a commented-out call and a string literal naming the capability in \
+             full do NOT satisfy the row",
+            &[&row_site("ledger-dual-write")],
+            {
+                let mut ov = Overlay::new();
+                ov.set(DURABILITY, decorated);
+                ov
+            },
+            &["NO PRODUCTION CONSTRUCTION SITE", "dual_writing"],
+        ));
+
+        // ── CONTROL 4 — A `use` LINE IS NOT A CONSTRUCTION SITE. ────────────────────────────
+        // Deliberately adversarial TEXT rather than valid Rust: the gate is a text scanner, so the
+        // question is whether the SCANNER can be fooled by an import that carries the needle, not
+        // whether rustc would accept the bait. The row must stay red AND say `use` statement.
+        let imported = format!(
+            "use crate::root::Ledger::dual_writing();\ntype AlsoDualWriting = Ledger::dual_writing();\n{gone}"
+        );
+        report.push(prove_rows_red(
+            cx,
+            &AT_DEV_LINE,
+            "a `use` line and a type alias carrying the needle do NOT satisfy the row",
+            &[&row_site("ledger-dual-write")],
+            {
+                let mut ov = Overlay::new();
+                ov.set(DURABILITY, imported);
+                ov
+            },
+            &["NO PRODUCTION CONSTRUCTION SITE", "use` statement"],
+        ));
+
+        // ── CONTROL 5 — A TEST-ONLY CALL IS NOT A PRODUCTION SITE. ──────────────────────────
+        // THE EXACT SHAPE OF THE PROVEN AUDIT-SIGNING FINDING: a real call, in a real production
+        // file, under `#[cfg(test)]`. Sixteen green tests are what this looks like from the inside.
+        let test_only = format!(
+            "{gone}\n#[cfg(test)]\nmod planted {{\n    fn f() {{ let _ = Ledger::dual_writing(rows); }}\n}}\n"
+        );
+        report.push(prove_rows_red(
+            cx,
+            &AT_DEV_LINE,
+            "a real call under #[cfg(test)] does NOT count as a production construction site",
+            &[&row_site("ledger-dual-write")],
+            {
+                let mut ov = Overlay::new();
+                ov.set(DURABILITY, test_only);
+                ov
+            },
+            &["NO PRODUCTION CONSTRUCTION SITE", "test scope"],
+        ));
+
+        // ── CONTROL 6 — THE GATE CAN SEE A CONSTRUCTION WHEN ONE APPEARS. ───────────────────
+        // The counterpart of control 2, and the one that proves the gate is not simply blind to
+        // this needle. The audit signer IS wired on the real tree (`root::keyset::bind`, KEYSET
+        // 2026-09-26), so the plant is the DECLARATION going stale over it: re-declare that row
+        // `unshipped` — the state it was in before the wiring landed — and the row must be caught
+        // as STALE, because the declaration now says something the tree refutes.
+        let redeclared = decls.replace(
+            "construct = [\".signing_with(\"]\n",
+            "construct = [\".signing_with(\"]\nunshipped = true\nswitch    = \"STRIKE THIS ROW in \
+             the same commit that gives the composition root a signing key\"\n",
+        );
+        report.push(prove_rows_red(
+            &base,
+            &AT_DEV_LINE,
+            "an audit-signer row declared unshipped over the wired signer reds \
+             `stale-declaration`: an unshipped row that HAS a construction site must be struck",
+            &[ROW_STALE],
+            on_base(DECLARATIONS, redeclared),
+            &["declared `unshipped` but NOW HAS", "audit-chain-signing"],
+        ));
+
+        // ── CONTROL 6b — UNWIRING THE AUDIT SIGNER REDS ITS ROW, BY NAME. ──────────────────
+        // The constructed-guard half of the struck debt: take the one production signing site
+        // away — the root binding the deployment keyset — and `audit-chain-signing` must go RED.
+        const KEYSET: &str = "crates/busbar/src/root/keyset.rs";
+        let unsigned = cx.read(KEYSET).unwrap_or_default().replace(
+            "std::mem::take(&mut durability.record).signing_with(key);",
+            "{ drop(key); std::mem::take(&mut durability.record) };",
+        );
+        report.push(prove_rows_red(
+            cx,
+            &AT_DEV_LINE,
+            "removing the root's audit-signer construction site reds `audit-chain-signing`, BY NAME",
+            &[&row_site("audit-chain-signing")],
+            {
+                let mut ov = Overlay::new();
+                ov.set(KEYSET, unsigned);
+                ov
+            },
+            &["NO PRODUCTION CONSTRUCTION SITE", "signing_with"],
+        ));
+
+        // ── CONTROL 7 — A NON-CALL NEEDLE IS REFUSED AT THE DECLARATION. ────────────────────
+        // The gate cannot be CONFIGURED to accept decoration. Weakening a row's needle to a bare
+        // name is refused outright rather than quietly passing on the `use` line control 4 plants.
+        report.push(prove_rows_red(
+            cx,
+            &AT_DEV_LINE,
+            "a `construct` needle that is not call-shaped is REFUSED, so no row can be weakened \
+             into accepting a mention",
+            &[ROW_SCAN_FLOOR],
+            {
+                let mut ov = Overlay::new();
+                ov.set(
+                    DECLARATIONS,
+                    decls.replace(
+                        "construct = [\"Ledger::dual_writing(\"]",
+                        "construct = [\"dual_writing\"]",
+                    ),
+                );
+                ov
+            },
+            &["does not end in `(`"],
+        ));
+
+        // ── CONTROL 8 — A SHRUG IS NOT A REASON. ────────────────────────────────────────────
+        report.push(prove_rows_red(
+            cx,
+            &AT_DEV_LINE,
+            "an `unshipped` row whose `switch` is a shrug is refused: a debt with no expiry is the \
+             state this file exists to end",
+            &[ROW_SCAN_FLOOR],
+            {
+                // The declared-unshipped planted row carries the shrug: every row on the real
+                // register is constructed today, so the switch under test is the plant's own.
+                let mut ov = Overlay::new();
+                let planted = planted_unshipped_toml();
+                let mut lines: Vec<String> = decls
+                    .lines()
+                    .chain(planted.lines())
+                    .map(str::to_string)
+                    .collect();
+                for l in &mut lines {
+                    if l.starts_with("switch    =") {
+                        *l = "switch    = \"soon\"".to_string();
+                    }
+                }
+                ov.set(DECLARATIONS, lines.join("\n"));
+                ov
+            },
+            &["a debt with no expiry"],
+        ));
+
+        // ── CONTROL 9 — AN ABSENT DECLARATION FILE IS A GAP, NEVER A PASS. ──────────────────
+        // A gate that cannot find its subject reports that. An empty declaration file and a tree
+        // with nothing to declare must never produce the same output.
+        report.push(prove_rows_red(
+            cx,
+            &AT_DEV_LINE,
+            "an absent declaration file is DID NOT RUN, never a green tree",
+            &[ROW_SCAN_FLOOR],
+            {
+                let mut ov = Overlay::new();
+                ov.remove(DECLARATIONS);
+                ov
+            },
+            &[DID_NOT_RUN],
+        ));
+
+        // ── CONTROL 10 — A DECLARATION THAT OUTLIVED ITS SUBJECT. ───────────────────────────
+        // The symbol is renamed away while its construct needle stays live, so the site scan alone
+        // would still read PASS: the dead-symbol row, and the site row with it, must go RED naming
+        // the row and the symbol.
+        report.push(prove_rows_red(
+            &base,
+            &AT_DEV_LINE,
+            "a declaration naming a symbol its `built` file no longer defines reds `dead-symbol` \
+             and its own site row, by row and by symbol",
+            &[ROW_DEAD_SYMBOL, &row_site("ledger-dual-write")],
+            on_base(
+                SETTLE,
+                cx.read(SETTLE)
+                    .unwrap_or_default()
+                    .replace("pub fn dual_writing(", "pub fn renamed_away("),
+            ),
+            &["DEAD SYMBOL", "ledger-dual-write", "dual_writing"],
+        ));
+
+        // ── CONTROL 10b — THE SYMBOL SURVIVING ONLY AS A TEST HELPER IS STILL DEAD. ─────────
+        // The production definition is renamed away and a `#[cfg(test)]` `fn dual_writing` is left
+        // behind: a test helper is not the capability, so the row must stay RED.
+        report.push(prove_rows_red(
+            &base,
+            &AT_DEV_LINE,
+            "a symbol defined only under #[cfg(test)] is a dead symbol",
+            &[ROW_DEAD_SYMBOL],
+            on_base(
+                SETTLE,
+                format!(
+                    "{}\n#[cfg(test)]\nmod planted {{\n    fn dual_writing() {{}}\n}}\n",
+                    cx.read(SETTLE)
+                        .unwrap_or_default()
+                        .replace("pub fn dual_writing(", "pub fn renamed_away(")
+                ),
+            ),
+            &["DEAD SYMBOL", "dual_writing"],
+        ));
+
+        // ── CONTROL 12 — A SELF-DECLARED UNSHIPPED CAPABILITY IS RED (item 230). ────────────
+        // The five-line silencing, planted: a new capability declared `unshipped` with a full
+        // reason and switch, in the declaration file only. Its row must RED, because the register
+        // the gate holds does not name it.
+        report.push(prove_rows_red(
+            cx,
+            &AT_DEV_LINE,
+            "an `unshipped` declaration the reviewed register does not name reds its own row",
+            &[&row_site(PLANTED_UNSHIPPED)],
+            {
+                let mut ov = Overlay::new();
+                ov.set(
+                    DECLARATIONS,
+                    format!("{decls}\n{}", planted_unshipped_toml()),
+                );
+                ov
+            },
+            &["SELF-DECLARED UNSHIPPED", PLANTED_UNSHIPPED],
+        ));
+
+        // ── CONTROL 13 — A DELETED DECLARATION IS RED, NOT A SMALLER GREEN. ─────────────────
+        // The declarations ARE the gate's denominator: a row struck from the file is a guard that
+        // stopped running, and the file read exactly as clean with one row as with two. Strike rows
+        // from the end until exactly one fewer than the floor is left, and the floor must go RED,
+        // naming the count it found.
+        //
+        // HOW MANY TO STRIKE IS MEASURED, not assumed to be one. The floor is a minimum, and the
+        // file may carry more rows than it: striking only the last row of a file holding more than
+        // [`DECLARATION_FLOOR`] leaves it above the floor, and this control then failed on every
+        // branch that declared a new row without touching the gate.
+        let ids: Vec<String> = declarations(cx)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        let strike = (ids.len() + 1).saturating_sub(DECLARATION_FLOOR).max(1);
+        let below_floor = ids
+            .iter()
+            .rev()
+            .take(strike)
+            .fold(decls.clone(), |text, id| without_declaration(&text, id));
+        let left = format!(
+            "{} capability declaration(s)",
+            ids.len().saturating_sub(strike)
+        );
+        report.push(prove_rows_red(
+            cx,
+            &AT_DEV_LINE,
+            "[[capability]] declarations struck from the file to one below the floor red the \
+             declaration floor",
+            &[ROW_SCAN_FLOOR],
+            {
+                let mut ov = Overlay::new();
+                ov.set(DECLARATIONS, below_floor);
+                ov
+            },
+            &["below the declaration floor", &left],
+        ));
+
+        // ── CONTROL 13b — A FILE WITH NO DECLARATIONS AT ALL IS RED. ────────────────────────
+        // Every row struck, every comment kept: the file parses, every scope is walked (there are
+        // none), and the gate used to read that as `0 capability declaration(s)` and pass.
+        let none_left = ids
+            .iter()
+            .fold(decls.clone(), |text, id| without_declaration(&text, id));
+        report.push(prove_rows_red(
+            cx,
+            &AT_DEV_LINE,
+            "a declaration file with zero [[capability]] rows reds the declaration floor",
+            &[ROW_SCAN_FLOOR],
+            {
+                let mut ov = Overlay::new();
+                ov.set(DECLARATIONS, none_left);
+                ov
+            },
+            &["below the declaration floor", "0 capability declaration(s)"],
+        ));
+
+        // ── CONTROL 14 — A RELEASE POSTURE REFUSES EVERY DECLARED-UNSHIPPED ROW (XH2#1). ────
+        // The register is a dev-line ledger, never a release exemption: "A built type or verb with
+        // no production construction site is either wired or deleted before the cut"
+        // (BUSBAR-1.6.0.md, What this means for the gates). So for a `qa` or `main` target, and for
+        // a posture nobody could read, every row the register names must be RED, by name.
+        for (posture, gate) in [
+            ("a `qa` target", &AT_QA),
+            ("a `main` target", &AT_MAIN),
+            ("an unreadable posture", &AT_UNKNOWN),
+        ] {
+            report.push(release_refuses_register(
+                &base,
+                gate,
+                format!("{posture} reds every declared-unshipped row on the register, by name"),
+            ));
+        }
+
+        // ── CONTROL 11 — RESTORING THE SITE RETURNS THE ROW TO GREEN. ───────────────────────
+        // Control 2's overlay with the call put back. This is what proves control 2's RED is about
+        // THE MISSING CALL and not about the edit, the overlay, or the file having been touched.
+        //
+        // THE BASELINE IS CONTROL 2'S PLANTED TREE, not the real one (item 209). Taken over the
+        // real tree, "put the call back" wrote the bytes `durability.rs` already has — a plant that
+        // planted nothing, so its green was a statement about the unplanted tree. Over the tree
+        // with the site REMOVED, restoring it is a real edit, and the row going green is the
+        // restoration's doing.
+        let site_removed = {
+            let mut ov = Overlay::new();
+            ov.set(DURABILITY, gone.clone());
+            cx.with_overlay(ov)
+        };
+        report.push(prove_rows_green(
+            &site_removed,
+            &AT_DEV_LINE,
+            "restoring the construction site returns the row to GREEN",
+            &[&row_site("ledger-dual-write")],
+            {
+                let mut ov = Overlay::new();
+                ov.set(
+                    DURABILITY,
+                    gone.replace("ledger: Ledger::new(),", REAL_SITE),
+                );
+                ov
+            },
+        ));
+
+        report
+    }
+}
+
+impl UnconstructedGate {
+    /// The gate's verdict over `cx` for `posture`: [`Gate::run`] with the posture named rather
+    /// than read, so the self-test drives every posture without a checkout.
+    fn run_at(cx: &Ctx, posture: &Posture) -> Verdict {
         let caps = match declarations(cx) {
             Ok(c) => c,
             Err(e) => return all_rows_did_not_run(&[], &e),
@@ -678,8 +1102,8 @@ impl Gate for UnconstructedGate {
                         &caps,
                         &format!(
                             "`{}` declares it is built in {}, which could not be read ({e}). A \
-                             capability whose implementation this gate cannot find is one it \
-                             cannot judge",
+                                 capability whose implementation this gate cannot find is one it \
+                                 cannot judge",
                             c.id, c.built
                         ),
                     )
@@ -689,7 +1113,7 @@ impl Gate for UnconstructedGate {
 
         let measured = format!(
             "{} capability declaration(s) in {DECLARATIONS} (floor {DECLARATION_FLOOR}), {} scope \
-             root(s), {} file(s) scanned, {} implementation file(s) read",
+                 root(s), {} file(s) scanned, {} implementation file(s) read",
             caps.len(),
             roots.len(),
             total,
@@ -704,10 +1128,10 @@ impl Gate for UnconstructedGate {
                 "fewer capabilities are declared than the reviewed floor",
                 format!(
                     "{measured}: {} is below the declaration floor of {DECLARATION_FLOOR}. A \
-                     declaration struck from {DECLARATIONS} is a construction guard that no longer \
-                     runs, and the file reads exactly as clean without it. Restore the row, or \
-                     lower DECLARATION_FLOOR in xtask/src/gates/unconstructed.rs in the same \
-                     reviewed diff that strikes it",
+                         declaration struck from {DECLARATIONS} is a construction guard that no longer \
+                         runs, and the file reads exactly as clean without it. Restore the row, or \
+                         lower DECLARATION_FLOOR in xtask/src/gates/unconstructed.rs in the same \
+                         reviewed diff that strikes it",
                     caps.len()
                 ),
             )
@@ -715,10 +1139,10 @@ impl Gate for UnconstructedGate {
             Row::pass(
                 ROW_SCAN_FLOOR,
                 "the declarations parsed, every construct needle is call-shaped, and every scope \
-                 was walked",
+                     was walked",
                 format!(
                     "{CLEAN} — {measured}; every `construct` needle ends in `(` so no `use`, doc \
-                     comment or type alias can satisfy a row"
+                         comment or type alias can satisfy a row"
                 ),
             )
         }];
@@ -749,8 +1173,8 @@ impl Gate for UnconstructedGate {
             if !symbol_live {
                 let finding = format!(
                     "DEAD SYMBOL: row `{}` declares `symbol = \"{}\"` built in {}, which defines no \
-                     production `fn {}` — a ledgered row that points at nothing proves nothing. \
-                     Strike the row (and its KNOWN_UNSHIPPED entry) or correct it",
+                         production `fn {}` — a ledgered row that points at nothing proves nothing. \
+                         Strike the row (and its KNOWN_UNSHIPPED entry) or correct it",
                     c.id, c.symbol, c.built, c.symbol
                 );
                 dead.push(finding.clone());
@@ -765,12 +1189,12 @@ impl Gate for UnconstructedGate {
             if sites.is_empty() {
                 let detail = format!(
                     "NO PRODUCTION CONSTRUCTION SITE for `{}` (built in {}, construct {:?}) \
-                     anywhere under {:?}. {} mention(s) found and every one was rejected: {}. \
-                     A CAPABILITY THAT IS NEVER CONSTRUCTED IS A CAPABILITY THAT DOES NOT SHIP — \
-                     its tests prove the code works; they prove nothing about whether it runs. \
-                     Wire it at the composition root, or declare it `unshipped = true` in \
-                     {DECLARATIONS} with the reason and the switch that retires the row. WHY THIS \
-                     CAPABILITY MATTERS: {}",
+                         anywhere under {:?}. {} mention(s) found and every one was rejected: {}. \
+                         A CAPABILITY THAT IS NEVER CONSTRUCTED IS A CAPABILITY THAT DOES NOT SHIP — \
+                         its tests prove the code works; they prove nothing about whether it runs. \
+                         Wire it at the composition root, or declare it `unshipped = true` in \
+                         {DECLARATIONS} with the reason and the switch that retires the row. WHY THIS \
+                         CAPABILITY MATTERS: {}",
                     c.symbol,
                     c.built,
                     c.construct,
@@ -797,11 +1221,34 @@ impl Gate for UnconstructedGate {
                         ),
                         format!(
                             "SELF-DECLARED UNSHIPPED: `{}` carries `unshipped = true` in \
-                             {DECLARATIONS} and is not named in KNOWN_UNSHIPPED \
-                             (xtask/src/gates/unconstructed.rs). A declaration may not silence its \
-                             own capability: a new \"does not ship\" is an edit to the gate's \
-                             register, reviewed as one. {} REASON: {} SWITCH: {}",
+                                 {DECLARATIONS} and is not named in KNOWN_UNSHIPPED \
+                                 (xtask/src/gates/unconstructed.rs). A declaration may not silence its \
+                                 own capability: a new \"does not ship\" is an edit to the gate's \
+                                 register, reviewed as one. {} REASON: {} SWITCH: {}",
                             c.id, detail, c.why, c.switch
+                        ),
+                    ));
+                } else if c.unshipped && refuses_register(posture) {
+                    // THE CUT CARRIES NO REGISTER (XH2#1). The register lets the dev line keep moving
+                    // while a debt drains; a release line inherits none of it.
+                    rows.push(Row::fail(
+                        id,
+                        format!(
+                            "`{}` is declared unshipped and a release line ships no unconstructed \
+                             capability",
+                            c.id
+                        ),
+                        format!(
+                            "{RELEASE_REFUSAL}: {} refuses the KNOWN_UNSHIPPED register. `{}` is built \
+                             and never constructed in production, and BUSBAR-1.6.0.md holds that \"a \
+                             built type or verb with no production construction site is either wired \
+                             or deleted before the cut\". Wire it, or delete it and strike its row and \
+                             its register entry. {} REASON: {} SWITCH: {}",
+                            posture_label(posture),
+                            c.id,
+                            detail,
+                            c.why,
+                            c.switch
                         ),
                     ));
                 } else if c.unshipped {
@@ -809,9 +1256,13 @@ impl Gate for UnconstructedGate {
                         id,
                         format!("`{}` — DECLARED UNSHIPPED, tracked", c.id),
                         format!(
-                            "DECLARED-UNSHIPPED and therefore not red, but it does NOT run. {} \
-                             REASON: {} SWITCH: {}",
-                            detail, c.why, c.switch
+                            "DECLARED-UNSHIPPED and therefore not red on {}, a dev line, but it does \
+                             NOT run, and a release posture (a shipping target, or one nobody could \
+                             read) reds this row. {} REASON: {} SWITCH: {}",
+                            posture_label(posture),
+                            detail,
+                            c.why,
+                            c.switch
                         ),
                     ));
                 } else {
@@ -827,8 +1278,8 @@ impl Gate for UnconstructedGate {
                     // STALENESS, half two: the debt was paid and the row was not struck.
                     stale.push(format!(
                         "`{}` is declared `unshipped` but NOW HAS {} production construction \
-                         site(s): {}. The ledger cannot outlive the debt it tracked — strike the \
-                         row in the same commit that wired it",
+                             site(s): {}. The ledger cannot outlive the debt it tracked — strike the \
+                             row in the same commit that wired it",
                         c.id,
                         sites.len(),
                         cites.join("; ")
@@ -839,7 +1290,7 @@ impl Gate for UnconstructedGate {
                     format!("`{}` is constructed in production", c.id),
                     format!(
                         "{CLEAN} — {} production construction site(s) for `{}`: {}{} ({} \
-                         decorative or test mention(s) rejected)",
+                             decorative or test mention(s) rejected)",
                         sites.len(),
                         c.symbol,
                         cites.join("; "),
@@ -859,8 +1310,8 @@ impl Gate for UnconstructedGate {
             if !caps.iter().any(|c| c.unshipped && c.id == *known) {
                 stale.push(format!(
                     "`{known}` is on the KNOWN_UNSHIPPED register and {DECLARATIONS} no longer \
-                     declares it `unshipped` — strike it from the register in the same commit, or \
-                     the register becomes room for the next self-declared debt"
+                         declares it `unshipped` — strike it from the register in the same commit, or \
+                         the register becomes room for the next self-declared debt"
                 ));
             }
         }
@@ -871,7 +1322,7 @@ impl Gate for UnconstructedGate {
                 "every declaration names a symbol that exists",
                 format!(
                     "{CLEAN} — every declared `symbol` is a production `fn` in its `built` file \
-                     ({} row(s) checked)",
+                         ({} row(s) checked)",
                     caps.len()
                 ),
             )
@@ -889,7 +1340,7 @@ impl Gate for UnconstructedGate {
                 "no declaration outlived its subject",
                 format!(
                     "{CLEAN} — no `unshipped` row has quietly acquired a construction site and \
-                     the register names only declared debts ({} row(s) checked)",
+                         the register names only declared debts ({} row(s) checked)",
                     caps.len()
                 ),
             )
@@ -903,411 +1354,6 @@ impl Gate for UnconstructedGate {
 
         Verdict::of(rows)
     }
-
-    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
-        let mut report = Report::new();
-
-        // THE PLANTS ARE OVER THE REAL TREE, not a fixture tree. This gate's entire subject is THIS
-        // repository's composition root, and a fixture would prove the predicate without proving it
-        // is about anything. Every plant below edits one real file IN AN OVERLAY, which lives in
-        // this process and writes no byte to disk.
-        const DURABILITY: &str = "crates/busbar/src/root/durability/mod.rs";
-        const SETTLE: &str = "crates/busbar-kernel-ledger/src/settle.rs";
-        const REAL_SITE: &str = "ledger: Ledger::dual_writing(legacy_rows),";
-
-        let real = cx.read(DURABILITY).unwrap_or_default();
-        let decls = cx.read(DECLARATIONS).unwrap_or_default();
-
-        // ── THE ONE STANDING RED THESE CONTROLS MUST NOT STAND ON (item 89). ────────────────
-        // `money-one-function-view` is declared `unshipped` and HAS a production construction
-        // site today, so `stale-declaration` is RED on the real tree. That is a money row, PARKED
-        // for its owner, and this selftest does not answer it: `gate unconstructed` stays RED on
-        // it. But every control that covers `stale-declaration` (and the whole-gate green arm)
-        // would then be planting into a row that is already red — PROOF IMPOSSIBLE, and the
-        // harness said so. So those controls run over a FIXTURE: the real tree with that one
-        // site's needle masked, i.e. the tree as the declaration still describes it. Everything
-        // else those controls read is the real tree, and every other control is unchanged.
-        let masked = parked_money_masked(cx);
-        let base = cx.with_overlay(masked.clone());
-        let on_base = |path: &str, content: String| {
-            let mut ov = masked.clone();
-            ov.set(path, content);
-            ov
-        };
-
-        // ── CONTROL 1 — THE GREEN ARM. ──────────────────────────────────────────────────────
-        // The unplanted tree must be green, or every RED below proves only that the gate is red
-        // about everything. It covers EVERY owed row, which is what makes the informational
-        // `unshipped` rows exercised rather than merely declared.
-        let owed: Vec<String> = self.owed();
-        report.push(prove_green(
-            &base,
-            self,
-            "the real tree, with the one parked money site masked, is GREEN: every declared \
-             capability is constructed, or declared unshipped and still unconstructed",
-            &owed.iter().map(String::as_str).collect::<Vec<_>>(),
-        ));
-
-        // ── CONTROL 2 — THE RED ARM: REMOVE A REAL CONSTRUCTION SITE. ───────────────────────
-        // `Ledger::dual_writing` IS constructed on HEAD. Take that one call away — the exact edit
-        // a refactor would make — and the gate must go RED naming that capability. This is what
-        // makes control 1's green a measurement rather than a default.
-        let gone = real.replace(REAL_SITE, "ledger: Ledger::new(),");
-        report.push(prove_rows_red(
-            cx,
-            self,
-            "removing the real `Ledger::dual_writing` construction site reds its row, BY NAME",
-            &[&row_site("ledger-dual-write")],
-            {
-                let mut ov = Overlay::new();
-                ov.set(DURABILITY, gone.clone());
-                ov
-            },
-            &["NO PRODUCTION CONSTRUCTION SITE", "dual_writing"],
-        ));
-
-        // ── CONTROL 3 — DECORATION IS NOT CONSTRUCTION. ─────────────────────────────────────
-        // The call is replaced by four disguises at once, all naming the capability in full: a doc
-        // comment, a commented-out call, a string literal, and a trailing comment. The row must
-        // STAY RED. A gate that passed this would be satisfied by a MENTION — which is exactly what
-        // the three proven instances looked like from a distance.
-        let decorated = format!(
-            "{}\n",
-            gone.replace(
-                "ledger: Ledger::new(),",
-                "ledger: Ledger::new(), // Ledger::dual_writing(legacy_rows) is the strong form\n\
-                 /// This node uses Ledger::dual_writing(legacy_rows) for reconciliation.\n\
-                 // let _ = Ledger::dual_writing(legacy_rows);\n\
-                 // const NOTE: &str = \"Ledger::dual_writing(legacy_rows)\";",
-            )
-        );
-        report.push(prove_rows_red(
-            cx,
-            self,
-            "a doc comment, a commented-out call and a string literal naming the capability in \
-             full do NOT satisfy the row",
-            &[&row_site("ledger-dual-write")],
-            {
-                let mut ov = Overlay::new();
-                ov.set(DURABILITY, decorated);
-                ov
-            },
-            &["NO PRODUCTION CONSTRUCTION SITE", "dual_writing"],
-        ));
-
-        // ── CONTROL 4 — A `use` LINE IS NOT A CONSTRUCTION SITE. ────────────────────────────
-        // Deliberately adversarial TEXT rather than valid Rust: the gate is a text scanner, so the
-        // question is whether the SCANNER can be fooled by an import that carries the needle, not
-        // whether rustc would accept the bait. The row must stay red AND say `use` statement.
-        let imported = format!(
-            "use crate::root::Ledger::dual_writing();\ntype AlsoDualWriting = Ledger::dual_writing();\n{gone}"
-        );
-        report.push(prove_rows_red(
-            cx,
-            self,
-            "a `use` line and a type alias carrying the needle do NOT satisfy the row",
-            &[&row_site("ledger-dual-write")],
-            {
-                let mut ov = Overlay::new();
-                ov.set(DURABILITY, imported);
-                ov
-            },
-            &["NO PRODUCTION CONSTRUCTION SITE", "use` statement"],
-        ));
-
-        // ── CONTROL 5 — A TEST-ONLY CALL IS NOT A PRODUCTION SITE. ──────────────────────────
-        // THE EXACT SHAPE OF THE PROVEN AUDIT-SIGNING FINDING: a real call, in a real production
-        // file, under `#[cfg(test)]`. Sixteen green tests are what this looks like from the inside.
-        let test_only = format!(
-            "{gone}\n#[cfg(test)]\nmod planted {{\n    fn f() {{ let _ = Ledger::dual_writing(rows); }}\n}}\n"
-        );
-        report.push(prove_rows_red(
-            cx,
-            self,
-            "a real call under #[cfg(test)] does NOT count as a production construction site",
-            &[&row_site("ledger-dual-write")],
-            {
-                let mut ov = Overlay::new();
-                ov.set(DURABILITY, test_only);
-                ov
-            },
-            &["NO PRODUCTION CONSTRUCTION SITE", "test scope"],
-        ));
-
-        // ── CONTROL 6 — THE GATE CAN SEE A CONSTRUCTION WHEN ONE APPEARS. ───────────────────
-        // The counterpart of control 2, and the one that proves the gate is not simply blind to
-        // this needle. The audit signer IS wired on the real tree (`root::keyset::bind`, KEYSET
-        // 2026-09-26), so the plant is the DECLARATION going stale over it: re-declare that row
-        // `unshipped` — the state it was in before the wiring landed — and the row must be caught
-        // as STALE, because the declaration now says something the tree refutes.
-        let redeclared = decls.replace(
-            "construct = [\".signing_with(\"]\n",
-            "construct = [\".signing_with(\"]\nunshipped = true\nswitch    = \"STRIKE THIS ROW in \
-             the same commit that gives the composition root a signing key\"\n",
-        );
-        report.push(prove_rows_red(
-            &base,
-            self,
-            "an audit-signer row declared unshipped over the wired signer reds \
-             `stale-declaration`: an unshipped row that HAS a construction site must be struck",
-            &[ROW_STALE],
-            on_base(DECLARATIONS, redeclared),
-            &["declared `unshipped` but NOW HAS", "audit-chain-signing"],
-        ));
-
-        // ── CONTROL 6b — UNWIRING THE AUDIT SIGNER REDS ITS ROW, BY NAME. ──────────────────
-        // The constructed-guard half of the struck debt: take the one production signing site
-        // away — the root binding the deployment keyset — and `audit-chain-signing` must go RED.
-        const KEYSET: &str = "crates/busbar/src/root/keyset.rs";
-        let unsigned = cx.read(KEYSET).unwrap_or_default().replace(
-            "std::mem::take(&mut durability.record).signing_with(key);",
-            "{ drop(key); std::mem::take(&mut durability.record) };",
-        );
-        report.push(prove_rows_red(
-            cx,
-            self,
-            "removing the root's audit-signer construction site reds `audit-chain-signing`, BY NAME",
-            &[&row_site("audit-chain-signing")],
-            {
-                let mut ov = Overlay::new();
-                ov.set(KEYSET, unsigned);
-                ov
-            },
-            &["NO PRODUCTION CONSTRUCTION SITE", "signing_with"],
-        ));
-
-        // ── CONTROL 7 — A NON-CALL NEEDLE IS REFUSED AT THE DECLARATION. ────────────────────
-        // The gate cannot be CONFIGURED to accept decoration. Weakening a row's needle to a bare
-        // name is refused outright rather than quietly passing on the `use` line control 4 plants.
-        report.push(prove_rows_red(
-            cx,
-            self,
-            "a `construct` needle that is not call-shaped is REFUSED, so no row can be weakened \
-             into accepting a mention",
-            &[ROW_SCAN_FLOOR],
-            {
-                let mut ov = Overlay::new();
-                ov.set(
-                    DECLARATIONS,
-                    decls.replace(
-                        "construct = [\"Ledger::dual_writing(\"]",
-                        "construct = [\"dual_writing\"]",
-                    ),
-                );
-                ov
-            },
-            &["does not end in `(`"],
-        ));
-
-        // ── CONTROL 8 — A SHRUG IS NOT A REASON. ────────────────────────────────────────────
-        report.push(prove_rows_red(
-            cx,
-            self,
-            "an `unshipped` row whose `switch` is a shrug is refused: a debt with no expiry is the \
-             state this file exists to end",
-            &[ROW_SCAN_FLOOR],
-            {
-                // The declared-unshipped planted row carries the shrug: every row on the real
-                // register is constructed today, so the switch under test is the plant's own.
-                let mut ov = Overlay::new();
-                let planted = planted_unshipped_toml();
-                let mut lines: Vec<String> = decls
-                    .lines()
-                    .chain(planted.lines())
-                    .map(str::to_string)
-                    .collect();
-                for l in &mut lines {
-                    if l.starts_with("switch    =") {
-                        *l = "switch    = \"soon\"".to_string();
-                    }
-                }
-                ov.set(DECLARATIONS, lines.join("\n"));
-                ov
-            },
-            &["a debt with no expiry"],
-        ));
-
-        // ── CONTROL 9 — AN ABSENT DECLARATION FILE IS A GAP, NEVER A PASS. ──────────────────
-        // A gate that cannot find its subject reports that. An empty declaration file and a tree
-        // with nothing to declare must never produce the same output.
-        report.push(prove_rows_red(
-            cx,
-            self,
-            "an absent declaration file is DID NOT RUN, never a green tree",
-            &[ROW_SCAN_FLOOR],
-            {
-                let mut ov = Overlay::new();
-                ov.remove(DECLARATIONS);
-                ov
-            },
-            &[DID_NOT_RUN],
-        ));
-
-        // ── CONTROL 10 — A DECLARATION THAT OUTLIVED ITS SUBJECT. ───────────────────────────
-        // The symbol is renamed away while its construct needle stays live, so the site scan alone
-        // would still read PASS: the dead-symbol row, and the site row with it, must go RED naming
-        // the row and the symbol.
-        report.push(prove_rows_red(
-            &base,
-            self,
-            "a declaration naming a symbol its `built` file no longer defines reds `dead-symbol` \
-             and its own site row, by row and by symbol",
-            &[ROW_DEAD_SYMBOL, &row_site("ledger-dual-write")],
-            on_base(
-                SETTLE,
-                cx.read(SETTLE)
-                    .unwrap_or_default()
-                    .replace("pub fn dual_writing(", "pub fn renamed_away("),
-            ),
-            &["DEAD SYMBOL", "ledger-dual-write", "dual_writing"],
-        ));
-
-        // ── CONTROL 10b — THE SYMBOL SURVIVING ONLY AS A TEST HELPER IS STILL DEAD. ─────────
-        // The production definition is renamed away and a `#[cfg(test)]` `fn dual_writing` is left
-        // behind: a test helper is not the capability, so the row must stay RED.
-        report.push(prove_rows_red(
-            &base,
-            self,
-            "a symbol defined only under #[cfg(test)] is a dead symbol",
-            &[ROW_DEAD_SYMBOL],
-            on_base(
-                SETTLE,
-                format!(
-                    "{}\n#[cfg(test)]\nmod planted {{\n    fn dual_writing() {{}}\n}}\n",
-                    cx.read(SETTLE)
-                        .unwrap_or_default()
-                        .replace("pub fn dual_writing(", "pub fn renamed_away(")
-                ),
-            ),
-            &["DEAD SYMBOL", "dual_writing"],
-        ));
-
-        // ── CONTROL 12 — A SELF-DECLARED UNSHIPPED CAPABILITY IS RED (item 230). ────────────
-        // The five-line silencing, planted: a new capability declared `unshipped` with a full
-        // reason and switch, in the declaration file only. Its row must RED, because the register
-        // the gate holds does not name it.
-        report.push(prove_rows_red(
-            cx,
-            self,
-            "an `unshipped` declaration the reviewed register does not name reds its own row",
-            &[&row_site(PLANTED_UNSHIPPED)],
-            {
-                let mut ov = Overlay::new();
-                ov.set(
-                    DECLARATIONS,
-                    format!("{decls}\n{}", planted_unshipped_toml()),
-                );
-                ov
-            },
-            &["SELF-DECLARED UNSHIPPED", PLANTED_UNSHIPPED],
-        ));
-
-        // ── CONTROL 13 — A DELETED DECLARATION IS RED, NOT A SMALLER GREEN. ─────────────────
-        // The declarations ARE the gate's denominator: a row struck from the file is a guard that
-        // stopped running, and the file read exactly as clean with one row as with two. Strike rows
-        // from the end until exactly one fewer than the floor is left, and the floor must go RED,
-        // naming the count it found.
-        //
-        // HOW MANY TO STRIKE IS MEASURED, not assumed to be one. The floor is a minimum, and the
-        // file may carry more rows than it: striking only the last row of a file holding more than
-        // [`DECLARATION_FLOOR`] leaves it above the floor, and this control then failed on every
-        // branch that declared a new row without touching the gate.
-        let ids: Vec<String> = declarations(cx)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|c| c.id)
-            .collect();
-        let strike = (ids.len() + 1).saturating_sub(DECLARATION_FLOOR).max(1);
-        let below_floor = ids
-            .iter()
-            .rev()
-            .take(strike)
-            .fold(decls.clone(), |text, id| without_declaration(&text, id));
-        let left = format!(
-            "{} capability declaration(s)",
-            ids.len().saturating_sub(strike)
-        );
-        report.push(prove_rows_red(
-            cx,
-            self,
-            "[[capability]] declarations struck from the file to one below the floor red the \
-             declaration floor",
-            &[ROW_SCAN_FLOOR],
-            {
-                let mut ov = Overlay::new();
-                ov.set(DECLARATIONS, below_floor);
-                ov
-            },
-            &["below the declaration floor", &left],
-        ));
-
-        // ── CONTROL 13b — A FILE WITH NO DECLARATIONS AT ALL IS RED. ────────────────────────
-        // Every row struck, every comment kept: the file parses, every scope is walked (there are
-        // none), and the gate used to read that as `0 capability declaration(s)` and pass.
-        let none_left = ids
-            .iter()
-            .fold(decls.clone(), |text, id| without_declaration(&text, id));
-        report.push(prove_rows_red(
-            cx,
-            self,
-            "a declaration file with zero [[capability]] rows reds the declaration floor",
-            &[ROW_SCAN_FLOOR],
-            {
-                let mut ov = Overlay::new();
-                ov.set(DECLARATIONS, none_left);
-                ov
-            },
-            &["below the declaration floor", "0 capability declaration(s)"],
-        ));
-
-        // ── CONTROL 14 — A RELEASE POSTURE REFUSES EVERY DECLARED-UNSHIPPED ROW (XH2#1). ────
-        // The register is a dev-line ledger, never a release exemption: "A built type or verb with
-        // no production construction site is either wired or deleted before the cut"
-        // (BUSBAR-1.6.0.md, What this means for the gates). So for a `qa` or `main` target, and for
-        // a posture nobody could read, every row the register names must be RED, by name.
-        for (posture, gate) in [
-            ("a `qa` target", &AT_QA),
-            ("a `main` target", &AT_MAIN),
-            ("an unreadable posture", &AT_UNKNOWN),
-        ] {
-            report.push(release_refuses_register(
-                &base,
-                gate,
-                format!("{posture} reds every declared-unshipped row on the register, by name"),
-            ));
-        }
-
-        // ── CONTROL 11 — RESTORING THE SITE RETURNS THE ROW TO GREEN. ───────────────────────
-        // Control 2's overlay with the call put back. This is what proves control 2's RED is about
-        // THE MISSING CALL and not about the edit, the overlay, or the file having been touched.
-        //
-        // THE BASELINE IS CONTROL 2'S PLANTED TREE, not the real one (item 209). Taken over the
-        // real tree, "put the call back" wrote the bytes `durability.rs` already has — a plant that
-        // planted nothing, so its green was a statement about the unplanted tree. Over the tree
-        // with the site REMOVED, restoring it is a real edit, and the row going green is the
-        // restoration's doing.
-        let site_removed = {
-            let mut ov = Overlay::new();
-            ov.set(DURABILITY, gone.clone());
-            cx.with_overlay(ov)
-        };
-        report.push(prove_rows_green(
-            &site_removed,
-            self,
-            "restoring the construction site returns the row to GREEN",
-            &[&row_site("ledger-dual-write")],
-            {
-                let mut ov = Overlay::new();
-                ov.set(
-                    DURABILITY,
-                    gone.replace("ledger: Ledger::new(),", REAL_SITE),
-                );
-                ov
-            },
-        ));
-
-        report
-    }
 }
 
 /// THE GATE PINNED TO ONE POSTURE, for the self-test. The posture is not a fact of the tree, so no
@@ -1315,6 +1361,7 @@ impl Gate for UnconstructedGate {
 /// nobody could read) whatever this checkout is on, and owes exactly what the gate owes.
 struct AtTarget(Option<&'static str>);
 
+static AT_DEV_LINE: AtTarget = AtTarget(Some("dev"));
 static AT_QA: AtTarget = AtTarget(Some("qa"));
 static AT_MAIN: AtTarget = AtTarget(Some("main"));
 static AT_UNKNOWN: AtTarget = AtTarget(None);
@@ -1341,7 +1388,7 @@ impl Gate for AtTarget {
     }
 
     fn run(&self, cx: &Ctx) -> Verdict {
-        run_at(cx, &self.posture())
+        UnconstructedGate::run_at(cx, &self.posture())
     }
 
     fn selftest<'a>(&'a self, _cx: &'a Ctx) -> Report<'a> {
