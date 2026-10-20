@@ -989,7 +989,7 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         // the tree a rename produces.
         let mut ov = Overlay::new();
         if let Ok(files) =
-            cx.walk(&crate::ctx::WalkSpec::new([format!("{}/plane", addresses.core)]).ext("rs"))
+            cx.walk(&crate::ctx::WalkSpec::new(plane_store::sink_scopes(&addresses)).ext("rs"))
         {
             for s in &files {
                 if s.text.contains("fn set_sink") {
@@ -1069,7 +1069,7 @@ fn sink_file(
     a: &crate::gates::structure_lint::roots::Addresses,
 ) -> Option<(String, String)> {
     let files = cx
-        .walk(&crate::ctx::WalkSpec::new([format!("{}/plane", a.core)]).ext("rs"))
+        .walk(&crate::ctx::WalkSpec::new(plane_store::sink_scopes(a)).ext("rs"))
         .ok()?;
     files
         .into_iter()
