@@ -171,7 +171,9 @@ impl AdminNode {
             .admin
             .units
             .principal(key)
-            .map_or(Subject::Arrival, |p| Subject::PrincipalId(p.as_str().to_string()));
+            .map_or(Subject::Arrival, |p| {
+                Subject::PrincipalId(p.as_str().to_string())
+            });
         let inputs = AuditInputs {
             subject,
             what: What {
@@ -186,7 +188,9 @@ impl AdminNode {
             wall: arrived_at,
             // The admin units' own order: the key each was drawn as, in arrival order.
             mono: key.get(),
-            origin: self.kernel.origin(busbar_contract::caps::OriginKind::Client),
+            origin: self
+                .kernel
+                .origin(busbar_contract::caps::OriginKind::Client),
             outcome: OutcomeFacts {
                 unit_end: ended,
                 step: ended.step(),
