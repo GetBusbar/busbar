@@ -134,7 +134,25 @@ pub const NEUTRAL_FLOOR: usize = 1109;
 /// THE PLANE WALK'S FLOOR: the `.rs` files the plane population (in-tree and pinned planes) held on
 /// dev, measured (606 on f49c8bf98c, the RED branch's `plane_files`). Same rule as
 /// [`NEUTRAL_FLOOR`].
-pub const PLANE_FLOOR: usize = 606;
+///
+/// RE-PINNED 606 -> 488 at the merge of dev 1ed9f8995d (#1161), today's measured value (Law 9; lowered,
+/// never raised). The walk did not shrink; the population did, by deletion of the retired engine
+/// crate in a reviewed commit (#1161). 606 was 247 (`busbar-plane-llm`) + 85 (`busbar-plane-mcp`)
+/// + 22 (`busbar-plane-decisions`) + 83 (`busbar-plane-a2a`) + 50 (`busbar-plane-streaming`) + 119
+/// (`busbar-llm`); 488 is the same five planes with `busbar-plane-llm` at 248 (+1, `exchange/catalog.rs`
+/// added). The 119 files that legitimately left, all `.rs` under `crates/busbar-llm/src`:
+/// * `busbar-llm/src/{arrival.rs, lib.rs, native_ingress.rs, openai_responses_webhook.rs}`;
+/// * `busbar-llm/src/engine/attempt/{assemble.rs, buffered.rs, classify.rs, mod.rs, respond.rs, send.rs}`;
+/// * `busbar-llm/src/engine/attempt/tests/{assemble.rs, failed_generation.rs}`;
+/// * `busbar-llm/src/engine/{build_runtime.rs, credential.rs, egress.rs, health.rs, hooks.rs, lazy_body.rs, mod.rs, pipeline.rs, response_body.rs, select.rs, tables.rs, usage.rs, wire.rs}`;
+/// * `busbar-llm/src/engine/engine_tests/{crossproto_delivery_billing_tests.rs, future_size_probe.rs, inject_include_usage_tests.rs, nonstream_drop_billing_tests.rs, send_envelope_tests.rs, stream_deadline_tests.rs}`;
+/// * `busbar-llm/src/engine/exhaustion/{fallback.rs, least_bad.rs, mod.rs, queue.rs}`;
+/// * `busbar-llm/src/engine/tests/{alloc_gate_tests.rs, attempt_identity_tests.rs, attempt_timeout_precedence_tests.rs, auth_dispatch_tests.rs, auth_native_envelope_tests.rs, auth_style_tests.rs, client_header_forwarding_tests.rs, dial_refusal_failover_tests.rs, dialect_registry_facts_tests.rs, egress_differential_tests.rs, egress_dropped_controls_audit_tests.rs, egress_target_tests.rs, engine_identity_witness_tests.rs, forward_once_pool_cell_tests.rs, forward_pool_integration_tests.rs, gate_policy_503_literals_tests.rs, health_tests.rs, hook_access_tests.rs, hook_non_chat_projection_tests.rs, hook_opt_in_projection_tests.rs, hook_seam_tests.rs, hook_seat_order_tests.rs, hook_system_turn_tests.rs, ingress_indistinguishability_tests.rs, ingress_integration_tests.rs, ingress_reject_response_tests.rs, lane_availability_proptest_tests.rs, lane_caps_config_tests.rs, lazy_body_tests.rs, ledger_100_tests.rs, legacy_forward_once.rs, mid_stream_error_tests.rs, multi_candidate_degrade_tests.rs, on_exhausted_tests.rs, ordered_walk_tests.rs, plane_attempt_parity_tests.rs, plane_reply_parity_tests.rs, pool_upstream_creds_tests.rs, probe_guard_tests.rs, probe_release_owner_tests.rs, provider_keys_drift_tests.rs, request_short_circuit_tests.rs, rerank_search_units_tests.rs, reroute_pool_tests.rs, responses_ingress_stream_tests.rs, route_deadline_tests.rs, runtime_carry_tests.rs, scrape_queued_depth_tests.rs, signal_catalog_tests.rs, stop_sequence_cap_degrade_tests.rs, stream_no_usage_bills_zero_tests.rs, translate_offload_tests.rs, unreadable_usage_floor_tests.rs, usage_tap_tests.rs, view_parity_tests.rs, wire_tests.rs}`;
+/// * `busbar-llm/src/testkit/{mod.rs, shell.rs}`;
+/// * `busbar-llm/src/tests/{arrival_tests.rs, plane_decl_identity_tests.rs, webhook_tests.rs}`;
+/// * `busbar-llm/src/unit/{admit.rs, approve.rs, arrival.rs, audit.rs, authenticate.rs, chain.rs, decode.rs, meter.rs, mod.rs, node.rs, route.rs, verify.rs, walk.rs}`;
+/// * `busbar-llm/src/unit/tests/{admit.rs, approve.rs, arrival.rs, audit.rs, authenticate.rs, chain.rs, decode.rs, meter.rs, route.rs, verify.rs}`;
+pub const PLANE_FLOOR: usize = 488;
 
 /// THE KINDS THAT MAKE UP THE PLANE ABI'S NEUTRAL SIDE. The population is the census's
 /// (`kind_isolation::neutral_census`), read off the kind table, so a crate seated under one of these
