@@ -2842,6 +2842,81 @@ fn a_full_lane_refuses_new_money_and_drops_no_record() {
     );
 }
 
+/// **A CHAIN READ WHILE THE LANE IS BETWEEN TWO PARTS OF A RECORD IS NOT A TORN RECORD.** A slot
+/// carries 510 bytes of a record, so a journal record past that (a 160-byte header and its body)
+/// crosses to the store as two or more puts, and the lane's worker runs beside the book. A chain read
+/// that lands between two of them (the boot's own `arm_checkpoints` and the keyset's sealed
+/// Bootstrap read do, right after the opening seal ships) finds the record's first part in the store
+/// and the whole record still in the lane. The record is read whole from the lane and nothing is
+/// reported: a record the lane still holds was never torn, it is being put. Posed here as a store
+/// that takes the first part and answers no more, which holds that moment still.
+///
+/// RED before the fix: the read warned "the stored journal holds a record whose parts are not all
+/// there" on a clean boot (oracle cells boot.warning|BOOT-W21, BOOT-W34, neutrality|boot-lines),
+/// a line 1.5.5 never printed.
+#[test]
+fn a_chain_read_between_two_parts_of_a_queued_record_warns_nothing() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let slots = crate::root::store_double::RecordSlots::new();
+    let node = 23;
+    let mut durability = store_book(&slots, node);
+    durability
+        .seal_unit(audit_inputs(1), audit_pass(), &token())
+        .expect("sealed");
+    drained(&durability);
+
+    // A body past one slot's bound: two parts at the least.
+    slots.take_then_refuse(1);
+    durability
+        .journal
+        .append(
+            &token(),
+            StepName::Meter,
+            &[busbar_kernel_wal::Entry::new(
+                RecordClass::Load,
+                vec![7u8; 1_000],
+            )],
+        )
+        .expect("handed to the lane");
+    let newest = durability.journal.next_seq() - 1;
+    let lane = durability.lane().expect("a book over the store");
+    assert!(
+        lane.wait_acked(node, newest, std::time::Duration::from_secs(5))
+            .is_err(),
+        "the store took the first part and refused the next"
+    );
+    assert_eq!(lane.pending(), 1, "the record is still the lane's");
+
+    let cap = busbar_kernel::test_support::warn_capture::WarnCapture::default();
+    let chain =
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(cap.clone()), || {
+            durability.chain()
+        })
+        .expect("the chain reads back")
+        .expect("and verifies");
+    assert_eq!(
+        chain.last().map(|r| r.node_seq),
+        Some(newest),
+        "the half-put record is on the chain, read whole from the lane"
+    );
+    assert!(
+        !cap.contains("parts are not all there"),
+        "a record the lane still holds is not torn: {:?}",
+        cap.messages()
+    );
+
+    slots.refuse(false);
+    drained(&durability);
+    assert_eq!(
+        read_chain(slots.calls().as_ref(), node)
+            .expect("reads back")
+            .last()
+            .map(|r| r.node_seq),
+        Some(newest),
+        "and the store holds it whole once it takes the rest"
+    );
+}
+
 // ---------------------------------------------------------------------------------------------
 // H3 follow-up (ARCHITECT 2026-10-07): THE DEPLOYMENT KEYSET AND THE NODE'S IDENTITY IN THE STORE
 // ---------------------------------------------------------------------------------------------

@@ -30,6 +30,8 @@ pub(crate) struct RecordSlots {
     rows: Arc<Mutex<Rows>>,
     claims: Arc<Mutex<Claims>>,
     refusing: Arc<AtomicBool>,
+    /// `0`: no budget. `n + 1`: take `n` more puts, then refuse every one after.
+    budget: Arc<AtomicUsize>,
     puts: Arc<AtomicUsize>,
 }
 
@@ -46,7 +48,27 @@ impl RecordSlots {
 
     /// From now on, refuse (`true`) or take (`false`) every put.
     pub(crate) fn refuse(&self, refusing: bool) {
+        self.budget.store(0, Ordering::Release);
         self.refusing.store(refusing, Ordering::Release);
+    }
+
+    /// Take the next `n` puts, then refuse every one after until [`Self::refuse`] says otherwise:
+    /// a store that answers no more partway through a record's parts.
+    pub(crate) fn take_then_refuse(&self, n: usize) {
+        self.budget.store(n.saturating_add(1), Ordering::Release);
+    }
+
+    /// Whether this put is refused: refusing outright, or past the budget.
+    fn refuses_put(&self) -> bool {
+        self.refusing.load(Ordering::Acquire)
+            || self
+                .budget
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |b| match b {
+                    0 => None,
+                    1 => Some(1),
+                    b => Some(b - 1),
+                })
+                == Ok(1)
     }
 
     /// How many puts the store took.
@@ -154,7 +176,7 @@ impl StoreCalls for RecordSlots {
         key: &'a [u8],
         value: &'a RecordBytes,
     ) -> StoreCall<'a, ()> {
-        let refused = self.refusing.load(Ordering::Acquire);
+        let refused = self.refuses_put();
         if !refused {
             self.rows
                 .lock()
