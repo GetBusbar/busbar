@@ -347,7 +347,7 @@ fn test_inert_durable_keys_banner_fires_only_for_durable_keyed_no_token() {
 #[test]
 fn test_stateful_plane_ephemeral_store_warn_fires_only_for_ram_plus_stateful() {
     // RAM store + an MCP plane configured (tool or tool-pool) → the specific warn fires.
-    let w = stateful_plane_ephemeral_store_warn(true, true, false)
+    let w = stateful_plane_ephemeral_store_warn(true, true)
         .expect("RAM + the first stateful plane → sharper warn fires");
     assert!(
         w.contains("in-flight tasks will break")
@@ -358,20 +358,20 @@ fn test_stateful_plane_ephemeral_store_warn_fires_only_for_ram_plus_stateful() {
 
     // RAM store + an A2A plane configured (agent or agent-pool) → fires (either stateful plane does).
     assert!(
-        stateful_plane_ephemeral_store_warn(true, false, true).is_some(),
+        stateful_plane_ephemeral_store_warn(true, true).is_some(),
         "RAM + the second stateful plane → the sharper warn fires"
     );
 
     // RAM store but LLM-only (no stateful plane) → stateless, a restart costs nothing → NO warn.
     assert!(
-        stateful_plane_ephemeral_store_warn(true, false, false).is_none(),
+        stateful_plane_ephemeral_store_warn(true, false).is_none(),
         "a stateless-only deploy must NOT get the sharper warn — noise trains people to \
          ignore warnings"
     );
 
     // A DURABLE store → task state survives a restart → no warn, even with stateful planes present.
     assert!(
-        stateful_plane_ephemeral_store_warn(false, true, true).is_none(),
+        stateful_plane_ephemeral_store_warn(false, true).is_none(),
         "a durable store persists stateful-plane task state across restarts — no sharper warn"
     );
 }
@@ -2525,6 +2525,93 @@ fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
     );
 }
 
+/// RESTART-TO-APPLY FOR A PLANE THE BOOT DID NOT OPEN (u67 BLOCK 2 item 2; BUSBAR-1.6.0.md Law 7
+/// l.547, and §6 item 8 l.980-982): a configuration that writes the section of a plane the root's
+/// rules name as not opened at boot builds, but gives that plane NO slot (it claims, admits and
+/// lists nothing this generation) and carries its section in `App::planes_awaiting_restart` for
+/// the apply's answer; the same configuration under rules that opened it builds the slot as
+/// before. RED before the fix: the build gave the unopened plane a slot (half-served) and nothing
+/// reported it.
+#[test]
+fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart() {
+    const SECTION: &str = "pending-red";
+    static PENDING: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
+        declaration: crate::plane::registry::PlaneDeclaration {
+            key: "pending-red-plane",
+            fallback: false,
+            config_section: SECTION,
+            ..crate::test_support::NEUTRAL_FALLBACK.declaration
+        },
+        build: |_| Some(std::sync::Arc::new(()) as std::sync::Arc<dyn std::any::Any + Send + Sync>),
+        ..crate::test_support::NEUTRAL_FALLBACK
+    };
+    struct Unopened;
+    impl crate::appbuild::RootRules for Unopened {
+        fn check(&self, _cfg: &crate::config::RootCfg) -> Result<(), String> {
+            Ok(())
+        }
+        fn planes_awaiting_restart(&self, cfg: &crate::config::RootCfg) -> Vec<&'static str> {
+            if cfg.plane_sections.contains(SECTION) {
+                vec![SECTION]
+            } else {
+                Vec::new()
+            }
+        }
+    }
+    let _registry = crate::plane::registry::TestRegistryIsolation::seeded(&[
+        crate::test_support::neutral_fallback_plane(),
+        &PENDING,
+    ]);
+    crate::snapshot::init();
+    let build = |rules: std::sync::Arc<dyn crate::appbuild::RootRules>, writes: bool| {
+        let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(
+            "BUSBAR_TEST_NO_SUCH_KEY_PENDING_PLANE",
+        ));
+        if writes {
+            cfg.plane_sections.insert(SECTION);
+        }
+        crate::build_app_from_config(
+            cfg,
+            crate::config::PluginsCfg::default(),
+            None,
+            std::collections::HashSet::new(),
+            std::collections::HashSet::new(),
+            (None, None),
+            None,
+            &rules,
+        )
+        .expect("the configuration builds")
+        .0
+    };
+    let opened = build(std::sync::Arc::new(crate::appbuild::AcceptAll), true);
+    assert!(
+        opened.plane_slot(PENDING.key).is_some(),
+        "a plane the boot opened builds its slot, as before"
+    );
+    assert!(opened.planes_awaiting_restart.is_empty());
+    let pending = build(std::sync::Arc::new(Unopened), true);
+    assert!(
+        pending.plane_slot(PENDING.key).is_none(),
+        "a plane the boot did not open is given no slot: nothing of it is half-served"
+    );
+    assert_eq!(pending.planes_awaiting_restart, vec![SECTION.to_string()]);
+    let unwritten = build(std::sync::Arc::new(Unopened), false);
+    assert!(unwritten.plane_slot(PENDING.key).is_none());
+    assert!(
+        unwritten.planes_awaiting_restart.is_empty(),
+        "a configuration that does not write the plane reports nothing"
+    );
+    assert_eq!(
+        crate::state::planes_awaiting_restart_added(&pending, &unwritten),
+        vec![SECTION.to_string()],
+        "the mutation that first writes the section is the one flagged"
+    );
+    assert!(
+        crate::state::planes_awaiting_restart_added(&pending, &pending).is_empty(),
+        "a later edit does not re-flag it"
+    );
+}
+
 // ── STEP 2.3: THE TYPE-ERASED PLANE SLOT MAP (`App::plane_slot`) ─────────────────────────────
 //
 // Additive: `App::mcp` / `App::a2a` still exist and every existing reader is untouched. These
@@ -2592,16 +2679,20 @@ fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
         "an inert prior must be reused across a planeless apply"
     );
 
-    // Arm 3: plane content appears (a `tool_pools:` set here — any of the plane signals works) →
+    // Arm 3: plane content appears (a plane pool here — any of the plane signals works) →
     // upgraded to a provisioned handle AT APPLY, not on a request path.
     let mut with_pool = planeless();
-    with_pool.tool_pools.insert(
-        "search".to_string(),
-        crate::failover::CandidatePoolCfg {
-            members: vec!["search-eu".to_string(), "search-us".to_string()],
-            ..Default::default()
-        },
-    );
+    with_pool
+        .plane_pools
+        .entry("search-section")
+        .or_default()
+        .insert(
+            "search".to_string(),
+            crate::config::pools::CandidatePoolCfg {
+                members: vec!["search-eu".to_string(), "search-us".to_string()],
+                ..Default::default()
+            },
+        );
     let app3 = build(with_pool, Some(&app2));
     assert!(
         app3.plane_breakers.is_provisioned(),

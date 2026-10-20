@@ -33,6 +33,31 @@ const VOICE_SUITES: &[(&str, &str)] = &[
     ("gemini", "voice-gemini-live"),
 ];
 
+/// The streaming plane's crate, as this workspace's lock names it.
+pub const VOICE_PLANE: &str = "busbar-plane-streaming";
+
+/// THE VOICE BOOT-VALIDATE CONFIG LEG'S COMMAND: the `streams:` grammar's own tests (`config::` in
+/// the streaming plane), in the pinned workspace `manifest` names (its committed lock held), built
+/// into this checkout's `target` (test-gated's `plugin()` shape, as the jev battery runs).
+pub fn voice_config_command(manifest: &Path, target: &Path) -> Vec<String> {
+    [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        &manifest.to_string_lossy(),
+        "-p",
+        VOICE_PLANE,
+        "--lib",
+        "config::",
+        "--target-dir",
+        &target.to_string_lossy(),
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
+}
+
 /// The llm rig's own bookkeeping row (testing/llm-conformance/run.sh `GAP_ID`): it reconciles the
 /// named gaps of the WHOLE battery, so a red there is every dialect's.
 const LLM_GAPS_ROW: &str = "gate|llm-conformance|named-gaps";
@@ -685,6 +710,47 @@ pub fn mcp_node_platform(os: &str, arch: &str) -> Option<(&'static str, &'static
     MCP_NODE_SHA256.iter().find(|(p, _)| *p == plat).copied()
 }
 
+/// Whether `recording` may be judged as the recording of the subject whose release binary has
+/// sha256 `subject_sha256`. The tie is the provenance the oracle recorder already writes: its
+/// `meta.json` names the `binary_sha256` of the busbar it recorded (`bin/oracle record --bin`). A
+/// recording with no rows, no `meta.json`, no `binary_sha256`, or one naming another build is
+/// refused: judging it would write six `llm-*` verdicts under HEAD for bytes HEAD did not produce.
+pub fn recording_for_subject(recording: &Path, subject_sha256: &str) -> Result<(), String> {
+    let has_rows = read_opt(&recording.join("ledger.tsv")).is_some_and(|l| !l.trim().is_empty());
+    if !has_rows {
+        return Err(format!(
+            "the recording {} has no ledger rows: the oracle recorded nothing to judge",
+            recording.display()
+        ));
+    }
+    let meta = recording.join("meta.json");
+    let Some(text) = read_opt(&meta) else {
+        return Err(format!(
+            "the recording carries no {}: nothing ties it to the build under HEAD, so it is not \
+             judged",
+            meta.display()
+        ));
+    };
+    let recorded = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| v.get("binary_sha256")?.as_str().map(str::to_string))
+        .filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()));
+    let Some(recorded) = recorded else {
+        return Err(format!(
+            "{} names no binary_sha256: nothing ties the recording to the build under HEAD",
+            meta.display()
+        ));
+    };
+    if !recorded.eq_ignore_ascii_case(subject_sha256) {
+        return Err(format!(
+            "the recording {} is of the busbar with sha256 {recorded}, but this checkout's release \
+             build is {subject_sha256}: a recording of another build is never judged under HEAD",
+            recording.display()
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn read_opt(p: &Path) -> Option<String> {
     std::fs::read_to_string(p).ok()
 }
@@ -775,6 +841,50 @@ impl Runner {
                 }
             })
             .clone()
+    }
+
+    /// The sha256 of THIS checkout's release busbar, built by the oracle's own command
+    /// (`cargo build --locked --release -p busbar --bin busbar`, `.ci/predev.yaml` `oracle:`), so a
+    /// recording the oracle made of this checkout names the same digest in its `meta.json`. Over a
+    /// target dir the oracle already built, the build is a no-op. A failed build names no digest.
+    fn release_busbar_sha256(&self) -> Result<String, String> {
+        let rig = Rig::Llm;
+        let code = self.leg(
+            rig,
+            "subject-release-build",
+            &[
+                "cargo",
+                "build",
+                "--locked",
+                "--release",
+                "-p",
+                "busbar",
+                "--bin",
+                "busbar",
+            ],
+            None,
+            &[],
+        );
+        let bin = self.target.join("release").join("busbar");
+        if code != Some(0) || !bin.is_file() {
+            return Err(format!(
+                "`cargo build --locked --release -p busbar --bin busbar` {}: no build of HEAD to \
+                 tie the recording to",
+                rc(code)
+            ));
+        }
+        let mut f = std::fs::File::open(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+        let mut h = crate::sha256::Sha256::new();
+        let mut buf = vec![0u8; 1 << 20];
+        loop {
+            let n = std::io::Read::read(&mut f, &mut buf)
+                .map_err(|e| format!("{}: {e}", bin.display()))?;
+            if n == 0 {
+                break;
+            }
+            h.update(&buf[..n]);
+        }
+        Ok(h.hexdigest())
     }
 
     pub fn run(&self, rig: Rig) -> BTreeMap<String, Outcome> {
@@ -942,15 +1052,12 @@ impl Runner {
                 ),
             );
         };
-        let has_rows = read_opt(&rec.join("ledger.tsv")).is_some_and(|l| !l.trim().is_empty());
-        if !has_rows {
-            return fan(
-                ids(),
-                &Outcome::not_run(format!(
-                    "the recording {} has no ledger rows: the oracle recorded nothing to judge",
-                    rec.display()
-                )),
-            );
+        let built = match self.release_busbar_sha256() {
+            Ok(h) => h,
+            Err(why) => return fan(ids(), &Outcome::not_run(why)),
+        };
+        if let Err(why) = recording_for_subject(rec, &built) {
+            return fan(ids(), &Outcome::not_run(why));
         }
         if self.leg(rig, "pyyaml", &["python3", "-c", "import yaml"], None, &[]) != Some(0) {
             return fan(
@@ -1023,6 +1130,19 @@ impl Runner {
         if selftest == Some(0) {
             // CI's boot-validate job, as it ran: the owned `streams:` section parses at boot.
             boot_validate = Some(0);
+            // The `streams:` section's grammar, the streaming plane's own (`config::` in
+            // busbar-plane-streaming; the legacy busbar-voice crate is deleted). The plane lives in
+            // its own repo (#68: the MUST set covers every plane wherever its crate lives): its
+            // tests run in the workspace this checkout's lock pins it at, never as `-p` of this
+            // workspace, which holds no such member.
+            let config = match super::oidf::pinned_repo_manifest(&self.root, VOICE_PLANE) {
+                Ok(manifest) => voice_config_command(&manifest, &self.target),
+                Err(e) => {
+                    eprintln!("  {}: boot-validate-config: {e}", rig.name());
+                    Vec::new()
+                }
+            };
+            let config: Vec<&str> = config.iter().map(String::as_str).collect();
             for (leg, cmd) in [
                 (
                     "boot-validate-build",
@@ -1035,19 +1155,7 @@ impl Runner {
                         "plane-streaming",
                     ][..],
                 ),
-                (
-                    // The `streams:` section's grammar, now the streaming plane's own (`config::`
-                    // in busbar-plane-streaming; the legacy busbar-voice crate is deleted).
-                    "boot-validate-config",
-                    &[
-                        "cargo",
-                        "test",
-                        "-p",
-                        "busbar-plane-streaming",
-                        "--lib",
-                        "config::",
-                    ][..],
-                ),
+                ("boot-validate-config", &config[..]),
                 (
                     "boot-validate-owned-sections",
                     &[
@@ -1064,7 +1172,12 @@ impl Runner {
                     ][..],
                 ),
             ] {
-                let c = self.leg(rig, leg, cmd, None, &[]);
+                // A plane the lock does not pin has no command: the leg did not run.
+                let c = if cmd.is_empty() {
+                    None
+                } else {
+                    self.leg(rig, leg, cmd, None, &[])
+                };
                 if c != Some(0) {
                     boot_validate = c;
                     break;

@@ -26,6 +26,8 @@ The check is a simple two-level test: `read-only` satisfies every read; every mu
 
 The operator admin token holds `full`. Role-carrying principals (external identity providers) get the highest scope their bound roles grant under `auth.role_bindings.<provider>`, capped by that provider's `max_admin_scope:`; unbound roles grant nothing. Insufficient scope is `403 forbidden` naming the scope that would have sufficed. Unknown HTTP methods fail closed to `full`.
 
+A role may instead (or as well) be granted admin verbs ONE BY ONE with `verbs:` on its binding (1.6.0): `verbs: "*"` is exactly `admin_scope: full`, and `verbs: [get_keys, post_keys]` admits exactly those operations, each whatever scope it needs. Operations are named by the closed verb table's snake-case names (`get_audit`, `post_config_apply`, `verify`, `get_ledger_totals`, …). A verb the list does not name is the same `403 forbidden` an insufficient scope gets. A binding without `verbs:` behaves exactly as in 1.5.5. See [configuration.md](configuration.md).
+
 **Mutation rate limits.** Mutations are budgeted per principal in fixed one-minute windows, spent *before* the handler runs (failed attempts count, anti-enumeration):
 
 | Class | Budget | Covers |

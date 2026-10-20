@@ -1111,13 +1111,19 @@ mod tests {
 
     /// The known spellings still parse: the value after `--jobs` is not a gate name, and the
     /// parity arm's legacy argv after `--` is not this parser's to judge.
+    ///
+    /// PARSED IS NOT 2, AND THAT IS ALL THIS TEST OWNS. A spelling that parses runs its gate, and
+    /// what the gate then answers (0 or 1) is the gate's verdict over the tree, including the
+    /// self-test's work budget, which a loaded box can push over. That verdict is owned by
+    /// `xtask/tests/cli.rs` and the gate's own selftest test; asserting it here made a parser test
+    /// fail on the box's load.
     #[test]
     fn the_known_spellings_still_parse() {
         assert_eq!(run(&["gate", "--list"]), 0);
-        assert_eq!(run(&["gate", "segregation", "--format=tsv"]), 0);
-        assert_eq!(
+        assert_ne!(run(&["gate", "segregation", "--format=tsv"]), 2);
+        assert_ne!(
             run(&["gate", "--jobs", "2", "segregation", "--selftest"]),
-            0
+            2
         );
         assert_eq!(run(&["gate", "segregation", "--parity"]), 2);
         assert_eq!(

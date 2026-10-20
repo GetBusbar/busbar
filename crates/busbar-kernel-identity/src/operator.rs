@@ -309,6 +309,9 @@ impl OperatorCredential {
 pub struct Operator {
     cred: OperatorCredential,
     names: Vec<String>,
+    /// The carriers the operator credential's row states (its Statement's carrier marks, in order):
+    /// where the admin credential sits, in the style's own words. None until the axis answers.
+    carriers: Vec<String>,
 }
 
 impl Operator {
@@ -318,6 +321,7 @@ impl Operator {
         Self {
             cred: OperatorCredential::Unanswered,
             names: vec![op.to_string()],
+            carriers: Vec::new(),
         }
     }
 
@@ -355,7 +359,26 @@ impl Operator {
             .map(str::to_string)
             .collect();
         let cred = OperatorCredential::open(answered, digest.as_deref(), open)?;
-        Ok(Self { cred, names })
+        Ok(Self {
+            cred,
+            names,
+            carriers: Vec::new(),
+        })
+    }
+
+    /// This operator credential, its row stating `carriers` (its Statement's carrier marks, in
+    /// order), read through the auth axis whether or not a token opened it.
+    #[must_use]
+    pub fn with_carriers(mut self, carriers: Vec<String>) -> Self {
+        self.carriers = carriers;
+        self
+    }
+
+    /// The carriers the operator credential's row states, in its Statement's order: the admin
+    /// lines the host strips and the admin chain's candidate is read from. Opaque words.
+    #[must_use]
+    pub fn carriers(&self) -> &[String] {
+        &self.carriers
     }
 
     /// Whether the admin-chain provider `name` is the operator credential.
