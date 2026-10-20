@@ -2307,13 +2307,16 @@ pub(crate) async fn reload_config(
                 &actor,
             );
             installed.record_version(&actor, "config.reload (from disk)");
-            with_config_etag(
-                ok_json(
-                    StatusCode::OK,
-                    &json!({ "reloaded": true, "config_version": installed.config_version }),
-                ),
-                installed.config_version,
-            )
+            let mut body = json!({ "reloaded": true, "config_version": installed.config_version });
+            // RESTART-TO-APPLY: the plane sections the reloaded config writes whose plane the
+            // process did not open at boot. Omitted when none, so the ordinary body is unchanged.
+            if let Some(note) =
+                super::named_map::restart_note(&[], &installed.planes_awaiting_restart)
+            {
+                body["reload_to_apply"] = json!(installed.planes_awaiting_restart);
+                body["note"] = json!(note);
+            }
+            with_config_etag(ok_json(StatusCode::OK, &body), installed.config_version)
         }
         Err(e) => {
             audit::AUDIT.record_by(
@@ -2555,18 +2558,25 @@ pub(crate) async fn apply_config(
                 &actor,
             );
             installed.record_version(&actor, "config.apply (request body)");
-            with_config_etag(
-                ok_json(
-                    StatusCode::OK,
-                    &json!({
-                        "applied": true,
-                        "config_version": installed.config_version,
-                        "note": "live until the next reload/restart returns to disk truth; persist \
-                                 by updating config.yaml",
-                    }),
-                ),
-                installed.config_version,
-            )
+            let mut body = json!({
+                "applied": true,
+                "config_version": installed.config_version,
+                "note": "live until the next reload/restart returns to disk truth; persist \
+                         by updating config.yaml",
+            });
+            // RESTART-TO-APPLY: the plane sections the applied config writes whose plane the
+            // process did not open at boot, named and appended to the note. Omitted when none, so
+            // the ordinary body is unchanged.
+            if let Some(pending) =
+                super::named_map::restart_note(&[], &installed.planes_awaiting_restart)
+            {
+                body["reload_to_apply"] = json!(installed.planes_awaiting_restart);
+                body["note"] = json!(format!(
+                    "live until the next reload/restart returns to disk truth; persist by \
+                     updating config.yaml; {pending}"
+                ));
+            }
+            with_config_etag(ok_json(StatusCode::OK, &body), installed.config_version)
         }
         Err(e) => {
             audit::AUDIT.record_by(
@@ -4415,20 +4425,16 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     "A PAST UTC-day bucket start epoch (default: current bucket). The response is always ONE bucket; spend_micros is a read-time estimate; bill from the raw token split, never store spend_micros as a ledger charge",
                     false,
                 ),
-            // OWED: the `as_of` query parameter this endpoint now accepts is NOT listed here yet,
-            // and it must be. `openapi.json` is GENERATED from this table and the committed copy is
-            // byte-checked against it (`openapi_json_matches_committed_file`), so adding the row
-            // without regenerating hands the next reader a red test — and the regeneration cannot
-            // run today: the `openapi-schema` feature build is broken at HEAD for an unrelated
-            // reason (`PlaneDecl.openapi_schemas` is missing from the linked plane crates). The row
-            // to add, once that compiles again, is:
-            //
-            //   ("as_of", "A rate-card history sequence number to price against (default: the \
-            //    history as it stands). Each row is priced at the card in force at the row's own \
-            //    instant UNDER THIS SNAPSHOT, so an invoice cut at a snapshot is re-derived by \
-            //    asking for it again. A seq above the head is refused, never clamped to it. \
-            //    Distinct from the `as_of` FIELD in the response, which is the instant the read \
-            //    was taken", false),
+                (
+                    "as_of",
+                    "A rate-card history sequence number to price against (default: the \
+                     history as it stands). Each row is priced at the card in force at the row's own \
+                     instant UNDER THIS SNAPSHOT, so an invoice cut at a snapshot is re-derived by \
+                     asking for it again. A seq above the head is refused, never clamped to it. \
+                     Distinct from the `as_of` FIELD in the response, which is the instant the read \
+                     was taken",
+                    false,
+                ),
             ],
         ),
         (
