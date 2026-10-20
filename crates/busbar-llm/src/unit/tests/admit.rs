@@ -319,3 +319,42 @@ async fn over_budget_refuses_with_no_charge_and_nothing_to_refund() {
 fn the_step_has_the_doors_shape() {
     let _: AdmitStep = admit;
 }
+
+// ── THE DOOR'S VERDICT, READ: what a grant, a grantless admission and a refusal each answer. ──
+
+fn grant() -> AdmitHandle {
+    AdmitHandle(std::sync::Arc::new(()))
+}
+
+#[test]
+fn an_admission_with_a_grant_charged_and_keeps_its_downgrade_pool() {
+    let g = grant();
+    let v = admit_verdict(Ok((Some(&g), Some("cheap".to_owned()))));
+    assert_eq!(v.verdict, Ok(()));
+    assert!(v.charged);
+    assert_eq!(v.effective_pool.as_deref(), Some("cheap"));
+}
+
+#[test]
+fn an_admission_without_a_grant_charged_nothing() {
+    let v = admit_verdict(Ok((None, None)));
+    assert_eq!(v.verdict, Ok(()));
+    assert!(!v.charged, "a grantless admission must never be refunded");
+    assert_eq!(v.effective_pool, None);
+}
+
+#[test]
+fn a_refusal_is_over_budget_and_carries_the_rendered_retry_after() {
+    let v = admit_verdict(Err(Some(30)));
+    let refusal = v.verdict.expect_err("the door refused");
+    assert_eq!(refusal.reason(), ReasonCode::OverBudget);
+    assert_eq!(refusal.retry_after_secs(), Some(30));
+    assert!(!v.charged);
+    assert_eq!(v.effective_pool, None);
+}
+
+#[test]
+fn a_refusal_without_a_retry_hint_carries_none() {
+    let v = admit_verdict(Err(None));
+    assert_eq!(v.verdict.expect_err("refused").retry_after_secs(), None);
+}
