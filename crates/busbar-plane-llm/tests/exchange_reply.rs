@@ -3633,6 +3633,16 @@ mod rehomed_metering {
 
     // ── a caller that leaves while the ended answer's last window is written (row 159 round c) ──
 
+    /// One ended answer: the caller's dialect, the far end's, whether the caller streams, the far
+    /// end's head and its whole answer.
+    type EndCase = (
+        &'static str,
+        &'static str,
+        bool,
+        &'static [(&'static [u8], &'static [u8])],
+        Vec<u8>,
+    );
+
     /// The reply after its far end's whole answer `far` was fed in one last piece: the piece that
     /// ended it, and whether a caller that leaves now leaves a billable partial.
     fn ended(ctx: &ReplyCtx<'_>, head: &[(&[u8], &[u8])], far: &[u8]) -> (Piece<'static>, bool) {
@@ -3651,7 +3661,7 @@ mod rehomed_metering {
     /// nothing (no tokens, no fee).
     #[test]
     fn an_ended_answer_that_bills_on_completion_bills_on_a_cancel_in_its_last_window() {
-        let cases: [(&str, &str, bool, &[(&[u8], &[u8])], Vec<u8>); 4] = [
+        let cases: [EndCase; 4] = [
             (
                 "openai",
                 "cohere",
