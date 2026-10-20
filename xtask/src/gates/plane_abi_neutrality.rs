@@ -67,15 +67,8 @@ const LIVE_ROOTS: &[(&str, usize)] = &[("plane", 2), ("host", 6)];
 const RETIRING_ROOT: &str = "hot";
 const TAXONOMY_DOC: &str = "docs/design/BUSBAR-1.6.0.md";
 
-/// DOCUMENTED EXEMPTION for [`declared_plane_keys`]: `crates/busbar-contract/src/abi/hot/mod.rs` declares
-/// `pub const PLANE_DECL: &[u8] = b"busbar_plane_decl\0";` — the ABI SYMBOL NAME a plane cdylib's
-/// hot-lane entrypoint exports, resolved by the loader via `libloading`. It starts with the same
-/// `pub const PLANE_DECL` grammar every real plane's declaration marker uses, but it is the loader's
-/// OWN vocabulary constant, not a plane declaring itself — `busbar-plugin` is the host, not a plane.
-/// Scanned like any other file it makes `declared_plane_keys` read a "plugin" plane into existence,
-/// which the total-coverage row then fails to find in [`BANNED`] — a false positive, not a leak.
-/// Excluded by exact file, not by loosening the grammar or adding "plugin" to the ban list.
-const HOT_LANE_DECL_SITE: &str = "crates/busbar-contract/src/abi/hot/mod.rs";
+// The exemption for the HOT lane's `PLANE_DECL` symbol-name constant (`abi/hot/mod.rs`, the
+// loader's own vocabulary, not a plane declaring itself) is STRUCK with the lane (status row 84).
 
 /// DOCUMENTED EXEMPTION for [`declared_plane_keys`]: the `decisions` plane (jev) declares the key
 /// `plane-decisions`, whose noun COLLIDES WITH A NEUTRAL PRIMITIVE. [`BANNED`] matches
@@ -86,7 +79,7 @@ const HOT_LANE_DECL_SITE: &str = "crates/busbar-contract/src/abi/hot/mod.rs";
 /// blows the test-path ratchet, every one of them core naming its own verdict rather than a plane
 /// leaking. The witness cannot distinguish the two by substring, so the plane key is exempted HERE,
 /// in writing, instead of the ban list being loosened or a correct primitive being renamed to dodge
-/// a grep. This is the same trade the `PLANE_DECL` exemption above makes.
+/// a grep.
 ///
 /// `TaskLost` IS THE SAME COLLISION AT THE IDENTIFIER (coordinator ruling, X5 finding 4): the wire
 /// refusal code `RefusalCode::TaskLost` (`abi/plane/mod.rs`) and the kernel reason it maps to are
@@ -456,9 +449,6 @@ fn declared_plane_keys(cx: &Ctx) -> Result<Vec<String>, String> {
     let mut keys: Vec<String> = Vec::new();
     for f in &files {
         let rel = f.rel_str();
-        if rel == HOT_LANE_DECL_SITE {
-            continue;
-        }
         // A PLANE CRATE NAMES ITS PLANE IN ITS DIRECTORY, declaration or none. `busbar-plane-*` is
         // the plane kind's own naming scheme (`busbar-plane-<key>[-<dialect>]`), and a plane crate
         // that carries no `PLANE_DECL` — `busbar-plane-streaming` does not — was a plane this row
@@ -1012,8 +1002,11 @@ impl Gate for PlaneAbiNeutralityGate {
         }
 
         // ...AND THE RETIRING HOT LANE GOING IS NOT RED: it is scanned while it exists, and its
-        // deletion (M6-HOT-PLANE) is the plan, not a blind scan, once the live roots are read.
-        match cx.walk(&WalkSpec::new([format!("{ABI_DIR}/hot")]).ext("rs")) {
+        // deletion (M6-HOT-PLANE) is the plan, not a blind scan, once the live roots are read. Once
+        // it is deleted (status row 84) the live run itself is that proof (`absent (retired)`).
+        let hot_dir = format!("{ABI_DIR}/{RETIRING_ROOT}");
+        match cx.walk(&WalkSpec::new([hot_dir.clone()]).ext("rs")) {
+            _ if !cx.exists(&hot_dir) => {}
             Ok(files) => {
                 let mut ov = Overlay::new();
                 for f in &files {
