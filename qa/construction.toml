@@ -2215,6 +2215,15 @@ abi = 1
 "crates/busbar-llm" = "DEV-GREEN row 83 (coordinator ruling 2026-10-18): the last legacy engine is deleted; the llm plane is served through its door alone, busbar-plane-llm, in default"
 "crates/busbar-a2a" = "FLIP-A2A U11 (Q128 pre-audit): the legacy a2a engine is deleted; the plane is served through its door, busbar-plane-a2a, in default (ARCHITECT 2026-10-04)"
 
+# THE RULE TABLES STRUCK WITH THEIR SUBJECT (coordinator ruling 2026-10-20, Law 9: a ceiling never
+# disappears silently). A `[rules.*]` table may leave this file only when it is named here with what
+# was deleted, the status row and the measured value, AND every subject path it named at the base
+# (`root`, `crate`, `allowed_file`) lies under a [gate.census.deleted] directory that is gone from
+# the tree. `ceiling-census` checks each condition; the ledger is add-only.
+[gate.census.deleted_rules]
+"rules.no-response-escapes-audit" = "DEV-GREEN row 83 (coordinator ruling 2026-10-18): its subject, the retired engine crate's step directory crates/busbar-llm/src/unit (allowed file audit.rs), was deleted with crates/busbar-llm; measured 0 (max_escapes = 0 at the base): no file under that root exists"
+"rules.terminal-doors-in-audit-step" = "DEV-GREEN row 83 (coordinator ruling 2026-10-18): its subject, the finish_admitted/finish_rejected call sites inside crate busbar-llm outside crates/busbar-llm/src/unit/audit.rs, was deleted with crates/busbar-llm; measured 0 (max_extra_sites = 0 at the base): the crate has no file"
+
 # THE RENAME ROWS (ARCHITECT 2026-10-03, Q-L7B2-CENSUS). A moved-out crate excuses its kind's floor
 # drop only when the root pins it as a git dependency at a rev under the package name it had at the
 # base. A crate whose package name changed with the move counts ONLY with BOTH the git pin under the
