@@ -30,6 +30,8 @@ fn holding(need: u32, target: Option<&str>) -> Op<'static> {
             host: None,
             ticket: TICKET,
         }),
+        // No wire read buffers: these ops read nothing off the wire.
+        None,
     )
 }
 

@@ -178,7 +178,11 @@ impl PlaneDriver {
         let buried = std::mem::take(&mut *self.lock_buried());
         let mut unsettled = Vec::new();
         for mut unit in buried {
-            let now = |ticket| self.cancel_now(ticket).map(|c| (c.disposition, c.writes));
+            let key = unit.ctx.key.get();
+            let now = |ticket| {
+                self.cancel_now(ticket, key)
+                    .map(|c| (c.disposition, c.writes))
+            };
             let cancelled = match unit.flight.take() {
                 Some(mut flight) => match flight.settled() {
                     None => {

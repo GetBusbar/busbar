@@ -447,7 +447,7 @@ fn an_unused_door_still_owns_its_key_and_its_legacy_row_does_not_serve() {
 /// row. The legacy row's engine (its fallback flag, the runtime it builds, the view, the provider
 /// merge, `on_swap`) yields with the plane axis: the fallback flag is the door's own tail's
 /// (`TAIL_FALLBACK`), and the core's readers walk the kernel's own tables
-/// (`busbar_kernel::plane_host::ConfigTables`, pinned equal to the engine's view on the same config
+/// (`busbar_kernel::plane_driver::route_tables::ConfigTables`, pinned equal to the engine's view on the same config
 /// by busbar-llm's `view_parity_tests`). RED while the door's row carried the legacy engine: its
 /// `build_runtime` and `viewer` were the legacy row's, so the core read the engine's tables.
 #[test]
@@ -459,7 +459,7 @@ fn a_door_taking_the_fallback_planes_key_serves_it_with_its_own_row() {
             ..base.declaration
         },
         build_runtime: Some(|_, _| Arc::new(()) as Arc<dyn std::any::Any + Send + Sync>),
-        viewer: Some(|_| &busbar_kernel::plane_host::EMPTY_VIEW),
+        viewer: Some(|_| &busbar_kernel::plane_driver::route_tables::EMPTY_VIEW),
         ..*base
     }));
     let door: &'static PlaneDecl = Box::leak(Box::new(PlaneDecl {

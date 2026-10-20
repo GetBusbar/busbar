@@ -970,11 +970,11 @@ pub fn check_cancel_records(
 }
 
 /// A generation snapshot (`open`/`refresh`): its own size, the generation asked for, lists within
-/// [`MAX_ROUTES`] and never counted with a NULL pointer. Its elements: [`check_claims`],
-/// [`check_admin_routes`], [`check_listed`].
+/// [`MAX_ROUTES`] and never counted with a NULL pointer, and arrival spans `0` or one per claim. Its
+/// elements: [`check_claims`], [`check_admin_routes`], [`check_listed`], [`check_arrival_spans`].
 ///
-/// The size is this build's, or that of a snapshot published before [`PlaneSnapshot::listed`]
-/// was appended (data structs grow by append under `honoured_size`): `s` is then the host's copy
+/// The size is this build's, or that of a snapshot published before [`PlaneSnapshot::listed`] or
+/// [`PlaneSnapshot::arrival_spans`] was appended (data structs grow by append under `honoured_size`): `s` is then the host's copy
 /// of the publisher's own bytes over zeros, so its appended fields read as none.
 ///
 /// # Errors
@@ -984,6 +984,7 @@ pub fn check_snapshot(s: &PlaneSnapshot, generation: u64) -> Result<(), Fault> {
     let size = s.size as usize;
     if size != core::mem::size_of::<PlaneSnapshot>()
         && size != core::mem::offset_of!(PlaneSnapshot, listed)
+        && size != core::mem::offset_of!(PlaneSnapshot, arrival_spans)
     {
         return Err(fault(Rule::Foreign, "snapshot.size"));
     }
@@ -1009,7 +1010,32 @@ pub fn check_snapshot(s: &PlaneSnapshot, generation: u64) -> Result<(), Fault> {
     if s.listed_len as u64 > MAX_ROUTES {
         return Err(fault(Rule::OverMax, "snapshot.listed"));
     }
-    listed(s.listed, s.listed_len, "snapshot.listed")
+    listed(s.listed, s.listed_len, "snapshot.listed")?;
+    if s.arrival_spans_len != 0 && s.arrival_spans_len != s.claims_len {
+        return Err(fault(Rule::Contradiction, "snapshot.arrival_spans"));
+    }
+    listed(
+        s.arrival_spans,
+        s.arrival_spans_len,
+        "snapshot.arrival_spans",
+    )
+}
+
+/// Every arrival span a snapshot states ([`PlaneSnapshot::arrival_spans`]): empty (that claim opens
+/// none), or a name of at most [`super::MAX_ARRIVAL_SPAN`] bytes. Its characters (`[a-z0-9_]`) are
+/// judged by the host when it copies it.
+///
+/// # Errors
+///
+/// The rule a name breaks.
+pub fn check_arrival_spans(names: &[AbiStr]) -> Result<(), Fault> {
+    for n in names {
+        text(*n, "snapshot.arrival_spans")?;
+        if n.len > super::MAX_ARRIVAL_SPAN {
+            return Err(fault(Rule::OverMax, "snapshot.arrival_spans"));
+        }
+    }
+    Ok(())
 }
 
 /// Every name a snapshot lists: non-empty text. Its UTF-8 is judged by the host when it copies it.

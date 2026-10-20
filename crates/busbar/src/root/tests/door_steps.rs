@@ -282,14 +282,15 @@ fn a_pool_members_tier_is_read_off_its_member() {
 /// is core-owned). RED before the tier: every member written bare, all at tier `0`, rotated.
 #[test]
 fn named_definition_pools_are_tiered_in_declared_order_and_the_plane_sees_bare_names() {
-    let stated: std::collections::BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg> = [(
-        "twins".to_string(),
-        busbar_kernel::failover::CandidatePoolCfg {
-            members: vec!["b".to_string(), "a".to_string()],
-            repeatable: vec!["read".to_string()],
-        },
-    )]
-    .into();
+    let stated: std::collections::BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg> =
+        [(
+            "twins".to_string(),
+            busbar_kernel::config::pools::CandidatePoolCfg {
+                members: vec!["b".to_string(), "a".to_string()],
+                repeatable: vec!["read".to_string()],
+            },
+        )]
+        .into();
     let mut section: serde_yaml::Value = serde_yaml::from_str("a: {}\nb: {}").expect("yaml");
     crate::root::serve::pools_into(&mut section, &stated);
     let p = DoorPools::of(&section);
@@ -1123,6 +1124,31 @@ fn a_members_binding_is_opened_with_its_dialects_parameters_under_the_providers_
     assert!(sealed_settings(b"[1]", "https://x", &serde_json::json!({})).is_err());
 }
 
+/// THE SIGNING REGION IS THE DIALLED HOST'S. The dialling stack ends a web URL's authority at a
+/// `\` as at a `/`, so `https://svc-runtime.us-west-2.amazonaws.com\@svc-runtime.eu-west-1...`
+/// dials `us-west-2`, and the region the request is signed for must be read off that same host
+/// (v1.5.5's `host_from_base` folded the `\` first). RED before the one authority split: the
+/// region was read past the `\`, off the text after the `@`, and the signature named a region
+/// the request never reached.
+#[test]
+fn the_signing_region_is_read_off_the_host_the_request_dials() {
+    use super::sealed_settings;
+    let params = br#"{"region":{"host_label_after":["svc-runtime"],"default":"us-east-1"}}"#;
+    for base_url in [
+        "https://svc-runtime.us-west-2.amazonaws.com\\@svc-runtime.eu-west-1.amazonaws.com/",
+        "https://svc-runtime.us-west-2.amazonaws.com\\x@svc-runtime.eu-west-1.amazonaws.com",
+    ] {
+        let dialled = busbar_contract::net::url_host(base_url).expect("the base URL reads a host");
+        assert_eq!(dialled, "svc-runtime.us-west-2.amazonaws.com", "{base_url}");
+        let sealed =
+            sealed_settings(params, base_url, &serde_json::json!({})).expect("the parameters seal");
+        assert_eq!(
+            sealed["region"], "us-west-2",
+            "{base_url}: the region is the dialled host's"
+        );
+    }
+}
+
 // ── the minted credential of a member bound under an OAuth grant (TODO row 22) ─────────────────
 
 /// One open's head fields: `(name, value)`, in the order received.
@@ -1142,6 +1168,27 @@ pub(crate) struct TokenEndpoint {
     /// The reply body to a request body, when the endpoint answers by what it was asked (an RFC
     /// 8693 exchange's token names its scope); `None` = the minted replies above.
     answer: Option<fn(&str) -> String>,
+    /// How many exchanges the plugin closed: it closes each one once it has read the token, the
+    /// event a test waits on for a mint (never the wall clock, Law 8; row 176).
+    closes: std::sync::Mutex<usize>,
+    /// Told on each close.
+    closing: tokio::sync::Notify,
+}
+
+impl TokenEndpoint {
+    /// Until the plugin has closed `n` exchanges with this endpoint: the `n`th mint has read its
+    /// token, which the plugin stores in the same crossing.
+    async fn closed(&self, n: usize) {
+        loop {
+            let notified = self.closing.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if *self.closes.lock().unwrap() >= n {
+                return;
+            }
+            notified.await;
+        }
+    }
 }
 
 /// What one open carried: the need, the target, the head target, the body.
@@ -1298,7 +1345,10 @@ impl busbar_contract::conn::Conns for TokenEndpoint {
         id: busbar_contract::conn::ConnId,
     ) -> Result<(), busbar_contract::conn::ConnError> {
         self.replies.lock().unwrap().remove(&id);
-        self.slab.remove(c, id).map(|_| ())
+        let closed = self.slab.remove(c, id).map(|_| ());
+        *self.closes.lock().unwrap() += 1;
+        self.closing.notify_waiters();
+        closed
     }
 }
 
@@ -1315,11 +1365,22 @@ fn presented(answer: Option<&busbar_contract::auth_calls::Fields>) -> Option<Str
 }
 
 /// The linked auth plugin that serves both mint styles (`oauth-client-credentials`, `jwt-bearer`),
-/// its mint connections declared and opened over `table`.
+/// its mint connections declared and opened over `table`, on a dispatcher serving the host services
+/// the root's own does at boot (`root::dispatch::dispatcher`: [`crate::root::serve::LateServices`],
+/// whose `clock.now` is the kernel's clock before any install). ROW 176: a dispatcher serving none
+/// refuses the plugin's `clock.now`, so its `drive` clock never moves past its last `tick`; a mint
+/// that lands on a `drive` (its binding opened after the first `tick`) then never comes due for its
+/// refresh until the next `tick`, half a minute on.
 fn linked_mint_plugin(table: &std::sync::Arc<TokenEndpoint>) -> super::OutboundAuths {
-    let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
+    let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::with_services(
         crate::root::loader::dispatch::DispatchConfig::default(),
+        crate::root::serve::LateServices::new(),
     ));
+    assert!(
+        dispatcher.host_services().is_some(),
+        "the plugin's clock is the host's: a dispatcher serving no host services answers no \
+         `clock.now`"
+    );
     crate::root::connector::install_io(&dispatcher);
     // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
@@ -1425,21 +1486,32 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
             table.declared.lock().unwrap()
         );
 
-        // The first request waits for the first mint (no empty credential), then carries it.
-        let first = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            binding
-                .auth
-                .fields(binding.handle, FieldsRequest::default(), 0),
-        )
-        .await
-        .expect("the first mint lands");
-        assert_eq!(
-            presented(Some(&first)).as_deref(),
-            Some("Bearer oracle-minted-1")
-        );
+        // Before the first mint lands a request carries no credential, as 1.5.5's bearer sent none
+        // in its boot window (v1.5.5 `egress_auth/bearer_token.rs:84-98`); once it lands, every
+        // request carries it.
+        // Each wait is on the endpoint's close of the mint's exchange (the plugin stores the token in
+        // that same crossing), never on the wall clock (Law 8; row 176). HANG_GUARD only turns a
+        // mint that never lands into a failure rather than a hung suite.
+        const HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(120);
+        let first = tokio::time::timeout(HANG_GUARD, async {
+            table.closed(1).await;
+            loop {
+                let now = binding
+                    .auth
+                    .fields_now(binding.handle, &FieldsRequest::default());
+                match presented(now.as_ref()).as_deref() {
+                    Some("Bearer oracle-minted-1") => return,
+                    None => {}
+                    other => panic!("only the first minted bearer, or none yet: {other:?}"),
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(first.is_ok(), "the first minted bearer is presented");
         // The refresh lands ahead of the first token's expiry; the next request carries it.
-        let refreshed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let refreshed = tokio::time::timeout(HANG_GUARD, async {
+            table.closed(2).await;
             loop {
                 let now = binding
                     .auth
@@ -1447,7 +1519,7 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
                 if presented(now.as_ref()).as_deref() == Some("Bearer oracle-minted-2") {
                     return;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                tokio::task::yield_now().await;
             }
         })
         .await;
@@ -4224,7 +4296,7 @@ pub(crate) mod door_boundary {
     /// The mcp door's registry row, folded from its Statement as the composition root folds it.
     pub(crate) fn row() -> &'static PlaneDecl {
         use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
-        busbar_kernel::plane::door::fold(
+        busbar_kernel::plane_driver::door::fold(
             registration(linked_probe(
                 super::tool_door::line_door(),
                 "door-boundary-row",
@@ -4269,11 +4341,11 @@ pub(crate) mod door_boundary {
         row: &'static PlaneDecl,
         value: serde_yaml::Value,
     ) -> Arc<dyn std::any::Any + Send + Sync> {
-        let tools = busbar_kernel::plane::door::DoorSection::new(row.config_section, value);
+        let tools = busbar_kernel::plane_driver::door::DoorSection::new(row.config_section, value);
+        let defs = tools.as_defs();
         (row.build)(&BuildCtx {
             endpoint_slot: None,
-            agent_defs: &(),
-            tool_defs: &tools,
+            plane_defs: &defs,
             public_url: Some(PUBLIC_URL),
             prior: None,
             providers: None,
@@ -8156,5 +8228,42 @@ fn a_first_section_of_an_unloaded_plane_is_refused_naming_the_section_and_the_pl
                 |r| r.starts_with("`zz_selects_red:` is the section of the `zz-unloaded-red`")
             ),
         "a section that selects the plane uses it as its verb does"
+    );
+}
+
+/// A REQUIRED CONSUMED SECTION WRITTEN EMPTY STILL OPENS ITS PLANE (ARCHITECT row-82 ruling: a
+/// written consumed|required key counts). The previous release required `models:` and accepted it
+/// empty (v1.5.5 crates/busbar/src/config/mod.rs:2626-2632), answering from its catch-all; the
+/// oracle's `neutrality|models-empty|surface` cell is that document. A plane that requires the
+/// section opens on the declaring section the root hands it, so `models: {}` must still hand it the
+/// pair. RED: the pair was handed only when either map had an entry, so the plane stayed unopened
+/// and every path fell to the kernel's catch-all.
+#[test]
+fn a_required_section_written_empty_hands_the_plane_its_sections() {
+    use busbar_contract::section::{RESERVED_MODELS_KEY, RESERVED_POOLS_KEY};
+    use busbar_kernel::plane::registry::{PlaneDecl, PlaneDeclaration, TestRegistryIsolation};
+    use busbar_kernel::test_support::NEUTRAL_FALLBACK;
+    static REQUIRES: PlaneDecl = PlaneDecl {
+        declaration: PlaneDeclaration {
+            key: "requires-the-consumed-section",
+            required_config_sections: &[RESERVED_MODELS_KEY],
+            ..NEUTRAL_FALLBACK.declaration
+        },
+        ..NEUTRAL_FALLBACK
+    };
+    let _registry = TestRegistryIsolation::seeded(&[&REQUIRES]);
+    let deploy = busbar_kernel::config::deploy_from_yaml_str("providers: {}\nmodels: {}\n")
+        .expect("a deployment");
+    let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+    let sections = super::kernel_sections(&cfg);
+    assert_eq!(
+        sections.get(RESERVED_MODELS_KEY),
+        Some(&serde_yaml::Value::Mapping(Default::default())),
+        "the written, empty required section is handed as written: {sections:?}"
+    );
+    assert_eq!(
+        sections.get(RESERVED_POOLS_KEY),
+        Some(&serde_yaml::Value::Mapping(Default::default())),
+        "and the declaring section beside it, so the plane opens: {sections:?}"
     );
 }

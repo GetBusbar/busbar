@@ -4450,20 +4450,16 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     "A PAST UTC-day bucket start epoch (default: current bucket). The response is always ONE bucket; spend_micros is a read-time estimate; bill from the raw token split, never store spend_micros as a ledger charge",
                     false,
                 ),
-            // OWED: the `as_of` query parameter this endpoint now accepts is NOT listed here yet,
-            // and it must be. `openapi.json` is GENERATED from this table and the committed copy is
-            // byte-checked against it (`openapi_json_matches_committed_file`), so adding the row
-            // without regenerating hands the next reader a red test — and the regeneration cannot
-            // run today: the `openapi-schema` feature build is broken at HEAD for an unrelated
-            // reason (`PlaneDecl.openapi_schemas` is missing from the linked plane crates). The row
-            // to add, once that compiles again, is:
-            //
-            //   ("as_of", "A rate-card history sequence number to price against (default: the \
-            //    history as it stands). Each row is priced at the card in force at the row's own \
-            //    instant UNDER THIS SNAPSHOT, so an invoice cut at a snapshot is re-derived by \
-            //    asking for it again. A seq above the head is refused, never clamped to it. \
-            //    Distinct from the `as_of` FIELD in the response, which is the instant the read \
-            //    was taken", false),
+                (
+                    "as_of",
+                    "A rate-card history sequence number to price against (default: the \
+                     history as it stands). Each row is priced at the card in force at the row's own \
+                     instant UNDER THIS SNAPSHOT, so an invoice cut at a snapshot is re-derived by \
+                     asking for it again. A seq above the head is refused, never clamped to it. \
+                     Distinct from the `as_of` FIELD in the response, which is the instant the read \
+                     was taken",
+                    false,
+                ),
             ],
         ),
         (

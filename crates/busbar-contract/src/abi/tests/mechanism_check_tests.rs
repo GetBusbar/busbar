@@ -191,7 +191,8 @@ use crate::abi::host::conn::connector::{Need, DIRECTION_INBOUND, KEEP_NAMED};
 use crate::abi::mechanism::call::Blob;
 use crate::abi::mechanism::door::{
     MarkWord, Rewrite, Section, MARK_BLOCKS, MARK_CATALOG, MARK_EPHEMERAL, MARK_ONE_INSTANCE,
-    MARK_WORD_CARRIER, MARK_WORD_HOOK, REWRITE_ALIAS, REWRITE_KEY, REWRITE_SUGAR, SECTION_CONSUMED,
+    MARK_WORD_CARRIER, MARK_WORD_HOOK, REWRITE_ALIAS, REWRITE_KEY, REWRITE_SUGAR,
+    REWRITE_SUGAR_NAMES, REWRITE_SUGAR_ROLE, REWRITE_SUGAR_SHOWN, SECTION_CONSUMED,
     SECTION_DECLARING, SECTION_REQUIRED, SECTION_SELECTS,
 };
 use crate::abi::sdk::door::{abi_str, statement};
@@ -275,9 +276,38 @@ fn a_rewrite_moves_a_key_to_a_path_and_an_alias_or_sugar_names_nothing_else() {
     ];
     assert_eq!(check_rewrites(&ok), Ok(()));
     assert_eq!(
-        check_rewrites(&[rewrite(4, "x", NONE)]),
+        check_rewrites(&[rewrite(7, "x", abi_str("y"))]),
         Err(fault(Rule::UnknownCode, "rewrite.class"))
     );
+    assert_eq!(
+        check_rewrites(&[rewrite(0, "x", NONE)]),
+        Err(fault(Rule::UnknownCode, "rewrite.class"))
+    );
+}
+
+/// The secret-sugar rewrites a later contract reads (the sugar's settings key, its shown
+/// placeholder, what its value names, its core role) are ACCEPTED by this one and grant nothing:
+/// each names its `from` and its `to`, and a sugar may state the settings key it lands under, so a
+/// plugin built for the later contract loads here unchanged (the two-step lockstep cure).
+#[test]
+fn the_later_sugar_rewrites_are_accepted_and_each_names_its_target() {
+    let ok = [
+        rewrite(REWRITE_SUGAR, "word", abi_str("key")),
+        rewrite(REWRITE_SUGAR_SHOWN, "word", abi_str("PLACEHOLDER")),
+        rewrite(REWRITE_SUGAR_NAMES, "word", abi_str("the thing it names")),
+        rewrite(REWRITE_SUGAR_ROLE, "word", abi_str("fill")),
+    ];
+    assert_eq!(check_rewrites(&ok), Ok(()));
+    for class in [REWRITE_SUGAR_SHOWN, REWRITE_SUGAR_NAMES, REWRITE_SUGAR_ROLE] {
+        assert_eq!(
+            check_rewrites(&[rewrite(class, "word", NONE)]),
+            Err(fault(Rule::Missing, "rewrite.to"))
+        );
+        assert_eq!(
+            check_rewrites(&[rewrite(class, "", abi_str("x"))]),
+            Err(fault(Rule::Missing, "rewrite.from"))
+        );
+    }
     assert_eq!(
         check_rewrites(&[rewrite(REWRITE_ALIAS, "", NONE)]),
         Err(fault(Rule::Missing, "rewrite.from"))
