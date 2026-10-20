@@ -2077,7 +2077,7 @@ pub(crate) async fn put_auth(
             // open, anonymous full-authority posture) with a warning, and so does this build until
             // the owner signs the fail-closed refusal; signing it is `EMPTY_CHAIN_REFUSED_LIVE = true`.
             if EMPTY_CHAIN_REFUSED_LIVE {
-                return Err(empty_chain_refusal(&operator));
+                return Err(empty_chain_refusal(operator));
             }
             diag_warn!(
                 ADMIN_AUTH_CHAIN_EMPTY,
