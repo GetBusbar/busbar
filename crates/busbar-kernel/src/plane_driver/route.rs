@@ -1325,6 +1325,10 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
     /// Push one piece: the crossing, the one short re-call, the backpressure loop, the units, and
     /// the delivery of what the plane emitted.
     async fn push(&self, run: &mut Pumping<'_>, mut piece: Piece, toward: &mut Toward<'_>) -> Step {
+        // A far-end piece that carries none of the far end's bytes (a cut or a trailer): what the
+        // plane writes for it is its own framing, not the answer's content.
+        let framing =
+            piece.from == FROM_FAR_END && (piece.src != Src::Input || run.bufs.input.is_empty());
         loop {
             let (done, out, cause) = run.cross(&piece).await;
             if let Some(cause) = cause {
@@ -1521,7 +1525,11 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     let message_end = out.flags & EMIT_MESSAGE_END != 0;
                     if n != 0 || message_end {
                         if n != 0 {
-                            run.lock().facts.streamed = true;
+                            let mut st = run.lock();
+                            st.facts.streamed = true;
+                            if !framing {
+                                st.facts.content = true;
+                            }
                         }
                         let left = run.left();
                         let Pumping { stop, bufs, .. } = &mut *run;

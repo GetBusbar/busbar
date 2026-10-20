@@ -722,6 +722,17 @@ impl<'s> DoorSteps<'s> {
         self.lock().downgraded.clone()
     }
 
+    /// Whether the unit's far end CUT its STREAMED answer after its head, as the driver told the
+    /// steps at the unit's audit ([`DriverSteps::answered`]): the caller asked for the answer
+    /// streamed (`ROUTE_STREAM`), and its connection failed, or its send's deadline passed, before
+    /// the answer completed. A whole (non-stream) answer cut by its far end is not one: it bills
+    /// what its far end reported (owner ruling Q31, oracle cell `route.failover|fo|primary-cut-body`).
+    #[must_use]
+    pub fn stream_cut(&self) -> bool {
+        let u = self.lock();
+        u.answered.1 && u.stream
+    }
+
     /// WHETHER A BUDGET DOWNGRADE MAY SEND THE UNIT TO `to` (1.5.5's `admit_check` guard, hop by
     /// hop): `to` is a pool of this section not yet visited, the visited set is smaller than the
     /// pool count, and the caller's grant reaches `to` and every pool its `on_exhausted` fallback
@@ -960,8 +971,15 @@ impl DriverSteps for DoorSteps<'_> {
         }
     }
 
-    fn answered(&self, _ctx: &UnitCtx, streamed: bool, cut: bool) {
+    fn answered(&self, ctx: &UnitCtx, streamed: bool, cut: bool) {
         self.lock().answered = (streamed, cut);
+        // A stream the far end cut bills no usage (status row 183): its money steps drop the usage
+        // it reported before its line is read and its end settled.
+        if self.stream_cut() {
+            if let Some(money) = self.money {
+                money.far_cut(ctx.key);
+            }
+        }
     }
 
     fn usage_tap_fault(&self, _ctx: &UnitCtx, dialect: u32, reason: &'static str) {
@@ -1836,7 +1854,17 @@ pub fn kernel_sections(
             yaml(Value::Object(providers)),
         );
     }
-    if !models.is_empty() || !pools.is_empty() {
+    // A WRITTEN consumed|required key counts, even an empty one (ARCHITECT row-82 ruling): a
+    // section some registered plane requires is written in every document that parsed (the pre-pass
+    // refuses one that omits it, `busbar_kernel::config::prepass`), so it is handed as written. The
+    // previous release accepted `models: {}` and answered from its catch-all (v1.5.5
+    // crates/busbar/src/config/mod.rs:2626-2632; ingress/dispatch.rs:292-319).
+    let required = |key: &'static str| {
+        busbar_kernel::plane::registry::plane_decls()
+            .iter()
+            .any(|d| d.required_config_sections.contains(&key))
+    };
+    if !models.is_empty() || !pools.is_empty() || required(RESERVED_MODELS_KEY) {
         out.insert(RESERVED_MODELS_KEY, yaml(Value::Object(models)));
         out.insert(RESERVED_POOLS_KEY, yaml(Value::Object(pools)));
     }

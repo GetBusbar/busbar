@@ -63,7 +63,11 @@ scan_roots = ["crates/*/src", "crates/*/tests", "crates/*/benches"]
 # `busbar-a2a` IS STRUCK the same way (FLIP-A2A, `crates/busbar-a2a` in [gate.census.deleted]): the
 # a2a plane is its door crate `busbar-plane-a2a`; the census floor drops 3 -> 2 by that deletion, and
 # 2 -> 1 by FLIP-STREAMING's `busbar-voice` deletion (both named in [gate.census.deleted]).
-plane_crates = ["busbar-llm"]
+# `busbar-llm` IS STRUCK the same way (DEV-GREEN row 83, coordinator ruling 2026-10-18): the last legacy engine is deleted and the llm plane
+# is its door crate `busbar-plane-llm`, which `gate.plugin_kinds.plane` already scans; the census
+# floor drops 1 -> 0 by that deletion (named in [gate.census.deleted]). No legacy engine crate is
+# left, so the two definitions of "plane" in this file collapse into `gate.plugin_kinds.plane`.
+plane_crates = []
 # A file at one of these path fragments is TEST code (same rule the purity lint applies), in
 # addition to any `#[cfg(test)] mod … { … }` block inside a production file.
 # A bare `tests.rs` (Rust's `#[cfg(test)] mod tests;` file convention) is test code too.
@@ -206,12 +210,18 @@ why = """Exactly one function in the workspace may send the egress request for a
 (the pooled hot path and the degraded walk path) mean every fix to the attempt — a timeout arm, a \
 breaker recording, a header rule — has to be made twice and is made once. The architecture's loop \
 has one ROUTE step and one dispatch; the code should have one too."""
-# The egress client's send verb: the call that turns an assembled request into an upstream
-# round trip. Every occurrence in non-test code outside `allowed_function` is a finding.
-send_verb = '\.client\(\)\.get\(\)\.request\('
-# The seam moved from the pooled hot loop to `engine/attempt/mod.rs::attempt` when the degraded
-# walk twin was deleted; the hot loop now calls `attempt()` too, so no extra site remains.
-allowed_function = "attempt"
+# REPOINTED (DEV-GREEN row 83, coordinator ruling 2026-10-18): the seam MOVED, it did not die. It
+# was the retired engine crate's `engine/attempt/mod.rs::attempt` (the egress client's
+# `.client().get().request(`); every unit's attempt is now the kernel walk's far end opening the
+# member through the connector, in `plane_driver/far_end.rs::send_attempt` (`e.conns.open(`). The
+# scan is the whole workspace, as it always was.
+send_verb = '\.conns\.open\('
+allowed_function = "send_attempt"
+# THE ONE NAMED KNOWN SITE, measured: the contract's ABI host shim opens a PLUGIN'S OWN declared
+# connection for it (THE DESIGN §5 / DECISIONS #40: a plugin reaches the network only through a
+# declared need, and the host opens it on its behalf), not a second attempt for a unit. Each entry
+# is `file::fn`; a known site that stops opening anything is RED, so the list cannot go stale.
+known_sites = ["crates/busbar-contract/src/abi/host/conn/mod.rs::host_open"]
 max_extra_sites = 0
 
 # ── 2. request-path-fn-size ──────────────────────────────────────────────────────────────────────
@@ -220,19 +230,8 @@ why = """A function on the request path that runs to four figures of lines canno
 tested at its seams, or diffed with confidence. The loop is eight named steps; a function should \
 be one of them, not all of them."""
 files = [
-  "crates/busbar-llm/src/engine/pipeline.rs",
-  "crates/busbar-llm/src/engine/attempt/mod.rs",
-  "crates/busbar-llm/src/engine/attempt/assemble.rs",
-  "crates/busbar-llm/src/engine/attempt/send.rs",
-  "crates/busbar-llm/src/engine/attempt/classify.rs",
-  "crates/busbar-llm/src/engine/attempt/respond.rs",
-  "crates/busbar-llm/src/engine/attempt/buffered.rs",
-  "crates/busbar-llm/src/engine/exhaustion/mod.rs",
-  "crates/busbar-llm/src/engine/exhaustion/queue.rs",
-  "crates/busbar-llm/src/engine/exhaustion/fallback.rs",
-  "crates/busbar-llm/src/engine/exhaustion/least_bad.rs",
-  "crates/busbar-llm/src/native_ingress.rs",
-  "crates/busbar-llm/src/arrival.rs",
+  # The retired engine crate's thirteen request-path files are STRUCK with it (DEV-GREEN row 83, coordinator ruling 2026-10-18): the plane's
+  # request path is its door crate, a sans-I/O exchange, and the kernel's plane driver.
   # busbar-core's ingress/admission moved into busbar-kernel when the crate was absorbed; re-pointed
   # here rather than dropped (see the crate's own `qa/construction.toml` history for the absorption).
   "crates/busbar-kernel/src/ingress/mod.rs",
@@ -254,7 +253,7 @@ needle = "busbar_kernel::"
 # measurement on the committed tree (HEAD b091b4e83), a raise the owner ruled is a needle repair
 # arming the true count, not a relaxation of what the instrument ever saw. Downward only from here.
 [rules.ports-only.max_per_crate]
-busbar-llm = 226
+# STRUCK: busbar-llm = 226 (DEV-GREEN row 83, coordinator ruling 2026-10-18 — the crate is deleted).
 # LOWERED 244 -> 226 by the llm plane reply fold: the answer path's byte steps moved into
 # busbar_plane_llm::exchange::reply and the engine calls the plane's copy. Downward only.
 # LOWERED 283 -> 282 by fold A5: the outbound wire moved to busbar-plane-mcp and reads the
@@ -273,6 +272,11 @@ busbar-llm = 226
 # STRUCK: busbar-a2a = 232 (FLIP-A2A, the flip: the plane is served through its door, and its row
 # went with the crate).
 # busbar-voice is struck: FLIP-STREAMING deleted the crate, and the row went with it.
+# REPOINTED (coordinator ruling 2026-10-20, Law 10): with `gate.plane_crates` empty this rule read
+# no crate, so its per-crate ceiling held nothing and its self-test could raise no figure. The
+# planes are now the `[gate.plugin_kinds].plane` door crates on the tree; each is armed at its
+# measure. A door crate with no row is held at 0.
+busbar-plane-llm = 0
 
 [rules.ports-only-tests]
 why = """The same reach from test code. Tests that name core internals pin the plane to core's \
@@ -289,10 +293,17 @@ counts can trend to zero at their own pace."""
 # no longer mint their own tokens (a mint is legal only in the kernel) and take them from
 # `busbar_kernel::test_support::tokens`, 47 added `busbar_kernel::` lines across the engine and unit
 # tests (RESOLVE c4, ARCHITECT to re-read).
-busbar-llm = 1027
+# STRUCK: busbar-llm = 1027 (DEV-GREEN row 83, coordinator ruling 2026-10-18 — the crate is deleted).
 # STRUCK: busbar-mcp = 185 (P3 DEL-MCP, ARCHITECT 2026-10-05 — the crate is deleted).
 # STRUCK: busbar-a2a = 98 (FLIP-A2A — the crate is deleted).
 # busbar-voice is struck: FLIP-STREAMING deleted the crate, and the row went with it.
+# REPOINTED with ports-only above: the door crate's test reach, armed at its measure (20 lines, all
+# in crates/busbar-plane-llm/tests/on_driver: held.rs 3, policies.rs 2, projection.rs 7,
+# refusals.rs 1, seam.rs 7). Downward only.
+busbar-plane-llm = 20
+# The pinned a2a door (laid by the base layer at its pin d7cf79d): 93 lines, all in its
+# tests/root/mod.rs rig. Downward only.
+busbar-plane-a2a = 93
 
 # ── 4. no-uninstalled-seam ───────────────────────────────────────────────────────────────────────
 [rules.no-uninstalled-seam]
@@ -660,37 +671,23 @@ loop_verb = "run_unit"
 loop_root = "crates/busbar-kernel/src"
 max_callers_per_plane_crate = 1
 legacy_verb = "run_gauntlet"
-# Today: the LLM and A2A planes. The MCP plane's site left with `busbar-mcp`, and the host-seam
-# adapter body (`EngineHost::run_gauntlet`) was deleted with it (ARCHITECT Q1c). Down to 0 when the
-# planes move.
-max_legacy_sites = 2
+# The MCP plane's site left with `busbar-mcp`, and the host-seam adapter body
+# (`EngineHost::run_gauntlet`) was deleted with it (ARCHITECT Q1c). LOWERED 2 -> 0 by #1161
+# (DEV-GREEN row 83): the last two call sites left with the retired engine crate, and no
+# production code calls `run_gauntlet(` any more (Law 9: the ceiling sits at today's measure).
+max_legacy_sites = 0
 
 # ── 11. no-response-escapes-audit ────────────────────────────────────────────────────────────────
-[rules.no-response-escapes-audit]
-why = """A plane's step files decide; only its Audit step answers. A function under the plane's \
-step directory that returns a `Response` from anywhere but `audit.rs` is a way for a unit to end \
-without being posted — the exact hole the loop exists to close."""
-root = "crates/busbar-llm/src/unit"
-allowed_files = ["audit.rs"]
-# THE SCOPE'S ONE EXEMPTION (spec #28; ARCHITECT RULING, SLOT NODE-AUDIT): a plane's unit answers with
-# the two-variant `PlaneAnswer` — `Unary(status, headers, body)`, turned into a response only on the
-# root's audited exit, or `Live(Response)`, a live body governed at admit. `PlaneAnswer::Live` is the
-# one carrier a response crosses the plane's boundary in, so a function returning a `PlaneAnswer` is
-# not an escape. It is stated HERE, once, for the whole scope; there is no per-function waiver, and a
-# carrier that is itself a bare `Response` is refused by the rule.
-answer_carrier = "PlaneAnswer::Live"
-max_escapes = 0
+# STRUCK (DEV-GREEN row 83, coordinator ruling 2026-10-18): its subject, the retired engine crate's
+# step directory (`crates/busbar-llm/src/unit`, where only `audit.rs` might answer), left the tree
+# with the crate. No plane has a step directory any more: a plane answers the kernel through its
+# door's ABI table, and a unit is sealed by the kernel loop's one Audit step for every plane, which
+# one-teller-loop and teller-step-order hold.
 
 # ── 12. terminal-doors-in-audit-step ─────────────────────────────────────────────────────────────
-[rules.terminal-doors-in-audit-step]
-why = """The terminal doors (`finish_admitted` / `finish_rejected`) seal and post a unit. In the \
-rebuilt plane they are called from its Audit step and nowhere else, so every unit is posted exactly \
-once by the one step whose job that is. Red by design until that step exists: every call from the \
-legacy ingress is a site the rebuild must move."""
-crate = "busbar-llm"
-doors = ["finish_admitted", "finish_rejected"]
-allowed_file = "crates/busbar-llm/src/unit/audit.rs"
-max_extra_sites = 0
+# STRUCK (DEV-GREEN row 83, coordinator ruling 2026-10-18): its subject, the retired engine crate's terminal doors and its Audit step
+# (`crates/busbar-llm/src/unit/audit.rs`, which never landed), left the tree with the crate. A unit
+# is sealed by the kernel loop's one Audit step for every plane.
 
 # ── 13. one-pick-site ────────────────────────────────────────────────────────────────────────────
 [rules.one-pick-site]
@@ -1277,7 +1274,7 @@ known_sites = [
   # was crates/busbar-core/src/plane_host/ (a whole directory) — the eight files of it that carry a
   # reviewed escape, so the seven substrate-origin files the merge added stay uncovered.
   "crates/busbar-kernel/src/plane_host/breaker.rs",
-  "crates/busbar-kernel/src/plane_host/vtable.rs",
+  # `plane_host/vtable.rs` STRUCK (status row 84): the file is deleted with the HOT lane.
   # was crates/busbar-core/src/plane/registry.rs (R099)
   "crates/busbar-kernel/src/plane/registry.rs",
   # was crates/busbar-core/src/router.rs (R099)
@@ -1483,7 +1480,7 @@ max_sites = 0
 known_sites = [
   "crates/busbar-contract/src/caps/",
   "crates/busbar/src/root/",
-  "crates/busbar-llm/src/unit/",
+  # `crates/busbar-llm/src/unit/` STRUCK (DEV-GREEN row 83, coordinator ruling 2026-10-18): the crate is deleted.
   "crates/busbar-kernel-breaker/src/port.rs",
 ]
 
@@ -1648,7 +1645,7 @@ which is the row that can name the home the call belongs in, so one site is neve
 # 2026-09-22 repoint above this row already fixed once.
 scope_globs = [
   "crates/busbar-plane-*/src/*",
-  "crates/busbar-llm/src/unit/*",
+  # `crates/busbar-llm/src/unit/*` STRUCK (DEV-GREEN row 83, coordinator ruling 2026-10-18): the crate is deleted, its plane is its door crate.
   # `crates/busbar-mcp/src/*` STRUCK (P3 DEL-MCP, ARCHITECT 2026-10-05): the engine is deleted and
   # the mcp plane is its door crate, which `crates/busbar-plane-*/src/*` above already covers whole.
   # `crates/busbar-a2a/src/*` STRUCK the same way (FLIP-A2A): the a2a plane is `busbar-plane-a2a`.
@@ -2058,7 +2055,9 @@ legacy_reach_prefixes = 4
 # (the plane_crates floor drops only by ledgered deletions, ARCHITECT 2026-10-05).
 # 2 -> 1: `busbar-voice` (P3 streaming flip, FLIP-STREAMING) left `gate.plane_crates` as a ruled
 # deletion, named in [gate.census.deleted] — the drop `ceiling-census` excuses.
-plane_crates = 1
+# 1 -> 0: `busbar-llm` left `gate.plane_crates` as a ruled deletion (DEV-GREEN row 83, coordinator ruling 2026-10-18), named in
+# [gate.census.deleted] — the drop `ceiling-census` excuses.
+plane_crates = 0
 
 # HOW MANY CRATE DIRECTORIES EACH KIND GLOB MATCHES.
 #
@@ -2226,7 +2225,17 @@ abi = 1
 "crates/busbar-voice" = "P3 streaming flip: legacy crate deleted (ARCHITECT 2026-10-04)"
 "crates/busbar-mcp" = "P3 DEL-MCP: the mcp plane is served through its door alone; the legacy engine crate is deleted (ARCHITECT 2026-10-05, U11 / Q1)"
 "crates/plane-example" = "TODO P5: delete plane-example (Q128 audit BLOCK 11/12: a fixture plane plugin riding the HOT lane with C-unwind doors)"
+"crates/busbar-llm" = "DEV-GREEN row 83 (coordinator ruling 2026-10-18): the last legacy engine is deleted; the llm plane is served through its door alone, busbar-plane-llm, in default"
 "crates/busbar-a2a" = "FLIP-A2A U11 (Q128 pre-audit): the legacy a2a engine is deleted; the plane is served through its door, busbar-plane-a2a, in default (ARCHITECT 2026-10-04)"
+
+# THE RULE TABLES STRUCK WITH THEIR SUBJECT (coordinator ruling 2026-10-20, Law 9: a ceiling never
+# disappears silently). A `[rules.*]` table may leave this file only when it is named here with what
+# was deleted, the status row and the measured value, AND every subject path it named at the base
+# (`root`, `crate`, `allowed_file`) lies under a [gate.census.deleted] directory that is gone from
+# the tree. `ceiling-census` checks each condition; the ledger is add-only.
+[gate.census.deleted_rules]
+"rules.no-response-escapes-audit" = "DEV-GREEN row 83 (coordinator ruling 2026-10-18): its subject, the retired engine crate's step directory crates/busbar-llm/src/unit (allowed file audit.rs), was deleted with crates/busbar-llm; measured 0 (max_escapes = 0 at the base): no file under that root exists"
+"rules.terminal-doors-in-audit-step" = "DEV-GREEN row 83 (coordinator ruling 2026-10-18): its subject, the finish_admitted/finish_rejected call sites inside crate busbar-llm outside crates/busbar-llm/src/unit/audit.rs, was deleted with crates/busbar-llm; measured 0 (max_extra_sites = 0 at the base): the crate has no file"
 
 # THE RENAME ROWS (ARCHITECT 2026-10-03, Q-L7B2-CENSUS). A moved-out crate excuses its kind's floor
 # drop only when the root pins it as a git dependency at a rev under the package name it had at the

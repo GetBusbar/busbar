@@ -209,6 +209,22 @@
         "path:*/converse-stream"
       ],
       [
+        "POST",
+        "/model/*/converse"
+      ],
+      [
+        "POST",
+        "/model/*/converse-stream"
+      ],
+      [
+        "GET",
+        "/v1/models"
+      ],
+      [
+        "GET",
+        "/v1beta/models"
+      ],
+      [
         "GET",
         "/"
       ],
@@ -333,6 +349,22 @@
       [
         "POST",
         "path:*/converse-stream"
+      ],
+      [
+        "POST",
+        "/model/*/converse"
+      ],
+      [
+        "POST",
+        "/model/*/converse-stream"
+      ],
+      [
+        "GET",
+        "/v1/models"
+      ],
+      [
+        "GET",
+        "/v1beta/models"
       ],
       [
         "GET",
