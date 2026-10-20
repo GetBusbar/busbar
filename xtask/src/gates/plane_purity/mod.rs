@@ -2009,7 +2009,9 @@ fn parse_strict_tables(run: &LegacyRun, plane_keys: &[String]) -> Result<StrictT
             ));
         }
     }
-    if cats.len() != scanner::CATEGORIES.len() || plane_keys.is_empty() || reach.len() != plane_keys.len()
+    if cats.len() != scanner::CATEGORIES.len()
+        || plane_keys.is_empty()
+        || reach.len() != plane_keys.len()
     {
         return Err(format!(
             "parity: the strict report carried {} of {} categories and {} of {} plane crate(s) \
