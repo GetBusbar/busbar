@@ -383,3 +383,6 @@ checks:
       ./bin/oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
       ./bin/oracle replay --golden testing/shadow-oracle/golden/1.5.5 --candidate target/oracle/recordings/candidate --out target/oracle/reports/dev --strict
     needs: [gates]
+    # The judge's report (diverging.txt and the per-cell diffs), kept with the run green or red and
+    # fetched with `modernci call artifact --check oracle`: the full diverging text a FAIL is triaged from.
+    outputs: [target/oracle/reports/]
