@@ -1366,6 +1366,29 @@ fn from_config_keeps_its_refusal_bytes_and_carries_every_floor_exactly() {
 /// every 1.5.5-era first-party tarball.
 const RELEASE_PUBKEY: &str = "b18395a332803151b9cd40a71489a86a96d8bea3ee6a37a45f59dec197bacba7";
 
+/// THE DEFAULT RELEASE KEY IS THE REAL ONE. The release key is a build input
+/// (`BUSBAR_RELEASE_PUBKEY`, read by [`embedded_release_pubkey`] at compile time); a build that does
+/// not set it in its environment takes this tree's `.cargo/config.toml` `[env]` value, which must be
+/// the busbar release key, so every ship build embeds it unchanged. The shadow oracle sets the
+/// variable to its run key at ITS candidate build only (ARCHITECT ruling 2026-10-20, row 86); cargo's
+/// `[env]` never overrides the process environment, so that build input wins there and nowhere else.
+#[test]
+fn the_default_release_key_input_is_the_real_release_key() {
+    let cfg = include_str!("../../../../.cargo/config.toml");
+    let committed: Vec<&str> = cfg
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("BUSBAR_RELEASE_PUBKEY"))
+        .filter_map(|rest| rest.trim().strip_prefix('='))
+        .map(|v| v.trim().trim_matches('"'))
+        .collect();
+    assert_eq!(
+        committed,
+        [RELEASE_PUBKEY],
+        "the committed default release key must be the busbar release key, exactly once"
+    );
+    public_key_from_hex(RELEASE_PUBKEY).expect("the release key parses");
+}
+
 /// A manifest packed before `former_names` existed parses UNCHANGED and its signature still
 /// verifies over this binary's canonical bytes: the field is skipped when empty, so an old
 /// manifest's signed bytes are exactly what its publisher signed. The witness is the REAL manifest
