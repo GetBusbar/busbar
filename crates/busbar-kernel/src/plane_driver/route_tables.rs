@@ -1,40 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE NEUTRAL READ-SIDE PROJECTION of a data-plane's routing tables — the seam the core-resident
-//! scrape/discovery readers name instead of the plane's concrete `Lane`/`WeightedLane`/`PoolRuntime`
-//! types (1.6.0 money-path Phase 3-4 B, read-side decoupling).
+//! THE ROUTE TABLES' READ VIEW — the pools, members and lanes the route step walks, projected for
+//! the cold readers that report them: the `/metrics` lane-state scrape, `/stats`, the admin pool
+//! listing and the boot-time telemetry label bank.
 //!
-//! ## Why this lives in the substrate
-//!
-//! The LLM money path (its `NativeRuntime` bundle + the `Lane`/`WeightedLane` routing tables) is being
-//! relocated into `busbar-llm`. A handful of core readers that STAY — the `/metrics` lane-state scrape,
-//! the `/v1/models` discovery listing, and the boot-time telemetry label bank — read those tables only
-//! for NEUTRAL facts: pool label spaces, per-pool member lane indices, the direct-model index, one
-//! lane's wire identity ([`LaneView`]), and a pool's live queue-park depth. Expressed through this
-//! trait, those readers name no plane type, so they need not move when the tables do.
-//!
-//! It lives in `busbar-substrate` (not `busbar-llm`) so a zero-plane binary — one that `git-rm`'d
-//! `busbar-llm` (the `plane-delete-test --all` posture) — still boots: core reaches an
-//! [`EMPTY_VIEW`] (zero pools, zero models) when no plane contributed a runtime slot, and never names a
-//! `busbar-llm` type to do it.
+//! The tables are the kernel's own: `pools`, their members, `on_exhausted` and
+//! `upstream_credentials` are reserved core-owned keys (BUSBAR-1.6.0.md §4, l.552-554), and the
+//! route step is the kernel's walk over them (Part 3 §12, l.2577). [`ConfigTables`] is the view over
+//! one resolved generation; [`EMPTY_VIEW`] is the view a configuration with no tables reads (zero
+//! pools, zero lanes), so every reader answers empty rather than panicking.
 //!
 //! ## What this is NOT
 //!
-//! This is the COLD/scrape read seam, reached at most once per scrape or discovery call and free to
-//! allocate its neutral projections. It is not the hot engine path: the engine downcasts its own
-//! concrete runtime once and reads plain fields. The table-object-coupled readers (health probing over
-//! `client()`/`probe_schedule()`, admin `pool_detail` over `&[WeightedLane]`) are deliberately NOT
-//! expressed here — they move into the plane with the tables.
+//! This is the COLD read seam, reached at most once per scrape or listing call and free to allocate
+//! its projections. It is not the route walk itself.
 
-/// A neutral, read-only projection of ONE lane's wire identity, borrowed from the plane's lane table
-/// for the duration of a scrape/discovery read. Carries only protocol-neutral scalars (no plane
-/// routing type), so a core reader can label a metric or render a `/stats`-adjacent fact without
-/// naming the plane's `Lane`.
-///
-/// Today's core readers consume only [`LaneView::model`] (the metric `lane` label / the discovery
-/// name); `provider` and `base_url` round out the neutral identity for the readers that relocate with
-/// the tables in the pivot, so the projection shape is settled before the move.
+/// A read-only projection of ONE lane's identity, borrowed from the lane table for the duration of a
+/// scrape or listing read: protocol-neutral scalars only.
 pub struct LaneView<'a> {
     /// The lane's configured model name — the value the `/metrics` `lane` label and the counter sites
     /// carry, so a gauge and its counters PromQL-join.
@@ -45,11 +28,9 @@ pub struct LaneView<'a> {
     pub base_url: &'a str,
 }
 
-/// THE NEUTRAL READ SEAM over a data-plane's routing tables. Implemented by the plane's concrete
-/// runtime (today the still-in-core `NativeRuntime`; after the pivot, `busbar-llm`'s own runtime,
-/// reached via a viewer fn-pointer). Every accessor returns a NEUTRAL projection — never the plane's
-/// `Lane`/`WeightedLane` — so the staying `/metrics`, `/v1/models`, and telemetry readers name no
-/// plane type. Cold/scrape paths only; the projections allocate.
+/// THE READ SEAM over the route tables. Every accessor returns a neutral projection, so the
+/// `/metrics`, `/stats`, admin and telemetry readers name no routing type. Cold paths only; the
+/// projections allocate.
 pub trait EngineTablesView {
     /// The pool label space paired with each pool's member lane indices — one entry per configured
     /// pool. Drives the `/metrics` per-pool lane-state loop, the `/v1/models` visible-pool filter, and
@@ -83,8 +64,8 @@ pub trait EngineTablesView {
 
     /// The `(lane index, member weight)` pairs of `pool`'s members, in config order — the NEUTRAL
     /// projection the core-resident admin pool listing (`GET /admin/pools[/{name}][?detail]`) renders
-    /// each member's weight and (via [`Self::lane_view`]) model from, so it names no plane
-    /// `WeightedLane`. Empty for an unknown pool. Cold admin path; allocates.
+    /// each member's weight and (via [`Self::lane_view`]) lane name from. Empty for an unknown pool.
+    /// Cold admin path; allocates.
     fn pool_members(&self, pool: &str) -> Vec<(usize, u32)>;
 
     /// The live `on_exhausted: queue` park depth for `pool` (0 when the pool never queues).
@@ -92,29 +73,22 @@ pub trait EngineTablesView {
 
     /// The FALLBACK-POOL target `pool` fails over to on exhaustion, if its `on_exhausted:` policy is
     /// `fallback_pool:<name>` — else `None` (every other policy, `503`/`least_bad`/`queue`, stays
-    /// within the pool and introduces no new pool name; an unconfigured pool defaults to `503`). A
-    /// NEUTRAL projection of the plane's `on_exhausted` config (the config enum is a plane type this
-    /// seam must not name), used by the staying ingress ACL walk (`fallback_pools_authorized`) to
-    /// re-enforce a key's `allowed_pools` against every reachable fallback pool.
+    /// within the pool and introduces no new pool name; an unconfigured pool defaults to `503`). Read
+    /// by the ingress ACL walk (`fallback_pools_authorized`) to re-enforce a key's `allowed_pools`
+    /// against every reachable fallback pool.
     fn on_exhausted_fallback(&self, pool: &str) -> Option<String>;
 
-    /// The ALL-POOLS upstream-credential DEFAULT (`Own` vs `Passthrough`) — a NEUTRAL scalar the
-    /// staying pool-less core readers (`auth::open_door` keys-in-chain guard, the admin
-    /// upstream-credentials render) consult after the plane's runtime relocated out of core. A pure
-    /// projection of the plane runtime's `upstream_credentials` field; the empty view returns the
-    /// type's default, byte-identical to the always-present-but-empty zero-plane runtime.
+    /// The ALL-POOLS upstream-credential DEFAULT (`Own` vs `Passthrough`), a kernel-owned key the
+    /// pool-less readers (`auth::open_door` keys-in-chain guard, the admin upstream-credentials
+    /// render) consult. The empty view returns the type's default.
     fn upstream_creds(&self) -> busbar_contract::config::UpstreamCreds;
 }
 
-/// THE ZERO-PLANE EMPTY VIEW: a core/substrate-resident [`EngineTablesView`] with zero pools and zero
-/// models, reached when no plane contributed a runtime slot (the featureless binary). Substrate-owned
-/// so core boots — and its scrape/discovery readers see empty tables rather than panicking — even with
-/// every plane crate compiled out (the `plane-delete-test --all` posture). Byte-identical in output to
-/// the always-present-but-empty runtime the zero-plane build used to carry.
+/// THE EMPTY VIEW: an [`EngineTablesView`] with zero pools and zero lanes, read when a generation
+/// carries no tables, so every reader sees empty tables rather than panicking.
 pub struct EmptyEngineTablesView;
 
-/// The process-lifetime [`EmptyEngineTablesView`] singleton the core read seam falls back to on an
-/// absent plane runtime slot.
+/// The process-lifetime [`EmptyEngineTablesView`] singleton the read seam falls back to.
 pub static EMPTY_VIEW: EmptyEngineTablesView = EmptyEngineTablesView;
 
 impl EngineTablesView for EmptyEngineTablesView {
@@ -150,13 +124,11 @@ impl EngineTablesView for EmptyEngineTablesView {
     }
 }
 
-/// THE KERNEL'S OWN TABLES VIEW over the `pools:`/`models:` sections it resolved (the kernel-owned
-/// sections, spec Part 1 line 569: the host resolves and validates them): the lanes in the lane
-/// table's order (the order the lane store and the telemetry bank are indexed by), the direct-model
-/// index, each pool's members and its fallback pool, and the all-pools upstream-credential default.
-/// The read seam answers from it when no plane contributed a runtime of its own, so `/stats`, the
-/// `/metrics` lane families, `/v1/models` and the admin pool listing read the same tables a
-/// door-served plane walks. The live `on_exhausted: queue` depth is the one the walk reports
+/// THE KERNEL'S OWN TABLES VIEW over the pools and lanes it resolved: the lanes in the lane table's
+/// order (the order the lane store and the telemetry bank are indexed by), the direct-lane index,
+/// each pool's members and its fallback pool, and the all-pools upstream-credential default. `/stats`,
+/// the `/metrics` lane families and the admin pool listing read the same tables the route walk
+/// walks. The live `on_exhausted: queue` depth is the one the walk reports
 /// ([`set_pool_queued_depth`]).
 #[derive(Debug, Default)]
 pub struct ConfigTables {
@@ -268,5 +240,5 @@ impl EngineTablesView for ConfigTables {
 }
 
 #[cfg(test)]
-#[path = "tests/config_tables_tests.rs"]
-mod config_tables_tests;
+#[path = "tests/route_tables_tests.rs"]
+mod route_tables_tests;
