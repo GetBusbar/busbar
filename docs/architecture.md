@@ -45,9 +45,9 @@ trust model.
 Busbar carries five planes of traffic, and the point of the architecture is that they are
 five *ingresses onto one core* rather than five products sharing a process. By crate, they
 are `busbar-plane-llm`, `busbar-plane-mcp`, `busbar-plane-a2a`, `busbar-plane-streaming`
-and `busbar-plane-decisions`. Two are in this repository (`crates/busbar-plane-llm`,
-`crates/busbar-plane-streaming`); the MCP, A2A and decisions planes live in their own
-repositories (GetBusbar/busbar-plane-mcp, GetBusbar/busbar-plane-a2a,
+and `busbar-plane-decisions`. One is in this repository (`crates/busbar-plane-llm`); the
+MCP, A2A, streaming and decisions planes live in their own repositories
+(GetBusbar/busbar-plane-mcp, GetBusbar/busbar-plane-a2a, GetBusbar/busbar-plane-streaming,
 GetBusbar/busbar-plane-decisions) and are pinned into the build as git dependencies in the
 root `Cargo.toml`. Each is a plugin
 of kind `plane`, compiled in or dropped into the plugins directory on the same contract, and
@@ -516,7 +516,7 @@ Metrics are emitted at the ingress boundary (`busbar_requests_total`, the durati
 histogram) on EVERY plane, and at each upstream attempt/failure/trip/failover/translation
 (`crates/busbar-kernel/src/telemetry.rs`, `crates/busbar-llm/src/engine/pipeline.rs`). The model plane emits from
 `ingress::finish_inner` (`crates/busbar-kernel/src/ingress/mod.rs`), every other plane from the plane
-ingress boundary layer (`crates/busbar-kernel/src/plane/observe.rs`), distinguished by a `plane` label. Optional OTLP spans and a request-log webhook
+ingress boundary layer (`crates/busbar-kernel/src/ingress/observe.rs`), distinguished by a `plane` label. Optional OTLP spans and a request-log webhook
 are configured via the `observability` section.
 
 ## How it deploys, simplest first

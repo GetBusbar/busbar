@@ -254,7 +254,8 @@ fn validate_worker_threads_config(wt: Option<usize>) -> Result<Option<usize>, St
 // crate this replaced did.
 include!(concat!(env!("OUT_DIR"), "/linked.rs"));
 // `LINKED_HOOK_NAMES`: each linked hook row's name as the admin surface prints it (the manifest's
-// `linked-name` rows), handed to the admin crate below so it names no hook plugin.
+// `linked-name` rows), carried on the root's install record (`root::linked::register_stores`) so the
+// admin crate names no hook plugin.
 include!(concat!(env!("OUT_DIR"), "/linked_hook_names.rs"));
 
 /// REGISTER THE LINKED PROTOCOLS — the composition root's one write into the protocol axis, over
@@ -318,9 +319,6 @@ fn register_planes() {
     // above. Unconditional: the admin surface carries no feature flag at this layer; core mounts it
     // through the seam whenever this (mandatory) sibling is linked, which is every real build.
     busbar_core_admin::install();
-    // The hook rows this build links, by the names the admin surface prints (Law 1: the admin crate
-    // spells no hook plugin; which hooks a build carries is the manifest's data).
-    busbar_core_admin::v1::service::install_hook_plugins(LINKED_HOOK_NAMES);
 
     // THE ROOT UNITS' SEALS. Each reads what its unit composes against the axes installed above and
     // against nothing else — it binds no listener, opens no store, reads no configuration and writes
@@ -772,14 +770,6 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         .filter_map(|capture| capture(&cfg))
         .collect();
 
-    // D38: the fleet's SEALED OPERATOR KEY reference (`auth.operator_pub`), captured from the
-    // resolved `auth:` block BEFORE `cfg` is consumed by `build_app_from_config`. It is resolved to
-    // its raw 32 ed25519 bytes below — once the secret resolver the build produces exists — and
-    // sealed into the admin plane's production posture view. Absent (the default) it stays `None`,
-    // which the posture view reads as `OperatorState::Unset`: the amend ceremony gate refuses exactly
-    // as the release without this field, byte for byte.
-    #[cfg(feature = "root-admin")]
-    let boot_operator_auth = cfg.auth.clone();
     // The operator's data chain (`auth.chain`), the auth of every data-listener guest-list line
     // (THE DESIGN §6), captured for the door planes' lines before `cfg` is consumed.
     let data_chain: Vec<String> = cfg
@@ -971,6 +961,14 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     )
     .unwrap_or_else(|e| die(e));
     root_rules.hold_owned_anchors(&served.need_trust());
+    // THE DOOR PLANES THE BOOT LEFT UNOPENED (their section absent, Law 7): a door plane is opened
+    // once, here, so an apply that first writes one's section is stored and validated but
+    // RESTART-TO-APPLY, reported in the apply's answer and given no slot until the next boot (the
+    // 1.5.5 precedent for what is mounted once at boot, `plugin_routes::paths_awaiting_restart`).
+    // Without governance no door plane is opened at all, at boot or after a restart: none is held.
+    if app.governance.is_some() {
+        root_rules.hold_unopened(served.unopened(root::boot::door_planes()));
+    }
     served.spawn_ticks();
     // RELIABILITY STATE IS STATELESS (store-or-RAM rule): a plane's own in-memory health/backoff
     // bookkeeping lives in RAM only and is RE-LEARNED after a restart — none of it is this crate's
@@ -1015,16 +1013,6 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // Grab the secret resolver before `app` is moved into the router builder - the TLS listeners
     // resolve cert/key/CA references through it below.
     let tls_secret_resolver = app.secret_resolver.clone();
-    // D38: resolve the sealed operator public key to its raw 32 ed25519 bytes through the SAME secret
-    // seam every key is resolved through (built-in env/file + kind:secret plugins). FAIL-CLOSED on a
-    // configured-but-unresolvable / malformed key — a fleet that MEANT to seal one must not come up
-    // silently ungated. `None` (absent) ⇒ `OperatorState::Unset` in the posture view below.
-    #[cfg(feature = "root-admin")]
-    let operator_key = busbar_kernel::preflight::resolve_operator_public_key(
-        boot_operator_auth.as_ref(),
-        &tls_secret_resolver,
-    )
-    .unwrap_or_else(|e| die(e));
     // THE PROCESS'S ONE BOOK IS OPENED BEFORE THE ROUTERS ARE BUILT (ARCHITECT Q-SW7, 2026-10-02):
     // the door planes' data routes are the router's construction (Q-SW1) and their units settle onto
     // this same one book, so it is opened from the boot `app` and opened once; nothing below opens
@@ -1231,7 +1219,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             req_body_max,
             &app_handle,
             book,
-            operator_key,
+            None,
             &late_services,
             breaker_policy,
         ),

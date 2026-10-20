@@ -22,7 +22,7 @@
 ///
 /// ## Keyed on the nonce, and only the terminal redemption is recorded
 ///
-/// The nonce already exists and is already unique per mint (`mrtr`'s multi-round scenario requires
+/// The nonce already exists and is already unique per mint (a multi-round exchange requires
 /// it), so it is the natural handle and nothing new has to be sealed. What is recorded is the ONE
 /// redemption that dispatches: an intermediate round's state is answered with a fresh ask and a
 /// fresh state, so burning it would refuse the ordinary case of a client retrying a request whose
@@ -70,7 +70,7 @@ pub struct SpentTokenLedger {
     seen: std::sync::Mutex<std::collections::HashMap<String, u64>>,
     /// The SHARED ledger: the configured governance store, attached once at boot. `None` is a
     /// deployment with no durable store, which is the process-local posture above.
-    sink: std::sync::Mutex<Option<std::sync::Arc<dyn crate::plane::store::PlaneStore>>>,
+    sink: std::sync::Mutex<Option<std::sync::Arc<dyn crate::store::plane_view::PlaneStore>>>,
 }
 
 /// Hand-written because `dyn Store` is not `Debug` — a backend must not be obliged to render itself,
@@ -95,11 +95,11 @@ impl SpentTokenLedger {
 
     /// Attach the configured governance store as the SHARED ledger. Called once at boot, on the
     /// instance carried across every later config apply.
-    pub fn set_sink(&self, store: std::sync::Arc<dyn crate::plane::store::PlaneStore>) {
+    pub fn set_sink(&self, store: std::sync::Arc<dyn crate::store::plane_view::PlaneStore>) {
         *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(store);
     }
 
-    fn sink(&self) -> Option<std::sync::Arc<dyn crate::plane::store::PlaneStore>> {
+    fn sink(&self) -> Option<std::sync::Arc<dyn crate::store::plane_view::PlaneStore>> {
         self.sink
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -114,7 +114,7 @@ impl SpentTokenLedger {
 // and spends it by the host's one-time `records.claim`, and only the root composes a door's
 // served path (P3 DEL-MCP).
 
-/// The DEFAULT life of a sealed state. Short, per `mrtr.mdx:236`: a caller answering an elicitation
+/// The DEFAULT life of a sealed state. Short: a caller answering an elicitation
 /// is a human at a prompt, not a batch job, and every second of validity is a second of replay
 /// window.
 pub const DEFAULT_TTL_SECS: u64 = 300;

@@ -198,7 +198,7 @@ impl Durability {
     /// `now` is wall seconds. The checkpoint numbering continues from the highest sequence number
     /// the chain already carries, so a restart never re-uses one.
     pub fn arm_checkpoints(&mut self, now: u64) {
-        let next_checkpoint_seq = match self.journal.replay() {
+        let next_checkpoint_seq = match self.chain() {
             Ok(Ok(records)) => next_checkpoint_seq_on(&records),
             _ => OPENING_CHECKPOINT_SEQ.saturating_add(1),
         };

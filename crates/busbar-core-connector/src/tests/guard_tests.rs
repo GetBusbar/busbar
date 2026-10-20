@@ -540,18 +540,25 @@ fn a_lookup_past_the_cap_is_refused_at_once_and_starts_no_thread() {
     assert_eq!(rest, [(0, true), (1, true)], "the two in flight answer");
 }
 
-/// RED (THE DESIGN §5 egress-class table: `open-web` is "public https only"; v1.5.5 refused a
-/// loopback, private, CGNAT or link-local open-web target and left that instance disabled,
-/// `crates/busbar/src/observability.rs:214-240`): an open-web need keeps its class when its config
-/// names its target. Only the default class is judged as operator infrastructure then; open-web
-/// and provider are never lifted.
+/// A CONFIGURED OPEN-WEB TARGET KEEPS THE OPEN-WEB CLASS (Q128 arch u22/u23 BLOCK; ruling 14: "a
+/// configured open-web target keeps the open-web class (public https only); only the egress
+/// default class is lifted when configured"; 1.5.5's webhook export refused a private or loopback
+/// URL). A webhook URL taken from settings is judged open-web, so `https://127.0.0.1` and a
+/// `10.x` address are refused; only the egress default is lifted to operator infrastructure.
+/// RED before the fix: the configured open-web need was lifted, and both were admitted.
 #[test]
-fn a_configured_open_web_target_keeps_the_open_web_class() {
+fn a_configured_open_web_target_keeps_its_class_and_is_refused_a_private_address() {
     assert_eq!(judged_class(EGRESS_OPEN_WEB, true), EGRESS_OPEN_WEB);
-    assert_eq!(judged_class(EGRESS_PROVIDER, true), EGRESS_PROVIDER);
     assert_eq!(
         judged_class(EGRESS_DEFAULT, true),
         EGRESS_OPERATOR_INFRASTRUCTURE
     );
-    assert_eq!(judged_class(EGRESS_OPEN_WEB, false), EGRESS_OPEN_WEB);
+    let g = Guard::default();
+    for a in ["127.0.0.1", "10.0.0.7"] {
+        assert_eq!(
+            verdict(g.judge_answer(a, &[ip(a)], judged_class(EGRESS_OPEN_WEB, true))),
+            Some(DEST_INTERNAL),
+            "a configured webhook to {a}"
+        );
+    }
 }

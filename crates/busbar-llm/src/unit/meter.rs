@@ -99,7 +99,11 @@
 
 use std::sync::Arc;
 
-use busbar_contract::caps::{step::Meter, Consumption, Grant, Outcome, Pass, SeatVerdict, Usage};
+use busbar_contract::caps::{
+    step::Meter, Consumption, Grant, MeterClassId, Outcome, Pass, QuantitySource, SeatVerdict,
+    Usage, UsageLine,
+};
+use busbar_contract::ClassDirection;
 use busbar_kernel::{door, plane_host::EngineHost};
 
 /// WHAT THE ROUTE STEP OBSERVED — the facts this step is bound to, as the step before it hands
@@ -404,7 +408,7 @@ pub fn meter(
     // The report the posting is made against: one line per non-zero tier, in canonical order. A
     // response that reported nothing reports no lines — zero, not a floor, because that is what the
     // older release bills when an upstream tells it nothing.
-    let lines = door::usage_lines(reported);
+    let lines = usage_lines(reported);
     let usage = Usage::report(usage_token, lines).expect("four tiers fit any record");
 
     // This step settles nothing: what the unit consumed leaves on the report, and the side that
@@ -416,6 +420,59 @@ pub fn meter(
         posted,
         report,
     }
+}
+
+/// The unit's usage lines: one per non-zero tier, in canonical order. A response that reported
+/// nothing reports no lines: zero, not a floor.
+fn usage_lines(reported: Option<&busbar_contract::billing::TokenUsage>) -> Vec<UsageLine> {
+    let mut lines = Vec::new();
+    if let Some(u) = reported {
+        push_line(&mut lines, CLASS_INPUT, ClassDirection::Input, u.input);
+        push_line(&mut lines, CLASS_OUTPUT, ClassDirection::Response, u.output);
+        push_line(
+            &mut lines,
+            CLASS_CACHE_READ,
+            ClassDirection::CacheRead,
+            u.cache_read.unwrap_or(0),
+        );
+        push_line(
+            &mut lines,
+            CLASS_CACHE_WRITE,
+            ClassDirection::CacheWrite,
+            u.cache_creation.unwrap_or(0),
+        );
+    }
+    lines
+}
+
+const CLASS_INPUT: MeterClassId = MeterClassId::new(busbar_contract::records::UNIT_INPUT);
+const CLASS_OUTPUT: MeterClassId = MeterClassId::new(busbar_contract::records::UNIT_OUTPUT);
+const CLASS_CACHE_READ: MeterClassId = MeterClassId::new(busbar_contract::records::UNIT_CACHE_READ);
+const CLASS_CACHE_WRITE: MeterClassId =
+    MeterClassId::new(busbar_contract::records::UNIT_CACHE_WRITE);
+
+/// One line, if the tier carries anything. A zero-quantity line is not a fact about anything.
+fn push_line(
+    lines: &mut Vec<UsageLine>,
+    class: MeterClassId,
+    direction: ClassDirection,
+    quantity: u64,
+) {
+    if quantity == 0 {
+        return;
+    }
+    lines.push(UsageLine {
+        class,
+        quantity,
+        // The figure came from the destination's own response, read at the locator the dialect's
+        // reader knows, not from a byte count of ours. The four directions partition the tiers:
+        // uncached input, the response, and the two additive cache sides.
+        source: QuantitySource::Locator {
+            direction,
+            ptr: busbar_contract::caps::LocatorPtr::new(class.as_str()),
+        },
+        estimated: false,
+    });
 }
 
 #[cfg(test)]
