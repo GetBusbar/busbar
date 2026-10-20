@@ -111,6 +111,8 @@ pub struct TestDoor {
     pub refused_statuses: Mutex<Vec<u32>>,
     /// The opening head fields every `begin` crossing carried (`BeginIn::fields`), in order.
     pub begun_fields: Mutex<Vec<OpeningFields>>,
+    /// The supervision key every `dial` crossing carried (`DialIn::supervision_key`), in order.
+    pub dialled_keys: Mutex<Vec<u64>>,
 }
 
 impl TestDoor {
@@ -158,6 +160,7 @@ impl TestDoor {
             threads: Mutex::new(HashSet::new()),
             refused_statuses: Mutex::new(Vec::new()),
             begun_fields: Mutex::new(Vec::new()),
+            dialled_keys: Mutex::new(Vec::new()),
         }
     }
 
@@ -675,6 +678,7 @@ impl TestDoor {
                 ),
             ),
             Carry::Dial(i, o) => {
+                self.dialled_keys.lock().unwrap().push(i.supervision_key);
                 // SAFETY: the connector's destination, live for the call.
                 let d = unsafe { &*i.dest };
                 let r = if d.kind == DEST_PROGRAM {

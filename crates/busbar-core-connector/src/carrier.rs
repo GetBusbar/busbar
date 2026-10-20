@@ -168,8 +168,13 @@ pub enum Dest {
     /// (`unix:/path`).
     Authority(String),
     /// A program: its absolute path, arguments and whole environment, and its environment
-    /// references as config time resolved them ([`crate::spawn_env::HeldEnv`]).
-    Program(busbar_contract::conn::Program, crate::spawn_env::HeldEnv),
+    /// references as config time resolved them ([`crate::spawn_env::HeldEnv`]), and the
+    /// supervision key of the member that runs it (`DialIn::supervision_key`; `0` = no member).
+    Program(
+        busbar_contract::conn::Program,
+        crate::spawn_env::HeldEnv,
+        u64,
+    ),
 }
 
 impl Dest {
@@ -177,7 +182,7 @@ impl Dest {
     fn admission(&self) -> Admission {
         match self {
             Self::Authority(a) => Admission::Dial(vec![a.clone()]),
-            Self::Program(p, env) => Admission::Spawn(p.clone(), env.clone()),
+            Self::Program(p, env, _) => Admission::Spawn(p.clone(), env.clone()),
         }
     }
 }
@@ -233,7 +238,7 @@ impl Carried {
         let mut wr = Driven::of(door.as_ref()).ok_or_else(refused)?;
         let rd = Driven::of(door.as_ref()).ok_or_else(refused)?;
         let (args, env): (Vec<AbiStr>, Vec<Field>) = match dest {
-            Dest::Program(p, _) => (
+            Dest::Program(p, _, _) => (
                 p.args.iter().map(|a| abi(a.as_bytes())).collect(),
                 p.env
                     .iter()
@@ -256,7 +261,7 @@ impl Carried {
                 env: std::ptr::null(),
                 env_len: 0,
             },
-            Dest::Program(p, _) => Destination {
+            Dest::Program(p, _, _) => Destination {
                 kind: DEST_PROGRAM,
                 _reserved: 0,
                 authority: abi(b""),
@@ -270,6 +275,10 @@ impl Carried {
         io.admit(wr.ticket(), dest.admission());
         let mut i: DialIn = blank_in();
         i.dest = &raw;
+        i.supervision_key = match dest {
+            Dest::Program(_, _, key) => *key,
+            Dest::Authority(_) => 0,
+        };
         let mut o: ConnOut = blank_out();
         let c = wr.cross(door.as_ref(), Carry::Dial(&mut i, &mut o), None);
         let (handle, failure) = io.settle(wr.ticket());

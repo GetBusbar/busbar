@@ -21,8 +21,8 @@
 //!   kinds the caller's Statement declares, [`UNDECLARED_KIND`] otherwise), `work.open` /
 //!   `work.find` / `work.settle` / `work.resume`, `unit.nest`, `content.scan` and `hook.call`
 //!   (for the unit the crossing serves), `verify.lookup` / `verify.store` (the caller's own
-//!   single-flight verify cache), `disk.append` (to the destinations the caller was granted,
-//!   [`NO_DESTINATION`] otherwise) and `snapshot.read` (the host's metric families, laid out in the
+//!   single-flight verify cache), `disk.append` (to the destinations the caller was granted; any
+//!   other answers FAILED at the open step, [`NO_DESTINATION`]) and `snapshot.read` (the host's metric families, laid out in the
 //!   caller's buffer by [`super::snapshot`], to the crossing the kernel granted them). Every slot of
 //!   the table is served.
 //! * **Who called.** The instance's [`Caller`], stated at bind, is handed to every service that is
@@ -713,8 +713,10 @@ fn destination(ctx: HostCtx, key: &str) -> Option<busbar_contract::services::Dis
 /// file the host bound for it (granted from its manifest, bound from its settings at open), and
 /// the bytes go to the kernel's bounded disk lane, which pends the call until the append is done.
 /// On READY and FAILED the result slot gets what the lane reported: the rotation before the append,
-/// and on READY the whole of the bytes. A key the caller was not granted is REFUSED
-/// ([`NO_DESTINATION`]) before anything is written.
+/// and on READY the whole of the bytes. A key the caller was not granted (or one its settings left
+/// unbound) is never opened: it answers FAILED at the [`svc::DISK_OPEN_FAILED`] step, in the host's
+/// words ([`NO_DESTINATION`]), before anything is written, so the sink reports it as the one line it
+/// reports a file it could not open with, as 1.5.5's file sink did (its BUSBAR-7074).
 extern "C" fn disk_append(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     slot(
         ctx,
@@ -735,7 +737,19 @@ extern "C" fn disk_append(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
                 return Answered::fault();
             };
             let Some(dest) = destination(ctx, &key) else {
-                return Answered::bare(Outcome::Refused, NO_DESTINATION);
+                // SAFETY: the caller's result slot, checked non-NULL by `check_disk_append_in`.
+                unsafe {
+                    i.result.write_unaligned(DiskWritten {
+                        size: size_of::<DiskWritten>() as u32,
+                        rotated: 0,
+                        faults: 0,
+                        _reserved: [0; 2],
+                        written: 0,
+                    });
+                }
+                let mut a = Answered::bare(Outcome::Failed, NO_DESTINATION);
+                a.value = svc::DISK_OPEN_FAILED;
+                return a;
             };
             let whole = bytes.len() as u64;
             let provider = Arc::clone(&served.provider);

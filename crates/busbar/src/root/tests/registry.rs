@@ -1173,8 +1173,8 @@ fn the_upgrade_lines_are_read_off_the_door_statements() {
     if upgrade_wire_linked() {
         assert_eq!(
             lines,
-            ["ws"],
-            "the session wire's claim opens at the upgrade"
+            ["ws", "wss"],
+            "the session wire's claims open at the upgrade, its secured scheme beside its own"
         );
     } else {
         assert!(
