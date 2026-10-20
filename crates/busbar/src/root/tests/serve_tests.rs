@@ -10266,3 +10266,141 @@ async fn a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane
         "the keys chain is a real gate on this app: a bad token is refused"
     );
 }
+
+// ── THE MODEL PLANE'S `/metrics` ON THE DOOR: COUNTED ONCE, v1.5.4-SHAPED ──────────────────────────
+//
+// MOVED HERE from `crates/busbar/tests/plane_integration.rs`, assertions unchanged (DEV-GREEN row
+// 83, ARCHITECT option (a) on #1161): a model request is served by the door that serves the `pools`
+// map, so it is driven through the data router built with the door's claims; the kernel's router
+// alone serves no model unit any more.
+
+/// The label keys of one exposition line, sorted.
+#[cfg(linked_driver_proofs)]
+fn exposition_label_keys(line: &str) -> Vec<String> {
+    line.split_once('{')
+        .and_then(|(_, rest)| rest.rsplit_once('}'))
+        .map(|(inner, _)| {
+            let mut ks: Vec<String> = inner
+                .split(',')
+                .filter_map(|kv| kv.split_once('=').map(|(k, _)| k.trim().to_string()))
+                .collect();
+            ks.sort();
+            ks
+        })
+        .unwrap_or_default()
+}
+
+/// Every non-comment exposition line of `family`.
+#[cfg(linked_driver_proofs)]
+fn exposition_family<'a>(exposition: &'a str, family: &str) -> Vec<&'a str> {
+    exposition
+        .lines()
+        .filter(|l| !l.starts_with('#') && l.starts_with(family))
+        .collect()
+}
+
+/// LEGACY `crates/busbar/tests/plane_integration.rs::a_model_plane_request_is_counted_exactly_once`.
+/// A MODEL-plane request is counted EXACTLY ONCE: one request produces ONE count on
+/// `busbar_requests_total` for its pool, not one from the request's own finish plus one from the
+/// plane ingress boundary. The far end is a closed port, so the request fails to forward, which is
+/// deliberate: what is under test is how many times it is counted, not what it returned.
+/// RED: a boundary that counts everything (2), or a model request counted nowhere (0).
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_model_plane_request_is_counted_exactly_once() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-counted-once";
+    let _published = Withdrawn(instance);
+    busbar_kernel::snapshot::init();
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(1, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    // The model plane's `busbar_requests_total` carries NO `plane` label (v1.5.4-identical); the
+    // test runs in a process of its own, so the pool's label pins the delta.
+    let labels = [("pool", "p")];
+    let before =
+        busbar_kernel::test_support::metric_sum(busbar_kernel::snapshot::REQUESTS_TOTAL, &labels);
+    let _ = rig.chat().await;
+    let after =
+        busbar_kernel::test_support::metric_sum(busbar_kernel::snapshot::REQUESTS_TOTAL, &labels);
+    assert_eq!(
+        (after - before).round() as u64,
+        1,
+        "one model-plane request must produce ONE count, not one from `finish_inner` plus one from \
+         the plane ingress boundary"
+    );
+}
+
+/// LEGACY the model-plane half of
+/// `crates/busbar/tests/plane_integration.rs::metrics_scrape::mounted_plane_traffic_appears_on_a_real_metrics_scrape`
+/// (its door- and agent-plane half stays there, on the kernel's router).
+/// THE MODEL PLANE STAYS v1.5.4-IDENTICAL on a scrape: after model traffic, `busbar_requests_total`
+/// carries a series with exactly the 1.5.4 label set {ingress_protocol, pool, outcome} and NO `plane`
+/// label, `busbar_request_duration_seconds` carries a series, and neither family carries a `plane`
+/// label anywhere in the exposition. An unroutable model is deliberate: the request finishes
+/// without an upstream, which is all the series shape needs.
+/// RED: a `plane` label on either model family (the BI-2 regression), or no model series at all.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_model_plane_families_stay_v1_5_4_shaped_on_a_real_scrape() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-model-families";
+    let _published = Withdrawn(instance);
+    busbar_kernel::snapshot::init();
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(1, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (model_status, _, _) = rig
+        .send(
+            "POST",
+            "/v1/chat/completions",
+            Some(serde_json::json!({
+                "model": "no-such-model",
+                "messages": [{ "role": "user", "content": "hi" }],
+            })),
+        )
+        .await;
+    let exposition = busbar_kernel::snapshot::render();
+    let model_counters = exposition_family(&exposition, busbar_kernel::snapshot::REQUESTS_TOTAL);
+    assert!(
+        model_counters.iter().any(|line| exposition_label_keys(line)
+            == vec![
+                "ingress_protocol".to_string(),
+                "outcome".to_string(),
+                "pool".to_string()
+            ]),
+        "no v1.5.4-shaped `{}` series {{ingress_protocol,pool,outcome}} after driving model traffic \
+         (model {model_status}). Exposition:\n{exposition}",
+        busbar_kernel::snapshot::REQUESTS_TOTAL,
+    );
+    assert!(
+        !exposition_family(
+            &exposition,
+            busbar_kernel::snapshot::REQUEST_DURATION_SECONDS
+        )
+        .is_empty(),
+        "no `{}` series after driving model traffic. Exposition:\n{exposition}",
+        busbar_kernel::snapshot::REQUEST_DURATION_SECONDS,
+    );
+    for family in [
+        busbar_kernel::snapshot::REQUESTS_TOTAL,
+        busbar_kernel::snapshot::REQUEST_DURATION_SECONDS,
+    ] {
+        for line in exposition_family(&exposition, family) {
+            assert!(
+                !line.contains("plane=\""),
+                "a `plane` label leaked onto the v1.5.4 model family `{family}`: {line}"
+            );
+        }
+    }
+}
