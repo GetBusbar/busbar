@@ -1,48 +1,62 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The lifecycle SCOPES a plane's host handles live at — RELOCATED to
-//! [`busbar_kernel::plane_host::scope`], re-exported here so in-core call sites are unchanged.
+//! The lifecycle SCOPES a plane's host handles live at.
 //!
-//! The scope types ([`DispatchScope`], [`DurableScope`], [`SessionScope`] and their supporting
-//! `SettleAdmission` / `EgressFaultDetail` vocabulary) name only [`busbar_contract::abi::hot`] + `std`, so
-//! they are neutral and now live in the substrate. This module re-exports them unchanged, so every
-//! in-core call site (`plane_host`'s own veneers, `a2a`) and the host `HostState` that materializes
-//! over a `DispatchScope` are untouched — the move is a pure relocation, not a code change.
+//! The scope types ([`DispatchScope`], [`DurableScope`], [`SessionScope`]) and the settle vocabulary
+//! they carry ([`AdmissionId`], [`Settle`], [`Settled`], [`SettleAdmission`]) are the kernel's own
+//! plain Rust types: no plugin is on the other side of them, so none is an ABI shape (BUSBAR-1.6.0.md
+//! THE DESIGN §11.5 l.1338-1349; the old HOT lane they were borrowed from is retired, §11.11
+//! l.1444-1446).
 
-// ==== merged from busbar-substrate (W4.b P2 engine drain) ====
+use crate::breaker::CanonicalSignal;
 use crate::host_work::handle_engine::{
     ChainPosition, DurableHandleEngine, HandleDenied, HandleEngineError, MutateError, Mutation,
     ScopedMutateError, SubmitRecord, SweepBounds,
-};
-use busbar_contract::abi::hot::{
-    AdmissionId, EgressFailClass, EgressId, PipeId, Signal, StatusClass, VerifyLease,
 };
 use busbar_contract::records::RecordStoreError;
 use std::any::Any;
 use std::sync::{Arc, Mutex};
 
-/// The neutral FAILURE detail the host stashes when an `egress_open` fails, so the plane can read it
-/// back through `egress_fault` and compose its OWN operator string. Held in the [`DispatchScope`] (not
-/// a process global) so the bytes live exactly for the dispatch that produced them and are reclaimed
-/// with it; the CAUSE (the flattened transport-error chain) and the URL are kept SEPARATE so each
-/// plane chooses to include or strip the url.
-#[derive(Clone, Debug)]
-pub struct EgressFaultDetail {
-    /// The neutral failure class the plane maps to its own failover/refusal taxonomy.
-    pub class: EgressFailClass,
-    /// The observed status (0 when the failure was before a response head).
-    pub status: u16,
-    /// The flattened cause-message bytes (the transport-error chain), url-free.
-    pub cause: String,
-    /// The target url bytes, kept separate from the cause.
-    pub url: String,
+/// A breaker admission the arena holds, by the id a settle leg names it with. The arena's `Drop`
+/// reclaims it (runs the real `Admission::drop`) when the work item's future ends or is dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct AdmissionId(pub u64);
+
+impl AdmissionId {
+    /// The reserved "no admission" id: ids the arena hands out start at `1`.
+    pub const NONE: AdmissionId = AdmissionId(0);
+
+    /// True iff this is the reserved [`NONE`](Self::NONE) id.
+    #[inline]
+    #[must_use]
+    pub const fn is_none(self) -> bool {
+        self.0 == 0
+    }
 }
 
-/// A reclaim action for a handle whose release is an explicit host call (close an egress, kill a
-/// subprocess, drop a leadership lease). Phase 2 fills these with the real host-side calls; each runs
-/// exactly once, when the [`DispatchScope`] drops.
-type Reclaim = Box<dyn FnOnce() + Send + 'static>;
+/// What a settle leg reports against the breaker admission it holds.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Settle {
+    /// The guarded operation succeeded: close the half-open probe, dilute the error window.
+    Success,
+    /// A failure to fold, carried as the breaker's own canonical signal.
+    Failure(CanonicalSignal),
+    /// Not an upstream health signal (a busbar-side refusal, a leg never transmitted): release the
+    /// probe and record nothing.
+    RecordNothing,
+}
+
+/// The answer to a settle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Settled {
+    /// The live admission was found, its outcome recorded and its probe consumed.
+    Ok,
+    /// No live admission carries the id: stale, or already settled.
+    Gone,
+    /// The settle panicked; nothing is claimed about the cell.
+    Fault,
+}
 
 /// A settle-capable breaker admission held in the arena — the leak-safety-critical resource of the
 /// BREAKER family. Its `Drop` (run by [`DispatchScope::reclaim_all`]) releases the real single-flight
@@ -54,36 +68,24 @@ type Reclaim = Box<dyn FnOnce() + Send + 'static>;
 /// `store::planes::Admission` RAII token; this trait lets the arena hold it behind a boxed object and
 /// still drive its one settle, WITHOUT `scope` depending on the private breaker types.
 pub trait SettleAdmission: Send {
-    /// Record the observed `signal` against the breaker exactly once and return the resulting ABI
-    /// [`StatusClass`]. Invoked at most once via [`DispatchScope::settle_admission`]; after it, the
-    /// guard's probe-release `Drop` becomes a no-op (the recorded outcome already consumed HalfOpen).
-    fn settle(&mut self, signal: &Signal) -> StatusClass;
+    /// Record the observed `signal` against the breaker exactly once. Invoked at most once via
+    /// [`DispatchScope::settle_admission`]; after it, the guard's probe-release `Drop` becomes a no-op
+    /// (the recorded outcome already consumed HalfOpen).
+    fn settle(&mut self, signal: &Settle);
 }
 
-/// Which kind of host handle an [`Entry`] carries. Kept alongside the raw id so the Phase-2 fan-out
-/// can resolve a plane-held handle-id back to its registered resource (e.g. `egress_write(id)`), and
-/// so the same raw `u64` under two kinds never collides.
+/// Which kind of host handle an [`Entry`] carries; named in the reclaim boundary's warning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HandleKind {
     /// A breaker/failover admission grant.
     Admission,
-    /// A one-shot / duplex governed egress.
-    Egress,
-    /// A subprocess (or raw-connection) duplex byte pipe.
-    Pipe,
-    /// A single-flight counterparty-verification leadership lease.
-    VerifyLease,
 }
 
-/// One registered, reclaimable resource. Either an RAII guard whose `Drop` reclaims it (the shape the
-/// real breaker `store::planes::Admission` takes in Phase 2 — boxed as `dyn Send` so this scaffold does
-/// not reach a private type), or an explicit [`Reclaim`] closure the arena runs once on drop.
+/// One registered, reclaimable resource: an RAII guard whose `Drop` reclaims it (boxed as `dyn Send`
+/// so the arena does not reach a private type), or a settle-capable breaker admission.
 enum Resource {
-    /// An RAII guard: dropping the box runs the guard's `Drop`. Used for the real admission guard in
-    /// Phase 2 and by the arena's own unit test.
+    /// An RAII guard: dropping the box runs the guard's `Drop` (the governance admission grant).
     Guard(Box<dyn Send>),
-    /// An explicit reclaim call, taken and run once on scope drop.
-    Closer(Option<Reclaim>),
     /// A breaker admission: dropping it releases the single-flight half-open probe (the leak-safety
     /// reclaim), and it can be SETTLED once — recording the outcome — before the scope ends. Boxed
     /// behind [`SettleAdmission`] so the arena never names the private breaker types.
@@ -92,18 +94,15 @@ enum Resource {
 
 /// A registered handle: its kind, its raw id (what the plane holds), and the resource to reclaim.
 struct Entry {
-    // `kind` + `raw` are the Phase-2 lookup key: the fan-out resolves a plane-held handle-id back to
-    // its registered resource (e.g. `egress_write(EgressId)` → this entry). The scaffold only RECLAIMS
-    // (which needs `res` alone), so they are write-only until that fan-out lands.
-    #[allow(dead_code)]
+    /// What the entry holds, named in the reclaim boundary's warning.
     kind: HandleKind,
-    #[allow(dead_code)]
+    /// The id a settle names it by.
     raw: u64,
     res: Resource,
 }
 
-/// The mutable interior of a [`DispatchScope`]. Guarded by a `Mutex` because every vtable fn holds
-/// only a shared `&DispatchScope` (via the recovered `HostState`) yet must register/reclaim.
+/// The mutable interior of a [`DispatchScope`]. Guarded by a `Mutex` because every host call holds
+/// only a shared `&DispatchScope` (through its `HostState`) yet must register/reclaim.
 #[derive(Default)]
 struct Registry {
     entries: Vec<Entry>,
@@ -114,17 +113,12 @@ struct Registry {
 
 /// The per-dispatch-invocation arena of acquired host handles — the leak-safety keystone.
 ///
-/// Core opens ONE of these per dispatch, hands the plane a `HostCtx` that recovers a
-/// `HostState` referencing it, and the plane's host calls register every handle they acquire here. On
+/// Core opens ONE of these per dispatch, and the host calls made for it register every handle they
+/// acquire here (through a `HostState` referencing it). On
 /// `Drop` — whenever the dispatch future ends OR is dropped — [`reclaim_all`](Self::reclaim_all)
 /// reclaims every registered handle, so a cancelled/dropped dispatch can never leak a bare host handle.
 pub struct DispatchScope {
     reg: Mutex<Registry>,
-    /// The last failed `egress_open`'s neutral fault detail, stashed here so the plane reads it back
-    /// through `egress_fault` after a non-`Ok` open. Lives with the dispatch (reclaimed on drop); holds
-    /// only the LAST fault (the "read it immediately after the failing open" contract, like the govern
-    /// refusal reason).
-    egress_fault: Mutex<Option<EgressFaultDetail>>,
 }
 
 impl Default for DispatchScope {
@@ -139,23 +133,7 @@ impl DispatchScope {
     pub fn new() -> Self {
         DispatchScope {
             reg: Mutex::new(Registry::default()),
-            egress_fault: Mutex::new(None),
         }
-    }
-
-    /// STASH the neutral fault detail of a just-failed `egress_open`, so a following `egress_fault`
-    /// hands it to the plane. Overwrites any prior unread fault (the last-fault contract).
-    pub fn stash_egress_fault(&self, detail: EgressFaultDetail) {
-        *self.egress_fault.lock().unwrap_or_else(|e| e.into_inner()) = Some(detail);
-    }
-
-    /// TAKE (and clear) the stashed egress fault, or `None` when none is pending. Consuming so a stale
-    /// fault cannot be re-read against a later, unrelated open.
-    pub fn take_egress_fault(&self) -> Option<EgressFaultDetail> {
-        self.egress_fault
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
     }
 
     /// Poison-recovering lock: a panic mid-register must not wedge the arena for the reclaim path, so
@@ -170,8 +148,8 @@ impl DispatchScope {
         reg.next
     }
 
-    /// Register a breaker admission as an RAII `guard` (the real `store::planes::Admission` in Phase 2;
-    /// a test guard here). Its `Drop` runs the actual release when the scope drops.
+    /// Register an admission as an RAII `guard` (the governance admission grant; a test guard in the
+    /// arena's own tests). Its `Drop` runs the actual release when the scope drops.
     pub fn register_admission(&self, guard: Box<dyn Send>) -> AdmissionId {
         let mut reg = self.lock();
         let raw = Self::next_raw(&mut reg);
@@ -198,12 +176,12 @@ impl DispatchScope {
         AdmissionId(raw)
     }
 
-    /// Settle the breaker admission `id`: record the observed `signal` against the breaker and return
-    /// the resulting ABI [`StatusClass`], REMOVING the entry (so the guard's probe-release `Drop` runs
-    /// now, a no-op after the record). Returns `None` when no live admission carries `id` — a stale or
-    /// already-settled handle the caller maps to `Gone`. Recording runs with the lock released, matching
-    /// [`reclaim_all`](Self::reclaim_all)'s discipline.
-    pub fn settle_admission(&self, id: AdmissionId, signal: &Signal) -> Option<StatusClass> {
+    /// Settle the breaker admission `id`: record the observed `signal` against the breaker, REMOVING
+    /// the entry (so the guard's probe-release `Drop` runs now, a no-op after the record), and answer
+    /// [`Settled::Ok`]. Returns `None` when no live admission carries `id` — a stale or
+    /// already-settled handle the caller maps to [`Settled::Gone`]. Recording runs with the lock
+    /// released, matching [`reclaim_all`](Self::reclaim_all)'s discipline.
+    pub fn settle_admission(&self, id: AdmissionId, signal: &Settle) -> Option<Settled> {
         if id.is_none() {
             return None;
         }
@@ -217,49 +195,13 @@ impl DispatchScope {
         };
         match entry.res {
             Resource::Admission(mut guard) => {
-                let class = guard.settle(signal);
+                guard.settle(signal);
                 drop(guard); // release the probe (a no-op now the outcome is recorded)
-                Some(class)
+                Some(Settled::Ok)
             }
             // Unreachable: the `matches!` above selected an `Admission` entry.
             _ => None,
         }
-    }
-
-    /// Register an open governed egress with the `reclaim` that closes it (Phase 2: `egress_close`).
-    pub fn register_egress(&self, reclaim: Reclaim) -> EgressId {
-        let mut reg = self.lock();
-        let raw = Self::next_raw(&mut reg);
-        reg.entries.push(Entry {
-            kind: HandleKind::Egress,
-            raw,
-            res: Resource::Closer(Some(reclaim)),
-        });
-        EgressId(raw)
-    }
-
-    /// Register a subprocess/raw-connection pipe with the `reclaim` that kills/closes it (Phase 2).
-    pub fn register_pipe(&self, reclaim: Reclaim) -> PipeId {
-        let mut reg = self.lock();
-        let raw = Self::next_raw(&mut reg);
-        reg.entries.push(Entry {
-            kind: HandleKind::Pipe,
-            raw,
-            res: Resource::Closer(Some(reclaim)),
-        });
-        PipeId(raw)
-    }
-
-    /// Register a verification leadership lease with the `reclaim` that releases it (Phase 2).
-    pub fn register_lease(&self, reclaim: Reclaim) -> VerifyLease {
-        let mut reg = self.lock();
-        let raw = Self::next_raw(&mut reg);
-        reg.entries.push(Entry {
-            kind: HandleKind::VerifyLease,
-            raw,
-            res: Resource::Closer(Some(reclaim)),
-        });
-        VerifyLease(raw)
     }
 
     /// How many handles are currently registered (test/observability hook).
@@ -269,11 +211,11 @@ impl DispatchScope {
     }
 
     /// Reclaim EVERY registered handle NOW, in reverse (LIFO) acquisition order: drop each guard
-    /// (running its real `Drop`) and run each closer exactly once. Idempotent — a second call finds an
+    /// (running its real `Drop`). Idempotent — a second call finds an
     /// empty registry. Called by `Drop`; exposed so a test can assert synchronous reclaim on abort.
     ///
-    /// EVERY ENTRY GETS ITS OWN BOUNDARY. Reclaiming runs code this loop does not own — a closer that
-    /// kills a subprocess, a guard's real `Drop` — and one of those panicking must not cost the
+    /// EVERY ENTRY GETS ITS OWN BOUNDARY. Reclaiming runs code this loop does not own — a guard's
+    /// real `Drop` — and one of those panicking must not cost the
     /// others. Unbounded, a single panic here skips every remaining entry, leaking exactly what this
     /// arena exists to reclaim; and because the loop is reached from `Drop`, that panic unwinding out
     /// of a drop already running during an unwind aborts the process. The boundary contains it to the
@@ -294,8 +236,6 @@ impl DispatchScope {
                 match entry.res {
                     Resource::Guard(g) => drop(g),
                     Resource::Admission(g) => drop(g), // Drop releases the single-flight probe.
-                    Resource::Closer(Some(reclaim)) => reclaim(),
-                    Resource::Closer(None) => {}
                 }
             }));
             if reclaimed.is_err() {
@@ -459,8 +399,8 @@ pub struct DurableScope {
     /// The durable arena. Reuses the [`DispatchScope`] machinery (register / settle / reclaim) so the
     /// handoff, the one settle, and the owner-checked release are byte-for-byte the per-request
     /// arena's — the ONLY difference is WHO owns this scope (the detached runner, so it drops at TASK
-    /// end) rather than any change in mechanics. A `HostState` materialized over this arena
-    /// therefore drives the exact same `breaker_settle` seam the per-request path does.
+    /// end) rather than any change in mechanics. A settle over this arena therefore drives the exact
+    /// same `breaker_settle` path the per-request one does.
     arena: DispatchScope,
 }
 
@@ -479,17 +419,16 @@ impl DurableScope {
         self.arena.register_admission(guard);
     }
 
-    /// SETTLE the durable breaker admission `id`: record `signal` against the breaker exactly once and
-    /// return the resulting ABI [`StatusClass`], releasing the probe (a no-op after the record).
-    /// `None` when no live admission carries `id` here (stale / already settled). This is the
-    /// detached-leg settle the runner reaches for on the create_task path.
-    pub fn settle(&self, id: AdmissionId, signal: &Signal) -> Option<StatusClass> {
+    /// SETTLE the durable breaker admission `id`: record `signal` against the breaker exactly once,
+    /// releasing the probe (a no-op after the record). `None` when no live admission carries `id`
+    /// here (stale / already settled). This is the detached-leg settle the runner reaches for on the
+    /// create_task path.
+    pub fn settle(&self, id: AdmissionId, signal: &Settle) -> Option<Settled> {
         self.arena.settle_admission(id, signal)
     }
 
-    /// Borrow the durable arena as a [`DispatchScope`] so a `HostState` can be materialized
-    /// over it — the seam that lets the host `breaker_settle` vtable slot settle a durable admission
-    /// with no change to the breaker path.
+    /// Borrow the durable arena as a [`DispatchScope`], so the host's `breaker_settle` settles a
+    /// durable admission with no change to the breaker path.
     #[must_use]
     pub fn arena(&self) -> &DispatchScope {
         &self.arena

@@ -3,21 +3,3 @@
 # blocking thread in the loader or dispatcher, extern "C" slots. Each row is one
 # the tree carries today. Strike a row in the commit that drains it; never add one.
 # Regenerate with `cargo xtask gate one-memory-abi --write`.
-
-[[finding]]
-rule = "one-memory-abi:c-unwind"
-file = "crates/busbar-contract/src/abi/hot/host.rs"
-item = "extern 'C-unwind'"
-count = 47
-
-[[finding]]
-rule = "one-memory-abi:c-unwind"
-file = "crates/busbar-kernel/src/plane_host/breaker.rs"
-item = "extern 'C-unwind'"
-count = 3
-
-[[finding]]
-rule = "one-memory-abi:c-unwind"
-file = "crates/busbar-kernel/src/plane_host/vtable.rs"
-item = "extern 'C-unwind'"
-count = 8

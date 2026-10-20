@@ -503,7 +503,7 @@ pub fn plane_rows(linked: &Linked) -> Result<Vec<&'static PlaneDecl>, String> {
 /// #7: the route tables, the view, the health loop and `on_swap` are the KERNEL's). The door's own
 /// tail states whether it is the fallback plane (`TAIL_FALLBACK`), the core's readers (the
 /// `/metrics` lane gauges, `/v1/models`, the keys and service-operations views) walk the kernel's
-/// own [`busbar_kernel::plane_host::ConfigTables`], built from the same resolved lanes and pools,
+/// own [`busbar_kernel::plane_driver::route_tables::ConfigTables`], built from the same resolved lanes and pools,
 /// the provider merge is the kernel's `merge_provider_fallback`, and the health probes are the
 /// kernel's probe units on the door's sealed egress (`root::serve::arm_probes`). So a legacy row of
 /// the door's key yields the plane axis whole, its `build_runtime`, `viewer`, `resolve_provider`,
