@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE THREE DISASTER-RECOVERY VERBS, PROVEN ACROSS A RESTART OVER A REAL STORE (status row 187,
-//! audit PL2#4; OWNER 2026-10-20). Each cell boots a node's book over the build's linked memory
+//! audit PL2#4; OWNER 2026-10-20). Each cell boots a node's book over the build's linked ephemeral
 //! store, opened through its door on the store axis exactly as boot opens the configured store,
 //! runs one verb through the verb store the boot binds ([`node_verb_store`]), boots a SECOND book
 //! over the SAME store, and reads the effect back from the store and the chain — never from the
@@ -19,7 +19,7 @@ use busbar_contract::store_calls::{StoreAxis as _, StoreDoor};
 use busbar_contract::verb_store::{Store as VerbStore, StoreError as VerbStoreError};
 
 /// The store's label, as the configuration names it.
-const STORE: &str = "memory";
+const STORE: &str = "configured";
 
 /// This node's id on the store: the same across the restart, as the store's node registry gives
 /// a host back its id.
@@ -31,8 +31,8 @@ struct Opened {
     calls: Arc<dyn StoreCalls>,
 }
 
-/// The build's linked memory store, opened through its door on the store axis, as boot opens it.
-fn memory_store() -> Opened {
+/// The build's linked ephemeral store, opened through its door on the store axis, as boot opens it.
+fn ephemeral_store() -> Opened {
     let axis = crate::root::loader::store_v3::DoorStoreAxis {
         dispatcher: {
             let d = Arc::new(crate::root::loader::dispatch::Dispatcher::new(
@@ -60,7 +60,7 @@ fn memory_store() -> Opened {
             STORE,
             b"{}",
         )
-        .expect("the memory store opens through its door");
+        .expect("the ephemeral store opens through its door");
     Opened {
         records: opened.records,
         calls: opened.calls.expect("a door-opened store has its v3 slots"),
@@ -125,7 +125,7 @@ fn verified_chain(book: &Arc<Mutex<Durability>>) -> Vec<JournalRecord> {
 /// verifies and carries exactly one deliberate operator break.
 #[test]
 fn a_chain_break_is_on_the_chain_after_a_restart_over_the_same_store() {
-    let store = memory_store();
+    let store = ephemeral_store();
     {
         let (book, verbs) = boot(&store);
         verbs
@@ -195,7 +195,7 @@ fn events_of(run: impl FnOnce()) -> Vec<String> {
 /// and no floor.
 #[test]
 fn a_store_restore_is_refused_and_changes_nothing_across_a_restart() {
-    let store = memory_store();
+    let store = ephemeral_store();
     {
         let (book, verbs) = boot(&store);
         let before = verified_chain(&book).len();
@@ -242,7 +242,7 @@ fn a_store_restore_is_refused_and_changes_nothing_across_a_restart() {
 /// in the store; a node booted again over the same store reads it back through `record_get`.
 #[test]
 fn a_resealed_epoch_floor_is_read_back_after_a_restart_over_the_same_store() {
-    let store = memory_store();
+    let store = ephemeral_store();
     {
         let (book, verbs) = boot(&store);
         verbs
@@ -263,7 +263,7 @@ fn a_resealed_epoch_floor_is_read_back_after_a_restart_over_the_same_store() {
 /// both.
 #[test]
 fn the_boot_reads_the_floor_back_and_a_node_below_it_does_not_boot() {
-    let store = memory_store();
+    let store = ephemeral_store();
     {
         let (book, verbs) = boot(&store);
         verbs
