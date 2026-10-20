@@ -20,8 +20,8 @@ fn token() -> Grant<DurableWrite> {
     busbar_kernel::test_support::tokens::grant::<DurableWrite>()
 }
 
-/// A book with NO DATA DIRECTORY over `slots`, as `root::boot::compose_book` builds it: the chain the
-/// store kept is resumed (and read back once, whole, to rebuild the book).
+/// A book with NO DATA DIRECTORY over `slots`, as `root::boot::compose_book` builds it: the chain
+/// the store kept is resumed (and read back once, whole, to rebuild the book).
 fn over_store(slots: &RecordSlots) -> Durability {
     let lane = JournalLane::start(slots.calls(), "test-store").expect("the lane starts");
     build_on_store(
@@ -138,14 +138,15 @@ fn a_keyset_binding_the_store_will_not_read_refuses_the_boot() {
          {bound:?}"
     );
     assert_eq!(
-        restarted.journal.head(), head,
+        restarted.journal.head(),
+        head,
         "no second Bootstrap went on the chain"
     );
 }
 
-/// THE CHECKPOINT NUMBERING CONTINUES from the chain the boot rebuilt the book from, whatever a
-/// later read of the store answers. Taking a failed read for an empty chain numbered from one again,
-/// re-using sequence numbers the chain already carries.
+/// THE CHECKPOINT NUMBERING CONTINUES from the chain the boot rebuilt the book from, whatever the
+/// store answers when it is read again. Taking a failed read for an empty chain numbered from one
+/// again, re-using sequence numbers the chain already carries.
 #[test]
 fn checkpoint_numbering_survives_a_store_that_stops_reading() {
     let slots = RecordSlots::new();
@@ -165,7 +166,8 @@ fn checkpoint_numbering_survives_a_store_that_stops_reading() {
     slots.fail_reads(true);
     restarted.arm_checkpoints(NOW);
     assert_eq!(
-        restarted.cadence().expect("armed").next_checkpoint_seq(), 3,
+        restarted.cadence().expect("armed").next_checkpoint_seq(),
+        3,
         "the next checkpoint follows the highest the chain carries"
     );
 }

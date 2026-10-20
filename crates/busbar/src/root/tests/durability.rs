@@ -360,7 +360,9 @@ fn two_boots_minting_the_same_unit_key_seal_distinct_verified_records() {
     assert_eq!(second.seq, first.seq + 1);
 
     let reread = boot(&cfg, 7).expect("the journal reopens");
-    let whole = reread.audit_window(1, u64::MAX);
+    let whole = reread
+        .audit_window(1, u64::MAX)
+        .expect("the journal reads back");
     assert_eq!(whole, vec![first, second]);
     assert!(AuditChain::verify_chain(&whole).is_ok());
     assert!(reread.retained_audit_findings().is_empty());
@@ -390,14 +392,19 @@ fn a_range_older_than_the_ring_is_read_back_after_a_restart() {
         restarted.audit_records[0].seq, 6,
         "the cache holds the newest"
     );
-    let old = restarted.audit_window(1, 3);
+    let old = restarted
+        .audit_window(1, 3)
+        .expect("the journal reads back");
     assert_eq!(
         old.iter().map(|r| r.seq).collect::<Vec<_>>(),
         vec![1, 2, 3],
         "the journal answers for what the cache let go"
     );
     assert!(AuditChain::verify_window(&old).is_ok());
-    assert_eq!(restarted.audit_window(total, total)[0].seq, total);
+    let newest = restarted
+        .audit_window(total, total)
+        .expect("the cache answers");
+    assert_eq!(newest[0].seq, total);
 }
 
 /// A RETAINED RECORD EDITED AFTER IT WAS SEALED IS A `/verify` FINDING.
