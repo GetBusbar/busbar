@@ -4888,6 +4888,169 @@ async fn every_pools_door_unit_served_or_refused_seals_one_record_on_one_tamper_
     );
 }
 
+/// DECODE'S REFUSALS, ON THE DOOR (the pools door's root leg; the 400 and 404 halves of the node's
+/// `the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it`): a well-formed body that
+/// names no model is the dialect's own 400, and an action the dialect declares that the door does
+/// not serve (the generate dialect's token count) is its own 404; neither is dispatched, neither is
+/// accounted, and each seals one record refused before Admit. RED: a body naming no model, or an
+/// unserved action, that reaches the far end, the ledger, or no record.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_refuses_a_body_naming_no_model_400_and_an_unserved_action_404() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-decode-refusals";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, _, body) = rig
+        .send(
+            "POST",
+            "/v1/chat/completions",
+            Some(serde_json::json!({"messages": [{"role": "user", "content": "hi"}]})),
+        )
+        .await;
+    assert_eq!(status, 400, "no model: {}", String::from_utf8_lossy(&body));
+    let (status, _, body) = rig
+        .send(
+            "POST",
+            door_word("count_tokens_path"),
+            Some(serde_json::json!({"contents": []})),
+        )
+        .await;
+    assert_eq!(
+        status,
+        404,
+        "an unserved action: {}",
+        String::from_utf8_lossy(&body)
+    );
+    assert_eq!(far.served(), 0, "neither is dispatched");
+    let (requests, spend, _, billable) = rig.ledger_after(0).await;
+    assert_eq!((requests, spend, billable), (0, 0, 0), "nothing accounted");
+    let records = sealed(&rig, 2).await;
+    assert_eq!(records.len(), 2, "one record per refused unit: {records:?}");
+    for record in &records {
+        assert!(
+            matches!(
+                record.outcome.unit_end,
+                busbar_contract::caps::Outcome::Refused(
+                    busbar_contract::caps::StepName::Arrival
+                        | busbar_contract::caps::StepName::Decode,
+                    _
+                )
+            ),
+            "refused before Admit draws a bucket: {:?}",
+            record.outcome
+        );
+    }
+}
+
+/// AN EXPIRED KEY, ON THE DOOR (the pools door's root leg; the expired-token arm of the node's
+/// `the_loop_attributes_the_identity_the_door_resolved_and_invents_none`): a key this deployment
+/// minted whose `exp` has passed is refused 401 before the plane, exactly as a key it never minted
+/// is, while the live key beside it is served: nothing dispatched for the expired one, nothing
+/// accounted, no key invented. RED: an expired signed key admitted, or charged.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_refuses_an_expired_key_before_the_plane() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-expired-key";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    // Minted on the same book, its `exp` one second after its own minting, long past.
+    let (_expired, token) = rig
+        .gov
+        .mint_signed(
+            busbar_kernel::governance::NewKeySpec {
+                name: "expired".to_string(),
+                ..Default::default()
+            },
+            1_700_000_001,
+            1_700_000_000,
+        )
+        .expect("mint");
+    let bearer = format!("Bearer {}", token.expose(&busbar_kernel::seal::lend()));
+    let chat = r#"{"model":"p","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}"#;
+    let (status, _) = send_written(
+        &rig,
+        "/v1/chat/completions",
+        &[("authorization", &bearer)],
+        chat,
+    )
+    .await;
+    assert_eq!(status, 401, "an expired key is refused before the plane");
+    assert_eq!(far.served(), 0, "nothing dispatched");
+    let (requests, spend, _, billable) = rig.ledger_after(0).await;
+    assert_eq!((requests, spend, billable), (0, 0, 0), "nothing accounted");
+    assert_eq!(rig.chat().await.0, 200, "the live key beside it is served");
+    assert_eq!(far.served(), 1);
+}
+
+/// A VETO, ON THE DOOR (the pools door's root leg; the vetoing-seat arm of the node's
+/// `a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_changes_nothing`): a gate
+/// that vetoes stops the unit before anything is dialled, answers the gate's own status in a JSON
+/// envelope, nets no spend and nothing billable (1.5.5 admitted first and refunded the fee, the
+/// hook stages running at the head of the route leg), and seals ONE record refused for the veto.
+/// RED: a vetoed unit dialled, charged, or sealed as anything but its veto.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_doors_veto_stops_the_unit_undialled_unbilled_and_sealed_as_a_veto() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-veto-sealed";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            reject_at_gate: true,
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, head, body) = rig.chat().await;
+    assert_eq!(status, 451, "the gate's own status");
+    assert_eq!(
+        head.get("content-type").and_then(|v| v.to_str().ok()),
+        Some("application/json"),
+        "in the caller's envelope: {}",
+        String::from_utf8_lossy(&body)
+    );
+    assert_eq!(far.served(), 0, "nothing dialled");
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    let mut ledger = rig.ledger_after(0).await;
+    while ledger.1 != 0 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        ledger = rig.ledger_after(0).await;
+    }
+    let (_, spend, _, billable) = ledger;
+    assert_eq!((spend, billable), (0, 0), "no spend, nothing billable");
+    let records = sealed(&rig, 1).await;
+    assert_eq!(records.len(), 1, "one record for the one unit: {records:?}");
+    assert!(
+        matches!(
+            records[0].outcome.unit_end,
+            busbar_contract::caps::Outcome::Refused(_, busbar_contract::caps::ReasonCode::HookVeto)
+        ),
+        "sealed as its veto: {:?}",
+        records[0].outcome
+    );
+}
+
 /// A NODE WHOSE JOURNAL CANNOT REACH ITS STORE FAILS CLOSED, ON THE DOOR (ARCHITECT 2026-10-07 H3
 /// ruling): the node's journal is kept by a configured store that refuses, and the lane to it is
 /// full, so a new unit through the door is answered 503 with the reason, in the caller's dialect
