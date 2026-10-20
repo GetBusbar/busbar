@@ -823,7 +823,10 @@ pub(crate) fn validate_hook_settings_size(
 // import list from growing for a single-use helper.
 
 /// The lane at `idx`'s model name projected through the neutral view; empty if the handle is stale.
-fn lane_model(view: &dyn busbar_kernel::plane_host::EngineTablesView, idx: usize) -> String {
+fn lane_model(
+    view: &dyn busbar_kernel::plane_driver::route_tables::EngineTablesView,
+    idx: usize,
+) -> String {
     view.lane_view(idx)
         .map(|l| l.model.to_string())
         .unwrap_or_default()
@@ -1336,7 +1339,7 @@ fn plane_named_def_list(
     busbar_kernel::plane::registry::plane_decl_for_config_section(section.key())
         .and_then(|d| d.named_def_list)
         .map_or_else(Vec::new, |f| {
-            f(app as &dyn busbar_kernel::plane_host::PlaneSlots)
+            f(app as &dyn busbar_kernel::plane_driver::slots::PlaneSlots)
         })
 }
 
@@ -1349,7 +1352,12 @@ fn plane_named_def_get(
 ) -> Option<NamedDefView> {
     busbar_kernel::plane::registry::plane_decl_for_config_section(section.key())
         .and_then(|d| d.named_def_get)
-        .and_then(|f| f(app as &dyn busbar_kernel::plane_host::PlaneSlots, name))
+        .and_then(|f| {
+            f(
+                app as &dyn busbar_kernel::plane_driver::slots::PlaneSlots,
+                name,
+            )
+        })
 }
 
 #[cfg(test)]

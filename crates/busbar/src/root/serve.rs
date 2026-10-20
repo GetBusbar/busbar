@@ -31,13 +31,15 @@ use busbar_contract::services::{
 };
 use busbar_kernel::host_records::QUEUE_CAP;
 use busbar_kernel::host_services::{BlockingPool, DestJudge, KernelServices, SignKey};
-use busbar_kernel::plane::DemotionRecord;
 use busbar_kernel::plane_driver::serve::{publish, ServeRoute, ServeTable};
 use busbar_kernel::plane_driver::{
     refusal_status, BufferCaps, CallerEnd, DriverConfig, Egress, HeadFields, MoneySeam,
     PlaneDriver, PlaneMoney, Rendered, SessionCaller,
 };
+/// The stream `Content-Type` every declared protocol states, folded at boot.
+use busbar_kernel::proto::streaming_content_types as declared_stream_media;
 use busbar_kernel::store::plane_view::KIND_DEMOTION;
+use busbar_kernel::trust::DemotionRecord;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::root::boot::DoorPlane;
@@ -704,9 +706,9 @@ impl DoorApply {
 
 /// THE SECTION A CONFIG APPLY REFRESHES A DOOR PLANE ONTO: the plane's slot in the generation `app`
 /// installed (its section as written), carrying the unified pools that generation resolved for the
-/// plane's section `section_key` ([`installed_door_pools`]: the `tools` pools off `App::tool_pools`,
-/// the `agents` pools off the generic per-plane pool map `App::plane_pools`, read first under the
-/// plane's own key, the key its slot is under), as the boot composition carries them
+/// plane's section `section_key` (its own pools off the generic per-plane pool map
+/// `App::plane_pools` under the key its slot is under, else [`installed_door_pools`]), as the boot
+/// composition carries them
 /// ([`with_pools`]); a generation with no slot for the plane keeps the section it serves now.
 #[must_use]
 pub fn applied_section(
@@ -718,23 +720,19 @@ pub fn applied_section(
     let Some(slot) = app
         .plane_slots
         .get(plane)
-        .and_then(|s| s.downcast_ref::<busbar_kernel::plane::door::DoorSlot>())
+        .and_then(|s| s.downcast_ref::<busbar_kernel::plane_driver::door::DoorSlot>())
     else {
         return now.section.clone();
     };
-    let mut pools = installed_door_pools(app);
-    // The generic per-plane pool map is keyed by the plane's key, the key its slot is under: read
-    // there first, so an apply carries the pools whatever the registry holds.
-    if section_key == busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3] {
-        if let Some(own) = app.plane_pools(plane) {
-            for (owner, stated) in &mut pools {
-                if *owner == section_key {
-                    *stated = own.clone();
-                }
-            }
-        }
+    // The generation's per-plane pool map is keyed by the plane's key, the key its slot is under:
+    // read there first, so an apply carries the plane's pools whatever the registry holds (an apply
+    // never re-resolves the plane through the registry to find its own pools).
+    if let Some(own) = app.plane_pools(plane) {
+        let mut section = slot.section.value.clone();
+        pools_into(&mut section, own);
+        return section;
     }
-    section_with_pools(section_key, &slot.section.value, &pools)
+    section_with_pools(section_key, &slot.section.value, &installed_door_pools(app))
 }
 
 /// EVERY SERVED DOOR PLANE'S APPLY, kept when the planes move into the data routes, for the
@@ -1201,7 +1199,7 @@ pub fn with_pools(
     mut sections: BTreeMap<&'static str, serde_yaml::Value>,
     pools: &[(
         &'static str,
-        BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+        BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg>,
     )],
 ) -> BTreeMap<&'static str, serde_yaml::Value> {
     for (key, stated) in pools {
@@ -1212,42 +1210,39 @@ pub fn with_pools(
     sections
 }
 
-/// The unified pools each door section carries at its reserved `pools` key, by section key.
-pub type DoorPoolsByKey = [(
+/// The pools each door section carries at its reserved `pools` key, by section key.
+pub type DoorPoolsByKey = Vec<(
     &'static str,
-    BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
-); 2];
+    BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg>,
+)>;
 
-/// The door sections' unified pools as the generation `tools`/`agents` resolved them, by section
-/// key: the one table boot ([`with_pools`]) and a config apply ([`applied_section`]) both inject
-/// from, so a door plane's section is built the same way on both paths (audit root-R1 leftover C1).
+/// The door sections' pools as the generation resolved them, by section key: the one table boot
+/// ([`with_pools`]) and a config apply ([`applied_section`]) both inject from, so a door plane's
+/// section is built the same way on both paths (audit root-R1 leftover C1).
 #[must_use]
 pub fn door_pools(
-    tools: &BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
-    agents: &BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+    plane_pools: &BTreeMap<
+        &'static str,
+        BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg>,
+    >,
 ) -> DoorPoolsByKey {
-    [
-        (
-            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
-            tools.clone(),
-        ),
-        (
-            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
-            agents.clone(),
-        ),
-    ]
+    plane_pools
+        .iter()
+        .map(|(section, pools)| (*section, pools.clone()))
+        .collect()
 }
 
-/// [`door_pools`] read off an installed generation: the pools a config apply resolved.
+/// [`door_pools`] read off an installed generation: the pools a config apply resolved, each plane's
+/// read off the generation under its own key and filed under its section.
 #[must_use]
 pub fn installed_door_pools(app: &busbar_kernel::state::App) -> DoorPoolsByKey {
-    let none = BTreeMap::new();
-    let agents = busbar_kernel::plane::registry::plane_decl_for_config_section(
-        busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
-    )
-    .and_then(|decl| app.plane_pools(decl.key))
-    .unwrap_or(&none);
-    door_pools(&app.tool_pools, agents)
+    busbar_kernel::plane::registry::plane_decls()
+        .iter()
+        .filter_map(|decl| {
+            app.plane_pools(decl.key)
+                .map(|pools| (decl.config_section, pools.clone()))
+        })
+        .collect()
 }
 
 /// The section a config apply refreshes the door plane serving `key` onto: the section as
@@ -1258,7 +1253,7 @@ fn section_with_pools(
     written: &serde_yaml::Value,
     pools: &[(
         &'static str,
-        BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+        BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg>,
     )],
 ) -> serde_yaml::Value {
     let mut section = written.clone();
@@ -1307,7 +1302,7 @@ fn settings_path(
 /// hands a plane each member's bare name.
 pub fn pools_into(
     section: &mut serde_yaml::Value,
-    stated: &BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+    stated: &BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg>,
 ) {
     use busbar_contract::section::{
         POOL_MEMBERS_KEY, POOL_MEMBER_GRANTED_KEY, POOL_MEMBER_NAME_KEY, POOL_MEMBER_TIER_KEY,
@@ -1881,7 +1876,7 @@ fn arm_probes(
     egress: Option<&DoorEgress<'_>>,
     schedule: &Arc<busbar_kernel::probe::ProbeSchedule>,
 ) {
-    #[cfg(linked_axis_node)]
+    #[cfg(linked_section_pools)]
     {
         let (Some(sealed), Some(models)) = (&live.egress, egress.and_then(|e| e.reach.models))
         else {
@@ -1917,7 +1912,7 @@ fn arm_probes(
         busbar_kernel::probe::spawn_probers(&target, schedule, &members);
         live.probes = Some(target);
     }
-    #[cfg(not(linked_axis_node))]
+    #[cfg(not(linked_section_pools))]
     let _ = (driver, served_facts, live, egress, schedule);
 }
 
@@ -2206,6 +2201,7 @@ pub type DataMounts = (
     Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
     Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
     Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
+    Option<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
 );
 
 /// [`data_routes`], and the door planes' session routes beside them (ARCHITECT Q-L5B-SESSION-SERVE;
@@ -2227,7 +2223,7 @@ pub fn data_mounts(
     offers: &[TransportOffer],
 ) -> Result<DataMounts, String> {
     if served.planes.iter().all(|p| p.snapshot.claims.is_empty()) {
-        return Ok((Vec::new(), Vec::new(), Vec::new()));
+        return Ok((Vec::new(), Vec::new(), Vec::new(), None));
     }
     door_mounts(
         served,
@@ -2240,7 +2236,7 @@ pub fn data_mounts(
     .and_then(|m| {
         // THE ROUTES AND THEIR REFUSALS PAIR, or the boot is refused (ARCHITECT 2026-10-06).
         busbar_kernel::plane_routes::pair_door_refusals(&m.routes, &m.sessions, &m.refusals)?;
-        Ok((m.routes, m.sessions, m.refusals))
+        Ok((m.routes, m.sessions, m.refusals, m.refuse_by_path))
     })
 }
 
@@ -2455,11 +2451,7 @@ fn claim_line(
             // segment (`CLAIM_PATTERN`); any other is its target's whole subtree, at any depth (the
             // guest list's tail pattern, which matches what remains, including nothing).
             path_form: if exact { PATH_EXACT } else { PATH_PATTERN },
-            path: if exact || pattern {
-                claim.target.clone()
-            } else {
-                format!("{}/{{*{SUBTREE}}}", claim.target.trim_end_matches('/'))
-            },
+            path: line_path(claim, exact || pattern),
             fields: Vec::new(),
             rung,
         },
@@ -2475,6 +2467,60 @@ fn claim_line(
         offered: offered_by(offers, &claim.carrier),
     };
     Ok((line, method))
+}
+
+/// A claim's guest-line path: an exact or pattern claim is its target; any other is its target's
+/// whole subtree, at any depth (the tail pattern, which matches what remains, including nothing).
+fn line_path(
+    claim: &crate::root::loader::dispatch::kinds::plane::OwnedClaim,
+    as_written: bool,
+) -> String {
+    if as_written {
+        claim.target.clone()
+    } else {
+        format!("{}/{{*{SUBTREE}}}", claim.target.trim_end_matches('/'))
+    }
+}
+
+/// THE SIGNED PATHS of a plane's claims (`CLAIM_SIGNED_INGRESS`; ARCHITECT rulings 2026-10-16, 3b A,
+/// and 2026-10-17): each flagged claim's raw-affix target, whatever its verb. The contract refuses
+/// the flag on any claim but a raw affix; one that slipped through signs nothing here.
+fn signed_paths(
+    claims: &[crate::root::loader::dispatch::kinds::plane::OwnedClaim],
+) -> Arc<[String]> {
+    use busbar_contract::abi::plane::{CLAIM_RAW_AFFIX, CLAIM_SIGNED_INGRESS};
+    claims
+        .iter()
+        .filter(|c| {
+            c.flags & (CLAIM_SIGNED_INGRESS | CLAIM_RAW_AFFIX)
+                == CLAIM_SIGNED_INGRESS | CLAIM_RAW_AFFIX
+        })
+        .map(|c| c.target.clone())
+        .collect::<Vec<_>>()
+        .into()
+}
+
+/// Whether a claim writes a guest line: every claim but a raw affix (`CLAIM_RAW_AFFIX`), which
+/// states a fact about paths and mounts no route (ARCHITECT ruling 2026-10-17).
+fn routed(claim: &crate::root::loader::dispatch::kinds::plane::OwnedClaim) -> bool {
+    claim.flags & busbar_contract::abi::plane::CLAIM_RAW_AFFIX == 0
+}
+
+/// Where the data router mounts a guest line's path: the path itself, or for a pattern with a
+/// `{name+}` placeholder (which the router's own path syntax has no form for), the literal prefix
+/// before it and that prefix's subtree; the guest list still matches the pattern.
+fn mount_paths(path: &str) -> Option<Vec<String>> {
+    let segs: Vec<&str> = path.split('/').collect();
+    let at = segs
+        .iter()
+        .position(|s| s.starts_with('{') && s.ends_with("+}"))?;
+    let prefix = segs[..at].join("/");
+    let target = if prefix.is_empty() {
+        "/".to_string()
+    } else {
+        prefix.clone()
+    };
+    Some(vec![target, format!("{prefix}/{{*{SUBTREE}}}")])
 }
 
 /// One claim's route: the plane it is of and the claim's index in its snapshot.
@@ -2511,6 +2557,9 @@ pub struct DoorMounts {
     pub sessions: Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
     /// The request routes' unit-less refusals (their `401`, worded by their plane).
     pub refusals: Vec<PlaneRefusalSpec>,
+    /// The kernel-shaped refusals' rendering by the door plane that owns a path (ARCHITECT ruling
+    /// 2026-10-16, 3b B); `None` when no plane claims a path.
+    pub refuse_by_path: Option<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
 }
 
 impl std::fmt::Debug for DoorMounts {
@@ -2547,6 +2596,7 @@ pub fn door_mounts(
             routes: public,
             sessions: Vec::new(),
             refusals: Vec::new(),
+            refuse_by_path: None,
         });
     }
     let mut upgraded: std::collections::HashSet<DoorClaim> = std::collections::HashSet::new();
@@ -2555,8 +2605,8 @@ pub fn door_mounts(
     for (p, plane) in served.planes.iter().enumerate() {
         for (i, claim) in plane.snapshot.claims.iter().enumerate() {
             // A claim over the line carrier is served on the process's own stdin/stdout
-            // ([`lines`]), never on the data listener.
-            if lines::carrier() == Some(claim.carrier.as_str()) {
+            // ([`lines`]), never on the data listener; a raw affix is served nowhere.
+            if !routed(claim) || lines::carrier() == Some(claim.carrier.as_str()) {
                 continue;
             }
             let rung =
@@ -2614,7 +2664,9 @@ pub fn door_mounts(
             LineAuth::Chain(..) => RouteAuth::Key,
         };
         let tail = format!("/{{*{SUBTREE}}}");
-        let paths = if line.route.path_form == PATH_EXACT || !line.route.path.ends_with(&tail) {
+        let paths = if let Some(paths) = mount_paths(&line.route.path) {
+            paths
+        } else if line.route.path_form == PATH_EXACT || !line.route.path.ends_with(&tail) {
             vec![line.route.path.clone()]
         } else {
             let target = line.route.path.trim_end_matches(&tail).to_string();
@@ -2722,6 +2774,12 @@ pub fn door_mounts(
     // the kernel's auth decides there through its plane's `refusal`, in the claim's refusal dialect,
     // for the request target. The decision stays the kernel's; no unit opens, nothing is charged.
     // Keyed by the door route's own identity (`DoorRouteId`), request and session routes alike.
+    let signed: Vec<Arc<[String]>> = routes
+        .served
+        .planes
+        .iter()
+        .map(|p| signed_paths(&p.snapshot.claims))
+        .collect();
     let refusals: Vec<PlaneRefusalSpec> = requests
         .iter()
         .chain(&session_mounts)
@@ -2733,6 +2791,7 @@ pub fn door_mounts(
                     path: path.clone(),
                     method: *method,
                 },
+                signed_ingress: Arc::clone(&signed[plane]),
                 refuse: Arc::new(move |reason: ReasonCode, target: &str| {
                     let served = &routes.served.planes[plane];
                     let dialect = served
@@ -2752,6 +2811,35 @@ pub fn door_mounts(
             }
         })
         .collect();
+    // THE KERNEL-SHAPED REFUSALS (ARCHITECT ruling 2026-10-16, 3b B): a method no route at a path
+    // takes, a body over the cap, a request handler that panicked. The kernel decides the reason,
+    // the status and the words; the plane whose line the guest list matches for the path, whatever
+    // the verb (its own reading, the one the router mounts by), renders the body through its
+    // `refusal`, in the line's refusal dialect, for the target. A failed render is `None`: the
+    // kernel answers its own.
+    let refuse_by_path: busbar_kernel::plane_routes::PlaneRefuseByPathFn = {
+        let routes = Arc::clone(&routes);
+        Arc::new(move |r: &busbar_kernel::plane_routes::KernelRefusal<'_>| {
+            let Matched::MethodMiss(line) = routes.guests.matched("", r.path, &[]) else {
+                return None;
+            };
+            let Claimant::Plane(instance) = &line.claimant else {
+                return None;
+            };
+            let (plane, _) = *routes.of_line.get(&(instance.clone(), line.route.rung))?;
+            let rendered = routes.served.planes[plane].driver.refuse_kernel(
+                r.reason,
+                u32::from(r.status),
+                r.text,
+                line.dialect,
+                r.target.as_bytes(),
+            )?;
+            Some(stated(
+                (rendered.status, rendered.fields),
+                Body::from(rendered.body),
+            ))
+        })
+    };
     let routes_of = requests
         .into_iter()
         .map(|(path, method, auth, (plane, claim))| {
@@ -2772,6 +2860,33 @@ pub fn door_mounts(
                                     scopes_supported: &doc.scopes_supported,
                                 },
                             )
+                        })
+                    }),
+                };
+            }
+            // A CATALOG ROUTE (ARCHITECT ruling 2026-10-16, 3b C): the kernel's names for the caller,
+            // rendered by the plane's pure `catalog`; no unit, no audit record, nothing metered.
+            let catalog = routes.served.planes[plane]
+                .snapshot
+                .claims
+                .get(claim as usize)
+                .is_some_and(|c| c.flags & busbar_contract::abi::plane::CLAIM_CATALOG != 0);
+            if catalog {
+                let routes = Arc::clone(&routes);
+                return PlaneRouteSpec {
+                    path,
+                    method,
+                    auth,
+                    handler: Arc::new(move |ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                        let routes = Arc::clone(&routes);
+                        Box::pin(async move {
+                            match DoorRequest::of(ctx) {
+                                Some(req) => routes.catalog(plane, &req),
+                                None => stated(
+                                    (refusal_status(ReasonCode::PlanePanic), Vec::new()),
+                                    Body::empty(),
+                                ),
+                            }
                         })
                     }),
                 };
@@ -2802,6 +2917,7 @@ pub fn door_mounts(
         routes: routes_of,
         sessions,
         refusals,
+        refuse_by_path: Some(refuse_by_path),
     })
 }
 
@@ -2822,7 +2938,7 @@ pub(crate) fn line_routes(
     let mut of_line = std::collections::HashMap::new();
     for (p, plane) in served.planes.iter().enumerate() {
         for (i, claim) in plane.snapshot.claims.iter().enumerate() {
-            if lines::carrier() == Some(claim.carrier.as_str()) {
+            if !routed(claim) || lines::carrier() == Some(claim.carrier.as_str()) {
                 continue;
             }
             let rung =
@@ -2985,6 +3101,36 @@ type BoundParent = (
 );
 
 impl DataRoutes {
+    /// ONE CATALOG ROUTE'S ANSWER (ARCHITECT ruling 2026-10-16, 3b C; `abi::plane::CLAIM_CATALOG`):
+    /// the names the generation lists for the caller (`endpoints::catalog_names`, the kernel's
+    /// visibility rule) rendered by the plane's pure `catalog` for the request head. No unit is
+    /// minted, no audit record written and nothing metered, as 1.5.5's list-models route.
+    fn catalog(&self, plane: usize, req: &DoorRequest) -> Response {
+        let names = busbar_kernel::endpoints::catalog_names(&req.app, &req.gov);
+        let target = req
+            .uri
+            .path_and_query()
+            .map_or_else(|| req.uri.path().to_string(), |t| t.as_str().to_string());
+        let head: Vec<(Vec<u8>, Vec<u8>)> = req
+            .headers
+            .iter()
+            .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
+            .collect();
+        let rendered = self.served.planes[plane].driver.catalog_unitless(
+            req.method.as_str().as_bytes(),
+            target.as_bytes(),
+            &head,
+            &names,
+        );
+        match rendered {
+            Some(r) => stated((r.status, r.fields), Body::from(r.body)),
+            None => stated(
+                (refusal_status(ReasonCode::PlanePanic), Vec::new()),
+                Body::empty(),
+            ),
+        }
+    }
+
     /// ONE DUPLEX SESSION ARRIVAL (K6; ARCHITECT Q-L5B-SESSION-SERVE 2026-10-03, TRANSITIONAL with
     /// the session routes): the caller's head delivered once at `arrive`, as a request's is; the
     /// session's unit opened on the node (its steps to the door, one admission) on its own task,
@@ -3084,6 +3230,10 @@ impl DataRoutes {
     ) {
         use busbar_kernel::teller::SessionOpen;
         let served = &self.served.planes[door.plane];
+        if let Some(refused) = journal_refused(served, &self.post, &arrival) {
+            let _ = verdict.send(Err(Some(refused)));
+            return;
+        }
         let live = served.live.current();
         let node = self.post.node();
         let unit = node.mint();
@@ -3543,6 +3693,9 @@ impl DataRoutes {
         nesting: Option<Nesting>,
     ) -> Option<Rendered> {
         let served = &self.served.planes[plane];
+        if let Some(refused) = journal_refused(served, &self.post, &arrival) {
+            return Some(refused);
+        }
         // The generation this unit is served by, held to its end.
         let live = served.live.current();
         let started = std::time::Instant::now();
@@ -3639,7 +3792,15 @@ impl DataRoutes {
             .map(|r| r.status)
             .or_else(|| caller.stated())
             .unwrap_or_else(|| refusal_status(ReasonCode::PlanePanic));
-        served.money.settle_end(unit, status);
+        // How the answer ended, not only the status its head carried: a stream its far end cut is
+        // no delivered response, and meters nothing (status row 183).
+        served.money.settle_end_as(
+            unit,
+            busbar_kernel::plane_driver::UnitEnd {
+                caller_status: status,
+                cut: steps.stream_cut(),
+            },
+        );
         // THE REQUEST FAMILIES of the plane serving the `pools` map (the flat card's plane), as the
         // previous release's `ingress::finish_inner` emitted them: for every request its dialect
         // read (decoded, or refused for its body; a path it does not serve, or a verb it does not
@@ -3687,6 +3848,43 @@ impl DataRoutes {
         }
         rendered
     }
+}
+
+/// A NODE WHOSE JOURNAL CANNOT REACH ITS STORE FAILS CLOSED (ARCHITECT 2026-10-07 H3 ruling):
+/// while the node's journal refuses money, a new unit is refused 503 with the reason before
+/// anything is built, held or journalled for it. The kernel decides the refusal
+/// (`durability_unavailable`, the reason's own words); the plane words it through its `refusal`,
+/// in the claim's refusal dialect, for the target (spec Part 3 section 12), the bytes the node's
+/// handed path answered. A plane that renders nothing leaves the reason as the body. `None` while
+/// the journal keeps up.
+fn journal_refused(
+    served: &ServedPlane,
+    post: &crate::root::plane_node::NodeEndPost,
+    arrival: &Arrival,
+) -> Option<Rendered> {
+    let why = post.node().journal_refusal()?;
+    let status = refusal_status(ReasonCode::DurabilityUnavailable);
+    let dialect = served
+        .snapshot
+        .claims
+        .get(arrival.claim as usize)
+        .map_or(0, |c| u32::from(c.refusal_dialect));
+    Some(
+        served
+            .driver
+            .refuse_kernel(
+                ReasonCode::DurabilityUnavailable,
+                status,
+                &why,
+                dialect,
+                &arrival.target,
+            )
+            .unwrap_or_else(|| Rendered {
+                status,
+                fields: Vec::new(),
+                body: why.into_bytes(),
+            }),
+    )
 }
 
 /// A nested unit's place: its parent, live on the node, and its depth.
@@ -4239,8 +4437,8 @@ fn closed_whole(h: Head, block: HeaderMap) -> Response {
     response
 }
 
-/// Whether a reply head is a WHOLE answer's: it states its length and is no event stream (a text
-/// one, or the AWS event-stream framing, which the previous release relayed piece by piece).
+/// Whether a reply head is a WHOLE answer's: it states its length and is no stream (one of the
+/// [`streamed_media`] types, which the previous release relayed piece by piece).
 fn whole_answer(fields: &HeadFields) -> bool {
     let named = |field: &[u8]| {
         fields
@@ -4249,9 +4447,20 @@ fn whole_answer(fields: &HeadFields) -> bool {
             .map(|(_, value)| String::from_utf8_lossy(value).to_ascii_lowercase())
     };
     named(b"content-length").is_some()
-        && !named(b"content-type").is_some_and(|v| {
-            v.starts_with("text/event-stream")
-                || v.starts_with("application/vnd.amazon.eventstream")
+        && !named(b"content-type").is_some_and(|v| streamed_media(&v))
+}
+
+/// Whether `content_type` is a stream's, read off the DECLARED ROWS and never spelled here (Law 1;
+/// BUSBAR-1.6.0.md: "Dialects are internal to their plane"): the event stream the contract names,
+/// or the stream `Content-Type` a declared protocol states on its `ProtocolDecl` row, folded at
+/// boot ([`declared_stream_media`]).
+fn streamed_media(content_type: &str) -> bool {
+    std::iter::once(busbar_contract::protocol::TEXT_EVENT_STREAM)
+        .chain(declared_stream_media().iter().copied())
+        .any(|media| {
+            content_type
+                .get(..media.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(media))
         })
 }
 
@@ -4415,45 +4624,45 @@ mod tests;
 #[path = "tests/serve_planes.rs"]
 pub(crate) mod planes_tests;
 
-// The doors served end to end through this composition: the decisions plane's (the `root-decisions`
-// leg's own cells, qa/capability-equality.json, under its feature) and the MCP plane's (the
-// `root-mcp` leg's loop cells, under the linked plane-door axis), each gated item by item inside,
-// so either plane's switch alone still compiles its own, and the session door's root-leg cells,
-// which find their door among the linked plane doors. Its MCP cells reach the door_steps helpers
-// that need the default build's linked auth rows (gated with the node-axis plane that carries that
-// build), and the capability cells of the door serving the `pools` map.
-#[cfg(all(test, linked_axis_node))]
+// The doors served end to end through this composition: each linked plane door's root-leg cells
+// (its own cells, qa/capability-equality.json, under its feature, or its loop cells under the
+// linked plane-door axis), each gated item by item inside, so one plane's switch alone still
+// compiles its own, and the session door's root-leg cells, which find their door among the linked
+// plane doors. Cells that reach the door_steps helpers needing the default build's linked auth rows
+// are gated with the node-axis plane that carries that build, as are the capability cells of the
+// door serving the `pools` map.
+#[cfg(all(test, linked_section_pools))]
 #[path = "tests/serve_tests.rs"]
 mod door_tests;
 
 // The door planes' own root cells (each plane crate's `tests/root/`, one module per enabled
 // `[package.metadata.busbar.door-cells]` row), compiled here beside the rig they drive.
-#[cfg(all(test, linked_axis_node))]
+#[cfg(all(test, linked_section_pools))]
 include!(concat!(env!("OUT_DIR"), "/door_cells.rs"));
 
 #[cfg(test)]
 #[path = "tests/serve_money.rs"]
 mod money_tests;
 
-#[cfg(all(test, linked_driver_proofs, linked_axis_node))]
+#[cfg(all(test, linked_driver_proofs, linked_section_pools))]
 #[path = "tests/serve_hook_seats.rs"]
-mod hook_seat_tests;
+pub(crate) mod hook_seat_tests;
 
-#[cfg(all(test, linked_axis_node))]
+#[cfg(all(test, linked_section_pools))]
 #[path = "tests/serve_door_far.rs"]
 mod door_far_tests;
 
-#[cfg(all(test, linked_axis_node))]
+#[cfg(all(test, linked_section_pools))]
 #[path = "tests/serve_framed.rs"]
 mod framed_tests;
 
 // A secret reference that does not resolve, scanned for its source across every linked door plane's
 // caller-facing renders (coordinator ruling 2026-10-07).
-#[cfg(all(test, linked_axis_node, linked_axis_plane_door))]
+#[cfg(all(test, linked_section_pools, linked_axis_plane_door))]
 #[path = "tests/secret_source.rs"]
 mod secret_source_tests;
 
 // The door planes' own root cells, held to the linked roster and to the capability-equality ledger.
-#[cfg(all(test, linked_axis_node))]
+#[cfg(all(test, linked_section_pools))]
 #[path = "tests/door_cells.rs"]
 mod door_cells_tests;

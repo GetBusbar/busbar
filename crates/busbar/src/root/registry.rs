@@ -105,7 +105,6 @@ use std::sync::Arc;
 
 use busbar_contract::transport::TransportSettings;
 use busbar_contract::{check_composition, CompositionError, Plugin, Registered};
-use busbar_core_admin::admin_codec::AdminPlane;
 use busbar_core_connector::wire::HostWire;
 use busbar_kernel::registry::{seal_claims, ClaimConflict, PlaneClaim, Registry, ResolvedOverlap};
 
@@ -188,21 +187,25 @@ pub struct BootRegistry {
 
 impl BootRegistry {}
 
-/// The core plane every build carries: the admin surface, registered after the linked planes.
-fn core_planes() -> [LinkedClaims; 1] {
-    [LinkedClaims {
-        plane: || Arc::new(AdminPlane::new()),
-        claims: <AdminPlane as busbar_contract::plane::PlaneMeta>::CLAIMS,
-    }]
+/// The cleanliness crate's route every build carries: the admin surface's one claim, sealed after
+/// the linked planes' under the surface's own key. A claimant, never a plugin (THE DESIGN §6 step
+/// 3: "a plane, a plugin's inbound need, or a cleanliness crate's route (admin, oauth2)"; §8: the
+/// cleanliness crates "are never plugins"), so the plugin registry holds nothing for it.
+fn core_claims() -> impl Iterator<Item = PlaneClaim> {
+    busbar_core_admin::admin_codec::claims::CLAIMS
+        .iter()
+        .map(|claim| PlaneClaim {
+            plane: busbar_core_admin::admin_codec::KEY,
+            claim: *claim,
+        })
 }
 
-/// Every plane's claims, paired with the key that names the plane: the linked planes in manifest
-/// order, then the core plane. Declaration order is what breaks precedence ties.
+/// Every claimant's claims, paired with the key that names it: the linked planes in manifest
+/// order, then the admin surface's route. Declaration order is what breaks precedence ties.
 #[must_use]
 pub fn plane_claims(planes: &[LinkedClaims]) -> Vec<PlaneClaim> {
     planes
         .iter()
-        .chain(core_planes().iter())
         .flat_map(|row| {
             let plane = (row.plane)().key();
             row.claims.iter().map(move |claim| PlaneClaim {
@@ -210,6 +213,7 @@ pub fn plane_claims(planes: &[LinkedClaims]) -> Vec<PlaneClaim> {
                 claim: *claim,
             })
         })
+        .chain(core_claims())
         .collect()
 }
 
@@ -454,8 +458,8 @@ fn check_claim_transports(
     Ok(())
 }
 
-/// Put every transport and every plane into one registry, transports first, in the order they were
-/// built and linked.
+/// Put every transport and every linked plane into one registry, transports first, in the order
+/// they were built and linked. The admin surface is no plugin and registers nothing here.
 ///
 /// # Errors
 ///
@@ -465,13 +469,12 @@ fn register_all(
     planes: &[LinkedClaims],
 ) -> Result<Registry, BootRefusal> {
     let mut registry = Registry::new();
-    let core = core_planes();
     // Every row is registered under its own key: an entry's own scheme and each scheme it claims
     // past it, so the registry's key is the scheme.
     let transports = registered
         .iter()
         .map(|row| Arc::new(Claimed(row.key)) as Arc<dyn Plugin>);
-    let planes = planes.iter().chain(core.iter()).map(|row| (row.plane)());
+    let planes = planes.iter().map(|row| (row.plane)());
     for plugin in transports.chain(planes).collect::<Vec<_>>() {
         registry.register(plugin).map_err(BootRefusal::Registry)?;
     }

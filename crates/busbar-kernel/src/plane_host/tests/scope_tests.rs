@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-substrate/src/plane_host/scope.rs`.
+//! Tests for `crates/busbar-kernel/src/plane_host/scope.rs`.
 
 use super::*;
 use crate::host_work::handle_engine::{HandleMeta, SealedEvent};
@@ -33,23 +33,12 @@ fn arena_reclaims_a_registered_guard_on_drop() {
 }
 
 #[test]
-fn arena_reclaims_every_kind_and_runs_closers() {
+fn arena_reclaims_every_registered_guard() {
     let count = Arc::new(AtomicUsize::new(0));
     let scope = DispatchScope::new();
-    let c = count.clone();
-    scope.register_admission(Box::new(DropCounter(count.clone())));
-    let cc = c.clone();
-    scope.register_egress(Box::new(move || {
-        cc.fetch_add(1, Ordering::SeqCst);
-    }));
-    let ccc = c.clone();
-    scope.register_pipe(Box::new(move || {
-        ccc.fetch_add(1, Ordering::SeqCst);
-    }));
-    let cccc = c.clone();
-    scope.register_lease(Box::new(move || {
-        cccc.fetch_add(1, Ordering::SeqCst);
-    }));
+    for _ in 0..4 {
+        scope.register_admission(Box::new(DropCounter(count.clone())));
+    }
     assert_eq!(scope.registered(), 4);
     // Explicit reclaim (the abort-path hardening assertion): synchronous, reclaims all four.
     scope.reclaim_all();
@@ -60,29 +49,27 @@ fn arena_reclaims_every_kind_and_runs_closers() {
     assert_eq!(count.load(Ordering::SeqCst), 4);
 }
 
-/// One closer that panics must not take the rest of the arena with it: the entries around it still
-/// reclaim, and the panic does not escape a call that `Drop` also makes (escaping there, mid-unwind,
-/// aborts the process rather than leaking).
+/// A guard whose `Drop` panics — a reclaim that went wrong.
+struct PanicsOnDrop;
+impl Drop for PanicsOnDrop {
+    fn drop(&mut self) {
+        panic!("a reclaim went wrong")
+    }
+}
+
+/// One guard that panics on reclaim must not take the rest of the arena with it: the entries around
+/// it still reclaim, and the panic does not escape a call that `Drop` also makes (escaping there,
+/// mid-unwind, aborts the process rather than leaking).
 #[test]
-fn a_panicking_closer_does_not_strand_the_other_handles() {
+fn a_panicking_reclaim_does_not_strand_the_other_handles() {
     let count = Arc::new(AtomicUsize::new(0));
-    let reclaimed = Arc::new(AtomicUsize::new(0));
     let scope = DispatchScope::new();
 
     // Registered first, reclaimed LAST (LIFO) — it is the one a panic ahead of it would strand.
-    scope.register_admission(Box::new(DropCounter(reclaimed.clone())));
-    let c = count.clone();
-    scope.register_egress(Box::new(move || {
-        c.fetch_add(1, Ordering::SeqCst);
-    }));
-    scope.register_pipe(Box::new(|| {
-        panic!("a closer that kills a subprocess went wrong")
-    }));
-    let c = count.clone();
-    scope.register_lease(Box::new(move || {
-        c.fetch_add(1, Ordering::SeqCst);
-    }));
-    assert_eq!(scope.registered(), 4);
+    scope.register_admission(Box::new(DropCounter(count.clone())));
+    scope.register_admission(Box::new(PanicsOnDrop));
+    scope.register_admission(Box::new(DropCounter(count.clone())));
+    assert_eq!(scope.registered(), 3);
 
     // The panic is contained: `reclaim_all` returns rather than unwinding into its caller.
     let quiet = std::panic::take_hook();
@@ -93,12 +80,7 @@ fn a_panicking_closer_does_not_strand_the_other_handles() {
     assert_eq!(
         count.load(Ordering::SeqCst),
         2,
-        "the closers on both sides of the panicking one still ran"
-    );
-    assert_eq!(
-        reclaimed.load(Ordering::SeqCst),
-        1,
-        "the guard behind the panicking closer was not stranded"
+        "the guards on both sides of the panicking one still reclaimed"
     );
     assert_eq!(scope.registered(), 0, "the arena is empty either way");
 }
@@ -141,11 +123,11 @@ fn durable_scope_handoff_is_lazy_and_reclaims_lifo() {
 #[test]
 fn handle_ids_are_nonzero_and_monotonic() {
     let scope = DispatchScope::new();
-    let a = scope.register_egress(Box::new(|| {}));
-    let b = scope.register_egress(Box::new(|| {}));
+    let a = scope.register_admission(Box::new(()));
+    let b = scope.register_admission(Box::new(()));
     assert!(!a.is_none());
-    assert_eq!(a, EgressId(1));
-    assert_eq!(b, EgressId(2));
+    assert_eq!(a, AdmissionId(1));
+    assert_eq!(b, AdmissionId(2));
 }
 
 // ── SessionScope over the durable-handle engine ─────────────────────────────────────────────────

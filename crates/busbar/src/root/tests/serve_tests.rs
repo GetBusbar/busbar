@@ -2429,15 +2429,17 @@ mod tools_door {
         repeatable: &[&str],
     ) -> serde_yaml::Value {
         let key = surface("section");
-        let pools: std::collections::BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg> =
-            [(
-                name.to_string(),
-                busbar_kernel::failover::CandidatePoolCfg {
-                    members: members.iter().map(|m| (*m).to_string()).collect(),
-                    repeatable: repeatable.iter().map(|m| (*m).to_string()).collect(),
-                },
-            )]
-            .into();
+        let pools: std::collections::BTreeMap<
+            String,
+            busbar_kernel::config::pools::CandidatePoolCfg,
+        > = [(
+            name.to_string(),
+            busbar_kernel::config::pools::CandidatePoolCfg {
+                members: members.iter().map(|m| (*m).to_string()).collect(),
+                repeatable: repeatable.iter().map(|m| (*m).to_string()).collect(),
+            },
+        )]
+        .into();
         let mut sections = crate::root::serve::with_pools([(key, section)].into(), &[(key, pools)]);
         sections.remove(key).expect("the section is handed back")
     }
@@ -3662,7 +3664,7 @@ mod tools_door {
     /// server that never answers fails when its continuation's walk is exhausted, and `tasks/get`
     /// states the failure as predev stated it: `-32603`, the upstream call failed, and the reason's
     /// own word.
-    #[cfg(linked_axis_node)]
+    #[cfg(linked_section_pools)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_tasks_exhausted_walk_fails_the_task_in_predevs_bytes() {
         let _one = PUBLISHING.lock().await;
@@ -3705,7 +3707,7 @@ mod tools_door {
     /// EXHAUSTED UNDER A TASK, THE SERVER TRIPPED: a task created on a tool whose server's cell is
     /// open fails as predev failed it, its `tasks/get` stating `-32603`, the upstream call failed,
     /// and the reason's own word.
-    #[cfg(linked_axis_node)]
+    #[cfg(linked_section_pools)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_task_on_a_tripped_server_fails_in_predevs_bytes() {
         let _one = PUBLISHING.lock().await;
@@ -4483,6 +4485,42 @@ async fn the_pools_door_attributes_spend_and_a_spent_budget_refuses() {
     assert_eq!(far.served(), 1, "the refused unit dialled nothing");
 }
 
+/// A FAILED UNIT'S FEE COMES BACK AND ITS ADMISSION SLOT DOES NOT (legacy
+/// `chain::the_refund_is_the_terminal_doors_and_it_lands_on_the_ledger`, item 366): the key's group
+/// charges a flat 1-cent fee per request; a unit whose far end answers 503 keeps its admitted
+/// request on the ledger, while the fee base the admission charged is refunded (spend 0) and
+/// nothing is billable.
+/// RED: the fee kept for an answer that was never delivered, or the admission slot refunded too.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_refunds_a_failed_units_fee_and_keeps_its_admission() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-failed-fee-refund";
+    let _published = Withdrawn(instance);
+    let down = seat_far_end(503, OVERLOADED).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(down.port, 1)],
+            budget_cents: Some(5),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_ne!(rig.chat().await.0, 200, "the far end fails");
+    // The refund lands when the unit ends, after its admission is on the ledger.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    let mut ledger = rig.ledger_after(0).await;
+    while (ledger.0 == 0 || ledger.1 != 0) && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        ledger = rig.ledger_after(0).await;
+    }
+    let (requests, spend, _, billable) = ledger;
+    assert_eq!(requests, 1, "the admission slot is never refunded");
+    assert_eq!(spend, 0, "the fee base the admission charged is refunded");
+    assert_eq!(billable, 0, "nothing billable");
+}
+
 /// AUDIT-CHAIN: every unit the door serves seals exactly one record on the node's chain.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4504,6 +4542,55 @@ async fn the_pools_door_seals_one_audit_record_per_unit() {
     assert_eq!(rig.audit_records(), 1, "one record for the one unit");
 }
 
+/// A NODE WHOSE JOURNAL CANNOT REACH ITS STORE FAILS CLOSED, ON THE DOOR (ARCHITECT 2026-10-07 H3
+/// ruling): the node's journal is kept by a configured store that refuses, and the lane to it is
+/// full, so a new unit through the door is answered 503 with the reason, in the caller's dialect
+/// (the plane's `refusal` renders it for the target, kind `overloaded`, the bytes the node's
+/// handed path answered: `ingress_error(dialect, 503, overloaded, reason)`), before anything is
+/// dispatched or charged, and nothing the journal holds is dropped. RED before the fix: the door
+/// answered a bare 502 (`plane_panic`) with an empty body, because nothing asked the node's
+/// `journal_refusal` before the borrowed drive declined the unit.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_refuses_a_new_unit_503_with_the_reason_while_its_journal_is_full() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-full-journal";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            full_journal: true,
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, head, body) = rig.chat().await;
+    let text = String::from_utf8_lossy(&body);
+    assert_eq!(status, 503, "{text}");
+    assert_eq!(
+        head.get("content-type").and_then(|v| v.to_str().ok()),
+        Some("application/json"),
+        "the caller's dialect envelope: {text}"
+    );
+    let answer: serde_json::Value = serde_json::from_slice(&body).expect("a JSON envelope");
+    let message = answer["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("journal is full") && message.contains("`test-store`"),
+        "the reason names the full journal and the store: {answer}"
+    );
+    assert!(answer["error"]["type"].is_string(), "{answer}");
+    assert_eq!(far.served(), 0, "nothing dispatched");
+    let (requests, spend, _, billable) = rig.ledger_after(0).await;
+    assert_eq!((requests, spend, billable), (0, 0, 0), "nothing charged");
+    assert_eq!(
+        rig.book.lock().unwrap().journal.dropped_total(),
+        0,
+        "no record is dropped"
+    );
+}
+
 /// HOOKS-GATE: a rejecting gate refuses the door's traffic before dispatch.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4523,6 +4610,45 @@ async fn the_pools_doors_gate_hook_refuses_before_dispatch() {
     .await;
     assert_eq!(rig.chat().await.0, 451, "the gate's own status");
     assert_eq!(far.served(), 0, "nothing was dispatched");
+}
+
+/// A GATE'S VETO KEEPS THE ADMISSION AND GIVES THE FEE BACK, AS 1.5.5 DID (legacy
+/// `approve::a_veto_refuses_at_approve_which_is_before_the_door`): v1.5.5 admitted and charged a
+/// unit before its gates ran (`ingress/dispatch.rs` `governance_guard` ahead of
+/// `forward_with_pool_parsed`, whose gates fire at `proxy/engine/mod.rs:946`), and the vetoed
+/// answer's non-2xx end refunded the flat fee (`finish_admitted`); the hook stages run at the head
+/// of the route leg after admit (K5, BUSBAR-1.6.0.md). So a vetoed unit answers the gate's status,
+/// dials nothing, keeps its admitted request and nets no spend.
+/// RED: the vetoed unit's fee kept, its admission dropped, or a far end dialled.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_doors_gate_veto_keeps_the_admission_and_refunds_the_fee() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-gate-money";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            reject_at_gate: true,
+            budget_cents: Some(5),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(rig.chat().await.0, 451, "the gate's own status");
+    assert_eq!(far.served(), 0, "nothing was dispatched");
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    let mut ledger = rig.ledger_after(0).await;
+    while (ledger.0 == 0 || ledger.1 != 0) && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        ledger = rig.ledger_after(0).await;
+    }
+    let (requests, spend, _, billable) = ledger;
+    assert_eq!(requests, 1, "the admission stands");
+    assert_eq!(spend, 0, "the vetoed unit's fee is refunded");
+    assert_eq!(billable, 0, "nothing billable");
 }
 
 /// HOOKS-TAP: the rewrite and observe hooks run over the door's payloads: the request-stage tap
@@ -5352,6 +5478,44 @@ mod pools_door_walk_and_breaker {
             .sum();
         assert_eq!(errs, 3, "three members, three attempts");
         assert!(fars.iter().all(|far| far.served() == 1));
+    }
+
+    /// A CALLER'S FAULT IS NEVER RETRIED ON ANOTHER MEMBER: a two-member pool whose far ends both
+    /// answer a 400 relays the first 400 to the caller, and exactly one member was dialled; the
+    /// walk does not try the second for a fault that is the caller's own. Rehomes
+    /// the retired engine crate's `src/engine/tests/forward_pool_integration_tests.rs::test_client_fault_no_failover_two_lanes`.
+    /// RED: the second member dialled, or the 400 replaced by a terminal.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_never_retries_a_callers_fault_on_another_member() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-walk-client-fault-once";
+        let _published = Withdrawn(instance);
+        let fars = [
+            seat_far_end(
+                400,
+                r#"{"error":{"message":"bad input","type":"invalid_request_error"}}"#,
+            )
+            .await,
+            seat_far_end(
+                400,
+                r#"{"error":{"message":"bad input","type":"invalid_request_error"}}"#,
+            )
+            .await,
+        ];
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(fars[0].port, 1), (fars[1].port, 1)],
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        assert_eq!(rig.chat().await.0, 400, "the caller's fault is relayed");
+        assert_eq!(
+            fars[0].served() + fars[1].served(),
+            1,
+            "one member dialled: a caller's fault is not retried"
+        );
     }
 
     /// One member of the messages dialect stating [`ERROR_MAP`], its far end answering `reply`.
@@ -7996,12 +8160,18 @@ mod pools_door_money {
         );
     }
 
-    /// A STREAM THAT DIED BILLS WHAT IT STREAMED AND KEEPS ITS FEE (F25 row 720; legacy
-    /// `meter::a_stream_that_died_bills_the_tokens_it_streamed_and_keeps_the_fee_it_earned`): a
-    /// streamed answer whose far end reports its usage (11 in, 7 out) and is then cut before its
-    /// end bills those 18 tokens, keeps its one fee (billable 1, the 200 that went out is not
-    /// reversed), and its sealed record reports one line per streamed tier: input 11, output 7. RED:
-    /// the streamed tokens dropped, the fee reversed, or the tiers merged.
+    /// A STREAM ITS FAR END CUT BILLS NO TOKENS AND KEEPS ITS FEE (F25 row 720; legacy
+    /// `meter::a_stream_that_died_bills_the_tokens_it_streamed_and_keeps_the_fee_it_earned`,
+    /// corrected to BUSBAR-1.6.0.md, Budgets, l.1014-1019, status row 183): a streamed answer whose
+    /// far end reports its usage (11 in, 7 out) and then cuts the stream before its end bills NO
+    /// tokens, as 1.5.5 billed none (v1.5.5 `crates/busbar/src/proxy/response_body.rs`: the
+    /// transport error sets `stream_failed` (:283) and the drop-time gate bills no tokens (:642);
+    /// oracle cell `route.failover|fo|primary-cut-stream`, golden usage `{"requests":1}`, tokens
+    /// 0). It keeps its one request and its one fee (billable 1: the 200 that went out is not
+    /// reversed, v1.5.5 `crates/busbar/src/ingress/mod.rs:574-575`), and its sealed record is
+    /// Partial with no token line. A stream the CALLER left is the other case: it bills what the far
+    /// end had reported (`:633-660`). RED: the cut stream's reported tokens billed, or the fee
+    /// reversed.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_bills_a_dead_stream_tokens_and_keeps_its_fee() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8029,25 +8199,69 @@ mod pools_door_money {
             .send("POST", "/v1/chat/completions", Some(streamed_chat()))
             .await;
         assert_eq!(status, 200, "the stream had begun");
-        assert_eq!(
-            rig.tokens_after().await,
-            18,
-            "the streamed tokens are the charge"
-        );
-        let (_, _, _, billable) = rig.ledger_after(1).await;
+        let (requests, _, _, billable) = rig.ledger_after(1).await;
+        assert_eq!(requests, 1, "the request unit still counts");
         assert_eq!(billable, 1, "the fee it earned is kept");
         let record = sealed_as(&rig, busbar_kernel_audit::FinishClass::Partial).await;
-        let mut lines = token_lines(&record);
-        lines.retain(|(_, quantity)| *quantity > 0);
-        lines.sort();
         assert_eq!(
-            lines,
-            vec![
-                (busbar_contract::records::UNIT_INPUT.to_string(), 11),
-                (busbar_contract::records::UNIT_OUTPUT.to_string(), 7)
-            ],
-            "one line per streamed tier"
+            rig.tokens_after().await,
+            0,
+            "a stream its far end cut bills no tokens"
         );
+        assert_eq!(
+            reported(&record),
+            0,
+            "its record reports no token either: {:?}",
+            token_lines(&record)
+        );
+    }
+
+    /// A 2XX STREAM IS SEALED WITH THE END ITS TAP SAW, NOT THE END ITS STATUS LINE CLAIMS (legacy
+    /// `chain::a_stream_audited_at_its_end_seals_the_class_the_tap_reported`): both answers go out
+    /// under a 200 status line, yet a stream cut after its first frame is sealed `Partial` and a
+    /// transfer that failed before its first byte is sealed `Error`; neither is sealed `Complete`.
+    /// RED: a record sealed from the status line (`Complete`) for an answer that never completed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_seals_a_2xx_stream_with_the_end_its_tap_saw() {
+        for (instance, pieces, finish) in [
+            (
+                "rehome-sealed-end-cut",
+                vec![(0, frame(FRAMES[0])), (50, Vec::new())],
+                busbar_kernel_audit::FinishClass::Partial,
+            ),
+            (
+                "rehome-sealed-end-failed",
+                vec![(50, Vec::new())],
+                busbar_kernel_audit::FinishClass::Error,
+            ),
+        ] {
+            let _one = ONE_PUBLISHER.lock().await;
+            let _published = Withdrawn(instance);
+            let far = far_end_scripted(SeatScript {
+                head: STREAM_HEAD.to_string(),
+                pieces,
+                finish: None,
+            })
+            .await;
+            let rig = rig(
+                instance,
+                RigOpts {
+                    members: &[(far.port, 1)],
+                    ..RigOpts::default()
+                },
+            )
+            .await;
+            let (status, _, _) = rig
+                .send("POST", "/v1/chat/completions", Some(streamed_chat()))
+                .await;
+            assert_eq!(status, 200, "{instance}: served on 2xx headers");
+            let record = sealed_as(&rig, finish).await;
+            assert_ne!(
+                record.outcome.finish,
+                busbar_kernel_audit::FinishClass::Complete,
+                "{instance}"
+            );
+        }
     }
 }
 
@@ -9814,4 +10028,439 @@ async fn the_pools_door_bills_no_tokens_for_an_answer_it_cannot_translate() {
         0,
         "an untranslated answer bills no tokens"
     );
+}
+
+// THE DOOR PATH'S MONEY CELLS that succeed the node's legacy answer path's own (`plane_node.rs`,
+// retired by #1161): each a gap that path alone witnessed, or one of its money cells whose door
+// successor asserted only part of it.
+#[cfg(linked_driver_proofs)]
+#[path = "serve_door_money_gaps.rs"]
+mod door_money_gaps;
+
+/// AN UNTRANSLATABLE 2XX GIVES THE LANE'S BUDGET UNIT BACK (`$`; legacy
+/// `crossproto_delivery_billing_tests::untranslatable_500_does_not_charge` and
+/// `ingress_indistinguishability_tests::test_untranslatable_2xx_refunds_budget_and_trips_breaker`):
+/// a far end in another dialect answers 2xx that its reader refuses, so the caller gets its own
+/// 500 and nothing is delivered. The member's lifetime request budget is refunded whole (5 stays
+/// 5), as 1.5.5's spend guard refunded every non-delivery, and no tokens bill.
+/// RED: the unit spent at the dial kept for an answer the caller never received (5 -> 4).
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_refunds_the_budget_unit_of_an_answer_it_cannot_translate() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-untranslatable-budget";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, door_word("unreadable_answer")).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            dialect: Some(door_word("untranslatable_dialect")),
+            lane_budget: Some(5),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, _, body) = rig.chat().await;
+    assert_eq!(status, 500, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(far.served(), 1, "the far end was dialled and answered");
+    assert_eq!(
+        rig.app.store.lane_budget_remaining(0),
+        Some(5),
+        "a non-delivery refunds the budget unit"
+    );
+    assert_eq!(rig.tokens_after().await, 0, "and bills no tokens");
+}
+
+/// A DELIVERED CROSS-DIALECT ANSWER BILLS ONCE AND KEEPS ITS BUDGET UNIT (`$`; legacy
+/// `crossproto_delivery_billing_tests::delivered_cross_protocol_response_bills_once`): a far end
+/// in another dialect answers a whole message (1 in, 1 out) that is translated and delivered to
+/// the caller. Its two tokens bill exactly once, and the member's lifetime budget unit spent at
+/// the dial is kept (5 -> 4).
+/// RED: a delivered answer refunded as a non-delivery (5 stays 5), or its tokens billed twice.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_bills_a_delivered_cross_dialect_answer_once_and_keeps_its_budget_unit() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-crossdialect-delivered-budget";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, door_word("messages_answer")).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            dialect: Some(door_word("messages_dialect")),
+            lane_budget: Some(5),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, _, body) = rig.chat().await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    let answer: serde_json::Value = serde_json::from_slice(&body).expect("a JSON answer");
+    assert!(
+        answer.get("choices").is_some(),
+        "the caller's own dialect: {answer}"
+    );
+    assert_eq!(
+        rig.tokens_after().await,
+        2,
+        "its 1 + 1 tokens bill exactly once"
+    );
+    assert_eq!(
+        rig.app.store.lane_budget_remaining(0),
+        Some(4),
+        "a delivered answer keeps the budget unit"
+    );
+}
+
+// ── THE 1.5.5 LIFECYCLE ON THE DOOR: NO ALARM, NO DISPUTE ──────────────────────────────────────────
+//
+// MOVED HERE from `crates/busbar/tests/alarm_silence_cross_plane.rs`, assertions unchanged
+// (DEV-GREEN row 83, ARCHITECT option (a) on #1161): the kernel's router alone serves no model unit
+// any more (the retired engine crate's arrivals are gone); the door serving the `pools` map does,
+// so the lifecycle is driven through the data router built with the door's claims.
+
+/// The words no 1.5.5-shaped deployment's tracing event or metric name may carry.
+#[cfg(linked_driver_proofs)]
+const SILENCE_MARKERS: &[&str] = &["alarm", "dispute"];
+
+#[cfg(linked_driver_proofs)]
+fn mentions_a_silence_marker(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    SILENCE_MARKERS.iter().any(|m| lower.contains(m))
+}
+
+/// The metric name an exposition line carries: the family a `# HELP`/`# TYPE` line names, or the
+/// series name before its labels or value.
+#[cfg(linked_driver_proofs)]
+fn exposition_metric_name(line: &str) -> Option<&str> {
+    if let Some(rest) = line.strip_prefix("# ") {
+        let mut it = rest.split_whitespace();
+        let _kind = it.next()?;
+        return it.next();
+    }
+    let end = line.find(['{', ' ']).unwrap_or(line.len());
+    let name = &line[..end];
+    (!name.is_empty()).then_some(name)
+}
+
+/// LEGACY `crates/busbar/tests/alarm_silence_cross_plane.rs::a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric`.
+/// A 1.5.5-SHAPED LIFECYCLE EMITS NO ALARM OR DISPUTE EVENT OR METRIC: two pools over the
+/// messages wire, no governance beyond the keyed caller, one pool's member answering and the other's
+/// at a closed port, then `/healthz` and `/stats`. The successful request comes back 200, the dead
+/// member's does not, the probe answers; no tracing event at DEBUG or above (on the test's thread
+/// or any of its runtime's workers) and no metric name mentions an alarm or a dispute.
+/// RED: any event or family that names either word on this deployment.
+#[cfg(linked_driver_proofs)]
+#[test]
+fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
+    use busbar_kernel::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    busbar_kernel::snapshot::init();
+    let cap = WarnCapture::capturing_debug();
+    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(cap.clone()));
+    let mut statuses: Vec<(&str, u16)> = Vec::new();
+    tracing::dispatcher::with_default(&dispatch, || {
+        let on_workers = dispatch.clone();
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .on_thread_start(move || {
+                // Every worker's events reach the capture, for the thread's whole life.
+                std::mem::forget(tracing::dispatcher::set_default(&on_workers));
+            })
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        rt.block_on(async {
+            let _one = ONE_PUBLISHER.lock().await;
+            let instance = "serve-door-alarm-silence";
+            let _published = Withdrawn(instance);
+            let far = seat_far_end(200, door_word("messages_answer")).await;
+            // Member 1 sits at a closed port, so pool `pb`'s request fails upstream: the path a
+            // stall or lane alarm would ride.
+            let rig = rig(
+                instance,
+                RigOpts {
+                    members: &[(far.port, 1), (1, 1)],
+                    dialect: Some(door_word("messages_dialect")),
+                    pooled: Some(1),
+                    more_pools: &[("pb", &[(1, 1)])],
+                    ..RigOpts::default()
+                },
+            )
+            .await;
+            let ask = |pool: &str| {
+                serde_json::json!({
+                    "model": pool,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "max_tokens": 8
+                })
+            };
+            let path = door_word("messages_path");
+            statuses.push(("ok request", rig.send("POST", path, Some(ask("p"))).await.0));
+            statuses.push((
+                "failed-upstream request",
+                rig.send("POST", path, Some(ask("pb"))).await.0,
+            ));
+            statuses.push(("healthz", rig.send("GET", "/healthz", None).await.0));
+            statuses.push(("stats", rig.send("GET", "/stats", None).await.0));
+        });
+    });
+
+    // The lifecycle really happened: the successful request reached the far end and came back 200,
+    // the dead-member request did NOT succeed, and the probe answered.
+    let status_of = |what: &str| {
+        statuses
+            .iter()
+            .find(|(w, _)| *w == what)
+            .map(|(_, s)| *s)
+            .unwrap()
+    };
+    assert_eq!(status_of("ok request"), 200, "statuses: {statuses:?}");
+    assert_ne!(
+        status_of("failed-upstream request"),
+        200,
+        "statuses: {statuses:?}"
+    );
+    assert_eq!(status_of("healthz"), 200, "statuses: {statuses:?}");
+
+    // No event at DEBUG or above mentions an alarm or a dispute, in its message or in any field.
+    let events = cap.messages();
+    let hits: Vec<&String> = events
+        .iter()
+        .filter(|m| mentions_a_silence_marker(m))
+        .collect();
+    assert!(
+        hits.is_empty(),
+        "no tracing event may carry an alarm/dispute message or field on a 1.5.5-shaped \
+         deployment; found:\n{}",
+        hits.iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    // No metric name carries either word.
+    let exposition = busbar_kernel::snapshot::render();
+    let leaked: Vec<&str> = exposition
+        .lines()
+        .filter_map(exposition_metric_name)
+        .filter(|n| mentions_a_silence_marker(n))
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "no metric name may mention an alarm or a dispute on a 1.5.5-shaped deployment; found: \
+         {leaked:?}"
+    );
+}
+
+// ── A KEY ROW'S `expires_at` ON THE DOOR: UNENFORCED, AS 1.5.5 ──────────────────────────────────────
+//
+// MOVED HERE from `crates/busbar/tests/key_expires_at_cross_plane.rs`, assertions unchanged
+// (DEV-GREEN row 83, ARCHITECT option (a) on #1161): the request is served by the door serving the
+// `pools` map, through the data router built with its claims.
+
+/// LEGACY `crates/busbar/tests/key_expires_at_cross_plane.rs::a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane`.
+/// End to end on the data plane through the `keys` chain: the request is admitted (200 from the far
+/// end) with the key row's `expires_at` stamped 30 days in the past (the token's own `exp` still in
+/// the future), while a wrong token is still refused (401) on the same app — so the admission is a
+/// real gate, not an open chain. Measured on the published 1.5.5 AND on HEAD's release binary
+/// (shadow-oracle script cell key-expired-out-of-band.sh): both answer 200.
+/// RED: a stored `expires_at` enforced on the data plane (the request refused).
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-key-row-expired";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, door_word("messages_answer")).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            dialect: Some(door_word("messages_dialect")),
+            allowed_pools: Some(&["p"]),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    // Stamp the minted key's row with an `expires_at` in the past, as an operator (or a migrated
+    // 1.5.5 database) would, and reload the caches. Mint never stamps it.
+    let store = rig.gov.store();
+    let mut row = store
+        .get_key(&rig.key_id)
+        .expect("store read")
+        .expect("the minted row");
+    assert_eq!(
+        row.expires_at, None,
+        "mint never stamps expires_at; it is a stored field nothing in the engine writes"
+    );
+    row.expires_at = Some(busbar_kernel::store::now() - 30 * 86_400);
+    store.put_key(&row).expect("rewrite the row");
+    rig.gov.refresh().expect("reload caches");
+
+    let ask = serde_json::json!({
+        "model": "p",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 8
+    });
+    let path = door_word("messages_path");
+    let (admitted, _, body) = rig.send("POST", path, Some(ask.clone())).await;
+    assert_eq!(
+        admitted,
+        200,
+        "a key row with a past expires_at is still admitted (1.5.5 never enforced it; measured): {}",
+        String::from_utf8_lossy(&body)
+    );
+    let (refused, _, _) = rig
+        .send_bare(
+            "POST",
+            path,
+            Some(ask),
+            &[("authorization", "Bearer bbk_not_a_real_token")],
+        )
+        .await;
+    assert_eq!(
+        refused, 401,
+        "the keys chain is a real gate on this app: a bad token is refused"
+    );
+}
+
+// ── THE MODEL PLANE'S `/metrics` ON THE DOOR: COUNTED ONCE, v1.5.4-SHAPED ──────────────────────────
+//
+// MOVED HERE from `crates/busbar/tests/plane_integration.rs`, assertions unchanged (DEV-GREEN row
+// 83, ARCHITECT option (a) on #1161): a model request is served by the door that serves the `pools`
+// map, so it is driven through the data router built with the door's claims; the kernel's router
+// alone serves no model unit any more.
+
+/// The label keys of one exposition line, sorted.
+#[cfg(linked_driver_proofs)]
+fn exposition_label_keys(line: &str) -> Vec<String> {
+    line.split_once('{')
+        .and_then(|(_, rest)| rest.rsplit_once('}'))
+        .map(|(inner, _)| {
+            let mut ks: Vec<String> = inner
+                .split(',')
+                .filter_map(|kv| kv.split_once('=').map(|(k, _)| k.trim().to_string()))
+                .collect();
+            ks.sort();
+            ks
+        })
+        .unwrap_or_default()
+}
+
+/// Every non-comment exposition line of `family`.
+#[cfg(linked_driver_proofs)]
+fn exposition_family<'a>(exposition: &'a str, family: &str) -> Vec<&'a str> {
+    exposition
+        .lines()
+        .filter(|l| !l.starts_with('#') && l.starts_with(family))
+        .collect()
+}
+
+/// LEGACY `crates/busbar/tests/plane_integration.rs::a_model_plane_request_is_counted_exactly_once`.
+/// A MODEL-plane request is counted EXACTLY ONCE: one request produces ONE count on
+/// `busbar_requests_total` for its pool, not one from the request's own finish plus one from the
+/// plane ingress boundary. The far end is a closed port, so the request fails to forward, which is
+/// deliberate: what is under test is how many times it is counted, not what it returned.
+/// RED: a boundary that counts everything (2), or a model request counted nowhere (0).
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_model_plane_request_is_counted_exactly_once() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-counted-once";
+    let _published = Withdrawn(instance);
+    busbar_kernel::snapshot::init();
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(1, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    // The model plane's `busbar_requests_total` carries NO `plane` label (v1.5.4-identical); the
+    // test runs in a process of its own, so the pool's label pins the delta.
+    let labels = [("pool", "p")];
+    let before =
+        busbar_kernel::test_support::metric_sum(busbar_kernel::snapshot::REQUESTS_TOTAL, &labels);
+    let _ = rig.chat().await;
+    let after =
+        busbar_kernel::test_support::metric_sum(busbar_kernel::snapshot::REQUESTS_TOTAL, &labels);
+    assert_eq!(
+        (after - before).round() as u64,
+        1,
+        "one model-plane request must produce ONE count, not one from `finish_inner` plus one from \
+         the plane ingress boundary"
+    );
+}
+
+/// LEGACY the model-plane half of
+/// `crates/busbar/tests/plane_integration.rs::metrics_scrape::mounted_plane_traffic_appears_on_a_real_metrics_scrape`
+/// (its door- and agent-plane half stays there, on the kernel's router).
+/// THE MODEL PLANE STAYS v1.5.4-IDENTICAL on a scrape: after model traffic, `busbar_requests_total`
+/// carries a series with exactly the 1.5.4 label set {ingress_protocol, pool, outcome} and NO `plane`
+/// label, `busbar_request_duration_seconds` carries a series, and neither family carries a `plane`
+/// label anywhere in the exposition. An unroutable model is deliberate: the request finishes
+/// without an upstream, which is all the series shape needs.
+/// RED: a `plane` label on either model family (the BI-2 regression), or no model series at all.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_model_plane_families_stay_v1_5_4_shaped_on_a_real_scrape() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-model-families";
+    let _published = Withdrawn(instance);
+    busbar_kernel::snapshot::init();
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(1, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (model_status, _, _) = rig
+        .send(
+            "POST",
+            "/v1/chat/completions",
+            Some(serde_json::json!({
+                "model": "no-such-model",
+                "messages": [{ "role": "user", "content": "hi" }],
+            })),
+        )
+        .await;
+    let exposition = busbar_kernel::snapshot::render();
+    let model_counters = exposition_family(&exposition, busbar_kernel::snapshot::REQUESTS_TOTAL);
+    assert!(
+        model_counters.iter().any(|line| exposition_label_keys(line)
+            == vec![
+                "ingress_protocol".to_string(),
+                "outcome".to_string(),
+                "pool".to_string()
+            ]),
+        "no v1.5.4-shaped `{}` series {{ingress_protocol,pool,outcome}} after driving model traffic \
+         (model {model_status}). Exposition:\n{exposition}",
+        busbar_kernel::snapshot::REQUESTS_TOTAL,
+    );
+    assert!(
+        !exposition_family(
+            &exposition,
+            busbar_kernel::snapshot::REQUEST_DURATION_SECONDS
+        )
+        .is_empty(),
+        "no `{}` series after driving model traffic. Exposition:\n{exposition}",
+        busbar_kernel::snapshot::REQUEST_DURATION_SECONDS,
+    );
+    for family in [
+        busbar_kernel::snapshot::REQUESTS_TOTAL,
+        busbar_kernel::snapshot::REQUEST_DURATION_SECONDS,
+    ] {
+        for line in exposition_family(&exposition, family) {
+            assert!(
+                !line.contains("plane=\""),
+                "a `plane` label leaked onto the v1.5.4 model family `{family}`: {line}"
+            );
+        }
+    }
 }

@@ -4,6 +4,7 @@
 
 pub mod arrive;
 pub mod attempt;
+pub mod catalog;
 pub mod invoke;
 pub mod multipart;
 pub mod probe;

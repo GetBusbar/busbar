@@ -1884,7 +1884,6 @@ fn the_chain_holds_counts_and_an_epoch_and_the_rebuilt_book_prices_them() {
         card: doubled,
         appended_at: ARRIVED_MS + 10_000,
         author: busbar_kernel_ledger::cost::Author::Amend {
-            operator_fingerprint: "op".to_string(),
             reason_hash: [0; 32],
         },
     });
@@ -2508,11 +2507,23 @@ fn a_torn_settlement_is_cut_and_its_hold_recovers() {
 fn every_fallback_open_class_prices_at_the_card_and_replays_idempotently() {
     use busbar_kernel_ledger::cost::LaneClass;
     const RATE: u64 = 3_000;
-    let fallback = crate::LINKED
-        .planes
-        .iter()
-        .find(|decl| decl.fallback)
-        .expect("every plane linked: one declares itself the fallback");
+    // The plane rows the linked doors fold to, as the composition root folds them: the fallback
+    // plane is a door row (DEV-GREEN row 83), so its declaration is its door's Statement.
+    let fallback = {
+        use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
+        let mut fallbacks: Vec<_> = crate::LINKED
+            .plane_doors
+            .iter()
+            .map(|door| registration(linked_probe(*door, "fallback-classes")).expect("binds"))
+            .filter(|reg| reg.fallback)
+            .collect();
+        assert_eq!(
+            fallbacks.len(),
+            1,
+            "every plane linked: one declares itself the fallback"
+        );
+        busbar_kernel::plane::door::fold(fallbacks.remove(0)).expect("the door folds")
+    };
     let open: Vec<&str> = fallback
         .billable_classes
         .iter()
