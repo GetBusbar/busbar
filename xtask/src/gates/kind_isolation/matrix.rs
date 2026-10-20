@@ -6551,12 +6551,13 @@ mod tests {
         );
     }
 
-    /// RED ARM 3: a hit moved from one ratcheting axis to another under a ruling (`transport` row
-    /// lowered by one, `auth` row raised by one in the same diff) is judged as it was: the #725
-    /// figure is unchanged, and the per-cell row covers the moved hit by the raise THIS branch
-    /// wrote. The base's own slack and a row minted here cover nothing.
+    /// RED ARM 3: a hit moved from one ratcheting axis to another (`transport` row lowered by one,
+    /// `auth` row raised by one in the same diff) leaves the #725 figure unchanged, but every row is
+    /// its own ceiling, per crate pair (Law 9; coordinator ruling on #1133): the raised `auth` row
+    /// covers nothing and the lowered `transport` row pays for nothing, so the grown cell is
+    /// `law0-row-raised`. The base's own slack and a row minted here cover nothing either.
     #[test]
-    fn a_ruled_move_between_axes_is_unchanged() {
+    fn a_move_between_axes_is_refused_per_row() {
         let crates = vec![neutral_kernel("busbar-kernel")];
         let at_rows: &[(&str, &str, usize)] = &[
             ("busbar-kernel", "plane", 12),
@@ -6580,11 +6581,17 @@ mod tests {
         let judged = rule_law0_base(&ruled, Some(&moved_cells), Ok(&base));
         assert_eq!(
             judged.status,
-            crate::ledger::Status::Pass,
+            crate::ledger::Status::Fail,
             "{}",
             judged.detail
         );
-        assert!(judged.detail.contains("1 moved"), "{}", judged.detail);
+        assert!(
+            judged
+                .detail
+                .contains("law0-row-raised\tbusbar-kernel \u{d7} auth\t3 -> 4"),
+            "{}",
+            judged.detail
+        );
 
         // The same move with NO raise written: the grown cell is red.
         let unruled = rule_law0_base(&law0_reg(at_rows), Some(&moved_cells), Ok(&base));
