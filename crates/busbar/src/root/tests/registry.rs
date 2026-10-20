@@ -1207,7 +1207,7 @@ fn the_upgrade_lines_are_read_off_the_door_statements() {
 /// transport plugin log file was ever opened and every record a transport emitted was dropped.
 #[test]
 fn a_linked_transport_door_is_bound_to_its_rows_plugin_log_file() {
-    use crate::root::loader::dispatch::{Diagnostic, EnvelopeSink, PluginLogConfig};
+    use crate::root::loader::dispatch::{Diagnostic, PluginLogConfig};
     use busbar_contract::abi::mechanism::call::{DIAG_LOG, SEVERITY_WARN};
     let dir = std::env::temp_dir().join(format!(
         "busbar-linked-transport-log-{}",
