@@ -494,3 +494,19 @@ fn no_proxy_and_a_raw_stream_dial_direct() {
         );
     });
 }
+
+/// RED (the proxy environment honoured "exactly as 1.5.5's reqwest clients did"): the proxy URL's
+/// userinfo is percent-DECODED before it is Base64-encoded into `Proxy-Authorization: Basic`, as
+/// reqwest decodes it. Encoded as written, a password with a reserved character (`@`, `:`, `%`,
+/// written `%40`, `%3A`, `%25` in the URL) reached the proxy still percent-encoded and was refused.
+#[test]
+fn the_proxy_credential_is_percent_decoded_before_it_is_presented() {
+    use base64::Engine;
+    let spec = parse_proxy("http://svc%40corp:p%40ss%3Aw%25rd@proxy.corp:3128").unwrap();
+    let expected = format!(
+        "Proxy-Authorization: Basic {}\r\n",
+        base64::engine::general_purpose::STANDARD.encode("svc@corp:p@ss:w%rd")
+    );
+    let request = String::from_utf8(connect_request("upstream.test:443", &spec)).unwrap();
+    assert!(request.contains(&expected), "{request}");
+}

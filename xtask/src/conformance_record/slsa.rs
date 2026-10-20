@@ -9,10 +9,14 @@
 //! stamped with HEAD and would otherwise vouch for bytes HEAD did not build.
 //!
 //! WHERE THE ARTIFACT COMES FROM is not this rig's to decide: provenance is minted by a trusted
-//! builder in CI (keyless, OIDC), never on a developer box. The caller hands both files in with
-//! `--slsa-artifact` and `--slsa-provenance`; with neither, the suite is `not-run` and says so.
-//! Which job mints them on the `dev` -> `qa` move is an open ARCHITECT/owner question (lane handoff
-//! CONFORMANCE-RIGS.md).
+//! builder (keyless, OIDC), never on a developer box and never under a key of our own. The trusted
+//! builder is GetBusbar/busbar's own GitHub Actions run on each push to `dev` (ARCHITECT ruling
+//! 2026-10-17, option A1): slsa-github-generator's generic generator over the `busbar` it builds
+//! at that commit, published to busbar-release's `dev-bin` release as
+//! `busbar-linux-<arch>-<sha>` and `busbar-linux-<arch>-<sha>.intoto.jsonl` ([`dev_bin_assets`]).
+//! The rig fetches the pair for HEAD (the release token, `BUSBAR_RELEASE_TOKEN`) unless the
+//! caller hands both files in with `--slsa-artifact` and `--slsa-provenance`. When `dev-bin` holds
+//! no pair for HEAD yet, the suite is `not-run` and says so: never a pass, never a fallback.
 
 use serde_json::Value;
 
@@ -21,6 +25,20 @@ use super::Outcome;
 
 /// The repository whose provenance is accepted.
 pub const SOURCE_URI: &str = "github.com/GetBusbar/busbar";
+/// The branch whose builds are attested: the generator runs on each push to it.
+pub const SOURCE_BRANCH: &str = "dev";
+/// Where the attested builds are published: busbar-release's `dev-bin` release.
+pub const DEV_BIN_REPO: &str = "GetBusbar/busbar-release";
+pub const DEV_BIN_TAG: &str = "dev-bin";
+
+/// THE PAIR `dev-bin` holds for the build of `head` on `arch` (`x86_64`, `aarch64`): the binary
+/// and its in-toto SLSA provenance, named as the generator workflow publishes them.
+#[must_use]
+pub fn dev_bin_assets(arch: &str, head: &str) -> (String, String) {
+    let artifact = format!("busbar-linux-{arch}-{head}");
+    let provenance = format!("{artifact}.intoto.jsonl");
+    (artifact, provenance)
+}
 /// slsa-verifier, when the runner has no binary on PATH: `go run` at this pinned release.
 pub const VERIFIER_MODULE: &str =
     "github.com/slsa-framework/slsa-verifier/v2/cli/slsa-verifier@v2.7.1";
@@ -125,16 +143,27 @@ impl Runner {
             head,
             evidence: self.rel(&dir.join("verify.log")),
         };
+        let fetched;
         let (artifact, provenance) = match (
             self.inputs.slsa_artifact.as_deref(),
             self.inputs.slsa_provenance.as_deref(),
         ) {
             (Some(a), Some(p)) if a.is_file() && p.is_file() => (a, p),
+            (None, None) => match self.fetch_dev_bin(&dir, &run.head) {
+                Ok(pair) => {
+                    fetched = pair;
+                    (fetched.0.as_path(), fetched.1.as_path())
+                }
+                Err(why) => {
+                    run.inputs = Err(why);
+                    return decide_slsa(&run);
+                }
+            },
             (a, p) => {
                 run.inputs = Err(format!(
-                    "no attested artifact of HEAD was handed in (--slsa-artifact {}, \
-                     --slsa-provenance {}): provenance is minted by a trusted CI builder, and no \
-                     job of this run minted one",
+                    "an attested artifact was handed in by half (--slsa-artifact {}, \
+                     --slsa-provenance {}): both, or neither and the rig fetches HEAD's from \
+                     {DEV_BIN_REPO}'s {DEV_BIN_TAG} release",
                     a.map_or("absent".to_string(), |x| x.display().to_string()),
                     p.map_or("absent".to_string(), |x| x.display().to_string()),
                 ));
@@ -158,11 +187,120 @@ impl Runner {
             provenance.to_string_lossy().into_owned(),
             "--source-uri".to_string(),
             SOURCE_URI.to_string(),
+            "--source-branch".to_string(),
+            SOURCE_BRANCH.to_string(),
             "--print-provenance".to_string(),
         ]);
         let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
         run.exit = self.leg(rig, "verify", &argv, None, &[]);
         run.output = self.log_text(rig, "verify");
         decide_slsa(&run)
+    }
+}
+
+impl Runner {
+    /// HEAD's attested build from `dev-bin`: the release's asset list read through the API with the
+    /// release token (`BUSBAR_RELEASE_TOKEN`, else `GH_TOKEN` / `GITHUB_TOKEN`, as `bin/oracle`
+    /// reads it), and the pair [`dev_bin_assets`] names downloaded into `dir`. The token is handed
+    /// to curl in a header file, never on its command line.
+    ///
+    /// # Errors
+    /// The release cannot be read, or holds no pair for HEAD on this architecture (the generator
+    /// has not published it yet): the suite is not-run, with this text.
+    fn fetch_dev_bin(
+        &self,
+        dir: &std::path::Path,
+        head: &str,
+    ) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+        use std::process::{Command, Stdio};
+        let token = ["BUSBAR_RELEASE_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"]
+            .iter()
+            .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
+            .ok_or_else(|| {
+                format!(
+                    "no release token (BUSBAR_RELEASE_TOKEN) to read {DEV_BIN_REPO}'s \
+                     {DEV_BIN_TAG} release, so HEAD's attested build cannot be fetched"
+                )
+            })?;
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let header = dir.join(".auth-header");
+        std::fs::write(&header, format!("Authorization: Bearer {token}\n"))
+            .map_err(|e| format!("{}: {e}", header.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&header, std::fs::Permissions::from_mode(0o600));
+        }
+        let auth = format!("@{}", header.display());
+        let curl = |args: &[&str]| -> Result<Vec<u8>, String> {
+            let out = Command::new("curl")
+                .args(["-fsSL", "--retry", "3", "-H", &auth])
+                .args(args)
+                .stdin(Stdio::null())
+                .output()
+                .map_err(|e| format!("curl could not run: {e}"))?;
+            if out.status.success() {
+                Ok(out.stdout)
+            } else {
+                Err(format!(
+                    "curl {} ({})",
+                    rc(out.status.code()),
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ))
+            }
+        };
+        let result = (|| {
+            let release: Value = serde_json::from_slice(&curl(&[
+                "-H",
+                "Accept: application/vnd.github+json",
+                &format!("https://api.github.com/repos/{DEV_BIN_REPO}/releases/tags/{DEV_BIN_TAG}"),
+            ])?)
+            .map_err(|e| format!("the {DEV_BIN_TAG} release did not read as JSON: {e}"))?;
+            let id = release
+                .get("id")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| format!("the {DEV_BIN_TAG} release names no id"))?;
+            let (want_a, want_p) = dev_bin_assets(std::env::consts::ARCH, head);
+            let (mut url_a, mut url_p) = (None, None);
+            for page in 1.. {
+                let assets: Value = serde_json::from_slice(&curl(&[
+                    "-H",
+                    "Accept: application/vnd.github+json",
+                    &format!(
+                        "https://api.github.com/repos/{DEV_BIN_REPO}/releases/{id}/assets?per_page=100&page={page}"
+                    ),
+                ])?)
+                .map_err(|e| format!("the {DEV_BIN_TAG} asset list did not read as JSON: {e}"))?;
+                let list = assets.as_array().cloned().unwrap_or_default();
+                for a in &list {
+                    let name = a.get("name").and_then(Value::as_str).unwrap_or("");
+                    let url = a.get("url").and_then(Value::as_str).map(str::to_string);
+                    if name == want_a {
+                        url_a = url;
+                    } else if name == want_p {
+                        url_p = url;
+                    }
+                }
+                if list.len() < 100 || (url_a.is_some() && url_p.is_some()) {
+                    break;
+                }
+            }
+            let (Some(url_a), Some(url_p)) = (url_a, url_p) else {
+                return Err(format!(
+                    "{DEV_BIN_REPO}'s {DEV_BIN_TAG} release holds no attested build of HEAD {head} \
+                     for {} yet (`{want_a}` and `{want_p}`): the provenance workflow has not \
+                     published it",
+                    std::env::consts::ARCH
+                ));
+            };
+            let (art, prov) = (dir.join(&want_a), dir.join(&want_p));
+            for (url, to) in [(&url_a, &art), (&url_p, &prov)] {
+                let to_s = to.to_string_lossy().into_owned();
+                curl(&["-H", "Accept: application/octet-stream", "-o", &to_s, url])?;
+            }
+            Ok((art, prov))
+        })();
+        let _ = std::fs::remove_file(&header);
+        result
     }
 }

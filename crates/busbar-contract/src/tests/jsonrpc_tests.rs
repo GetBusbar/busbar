@@ -322,3 +322,45 @@ fn an_error_member_is_read_with_its_code_and_message() {
         }
     );
 }
+
+/// A KERNEL REFUSAL WITH NO UNIT, IN THE JSON-RPC WIRE: the bytes v1.5.5 answered when a request was
+/// refused before any unit was made (no credential; a body over the cap), exactly: `id` null, code
+/// `-32600`. Every other reason has no unit-less body of its own. RED before the one table: each
+/// renderer kept its own copy of these bytes.
+#[test]
+fn a_unitless_kernel_refusal_renders_the_v1_5_5_bytes() {
+    use crate::abi::plane::RefusalCode;
+    assert_eq!(
+        unitless_kernel_body(RefusalCode::Unauthenticated.code()),
+        Some(&br#"{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"authentication failed"}}"#[..])
+    );
+    assert_eq!(
+        unitless_kernel_body(RefusalCode::BodyTooLarge.code()),
+        Some(
+            &br#"{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"request body exceeds the maximum allowed size"}}"#[..]
+        )
+    );
+    for code in RefusalCode::ALL {
+        if !matches!(
+            code,
+            RefusalCode::Unauthenticated | RefusalCode::BodyTooLarge
+        ) {
+            assert_eq!(unitless_kernel_body(code.code()), None, "{code:?}");
+        }
+    }
+    // The bytes are the one error envelope, with the unattributable `null` id.
+    for (code, message) in [
+        (RefusalCode::Unauthenticated, "authentication failed"),
+        (
+            RefusalCode::BodyTooLarge,
+            "request body exceeds the maximum allowed size",
+        ),
+    ] {
+        let body = unitless_kernel_body(code.code()).expect("a body");
+        let parsed: serde_json::Value = serde_json::from_slice(body).expect("JSON");
+        assert_eq!(
+            parsed,
+            error_body(serde_json::Value::Null, INVALID_REQUEST, message, None)
+        );
+    }
+}
