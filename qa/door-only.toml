@@ -11,7 +11,7 @@ item = "SINK"
 
 [[finding]]
 rule = "door-only:static-seam"
-file = "crates/busbar-kernel/src/plane/config.rs"
+file = "crates/busbar-kernel/src/config/plane_sections.rs"
 item = "PLANE_SECTIONS"
 
 # judge_answer: interim for the 8 pooled-client builders; struck when D1-D6 move onto conns (Phase B).

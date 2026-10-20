@@ -2429,15 +2429,17 @@ mod tools_door {
         repeatable: &[&str],
     ) -> serde_yaml::Value {
         let key = surface("section");
-        let pools: std::collections::BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg> =
-            [(
-                name.to_string(),
-                busbar_kernel::failover::CandidatePoolCfg {
-                    members: members.iter().map(|m| (*m).to_string()).collect(),
-                    repeatable: repeatable.iter().map(|m| (*m).to_string()).collect(),
-                },
-            )]
-            .into();
+        let pools: std::collections::BTreeMap<
+            String,
+            busbar_kernel::config::pools::CandidatePoolCfg,
+        > = [(
+            name.to_string(),
+            busbar_kernel::config::pools::CandidatePoolCfg {
+                members: members.iter().map(|m| (*m).to_string()).collect(),
+                repeatable: repeatable.iter().map(|m| (*m).to_string()).collect(),
+            },
+        )]
+        .into();
         let mut sections = crate::root::serve::with_pools([(key, section)].into(), &[(key, pools)]);
         sections.remove(key).expect("the section is handed back")
     }

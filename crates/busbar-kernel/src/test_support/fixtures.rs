@@ -57,13 +57,11 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
         crate::config::ResolvedProvider::from(provider),
     );
     crate::config::RootCfg {
-        tool_defs: crate::plane::config::ToolsSection::default().0,
+        plane_defs: Default::default(),
         // No endpoint plane configured.
         endpoint_resources: Default::default(),
         oauth_as: None,
-        agent_defs: crate::plane::config::AgentsSection::default().0,
-        tool_pools: Default::default(),
-        agent_pools: Default::default(),
+        plane_pools: Default::default(),
         plane_sections: Default::default(),
         upstream_credentials: crate::auth::UpstreamCreds::Own,
         listen: crate::config::DEFAULT_LISTEN_ADDR.into(),
@@ -96,7 +94,7 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
 }
 
 // ── THE NEUTRAL FALLBACK-PLANE FIXTURE ────────────────────────────────────────────────────────────
-// `plane::config::split_section_for_plane` REFUSES (not panics — see that fn's doc) when it resolves
+// `config::plane_sections::split_section_for_plane` REFUSES (not panics — see that fn's doc) when it resolves
 // `plane::fallback_key()` and finds no plane registered to own it: since the A6/HostCtx
 // dev-dependency-cycle cleanup moved every test that asserts REAL llm/mcp/a2a behaviour out to
 // `tests/*_cross_plane.rs` (the only place with ONE `busbar_kernel` in the graph — see that target's

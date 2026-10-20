@@ -1482,7 +1482,7 @@ fn validate_refuses_none_on_a_secret_that_requires_a_credential() {
 // `providers.yaml`'s `protocol:` selects the WIRE dialect (`anthropic`/`openai`/…/`jev`); a `mock`
 // provider on `protocol: jev` is what a genuine decisions deployment configures — the decision
 // plane's door states it as its one dialect and consumes `providers:`, so its folded section's
-// `PlaneCfg::known_dialects` (`busbar_kernel::plane::door`) is unioned into the provider
+// `PlaneCfg::known_dialects` (`busbar_kernel::plane_driver::door`) is unioned into the provider
 // wire-codec check (`config_validate::validate_providers_with`) for exactly this reason, so `jev`
 // is a legal `protocol:` value even though no `busbar-llm-codec` dialect module translates it.
 

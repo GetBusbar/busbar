@@ -155,10 +155,9 @@ async fn session(
         }
     }
     // (2)+(3) THE CHAIN AND THE ONE VERDICT RESOLUTION the data listener runs.
-    let admitted = busbar_kernel::plane_host::identity_admit_over(
+    let admitted = busbar_kernel::auth::admit::admit_session(
         app,
         credential.map(str::to_string),
-        resource.to_string(),
         resource.to_string(),
     )
     .await;

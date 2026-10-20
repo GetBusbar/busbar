@@ -54,6 +54,7 @@
 //! cancelled; the write itself runs on).
 
 mod cancel;
+pub mod door;
 mod epoch;
 mod far_end;
 pub(crate) mod hooks;

@@ -27,15 +27,8 @@
 //!   rest forwarding into the capability modules), zero stubs remaining.
 
 pub mod breaker;
-mod creds;
-pub mod dispatch;
-pub mod egress;
 mod govern;
-pub(crate) mod identity_admit;
-pub mod journal;
-pub mod pipe;
 pub mod scope;
-pub mod session_meter;
 pub mod vtable;
 
 pub use scope::{DispatchScope, DurableScope, SessionScope};
@@ -79,9 +72,6 @@ pub struct HostState<'a> {
     /// open route, or a mint with no request behind it) admits and bills the named synthetic keys
     /// (`govern::SYNTH_TENANT_KEY`, `govern::SYNTH_ADMISSION_KEY`).
     caller: Option<HostCaller>,
-    /// The operator's destinations for the plane this handle was minted for (DEC-SERVE G3): the only
-    /// source of the privilege scope the `egress_open` slot judges a hop against. `None` ⇒ scope `0`.
-    destinations: Option<&'a egress::OperatorDestinations>,
 }
 
 /// The middleware-resolved caller behind a plane mint (DEC-SERVE G1): an OPAQUE, kernel-only handle.
@@ -175,7 +165,7 @@ pub fn with_borrowed_host<R>(
     f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R,
 ) -> R {
     // A host-internal mint: nobody's plane. See `HostState::emitter`.
-    mint(None, None, None, app, scope, f)
+    mint(None, None, app, scope, f)
 }
 
 /// Run `f` with a [`HostCtx`] ATTRIBUTED to `plane` — the mint site a real plane dispatch uses.
@@ -195,30 +185,21 @@ pub fn with_borrowed_host_as<R>(
     scope: &DispatchScope,
     f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R,
 ) -> R {
-    mint(Some(plane), None, None, app, scope, f)
+    mint(Some(plane), None, app, scope, f)
 }
 
 /// THE HOT DOOR'S MINT (DEC-SERVE G1 + G3): [`with_borrowed_host_as`], plus the two facts only the
 /// host knows about this request — the `caller` the auth middleware resolved (the request's
 /// [`PlaneRequestCtx`](busbar_contract::records::PlaneRequestCtx), `None` on an open route), which
-/// `meter_charge` bills; and the operator's `destinations` for `plane`, which `egress_open` derives a
-/// hop's privilege scope from. Neither is a word the plane can supply.
+/// `meter_charge` bills. It is not a word the plane can supply.
 pub fn with_plane_door<R>(
     plane: &'static str,
     caller: Option<&busbar_contract::records::PlaneRequestCtx>,
-    destinations: &egress::OperatorDestinations,
     app: &App,
     scope: &DispatchScope,
     f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R,
 ) -> R {
-    mint(
-        Some(plane),
-        HostCaller::of(caller),
-        Some(destinations),
-        app,
-        scope,
-        f,
-    )
+    mint(Some(plane), HostCaller::of(caller), app, scope, f)
 }
 
 /// THE ONE MINT: run `f` with a [`HostCtx`] over a [`HostState`] of `app` + `scope` (attributed to
@@ -230,7 +211,6 @@ pub fn with_plane_door<R>(
 fn mint<R>(
     emitter: Option<&'static str>,
     caller: Option<HostCaller>,
-    destinations: Option<&egress::OperatorDestinations>,
     app: &App,
     scope: &DispatchScope,
     f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R,
@@ -240,7 +220,6 @@ fn mint<R>(
         scope,
         emitter,
         caller,
-        destinations,
     };
     let vtable = build_plane_host_vtable();
     let generation = HostGeneration::open();
@@ -251,31 +230,6 @@ fn mint<R>(
     let host = HostCtx::new(ptr, generation.value(), HostCtx::KIND_PLANE_HOST);
     // `state` and `generation` are locals, dropped only after this tail call returns.
     f(host, &vtable)
-}
-
-/// Sign a plane-framed agent-card signing input through the host [`card_sign`](vtable) seam,
-/// returning the 64-byte Ed25519 signature. The card subkey is derived and held HOST-side (see
-/// [`GovState::card_sign`](crate::governance::GovState::card_sign)); the caller passes only the bytes
-/// to sign and receives only the signature — no signing material crosses to the plane. A SAFE wrapper
-/// that keeps the raw fn-pointer + out-buffer read inside this audited module (busbar-core denies
-/// `unsafe` elsewhere). `None` when this deployment holds no card-signing key (the `Refused` status).
-#[must_use]
-pub fn card_sign_over(app: &App, signing_input: &[u8]) -> Option<[u8; 64]> {
-    let scope = DispatchScope::new();
-    with_borrowed_host(app, &scope, |host, vt| {
-        // The slot is wired whenever a plane declares a card-signing domain (`plane-a2a`) and `None`
-        // otherwise (see the vtable's `subkey_sign`): an unwired slot signs nothing, so degrade to
-        // `None` rather than panic — the trait method must exist unconditionally across every feature combo.
-        let sign = vt.subkey_sign?;
-        let mut out = [0u8; 64];
-        let status = sign(
-            host,
-            signing_input.as_ptr(),
-            signing_input.len(),
-            out.as_mut_ptr(),
-        );
-        (status == busbar_contract::abi::hot::StatusClass::Ok).then_some(out)
-    })
 }
 
 // The refusal-fidelity admit outcome is a pure POD naming only `busbar_contract::abi::hot` + std, so it now
@@ -301,7 +255,6 @@ pub fn govern_admit_reason_over(
     let decision = mint(
         None,
         HostCaller::of(Some(caller)),
-        None,
         app,
         scope,
         |hctx, vt| {
@@ -329,93 +282,12 @@ pub fn govern_admit_reason_over(
     }
 }
 
-/// Resolve INBOUND data-plane identity over the wired [`identity_admit`](vtable) seam: run the
-/// configured auth chain + the ONE verdict resolution over the caller's OWN wire credential and the live
-/// governance state, and reconstruct the resolved `(AuthPrincipal, PlaneRequestCtx)` — or the specific
-/// [`IdentityRefusal`](crate::auth::IdentityRefusal) — from the host's answer. A SAFE wrapper that keeps
-/// the `#[repr(C)]` [`IdentityAdmitted`](busbar_contract::abi::hot::IdentityAdmitted) out-param read and the
-/// opaque-handle recovery inside this audited module, so a plane admits an inbound session without ever
-/// naming `crate::auth`. Byte-identical to the in-process resolution: the resolved principal and gov
-/// context are the EXACT objects the host produced (recovered through the opaque handle), and a refusal
-/// keeps its exact variant.
-///
-/// The slot drives the ASYNC auth chain on a fresh current-thread runtime, so it is invoked from a
-/// BLOCKING thread (`spawn_blocking`) — calling `block_on` on a runtime worker would panic. The bridge
-/// is fail-closed: a join panic maps to [`IdentityRefusal::Denied`](crate::auth::IdentityRefusal),
-/// exactly as a chain that could not run denies.
-// Only the inbound stdio admission path consumes this seam today; a build whose planes resolve
-// identity on their own door leaves it with no caller, hence the unconditional dead-code allow (the
-// fn is always compiled).
-#[allow(dead_code)]
-pub async fn identity_admit_over(
-    app: Arc<App>,
-    token: Option<String>,
-    audience: String,
-    resource: String,
-) -> Result<
-    (
-        crate::auth::AuthPrincipal,
-        crate::governance::PlaneRequestCtx,
-    ),
-    crate::auth::IdentityRefusal,
-> {
-    let guard = SendHostDispatch::new(app);
-    tokio::task::spawn_blocking(move || {
-        guard.with_host(|hctx, vt| {
-            let token_bytes: &[u8] = token.as_deref().map(str::as_bytes).unwrap_or(&[]);
-            let query = busbar_contract::abi::hot::IdentityQuery {
-                size: core::mem::size_of::<busbar_contract::abi::hot::IdentityQuery>() as u32,
-                version: busbar_contract::abi::hot::POD_VERSION,
-                _reserved: 0,
-                token_present: u32::from(token.is_some()),
-                _reserved2: 0,
-                token_ptr: token_bytes.as_ptr(),
-                token_len: token_bytes.len(),
-                audience_ptr: audience.as_ptr(),
-                audience_len: audience.len(),
-                resource_ptr: resource.as_ptr(),
-                resource_len: resource.len(),
-            };
-            let mut out =
-                core::mem::MaybeUninit::<busbar_contract::abi::hot::IdentityAdmitted>::uninit();
-            let status = (vt.identity_admit.expect("identity_admit is a wired slot"))(
-                hctx,
-                &query as *const busbar_contract::abi::hot::IdentityQuery,
-                std::ptr::from_mut(&mut out),
-            );
-            if status != busbar_contract::abi::hot::StatusClass::Ok {
-                // A null query is impossible here (we pass a live POD); a runtime that will not start /
-                // a caught panic fails closed to a refusal, never an admit.
-                return Err(crate::auth::IdentityRefusal::Denied);
-            }
-            // SAFETY: the `Ok` status published the out-param (init-only-on-Ok).
-            let admitted = unsafe { out.assume_init() };
-            match admitted.outcome {
-                busbar_contract::abi::hot::IdentityOutcome::Admitted => {
-                    // Consume the opaque handle to recover the EXACT resolved (principal, gov). A handle
-                    // that vanished (double-consume / eviction) fails closed to a refusal.
-                    identity_admit::take(admitted.identity)
-                        .ok_or(crate::auth::IdentityRefusal::Denied)
-                }
-                busbar_contract::abi::hot::IdentityOutcome::Denied => {
-                    Err(crate::auth::IdentityRefusal::Denied)
-                }
-                busbar_contract::abi::hot::IdentityOutcome::NoGrant => {
-                    Err(crate::auth::IdentityRefusal::NoGrant)
-                }
-            }
-        })
-    })
-    .await
-    .unwrap_or(Err(crate::auth::IdentityRefusal::Denied))
-}
-
 /// Read the host wall clock in whole SECONDS through the wired [`clock_now`](vtable) seam — the
 /// host-driven form of a plane's [`busbar_kernel::store::now`]. The slot's ABI unit is Unix NANOSECONDS
 /// (see [`vtable`]'s `clock_now`, which scales the host milliseconds clock up), so this scales it
 /// back down to the seconds `store::now` returns; the value is identical to reading `store::now`
 /// in place. A fresh per-call [`DispatchScope`] backs the borrow — a clock read acquires no host
-/// handle, so nothing outlives the call — mirroring [`card_sign_over`]. A SAFE wrapper that keeps
+/// handle, so nothing outlives the call — mirroring the other borrowed-host reads. A SAFE wrapper that keeps
 /// the raw fn-pointer read inside this audited module (busbar-core denies `unsafe` elsewhere).
 #[must_use]
 pub fn clock_now_secs_over(app: &App) -> u64 {
@@ -658,19 +530,6 @@ impl busbar_kernel::plane_host::RegistryHost for EngineHostImpl {
         // `kind: secret` plugin), fail-closed exactly as core resolution.
         self.app.secret_resolver.clone()
     }
-
-    fn subkey_sign(&self, signing_input: &[u8]) -> Option<[u8; 64]> {
-        // SAME dispatch as the veneer: a fresh per-call `DispatchScope`, the `card_sign` slot driven
-        // synchronously over a stack-pinned `HostState`, the `HostCtx` never escaping the call. `None`
-        // when no card-signing key is held (or, in a build without `plane-a2a`, the slot is unwired).
-        card_sign_over(&self.app, signing_input)
-    }
-
-    fn plane_defs(&self) -> Arc<dyn std::any::Any + Send + Sync> {
-        // Pure snapshot read: the type-erased per-plane config the owning plane downcasts, cloned so it
-        // outlives the call. Already an `Arc<dyn Any + Send + Sync>` on `App`, so the clone is the whole seam.
-        self.app.agent_defs.clone()
-    }
 }
 
 impl busbar_kernel::plane_host::HookConfigHost for EngineHostImpl {
@@ -787,7 +646,7 @@ impl busbar_kernel::plane_host::BudgetHost for EngineHostImpl {
         // `caller` (DEC-SERVE G1b — the host bills that key, never the `Usage` tail's), fire the
         // `meter_charge` slot, and drop the host pointer without letting it escape. Fire-and-forget.
         let caller = HostCaller::of(Some(caller));
-        mint(None, caller, None, &self.app, scope, |host, vt| {
+        mint(None, caller, &self.app, scope, |host, vt| {
             let _ = (vt.meter_charge.expect("meter_charge is a wired slot"))(
                 host,
                 usage as *const busbar_contract::abi::hot::Usage,
@@ -1571,7 +1430,7 @@ impl<'a> HostDispatch<'a> {
     /// fresh [`HostGeneration`] opens for exactly this call and drops when it returns, so a `HostCtx`
     /// that escapes `f` anyway is refused (its generation is no longer live) rather than dereferenced.
     pub fn with_host<R>(&self, f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R) -> R {
-        mint(None, None, None, self.app, &self.scope, f)
+        mint(None, None, self.app, &self.scope, f)
     }
 }
 
@@ -1618,7 +1477,7 @@ impl SendHostDispatch {
     /// [`new`](Self::new) would mint a stamp that is never live on the thread that checks it) and
     /// drops when this call returns.
     pub fn with_host<R>(&self, f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R) -> R {
-        mint(None, None, None, &self.app, &self.scope, f)
+        mint(None, None, &self.app, &self.scope, f)
     }
 }
 
@@ -2236,8 +2095,8 @@ pub trait LanePoolHost: Send + Sync {
 
 /// THE KERNEL'S PRICING SIDE of a live carrier — the rate card that prices each increment. KERNEL-INTERNAL (#43: "a plane plugin NEVER sees its rate card or
 /// fees"): it is NOT a supertrait of [`EngineHost`], so no plane-side host implements it and no plane
-/// names it. A plane meters a live carrier through the kernel's count-only
-/// [`SessionAccount`](session_meter::SessionAccount), which prices nothing (Q21b). (The hot-ABI
+/// names it. A plane's live carrier is metered by counts alone, through the kernel plane driver's
+/// money seam, which prices nothing (Q21b). (The hot-ABI
 /// reserve-then-settle lease slots that once drove this trait were retired by KERNEL<>PLUGINS step 16:
 /// a plane never hands the kernel a price, #43/#71.) Money-denominated end to end in `u128`
 /// nanodollars; a plain Rust trait, not the frozen hot FFI.
@@ -2403,7 +2262,7 @@ pub trait MountHost: Send + Sync {
 
 /// The REGISTRY slice: the per-generation registry/snapshot reads a plane pulls off the bound (or
 /// live) snapshot — its type-erased runtime slot, its type-erased defs, the request-id counter, the
-/// neutral secret resolver, and the host-held card-signing key. Split off `EngineHost` as a supertrait.
+/// neutral secret resolver. Split off `EngineHost` as a supertrait.
 pub trait RegistryHost: Send + Sync {
     /// Stamp the NEXT per-request correlation id — one relaxed `fetch_add` on the host-owned counter.
     /// Identical to `busbar_kernel::state::App::next_request_id` (the counter is boot-seeded and carried
@@ -2424,19 +2283,6 @@ pub trait RegistryHost: Send + Sync {
     /// `HostCtx`; the returned `Arc<dyn SecretResolve>` shares the live resolver (built-ins plus any
     /// wired `kind: secret` plugin), fail-closed exactly as core resolution.
     fn secret_resolver(&self) -> Arc<dyn busbar_contract::secret::SecretResolve>;
-
-    /// Sign a plane-framed agent-card signing input, returning the 64-byte Ed25519 signature (None
-    /// when this deployment holds no card-signing key). The card subkey is derived and held HOST-side;
-    /// only the bytes to sign cross in and only the signature crosses out — no key material reaches the
-    /// plane. Mints its transient HostCtx internally over a fresh per-call DispatchScope, drives the
-    /// slot synchronously, returns owned bytes — no HostCtx crosses an `.await`.
-    fn subkey_sign(&self, signing_input: &[u8]) -> Option<[u8; 64]>;
-
-    /// The deployment's type-erased plane definitions (`Arc<dyn Any + Send + Sync>` holding the
-    /// per-plane config object the owning plane downcasts), off the BOUND snapshot — the
-    /// `App::agent_defs` field that is NOT a `plane_slots` entry. Owned (an `Arc` clone) so it
-    /// outlives the call; a pure snapshot read, no `HostCtx` (mirrors [`secret_resolver`](Self::secret_resolver)).
-    fn plane_defs(&self) -> Arc<dyn std::any::Any + Send + Sync>;
 }
 
 /// The HOOK/CONFIG-FACADE slice (App-retype WEDGE 2d): the residual the retired engine crate request-path reads off
@@ -2569,8 +2415,8 @@ pub trait HookConfigHost: Send + Sync {
 
 /// The BUDGET/METERING slice: the money-path seams a plane drives — COUNTS in, VERDICTS out. The
 /// governance handle and [`MeterPin`] mints, the record-usage / record-metering accruals, the
-/// reserve-then-charge meter, and the pure headroom/budget projections (a live carrier's
-/// [`SessionAccount`](session_meter::SessionAccount) is built over them). No method names a cost or price type: pricing is the kernel's
+/// reserve-then-charge meter, and the pure headroom/budget projections. No method names a cost or
+/// price type: pricing is the kernel's
 /// ([`MeteringHost`], #43), so a plane-side host implements this slice without naming one. Split off
 /// `EngineHost` as a supertrait; the accrual seams read the pin kernel-side, no `HostCtx`.
 pub trait BudgetHost: Send + Sync {
