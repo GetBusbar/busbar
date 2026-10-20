@@ -22,7 +22,6 @@ fn the_contract_index_names_the_zero_bearing_structs() {
         "PlaneTail",
         "StoreTail",
         "FramePiece",
-        "ConnFacts",
         "Need",
         "Claim",
         "AbiStr",
@@ -40,6 +39,11 @@ fn the_contract_index_names_the_zero_bearing_structs() {
         .map(String::from)
         .into();
     assert!(idx.judged("Tail", &export_tail));
+    // `ConnFacts` is two structs too: the ABI's facts (a `ZERO`) and the host-side stack's (none).
+    let abi_facts: BTreeSet<String> = ["size", "offered_name", "claim"].map(String::from).into();
+    assert!(idx.judged("ConnFacts", &abi_facts));
+    let stack_facts: BTreeSet<String> = ["sni", "alpn", "client_identity"].map(String::from).into();
+    assert!(!idx.judged("ConnFacts", &stack_facts));
 }
 
 /// THE IN-TREE PLUGINS build every ZERO-bearing contract struct with a base: each fixture plugin

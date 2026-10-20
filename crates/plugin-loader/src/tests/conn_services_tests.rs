@@ -2702,3 +2702,59 @@ fn red_the_connector_service_frame_writes_no_further_than_the_out_the_caller_sta
     );
     assert_eq!(lent.0[5], 0, "`exited` is written zero by every frame");
 }
+
+/// THE AUTH CALL SIGNS THE AUTHORITY THE SOCKET DIALS. A member binding is asked for its fields over
+/// the request's authority, path and query, and the authority is read where the dialling stack ends
+/// it: at the first `/`, `?`, `#` or (a web scheme) `\`, with the userinfo before its last `@` left
+/// out. RED before the one authority split: the authority ran to the first `/` or `?`, so a `\` or a
+/// `#` let the text after an `@` stand as the host signed, and a userinfo was signed with it.
+#[test]
+fn the_auth_request_signs_the_authority_the_socket_dials() {
+    let binding = busbar_contract::conn::ConnAuth {
+        auth: Arc::new(ByHandle::default()) as Arc<dyn OutboundAuth>,
+        handle: 1,
+        style_flags: 0,
+        points: busbar_contract::abi::auth::AuthPoints::HEAD,
+        passthrough: false,
+        lender: None,
+        per_request: None,
+    };
+    let head = super::Head {
+        method: b"GET".to_vec(),
+        target: Vec::new(),
+        fields: Vec::new(),
+        timeout_ms: 0,
+    };
+    for (target, authority, path, query) in [
+        (
+            "https://svc.example\\@other.example/x?q=1",
+            "svc.example",
+            &b"/@other.example/x"[..],
+            Some(&b"q=1"[..]),
+        ),
+        (
+            "https://user:pw@svc.example/x",
+            "svc.example",
+            &b"/x"[..],
+            None,
+        ),
+        (
+            "https://svc.example#f@other.example/x",
+            "svc.example",
+            &b"/"[..],
+            None,
+        ),
+        (
+            "https://svc.example:8443",
+            "svc.example:8443",
+            &b"/"[..],
+            None,
+        ),
+    ] {
+        let asked = super::auth_request(&binding, &head, target, b"", None)
+            .expect("a non-passthrough binding asks");
+        assert_eq!(asked.authority, authority, "{target}");
+        assert_eq!(asked.path, path, "{target}");
+        assert_eq!(asked.query.as_deref(), query, "{target}");
+    }
+}

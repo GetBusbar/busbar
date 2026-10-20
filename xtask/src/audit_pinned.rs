@@ -17,7 +17,9 @@
 //! WHICH PACKAGES ([`pins_for`]): a `git+` package of `R`'s `Cargo.lock` whose name resolves to one
 //! of the seven plugin kinds (the kind-isolation table, [`crate::gates::kind_isolation::plugin_kind`]),
 //! that is not the `-plugin` cdylib twin, and that the DEFAULT DISTRIBUTION compiles in
-//! ([`default_distribution`]). A plugin only a test links is out of this ledger.
+//! ([`default_distribution`]). A plugin only a test links is out of this ledger. A PLANE's cdylib
+//! twin (`<package>-plugin`, the logic crate's `export_door!` image) is mounted beside it from the
+//! same repository and commit, at `crates/<package>-plugin` ([`TWINNED_KIND`]).
 //!
 //! WHERE THE BYTES COME FROM ([`PinStore`]): cargo's own git database (`$CARGO_HOME/git/db/*`,
 //! bare repositories cargo fills when it resolves the workspace — every `cargo xtask` run has
@@ -431,9 +433,28 @@ pub fn pins_for(
         }
         pins.push(pin);
     }
+    // THE PLANE'S CDYLIB TWIN IS MOUNTED BESIDE IT (ARCHITECT ruling on #1269: the twin's production
+    // code — the `export_door!` image a signed tarball carries — is audited by this ledger, never by
+    // nobody). It is not in the lock (busbar links the logic crate), so it is read from the same
+    // repository at the same commit as its logic crate, at `crates/<package>-plugin`. A twin the
+    // pinned commit does not carry is an error naming it, as any unproducible pin is.
+    let twins: Vec<Pin> = pins
+        .iter()
+        .filter(|p| crate::gates::kind_isolation::plugin_kind(&p.package) == Some(TWINNED_KIND))
+        .map(|p| Pin {
+            package: format!("{}{CDYLIB_SUFFIX}", p.package),
+            url: p.url.clone(),
+            sha: p.sha.clone(),
+        })
+        .filter(|t| !in_tree(&t.package))
+        .collect();
+    pins.extend(twins);
     pins.sort();
     Ok(pins)
 }
+
+/// The plugin kind whose cdylib twin [`pins_for`] mounts beside its logic crate.
+pub const TWINNED_KIND: &str = "plane";
 
 // ---------------------------------------------------------------------------------------------
 // reading a pinned checkout

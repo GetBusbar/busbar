@@ -766,6 +766,72 @@ pub fn target_host(target: &str) -> Option<String> {
     }
 }
 
+/// A URL's AUTHORITY, split where the dialling stack splits it, borrowed from the string.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Authority<'a> {
+    /// The scheme before `://`, as written; `None` when the string carries none.
+    pub scheme: Option<&'a str>,
+    /// The userinfo: everything before the authority's LAST `@`. Never a host.
+    pub userinfo: Option<&'a str>,
+    /// `host[:port]`, as written (brackets and case kept).
+    pub host_port: &'a str,
+    /// Everything after the authority, as written, from its first delimiter on.
+    pub tail: &'a str,
+    /// The authority ends at a `\` as at a `/` (no scheme, or a [`UrlFamily::Web`] one).
+    pub web: bool,
+}
+
+/// THE ONE AUTHORITY SPLIT: every caller that reads a URL's host, strips its userinfo or masks it
+/// reads the authority here, so no two of them can end it at different bytes.
+///
+/// v1.5.5's reading (`host_from_base`): an optional `scheme://`; the
+/// authority ends at the first `/`, `?` or `#` and, when the scheme is absent or a
+/// [`UrlFamily::Web`] scheme, at the first `\` too (the WHATWG parser the dialling stacks use reads
+/// `\` as `/` there); the userinfo is everything before the authority's LAST `@`. So
+/// `https://evil.example\@victim.example/` has the authority `evil.example`, the host the socket
+/// dials, and no userinfo. Pure: no allocation, no normalisation.
+#[must_use]
+pub fn url_authority(url: &str) -> Authority<'_> {
+    let (scheme, rest) = match url.split_once("://") {
+        Some((s, r))
+            if s.starts_with(|c: char| c.is_ascii_alphabetic())
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.')) =>
+        {
+            (Some(s), r)
+        }
+        _ => (None, url),
+    };
+    // The scheme lower-cased on the stack (no web scheme is longer than eight bytes), then read
+    // by [`UrlFamily::of`]: the one list of web schemes.
+    let web = scheme.is_none_or(|s| {
+        let mut low = [0u8; 8];
+        s.len() <= low.len() && {
+            low[..s.len()].copy_from_slice(s.as_bytes());
+            low[..s.len()].make_ascii_lowercase();
+            std::str::from_utf8(&low[..s.len()]).is_ok_and(|l| UrlFamily::of(l) == UrlFamily::Web)
+        }
+    });
+    let end = if web {
+        rest.find(['/', '?', '#', '\\'])
+    } else {
+        rest.find(['/', '?', '#'])
+    }
+    .unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(end);
+    let (userinfo, host_port) = match authority.rfind('@') {
+        Some(at) => (Some(&authority[..at]), &authority[at + 1..]),
+        None => (None, authority),
+    };
+    Authority {
+        scheme,
+        userinfo,
+        host_port,
+        tail,
+        web,
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/net_tests.rs"]
 mod net_tests;

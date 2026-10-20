@@ -1757,7 +1757,13 @@ impl Connection {
             .encode_opening(opening, words)?
             .filter(|m| !m.is_empty())
         {
-            self.put_opening(EXCHANGE_STREAM, &message, true, false, body_len)?;
+            // THE OPENING GOES FIRST: the writes held back for the framing's begin wait behind it.
+            // Held where they are, a write on the exchange stream would queue the opening after
+            // itself (a stream with writes waiting takes every later write behind them).
+            let held = std::mem::take(&mut self.early);
+            let sent = self.put_opening(EXCHANGE_STREAM, &message, true, false, body_len);
+            self.early.extend(held);
+            sent?;
         }
         Ok(())
     }

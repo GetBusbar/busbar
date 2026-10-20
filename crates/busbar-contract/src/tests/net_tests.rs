@@ -439,3 +439,49 @@ fn the_verbatim_host_keeps_the_root_dot_the_shared_reader_drops() {
     assert_eq!(url_host_verbatim("file:///etc/passwd"), None);
     assert_eq!(url_host_verbatim("mailto:a@b"), None);
 }
+
+/// THE ONE AUTHORITY SPLIT reads v1.5.5's authority: it ends at `/`, `?`, `#` and (no scheme, or a
+/// web scheme) `\`; the userinfo runs to the authority's last `@`; a generic scheme keeps its `\`.
+#[test]
+fn the_authority_ends_where_the_dialling_stack_ends_it() {
+    fn at(url: &str) -> (Option<&str>, Option<&str>, &str, &str) {
+        let a = url_authority(url);
+        (a.scheme, a.userinfo, a.host_port, a.tail)
+    }
+    assert_eq!(
+        at("https://evil.example\\@victim.example/p"),
+        (Some("https"), None, "evil.example", "\\@victim.example/p")
+    );
+    assert_eq!(
+        at("https://u:p@w@host.example:8443/x?q#f"),
+        (Some("https"), Some("u:p@w"), "host.example:8443", "/x?q#f")
+    );
+    assert_eq!(
+        at("https://host.example#f@other.example"),
+        (Some("https"), None, "host.example", "#f@other.example")
+    );
+    assert_eq!(
+        at("host.example\\x@other"),
+        (None, None, "host.example", "\\x@other")
+    );
+    assert_eq!(
+        at("ftp://a\\b@dir.example/o"),
+        (Some("ftp"), Some("a\\b"), "dir.example", "/o")
+    );
+    assert_eq!(
+        at("HTTPS://h.example"),
+        (Some("HTTPS"), None, "h.example", "")
+    );
+    // The authority the split reads is the host the WHATWG reader reads.
+    for url in [
+        "https://evil.example\\@victim.example/p",
+        "https://u:p@host.example/x",
+        "https://host.example?x@y",
+    ] {
+        assert_eq!(
+            url_host(url).as_deref(),
+            Some(url_authority(url).host_port.split(':').next().unwrap_or("")),
+            "{url}"
+        );
+    }
+}

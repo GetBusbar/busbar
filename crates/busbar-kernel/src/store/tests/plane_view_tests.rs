@@ -64,13 +64,16 @@ fn plane_method_set_is_exactly_the_plane_methods() {
 // it. The bindings above prove each named verb is there; they cannot see a tenth. Two proofs can.
 
 /// The verbs `PlaneStore` carries, by name: what the trait is held to, both ways.
-const PLANE_METHODS: [&str; 9] = [
+/// `purge_plane_records` is the declared-retention purge, DEFAULTED on the contract's rule (an age
+/// purge is `purge_plane_records_before`), so [`EveryVerb`] need not write it and this list must.
+const PLANE_METHODS: [&str; 10] = [
     "upsert_plane_record",
     "get_plane_record",
     "append_plane_record",
     "list_plane_records",
     "list_plane_record_parents",
     "purge_plane_records_before",
+    "purge_plane_records",
     "delete_plane_record",
     "redeem_plane_token",
     "plane_token_live",

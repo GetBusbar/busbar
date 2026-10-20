@@ -3839,7 +3839,10 @@ fn amend_rate_history_appends_a_signed_back_dated_correction_and_rewrites_nothin
     assert_eq!(doc["effective_from"], 0);
     assert_eq!(doc["effective_until"], 86_400_000);
     assert_eq!(doc["amended_at"], 6_000);
-    assert_eq!(doc["operator_fingerprint"], "");
+    assert!(
+        doc.get("operator_fingerprint").is_none(),
+        "the answer names no signer: {doc}"
+    );
     assert!(
         doc["reason_sha256"].as_str().is_some_and(|s| s.len() == 64),
         "the reason is sealed as its 32-byte SHA-256, hex-encoded"
@@ -3861,13 +3864,14 @@ fn amend_rate_history_appends_a_signed_back_dated_correction_and_rewrites_nothin
         .card_at(instant)
         .expect("the correction prices the instant");
     assert_eq!(now_seq, busbar_kernel_ledger::cost::HistorySeq(1));
-    match entries[1].author() {
-        busbar_kernel_ledger::cost::Author::Amend {
-            operator_fingerprint,
-            ..
-        } => assert_eq!(operator_fingerprint, ""),
-        other => panic!("the appended entry must be an amendment, got {other:?}"),
-    }
+    assert!(
+        matches!(
+            entries[1].author(),
+            busbar_kernel_ledger::cost::Author::Amend { .. }
+        ),
+        "the appended entry must be an amendment, got {:?}",
+        entries[1].author()
+    );
 
     // AN INVOICE CUT BEFORE THE AMENDMENT RE-DERIVES UNCHANGED: an older snapshot never sees the
     // correction, so money already booked stays booked.
@@ -4744,8 +4748,8 @@ fn amend_rate_history_moves_no_ledger_cell() {
 
 /// A CORRECTION WITH NO SIGNATURE APPLIES (#77(9), OWNER-LOCKED, `docs/design/BUSBAR-1.6.0.md`
 /// l.2279: "no verb carries dual control, escrow or operator signatures"). The body names no
-/// `signature` and no `operator_fingerprint`; it is applied, answered 200, and the answer's and the
-/// history entry's `operator_fingerprint` slots are empty. RED before the fix: the effect refused
+/// `signature` and no `operator_fingerprint`; it is applied, answered 200, and the answer names no
+/// signer. RED before the fix: the effect refused
 /// it `Validation` at the shape (no signer, no signature) and, with no sealed operator key, at the
 /// verify seam.
 #[test]
@@ -4759,7 +4763,10 @@ fn amend_rate_history_applies_a_correction_that_carries_no_signature() {
     let answer = AdminAnswer::unpack(&packed).expect("the answer packs");
     assert_eq!(answer.status, 200);
     let doc: serde_json::Value = serde_json::from_slice(&answer.body).expect("JSON");
-    assert_eq!(doc["operator_fingerprint"], "");
+    assert!(
+        doc.get("operator_fingerprint").is_none(),
+        "the answer names no signer: {doc}"
+    );
     assert_eq!(history.len(), 2, "the correction appended one entry");
 }
 
@@ -4777,7 +4784,10 @@ fn amend_rate_history_ignores_a_signature_a_body_still_carries() {
         .expect("a body carrying a stale signature still applies");
     let answer = AdminAnswer::unpack(&packed).expect("the answer packs");
     let doc: serde_json::Value = serde_json::from_slice(&answer.body).expect("JSON");
-    assert_eq!(doc["operator_fingerprint"], "");
+    assert!(
+        doc.get("operator_fingerprint").is_none(),
+        "the answer names no signer: {doc}"
+    );
 }
 
 // ── THE TOTALS VIEW DERIVES ITS MONEY AT READ TIME (#77(3) / #79) ───────────────────────────────
@@ -4989,7 +4999,6 @@ fn a_rate_card_added_after_a_posting_moves_what_the_totals_view_reports() {
                 effective_until: Some(A_LINE_MS + 86_400_000),
                 appended_at: A_LINE_MS + 60_000,
                 author: busbar_kernel_ledger::cost::Author::Amend {
-                    operator_fingerprint: "op-1".to_string(),
                     reason_hash: [9u8; 32],
                 },
                 cells: vec![(
@@ -6245,7 +6254,6 @@ fn h6_correct(history: &crate::root::kernel::RootHistory, nanos_per_unit: u64) {
                 effective_until: Some(A_LINE_MS + 86_400_000),
                 appended_at: A_LINE_MS + 60_000,
                 author: busbar_kernel_ledger::cost::Author::Amend {
-                    operator_fingerprint: "op-1".to_string(),
                     reason_hash: [9u8; 32],
                 },
                 cells: vec![(
