@@ -67,7 +67,6 @@
 //! back onto the rows, because a deployment booting on a read-only replica or a grant-restricted
 //! database is the previous release's supported shape and must keep booting.
 
-use busbar_contract::caps::{AdminVerb, Grant};
 use busbar_contract::migration::{
     LegacyCapDimension, LegacyFamily, LegacyFigure, LegacyFigures, LegacyHead, LegacyLedgerRows,
     LegacyMigrationSource, MigrationError, MigrationMarker, MigrationRecords,
