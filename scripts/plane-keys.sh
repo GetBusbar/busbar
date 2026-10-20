@@ -58,7 +58,12 @@
 # `a2a` IS STRUCK the same way (FLIP-A2A): `crates/busbar-a2a` is deleted and the A2A plane is
 # `crates/busbar-plane-a2a`, served through its memory-ABI door (`plane-a2a-door`), scanned by the
 # plane-kind regime and reaching the deletion harness as `plane-a2a`.
-PLANE_KEYS="llm"
+#
+# `llm` IS STRUCK the same way at its extraction (rows 106/107): `crates/busbar-llm` was deleted
+# (DEV-GREEN row 83) and `busbar-plane-llm` left for GetBusbar/busbar-plane-llm, pinned. It reaches
+# the deletion harness as `plane-llm` (`plane_ondisk_key`). The list is EMPTY: a gate keyed on it
+# reports 0 of 0 roots and stays armed for a key that comes back.
+PLANE_KEYS=""
 
 # PLANE_KEYS_KIND_ONLY — plane keys whose plane has NO legacy-engine crate any more and lives only in
 # its plane-kind crate `crates/busbar-plane-<key>` (P3 DEL-MCP, ARCHITECT 2026-10-05: `mcp`; FLIP-A2A:
@@ -68,8 +73,9 @@ PLANE_KEYS="llm"
 # `decisions` (#48) never had a legacy-engine crate: one plane-kind crate, located by its door row
 # alone, so it is kind-only from birth and on this list so a vanished door row is PLANE-ROOT-MISSING
 # (xtask/src/planes.rs, the twin, pinned equal by xtask/tests/infra.rs). As a needle it reaches only
-# the report-only meter that sources this list (plane-noun-gate.sh).
-PLANE_KEYS_KIND_ONLY="mcp a2a streaming decisions"
+# the report-only meter that sources this list (plane-noun-gate.sh). `llm` joined at its extraction
+# (rows 106/107).
+PLANE_KEYS_KIND_ONLY="llm mcp a2a streaming decisions"
 
 # The protocol subset: every plane key except `llm`. Derived from PLANE_KEYS so adding a plane in
 # one place flows here automatically.
@@ -167,27 +173,6 @@ plane_key_src() {
   printf 'crates/busbar-%s/src' "${od:-$1}"
 }
 
-# plane_root_dir <repo-relative dir> -> where that directory's bytes are: the path itself when it is
-# on disk, or, for a `crates/busbar-plane-*` path no crate on disk is, the same path inside the
-# checkout cargo resolved for the rev the root's Cargo.lock pins (a plane that left for its own repo,
-# row 106; read there, never copied: spec #39). Prints nothing when neither holds it, which every
-# caller refuses: a root nothing holds is a scan of zero files.
-plane_root_dir() { # $1 = repo-relative directory, read from the current directory
-  if [ -d "$1" ]; then printf '%s\n' "$1"; return 0; fi
-  case "$1" in crates/busbar-plane-*) ;; *) return 0 ;; esac
-  [ -f Cargo.toml ] || return 0
-  local rest="${1#crates/}" pkg inner dir
-  pkg="${rest%%/*}"; inner="${rest#"$pkg"}"
-  dir="$(cargo metadata --format-version 1 2>/dev/null | python3 -I -c '
-import json, os, sys
-for p in json.load(sys.stdin)["packages"]:
-    if p["name"] == sys.argv[1] and (p.get("source") or "").startswith("git+"):
-        print(os.path.dirname(p["manifest_path"])); break
-' "$pkg")" || true
-  if [ -n "$dir" ] && [ -d "$dir$inner" ]; then printf '%s%s\n' "$dir" "$inner"; fi
-  return 0
-}
-
 # require_plane_key_roots — every gate keyed on PLANE_KEYS calls this before it scans: a key whose
 # root is not a directory is scanned as ZERO files, and zero is the passing answer to every ban
 # (row 115). Prints the missing roots and returns 1; a caller exits on it.
@@ -195,7 +180,7 @@ require_plane_key_roots() {
   local k r missing=""
   for k in $PLANE_KEYS; do
     r="$(plane_key_src "$k")"
-    [ -n "$(plane_root_dir "$r")" ] || missing="${missing:+$missing }$r"
+    [ -d "$r" ] || missing="${missing:+$missing }$r"
   done
   [ -z "$missing" ] && return 0
   printf 'plane-keys: a PLANE_KEYS root is not a directory on disk: %s -- a gate keyed on it would scan zero files and pass every ban\n' "$missing" >&2

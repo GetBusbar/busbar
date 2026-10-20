@@ -548,7 +548,13 @@ impl Gate for PlanePurityGate {
         // gate actually performs rather than beside it.
         let neutral = planes::neutral_src_roots();
         let plant_at = format!("{}/planted_plane_purity.rs", neutral[0]);
-        let plane_at = format!("{}/planted_plane_purity.rs", planes::plane_src_roots()[0]);
+        // The plane plant goes into a plane-kind crate the scan reads (every plane is kind-only
+        // since the llm extraction, rows 106/107; a pinned one is laid at its old path by the
+        // context's base layer), never into the legacy-engine roster, which is empty.
+        let plane_at = format!(
+            "crates/busbar-plane-{}/src/planted_plane_purity.rs",
+            planes::PLANE_KEYS_KIND_ONLY[0]
+        );
 
         report.push(create(
             cx,
