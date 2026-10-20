@@ -468,7 +468,6 @@ impl Reply {
                         tap_fault: None,
                     };
                 }
-                let partial = relay.partial();
                 let failed_generation = relay.failed_generation(ctx.lane.dialect);
                 let end = relay.end(host);
                 if !end.bytes.is_empty() {
@@ -478,27 +477,31 @@ impl Reply {
                     .generation_failed
                     .then_some(Fault::Transient("upstream-generation-failed")));
                 // The end's report replaces a floor stated while relaying, even when it is zero.
-                // A stream the far end itself ended as FAILED (its terminal error, or a translation
-                // that aborted) delivered no completed generation and bills no tokens, as 1.5.5
-                // billed none (v1.5.5 proxy/response_body.rs:550-575, `if !billing_failed`): its
-                // buffered twin (a `failed` status) reports none either (row-159 L3#4). A FAILED
-                // GENERATION is not one of those: 1.5.5's reader raised no error for it and billed
-                // what it reported, and owner ruling Q31 charges it too ([`Relay::failed_generation`]).
-                let end_bills = end.stream_fault.is_none() || failed_generation;
-                let generation_failed = end.generation_failed;
-                let units = if !end_bills {
-                    Units::default()
-                } else {
+                // A stream the far end itself ended as FAILED (its in-band terminal error)
+                // delivered no completed generation and bills no tokens, as 1.5.5 billed none
+                // (v1.5.5 proxy/response_body.rs:550-575, `if !billing_failed`): its buffered twin
+                // (a `failed` status) reports none either (row-159 L3#4). A FAILED GENERATION is
+                // not one of those: 1.5.5's reader raised no error for it and billed what it
+                // reported, and owner ruling Q31 charges it too ([`Relay::failed_generation`]). A
+                // TRANSLATION THAT ABORTED after the first byte is a mid-stream cut, not a refund:
+                // it bills what the far end reported before it (#62, OWNER-LOCKED 2026-09-20;
+                // ruled for this case 2026-10-17), as a caller that leaves after it does.
+                let translate_aborted = end.stream_fault == Some("stream-translate-abort");
+                let end_bills =
+                    end.stream_fault.is_none() || failed_generation || translate_aborted;
+                let units = if end_bills {
                     Units {
                         stated: units.floor,
                         ..Units::of(end.usage.as_ref(), end.open_units)
                     }
+                } else {
+                    Units::default()
                 };
-                // What the end bills on completion bills on a cancel in its last window too: a
-                // usable success, and a failed generation whose reported usage Q31 charges (1.5.5
-                // billed both at the stream's end). An end that bills nothing stays not-partial.
-                self.ended_partial = end_bills
-                    && (failed_generation || (partial && (fault.is_none() || generation_failed)));
+                // What the end bills on completion bills on a cancel in its last window too (the
+                // door writes this end over windows after it): a usable success, a failed
+                // generation Q31 charges, a translation that aborted (#62). An end that bills
+                // nothing stays not-partial (row 159 round c, LLM1 HIGH 1).
+                self.ended_partial = end_bills;
                 self.state = State::Done;
                 Piece {
                     head,
