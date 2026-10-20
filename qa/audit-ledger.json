@@ -367,18 +367,18 @@
    "paths": [
     "crates/busbar-auth-header/src"
    ],
-   "tree_hash": "5404c65467d9bbf2059c5d36a0e80d81c4c74c1caee901562696a5fe8fcd3c88",
-   "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
-   "round": 3,
+   "tree_hash": "6c99f5cc16b42b5cd437c4f8cec1a3ea5b94aefa76aa9c2a3ad6031fdf9d2df8",
+   "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+   "round": 4,
    "result": "findings",
    "counts": {
-    "HIGH": 2,
-    "MEDIUM": 1,
-    "LOW": 3,
-    "NIT": 2
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 1,
+    "NIT": 0
    },
-   "report": "The header auth plugin builds bearer, api-key, x-goog-api-key and query-key fields once at open and serves the operator's or the caller's credential per request; it never pends and opens no connection, and credential values are wiped on drop. It still breaks the auth kind's rules twice: raw-pointer code lives in the crate under a lint allowance although the safe outbound door kit exists, and two per-thread statics hold reply storage. Each request still allocates in the plugin's own code. The query-key style is never selected by any production path. Read fully.",
-   "auditor": "opus-q128-l159",
+   "report": "The header auth plugin builds bearer, api-key, x-goog-api-key and query-key fields once at open and presents the operator's or the caller's credential per request by reference, through the contract's safe outbound door. The crate forbids unsafe code, keeps all state per instance, wipes credential values on drop, never prints them, and refuses settings header names that are not tokens. It never pends and opens no connection. The query-key style is still selected by no production path. Read fully.",
+   "auditor": "opus-r159c-auth-reread",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-auth-header/src/tests"
@@ -411,6 +411,20 @@
       "NIT": 2
      },
      "report": "The header auth plugin builds bearer, api-key, x-goog-api-key and query-key fields once at open and serves the operator's or the caller's credential per request; it never pends and opens no connection, and credential values are wiped on drop. It still breaks the auth kind's rules twice: raw-pointer code lives in the crate under a lint allowance although the safe outbound door kit exists, and two per-thread statics hold reply storage. Each request still allocates in the plugin's own code. The query-key style is never selected by any production path. Read fully."
+    },
+    {
+     "round": 4,
+     "result": "findings",
+     "auditor": "opus-r159c-auth-reread",
+     "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+     "tree_hash": "6c99f5cc16b42b5cd437c4f8cec1a3ea5b94aefa76aa9c2a3ad6031fdf9d2df8",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 1,
+      "NIT": 0
+     },
+     "report": "The header auth plugin builds bearer, api-key, x-goog-api-key and query-key fields once at open and presents the operator's or the caller's credential per request by reference, through the contract's safe outbound door. The crate forbids unsafe code, keeps all state per instance, wipes credential values on drop, never prints them, and refuses settings header names that are not tokens. It never pends and opens no connection. The query-key style is still selected by no production path. Read fully."
     }
    ]
   },
@@ -420,18 +434,18 @@
    "paths": [
     "crates/busbar-auth-oauth/src"
    ],
-   "tree_hash": "186ec7f33e8700bb0aa99e9968d634a72e9041c493db5f0c7641624ea240f3a4",
-   "audited_at": "faa7d5bc8f5d01ca9ebfb4bef3fa6debd4f44a78",
-   "round": 3,
+   "tree_hash": "345363dfdcf7c65ae0c722abf67e3ae8caa4969ba0ff36f665a6cfaacc8cf9e6",
+   "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+   "round": 4,
    "result": "findings",
    "counts": {
-    "HIGH": 1,
+    "HIGH": 0,
     "MEDIUM": 1,
-    "LOW": 2,
+    "LOW": 1,
     "NIT": 0
    },
-   "report": "The scope is the outbound auth plugin for the OAuth self-minting styles (JWT bearer, client credentials) and on-demand token exchange: it binds a style to the operator's credential, mints bearer tokens over its own pinned operator-infrastructure need through the host connector on its driver ticket, caches them per credential and settings, refreshes them ahead of expiry on tick, and answers the per-request auth-fields call with the cached bearer. Secret hygiene is careful throughout (redacting, zeroising holders; decoder and base64 texts withheld; sized-once buffers), and it reaches the network only through the host. Before the first mint has landed, the per-request call parks the request (not-ready) instead of answering ready with no fields, which the locked ABI design and the auth contract require so the upstream answers 401 as the previous release did. Retiring a generation drops every token-exchange cache cell, because no handle holds those cells, so a request waiting on an in-flight exchange is never woken and its connection is never closed. Two minor deviations remain: the plugin reads the operating-system clock instead of the host's one clock, and the JWT-bearer style reads a service-account key file from disk with a blocking read outside the host's disk lane and outside the secret kind. Read fully.",
-   "auditor": "opus-q128-auth-oauth-src-a",
+   "report": "The OAuth auth plugin binds jwt-bearer, client-credentials and token-exchange, mints over its own need on the host's clock and refreshes ahead of expiry. Before the first mint a request is answered at once with no header; a waiting request parks before it reads, so no wake is lost; readiness follows the read rule. The crate forbids unsafe code and opens no file. An access token whose JSON carries an escape is still copied into an unwiped decoder buffer, and two comments describe removed behaviour. Read fully.",
+   "auditor": "opus-r159c-auth-reread",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-auth-oauth/src/tests"
@@ -478,6 +492,20 @@
       "NIT": 0
      },
      "report": "The scope is the outbound auth plugin for the OAuth self-minting styles (JWT bearer, client credentials) and on-demand token exchange: it binds a style to the operator's credential, mints bearer tokens over its own pinned operator-infrastructure need through the host connector on its driver ticket, caches them per credential and settings, refreshes them ahead of expiry on tick, and answers the per-request auth-fields call with the cached bearer. Secret hygiene is careful throughout (redacting, zeroising holders; decoder and base64 texts withheld; sized-once buffers), and it reaches the network only through the host. Before the first mint has landed, the per-request call parks the request (not-ready) instead of answering ready with no fields, which the locked ABI design and the auth contract require so the upstream answers 401 as the previous release did. Retiring a generation drops every token-exchange cache cell, because no handle holds those cells, so a request waiting on an in-flight exchange is never woken and its connection is never closed. Two minor deviations remain: the plugin reads the operating-system clock instead of the host's one clock, and the JWT-bearer style reads a service-account key file from disk with a blocking read outside the host's disk lane and outside the secret kind. Read fully."
+    },
+    {
+     "round": 4,
+     "result": "findings",
+     "auditor": "opus-r159c-auth-reread",
+     "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+     "tree_hash": "345363dfdcf7c65ae0c722abf67e3ae8caa4969ba0ff36f665a6cfaacc8cf9e6",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 1,
+      "NIT": 0
+     },
+     "report": "The OAuth auth plugin binds jwt-bearer, client-credentials and token-exchange, mints over its own need on the host's clock and refreshes ahead of expiry. Before the first mint a request is answered at once with no header; a waiting request parks before it reads, so no wake is lost; readiness follows the read rule. The crate forbids unsafe code and opens no file. An access token whose JSON carries an escape is still copied into an unwiped decoder buffer, and two comments describe removed behaviour. Read fully."
     }
    ]
   },
@@ -2022,18 +2050,18 @@
    "paths": [
     "crates/busbar-plane-llm/src"
    ],
-   "tree_hash": "347b47495b11b2629d2815efbc1c92dc1d71bf4f64f1d14ecf8ff9036dc43e72",
-   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
-   "round": 1,
+   "tree_hash": "eca2290e8832333d53334da59b01d7c6d36656e8eb44a53fd3cde8d5f90ddaae",
+   "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 20,
+    "HIGH": 4,
     "MEDIUM": 27,
-    "LOW": 19,
+    "LOW": 20,
     "NIT": 4
    },
-   "report": "The llm plane's door is linked only under a development switch; the default build uses its codecs and reply relay through the legacy engine. Several token and billing behaviours differ from 1.5.5 with no registered difference: cache-write tokens billed as their own class, image tokens billed, failed streams billed, cached tokens moved, thinking switched on, hosted tools forwarded. The codec keeps per-thread state. On the door path failover, cuts and a model's protocol override are wrong. Read in three parts; large codec core files sampled.",
-   "auditor": "opus-ledger-plane-llm-parts",
+   "report": "The llm plane's door now ships by default and the earlier billing departures from 1.5.5 are gone, but a translated answer larger than one window bills nothing when the caller leaves before its last window, Cohere billed-unit counts replace the raw token counts the key is charged, reasoning asks 1.5.5 never translated now cross Cohere both ways and Anthropic outward, and the codec keeps a second per-thread slot. Unregistered translated members, uncapped stream buffers and leaked per-unit entries remain. Read in three parts; large codec core files sampled.",
+   "auditor": "opus-r159c-plane-llm-parts",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-llm/src/tests"
@@ -2052,6 +2080,20 @@
       "NIT": 4
      },
      "report": "The llm plane's door is linked only under a development switch; the default build uses its codecs and reply relay through the legacy engine. Several token and billing behaviours differ from 1.5.5 with no registered difference: cache-write tokens billed as their own class, image tokens billed, failed streams billed, cached tokens moved, thinking switched on, hosted tools forwarded. The codec keeps per-thread state. On the door path failover, cuts and a model's protocol override are wrong. Read in three parts; large codec core files sampled."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-r159c-plane-llm-parts",
+     "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+     "tree_hash": "eca2290e8832333d53334da59b01d7c6d36656e8eb44a53fd3cde8d5f90ddaae",
+     "counts": {
+      "HIGH": 4,
+      "MEDIUM": 27,
+      "LOW": 20,
+      "NIT": 4
+     },
+     "report": "The llm plane's door now ships by default and the earlier billing departures from 1.5.5 are gone, but a translated answer larger than one window bills nothing when the caller leaves before its last window, Cohere billed-unit counts replace the raw token counts the key is charged, reasoning asks 1.5.5 never translated now cross Cohere both ways and Anthropic outward, and the codec keeps a second per-thread slot. Unregistered translated members, uncapped stream buffers and leaked per-unit entries remain. Read in three parts; large codec core files sampled."
     }
    ]
   },
@@ -5525,18 +5567,18 @@
    "paths": [
     "testing/a2a-tck"
    ],
-   "tree_hash": "054209d8ac047d36a6ca2fa1b802cc6bc86c1ea7160994816be834c04cb7d3c1",
-   "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
-   "round": 2,
+   "tree_hash": "a2cdd744be9839873bbca0cdde95521d8a1f14bd20d5cc7b6944fad54666d418",
+   "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+   "round": 3,
    "result": "findings",
    "counts": {
-    "HIGH": 1,
-    "MEDIUM": 0,
-    "LOW": 2,
+    "HIGH": 0,
+    "MEDIUM": 1,
+    "LOW": 3,
     "NIT": 0
    },
-   "report": "The subject gate now evaluates every forgiveness: each waived push-delivery failure and each justified skip carries a premise the gate checks against the run, and an unnamed skip is refused, so both earlier gate defects are gone. What remains is the plane the waiver ledger rests on: the push-delivery waiver's premise is a plane-local webhook guard, and that plane resolves DNS itself and runs its own destination guard. The ledger also cites moved source paths, and the skip premises read a report key nothing in the tree produces. Read fully.",
-   "auditor": "sonnet-ledger-a2a-tck",
+   "report": "The push-delivery waiver now rests on the connector's single destination check; the plane asks the host's judge, words the refusal and resolves nothing itself. The pinned suite writes the agent card the skip premises read. What remains: a control leg whose suite writes no report is judged on the report an earlier run left, so a crashed run can match its baseline; the waiver ledger describes the deleted plane guard and cites moved paths; one control pin is kept twice, unchecked. Read fully.",
+   "auditor": "opus-r159c-harness-reread",
    "fixed_at": null,
    "rounds": [
     {
@@ -5564,6 +5606,20 @@
       "NIT": 0
      },
      "report": "The subject gate now evaluates every forgiveness: each waived push-delivery failure and each justified skip carries a premise the gate checks against the run, and an unnamed skip is refused, so both earlier gate defects are gone. What remains is the plane the waiver ledger rests on: the push-delivery waiver's premise is a plane-local webhook guard, and that plane resolves DNS itself and runs its own destination guard. The ledger also cites moved source paths, and the skip premises read a report key nothing in the tree produces. Read fully."
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-r159c-harness-reread",
+     "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+     "tree_hash": "a2cdd744be9839873bbca0cdde95521d8a1f14bd20d5cc7b6944fad54666d418",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 3,
+      "NIT": 0
+     },
+     "report": "The push-delivery waiver now rests on the connector's single destination check; the plane asks the host's judge, words the refusal and resolves nothing itself. The pinned suite writes the agent card the skip premises read. What remains: a control leg whose suite writes no report is judged on the report an earlier run left, so a crashed run can match its baseline; the waiver ledger describes the deleted plane guard and cites moved paths; one control pin is kept twice, unchecked. Read fully."
     }
    ]
   },
@@ -5756,18 +5812,18 @@
    "paths": [
     "testing/voice-conformance"
    ],
-   "tree_hash": "97a3346bc37b24dffb98b00a67591191912c0ac516f9664a174bc7011d3c2647",
-   "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
-   "round": 2,
+   "tree_hash": "10dade8e73044a718b3602ed8d43b00755cdef1fcd325280ea79c28716fb3578",
+   "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+   "round": 3,
    "result": "findings",
    "counts": {
-    "HIGH": 3,
+    "HIGH": 4,
     "MEDIUM": 2,
-    "LOW": 5,
+    "LOW": 4,
     "NIT": 0
    },
-   "report": "One leg still certifies that a client's tool reply naming a call the node is not waiting on is refused and carried on no wire, and the plane it drives still executes tools in-process through an echo executor wired into the mounted runtime. Two legs still certify the plane dialing its own provider socket under a plane-chosen destination policy. The budget hard-close check can now fail but its failure is discarded by design, a harness that dies after some results passes, the leg floor is 3 against 14 legs, and prose is stale. Read fully except fixtures and part of the harness.",
-   "auditor": "sonnet-ledger-voice-conformance",
+   "report": "The legs that certified tool execution, reply interception and plane-owned dials are gone. Three legs cannot pass against the pinned plane: one requires a model's usage report to be withheld from the caller, two expect a Twilio mark frame the plane never writes. The relay legs judge the door only through the plane's own reader, so a dropped or rewritten frame it ignores passes; the Twilio legs cannot see a frame busbar authors upstream or a dropped tool call. Read fully except the fixture files, sampled.",
+   "auditor": "opus-r159c-harness-reread",
    "fixed_at": null,
    "rounds": [
     {
@@ -5795,6 +5851,20 @@
       "NIT": 0
      },
      "report": "One leg still certifies that a client's tool reply naming a call the node is not waiting on is refused and carried on no wire, and the plane it drives still executes tools in-process through an echo executor wired into the mounted runtime. Two legs still certify the plane dialing its own provider socket under a plane-chosen destination policy. The budget hard-close check can now fail but its failure is discarded by design, a harness that dies after some results passes, the leg floor is 3 against 14 legs, and prose is stale. Read fully except fixtures and part of the harness."
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-r159c-harness-reread",
+     "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+     "tree_hash": "10dade8e73044a718b3602ed8d43b00755cdef1fcd325280ea79c28716fb3578",
+     "counts": {
+      "HIGH": 4,
+      "MEDIUM": 2,
+      "LOW": 4,
+      "NIT": 0
+     },
+     "report": "The legs that certified tool execution, reply interception and plane-owned dials are gone. Three legs cannot pass against the pinned plane: one requires a model's usage report to be withheld from the caller, two expect a Twilio mark frame the plane never writes. The relay legs judge the door only through the plane's own reader, so a dropped or rewritten frame it ignores passes; the Twilio legs cannot see a frame busbar authors upstream or a dropped tool call. Read fully except the fixture files, sampled."
     }
    ]
   },
