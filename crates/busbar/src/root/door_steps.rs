@@ -1798,10 +1798,10 @@ pub fn kernel_sections(
     // refuses one that omits it, `busbar_kernel::config::prepass`), so it is handed as written. The
     // previous release accepted `models: {}` and answered from its catch-all (v1.5.5
     // crates/busbar/src/config/mod.rs:2626-2632; ingress/dispatch.rs:292-319).
-    let required = |key: &str| {
+    let required = |key: &'static str| {
         busbar_kernel::plane::registry::plane_decls()
             .iter()
-            .any(|d| d.required_config_sections.iter().any(|k| *k == key))
+            .any(|d| d.required_config_sections.contains(&key))
     };
     if !models.is_empty() || !pools.is_empty() || required(RESERVED_MODELS_KEY) {
         out.insert(RESERVED_MODELS_KEY, yaml(Value::Object(models)));
