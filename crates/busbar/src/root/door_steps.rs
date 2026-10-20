@@ -1793,7 +1793,17 @@ pub fn kernel_sections(
             yaml(Value::Object(providers)),
         );
     }
-    if !models.is_empty() || !pools.is_empty() {
+    // A WRITTEN consumed|required key counts, even an empty one (ARCHITECT row-82 ruling): a
+    // section some registered plane requires is written in every document that parsed (the pre-pass
+    // refuses one that omits it, `busbar_kernel::config::prepass`), so it is handed as written. The
+    // previous release accepted `models: {}` and answered from its catch-all (v1.5.5
+    // crates/busbar/src/config/mod.rs:2626-2632; ingress/dispatch.rs:292-319).
+    let required = |key: &'static str| {
+        busbar_kernel::plane::registry::plane_decls()
+            .iter()
+            .any(|d| d.required_config_sections.contains(&key))
+    };
+    if !models.is_empty() || !pools.is_empty() || required(RESERVED_MODELS_KEY) {
         out.insert(RESERVED_MODELS_KEY, yaml(Value::Object(models)));
         out.insert(RESERVED_POOLS_KEY, yaml(Value::Object(pools)));
     }
