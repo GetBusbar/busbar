@@ -58,11 +58,11 @@ pub trait MoneySeam: Send + Sync {
     }
 
     /// The member whose attempt answered the unit, once it commits (failover happens only before
-    /// the first byte, so this is final): its CONFIG model name and its provider. The money steps
+    /// the first byte, so this is final): its member name and its provider. The money steps
     /// ledger and meter the unit under it, as 1.5.5's `ledger_and_meter` did under the serving
     /// lane. The driver calls it once per unit, before any piece of that answer is relayed.
-    fn served(&self, ctx: &UnitCtx, model: &str, provider: &str) {
-        let _ = (ctx, model, provider);
+    fn served(&self, ctx: &UnitCtx, member: &str, provider: &str) {
+        let _ = (ctx, member, provider);
     }
 
     /// THE UNIT'S LEDGER LANE, as the plane's answer named it (`OnPieceOut::lane`): the billing
@@ -178,7 +178,11 @@ impl PlaneDriver {
         let buried = std::mem::take(&mut *self.lock_buried());
         let mut unsettled = Vec::new();
         for mut unit in buried {
-            let now = |ticket| self.cancel_now(ticket).map(|c| (c.disposition, c.writes));
+            let key = unit.ctx.key.get();
+            let now = |ticket| {
+                self.cancel_now(ticket, key)
+                    .map(|c| (c.disposition, c.writes))
+            };
             let cancelled = match unit.flight.take() {
                 Some(mut flight) => match flight.settled() {
                     None => {

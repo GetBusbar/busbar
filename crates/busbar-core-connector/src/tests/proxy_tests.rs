@@ -254,6 +254,22 @@ fn proxy_env_refusals_never_echo_the_proxy_password() {
     }
 }
 
+/// A REFUSAL NAMES THE HOST THE VALUE DIALS, OR NONE. The dialling stack ends a web URL's authority
+/// at a `\` as at a `/`, so in `https://proxy.corp\@victim.example` the text after the `@` is path,
+/// not host. RED before the one authority split: the mask read past the `\` and printed
+/// `***@victim.example`, naming a host the value never dials.
+#[test]
+fn a_proxy_refusal_names_no_host_the_value_does_not_dial() {
+    for v in [
+        "https://proxy.corp\\@victim.example:3128",
+        "https://proxy.corp\\u:pw@victim.example",
+    ] {
+        let err = parse_proxy(v).expect_err("an https:// proxy is refused");
+        assert!(!err.contains("victim.example"), "{v}: {err}");
+        assert!(!err.contains("pw@"), "{v}: {err}");
+    }
+}
+
 /// The proxy's answer is read whole before the tunnel is up: an incomplete head waits, a 2xx
 /// head is the tunnel (and only its own bytes are the head's), any other status refuses in the
 /// engine's words, and an endless head refuses at 8 KiB.
@@ -493,4 +509,20 @@ fn no_proxy_and_a_raw_stream_dial_direct() {
             "with no proxy, a name nothing here resolves is refused"
         );
     });
+}
+
+/// RED (the proxy environment honoured "exactly as 1.5.5's reqwest clients did"): the proxy URL's
+/// userinfo is percent-DECODED before it is Base64-encoded into `Proxy-Authorization: Basic`, as
+/// reqwest decodes it. Encoded as written, a password with a reserved character (`@`, `:`, `%`,
+/// written `%40`, `%3A`, `%25` in the URL) reached the proxy still percent-encoded and was refused.
+#[test]
+fn the_proxy_credential_is_percent_decoded_before_it_is_presented() {
+    use base64::Engine;
+    let spec = parse_proxy("http://svc%40corp:p%40ss%3Aw%25rd@proxy.corp:3128").unwrap();
+    let expected = format!(
+        "Proxy-Authorization: Basic {}\r\n",
+        base64::engine::general_purpose::STANDARD.encode("svc@corp:p@ss:w%rd")
+    );
+    let request = String::from_utf8(connect_request("upstream.test:443", &spec)).unwrap();
+    assert!(request.contains(&expected), "{request}");
 }

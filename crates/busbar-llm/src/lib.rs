@@ -107,13 +107,14 @@ mod alloc_gate_instrument {
 /// THE CODECS, RE-EXPORTED FROM THE PLANE'S OWN `codec` MODULE.
 ///
 /// The six dialect modules, the concrete IR, the chat/leaf handles, the wire-codec surface, the
-/// stream translator and the answer-normalization helpers are the plane crate's `codec` module.
+/// stream translator, the answer-normalization helpers and the plane's own coded diagnostics are the
+/// plane crate's `codec` module.
 /// They are re-exported HERE, at this crate's root under the module names its callers already use
 /// (`proto_codec`, `ir`, the dialect modules), so every such path resolves to the same item.
 pub use busbar_plane_llm::codec::{
-    anthropic, bedrock, chat_handle, cohere, gemini, ir, ir_encode, leaf_codec, leaf_handles,
-    openai_chat, openai_responses, proto_codec, proto_stream, synth_rng, url_citation_wire,
-    usage_tail, wire_shim, DECLS,
+    anthropic, bedrock, chat_handle, cohere, diagnostics, gemini, ir, ir_encode, leaf_codec,
+    leaf_handles, openai_chat, openai_responses, proto_codec, proto_stream, synth_rng,
+    url_citation_wire, usage_tail, wire_shim, DECLS,
 };
 
 /// THE LLM PLANE'S CAPABILITY KEY (`"llm"`) — the string the composition root flips onto the unified
