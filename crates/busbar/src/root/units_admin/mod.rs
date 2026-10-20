@@ -2566,6 +2566,9 @@ struct AdminInFlight {
     request: AdminRequest,
     verb: Option<ResolvedVerb>,
     granted: Option<VerbScope>,
+    /// The per-verb allow-list the door identified the caller with, when its bindings grant verbs
+    /// BY NAME (#77(9) l.2279); `None` = the rung alone decides, as it did in 1.5.5.
+    listed: Option<busbar_kernel::auth::VerbAllowList>,
     /// Who the auth unit said is calling, as the loop sealed it. Kept here rather than re-derived
     /// downstream because the credential that was presented is NOT the identity that was resolved:
     /// the identity is what a record attributes to, and the credential is a secret that must not
@@ -2598,6 +2601,7 @@ impl AdminUnits {
                 request,
                 verb: None,
                 granted: None,
+                listed: None,
                 principal: None,
                 answer: None,
             },
@@ -2660,6 +2664,16 @@ impl AdminUnits {
     fn set_granted(&self, key: UnitKey, granted: VerbScope) {
         if let Some(unit) = self.lock().get_mut(&key) {
             unit.granted = Some(granted);
+        }
+    }
+
+    fn listed(&self, key: UnitKey) -> Option<busbar_kernel::auth::VerbAllowList> {
+        self.lock().get(&key).and_then(|u| u.listed.clone())
+    }
+
+    fn set_listed(&self, key: UnitKey, listed: busbar_kernel::auth::VerbAllowList) {
+        if let Some(unit) = self.lock().get_mut(&key) {
+            unit.listed = Some(listed);
         }
     }
 
@@ -2981,17 +2995,25 @@ pub(crate) fn authenticate(
     let Some(request) = binding.units.request(ctx.key) else {
         return SeatVerdict::refuse(token, Refusal::new(ReasonCode::Unauthenticated));
     };
-    let (principal, grants) = match (binding.door)(&request) {
+    let (principal, grants, listed) = match (binding.door)(&request) {
         busbar_kernel::auth::AdminDoor::Open => (
             busbar_kernel_identity::principal::ANONYMOUS.to_string(),
             busbar_contract::authz::Grants::of(busbar_contract::authz::Scope::Full),
+            None,
         ),
         busbar_kernel::auth::AdminDoor::Identified(principal, grants) => {
             let revoked = bindings.revocations().zip(request.credential.as_deref());
             if revoked.is_some_and(|(set, credential)| set.is_revoked(credential)) {
                 return SeatVerdict::refuse(token, Refusal::new(ReasonCode::Revoked));
             }
-            (principal.id, grants)
+            (principal.id, grants, None)
+        }
+        busbar_kernel::auth::AdminDoor::Listed(principal, grants, list) => {
+            let revoked = bindings.revocations().zip(request.credential.as_deref());
+            if revoked.is_some_and(|(set, credential)| set.is_revoked(credential)) {
+                return SeatVerdict::refuse(token, Refusal::new(ReasonCode::Revoked));
+            }
+            (principal.id, grants, Some(list))
         }
         busbar_kernel::auth::AdminDoor::Denied => {
             return SeatVerdict::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
@@ -3009,6 +3031,10 @@ pub(crate) fn authenticate(
     };
     if let Some(rung) = rung {
         binding.units.set_granted(ctx.key, rung);
+    }
+    // The verbs the caller holds BY NAME, for approve to read beside the rung (#77(9) l.2279).
+    if let Some(list) = listed {
+        binding.units.set_listed(ctx.key, list);
     }
     SeatVerdict::proceed(
         token,
@@ -3070,6 +3096,16 @@ pub(crate) fn approve(
     binding.units.set_granted(ctx.key, granted);
     if !granted.allows(scope_as_verb_scope(needed)) {
         return SeatVerdict::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
+    }
+    // THE PER-VERB ALLOW-LIST (#77(9), OWNER-LOCKED, `docs/design/BUSBAR-1.6.0.md` l.2279): a
+    // caller holding verbs BY NAME is admitted only to a verb its list reaches — the closed table's
+    // name for this operation, as decode resolved it — and refused with the same scope ending as a
+    // rung it does not hold. A caller with no list is decided by the rung alone, as before.
+    if let Some(list) = binding.units.listed(ctx.key) {
+        let verb = binding.units.verb(ctx.key).map(|resolved| resolved.verb);
+        if !list.admits(verb, needed) {
+            return SeatVerdict::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
+        }
     }
     SeatVerdict::proceed(token, busbar_contract::ScopeFacts::default())
 }

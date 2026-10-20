@@ -4,7 +4,7 @@
 //! THE NEUTRAL DURABLE-HANDLE ENGINE — the plane-agnostic async-handle / durable-session capability.
 //!
 //! Axis-C (stateful handles / async: "park a handle at a `202` and resume it later") is a capability
-//! EVERY plane can want — the async-task plane, the LLM plane's stateful/batch handles, a live-session
+//! EVERY plane can want — an async-task plane, a plane's stateful or batch handles, a live-session
 //! plane. Its mechanics are neutral: a process-wide registry of cross-request handles keyed by an
 //! opaque id, a durable write-through to the generic [`PlaneStore`] seam, a retention sweep with a hard
 //! cap, a boot rehydrate that turns a restart into a pause, a monotonic inbound-push cursor, and a
@@ -46,7 +46,7 @@
 //! the inner lock across the plan + persist. This preserves same-handle chain serialization (the naive
 //! "drop the lock during seal/append" minimization would reopen exactly the concurrent-same-handle fork
 //! the inner lock prevents) while lifting the per-ENGINE bottleneck the earlier single-global-lock shape
-//! imposed on a high-concurrency SECOND consumer (voice-session frames, Responses-stateful streaming).
+//! imposed on a high-concurrency SECOND consumer (live-session frames, a stateful stream).
 //!
 //! - [`submit`](DurableHandleEngine::submit) still does its durable writes (`upsert_record` +
 //!   `append_record`) BEFORE it takes the outer lock — a submit is a FRESH id at the genesis chain
@@ -73,7 +73,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::plane::store::PlaneStore;
+use crate::store::plane_view::PlaneStore;
 use busbar_contract::records::{PlaneRecord, PlaneSelector, RecordStoreError, RecordStoreResult};
 
 /// The NEUTRAL projection of a plane row the engine reads to run its mechanics WITHOUT decoding the
@@ -179,9 +179,9 @@ pub struct SubmitRecord {
     pub meta: HandleMeta,
     /// The durable row record to upsert.
     pub row_record: PlaneRecord,
-    /// The genesis provenance event, or `None` to open a CHAINLESS durable handle. A2A always opens a
-    /// chain here (an `EV_SUBMITTED` genesis); a consumer that wants a durable row WITHOUT a per-event
-    /// hash chain (a Responses-stateful handle keyed by response id) passes `None` — matching
+    /// The genesis provenance event, or `None` to open a CHAINLESS durable handle. A task plane opens a
+    /// chain here (its submitted genesis); a consumer that wants a durable row WITHOUT a per-event
+    /// hash chain (a stateful handle keyed by its answer's id) passes `None` — matching
     /// [`Mutation::event`], so "every handle opens a provenance chain" is a plane CHOICE, not an engine
     /// assumption. With `None` the handle's position stays at [`ChainPosition::genesis`] (empty tail,
     /// `next_seq` 1), so a LATER `mutate` that does append an event seals the true genesis event.
@@ -675,8 +675,8 @@ impl DurableHandleEngine {
     /// distinctly. Returns the resulting opaque row.
     ///
     /// UNSCOPED — keyed by `id` alone, authorization is the caller's to enforce upstream. This is the
-    /// right primitive for a TRUSTED internal caller that has already scoped (A2A's front door scopes at
-    /// its edge). An UNTRUSTED write-by-correlation-id (the T3 inbound webhook receiver) MUST instead go
+    /// right primitive for a TRUSTED internal caller that has already scoped (a plane's front door scopes
+    /// at its edge). An UNTRUSTED write-by-correlation-id (the T3 inbound webhook receiver) MUST instead go
     /// through [`scoped_mutate`](Self::scoped_mutate), which owner-gates the write with the same
     /// indistinguishable refusal the read path uses.
     pub fn mutate<F>(

@@ -151,6 +151,55 @@ pub struct RoleBindingCfg {
     /// module), ceilinged by the asserting module's `max_admin_scope`.
     #[serde(default)]
     pub admin_scope: Option<String>,
+    /// The PER-VERB ALLOW-LIST this role grants (#77(9), OWNER-LOCKED,
+    /// `docs/design/BUSBAR-1.6.0.md` l.2279: "Each verb is a plain scoped verb authorized by the
+    /// per-verb allow-list on the admin token (`verbs: [ … ]` or `verbs: "*"`; `read-only` and
+    /// `full` stay the 1.5.5 shorthands)"). Either [`ALL_ADMIN_VERBS`] — every verb, exactly what
+    /// `admin_scope: full` grants — or a list of the closed admin table's operation names
+    /// (`[get_keys, post_keys]`), each admitted whatever rung it needs. `admin_scope:` keeps its
+    /// 1.5.5 meaning beside it; a principal holds the UNION of both across its bound roles. ABSENT =
+    /// only what `admin_scope` grants, byte for byte the 1.5.5 grant.
+    ///
+    /// Held as the value the operator wrote and read through [`RoleBindingCfg::verb_grant`];
+    /// `config_validate` refuses any other shape and any name the closed table does not declare
+    /// (fail closed: a typo'd verb must never sit inert while the operator believes it granted).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verbs: Option<serde_json::Value>,
+}
+
+/// The `verbs:` spelling that grants EVERY admin verb — exactly `admin_scope: full` (#77(9)).
+pub const ALL_ADMIN_VERBS: &str = "*";
+
+/// One role binding's `verbs:` grant, read off the value the operator wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VerbGrant {
+    /// `verbs: "*"` — every verb, the same grant as `admin_scope: full`.
+    All,
+    /// `verbs: [ … ]` — exactly these closed-table operation names.
+    Named(Vec<String>),
+}
+
+impl RoleBindingCfg {
+    /// This binding's `verbs:` grant: `None` when the key is absent; `Some(Err(shape))` when the
+    /// value is neither [`ALL_ADMIN_VERBS`] nor a list of names (`shape` says what it was instead,
+    /// for the validation message). Whether each NAME is a verb is the closed table's to say, at
+    /// validation ([`crate::admin::seam::admin_verb_rung`]).
+    pub fn verb_grant(&self) -> Option<Result<VerbGrant, String>> {
+        let value = self.verbs.as_ref()?;
+        Some(match value {
+            serde_json::Value::String(s) if s == ALL_ADMIN_VERBS => Ok(VerbGrant::All),
+            serde_json::Value::Array(items) => items
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| format!("a list holding {item}"))
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(VerbGrant::Named),
+            other => Err(other.to_string()),
+        })
+    }
 }
 
 /// `role_bindings:` - module name -> role name -> grant.

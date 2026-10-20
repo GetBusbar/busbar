@@ -3478,3 +3478,358 @@ fn a_recovered_posting_names_the_card_in_force_at_its_arrival() {
     );
     assert_ne!(in_force, busbar_kernel_ledger::cost::HistorySeq::OPENING);
 }
+
+/// A LIVE HOLDER: `lease` refreshed on every lease poll until the guard drops, as a running node's
+/// flush tick refreshes it.
+struct Refreshing(
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+    Option<std::thread::JoinHandle<()>>,
+);
+
+impl Refreshing {
+    fn new(
+        slots: &crate::root::store_double::RecordSlots,
+        lease: Option<&store_identity::NodeLease>,
+    ) -> Self {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let handle = lease.cloned().map(|lease| {
+            let (calls, stop) = (slots.calls(), std::sync::Arc::clone(&stop));
+            std::thread::spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = lease.refresh(calls.as_ref());
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        store_identity::LEASE_TTL_MS / 9,
+                    ));
+                }
+            })
+        });
+        Refreshing(stop, handle)
+    }
+}
+
+impl Drop for Refreshing {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(handle) = self.1.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// Two LIVE nodes that share one host name — `host`, or none at all — on one store: each takes its
+/// identity, seals its own audit records and settles its own money, and each restarted book over
+/// the store reads back exactly its own (Q128 root part 12 HIGH 2).
+fn two_live_nodes_keep_their_own_records(host: &str) {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let a = take_node(slots.calls().as_ref(), host).expect("the first node's identity");
+    let _live = Refreshing::new(&slots, a.lease.as_ref());
+    let b = take_node(slots.calls().as_ref(), host).expect("the second node's identity");
+    assert_ne!(
+        a.id, b.id,
+        "two live nodes named {host:?} journal under one identity"
+    );
+    let (ka, kb) = (totals_key("vk_same_a"), totals_key("vk_same_b"));
+    {
+        let mut first = store_book(&slots, a.id);
+        let mut second = store_book(&slots, b.id);
+        for unit in 1..=2 {
+            first
+                .seal_unit(audit_inputs(unit), audit_pass(), &token())
+                .expect("sealed");
+        }
+        settle_one(&mut first, &ka, 1_000, 600, 1);
+        for unit in 1..=5 {
+            second
+                .seal_unit(audit_inputs(unit), audit_pass(), &token())
+                .expect("sealed");
+        }
+        settle_one(&mut second, &kb, 1_000, 900, 1);
+        drained(&first);
+        drained(&second);
+    }
+    let first = store_book(&slots, a.id);
+    let second = store_book(&slots, b.id);
+    assert_eq!(
+        first.audit_records.len(),
+        2,
+        "the first node's audit records"
+    );
+    assert_eq!(
+        second.audit_records.len(),
+        5,
+        "the second node's audit records"
+    );
+    assert_eq!(first.ledger.book().get(&ka, 86_400).settled, 600);
+    assert_eq!(first.ledger.book().get(&kb, 86_400).settled, 0);
+    assert_eq!(second.ledger.book().get(&kb, 86_400).settled, 900);
+    assert_eq!(second.ledger.book().get(&ka, 86_400).settled, 0);
+    assert!(
+        first.restart_findings.is_empty(),
+        "{:?}",
+        first.restart_findings
+    );
+    assert!(
+        second.restart_findings.is_empty(),
+        "{:?}",
+        second.restart_findings
+    );
+}
+
+/// **TWO LIVE NODES WITH ONE HOST NAME KEEP SEPARATE MONEY AND AUDIT RECORDS** (Q128 root part 12
+/// HIGH 2): the second takes a fresh id because the first holds the name's lease.
+///
+/// RED before the fix: the identity was the host name's alone, so both nodes journaled under one
+/// id and overwrote each other's records in the store.
+#[test]
+fn two_live_nodes_with_one_host_name_keep_separate_money_and_audit_records() {
+    two_live_nodes_keep_their_own_records("host-same");
+}
+
+/// **TWO LIVE NAMELESS NODES KEEP SEPARATE MONEY AND AUDIT RECORDS** (Q128): no host name is one
+/// name, held under one lease like any other.
+///
+/// RED before the fix: every nameless host shared the empty name's one identity.
+#[test]
+fn two_live_nameless_nodes_keep_separate_money_and_audit_records() {
+    two_live_nodes_keep_their_own_records("");
+}
+
+/// **A CRASH-RESTART RESUMES THE SAME CHAIN AND RECOVERS ITS HOLDS** (Q128): a node with no data
+/// directory killed with a hold open (its lease neither released nor refreshed again) restarts at
+/// once; the new boot watches the lease, sees it lapse unrefreshed, takes the host's id back under
+/// a lease of its own and resumes its chain. (The in-process sweep never sees a dead process's
+/// holds; resuming the chain is what recovers them.)
+///
+/// RED before the fix: no lease was taken, so the restart held nothing a second process would see.
+#[test]
+fn a_restart_after_the_lease_lapsed_resumes_the_chain_and_recovers_the_holds() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let held = totals_key("vk_lease_held");
+    let first = take_node(slots.calls().as_ref(), "host-lapse").expect("an identity");
+    assert!(
+        first.lease.is_some(),
+        "the first boot holds the name's lease"
+    );
+    {
+        let mut durability = store_book(&slots, first.id);
+        durability
+            .seal_unit(audit_inputs(1), audit_pass(), &token())
+            .expect("sealed");
+        let durability_token = token();
+        let mut at = settling(&held, &durability_token);
+        at.stamp.mono = 77;
+        durability
+            .open_hold(
+                &at,
+                &busbar_contract::caps::PrincipalId::new("vk_lease_held"),
+                &inputs(2_000),
+                ARRIVED_MS,
+            )
+            .expect("the hold goes on the chain");
+        drained(&durability);
+        // kill -9: no release of the lease, nothing flushed on the way out.
+        std::mem::forget(durability);
+        std::mem::forget(first.lease);
+    }
+    let again = take_node(slots.calls().as_ref(), "host-lapse").expect("an identity");
+    assert_eq!(again.id, first.id, "the restart takes the host's id back");
+    assert!(again.lease.is_some(), "under a lease of its own");
+    let restarted = store_book(&slots, again.id);
+    assert_eq!(restarted.audit_records.len(), 1, "the chain is resumed");
+    assert_eq!(
+        restarted.recovered_holds, 1,
+        "the hold the dead process left open is recovered"
+    );
+    // A clean shutdown releases the lease: the next boot resumes at once.
+    again
+        .lease
+        .as_ref()
+        .expect("held")
+        .release(slots.calls().as_ref())
+        .expect("released");
+    let next = take_node(slots.calls().as_ref(), "host-lapse").expect("an identity");
+    assert_eq!(next.id, first.id, "a released lease is taken at once");
+}
+
+/// **A BOOT WHILE ITS PREDECESSOR STILL REFRESHES THE LEASE TAKES A FRESH ID** (Q128, the
+/// overlap): the lease is refreshed while the second process watches it, so its holder is live, and
+/// the second journals under an id of its own and leaves the host's chain untouched.
+///
+/// RED before the fix: the second process took the host's id and wrote over the first's chain.
+#[test]
+fn a_restart_while_the_old_lease_is_live_takes_a_fresh_id() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let first = take_node(slots.calls().as_ref(), "host-overlap").expect("an identity");
+    let live = Refreshing::new(&slots, first.lease.as_ref());
+    {
+        let mut durability = store_book(&slots, first.id);
+        for unit in 1..=3 {
+            durability
+                .seal_unit(audit_inputs(unit), audit_pass(), &token())
+                .expect("sealed");
+        }
+        drained(&durability);
+        std::mem::forget(durability);
+    }
+    let second = take_node(slots.calls().as_ref(), "host-overlap").expect("an identity");
+    drop(live);
+    assert_ne!(second.id, first.id, "a live lease is never shared");
+    assert!(second.lease.is_none(), "and the second holds none");
+    {
+        let mut durability = store_book(&slots, second.id);
+        assert!(durability.audit_records.is_empty(), "a chain of its own");
+        durability
+            .seal_unit(audit_inputs(9), audit_pass(), &token())
+            .expect("sealed");
+        drained(&durability);
+    }
+    assert_eq!(
+        store_book(&slots, first.id).audit_records.len(),
+        3,
+        "the first process's chain is untouched"
+    );
+    let (calls, own, keys) = keyed_store_book(&slots, second.id)
+        .stored_walk_inputs()
+        .expect("a book over the store");
+    let walk = walk_stored_chains(calls.as_ref(), own, &keys);
+    assert!(walk.chains.contains(&first.id) && walk.chains.contains(&second.id));
+}
+
+/// A book over the store whose journal is on `dir`.
+fn dir_store_book(
+    slots: &crate::root::store_double::RecordSlots,
+    dir: &std::path::Path,
+    node: u64,
+) -> Durability {
+    let lane = JournalLane::start(slots.calls(), "test-store").expect("the lane starts");
+    build_on_store(
+        &DurabilityConfig {
+            data_dir: Some(dir.to_path_buf()),
+        },
+        node,
+        lane,
+        rows(),
+        priced(),
+        None,
+    )
+    .expect("the directory opens")
+}
+
+/// **A NODE WITH A DATA DIRECTORY KEEPS ITS ID IN IT, AND A RESTART READS IT BACK** (Q128): the id
+/// is the directory's own, so two directories on one host name are two identities.
+///
+/// RED before the fix: the id came from the host name in the store, and nothing was kept in the
+/// directory.
+#[test]
+fn a_restart_over_the_same_data_dir_keeps_its_id() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let one = ScratchDir::new("node-id-one");
+    let two = ScratchDir::new("node-id-two");
+    let id = persisted_node(slots.calls().as_ref(), &one.path, "host-dir")
+        .expect("an id")
+        .id;
+    assert!(
+        one.entries()
+            .contains(&store_identity::NODE_ID_FILE.to_string()),
+        "the id is kept in the node's own data directory: {:?}",
+        one.entries()
+    );
+    assert_eq!(
+        persisted_node(slots.calls().as_ref(), &one.path, "host-dir")
+            .expect("again")
+            .id,
+        id,
+        "a restart reads the same id back"
+    );
+    assert_ne!(
+        persisted_node(slots.calls().as_ref(), &two.path, "host-dir")
+            .expect("another")
+            .id,
+        id,
+        "another directory on the same host name is another node"
+    );
+    let full = std::fs::read_to_string(one.path.join(store_identity::NODE_ID_FILE)).expect("kept");
+    assert_eq!(full.trim().len(), 32, "a 128-bit id: {full:?}");
+}
+
+/// **MIGRATION: THE HOST NAME'S OLD REGISTRY ID IS ADOPTED, AND THE CHAIN KEEPS READING** (Q128):
+/// a data directory written by a build that keyed the node by its host name has no id file; its
+/// first boot on this build adopts the id the registry holds under that name, keeps it in the
+/// directory, and the chain written under it reads back whole.
+///
+/// RED before the fix: nothing was kept in the directory.
+#[test]
+fn the_first_boot_adopts_the_host_names_registry_id_and_the_chain_keeps_reading() {
+    use store_identity::NODE_SCHEMA;
+    let slots = crate::root::store_double::RecordSlots::new();
+    let dir = ScratchDir::new("node-id-migrate");
+    slots.put_row(NODE_SCHEMA, b"host:host-old", &77u64.to_be_bytes());
+    {
+        // The old build's boot: the journal written under the registry's id.
+        let mut durability = dir_store_book(&slots, &dir.path, 77);
+        for unit in 1..=2 {
+            durability
+                .seal_unit(audit_inputs(unit), audit_pass(), &token())
+                .expect("sealed");
+        }
+        drained(&durability);
+    }
+    let taken = persisted_node(slots.calls().as_ref(), &dir.path, "host-old").expect("adopted");
+    let id = taken.id;
+    assert_eq!(id, 77, "the registry's id is adopted");
+    let full = std::fs::read_to_string(dir.path.join(store_identity::NODE_ID_FILE))
+        .expect("the adopted id is kept in the directory");
+    assert_eq!(
+        u128::from_str_radix(full.trim(), 16).expect("hex") & u128::from(u64::MAX),
+        77,
+        "its low 64 bits are the journal key"
+    );
+    let restarted = dir_store_book(&slots, &dir.path, id);
+    assert_eq!(restarted.journal.node(), 77, "the chain keeps its identity");
+    assert_eq!(restarted.audit_records.len(), 2, "and keeps reading");
+    assert!(
+        restarted.restart_findings.is_empty(),
+        "{:?}",
+        restarted.restart_findings
+    );
+    // A clean shutdown releases the adopted id's lease; a later boot reads the kept id back.
+    if let Some(lease) = &taken.lease {
+        lease.release(slots.calls().as_ref()).expect("released");
+    }
+    assert_eq!(
+        persisted_node(slots.calls().as_ref(), &dir.path, "host-old")
+            .expect("again")
+            .id,
+        77,
+        "later boots read the kept id"
+    );
+}
+
+/// **A DATA-DIRECTORY NODE THAT ADOPTED ITS HOST NAME'S ID HOLDS THAT NAME'S LEASE** (Q128, the
+/// mixed pair): a live node with no data directory and the same name then takes a fresh id, so the
+/// two never journal under one identity.
+///
+/// RED before the fix: both took the host name's registry id.
+#[test]
+fn a_data_dir_node_that_adopted_the_host_id_holds_its_lease_against_a_no_data_dir_peer() {
+    use store_identity::NODE_SCHEMA;
+    let slots = crate::root::store_double::RecordSlots::new();
+    let dir = ScratchDir::new("node-id-mixed");
+    slots.put_row(NODE_SCHEMA, b"host:host-mix", &77u64.to_be_bytes());
+    let adopted = persisted_node(slots.calls().as_ref(), &dir.path, "host-mix").expect("adopted");
+    assert_eq!(
+        adopted.id, 77,
+        "the data-dir node adopts the host name's id"
+    );
+    let _live = Refreshing::new(&slots, adopted.lease.as_ref());
+    let peer = take_node(slots.calls().as_ref(), "host-mix").expect("an identity");
+    assert_ne!(
+        peer.id, adopted.id,
+        "a live no-data-dir node with the same name takes the adopted id"
+    );
+    assert!(
+        adopted.lease.is_some(),
+        "the adopted id is held under the lease"
+    );
+    assert!(peer.lease.is_none(), "and the peer holds none");
+}

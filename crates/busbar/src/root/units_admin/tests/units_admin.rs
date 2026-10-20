@@ -458,6 +458,232 @@ fn the_six_formerly_irreducible_verbs_are_authorized_by_the_grant_alone() {
     }
 }
 
+// ── #77(9) l.2279: the per-verb allow-list, at authenticate and approve ─────────────────────────
+
+/// A door that answers every request with `door`: the verdict the kernel's admin door reaches for a
+/// principal (`busbar_kernel::auth::admin_door`), stated rather than derived, so these cells read
+/// what the root's steps do with it.
+#[cfg(feature = "root-admin")]
+fn a_door_answering(door: busbar_kernel::auth::AdminDoor) -> AdminDoorFn {
+    Arc::new(move |_: &AdminRequest| door.clone())
+}
+
+/// The verdict for a principal holding `named` verbs BY NAME and no rung whole: its matrix reaches
+/// every rung a named verb needs (`needs`), as the kernel's door computes it.
+#[cfg(feature = "root-admin")]
+fn listed_door(named: &[&str], needs: Scope) -> busbar_kernel::auth::AdminDoor {
+    busbar_kernel::auth::AdminDoor::Listed(
+        busbar_contract::auth::Principal::from_id("acct:verb-listed"),
+        busbar_contract::authz::Grants::of(needs),
+        busbar_kernel::auth::VerbAllowList {
+            rungs: busbar_contract::authz::Grants::default(),
+            named: named.iter().map(|verb| verb.to_string()).collect(),
+        },
+    )
+}
+
+/// Walk `method path` through decode, authenticate and approve under `door`: the two steps the
+/// allow-list lives in. `Ok` = approve admitted it; `Err` = the reason a step refused it.
+#[cfg(feature = "root-admin")]
+fn approved_under(
+    door: busbar_kernel::auth::AdminDoor,
+    method: &str,
+    path: &str,
+) -> Result<(), ReasonCode> {
+    let seal = busbar_kernel::test_support::tokens::seal();
+    let binding = AdminBinding::new(Arc::new(AnsweringDispatch), a_door_answering(door));
+    let key = UnitKey::new(a_fresh_unit());
+    let mut request = a_request();
+    request.method = method.to_string();
+    request.path = path.to_string();
+    binding.units.open(key, request);
+    let ctx = UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
+        key,
+        origin: busbar_contract::caps::OriginKind::Client,
+        session: None,
+        generation: busbar_kernel::registry::Generation::FIRST,
+        admin_listener: true,
+        kernel_verb_only: true,
+    };
+    decode(
+        &binding,
+        &busbar_kernel::test_support::tokens::pass::<Decode>(),
+        &ctx,
+    )
+    .into_result(&seal)
+    .expect("the plane's table declares this operation");
+    let bindings = crate::root::auth_bindings::AuthBindings::without_directory();
+    let authenticated = authenticate(
+        &binding,
+        &bindings,
+        &busbar_kernel::test_support::tokens::pass::<Authenticate>(),
+        &ctx,
+    )
+    .into_result(&seal);
+    let verdict = match authenticated {
+        Err(refusal) => Err(refusal.reason()),
+        Ok(_) => approve(
+            &binding,
+            binding.units.granted(key),
+            &busbar_kernel::test_support::tokens::pass::<Approve>(),
+            &ctx,
+            &PrincipalId::new("acct:verb-listed"),
+            &[],
+        )
+        .into_result(&seal)
+        .map(|_| ())
+        .map_err(|refusal| refusal.reason()),
+    };
+    binding.units.close(key);
+    verdict
+}
+
+/// One request through the WHOLE loop under `door`, answered as the listener answers it.
+#[cfg(feature = "root-admin")]
+fn answered_under(door: busbar_kernel::auth::AdminDoor, request: AdminRequest) -> AdminAnswer {
+    let units = crate::root::kernel::ProductionUnits::admin_only(
+        Arc::new(AnsweringDispatch),
+        a_door_answering(door),
+    );
+    AdminNode::new(crate::root::kernel::new_kernel(), units).answer(request)
+}
+
+/// RED 1 — A VERB THE ALLOW-LIST NAMES IS ADMITTED: a mutation and a read, each held by name, pass
+/// approve, and the named read is answered by its operation through the whole loop. RED before the
+/// allow-list: the door had no `Listed` verdict and authenticate no list to record, so nothing
+/// could be held by name — a principal with no `admin_scope` earned no grant and was refused.
+#[cfg(feature = "root-admin")]
+#[test]
+fn a_verb_the_allow_list_names_is_admitted() {
+    let door = || listed_door(&["post_keys", "get_audit"], Scope::Full);
+    assert_eq!(
+        approved_under(door(), "POST", "/api/v1/admin/keys"),
+        Ok(()),
+        "a mutation the list names is admitted"
+    );
+    assert_eq!(
+        approved_under(door(), "GET", "/api/v1/admin/audit?limit=4"),
+        Ok(()),
+        "a read the list names is admitted"
+    );
+    assert_eq!(
+        answered_under(door(), a_request()).status,
+        200,
+        "and the named read reaches its operation"
+    );
+}
+
+/// RED 2 — A VERB THE ALLOW-LIST DOES NOT NAME IS REFUSED, with the existing scope refusal: the
+/// 403 a missing rung gets, byte for byte (`scope_answer`), whether the verb is a read or a
+/// mutation — even though the principal's matrix reaches the rung, because a named list is not a
+/// rung. RED before the allow-list: approve compared the rung alone, so a `full` matrix admitted
+/// every verb.
+#[cfg(feature = "root-admin")]
+#[test]
+fn a_verb_the_allow_list_does_not_name_is_refused_with_the_scope_answer() {
+    let door = || listed_door(&["post_keys"], Scope::Full);
+    assert_eq!(
+        approved_under(door(), "POST", "/api/v1/admin/hooks"),
+        Err(ReasonCode::ScopeDenied),
+        "a mutation the list does not name is refused at approve"
+    );
+    assert_eq!(
+        approved_under(door(), "GET", "/api/v1/admin/audit?limit=4"),
+        Err(ReasonCode::ScopeDenied),
+        "a read the list does not name is refused at approve"
+    );
+    let read = a_request();
+    let refused = answered_under(door(), read.clone());
+    assert_eq!(refused, scope_answer(&read), "the existing scope refusal");
+    assert_eq!(refused.status, 403);
+    assert_eq!(
+        String::from_utf8(refused.body).expect("the envelope is text"),
+        "{\"error\":{\"code\":\"forbidden\",\"message\":\"insufficient scope: this endpoint \
+         requires `read-only`\"}}"
+    );
+    let mut mutation = a_request();
+    mutation.method = "POST".to_string();
+    mutation.path = "/api/v1/admin/hooks".to_string();
+    assert_eq!(
+        answered_under(door(), mutation.clone()),
+        scope_answer(&mutation),
+        "a mutation the list does not name is answered with the scope it needed"
+    );
+}
+
+/// RED 3 — `verbs: "*"` BEHAVES EXACTLY AS `full`. The kernel's door turns a `"*"` binding into the
+/// very verdict an `admin_scope: full` binding earns (`verbs_star_is_exactly_admin_scope_full`,
+/// busbar-kernel); here a list that holds the full rung WHOLE — the shape `"*"` beside named verbs
+/// takes — admits a mutation and a read exactly as that verdict does, verb for verb.
+#[cfg(feature = "root-admin")]
+#[test]
+fn a_rung_held_whole_beside_a_list_admits_exactly_as_full() {
+    let full = || {
+        busbar_kernel::auth::AdminDoor::Identified(
+            busbar_contract::auth::Principal::from_id("acct:verb-listed"),
+            busbar_contract::authz::Grants::of(Scope::Full),
+        )
+    };
+    let whole = || {
+        busbar_kernel::auth::AdminDoor::Listed(
+            busbar_contract::auth::Principal::from_id("acct:verb-listed"),
+            busbar_contract::authz::Grants::of(Scope::Full),
+            busbar_kernel::auth::VerbAllowList {
+                rungs: busbar_contract::authz::Grants::of(Scope::Full),
+                named: ["get_audit".to_string()].into_iter().collect(),
+            },
+        )
+    };
+    for (method, path) in [
+        ("POST", "/api/v1/admin/hooks"),
+        ("POST", "/api/v1/admin/keys"),
+        ("GET", "/api/v1/admin/audit?limit=4"),
+    ] {
+        assert_eq!(
+            approved_under(full(), method, path),
+            Ok(()),
+            "{method} {path}"
+        );
+        assert_eq!(
+            approved_under(whole(), method, path),
+            approved_under(full(), method, path),
+            "{method} {path}: a full rung held whole admits exactly as `full` does"
+        );
+    }
+}
+
+/// RED 4 — A TOKEN WITH NO `verbs` KEY BEHAVES EXACTLY AS TODAY. The door's `Identified` verdict
+/// (what every binding without `verbs` earns) is decided by its rung alone: `read-only` reaches a
+/// read and is refused a mutation with the scope answer, `full` reaches both. A no-regression pin:
+/// it holds on the code before the allow-list too, by design.
+#[cfg(feature = "root-admin")]
+#[test]
+fn a_grant_with_no_verbs_key_is_decided_by_its_rung_as_before() {
+    let rung = |scope: Scope| {
+        busbar_kernel::auth::AdminDoor::Identified(
+            busbar_contract::auth::Principal::from_id("acct:verb-listed"),
+            busbar_contract::authz::Grants::of(scope),
+        )
+    };
+    let read = "/api/v1/admin/audit?limit=4";
+    let mutation = "/api/v1/admin/hooks";
+    assert_eq!(approved_under(rung(Scope::ReadOnly), "GET", read), Ok(()));
+    assert_eq!(
+        approved_under(rung(Scope::ReadOnly), "POST", mutation),
+        Err(ReasonCode::ScopeDenied)
+    );
+    assert_eq!(approved_under(rung(Scope::Full), "GET", read), Ok(()));
+    assert_eq!(approved_under(rung(Scope::Full), "POST", mutation), Ok(()));
+    let mut refused = a_request();
+    refused.method = "POST".to_string();
+    refused.path = mutation.to_string();
+    assert_eq!(
+        answered_under(rung(Scope::ReadOnly), refused.clone()),
+        scope_answer(&refused)
+    );
+}
+
 /// Both tables were extracted from the same pinned tag. Every row the plane decodes to has to
 /// name a verb the executing unit knows, or the root would be binding an operation to nothing.
 #[test]

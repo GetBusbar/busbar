@@ -5,7 +5,10 @@
 //! provably NONE of the audit-chain authority `busbar_contract::records::RecordStore` also holds, and `PlaneStoreView`
 //! forwards to the real backend.
 
-use super::super::store::{PlaneStore, PlaneStoreView};
+use super::{PlaneStore, PlaneStoreView};
+
+/// A single-use token kind, as a spent-approval ledger writes it (no production caller names one).
+const KIND_ASK: &str = "ask";
 use busbar_contract::records::{
     PlaneDisposition, PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStoreResult,
 };
@@ -23,10 +26,10 @@ struct DemoRow {
 // ── THE POSITIVE HALF: every plane method is present, at its `Store`-mirrored signature ──────────
 //
 // Each binding coerces the trait method to a concrete function pointer. It fails to COMPILE if the
-// method is missing or its signature drifts from the one the store plugin ABI froze, so the set
-// below is the authoritative statement of what `PlaneStore` carries. Eight neutral kind-tagged
-// verbs, and the exact eight a plane needs to persist its own trust state — the 14→8 consolidation
-// of the 1.6.0 store genericization, over the `PlaneRecord` envelope.
+// method is missing or its signature drifts from the one the store plugin ABI froze. Nine neutral
+// kind-tagged verbs: the 14→8 consolidation of the 1.6.0 store genericization, over the
+// `PlaneRecord` envelope, and the multi-use capability check (`plane_token_live`) beside the
+// single-use one. PRESENCE is what this half proves; EXACTNESS is the next two proofs'.
 #[allow(clippy::type_complexity)]
 fn plane_method_set_is_exactly_the_plane_methods() {
     let _: fn(&dyn PlaneStore, PlaneRecordRef<'_>) -> RecordStoreResult<()> =
@@ -45,6 +48,111 @@ fn plane_method_set_is_exactly_the_plane_methods() {
         <dyn PlaneStore>::delete_plane_record;
     let _: fn(&dyn PlaneStore, &str, &str, u64, u64) -> RecordStoreResult<bool> =
         <dyn PlaneStore>::redeem_plane_token;
+    let _: fn(&dyn PlaneStore, &str, &str, u64, u64) -> RecordStoreResult<bool> =
+        <dyn PlaneStore>::plane_token_live;
+}
+
+// ── THE EXACT HALF: nothing outside the set ──────────────────────────────────────────────────────
+//
+// Law 8 (`BUSBAR-1.6.0.md` l.2043-2044): a count is a measurement only when nothing fell outside
+// it. The bindings above prove each named verb is there; they cannot see a tenth. Two proofs can.
+
+/// The verbs `PlaneStore` carries, by name: what the trait is held to, both ways.
+const PLANE_METHODS: [&str; 9] = [
+    "upsert_plane_record",
+    "get_plane_record",
+    "append_plane_record",
+    "list_plane_records",
+    "list_plane_record_parents",
+    "purge_plane_records_before",
+    "delete_plane_record",
+    "redeem_plane_token",
+    "plane_token_live",
+];
+
+/// AT COMPILE TIME: an implementor that writes exactly the nine and nothing else. A tenth REQUIRED
+/// method is a missing item here (E0046), and a verb dropped from the trait is an item that is not a
+/// member of it (E0407), so this file stops compiling either way.
+struct EveryVerb;
+
+impl PlaneStore for EveryVerb {
+    fn upsert_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn get_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    fn append_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_plane_records(
+        &self,
+        _kind: &str,
+        _selector: &PlaneSelector,
+    ) -> RecordStoreResult<Vec<Vec<u8>>> {
+        Ok(Vec::new())
+    }
+    fn list_plane_record_parents(&self, _kind: &str) -> RecordStoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn delete_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn redeem_plane_token(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> RecordStoreResult<bool> {
+        Ok(false)
+    }
+    fn plane_token_live(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> RecordStoreResult<bool> {
+        Ok(false)
+    }
+}
+
+/// AT TEST TIME, AND DEFAULTED METHODS TOO: the trait's own declaration, read from its source, names
+/// exactly [`PLANE_METHODS`]. A tenth method WITH a default body compiles past [`EveryVerb`]; it does
+/// not get past this. RED before Q128 p29#8: the set named eight and the trait declared nine
+/// (`plane_token_live` had widened it unseen).
+#[test]
+fn plane_store_declares_exactly_the_plane_methods() {
+    let src = include_str!("../plane_view.rs");
+    let start = src
+        .find("pub trait PlaneStore")
+        .expect("plane_view.rs declares the PlaneStore trait");
+    let trait_src = &src[start..];
+    let end = trait_src
+        .find("\n}\n")
+        .expect("the PlaneStore declaration closes");
+    let mut declared: Vec<&str> = trait_src[..end]
+        .lines()
+        .map(str::trim_start)
+        .filter_map(|line| line.strip_prefix("fn "))
+        .filter_map(|line| line.split(['(', '<']).next())
+        .collect();
+    declared.sort_unstable();
+    let mut named = PLANE_METHODS.to_vec();
+    named.sort_unstable();
+    assert_eq!(
+        declared, named,
+        "PlaneStore must declare exactly the named plane verbs, no more and no fewer"
+    );
+    // The implementor above is the compile-time half; naming it keeps it compiled and live.
+    let every: &dyn PlaneStore = &EveryVerb;
+    assert!(every
+        .list_plane_record_parents("kind")
+        .is_ok_and(|parents| parents.is_empty()));
 }
 
 // ── THE NEGATIVE HALF: the audit chain is NOT reachable through `PlaneStore` ──────────────────────
@@ -155,11 +263,11 @@ impl busbar_contract::records::RecordStore for RecordingStore {
     // The neutral plane verbs the forwarding test observes.
     fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
         let record = &record.to_record();
-        if record.kind == crate::plane::store::KIND_DEMOTION {
+        if record.kind == crate::store::plane_view::KIND_DEMOTION {
             self.demotions
                 .lock()
                 .unwrap()
-                .push(crate::plane::store::decode(&record.body)?);
+                .push(crate::store::plane_view::decode(&record.body)?);
         }
         Ok(())
     }
@@ -169,12 +277,12 @@ impl busbar_contract::records::RecordStore for RecordingStore {
         selector: &PlaneSelector,
     ) -> RecordStoreResult<Vec<Vec<u8>>> {
         match (kind, selector) {
-            (crate::plane::store::KIND_DEMOTION, PlaneSelector::All) => self
+            (crate::store::plane_view::KIND_DEMOTION, PlaneSelector::All) => self
                 .demotions
                 .lock()
                 .unwrap()
                 .iter()
-                .map(crate::plane::store::encode)
+                .map(crate::store::plane_view::encode)
                 .collect(),
             _ => Ok(Vec::new()),
         }
@@ -201,10 +309,10 @@ fn plane_store_view_forwards_to_the_real_backend() {
     // demotion would not survive the call and the redemption ledger would not advance.
     let store: Arc<dyn PlaneStore> = PlaneStoreView::narrow(Arc::new(RecordingStore::default()));
     let list_demotions = |s: &Arc<dyn PlaneStore>| -> Vec<DemoRow> {
-        s.list_plane_records(crate::plane::store::KIND_DEMOTION, &PlaneSelector::All)
+        s.list_plane_records(crate::store::plane_view::KIND_DEMOTION, &PlaneSelector::All)
             .unwrap()
             .iter()
-            .map(|body| crate::plane::store::decode(body).unwrap())
+            .map(|body| crate::store::plane_view::decode(body).unwrap())
             .collect()
     };
     assert!(
@@ -214,13 +322,13 @@ fn plane_store_view_forwards_to_the_real_backend() {
     store
         .upsert_plane_record(
             PlaneRecord {
-                kind: crate::plane::store::KIND_DEMOTION.to_string(),
+                kind: crate::store::plane_view::KIND_DEMOTION.to_string(),
                 id: "srv-1".to_string(),
                 parent: None,
                 seq: 0,
                 ts: 100,
                 disposition: PlaneDisposition::Active,
-                body: crate::plane::store::encode(&DemoRow {
+                body: crate::store::plane_view::encode(&DemoRow {
                     server: "srv-1".to_string(),
                     reason: "drift".to_string(),
                     recorded_at: 100,
@@ -238,13 +346,13 @@ fn plane_store_view_forwards_to_the_real_backend() {
     // which can only hold if both calls reached the one inner instance.
     assert!(
         store
-            .redeem_plane_token(crate::plane::store::KIND_ASK, "nonce-a", 1_000, 10)
+            .redeem_plane_token(KIND_ASK, "nonce-a", 1_000, 10)
             .unwrap(),
         "first redemption is fresh"
     );
     assert!(
         !store
-            .redeem_plane_token(crate::plane::store::KIND_ASK, "nonce-a", 1_000, 10)
+            .redeem_plane_token(KIND_ASK, "nonce-a", 1_000, 10)
             .unwrap(),
         "second redemption sees the same inner ledger the wrapper forwarded to"
     );

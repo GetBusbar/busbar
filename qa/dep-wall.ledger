@@ -22,4 +22,3 @@ busbar-llm	tokio-rustls
 # hyper_io!). Same precedent as the http and ws doors. ARCHITECT ruling GRPC-DOOR Q2 2026-10-01.
 busbar-transport-grpc	socket2
 busbar-transport-http	socket2
-busbar-transport-ws	socket2

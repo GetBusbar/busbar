@@ -596,7 +596,7 @@ pub use busbar_kernel::config::auth::{
 pub use busbar_kernel::config::auth::{
     AuthCfg, AuthChainEntry, AuthDeployCfg, AuthMethodCfg, AuthMethods, AuthPolicyCfg, BindingMode,
     BrowserLoginCfg, IdentityProviderCfg, IdentityProviders, MintCeilingCfg, RoleBindingCfg,
-    RoleBindings, DEFAULT_MAX_ADMIN_SCOPE, KEYS_MODULE,
+    RoleBindings, VerbGrant, ALL_ADMIN_VERBS, DEFAULT_MAX_ADMIN_SCOPE, KEYS_MODULE,
 };
 
 /// The built-in signed-key verifier module name (`auth.chain: [keys]`).

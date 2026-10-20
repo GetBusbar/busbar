@@ -766,8 +766,9 @@ busbar-transport-webrtc = ["str0m", "ring", "aes", "zeroize"]
 busbar-transport-http = ["futures", "http", "http-body-util", "hyper", "hyper-util", "memchr", "tokio", "tokio-util"]
 # The pinned grpc framer: hyper's http and http-body types for the gRPC framing over HTTP/2.
 busbar-transport-grpc = ["http", "http-body", "hyper"]
-# The pinned ws framer: tokio-tungstenite's frame codec (handshake feature only).
-busbar-transport-ws = ["tokio-tungstenite"]
+# The pinned ws framer: tungstenite's frame codec and handshake machines, driven over the host's
+# bytes with no runtime (handshake feature only; ws #21 dropped the tokio wrapper).
+busbar-transport-ws = ["tungstenite"]
 # The MCP plane's outbound wire (fold A5, ARCHITECT 2026-09-29 under the PLUGIN LIBRARIES ruling):
 # the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry.
 busbar-plane-mcp = ["base64", "indexmap"]
@@ -1284,9 +1285,10 @@ known_sites = [
   "crates/busbar-kernel/src/plane/registry.rs",
   # was crates/busbar-core/src/router.rs (R099)
   "crates/busbar-kernel/src/router.rs",
-  # was crates/busbar-substrate/src/plane/handle_engine.rs::sweep (R100); `sweep` is still the
+  # was crates/busbar-substrate/src/plane/handle_engine.rs::sweep (R100), then
+  # crates/busbar-kernel/src/plane/handle_engine.rs::sweep (D2 item 15, a rename); `sweep` is still the
   # enclosing function — the escape is at :858, the fn opens at :820.
-  "crates/busbar-kernel/src/plane/handle_engine.rs::sweep",
+  "crates/busbar-kernel/src/host_work/handle_engine.rs::sweep",
   # was crates/busbar-substrate/src/plane_host/mod.rs — MERGED into the core-descended kernel file
   # of the same name by 5fa320208 (+1775 lines). The one escape there (:2433) is substrate's.
   "crates/busbar-kernel/src/plane_host/mod.rs",

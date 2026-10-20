@@ -31,6 +31,14 @@ Each plane is inert until its section is written. An `mcp:` block with an empty 
 refuses to start, because an anonymous MCP request is never narrowed by a key and would run with
 wildcard grants over every registered server: close the data-plane chain, or drop the block.
 
+A plane is opened once, at start, when its section is configured. A config apply, reload or named
+definition write that first writes the section of a plane this process started without is accepted,
+validated and stored, but that plane serves nothing until the next restart. The answer says so the
+way 1.5.5 named a newly declared plugin route: `reload_to_apply` lists the section and `note`
+explains, on `POST /config/apply`, `POST /config/reload` and the named-definition write. `GET
+/config` lists the same sections under `reload_to_apply`. Every field is omitted when nothing is
+pending, so a 1.5.5 configuration's answers are unchanged.
+
 ### Behaviour identical to 1.5.5
 
 Measured by the shadow oracle over 780 cells — boot refusals and warnings, `--validate`,
@@ -750,6 +758,13 @@ each dialect translates, field by field, is listed in the generated
 
 ### Added
 
+- **Admin authority can be granted verb by verb.** A role binding
+  (`auth.role_bindings.<provider>.<role>`) takes `verbs:`, either `"*"` (every verb, exactly
+  `admin_scope: full`) or a list of admin operation names from the closed verb table (`[get_keys,
+  post_keys]`), each admitted whatever scope it needs; a verb outside the list is the same
+  `403 forbidden` a missing scope gets. `admin_scope: read-only | full` stay the 1.5.5 shorthands
+  and a binding without `verbs:` behaves exactly as before. A name the table does not declare fails
+  `--validate`/boot. See [the configuration reference](docs/configuration.md).
 - **`/metrics` carries two plugin-health counters.** `bb_deadline_without_wake_total` counts plugin
   operations settled by their deadline without ever being woken, and `bb_plugin_quarantined_total`
   counts plugin instances the crossing watchdog quarantined. Each is one counter family with its
