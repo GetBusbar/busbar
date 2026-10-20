@@ -689,6 +689,25 @@ max_legacy_sites = 0
 # (`crates/busbar-llm/src/unit/audit.rs`, which never landed), left the tree with the crate. A unit
 # is sealed by the kernel loop's one Audit step for every plane.
 
+# ── 12b. terminal-sites ──────────────────────────────────────────────────────────────────────────
+[rules.terminal-sites]
+why = """Nothing else pins where the terminal record is written. `finish_admitted` / `finish_rejected` \
+are called only from the listed `file::fn` sites: the kernel ingress refusal arms, the arrival \
+host's pass-through and the plane host's trait pass-through. A call anywhere else is a second \
+writer of the terminal record (RED, new site); a listed entry that no longer calls either verb is \
+RED too (stale entry), so the list cannot outlive the code. `max_sites` is the measured total and \
+may only ever fall (Law 9, docs/design/BUSBAR-1.6.0.md Part 1). Entries are `<file>::<fn>`, with \
+`=<n>` when one fn legitimately calls the verbs n times."""
+verbs = ["finish_admitted", "finish_rejected"]
+allowed = [
+  "crates/busbar-kernel/src/ingress/mod.rs::destination_guard=3",
+  "crates/busbar-kernel/src/ingress/mod.rs::admission_door",
+  "crates/busbar-kernel/src/ingress/arrival_host.rs::finish_rejected",
+  "crates/busbar-kernel/src/plane_host/mod.rs::finish_admitted",
+  "crates/busbar-kernel/src/plane_host/mod.rs::finish_rejected",
+]
+max_sites = 7
+
 # ── 13. one-pick-site ────────────────────────────────────────────────────────────────────────────
 [rules.one-pick-site]
 why = """The lane pick has two legitimate callers: the Route loop and the fallback-pool re-entry. \

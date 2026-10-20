@@ -173,6 +173,7 @@ impl ConstructionGate {
             "teller-step-order",
             "one-teller-loop",
             "one-teller-loop:run_gauntlet",
+            "terminal-sites",
             "one-pick-site",
             rules2::ROW_NO_UNIT_CRATES,
             "lean-core",
@@ -361,6 +362,7 @@ impl ConstructionGate {
                 rules::teller_step_order(&tree, &cfg)
             }),
             ("one-teller-loop", &|| rules::one_teller_loop(&tree, &cfg)),
+            ("terminal-sites", &|| rules::terminal_sites(&tree, &cfg)),
             ("one-pick-site", &|| rules::one_pick_site(&tree, &cfg)),
             (rules2::ROW_NO_UNIT_CRATES, &|| {
                 rules2::no_unit_crates(cx, &tree, &cfg)

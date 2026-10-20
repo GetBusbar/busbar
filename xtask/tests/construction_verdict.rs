@@ -224,6 +224,7 @@ const PINNED_PROBLEMS: &[&str] = &[
     "duplicate-dispatch: qa/construction.toml has no [rules.duplicate-dispatch] table",
     "teller-step-order: qa/construction.toml has no [rules.teller-step-order] table",
     "one-teller-loop: qa/construction.toml has no [rules.one-teller-loop] table",
+    "terminal-sites: qa/construction.toml has no [rules.terminal-sites] table",
     "one-pick-site: qa/construction.toml has no [rules.one-pick-site] table",
     "no-unit-crates: qa/construction.toml has no [rules.no-unit-crates] table",
     "manifest-allowlist: qa/construction.toml has no [rules.manifest-allowlist] table",

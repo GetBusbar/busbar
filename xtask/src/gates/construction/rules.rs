@@ -1311,6 +1311,79 @@ pub fn one_teller_loop(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
 // STRUCK (DEV-GREEN row 83, coordinator ruling 2026-10-18): the rule's subject, the retired engine crate's terminal doors and Audit step,
 // left the tree with the crate; its table is struck from qa/construction.toml in the same commit.
 
+// ── 12b. terminal-sites ──────────────────────────────────────────────────────────────────────────
+
+/// One `allowed` entry: `<file>::<fn>`, optionally `=<n>` when the fn legitimately calls a terminal
+/// verb `n` times (default 1).
+fn parse_terminal_entry(raw: &str) -> Result<(String, i64), String> {
+    let (key, n) = match raw.rsplit_once('=') {
+        Some((k, n)) => (
+            k,
+            n.trim().parse::<i64>().map_err(|_| {
+                format!("[rules.terminal-sites] allowed entry `{raw}` has a non-integer count")
+            })?,
+        ),
+        None => (raw, 1),
+    };
+    if n < 1 || !key.contains("::") {
+        return Err(format!(
+            "[rules.terminal-sites] allowed entry `{raw}` is not `<file>::<fn>` or `<file>::<fn>=<n>` \
+             with n >= 1"
+        ));
+    }
+    Ok((key.trim().to_string(), n))
+}
+
+pub fn terminal_sites(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
+    let c = cfg.rule("terminal-sites")?;
+    let max_sites = need_int(c, "max_sites", "terminal-sites")?;
+    let mut allowed: BTreeMap<String, i64> = BTreeMap::new();
+    for raw in c.list_of("allowed") {
+        let (key, n) = parse_terminal_entry(&raw)?;
+        *allowed.entry(key).or_insert(0) += n;
+    }
+
+    let mut seen: BTreeMap<String, i64> = BTreeMap::new();
+    let mut offenders: Vec<String> = Vec::new();
+    let mut total = 0i64;
+    for verb in c.list_of("verbs") {
+        for (rel, l) in call_sites(tree, &verb, None)? {
+            total += 1;
+            let fname = tree
+                .enclosing_fn(rel, l.no)
+                .map(|f| f.name.clone())
+                .unwrap_or_else(|| "<module>".to_string());
+            let key = format!("{rel}::{fname}");
+            let n = seen.entry(key.clone()).or_insert(0);
+            *n += 1;
+            if *n > allowed.get(&key).copied().unwrap_or(0) {
+                offenders.push(format!("new site `{verb}(` at {rel}:{} in {key}", l.no));
+            }
+        }
+    }
+    for key in allowed.keys() {
+        if !seen.contains_key(key) {
+            offenders.push(format!("stale entry {key} no longer calls a terminal verb"));
+        }
+    }
+    let over = total > max_sites;
+    let detail = format!(
+        "{total} production terminal-record site(s) (ceiling {max_sites}, may only fall; Law 9, \
+         BUSBAR-1.6.0.md Part 1); {} off the allowed list: {}",
+        offenders.len(),
+        join_or_none(&offenders)
+    );
+    Ok(vec![plain(
+        "terminal-sites",
+        offenders.is_empty() && !over,
+        "the terminal record is written only from the listed sites",
+        detail,
+        total,
+        max_sites,
+        offenders,
+    )])
+}
+
 // ── 13. one-pick-site ────────────────────────────────────────────────────────────────────────────
 
 pub fn one_pick_site(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {

@@ -424,6 +424,54 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         ],
     ));
 
+    // STATUS ROW 184: THE TERMINAL RECORD'S WRITERS ARE A LIST. A call of either terminal verb from
+    // a fn that is not on `[rules.terminal-sites].allowed` is a new site; a listed entry whose fn no
+    // longer calls either verb is stale; and the tree as it stands is green.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar-kernel/src/zz_planted_terminal_site.rs",
+        "pub fn planted_terminal_writer() {\n    let _ = finish_rejected(app, gov, proto, pool, at, \
+         charged, resp);\n}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a terminal verb called from a fn that is not on the allowed list",
+        &["terminal-sites"],
+        ov,
+        &["new site `finish_rejected(` at crates/busbar-kernel/src/zz_planted_terminal_site.rs:2"],
+    ));
+
+    let stale_entry = "crates/busbar-kernel/src/ingress/mod.rs::zz_planted_stale_writer";
+    if let Ok(text) = cx.read(CEILINGS) {
+        let anchor = "  \"crates/busbar-kernel/src/ingress/mod.rs::admission_door\",\n";
+        let planted = text.replacen(anchor, &format!("{anchor}  \"{stale_entry}\",\n"), 1);
+        if planted != text {
+            let mut ov = on(base);
+            ov.set(CEILINGS, planted);
+            r.push(prove_red(
+                cx,
+                gate,
+                "a listed terminal-site entry that no longer calls either verb",
+                &["terminal-sites"],
+                ov,
+                &[&format!("stale entry {stale_entry}")],
+            ));
+        } else {
+            r.note_infra_failure(
+                "[rules.terminal-sites] allowed anchor could not be found, so the stale-entry arm \
+                 is unproven",
+            );
+        }
+    }
+    r.push(prove_rows_green(
+        cx,
+        gate,
+        "the terminal verbs are called only from the listed sites on the clean tree",
+        &["terminal-sites"],
+        on(base),
+    ));
+
     // Q-GG1 (ARCHITECT ruling a): THE ONE WALK'S PICK IS THE KERNEL'S ONLY ONE. The far end's own
     // pull walk moved into busbar-kernel-egress as `walk::Walk`, whose `Walk::pick` is the one
     // production call of the verb in any kernel crate. A second one beside it — a far end that
