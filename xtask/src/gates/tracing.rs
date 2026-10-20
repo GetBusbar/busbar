@@ -163,6 +163,12 @@ fn declares_level(code: &str) -> bool {
     })
 }
 
+/// The span MACROS a raw line invokes (`span!`, `debug_span!`, …), with the level each fixes.
+/// Not read yet: the RED this commit plants.
+fn span_macros_in(_line: &str) -> Vec<(&'static str, Option<&'static str>)> {
+    Vec::new()
+}
+
 /// The statement-window accumulator, per file. An attribute's token stream may span any number of
 /// lines (a multi-line `fields(…)` list is the common shape); it is complete once the accumulated
 /// code has equal `(` and `)` counts — true immediately for a bare `#[instrument]`.
@@ -258,7 +264,10 @@ fn coverage_plant(cx: &Ctx) -> Result<(Overlay, String), String> {
     let rel = files
         .iter()
         .rev()
-        .find(|f| !f.text.contains("#[instrument"))
+        .find(|f| {
+            !f.text.contains("#[instrument")
+                && !f.text.lines().any(|l| !span_macros_in(l).is_empty())
+        })
         .map(|f| f.rel_str())
         .ok_or_else(|| "the crates walk holds no span-free file to hide".to_string())?;
     let ov = cx
@@ -516,6 +525,37 @@ impl Gate for TracingGate {
             ],
         ));
 
+        // A HAND-ROLLED SPAN IS A SPAN (row 82 D2, ARCHITECT ruling 2026-10-20): `span!` and the
+        // `*_span!` macros are read beside the attribute, and each one's level is checked against
+        // `observability::HOTPATH_LEVEL`. An INFO span and a `span!` at TRACE are flagged, a
+        // multi-line `span!` read to its first argument; a `span!` naming HOTPATH_LEVEL and a
+        // `debug_span!` (HOTPATH_LEVEL's own level) are not.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-core/src/planted_wrong_level_spans.rs",
+            "pub fn f() {\n\
+             \x20   let _a = tracing::info_span!(\"forward\");\n\
+             \x20   let _b = tracing::span!(\n\
+             \x20       tracing::Level::TRACE,\n\
+             \x20       \"forward_once\"\n\
+             \x20   );\n\
+             \x20   let _c = tracing::span!(busbar_kernel::observability::HOTPATH_LEVEL, \"ok\");\n\
+             \x20   let _d = tracing::debug_span!(\"ok\");\n\
+             }\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a hand-rolled span at a level other than HOTPATH_LEVEL is flagged",
+            &[ROW_LEVEL],
+            ov,
+            &[
+                "2 finding(s)",
+                "planted_wrong_level_spans.rs:2",
+                "planted_wrong_level_spans.rs:3",
+            ],
+        ));
+
         // ITEM 228: THE SUBJECT FLOOR. Every production span becomes a hand-rolled `span!`; the
         // file walk still clears 130, and the scan must still refuse to call the empty subject
         // clean.
@@ -527,15 +567,19 @@ impl Gate for TracingGate {
                 .exclude([EXCLUDE_TESTS_DIR]),
         ) {
             for f in &files {
-                if !f.text.lines().any(opens_instrument_attr) {
+                if !f
+                    .text
+                    .lines()
+                    .any(|l| opens_instrument_attr(l) || !span_macros_in(l).is_empty())
+                {
                     continue;
                 }
                 let text: String = f
                     .text
                     .lines()
                     .map(|l| {
-                        if opens_instrument_attr(l) {
-                            "// span moved to a hand-rolled tracing::span!".to_string()
+                        if opens_instrument_attr(l) || !span_macros_in(l).is_empty() {
+                            "// span removed".to_string()
                         } else {
                             l.to_string()
                         }
@@ -548,8 +592,8 @@ impl Gate for TracingGate {
         }
         if planted == 0 {
             report.note_infra_failure(
-                "tracing selftest: the base tree holds no #[instrument] span to remove, so the \
-                 span-floor plant has nothing to take away"
+                "tracing selftest: the base tree holds no span to remove, so the span-floor plant \
+                 has nothing to take away"
                     .to_string(),
             );
         } else {
