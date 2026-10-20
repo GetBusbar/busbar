@@ -54,6 +54,7 @@
 //! cancelled; the write itself runs on).
 
 mod cancel;
+pub mod door;
 mod epoch;
 mod far_end;
 pub(crate) mod hooks;
@@ -61,7 +62,9 @@ mod money;
 mod needs;
 mod probe;
 mod route;
+pub mod route_tables;
 pub mod serve;
+pub mod slots;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -569,10 +572,15 @@ impl PlaneDriver {
         }
     }
 
-    /// The driver's own ticketless `cancel` of `ticket`, on the calling task: its disposition and
-    /// its record writes, or `None` when it did not answer READY.
-    fn cancel_now(&self, ticket: Ticket) -> Option<busbar_contract::plane_calls::Cancelled> {
-        self.calls.cancel(ticket)
+    /// The driver's own ticketless `cancel` of `ticket`, the ticket of the unit keyed `unit`, on
+    /// the calling task: its disposition and its record writes, or `None` when it did not answer
+    /// READY. The unit is named so the plane finds a unit no piece ever reached (audit P-M7).
+    fn cancel_now(
+        &self,
+        ticket: Ticket,
+        unit: u64,
+    ) -> Option<busbar_contract::plane_calls::Cancelled> {
+        self.calls.cancel(ticket, unit)
     }
 }
 
@@ -1078,7 +1086,38 @@ impl PlaneDriver {
         }
     }
 
-    /// A UNIT-LESS REFUSAL (spec Part 3 section 12, "Refusals": "for a refusal with no unit — the
+    /// A KERNEL-SHAPED REFUSAL (ARCHITECT ruling 2026-10-16, 3b B): a refusal the kernel decides
+    /// before any unit exists, outside the auth chain (a method no route at the path takes, a body
+    /// over the cap, a request handler that panicked). The kernel decides `reason`, `status` and the
+    /// `text`; the plane's `refusal` renders the body in `dialect` for `target`. No unit, no
+    /// principal, nothing charged. `None` when the render failed: the kernel answers its own
+    /// generic refusal then.
+    #[must_use]
+    pub fn refuse_kernel(
+        &self,
+        reason: ReasonCode,
+        status: u32,
+        text: &str,
+        dialect: u32,
+        target: &[u8],
+    ) -> Option<Rendered> {
+        let input = RefusalIn {
+            cause: REFUSAL_KERNEL,
+            status,
+            dialect,
+            reason: reason_code(reason),
+            text: AbiStr::over(text.as_bytes()),
+            unit: 0,
+            target: AbiStr::over(target),
+            ..blank_in()
+        };
+        let rendered = self.render_refusal(input, None);
+        // A render that failed (the plane faulted or answered nothing) is no answer: the kernel
+        // writes its own generic one.
+        (!rendered.body.is_empty() || !rendered.fields.is_empty()).then_some(rendered)
+    }
+
+    /// A DOOR ROUTE'S UNIT-LESS REFUSAL (spec Part 3 section 12, "a refusal the kernel decides for a
     /// TARGET, which the plane renders by its own path rule"): `reason`, decided by the kernel before
     /// any unit exists (an unauthenticated caller at the door), rendered by the plane's `refusal` in
     /// `dialect` (the matched route's `refusal_dialect`) for `target`, at the status the plane's tail
