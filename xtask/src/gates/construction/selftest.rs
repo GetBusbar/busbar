@@ -446,7 +446,7 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
 
     let stale_entry = "crates/busbar-kernel/src/ingress/mod.rs::zz_planted_stale_writer";
     if let Ok(text) = cx.read(CEILINGS) {
-        let anchor = "  \"crates/busbar-kernel/src/ingress/mod.rs::admission_door\",\n";
+        let anchor = "verbs = [\"finish_admitted\", \"finish_rejected\"]\nallowed = [\n";
         let planted = text.replacen(anchor, &format!("{anchor}  \"{stale_entry}\",\n"), 1);
         if planted != text {
             let mut ov = on(base);
