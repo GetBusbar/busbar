@@ -364,8 +364,9 @@ extern "C" {
 #define BB_PLANE_SLOT_HYDRATE UINT32_C(13) /* Restore durable state before the listener opens. */
 #define BB_PLANE_SLOT_START UINT32_C(14) /* Begin background work after the listener is bound. */
 #define BB_PLANE_SLOT_PROJECT UINT32_C(15) /* Project a unit's request into the hook kind's request view. */
-#define BB_PLANE_KIND_SLOTS UINT32_C(7) /* How many kind ops the table holds after the lifecycle. */
-#define BB_PLANE_SLOTS UINT32_C(16) /* How many slots the whole table holds ([`OpsHead::slots`]). */
+#define BB_PLANE_SLOT_CATALOG UINT32_C(16) /* Render a catalog route's listing of the names the kernel hands it. */
+#define BB_PLANE_KIND_SLOTS UINT32_C(8) /* How many kind ops the table holds after the lifecycle. */
+#define BB_PLANE_SLOTS UINT32_C(17) /* How many slots the whole table holds ([`OpsHead::slots`]). */
 #define BB_PLANE_CANCEL_OK_PARTIAL UINT32_C(1) /* [`crate::abi::mechanism::lifecycle::CancelOut::disposition`]: the unit was cut after the far end */
 #define BB_PLANE_CANCEL_FAILED UINT32_C(2) /* The unit failed; nothing is billed. */
 #define BB_PLANE_CANCEL_ABORTED UINT32_C(3) /* The plane aborted the unit before the far end answered (a translate-abort); nothing is billed. */
@@ -373,9 +374,12 @@ extern "C" {
 #define BB_PLANE_TAIL_PROBES UINT32_C(2) /* [`PlaneTail::flags`]: the plane answers health probes. A probe is a kernel-originated unit */
 #define BB_PLANE_TAIL_HOOKS_GATED UINT32_C(4) /* [`PlaneTail::flags`]: the plane's request-stage hooks run GATE-FIRST (spec Part 3 section 12 */
 #define BB_PLANE_TAIL_REFUSED_PIECE UINT32_C(8) /* [`PlaneTail::flags`]: the plane takes a unit's refusal as a piece first where the unit's hop */
+#define BB_PLANE_DIALECT_PROVIDER UINT32_C(1) /* [`DialectAuth::flags`]: a provider's `protocol` may name this dialect. */
 #define BB_PLANE_CLAIM_OPEN UINT32_C(1) /* [`Claim::flags`]: the route takes no inbound credential; the kernel admits an arrival on it */
 #define BB_PLANE_CLAIM_EXACT UINT32_C(2) /* [`Claim::flags`]: the target matches exactly. Without it (and without [`CLAIM_PATTERN`]), the */
 #define BB_PLANE_CLAIM_PATTERN UINT32_C(4) /* [`Claim::flags`]: the target is a path pattern. Each `/`-separated segment is a literal, or a */
+#define BB_PLANE_CLAIM_CATALOG UINT32_C(8) /* [`Claim::flags`]: the route is a CATALOG listing, answered with no unit. */
+#define BB_PLANE_CLAIM_SIGNED_INGRESS UINT32_C(16) /* [`Claim::flags`]: callers sign a request to this route's path (its inbound auth point). */
 #define BB_PLANE_CLAIM_RAW_AFFIX UINT32_C(32) /* [`Claim::flags`]: the target is a RAW AFFIX, spelled `<prefix>*<suffix>`. It matches a request */
 #define BB_PLANE_CLAIM_ENTRY UINT32_C(64) /* [`Claim::flags`]: the target is an ENTRY FACT, the request shape whose arrival opens the entry */
 #define BB_PLANE_CLAIM_PROBE UINT32_C(0xffffffff) /* [`ArriveIn::claim`]: the arrival is a health probe, not a snapshot claim. Only a plane whose */
@@ -456,6 +460,11 @@ extern "C" {
 #define BB_PLANE_PIN_FINGERPRINT UINT32_C(1) /* [`TrustKey::flags`], on a [`TRUST_PIN`] key only: the pin object may also carry `fingerprint`. */
 #define BB_PLANE_MECHANISM_ROOT UINT32_C(1) /* [`PinMechanism::flags`]: the mechanism is an authenticity root, so a pin naming it needs key */
 #define BB_PLANE_MECHANISM_PEER_KEY UINT32_C(2) /* [`PinMechanism::flags`], on a root only: the mechanism's key material is the FAR END'S KEY, a pin */
+#define BB_PLANE_CLI_HELP_MARK "\x1e" /* Opens a row (ASCII record separator). */
+#define BB_PLANE_CLI_HELP_NAME_END "\x1f" /* Ends a row's slot name (ASCII unit separator). */
+#define BB_PLANE_CLI_HELP_TAGLINE "tagline" /* The one-line description the help opens with (the first one stated is printed). */
+#define BB_PLANE_CLI_HELP_FLAG "flag" /* A block of the help's `Flags:` rows; its first word is the flag the host accepts. */
+#define BB_PLANE_CLI_HELP_ENDPOINT "endpoint" /* A block of the help's `ENDPOINTS` rows. */
 #define BB_PLANE_MAX_METRIC_LANES ((size_t)16) /* The most lane words a plane's tail may declare ([`PlaneTail::metric_lanes`]). */
 #define BB_PLANE_EXT_OWNED "owned" /* A plane `refresh`'s EXTENSIONS KEY ([`crate::abi::mechanism::extensions`], carried in */
 #define BB_PLANE_MAX_ARRIVAL_SPAN ((size_t)64) /* The longest arrival span name a snapshot may state ([`PlaneSnapshot::arrival_spans`]). */
@@ -576,7 +585,7 @@ extern "C" {
 #define BB_TRANSPORT_METHOD_TRACE UINT32_C(256) /* `TRACE`. */
 #define BB_TRANSPORT_METHOD_ANY UINT32_C(511) /* Every method. */
 #define BB_TRANSPORT_PATH_EXACT UINT32_C(1) /* The whole path equals the route's path. */
-#define BB_TRANSPORT_PATH_PATTERN UINT32_C(2) /* A segment pattern: `/` separated, a `{name}` segment matches one segment of any value, a last */
+#define BB_TRANSPORT_PATH_PATTERN UINT32_C(2) /* A segment pattern: `/` separated, a `{name}` segment matches one segment of any value, a */
 #define BB_TRANSPORT_PATH_PREFIX UINT32_C(3) /* Exactly one segment under the route's path (`/a` admits `/a/b`, never `/a`, `/ab` or `/a/b/c`). */
 #define BB_TRANSPORT_PATH_SUFFIX UINT32_C(4) /* The path ends with the route's path. */
 #define BB_TRANSPORT_PATH_CONTAINS UINT32_C(5) /* The path contains the route's path. */
@@ -850,6 +859,8 @@ typedef uint32_t bb_plane_RefusalCode;
 #define BB_PLANE_RefusalCode_DeadlineExceeded ((bb_plane_RefusalCode)41)
 #define BB_PLANE_RefusalCode_Untrusted ((bb_plane_RefusalCode)42)
 #define BB_PLANE_RefusalCode_CredentialUnavailable ((bb_plane_RefusalCode)43)
+#define BB_PLANE_RefusalCode_MethodNotAllowed ((bb_plane_RefusalCode)44)
+#define BB_PLANE_RefusalCode_Internal ((bb_plane_RefusalCode)45)
 
 /* ---- forward declarations ---- */
 typedef struct bb_mech_AbiStr bb_mech_AbiStr;
@@ -1032,6 +1043,8 @@ typedef struct bb_plane_RefusalIn bb_plane_RefusalIn;
 typedef struct bb_plane_RefusalOut bb_plane_RefusalOut;
 typedef struct bb_plane_ServeIn bb_plane_ServeIn;
 typedef struct bb_plane_ServeOut bb_plane_ServeOut;
+typedef struct bb_plane_CatalogIn bb_plane_CatalogIn;
+typedef struct bb_plane_CatalogOut bb_plane_CatalogOut;
 typedef struct bb_plane_PlaneDriveIn bb_plane_PlaneDriveIn;
 typedef struct bb_plane_PlaneDriveOut bb_plane_PlaneDriveOut;
 typedef struct bb_plane_PlaneCancelIn bb_plane_PlaneCancelIn;
@@ -2563,7 +2576,7 @@ struct bb_export_Tail {
     size_t routes_len;
 };
 
-/* The plane kind's ops table: the lifecycle, then the plane's seven ops. */
+/* The plane kind's ops table: the lifecycle, then the plane's eight ops. */
 struct bb_plane_Ops {
     bb_mech_OpsHead head;
     bb_mech_Op arrive;
@@ -2573,12 +2586,13 @@ struct bb_plane_Ops {
     bb_mech_Op hydrate;
     bb_mech_Op start;
     bb_mech_Op project;
+    bb_mech_Op catalog;
 };
 
 /* A dialect's default auth style (the 1.5.5 dialect defaults), as data. */
 struct bb_plane_DialectAuth {
     uint32_t dialect;
-    uint32_t _reserved;
+    uint32_t flags;
     bb_mech_AbiStr style;
     bb_mech_Blob params;
 };
@@ -2946,6 +2960,36 @@ struct bb_plane_ServeOut {
     uint32_t audit;
     uint32_t records_written;
     uint32_t records_needed;
+};
+
+/* `catalog`'s `in`: a [`CLAIM_CATALOG`] route's request head and the names the kernel lists for */
+struct bb_plane_CatalogIn {
+    bb_mech_InHead head;
+    bb_mech_AbiStr method;
+    bb_mech_AbiStr target;
+    const bb_mech_Field *fields;
+    size_t fields_len;
+    const bb_mech_AbiStr *names;
+    size_t names_len;
+    uint8_t *reply_buf;
+    size_t reply_cap;
+    bb_plane_OutField *fields_buf;
+    size_t fields_cap;
+    uint8_t *arena_buf;
+    size_t arena_cap;
+};
+
+/* `catalog`'s `out`. */
+struct bb_plane_CatalogOut {
+    bb_mech_OutHead head;
+    uint64_t reply_written;
+    uint64_t reply_needed;
+    uint64_t arena_written;
+    uint64_t arena_needed;
+    uint32_t status;
+    uint32_t fields_written;
+    uint32_t fields_needed;
+    uint32_t _reserved;
 };
 
 /* The plane's `drive` `in`: the lifecycle's, plus a HOST buffer for the sessions with output */
@@ -4066,7 +4110,7 @@ struct bb_hio_SpawnIn {
     size_t env_len;
 };
 
-/* ---- layout proof: 290 of 294 structures are pinned by the golden ---- */
+/* ---- layout proof: 292 of 296 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
@@ -5162,7 +5206,7 @@ BB_ASSERT(offsetof(bb_export_Tail, streams) == 8, "bb_export_Tail.streams: offse
 BB_ASSERT(offsetof(bb_export_Tail, streams_len) == 16, "bb_export_Tail.streams_len: offset");
 BB_ASSERT(offsetof(bb_export_Tail, routes) == 24, "bb_export_Tail.routes: offset");
 BB_ASSERT(offsetof(bb_export_Tail, routes_len) == 32, "bb_export_Tail.routes_len: offset");
-BB_ASSERT(sizeof(bb_plane_Ops) == 136, "bb_plane_Ops: size");
+BB_ASSERT(sizeof(bb_plane_Ops) == 144, "bb_plane_Ops: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_Ops) == 8, "bb_plane_Ops: alignment");
 BB_ASSERT(offsetof(bb_plane_Ops, head) == 0, "bb_plane_Ops.head: offset");
 BB_ASSERT(offsetof(bb_plane_Ops, arrive) == 80, "bb_plane_Ops.arrive: offset");
@@ -5172,10 +5216,11 @@ BB_ASSERT(offsetof(bb_plane_Ops, serve) == 104, "bb_plane_Ops.serve: offset");
 BB_ASSERT(offsetof(bb_plane_Ops, hydrate) == 112, "bb_plane_Ops.hydrate: offset");
 BB_ASSERT(offsetof(bb_plane_Ops, start) == 120, "bb_plane_Ops.start: offset");
 BB_ASSERT(offsetof(bb_plane_Ops, project) == 128, "bb_plane_Ops.project: offset");
+BB_ASSERT(offsetof(bb_plane_Ops, catalog) == 136, "bb_plane_Ops.catalog: offset");
 BB_ASSERT(sizeof(bb_plane_DialectAuth) == 48, "bb_plane_DialectAuth: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_DialectAuth) == 8, "bb_plane_DialectAuth: alignment");
 BB_ASSERT(offsetof(bb_plane_DialectAuth, dialect) == 0, "bb_plane_DialectAuth.dialect: offset");
-BB_ASSERT(offsetof(bb_plane_DialectAuth, _reserved) == 4, "bb_plane_DialectAuth._reserved: offset");
+BB_ASSERT(offsetof(bb_plane_DialectAuth, flags) == 4, "bb_plane_DialectAuth.flags: offset");
 BB_ASSERT(offsetof(bb_plane_DialectAuth, style) == 8, "bb_plane_DialectAuth.style: offset");
 BB_ASSERT(offsetof(bb_plane_DialectAuth, params) == 24, "bb_plane_DialectAuth.params: offset");
 BB_ASSERT(sizeof(bb_plane_OpClass) == 32, "bb_plane_OpClass: size");
@@ -5491,6 +5536,32 @@ BB_ASSERT(offsetof(bb_plane_ServeOut, fields_needed) == 136, "bb_plane_ServeOut.
 BB_ASSERT(offsetof(bb_plane_ServeOut, audit) == 140, "bb_plane_ServeOut.audit: offset");
 BB_ASSERT(offsetof(bb_plane_ServeOut, records_written) == 144, "bb_plane_ServeOut.records_written: offset");
 BB_ASSERT(offsetof(bb_plane_ServeOut, records_needed) == 148, "bb_plane_ServeOut.records_needed: offset");
+BB_ASSERT(sizeof(bb_plane_CatalogIn) == 200, "bb_plane_CatalogIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_plane_CatalogIn) == 8, "bb_plane_CatalogIn: alignment");
+BB_ASSERT(offsetof(bb_plane_CatalogIn, head) == 0, "bb_plane_CatalogIn.head: offset");
+BB_ASSERT(offsetof(bb_plane_CatalogIn, method) == 88, "bb_plane_CatalogIn.method: offset");
+BB_ASSERT(offsetof(bb_plane_CatalogIn, target) == 104, "bb_plane_CatalogIn.target: offset");
+BB_ASSERT(offsetof(bb_plane_CatalogIn, fields) == 120, "bb_plane_CatalogIn.fields: offset");
+BB_ASSERT(offsetof(bb_plane_CatalogIn, fields_len) == 128, "bb_plane_CatalogIn.fields_len: offset");
+BB_ASSERT(offsetof(bb_plane_CatalogIn, names) == 136, "bb_plane_CatalogIn.names: offset");
+BB_ASSERT(offsetof(bb_plane_CatalogIn, names_len) == 144, "bb_plane_CatalogIn.names_len: offset");
+BB_ASSERT(offsetof(bb_plane_CatalogIn, reply_buf) == 152, "bb_plane_CatalogIn.reply_buf: offset");
+BB_ASSERT(offsetof(bb_plane_CatalogIn, reply_cap) == 160, "bb_plane_CatalogIn.reply_cap: offset");
+BB_ASSERT(offsetof(bb_plane_CatalogIn, fields_buf) == 168, "bb_plane_CatalogIn.fields_buf: offset");
+BB_ASSERT(offsetof(bb_plane_CatalogIn, fields_cap) == 176, "bb_plane_CatalogIn.fields_cap: offset");
+BB_ASSERT(offsetof(bb_plane_CatalogIn, arena_buf) == 184, "bb_plane_CatalogIn.arena_buf: offset");
+BB_ASSERT(offsetof(bb_plane_CatalogIn, arena_cap) == 192, "bb_plane_CatalogIn.arena_cap: offset");
+BB_ASSERT(sizeof(bb_plane_CatalogOut) == 144, "bb_plane_CatalogOut: size");
+BB_ASSERT(BB_ALIGNOF(bb_plane_CatalogOut) == 8, "bb_plane_CatalogOut: alignment");
+BB_ASSERT(offsetof(bb_plane_CatalogOut, head) == 0, "bb_plane_CatalogOut.head: offset");
+BB_ASSERT(offsetof(bb_plane_CatalogOut, reply_written) == 96, "bb_plane_CatalogOut.reply_written: offset");
+BB_ASSERT(offsetof(bb_plane_CatalogOut, reply_needed) == 104, "bb_plane_CatalogOut.reply_needed: offset");
+BB_ASSERT(offsetof(bb_plane_CatalogOut, arena_written) == 112, "bb_plane_CatalogOut.arena_written: offset");
+BB_ASSERT(offsetof(bb_plane_CatalogOut, arena_needed) == 120, "bb_plane_CatalogOut.arena_needed: offset");
+BB_ASSERT(offsetof(bb_plane_CatalogOut, status) == 128, "bb_plane_CatalogOut.status: offset");
+BB_ASSERT(offsetof(bb_plane_CatalogOut, fields_written) == 132, "bb_plane_CatalogOut.fields_written: offset");
+BB_ASSERT(offsetof(bb_plane_CatalogOut, fields_needed) == 136, "bb_plane_CatalogOut.fields_needed: offset");
+BB_ASSERT(offsetof(bb_plane_CatalogOut, _reserved) == 140, "bb_plane_CatalogOut._reserved: offset");
 BB_ASSERT(sizeof(bb_plane_PlaneDriveIn) == 112, "bb_plane_PlaneDriveIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneDriveIn) == 8, "bb_plane_PlaneDriveIn: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneDriveIn, drive) == 0, "bb_plane_PlaneDriveIn.drive: offset");

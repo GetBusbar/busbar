@@ -73,8 +73,10 @@ use busbar_contract::abi::plane::{
     SHAPE_PIECEWISE, SPAN_ABSENT, TAIL_FALLBACK, TAIL_PROBES, UNITS_FLOOR, UNITS_REPORTED,
     VERDICT_HARD, VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
 };
+use busbar_contract::abi::plane::{CatalogIn, CatalogOut, CLAIM_CATALOG, DIALECT_PROVIDER};
 use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
 use busbar_contract::abi::plane::{RecordWrite, AUDIT_DEGRADED, RECORD_AUDIT};
+use busbar_contract::abi::plane::{CLAIM_RAW_AFFIX, CLAIM_SIGNED_INGRESS};
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::life::Refusal;
 use busbar_contract::abi::sdk::publish::{ClaimSpec, SnapshotSpec};
@@ -97,6 +99,12 @@ use crate::exchange::webhook::{self, Webhooks};
 use crate::exchange::{handler_of, probe, project, refuse};
 use crate::meta::PROVIDER_KEYS;
 use crate::LlmPlane;
+
+/// THE PROTOCOL AXIS of the door's linked row: the plane's own six dialect declarations, in the
+/// order an operator sees, as contract data (`busbar_contract::protocol::ProtocolDecl`). A
+/// composition root that links this door seeds the kernel's protocol registry from them, so the
+/// kernel names no dialect (ARCHITECT 2026-10-16 ruling 3).
+pub use crate::codec::DECLS as PROTOCOLS;
 
 // ── the Statement ────────────────────────────────────────────────────────────────────────────────
 
@@ -278,11 +286,16 @@ const _: () = assert!(
     "EGRESS_STYLES names every dialect's default style, each once"
 );
 
+/// THE TAIL'S PER-DIALECT FLAGS (ARCHITECT ruling 2026-10-16, item 3): a provider's `protocol`
+/// may name every dialect this plane speaks ([`DIALECT_PROVIDER`]); the kernel reads it as declared
+/// data.
+const DIALECT_FLAG: u32 = DIALECT_PROVIDER;
+
 const fn dialect_auth(i: usize) -> DialectAuth {
     let params = DIALECTS[i].egress_params.as_bytes();
     DialectAuth {
         dialect: i as u32,
-        _reserved: 0,
+        flags: DIALECT_FLAG,
         style: abi_str(DIALECTS[i].egress_style),
         // The default style's parameters (ARCHITECT RULING 2026-10-03, Q-L6-AUTHPARAMS).
         params: if params.is_empty() {
@@ -399,7 +412,7 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     audit_kind: NONE,
     signing_domain: NONE,
     signing_kid_prefix: NONE,
-    cli_help: NONE,
+    cli_help: abi_str(crate::meta::CLI_HELP_TEXT),
     dialects: DIALECT_NAMES.as_ptr(),
     dialects_len: DIALECT_NAMES.len(),
     dialect_auth: DIALECT_AUTH.as_ptr(),
@@ -740,7 +753,24 @@ const ENTRY_FACTS: [(&str, &str); 19] = [
     ("path:*/converse-stream", BEDROCK_CONVERSE_STREAM),
 ];
 
-/// THE PLANE'S CLAIMS: [`DIALECT_CLAIMS`], the [`ENTRY_FACTS`], then the previous release's
+/// THE SIGNED PATHS (ARCHITECT rulings 2026-10-16, 3b A, and 2026-10-17): the request shapes whose
+/// callers sign each request (the bedrock dialect's converse surfaces), claimed as raw affixes
+/// flagged `CLAIM_SIGNED_INGRESS`. The kernel matches each against the raw path as the previous
+/// release did (`starts_with("/model/")` and `ends_with` the surface), odd paths included, an
+/// unencoded inference-profile ARN's raw `/` and an encoded one alike, whatever the verb. They mount
+/// no route: the `/model` subtree claim serves the dialect's paths, and its other surfaces
+/// (`/model/{id}/invoke`) sign nothing.
+const SIGNED_CLAIMS: [&str; 2] = ["/model/*/converse", "/model/*/converse-stream"];
+
+/// THE LIST-MODELS CATALOG ROUTES (ARCHITECT ruling 2026-10-16, 3b C): `GET` on each listing path,
+/// exact, answered with no unit by [`CatalogSlot`] over the names the kernel lists for the caller.
+const CATALOG_PATHS: [&str; 2] = [
+    crate::exchange::catalog::PATH,
+    crate::exchange::catalog::BETA_PATH,
+];
+
+/// THE PLANE'S CLAIMS: [`DIALECT_CLAIMS`], the [`ENTRY_FACTS`], the [`SIGNED_CLAIMS`], the
+/// [`CATALOG_PATHS`], then the previous release's
 /// fallback, a prefix claim on `/` per verb wearing the residual default dialect. The fallback
 /// reaches every path at any depth no more specific claim or kernel route takes (CG-62); the router
 /// has no plane-shaped branch.
@@ -748,6 +778,11 @@ const ENTRY_FACTS: [(&str, &str); 19] = [
 pub fn claims() -> Vec<ClaimSpec> {
     let fallback = crate::exchange::arrive::envelope_for("/");
     let dialect_of = |dialect: &str| u16::try_from(dialect_index(dialect)).unwrap_or(0);
+    let catalogs = CATALOG_PATHS.iter().map(|&path| {
+        let mut claim = ClaimSpec::new("GET", path, TRANSPORT, CLAIM_EXACT | CLAIM_CATALOG);
+        claim.refusal_dialect = dialect_of(crate::exchange::arrive::envelope_for(path));
+        claim
+    });
     let claimed = DIALECT_CLAIMS
         .iter()
         .copied()
@@ -760,12 +795,27 @@ pub fn claims() -> Vec<ClaimSpec> {
     let entries = ENTRY_FACTS.iter().map(|&(target, span)| {
         ClaimSpec::new("POST", target, TRANSPORT, CLAIM_ENTRY).with_arrival_span(span)
     });
+    let signed = SIGNED_CLAIMS.iter().map(|&target| {
+        let mut claim = ClaimSpec::new(
+            "POST",
+            target,
+            TRANSPORT,
+            CLAIM_RAW_AFFIX | CLAIM_SIGNED_INGRESS,
+        );
+        claim.refusal_dialect = dialect_of(crate::exchange::arrive::envelope_for(target));
+        claim
+    });
     let fallbacks = FALLBACK_VERBS.iter().map(|&verb| {
         let mut claim = ClaimSpec::new(verb, "/", TRANSPORT, 0);
         claim.refusal_dialect = dialect_of(fallback);
         claim
     });
-    claimed.chain(entries).chain(fallbacks).collect()
+    claimed
+        .chain(entries)
+        .chain(signed)
+        .chain(catalogs)
+        .chain(fallbacks)
+        .collect()
 }
 
 /// THE RECEIVERS' CLAIMS: each webhook receiver its `webhooks:` section switches on, an exact path
@@ -1820,6 +1870,56 @@ slot!(
     }
 );
 
+slot!(
+    /// `catalog`: a list-models catalog route's listing of the names the kernel hands it, in the
+    /// envelope of the dialect the request names (`exchange::catalog`). Pure, and no unit exists.
+    CatalogSlot, CatalogIn, CatalogOut, |_instance, input, mut out| {
+        let target = String::from_utf8_lossy(input.field(|i| &i.target).bytes()).into_owned();
+        let path = target.split_once('?').map_or(target.as_str(), |(p, _)| p);
+        let head: Vec<(Vec<u8>, Vec<u8>)> = input
+            .fields()
+            .iter()
+            .map(|f| {
+                (
+                    f.field(|f| &f.name).bytes().to_vec(),
+                    f.field(|f| &f.value).bytes().to_vec(),
+                )
+            })
+            .collect();
+        let names: Vec<String> = input
+            .names()
+            .iter()
+            .map(|n| String::from_utf8_lossy(n.bytes()).into_owned())
+            .collect();
+        let rendered = crate::exchange::catalog::render_listing(path, &head, &names);
+        let (mut reply, mut fields, mut arena) =
+            (input.reply_buf(), input.fields_buf(), input.arena_buf());
+        reply.extend(&rendered.body);
+        for (name, value) in &rendered.fields {
+            fields.push(OutField {
+                name: arena.span(name.as_bytes()),
+                value: arena.span(value),
+            });
+        }
+        let short = !(reply.fits() && fields.fits() && arena.fits());
+        let (rw, rnd) = reply.settle(short);
+        let (fw, fnd) = fields.settle(short);
+        let (aw, and) = arena.settle(short);
+        out.set(|o| &o.reply_written, rw as u64);
+        out.set(|o| &o.reply_needed, rnd as u64);
+        out.set(|o| &o.fields_written, fw as u32);
+        out.set(|o| &o.fields_needed, fnd as u32);
+        out.set(|o| &o.arena_written, aw as u64);
+        out.set(|o| &o.arena_needed, and as u64);
+        out.set(|o| &o.status, u32::from(rendered.status));
+        if short {
+            Outcome::Failed
+        } else {
+            Outcome::Ready
+        }
+    }
+);
+
 busbar_contract::plugin_door! {
     ops: busbar_contract::abi::plane::Ops,
     statement: STATEMENT,
@@ -1831,5 +1931,6 @@ busbar_contract::plugin_door! {
     kind_ops: {
         arrive: Safe<Arrive>, on_piece: Safe<OnPiece>, refusal: Safe<RefusalSlot>,
         serve: Safe<Serve>, hydrate: Safe<Hydrate>, start: Safe<Start>, project: Safe<Project>,
+        catalog: Safe<CatalogSlot>,
     },
 }
