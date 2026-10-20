@@ -4589,8 +4589,8 @@ async fn sealed(
     rig.records()
 }
 
-/// ARRIVAL AND ENCODE, ON THE DOOR (root-llm; the door-path successor of the node's
-/// `every_fixture_reaches_the_end_it_names` Malformed fixture and of
+/// ARRIVAL AND ENCODE, ON THE DOOR (the pools door's root leg; the door-path successor of the
+/// node's `every_fixture_reaches_the_end_it_names` Malformed fixture and of
 /// `the_route_seam_is_driven_once_by_a_served_unit_and_never_by_a_refused_one`): a served chat is
 /// ONE unit -- one admitted request, dispatched exactly once, one sealed record ending `Completed`;
 /// a body the plane cannot read is a 400 that is never dispatched, moves nothing on the key's
@@ -4654,7 +4654,7 @@ async fn the_pools_door_answers_each_request_as_one_unit_and_an_unreadable_one_b
     );
 }
 
-/// DECODE, ON THE DOOR (root-llm; the door-path successor of the node's
+/// DECODE, ON THE DOOR (the pools door's root leg; the door-path successor of the node's
 /// `the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it`): each of the six caller
 /// dialects the door claims decodes a well-formed request into a unit that is served (200,
 /// dispatched once), and refuses a body it cannot read on the same path with a 400 that is never
@@ -4709,7 +4709,7 @@ async fn the_pools_door_decodes_every_dialect_and_refuses_an_unreadable_body_in_
     }
 }
 
-/// AUTHENTICATE, ON THE DOOR (root-llm; the door-path successor of the node's
+/// AUTHENTICATE, ON THE DOOR (the pools door's root leg; the door-path successor of the node's
 /// `the_loop_attributes_the_identity_the_door_resolved_and_invents_none`): the key the caller
 /// presents is the one the unit is admitted and charged under, and a bearer this deployment never
 /// minted, or no credential at all, is refused 401 before the plane: nothing dispatched, nothing
@@ -4749,7 +4749,7 @@ async fn the_pools_door_admits_the_presented_key_and_refuses_an_unknown_one_befo
     }
 }
 
-/// APPROVE, ON THE DOOR (root-llm; the door-path successor of the node's
+/// APPROVE, ON THE DOOR (the pools door's root leg; the door-path successor of the node's
 /// `a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_changes_nothing`): the
 /// approve step passes a key its grant reaches (the unit is served and ends `Completed`), and a key
 /// whose grant does not reach the pool is stopped BEFORE approve, at verify's destination guard,
@@ -4815,7 +4815,7 @@ async fn the_pools_door_approves_a_granted_key_and_an_ungranted_one_never_reache
     );
 }
 
-/// AUDIT-CHAIN, ON THE DOOR (root-llm; the door-path successor of the node's
+/// AUDIT-CHAIN, ON THE DOOR (the pools door's root leg; the door-path successor of the node's
 /// `every_unit_the_node_answers_served_or_refused_seals_one_record_on_one_tamper_evident_chain` and
 /// `a_driven_planes_abandoned_end_seals_one_audit_record`): every unit the pools door answers,
 /// served or refused inside the loop (the caller's group allows one request an hour), seals ONE
