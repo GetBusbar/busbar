@@ -89,10 +89,10 @@
 // sites, is what states whether a member of this module is reachable.
 #![cfg_attr(not(test), allow(dead_code))]
 
-pub mod approvals;
-pub mod config;
-pub mod door;
 pub mod registry;
+/// The door-plane registry fold at its former path: the pinned `busbar-plane-a2a` root suite
+/// (compiled into this workspace's root tests) names `busbar_kernel::plane::door` until its next pin.
+pub use crate::plane_driver::door;
 // A durable task set and its per-task provenance chain were RELOCATED wholesale to a plane crate
 // in the 1.7.0 plane extraction: a task is a SINGLE-plane mechanism, so it lives on the plane that
 // owns it, backed by the generic neutral `PlaneRecord` store. Core names none of it.
