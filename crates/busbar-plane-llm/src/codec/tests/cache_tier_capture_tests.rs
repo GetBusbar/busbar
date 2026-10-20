@@ -415,13 +415,17 @@ fn cohere_truncated_recovery_bills_the_same_bucket_as_the_buffered_path() {
         "one completion must produce ONE invoice: the truncated-recovery path and the buffered \
          path must ledger identical counts.\n  recovered: {recovered:?}\n   buffered: {buffered:?}"
     );
+    let raw_tokens = |key: &str| {
+        recorded
+            .pointer(&format!("/usage/tokens/{key}"))
+            .and_then(Value::as_u64)
+            .expect("the recording states its raw tokens")
+    };
     assert_eq!(
-        buffered.input, 25,
-        "and the bucket they agree on is the BILLED one (25), not the raw count: {buffered:?}"
-    );
-    assert_eq!(
-        buffered.output, 13,
-        "the billed output attribution must win over the raw count too: {buffered:?}"
+        (buffered.input, buffered.output),
+        (raw_tokens("input_tokens"), raw_tokens("output_tokens")),
+        "and the bucket they agree on is the raw `tokens` 1.5.5 billed, never billed_units (25 / 13) \
+         (row 159 round c, plane-llm LLM2 HIGH 1): {buffered:?}"
     );
 }
 

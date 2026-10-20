@@ -323,12 +323,13 @@ fn readable_blocks_are_not_opaque() {
     }
 }
 
-/// COHERE `billed_units` (1.6.0 M1, `BUSBAR-1.6.0.md` THE DESIGN, §7): when Cohere reports a separately-metered billed bucket,
-/// `to_token_usage` must ledger the BILLED input/output, NOT the raw `tokens` totals — the reserved
-/// tiers (via `engine::usage::tier_tokens`) follow. This is the deliberate per-dialect ledgered-count
-/// change; every dialect that leaves `billed_*` as `None` still projects the raw totals unchanged.
+/// COHERE `billed_units` NEVER REPLACE THE RAW TOKENS THE KEY IS BILLED (row 159 round c, plane-llm
+/// LLM2 HIGH 1; BUSBAR-1.6.0.md l.4827 "Billing never moves"): 1.5.5 read only `usage.tokens` and
+/// billed those (v1.5.5 `crates/busbar/src/proto/cohere/reader.rs:964-979`, `:709-729`), and no
+/// signed register entry moves that figure. The billed counts stay as attribution. RED: the billed
+/// 90 / 35 won the reserved tiers over the raw 100 / 40.
 #[test]
-fn cohere_billed_units_win_over_raw_in_to_token_usage() {
+fn cohere_billed_units_never_replace_the_raw_tokens_in_to_token_usage() {
     let raw_wins_when_absent = IrUsage {
         input_tokens: 100,
         output_tokens: 40,
@@ -357,10 +358,10 @@ fn cohere_billed_units_win_over_raw_in_to_token_usage() {
     let tu = billed.to_token_usage();
     assert_eq!(
         (tu.input, tu.output),
-        (90, 35),
-        "billed_units present → the ledger bills the BILLED counts, not the raw tokens bucket"
+        (100, 40),
+        "billed_units present → the ledger still bills the raw tokens bucket, as 1.5.5 did"
     );
-    // The reserved-tier projection the ledger actually accrues follows the billed counts.
+    // The reserved-tier projection the ledger actually accrues follows the raw counts.
     let tier = crate::codec::wire_shim::tier_usage(&tu);
     let u = |k: &str| tier.usage_units.get(k).copied().unwrap_or(0);
     assert_eq!(
@@ -368,7 +369,7 @@ fn cohere_billed_units_win_over_raw_in_to_token_usage() {
             u(busbar_contract::records::UNIT_INPUT),
             u(busbar_contract::records::UNIT_OUTPUT)
         ),
-        (90, 35)
+        (100, 40)
     );
 }
 

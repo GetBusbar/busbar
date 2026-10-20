@@ -158,13 +158,13 @@ fn same_proto_tap_carries_cohere_billed_units() {
         Some(3),
         "streamed Cohere must carry billed_units.classifications"
     );
-    // The billed counts are the ledgered ones (`to_token_usage` lets them win over the raw totals),
-    // so a streamed Cohere call now meters the same figures its buffered twin does.
+    // The raw `tokens` are the ledgered counts, as 1.5.5 billed them; the billed counts ride as
+    // attribution (row 159 round c, plane-llm LLM2 HIGH 1).
     let ledgered = u.to_token_usage();
     assert_eq!(
         (ledgered.input, ledgered.output),
-        (120, 50),
-        "streamed Cohere must ledger the billed counts, not the raw totals"
+        (100, 40),
+        "streamed Cohere must ledger the raw tokens 1.5.5 billed, not billed_units"
     );
 }
 

@@ -238,8 +238,8 @@ fn buffered_billing_and_stream_tap_agree_on_cohere_billed_units() {
     let streamed = ir.usage.to_token_usage();
     assert_eq!(
         (streamed.input, streamed.output),
-        (120, 50),
-        "the stream tap ledgers the BILLED counts"
+        (100, 40),
+        "the stream tap ledgers the raw tokens 1.5.5 billed, not billed_units (row 159 round c, plane-llm LLM2 HIGH 1)"
     );
 
     // The BUFFERED billing arm over the same IR.
@@ -255,6 +255,6 @@ fn buffered_billing_and_stream_tap_agree_on_cohere_billed_units() {
     assert_eq!(
         buffered, streamed,
         "buffered and streamed billing must be ONE projection of one completion's usage — the \
-         buffered arm must not rebuild TokenUsage from the raw totals and ignore billed_units"
+         buffered arm must not grow a second projection of the usage"
     );
 }

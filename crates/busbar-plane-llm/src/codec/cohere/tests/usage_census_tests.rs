@@ -16,9 +16,10 @@ use crate::codec::usage_census::{
     at, bump, class_of, ledgered, lock_counts, moved, slot, Ledgered, IN, NONE, OUT,
 };
 
-/// Which turn a count is measured on. Cohere invoices `billed_units`, whose token counts WIN the
-/// reserved input/output classes over the raw `tokens` (`IrUsage::to_token_usage`), so a raw count
-/// is measured on a turn that reports no billed tokens, where it is what the ledger holds.
+/// Which turn a count is measured on. The raw `tokens` bucket is what the key is billed, as 1.5.5
+/// billed it (v1.5.5 `crates/busbar/src/proto/cohere/reader.rs:964-979` and `:709-729` read only
+/// `tokens.*`); `billed_units`' token counts are attribution the Cohere writer re-emits and move no
+/// class (row 159 round c, plane-llm LLM2 HIGH 1: "Billing never moves").
 #[derive(Clone, Copy)]
 enum Turn {
     /// Raw `tokens`, the cache hit and every `billed_units` count.
@@ -28,8 +29,9 @@ enum Turn {
 }
 
 /// What each Cohere `usage` count IS, as the move one more of it makes on the ledgered units
-/// (the four token tiers and every open class), and the turn it is measured on. The billed token
-/// counts are the reserved input/output classes; the cache hit stays inside the input (1.5.5);
+/// (the four token tiers and every open class), and the turn it is measured on. The raw token
+/// counts are the reserved input/output classes and the billed token counts move none (1.5.5);
+/// the cache hit stays inside the input (1.5.5);
 /// `search_units` is the open class `search_units`; `classifications` is the open class
 /// `classifications` (owner LEDGER-100: every reported unit is a ledger line).
 const COHERE_COUNT_CLASSES: &[(&str, (Turn, Ledgered))] = &[
@@ -39,8 +41,8 @@ const COHERE_COUNT_CLASSES: &[(&str, (Turn, Ledgered))] = &[
     // (v1.5.5 `crates/busbar/src/proto/cohere/reader.rs:964-979` and `:709-729` read only
     // `tokens.*`): 7 more cached tokens move nothing, on the raw turn where the raw input is the bill.
     ("cached_tokens", (Turn::Raw, NONE)),
-    ("billed_units.input_tokens", (Turn::Billed, at(IN, 1))),
-    ("billed_units.output_tokens", (Turn::Billed, at(OUT, 1))),
+    ("billed_units.input_tokens", (Turn::Billed, NONE)),
+    ("billed_units.output_tokens", (Turn::Billed, NONE)),
     (
         "billed_units.search_units",
         (Turn::Billed, at(slot("search_units"), 1)),

@@ -379,3 +379,91 @@ fn disabled_thinking_stays_in_extra() {
         "{gout}"
     );
 }
+
+/// ROW 159 ROUND C, plane-llm LLM2 HIGH 2, `$`: an Anthropic caller's reasoning ask leaves it only
+/// as 1.5.5 let it, the `{type:"enabled", budget_tokens:N}` budget (v1.5.5
+/// `crates/busbar/src/proto/anthropic/reader.rs:278-289`: "Any other form ({type:"disabled"},
+/// malformed) stays in `extra` untouched"). Adaptive thinking, an `output_config.effort` word and
+/// `disabled` stay in `extra`, re-emitted on a same-dialect hop and dropped at a foreign seam, so
+/// they switch no foreign model's billed thinking on or off (BUSBAR-1.6.0.md l.4827 "Billing never
+/// moves"). RED: each was promoted to an Effort, Dynamic or Off ask that crossed the seam.
+#[test]
+fn only_an_enabled_budget_leaves_an_anthropic_caller_as_in_1_5_5() {
+    for (thinking, output_config) in [
+        (Some(serde_json::json!({"type": "adaptive"})), None),
+        (
+            Some(serde_json::json!({"type": "adaptive"})),
+            Some(serde_json::json!({"effort": "high"})),
+        ),
+        (Some(serde_json::json!({"type": "disabled"})), None),
+        (None, Some(serde_json::json!({"effort": "medium"}))),
+    ] {
+        let mut body = serde_json::json!({
+            "model": "m", "max_tokens": 16000,
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        if let Some(t) = &thinking {
+            body["thinking"] = t.clone();
+        }
+        if let Some(c) = &output_config {
+            body["output_config"] = c.clone();
+        }
+        let ir = AnthropicReader.read_request(&body).expect("parses");
+        assert_eq!(ir.reasoning, None, "no ask leaves the caller: {body}");
+        if let Some(t) = &thinking {
+            assert_eq!(ir.extra.get("thinking"), Some(t), "{body}");
+        }
+        let gout = Protocol::gemini()
+            .writer()
+            .write_request(crate::codec::test_host::HOST, &ir);
+        assert!(
+            gout.pointer("/generationConfig/thinkingConfig").is_none(),
+            "a Gemini backend is told nothing about thinking: {gout}"
+        );
+        let oout = Protocol::openai()
+            .writer()
+            .write_request(crate::codec::test_host::HOST, &ir);
+        assert!(
+            oout.get("reasoning_effort").is_none(),
+            "an OpenAI backend is told nothing about reasoning: {oout}"
+        );
+    }
+    let budget = serde_json::json!({
+        "model": "m", "max_tokens": 16000,
+        "messages": [{"role": "user", "content": "hi"}],
+        "thinking": {"type": "enabled", "budget_tokens": 6000}
+    });
+    let ir = AnthropicReader.read_request(&budget).expect("parses");
+    assert_eq!(ir.reasoning, Some(IrReasoningAsk::Budget(6000)), "the 1.5.5 promotion stands");
+}
+
+/// ROW 159 ROUND C, plane-llm LLM2 HIGH 2, `$`: an OFF ask (an OpenAI `reasoning_effort: "none"`)
+/// is dropped on Anthropic egress on every lane, as 1.5.5 wrote no `thinking` for it (1.5.5's ask
+/// had no OFF form: v1.5.5 `crates/busbar/src/ir/mod.rs:300-310`, and its OpenAI reader read
+/// `"none"` as no ask). RED: `thinking:{type:"disabled"}` was written, switching a model's
+/// thinking off where 1.5.5 left it at its default.
+#[test]
+fn an_off_ask_is_dropped_on_anthropic_egress_as_in_1_5_5() {
+    let ir = super::super::openai_chat::OpenAiReader
+        .read_request(&openai_effort_body("none"))
+        .expect("parses");
+    for caps in [
+        LaneCaps::default(),
+        LaneCaps {
+            anthropic_adaptive_thinking: true,
+            ..LaneCaps::default()
+        },
+        LaneCaps {
+            thinking_always_on: true,
+            ..LaneCaps::default()
+        },
+    ] {
+        let out = anthropic_writer().write_request_for_lane(
+            crate::codec::test_host::HOST,
+            &ir,
+            "claude-sonnet-4-5",
+            &caps,
+        );
+        assert!(out.get("thinking").is_none(), "{caps:?}: {out}");
+    }
+}

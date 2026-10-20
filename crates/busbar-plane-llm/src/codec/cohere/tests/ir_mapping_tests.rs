@@ -522,74 +522,66 @@ fn coh09_streamed_thinking_is_a_thinking_content_block() {
 
 // ── COH-05 / COH-06: the reasoning ask ────────────────────────────────────────────────────────────
 
-/// COH-05: a Cohere `thinking.token_budget` is a numeric reasoning budget; it reaches an Anthropic
-/// backend as `thinking.budget_tokens` and an OpenAI one as the effort word the table maps it to.
+/// ROW 159 ROUND C, plane-llm LLM2 HIGH 2, `$`: a Cohere caller's `thinking` reaches no foreign
+/// backend, as in 1.5.5 (v1.5.5 `crates/busbar/src/proto/cohere/reader.rs:469` read every request
+/// with `reasoning: None`, its `thinking` riding `extra`): a foreign model's billed thinking is
+/// switched neither on nor off by it (BUSBAR-1.6.0.md l.4827 "Billing never moves"). A same-dialect
+/// hop re-emits the caller's own object. RED: the budget reached Anthropic as `budget_tokens` and
+/// OpenAI as an effort word, the budget-less form Gemini as -1, and `disabled` Anthropic as an OFF.
 #[test]
-fn coh05_cohere_thinking_budget_reaches_a_foreign_reasoning_backend() {
-    let body = json!({
-        "model": "m", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 20000,
-        "thinking": {"type": "enabled", "token_budget": 4096}
-    });
-    let out = translate_request("cohere", "anthropic", &body);
-    assert_eq!(
-        out["thinking"],
-        json!({"type": "enabled", "budget_tokens": 4096}),
-        "COH-05: {out}"
-    );
-    let out = translate_request("cohere", "openai", &body);
-    assert_eq!(out["reasoning_effort"], json!("low"), "COH-05: {out}");
-    // No budget: the model decides (the IR's Dynamic), which Gemini spells -1.
-    let dynamic = json!({
-        "model": "m", "messages": [{"role": "user", "content": "hi"}],
-        "thinking": {"type": "enabled"}
-    });
-    let out = translate_request("cohere", "gemini", &dynamic);
-    assert_eq!(
-        out["generationConfig"]["thinkingConfig"]["thinkingBudget"],
-        json!(-1),
-        "COH-05: {out}"
-    );
-    // `disabled` switches reasoning OFF (IR-09): the Anthropic backend is told so, rather than
-    // left to its default.
-    let off = json!({
-        "model": "m", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 20000,
-        "thinking": {"type": "disabled"}
-    });
-    let out = translate_request("cohere", "anthropic", &off);
-    assert_eq!(out["thinking"], json!({"type": "disabled"}), "IR-09: {out}");
+fn a_cohere_thinking_ask_reaches_no_foreign_backend_as_in_1_5_5() {
+    for thinking in [
+        json!({"type": "enabled", "token_budget": 4096}),
+        json!({"type": "enabled"}),
+        json!({"type": "disabled"}),
+    ] {
+        let body = json!({
+            "model": "m", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 20000,
+            "thinking": thinking
+        });
+        let out = translate_request("cohere", "anthropic", &body);
+        assert!(out.get("thinking").is_none(), "{thinking}: {out}");
+        let out = translate_request("cohere", "openai", &body);
+        assert!(out.get("reasoning_effort").is_none(), "{thinking}: {out}");
+        let out = translate_request("cohere", "gemini", &body);
+        assert!(
+            out.pointer("/generationConfig/thinkingConfig").is_none(),
+            "{thinking}: {out}"
+        );
+        let cohere = crate::codec::proto_codec::protocol_for("cohere").expect("cohere");
+        let ir = cohere.reader().read_request(&body).expect("read_request");
+        assert_eq!(ir.reasoning, None, "{thinking}: no ask is promoted");
+        let out = cohere
+            .writer()
+            .write_request(crate::codec::test_host::HOST, &ir);
+        assert_eq!(out["thinking"], thinking, "same-dialect: the caller's own object");
+    }
 }
 
-/// COH-06: a foreign reasoning ask reaches a Cohere backend as `thinking` — a budget as-is, an
-/// effort word through the table, Gemini's "model decides" as Cohere's own budget-less form.
+/// ROW 159 ROUND C, plane-llm LLM2 HIGH 2, `$`: a foreign reasoning ask is dropped on Cohere
+/// egress, with a warn, as 1.5.5 dropped it (v1.5.5 `crates/busbar/src/proto/cohere/writer.rs:9-13`:
+/// "dropping cross-protocol reasoning/thinking ask: no Cohere mapping in this release"). RED: an
+/// Anthropic budget, an OpenAI effort word and Gemini's "model decides" each reached the Cohere
+/// backend as `thinking`, switching on billed thinking 1.5.5 never asked for.
 #[test]
-fn coh06_foreign_reasoning_ask_reaches_a_cohere_backend() {
+fn a_foreign_reasoning_ask_reaches_no_cohere_backend_as_in_1_5_5() {
     let anthropic = json!({
         "model": "claude", "max_tokens": 20000,
         "messages": [{"role": "user", "content": "hi"}],
         "thinking": {"type": "enabled", "budget_tokens": 3000}
     });
-    let out = translate_request("anthropic", "cohere", &anthropic);
-    assert_eq!(
-        out["thinking"],
-        json!({"type": "enabled", "token_budget": 3000}),
-        "COH-06: {out}"
-    );
     let openai = json!({
         "model": "o3", "messages": [{"role": "user", "content": "hi"}],
         "reasoning_effort": "medium"
     });
-    let out = translate_request("openai", "cohere", &openai);
-    assert_eq!(
-        out["thinking"],
-        json!({"type": "enabled", "token_budget": 8192}),
-        "COH-06: {out}"
-    );
     let gemini = json!({
         "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
         "generationConfig": {"thinkingConfig": {"thinkingBudget": -1}}
     });
-    let out = translate_request("gemini", "cohere", &gemini);
-    assert_eq!(out["thinking"], json!({"type": "enabled"}), "COH-06: {out}");
+    for (ingress, body) in [("anthropic", &anthropic), ("openai", &openai), ("gemini", &gemini)] {
+        let out = translate_request(ingress, "cohere", body);
+        assert!(out.get("thinking").is_none(), "{ingress}: {out}");
+    }
 }
 
 // ── COH-11 / COH-12: strict tool schemas ──────────────────────────────────────────────────────────
