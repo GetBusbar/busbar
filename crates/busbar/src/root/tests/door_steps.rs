@@ -11,7 +11,7 @@ use busbar_contract::abi::plane::{ROUTE_DIRECT, ROUTE_POOL};
 use super::DoorPools;
 
 fn pools(yaml: &str) -> DoorPools {
-    DoorPools::of(&serde_yaml::from_str(yaml).expect("yaml"))
+    DoorPools::of(&serde_yaml::from_str(yaml).expect("yaml")).expect("the pools")
 }
 
 fn routed(p: &DoorPools, class: u8, named: Option<&str>) -> Option<(String, Vec<String>)> {
@@ -259,21 +259,46 @@ fn a_member_granted_pool_route_is_judged_on_the_member_it_is_addressed_to() {
 }
 
 /// THE MEMBER'S TIER (the core-owned per-member `tier`, `BUSBAR-1.6.0.md` l.4196 (b), R2-G
-/// l.4285): read off a member written `{name, tier}`, `0` for a bare name, for one with no tier, and
-/// for a tier that is no unsigned integer; a pool's entries are its members' names either way.
+/// l.4285): read off a member written `{name, tier}`, and `0` for a bare name, which is an
+/// operator-written member and states no tier; a pool's entries are its members' names either way.
 #[test]
 fn a_pool_members_tier_is_read_off_its_member() {
     let p = pools(
-        "a: {}\nb: {}\nc: {}\npools:\n  t:\n    members: [{name: b, tier: 2}, a, {name: c}]\n\
-         \x20 u:\n    members: [{name: a, tier: minus}]",
+        "a: {}\nb: {}\nc: {}\npools:\n  t:\n    members: [{name: b, tier: 2}, a, {name: c, tier: 1}]",
     );
     assert_eq!(
         routed(&p, ROUTE_POOL, Some("t")),
         owned("t", &["b", "a", "c"])
     );
-    assert_eq!((p.tier("t", 0), p.tier("t", 1), p.tier("t", 2)), (2, 0, 0));
-    assert_eq!(p.tier("u", 0), 0);
+    assert_eq!((p.tier("t", 0), p.tier("t", 1), p.tier("t", 2)), (2, 0, 1));
     assert_eq!(p.tier("absent", 0), 0);
+}
+
+/// A BAD CORE-OWNED TIER IS REFUSED, NEVER READ AS `0` (no-float-money count-read finding on
+/// `members`, coordinator ruling): the tier is written by `pools_into` as the member's declared
+/// index, so a member written `{name, tier}` whose tier is missing, no integer, negative or wider
+/// than `u32` is a core bug, and the section build refuses it at config time rather than routing
+/// the member at the top tier. RED before the refusal: each of these built, at tier `0`.
+#[test]
+fn a_member_with_a_missing_or_bad_tier_is_refused_at_the_section_build() {
+    for (what, member) in [
+        ("no tier", "{name: a}"),
+        ("a word", "{name: a, tier: minus}"),
+        ("a negative", "{name: a, tier: -1}"),
+        ("a float", "{name: a, tier: 1.5}"),
+        ("wider than u32", "{name: a, tier: 4294967296}"),
+    ] {
+        let section: serde_yaml::Value =
+            serde_yaml::from_str(&format!("a: {{}}\npools:\n  u:\n    members: [{member}]"))
+                .expect("yaml");
+        let refused = DoorPools::of(&section)
+            .err()
+            .unwrap_or_else(|| panic!("{what}: a member written {member} built"));
+        assert!(
+            refused.contains("pool 'u'") && refused.contains("member 'a'"),
+            "{what}: the refusal names the pool and member: {refused}"
+        );
+    }
 }
 
 /// A NAMED-DEFINITION SECTION'S POOLS, AS THE ROOT HANDS THEM: each member written `{name, tier}`,
@@ -293,7 +318,7 @@ fn named_definition_pools_are_tiered_in_declared_order_and_the_plane_sees_bare_n
         .into();
     let mut section: serde_yaml::Value = serde_yaml::from_str("a: {}\nb: {}").expect("yaml");
     crate::root::serve::pools_into(&mut section, &stated);
-    let p = DoorPools::of(&section);
+    let p = DoorPools::of(&section).expect("the pools");
     assert_eq!(
         routed(&p, ROUTE_POOL, Some("twins")),
         owned("twins", &["b", "a"])
@@ -769,7 +794,7 @@ fn resolve_upgrading(
     };
     super::member_routes(
         &section,
-        &DoorPools::of(&section),
+        &DoorPools::of(&section).expect("the pools"),
         served,
         &reach,
         &busbar_contract::config_time::ConfigScope::config_time(),
@@ -1467,7 +1492,7 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
         };
         let routes = super::member_routes(
             &section,
-            &DoorPools::of(&section),
+            &DoorPools::of(&section).expect("the pools"),
             &facts,
             &reach,
             &busbar_contract::config_time::ConfigScope::config_time(),
@@ -1651,7 +1676,7 @@ fn jwt_bearer_routes(
     };
     let routes = super::member_routes(
         &section,
-        &DoorPools::of(&section),
+        &DoorPools::of(&section).expect("the pools"),
         &facts,
         &reach,
         &busbar_contract::config_time::ConfigScope::config_time(),
@@ -7814,7 +7839,7 @@ fn a_registration_members_anchors_reach_and_binding_hold_on_every_need_it_rides(
     let post = std::sync::Arc::new(crate::root::plane_node::NodeEndPost::new(node));
     super::compose_egress(
         &facts,
-        &DoorPools::of(&section),
+        &DoorPools::of(&section).expect("the pools"),
         instance,
         std::sync::Arc::clone(&table) as std::sync::Arc<dyn busbar_contract::conn::PollConns>,
         &routes,
