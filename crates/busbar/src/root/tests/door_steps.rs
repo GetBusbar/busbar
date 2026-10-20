@@ -2474,6 +2474,10 @@ pub(crate) mod tool_door {
                     wall: Arc::clone(&wall),
                 }),
             ));
+            // The transport doors bind on this dispatcher and reach its host services (the clock
+            // the stdio carrier supervises a member's program by), as main.rs hands the process's
+            // one dispatcher to `root::doors` before any door binds.
+            crate::root::doors::install_dispatcher(Arc::clone(&dispatcher));
             crate::root::connector::install_io(&dispatcher);
             // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
             let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
