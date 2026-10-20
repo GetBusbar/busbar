@@ -208,7 +208,7 @@ generation rather than about a provider:
 | Key | Values | Default | What it changes |
 |---|---|---|---|
 | `reasoning_none` | `true` \| `false` | `false` | How an **OpenAI-** or **Responses-protocol** upstream receives a reasoning-off ask. `true`: `reasoning_effort: "none"` (`reasoning.effort: "none"` on Responses). `false`: the effort is omitted, since a model that does not know the word rejects it. GPT-5.1 and GPT-5.2 accept `none`. |
-| `thinking_always_on` | `true` \| `false` | `false` | How an **Anthropic-** or **Bedrock-protocol** upstream receives a reasoning-off ask. `true`: `thinking` is omitted. `false`: `thinking: {type: disabled}`. Claude Opus 5.5 and Fable 5 cannot switch thinking off and reject `disabled`. |
+| `thinking_always_on` | `true` \| `false` | `false` | Accepted, and changes nothing: an **Anthropic-** or **Bedrock-protocol** upstream never receives a translated reasoning-off ask, whatever its value. `thinking` is omitted, as in 1.5.5. Claude Opus 5.5 and Fable 5 cannot switch thinking off and reject `disabled`. |
 
 ```yaml
 anthropic:

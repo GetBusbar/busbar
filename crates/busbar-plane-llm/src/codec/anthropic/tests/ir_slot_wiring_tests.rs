@@ -77,22 +77,26 @@ fn anthropic_response(stop_reason: &str, stop_details: Value) -> Value {
 
 // ── IR-09 / ANT-09 ────────────────────────────────────────────────────────────────────────────────
 
-/// ANT-09: `thinking:{type:"disabled"}` is the explicit OFF ask, and the Anthropic writer emits it
-/// back as `disabled` (never a zero budget that drops the ask, never an enable ask).
+/// `thinking:{type:"disabled"}` is no ask, as in 1.5.5 (v1.5.5 `proto/anthropic/reader.rs:278-289`):
+/// it rides `extra` for a same-dialect hop, and a translated request carries no `thinking` and no
+/// enable ask (row 159 round c, plane-llm LLM2 HIGH 2).
 #[test]
-fn ant09_thinking_disabled_reads_as_off_and_writes_disabled() {
+fn ant09_thinking_disabled_is_no_ask_as_in_1_5_5() {
     let body = with(base(), "thinking", json!({"type": "disabled"}));
     let ir = read(&body);
-    assert_eq!(ir.reasoning, Some(crate::codec::ir::IrReasoningAsk::Off));
+    assert_eq!(ir.reasoning, None);
+    assert_eq!(ir.extra.get("thinking"), Some(&json!({"type": "disabled"})));
     for caps in [Default::default(), newest_lane()] {
         let out = egress(ir.clone(), &caps);
-        assert_eq!(out["thinking"], json!({"type": "disabled"}), "{out}");
+        assert!(out.get("thinking").is_none(), "{out}");
         assert!(out.get("output_config").is_none(), "{out}");
     }
 }
 
-/// ANT-09: `output_config.effort` `xhigh` / `max` read as the IR-09 words above High and are written
-/// back verbatim on an adaptive lane; a budget lane takes the table's top entry.
+/// ANT-09: the IR-09 words above High (`xhigh` / `max`, a foreign caller's ask) are written verbatim
+/// as `output_config.effort` on an adaptive lane; a budget lane takes the table's top entry. An
+/// Anthropic caller's own `output_config.effort` is no ask (as in 1.5.5; row 159 round c, plane-llm
+/// LLM2 HIGH 2): it rides `extra`.
 #[test]
 fn ant09_effort_xhigh_and_max_are_carried() {
     use crate::codec::ir::{IrReasoningAsk::Effort, IrReasoningEffort as E};
@@ -102,8 +106,9 @@ fn ant09_effort_xhigh_and_max_are_carried() {
             "output_config",
             json!({"effort": word}),
         );
-        let ir = read(&body);
-        assert_eq!(ir.reasoning, Some(Effort(want)), "{word}");
+        assert_eq!(read(&body).reasoning, None, "{word}");
+        let mut ir = read(&base());
+        ir.reasoning = Some(Effort(want));
         let out = egress(ir.clone(), &newest_lane());
         assert_eq!(out["thinking"], json!({"type": "adaptive"}), "{out}");
         assert_eq!(

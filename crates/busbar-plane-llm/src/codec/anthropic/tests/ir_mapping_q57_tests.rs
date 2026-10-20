@@ -391,23 +391,21 @@ fn ant07_default_lane_drops_the_directive_as_in_1_5_5() {
     assert_eq!(o["choices"][0]["finish_reason"], json!("tool_calls"), "{o}");
 }
 
-/// ANT-09: Anthropic adaptive thinking and `output_config.effort` reach foreign backends.
+/// Anthropic adaptive thinking and `output_config.effort` reach no foreign backend, as in 1.5.5,
+/// which promoted only the `enabled` budget (v1.5.5 `proto/anthropic/reader.rs:278-289`; row 159
+/// round c, plane-llm LLM2 HIGH 2: they switched a foreign model's billed thinking on).
 #[test]
-fn ant09_adaptive_thinking_and_effort_are_read() {
+fn ant09_adaptive_thinking_and_effort_cross_no_seam_as_in_1_5_5() {
     let with_effort = json!({"model": "m", "max_tokens": 100, "messages": [user_text("hi")],
         "thinking": {"type": "adaptive"}, "output_config": {"effort": "xhigh"}});
     let out = xreq("anthropic", "openai", &with_effort);
-    assert_eq!(
-        out["reasoning_effort"], "high",
-        "xhigh reads as the IR's top level; got {out}"
-    );
+    assert!(out.get("reasoning_effort").is_none(), "{out}");
     let adaptive = json!({"model": "m", "max_tokens": 100, "messages": [user_text("hi")],
         "thinking": {"type": "adaptive"}});
     let g = xreq("anthropic", "gemini", &adaptive);
-    assert_eq!(
-        g.pointer("/generationConfig/thinkingConfig/thinkingBudget"),
-        Some(&json!(-1)),
-        "adaptive is 'the model decides' = Gemini dynamic; got {g}"
+    assert!(
+        g.pointer("/generationConfig/thinkingConfig").is_none(),
+        "{g}"
     );
 }
 

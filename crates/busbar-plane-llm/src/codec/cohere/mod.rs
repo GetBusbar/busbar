@@ -321,20 +321,12 @@ const IR_BLOCK_KINDS: &[(&str, &str)] = &[
     (crate::codec::drops::kind::THINKING, "type=thinking"),
 ];
 
-/// The IR request members the reader carries by code from a path no map-file row names (how a drop
-/// of one is named by the caller's wire path).
-const REQUEST_CODE_NAMES: &[(&str, &str)] = &[
-    (crate::codec::drops::name::REASONING, keys::THINKING),
-    (
-        crate::codec::drops::name::THINKING_BUDGET,
-        "thinking.token_budget",
-    ),
-];
-
 /// The IR request members the reader never sets.
 // No candidate count, cache marks, parallel-call switch, metadata, top-logprob count, output
-// modalities or service tier.
+// modalities or service tier; and no reasoning ask: a Cohere caller's `thinking` rides `extra`,
+// as 1.5.5 read it (row 159 round c, plane-llm LLM2 HIGH 2).
 const UNREAD: &[&str] = &[
+    crate::codec::drops::name::REASONING,
     crate::codec::drops::name::N,
     crate::codec::drops::name::CACHE_CONTROL,
     crate::codec::drops::name::PARALLEL_TOOL_CALLS,
@@ -374,9 +366,6 @@ const STREAM_DROPS: &[&str] = &[
 
 /// The cohere wire word `texts`, spelled once.
 const TEXTS: &str = "texts";
-
-/// The cohere wire word `token_budget`, spelled once.
-const TOKEN_BUDGET: &str = "token_budget";
 
 /// The cohere wire word `tool_plan`, spelled once.
 const TOOL_PLAN: &str = "tool_plan";
@@ -549,53 +538,6 @@ fn write_cohere_response_format(rf: &crate::codec::ir::IrResponseFormat) -> serd
             serde_json::json!({ (keys::TYPE): keys::JSON_OBJECT, (keys::JSON_SCHEMA): schema })
         }
         None => serde_json::json!({ (keys::TYPE): keys::JSON_OBJECT }),
-    }
-}
-
-/// Read Cohere v2's request `thinking` param into the IR reasoning ask — see `read_request`.
-/// `{type:"enabled", token_budget:N}` is `Budget(N)`; `{type:"enabled"}` with no (or a `null`) budget
-/// is `Dynamic` ("the model decides"); `{type:"disabled"}` is `Off` (IR-09). Anything else — an
-/// unknown type, a budget that is not a `u32` — is no promotable ask (`None`).
-fn read_cohere_reasoning(
-    v: Option<&serde_json::Value>,
-) -> Option<crate::codec::ir::IrReasoningAsk> {
-    let t = v?.as_object()?;
-    match t.get(keys::TYPE).and_then(|ty| ty.as_str()) {
-        Some(keys::ENABLED) => {}
-        // IR-09: reasoning switched OFF — a reasoning-by-default model stops thinking. Not the
-        // same as saying nothing.
-        Some(keys::DISABLED) => return Some(crate::codec::ir::IrReasoningAsk::Off),
-        _ => return None,
-    }
-    match t.get(TOKEN_BUDGET) {
-        None | Some(serde_json::Value::Null) => Some(crate::codec::ir::IrReasoningAsk::Dynamic),
-        Some(b) => b
-            .as_u64()
-            .and_then(|n| u32::try_from(n).ok())
-            .map(crate::codec::ir::IrReasoningAsk::Budget),
-    }
-}
-
-/// Project the IR reasoning ask into Cohere v2's `thinking` param — the inverse of
-/// [`read_cohere_reasoning`]. A numeric budget is emitted as-is and a word-form effort goes through
-/// the operator's effort-budget table; `Dynamic` ("the model decides") is Cohere's own
-/// `{type:"enabled"}` with no budget, so it needs no table guess here.
-fn write_cohere_reasoning(
-    ask: crate::codec::ir::IrReasoningAsk,
-    table: [u32; 4],
-) -> serde_json::Value {
-    match ask {
-        // IR-09: matched FIRST — `Off` is a disable ask, never an enable with a budget.
-        crate::codec::ir::IrReasoningAsk::Off => {
-            serde_json::json!({ (keys::TYPE): keys::DISABLED })
-        }
-        // `Dynamic` has no table entry: it is Cohere's own budget-less enable.
-        other => match other.to_budget(table) {
-            Some(budget) => {
-                serde_json::json!({ (keys::TYPE): keys::ENABLED, (TOKEN_BUDGET): budget })
-            }
-            None => serde_json::json!({ (keys::TYPE): keys::ENABLED }),
-        },
     }
 }
 

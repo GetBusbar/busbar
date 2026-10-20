@@ -110,7 +110,8 @@ fn off_ask() -> crate::codec::ir::IrRequest {
 }
 
 /// Item 12: on a lane declaring `thinking_always_on` (Fable 5.x, Opus 5.5) an Off ask OMITS
-/// `thinking` — `{type:"disabled"}` 400s there. The default lane keeps today's bytes.
+/// `thinking` — `{type:"disabled"}` 400s there. Every other lane omits it too, as 1.5.5 wrote no
+/// `thinking` for it (row 159 round c, plane-llm LLM2 HIGH 2).
 #[test]
 fn item12_off_omits_thinking_on_an_always_on_lane() {
     let w = protocol_for("anthropic").unwrap();
@@ -133,5 +134,5 @@ fn item12_off_omits_thinking_on_an_always_on_lane() {
         "claude-opus-4-5",
         &Default::default(),
     );
-    assert_eq!(out["thinking"], json!({"type": "disabled"}), "{out}");
+    assert!(out.get("thinking").is_none(), "{out}");
 }

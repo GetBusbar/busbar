@@ -289,17 +289,19 @@ fn cohere_control_drop_is_named_by_its_wire_path() {
     );
 }
 
-/// A member the caller's map file has no row for, carried by the reader's own code: Cohere's
-/// budget ask is its `thinking.token_budget` member, and the gate's drop is named by it (DF-SITES: the
-/// reader's request code names), not by the IR name.
+/// A member the caller's map file has no row for, carried by the reader's own code: Bedrock's
+/// `top_k` is its `additionalModelRequestFields.top_k` member, and the drop is named by it (DF-SITES:
+/// the reader's request code names), not by the IR name. (Cohere's `thinking` was this example; it is
+/// no longer read into the IR, as in 1.5.5: row 159 round c, plane-llm LLM2 HIGH 2.)
 #[test]
 fn a_slot_the_callers_reader_carries_by_code_is_named_by_its_wire_path() {
-    gate_named(
-        "cohere",
+    control_named(
+        "bedrock",
         "openai",
-        json!({"model": "m", "thinking": {"type": "enabled", "token_budget": 100},
-            "messages": [{"role": "user", "content": "hi"}]}),
-        "thinking.token_budget",
-        "reasoning",
+        json!({"messages": [{"role": "user", "content": [{"text": "hi"}]}],
+            "inferenceConfig": {"maxTokens": 5},
+            "additionalModelRequestFields": {"top_k": 5}}),
+        "additionalModelRequestFields.top_k",
+        "top_k",
     );
 }

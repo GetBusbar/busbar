@@ -377,27 +377,22 @@ fn ir09_thinking_budget_zero_carries_no_ask() {
         .is_none());
 }
 
-/// IR-09 across the seam: an Anthropic `thinking:{type:"disabled"}` (read as Off) reaches a Gemini
-/// flash backend as budget 0 — never as the smallest ENABLE budget — and a Gemini pro backend
-/// with no thinkingConfig at all.
+/// An Anthropic `thinking:{type:"disabled"}` is no ask, as in 1.5.5 (row 159 round c, plane-llm LLM2
+/// HIGH 2): no Gemini backend, flash or pro, is handed a thinkingConfig for it.
 #[test]
-fn ir09_anthropic_thinking_disabled_reaches_gemini_as_off() {
+fn ir09_anthropic_thinking_disabled_reaches_no_gemini_backend_as_in_1_5_5() {
     let body = json!({"model": "claude", "max_tokens": 64, "thinking": {"type": "disabled"},
         "messages": [{"role": "user", "content": "hi"}]});
     let ir = read_then_seam_from("anthropic", &body);
-    assert_eq!(ir.reasoning, Some(IrReasoningAsk::Off));
+    assert_eq!(ir.reasoning, None);
     let flash =
         gw().write_request_for_model(crate::codec::test_host::HOST, &ir, "gemini-2.5-flash");
-    assert_eq!(
-        flash["generationConfig"]["thinkingConfig"],
-        json!({"thinkingBudget": 0}),
+    assert!(
+        flash.pointer("/generationConfig/thinkingConfig").is_none(),
         "{flash}"
     );
     let pro = gw().write_request_for_model(crate::codec::test_host::HOST, &ir, "gemini-2.5-pro");
-    assert!(
-        pro["generationConfig"].get("thinkingConfig").is_none(),
-        "{pro}"
-    );
+    assert!(pro.pointer("/generationConfig/thinkingConfig").is_none(), "{pro}");
 }
 
 /// GEM-10 / IR-11 across the seam: an Anthropic hosted web search / code execution reaches a

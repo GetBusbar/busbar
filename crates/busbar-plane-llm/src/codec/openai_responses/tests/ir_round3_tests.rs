@@ -6,12 +6,15 @@ use crate::codec::proto_codec::protocol_for;
 use busbar_contract::ir::egress_prep::LaneCaps;
 use serde_json::json;
 
-fn anthropic_off() -> crate::codec::ir::IrRequest {
-    let mut ir = protocol_for("anthropic")
+/// A foreign caller's OFF ask with `extra` cleared, as the seam hands it on. (An Anthropic
+/// `thinking:{type:"disabled"}` is no ask, as in 1.5.5: row 159 round c, plane-llm LLM2 HIGH 2; an
+/// OpenAI `reasoning_effort: "none"` is the OFF ask.)
+fn foreign_off() -> crate::codec::ir::IrRequest {
+    let mut ir = protocol_for("openai")
         .unwrap()
         .reader()
         .read_request(
-            &json!({"model": "m", "max_tokens": 64, "thinking": {"type": "disabled"},
+            &json!({"model": "m", "max_tokens": 64, "reasoning_effort": "none",
             "messages": [{"role": "user", "content": "hi"}]}),
         )
         .expect("read");
@@ -31,14 +34,14 @@ fn item12_off_is_reasoning_effort_none_on_a_declaring_lane() {
     };
     let out = w.writer().write_request_for_lane(
         crate::codec::test_host::HOST,
-        &anthropic_off(),
+        &foreign_off(),
         "gpt-5.1",
         &none_lane,
     );
     assert_eq!(out["reasoning"], json!({"effort": "none"}), "{out}");
     let out = w.writer().write_request_for_lane(
         crate::codec::test_host::HOST,
-        &anthropic_off(),
+        &foreign_off(),
         "gpt-4o",
         &Default::default(),
     );

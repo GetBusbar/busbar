@@ -308,10 +308,6 @@ const OUTPUT_FORMAT_JSON_SCHEMA: &str = "json_schema";
 /// on-mode Opus 4.7+/5.x, Sonnet 5 and Fable accept — `{type:"enabled",budget_tokens}` 400s there.
 const THINKING_TYPE_ADAPTIVE: &str = "adaptive";
 
-/// Anthropic `thinking.type` that switches reasoning OFF — the IR's [`crate::codec::ir::IrReasoningAsk::Off`]
-/// (IR-09, ANT-09).
-const THINKING_TYPE_DISABLED: &str = "disabled";
-
 /// Anthropic tool `type` for an ordinary client (function) tool. Absent `type` means the same thing.
 /// Any OTHER `type` is an Anthropic-defined SERVER / client-executed tool (`web_search_*`, `bash_*`,
 /// `text_editor_*`, `code_execution_*`, `computer_*`, `memory_*`, `mcp_toolset`, …) whose schema is
@@ -1335,22 +1331,6 @@ fn anthropic_effort_word(effort: crate::codec::ir::IrReasoningEffort) -> &'stati
         E::High => keys::HIGH,
         E::XHigh => keys::XHIGH,
         E::Max => W_MAX,
-    }
-}
-
-/// Anthropic `output_config.effort` word → IR effort. `xhigh`/`max` are the IR-09 words above
-/// `High` (ANT-09) — each foreign writer projects them onto its own top (OpenAI `"high"`, the
-/// budget table's top entry); `anthropic_effort_word` writes them back verbatim. Anthropic has no
-/// `minimal`, so that word is not read.
-fn read_anthropic_effort_word(word: &str) -> Option<crate::codec::ir::IrReasoningEffort> {
-    use crate::codec::ir::IrReasoningEffort as E;
-    match word {
-        keys::LOW => Some(E::Low),
-        keys::MEDIUM => Some(E::Medium),
-        keys::HIGH => Some(E::High),
-        keys::XHIGH => Some(E::XHigh),
-        W_MAX => Some(E::Max),
-        _ => None,
     }
 }
 

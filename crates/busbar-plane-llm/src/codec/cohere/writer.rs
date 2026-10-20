@@ -19,6 +19,11 @@ impl ProtocolWriter for CohereWriter {
         crate::codec::carry::dropped(super::map::REQUEST, super::map::CONTROLS, req)
             .map(crate::codec::carry::Slot::name)
             .chain(req.hosted_tools.iter().map(|h| h.kind_str()))
+            .chain(
+                req.reasoning
+                    .is_some()
+                    .then_some(crate::codec::drops::name::REASONING),
+            )
             .collect()
     }
 
@@ -578,16 +583,17 @@ impl ProtocolWriter for CohereWriter {
         if req.stream {
             out.insert(keys::STREAM.to_string(), serde_json::json!(true));
         }
-        // The reasoning ASK in Cohere v2's native `thinking` param (COH-06). It used to be dropped
-        // with a warn, as if Cohere had no reasoning control; it has `thinking.token_budget`.
-        if let Some(ask) = req.reasoning {
-            out.insert(
-                keys::THINKING.to_string(),
-                write_cohere_reasoning(
-                    ask,
-                    req.reasoning_budgets
-                        .unwrap_or(crate::codec::ir::REASONING_BUDGET_DEFAULTS),
-                ),
+        // A cross-protocol reasoning ask is DROPPED, with a warn, exactly as 1.5.5 dropped it
+        // (v1.5.5 `crates/busbar/src/proto/cohere/writer.rs:9-13`: "no Cohere mapping in this
+        // release"). Writing it as `thinking` switched on billed thinking 1.5.5 never asked for
+        // (BUSBAR-1.6.0.md l.4827 "Billing never moves"; row 159 round c, plane-llm LLM2 HIGH 2).
+        // A same-dialect caller's own `thinking` rides `extra` and is re-emitted below, untouched.
+        if req.reasoning.is_some() {
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::REASONING,
+                &crate::codec::diagnostics::IR_DROP_REASONING,
+                [],
+                "dropping cross-protocol reasoning/thinking ask: no Cohere mapping, as in 1.5.5"
             );
         }
         for (key, value) in &req.extra {

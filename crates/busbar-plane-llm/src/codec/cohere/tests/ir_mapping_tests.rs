@@ -1044,10 +1044,11 @@ fn ir08_image_detail_maps_both_ways() {
     );
 }
 
-/// IR-09: `thinking:{type:"disabled"}` is the IR's `Off` (it used to stay in `extra`, dying at the
-/// seam), and `Off` is written as `disabled` — never as an enable ask with a zero budget.
+/// `thinking:{type:"disabled"}` is no ask, as in 1.5.5: it rides `extra` and a same-dialect hop
+/// re-emits it; an OFF ask from a foreign caller is dropped on Cohere egress, never written as
+/// `disabled` (row 159 round c, plane-llm LLM2 HIGH 2).
 #[test]
-fn ir09_reasoning_off_maps_both_ways() {
+fn ir09_reasoning_off_crosses_neither_way_as_in_1_5_5() {
     let body = json!({
         "model": "command-a-reasoning",
         "messages": [{"role": "user", "content": "hi"}],
@@ -1058,13 +1059,21 @@ fn ir09_reasoning_off_maps_both_ways() {
         .reader()
         .read_request(&body)
         .expect("read");
-    assert_eq!(ir.reasoning, Some(crate::codec::ir::IrReasoningAsk::Off));
-    assert!(!ir.extra.contains_key("thinking"), "{:?}", ir.extra);
+    assert_eq!(ir.reasoning, None);
+    assert!(ir.extra.contains_key("thinking"), "{:?}", ir.extra);
     let out = crate::codec::proto_codec::protocol_for("cohere")
         .expect("cohere")
         .writer()
         .write_request(crate::codec::test_host::HOST, &ir);
-    assert_eq!(out["thinking"], json!({"type": "disabled"}), "IR-09: {out}");
+    assert_eq!(out["thinking"], json!({"type": "disabled"}), "same-dialect: {out}");
+    let mut foreign = ir;
+    foreign.extra.clear();
+    foreign.reasoning = Some(crate::codec::ir::IrReasoningAsk::Off);
+    let out = crate::codec::proto_codec::protocol_for("cohere")
+        .expect("cohere")
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &foreign);
+    assert!(out.get("thinking").is_none(), "{out}");
 }
 
 fn function_tool(name: &str) -> crate::codec::ir::IrTool {

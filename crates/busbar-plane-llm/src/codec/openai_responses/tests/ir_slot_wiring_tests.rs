@@ -69,9 +69,10 @@ fn reasoning_items(out: &serde_json::Value) -> Vec<serde_json::Value> {
 
 // ─────────────────────────────── RSP-14 / IR-09 reasoning off ───────────────────────────────
 
-/// RSP-14 (IR-09): `reasoning.effort: "none"` is reasoning switched OFF, not "nothing said": it
-/// reaches an Anthropic backend as `thinking:{type:"disabled"}`, and a foreign lane is never handed
-/// an ENABLE ask projected from it (the Responses writer omits it — no lane declares `"none"`).
+/// RSP-14 (IR-09): `reasoning.effort: "none"` is reasoning switched OFF, not "nothing said": a
+/// foreign lane is never handed an ENABLE ask projected from it (the Responses writer omits it — no
+/// lane declares `"none"`), and an Anthropic backend is handed no `thinking` for it, as 1.5.5 wrote
+/// none (row 159 round c, plane-llm LLM2 HIGH 2).
 #[test]
 fn rsp14_effort_none_is_reasoning_off() {
     let body = serde_json::json!({"model": "gpt", "input": "hi", "max_output_tokens": 64,
@@ -79,7 +80,7 @@ fn rsp14_effort_none_is_reasoning_off() {
     let ir = ResponsesReader.read_request(&body).expect("read");
     assert_eq!(ir.reasoning, Some(crate::codec::ir::IrReasoningAsk::Off));
     let anthropic = seam("anthropic", &body);
-    assert_eq!(anthropic["thinking"]["type"], "disabled", "{anthropic}");
+    assert!(anthropic.get("thinking").is_none(), "{anthropic}");
     let responses = seam("responses", &body);
     assert!(responses.get("reasoning").is_none(), "{responses}");
 }

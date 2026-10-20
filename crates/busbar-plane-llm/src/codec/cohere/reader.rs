@@ -687,11 +687,12 @@ impl ProtocolReader for CohereReader {
             extra.remove(keys::DOCUMENTS);
         }
 
-        let reasoning = read_cohere_reasoning(obj.get(keys::THINKING));
-        if reasoning.is_some() {
-            // Promoted: the writer re-emits it from the typed field, so it must not also ride extra.
-            extra.remove(keys::THINKING);
-        }
+        // The request `thinking` param is NOT promoted to the IR reasoning ask: it rides `extra`,
+        // re-emitted verbatim on a same-dialect hop and dropped at a foreign seam, exactly as 1.5.5
+        // read it (v1.5.5 `crates/busbar/src/proto/cohere/reader.rs:469`, `reasoning: None`).
+        // Carrying it switched a foreign model's billed thinking on or off (BUSBAR-1.6.0.md
+        // l.4827 "Billing never moves"; row 159 round c, plane-llm LLM2 HIGH 2).
+        let reasoning = None;
 
         let mut ir = crate::codec::ir::IrRequest {
             reasoning,
@@ -1272,10 +1273,6 @@ impl ProtocolReader for CohereReader {
         super::IR_BLOCK_KINDS
     }
 
-    fn request_code_names(&self) -> &'static [(&'static str, &'static str)] {
-        super::REQUEST_CODE_NAMES
-    }
-
     fn unread(&self) -> &'static [&'static str] {
         super::UNREAD
     }
@@ -1482,8 +1479,9 @@ impl ProtocolReader for CohereReader {
 /// token classes, their figures and every `tokens:` cap count exactly what 1.5.5 counted").
 ///
 /// WHERE EACH COUNT IS LEDGERED (MONEY-AUDIT A-F1; the census over the pinned wire lock,
-/// `testing/llm-conformance/wire/cohere.wire.json`, is `usage_census_tests`): the billed token
-/// counts win the reserved input/output classes over the raw ones (`IrUsage::to_token_usage`),
+/// `testing/llm-conformance/wire/cohere.wire.json`, is `usage_census_tests`): the raw token counts
+/// are the reserved input/output classes, as 1.5.5 billed them, and the billed token counts are
+/// attribution that moves no class (`IrUsage::to_token_usage`; row 159 round c, LLM2 HIGH 1);
 /// `search_units` is the open class `search_units`, and `classifications` is the open class
 /// `classifications` (owner LEDGER-100).
 const USAGE: &[UsageCount] = &[

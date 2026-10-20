@@ -370,45 +370,20 @@ impl ProtocolReader for AnthropicReader {
             .and_then(|m| m.get(super::USER_ID))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        // The request-level `thinking` param (the ASK, not the response content blocks), plus the
-        // effort word Anthropic carries in `output_config.effort`:
-        //   * `{type:"enabled", budget_tokens:N}` → `Budget(N)` (a straight number to Gemini's
-        //     thinkingBudget, bucketed to a word for OpenAI's reasoning_effort);
-        //   * `{type:"adaptive"}` → `Effort(<output_config.effort>)` when an effort word is given,
-        //     else `Dynamic` — "the model decides", Gemini's `thinkingBudget:-1` (ANT-09);
-        //   * no `thinking` but an `output_config.effort` word → `Effort(word)`: the caller asked for
-        //     that reasoning depth, and the adaptive-by-default models honour it;
-        //   * `{type:"disabled"}` → `Off` (IR-09, ANT-09): the caller switched reasoning OFF, which a
-        //     reasoning-by-default foreign model must hear (Chat/Responses `"none"`, Gemini
-        //     `thinkingBudget:0`) rather than read as "never said";
-        //   * a malformed `thinking` → no ask.
-        // Everything stays in `extra` too except a promoted budget-form `thinking` (removed below),
-        // so a same-protocol hop through the IR still re-emits the caller's exact objects.
-        let thinking_type = obj
+        // The request-level `thinking` param (the ASK, not the response content blocks): only
+        // `{type:"enabled", budget_tokens:N}` is promoted, to `Budget(N)`, exactly as 1.5.5 read it
+        // (v1.5.5 `crates/busbar/src/proto/anthropic/reader.rs:278-289`). Adaptive thinking, an
+        // `output_config.effort` word, `{type:"disabled"}` and a malformed `thinking` stay in
+        // `extra` untouched: re-emitted on a same-dialect hop, dropped at a foreign seam, so they
+        // switch no foreign model's billed thinking on or off (BUSBAR-1.6.0.md l.4827 "Billing
+        // never moves"; row 159 round c, plane-llm LLM2 HIGH 2).
+        let reasoning = obj
             .get(keys::THINKING)
-            .and_then(|t| t.get(keys::TYPE))
-            .and_then(|v| v.as_str());
-        let effort = obj
-            .get(keys::OUTPUT_CONFIG)
-            .and_then(|c| c.get(keys::EFFORT))
-            .and_then(|v| v.as_str())
-            .and_then(read_anthropic_effort_word);
-        let reasoning = match thinking_type {
-            Some(keys::ENABLED) => obj
-                .get(keys::THINKING)
-                .and_then(|t| t.get(keys::BUDGET_TOKENS))
-                .and_then(|v| v.as_u64())
-                .and_then(|v| u32::try_from(v).ok())
-                .map(crate::codec::ir::IrReasoningAsk::Budget),
-            Some(THINKING_TYPE_ADAPTIVE) => Some(
-                effort
-                    .map(crate::codec::ir::IrReasoningAsk::Effort)
-                    .unwrap_or(crate::codec::ir::IrReasoningAsk::Dynamic),
-            ),
-            Some(THINKING_TYPE_DISABLED) => Some(crate::codec::ir::IrReasoningAsk::Off),
-            None => effort.map(crate::codec::ir::IrReasoningAsk::Effort),
-            Some(_) => None,
-        };
+            .filter(|t| t.get(keys::TYPE).and_then(|v| v.as_str()) == Some(keys::ENABLED))
+            .and_then(|t| t.get(keys::BUDGET_TOKENS))
+            .and_then(|v| v.as_u64())
+            .and_then(|v| u32::try_from(v).ok())
+            .map(crate::codec::ir::IrReasoningAsk::Budget);
         let reasoning_is_budget =
             matches!(reasoning, Some(crate::codec::ir::IrReasoningAsk::Budget(_)));
         // Native structured outputs: `output_config.format` (GA) or the deprecated top-level

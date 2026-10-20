@@ -428,7 +428,13 @@ impl Reply {
                     .iter()
                     .map(|(n, v)| (n.as_slice(), v.as_slice()))
                     .collect();
-                whole_piece(host, ctx, status, &body, &far_head, at)
+                let (piece, bills) = whole_piece(host, ctx, status, &body, &far_head, at);
+                // The answer is written to the caller over the door's windows after this end: a
+                // caller that leaves before the last one leaves what this end bills (row 159
+                // round c, LLM1 HIGH 1). 1.5.5 billed a translated whole answer at decode, before
+                // writing a byte of it (v1.5.5 proxy/engine/mod.rs:441-446).
+                self.ended_partial = bills;
+                piece
             }
             State::Relay { relay, head, units } => {
                 let (fed, _) = relay.feed(host, bytes);
@@ -478,7 +484,9 @@ impl Reply {
                 // buffered twin (a `failed` status) reports none either (row-159 L3#4). A FAILED
                 // GENERATION is not one of those: 1.5.5's reader raised no error for it and billed
                 // what it reported, and owner ruling Q31 charges it too ([`Relay::failed_generation`]).
-                let units = if end.stream_fault.is_some() && !failed_generation {
+                let end_bills = end.stream_fault.is_none() || failed_generation;
+                let generation_failed = end.generation_failed;
+                let units = if !end_bills {
                     Units::default()
                 } else {
                     Units {
@@ -486,7 +494,11 @@ impl Reply {
                         ..Units::of(end.usage.as_ref(), end.open_units)
                     }
                 };
-                self.ended_partial = partial && fault.is_none();
+                // What the end bills on completion bills on a cancel in its last window too: a
+                // usable success, and a failed generation whose reported usage Q31 charges (1.5.5
+                // billed both at the stream's end). An end that bills nothing stays not-partial.
+                self.ended_partial = end_bills
+                    && (failed_generation || (partial && (fault.is_none() || generation_failed)));
                 self.state = State::Done;
                 Piece {
                     head,
@@ -507,7 +519,10 @@ impl Reply {
     }
 
     /// The caller had a usable part of a success answer when it left (see [`relay::Relay::partial`]):
-    /// its cancel bills the units the answer stated so far.
+    /// its cancel bills the units the answer stated so far. An ENDED answer the door is still
+    /// writing in windows answers whether its end bills: what bills on completion bills on a
+    /// cancel in the last window too (a translated whole answer, a failed generation; row 159
+    /// round c, LLM1 HIGH 1).
     #[must_use]
     pub fn partial(&self) -> bool {
         match &self.state {
@@ -622,7 +637,7 @@ fn whole_piece<'a>(
     body: &[u8],
     far_head: HeadFields<'_>,
     at: At,
-) -> Piece<'a> {
+) -> (Piece<'a>, bool) {
     let mut w = whole::translate(
         host,
         &whole::WholeCtx {
@@ -662,8 +677,16 @@ fn whole_piece<'a>(
         whole::WholeEnd::Cut => (Verdict::Hard, Some(Fault::Transient("transport"))),
         whole::WholeEnd::IngressUnsupported | whole::WholeEnd::OverCap => (Verdict::Hard, None),
     };
-    Piece {
-        dropped,
-        ..answered(w.answer, units, verdict, fault)
-    }
+    // The ends whose reported usage bills: a delivered answer and a failed generation (Q31).
+    let bills = matches!(
+        w.end,
+        whole::WholeEnd::Delivered | whole::WholeEnd::FailedGeneration
+    );
+    (
+        Piece {
+            dropped,
+            ..answered(w.answer, units, verdict, fault)
+        },
+        bills,
+    )
 }

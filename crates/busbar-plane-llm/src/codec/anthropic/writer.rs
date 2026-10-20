@@ -426,25 +426,19 @@ impl ProtocolWriter for AnthropicWriter {
         // alongside thinking, so when the ask IS emitted those knobs are omitted (warned) below.
         let mut thinking_emitted = false;
         match req.reasoning {
-            // Reasoning switched OFF (IR-09, ANT-09) — matched FIRST: it has no budget, and the
-            // caller's "off" must reach a reasoning-by-default model.
-            // Not an emitted thinking ask, so the sampling knobs below stay.
-            // A lane whose model cannot switch thinking off (`LaneCaps::thinking_always_on`)
-            // rejects `{type:"disabled"}`: the ask is omitted with a warn and the
-            // model thinks at its default.
-            Some(crate::codec::ir::IrReasoningAsk::Off) if caps.thinking_always_on => {
+            // Reasoning switched OFF — matched FIRST: it has no budget. It is DROPPED, with a warn,
+            // on every lane, and the model thinks at its default, exactly as 1.5.5 wrote no
+            // `thinking` for it (1.5.5's ask had no OFF form, v1.5.5 `crates/busbar/src/ir/mod.rs:
+            // 300-310`). Writing `{type:"disabled"}` switched a model's billed thinking off where
+            // 1.5.5 left it on (BUSBAR-1.6.0.md l.4827 "Billing never moves"; row 159 round c,
+            // plane-llm LLM2 HIGH 2). Not an emitted thinking ask, so the sampling knobs below stay.
+            Some(crate::codec::ir::IrReasoningAsk::Off) => {
                 crate::codec::drops::writer_drop!(
                     crate::codec::drops::REASONING,
                     &crate::codec::diagnostics::IR_DROP_REASONING,
                     [],
-                    "omitting reasoning OFF on Anthropic egress: this lane's model cannot switch \
-                     thinking off (thinking_always_on) and rejects thinking.type \"disabled\""
-                );
-            }
-            Some(crate::codec::ir::IrReasoningAsk::Off) => {
-                out.insert(
-                    keys::THINKING.to_string(),
-                    serde_json::json!({ (keys::TYPE): THINKING_TYPE_DISABLED }),
+                    "dropping a reasoning OFF ask on Anthropic egress: no Anthropic mapping, as in \
+                     1.5.5"
                 );
             }
             Some(crate::codec::ir::IrReasoningAsk::Effort(effort))
