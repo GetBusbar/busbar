@@ -184,7 +184,9 @@ fn rig() -> Rig {
 /// A durable demotion record over `store`.
 fn demotions(store: &Arc<MemoryStore>) -> Arc<DemotionRecord> {
     let d = DemotionRecord::default();
-    d.set_sink(crate::plane::store::PlaneStoreView::narrow(store.clone()));
+    d.set_sink(crate::store::plane_view::PlaneStoreView::narrow(
+        store.clone(),
+    ));
     Arc::new(d)
 }
 
@@ -2075,7 +2077,7 @@ struct ParkingStore {
     release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
 }
 
-impl crate::plane::store::PlaneStore for ParkingStore {
+impl crate::store::plane_view::PlaneStore for ParkingStore {
     fn upsert_plane_record(
         &self,
         _: busbar_contract::records::PlaneRecordRef<'_>,
@@ -2100,7 +2102,7 @@ impl crate::plane::store::PlaneStore for ParkingStore {
         kind: &str,
         _: &busbar_contract::records::PlaneSelector,
     ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
-        if kind != crate::plane::store::KIND_DEMOTION && self.armed.load(Ordering::SeqCst) {
+        if kind != crate::store::plane_view::KIND_DEMOTION && self.armed.load(Ordering::SeqCst) {
             if let Some(entered) = self.entered.lock().unwrap().take() {
                 entered.send(()).unwrap();
             }
@@ -2216,13 +2218,13 @@ struct Probe {
     lock_free_at_read: Mutex<Vec<bool>>,
 }
 
-impl crate::plane::store::PlaneStore for Probe {
+impl crate::store::plane_view::PlaneStore for Probe {
     fn upsert_plane_record(
         &self,
         record: busbar_contract::records::PlaneRecordRef<'_>,
     ) -> busbar_contract::records::RecordStoreResult<()> {
         let kind = record.to_record().kind;
-        if kind == crate::plane::store::KIND_TRUST_DECISION
+        if kind == crate::store::plane_view::KIND_TRUST_DECISION
             && self.refuse_decisions.load(Ordering::SeqCst)
         {
             return Err("the store is down".into());
@@ -2247,7 +2249,7 @@ impl crate::plane::store::PlaneStore for Probe {
         kind: &str,
         _selector: &busbar_contract::records::PlaneSelector,
     ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
-        if kind == crate::plane::store::KIND_TRUST_DECISION {
+        if kind == crate::store::plane_view::KIND_TRUST_DECISION {
             if let Some(k) = self.kernel.get().and_then(std::sync::Weak::upgrade) {
                 let free = k.instances.try_lock().is_ok();
                 self.lock_free_at_read.lock().unwrap().push(free);
@@ -2298,7 +2300,7 @@ impl crate::plane::store::PlaneStore for Probe {
 /// A kernel whose durable record keeps through `probe`.
 fn probed(probe: &Arc<Probe>) -> Arc<KernelServices> {
     let d = DemotionRecord::default();
-    d.set_sink(Arc::clone(probe) as Arc<dyn crate::plane::store::PlaneStore>);
+    d.set_sink(Arc::clone(probe) as Arc<dyn crate::store::plane_view::PlaneStore>);
     let k = Arc::new(
         KernelServices::new()
             .with_pool(Arc::new(Inline))
