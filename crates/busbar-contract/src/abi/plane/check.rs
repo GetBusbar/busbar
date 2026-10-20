@@ -1146,34 +1146,33 @@ pub enum EntryPredicate<'a> {
 /// segment as a whole segment `{}` or `{<field>}` (`[a-z0-9_]`).
 #[must_use]
 pub fn entry_fact(target: &str) -> Option<Vec<EntryPredicate<'_>>> {
-    let mut out = Vec::new();
-    let mut paths = 0;
-    for token in target.split(' ') {
-        if let Some(field) = token.strip_prefix("field:") {
-            let (name, prefix) = match field.split_once('=') {
-                Some((name, prefix)) if !prefix.is_empty() => (name, Some(prefix)),
-                Some(_) => return None,
-                None => (field, None),
-            };
-            let named = !name.is_empty()
-                && name
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
-            if !named {
-                return None;
-            }
-            out.push(EntryPredicate::Field(name, prefix));
-        } else if let Some(pattern) = token.strip_prefix("path:") {
-            paths += 1;
-            if paths > 1 || !entry_pattern_shape(pattern) {
-                return None;
-            }
-            out.push(EntryPredicate::Path(pattern));
-        } else {
-            return None;
-        }
+    let out: Vec<EntryPredicate<'_>> = target
+        .split(' ')
+        .map(entry_predicate)
+        .collect::<Option<_>>()?;
+    let paths = out
+        .iter()
+        .filter(|p| matches!(p, EntryPredicate::Path(_)))
+        .count();
+    (!out.is_empty() && paths <= 1).then_some(out)
+}
+
+/// One predicate of an entry fact's target, or `None` when the token is not one.
+fn entry_predicate(token: &str) -> Option<EntryPredicate<'_>> {
+    if let Some(field) = token.strip_prefix("field:") {
+        let (name, prefix) = match field.split_once('=') {
+            Some((name, prefix)) if !prefix.is_empty() => (name, Some(prefix)),
+            Some(_) => return None,
+            None => (field, None),
+        };
+        let named = !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+        return named.then_some(EntryPredicate::Field(name, prefix));
     }
-    (!out.is_empty()).then_some(out)
+    let pattern = token.strip_prefix("path:")?;
+    entry_pattern_shape(pattern).then_some(EntryPredicate::Path(pattern))
 }
 
 /// An entry path pattern's shape: it starts with `/` or `*`, and each `{` opens a whole segment
