@@ -548,13 +548,17 @@ fn a_cohere_thinking_ask_reaches_no_foreign_backend_as_in_1_5_5() {
             out.pointer("/generationConfig/thinkingConfig").is_none(),
             "{thinking}: {out}"
         );
-        let cohere = crate::codec::proto_codec::protocol_for("cohere").expect("cohere");
+        let cohere = crate::codec::proto_codec::protocol_for("cohere")
+            .expect("cohere");
         let ir = cohere.reader().read_request(&body).expect("read_request");
         assert_eq!(ir.reasoning, None, "{thinking}: no ask is promoted");
         let out = cohere
             .writer()
             .write_request(crate::codec::test_host::HOST, &ir);
-        assert_eq!(out["thinking"], thinking, "same-dialect: the caller's own object");
+        assert_eq!(
+            out["thinking"], thinking,
+            "same-dialect: the caller's own object"
+        );
     }
 }
 
@@ -578,7 +582,11 @@ fn a_foreign_reasoning_ask_reaches_no_cohere_backend_as_in_1_5_5() {
         "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
         "generationConfig": {"thinkingConfig": {"thinkingBudget": -1}}
     });
-    for (ingress, body) in [("anthropic", &anthropic), ("openai", &openai), ("gemini", &gemini)] {
+    for (ingress, body) in [
+        ("anthropic", &anthropic),
+        ("openai", &openai),
+        ("gemini", &gemini),
+    ] {
         let out = translate_request(ingress, "cohere", body);
         assert!(out.get("thinking").is_none(), "{ingress}: {out}");
     }
@@ -1065,7 +1073,11 @@ fn ir09_reasoning_off_crosses_neither_way_as_in_1_5_5() {
         .expect("cohere")
         .writer()
         .write_request(crate::codec::test_host::HOST, &ir);
-    assert_eq!(out["thinking"], json!({"type": "disabled"}), "same-dialect: {out}");
+    assert_eq!(
+        out["thinking"],
+        json!({"type": "disabled"}),
+        "same-dialect: {out}"
+    );
     let mut foreign = ir;
     foreign.extra.clear();
     foreign.reasoning = Some(crate::codec::ir::IrReasoningAsk::Off);

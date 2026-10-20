@@ -3685,25 +3685,28 @@ mod rehomed_metering {
         }
     }
 
-    /// THE CONTROL: an ended answer that bills nothing on completion (a translated stream whose
-    /// reframing gave up, 1.5.5's `billing_failed`) bills nothing on a cancel in its last window.
+    /// THE CONTROL: an ended answer that bills nothing on completion (a stream the far end itself
+    /// ended as failed, row-159 L3#4, 1.5.5's `billing_failed`) bills nothing on a cancel in its
+    /// last window.
     #[test]
     fn an_ended_answer_that_bills_nothing_bills_nothing_on_a_cancel() {
-        let (arrived, lane) = ask("anthropic", "openai", true);
+        let (arrived, lane) = ask("responses", "responses", true);
         let ctx = reply_ctx(&arrived, &lane);
-        let mut reply = Reply::new(HOST, &ctx, 200, SSE_HEAD);
-        let _ = reply.feed(
-            HOST,
-            &ctx,
-            b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":600,\"completion_tokens\":400}}\n\n",
-            false,
-            AT,
+        let stream = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":1,\"status\":\"in_progress\",\"model\":\"m-1\",\"output\":[]}}\n\n",
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"hel\"}\n\n",
+            "event: response.failed\n",
+            "data: {\"type\":\"response.failed\",\"sequence_number\":2,\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":1,\"status\":\"failed\",\"model\":\"m-1\",\"output\":[],\"error\":{\"code\":\"server_error\",\"message\":\"boom\"},\"usage\":{\"input_tokens\":5,\"output_tokens\":2,\"total_tokens\":7}}}\n\n",
         );
-        let overflow = vec![b'x'; busbar_plane_llm::codec::eventstream::MAX_FRAME_BYTES + 16];
-        let end = owned(reply.feed(HOST, &ctx, &overflow, true, AT));
-        assert!(end.done);
-        assert_eq!(end.units, Units::default(), "the abort bills nothing");
-        assert!(!reply.partial(), "nor does a cancel in its last window");
+        let (end, partial) = ended(&ctx, SSE_HEAD, stream.as_bytes());
+        assert_eq!(
+            (end.units.tokens_in, end.units.tokens_out),
+            (0, 0),
+            "the failed stream bills nothing"
+        );
+        assert!(!partial, "nor does a cancel in its last window");
     }
 
     // ── a delivered or undelivered whole answer (crossproto_delivery_billing_tests.rs) ─────────
