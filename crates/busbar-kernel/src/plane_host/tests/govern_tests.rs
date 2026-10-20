@@ -120,9 +120,8 @@ fn with_caller<R>(
     let ctx = busbar_contract::records::PlaneRequestCtx {
         key: Some(Arc::new(key.clone())),
     };
-    let dest = crate::plane_host::egress::OperatorDestinations::default();
     let scope = crate::plane_host::DispatchScope::new();
-    crate::plane_host::with_plane_door("test-plane", Some(&ctx), &dest, app, &scope, f)
+    crate::plane_host::with_plane_door("test-plane", Some(&ctx), app, &scope, f)
 }
 
 /// THE GOVERN FAITHFULNESS PROOF: driving `govern_admit` over a [`Facts`] carrying the caller's

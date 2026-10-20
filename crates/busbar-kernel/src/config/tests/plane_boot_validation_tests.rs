@@ -11,7 +11,7 @@
 use busbar_contract::plane::{PinMechanismDecl, TrustKeyDecl, TrustRole};
 
 use crate::config::named_map::NamedMapSection;
-use crate::plane::config::{validate_plane_entry, validate_plane_section};
+use crate::config::plane_sections::{validate_plane_entry, validate_plane_section};
 
 const MECHANISMS: &[PinMechanismDecl] = &[
     PinMechanismDecl {
@@ -46,8 +46,8 @@ const KEYS: &[TrustKeyDecl] = &[
 /// The plane's own parse: it accepts any section, so nothing it could refuse hides the kernel's rule.
 fn accept_anything(
     _: &serde_yaml::Value,
-) -> Result<Box<dyn crate::plane::config::PlaneCfg>, String> {
-    Ok(Box::<crate::plane::config::RawPlaneSection>::default())
+) -> Result<Box<dyn crate::config::plane_sections::PlaneCfg>, String> {
+    Ok(Box::<crate::config::plane_sections::RawPlaneSection>::default())
 }
 
 /// A plane owning the `bays:` section and declaring two kernel trust keys.
