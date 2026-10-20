@@ -96,7 +96,7 @@ busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", re
 # THE SIGV4 STYLE (kind: auth): outbound signing and the inbound SigV4 verify, linked on the root's
 # `auths` axis (feature `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin. The
 # pin carries the sealed-Secret port (#1021, Part 2 #54): its signing secret is a private `Held`.
-busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "e3ba472a286f3f77412efc9a5d7ae2074313abc2" }
+busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "17a24d970b0190d7dffb84dbdf87ab4f792bbc0d" }
 # THE WEBHOOK-SIGNATURE STYLE (kind: auth): the inbound verify of a webhook sender's HMAC (variants
 # Twilio and Standard Webhooks), linked on the root's `auths` axis (feature `auth-webhook-signature`,
 # default-on, ARCHITECT 2026-10-14: its inbound verify is an auth-chain module, so

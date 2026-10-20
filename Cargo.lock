@@ -427,7 +427,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-sigv4"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=e3ba472a286f3f77412efc9a5d7ae2074313abc2#e3ba472a286f3f77412efc9a5d7ae2074313abc2"
+source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=17a24d970b0190d7dffb84dbdf87ab4f792bbc0d#17a24d970b0190d7dffb84dbdf87ab4f792bbc0d"
 dependencies = [
  "busbar-contract",
  "hex",
