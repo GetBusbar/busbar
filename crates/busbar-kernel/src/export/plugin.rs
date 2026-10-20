@@ -135,6 +135,8 @@ pub(super) struct PluginSink {
     /// it serves `/metrics/hooks` for the process's life ([`route_decls`]).
     scrape: bool,
     pub(super) projection: Projection,
+    /// It takes each `traces` line's full span record (`ExportCalls::takes_span_records`).
+    pub(super) span_record: bool,
     /// Its admission, as it stated it when started ([`start`]).
     admission: OnceLock<Admission>,
 }
@@ -210,9 +212,11 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
             false,
             &mut errors,
         );
+        let span_record = sink.takes_span_records();
         opened.push(PluginSink {
             name: name.clone(),
             module: module.to_string(),
+            span_record,
             sink,
             scrape: p.scrape,
             projection,
@@ -239,6 +243,16 @@ pub(crate) fn deliver_logs(cache: &mut PayloadCache<'_>) {
 /// sink subscribed to it. A sink at its in-flight bound sheds it (counted on its gate and on its
 /// declared shed counter); a sink that errors is logged. Neither reaches the caller.
 pub(super) fn deliver(stream: ExportStream, op: &str, mut f: impl FnMut(Projection) -> Arc<Value>) {
+    deliver_to(stream, op, |projection, _| f(projection));
+}
+
+/// [`deliver`], `f` told also whether the sink takes full span records
+/// ([`PluginSink::span_record`]).
+pub(super) fn deliver_to(
+    stream: ExportStream,
+    op: &str,
+    mut f: impl FnMut(Projection, bool) -> Arc<Value>,
+) {
     for s in sinks().filter(|s| s.projection.wants_stream(stream)) {
         let admission = s.admission();
         if !admission.live {
@@ -248,7 +262,7 @@ pub(super) fn deliver(stream: ExportStream, op: &str, mut f: impl FnMut(Projecti
             s.sink.shed();
             continue;
         };
-        let payload = f(s.projection);
+        let payload = f(s.projection, s.span_record);
         crate::audit::amend::export_read(&s.module, op, &payload);
         let line = serde_json::to_vec(&*payload).unwrap_or_default();
         if s.sink.deliver(stream as u8, line, Box::new(permit)) == Delivered::Shed {
