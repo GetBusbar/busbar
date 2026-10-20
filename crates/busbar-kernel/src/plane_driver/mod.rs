@@ -62,7 +62,9 @@ mod money;
 mod needs;
 mod probe;
 mod route;
+pub mod route_tables;
 pub mod serve;
+pub mod slots;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

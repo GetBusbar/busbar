@@ -1493,26 +1493,22 @@ mod residual_tests;
 // THE NEUTRAL LLM-RUNTIME BUILD CARRIER (1.6.0 money-path Phase 3-4 C): the single-compiled `PlaneBuildInput`
 // DTO `busbar-core`'s `appbuild` populates and hands to the LLM plane's `build_runtime` seam.
 pub mod build_input;
-// THE NEUTRAL READ-SIDE PROJECTION of a data-plane's routing tables (1.6.0 money-path Phase 3-4 B):
-// the `EngineTablesView` trait + `LaneView` + the zero-plane `EMPTY_VIEW` the core scrape/discovery
-// readers name so they need not move when the tables relocate into the retired engine crate.
-pub mod engine_view;
-// `PlaneSlots` through any pointer to a slot holder (`Arc`, load guard, borrow), so a plane's slot
-// readers can take `&impl PlaneSlots` instead of a concrete snapshot type without touching callers.
-pub mod slots_through;
+// The route tables' read view and the slots a plane reads live in the plane driver
+// (`crate::plane_driver::{route_tables, slots}`); re-exported at their former paths below.
+pub use crate::plane_driver::slots::{ContainerGateSink, PlaneSlots};
 // The egress-trust primitives (client identity, extra trust anchors, the peer-SPKI pin) live on the
 // kernel's outbound surface, `crate::egress::trust`. This re-export only keeps the legacy plane crates'
 // `busbar_kernel::plane_host::{identity, spki, trust_anchor}` paths resolving; it leaves with them.
 pub use crate::egress::trust::{identity, spki, trust_anchor};
 
+pub use crate::plane_driver::route_tables::{
+    set_pool_queued_depth, ConfigTables, EmptyEngineTablesView, EngineTablesView, LaneView,
+    EMPTY_VIEW,
+};
 pub use crate::plane_host::build_input::{
     AffinityInput, AuthReach, AuthStyleInput, BreakerInput, ClientSettingsInput, FailoverInput,
     HealthInput, HealthModeInput, LaneInput, LegacyLaneKeys, OnExhaustedInput, PlaneBuildInput,
     PoolInput, PoolMemberInput, TripInput, TripModeInput,
-};
-pub use crate::plane_host::engine_view::{
-    set_pool_queued_depth, ConfigTables, EmptyEngineTablesView, EngineTablesView, LaneView,
-    EMPTY_VIEW,
 };
 use busbar_contract::abi::hot::{AdmissionId, Signal, StatusClass};
 use busbar_contract::records::PlaneRequestCtx;
@@ -2724,46 +2720,6 @@ const _: () = {
         _needs_admission::<T>();
     }
 };
-
-/// THE NEUTRAL TYPE-ERASED SLOT-READ SEAM the core-owned `PlaneDecl` callbacks that today force a
-/// `&busbar_kernel::state::App` are neutralised over — so a plane's `on_swap` / `registry_contains` /
-/// `retain_verify_gates` hook reads its own per-generation runtime object off the snapshot WITHOUT
-/// the callback fn-pointer signature naming a core type. Core `impl`s it for `App` as a thin delegate
-/// to the inherent `App::plane_slot`; an EXTRACTED plane reaches only [`Self::plane_slot`] and
-/// stays neutral. [`Self::as_any`] is the recovery hatch an in-core plane twin uses to downcast back
-/// to its concrete snapshot for a field that does not live in `plane_slots` (`agent_defs`); an
-/// extracted plane never calls it.
-pub trait PlaneSlots {
-    /// The plane's type-erased runtime object for THIS generation, keyed by the plane's decl key —
-    /// a pure `plane_slots` map read, borrowed (mirrors the inherent `App::plane_slot`).
-    fn plane_slot(&self, key: &str) -> Option<&Arc<dyn std::any::Any + Send + Sync>>;
-
-    /// Recover the concrete engine snapshot as `&dyn Any` — the hatch an in-core plane twin downcasts
-    /// through to reach the snapshot fields that are not `plane_slots` entries. An extracted plane
-    /// never names a concrete type through this, so it never calls it.
-    fn as_any(&self) -> &dyn std::any::Any;
-}
-
-/// THE NEUTRAL `&mut` GATE-REBUILD SINK the core-owned `PlaneDecl::reresolve_gates` callback is
-/// neutralised over — the config-swap re-resolution of a plane's per-registration hook gates, moved
-/// behind a trait so the fn-pointer signature names no `&mut busbar_kernel::state::App`. A `PlaneSlots`
-/// (its supertrait) so the plane can read its own registry object off the same `&mut` receiver before
-/// it writes the resolved gates back. The resolve-and-store is ONE method (rather than the spec's
-/// `resolve` + `set` pair) because the resolved gate map value type is core-owned
-/// (`Vec<(u16, busbar_kernel::hooks::ResolvedPolicy)>`) and cannot be named in this crate — so the map
-/// never crosses the seam; it is built and stored entirely core-side, keyed by `plane_key`.
-pub trait ContainerGateSink: PlaneSlots {
-    /// Resolve `containers` (each `(name, its-own-hooks)`) unioned with `section_hooks` against this
-    /// snapshot's hook registry, and store the resolved per-container gates under the opaque registry
-    /// `plane_key` (the plane's stable decl key) in the generic `App::plane_gates` map. Byte-identical
-    /// to the old inline `next.plane_gates.insert(plane_key, next.resolve_container_gates(...))`.
-    fn reresolve_container_gates(
-        &mut self,
-        plane_key: &str,
-        containers: &[(&str, &[String])],
-        section_hooks: &[String],
-    );
-}
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // D3 WITNESS — the gauntlet siblings COEXIST and share ONE `admit_open` gate. (That a session

@@ -673,13 +673,13 @@ pub fn listed<'a>(
 
 /// The generation's slot of the door at `I`, off the neutral slot seam.
 fn slot_of<const I: usize>(
-    slots: &dyn crate::plane_host::PlaneSlots,
+    slots: &dyn crate::plane_driver::slots::PlaneSlots,
 ) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
     slots.plane_slot(door(I)?.reg.key).cloned()
 }
 
 fn named_def_list<const I: usize>(
-    slots: &dyn crate::plane_host::PlaneSlots,
+    slots: &dyn crate::plane_driver::slots::PlaneSlots,
 ) -> Vec<crate::api::NamedDefView> {
     let (Some(d), Some(slot)) = (door(I), slot_of::<I>(slots)) else {
         return Vec::new();
@@ -696,7 +696,7 @@ fn named_def_list<const I: usize>(
 }
 
 fn named_def_get<const I: usize>(
-    slots: &dyn crate::plane_host::PlaneSlots,
+    slots: &dyn crate::plane_driver::slots::PlaneSlots,
     name: &str,
 ) -> Option<crate::api::NamedDefView> {
     let d = door(I)?;
@@ -711,7 +711,7 @@ fn named_def_get<const I: usize>(
 }
 
 fn registry_contains<const I: usize>(
-    slots: &dyn crate::plane_host::PlaneSlots,
+    slots: &dyn crate::plane_driver::slots::PlaneSlots,
     name: &str,
 ) -> bool {
     let Some(slot) = slot_of::<I>(slots) else {
@@ -721,7 +721,7 @@ fn registry_contains<const I: usize>(
         .is_some_and(|s| s.section.contains_def(name))
 }
 
-fn reresolve_gates<const I: usize>(next: &mut dyn crate::plane_host::ContainerGateSink) {
+fn reresolve_gates<const I: usize>(next: &mut dyn crate::plane_driver::slots::ContainerGateSink) {
     let Some(d) = door(I) else {
         return;
     };
@@ -1027,10 +1027,12 @@ struct HookRow {
     admission: fn(&dyn std::any::Any) -> Option<crate::plane::PlaneAdmission>,
     build: fn(&BuildCtx) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     config_validate: fn(&str, &serde_json::Value) -> Result<(), String>,
-    named_def_list: fn(&dyn crate::plane_host::PlaneSlots) -> Vec<crate::api::NamedDefView>,
-    named_def_get: fn(&dyn crate::plane_host::PlaneSlots, &str) -> Option<crate::api::NamedDefView>,
-    registry_contains: fn(&dyn crate::plane_host::PlaneSlots, &str) -> bool,
-    reresolve_gates: fn(&mut dyn crate::plane_host::ContainerGateSink),
+    named_def_list:
+        fn(&dyn crate::plane_driver::slots::PlaneSlots) -> Vec<crate::api::NamedDefView>,
+    named_def_get:
+        fn(&dyn crate::plane_driver::slots::PlaneSlots, &str) -> Option<crate::api::NamedDefView>,
+    registry_contains: fn(&dyn crate::plane_driver::slots::PlaneSlots, &str) -> bool,
+    reresolve_gates: fn(&mut dyn crate::plane_driver::slots::ContainerGateSink),
     parse_section: fn(&serde_yaml::Value) -> Result<Box<dyn PlaneCfg>, String>,
     default_section: fn() -> Box<dyn PlaneCfg>,
     admin_routes: fn(&dyn std::any::Any) -> Vec<crate::admin_verbs::AdminRouteSpec>,
