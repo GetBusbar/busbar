@@ -132,18 +132,18 @@
    "paths": [
     "crates/busbar/src/root"
    ],
-   "tree_hash": "90048916c9eae4288d2de5befb61062cb8102325184afc7ace7afd487b7d0c38",
-   "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
-   "round": 2,
+   "tree_hash": "6a762ce7e43c05bbc83e8bda6b99151d939b06be2d2e1b6d334fdba40488c2fc",
+   "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+   "round": 3,
    "result": "findings",
    "counts": {
-    "HIGH": 7,
-    "MEDIUM": 14,
-    "LOW": 12,
+    "HIGH": 6,
+    "MEDIUM": 19,
+    "LOW": 17,
     "NIT": 1
    },
-   "report": "With no data directory, chain reads after boot see only the newest journal segment, so corrections, the migration marker and checkpoint numbering are lost once the journal outgrows one segment. Duplex sessions seal no audit record and unit records omit hooks and slice. Serving branches on a vendor stream media type and special-cases two plane config sections. Boot binds every plane and dropped-in transport whether configured or not, and one outbound auth style loads every auth plugin. Admin units seal no record. Read in two parts, fully.",
-   "auditor": "opus-r159b-root",
+   "report": "Duplex and swept sessions now seal their record and the serve path no longer names a vendor stream type or special-cases pool sections, but boot still binds every plane and transport whatever the configuration uses, one outbound auth style loads every auth plugin, unit records omit hooks applied and slice, admin units seal no record on the fixed chain, and a failed store-kept chain read at boot is taken as an empty chain, dropping signed corrections and restarting checkpoint numbering. Read in two parts, fully.",
+   "auditor": "opus-r159c-root-parts",
    "fixed_at": null,
    "rounds": [
     {
@@ -173,6 +173,20 @@
       "NIT": 1
      },
      "report": "With no data directory, chain reads after boot see only the newest journal segment, so corrections, the migration marker and checkpoint numbering are lost once the journal outgrows one segment. Duplex sessions seal no audit record and unit records omit hooks and slice. Serving branches on a vendor stream media type and special-cases two plane config sections. Boot binds every plane and dropped-in transport whether configured or not, and one outbound auth style loads every auth plugin. Admin units seal no record. Read in two parts, fully."
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-r159c-root-parts",
+     "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+     "tree_hash": "6a762ce7e43c05bbc83e8bda6b99151d939b06be2d2e1b6d334fdba40488c2fc",
+     "counts": {
+      "HIGH": 6,
+      "MEDIUM": 19,
+      "LOW": 17,
+      "NIT": 1
+     },
+     "report": "Duplex and swept sessions now seal their record and the serve path no longer names a vendor stream type or special-cases pool sections, but boot still binds every plane and transport whatever the configuration uses, one outbound auth style loads every auth plugin, unit records omit hooks applied and slice, admin units seal no record on the fixed chain, and a failed store-kept chain read at boot is taken as an empty chain, dropping signed corrections and restarting checkpoint numbering. Read in two parts, fully."
     }
    ]
   },
@@ -813,18 +827,18 @@
    "paths": [
     "crates/busbar-core-connector/src"
    ],
-   "tree_hash": "76aada588a98f9d865e5e75387eea4c94350b3f73a6ce9d8df6becc721cbc5c7",
-   "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
-   "round": 2,
+   "tree_hash": "1eb639e4144df366fe111cb4c6c4090baec488ac20454a9c5dfa427f87205f5b",
+   "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+   "round": 3,
    "result": "findings",
    "counts": {
-    "HIGH": 5,
-    "MEDIUM": 14,
-    "LOW": 12,
+    "HIGH": 1,
+    "MEDIUM": 7,
+    "LOW": 11,
     "NIT": 2
    },
-   "report": "The connector still lends a pooled connection across instances and needs regardless of the trust it was secured with, and a registration sealed with no anchors borrows another's client identity. An upstream media leg's read deadlocks on a message longer than the reader's buffer, a TLS write over 64 KiB fails its connection, and a replaced instance's member programs are never stopped. Program leases, framer auto-replies, idle pooled sockets, name-lookup threads, framer re-calls and datagram path maps are unbounded. Read fully except the test kit, sampled.",
-   "auditor": "opus-q128-l159",
+   "report": "A replaced instance's member programs keep running and every per-instance record grows with each reload. A pooled connection verified under a need's earlier operator CA is still lent after that CA is replaced. One stalled reader freezes its HTTP/2 siblings; a plugin alone turns certificate verification off; a plaintext private plugin registry is refused by default; an unpinned infrastructure need reaches any internal host or socket; a dialled media leg probes unjudged addresses; a transport's size answer can abort the host. Read fully except in-scope test code, sampled.",
+   "auditor": "opus-r159c-connector-reread",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-core-connector/src/tests"
@@ -857,6 +871,20 @@
       "NIT": 2
      },
      "report": "The connector still lends a pooled connection across instances and needs regardless of the trust it was secured with, and a registration sealed with no anchors borrows another's client identity. An upstream media leg's read deadlocks on a message longer than the reader's buffer, a TLS write over 64 KiB fails its connection, and a replaced instance's member programs are never stopped. Program leases, framer auto-replies, idle pooled sockets, name-lookup threads, framer re-calls and datagram path maps are unbounded. Read fully except the test kit, sampled."
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-r159c-connector-reread",
+     "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
+     "tree_hash": "1eb639e4144df366fe111cb4c6c4090baec488ac20454a9c5dfa427f87205f5b",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 7,
+      "LOW": 11,
+      "NIT": 2
+     },
+     "report": "A replaced instance's member programs keep running and every per-instance record grows with each reload. A pooled connection verified under a need's earlier operator CA is still lent after that CA is replaced. One stalled reader freezes its HTTP/2 siblings; a plugin alone turns certificate verification off; a plaintext private plugin registry is refused by default; an unpinned infrastructure need reaches any internal host or socket; a dialled media leg probes unjudged addresses; a transport's size answer can abort the host. Read fully except in-scope test code, sampled."
     }
    ]
   },
