@@ -579,9 +579,12 @@ dependencies = [
 [[package]]
 name = "busbar-export-otlp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=53e9cf86b2e1c9d7eeccd61f9e7a020bf1554980#53e9cf86b2e1c9d7eeccd61f9e7a020bf1554980"
+source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=6e7c9327103382e5ee9e5b223c5306eea82ef51f#6e7c9327103382e5ee9e5b223c5306eea82ef51f"
 dependencies = [
+ "base64 0.22.1",
  "busbar-contract",
+ "percent-encoding",
+ "prost",
  "serde",
  "serde_json",
  "tracing",
@@ -591,7 +594,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-otlp-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=53e9cf86b2e1c9d7eeccd61f9e7a020bf1554980#53e9cf86b2e1c9d7eeccd61f9e7a020bf1554980"
+source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=6e7c9327103382e5ee9e5b223c5306eea82ef51f#6e7c9327103382e5ee9e5b223c5306eea82ef51f"
 dependencies = [
  "busbar-contract",
  "busbar-export-otlp",
