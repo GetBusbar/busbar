@@ -219,7 +219,6 @@ pub mod bound_credential;
 pub mod egress;
 pub mod endpoints;
 pub mod export;
-pub mod failover;
 pub mod governance;
 pub mod handlers;
 pub mod hooks;
