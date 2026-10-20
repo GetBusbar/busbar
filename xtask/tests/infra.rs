@@ -600,11 +600,15 @@ fn the_plane_key_contract_matches_plane_keys_sh() {
     // The llm key's root is its door crate since the retired engine crate was deleted (DEV-GREEN
     // row 83): a key pointing at a deleted directory judges nothing (row 115).
     assert_eq!(src[0], "crates/busbar-plane-llm/src");
+    // The root is read through the context's base layer: the door crate left for its own repo
+    // (row 106) and is laid at the path it had from the checkout of the rev the root pins, so a gate
+    // keyed on it scans the pinned bytes, never zero files.
+    let c = cx();
     for r in &src {
         assert!(
-            repo_root().join(r).is_dir(),
-            "plane key root `{r}` is listed but is not a directory in this tree -- a gate keyed on \
-             it would scan zero files and pass every ban silently"
+            c.is_dir(r),
+            "plane key root `{r}` is listed but is not a directory in this tree or its pinned planes \
+             -- a gate keyed on it would scan zero files and pass every ban silently"
         );
     }
     // The shell's twin mapping says the same: `plane_ondisk_key llm` is `plane-llm`.

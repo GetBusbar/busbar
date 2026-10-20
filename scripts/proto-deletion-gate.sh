@@ -263,7 +263,7 @@ llm_registrations() {
 }
 
 llm_dialects() {
-  local src="${1:-crates/busbar-plane-llm/src/codec}" mods m f n out=""
+  local src="${1:-$(pinned_dir crates/busbar-plane-llm/src/codec)}" mods m f n out=""
   [ -f "$src/mod.rs" ] || die "cannot derive the LLM dialects: $src/mod.rs is not on disk"
   mods="$(llm_registrations "$src/mod.rs" | sed -e 's/^&//' -e 's/::ENTRY$//')"
   [ -n "$mods" ] || die "cannot derive the LLM dialects: no '&<module>::ENTRY' entry in $src/mod.rs DIALECTS"
@@ -410,8 +410,8 @@ if [ "${1:-}" = "--selftest" ]; then
 
   # DIALECTS ARE DERIVED AND COUNTED (item 517): the live derivation matches the DECLS entry count and
   # carries the leg's own probe dialect; a fixture DECLS yields exactly its own entries.
-  st_decls_n="$(llm_registrations crates/busbar-plane-llm/src/codec/mod.rs | grep -c . || true)"
-  st_dialects="$(llm_dialects crates/busbar-plane-llm/src/codec)"
+  st_decls_n="$(llm_registrations "$(pinned_dir crates/busbar-plane-llm/src/codec/mod.rs)" | grep -c . || true)"
+  st_dialects="$(llm_dialects "$(pinned_dir crates/busbar-plane-llm/src/codec)")"
   st_dialects_n="$(printf '%s\n' "$st_dialects" | wc -w | tr -d ' ')"
   if [ "${st_decls_n:-0}" -gt 0 ] && [ "$st_dialects_n" = "$st_decls_n" ] && printf ' %s ' "$st_dialects" | grep -q ' anthropic '; then
     note "self-test DIALECTS: $st_dialects_n derived from DIALECTS ($st_dialects), one per entry"
@@ -779,7 +779,7 @@ run_gate() {
 # The deleted-ingress probe is anthropic's `/v1/messages`; every other dialect's URL space
 # (gemini's `/v1beta/...`, bedrock's `/model/{id}/converse`, `/v1/responses`, `/v2/chat`) is covered
 # by the same binary having no LLM handler at all.
-LLM_DIALECTS="$(llm_dialects crates/busbar-plane-llm/src/codec)"
+LLM_DIALECTS="$(llm_dialects "$(pinned_dir crates/busbar-plane-llm/src/codec)")"
 LLM_DIALECTS_N="$(printf '%s\n' "$LLM_DIALECTS" | wc -w | tr -d ' ')"
 case " $LLM_DIALECTS " in
   *" anthropic "*) ;;
