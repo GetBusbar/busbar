@@ -19,14 +19,14 @@
 //!    the composition root built for the life of the node and handed to [`Verbs::new`], so the
 //!    window outlives the request; and it spends only the new verbs (see [`Verbs::admit`] for why
 //!    a legacy verb's budget is not spent here).
-//! 3. **Posture** (new verbs only). [`crate::posture::check_new_verb_admission`]. The five ledger
-//!    views ([`crate::verb::LEDGER_VERBS`]) are answered BEFORE this step and never reach it: a view
-//!    reads figures the ledger already holds, so there is no mutation for dual control to check and
-//!    no ceremony for it to wait on. They reach [`crate::governance::Governance::execute_ledger_read`]
-//!    instead, having passed exactly the same scope and rate checks as everything above. The three
-//!    audit-chain reads ([`crate::verb::AUDIT_VERBS`]) are answered on the same rung, one branch
-//!    later, through [`crate::governance::Governance::execute_audit_read`], for the same reason and
-//!    with the same checks run first.
+//! 3. **Nothing else.** There is no posture step: the admin API is dumb (#77(9) OWNER-LOCKED,
+//!    `docs/design/BUSBAR-1.6.0.md` l.2279) — no verb carries dual control, escrow or operator
+//!    signatures, and each verb is a plain scoped verb authorized by the token's grant. The five
+//!    ledger views ([`crate::verb::LEDGER_VERBS`]) reach
+//!    [`crate::governance::Governance::execute_ledger_read`], the three audit-chain reads
+//!    ([`crate::verb::AUDIT_VERBS`]) reach [`crate::governance::Governance::execute_audit_read`],
+//!    and every other new verb reaches [`crate::governance::Governance::execute_new_verb`], each
+//!    having passed exactly the same scope and rate checks.
 //! 4. **Idempotency** is not a step of this executor. The two replayable mutations, `POST /keys`
 //!    and `POST /keys/{id}/rotate`, are answered by the served handlers in [`crate::keys`] behind
 //!    the kernel's mutation limiter, against the node's one process-lifetime
@@ -41,7 +41,6 @@
 //! and nothing in the type system would have asked it not to.
 
 use crate::governance::{Governance, GovernanceError};
-use crate::posture::{ApprovalState, PostureCtx};
 use crate::rate::{ConfigClassRule, MutationClass, MutationLimiter, RateCheck};
 use crate::refusal::{store_error_into_refusal, ReasonCode, Refusal, RefusalStep};
 use crate::verb::{
@@ -162,8 +161,8 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
         }
     }
 
-    /// The generic dispatcher: every legacy operation but the two key mints, the new verbs
-    /// (posture-gated), and nothing else. `PostKeys` and `PostKeysIdRotate` are refused here rather
+    /// The generic dispatcher: every legacy operation but the two key mints, the new verbs, and
+    /// nothing else. `PostKeys` and `PostKeysIdRotate` are refused here rather
     /// than served, because this path carries none of the replay machinery the served handlers in
     /// [`crate::keys`] answer them with.
     #[allow(clippy::too_many_arguments)]
@@ -174,8 +173,6 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
         actor: &str,
         granted: VerbScope,
         now: u64,
-        posture: Option<PostureCtx>,
-        approval: ApprovalState,
         request: &[u8],
     ) -> Result<Vec<u8>, Refusal> {
         // The two minting verbs are REFUSED here, in every build, rather than asserted against in
@@ -187,11 +184,9 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
             return Err(Refusal::new(RefusalStep::Admit, ReasonCode::Internal));
         }
         self.admit(verb, actor, granted, now)?;
-        // A ledger view is answered BEFORE the new-verb branch, and the ordering is the whole of
-        // its posture: it never reaches `check_new_verb_admission`, because there is no mutation
-        // for dual control to check and no ceremony a read has to wait for. What it does reach is
-        // the same `admit` above every other verb reaches, so its scope and its rate class are
-        // decided by the same two lines that decide every other verb's.
+        // A ledger view is answered BEFORE the new-verb branch, by its own read seam. What it
+        // reaches is the same `admit` above every other verb reaches, so its scope and its rate
+        // class are decided by the same two lines that decide every other verb's.
         if LEDGER_VERBS.contains(&verb) {
             return self
                 .governance
@@ -199,10 +194,9 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
                 .map_err(GovernanceError::into_refusal);
         }
         // An audit-chain read is answered here for the same reason a ledger view is, one branch
-        // above: it never reaches `check_new_verb_admission`, because there is no mutation for dual
-        // control to check and no ceremony a read has to wait for. Without this branch the three
-        // verbs RESOLVED — they are in the closed table, they carry a scope and a rate class — and
-        // then fell past both this arm and the posture-gated one into the legacy catch-all, where a
+        // above, by its own read seam. Without this branch the three verbs RESOLVED — they are in
+        // the closed table, they carry a scope and a rate class — and then fell past both this arm
+        // and the new-verb one into the legacy catch-all, where a
         // router that never had those paths answered a 404. A verb that resolves and then refuses is
         // the worst of the three possible states: the table says the surface exists and the surface
         // says it does not.
@@ -213,18 +207,11 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
                 .map_err(GovernanceError::into_refusal);
         }
         if NEW_VERBS.contains(&verb) {
-            // A posture-gated verb whose posture the caller did not resolve is REFUSED, not
-            // unwrapped. "A new verb always arrives with one" is a claim about a call site, and a
-            // miswired caller — or a verb added to the gated set on one side only — would otherwise
-            // turn an admin request into a downed process at the point where the gate was supposed
-            // to protect something.
-            let Some(ctx) = posture else {
-                return Err(Refusal::new(RefusalStep::Verify, ReasonCode::Validation));
-            };
-            crate::posture::check_new_verb_admission(verb, ctx, approval)?;
+            // A plain scoped verb (#77(9)): the token's grant, checked in `admit` above, is the
+            // whole of its authorization. No operator key, signature or second approver is asked.
             return self
                 .governance
-                .execute_new_verb(verb, admin, request, ctx.operator)
+                .execute_new_verb(verb, admin, request)
                 .map_err(GovernanceError::into_refusal);
         }
         self.governance
@@ -249,27 +236,19 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
 
     /// The gate the three disaster-recovery verbs run through before they reach the store.
     ///
-    /// Identical to what [`Verbs::execute`] runs for any other new verb — scope, rate class, then
-    /// the operator ceremony and dual control — because these three are new verbs; the only thing
-    /// that makes them different is that their effect lands on [`Store`] rather than
-    /// [`Governance`], and where an effect lands is not a reason to be admitted differently. A
-    /// posture the caller did not resolve is REFUSED rather than unwrapped, for the same reason it
-    /// is in `execute`: a miswired caller must not turn the gate protecting a chain break into a
-    /// downed process.
+    /// Identical to what [`Verbs::execute`] runs for any other new verb — scope, then rate class —
+    /// because these three are new verbs; the only thing that makes them different is that their
+    /// effect lands on [`Store`] rather than [`Governance`], and where an effect lands is not a
+    /// reason to be admitted differently. Each is a plain scoped verb (#77(9), OWNER-LOCKED,
+    /// `docs/design/BUSBAR-1.6.0.md` l.2279): no operator key, signature or second approver.
     fn admit_recovery_verb(
         &self,
         verb: KernelVerb,
         actor: &str,
         granted: VerbScope,
         now: u64,
-        posture: Option<PostureCtx>,
-        approval: ApprovalState,
     ) -> Result<(), Refusal> {
-        self.admit(verb, actor, granted, now)?;
-        let Some(ctx) = posture else {
-            return Err(Refusal::new(RefusalStep::Verify, ReasonCode::Validation));
-        };
-        crate::posture::check_new_verb_admission(verb, ctx, approval)
+        self.admit(verb, actor, granted, now).map(|_| ())
     }
 
     /// `chain_break` — deliberately break the journal chain. Admitted through
@@ -280,17 +259,8 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
         actor: &str,
         granted: VerbScope,
         now: u64,
-        posture: Option<PostureCtx>,
-        approval: ApprovalState,
     ) -> Result<(), Refusal> {
-        self.admit_recovery_verb(
-            KernelVerb::ChainBreak,
-            actor,
-            granted,
-            now,
-            posture,
-            approval,
-        )?;
+        self.admit_recovery_verb(KernelVerb::ChainBreak, actor, granted, now)?;
         self.bound_store()
             .and_then(|store| store.chain_break(admin))
             .map_err(store_error_into_refusal)
@@ -298,25 +268,15 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
 
     /// `store_restore` — restore the store from a named backup. Admitted through
     /// [`Verbs::admit_recovery_verb`] and only then handed to the store.
-    #[allow(clippy::too_many_arguments)]
     pub fn store_restore(
         &self,
         admin: &Grant<AdminVerb>,
         actor: &str,
         granted: VerbScope,
         now: u64,
-        posture: Option<PostureCtx>,
-        approval: ApprovalState,
         backup_ref: &str,
     ) -> Result<(), Refusal> {
-        self.admit_recovery_verb(
-            KernelVerb::StoreRestore,
-            actor,
-            granted,
-            now,
-            posture,
-            approval,
-        )?;
+        self.admit_recovery_verb(KernelVerb::StoreRestore, actor, granted, now)?;
         self.bound_store()
             .and_then(|store| store.store_restore(admin, backup_ref))
             .map_err(store_error_into_refusal)
@@ -330,17 +290,8 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
         actor: &str,
         granted: VerbScope,
         now: u64,
-        posture: Option<PostureCtx>,
-        approval: ApprovalState,
     ) -> Result<(), Refusal> {
-        self.admit_recovery_verb(
-            KernelVerb::ResealEpochFloor,
-            actor,
-            granted,
-            now,
-            posture,
-            approval,
-        )?;
+        self.admit_recovery_verb(KernelVerb::ResealEpochFloor, actor, granted, now)?;
         self.bound_store()
             .and_then(|store| store.reseal_epoch_floor(admin))
             .map_err(store_error_into_refusal)

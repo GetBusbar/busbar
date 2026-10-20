@@ -116,6 +116,9 @@ pub struct Measurement {
     /// scan matched it. The listed segment-only hits are already gone from the forward lists above.
     pub segment_debt: Vec<segment_debt::Debt>,
     pub segment_debt_matched: Vec<bool>,
+    /// The rows of the list this change wrote over the base's copy ([`segment_debt::minted`]), or
+    /// why no base could be read.
+    pub segment_debt_minted: Result<Vec<String>, String>,
 }
 
 impl Measurement {
@@ -212,6 +215,7 @@ fn measure(cx: &Ctx) -> Result<Measurement, String> {
     // the debt is drained out of them once, here, and a segment hit nobody listed stays in as the
     // DIALECT hit it is.
     let segment_debt = segment_debt::load(cx)?;
+    let segment_debt_minted = segment_debt::minted(cx, &segment_debt);
     let mut segment_debt_matched = vec![false; segment_debt.len()];
     let prod_forward =
         segment_debt::drain_listed(&segment_debt, &mut segment_debt_matched, prod_forward);
@@ -230,6 +234,7 @@ fn measure(cx: &Ctx) -> Result<Measurement, String> {
         vocab,
         segment_debt,
         segment_debt_matched,
+        segment_debt_minted,
     })
 }
 
@@ -361,8 +366,12 @@ fn segment_debt_row(m: &Measurement) -> Row {
         })
         .map(|(d, _)| format!("{} `{}`", d.site(), d.text))
         .collect();
+    let (minted, no_base) = match &m.segment_debt_minted {
+        Ok(rows) => (rows.clone(), None),
+        Err(e) => (Vec::new(), Some(e.clone())),
+    };
     let title = "no neutral crate names a dialect as an identifier segment beyond the listed debt";
-    if unlisted.is_empty() && stale.is_empty() {
+    if unlisted.is_empty() && stale.is_empty() && minted.is_empty() && no_base.is_none() {
         return Row::pass(
             ROW_SEGMENT_DEBT,
             title,
@@ -388,6 +397,17 @@ fn segment_debt_row(m: &Measurement) -> Row {
             segment_debt::SEGMENT_DEBT_TOML,
             stale.join("; ")
         ));
+    }
+    if !minted.is_empty() {
+        detail.push(format!(
+            "{} MINTED row(s) — written by this change beside the hit they forgive; the list is \
+             drain-only, so name the dialect in its plane instead: {}",
+            minted.len(),
+            minted.join("; ")
+        ));
+    }
+    if let Some(e) = no_base {
+        detail.push(e);
     }
     Row::fail(ROW_SEGMENT_DEBT, title, detail.join(" | "))
 }
@@ -533,7 +553,11 @@ impl Gate for PlanePurityGate {
         // and stays RED on `cargo xtask gate plane-purity`; what changes is that each case now has
         // a green row to move. The set-aside is DERIVED from the gate's own hits, so a standing red
         // that is drained shrinks it and a new one grows it — nothing here names a file.
-        let base = cx.with_overlay(standing_red_set_aside(cx));
+        //
+        // The set-aside is laid over `cx` with its base PINNED to `HEAD`: the segment-debt row
+        // compares the list with the base's copy, and a detached battery checkout has no other.
+        let pinned = crate::gates::construction::ceilings::with_head_pin(cx);
+        let base = pinned.with_overlay(layered(&pinned).layered(&standing_red_set_aside(cx)));
         let cx: &Ctx = &base;
 
         report.push(prove_green(
@@ -562,14 +586,17 @@ impl Gate for PlanePurityGate {
 
         // The OTHER dual-compile spelling. It used to fall through to the vocabulary rules, which
         // sit BELOW the pragma gate — so one trailing comment spliced a plane's source into a
-        // neutral crate under a clean report. The pragma is on the fixture on purpose.
+        // neutral crate under a clean report. The pragma is on the fixture on purpose. Its target
+        // is a plane directory the tree still derives (the one the `#[path]` case above proves
+        // live): the instance directories are derived, so a plant naming a deleted crate
+        // (`busbar-a2a/`, gone with the a2a extraction) names no plane and proves nothing.
         report.push(create(
             cx,
             self,
             "an include! dual-compile, carrying a pragma that must not launder it",
             &[ROW_PATH_INCLUDE],
             &plant_at,
-            "include!(\"../../../busbar-a2a/src/witness.rs\"); // plane-purity: frozen-wire abuse\n",
+            "include!(\"../../../busbar-plane-mcp/src/witness.rs\"); // plane-purity: frozen-wire abuse\n",
             &[ROW_PATH_INCLUDE, "planted_plane_purity.rs:1"],
         ));
 
@@ -930,7 +957,9 @@ impl Gate for PlanePurityGate {
             ));
         }
 
-        let mut ov = layered(cx);
+        // THE LIST AGAINST ITS BASE (Law 9). The same listed hit, twice: once with its row on the
+        // base's copy of the list too (debt the base already carried: green), and once with the row
+        // written by this change alone (a new dialect segment forgiven by a data edit: RED).
         let mut rows = debt_now;
         rows.push(segment_debt::Debt {
             file: plant_at.clone(),
@@ -939,17 +968,38 @@ impl Gate for PlanePurityGate {
             dialect: "anthropic".to_string(),
             owner: "kernel-neutrality lane".to_string(),
         });
-        ov.set(segment_debt::SEGMENT_DEBT_TOML, segment_debt::render(&rows));
-        if Edit::Create(format!("{seg_line}\n"))
-            .apply(cx, &plant_at, &mut ov)
-            .is_ok()
-        {
+        let listed = segment_debt::render(&rows);
+        let unlisted = segment_debt::render(&rows[..rows.len() - 1]);
+        let on_base = |was: &str| {
+            let mut ov =
+                layered(cx).layered(&crate::gates::construction::ceilings::synthetic_base(
+                    "zz-segment-debt-base",
+                    segment_debt::SEGMENT_DEBT_TOML,
+                    was,
+                ));
+            ov.set(segment_debt::SEGMENT_DEBT_TOML, listed.clone());
+            Edit::Create(format!("{seg_line}\n"))
+                .apply(cx, &plant_at, &mut ov)
+                .ok()
+                .map(|()| ov)
+        };
+        if let Some(ov) = on_base(&listed) {
             report.push(prove_rows_green(
                 cx,
                 self,
                 "a listed segment-only hit is debt, not a DIALECT hit: both rows stay green",
                 &[ROW_SEGMENT_DEBT, ROW_DIALECT],
                 ov,
+            ));
+        }
+        if let Some(ov) = on_base(&unlisted) {
+            report.push(prove_red(
+                cx,
+                self,
+                "a segment-debt row the base's list does not carry is MINTED, and refused",
+                &[ROW_SEGMENT_DEBT],
+                ov,
+                &[ROW_SEGMENT_DEBT, "MINTED", "planted_plane_purity.rs"],
             ));
         }
 

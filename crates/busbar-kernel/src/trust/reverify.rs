@@ -1,17 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Re-export shim. THE RE-VERIFICATION CADENCE moved DOWN into `busbar-substrate` in Phase-B B1;
-//! this module re-exports it (glob) so every `crate::trust::reverify::…` name resolves unchanged and
-//! hosts the core-only re-verification tests, which exercise an in-core plane consumer's
-//! registration/pin call site.
+//! THE RE-VERIFICATION CADENCE: when the kernel's trust book ([`super::book`]) marks a
+//! counterparty due to be looked at again, from the operator's declared policy and the kernel's
+//! own clock.
 
 #[cfg(test)]
 #[path = "tests/reverify_tests.rs"]
 mod reverify_tests;
-
-// ==== merged from busbar-substrate (W4.b P2 engine drain) ====
-use super::{Approval, PinnedArtifact, Sighting};
 
 /// The operator's cadence. Config, therefore intent.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,20 +58,6 @@ impl Due {
     pub fn should_check(self) -> bool {
         !matches!(self, Due::No)
     }
-
-    /// Marshal this reason onto the neutral [`VerifyDecision`](busbar_contract::abi::hot::VerifyDecision) the
-    /// host `verify_decide_q` slot returns BY VALUE — the outbound half of the reason mapping the slot
-    /// uses so a full `Due` crosses the `#[repr(C)]` seam rather than a lossy `Fresh`/`Stale` bool.
-    pub fn to_verify_decision(self) -> busbar_contract::abi::hot::VerifyDecision {
-        use busbar_contract::abi::hot::VerifyDecision as V;
-        match self {
-            Due::No => V::Fresh,
-            Due::NeverChecked => V::NeverChecked,
-            Due::TtlExpired => V::TtlExpired,
-            Due::OperatorSync => V::OperatorSync,
-            Due::ClockWentBackwards => V::ClockWentBackwards,
-        }
-    }
 }
 
 /// Decide whether to re-fetch, from the operator's policy and OUR clock alone.
@@ -98,87 +80,3 @@ pub fn due(ledger: &Ledger, policy: &Policy, now_ms: u64, operator_sync: bool) -
     }
     Due::No
 }
-
-/// What settling an observation did, so a caller can log and surface it rather than inferring it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Settled<A: PinnedArtifact> {
-    /// The sighting to RECORD. The trust state derives from it, so this is what decides whether the
-    /// upstream is quarantined.
-    pub sighting: Sighting<A>,
-    /// Drift was observed on this pass. Set whether or not the observation was acted on.
-    pub drift_observed: bool,
-    /// A clean answer was DISBELIEVED because the backoff since the last drift has not elapsed.
-    /// Surfaced so an operator can tell "still broken" from "claims to be fine, too soon to say".
-    pub recovery_held: bool,
-}
-
-/// Fold a fresh observation into what is recorded.
-///
-/// The ledger is always stamped, and drift is always counted, before any decision about what to
-/// believe. Detection and demotion are different acts, and only the second one is ever held back.
-pub fn settle<A: PinnedArtifact>(
-    approval: &Approval<A>,
-    recorded: &Sighting<A>,
-    observed: Sighting<A>,
-    ledger: &mut Ledger,
-    policy: &Policy,
-    now_ms: u64,
-) -> Settled<A> {
-    ledger.last_checked_ms = Some(now_ms);
-
-    match &observed {
-        // A FAILED CONTACT IS NOT A RECOVERY. Recording it derives `Error`, which never serves, and
-        // it deliberately does not clear the drift clock: an upstream that could age its own
-        // quarantine out by refusing connections would have been handed the cheapest possible escape
-        // from being quarantined.
-        Sighting::Failed(_) => Settled {
-            sighting: observed,
-            drift_observed: false,
-            recovery_held: false,
-        },
-        // Nothing observed, nothing to fold. Keeping what is recorded is the only answer that does
-        // not invent an observation. `Demoted` is here with `Never` and not with `Failed` for
-        // exactly that reason: it is the REPLAY of an observation taken by a previous process, so it
-        // can arrive as the RECORDED sighting but is never something a fresh look produces. Folding
-        // it in as if it were would let a boot replay stamp the drift clock a second time for a
-        // demotion that has already been counted once.
-        Sighting::Never | Sighting::Demoted(_) => Settled {
-            sighting: recorded.clone(),
-            drift_observed: false,
-            recovery_held: false,
-        },
-        Sighting::Seen(_) => {
-            if !approval.drift(&observed).is_empty() {
-                // DEMOTION IS NEVER HELD. Holding it would mean an upstream that flapped recently
-                // gets a window in which its next change is not acted on, and choosing when to flap
-                // is entirely within its gift.
-                ledger.drift_observations += 1;
-                ledger.last_drift_ms = Some(now_ms);
-                return Settled {
-                    sighting: observed,
-                    drift_observed: true,
-                    recovery_held: false,
-                };
-            }
-            // A clean answer, which is the only case the backoff applies to.
-            //
-            // A clock that has gone backwards since the drift was stamped says nothing about how
-            // much of the backoff has elapsed, and the only safe reading of "unknown" is that it
-            // has not. `is_due` already fails an unreadable clock CLOSED — treating the same clock
-            // as an expired backoff here would fail it OPEN, and would hand any upstream that can
-            // nudge our clock backwards a way to have its next clean answer believed at once.
-            let held = ledger.last_drift_ms.is_some_and(|drifted| {
-                now_ms < drifted || now_ms - drifted < policy.recovery_backoff_ms
-            });
-            Settled {
-                sighting: if held { recorded.clone() } else { observed },
-                drift_observed: false,
-                recovery_held: held,
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-#[path = "tests/reverify.rs"]
-mod tests;
