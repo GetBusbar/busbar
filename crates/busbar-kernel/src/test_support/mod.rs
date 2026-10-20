@@ -2087,6 +2087,11 @@ pub fn hook_axis_stand_in(
 /// process. See [`hook_double`].
 pub mod hook_double;
 
+/// The operator-credential double: the `kind: auth` door a test binary links as the operator
+/// credential's row in place of the composition root's plugin (kind-neutral, under the stand-in
+/// operator words). See [`operator_double`].
+pub mod operator_double;
+
 /// The ranking hook double (R-FIX3): the door that stands in for the root's linked ranking row in a
 /// test build. Linked only.
 pub mod ranking_double;
