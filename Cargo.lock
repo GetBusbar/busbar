@@ -828,7 +828,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-streaming"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=8c282f41b726513b6b63942a9fb285961b7f6aef#8c282f41b726513b6b63942a9fb285961b7f6aef"
+source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=a6c19c9a8f4310a95154156cfe458394af11567f#a6c19c9a8f4310a95154156cfe458394af11567f"
 dependencies = [
  "busbar-contract",
  "bytes",
