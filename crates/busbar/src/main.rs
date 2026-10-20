@@ -1040,7 +1040,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // Every config apply refreshes each served door plane onto the generation it installed
     // (the ARCHITECT ruling on a served door plane's apply), bound on the handle once the routers are built.
     let door_appliers = served.appliers();
-    #[cfg(linked_axis_node)]
+    #[cfg(linked_section_pools)]
     let door_post = served.post.clone();
     // THE LINE CARRIER (SEAM-S1, `root::serve::lines`): with a plane's line-serve flag passed and a
     // served plane claiming the line carrier, the served planes are kept for the process's own
@@ -1064,7 +1064,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             (provider, points)
         })
         .collect();
-    let (doors, sessions, refusals) = root::serve::data_mounts(
+    let (doors, sessions, refusals, refuse_by_path) = root::serve::data_mounts(
         served,
         &data_chain,
         &busbar_kernel::base_data_core_lines(&app),
@@ -1081,6 +1081,11 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         max_inbound,
         response_headers_cfg.server_timing,
     );
+    // The kernel-shaped refusals render through the door that owns the path (ARCHITECT ruling
+    // 2026-10-16, 3b B).
+    if let Some(refuse) = refuse_by_path {
+        app_handle.bind_door_refuser(refuse);
+    }
     credential_handle.set(std::sync::Arc::clone(&app_handle));
     let _ = door_live_handle.set(std::sync::Arc::clone(&app_handle));
     app_handle.on_apply(Box::new({
@@ -1091,7 +1096,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // (`DoorAppliers::refresh_models`): the swapped-in App's projected configuration, its lane
     // table and its secret seam. A build with no node composes no door plane's money, so it has
     // none to refresh.
-    #[cfg(linked_axis_node)]
+    #[cfg(linked_section_pools)]
     if let Some(post) = door_post {
         let (auths, live) = (
             std::sync::Arc::clone(&door_auths),

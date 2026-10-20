@@ -1223,7 +1223,7 @@ fn no_swept_unit_settles_with_zero_audit_records() {
 // TWO BOOKS AGREE ON EVERY CLASS CELL
 // ---------------------------------------------------------------------------------------------
 
-/// The open class a rerank's search units are ledgered under (`busbar-llm-codec`'s
+/// The open class a rerank's search units are ledgered under (the rerank dialect codec's
 /// `SEARCH_UNITS_CLASS`, which `record_resp_usage` ledgers verbatim — item 134). Spelled here because
 /// this crate does not depend on the codec.
 const SEARCH_UNITS: &str = "search_units";
