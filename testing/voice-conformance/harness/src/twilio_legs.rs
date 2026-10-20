@@ -147,7 +147,13 @@ fn lock_of(session: &Value) -> String {
             None => "unset".to_string(),
         }
     };
-    let known = ["model", "type", "audio", "input_audio_format", "output_audio_format"];
+    let known = [
+        "model",
+        "type",
+        "audio",
+        "input_audio_format",
+        "output_audio_format",
+    ];
     let more: Vec<&str> = session
         .as_object()
         .map(|o| {
@@ -509,11 +515,7 @@ fn fixture_steps(fx: &Fixtures, name: &str, v: &Value) -> Result<Vec<Step>, Stri
                 &[format!("caller-media:{sid}:{}", payload_of(v))],
             ),
         ],
-        "to-twilio.mark.json" => vec![
-            opening(),
-            delta(),
-            far_audio_done(name),
-        ],
+        "to-twilio.mark.json" => vec![opening(), delta(), far_audio_done(name)],
         "to-twilio.clear.json" => vec![
             opening(),
             delta(),
