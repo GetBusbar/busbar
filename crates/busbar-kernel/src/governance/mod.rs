@@ -112,7 +112,7 @@ pub fn generation_matches(generation_hash: &str, presented: Option<&str>) -> boo
 
 /// THE ONE 128-bit random hex draw: 128 bits of OS CSPRNG as 32 lowercase hex chars. Fails closed on
 /// no entropy, exactly like every other credential-shaped draw in this module. A fresh unguessable
-/// binding GENERATION, and the ask-state nonce (`plane::approvals::nonce`).
+/// binding GENERATION, and the ask-state nonce.
 pub(crate) fn generate_binding_generation() -> Result<String, getrandom::Error> {
     let mut raw = [0u8; 16];
     getrandom::fill(&mut raw)?;

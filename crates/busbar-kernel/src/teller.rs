@@ -67,8 +67,8 @@ use busbar_contract::caps::{
     Authenticate, Authenticated, CallId, Canary, CellError, Consumption, Decode, Dial,
     DurabilityLost, DurableWrite, Encode, Exit, Grant, Hold, HoldAccrual, HoldCell, HoldCellState,
     KernelSeal, Meter, Origin, OriginKind, Outcome, Pass, Posted, PostingFlags, PrincipalId,
-    QuantitySource, ReasonCode, Refusal, Route, SeatVerdict, SessionId, Sign, Step, StepName,
-    UnitEnd, UnitKey, Usage, UsageLine, VerifiedDestination, Verify, WriteMoney,
+    QuantitySource, ReasonCode, Refusal, Route, SeatVerdict, SessionId, Step, StepName, UnitEnd,
+    UnitKey, Usage, UsageLine, VerifiedDestination, Verify, WriteMoney,
 };
 
 use crate::registry::Generation;
@@ -203,18 +203,6 @@ impl Kernel {
         Grant::<Consumption>::mint(&self.seal)
     }
 
-    /// The egress-auth unit's token, as the egress step lends it to one presentation of a lane
-    /// credential under the protocol's declared scheme.
-    ///
-    /// The sixth token minted outside the loop: a credential is presented per upstream ATTEMPT, and
-    /// an attempt is inside Route's leg rather than a step of its own, so no step token can stand in
-    /// — and without this the unit's `decorate` has a parameter no caller in the tree can supply.
-    /// Kept beside the other five and named the same way, so the source scan that accounts for every
-    /// mint sees this one too.
-    pub fn sign_token(&self) -> Grant<Sign> {
-        Grant::<Sign>::mint(&self.seal)
-    }
-
     /// The seal itself, for the other two places in the kernel that mint tokens. Between them they
     /// mint seven, two of them `WriteMoney` — the source scan that accounts for every mint counts
     /// these as well as the factories above:
@@ -222,7 +210,8 @@ impl Kernel {
     /// - the recovery module, which materialises a hold from a journal record and settles it:
     ///   `Recover`, `Consumption` and `WriteMoney`;
     /// - the node's sweep, which settles an abandoned unit: `Exit` for the take, `Consumption`,
-    ///   `WriteMoney`, and `Exit` again to seal the end.
+    ///   `WriteMoney`, and `Exit` again to seal the end. The unit's audit pass it takes from
+    ///   [`audit_pass`], the loop's one audit mint, rather than minting one of its own.
     pub(crate) fn seal(&self) -> &KernelSeal {
         &self.seal
     }
@@ -634,7 +623,7 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
             // from a decision at all, and the door is the last step it could have been raised at.
             let outcome =
                 Outcome::Refused(refusal.step().unwrap_or(StepName::Admit), refusal.reason());
-            let pass = Pass::<Audit>::mint_bound(seal, ctx.call);
+            let pass = audit_pass(seal, ctx.call);
             if let Ok(facts) = units.audit_refused(&pass, ctx, &refusal).into_result(seal) {
                 units.audited(ctx, facts, pass);
             }
@@ -975,8 +964,11 @@ pub enum SessionOpen {
 /// The kernel twin of the substrate `open_unit`: it runs the SAME arrival→…→admit as
 /// [`run_unit_async`] (through [`open_to_door`]), then the success/refused audit — and RETURNS. It
 /// NEVER runs `under_hold` (there is no Route leg) and NEVER runs the settling [`exit`]. A session's
-/// door is [`Admission::ZeroHold`] — an empty hold — so there is nothing for the exit to settle, and
-/// the plane's own reserve-on-admit and per-turn settle stay entirely plane-side, AFTER this gate.
+/// door is [`Admission::ZeroHold`] — an empty hold — so there is nothing for the exit to settle. The
+/// session's money is the kernel's session account, not a plane-side reserve: checkpoints while it
+/// runs and one sealed line at its end, written by the node from the counts the plane reports (THE
+/// DESIGN §7, `BUSBAR-1.6.0.md` l.1027-1035: "The kernel owns session money ... The plane reports
+/// counts only and holds no reservation").
 /// The result says only whether the door passed; a refusing plane's own response is the plane's to
 /// carry (it shaped it at its refusing step), exactly as the substrate session opener carries it.
 ///
@@ -993,7 +985,7 @@ pub fn open_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'
         Err(refusal) => {
             let outcome =
                 Outcome::Refused(refusal.step().unwrap_or(StepName::Admit), refusal.reason());
-            let pass = Pass::<Audit>::mint_bound(seal, ctx.call);
+            let pass = audit_pass(seal, ctx.call);
             if let Ok(facts) = units.audit_refused(&pass, ctx, &refusal).into_result(seal) {
                 units.audited(ctx, facts, pass);
             }
@@ -1007,7 +999,7 @@ pub fn open_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'
         // `under_hold`, no `exit`.
         Ok((_admission, destinations)) => {
             let outcome = Outcome::Completed;
-            let pass = Pass::<Audit>::mint_bound(seal, ctx.call);
+            let pass = audit_pass(seal, ctx.call);
             if let Ok(facts) = units.audit(&pass, ctx, &outcome).into_result(seal) {
                 units.audited(ctx, facts, pass);
             }
@@ -1215,7 +1207,7 @@ fn terminal<U: Units>(
         },
         other => (outcome, other),
     };
-    let pass = Pass::<Audit>::mint_bound(seal, ctx.call);
+    let pass = audit_pass(seal, ctx.call);
     if let Ok(facts) = units.audit(&pass, ctx, &outcome).into_result(seal) {
         units.audited(ctx, facts, pass);
     }
@@ -1324,6 +1316,20 @@ async fn under_hold<U: Units, R: RouteAwait>(
             }
         }
     }
+}
+
+/// THE AUDIT PASS, minted here and at no other site in the kernel.
+///
+/// THE DESIGN §7 (U14 and the class-registration ruling, `BUSBAR-1.6.0.md` l.1061-1071): one audit
+/// record per unit, sealed at its one line by the pass its audit step was lent — "nothing mints an
+/// audit pass freely". Every end that writes a line takes its pass from this one fn: the loop's two
+/// audit doors ([`run_unit_async`]'s refused door and [`terminal`]), the session opener's two
+/// ([`open_unit`]), and the node's sweep ([`crate::tick::sweep_settle`]), which settles a unit whose
+/// task disappeared and so has no audit step of its own to have been lent one. Each pass is bound to
+/// the unit's call (#74): the loop's to its context's, the sweep's to the call its hold was opened
+/// under.
+pub(crate) fn audit_pass(seal: &KernelSeal, call: CallId) -> Pass<Audit> {
+    Pass::<Audit>::mint_bound(seal, call)
 }
 
 /// A hold the cell handed back. It has been superseded by the admitted one and carries no spend of

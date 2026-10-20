@@ -26,7 +26,7 @@ const PROBE_RETRY_FLOOR_MS: u64 = 250;
 /// Advisory recovery floor for an inbound-shed request (`limits.max_inbound_concurrent`). Advisory
 /// like the probe floor above.
 ///
-/// `pub(crate)` so the inbound-admission `Retry-After` DERIVES its whole-second value from this one
+/// `pub` so the inbound-admission `Retry-After` DERIVES its whole-second value from this one
 /// source rather than hardcoding a bare `"1"` beside it — the same coupling
 /// [`AT_CAPACITY_RECOVERY_FLOOR_MS`] gives the proxy's at-capacity `Retry-After`. The store must not
 /// depend on `limits`, so the derivation lives at the consumer (`limits::admission`), reading this
@@ -374,8 +374,6 @@ pub struct LaneSnapshot {
 /// an in-flight probe records into the OLD store snapshot it was dispatched under), SWRR fairness
 /// counters (positional by nature; reset is harmless), and the rolling outcome windows (strictly
 /// time-windowed — they refill within seconds and carrying them would import stale samples).
-// Bin-target consumer is the config-apply core (next slice); tests exercise it now.
-#[allow(dead_code)]
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct LaneHealthSnapshot {
     /// The member the lane serves ([`LaneSnapshot::member`]).
@@ -408,7 +406,6 @@ pub struct LaneHealthSnapshot {
 }
 
 /// One per-pool breaker cell's portable state (the FSM triple; windows/probe/SWRR stay ephemeral).
-#[allow(dead_code)]
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PoolCellHealthSnapshot {
     pub pool: String,

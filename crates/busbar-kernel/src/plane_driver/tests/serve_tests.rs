@@ -127,7 +127,7 @@ impl PlaneCalls for Echo {
     ) -> AbiOutcome {
         AbiOutcome::Ready
     }
-    fn cancel(&self, _: Ticket) -> Option<busbar_contract::plane_calls::Cancelled> {
+    fn cancel(&self, _: Ticket, _: u64) -> Option<busbar_contract::plane_calls::Cancelled> {
         None
     }
     fn declared(&self) -> InstanceDecl {

@@ -1949,7 +1949,6 @@ fn a_back_dated_correction_survives_a_restart() {
                     effective_until: Some(CORRECTED.1),
                     appended_at: SIGNED_AT,
                     author: busbar_kernel_ledger::cost::Author::Amend {
-                        operator_fingerprint: "op".to_string(),
                         reason_hash: [9; 32],
                     },
                     cells: vec![(
@@ -2001,7 +2000,7 @@ fn a_back_dated_correction_survives_a_restart() {
     );
     assert!(matches!(
         entry.author(),
-        busbar_kernel_ledger::cost::Author::Amend { operator_fingerprint, .. } if operator_fingerprint == "op"
+        busbar_kernel_ledger::cost::Author::Amend { .. }
     ));
     drop(book);
     let _ = std::fs::remove_dir_all(&dir);
@@ -2032,7 +2031,6 @@ fn seal_correction(
                 effective_until: Some(window.1),
                 appended_at: signed_at,
                 author: busbar_kernel_ledger::cost::Author::Amend {
-                    operator_fingerprint: "op".to_string(),
                     reason_hash: [9; 32],
                 },
                 cells: vec![(
@@ -2351,7 +2349,6 @@ fn a_back_dated_correction_survives_a_restart_over_the_store() {
                     effective_until: Some(CORRECTED.1),
                     appended_at: SIGNED_AT,
                     author: busbar_kernel_ledger::cost::Author::Amend {
-                        operator_fingerprint: "op".to_string(),
                         reason_hash: [9; 32],
                     },
                     cells: vec![(
