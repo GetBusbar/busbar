@@ -1,7 +1,8 @@
 //! `teller-steps` — THE TELLER STEP MATRIX: one cell per Teller step per plane, and a second,
 //! independent verdict per cell taken over the composition root's own legs.
 //!
-//! Ported from `scripts/teller-steps-check.py`. Five rules, five owed rows, and the shape of each
+//! Ported from `scripts/teller-steps-check.py`. Five rules, five owed rows (a sixth, the run rule
+//! over the capability-equality ledger, has no Python ancestor), and the shape of each
 //! is the shape the Python enforced — including the three floors that are the whole reason the
 //! check is not a formality:
 //!
@@ -12,6 +13,11 @@
 //! * **a claim may not outlive its evidence.** A named rig cell must be owned by something in the
 //!   tree, and a named loop cell must exist as an `fn` in the leg's own file — the two ways a
 //!   renamed test leaves a green row pointing at nothing.
+//! * **a proof must RUN** (Law 10). A named loop cell — this matrix's, and the capability-equality
+//!   ledger's root column ([`ROW_EQUALITY_CELLS`]) — must be a test CI's build compiles and runs:
+//!   every cfg on its module's way enabled in the `test` check's build, a test attribute, no
+//!   `#[ignore]` ([`crate::ci_cfg`]). A fn that exists under a cfg no build enables is a proof that
+//!   never runs, which fourteen root-llm cells were once no linked row carried the `node` axis.
 //! * **the roster is the tree's, not the file's** ([`check_roster`]). "Every plane carries every
 //!   declared step" is true of whatever lists the file wrote, so both lists are DERIVED: the steps
 //!   from the kernel's own `StepName::ALL` (set and order), the rows from the `PlaneMeta` KEY every
@@ -119,6 +125,14 @@ pub const ROW_RIG: &str = "teller-steps:rig-cells";
 pub const ROW_ROOT_COLUMN: &str = "teller-steps:root-column";
 pub const ROW_ROOT_LEGS: &str = "teller-steps:root-legs";
 pub const ROW_GATING: &str = "teller-steps:gating-gaps";
+/// The capability-equality ledger's root column, judged by the same run rule as this matrix's
+/// (Law 10, status row 178): its enforcing cargo test (`crates/busbar/tests/capability_equality.rs`)
+/// reads only the source, so whether CI's build compiles a cited cell is asked here, where the
+/// module tree is read.
+pub const ROW_EQUALITY_CELLS: &str = "teller-steps:equality-root-cells";
+
+/// The capability-equality ledger whose root column [`ROW_EQUALITY_CELLS`] judges.
+pub const EQUALITY_REL: &str = "qa/capability-equality.json";
 
 // -------------------------------------------------------------------------------------------
 // The matrix
@@ -657,6 +671,38 @@ pub struct RootProblems {
 }
 
 pub fn check_root_column(cx: &Ctx, m: &Matrix) -> RootProblems {
+    check_root_column_in(cx, m, &CiView::of(cx))
+}
+
+/// WHAT RUNS IN CI: the composition root's module tree, read off the source with every cfg on the
+/// way to each file, and the build CI's `test` check compiles it in ([`crate::ci_cfg`]). Read once
+/// per gate run and handed to both root columns.
+pub struct CiView {
+    tree: crate::libtest_path::ModuleTree,
+    ci: Result<crate::ci_cfg::CiBuild, String>,
+}
+
+impl CiView {
+    pub fn of(cx: &Ctx) -> CiView {
+        CiView {
+            tree: crate::libtest_path::module_tree(&|rel: &str| cx.read(rel).ok(), BUSBAR_MAIN),
+            ci: cx
+                .read(MANIFEST_REL)
+                .and_then(|t| crate::ci_cfg::CiBuild::of_manifest(&t))
+                .map_err(|e| format!("{MANIFEST_REL}: {e}")),
+        }
+    }
+
+    /// `Ok` when `file::func` is a test CI's build compiles and runs; else why not.
+    fn runs(&self, file: &str, func: &str) -> Result<(), String> {
+        let ci = self.ci.as_ref().map_err(|e| {
+            format!("CI's test build could not be derived, so no cell is shown to run ({e})")
+        })?;
+        crate::libtest_path::resolve_cell(&self.tree, file, func).and_then(|c| ci.runs(&c))
+    }
+}
+
+fn check_root_column_in(cx: &Ctx, m: &Matrix, view: &CiView) -> RootProblems {
     let mut p = RootProblems::default();
     let legs = m.root_legs();
     let Some(legs_obj) = legs.as_object().filter(|o| !o.is_empty()) else {
@@ -809,6 +855,16 @@ pub fn check_root_column(cx: &Ctx, m: &Matrix) -> RootProblems {
                 ));
                 continue;
             }
+            // THE NAMED CELL MUST RUN (Law 10). A fn that exists in a module no CI build compiles,
+            // or that the harness skips, is a proof that never runs: the same green as one that
+            // passed, which is what fourteen root-llm cells were once their node-axis row went.
+            if let Err(why) = view.runs(file, func) {
+                p.column.push(format!(
+                    "{LEDGER_REL}: matrix.{plane}.{step}.root is proven by {test}, which no CI step \
+                     runs: {why}. A proof may not point at a test that never runs"
+                ));
+                continue;
+            }
             *proven_per_leg.entry(leg.clone()).or_default() += 1;
         }
     }
@@ -828,6 +884,54 @@ pub fn check_root_column(cx: &Ctx, m: &Matrix) -> RootProblems {
         ));
     }
     p
+}
+
+/// THE CAPABILITY-EQUALITY LEDGER'S ROOT COLUMN, BY THE SAME RUN RULE: every `proven` root cell of
+/// [`EQUALITY_REL`] names a test CI's build compiles and runs. Its shape, ownership and existence
+/// are the cargo gate's (`crates/busbar/tests/capability_equality.rs`); what this adds is the
+/// question a source read there cannot answer, whether the cited fn is in the build that runs.
+pub fn check_equality_cells(cx: &Ctx, view: &CiView) -> Vec<String> {
+    let doc = match cx.read(EQUALITY_REL).and_then(|t| json_lite::parse(&t)) {
+        Ok(d) => d,
+        Err(e) => return vec![format!("{EQUALITY_REL}: {e}")],
+    };
+    let mut out = Vec::new();
+    let mut proven = 0usize;
+    for cell in doc.get("cells").as_array().unwrap_or(&[]) {
+        let r = cell.get("root");
+        if r.str_or("state", "") != "proven" {
+            continue;
+        }
+        proven += 1;
+        let id = format!(
+            "{}x{}",
+            cell.str_or("capability", "?"),
+            cell.str_or("plane", "?")
+        );
+        let test = r.str_or("test", "");
+        let Some((file, func)) = test.split_once("::") else {
+            out.push(format!(
+                "{EQUALITY_REL}: cell {id} is proven over the loop by {}, which names no \
+                 `<file>::<fn>`",
+                json_lite::py_repr(&test)
+            ));
+            continue;
+        };
+        if let Err(why) = view.runs(file, func) {
+            out.push(format!(
+                "{EQUALITY_REL}: cell {id} is proven over the loop by {test}, which no CI step \
+                 runs: {why}. A proof may not point at a test that never runs"
+            ));
+        }
+    }
+    // Zero findings over zero cells is no verdict.
+    if proven == 0 {
+        out.push(format!(
+            "{EQUALITY_REL}: no root cell is proven, so there is nothing to show runs -- an empty \
+             column is not a column that passed"
+        ));
+    }
+    out
 }
 
 // -------------------------------------------------------------------------------------------
@@ -1453,6 +1557,8 @@ pub struct Findings {
     pub gating: Vec<String>,
     /// The gating gaps owed by name (`plane.step (owner)`), carried in the gating row's detail.
     pub owed: Vec<String>,
+    /// [`EQUALITY_REL`]'s root cells that no CI step runs.
+    pub equality_cells: Vec<String>,
 }
 
 /// THE MATRIX DID NOT PARSE, so no rule below it ran. Every rule carries the refusal — the one
@@ -1477,6 +1583,7 @@ pub fn did_not_load(detail: &str) -> Findings {
         root_legs: pick(ROW_ROOT_LEGS),
         gating: pick(ROW_GATING),
         owed: Vec::new(),
+        equality_cells: pick(ROW_EQUALITY_CELLS),
     }
 }
 
@@ -1517,8 +1624,9 @@ pub fn rows_from(f: &Findings) -> Vec<Row> {
         one_row(
             &f.root_column,
             ROW_ROOT_COLUMN,
-            "every cell carries a root verdict whose named loop cell still exists",
-            "a root verdict is absent, mis-attributed, unargued, or names a loop cell that is gone",
+            "every cell carries a root verdict whose named loop cell exists and runs in CI",
+            "a root verdict is absent, mis-attributed, unargued, or names a loop cell that is gone \
+             or that no CI step runs",
             format!("{cells} verdict(s) read"),
         ),
         one_row(
@@ -1543,6 +1651,14 @@ pub fn rows_from(f: &Findings) -> Vec<Row> {
                 )
             },
         ),
+        one_row(
+            &f.equality_cells,
+            ROW_EQUALITY_CELLS,
+            "every proven root cell of the capability-equality ledger is a test CI's build compiles \
+             and runs",
+            "a proven root cell of the capability-equality ledger names a test no CI step runs",
+            format!("{EQUALITY_REL} root column read"),
+        ),
     ]
 }
 
@@ -1558,6 +1674,7 @@ impl Gate for TellerStepsGate {
             ROW_ROOT_COLUMN.to_string(),
             ROW_ROOT_LEGS.to_string(),
             ROW_GATING.to_string(),
+            ROW_EQUALITY_CELLS.to_string(),
         ]
     }
 
@@ -1567,7 +1684,8 @@ impl Gate for TellerStepsGate {
             Err(e) => return Verdict::of(rows_from(&did_not_load(&e))),
         };
 
-        let root = check_root_column(cx, &m);
+        let view = CiView::of(cx);
+        let root = check_root_column_in(cx, &m, &view);
         let gating = check_gating(&m);
         Verdict::of(rows_from(&Findings {
             cells: m.planes().len() * m.step_order().len(),
@@ -1578,6 +1696,7 @@ impl Gate for TellerStepsGate {
             root_legs: root.legs,
             gating: gating.problems,
             owed: gating.owed,
+            equality_cells: check_equality_cells(cx, &view),
         }))
     }
 
@@ -1609,6 +1728,7 @@ impl Gate for TellerStepsGate {
                 ROW_ROOT_COLUMN,
                 ROW_ROOT_LEGS,
                 ROW_GATING,
+                ROW_EQUALITY_CELLS,
             ],
         ));
 
@@ -1640,6 +1760,14 @@ impl Gate for TellerStepsGate {
                     .find_map(|(_, cell)| cell.get("root").get("note").as_str().map(str::to_string))
             })
             .unwrap_or_default();
+
+        // The llm leg's own file, as the committed matrix names it: the root-column plants cite
+        // cells there, so a plant is about the rule it names and not about which file the leg is.
+        let llm_leg_file = doc
+            .get("root_legs")
+            .get("root-llm")
+            .str_or("file", &format!("{ROOT_DIR}tests/serve_tests.rs"));
+        let renamed_away = format!("{llm_leg_file}::a_fn_that_was_renamed_away");
 
         // Every plant is a MUTATION OF THE REAL COMMITTED MATRIX, not a synthetic fixture, so a
         // rule that stopped covering the real file's shape cannot pass its own selftest.
@@ -1701,15 +1829,8 @@ impl Gate for TellerStepsGate {
                 "a root proof whose named loop cell was renamed away",
                 ROW_ROOT_COLUMN,
                 "no `fn a_fn_that_was_renamed_away(` exists there",
-                Box::new(|p: &mut Plant| {
-                    p.set_root_field(
-                        "llm",
-                        "meter",
-                        "test",
-                        Json::Str(format!(
-                            "{ROOT_DIR}tests/plane_node.rs::a_fn_that_was_renamed_away"
-                        )),
-                    );
+                Box::new(move |p: &mut Plant| {
+                    p.set_root_field("llm", "meter", "test", Json::Str(renamed_away.clone()));
                 }),
             ),
             (
@@ -1871,6 +1992,109 @@ impl Gate for TellerStepsGate {
                 base.layered(&ov),
                 &[naming],
             ));
+        }
+
+        // ── THE CELL MUST RUN (Law 10, status row 178). The `fn <name>(` match accepted any fn
+        // that EXISTS; each plant below is a fn that exists in the llm leg's own file and that no
+        // CI step runs, cited by a cell. The first two are the shape fourteen root-llm cells had
+        // once no linked row carried the `node` axis: a cfg no CI build enables. ──
+        let leg_body = base_cx.read(&llm_leg_file).unwrap_or_default();
+        let run_plants: [(&str, &str, &str, &str); 4] = [
+            (
+                "a root cell under a cfg no CI build enables",
+                "\n#[cfg(linked_axis_node)]\n#[tokio::test]\nasync fn a_cell_no_ci_build_compiles() {}\n",
+                "a_cell_no_ci_build_compiles",
+                "linked_axis_node",
+            ),
+            (
+                "a root cell in a module no CI build carries",
+                "\n#[cfg(all(test, linked_axis_node))]\nmod gone_with_its_axis {\n    \
+                 #[tokio::test]\n    async fn a_cell_in_a_module_no_build_carries() {}\n}\n",
+                "a_cell_in_a_module_no_build_carries",
+                "linked_axis_node",
+            ),
+            (
+                "a root cell CI's test run skips",
+                "\n#[tokio::test]\n#[ignore]\nasync fn a_cell_the_run_skips() {}\n",
+                "a_cell_the_run_skips",
+                "ignore",
+            ),
+            (
+                "a root cell that is a helper the harness never runs",
+                "\nfn a_helper_no_harness_runs() {}\n",
+                "a_helper_no_harness_runs",
+                "no test attribute",
+            ),
+        ];
+        for (label, cell, func, naming) in run_plants {
+            let mut plant = Plant { doc: doc.clone() };
+            plant.set_root_field(
+                "llm",
+                "meter",
+                "test",
+                Json::Str(format!("{llm_leg_file}::{func}")),
+            );
+            let mut ov = Overlay::new();
+            ov.set(&llm_leg_file, format!("{leg_body}{cell}"));
+            let text = format!("{}\n", json_lite::dump_python(&plant.doc));
+            if let Err(e) = Edit::Replace(text).apply(cx, LEDGER_REL, &mut ov) {
+                report.note_infra_failure(format!("{label}: {e}"));
+                continue;
+            }
+            report.push(prove_red(
+                &base_cx,
+                self,
+                label,
+                &[ROW_ROOT_COLUMN],
+                base.layered(&ov),
+                &[naming],
+            ));
+        }
+
+        // THE SAME RULE OVER THE CAPABILITY-EQUALITY LEDGER: one of its proven root cells pointed
+        // at a cell under a cfg no CI build enables.
+        match base_cx
+            .read(EQUALITY_REL)
+            .and_then(|t| json_lite::parse(&t))
+        {
+            Ok(mut eq) => {
+                let cited = format!("{llm_leg_file}::a_cell_no_ci_build_compiles");
+                let mut planted = false;
+                if let Some(Json::Array(cells)) =
+                    eq.as_object_mut().and_then(|d| d.get_mut("cells"))
+                {
+                    for c in cells.iter_mut() {
+                        if c.get("root").str_or("state", "") != "proven" {
+                            continue;
+                        }
+                        if let Some(Json::Object(r)) =
+                            c.as_object_mut().and_then(|o| o.get_mut("root"))
+                        {
+                            r.insert("test", Json::Str(cited.clone()));
+                            planted = true;
+                            break;
+                        }
+                    }
+                }
+                if planted {
+                    let mut ov = Overlay::new();
+                    ov.set(&llm_leg_file, format!("{leg_body}{}", run_plants[0].1));
+                    ov.set(EQUALITY_REL, format!("{}\n", json_lite::dump_python(&eq)));
+                    report.push(prove_red(
+                        &base_cx,
+                        self,
+                        "a capability-equality root cell under a cfg no CI build enables",
+                        &[ROW_EQUALITY_CELLS],
+                        base.layered(&ov),
+                        &["linked_axis_node"],
+                    ));
+                } else {
+                    report.note_infra_failure(format!(
+                        "{EQUALITY_REL}: no proven root cell to plant the run rule's RED on"
+                    ));
+                }
+            }
+            Err(e) => report.note_infra_failure(format!("{EQUALITY_REL}: {e}")),
         }
 
         // THE TREE'S SIDE OF THE ROSTER: plants in the declarations the roster is derived from,
