@@ -1313,14 +1313,27 @@ impl KernelServices {
     /// after it starts, whatever any plane's own tick schedule is. A record write whose flush the
     /// pool refused, with no later write to start another, reaches the store within one interval.
     /// The composition root runs it once, beside the services it built; it never ends.
+    ///
+    /// It is also THE KERNEL'S ONE CLOCK for the compiled-in crates (THE DESIGN §1): each interval
+    /// beats every work handed to [`crate::tick::on_clock`] and runs the jobs the beat answers here,
+    /// on this one task, beside the ticks, so no crate keeps a timer or a task of its own.
     pub async fn flushes(&self) {
+        use futures::StreamExt as _;
         let every = crate::host_records::FLUSH_INTERVAL;
         let mut at = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
         at.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut jobs = futures::stream::FuturesUnordered::new();
         loop {
-            at.tick().await;
-            self.flush_tick();
-            self.verify_tick();
+            tokio::select! {
+                _ = at.tick() => {
+                    self.flush_tick();
+                    self.verify_tick();
+                    let wall = std::time::UNIX_EPOCH
+                        + std::time::Duration::from_millis((self.wall_ms)());
+                    jobs.extend(crate::tick::beat(wall));
+                }
+                Some(()) = jobs.next(), if !jobs.is_empty() => {}
+            }
         }
     }
 

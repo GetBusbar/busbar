@@ -74,9 +74,10 @@ pub struct AsPlaneSeam {
     /// sessions, an ephemeral key) carries across the generation swap. And the deployment's
     /// configured store (its typed records and its single-use claims; `None` without one): the
     /// server keeps what it holds there, under the kernel's own record kinds, so every node on one
-    /// store serves one authorization server (THE DESIGN §1, "Nodes share one store"). Also spawns the
-    /// plane's own expired-record sweeper, mirroring what `appbuild.rs` did inline before the
-    /// extraction — the seam owns the whole "how do I come alive" act, not just allocation.
+    /// store serves one authorization server (THE DESIGN §1, "Nodes share one store"). Also hands
+    /// the plane's expired-record sweep to the kernel's one clock ([`crate::tick::on_clock`]),
+    /// starting no task of its own — the seam owns the whole "how do I come alive" act, not just
+    /// allocation.
     /// Returns the type-erased object `App::oauth_as` stores, or the plane's own build error
     /// rendered to a string (boot refuses with it exactly as it did when this call was inline).
     pub build: AsPlaneBuildFn,

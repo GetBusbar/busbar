@@ -1867,10 +1867,10 @@ pub fn build_app_from_config(
             // Built through the seam (`crate::oauth_as::seam`), not `crate::oauth_as::plane::AsPlane`
             // directly: the concrete plane type lives in the sibling `busbar-core-oauth2` crate, which
             // core cannot name (the one-way dependency runs the other direction). The seam's `build`
-            // also spawns the plane's own expired-record sweeper — the same "how do I come alive"
-            // act this call site used to perform inline (`Storage::sweep_expired` is the only thing
-            // that reclaims anything in `oauth-as`, and it runs when it is called and never
-            // otherwise; spawned once per generation).
+            // also hands the plane's expired-record sweep to the kernel's one clock — the same "how
+            // do I come alive" act this call site used to perform inline (`Storage::sweep_expired`
+            // is the only thing that reclaims anything in `oauth-as`, and it runs when it is called
+            // and never otherwise; registered once per generation, beaten by `crate::tick::beat`).
             // The PRIOR generation's server goes in with it: what the server holds carries across
             // the swap, so a reload does not void its tokens, clients, sessions and replay ledgers.
             // The deployment's store, when one is configured: the server keeps its records there,
