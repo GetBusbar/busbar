@@ -98,6 +98,18 @@ pub fn inspect_bearer(token: &str, expected_aud: &str) -> Binding {
     }
 }
 
+/// The refusal description an audience-bound plane sends for a [`Binding::Mismatch`] bearer. The
+/// bytes go verbatim into the `WWW-Authenticate` challenge's `error_description` and the JSON body
+/// (`auth::challenge::refuse`), so each is one line of text, written with `\` continuations.
+pub(crate) const MISMATCH_DESCRIPTION: &str =
+    "The access token's audience does not identify this resource. Request a token whose \
+     `resource` (RFC 8707) is this server's canonical URI.";
+
+/// The refusal description an audience-bound plane sends for a [`Binding::Opaque`] bearer.
+pub(crate) const OPAQUE_DESCRIPTION: &str =
+    "This credential carries no readable audience, so it cannot be shown to have been issued \
+     for this resource. A JWT access token is required here.";
+
 #[cfg(test)]
 #[path = "tests/audience_tests.rs"]
 mod audience_tests;
