@@ -2061,17 +2061,16 @@ fn unauthorized_with_completion_taps(
         // ZEROED shape directly (the plane's `capture_stage_shape` would short-circuit an
         // `operation: None` capture to exactly this before any IR read), so core names no
         // plane reader here.
-        let shape = crate::proxy::StageShape::zeroed(app.next_request_id(), "", proto, false);
+        let shape = crate::hooks::taps::StageShape::zeroed(app.next_request_id(), "", proto, false);
         let status = auth_failure_status_and_kind(proto).0.as_u16();
-        // App-retype WEDGE 3 (THE FLIP): fire through the SUBSTRATE stage-tap fan-out so this synthetic
-        // auth-denial tap shares the ONE 1024-permit bounded-spawn gate with the engine's stage/global
-        // taps (a single cap, byte-identical `busbar_tap_notifications_dropped_total` +
-        // `busbar_admission_denied_total{gate="tap"}` on saturation) — core's own `fire_stage_taps`/
-        // `spawn_bounded_tap` are retired with this move so the cap is never split into two gates. The
-        // host is minted over `app` (an alloc-free `engine_host_value`); the group-scope walk folds
-        // `&app.groups_registry` in host-side, byte-identical to the former raw-tree walk.
+        // Fired through the hook kind's one stage-tap fan-out, so this synthetic auth-denial tap shares
+        // the ONE 1024-permit bounded-spawn gate with every other stage tap (one cap, one
+        // `busbar_tap_notifications_dropped_total` + `busbar_admission_denied_total{gate="tap"}` on
+        // saturation). The host is minted over `app` (an alloc-free `engine_host_value`); the
+        // group-scope walk folds `&app.groups_registry` in host-side.
         let host = crate::plane_host::engine_host_value(app);
-        busbar_kernel::proxy::proxy_vocab::fire_stage_taps(
+        let host: &dyn crate::plane_host::EngineHost = &host;
+        crate::hooks::taps::fire_stage_taps_where(
             &app.tap_hooks_response,
             &shape,
             busbar_contract::hook_wire::HookStageProjection {
@@ -2087,8 +2086,7 @@ fn unauthorized_with_completion_taps(
             Default::default(),
             // An auth denial has no authenticated caller, so no group binding: unscoped taps fire,
             // group-scoped taps do not (a groupless caller matches only an unscoped hook).
-            None,
-            &host,
+            &|groups: &[String]| host.caller_in_hook_groups(None, groups),
         );
     }
     unauthorized_response(app, path, door)
