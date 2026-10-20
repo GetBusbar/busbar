@@ -180,7 +180,7 @@ mod audit;
 /// 187): the operator's chain break on the chain, the epoch floor in the store, the restore refused.
 /// A private child module, as `replay` is; its public items are re-exported here.
 mod recovery;
-pub use recovery::node_verb_store;
+pub use recovery::{boot_recovery, node_verb_store};
 
 /// The money-book seam: the settling descriptor ([`Settling`], [`PostingStamp`]), what a settlement
 /// left ([`Settled`]), the [`MoneyBook`] trait an exit arm settles through and its one pass-through
@@ -2562,10 +2562,9 @@ pub struct NodeBook {
     /// The previous release's rows, as the dual write fills them. The write half is inside the
     /// ledger; this is the same value, kept so a view has somewhere to read them from.
     pub rows: std::sync::Arc<SummedRows>,
-    /// The configured store, behind the published ABI, as the admin verbs unit reaches it: the SAME
-    /// loader adapter boot shipped this book's batches through (`StoreAdapter::verb_store`), so the
-    /// disaster-recovery verbs land on the store the book is shipped to. `None` on a node with no
-    /// configured store (row 113, ruling (B)).
+    /// The disaster-recovery verbs' store, as the admin verbs unit reaches it ([`node_verb_store`]):
+    /// this book's journal for the chain break and the store the book is shipped to for the epoch
+    /// floor (row 187). `None` on a node with no configured store (row 113, ruling (B)).
     pub verb_store: crate::root::kernel::VerbStoreHandle,
 }
 

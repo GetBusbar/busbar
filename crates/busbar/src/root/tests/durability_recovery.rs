@@ -191,12 +191,14 @@ fn events_of(run: impl FnOnce()) -> Vec<String> {
 
 /// **`store_restore` REFUSES, AND NOTHING CHANGES ACROSS A RESTART.** The configured store has no
 /// restore operation, so the verb answers a store failure — never `Ok` — with one error line naming
-/// it; a node booted again over the same store finds the same chain, no operator break and no floor.
+/// it and nothing put on the chain; a node booted again over the same store finds no operator break
+/// and no floor.
 #[test]
 fn a_store_restore_is_refused_and_changes_nothing_across_a_restart() {
     let store = memory_store();
-    let before = {
+    {
         let (book, verbs) = boot(&store);
+        let before = verified_chain(&book).len();
         let mut answer = None;
         let lines =
             events_of(|| answer = Some(verbs.store_restore(&admin(), "nightly-2026-10-20")));
@@ -211,17 +213,15 @@ fn a_store_restore_is_refused_and_changes_nothing_across_a_restart() {
             "the line names the verb: {}",
             errors[0]
         );
-        let before = verified_chain(&book).len();
+        assert_eq!(
+            verified_chain(&book).len(),
+            before,
+            "the refused restore put nothing on the chain"
+        );
         stop(book);
-        before
-    };
+    }
 
     let (book, _verbs) = boot(&store);
-    assert_eq!(
-        verified_chain(&book).len(),
-        before,
-        "the refused restore put nothing on the chain"
-    );
     assert!(
         book.lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -256,4 +256,55 @@ fn a_resealed_epoch_floor_is_read_back_after_a_restart_over_the_same_store() {
         .expect("the store answers")
         .expect("the floor the verb resealed is in the store after the restart");
     assert_eq!(floor.floor, 0, "resealed to the node's one slice epoch");
+}
+
+/// **THE BOOT READS THE FLOOR BACK, AND A NODE BELOW IT DOES NOT BOOT.** The floor a reseal left is
+/// what the boot's reading answers; a floor above the node's slice epoch refuses the boot, naming
+/// both.
+#[test]
+fn the_boot_reads_the_floor_back_and_a_node_below_it_does_not_boot() {
+    let store = memory_store();
+    {
+        let (book, verbs) = boot(&store);
+        verbs
+            .reseal_epoch_floor(&admin())
+            .expect("the floor is resealed in the store");
+        stop(book);
+    }
+    let (book, _verbs) = boot(&store);
+    let read = boot_recovery(
+        &book.lock().unwrap_or_else(|p| p.into_inner()),
+        store.calls.as_ref(),
+        STORE,
+        0,
+    )
+    .expect("a node at the floor boots");
+    assert_eq!(
+        read.map(|f| f.floor),
+        Some(0),
+        "the boot read the floor back"
+    );
+
+    let above = RecordBytes::new(encode_floor(EpochFloor {
+        floor: 5,
+        resealed_at: 1,
+    }))
+    .expect("a small record");
+    wait_for(
+        store
+            .calls
+            .record_put(EPOCH_FLOOR_SCHEMA, &floor_key(STORE), &above),
+    )
+    .expect("the store takes the floor");
+    let refused = boot_recovery(
+        &book.lock().unwrap_or_else(|p| p.into_inner()),
+        store.calls.as_ref(),
+        STORE,
+        0,
+    )
+    .expect_err("a node below the floor does not boot");
+    assert!(
+        refused.contains("below the epoch floor 5"),
+        "the refusal names the floor: {refused}"
+    );
 }
