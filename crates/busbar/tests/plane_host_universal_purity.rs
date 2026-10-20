@@ -519,7 +519,7 @@ fn no_unjustified_single_plane_method_on_universal_engine_host() {
 /// SELF-TEST (the detector is NON-VACUOUS): the SAME detector must (1) enumerate the known slice
 /// methods, (2) classify a KNOWN single-plane method (`pool_label`) as single-plane, (3)
 /// see a method two (planted) planes call as multi-plane, and (4) a KNOWN 0-plane method
-/// (`plane_defs`) as neutral. A broken scan that "finds nothing" (all-0, or all-1) fails HERE loudly,
+/// (`secret_resolver`) as neutral. A broken scan that "finds nothing" (all-0, or all-1) fails HERE loudly,
 /// so a green real witness above is meaningful. It also proves `.plane_slot(` ≠ `plane_slot_live`
 /// (whole-token matching) via a direct `calls_method` assertion.
 #[test]
@@ -532,7 +532,7 @@ fn detector_is_non_vacuous_across_single_multi_and_zero_plane_methods() {
         "verify_token_test", // IdentityHost
         "clock_now_secs",    // ClockHost
         "breaker_settle",    // BreakerHost
-        "plane_defs",        // RegistryHost
+        "secret_resolver",   // RegistryHost
     ] {
         assert!(
             scan.methods.contains(expect),
@@ -593,14 +593,15 @@ fn detector_is_non_vacuous_across_single_multi_and_zero_plane_methods() {
          {shared:?}); a broken counter that under-counts would false-RED shared methods"
     );
 
-    // (4) A KNOWN 0-plane method: `plane_defs` (A2A's card path names it, but not via `.plane_defs(`
-    //     directly in these crates today) — proves the detector's neutral (0-plane) class is reachable,
-    //     so it is not the case that every method scans as ≥1.
-    let defs = scan.callers.get("plane_defs").expect("enumerated");
+    // (4) A KNOWN 0-plane method: `secret_resolver` (the root's secret axis reads it; no linked plane
+    //     crate calls `.secret_resolver(`) — proves the detector's neutral (0-plane) class is reachable,
+    //     so it is not the case that every method scans as ≥1. (`plane_defs` held this arm until the
+    //     registry's plane-defs read left the universal trait with the plane-neutral root.)
+    let neutral = scan.callers.get("secret_resolver").expect("enumerated");
     assert_eq!(
-        defs.len(),
+        neutral.len(),
         0,
-        "expected `plane_defs` to scan as 0-plane (neutral), got {defs:?}"
+        "expected `secret_resolver` to scan as 0-plane (neutral), got {neutral:?}"
     );
 
     // (5) Whole-token call matching: `.plane_slot(` must NOT match the longer method `plane_slot_live`,

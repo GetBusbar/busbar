@@ -419,7 +419,7 @@
         },
         "agents": {
           "optional": true,
-          "type": "AgentsSection"
+          "type": "DeclaredSections"
         },
         "auth": {
           "optional": true,
@@ -527,11 +527,16 @@
         },
         "tools": {
           "optional": true,
-          "type": "ToolsSection"
+          "type": "DeclaredSections"
         }
       },
       "kind": "struct",
       "transparent": false
+    },
+    "EndpointSection": {
+      "deserialize": "manual",
+      "fields": {},
+      "kind": "struct"
     },
     "EnvFetch": {
       "deny_unknown_fields": true,
@@ -1934,6 +1939,11 @@
       "kind": "struct",
       "transparent": false
     },
+    "RawPlaneSection": {
+      "deserialize": "manual",
+      "fields": {},
+      "kind": "struct"
+    },
     "RawPoolCfg": {
       "deny_unknown_fields": true,
       "fields": {
@@ -2558,6 +2568,12 @@
         "header"
       ]
     },
+    "manual-de EndpointSection": {
+      "fields": {},
+      "kind": "manual",
+      "refused": [],
+      "wire_keys": []
+    },
     "manual-de LimitCfg": {
       "fields": {
         "admission": {
@@ -2628,6 +2644,12 @@
       "wire_keys": []
     },
     "manual-de PoolsCfg": {
+      "fields": {},
+      "kind": "manual",
+      "refused": [],
+      "wire_keys": []
+    },
+    "manual-de RawPlaneSection": {
       "fields": {},
       "kind": "manual",
       "refused": [],
