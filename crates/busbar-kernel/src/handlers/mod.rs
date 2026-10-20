@@ -231,14 +231,11 @@ pub fn chat(protocol: &str, transport: crate::transport::Transport) -> Op {
         transport,
     )
     .unwrap_or_else(|| {
-        // Unreachable in any shipped configuration: a chat plugin always registers the residual chat
-        // protocol and its siblings, and the sole production caller asks for that residual name. The
-        // diagnostic names the registry's residual-default protocol rather than a hard-coded dialect,
-        // so the substrate spells no dialect here.
+        // Unreachable in any shipped configuration: the caller asks for a protocol a linked plugin
+        // registered. The diagnostic names the verb, and no dialect.
         panic!(
-            "a protocol serving `{}` is registered (registry residual default protocol: {:?})",
-            busbar_contract::operation::OpVerb::CHAT.name(),
-            crate::proto::residual_default_protocol()
+            "a protocol serving `{}` is registered",
+            busbar_contract::operation::OpVerb::CHAT.name()
         )
     })
 }
