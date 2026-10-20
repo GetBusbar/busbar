@@ -23,6 +23,10 @@ const NOW: u64 = 1_700_000_000;
 /// where the token comes from the kernel's test token helper.
 mod probe;
 
+/// The unit's source and manifest name no protocol: no header read, no date parser, no status
+/// ladder, no vendor status, no dialect code.
+mod protocol_free;
+
 // ── The class vocabulary the unit still names ────────────────────────────────────────────────────
 
 #[test]
