@@ -43,9 +43,9 @@ pub const ROW_SITES: &str = "response-header:sanctioned-sites";
 // server-timing sanctioned site) landed at `crates/busbar-kernel/src/router.rs`.
 const CORE: &str = "crates/busbar-kernel/src";
 const BIN: &str = "crates/busbar/src";
-/// The LLM plane's front door. `busbar-llm` has no self-named `llm/` subdirectory (its code is
-/// `engine/`, `arrival.rs`, …), so it is named by path rather than resolved like mcp and a2a.
-const LLM: &str = "crates/busbar-llm/src";
+/// The LLM plane's front door: its door crate since the retired engine crate's deletion (DEV-GREEN
+/// row 83, coordinator ruling 2026-10-18), named by path rather than resolved like mcp.
+const LLM: &str = "crates/busbar-plane-llm/src";
 const FIXED_ROOTS: &[&str] = &[CORE, BIN, LLM];
 // `a2a` is struck: FLIP-A2A deleted crates/busbar-a2a, and the A2A plane is crates/busbar-plane-a2a,
 // a memory-ABI door that declares no `PLANE_DECL` (so no root resolves for it). Its source is still
@@ -55,10 +55,11 @@ const EXCLUDE_TESTS_DIR: &str = "/tests/";
 // THE FLOOR MOVED TO `gates::population`, along with the scan set it is a floor on.
 
 /// The `x-busbar-route-*` NAME literals and their `HDR_ROUTE_*` consts live in the kernel's
-/// `proxy`; the ONE emission call lives in the LLM plane's wire; `server-timing` stayed in core's
-/// router. The table names where they ACTUALLY are, or its allow column stops describing reality.
+/// `proxy`; the ONE emission site is the plane driver's gated `route_policy_fields` (the retired
+/// engine crate's wire went with it, DEV-GREEN row 83); `server-timing` stayed in core's router.
+/// The table names where they ACTUALLY are, or its allow column stops describing reality.
 const HDR_ROUTE_POLICY_FILE: &str = "crates/busbar-kernel/src/proxy/mod.rs";
-const HDR_ROUTE_WIRE_FILE: &str = "crates/busbar-llm/src/engine/wire.rs";
+const HDR_ROUTE_WIRE_FILE: &str = "crates/busbar-kernel/src/plane_driver/route.rs";
 const HDR_SERVER_TIMING_FILE: &str = "crates/busbar-kernel/src/router.rs";
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";

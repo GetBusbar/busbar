@@ -5,7 +5,7 @@
 //! "fix the 38" pass after the A6/HostCtx dev-dependency-cycle cleanup): `App::upstream_creds()`
 //! reads through `engine_tables_view()`, which — same as `endpoints_cross_plane.rs`/
 //! `metrics_cross_plane.rs` (see their headers) — projects the FALLBACK plane's own runtime slot
-//! through that plane decl's `viewer` fn-pointer. Only the REAL `busbar_llm` plane's `build_runtime`
+//! through that plane decl's `viewer` fn-pointer. Only the REAL the retired engine crate plane's `build_runtime`
 //! actually carries the configured `upstream_credentials` into that runtime; a neutral fake plane (no
 //! `build_runtime`) would leave `upstream_creds()` reading the EMPTY-VIEW default regardless of what
 //! `TestApp::upstream_creds` was set to, which is a different, false-negative failure than what this
