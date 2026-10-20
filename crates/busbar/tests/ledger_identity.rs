@@ -69,9 +69,9 @@ use ledger_identity::{
     accumulate, describe, holds, reconcile, LedgerSnapshot, LegacyRow, LegacySnapshot, RowKey,
 };
 
-// The linked plane rows (build.rs), so the card's open classes are read off the real declarations
-// without naming a plane crate.
-include!(concat!(env!("OUT_DIR"), "/linked_planes.rs"));
+// The linked plane rows, as the root folds each linked door (the test-linked roster), so the
+// card's open classes are read off the real declarations without naming a plane crate.
+mod linked;
 
 // ── the pinned figures ───────────────────────────────────────────────────────────────────────────
 //
@@ -953,7 +953,7 @@ fn oracle_shim() -> PathBuf {
 /// one, Q29/Q35), read off the plane's own declaration so the card follows it; the plane is found
 /// on the linked rows by its `fallback` flag, never by name.
 fn free_open_units() -> String {
-    LINKED_PLANES
+    linked::planes()
         .iter()
         .find(|decl| decl.fallback)
         .expect("the build links the fallback plane the oracle's lane falls through to")
