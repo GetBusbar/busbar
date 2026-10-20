@@ -1800,7 +1800,17 @@ pub fn kernel_sections(
             yaml(Value::Object(providers)),
         );
     }
-    if !models.is_empty() || !pools.is_empty() {
+    // A WRITTEN consumed|required key counts, even an empty one (ARCHITECT row-82 ruling): a
+    // section some registered plane requires is written in every document that parsed (the pre-pass
+    // refuses one that omits it, `busbar_kernel::config::prepass`), so it is handed as written. The
+    // previous release accepted `models: {}` and answered from its catch-all (v1.5.5
+    // crates/busbar/src/config/mod.rs:2626-2632; ingress/dispatch.rs:292-319).
+    let required = |key: &'static str| {
+        busbar_kernel::plane::registry::plane_decls()
+            .iter()
+            .any(|d| d.required_config_sections.contains(&key))
+    };
+    if !models.is_empty() || !pools.is_empty() || required(RESERVED_MODELS_KEY) {
         out.insert(RESERVED_MODELS_KEY, yaml(Value::Object(models)));
         out.insert(RESERVED_POOLS_KEY, yaml(Value::Object(pools)));
     }
@@ -3684,12 +3694,14 @@ pub fn sealed_settings(
     Ok(serde_json::Value::Object(sealed))
 }
 
-/// The host of `base_url`: after its scheme, before its port, path, query or fragment.
+/// The host of `base_url`, the one the request dials: its authority read by the one split
+/// ([`busbar_contract::net::url_authority`]), before its port.
 fn base_url_host(base_url: &str) -> &str {
-    let rest = base_url.split_once("://").map_or(base_url, |(_, r)| r);
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let authority = authority.rsplit_once('@').map_or(authority, |(_, a)| a);
-    authority.split(':').next().unwrap_or("")
+    busbar_contract::net::url_authority(base_url)
+        .host_port
+        .split(':')
+        .next()
+        .unwrap_or("")
 }
 
 /// The dotted label of `host` right after the first of `after`, when it reads as a dashed name

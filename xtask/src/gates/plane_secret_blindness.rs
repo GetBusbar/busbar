@@ -65,8 +65,8 @@ pub const SPEC: Spec = Spec {
              # credentials to the auth styles (step 21); the legacy engines' Secret::expose reads to their\n\
              # deletion (row 155). An exposes-secret-bytes row is COUNTED (`count = N`, one per line) and\n\
              # only goes down. Strike a row (or lower its count) in the commit that drains it; never add\n\
-             # one. `cargo xtask gate plane-secret-blindness --write` regenerates the keys; it does not\n\
-             # write counts, so a regenerated ledger restates each count before it is committed.\n",
+             # one. `cargo xtask gate plane-secret-blindness --write` regenerates the rows, each with\n\
+             # its count; a row or a count above the base's ledger is refused.\n",
 };
 
 /// The plane-family crate directories (`crates/x`), from the kind census.
@@ -254,7 +254,7 @@ impl Gate for PlaneSecretBlindnessGate {
             ov.set(home, text.replace("fn expose<", "fn expose_renamed<"));
             let ledger_row = SPEC.ledger_row();
             report.push(crate::gates::prove_rows_red(
-                cx,
+                &crate::gates::construction::ceilings::with_head_pin(cx),
                 self,
                 "a forbidden name defined nowhere in the tree is RED, naming it",
                 &[ledger_row.as_str()],

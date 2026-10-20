@@ -3085,6 +3085,10 @@ impl DataRoutes {
     ) {
         use busbar_kernel::teller::SessionOpen;
         let served = &self.served.planes[door.plane];
+        if let Some(refused) = journal_refused(served, &self.post, &arrival) {
+            let _ = verdict.send(Err(Some(refused)));
+            return;
+        }
         let live = served.live.current();
         let node = self.post.node();
         let unit = node.mint();
@@ -3544,6 +3548,9 @@ impl DataRoutes {
         nesting: Option<Nesting>,
     ) -> Option<Rendered> {
         let served = &self.served.planes[plane];
+        if let Some(refused) = journal_refused(served, &self.post, &arrival) {
+            return Some(refused);
+        }
         // The generation this unit is served by, held to its end.
         let live = served.live.current();
         let started = std::time::Instant::now();
@@ -3688,6 +3695,43 @@ impl DataRoutes {
         }
         rendered
     }
+}
+
+/// A NODE WHOSE JOURNAL CANNOT REACH ITS STORE FAILS CLOSED (ARCHITECT 2026-10-07 H3 ruling):
+/// while the node's journal refuses money, a new unit is refused 503 with the reason before
+/// anything is built, held or journalled for it. The kernel decides the refusal
+/// (`durability_unavailable`, the reason's own words); the plane words it through its `refusal`,
+/// in the claim's refusal dialect, for the target (spec Part 3 section 12), the bytes the node's
+/// handed path answered. A plane that renders nothing leaves the reason as the body. `None` while
+/// the journal keeps up.
+fn journal_refused(
+    served: &ServedPlane,
+    post: &crate::root::plane_node::NodeEndPost,
+    arrival: &Arrival,
+) -> Option<Rendered> {
+    let why = post.node().journal_refusal()?;
+    let status = refusal_status(ReasonCode::DurabilityUnavailable);
+    let dialect = served
+        .snapshot
+        .claims
+        .get(arrival.claim as usize)
+        .map_or(0, |c| u32::from(c.refusal_dialect));
+    Some(
+        served
+            .driver
+            .refuse_kernel(
+                ReasonCode::DurabilityUnavailable,
+                status,
+                &why,
+                dialect,
+                &arrival.target,
+            )
+            .unwrap_or_else(|| Rendered {
+                status,
+                fields: Vec::new(),
+                body: why.into_bytes(),
+            }),
+    )
 }
 
 /// A nested unit's place: its parent, live on the node, and its depth.

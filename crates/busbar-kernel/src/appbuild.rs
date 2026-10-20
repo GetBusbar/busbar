@@ -1651,7 +1651,7 @@ pub fn build_app_from_config(
                     // THE PRIOR GENERATION'S SLOTS, so a plane's `build` can CARRY accumulated
                     // coordination off its own prior runtime object across this apply — the same
                     // neutral `&dyn PlaneSlots` a container plane's `build_runtime` receives below.
-                    prior: prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
+                    prior: prior.map(|p| p as &dyn busbar_kernel::plane_driver::slots::PlaneSlots),
                     // The resolved providers: a door plane's probe is handed its referenced ones.
                     providers: Some(&cfg.providers),
                 };
@@ -1696,7 +1696,7 @@ pub fn build_app_from_config(
     // plaintexts + rate-card-derived costs + resolved context/tokens are in `lane_inputs`/`pool_inputs`).
     // THE KERNEL'S OWN TABLES over the same resolved sections, for the read seam when no plane
     // contributes a runtime of its own.
-    let config_tables = Arc::new(busbar_kernel::plane_host::ConfigTables::of(
+    let config_tables = Arc::new(busbar_kernel::plane_driver::route_tables::ConfigTables::of(
         &lane_inputs,
         &pool_inputs,
         &by_model,
@@ -1747,7 +1747,7 @@ pub fn build_app_from_config(
     if let Some(f) = fallback.and_then(|d| d.build_runtime) {
         let slot = f(
             &fallback_build_input as &dyn std::any::Any,
-            prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
+            prior.map(|p| p as &dyn busbar_kernel::plane_driver::slots::PlaneSlots),
         );
         plane_slots.insert(fallback_runtime_key, slot);
     }
@@ -1806,10 +1806,10 @@ pub fn build_app_from_config(
             // Built through the seam (`crate::oauth_as::seam`), not `crate::oauth_as::plane::AsPlane`
             // directly: the concrete plane type lives in the sibling `busbar-core-oauth2` crate, which
             // core cannot name (the one-way dependency runs the other direction). The seam's `build`
-            // also spawns the plane's own expired-record sweeper — the same "how do I come alive"
-            // act this call site used to perform inline (`Storage::sweep_expired` is the only thing
-            // that reclaims anything in `oauth-as`, and it runs when it is called and never
-            // otherwise; spawned once per generation).
+            // also hands the plane's expired-record sweep to the kernel's one clock — the same "how
+            // do I come alive" act this call site used to perform inline (`Storage::sweep_expired`
+            // is the only thing that reclaims anything in `oauth-as`, and it runs when it is called
+            // and never otherwise; registered once per generation, beaten by `crate::tick::beat`).
             // The PRIOR generation's server goes in with it: what the server holds carries across
             // the swap, so a reload does not void its tokens, clients, sessions and replay ledgers.
             // The deployment's store, when one is configured: the server keeps its records there,
