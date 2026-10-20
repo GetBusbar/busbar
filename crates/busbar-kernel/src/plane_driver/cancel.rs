@@ -103,6 +103,11 @@ pub(crate) struct Facts {
     pub(crate) far_end_answered: bool,
     /// A byte of the reply reached the caller.
     pub(crate) streamed: bool,
+    /// A byte of the reply reached the caller from a piece that carried the far end's bytes (or a
+    /// piece of the kernel's, for an answer the plane makes itself): the answer's CONTENT began.
+    /// A byte the plane writes on a far-end piece that carried none (its own closing frame for an
+    /// answer cut before its first byte) is not content, so that unit ended before its first byte.
+    pub(crate) content: bool,
     /// The far end CUT the answer after its head (its connection failed, or the send's deadline
     /// passed): the plane was handed its last piece with `PIECE_CUT`.
     pub(crate) cut: bool,
@@ -178,7 +183,11 @@ impl PlaneDriver {
         let buried = std::mem::take(&mut *self.lock_buried());
         let mut unsettled = Vec::new();
         for mut unit in buried {
-            let now = |ticket| self.cancel_now(ticket).map(|c| (c.disposition, c.writes));
+            let key = unit.ctx.key.get();
+            let now = |ticket| {
+                self.cancel_now(ticket, key)
+                    .map(|c| (c.disposition, c.writes))
+            };
             let cancelled = match unit.flight.take() {
                 Some(mut flight) => match flight.settled() {
                     None => {
