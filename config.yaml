@@ -125,6 +125,7 @@ auth:
   #   corp-ad:
   #     growth-eng: { allowed_pools: [fast], group: growth }
   #     platform:   { group: acme, admin_scope: full }       # allowed_pools omitted = ALL pools
+  #     auditors:   { verbs: [get_audit, get_ledger_totals] } # per-verb admin allow-list ("*" = full)
   signing_key: { file: /var/lib/busbar/signing.key }        # REQUIRED with `keys` above; fleet-shared
   #                                                          # key. Generate: `busbar --generate-signing-key`.
 

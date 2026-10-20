@@ -389,6 +389,8 @@ static OPS: Shared<Ops> = Shared(Ops {
     hydrate: Some(ready),
     start: Some(ready),
     project: Some(project),
+    // This test plane claims no catalog route (ARCHITECT ruling 2026-10-16, 3b C).
+    catalog: None,
 });
 
 static DOOR: Shared<Door> = Shared(Door {
@@ -664,6 +666,8 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             resource_facts,
             listed: std::ptr::null(),
             listed_len: 0,
+            arrival_spans: std::ptr::null(),
+            arrival_spans_len: 0,
         });
         let me = Box::new(Inst {
             wake,

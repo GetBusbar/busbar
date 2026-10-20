@@ -138,6 +138,11 @@ pub struct ConfigApplyView {
     pub applied: bool,
     pub config_version: u64,
     pub note: String,
+    /// The plane sections this configuration writes whose plane the process did not open at boot:
+    /// a plane is opened once, at process start, when its section is configured, so each is stored
+    /// and validated but serves nothing until the next RESTART. Omitted when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reload_to_apply: Vec<String>,
 }
 
 /// `POST /config/reload`: reload-from-disk result.
@@ -145,6 +150,14 @@ pub struct ConfigApplyView {
 pub struct ConfigReloadView {
     pub reloaded: bool,
     pub config_version: u64,
+    /// The plane sections this configuration writes whose plane the process did not open at boot:
+    /// a plane is opened once, at process start, when its section is configured, so each is stored
+    /// and validated but serves nothing until the next RESTART. Omitted when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reload_to_apply: Vec<String>,
+    /// A human note naming the plane sections awaiting restart (omitted with them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// `POST /restart`: accepted-and-draining result.
