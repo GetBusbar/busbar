@@ -1681,16 +1681,6 @@
             "cell": "admin.ops|GetAudit|ok",
             "pointer": "/items/0/scheme",
             "equals": 1
-          },
-          {
-            "cell": "teller|audit-record",
-            "pointer": "/audit_entry_delta",
-            "equals": 1
-          },
-          {
-            "cell": "teller|audit-record",
-            "pointer": "/newest_action",
-            "equals": "key.create"
           }
         ]
       },
