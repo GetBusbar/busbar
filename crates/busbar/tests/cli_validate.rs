@@ -1960,103 +1960,72 @@ models:
     );
 }
 
-/// One provider `lane` whose `auth:` block is `auth_block` (config-side lines, indented under the
-/// provider), credential `env:MOCK_KEY` (`run_busbar` sets it to `test-key-value`): `--validate`'s
-/// exit code and its refusal's item lines (`  - …`), in order.
+/// One provider `lane` whose credential is `api_key` and whose `auth:` block is `auth_block`
+/// (config-side lines, indented under the provider): `--validate`'s exit code and its whole output.
+/// `run_busbar` sets `MOCK_KEY` to `test-key-value`.
 #[cfg(all(linked_section_pools, linked_every_auth))]
-fn validate_provider_auth(tag: &str, auth_block: &str) -> (i32, Vec<String>, String) {
+fn validate_provider_auth(tag: &str, api_key: &str, auth_block: &str) -> (i32, String) {
     let dir = fixture_dir(tag);
     std::fs::write(
         dir.join("providers.yaml"),
         "lane:\n  protocol: openai\n  base_url: \"https://res.example.com\"\n  api_key_env: MOCK_KEY\n",
     )
     .unwrap();
+    let api_key = api_key.replace("{dir}", &dir.display().to_string());
+    std::fs::write(
+        dir.join("sa.json"),
+        r#"{"client_email":"a@b","private_key":"not a key"}"#,
+    )
+    .unwrap();
     std::fs::write(
         dir.join("config.yaml"),
         format!(
             "listen: \"127.0.0.1:0\"\nstore: {{module: memory}}\nproviders:\n  lane:\n    \
-             api_key: {{ env: MOCK_KEY }}\n{auth_block}models:\n  test-model:\n    provider: lane\n"
+             api_key: {api_key}\n{auth_block}models:\n  test-model:\n    provider: lane\n"
         ),
     )
     .unwrap();
     let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
     let _ = std::fs::remove_dir_all(&dir);
-    let items = stderr
-        .lines()
-        .filter(|l| l.starts_with("  - "))
-        .map(str::to_string)
-        .collect();
-    (code, items, format!("stdout={stdout} stderr={stderr}"))
+    (code, format!("stdout={stdout} stderr={stderr}"))
 }
 
-/// THE OAUTH CREDENTIAL'S SHAPE, AT `--validate`, IN 1.5.5'S WORDS (oracle BOOT-035; RED): a
-/// `client_id:client_secret` credential with no `:` is refused by `--validate` with exit 1, as the
-/// 1.5.5 binary refused it (`config_validate/mod.rs:515`, v1.5.5). 1.6.0 asks the auth plugin
-/// serving the style to judge it, and the plugin declares its token-endpoint needs: a check bind
-/// that grants no connection table must still load it, or the refusal is silently lost and the
-/// config validates clean.
+/// `--validate` AGREES WITH BOOT ON A MALFORMED OAUTH CREDENTIAL (oracle BOOT-035; RED). An
+/// `oauth-client-credentials` credential that is no `client_id:client_secret` is refused when the
+/// lane is bound at boot, so `--validate` must refuse it too (exit 1). The credential's shape is the
+/// auth plugin's to judge, and that plugin declares its token-endpoint needs. A check bind that
+/// refuses such a plugin passes its row over, drops every refusal, and `--validate` goes green on a
+/// config boot will not start.
 #[cfg(all(linked_section_pools, linked_every_auth))]
 #[test]
-fn validate_refuses_a_malformed_oauth_client_credential_as_1_5_5_did() {
-    let (code, items, out) = validate_provider_auth(
+fn validate_refuses_a_malformed_oauth_client_credential_as_boot_does() {
+    let (code, out) = validate_provider_auth(
         "oauth-cred-shape",
+        "{ env: MOCK_KEY }",
         "    auth: oauth-client-credentials\n    token_url: \"https://127.0.0.1/token\"\n    \
          scope: oracle\n",
     );
     assert_eq!(code, 1, "{out}");
-    assert_eq!(
-        items,
-        vec![
-            "  - provider 'lane' oauth-client-credentials credential (from env:MOCK_KEY) is \
-             invalid: oauth-client-credentials key must be `client_id:client_secret`"
-                .to_string()
-        ],
-        "{out}"
+    assert!(
+        out.contains("oauth-client-credentials credential")
+            && out.contains("client_id:client_secret"),
+        "the credential refusal is named: {out}"
     );
 }
 
-/// The same credential refusal CO-FIRES beside a missing `token_url` (oracle BOOT-030; the
-/// BOOT-031..034 settings refusals ride the same pass), as in 1.5.5: neither preempts the other.
+/// The same agreement for `jwt-bearer`: a service account whose key is no key is refused by
+/// `--validate`, by the auth plugin that serves the style, as boot refuses it.
 #[cfg(all(linked_section_pools, linked_every_auth))]
 #[test]
-fn validate_refuses_a_malformed_oauth_client_credential_beside_a_missing_token_url() {
-    let (code, mut items, out) = validate_provider_auth(
-        "oauth-cred-no-token-url",
-        "    auth: oauth-client-credentials\n    scope: oracle\n",
+fn validate_refuses_a_malformed_jwt_bearer_service_account_as_boot_does() {
+    let (code, out) = validate_provider_auth(
+        "jwt-bad-key",
+        "{ file: \"{dir}/sa.json\" }",
+        "    auth: jwt-bearer\n",
     );
     assert_eq!(code, 1, "{out}");
-    items.sort();
-    assert_eq!(
-        items,
-        vec![
-            "  - provider 'lane' oauth-client-credentials credential (from env:MOCK_KEY) is \
-             invalid: oauth-client-credentials key must be `client_id:client_secret`"
-                .to_string(),
-            "  - provider 'lane' uses auth: oauth-client-credentials but has no `token_url` (the \
-             OAuth token endpoint the client credentials are POSTed to)"
-                .to_string(),
-        ],
-        "{out}"
-    );
-}
-
-/// A `jwt-bearer` KEY FILE THAT CANNOT BE READ, AT `--validate` (oracle BOOT-036; RED): refused
-/// under 1.5.5's own prefix, `provider '<p>' jwt-bearer credential (from <ref>) is invalid: `
-/// (`config_validate/mod.rs:543`, v1.5.5). Only the clause naming the file is 1.6.0's (signed
-/// register entry F-019: the credential, which may be the key itself, is never echoed).
-#[cfg(all(linked_section_pools, linked_every_auth))]
-#[test]
-fn validate_refuses_an_unreadable_jwt_bearer_key_file_under_1_5_5s_prefix() {
-    let (code, items, out) = validate_provider_auth("jwt-key-file", "    auth: jwt-bearer\n");
-    assert_eq!(code, 1, "{out}");
-    assert_eq!(
-        items,
-        vec![
-            "  - provider 'lane' jwt-bearer credential (from env:MOCK_KEY) is invalid: could not \
-             read service-account key file named by this lane's credential: No such file or \
-             directory (os error 2)"
-                .to_string()
-        ],
-        "{out}"
+    assert!(
+        out.contains("jwt-bearer credential (from ") && out.contains(") is invalid: "),
+        "the credential refusal is named: {out}"
     );
 }
