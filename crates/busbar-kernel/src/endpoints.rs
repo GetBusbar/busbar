@@ -106,8 +106,8 @@ pub async fn stats(
                 busbar_kernel::store::BreakerState::HalfOpen => "half_open",
             };
             json!({
-                "model": snap.model,
-                "provider": snap.provider,
+                "model": snap.member,
+                "provider": snap.route,
                 "max_concurrent": snap.max_concurrent,
                 // Alias of `max_concurrent` under a shorter field name (the lane's concurrency
                 // limit). Kept alongside `max_concurrent` for backward compatibility: an unbounded
@@ -232,7 +232,7 @@ fn list_models_dialect(
     // Each plane generation's listed names, appended after the routing tables' own, scope-filtered
     // as the plane admits them; a name already listed is not listed twice. None listed: the list,
     // and so the bytes, are unchanged.
-    for name in crate::plane::door::listed(&app.plane_slots, gov.key.as_deref()) {
+    for name in crate::plane_driver::door::listed(&app.plane_slots, gov.key.as_deref()) {
         if !names.contains(&name) {
             names.push(name);
         }
@@ -325,13 +325,13 @@ fn plugin_dispatch_halted(latched: bool) -> Option<Response> {
 }
 
 /// Whether any configured non-model plane's generation opened: its runtime slot was built for this
-/// generation and, for a door plane, its open answered ([`crate::plane::door::opened`]).
+/// generation and, for a door plane, its open answered ([`crate::plane_driver::door::opened`]).
 fn a_plane_opened(app: &crate::state::App) -> bool {
     crate::plane::registry::plane_decls()
         .iter()
         .filter(|d| !d.fallback && app.plane_configured(d))
         .filter_map(|d| app.plane_slot(d.key))
-        .any(|slot| crate::plane::door::opened(slot.as_ref()))
+        .any(|slot| crate::plane_driver::door::opened(slot.as_ref()))
 }
 
 // `tests` (the `/stats`/`/v1/models` topology suite) MOVED to the composition root's

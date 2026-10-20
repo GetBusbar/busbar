@@ -4,8 +4,9 @@
 //! THE DOOR, BOTH WAYS: the plumbing every leg drives the streaming plane through.
 //!
 //! The same door is loaded twice through the ONE loader: compiled in
-//! (`busbar_plane_streaming::door::door`, [`load_linked`]) and dropped in (the `streaming_door`
-//! example `cdylib` beside this harness, [`load_dropped`] against the linked row's own Statement).
+//! (`busbar_plane_streaming::door::door`, [`load_linked`]) and dropped in (the plane's cdylib twin,
+//! `busbar-plane-streaming-plugin`, beside this harness, [`load_dropped`] against the linked row's
+//! own Statement).
 //! Every leg builds a fresh instance of each, drives both with one script, and [`judge`]s the pair:
 //! the two observations must be equal, the observation must pass the leg's check, and the leg's
 //! PLANTED WRONG ANSWER must be refused by the same check (the RED arm, run in the same process on
@@ -134,9 +135,10 @@ pub struct Rig {
     stated: Vec<u8>,
 }
 
-/// Where the dropped-in door is: `VOICE_CONFORM_DOOR`, else the plane's `streaming_door` example
-/// library in the profile's `examples/` beside this harness's binary (`cargo build -p
-/// busbar-plane-streaming --example streaming_door` puts it there).
+/// Where the dropped-in door is: `VOICE_CONFORM_DOOR`, else the plane's cdylib twin beside this
+/// harness's binary in the profile directory (`cargo build --manifest-path <the pinned plane's
+/// workspace> -p busbar-plane-streaming-plugin --target-dir <this target>` puts it there; the plane
+/// lives in its own repo, row 106).
 fn dropped_path() -> Result<PathBuf, String> {
     if let Some(p) = std::env::var_os(DOOR_ENV) {
         let p = PathBuf::from(p);
@@ -151,17 +153,17 @@ fn dropped_path() -> Result<PathBuf, String> {
         return Err("the harness's path has no directory".to_string());
     };
     let name = format!(
-        "{}streaming_door{}",
+        "{}busbar_plane_streaming_plugin{}",
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_SUFFIX
     );
-    let path = dir.join("examples").join(name);
+    let path = dir.join(name);
     if path.is_file() {
         Ok(path)
     } else {
         Err(format!(
-            "the dropped-in door is not built beside the harness ({}): build the \
-             `streaming_door` example",
+            "the dropped-in door is not built beside the harness ({}): build the plane's \
+             cdylib twin, `busbar-plane-streaming-plugin`, from its pinned workspace",
             path.display()
         ))
     }

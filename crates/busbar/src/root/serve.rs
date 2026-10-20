@@ -31,13 +31,15 @@ use busbar_contract::services::{
 };
 use busbar_kernel::host_records::QUEUE_CAP;
 use busbar_kernel::host_services::{BlockingPool, DestJudge, KernelServices, SignKey};
-use busbar_kernel::plane::store::KIND_DEMOTION;
-use busbar_kernel::plane::DemotionRecord;
 use busbar_kernel::plane_driver::serve::{publish, ServeRoute, ServeTable};
 use busbar_kernel::plane_driver::{
     refusal_status, BufferCaps, CallerEnd, DriverConfig, Egress, HeadFields, MoneySeam,
     PlaneDriver, PlaneMoney, Rendered, SessionCaller,
 };
+/// The stream `Content-Type` every declared protocol states, folded at boot.
+use busbar_kernel::proto::streaming_content_types as declared_stream_media;
+use busbar_kernel::store::plane_view::KIND_DEMOTION;
+use busbar_kernel::trust::DemotionRecord;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::root::boot::DoorPlane;
@@ -704,9 +706,9 @@ impl DoorApply {
 
 /// THE SECTION A CONFIG APPLY REFRESHES A DOOR PLANE ONTO: the plane's slot in the generation `app`
 /// installed (its section as written), carrying the unified pools that generation resolved for the
-/// plane's section `section_key` ([`installed_door_pools`]: the `tools` pools off `App::tool_pools`,
-/// the `agents` pools off the generic per-plane pool map `App::plane_pools`, read first under the
-/// plane's own key, the key its slot is under), as the boot composition carries them
+/// plane's section `section_key` (its own pools off the generic per-plane pool map
+/// `App::plane_pools` under the key its slot is under, else [`installed_door_pools`]), as the boot
+/// composition carries them
 /// ([`with_pools`]); a generation with no slot for the plane keeps the section it serves now.
 #[must_use]
 pub fn applied_section(
@@ -718,23 +720,19 @@ pub fn applied_section(
     let Some(slot) = app
         .plane_slots
         .get(plane)
-        .and_then(|s| s.downcast_ref::<busbar_kernel::plane::door::DoorSlot>())
+        .and_then(|s| s.downcast_ref::<busbar_kernel::plane_driver::door::DoorSlot>())
     else {
         return now.section.clone();
     };
-    let mut pools = installed_door_pools(app);
-    // The generic per-plane pool map is keyed by the plane's key, the key its slot is under: read
-    // there first, so an apply carries the pools whatever the registry holds.
-    if section_key == busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3] {
-        if let Some(own) = app.plane_pools(plane) {
-            for (owner, stated) in &mut pools {
-                if *owner == section_key {
-                    *stated = own.clone();
-                }
-            }
-        }
+    // The generation's per-plane pool map is keyed by the plane's key, the key its slot is under:
+    // read there first, so an apply carries the plane's pools whatever the registry holds (an apply
+    // never re-resolves the plane through the registry to find its own pools).
+    if let Some(own) = app.plane_pools(plane) {
+        let mut section = slot.section.value.clone();
+        pools_into(&mut section, own);
+        return section;
     }
-    section_with_pools(section_key, &slot.section.value, &pools)
+    section_with_pools(section_key, &slot.section.value, &installed_door_pools(app))
 }
 
 /// EVERY SERVED DOOR PLANE'S APPLY, kept when the planes move into the data routes, for the
@@ -913,6 +911,21 @@ impl Served {
             .flat_map(|p| p.live.served_facts.need_trust.iter().copied())
             .collect()
     }
+
+    /// The declaring sections of the planes among `doors` this composition did not open (what the
+    /// root's rules hold as restart-to-apply, `door_steps::Rules::hold_unopened`). The fallback
+    /// plane is never one: its generation is built at every apply, as the previous release built
+    /// it.
+    #[must_use]
+    pub fn unopened(&self, doors: &[(String, DoorPlane)]) -> Vec<&'static str> {
+        doors
+            .iter()
+            .filter(|(instance, _)| !self.planes.iter().any(|p| p.instance == *instance))
+            .map(|(_, plugin)| plugin.served())
+            .filter(|served| !served.fallback)
+            .map(|served| served.section)
+            .collect()
+    }
 }
 
 impl Served {
@@ -952,6 +965,9 @@ impl Checkpoints {
     /// One tick: bump the epoch, then hand each running unit's checkpoint to the node's book
     /// ([`PlaneMoney::flush_checkpoints`]). Answers how many were journaled.
     fn tick(&self) -> usize {
+        // THE NODE'S LEASE ON ITS HOST NAME, refreshed on this same tick (Q128): a node with no data
+        // directory keeps journaling under its host's id only while it holds it.
+        crate::root::durability::refresh_held_lease();
         self.epoch.bump();
         self.money
             .iter()
@@ -1183,7 +1199,7 @@ pub fn with_pools(
     mut sections: BTreeMap<&'static str, serde_yaml::Value>,
     pools: &[(
         &'static str,
-        BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+        BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg>,
     )],
 ) -> BTreeMap<&'static str, serde_yaml::Value> {
     for (key, stated) in pools {
@@ -1194,42 +1210,39 @@ pub fn with_pools(
     sections
 }
 
-/// The unified pools each door section carries at its reserved `pools` key, by section key.
-pub type DoorPoolsByKey = [(
+/// The pools each door section carries at its reserved `pools` key, by section key.
+pub type DoorPoolsByKey = Vec<(
     &'static str,
-    BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
-); 2];
+    BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg>,
+)>;
 
-/// The door sections' unified pools as the generation `tools`/`agents` resolved them, by section
-/// key: the one table boot ([`with_pools`]) and a config apply ([`applied_section`]) both inject
-/// from, so a door plane's section is built the same way on both paths (audit root-R1 leftover C1).
+/// The door sections' pools as the generation resolved them, by section key: the one table boot
+/// ([`with_pools`]) and a config apply ([`applied_section`]) both inject from, so a door plane's
+/// section is built the same way on both paths (audit root-R1 leftover C1).
 #[must_use]
 pub fn door_pools(
-    tools: &BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
-    agents: &BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+    plane_pools: &BTreeMap<
+        &'static str,
+        BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg>,
+    >,
 ) -> DoorPoolsByKey {
-    [
-        (
-            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
-            tools.clone(),
-        ),
-        (
-            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
-            agents.clone(),
-        ),
-    ]
+    plane_pools
+        .iter()
+        .map(|(section, pools)| (*section, pools.clone()))
+        .collect()
 }
 
-/// [`door_pools`] read off an installed generation: the pools a config apply resolved.
+/// [`door_pools`] read off an installed generation: the pools a config apply resolved, each plane's
+/// read off the generation under its own key and filed under its section.
 #[must_use]
 pub fn installed_door_pools(app: &busbar_kernel::state::App) -> DoorPoolsByKey {
-    let none = BTreeMap::new();
-    let agents = busbar_kernel::plane::registry::plane_decl_for_config_section(
-        busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
-    )
-    .and_then(|decl| app.plane_pools(decl.key))
-    .unwrap_or(&none);
-    door_pools(&app.tool_pools, agents)
+    busbar_kernel::plane::registry::plane_decls()
+        .iter()
+        .filter_map(|decl| {
+            app.plane_pools(decl.key)
+                .map(|pools| (decl.config_section, pools.clone()))
+        })
+        .collect()
 }
 
 /// The section a config apply refreshes the door plane serving `key` onto: the section as
@@ -1240,7 +1253,7 @@ fn section_with_pools(
     written: &serde_yaml::Value,
     pools: &[(
         &'static str,
-        BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+        BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg>,
     )],
 ) -> serde_yaml::Value {
     let mut section = written.clone();
@@ -1289,7 +1302,7 @@ fn settings_path(
 /// hands a plane each member's bare name.
 pub fn pools_into(
     section: &mut serde_yaml::Value,
-    stated: &BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+    stated: &BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg>,
 ) {
     use busbar_contract::section::{
         POOL_MEMBERS_KEY, POOL_MEMBER_GRANTED_KEY, POOL_MEMBER_NAME_KEY, POOL_MEMBER_TIER_KEY,
@@ -3066,6 +3079,10 @@ impl DataRoutes {
     ) {
         use busbar_kernel::teller::SessionOpen;
         let served = &self.served.planes[door.plane];
+        if let Some(refused) = journal_refused(served, &self.post, &arrival) {
+            let _ = verdict.send(Err(Some(refused)));
+            return;
+        }
         let live = served.live.current();
         let node = self.post.node();
         let unit = node.mint();
@@ -3102,27 +3119,38 @@ impl DataRoutes {
             &self.post,
             &units,
             (self.pin)(),
+            served.facts.audit_kind,
         ) else {
             let _ = verdict.send(Err(None));
             return;
         };
-        let status = match opened {
+        let admitted = match opened {
             // The open's hook stage (K5, ARCHITECT Q-L5B-PROJECT) runs before the caller is
-            // answered: a hook that stops it is answered in the plane's rendering, never upgraded.
+            // answered: a hook that stops it is answered in the plane's rendering, never upgraded,
+            // and the session's record says it was refused there.
             SessionOpen::Admitted {
                 route,
                 destinations,
-            } if units.open_hooks(&route, &ctx).await.is_ok()
-                && attach
+            } => match units.open_hooks(&route, &ctx).await {
+                Err(reason) => {
+                    self.post.stopped(unit, reason);
+                    None
+                }
+                Ok(()) => attach
                     .admitted
                     .take()
-                    .is_none_or(|admitted| admitted(unit.get()).is_ok()) =>
-            {
+                    .is_none_or(|admitted| admitted(unit.get()).is_ok())
+                    .then_some((route, destinations)),
+            },
+            SessionOpen::Refused => None,
+        };
+        let status = match admitted {
+            Some((route, destinations)) => {
                 let _ = verdict.send(Ok(()));
                 let _ended = units.session(&route, &ctx, &destinations).await;
                 attach.answered
             }
-            _ => {
+            None => {
                 let rendered = units.take_rendered();
                 let status = rendered
                     .as_ref()
@@ -3135,6 +3163,9 @@ impl DataRoutes {
         if let Some(ended) = attach.ended.take() {
             ended(unit.get());
         }
+        // The session's record carries what it consumed, read before its money closes.
+        self.post
+            .reported(unit, report_of(&served.money, unit, &live.facts));
         slot.finish(&self.post);
         served.money.settle_end(unit, status);
     }
@@ -3173,14 +3204,23 @@ impl DataRoutes {
             joining,
         } = opened;
         let joining = Arc::new(Mutex::new(Some(joining)));
+        // The admitted unit, so an open whose plane never states its head can end its session.
+        let admitted_unit: Arc<Mutex<Option<u64>>> = Arc::default();
         let admitted = {
             let joining = Arc::clone(&joining);
+            let admitted_unit = Arc::clone(&admitted_unit);
             Box::new(move |unit: u64| {
                 let j = joining
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .take();
-                j.map_or(Err("admitted twice".to_owned()), |j| j.admit(unit))
+                let joined = j.map_or(Err("admitted twice".to_owned()), |j| j.admit(unit));
+                if joined.is_ok() {
+                    *admitted_unit
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(unit);
+                }
+                joined
             }) as Box<dyn FnOnce(u64) -> Result<(), String> + Send>
         };
         let ended = Box::new(|unit: u64| crate::root::connector::the().unpair(unit))
@@ -3194,11 +3234,25 @@ impl DataRoutes {
         tokio::spawn(self.session(door, caller, arrival, verdict, attach));
         match said.await {
             Ok(Ok(())) => {
-                // The plane's head where it stated one before the session ran, else the created
-                // status alone; the body is the framer's own description.
-                let mut head = head;
-                let (status, fields) = head.try_recv().unwrap_or((CREATED, Vec::new()));
-                stated((status, fields), Body::from(description))
+                // THE PLANE'S HEAD, stated on the session's first crossing (ARCHITECT row 132
+                // ruling (a)): the open answers under it, the body the framer's own description.
+                // A plane that states none within the open's bound is the open's failure: its
+                // session ends, and the caller is refused, never answered without the plane.
+                match serve_datagram::plane_head(head, OPEN_HEAD_WAIT).await {
+                    Some((status, fields)) => stated((status, fields), Body::from(description)),
+                    None => {
+                        let unit = *admitted_unit
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if let Some(unit) = unit {
+                            crate::root::connector::the().unpair(unit);
+                        }
+                        stated(
+                            (refusal_status(ReasonCode::PlanePanic), Vec::new()),
+                            Body::empty(),
+                        )
+                    }
+                }
             }
             Ok(Err(Some(rendered))) => stated(
                 (rendered.status, rendered.fields),
@@ -3309,7 +3363,7 @@ impl DataRoutes {
                 Ok(messages) => messages,
                 Err(why) => {
                     let status = refusal_status(ReasonCode::DecodeFailed);
-                    return match stream.refuse(why.error.as_bytes(), status) {
+                    return match stream.refuse(why.error.as_bytes(), status, false) {
                         Ok(block) => serve_framed::whole(status, &block),
                         Err(_) => stated((status, Vec::new()), Body::empty()),
                     };
@@ -3488,6 +3542,9 @@ impl DataRoutes {
         nesting: Option<Nesting>,
     ) -> Option<Rendered> {
         let served = &self.served.planes[plane];
+        if let Some(refused) = journal_refused(served, &self.post, &arrival) {
+            return Some(refused);
+        }
         // The generation this unit is served by, held to its end.
         let live = served.live.current();
         let started = std::time::Instant::now();
@@ -3556,6 +3613,7 @@ impl DataRoutes {
                 late,
                 (self.pin)(),
                 nesting.as_ref().map(|n| &n.parent),
+                live.facts.audit_kind,
             )
             .instrument(span.clone())
             .await
@@ -3583,7 +3641,15 @@ impl DataRoutes {
             .map(|r| r.status)
             .or_else(|| caller.stated())
             .unwrap_or_else(|| refusal_status(ReasonCode::PlanePanic));
-        served.money.settle_end(unit, status);
+        // How the answer ended, not only the status its head carried: a stream its far end cut is
+        // no delivered response, and meters nothing (status row 183).
+        served.money.settle_end_as(
+            unit,
+            busbar_kernel::plane_driver::UnitEnd {
+                caller_status: status,
+                cut: steps.stream_cut(),
+            },
+        );
         // THE REQUEST FAMILIES of the plane serving the `pools` map (the flat card's plane), as the
         // previous release's `ingress::finish_inner` emitted them: for every request its dialect
         // read (decoded, or refused for its body; a path it does not serve, or a verb it does not
@@ -3631,6 +3697,43 @@ impl DataRoutes {
         }
         rendered
     }
+}
+
+/// A NODE WHOSE JOURNAL CANNOT REACH ITS STORE FAILS CLOSED (ARCHITECT 2026-10-07 H3 ruling):
+/// while the node's journal refuses money, a new unit is refused 503 with the reason before
+/// anything is built, held or journalled for it. The kernel decides the refusal
+/// (`durability_unavailable`, the reason's own words); the plane words it through its `refusal`,
+/// in the claim's refusal dialect, for the target (spec Part 3 section 12), the bytes the node's
+/// handed path answered. A plane that renders nothing leaves the reason as the body. `None` while
+/// the journal keeps up.
+fn journal_refused(
+    served: &ServedPlane,
+    post: &crate::root::plane_node::NodeEndPost,
+    arrival: &Arrival,
+) -> Option<Rendered> {
+    let why = post.node().journal_refusal()?;
+    let status = refusal_status(ReasonCode::DurabilityUnavailable);
+    let dialect = served
+        .snapshot
+        .claims
+        .get(arrival.claim as usize)
+        .map_or(0, |c| u32::from(c.refusal_dialect));
+    Some(
+        served
+            .driver
+            .refuse_kernel(
+                ReasonCode::DurabilityUnavailable,
+                status,
+                &why,
+                dialect,
+                &arrival.target,
+            )
+            .unwrap_or_else(|| Rendered {
+                status,
+                fields: Vec::new(),
+                body: why.into_bytes(),
+            }),
+    )
 }
 
 /// A nested unit's place: its parent, live on the node, and its depth.
@@ -3836,6 +3939,9 @@ const SWITCHED: u32 = 101;
 /// The status a datagram session's caller is answered with when its plane states no head of its
 /// own: the session was created (`201 Created`).
 const CREATED: u32 = 201;
+
+/// How long a datagram session's open waits for its plane's head: the connector's open bound.
+const OPEN_HEAD_WAIT: std::time::Duration = busbar_core_connector::compose::DEFAULT_OPEN_TIMEOUT;
 
 /// WHAT A SESSION'S CARRIER DOES AROUND ITS ADMISSION: the status its caller was answered with
 /// (the session's money settles on it); what runs once the unit is admitted, before the session
@@ -4180,8 +4286,8 @@ fn closed_whole(h: Head, block: HeaderMap) -> Response {
     response
 }
 
-/// Whether a reply head is a WHOLE answer's: it states its length and is no event stream (a text
-/// one, or the AWS event-stream framing, which the previous release relayed piece by piece).
+/// Whether a reply head is a WHOLE answer's: it states its length and is no stream (one of the
+/// [`streamed_media`] types, which the previous release relayed piece by piece).
 fn whole_answer(fields: &HeadFields) -> bool {
     let named = |field: &[u8]| {
         fields
@@ -4190,9 +4296,20 @@ fn whole_answer(fields: &HeadFields) -> bool {
             .map(|(_, value)| String::from_utf8_lossy(value).to_ascii_lowercase())
     };
     named(b"content-length").is_some()
-        && !named(b"content-type").is_some_and(|v| {
-            v.starts_with("text/event-stream")
-                || v.starts_with("application/vnd.amazon.eventstream")
+        && !named(b"content-type").is_some_and(|v| streamed_media(&v))
+}
+
+/// Whether `content_type` is a stream's, read off the DECLARED ROWS and never spelled here (Law 1;
+/// BUSBAR-1.6.0.md: "Dialects are internal to their plane"): the event stream the contract names,
+/// or the stream `Content-Type` a declared protocol states on its `ProtocolDecl` row, folded at
+/// boot ([`declared_stream_media`]).
+fn streamed_media(content_type: &str) -> bool {
+    std::iter::once(busbar_contract::protocol::TEXT_EVENT_STREAM)
+        .chain(declared_stream_media().iter().copied())
+        .any(|media| {
+            content_type
+                .get(..media.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(media))
         })
 }
 
@@ -4356,13 +4473,13 @@ mod tests;
 #[path = "tests/serve_planes.rs"]
 pub(crate) mod planes_tests;
 
-// The doors served end to end through this composition: the decisions plane's (the `root-decisions`
-// leg's own cells, qa/capability-equality.json, under its feature) and the MCP plane's (the
-// `root-mcp` leg's loop cells, under the linked plane-door axis), each gated item by item inside,
-// so either plane's switch alone still compiles its own, and the session door's root-leg cells,
-// which find their door among the linked plane doors. Its MCP cells reach the door_steps helpers
-// that need the default build's linked auth rows (gated with the node-axis plane that carries that
-// build), and the capability cells of the door serving the `pools` map.
+// The doors served end to end through this composition: each linked plane door's root-leg cells
+// (its own cells, qa/capability-equality.json, under its feature, or its loop cells under the
+// linked plane-door axis), each gated item by item inside, so one plane's switch alone still
+// compiles its own, and the session door's root-leg cells, which find their door among the linked
+// plane doors. Cells that reach the door_steps helpers needing the default build's linked auth rows
+// are gated with the node-axis plane that carries that build, as are the capability cells of the
+// door serving the `pools` map.
 #[cfg(all(test, linked_axis_node))]
 #[path = "tests/serve_tests.rs"]
 mod door_tests;

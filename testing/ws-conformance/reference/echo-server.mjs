@@ -17,6 +17,10 @@ wss.on('listening', () => {
   console.log(`REFERENCE_PORT=${port}`);
 });
 wss.on('connection', (ws) => {
+  // A peer that breaks the protocol (Autobahn 2.5: a ping over 125 bytes) makes `ws` close that
+  // connection with 1002 and emit 'error' on it. The error is THAT connection's, and is answered by
+  // the close; an unheard 'error' would end the whole server and every case after it.
+  ws.on('error', () => {});
   ws.on('message', (data, isBinary) => {
     ws.send(data, { binary: isBinary });
   });

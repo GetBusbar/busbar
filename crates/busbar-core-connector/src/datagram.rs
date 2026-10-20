@@ -254,6 +254,22 @@ impl DatagramFraming {
         Self::begin(door, cert, local, SIDE_ACCEPT, None, &[])
     }
 
+    /// Begin an ACCEPTING association on `door` under a certificate minted for it alone: as
+    /// [`Self::accept`], the session's certificate the connector's own, so the host that serves the
+    /// association names no protocol of it.
+    ///
+    /// # Errors
+    ///
+    /// The certificate could not be minted, or the entry refused to frame it, or answered outside
+    /// the lane's rules.
+    pub fn accept_minted(
+        door: Arc<dyn FramerDoor>,
+        local: SocketAddr,
+    ) -> Result<(Self, Yielded), Refused> {
+        let cert = SessionCert::mint().map_err(|e| fault(format!("{e:?}")))?;
+        Self::accept(door, Arc::new(cert), local)
+    }
+
     /// Begin a DIALLING association on `door`: as [`Self::accept`], with the `opening` fields the
     /// framing offers (its own description comes back as a piece) and the destination `judge` every
     /// candidate the far end's answer advertises meets, under the dialling need's egress `class`,
@@ -446,6 +462,14 @@ impl DatagramFraming {
             .is_some_and(|s| s.knows(path) || s.bound_path() == Some(path))
     }
 
+    /// Whether `path` is the one this association has bound (proven by core's round trip).
+    #[must_use]
+    pub fn binds(&self, path: SocketAddr) -> bool {
+        self.secure
+            .as_ref()
+            .is_some_and(|s| s.bound_path() == Some(path))
+    }
+
     /// The far-end addresses this association owns ([`Self::owns`]) that it has numbered: on the
     /// dialling side its admitted candidates, before any of them has sent a byte.
     pub fn addresses(&self) -> impl Iterator<Item = SocketAddr> + '_ {
@@ -563,12 +587,14 @@ impl DatagramFraming {
     /// applied.
     fn cross(&mut self, first: Op<'_>, y: &mut Yielded, now: Instant) -> Result<(), Refused> {
         let mut op = first;
+        let mut recalls = crate::framer::Recalls::default();
         loop {
             let o = self.cross_once(op)?;
             let done = self.take(&o, y, now)?;
             if done {
                 return Ok(());
             }
+            recalls.owed(&o)?;
             op = op.again();
         }
     }
@@ -992,8 +1018,29 @@ impl Associations {
         }?;
         let f = self.framings.get_mut(&id)?;
         let answer = f.datagram(from, bytes, now);
-        if answer.is_ok() && f.owns(from) {
-            self.by_path.insert(from, id);
+        let (owns, binds) = (f.owns(from), f.binds(from));
+        if answer.is_ok() && owns {
+            // A path another association holds stays its own while it still owns it, unless this
+            // one has it BOUND (proven by core's round trip) and the holder does not: a heard check
+            // proves only that its sender knows this association's password, never that it owns
+            // the source address.
+            let take = match self.by_path.get(&from) {
+                None => true,
+                Some(holder) if *holder == id => false,
+                Some(holder) => self
+                    .framings
+                    .get(holder)
+                    .is_none_or(|h| !h.owns(from) || (binds && !h.binds(from))),
+            };
+            if take {
+                self.by_path.insert(from, id);
+                // The paths it let go of (a heard path that made room for this one) are let go
+                // here too, so the port routes an association no more paths than it owns.
+                let framings = &self.framings;
+                self.by_path.retain(|addr, holder| {
+                    *holder != id || framings.get(holder).is_some_and(|h| h.owns(*addr))
+                });
+            }
         }
         if answer.is_err() {
             self.remove(id);

@@ -488,3 +488,77 @@ fn operator_infrastructure_is_allowed_private_and_refused_metadata_whatever_is_c
         DEST_METADATA
     );
 }
+
+/// RED (THE DESIGN §5 "no blocking thread exists"; resource bounds): the dial guard's name
+/// lookups are CAPPED as the kernel's are (`hostio::SystemNames`, `MAX_PENDING_LOOKUPS`): with
+/// the cap's lookups in flight one more is answered at once as a resolution failure and starts no
+/// thread. Uncapped, one thread was started per lookup, so a burst of dials while names were slow
+/// grew threads without limit.
+#[test]
+fn a_lookup_past_the_cap_is_refused_at_once_and_starts_no_thread() {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::{mpsc, Condvar, Mutex};
+    use std::time::Duration;
+
+    static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let (answer, answered) = mpsc::channel();
+    for i in 0..3_u32 {
+        let (gate, answer) = (Arc::clone(&gate), answer.clone());
+        super::resolve_capped(
+            "slow.example",
+            Box::new(move |r| {
+                let _ = answer.send((i, r.is_ok()));
+            }),
+            2,
+            &IN_FLIGHT,
+            move |_| {
+                let (open, opened) = &*gate;
+                let mut is_open = open.lock().unwrap();
+                while !*is_open {
+                    is_open = opened.wait(is_open).unwrap();
+                }
+                Ok(Vec::new())
+            },
+        );
+    }
+    let first = answered.recv_timeout(Duration::from_secs(2));
+    {
+        let (open, opened) = &*gate;
+        *open.lock().unwrap() = true;
+        opened.notify_all();
+    }
+    assert_eq!(
+        first,
+        Ok((2, false)),
+        "the lookup past the cap is refused at once"
+    );
+    let mut rest: Vec<(u32, bool)> = (0..2)
+        .map(|_| answered.recv_timeout(Duration::from_secs(5)).unwrap())
+        .collect();
+    rest.sort_unstable();
+    assert_eq!(rest, [(0, true), (1, true)], "the two in flight answer");
+}
+
+/// A CONFIGURED OPEN-WEB TARGET KEEPS THE OPEN-WEB CLASS (Q128 arch u22/u23 BLOCK; ruling 14: "a
+/// configured open-web target keeps the open-web class (public https only); only the egress
+/// default class is lifted when configured"; 1.5.5's webhook export refused a private or loopback
+/// URL). A webhook URL taken from settings is judged open-web, so `https://127.0.0.1` and a
+/// `10.x` address are refused; only the egress default is lifted to operator infrastructure.
+/// RED before the fix: the configured open-web need was lifted, and both were admitted.
+#[test]
+fn a_configured_open_web_target_keeps_its_class_and_is_refused_a_private_address() {
+    assert_eq!(judged_class(EGRESS_OPEN_WEB, true), EGRESS_OPEN_WEB);
+    assert_eq!(
+        judged_class(EGRESS_DEFAULT, true),
+        EGRESS_OPERATOR_INFRASTRUCTURE
+    );
+    let g = Guard::default();
+    for a in ["127.0.0.1", "10.0.0.7"] {
+        assert_eq!(
+            verdict(g.judge_answer(a, &[ip(a)], judged_class(EGRESS_OPEN_WEB, true))),
+            Some(DEST_INTERNAL),
+            "a configured webhook to {a}"
+        );
+    }
+}

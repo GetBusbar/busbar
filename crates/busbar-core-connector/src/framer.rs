@@ -637,6 +637,9 @@ pub struct Located {
     /// The entry's protocol offer for the handshake (ALPN), most preferred first; empty = it makes
     /// none (THE DESIGN, connections: "the ALPN offer is the framer's").
     pub offer: Vec<Vec<u8>>,
+    /// The framer's own head lines on a request to the target (`LocateIn::defaults_buf`), in order:
+    /// each one a request that does not state it carries, added before the auth signs the head.
+    pub defaults: Vec<crate::compose::HeadWords>,
 }
 
 /// A protocol offer in the handshake's ProtocolNameList encoding (each name led by its one-byte
@@ -678,10 +681,12 @@ pub fn accept_offer(door: &dyn FramerDoor) -> Result<Vec<Vec<u8>>, Refused> {
 
 fn locate_as(door: &dyn FramerDoor, target: &str, accept: bool) -> Result<Located, Refused> {
     let (mut auth_cap, mut name_cap, mut alpn_cap) = (256_usize, 256_usize, 256_usize);
+    let mut defaults_cap = 256_usize;
     for _ in 0..2 {
         let mut authority = vec![0_u8; auth_cap];
         let mut name = vec![0_u8; name_cap];
         let mut alpn = vec![0_u8; alpn_cap];
+        let mut defaults = vec![0_u8; defaults_cap];
         let mut i: LocateIn = blank_in();
         i.target = abi(target.as_bytes());
         i.authority_buf = authority.as_mut_ptr();
@@ -691,16 +696,20 @@ fn locate_as(door: &dyn FramerDoor, target: &str, accept: bool) -> Result<Locate
         i.alpn_buf = alpn.as_mut_ptr();
         i.alpn_cap = alpn.len();
         i.accept = u32::from(accept);
+        i.defaults_buf = defaults.as_mut_ptr();
+        i.defaults_cap = defaults.len();
         let mut o: LocateOut = blank_out();
         let c = door.cross(Call::Locate(&mut i, &mut o));
         let short = o.authority_needed > auth_cap as u64
             || o.name_needed > name_cap as u64
-            || o.alpn_needed > alpn_cap as u64;
+            || o.alpn_needed > alpn_cap as u64
+            || o.defaults_needed > defaults_cap as u64;
         if c.outcome == Outcome::Failed && short {
             let grow = |needed: u64, cap: usize| usize::try_from(needed).unwrap_or(0).max(cap);
             auth_cap = grow(o.authority_needed, auth_cap);
             name_cap = grow(o.name_needed, name_cap);
             alpn_cap = grow(o.alpn_needed, alpn_cap);
+            defaults_cap = grow(o.defaults_needed, defaults_cap);
             continue;
         }
         ready(c)?;
@@ -715,11 +724,18 @@ fn locate_as(door: &dyn FramerDoor, target: &str, accept: bool) -> Result<Locate
                 outcome: Outcome::Fault,
                 error: "the framer's protocol offer is not a protocol list".into(),
             })?;
+        let lines = defaults
+            .get(..usize::try_from(o.defaults_written).unwrap_or(usize::MAX))
+            .ok_or_else(|| Refused {
+                outcome: Outcome::Fault,
+                error: "the framer's head lines overrun its buffer".into(),
+            })?;
         return Ok(Located {
             authority: text(&authority, o.authority_written),
             name: (o.has_name != 0).then(|| text(&name, o.name_written)),
             secure: o.secure != 0,
             offer: offered,
+            defaults: crate::framed_stream::field_lines(lines)?,
         });
     }
     Err(Refused {
@@ -783,13 +799,62 @@ pub fn encode_head(
     Ok(y.wire)
 }
 
+/// How many `YIELD_MORE` answers in a row may write nothing before the framing FAULTs: a framer
+/// that owes more and gives nothing would otherwise hold the host worker forever (Law 0).
+pub(crate) const MORE_STALLS: usize = 64;
+
+/// The most bytes one op's `YIELD_MORE` re-calls may write before the framing FAULTs: an op's own
+/// input is bounded (a socket read, a write under the write buffer), so a framer that keeps writing
+/// past this is not answering it.
+pub(crate) const MORE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Whether one answer wrote anything: wire bytes, frame bytes, a piece or a head.
+pub(crate) fn wrote(o: &FramerOut) -> bool {
+    let y = &o.yielded;
+    y.wire_len != 0 || y.frame_len != 0 || y.pieces_len != 0 || y.heads_len != 0
+}
+
+/// The re-calls of one op: their count with nothing written, and the bytes written.
+#[derive(Default)]
+pub(crate) struct Recalls {
+    stalls: usize,
+    bytes: u64,
+}
+
+impl Recalls {
+    /// Count one more answer that owed more: a FAULT once [`MORE_STALLS`] in a row wrote nothing,
+    /// or the op's answers wrote past [`MORE_BYTES`].
+    pub(crate) fn owed(&mut self, o: &FramerOut) -> Result<(), Refused> {
+        self.stalls = if wrote(o) { 0 } else { self.stalls + 1 };
+        self.bytes = self
+            .bytes
+            .saturating_add(o.yielded.wire_len)
+            .saturating_add(o.yielded.frame_len);
+        if self.stalls >= MORE_STALLS {
+            return Err(Refused {
+                outcome: Outcome::Fault,
+                error: format!(
+                    "the framer owed more {MORE_STALLS} times in a row and wrote nothing"
+                ),
+            });
+        }
+        if self.bytes > MORE_BYTES {
+            return Err(Refused {
+                outcome: Outcome::Fault,
+                error: format!("the framer's answers to one op ran past {MORE_BYTES} bytes"),
+            });
+        }
+        Ok(())
+    }
+}
+
 /// Which op a `YIELD_MORE` re-call repeats.
 #[derive(Clone, Copy)]
 enum Again {
     Ingest,
     Emit(u64),
     Timer,
-    Refuse(Option<u64>, u32),
+    Refuse(Option<u64>, u32, bool),
 }
 
 impl Framing {
@@ -896,6 +961,7 @@ impl Framing {
 
     /// Re-call `again` with no new bytes until the framer owes nothing more.
     fn more(&mut self, again: Again, y: &mut Yielded) -> Result<(), Refused> {
+        let mut recalls = Recalls::default();
         loop {
             let sink = self.bufs.sink();
             let mut o: FramerOut = blank_out();
@@ -913,12 +979,13 @@ impl Framing {
                     i.sink = sink;
                     self.door.cross(Call::Emit(&mut i, &mut o))
                 }
-                Again::Refuse(stream, status) => {
+                Again::Refuse(stream, status, head_sent) => {
                     let mut i: RefuseIn = blank_in();
                     i.framing = self.token;
                     i.stream = stream.unwrap_or(0);
                     i.has_stream = u32::from(stream.is_some());
                     i.status = status;
+                    i.head_sent = u32::from(head_sent);
                     i.sink = sink;
                     self.door.cross(Call::Refuse(&mut i, &mut o))
                 }
@@ -933,6 +1000,7 @@ impl Framing {
             if self.bufs.take(&o, y)? {
                 return Ok(());
             }
+            recalls.owed(&o)?;
         }
     }
 
@@ -987,7 +1055,9 @@ impl Framing {
     }
 
     /// `refuse`: a refusal's bytes for `stream` (`None` = the whole connection), with its neutral
-    /// `status` for the framer to map to its wire (`0` = none stated).
+    /// `status` for the framer to map to its wire (`0` = none stated). `head_sent` = the host already
+    /// sent the stream's response head, so the refusal is its closing lines only (never on a
+    /// refusal for the whole connection).
     ///
     /// # Errors
     ///
@@ -997,12 +1067,15 @@ impl Framing {
         stream: Option<u64>,
         bytes: &[u8],
         status: u32,
+        head_sent: bool,
     ) -> Result<Yielded, Refused> {
+        let head_sent = head_sent && stream.is_some();
         let mut i: RefuseIn = blank_in();
         i.framing = self.token;
         i.stream = stream.unwrap_or(0);
         i.has_stream = u32::from(stream.is_some());
         i.status = status;
+        i.head_sent = u32::from(head_sent);
         i.bytes = bytes.as_ptr();
         i.len = bytes.len();
         i.sink = self.bufs.sink();
@@ -1010,7 +1083,7 @@ impl Framing {
         ready(self.door.cross(Call::Refuse(&mut i, &mut o)))?;
         let mut y = Yielded::default();
         if !self.bufs.take(&o, &mut y)? {
-            self.more(Again::Refuse(stream, status), &mut y)?;
+            self.more(Again::Refuse(stream, status, head_sent), &mut y)?;
         }
         Ok(y)
     }
@@ -1033,6 +1106,7 @@ impl Framing {
     /// The framer refused to give the connection up.
     pub fn detach(mut self) -> Result<Vec<u8>, Refused> {
         let mut left = Vec::new();
+        let mut recalls = Recalls::default();
         loop {
             let mut i: FramingIn = blank_in();
             i.framing = self.token;
@@ -1048,6 +1122,7 @@ impl Framing {
                 self.token = 0;
                 return Ok(left);
             }
+            recalls.owed(&o)?;
         }
     }
 
@@ -1105,6 +1180,7 @@ impl Framing {
             });
         }
         let mut y = Yielded::default();
+        let mut recalls = Recalls::default();
         loop {
             i.sink = self.bufs.sink();
             let mut o: FramerOut = blank_out();
@@ -1113,6 +1189,7 @@ impl Framing {
                 self.token = 0;
                 return Ok(y);
             }
+            recalls.owed(&o)?;
         }
     }
 

@@ -692,3 +692,119 @@ fn a_holder_that_does_not_read_holds_the_far_end_back() {
         );
     });
 }
+
+/// RED (THE DESIGN §5 "Writes are back-pressured (a full buffer answers not-ready)"; resource
+/// bounds): what the framer answers to what it read on its own (an h2 PING's ack, a ws pong) is
+/// bounded too. A far end that sends and never reads stops being read once those answers fill the
+/// write side; queued with no cap while the socket kept being read, they grew host memory at the
+/// far end's line rate.
+#[test]
+fn a_far_end_that_never_reads_is_not_read_past_the_answers_it_is_owed() {
+    const SENT: usize = 64 * 1024 * 1024;
+    worker().block_on(async {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let far = l.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let (mut s, _) = l.accept().await.unwrap();
+            let chunk = vec![7_u8; 64 * 1024];
+            for _ in 0..SENT / chunk.len() {
+                if s.write_all(&chunk).await.is_err() {
+                    return;
+                }
+            }
+            // Held open, never read.
+            let _keep = s;
+            std::future::pending::<()>().await;
+        });
+        let door = Arc::new(TestDoor::new(
+            "echo",
+            &["echo"],
+            &[],
+            Knobs {
+                echo: true,
+                ..Knobs::default()
+            },
+        ));
+        let mut c = Connection::dial(door, &crate::support::via(), dial(&far)).expect("dials");
+        let waker = std::task::Waker::noop();
+        let started = Instant::now();
+        let mut most = 0;
+        while started.elapsed() < Duration::from_secs(3) {
+            // The holder takes every piece it is handed: only the owed answers can pile up.
+            while let std::task::Poll::Ready(Ok(Some(_))) =
+                c.poll_piece(&mut std::task::Context::from_waker(waker))
+            {}
+            most = most.max(c.out.len());
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert!(
+            most <= 4 * WRITE_BUFFER_BYTES,
+            "{most} bytes owed to a far end that never reads"
+        );
+    });
+}
+
+/// RED (THE DESIGN §5: TLS is the connector's, "today's code moved byte-identically"; a write is
+/// taken up to `WRITE_BUFFER_BYTES`): one write larger than the TLS library's default send buffer
+/// (64 KiB) crosses whole, encrypted, in order. Handed to the TLS writer in one piece past that
+/// buffer, the write failed the connection ("failed to write whole buffer").
+#[test]
+fn one_write_larger_than_the_tls_send_buffer_crosses_whole() {
+    const SENT: usize = 200_000;
+    crate::tls::install_crypto_provider();
+    let (ca, leaf, key) = localhost_cert();
+    worker().block_on(async move {
+        let server = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![leaf.into()],
+                rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
+            )
+            .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let far = l.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let (s, _) = l.accept().await.unwrap();
+            let mut s = acceptor.accept(s).await.unwrap();
+            let mut buf = vec![0_u8; 16 * 1024];
+            while let Ok(n) = s.read(&mut buf).await {
+                if n == 0 || s.write_all(&buf[..n]).await.is_err() || s.flush().await.is_err() {
+                    break;
+                }
+            }
+        });
+        let door = Arc::new(TestDoor::new(
+            "sec",
+            &["sec"],
+            &[],
+            Knobs {
+                secure_name: Some("localhost"),
+                ..Knobs::default()
+            },
+        ));
+        let trust = busbar_contract::transport::trust::EgressTrust {
+            extra_anchors: vec![ca],
+            ..Default::default()
+        };
+        let mut d = dial(&far);
+        d.tls = Some(Arc::new(
+            crate::tls::client::build_client_config(&trust).expect("a usable client config"),
+        ));
+        d.opening = Some((Vec::new(), b"hello".to_vec()));
+        let mut c = Connection::dial(door, &crate::support::via(), d).unwrap();
+        assert_eq!(gather(&mut c, 5).await, b"hello", "the handshake completed");
+        let sent: Vec<u8> = (0..=255_u8).cycle().take(SENT).collect();
+        let waker = std::task::Waker::noop();
+        let taken = c
+            .write(
+                &sent,
+                true,
+                false,
+                &mut std::task::Context::from_waker(waker),
+            )
+            .expect("the write is taken, not failed");
+        assert_eq!(taken, SENT, "the whole write fits the write buffer");
+        assert_eq!(gather(&mut c, SENT).await, sent, "every byte, in order");
+    });
+}

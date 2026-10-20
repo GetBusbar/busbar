@@ -680,3 +680,111 @@ fn a_leases_bound_below_the_answer_is_a_timeout_and_the_answer_spends_it() {
         c.close(OWNER, id).unwrap();
     });
 }
+
+/// Read `id` for `bound`, every piece taken: the body bytes read.
+async fn drain(c: &Connector, id: ConnId, bound: Duration) -> usize {
+    let mut buf = vec![0_u8; 64 * 1024];
+    let mut read = 0;
+    let started = std::time::Instant::now();
+    while started.elapsed() < bound {
+        match c.read(OWNER, id, 7, &mut buf) {
+            Ok(p) if p.kind == PieceKind::Body => read += p.len,
+            Ok(_) => {}
+            Err(ConnError::Pending) => tokio::time::sleep(Duration::from_millis(1)).await,
+            Err(e) => panic!("the read failed: {e:?}"),
+        }
+    }
+    read
+}
+
+/// RED (resource bounds; THE DESIGN §5, back-pressure): every frame the program writes is kept for
+/// every open lease until it reads it, so a lease that does not read holds the program back, as a
+/// holder that does not read holds a line's far end back. Kept with no cap, a lease that never read
+/// grew host memory by everything the program wrote while another lease read on; once it reads,
+/// the program runs on.
+#[test]
+fn a_lease_that_does_not_read_holds_its_program_back() {
+    worker().block_on(async {
+        let c = connector();
+        declare(
+            &c,
+            &[(
+                "one",
+                sh(
+                    "/usr/bin/yes 0123456789abcdef0123456789abcdef0123456789abcdef",
+                    &[],
+                ),
+            )],
+        )
+        .unwrap();
+        let reading = open(&c, "one", b"").unwrap();
+        assert_eq!(generation(&c, reading).await, 1);
+        let idle = open(&c, "one", b"").unwrap();
+        assert_eq!(generation(&c, idle).await, 1);
+        let read = drain(&c, reading, Duration::from_secs(2)).await;
+        assert!(
+            read < 8 * 1024 * 1024,
+            "one lease read {read} bytes while another read none: the other kept them all"
+        );
+        // The idle lease reads: the program is read again for both.
+        assert!(drain(&c, idle, Duration::from_millis(500)).await > 0);
+        assert!(
+            drain(&c, reading, Duration::from_millis(500)).await > 0,
+            "once the idle lease read, the program runs on"
+        );
+        c.close(OWNER, reading).unwrap();
+        c.close(OWNER, idle).unwrap();
+    });
+}
+
+/// RED (`DialIn::supervision_key`): a member's spawn carries its supervision key, never `0`, one per
+/// member; a member a re-declaration changed is a new member with a new key, so a carrier that
+/// supervises what it runs resets exactly when the connector's member is new.
+#[test]
+fn a_members_spawn_carries_its_supervision_key_and_a_changed_member_a_new_one() {
+    worker().block_on(async {
+        let door = Arc::new(TestDoor::identity("bytes"));
+        let view = Transports::new(vec![Entry {
+            door: Arc::clone(&door) as Arc<dyn crate::framer::FramerDoor>,
+            alpn: Vec::new(),
+        }])
+        .unwrap();
+        let c = Connector::serving(
+            view,
+            Arc::new(crate::LiteralsOnly(crate::guard::Guard::default())),
+            None,
+            Arc::new(|_, _| {}),
+        );
+        declare(
+            &c,
+            &[("kept", sh(ECHO_PID, &[])), ("changed", sh(ECHO_PID, &[]))],
+        )
+        .unwrap();
+        for name in ["kept", "changed"] {
+            let id = open(&c, name, b"").unwrap();
+            generation(&c, id).await;
+            c.close(OWNER, id).unwrap();
+        }
+        let first = door.dialled_keys.lock().unwrap().clone();
+        assert_eq!(first.len(), 2, "one spawn per member: {first:?}");
+        assert!(first.iter().all(|k| *k != 0), "a member's key is never 0");
+        assert_ne!(first[0], first[1], "each member its own key");
+        declare(
+            &c,
+            &[
+                ("kept", sh(ECHO_PID, &[])),
+                ("changed", sh(ECHO_PID, &[("NEW", "1")])),
+            ],
+        )
+        .unwrap();
+        let id = open(&c, "changed", b"").unwrap();
+        generation(&c, id).await;
+        c.close(OWNER, id).unwrap();
+        let keys = door.dialled_keys.lock().unwrap().clone();
+        let renewed = *keys.last().unwrap();
+        assert!(
+            renewed != 0 && !first.contains(&renewed),
+            "the changed member is new, with a new key: {keys:?}"
+        );
+    });
+}

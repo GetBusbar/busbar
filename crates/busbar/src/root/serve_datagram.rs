@@ -364,6 +364,20 @@ pub(super) struct DatagramCaller {
     from: tokio::sync::Mutex<mpsc::Receiver<Vec<u8>>>,
     head: Mutex<Option<oneshot::Sender<(u32, HeadFields)>>>,
     stated: std::sync::atomic::AtomicU32,
+    /// The session's opening piece was read: the association's open, one empty piece before the
+    /// caller's first message, so the plane crosses the session once before the open is answered
+    /// (the open waits for the head that crossing states).
+    opened: std::sync::atomic::AtomicBool,
+}
+
+/// THE PLANE'S HEAD for a datagram session's open: the head the plane states on its session's first
+/// crossing, waited for within `wait`; `None` when it states none in time (or the session ended
+/// without one).
+pub(super) async fn plane_head(
+    head: oneshot::Receiver<(u32, HeadFields)>,
+    wait: std::time::Duration,
+) -> Option<(u32, HeadFields)> {
+    tokio::time::timeout(wait, head).await.ok()?.ok()
 }
 
 impl CallerEnd for DatagramCaller {
@@ -386,6 +400,9 @@ impl CallerEnd for DatagramCaller {
 
 impl SessionCaller for DatagramCaller {
     async fn read(&self) -> Option<Vec<u8>> {
+        if !self.opened.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return Some(Vec::new());
+        }
         self.from.lock().await.recv().await
     }
 }
@@ -410,9 +427,9 @@ pub(super) struct Opened {
     pub(super) joining: Joining,
 }
 
-/// AN ASSOCIATION NOT YET ON ITS DOOR: it joins only once its unit is admitted (WebRTC-class media
-/// associations exist only for units admitted at the description's accept). Dropped unjoined, its
-/// framing finishes and nothing was ever registered.
+/// AN ASSOCIATION NOT YET ON ITS DOOR: it joins only once its unit is admitted (an association
+/// exists only for a unit admitted at the description's accept). Dropped unjoined, its framing
+/// finishes and nothing was ever registered.
 pub(super) struct Joining {
     door: Arc<ClaimDoor>,
     framing: DatagramFraming,
@@ -432,11 +449,8 @@ impl Opened {
         framer: Arc<dyn busbar_core_connector::framer::FramerDoor>,
         description: &[u8],
     ) -> Result<Self, String> {
-        let cert = Arc::new(
-            busbar_core_connector::dtls::SessionCert::mint().map_err(|e| format!("{e:?}"))?,
-        );
         let (mut framing, _) =
-            DatagramFraming::accept(framer, cert, door.local()).map_err(|r| r.error)?;
+            DatagramFraming::accept_minted(framer, door.local()).map_err(|r| r.error)?;
         let now = Instant::now();
         let y = framing.rendezvous(description, now).map_err(|r| r.error)?;
         let (to_session, from) = mpsc::channel(CALLER_QUEUE);
@@ -457,6 +471,7 @@ impl Opened {
                 from: tokio::sync::Mutex::new(from),
                 head: Mutex::new(Some(head_tx)),
                 stated: std::sync::atomic::AtomicU32::new(0),
+                opened: std::sync::atomic::AtomicBool::new(false),
             },
             head,
             joining: Joining {

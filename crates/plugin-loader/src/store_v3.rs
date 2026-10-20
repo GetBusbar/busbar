@@ -30,6 +30,7 @@
 //!
 //! Off-path answers are read out of their lease and the lease is released at once.
 
+use std::cell::UnsafeCell;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -64,7 +65,9 @@ use busbar_contract::records::{
 use busbar_contract::store_calls::{OpIdMint, StoreCall, StoreCalls, StoreFailure};
 
 use crate::dispatch::kinds::store::{Store, StoreFacts};
-use crate::dispatch::{in_head, now_ns, out_head, Dispatcher, Frame, InFrame, OutFrame, Plugin};
+use crate::dispatch::{
+    in_head, now_ns, out_head, Dispatcher, Frame, InFrame, Lent, OutFrame, Plugin,
+};
 
 /// The first byte buffer a request-path read is handed; a longer answer is re-asked once at the
 /// size it named.
@@ -112,13 +115,15 @@ impl LoadedStore {
         let facts = *plugin
             .context::<StoreFacts>()
             .ok_or_else(|| "the store states no tail".to_string())?;
+        // The settings the `open` lends, owned so they outlive its crossing ([`Lent`]).
+        let settings: Arc<Vec<u8>> = Arc::new(settings.to_vec());
         // `open` is the settings' judge, as it was in 1.5.5: its refusal carries the plugin's own
         // reason (the host's lent reason buffer), which a bare `validate` answer cannot.
         let o = Frame::new(
             OpenIn {
                 head: in_head(),
                 host: std::ptr::null(),
-                settings: octets(settings),
+                settings: octets(&settings),
                 secrets: std::ptr::null(),
                 secrets_len: 0,
                 generation: 1,
@@ -131,7 +136,7 @@ impl LoadedStore {
                 err_len: 0,
             },
         );
-        let c = Self::open_on_ticket(&plugin, &dispatcher, o);
+        let c = Self::open_on_ticket(&plugin, &dispatcher, o, settings);
         if c.outcome != Outcome::Ready {
             return Err(c.open_failure(plugin.name()));
         }
@@ -152,10 +157,12 @@ impl LoadedStore {
     /// connector is resumed on its wake and completes the open, and an unreachable backend still
     /// refuses the load at open, in the store's own words. Called on the dispatcher's only worker,
     /// it crosses ticket-less on this thread (as the bridge does, [`LoadedStore::inline`]).
+    /// `settings` owns what `o` lends: the dispatcher keeps it until the crossing returns.
     fn open_on_ticket(
         plugin: &Plugin<Store>,
         dispatcher: &Dispatcher,
         mut o: Frame<OpenIn, OpenOut>,
+        settings: Arc<Vec<u8>>,
     ) -> crate::dispatch::Called {
         let Some(worker) = pick_worker(dispatcher, 0) else {
             return plugin.call(life::OPEN, &mut o);
@@ -171,7 +178,15 @@ impl LoadedStore {
         let _recycle = Recycle(dispatcher, ticket);
         let deadline = now_ns().saturating_add(CALL_DEADLINE.as_nanos() as u64);
         let done = dispatcher
-            .submit(plugin, ticket, life::OPEN, o, DeadlineClass::Call, deadline)
+            .submit_lent(
+                plugin,
+                ticket,
+                life::OPEN,
+                o,
+                DeadlineClass::Call,
+                deadline,
+                settings,
+            )
             .wait_done();
         crate::dispatch::Called {
             outcome: done.outcome,
@@ -252,36 +267,40 @@ impl LoadedStore {
     /// ticket-less on this thread ([`LoadedStore::inline`]).
     // TRANSITIONAL: the synchronous caller waits on its own thread (ARCHITECT ruling 2026-10-03 on
     // Q-L16-1); drains when the governance callers move to StoreCalls (D2/D3; 1.6.0-TODO.md).
-    fn now<R: Req>(&self, r: &mut R) -> Ran<R::O> {
+    fn now<R: Req>(&self, mut r: R) -> (Ran<R::O>, Arc<Lend<R>>) {
         let s = r.slot();
         let Some(worker) = self.bridge_worker() else {
-            return self.inline(r);
+            let ran = self.inline(&mut r);
+            return (ran, Lend::new(r));
         };
         let Some(ticket) = self.dispatcher.mint(worker) else {
-            return Ran::host(Outcome::Refused, r.out());
+            return (Ran::host(Outcome::Refused, r.out()), Lend::new(r));
         };
         let _recycle = Recycle(&self.dispatcher, ticket);
         let (class, deadline) = deadline_of(s);
+        let r = Lend::new(r);
         let mut regrown = false;
         loop {
-            let frame = Frame::new(r.input(), r.out());
-            // Settled before it is dropped, so the drop cancels nothing.
+            let frame = r.frame();
+            // Settled before it is dropped, so the drop cancels nothing. The request is LENT: the
+            // dispatcher holds it until the crossing returns, even past a watchdog fault.
             let done = self
                 .dispatcher
-                .submit(&self.plugin, ticket, s, frame, class, deadline)
+                .submit_lent(&self.plugin, ticket, s, frame, class, deadline, r.lent())
                 .wait_done();
-            let out = done.frame.as_ref().map_or_else(|| r.out(), |f| f.out);
+            let out = done.frame.as_ref().map_or_else(|| r.get().out(), |f| f.out);
             if done.short && !regrown {
                 regrown = true;
                 r.grow(&out);
                 continue;
             }
-            return Ran {
+            let ran = Ran {
                 outcome: done.outcome,
                 out,
                 error: done.error,
                 lease: done.lease,
             };
+            return (ran, r);
         }
     }
 
@@ -321,34 +340,44 @@ impl LoadedStore {
 
     /// THE TYPED RUNNER: submitted on a ticket, awaited, a short answer re-submitted once on the
     /// same ticket.
-    async fn submit<R: Req>(&self, r: &mut R) -> Ran<R::O> {
+    async fn submit<R: Req>(&self, r: R) -> (Ran<R::O>, Arc<Lend<R>>) {
         let s = r.slot();
         let workers = self.dispatcher.workers().max(1);
         let worker = self.next_worker.fetch_add(1, Ordering::Relaxed) % workers;
         let Some(ticket) = self.dispatcher.mint(worker) else {
-            return Ran::host(Outcome::Refused, r.out());
+            return (Ran::host(Outcome::Refused, r.out()), Lend::new(r));
         };
         let _recycle = Recycle(&self.dispatcher, ticket);
         let (class, deadline) = deadline_of(s);
+        let r = Lend::new(r);
         let mut regrown = false;
         loop {
-            let frame = Frame::new(r.input(), r.out());
-            let reply = self
-                .dispatcher
-                .submit(&self.plugin, ticket, s, frame, class, deadline);
+            let frame = r.frame();
+            // The request is LENT: the dispatcher holds it until the crossing returns, even when
+            // the watchdog faults the op or this future is dropped first.
+            let reply = self.dispatcher.submit_lent(
+                &self.plugin,
+                ticket,
+                s,
+                frame,
+                class,
+                deadline,
+                r.lent(),
+            );
             let done = reply.await;
-            let out = done.frame.as_ref().map_or_else(|| r.out(), |f| f.out);
+            let out = done.frame.as_ref().map_or_else(|| r.get().out(), |f| f.out);
             if done.short && !regrown {
                 regrown = true;
                 r.grow(&out);
                 continue;
             }
-            return Ran {
+            let ran = Ran {
                 outcome: done.outcome,
                 out,
                 error: done.error,
                 lease: done.lease,
             };
+            return (ran, r);
         }
     }
 }
@@ -412,11 +441,134 @@ fn pended_on_the_bridge(store: &str, s: u32) {
     );
 }
 
-/// Host-built rows that point at data the calling future owns, carried across its await.
-struct Held<T>(T);
-// SAFETY: the pointers inside point at data owned by the same future (or borrowed by it for its
-// whole life); one thread touches the future at a time.
-unsafe impl<T> Send for Held<T> {}
+/// ONE OP'S REQUEST, LENT TO THE DISPATCHER (THE DESIGN §2: "The memory a call lends a plugin
+/// lives until that call completes, abandoned or not, for every kind (a submit that the watchdog
+/// can abandon uses the lending submit)"). Every pointer an op's `in` carries names memory its
+/// request owns ([`Owned`] and its own buffers); the runner hands a clone of this `Arc` to
+/// [`Dispatcher::submit_lent`], so a crossing the watchdog abandoned, or one whose caller stopped
+/// waiting, still reads and writes live memory until it returns.
+struct Lend<R>(UnsafeCell<R>);
+// SAFETY: a request is plain data and raw pointers into memory it owns. The host touches it only
+// between crossings (building a frame, growing it on a SHORT answer, reading a READY answer, each
+// after the crossing that wrote it returned); the dispatcher only holds it and drops it.
+unsafe impl<R> Send for Lend<R> {}
+// SAFETY: as `Send`: no two threads touch a request at once.
+unsafe impl<R> Sync for Lend<R> {}
+
+impl<R: Req> Lend<R> {
+    fn new(r: R) -> Arc<Self> {
+        Arc::new(Self(UnsafeCell::new(r)))
+    }
+
+    /// The request, to read an answer the crossing that wrote it has returned from.
+    fn get(&self) -> &R {
+        // SAFETY: see `Send`: no crossing writes the request's own fields, and the buffers they
+        // own are read only from a READY answer, whose crossing returned.
+        unsafe { &*self.0.get() }
+    }
+
+    /// The next submit's frame. Called only before the first submit or after a SHORT answer,
+    /// when no crossing of the op runs.
+    fn frame(&self) -> Frame<R::I, R::O> {
+        // SAFETY: as `frame`'s contract: nothing else touches the request now.
+        let r = unsafe { &mut *self.0.get() };
+        Frame::new(r.input(), r.out())
+    }
+
+    /// Grow the buffers a SHORT answer named (its crossing returned).
+    fn grow(&self, out: &R::O) {
+        // SAFETY: as `frame`.
+        unsafe { &mut *self.0.get() }.grow(out);
+    }
+
+    /// The owner the dispatcher holds until the op completes.
+    fn lent(self: &Arc<Self>) -> Lent {
+        Arc::clone(self) as Lent
+    }
+}
+
+/// WHAT ONE OP'S `in` POINTS AT, OWNED BY ITS REQUEST: every string, byte run and row array the
+/// caller only borrowed is copied in, so the request (lent whole to the dispatcher, [`Lend`]) keeps
+/// it alive past the caller's own borrow. A heap buffer does not move when its `Vec` does.
+#[derive(Default)]
+struct Owned {
+    bytes: Vec<Vec<u8>>,
+    /// Secret material: zeroed when the request drops.
+    secrets: Vec<Zeroing>,
+    rows: Vec<Box<dyn std::any::Any>>,
+}
+
+impl Owned {
+    fn keep(&mut self, b: Vec<u8>) -> (*const u8, usize) {
+        let at = (b.as_ptr(), b.len());
+        self.bytes.push(b);
+        at
+    }
+
+    fn text(&mut self, s: &str) -> AbiStr {
+        let (ptr, len) = self.keep(s.as_bytes().to_vec());
+        AbiStr { ptr, len }
+    }
+
+    fn opt_text(&mut self, s: Option<&str>) -> AbiStr {
+        s.map_or(
+            AbiStr {
+                ptr: std::ptr::null(),
+                len: 0,
+            },
+            |s| self.text(s),
+        )
+    }
+
+    fn octets(&mut self, b: &[u8]) -> Blob {
+        let (ptr, len) = self.keep(b.to_vec());
+        Blob {
+            ptr,
+            len,
+            fmt: BLOB_OCTETS,
+            flags: 0,
+        }
+    }
+
+    fn json(&mut self, b: Vec<u8>) -> Blob {
+        let (ptr, len) = self.keep(b);
+        Blob {
+            ptr,
+            len,
+            fmt: BLOB_JSON,
+            flags: 0,
+        }
+    }
+
+    fn secret_json(&mut self, b: Vec<u8>) -> Blob {
+        let (ptr, len) = (b.as_ptr(), b.len());
+        self.secrets.push(Zeroing(b));
+        Blob {
+            ptr,
+            len,
+            fmt: BLOB_JSON,
+            flags: BLOB_SECRET,
+        }
+    }
+
+    fn rows<T: 'static>(&mut self, v: Vec<T>) -> (*const T, usize) {
+        let at = (v.as_ptr(), v.len());
+        self.rows.push(Box::new(v));
+        at
+    }
+}
+
+/// An `in` built over memory it owns.
+fn owned_in<I>(f: impl FnOnce(&mut Owned, InHead) -> I) -> (I, Owned) {
+    let mut o = Owned::default();
+    let i = f(&mut o, in_head());
+    (i, o)
+}
+
+/// An `in` that points at nothing.
+fn bare<I>(i: I) -> (I, Owned) {
+    (i, Owned::default())
+}
 
 /// What one op answered.
 struct Ran<O> {
@@ -484,8 +636,8 @@ fn bridge<T>(r: Result<T, StoreFailure>) -> RecordStoreResult<T> {
 
 // ── the requests ─────────────────────────────────────────────────────────────────────────────
 
-/// One op's `in`/`out`, built over buffers the request owns.
-trait Req {
+/// One op's `in`/`out`, built over buffers the request owns (never over the caller's borrow).
+trait Req: 'static {
     type I: InFrame;
     type O: OutFrame;
     fn slot(&self) -> u32;
@@ -497,21 +649,23 @@ trait Req {
     fn grow(&mut self, _out: &Self::O) {}
 }
 
-/// An op with no host buffers: a fixed `in`.
+/// An op with no host result buffers: a fixed `in` over what it owns.
 struct Fixed<I, O> {
     slot: u32,
     input: I,
+    _owned: Owned,
     _o: PhantomData<O>,
 }
 
-// SAFETY: the `in`'s pointers are borrowed data the caller keeps alive across the call; a request
-// moves with the future that owns it and is touched by one thread at a time.
+// SAFETY: the `in`'s pointers point into the request's own `Owned`; a request moves with the
+// future that owns it (or is lent whole, [`Lend`]) and is touched by one thread at a time.
 unsafe impl<I, O> Send for Fixed<I, O> {}
 
-fn fixed<I: InFrame, O: OutFrame>(slot: u32, input: I) -> Fixed<I, O> {
+fn fixed<I: InFrame, O: OutFrame>(slot: u32, (input, owned): (I, Owned)) -> Fixed<I, O> {
     Fixed {
         slot,
         input,
+        _owned: owned,
         _o: PhantomData,
     }
 }
@@ -543,38 +697,12 @@ fn blank<O: OutFrame>() -> O {
     o
 }
 
-fn text(s: &str) -> AbiStr {
-    AbiStr {
-        ptr: s.as_ptr(),
-        len: s.len(),
-    }
-}
-
-fn opt_text(s: Option<&str>) -> AbiStr {
-    s.map_or(
-        AbiStr {
-            ptr: std::ptr::null(),
-            len: 0,
-        },
-        text,
-    )
-}
-
 fn octets(b: &[u8]) -> Blob {
     Blob {
         ptr: b.as_ptr(),
         len: b.len(),
         fmt: BLOB_OCTETS,
         flags: 0,
-    }
-}
-
-fn json_blob(b: &[u8], secret: bool) -> Blob {
-    Blob {
-        ptr: b.as_ptr(),
-        len: b.len(),
-        fmt: BLOB_JSON,
-        flags: if secret { BLOB_SECRET } else { 0 },
     }
 }
 
@@ -655,6 +783,7 @@ impl LoadedStore {
 struct BytesReq<I> {
     slot: u32,
     input: I,
+    _owned: Owned,
     buf: Vec<u8>,
     place: fn(&mut I, HostBuf),
 }
@@ -697,6 +826,7 @@ impl<I> BytesReq<I> {
 struct ListReq<I, T> {
     slot: u32,
     input: I,
+    _owned: Owned,
     items: Vec<T>,
     bytes: Vec<u8>,
     place: fn(&mut I, *mut T, usize, HostBuf),
@@ -735,10 +865,15 @@ impl<I: InFrame, T: Copy + 'static> Req for ListReq<I, T> {
 }
 
 impl<I, T: Copy> ListReq<I, T> {
-    fn new(slot: u32, input: I, place: fn(&mut I, *mut T, usize, HostBuf)) -> Self {
+    fn new(
+        slot: u32,
+        (input, owned): (I, Owned),
+        place: fn(&mut I, *mut T, usize, HostBuf),
+    ) -> Self {
         Self {
             slot,
             input,
+            _owned: owned,
             // SAFETY: as `grow`.
             items: vec![unsafe { std::mem::zeroed() }; FIRST_ITEMS],
             bytes: vec![0; FIRST_BYTES],
@@ -777,6 +912,8 @@ fn place_records(i: &mut RecordScanIn, p: *mut RecordEntry, n: usize, bytes: Hos
 /// `reserve`: the grants array sized to the cells.
 struct ReserveReq {
     input: ReserveIn,
+    /// The cells' bucket, pool and class words.
+    _owned: Owned,
     cells: Vec<UnitCell>,
     grants: Vec<CellGrant>,
 }
@@ -813,7 +950,7 @@ fn zero_grant() -> CellGrant {
     }
 }
 
-fn unit_cell(c: &Cell<'_>) -> UnitCell {
+fn unit_cell(o: &mut Owned, c: &Cell<'_>) -> UnitCell {
     let (dimension, class_key) = match c.key.dimension {
         Dimension::NanoUnits => (st::DIM_NANO_UNITS, None),
         Dimension::Requests => (st::DIM_REQUESTS, None),
@@ -821,21 +958,24 @@ fn unit_cell(c: &Cell<'_>) -> UnitCell {
         Dimension::Class(k) => (st::DIM_CLASS, Some(k)),
     };
     UnitCell {
-        bucket: text(c.key.bucket),
-        pool: opt_text(c.key.pool),
+        bucket: o.text(c.key.bucket),
+        pool: o.opt_text(c.key.pool),
         dimension,
         _r: 0,
-        class_key: opt_text(class_key),
+        class_key: o.opt_text(class_key),
         amount: c.amount,
         window_start: c.key.window_start,
     }
 }
 
-fn window_cap(c: &Cap<'_>) -> WindowCap {
-    let u = unit_cell(&Cell {
-        key: c.key,
-        amount: 0,
-    });
+fn window_cap(o: &mut Owned, c: &Cap<'_>) -> WindowCap {
+    let u = unit_cell(
+        o,
+        &Cell {
+            key: c.key,
+            amount: 0,
+        },
+    );
     WindowCap {
         bucket: u.bucket,
         pool: u.pool,
@@ -879,11 +1019,11 @@ impl Req for ReleaseReq {
     }
 }
 
-fn plane_row(r: PlaneRecordRef<'_>) -> PlaneRecordRow {
+fn plane_row(o: &mut Owned, r: PlaneRecordRef<'_>) -> PlaneRecordRow {
     PlaneRecordRow {
-        kind: text(r.kind),
-        id: text(r.id),
-        parent: opt_text(r.parent),
+        kind: o.text(r.kind),
+        id: o.text(r.id),
+        parent: o.opt_text(r.parent),
         seq: r.seq,
         ts: r.ts,
         disposition: match r.disposition {
@@ -891,7 +1031,7 @@ fn plane_row(r: PlaneRecordRef<'_>) -> PlaneRecordRow {
             PlaneDisposition::Terminal => st::DISPOSITION_TERMINAL,
         },
         _reserved: 0,
-        body: octets(r.body),
+        body: o.octets(r.body),
     }
 }
 
@@ -904,10 +1044,10 @@ fn in_of<T>(f: impl FnOnce(InHead) -> T) -> T {
 /// Run `req` through `$run` (`now` or `submit`), on `$self`.
 macro_rules! run {
     ($self:ident, now, $r:expr) => {
-        $self.now(&mut $r)
+        $self.now($r)
     };
     ($self:ident, submit, $r:expr) => {
-        $self.submit(&mut $r).await
+        $self.submit($r).await
     };
 }
 
@@ -915,7 +1055,8 @@ macro_rules! run {
 /// [`StoreCalls`]' `submit` (submitted on a ticket and awaited).
 impl LoadedStore {
     fn reserve_req(op: OpId, epoch: u64, cells: &[Cell<'_>]) -> ReserveReq {
-        let cells: Vec<UnitCell> = cells.iter().map(unit_cell).collect();
+        let mut owned = Owned::default();
+        let cells: Vec<UnitCell> = cells.iter().map(|c| unit_cell(&mut owned, c)).collect();
         let n = cells.len();
         ReserveReq {
             input: in_of(|head| ReserveIn {
@@ -927,6 +1068,7 @@ impl LoadedStore {
                 grants: std::ptr::null_mut(),
                 grants_cap: 0,
             }),
+            _owned: owned,
             cells,
             grants: vec![zero_grant(); n],
         }
@@ -978,34 +1120,38 @@ impl LoadedStore {
     }
 
     fn get_plane_req(kind: &str, id: &str) -> BytesReq<GetPlaneRecordIn> {
+        let (input, owned) = owned_in(|o, head| GetPlaneRecordIn {
+            head,
+            kind: o.text(kind),
+            id: o.text(id),
+            body: HostBuf {
+                ptr: std::ptr::null_mut(),
+                cap: 0,
+            },
+        });
         BytesReq {
             slot: slot::GET_PLANE_RECORD,
-            input: in_of(|head| GetPlaneRecordIn {
-                head,
-                kind: text(kind),
-                id: text(id),
-                body: HostBuf {
-                    ptr: std::ptr::null_mut(),
-                    cap: 0,
-                },
-            }),
+            input,
+            _owned: owned,
             buf: vec![0; FIRST_BYTES],
             place: |i, b| i.body = b,
         }
     }
 
     fn record_get_req(schema: &str, key: &[u8]) -> BytesReq<RecordGetIn> {
+        let (input, owned) = owned_in(|o, head| RecordGetIn {
+            head,
+            schema: o.text(schema),
+            key: o.octets(key),
+            value: HostBuf {
+                ptr: std::ptr::null_mut(),
+                cap: 0,
+            },
+        });
         BytesReq {
             slot: slot::RECORD_GET,
-            input: in_of(|head| RecordGetIn {
-                head,
-                schema: text(schema),
-                key: octets(key),
-                value: HostBuf {
-                    ptr: std::ptr::null_mut(),
-                    cap: 0,
-                },
-            }),
+            input,
+            _owned: owned,
             buf: vec![0; FIRST_BYTES],
             place: |i, b| i.value = b,
         }
@@ -1018,12 +1164,12 @@ impl LoadedStore {
         };
         ListReq::new(
             slot::LIST_PLANE_RECORDS,
-            in_of(|head| ListPlaneRecordsIn {
+            owned_in(|o, head| ListPlaneRecordsIn {
                 head,
-                kind: text(kind),
+                kind: o.text(kind),
                 selector: sel,
                 _reserved: 0,
-                parent: opt_text(parent),
+                parent: o.opt_text(parent),
                 out: HostBlobs {
                     items: std::ptr::null_mut(),
                     items_cap: 0,
@@ -1040,9 +1186,9 @@ impl LoadedStore {
     fn sessions_req(principal: &str) -> ListReq<SessionsForIn, SessionRow> {
         ListReq::new(
             slot::SESSIONS_FOR,
-            in_of(|head| SessionsForIn {
+            owned_in(|o, head| SessionsForIn {
                 head,
-                principal: text(principal),
+                principal: o.text(principal),
                 out: HostSessions {
                     items: std::ptr::null_mut(),
                     items_cap: 0,
@@ -1059,10 +1205,10 @@ impl LoadedStore {
     fn scan_req(schema: &str, prefix: &[u8], limit: u32) -> ListReq<RecordScanIn, RecordEntry> {
         let mut r = ListReq::new(
             slot::RECORD_SCAN,
-            in_of(|head| RecordScanIn {
+            owned_in(|o, head| RecordScanIn {
                 head,
-                schema: text(schema),
-                prefix: octets(prefix),
+                schema: o.text(schema),
+                prefix: o.octets(prefix),
                 limit,
                 _reserved: 0,
                 out: HostRecords {
@@ -1090,10 +1236,10 @@ impl LoadedStore {
     ) -> Fixed<TokenIn, VerdictOut> {
         fixed(
             slot,
-            in_of(|head| TokenIn {
+            owned_in(|o, head| TokenIn {
                 head,
-                kind: text(kind),
-                token: text(token),
+                kind: o.text(kind),
+                token: o.text(token),
                 expires_at,
                 now,
             }),
@@ -1120,9 +1266,8 @@ impl StoreCalls for LoadedStore {
         cells: &'a [Cell<'a>],
     ) -> StoreCall<'a, Vec<Grant>> {
         boxed(async move {
-            let mut r = Self::reserve_req(op, epoch, cells);
-            let ran = run!(self, submit, r);
-            Self::reserve_read(&r, &ran)
+            let (ran, r) = run!(self, submit, Self::reserve_req(op, epoch, cells));
+            Self::reserve_read(r.get(), &ran)
         })
     }
 
@@ -1133,10 +1278,9 @@ impl StoreCalls for LoadedStore {
         items: &'a [(u64, u64)],
     ) -> StoreCall<'a, Vec<u64>> {
         boxed(async move {
-            let mut r = Self::release_req(op, epoch, items);
-            let ran = run!(self, submit, r);
+            let (ran, r) = run!(self, submit, Self::release_req(op, epoch, items));
             ran.ok()?;
-            Ok(r.released[..ran.out.released_len].to_vec())
+            Ok(r.get().released[..ran.out.released_len].to_vec())
         })
     }
 
@@ -1146,28 +1290,27 @@ impl StoreCalls for LoadedStore {
         cells: &'a [(&'a str, u64, UsageDelta)],
     ) -> StoreCall<'a, ()> {
         boxed(async move {
-            let deltas: Vec<Vec<u8>> = cells.iter().map(|(_, _, d)| to_json(d)).collect();
-            let rows: Held<Vec<UsageCell>> = Held(
-                cells
-                    .iter()
-                    .zip(&deltas)
-                    .map(|((b, w, _), d)| UsageCell {
-                        bucket: text(b),
-                        window_start: *w,
-                        delta: json_blob(d, false),
-                    })
-                    .collect(),
-            );
-            let mut r = fixed::<_, OutHead>(
+            let r = fixed::<_, OutHead>(
                 slot::ADD_USAGE_BATCH,
-                in_of(|head| AddUsageBatchIn {
-                    head,
-                    op_id: op,
-                    cells: rows.0.as_ptr(),
-                    cells_len: rows.0.len(),
+                owned_in(|o, head| {
+                    let rows: Vec<UsageCell> = cells
+                        .iter()
+                        .map(|(b, w, d)| UsageCell {
+                            bucket: o.text(b),
+                            window_start: *w,
+                            delta: o.json(to_json(d)),
+                        })
+                        .collect();
+                    let (cells, cells_len) = o.rows(rows);
+                    AddUsageBatchIn {
+                        head,
+                        op_id: op,
+                        cells,
+                        cells_len,
+                    }
                 }),
             );
-            run!(self, submit, r).ok()
+            run!(self, submit, r).0.ok()
         })
     }
 
@@ -1177,61 +1320,58 @@ impl StoreCalls for LoadedStore {
         deltas: &'a [MeteringDelta],
     ) -> StoreCall<'a, ()> {
         boxed(async move {
-            let bodies: Vec<Vec<u8>> = deltas.iter().map(to_json).collect();
-            let blobs = Held(
-                bodies
-                    .iter()
-                    .map(|b| json_blob(b, false))
-                    .collect::<Vec<Blob>>(),
-            );
-            let mut r = fixed::<_, OutHead>(
+            let r = fixed::<_, OutHead>(
                 slot::ADD_METERING_BATCH,
-                in_of(|head| OpBlobsIn {
-                    head,
-                    op_id: op,
-                    records: blobs.0.as_ptr(),
-                    records_len: blobs.0.len(),
+                owned_in(|o, head| {
+                    let blobs: Vec<Blob> = deltas.iter().map(|d| o.json(to_json(d))).collect();
+                    let (records, records_len) = o.rows(blobs);
+                    OpBlobsIn {
+                        head,
+                        op_id: op,
+                        records,
+                        records_len,
+                    }
                 }),
             );
-            run!(self, submit, r).ok()
+            run!(self, submit, r).0.ok()
         })
     }
 
     fn append_audit_batch<'a>(&'a self, op: OpId, entries: &'a [AuditRecord]) -> StoreCall<'a, ()> {
         boxed(async move {
-            let bodies: Vec<Vec<u8>> = entries.iter().map(to_json).collect();
-            let blobs = Held(
-                bodies
-                    .iter()
-                    .map(|b| json_blob(b, false))
-                    .collect::<Vec<Blob>>(),
-            );
-            let mut r = fixed::<_, OutHead>(
+            let r = fixed::<_, OutHead>(
                 slot::APPEND_AUDIT_BATCH,
-                in_of(|head| OpBlobsIn {
-                    head,
-                    op_id: op,
-                    records: blobs.0.as_ptr(),
-                    records_len: blobs.0.len(),
+                owned_in(|o, head| {
+                    let blobs: Vec<Blob> = entries.iter().map(|e| o.json(to_json(e))).collect();
+                    let (records, records_len) = o.rows(blobs);
+                    OpBlobsIn {
+                        head,
+                        op_id: op,
+                        records,
+                        records_len,
+                    }
                 }),
             );
-            run!(self, submit, r).ok()
+            run!(self, submit, r).0.ok()
         })
     }
 
     fn window_caps<'a>(&'a self, op: OpId, caps: &'a [Cap<'a>]) -> StoreCall<'a, ()> {
         boxed(async move {
-            let rows = Held(caps.iter().map(window_cap).collect::<Vec<WindowCap>>());
-            let mut r = fixed::<_, OutHead>(
+            let r = fixed::<_, OutHead>(
                 slot::WINDOW_CAPS,
-                in_of(|head| WindowCapsIn {
-                    head,
-                    op_id: op,
-                    caps: rows.0.as_ptr(),
-                    caps_len: rows.0.len(),
+                owned_in(|o, head| {
+                    let rows: Vec<WindowCap> = caps.iter().map(|c| window_cap(o, c)).collect();
+                    let (caps, caps_len) = o.rows(rows);
+                    WindowCapsIn {
+                        head,
+                        op_id: op,
+                        caps,
+                        caps_len,
+                    }
                 }),
             );
-            run!(self, submit, r).ok()
+            run!(self, submit, r).0.ok()
         })
     }
 
@@ -1242,23 +1382,22 @@ impl StoreCalls for LoadedStore {
         records: &'a [RecordBytes],
     ) -> StoreCall<'a, Head> {
         boxed(async move {
-            let blobs = Held(
-                records
-                    .iter()
-                    .map(|r| octets(r.as_slice()))
-                    .collect::<Vec<Blob>>(),
-            );
-            let mut r = fixed::<_, HeadOut>(
+            let r = fixed::<_, HeadOut>(
                 slot::APPEND_BATCH,
-                in_of(|head| AppendBatchIn {
-                    head,
-                    op_id: op,
-                    stream: text(stream),
-                    records: blobs.0.as_ptr(),
-                    records_len: blobs.0.len(),
+                owned_in(|o, head| {
+                    let blobs: Vec<Blob> = records.iter().map(|r| o.octets(r.as_slice())).collect();
+                    let stream = o.text(stream);
+                    let (records, records_len) = o.rows(blobs);
+                    AppendBatchIn {
+                        head,
+                        op_id: op,
+                        stream,
+                        records,
+                        records_len,
+                    }
                 }),
             );
-            let ran = run!(self, submit, r);
+            let (ran, _) = run!(self, submit, r);
             ran.ok()?;
             Ok(Head {
                 seq: ran.out.seq,
@@ -1269,8 +1408,8 @@ impl StoreCalls for LoadedStore {
 
     fn heads(&self) -> StoreCall<'_, Vec<(String, Head)>> {
         boxed(async move {
-            let mut r = fixed::<_, HeadsOut>(slot::HEADS, in_head());
-            let ran = run!(self, submit, r);
+            let r = fixed::<_, HeadsOut>(slot::HEADS, bare(in_head()));
+            let (ran, _) = run!(self, submit, r);
             let out = ran.ok().map(|()| {
                 items(ran.out.items, ran.out.items_len)
                     .iter()
@@ -1297,37 +1436,37 @@ impl StoreCalls for LoadedStore {
         principal: &'a str,
     ) -> StoreCall<'a, ()> {
         boxed(async move {
-            let mut r = fixed::<_, OutHead>(
+            let r = fixed::<_, OutHead>(
                 slot::SESSION_PUT,
-                in_of(|head| SessionPutIn {
+                owned_in(|o, head| SessionPutIn {
                     head,
                     session,
-                    node: text(node),
-                    principal: text(principal),
+                    node: o.text(node),
+                    principal: o.text(principal),
                 }),
             );
-            run!(self, submit, r).ok()
+            run!(self, submit, r).0.ok()
         })
     }
 
     fn session_remove(&self, session: u64) -> StoreCall<'_, ()> {
         boxed(async move {
-            let mut r = fixed::<_, OutHead>(
+            let r = fixed::<_, OutHead>(
                 slot::SESSION_REMOVE,
-                in_of(|head| U64In {
+                bare(in_of(|head| U64In {
                     head,
                     value: session,
-                }),
+                })),
             );
-            run!(self, submit, r).ok()
+            run!(self, submit, r).0.ok()
         })
     }
 
     fn sessions_for<'a>(&'a self, principal: &'a str) -> StoreCall<'a, Vec<(u64, String)>> {
         boxed(async move {
-            let mut r = Self::sessions_req(principal);
-            let ran = run!(self, submit, r);
-            Ok(r.rows(&ran)?
+            let (ran, r) = run!(self, submit, Self::sessions_req(principal));
+            Ok(r.get()
+                .rows(&ran)?
                 .iter()
                 .map(|s| {
                     (
@@ -1346,16 +1485,16 @@ impl StoreCalls for LoadedStore {
         value: &'a RecordBytes,
     ) -> StoreCall<'a, ()> {
         boxed(async move {
-            let mut r = fixed::<_, OutHead>(
+            let r = fixed::<_, OutHead>(
                 slot::RECORD_PUT,
-                in_of(|head| RecordPutIn {
+                owned_in(|o, head| RecordPutIn {
                     head,
-                    schema: text(schema),
-                    key: octets(key),
-                    value: octets(value.as_slice()),
+                    schema: o.text(schema),
+                    key: o.octets(key),
+                    value: o.octets(value.as_slice()),
                 }),
             );
-            run!(self, submit, r).ok()
+            run!(self, submit, r).0.ok()
         })
     }
 
@@ -1365,9 +1504,9 @@ impl StoreCalls for LoadedStore {
         key: &'a [u8],
     ) -> StoreCall<'a, Option<RecordBytes>> {
         boxed(async move {
-            let mut r = Self::record_get_req(schema, key);
-            let ran = run!(self, submit, r);
-            r.read(&ran)?
+            let (ran, r) = run!(self, submit, Self::record_get_req(schema, key));
+            r.get()
+                .read(&ran)?
                 .map(|v| {
                     RecordBytes::new(v).map_err(|n| {
                         StoreFailure::Fault(format!("a record of {n} bytes is over the ceiling"))
@@ -1387,9 +1526,9 @@ impl StoreCalls for LoadedStore {
             if limit == 0 {
                 return Ok(Vec::new());
             }
-            let mut r = Self::scan_req(schema, prefix, limit);
-            let ran = run!(self, submit, r);
-            r.rows(&ran)?
+            let (ran, r) = run!(self, submit, Self::scan_req(schema, prefix, limit));
+            r.get()
+                .rows(&ran)?
                 .iter()
                 .map(|e| {
                     let v = RecordBytes::new(host_blob(&e.value)).map_err(|n| {
@@ -1403,14 +1542,14 @@ impl StoreCalls for LoadedStore {
 
     fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
         boxed(async move {
-            let mut r = fixed::<_, OutHead>(
+            let r = fixed::<_, OutHead>(
                 slot::UPSERT_PLANE_RECORD,
-                in_of(|head| UpsertPlaneRecordIn {
+                owned_in(|o, head| UpsertPlaneRecordIn {
                     head,
-                    record: plane_row(record),
+                    record: plane_row(o, record),
                 }),
             );
-            run!(self, submit, r).ok()
+            run!(self, submit, r).0.ok()
         })
     }
 
@@ -1420,9 +1559,8 @@ impl StoreCalls for LoadedStore {
         id: &'a str,
     ) -> StoreCall<'a, Option<Vec<u8>>> {
         boxed(async move {
-            let mut r = Self::get_plane_req(kind, id);
-            let ran = run!(self, submit, r);
-            r.read(&ran)
+            let (ran, r) = run!(self, submit, Self::get_plane_req(kind, id));
+            r.get().read(&ran)
         })
     }
 
@@ -1432,15 +1570,15 @@ impl StoreCalls for LoadedStore {
         record: PlaneRecordRef<'a>,
     ) -> StoreCall<'a, ()> {
         boxed(async move {
-            let mut r = fixed::<_, OutHead>(
+            let r = fixed::<_, OutHead>(
                 slot::APPEND_PLANE_RECORD,
-                in_of(|head| AppendPlaneRecordIn {
+                owned_in(|o, head| AppendPlaneRecordIn {
                     head,
                     op_id: op,
-                    record: plane_row(record),
+                    record: plane_row(o, record),
                 }),
             );
-            run!(self, submit, r).ok()
+            run!(self, submit, r).0.ok()
         })
     }
 
@@ -1450,23 +1588,22 @@ impl StoreCalls for LoadedStore {
         selector: &'a PlaneSelector<'a>,
     ) -> StoreCall<'a, Vec<Vec<u8>>> {
         boxed(async move {
-            let mut r = Self::list_plane_req(kind, selector);
-            let ran = run!(self, submit, r);
-            Ok(r.rows(&ran)?.iter().map(host_blob).collect())
+            let (ran, r) = run!(self, submit, Self::list_plane_req(kind, selector));
+            Ok(r.get().rows(&ran)?.iter().map(host_blob).collect())
         })
     }
 
     fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> StoreCall<'a, ()> {
         boxed(async move {
-            let mut r = fixed::<_, OutHead>(
+            let r = fixed::<_, OutHead>(
                 slot::DELETE_PLANE_RECORD,
-                in_of(|head| KindIdIn {
+                owned_in(|o, head| KindIdIn {
                     head,
-                    kind: text(kind),
-                    id: text(id),
+                    kind: o.text(kind),
+                    id: o.text(id),
                 }),
             );
-            run!(self, submit, r).ok()
+            run!(self, submit, r).0.ok()
         })
     }
 
@@ -1478,8 +1615,8 @@ impl StoreCalls for LoadedStore {
         now: u64,
     ) -> StoreCall<'a, bool> {
         boxed(async move {
-            let mut r = Self::token_req(slot::REDEEM_PLANE_TOKEN, kind, token, expires_at, now);
-            let ran = run!(self, submit, r);
+            let r = Self::token_req(slot::REDEEM_PLANE_TOKEN, kind, token, expires_at, now);
+            let (ran, _) = run!(self, submit, r);
             ran.ok()?;
             Ok(ran.out.verdict == VERDICT_YES)
         })
@@ -1493,8 +1630,8 @@ impl StoreCalls for LoadedStore {
         now: u64,
     ) -> StoreCall<'a, bool> {
         boxed(async move {
-            let mut r = Self::token_req(slot::PLANE_TOKEN_LIVE, kind, token, expires_at, now);
-            let ran = run!(self, submit, r);
+            let r = Self::token_req(slot::PLANE_TOKEN_LIVE, kind, token, expires_at, now);
+            let (ran, _) = run!(self, submit, r);
             ran.ok()?;
             Ok(ran.out.verdict == VERDICT_YES)
         })
@@ -1504,50 +1641,57 @@ impl StoreCalls for LoadedStore {
 // ── RecordStore: the synchronous bridge (until M6) ────────────────────────────────────────────────
 
 impl LoadedStore {
-    fn plain<I: InFrame>(&self, s: u32, input: I) -> RecordStoreResult<()> {
-        bridge(self.now(&mut fixed::<I, OutHead>(s, input)).ok())
+    fn plain<I: InFrame>(&self, s: u32, input: (I, Owned)) -> RecordStoreResult<()> {
+        bridge(self.now(fixed::<I, OutHead>(s, input)).0.ok())
     }
 
     fn one<I: InFrame, T: serde::de::DeserializeOwned>(
         &self,
         s: u32,
-        input: I,
+        input: (I, Owned),
     ) -> RecordStoreResult<Option<T>> {
-        let ran = self.now(&mut fixed::<I, LeasedBlobOut>(s, input));
+        let (ran, _) = self.now(fixed::<I, LeasedBlobOut>(s, input));
         bridge(self.record(ran))
     }
 
     fn many<I: InFrame, T: serde::de::DeserializeOwned>(
         &self,
         s: u32,
-        input: I,
+        input: (I, Owned),
     ) -> RecordStoreResult<Vec<T>> {
-        let ran = self.now(&mut fixed::<I, LeasedListOut>(s, input));
+        let (ran, _) = self.now(fixed::<I, LeasedListOut>(s, input));
         bridge(self.records(ran))
     }
 
-    fn count<I: InFrame>(&self, s: u32, input: I) -> RecordStoreResult<u64> {
-        let ran = self.now(&mut fixed::<I, CountOut>(s, input));
+    fn count<I: InFrame>(&self, s: u32, input: (I, Owned)) -> RecordStoreResult<u64> {
+        let (ran, _) = self.now(fixed::<I, CountOut>(s, input));
         bridge(ran.ok().map(|()| ran.out.count))
     }
 
-    fn id(id: &str) -> IdIn {
-        in_of(|head| IdIn { head, id: text(id) })
+    fn id(id: &str) -> (IdIn, Owned) {
+        owned_in(|o, head| IdIn {
+            head,
+            id: o.text(id),
+        })
     }
 
-    fn value(v: u64) -> U64In {
-        in_of(|head| U64In { head, value: v })
+    fn value(v: u64) -> (U64In, Owned) {
+        bare(in_of(|head| U64In { head, value: v }))
+    }
+
+    fn strs<I: InFrame>(&self, s: u32, input: (I, Owned)) -> RecordStoreResult<Vec<String>> {
+        let (ran, _) = self.now(fixed::<I, LeasedStrListOut>(s, input));
+        bridge(self.read_strs(ran))
     }
 }
 
 impl RecordStore for LoadedStore {
     fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
-        let b = to_json(key);
         self.plain(
             slot::PUT_KEY,
-            in_of(|head| BlobIn {
+            owned_in(|o, head| BlobIn {
                 head,
-                record: json_blob(&b, false),
+                record: o.json(to_json(key)),
             }),
         )
     }
@@ -1557,7 +1701,7 @@ impl RecordStore for LoadedStore {
     }
 
     fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
-        self.many(slot::LIST_KEYS, in_head())
+        self.many(slot::LIST_KEYS, bare(in_head()))
     }
 
     fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
@@ -1575,9 +1719,9 @@ impl RecordStore for LoadedStore {
     fn get_usage(&self, bucket_id: &str, window_start: u64) -> RecordStoreResult<UsageLedger> {
         let got: Option<UsageLedger> = self.one(
             slot::GET_USAGE,
-            in_of(|head| WindowIn {
+            owned_in(|o, head| WindowIn {
                 head,
-                bucket: text(bucket_id),
+                bucket: o.text(bucket_id),
                 window_start,
             }),
         )?;
@@ -1590,14 +1734,13 @@ impl RecordStore for LoadedStore {
         window_start: u64,
         ledger: &UsageLedger,
     ) -> RecordStoreResult<()> {
-        let b = to_json(ledger);
         self.plain(
             slot::PUT_USAGE,
-            in_of(|head| PutUsageIn {
+            owned_in(|o, head| PutUsageIn {
                 head,
-                bucket: text(bucket_id),
+                bucket: o.text(bucket_id),
                 window_start,
-                ledger: json_blob(&b, false),
+                ledger: o.json(to_json(ledger)),
             }),
         )
     }
@@ -1608,29 +1751,27 @@ impl RecordStore for LoadedStore {
         window_start: u64,
         delta: &UsageDelta,
     ) -> RecordStoreResult<()> {
-        let b = to_json(delta);
         self.plain(
             slot::ADD_USAGE,
-            in_of(|head| AddUsageIn {
+            owned_in(|o, head| AddUsageIn {
                 head,
                 op_id: self.mint(),
                 cell: UsageCell {
-                    bucket: text(bucket_id),
+                    bucket: o.text(bucket_id),
                     window_start,
-                    delta: json_blob(&b, false),
+                    delta: o.json(to_json(delta)),
                 },
             }),
         )
     }
 
     fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
-        let b = to_json(delta);
         self.plain(
             slot::ADD_METERING,
-            in_of(|head| OpBlobIn {
+            owned_in(|o, head| OpBlobIn {
                 head,
                 op_id: self.mint(),
-                record: json_blob(&b, false),
+                record: o.json(to_json(delta)),
             }),
         )
     }
@@ -1648,12 +1789,11 @@ impl RecordStore for LoadedStore {
     }
 
     fn put_credential(&self, secret: &CredentialSecret) -> RecordStoreResult<()> {
-        let b = zeroing(to_json(secret));
         self.plain(
             slot::PUT_CREDENTIAL,
-            in_of(|head| BlobIn {
+            owned_in(|o, head| BlobIn {
                 head,
-                record: json_blob(&b.0, true),
+                record: o.secret_json(to_json(secret)),
             }),
         )
     }
@@ -1663,14 +1803,12 @@ impl RecordStore for LoadedStore {
         key: &VirtualKey,
         secret: &CredentialSecret,
     ) -> RecordStoreResult<()> {
-        let k = to_json(key);
-        let c = zeroing(to_json(secret));
         self.plain(
             slot::PUT_KEY_WITH_CREDENTIAL,
-            in_of(|head| KeyWithCredentialIn {
+            owned_in(|o, head| KeyWithCredentialIn {
                 head,
-                key: json_blob(&k, false),
-                credential: json_blob(&c.0, true),
+                key: o.json(to_json(key)),
+                credential: o.secret_json(to_json(secret)),
             }),
         )
     }
@@ -1686,10 +1824,10 @@ impl RecordStore for LoadedStore {
     ) -> RecordStoreResult<Option<CredentialSecret>> {
         self.one(
             slot::LOOKUP_CREDENTIAL_SECRET,
-            in_of(|head| KindIdIn {
+            owned_in(|o, head| KindIdIn {
                 head,
-                kind: text(kind),
-                id: text(public_id),
+                kind: o.text(kind),
+                id: o.text(public_id),
             }),
         )
     }
@@ -1697,10 +1835,10 @@ impl RecordStore for LoadedStore {
     fn revoke_credential(&self, id: &str, reason: &str) -> RecordStoreResult<()> {
         self.plain(
             slot::REVOKE_CREDENTIAL,
-            in_of(|head| IdReasonIn {
+            owned_in(|o, head| IdReasonIn {
                 head,
-                id: text(id),
-                reason: text(reason),
+                id: o.text(id),
+                reason: o.text(reason),
             }),
         )
     }
@@ -1710,38 +1848,33 @@ impl RecordStore for LoadedStore {
     }
 
     fn append_audit(&self, entry: &AuditRecord) -> RecordStoreResult<()> {
-        let b = to_json(entry);
         self.plain(
             slot::APPEND_AUDIT,
-            in_of(|head| OpBlobIn {
+            owned_in(|o, head| OpBlobIn {
                 head,
                 op_id: self.mint(),
-                record: json_blob(&b, false),
+                record: o.json(to_json(entry)),
             }),
         )
     }
 
     fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
-        self.many(slot::LIST_AUDIT, in_head())
+        self.many(slot::LIST_AUDIT, bare(in_head()))
     }
 
     fn add_denylist(&self, sub: &str, reason: &str) -> RecordStoreResult<()> {
         self.plain(
             slot::ADD_DENYLIST,
-            in_of(|head| IdReasonIn {
+            owned_in(|o, head| IdReasonIn {
                 head,
-                id: text(sub),
-                reason: text(reason),
+                id: o.text(sub),
+                reason: o.text(reason),
             }),
         )
     }
 
     fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
-        let ran = self.now(&mut fixed::<InHead, LeasedStrListOut>(
-            slot::LIST_DENYLIST,
-            in_head(),
-        ));
-        bridge(self.read_strs(ran))
+        self.strs(slot::LIST_DENYLIST, bare(in_head()))
     }
 
     fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
@@ -1751,26 +1884,25 @@ impl RecordStore for LoadedStore {
     fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
         self.plain(
             slot::UPSERT_PLANE_RECORD,
-            in_of(|head| UpsertPlaneRecordIn {
+            owned_in(|o, head| UpsertPlaneRecordIn {
                 head,
-                record: plane_row(record),
+                record: plane_row(o, record),
             }),
         )
     }
 
     fn get_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
-        let mut r = Self::get_plane_req(kind, id);
-        let ran = run!(self, now, r);
-        bridge(r.read(&ran))
+        let (ran, r) = run!(self, now, Self::get_plane_req(kind, id));
+        bridge(r.get().read(&ran))
     }
 
     fn append_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
         self.plain(
             slot::APPEND_PLANE_RECORD,
-            in_of(|head| AppendPlaneRecordIn {
+            owned_in(|o, head| AppendPlaneRecordIn {
                 head,
                 op_id: self.mint(),
-                record: plane_row(record),
+                record: plane_row(o, record),
             }),
         )
     }
@@ -1780,28 +1912,24 @@ impl RecordStore for LoadedStore {
         kind: &str,
         selector: &PlaneSelector<'_>,
     ) -> RecordStoreResult<Vec<Vec<u8>>> {
-        let mut r = Self::list_plane_req(kind, selector);
-        let ran = run!(self, now, r);
+        let (ran, r) = run!(self, now, Self::list_plane_req(kind, selector));
         bridge(
-            r.rows(&ran)
+            r.get()
+                .rows(&ran)
                 .map(|rows| rows.iter().map(host_blob).collect()),
         )
     }
 
     fn list_plane_record_parents(&self, kind: &str) -> RecordStoreResult<Vec<String>> {
-        let ran = self.now(&mut fixed::<IdIn, LeasedStrListOut>(
-            slot::LIST_PLANE_RECORD_PARENTS,
-            Self::id(kind),
-        ));
-        bridge(self.read_strs(ran))
+        self.strs(slot::LIST_PLANE_RECORD_PARENTS, Self::id(kind))
     }
 
     fn purge_plane_records_before(&self, kind: &str, before: u64) -> RecordStoreResult<u64> {
         self.count(
             slot::PURGE_PLANE_RECORDS_BEFORE,
-            in_of(|head| KindBeforeIn {
+            owned_in(|o, head| KindBeforeIn {
                 head,
-                kind: text(kind),
+                kind: o.text(kind),
                 before,
             }),
         )
@@ -1810,10 +1938,10 @@ impl RecordStore for LoadedStore {
     fn delete_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<()> {
         self.plain(
             slot::DELETE_PLANE_RECORD,
-            in_of(|head| KindIdIn {
+            owned_in(|o, head| KindIdIn {
                 head,
-                kind: text(kind),
-                id: text(id),
+                kind: o.text(kind),
+                id: o.text(id),
             }),
         )
     }
@@ -1825,8 +1953,8 @@ impl RecordStore for LoadedStore {
         expires_at: u64,
         now: u64,
     ) -> RecordStoreResult<bool> {
-        let mut r = Self::token_req(slot::REDEEM_PLANE_TOKEN, kind, token, expires_at, now);
-        let ran = run!(self, now, r);
+        let r = Self::token_req(slot::REDEEM_PLANE_TOKEN, kind, token, expires_at, now);
+        let (ran, _) = run!(self, now, r);
         bridge(ran.ok().map(|()| ran.out.verdict == VERDICT_YES))
     }
 
@@ -1837,8 +1965,8 @@ impl RecordStore for LoadedStore {
         expires_at: u64,
         now: u64,
     ) -> RecordStoreResult<bool> {
-        let mut r = Self::token_req(slot::PLANE_TOKEN_LIVE, kind, token, expires_at, now);
-        let ran = run!(self, now, r);
+        let r = Self::token_req(slot::PLANE_TOKEN_LIVE, kind, token, expires_at, now);
+        let (ran, _) = run!(self, now, r);
         bridge(ran.ok().map(|()| ran.out.verdict == VERDICT_YES))
     }
 }
@@ -1849,9 +1977,6 @@ impl Drop for Zeroing {
     fn drop(&mut self) {
         self.0.iter_mut().for_each(|b| *b = 0);
     }
-}
-fn zeroing(v: Vec<u8>) -> Zeroing {
-    Zeroing(v)
 }
 
 /// THE STORE AXIS over the process's ONE dispatcher (WIRE-STORE Q8/Q9): the composition root
@@ -1953,3 +2078,7 @@ mod wire_tests;
 #[cfg(test)]
 #[path = "tests/store_v3_axis_tests.rs"]
 mod axis_tests;
+
+#[cfg(test)]
+#[path = "tests/store_v3_lent_tests.rs"]
+mod lent_tests;

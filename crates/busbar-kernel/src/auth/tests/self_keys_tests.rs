@@ -101,6 +101,7 @@ fn bindings(module: &str, role: &str, group: Option<&str>) -> RoleBindings {
             allowed_pools: None,
             group: group.map(str::to_string),
             admin_scope: None,
+            verbs: None,
         },
     );
     let mut outer: RoleBindings = BTreeMap::new();
@@ -448,7 +449,7 @@ fn no_policy_mints_at_the_self_serve_default_and_self_mint_off_still_refuses() {
     let open = crate::governance::mint_policy::MintPolicy::default();
     let mint = admit_self_mint(&v, &rb, &open, SELF_TTL).expect("no ceiling");
     assert_eq!(mint.ttl, Duration::from_secs(SELF_TTL));
-    assert_eq!(mint.pools, None);
+    assert_eq!(mint.granted_pools, None);
     let off = crate::governance::mint_policy::MintPolicy {
         self_mint: Some(false),
         block_max_ttl_secs: Some(3_600),
@@ -563,6 +564,7 @@ fn later_role_group_used_when_earlier_role_bound_but_groupless() {
             allowed_pools: Some(vec!["pool-a".to_string()]),
             group: None,
             admin_scope: None,
+            verbs: None,
         },
     );
     inner.insert(
@@ -571,6 +573,7 @@ fn later_role_group_used_when_earlier_role_bound_but_groupless() {
             allowed_pools: Some(vec!["pool-b".to_string()]),
             group: Some("x".to_string()),
             admin_scope: None,
+            verbs: None,
         },
     );
     let mut rb: RoleBindings = BTreeMap::new();
@@ -610,6 +613,7 @@ fn omitted_pools_on_any_granting_binding_widens_union_to_all_pools() {
             allowed_pools: None,
             group: None,
             admin_scope: None,
+            verbs: None,
         },
     );
     inner.insert(
@@ -618,6 +622,7 @@ fn omitted_pools_on_any_granting_binding_widens_union_to_all_pools() {
             allowed_pools: Some(vec!["pool-b".to_string()]),
             group: Some("x".to_string()),
             admin_scope: None,
+            verbs: None,
         },
     );
     let mut rb: RoleBindings = BTreeMap::new();

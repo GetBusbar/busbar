@@ -37,7 +37,7 @@ use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::transport::ConnFacts;
 
-use crate::compose::{Connection, Dial, Failure, Via, DEFAULT_OPEN_TIMEOUT};
+use crate::compose::{Connection, Dial, Failure, Via, DEFAULT_OPEN_TIMEOUT, RECEIVE_BUFFER_BYTES};
 
 /// The first restart's backoff after a program ended (the previous release's crash-loop policy).
 const BASE_BACKOFF: Duration = Duration::from_millis(100);
@@ -131,6 +131,9 @@ struct Inbox {
     head: Option<Vec<u8>>,
     /// The frames read since it opened, each with whether it ends its frame.
     pieces: VecDeque<(Vec<u8>, bool)>,
+    /// The bytes of `pieces`: at [`RECEIVE_BUFFER_BYTES`] the program is not read again until this
+    /// lease reads (the program held back, as a line's far end is by a holder that does not read).
+    queued: usize,
     /// The program ended: how (`None` = its output closed).
     ended: Option<Option<Failure>>,
     /// The end was read once; every read after it is closed.
@@ -169,7 +172,13 @@ pub(crate) struct Member {
     alpn: Vec<Vec<u8>>,
     state: Mutex<State>,
     fan: Arc<Fan>,
+    /// Its supervision key (`DialIn::supervision_key`): minted at [`Member::new`], never `0`, and
+    /// kept for as long as this member is, so a re-declaration that keeps the member keeps it.
+    supervision_key: u64,
 }
+
+/// The next member's supervision key: process-wide, from `1`.
+static NEXT_SUPERVISION_KEY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 fn map(f: &Failure) -> ConnError {
     match f {
@@ -198,6 +207,14 @@ fn piece(kind: PieceKind, len: usize, end: bool) -> Piece {
 }
 
 impl State {
+    /// Whether a lease of `generation` still open holds [`RECEIVE_BUFFER_BYTES`] unread: the
+    /// program is not read until it reads.
+    fn backlogged(&self, generation: u64) -> bool {
+        self.leases.values().any(|i| {
+            i.generation == generation && i.ended.is_none() && i.queued >= RECEIVE_BUFFER_BYTES
+        })
+    }
+
     /// The program of `generation` ended (`failure` = how, `None` = its output closed): it is
     /// killed, every lease of its generation ends, and an end the member did not ask for is a
     /// crash its supervisor counts.
@@ -269,6 +286,8 @@ impl Member {
                 supervisor: Supervisor::default(),
             }),
             fan: Arc::new(Fan::default()),
+            supervision_key: NEXT_SUPERVISION_KEY
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         }
     }
 
@@ -322,7 +341,13 @@ impl Member {
                 head_words: (Vec::new(), Vec::new()),
                 anchors: None,
             };
-            match Connection::spawn(&self.via, &self.program, &self.env, dial) {
+            match Connection::spawn(
+                &self.via,
+                &self.program,
+                &self.env,
+                dial,
+                self.supervision_key,
+            ) {
                 Ok(conn) => {
                     st.generation += 1;
                     let generation = st.generation;
@@ -351,6 +376,7 @@ impl Member {
                 generation,
                 head: Some(head),
                 pieces: VecDeque::new(),
+                queued: 0,
                 ended: None,
                 end_read: false,
                 unsent: (!first.is_empty()).then(|| first.to_vec()),
@@ -392,6 +418,12 @@ impl Member {
             if let Some((mut bytes, end)) = inbox.pieces.pop_front() {
                 let n = bytes.len().min(buf.len());
                 buf[..n].copy_from_slice(&bytes[..n]);
+                let full = inbox.queued >= RECEIVE_BUFFER_BYTES;
+                inbox.queued = inbox.queued.saturating_sub(n);
+                if full && inbox.queued < RECEIVE_BUFFER_BYTES {
+                    // Under the cap again: the program is read again, for whoever waits on it.
+                    self.fan.wake_all();
+                }
                 if n < bytes.len() {
                     bytes.drain(..n);
                     inbox.pieces.push_front((bytes, end));
@@ -417,11 +449,17 @@ impl Member {
                     continue;
                 }
             }
-            let Some(live) = st.live.as_mut().filter(|l| l.generation == generation) else {
+            if !st.live.as_ref().is_some_and(|l| l.generation == generation) {
                 st.ended(generation, None, &self.fan);
                 continue;
-            };
+            }
             self.fan.register(lease, waker);
+            if st.backlogged(generation) {
+                return Err(ConnError::Pending);
+            }
+            let Some(live) = st.live.as_mut().filter(|l| l.generation == generation) else {
+                continue;
+            };
             match live.conn.poll_piece(&mut cx) {
                 Poll::Pending => return Err(ConnError::Pending),
                 Poll::Ready(Ok(Some(got))) => {
@@ -436,6 +474,7 @@ impl Member {
                             inbox.mid_frame = !got.end_of_frame;
                             continue;
                         }
+                        inbox.queued += got.bytes.len();
                         inbox
                             .pieces
                             .push_back((got.bytes.clone(), got.end_of_frame));
@@ -458,6 +497,11 @@ impl Member {
             return Ok(true);
         }
         let generation = inbox.generation;
+        if st.live.as_ref().is_some_and(|l| l.generation == generation) && st.backlogged(generation)
+        {
+            self.fan.register(lease, waker);
+            return Ok(false);
+        }
         let Some(live) = st.live.as_mut().filter(|l| l.generation == generation) else {
             return Ok(true);
         };
@@ -530,7 +574,14 @@ impl Member {
     pub(crate) fn close(&self, lease: u64) {
         self.fan.forget(lease);
         let mut st = self.lock();
-        st.leases.remove(&lease);
+        // A lease that held the program back lets it go: whoever waits on it reads it again.
+        if st
+            .leases
+            .remove(&lease)
+            .is_some_and(|i| i.queued >= RECEIVE_BUFFER_BYTES)
+        {
+            self.fan.wake_all();
+        }
         if st.retired && st.leases.is_empty() {
             if let Some(live) = st.live.take() {
                 live.conn.close();

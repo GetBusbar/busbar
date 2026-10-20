@@ -3007,7 +3007,7 @@ async fn named_map_app_opts(
         let cfg = parse(&disk[section]).unwrap_or_else(|e| panic!("`{section}:` parses: {e}"));
         (
             decl,
-            std::sync::Arc::<dyn busbar_kernel::plane::config::PlaneCfg>::from(cfg),
+            std::sync::Arc::<dyn busbar_kernel::config::plane_sections::PlaneCfg>::from(cfg),
         )
     };
     // `tools:` — a per-generation runtime built through the plane's own `build_runtime`, installed
@@ -3024,14 +3024,14 @@ async fn named_map_app_opts(
                 );
             }
             None => {
+                let defs =
+                    std::collections::BTreeMap::from([(decl.config_section, cfg.clone_box())]);
                 let ctx = busbar_kernel::plane::registry::BuildCtx {
                     endpoint_slot: None,
-                    agent_defs: &(),
-                    tool_defs: cfg.as_any(),
+                    plane_defs: &defs,
                     public_url: Some("https://busbar.example"),
                     prior: None,
                     providers: None,
-                    hostless: busbar_kernel::plane::registry::EgressDriver::core(),
                 };
                 if let Some(slot) = (decl.build)(&ctx) {
                     builder.install_plane_runtime(decl.key, slot);
@@ -3045,15 +3045,13 @@ async fn named_map_app_opts(
     // `base-agent` (or a patch of it 404s).
     {
         let (decl, cfg) = parse("agents");
-        builder.set_plane_defs_any(decl.key, cfg.clone());
+        let defs = std::collections::BTreeMap::from([(decl.config_section, cfg.clone_box())]);
         let ctx = busbar_kernel::plane::registry::BuildCtx {
             endpoint_slot: None,
-            agent_defs: cfg.as_any(),
-            tool_defs: &(),
+            plane_defs: &defs,
             public_url: Some("https://busbar.example"),
             prior: None,
             providers: None,
-            hostless: busbar_kernel::plane::registry::EgressDriver::core(),
         };
         if let Some(plane) = (decl.build)(&ctx) {
             builder.install_plane_runtime(decl.key, plane);
