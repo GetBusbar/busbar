@@ -54,15 +54,12 @@ pub const PLUGIN_LABEL: &str = "plugin";
 /// The metric-name prefix a plugin may not write into. See the module doc.
 const RESERVED_PREFIX: &str = "busbar_";
 
-/// Whether the host will expose a plugin-reported series under this NAME — the one rule, for both
-/// ABI lanes.
+/// Whether the host will expose a plugin-reported series under this NAME — the one rule.
 ///
-/// It exists as a named function rather than as two inline checks because the COLD lane (a JSON
-/// envelope, folded in [`fold_metrics`]) and the HOT lane (a plane calling the host's `metrics_emit`
-/// slot) are two call conventions for one rule, and the rule is the thing #85 is about: a plugin
-/// REPORTS, and the host decides what it is allowed to have said. Two copies of this predicate would
-/// be two answers to "may a plugin write `busbar_http_requests_total`", and the lane a plugin
-/// happened to use would decide which answer it got.
+/// It exists as a named function because every path that folds a plugin's metrics into the host's
+/// exposition ([`fold_metrics`], the snapshot's) asks it, and the rule is the thing #85 is about: a
+/// plugin REPORTS, and the host decides what it is allowed to have said. Two copies of this
+/// predicate would be two answers to "may a plugin write `busbar_http_requests_total`".
 ///
 /// Rejects an empty name, a name outside `^[a-z][a-z0-9_]{0,63}$` (these become Prometheus
 /// identifiers, so the charset is structural — it is also what stops a plugin holding a read-only
@@ -73,7 +70,7 @@ pub(crate) fn admits_metric_name(name: &str) -> bool {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// THE CARDINALITY BUDGET — the second question both lanes ask, after the name.
+// THE CARDINALITY BUDGET — the second question, after the name.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// Distinct SERIES NAMES one plugin may register, for the life of the process.
@@ -116,12 +113,8 @@ static LEDGER: std::sync::RwLock<Option<std::collections::HashMap<String, Budget
 
 /// Fingerprint one label set, so the budget can count DISTINCT sets without keeping their bytes.
 ///
-/// Takes BYTES, not a parsed map, because the two lanes present labels differently and only one of
-/// them presents them in a form the host understands: the cold lane hands over a validated
-/// `BTreeMap` (see [`fingerprint_pairs`]), while the hot lane hands over an opaque packed blob the
-/// ABI explicitly says the host does not interpret. Bounding cardinality does not require
-/// understanding the labels — only telling two label sets apart — so the hot lane gets its budget
-/// enforced BEFORE its label encoding is designed, rather than after the first explosion.
+/// Takes BYTES: [`fingerprint_pairs`] renders a validated label map canonically first. Bounding
+/// cardinality does not require understanding the labels — only telling two label sets apart.
 ///
 /// `DefaultHasher` is right here and its instability across Rust releases is not a defect: nothing
 /// persists a fingerprint, compares one across processes, or makes a decision from its value. A
@@ -133,7 +126,7 @@ fn fingerprint(bytes: &[u8]) -> u64 {
     h.finish()
 }
 
-/// Fingerprint a validated label map — the cold lane's form. Sorted already (`BTreeMap`), so the
+/// Fingerprint a validated label map. Sorted already (`BTreeMap`), so the
 /// canonical rendering below is order-stable and two identical label sets fingerprint identically
 /// however the plugin ordered them on the wire.
 fn fingerprint_pairs(labels: Option<&std::collections::BTreeMap<String, String>>) -> u64 {
@@ -150,7 +143,7 @@ fn fingerprint_pairs(labels: Option<&std::collections::BTreeMap<String, String>>
     fingerprint(canonical.as_bytes())
 }
 
-/// **THE SECOND QUESTION, asked identically by both ABI lanes.** May `plugin` register a sample
+/// **THE SECOND QUESTION.** May `plugin` register a sample
 /// under `series` with this label set?
 ///
 /// `true` for a BOUNDED emitter, forever: a label set already inside the budget is admitted every
@@ -159,10 +152,9 @@ fn fingerprint_pairs(labels: Option<&std::collections::BTreeMap<String, String>>
 /// for that new shape, rather than evicting an established one, because evicting would make a
 /// well-behaved series flap in and out of the exposition to make room for a misbehaving one.
 ///
-/// REFUSAL, not silent truncation. The hot lane returns the refusal to the plane as a status; the
-/// cold lane cannot (the plugin has already answered), so [`fold_metrics`] says so in the operator's
-/// log instead. Either way the operator learns that telemetry is being dropped, which is the thing a
-/// silent cap never tells them.
+/// REFUSAL, not silent truncation. The plugin has already answered, so there is no status to refuse
+/// it with: [`fold_metrics`] says so in the operator's log instead, and the operator learns that
+/// telemetry is being dropped, which is the thing a silent cap never tells them.
 pub(crate) fn admits_cardinality(plugin: &str, series: &str, label_fingerprint: u64) -> bool {
     let mut guard = LEDGER.write().unwrap_or_else(|e| e.into_inner());
     let ledger = guard.get_or_insert_with(std::collections::HashMap::new);
@@ -212,12 +204,6 @@ pub(crate) fn forget_cardinality(plugin: &str) {
     if let Some(ledger) = guard.as_mut() {
         ledger.remove(plugin);
     }
-}
-
-/// The hot lane's entry to the budget: an OPAQUE packed label blob, fingerprinted without being
-/// interpreted. See [`fingerprint`] for why that is enough.
-pub(crate) fn admits_cardinality_opaque(plugin: &str, series: &str, labels: &[u8]) -> bool {
-    admits_cardinality(plugin, series, fingerprint(labels))
 }
 
 /// The kernel's observer: validates what a plugin reported, bounds it, and folds it into THIS
@@ -304,7 +290,7 @@ fn fold_metrics(grants: &dyn Grants, plugin: &str, raw: &[serde_json::Value]) {
         if !granted && !admits_metric_name(&m.name) {
             // Reserved first-party namespace — a plugin cannot impersonate a `busbar_*` series.
             // (The charset half is already guaranteed by the validator; naming both through one
-            // predicate is what keeps the two ABI lanes answering the same question.)
+            // predicate keeps every fold answering the same question.)
             continue;
         }
         // THE SECOND QUESTION (see `admits_cardinality`). A name check bounds what a series may be
