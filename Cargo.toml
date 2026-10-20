@@ -130,7 +130,7 @@ busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev 
 # THE DECISIONS PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
 # decisions plane's door row (`plane-decisions`, `busbar_plane_decisions::plane_door::door`). Its
 # dropped-in cdylib twin (`busbar-plane-decisions-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-decisions", rev = "4cf0276be4fc9c015a9317952344eaedde02cb73" }
+busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-decisions", rev = "046e649d20fcf509b5ee1d8091fa558075be92a4" }
 # THE A2A PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the a2a
 # plane's door row (`plane-a2a-door`, `busbar_plane_a2a::agent_door::door`), whose own root cells it
 # states under its `links` name. Its dropped-in cdylib twin (`busbar-plane-a2a-plugin`) and its gates
@@ -140,7 +140,7 @@ busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev 
 # streaming plane's door row (`plane-streaming`, `busbar_plane_streaming::door::door`), whose own root
 # cells it states under its `links` name, and the voice conformance harness drives. Its dropped-in
 # cdylib twin (`busbar-plane-streaming-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "744f6efc3c784562fdb364c77d05b90045a31cad" }
+busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "d31740b9c741a373dec69c2fe63c7e76c77ce6d3" }
 arc-swap = "1"
 async-trait = "0.1"
 axum = "0.8"

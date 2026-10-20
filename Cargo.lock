@@ -790,7 +790,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-decisions"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=4cf0276be4fc9c015a9317952344eaedde02cb73#4cf0276be4fc9c015a9317952344eaedde02cb73"
+source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=046e649d20fcf509b5ee1d8091fa558075be92a4#046e649d20fcf509b5ee1d8091fa558075be92a4"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -828,7 +828,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-streaming"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=744f6efc3c784562fdb364c77d05b90045a31cad#744f6efc3c784562fdb364c77d05b90045a31cad"
+source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=d31740b9c741a373dec69c2fe63c7e76c77ce6d3#d31740b9c741a373dec69c2fe63c7e76c77ce6d3"
 dependencies = [
  "busbar-contract",
  "bytes",
