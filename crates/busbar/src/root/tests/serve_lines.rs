@@ -76,3 +76,30 @@ fn the_credential_variable_is_spelled_from_the_plane_and_the_carrier() {
     );
     assert_eq!(env_credential("x", "y"), "BUSBAR_X_Y_CREDENTIAL");
 }
+
+/// A LINE PAST THE BOUND IS DROPPED WHOLE, its tail with it, and the next line is read as it is
+/// (the carrier's own contract: "a longer one is read to its end and dropped ... so the session
+/// goes on"). The reader hands the line over in pieces smaller than the bound, so the bound is
+/// crossed mid-line and pieces of the same line follow it. RED before Q128 root-p9 #5: the buffer
+/// was cleared where the bound was crossed and the rest of the line kept, so its tail (`bb`) came
+/// back as a line of its own.
+#[tokio::test]
+async fn a_line_past_the_bound_is_dropped_with_its_tail() {
+    let input: &[u8] = b"aaaaaaaaaaaabb\nok\n";
+    let mut reader = tokio::io::BufReader::with_capacity(4, input);
+    let mut over = Vec::new();
+    let read = read_line(&mut reader, &mut over, 8)
+        .await
+        .expect("the over-long line reads");
+    assert_eq!(read, 15, "the whole over-long line is consumed");
+    assert!(
+        trim(&over).is_empty(),
+        "nothing of the over-long line is kept: {:?}",
+        String::from_utf8_lossy(&over)
+    );
+    let mut next = Vec::new();
+    read_line(&mut reader, &mut next, 8)
+        .await
+        .expect("the next line reads");
+    assert_eq!(trim(&next), b"ok", "the session goes on at the next line");
+}

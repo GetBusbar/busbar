@@ -193,10 +193,15 @@ proto_crate_names() { # underscore crate names of every protocol / plane / trans
     || die "cannot read [gate.plugin_kinds].plane/.transport from $root/qa/construction.toml -- no needle set without it"
   [ -n "$globs" ] || die "[gate.plugin_kinds] in $root/qa/construction.toml names no plane/transport glob"
   [ -n "${PLANE_KEYS:-}" ] || die "PLANE_KEYS is empty -- scripts/plane-keys.sh was not sourced"
+  # A key whose root is not on disk is refused, never skipped: skipping it is a needle set that
+  # silently lost a plane (row 115). llm's root is its door crate (DEV-GREEN row 83).
+  ( cd "$root" && require_plane_key_roots ) || die "a PLANE_KEYS root is not on disk under $root -- no needle set without it"
   (
     cd "$root" || exit 1
     for k in $PLANE_KEYS; do
-      for d in "crates/busbar-$k" "crates/busbar-$k-codec"; do [ -d "$d" ] && printf '%s\n' "$d"; done
+      d="$(dirname "$(plane_key_src "$k")")"
+      [ -d "$d" ] && printf '%s\n' "$d"
+      [ -d "crates/busbar-$k-codec" ] && printf '%s\n' "crates/busbar-$k-codec"
     done
     # The kind table's globs, UNION the #34 naming-law families (`busbar-plane-<x>` is a plane by its
     # name, and a `-codec` crate is a plane's pure half by its name). The kind table enrols planes by
@@ -208,6 +213,9 @@ proto_crate_names() { # underscore crate names of every protocol / plane / trans
     done
     pinned_kind_crates "$root/Cargo.toml" $globs crates/busbar-plane-* crates/busbar-*-codec
   ) | while IFS= read -r d; do b="$(basename "$d")"; printf '%s\n' "${b//-/_}"; done | sort -u
+  # The listing's own status is not the verdict (a trailing `[ -d ]` that found nothing is not a
+  # failure); the refusals above `die`, and that exit is the only non-zero this function returns.
+  return 0
 }
 
 # pinned_kind_crates <Cargo.toml> <glob>... -> `crates/<key>` for every [workspace.dependencies] key a
@@ -315,7 +323,7 @@ if [ "${1:-}" = "--selftest" ]; then
   st_tmp="$(mktemp -d)"; trap 'rm -rf "$st_tmp"' EXIT
   st_fail=0
   mkdir -p "$st_tmp/core/tests"
-  needles="$(proto_crate_names)"
+  needles="$(proto_crate_names)" || die "self-test: the needle set could not be derived: $needles"
   [ -n "$needles" ] || { die "self-test: no protocol/plane crate on disk, so there is no needle to prove"; }
 
   printf 'pub fn ok() {}\n' > "$st_tmp/core/clean.rs"
@@ -379,7 +387,10 @@ if [ "${1:-}" = "--selftest" ]; then
       st_fail=1; note "SELF-TEST NEEDLE case FAILED: $st_n (ABI / neutral) is a needle -- level 1 would red on core's own foundations"
     fi
   done
+  # The fixture tree carries each PLANE_KEYS root (llm's is its door crate), which the needle set
+  # refuses to be without.
   mkdir -p "$st_tmp/tree/qa" "$st_tmp/tree/crates/busbar-transport-selftestzz" "$st_tmp/tree/crates/busbar-plane-selftestzz"
+  for st_k in $PLANE_KEYS; do mkdir -p "$st_tmp/tree/$(plane_key_src "$st_k")"; done
   cp qa/construction.toml "$st_tmp/tree/qa/"
   st_fix_needles="$(proto_crate_names "$st_tmp/tree")"
   if printf '%s\n' "$st_fix_needles" | grep -qx busbar_transport_selftestzz \
@@ -387,6 +398,14 @@ if [ "${1:-}" = "--selftest" ]; then
     note "self-test DERIVED: a new busbar-transport-*/busbar-plane-* crate is a needle with no edit to this script"
   else
     st_fail=1; note "SELF-TEST NEEDLE case FAILED: a newly added kind crate is not a needle (got: $(printf '%s' "$st_fix_needles" | tr '\n' ' '))"
+  fi
+  # RED: a PLANE_KEYS root that is not on disk is refused, never skipped (row 115).
+  mkdir -p "$st_tmp/keyless/qa"
+  cp qa/construction.toml "$st_tmp/keyless/qa/"
+  if ( proto_crate_names "$st_tmp/keyless" ) >/dev/null 2>&1; then
+    st_fail=1; note "SELF-TEST NEEDLE case FAILED: a tree missing a PLANE_KEYS root still yielded a needle set"
+  else
+    note "self-test RED: a tree missing a PLANE_KEYS root is refused, not scanned without the plane"
   fi
 
   # DIALECTS ARE DERIVED AND COUNTED (item 517): the live derivation matches the DECLS entry count and
@@ -435,7 +454,7 @@ fi
 for core_root in "${CORE_SRC_ROOTS[@]}"; do
   require_scan_dir "$core_root" "a neutral core source root (level 1 static)"
 done
-PROTO_NEEDLES="$(proto_crate_names)"
+PROTO_NEEDLES="$(proto_crate_names)" || die "the needle set could not be derived: $PROTO_NEEDLES"
 [ -n "$PROTO_NEEDLES" ] || die "no protocol or plane crate found under crates/; with no needle this level asserts nothing"
 CORE_NFILES=0
 for core_root in "${CORE_SRC_ROOTS[@]}"; do
