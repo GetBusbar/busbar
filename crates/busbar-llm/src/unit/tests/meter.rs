@@ -553,3 +553,45 @@ fn the_step_says_whether_it_posted_or_only_sealed() {
         "the step that made the accrual says so; the step that only sealed one says it did not"
     );
 }
+
+// ── THE UNIT'S USAGE LINES AND ITS METERING ROW, as this step builds them. ──
+
+fn usage(
+    input: u64,
+    output: u64,
+    read: Option<u64>,
+    write: Option<u64>,
+) -> busbar_contract::billing::TokenUsage {
+    busbar_contract::billing::TokenUsage {
+        input,
+        output,
+        cache_read: read,
+        cache_creation: write,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn usage_lines_are_the_non_zero_tiers_in_canonical_order() {
+    let u = usage(10, 5, Some(0), Some(3));
+    let lines = usage_lines(Some(&u));
+    let got: Vec<(&str, u64)> = lines
+        .iter()
+        .map(|l| (l.class.as_str(), l.quantity))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (busbar_contract::records::UNIT_INPUT, 10),
+            (busbar_contract::records::UNIT_OUTPUT, 5),
+            (busbar_contract::records::UNIT_CACHE_WRITE, 3),
+        ]
+    );
+    assert!(lines.iter().all(|l| !l.estimated));
+}
+
+#[test]
+fn a_response_that_reported_nothing_reports_no_lines() {
+    assert!(usage_lines(None).is_empty());
+    assert!(usage_lines(Some(&usage(0, 0, None, None))).is_empty());
+}
