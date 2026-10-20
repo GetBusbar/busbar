@@ -18,8 +18,11 @@
 //! The URL is a stranger's, and `/authorize` and `/token` take no credential, so the fetch is
 //! bounded ([`Documents`]): a validated document answers for its client for [`DOCUMENT_TTL`] (at
 //! most [`MAX_CACHED_DOCUMENTS`] held), concurrent requests naming one uncached document wait on
-//! ONE fetch, and at most [`MAX_CONCURRENT_FETCHES`] fetches run at once. Past that a request
-//! naming an uncached document reads as an unknown client, as every other fetch failure does.
+//! ONE fetch, at most [`MAX_FETCHES_PER_SITE`] fetches run at once for the documents of one site
+//! (a host's last two labels, so one owner's many hosts are one site), and at most
+//! [`MAX_CONCURRENT_FETCHES`] run at once in all, a request waiting up to [`PERMIT_WAIT`] for one
+//! of those. Past that a request naming an uncached document reads as an unknown client, as every
+//! other fetch failure does. So one owner's slow documents hold at most its own site's share.
 //!
 //! ## Every failure is an UNKNOWN CLIENT, not an error
 //!
@@ -98,6 +101,31 @@ pub(crate) const MAX_CACHED_DOCUMENTS: usize = 1024;
 /// The most document fetches in flight at once.
 pub(crate) const MAX_CONCURRENT_FETCHES: usize = 16;
 
+/// The most document fetches in flight at once for the documents of one site ([`site_of`]).
+pub(crate) const MAX_FETCHES_PER_SITE: usize = 2;
+
+/// How long a request naming an uncached document waits for a fetch permit before its client reads
+/// as unknown.
+pub(crate) const PERMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The site a document URL's host belongs to: its last two labels, lower-cased (an IP literal is
+/// its own site). Hosts one owner can mint freely (`a.attacker.example`, `b.attacker.example`) are
+/// one site, so their fetches share one site's bound.
+pub(crate) fn site_of(url: &str) -> String {
+    let host = busbar_contract::net::parse_url(url)
+        .map(|p| p.host.to_ascii_lowercase())
+        .unwrap_or_default();
+    let host = host.trim_end_matches('.');
+    if host.contains(':') || host.parse::<std::net::Ipv4Addr>().is_ok() {
+        return host.to_string();
+    }
+    let labels: Vec<&str> = host.rsplitn(3, '.').collect();
+    match labels.as_slice() {
+        [last, second, ..] => format!("{second}.{last}"),
+        _ => host.to_string(),
+    }
+}
+
 /// THE DOCUMENTS ONE SERVER HOLDS AND FETCHES: the validated ones by URL, each until it expires;
 /// the fetch in flight for each URL, which every concurrent request naming it waits on; and the
 /// permits that bound how many fetches run at once.
@@ -105,6 +133,8 @@ pub(crate) struct Documents {
     held: Mutex<HashMap<String, (Arc<Client>, std::time::Instant)>>,
     flights: Mutex<HashMap<String, Flight>>,
     permits: tokio::sync::Semaphore,
+    /// Fetches in flight per site ([`site_of`]).
+    sites: Mutex<HashMap<String, usize>>,
 }
 
 /// One URL's fetch in flight: the client its document validated to, or `None`, once it lands.
@@ -116,11 +146,46 @@ impl Default for Documents {
             held: Mutex::new(HashMap::new()),
             flights: Mutex::new(HashMap::new()),
             permits: tokio::sync::Semaphore::new(MAX_CONCURRENT_FETCHES),
+            sites: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+/// One site's share of the fetches, held while its fetch runs.
+struct SiteShare<'a> {
+    sites: &'a Mutex<HashMap<String, usize>>,
+    site: String,
+}
+
+impl Drop for SiteShare<'_> {
+    fn drop(&mut self) {
+        let mut sites = self.sites.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(n) = sites.get_mut(&self.site) {
+            *n -= 1;
+            if *n == 0 {
+                sites.remove(&self.site);
+            }
         }
     }
 }
 
 impl Documents {
+    /// A share of `url`'s site's fetches, or `None` when its site already holds
+    /// [`MAX_FETCHES_PER_SITE`].
+    fn site_share(&self, url: &str) -> Option<SiteShare<'_>> {
+        let site = site_of(url);
+        let mut sites = self.sites.lock().unwrap_or_else(|p| p.into_inner());
+        let n = sites.entry(site.clone()).or_insert(0);
+        if *n >= MAX_FETCHES_PER_SITE {
+            return None;
+        }
+        *n += 1;
+        Some(SiteShare {
+            sites: &self.sites,
+            site,
+        })
+    }
+
     /// The validated document's client for `url`, while it has not expired.
     fn held(&self, url: &str) -> Option<Arc<Client>> {
         let held = self.held.lock().unwrap_or_else(|p| p.into_inner());
@@ -805,9 +870,20 @@ impl CimdStore {
 impl CimdStore {
     /// One fetch of the document at `url`, validated: its client, or `None` (an unknown client)
     /// when the fetch is refused or fails, the document fails validation, or
-    /// [`MAX_CONCURRENT_FETCHES`] are already in flight.
+    /// [`MAX_FETCHES_PER_SITE`] are already in flight for its site, or no fetch permit frees within
+    /// [`PERMIT_WAIT`].
     async fn fetch_document(&self, url: &str) -> Option<Arc<Client>> {
-        let Ok(_permit) = self.documents.permits.try_acquire() else {
+        let Some(_share) = self.documents.site_share(url) else {
+            tracing::debug!(
+                client_id = url,
+                "oauth_as: this site's client metadata document fetches are all in flight; the \
+                 client is unknown"
+            );
+            return None;
+        };
+        let Ok(Ok(_permit)) =
+            tokio::time::timeout(PERMIT_WAIT, self.documents.permits.acquire()).await
+        else {
             tracing::debug!(
                 client_id = url,
                 "oauth_as: every client metadata document fetch is in flight; the client is \
