@@ -308,7 +308,7 @@ fn golden_meta_lines() -> Vec<String> {
 }
 
 /// ORACLE ROW 86 (`/metrics` must match 1.5.5; golden cells `ops.scrape|metrics|key`,
-/// `export|prometheus|raw`, `neutrality|metrics-series`): the process dispatcher's internal `bb_*`
+/// the raw-exposition export cell, `neutrality|metrics-series`): the process dispatcher's internal `bb_*`
 /// counters are NOT on the customer scrape. 1.5.5 served no `bb_deadline_without_wake_total` and no
 /// `bb_plugin_quarantined_total` family; the dispatcher keeps both as its own counts
 /// (`DispatchStats`, read by the plugin conformance suite), never as exposition families. RED on
