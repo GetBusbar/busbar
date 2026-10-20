@@ -89,9 +89,9 @@ pub mod shared;
 pub mod store;
 pub mod transport;
 
-// The two `#[macro_export]` sized-read macros, named at this module's path too, so a caller writes
+// The `#[macro_export]` sized-read macro, named at this module's path too, so a caller writes
 // `busbar_contract::abi::read_sized_field!` exactly where it wrote `busbar_plugin::read_sized_field!`.
-pub use crate::{host_slot, read_sized_field};
+pub use crate::read_sized_field;
 
 // THE KERNEL SEAL'S ONE CROSSING (#65, ARCHITECT ruling 2026-10-14): declared here, DEFINED only
 // by `busbar-kernel` (`crates/busbar-kernel/src/seal.rs`). It lives in `abi` because calling it is
