@@ -52,6 +52,8 @@ pub const MAX_DOOR_PLANES: usize = 16;
 struct Folded {
     reg: PlaneRegistration,
     dialects: &'static [&'static str],
+    /// The dialects its tail flags `DIALECT_PROVIDER`, in its order.
+    provider_dialects: &'static [&'static str],
     decl: PlaneDecl,
 }
 
@@ -103,9 +105,16 @@ pub fn fold(reg: PlaneRegistration) -> Result<&'static PlaneDecl, String> {
         HOOK_TABLE[index].clone_hooks(named, !reg.owns.is_empty(), !reg.admin_routes.is_empty()),
     );
     let dialects: &'static [&'static str] = reg.dialects.clone().leak();
+    let provider_dialects: &'static [&'static str] = (reg.dialects.iter())
+        .zip(&reg.dialect_flags)
+        .filter(|(_, f)| *f & busbar_contract::abi::plane::DIALECT_PROVIDER != 0)
+        .map(|(d, _)| *d)
+        .collect::<Vec<_>>()
+        .leak();
     let folded = DOORS[index].get_or_init(|| Folded {
         reg,
         dialects,
+        provider_dialects,
         decl,
     });
     *next = index + 1;
@@ -499,6 +508,10 @@ fn view_of(
 
 fn wire_formats<const I: usize>() -> &'static [&'static str] {
     door(I).map_or(&[], |d| d.dialects)
+}
+
+fn provider_dialects<const I: usize>() -> &'static [&'static str] {
+    door(I).map_or(&[], |d| d.provider_dialects)
 }
 
 /// A door plane's runtime slot for one generation: its section, and what its `open` faces the world
@@ -1009,6 +1022,7 @@ fn condition_of(
 /// One table index's hooks, as data a `const` table can hold.
 struct HookRow {
     wire_format_names: fn() -> &'static [&'static str],
+    provider_dialects: fn() -> &'static [&'static str],
     claims: fn(&dyn std::any::Any) -> Vec<(String, &'static str)>,
     admission: fn(&dyn std::any::Any) -> Option<crate::plane::PlaneAdmission>,
     build: fn(&BuildCtx) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
@@ -1039,6 +1053,7 @@ impl HookRow {
     const fn of<const I: usize>() -> HookRow {
         HookRow {
             wire_format_names: wire_formats::<I>,
+            provider_dialects: provider_dialects::<I>,
             claims: claims::<I>,
             admission: admission::<I>,
             build: build::<I>,
@@ -1062,6 +1077,7 @@ impl HookRow {
     fn clone_hooks(&self, named: bool, owns: bool, admin: bool) -> PlaneHooks {
         PlaneHooks {
             wire_format_names: self.wire_format_names,
+            provider_dialects: self.provider_dialects,
             claims: self.claims,
             admission: self.admission,
             build: self.build,

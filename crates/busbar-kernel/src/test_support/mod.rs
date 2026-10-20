@@ -528,7 +528,7 @@ pub struct LaneSpec {
     // NAME — the codec itself is resolved by-name from the installed registry at dispatch, never held
     // here. Storing the interned `&'static str` (a neutral `PROTO_*` const) instead of an
     // `Arc<crate::proto::Protocol>` lets the routing/dispatch suites build lanes without naming the
-    // witnessed busbar-llm codec, so the witness can be deleted at the final flip.
+    // witnessed the retired engine crate codec, so the witness can be deleted at the final flip.
     protocol: &'static str,
     max: usize,
     api_key: busbar_contract::redacted::Secret<String>,
