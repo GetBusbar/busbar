@@ -1239,6 +1239,7 @@ impl AdminService {
             providers: self.list_providers().await?.items,
             hooks: self.list_hooks().await?.items,
             global_hooks: self.app.global_hooks.clone(),
+            reload_to_apply: self.app.planes_awaiting_restart.clone(),
         })
     }
 

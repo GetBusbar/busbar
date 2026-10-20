@@ -2810,7 +2810,6 @@ mod dated_rate_card_history {
             card: card(5.0),
             appended_at: busbar_kernel::store::now().saturating_mul(1_000),
             author: Author::Amend {
-                operator_fingerprint: "sha256:operator".to_string(),
                 reason_hash: [7u8; 32],
             },
         });
@@ -3235,7 +3234,6 @@ mod usage_as_of {
             card: card(5.0),
             appended_at: busbar_kernel::store::now().saturating_mul(1_000),
             author: Author::Amend {
-                operator_fingerprint: "sha256:operator".to_string(),
                 reason_hash: [7u8; 32],
             },
         });
@@ -3768,6 +3766,7 @@ mod plane_fees_on_admin_usage {
                     caller_credential_refusal: None,
                 },
                 wire_format_names: || &[],
+                provider_dialects: || &[],
                 claims: |_| Vec::new(),
                 admission: |_| None,
                 build: |_| None,

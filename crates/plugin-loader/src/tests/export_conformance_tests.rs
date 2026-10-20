@@ -1130,10 +1130,12 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
         .iter()
         .map(|s| (s.name.clone(), s.kind.clone()))
         .collect();
+    // The sink's one reserved series, as 1.5.5 declared it (v1.5.5 `metrics.rs:177`): the rotation
+    // counters 1.5.5 never had are no longer declared (busbar-export-file 1980b90).
     assert!(
         series
             .iter()
-            .any(|(n, _)| n == "busbar_file_logs_rotated_total"),
+            .any(|(n, _)| n == "busbar_file_logs_dropped_total"),
         "{series:?}"
     );
     let name = "s1-fixture";
@@ -1161,8 +1163,12 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
             serde_json::json!({ "granted": granted, "folds": tape.seen() }).to_string();
         (both_ways::row(&registry, name), transcript)
     });
+    let every_granted = format!(
+        r#""granted":{}"#,
+        serde_json::json!(vec![true; series.len()])
+    );
     assert!(
-        linked.1.contains(r#""granted":[true,true,true]"#)
+        linked.1.contains(&every_granted)
             && linked.1.contains("request-log file rotated by rename"),
         "the linked door grants every declared series and the sink reports: {}",
         linked.1

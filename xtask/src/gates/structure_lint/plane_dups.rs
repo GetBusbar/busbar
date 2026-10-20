@@ -150,7 +150,7 @@ pub fn ledger() -> Vec<LedgerRow> {
         s("parse", &["a2a", "streaming"], "Unrelated: a2a's reads an agent card value into an AgentCard; streaming's reads wire bytes into a JSON value in its codec."),
         s("read_settings", &["decisions", "streaming"], "Each plane judges its own settings blob by its own grammar and answers its own section for an empty one: DecisionsSection for decisions, StreamsCfg for streaming. The grammar is the plane's."),
         s("refusal_body", &["decisions", "streaming"], "Each plane renders the kernel's refusal in its own wire's error shape: jev's error code and message for decisions, the OpenAI REST error envelope for streaming. The status and text are the kernel's; the shape is the dialect's."),
-        d("config.rs", "The parse ORDER these two files shared is gone: plane::config::split_section owns the reserved-key refusals, the two typed lifts and the sequence they run in, and all THREE plane sections are read through it. What is left in each file is that plane's GRAMMAR and nothing else — they share no type, no field, no value rule, no sentence and no caller. What they share is a filename, which on every plane says the same true and un-actionable thing: this is where that section's grammar is written."),
+        d("config.rs", "The parse ORDER these two files shared is gone: config::plane_sections::split_section owns the reserved-key refusals, the two typed lifts and the sequence they run in, and all THREE plane sections are read through it. What is left in each file is that plane's GRAMMAR and nothing else — they share no type, no field, no value rule, no sentence and no caller. What they share is a filename, which on every plane says the same true and un-actionable thing: this is where that section's grammar is written."),
         // STRUCK at P3 DEL-MCP (ARCHITECT 2026-10-05: busbar-mcp deleted, the mcp plane is served
         // through its door crate alone): `transport.rs`, `judge`, `revalidate`, `observed_pin`,
         // `contains`, `get`, `list`, `openapi_schemas`, `reresolve_gates`, `metadata_route` and
@@ -423,7 +423,42 @@ pub fn scan(cx: &Ctx, a: &Addresses, corpus: Option<&Corpus>, t: &Tables, f: &mu
 /// door scaffolding moves to the SDK (planes never depend on each other, Law 0), the duplicates
 /// that encode a security or money property first (DoD item 5); lower this count in the commit
 /// that drains each one.
-pub const UNLEDGERED_ARMED: usize = 46;
+///
+/// RE-ARMED 46 -> 97, armed at the measure: llm home moved to busbar-plane-llm (#1161), Law 9,
+/// ARCHITECT 2026-10-18 (DEV-GREEN row 83). The retired engine crate `busbar-llm` is deleted, so
+/// the llm plane's home is its door crate `busbar-plane-llm`, as FLIP-A2A moved a2a's. A SCOPE
+/// RE-BASELINE, not a blanket raise: 46 measured a smaller world. Net +51, name by name:
+///
+/// * 3 DRAINED with the deleted engine (they paired its copies): `Admitted`, `Hop`, `Tap`;
+/// * 54 NEWLY VISIBLE, each a declaration busbar-plane-llm already held on dev (faa7d5bc8f)
+///   before #1161, now read beside the other planes (name, then the planes it pairs):
+///   modules `plane.rs` (decisions+llm), `plane_door.rs` (decisions+llm), `relay.rs` (a2a+llm);
+///   symbols `Answer` (llm+mcp+streaming), `answer` (llm+mcp), `answered` (a2a+llm),
+///   `arrive` (decisions+llm+mcp+streaming), `Arrived` (decisions+llm), `billable` (decisions+llm),
+///   `billed_count` (llm+streaming), `Catalogue` (llm+mcp), `decode` (a2a+llm),
+///   `Dialect` (a2a+llm+streaming), `dialect_for` (llm+streaming), `Direction` (a2a+llm),
+///   `End` (llm+mcp), `envelope` (llm+mcp), `error_body` (decisions+llm), `Event` (a2a+llm),
+///   `event` (a2a+llm), `far_answer` (llm+mcp), `far_end` (decisions+llm), `guard` (llm+mcp),
+///   `judge` (a2a+llm), `kernel_refusal` (a2a+llm), `matches_selector` (llm+streaming),
+///   `Member` (decisions+llm), `member` (a2a+llm), `need` (llm+streaming),
+///   `op_class_index` (llm+mcp), `parse` (a2a+llm+streaming), `Pending` (llm+mcp),
+///   `read_count_u64` (llm+streaming), `read_event` (a2a+llm),
+///   `read_settings` (decisions+llm+streaming), `Refusal` (llm+mcp), `Relay` (llm+mcp),
+///   `render` (a2a+llm), `Rendered` (a2a+llm), `Reply` (llm+mcp+streaming), `request` (a2a+llm),
+///   `resolve` (llm+mcp), `same` (llm+mcp), `scope` (a2a+llm), `section` (llm+mcp),
+///   `Slot` (decisions+llm), `translate_request` (a2a+llm), `Units` (decisions+llm),
+///   `Unreadable` (a2a+llm), `Upstream` (llm+streaming), `verdict` (a2a+llm),
+///   `view` (decisions+llm), `walk` (llm+mcp), `whole` (decisions+llm);
+///
+/// The names already in the 46 that now also pair busbar-plane-llm (`claims.rs`, `diagnostics.rs`,
+/// `meta.rs`, `attempt`, `claim`, `dialect_auth`, `encode`, `settle` and the rest) are NOT counted
+/// again. #1161's own new code adds no pair: its one new plane-llm file (`exchange/catalog.rs`)
+/// names its listing `ModelsCatalogAnswer` / `render_listing`, so it duplicates nothing.
+///
+/// MANDATORY DRAIN (owner: lane a29e9b3, busbar-llm retirement): the busbar-plane-llm extraction
+/// (status row 106, the #1072 recipe) re-lowers UNLEDGERED_ARMED to the measure after extraction in
+/// the SAME PR, and the plugin repo's own plane-dup run carries these names from then on.
+pub const UNLEDGERED_ARMED: usize = 97;
 
 /// [`ROW_UNLEDGERED`], judged against [`UNLEDGERED_ARMED`]. A tree with none is clean.
 fn unledgered_row(unledgered: &[String]) -> Row {
@@ -441,8 +476,9 @@ fn unledgered_row(unledgered: &[String]) -> Row {
             "the plane-local duplicates are the armed count and no more",
             format!(
                 "{n} finding(s), armed at {UNLEDGERED_ARMED} (predev's carried findings and the \
-                 a2a plane's pre-existing files its home move to busbar-plane-a2a made visible; \
-                 drain: shared door scaffolding to the SDK): {}",
+                 a2a and llm planes' pre-existing files their home moves to busbar-plane-a2a and \
+                 busbar-plane-llm made visible; drain: shared door scaffolding to the SDK, and the \
+                 busbar-plane-llm extraction re-lowers it): {}",
                 unledgered.join(" | ")
             ),
         );
