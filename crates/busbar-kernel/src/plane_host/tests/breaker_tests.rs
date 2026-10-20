@@ -12,7 +12,7 @@ const POOL_STR: &str = "tool:fs";
 
 /// The kernel's host over a fresh test `App`.
 fn host() -> EngineHostImpl {
-    EngineHostImpl::new(Arc::new(crate::test_support::TestApp::new().build()))
+    EngineHostImpl::new(crate::test_support::TestApp::new().build())
 }
 
 /// THE LEAK-SAFETY PROOF: admit wins the single-flight probe, then the dispatch scope ends
