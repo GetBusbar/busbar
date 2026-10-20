@@ -114,7 +114,7 @@ use crate::framer::FramerDoor;
 use crate::hostio::HostIo;
 use crate::line::{Line, EVERY};
 use crate::listen::{AcceptLimits, Listening};
-use crate::pool::{PoolKey, PoolPosture, Pools};
+use crate::pool::{PoolKey, PoolPosture, Pools, SealRef};
 use crate::registry::Transports;
 
 /// How the host wakes a caller's ticket, naming the caller that handed it the ticket: the supplier
@@ -327,7 +327,63 @@ type Answer = Arc<Mutex<(Option<Result<SocketAddr, Verdict>>, Option<Waker>)>>;
 
 /// The trust anchors sealed per destination (the transport pin, ARCHITECT 2026-10-03), by the need's owner, the need and
 /// the destination's authority (lower-case, `host:port`).
-type Anchored = Mutex<HashMap<(InstanceId, NeedId, String), Arc<tls::client::Sealed>>>;
+type Anchored = Mutex<HashMap<(InstanceId, NeedId, String), Destination>>;
+
+/// ONE DESTINATION'S SEALS: its own (sealed naming no registration) and each registration's sealed
+/// at its authority, by name. An open naming no registration sealed there is held to the one
+/// answer they all give, and refused where they disagree: a pin nobody enforces is refused, never
+/// dropped, and no registration's anchors are erased by another's.
+#[derive(Default)]
+struct Destination {
+    /// The destination's own seal (`None`: none, or dropped by an empty one).
+    own: Option<Arc<tls::client::Sealed>>,
+    /// Each registration's seal at this authority (`None`: it holds no anchors), in name order.
+    members: std::collections::BTreeMap<String, Option<Arc<tls::client::Sealed>>>,
+}
+
+impl Destination {
+    /// Whether nothing is sealed here at all.
+    fn is_empty(&self) -> bool {
+        self.own.is_none() && self.members.is_empty()
+    }
+
+    /// What an open naming no registration is held to: the one answer every seal here gives (the
+    /// destination's own first, then the registrations' in name order, so the same seal answers
+    /// every open), or `Err` where two disagree.
+    fn held(&self) -> Result<Option<Arc<tls::client::Sealed>>, ConnError> {
+        let mut seals = self
+            .own
+            .iter()
+            .map(Some)
+            .chain(self.members.values().map(Option::as_ref));
+        let Some(first) = seals.next() else {
+            return Ok(None);
+        };
+        if seals.all(|other| same_anchors(first, other)) {
+            Ok(first.cloned())
+        } else {
+            Err(ConnError::Refused)
+        }
+    }
+}
+
+/// Whether two seals hold a connection to the same: the same key pin and the same client identity
+/// (its certificate chain), `None` and a seal holding nothing alike.
+fn same_anchors(
+    a: Option<&Arc<tls::client::Sealed>>,
+    b: Option<&Arc<tls::client::Sealed>>,
+) -> bool {
+    let pins = a.and_then(|s| s.key_pin.as_deref()) == b.and_then(|s| s.key_pin.as_deref());
+    let identities = match (
+        a.and_then(|s| s.identity.as_deref()),
+        b.and_then(|s| s.identity.as_deref()),
+    ) {
+        (None, None) => true,
+        (Some(x), Some(y)) => x.cert == y.cert,
+        _ => false,
+    };
+    pins && identities
+}
 
 /// The trust anchors sealed per REGISTRATION, by the need's owner, the need and the registration's
 /// name: the authority (lower-case, `host:port`) of its own target and what it is held to there
@@ -2150,15 +2206,22 @@ impl Connector {
         // The registration whose own anchors the dial is held to, if any: a pooled line is lent
         // only to an open held to the same.
         let anchored_as = own.is_some().then(|| desc.member.to_owned());
+        // Naming none, the open is held to the destination's anchors: the one answer every seal at
+        // its authority gives, and refused where they disagree.
         let anchors = match own {
             Some(sealed) => sealed,
-            None => self
+            None => match self
                 .anchored
                 .lock()
                 .expect("anchors")
                 .get(&(caller, need, authority))
-                .cloned(),
+            {
+                Some(destination) => destination.held()?,
+                None => None,
+            },
         };
+        // The very seal the dial is held to: a pooled line is lent only to an open held to it.
+        let sealed = anchors.clone().map(SealRef);
         if anchors
             .as_ref()
             .is_some_and(|a| a.key_pin.is_some() && !planned.secure())
@@ -2206,6 +2269,8 @@ impl Connector {
             (
                 self.pools.shard(),
                 PoolKey {
+                    owner: caller,
+                    need,
                     door: Arc::as_ptr(&door).cast::<()>() as usize,
                     authority: planned.authority().to_ascii_lowercase(),
                     secure: planned.secure(),
@@ -2213,6 +2278,7 @@ impl Connector {
                     class: (judged_class, egress_class),
                     reach,
                     anchored_as,
+                    sealed,
                 },
             )
         });
@@ -2610,30 +2676,44 @@ impl PollConns for Connector {
         // A REGISTRATION'S anchors are kept under its name too: an open naming it, at its own
         // authority, is held to what it holds there (or to nothing, where it holds nothing), apart
         // from every other registration at that `host:port`.
-        if !member.is_empty() {
-            let key = (owner, need, member.to_owned());
-            let mut by_member = self.member_anchored.lock().expect("anchors");
-            match &at {
-                Some((_, _, authority)) => {
-                    by_member.insert(key, (authority.clone(), sealed.clone()));
-                }
-                None => {
-                    by_member.remove(&key);
+        // The destination's seals are kept apart too: a registration's seal joins those at its
+        // authority (leaving the ones at any authority it was sealed at before), and an open naming
+        // none is held to what they all agree on. No seal ever drops or overwrites another's.
+        if member.is_empty() {
+            let Some(at) = at else {
+                return Ok(());
+            };
+            let mut anchored = self.anchored.lock().expect("anchors");
+            let destination = anchored.entry(at.clone()).or_default();
+            // Nothing to hold: the destination's own earlier seal is dropped.
+            destination.own = sealed;
+            if destination.is_empty() {
+                anchored.remove(&at);
+            }
+            return Ok(());
+        }
+        let key = (owner, need, member.to_owned());
+        let mut by_member = self.member_anchored.lock().expect("anchors");
+        let mut anchored = self.anchored.lock().expect("anchors");
+        let before = match &at {
+            Some((_, _, authority)) => by_member.insert(key, (authority.clone(), sealed.clone())),
+            None => by_member.remove(&key),
+        };
+        if let Some((was, _)) = before {
+            let was = (owner, need, was);
+            if let Some(destination) = anchored.get_mut(&was) {
+                destination.members.remove(member);
+                if destination.is_empty() {
+                    anchored.remove(&was);
                 }
             }
         }
-        let Some(at) = at else {
-            return Ok(());
-        };
-        let mut anchored = self.anchored.lock().expect("anchors");
-        match sealed {
-            Some(sealed) => {
-                anchored.insert(at, sealed);
-            }
-            // Nothing to hold: any earlier seal for the destination is dropped.
-            None => {
-                anchored.remove(&at);
-            }
+        if let Some(at) = at {
+            anchored
+                .entry(at)
+                .or_default()
+                .members
+                .insert(member.to_owned(), sealed);
         }
         Ok(())
     }
