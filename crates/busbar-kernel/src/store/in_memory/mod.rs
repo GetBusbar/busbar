@@ -737,10 +737,10 @@ impl HealthState {
     }
 
     // Production callers: the test-only `record_hard_down` trait wrapper, and
-    // `store::planes::PlaneBreakers::record_signal` — a secondary plane consumer's hard-down is PER
-    // CELL by design (their degenerate cells share one lane index, so the all-cells primitive would
-    // trip every other registered target). With BOTH planes compiled out that consumer is
-    // vestigial, so this reads dead in a non-test both-off build alone.
+    // `store::breaker_admission::PlaneBreakers::record_signal` — a registered target's hard-down is
+    // PER CELL by design (the degenerate cells share one lane index, so the all-cells primitive
+    // would trip every other registered target). With no plane consumer compiled in that caller is
+    // vestigial, so this reads dead in such a non-test build alone.
     #[allow(dead_code)]
     pub(crate) fn record_hard_down_for(&self, pool: &str, lane: usize, reason: &str) {
         let ls = self.get_lane(lane);

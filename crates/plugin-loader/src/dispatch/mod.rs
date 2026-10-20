@@ -113,6 +113,13 @@ pub trait Kind: Send + Sync + 'static {
         lifecycle_name(slot)
     }
 
+    /// Whether `slot` is a kind op this kind states OPTIONAL: a door may leave it NULL (absent),
+    /// and the host reads an absent one as a pass. Every other slot NULL refuses the load.
+    fn optional_slot(slot: u32) -> bool {
+        let _ = slot;
+        false
+    }
+
     /// The instance's CONTEXT for its checks, built once from the Statement at bind (the plane's
     /// tail bounds); `None` = the kind's checks need none. An `Err` refuses the load.
     ///

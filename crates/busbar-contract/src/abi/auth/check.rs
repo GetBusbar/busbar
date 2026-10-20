@@ -7,7 +7,7 @@
 //! any `Err` makes the answer FAULT. No host re-implements them.
 
 use super::inbound::{BeginLoginOut, IdentifyOut, IdentityBuf, StripName};
-use super::outbound::{FieldSpan, FieldsOut};
+use super::outbound::{FieldSpan, FieldsOut, TargetOut};
 use super::points::{AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
 use super::{
     BEGIN_AUTHORIZE, BEGIN_FORM, CAP_INBOUND, DECISION_CONTINUE, DECISION_STOP, FIELD_QUERY,
@@ -378,6 +378,30 @@ pub fn check_fields(
         span(f.name, cap, false, a)?;
         span(f.value, cap, false, a)
     })
+}
+
+/// `target`'s answer. `buf_cap` is the capacity of the buffer the host handed in. On READY the
+/// target is absent (`SPAN_ABSENT`, `len == 0`: the style sends to no destination of its own) or a
+/// non-empty span within `buf_cap`; on REFUSED or FAILED it is absent.
+///
+/// # Errors
+/// The answer breaks a rule [`TargetOut`] states.
+pub fn check_target(outcome: Outcome, out: &TargetOut, buf_cap: usize) -> Result<(), Fault> {
+    let t = out.target;
+    match outcome {
+        Outcome::Fault | Outcome::Pending => Ok(()),
+        Outcome::Ready if t.offset == SPAN_ABSENT => match t.len {
+            0 => Ok(()),
+            _ => Err(fault(Rule::SpanNotAbsent, "target.target.absent_with_len")),
+        },
+        Outcome::Ready if t.len == 0 => Err(fault(Rule::Missing, "target.target.empty")),
+        Outcome::Ready if u64::from(t.offset) + u64::from(t.len) > buf_cap as u64 => {
+            Err(fault(Rule::SpanOutOfBounds, "target.target.out_of_bounds"))
+        }
+        Outcome::Ready => Ok(()),
+        _ if t.offset == SPAN_ABSENT && t.len == 0 => Ok(()),
+        _ => Err(fault(Rule::Contradiction, "target.target.unexpected")),
+    }
 }
 
 /// One [`super::StyleDecl`]'s `flags` and `points`: only [`STYLE_NEEDS_HEADERS`] |

@@ -139,7 +139,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             errors.push(format!(
                 "model '{}' has default_max_tokens: 0; must be > 0 (or omit it to use the {} fallback)",
                 model_name,
-                crate::proto::DEFAULT_MAX_TOKENS
+                crate::config::limits::DEFAULT_MAX_TOKENS
             ));
         }
         // A `max_concurrent: 0` lane builds a `Semaphore::new(0)` at startup (main.rs), which never
@@ -288,13 +288,6 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             ));
         }
     }
-
-    // UNIFIED `pools:` NEUTRALITY (1.6.0, design `1.6.0-unified-pools.md` §7-8). The single neutral
-    // `pools:` map infers each pool's KIND from its members and resolves members by NAME ALONE, which
-    // is sound only if names are GLOBALLY UNIQUE: no name defined in two nouns, and no pool name
-    // colliding with a noun/member name. Checked here (over the resolved `RootCfg`) so a clean
-    // `--validate` is a clean boot — the same reason the context_max conflict moved here.
-    validate_unified_pool_names(cfg, &mut errors);
 
     // The same reserved-prefix collision applies to PROVIDER names: a provider named `api` is
     // reachable via the adhoc route `POST /api/<model>/v1/messages`, whose first segment the auth
@@ -597,10 +590,10 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     }
 
     // Rule 6, EVERY PLANE'S POOLS (BUSBAR-1.6.0.md THE DESIGN §1: "Any plugin gets all
-    // functionality"): a pool whose members belong to another plane is projected out of `pools`
-    // before this loop, but it carries the same `breaker:` block, so it is held to the same rules in
-    // the same words. Before, the block was dropped at the projection without being read.
-    for (pool_name, pool_cfg) in cfg.tool_pools.iter().chain(cfg.agent_pools.iter()) {
+    // functionality"): a pool written under another plane's section (`<verb>.pools`) is not in
+    // `pools`, but it carries the same `breaker:` block, so it is held to the same rules in the same
+    // words.
+    for (pool_name, pool_cfg) in cfg.plane_pools.values().flat_map(|pools| pools.iter()) {
         if let Some(breaker) = &pool_cfg.breaker {
             check_pool_breaker(pool_name, breaker, &mut errors);
         }
@@ -948,6 +941,30 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                         ));
                     }
                 }
+                // Rule (verbs, #77(9) l.2279): the per-verb allow-list is `"*"` or a list of the
+                // closed admin table's operation names. Any other shape, and any name the table
+                // does not declare, is refused: an allow-list entry that grants nothing must never
+                // sit inert while the operator believes it granted.
+                match binding.verb_grant() {
+                    None | Some(Ok(crate::config::VerbGrant::All)) => {}
+                    Some(Err(shape)) => errors.push(format!(
+                        "role_bindings.{module}.{role}.verbs must be \"{all}\" or a list of admin \
+                         verb names, not {shape}",
+                        all = crate::config::ALL_ADMIN_VERBS
+                    )),
+                    Some(Ok(crate::config::VerbGrant::Named(names))) => {
+                        for name in names {
+                            if crate::admin::seam::admin_verb_rung(&name).is_none() {
+                                errors.push(format!(
+                                    "role_bindings.{module}.{role}.verbs names unknown admin verb \
+                                     '{name}': expected \"{all}\" or operation names from the \
+                                     admin verb table (e.g. get_keys, post_keys)",
+                                    all = crate::config::ALL_ADMIN_VERBS
+                                ));
+                            }
+                        }
+                    }
+                }
                 if let Some(group) = binding.group.as_deref() {
                     if !cfg.groups.contains_key(group) {
                         errors.push(format!(
@@ -1054,7 +1071,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // the neutral SECTION-KEYED accessor and name the plane from its REGISTERED decl (`subject_noun`),
     // so this neutral rule carries no plane token: the concrete noun is registry-supplied at
     // runtime, never a literal here.
-    let endpoint_section = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2];
+    let endpoint_section = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
     if cfg.endpoint_resource(endpoint_section).is_some()
         && cfg.auth.as_ref().is_none_or(|a| a.chain.is_empty())
     {
@@ -1741,9 +1758,9 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     // about one refuses here with a paste-ready stub, rather than a unit ledgered on a lane no card
     // prices (which fails every read of the bucket that holds it).
     //
-    // [`PlaneCfg::ledger_lanes`]: crate::plane::config::PlaneCfg::ledger_lanes
+    // [`PlaneCfg::ledger_lanes`]: crate::config::plane_sections::PlaneCfg::ledger_lanes
     if let Some(card) = &cfg.rate_card {
-        for defs in [cfg.tool_defs.as_ref(), cfg.agent_defs.as_ref()] {
+        for defs in cfg.plane_defs.values() {
             let lanes = defs.ledger_lanes();
             let missing: Vec<&str> = (lanes.iter().map(String::as_str))
                 .filter(|l| {
@@ -1978,65 +1995,6 @@ fn reserved_admin_name(name: &str) -> bool {
 /// exactly that. Same first-segment test as the sibling so `admin/x` cannot slip through either.
 fn reserved_legacy_admin_name(name: &str) -> bool {
     name.split('/').next() == Some("admin")
-}
-
-/// Resolve the single `on_exhausted: fallback_pool:<name>` edge out of `pool_name`, if it has one.
-/// UNIFIED `pools:` GLOBAL-NAME VALIDATOR (1.6.0). The neutral `pools:` map infers a pool's kind
-/// from its members and resolves every member by NAME ALONE. That is sound only when names are
-/// globally unique, so this refuses:
-///
-/// 1. A name defined in TWO nouns (`models:`/`tools:`/`agents:`) — kind inference could not decide
-///    which plane a member of that name belongs to, and the router would silently pick one.
-/// 2. A POOL name that collides with a member/registration name on the same keyspace — already
-///    partly covered for models above; here it is extended to the other registered nouns.
-///
-/// (Homogeneity — all of a pool's members being one noun — and unresolvable members are enforced at
-/// resolution, in `config::resolve`, where the members are still visible before projection; this
-/// function is the name-uniqueness half that makes that inference unambiguous.)
-pub fn validate_unified_pool_names(cfg: &RootCfg, errors: &mut Vec<String>) {
-    use std::collections::BTreeSet;
-    let models: BTreeSet<&str> = cfg.models.keys().map(|s| s.as_str()).collect();
-    // The plane registry nouns read through their always-present type-erased seam. With the owning
-    // plane compiled out the seam holds a `RawPlaneSection`, whose `def_names` is empty (a present
-    // section is refused at resolve), so no name resolves there — the same answer the per-plane
-    // feature gate gave, without naming a plane.
-    let tool_names: BTreeSet<&str> = cfg.tool_defs.def_names().into_iter().collect();
-    let agent_names: BTreeSet<&str> = cfg.agent_defs.def_names().into_iter().collect();
-
-    // (1) No name may be defined in two nouns — the kind of a bare member must be decidable by name.
-    for (a, b, name_a, name_b) in [
-        (&models, &tool_names, "models", "tools"),
-        (&models, &agent_names, "models", "agents"),
-        (&tool_names, &agent_names, "tools", "agents"),
-    ] {
-        for dup in a.intersection(b) {
-            errors.push(format!(
-                "`{dup}` is defined in both the top-level `{name_a}:` and `{name_b}:` maps. Pool \
-                 member names are resolved by name alone (a pool's kind is inferred from its \
-                 members), so a name may live in at most ONE noun. Rename one of them."
-            ));
-        }
-    }
-
-    // (2) A pool name must not collide with a registration name on the plane it routes to (the pool
-    // and the registration share the breaker keyspace). Cross-checked against every noun, since a
-    // single neutral `pools:` map is not scoped by kind.
-    for pool_name in cfg
-        .pools
-        .keys()
-        .chain(cfg.tool_pools.keys())
-        .chain(cfg.agent_pools.keys())
-    {
-        for (set, noun) in [(&tool_names, "tools"), (&agent_names, "agents")] {
-            if set.contains(pool_name.as_str()) {
-                errors.push(format!(
-                    "pool name '{pool_name}' conflicts with a `{noun}:` registration of the same \
-                     name; a pool and a registration share the failover breaker keyspace, so their \
-                     names must be distinct. Rename the pool."
-                ));
-            }
-        }
-    }
 }
 
 /// Returns `Some(target)` only for a well-formed FallbackPool action; `None` for a pool with no
@@ -2505,11 +2463,23 @@ fn validate_providers_with(
                      service-account JSON or key file), so there is nothing to declare keyless"
                 ));
             }
+            let config_time = busbar_contract::config_time::ConfigScope::config_time();
             let cred = crate::config::secret::resolve_linked_string_at_config(
                 &provider_cfg.api_key,
-                &busbar_contract::config_time::ConfigScope::config_time(),
+                &config_time,
             )
             .unwrap_or_default();
+            // A credential naming its key file is read as the build reads it, in the same words.
+            let cred = match service_account_json(cred.into_bytes(), |file| {
+                crate::config::secret::SecretResolver::builtins_only()
+                    .resolve_at_config(file, &config_time)
+            }) {
+                Ok(json) => String::from_utf8(json).unwrap_or_default(),
+                Err(e) => {
+                    errors.push(format!("provider '{provider_name}' (jwt-bearer auth): {e}"));
+                    String::new()
+                }
+            };
             if !cred.trim().is_empty() {
                 // THE NEED'S TARGET IS THE KERNEL'S TO JUDGE (THE DESIGN §5; ARCHITECT ruling
                 // 2026-09-28, Q2 (a)): the service account's `token_uri`, under the SAME operator
@@ -2609,15 +2579,47 @@ fn outbound_credential_refusals(
         .unwrap_or_default()
 }
 
-/// THE SERVICE ACCOUNT'S TOKEN ENDPOINT: the `token_uri` of the service-account JSON a `jwt-bearer`
-/// credential carries inline (it starts with `{`) or names as a key file, else Google's default
-/// endpoint — 1.5.5's `ServiceAccount` (`egress_auth/jwt_bearer.rs`, v1.5.5: `token_uri` defaults to
-/// `https://oauth2.googleapis.com/token`). `Err` when the JSON cannot be read or parsed (the auth
-/// plugin serving the style names why, in its own words).
+/// THE SERVICE ACCOUNT A `jwt-bearer` CREDENTIAL CARRIES, as bytes of its JSON (Q128 audit
+/// ruling (a), restating its M4). 1.5.5 took the credential as the service-account JSON inline
+/// (it starts with `{`) or as the path of its key file, and both stay valid. A path is read HERE,
+/// at configuration time, through the secret kind's file source (`read_file`, handed the file
+/// reference), so the auth plugin is handed the JSON and never opens a file. A file that cannot be
+/// read refuses in 1.5.5's words (`egress_auth/jwt_bearer.rs`, v1.5.5), and the credential, which
+/// names the file, is never rendered.
 ///
 /// # Errors
 ///
-/// The credential cannot be read or is not the service-account JSON.
+/// The key file the credential names cannot be read.
+pub fn service_account_json(
+    credential: Vec<u8>,
+    read_file: impl FnOnce(&busbar_contract::secret_ref::SecretRef) -> Result<Vec<u8>, String>,
+) -> Result<Vec<u8>, String> {
+    let named = match std::str::from_utf8(&credential) {
+        Ok(text) if !text.trim_start().starts_with('{') && !text.trim().is_empty() => {
+            text.trim().to_string()
+        }
+        _ => return Ok(credential),
+    };
+    let file = busbar_contract::secret_ref::SecretRef::file(named.clone());
+    read_file(&file).map_err(|e| {
+        // The file source's refusal names the path; only its reason is 1.5.5's to show.
+        let why = e.split_once(" cannot resolve: ").map_or_else(
+            || e.replace(&named, "<key file>"),
+            |(_, why)| why.to_string(),
+        );
+        format!("could not read service-account key file named by this lane's credential: {why}")
+    })
+}
+
+/// THE SERVICE ACCOUNT'S TOKEN ENDPOINT: the `token_uri` of the service-account JSON a `jwt-bearer`
+/// credential carries ([`service_account_json`] reads a key file the credential names into it),
+/// else Google's default endpoint — 1.5.5's `ServiceAccount` (`egress_auth/jwt_bearer.rs`, v1.5.5:
+/// `token_uri` defaults to `https://oauth2.googleapis.com/token`). `Err` when the JSON cannot be
+/// parsed (the auth plugin serving the style names why, in its own words).
+///
+/// # Errors
+///
+/// The credential is not the service-account JSON.
 pub fn service_account_token_uri(credential: &str) -> Result<String, String> {
     // The service account's shape as its auth plugin reads it, so a JSON this cannot read is one
     // the plugin refuses, in its own words. The key is required and never held.
@@ -2629,14 +2631,7 @@ pub fn service_account_token_uri(credential: &str) -> Result<String, String> {
         private_key: serde::de::IgnoredAny,
         token_uri: Option<String>,
     }
-    let parsed: TokenUri = if credential.trim_start().starts_with('{') {
-        serde_json::from_str(credential).map_err(|e| e.to_string())?
-    } else {
-        let json = zeroize::Zeroizing::new(
-            std::fs::read_to_string(credential).map_err(|e| e.to_string())?,
-        );
-        serde_json::from_str(&json).map_err(|e| e.to_string())?
-    };
+    let parsed: TokenUri = serde_json::from_str(credential).map_err(|e| e.to_string())?;
     Ok(parsed
         .token_uri
         .unwrap_or_else(|| "https://oauth2.googleapis.com/token".to_string()))

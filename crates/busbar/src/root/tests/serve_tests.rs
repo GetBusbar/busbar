@@ -2429,16 +2429,18 @@ mod tools_door {
         repeatable: &[&str],
     ) -> serde_yaml::Value {
         let key = surface("section");
-        let pools: std::collections::BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg> =
-            [(
-                name.to_string(),
-                busbar_kernel::failover::CandidatePoolCfg {
-                    members: members.iter().map(|m| (*m).to_string()).collect(),
-                    repeatable: repeatable.iter().map(|m| (*m).to_string()).collect(),
-                    breaker: None,
-                },
-            )]
-            .into();
+        let pools: std::collections::BTreeMap<
+            String,
+            busbar_kernel::config::pools::CandidatePoolCfg,
+        > = [(
+            name.to_string(),
+            busbar_kernel::config::pools::CandidatePoolCfg {
+                members: members.iter().map(|m| (*m).to_string()).collect(),
+                repeatable: repeatable.iter().map(|m| (*m).to_string()).collect(),
+                breaker: None,
+            },
+        )]
+        .into();
         let mut sections = crate::root::serve::with_pools([(key, section)].into(), &[(key, pools)]);
         sections.remove(key).expect("the section is handed back")
     }
@@ -4503,6 +4505,55 @@ async fn the_pools_door_seals_one_audit_record_per_unit() {
     assert_eq!(rig.chat().await.0, 200);
     let _ = rig.ledger_after(1).await;
     assert_eq!(rig.audit_records(), 1, "one record for the one unit");
+}
+
+/// A NODE WHOSE JOURNAL CANNOT REACH ITS STORE FAILS CLOSED, ON THE DOOR (ARCHITECT 2026-10-07 H3
+/// ruling): the node's journal is kept by a configured store that refuses, and the lane to it is
+/// full, so a new unit through the door is answered 503 with the reason, in the caller's dialect
+/// (the plane's `refusal` renders it for the target, kind `overloaded`, the bytes the node's
+/// handed path answered: `ingress_error(dialect, 503, overloaded, reason)`), before anything is
+/// dispatched or charged, and nothing the journal holds is dropped. RED before the fix: the door
+/// answered a bare 502 (`plane_panic`) with an empty body, because nothing asked the node's
+/// `journal_refusal` before the borrowed drive declined the unit.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_refuses_a_new_unit_503_with_the_reason_while_its_journal_is_full() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-full-journal";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            full_journal: true,
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, head, body) = rig.chat().await;
+    let text = String::from_utf8_lossy(&body);
+    assert_eq!(status, 503, "{text}");
+    assert_eq!(
+        head.get("content-type").and_then(|v| v.to_str().ok()),
+        Some("application/json"),
+        "the caller's dialect envelope: {text}"
+    );
+    let answer: serde_json::Value = serde_json::from_slice(&body).expect("a JSON envelope");
+    let message = answer["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("journal is full") && message.contains("`test-store`"),
+        "the reason names the full journal and the store: {answer}"
+    );
+    assert!(answer["error"]["type"].is_string(), "{answer}");
+    assert_eq!(far.served(), 0, "nothing dispatched");
+    let (requests, spend, _, billable) = rig.ledger_after(0).await;
+    assert_eq!((requests, spend, billable), (0, 0, 0), "nothing charged");
+    assert_eq!(
+        rig.book.lock().unwrap().journal.dropped_total(),
+        0,
+        "no record is dropped"
+    );
 }
 
 /// HOOKS-GATE: a rejecting gate refuses the door's traffic before dispatch.

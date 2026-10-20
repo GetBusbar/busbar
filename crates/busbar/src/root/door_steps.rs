@@ -70,7 +70,7 @@ pub struct DoorPools {
     /// Each pool's members' tiers, in member order (`0` where a member states none).
     tiers: BTreeMap<String, Vec<u32>>,
     /// Each pool's `breaker:` block, where its `pools:` entry states one ([`POOL_BREAKER_KEY`]):
-    /// the same block, read the same way, as the first plane's pools (BUSBAR-1.6.0.md THE DESIGN
+    /// the same block, read the same way, as a top-level pool's (BUSBAR-1.6.0.md THE DESIGN
     /// §1: "Any plugin gets all functionality").
     breakers: BTreeMap<String, busbar_kernel::config::BreakerCfg>,
 }
@@ -164,8 +164,8 @@ impl DoorPools {
                     .collect()
             })
             .unwrap_or_default();
-        // THE POOL'S `breaker:` BLOCK, carried here by `serve::pools_into` from the pool's unified
-        // `pools:` entry (already held to `config_validate`'s Rule 6), never handed to the plane.
+        // THE POOL'S `breaker:` BLOCK, carried here by `serve::pools_into` from the pool's
+        // `<verb>.pools` entry (already held to `config_validate`'s Rule 6), never handed to the plane.
         let breakers = map
             .get(RESERVED_POOLS_KEY)
             .and_then(serde_yaml::Value::as_mapping)
@@ -1498,7 +1498,7 @@ pub fn compose_egress(
     }
     // Every cell of this plane's members under its pool's ladder: the pool's own `breaker:` block
     // where its `pools:` entry states one, lowered by the kernel's one lowering exactly as the
-    // first plane's pools are (`BreakerPolicy::from_pools`), else the default ladder (BUSBAR-1.6.0.md
+    // top-level pools are (`BreakerPolicy::from_pools`), else the default ladder (BUSBAR-1.6.0.md
     // THE DESIGN §1: "Any plugin gets all functionality"); with the plane's declared breaker fact
     // where it states one (ARCHITECT Q4). A pool with no block — every pool of a default config —
     // reads exactly the ladder it always did.
@@ -1515,7 +1515,7 @@ pub fn compose_egress(
     );
     // The process-wide `limits.hard_down_cooldown_secs` / `limits.max_honored_retry_after_secs`,
     // as published for the generation this egress is sealed for (boot's commit, or the swap that
-    // refreshes the door planes onto a new generation): the same two limits the first plane's
+    // refreshes the door planes onto a new generation): the same two limits the lane store's
     // cells run under (THE DESIGN §1). Unpublished (a test process), the defaults — the values
     // every default deployment runs under.
     let (hard_down_cooldown_secs, max_honored_retry_after_secs) =
@@ -1846,7 +1846,17 @@ pub fn kernel_sections(
             yaml(Value::Object(providers)),
         );
     }
-    if !models.is_empty() || !pools.is_empty() {
+    // A WRITTEN consumed|required key counts, even an empty one (ARCHITECT row-82 ruling): a
+    // section some registered plane requires is written in every document that parsed (the pre-pass
+    // refuses one that omits it, `busbar_kernel::config::prepass`), so it is handed as written. The
+    // previous release accepted `models: {}` and answered from its catch-all (v1.5.5
+    // crates/busbar/src/config/mod.rs:2626-2632; ingress/dispatch.rs:292-319).
+    let required = |key: &'static str| {
+        busbar_kernel::plane::registry::plane_decls()
+            .iter()
+            .any(|d| d.required_config_sections.contains(&key))
+    };
+    if !models.is_empty() || !pools.is_empty() || required(RESERVED_MODELS_KEY) {
         out.insert(RESERVED_MODELS_KEY, yaml(Value::Object(models)));
         out.insert(RESERVED_POOLS_KEY, yaml(Value::Object(pools)));
     }
@@ -3599,6 +3609,17 @@ pub fn member_routes(
                 .resolve_at_config(&r.provider.credential, scope)
                 .map_err(|e| format!("provider '{}' credential: {e}", r.name))?
         };
+        // A service-account credential naming its key file is read here, at configuration time,
+        // through the secret kind's file source: the serving plugin is handed the JSON and opens no
+        // file (Q128 audit ruling (a)).
+        let credential = if r.style == SERVICE_ACCOUNT_STYLE {
+            busbar_kernel::config_validate::service_account_json(credential, |file| {
+                reach.secrets.resolve_at_config(file, scope)
+            })
+            .map_err(|e| format!("provider '{}' (jwt-bearer auth): {e}", r.name))?
+        } else {
+            credential
+        };
         let settings = sealed_params(&r.name, &r.style, r.provider, &credential)?.to_json();
         let (auth, decl) = reach.auths.serving(&r.style, &settings)?.ok_or_else(|| {
             format!(
@@ -3719,12 +3740,14 @@ pub fn sealed_settings(
     Ok(serde_json::Value::Object(sealed))
 }
 
-/// The host of `base_url`: after its scheme, before its port, path, query or fragment.
+/// The host of `base_url`, the one the request dials: its authority read by the one split
+/// ([`busbar_contract::net::url_authority`]), before its port.
 fn base_url_host(base_url: &str) -> &str {
-    let rest = base_url.split_once("://").map_or(base_url, |(_, r)| r);
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let authority = authority.rsplit_once('@').map_or(authority, |(_, a)| a);
-    authority.split(':').next().unwrap_or("")
+    busbar_contract::net::url_authority(base_url)
+        .host_port
+        .split(':')
+        .next()
+        .unwrap_or("")
 }
 
 /// The dotted label of `host` right after the first of `after`, when it reads as a dashed name
