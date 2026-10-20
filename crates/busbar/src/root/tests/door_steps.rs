@@ -6734,7 +6734,7 @@ pub(crate) mod program_member {
 /// program's carrier, keyed by the member's supervision key the connector hands each spawn. RED
 /// with the connector's own supervisor deleted and the carrier's absent: every call spawns the
 /// program anew.
-#[cfg(all(linked_axis_plane_door, linked_section_pools, linked_axis_node))]
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
 mod program_member_supervised {
     use super::program_member::section_running;
     use super::tool_door::{rig_tools, send, CALL};
