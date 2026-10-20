@@ -347,7 +347,7 @@ fn test_inert_durable_keys_banner_fires_only_for_durable_keyed_no_token() {
 #[test]
 fn test_stateful_plane_ephemeral_store_warn_fires_only_for_ram_plus_stateful() {
     // RAM store + an MCP plane configured (tool or tool-pool) → the specific warn fires.
-    let w = stateful_plane_ephemeral_store_warn(true, true, false)
+    let w = stateful_plane_ephemeral_store_warn(true, true)
         .expect("RAM + the first stateful plane → sharper warn fires");
     assert!(
         w.contains("in-flight tasks will break")
@@ -358,20 +358,20 @@ fn test_stateful_plane_ephemeral_store_warn_fires_only_for_ram_plus_stateful() {
 
     // RAM store + an A2A plane configured (agent or agent-pool) → fires (either stateful plane does).
     assert!(
-        stateful_plane_ephemeral_store_warn(true, false, true).is_some(),
+        stateful_plane_ephemeral_store_warn(true, true).is_some(),
         "RAM + the second stateful plane → the sharper warn fires"
     );
 
     // RAM store but LLM-only (no stateful plane) → stateless, a restart costs nothing → NO warn.
     assert!(
-        stateful_plane_ephemeral_store_warn(true, false, false).is_none(),
+        stateful_plane_ephemeral_store_warn(true, false).is_none(),
         "a stateless-only deploy must NOT get the sharper warn — noise trains people to \
          ignore warnings"
     );
 
     // A DURABLE store → task state survives a restart → no warn, even with stateful planes present.
     assert!(
-        stateful_plane_ephemeral_store_warn(false, true, true).is_none(),
+        stateful_plane_ephemeral_store_warn(false, true).is_none(),
         "a durable store persists stateful-plane task state across restarts — no sharper warn"
     );
 }
@@ -2675,16 +2675,20 @@ fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
         "an inert prior must be reused across a planeless apply"
     );
 
-    // Arm 3: plane content appears (a `tool_pools:` set here — any of the plane signals works) →
+    // Arm 3: plane content appears (a plane pool here — any of the plane signals works) →
     // upgraded to a provisioned handle AT APPLY, not on a request path.
     let mut with_pool = planeless();
-    with_pool.tool_pools.insert(
-        "search".to_string(),
-        crate::failover::CandidatePoolCfg {
-            members: vec!["search-eu".to_string(), "search-us".to_string()],
-            ..Default::default()
-        },
-    );
+    with_pool
+        .plane_pools
+        .entry("search-section")
+        .or_default()
+        .insert(
+            "search".to_string(),
+            crate::config::pools::CandidatePoolCfg {
+                members: vec!["search-eu".to_string(), "search-us".to_string()],
+                ..Default::default()
+            },
+        );
     let app3 = build(with_pool, Some(&app2));
     assert!(
         app3.plane_breakers.is_provisioned(),

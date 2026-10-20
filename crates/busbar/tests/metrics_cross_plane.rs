@@ -631,7 +631,9 @@ fn test_lane_state_by_model_default_cell_untouched_zero_cooldown_reports_healthy
 /// the leave), or the scrape renders a value other than the live depth its read seam reports.
 #[test]
 fn the_scrapes_pool_queued_gauge_reads_the_live_depth() {
-    use busbar_kernel::plane_host::{set_pool_queued_depth, ConfigTables, EngineTablesView};
+    use busbar_kernel::plane_driver::route_tables::{
+        set_pool_queued_depth, ConfigTables, EngineTablesView,
+    };
     register_planes();
     init();
     // Unique labels: the recorder and the park table are process-global.

@@ -1724,26 +1724,26 @@ The durable plane demotion records could NOT be read at boot, so any upstream th
 **What to do:** Restore the durable governance store's read path and restart so persisted demotions are re-applied before a listener binds.
 
 <a id="trust-verify-refused-on-drift"></a>
-### BUSBAR-7097 — Verify-on-call refused a call because the upstream's advertised surface drifted
+### BUSBAR-7097 — Verify-on-call refused a call because the upstream's advertised surface drifted — RETIRED *(retired)*
 
 - **Severity:** benign_recurring
 - **Since:** 1.6.0
 - **Slug:** `trust-verify-refused-on-drift`
 
-On the request path, verify-on-call re-fetched the upstream's advertised surface (a tool's name+args+description, or an agent card) within `verify_ttl` and found it DRIFTED from the fingerprint the operator approved, so the call was refused BEFORE dispatch. The refusal itself is the signal; this is a warn-once-per-subject note so persistent drift does not spam.
+RETIRED. Nothing emits this code: the verify-on-call gate that refused a drifted call is deleted (Q128 p8#3); a registration whose upstream drifted is demoted by the trust book (BUSBAR-4019).
 
-**What to do:** Review the change on the trust surface and re-approve the new fingerprint if it is legitimate, or investigate the upstream if it is not.
+**What to do:** Nothing emits this code. See BUSBAR-4019.
 
 <a id="trust-verify-unreachable"></a>
-### BUSBAR-7098 — Verify-on-call could not reach an upstream to re-verify, and refused fail-closed
+### BUSBAR-7098 — Verify-on-call could not reach an upstream to re-verify, and refused fail-closed — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `trust-verify-unreachable`
 
-On the request path, verify-on-call needed to re-verify an upstream whose recorded observation was older than `verify_ttl`, and the re-fetch FAILED (unreachable or unverifiable). The call was REFUSED fail-closed rather than served against a snapshot older than the operator's bound. Latched per subject.
+RETIRED. Nothing emits this code: the verify-on-call gate that re-fetched a stale observation is deleted (Q128 p8#3).
 
-**What to do:** Restore reachability to the named upstream. Calls to it are refused until a re-fetch succeeds within `verify_ttl`; a larger `verify_ttl` widens the drift-serving window and is an explicit, documented security downgrade.
+**What to do:** Nothing emits this code.
 
 <a id="plane-task-abandon-unrecorded"></a>
 ### BUSBAR-7099 — Abandoned plane task could not be transitioned to canceled (durable store write failed)

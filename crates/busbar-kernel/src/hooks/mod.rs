@@ -1648,8 +1648,8 @@ pub fn resolve_gate_hooks(
     ranked
 }
 
-/// THE ADDITIVE-LIST COMBINE RULE — relocated to the neutral seam (`busbar_kernel::plane::config`)
-/// beside the [`ContainerGateInputs`](busbar_kernel::plane::config::ContainerGateInputs) it folds,
+/// THE ADDITIVE-LIST COMBINE RULE — relocated to the neutral seam (`busbar_kernel::config::plane_sections`)
+/// beside the [`ContainerGateInputs`](busbar_kernel::config::plane_sections::ContainerGateInputs) it folds,
 /// so an extracted plane crate reaches it without naming `busbar_kernel::hooks`. Re-exported here so
 /// `crate::hooks::attach_list` (this module's [`resolve_container_gates`], and the A2A twin) is
 /// unchanged.
@@ -1657,7 +1657,7 @@ pub fn resolve_gate_hooks(
 // [`resolve_container_gates`] has no caller, so the re-export reads unused. Unconditional allow —
 // the neutral seam names no plane feature; it is a public re-export whichever planes are compiled in.
 #[allow(unused_imports)]
-pub use busbar_kernel::plane::config::attach_list;
+pub use busbar_kernel::config::plane_sections::attach_list;
 
 /// Resolve the per-CONTAINER gate chains for one plane's registry: for each `(container name, that
 /// container's own hook list)`, the effective attach ([`attach_list`]) resolved through

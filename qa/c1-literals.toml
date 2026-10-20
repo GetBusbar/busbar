@@ -13,188 +13,202 @@
 rule = "c1-literals:feature"
 file = "crates/busbar-kernel/Cargo.toml"
 item = "a2a (plane-a2a)"
+count = 1
 
 [[finding]]
 rule = "c1-literals:feature"
 file = "crates/busbar-kernel/Cargo.toml"
 item = "mcp (plane-mcp)"
+count = 1
 
 [[finding]]
 rule = "c1-literals:feature"
 file = "crates/busbar-kernel/Cargo.toml"
 item = "openapi (openapi-schema)"
+count = 1
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/api.rs"
 item = "openapi"
+count = 6
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/audit_ring.rs"
 item = "openapi"
+count = 1
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/config/mod.rs"
 item = "github"
+count = 4
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/config/mod.rs"
 item = "ranking"
+count = 1
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/config/named_map.rs"
 item = "openapi"
+count = 2
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/config_validate/mod.rs"
 item = "ranking"
+count = 3
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/plane/registry.rs"
 item = "openapi"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/plane_host/egress_tests.rs"
-item = "jsonrpc"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/plane_host/egress_tests.rs"
-item = "streaming"
+count = 6
 
 [[finding]]
 rule = "c1-literals:feature"
 file = "crates/busbar-kernel/Cargo.toml"
 item = "ws (duplex-ws)"
+count = 1
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel-egress/src/trust/net.rs"
 item = "http"
+count = 3
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel-egress/src/trust/net.rs"
 item = "https"
+count = 1
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/config/mod.rs"
 item = "https"
+count = 1
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/config_validate/mod.rs"
 item = "http"
+count = 15
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/config_validate/mod.rs"
 item = "https"
+count = 11
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/diagnostics/mod.rs"
 item = "http"
+count = 1
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/egress/engine/client.rs"
 item = "https"
+count = 1
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/egress/engine/client.rs"
 item = "wss"
+count = 1
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/egress/engine/deadline.rs"
 item = "tcp"
+count = 1
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/egress/engine/https.rs"
 item = "h2"
+count = 1
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/egress/engine/mod.rs"
 item = "h2"
+count = 1
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/egress/engine/mod.rs"
 item = "http"
+count = 4
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/egress/engine/mod.rs"
 item = "https"
+count = 1
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/egress/engine/observe.rs"
 item = "h2"
+count = 1
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/egress/fixtures.rs"
 item = "http"
+count = 2
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/ingress/protocol.rs"
 item = "http"
+count = 1
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/ingress/protocol.rs"
 item = "https"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/plane_host/egress_tests.rs"
-item = "http"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/plane_host/egress_tests.rs"
-item = "https"
+count = 1
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/preflight.rs"
 item = "http"
+count = 3
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/preflight.rs"
 item = "https"
+count = 2
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/router.rs"
 item = "ws"
+count = 3
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/test_support/fixtures.rs"
 item = "http"
+count = 1
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/test_support/fixtures.rs"
 item = "https"
+count = 1
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/test_support/mod.rs"
 item = "http"
+count = 1
