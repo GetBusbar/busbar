@@ -1416,7 +1416,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         let (streamed, cut) = {
             let st = self.lock();
             let success = st.facts.status == 0 || (200..300).contains(&st.facts.status);
-            (st.facts.streamed && success, st.facts.cut)
+            (st.facts.content && success, st.facts.cut)
         };
         self.steps.answered(ctx, streamed, cut);
         self.steps.audit(token, ctx, outcome)

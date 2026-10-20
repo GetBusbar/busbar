@@ -918,6 +918,7 @@ fn a_cancel_bill_carries_the_floor_counts_and_never_an_estimate() {
         status: 0,
         far_end_answered: true,
         streamed: true,
+        content: true,
         cut: false,
         relayed: false,
         units: vec![
