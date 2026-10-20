@@ -18,7 +18,7 @@
 //! The measure is every line of every file under the directory, whatever its extension. A frozen
 //! lane's tests die with it, so they are frozen with it.
 
-use crate::ctx::{Ctx, Overlay, WalkSpec};
+use crate::ctx::{Ctx, Overlay, WalkError, WalkSpec};
 use crate::gates::{prove_green, prove_red, Gate, Report};
 use crate::ledger::{Row, Verdict};
 
@@ -30,19 +30,25 @@ pub const LEDGER: &str = "qa/abi-freeze.toml";
 /// The directories this gate refuses to see unfrozen. A ledger that drops one is RED, so the
 /// freeze cannot be lifted by deleting its row.
 pub const CONDEMNED: &[&str] = &[
+    // qa-names: crates/busbar-contract/src/abi/hot -- xtask/src/gates/abi_freeze.rs -- the hot lane is deleted (row 84); it stays condemned so a directory that grows back there is UNFROZEN and red, and this declaration reds the day the path exists again
     "crates/busbar-contract/src/abi/hot",
     // qa-names: crates/busbar-contract/src/abi/cold -- xtask/src/gates/abi_freeze.rs -- the cold lane is deleted (row 84, #961); it stays condemned so a directory that grows back there is UNFROZEN and red, and this declaration reds the day the path exists again
     "crates/busbar-contract/src/abi/cold",
 ];
 
 /// Every line of every file under `dir`, and how many files that is.
+///
+/// THE WALK IS ASKED, NOT THE DIRECTORY. This used to open with `cx.exists(dir)`, a stat that no
+/// overlay can answer for a directory the overlay alone lays: a deleted lane growing back is
+/// exactly such a directory, and it measured zero, so the UNFROZEN rule below never saw it. The
+/// walk resolves a root from the disk, the base layer AND the overlay, and refuses only a root
+/// none of them lays, which is the one "nothing here" this measure turns into zero.
 fn measure(cx: &Ctx, dir: &str) -> Result<(u64, usize), String> {
-    if !cx.exists(dir) {
-        return Ok((0, 0));
-    }
-    let files = cx
-        .list(&WalkSpec::new([dir]))
-        .map_err(|e| format!("{dir}: {e}"))?;
+    let files = match cx.list(&WalkSpec::new([dir]).allow_empty()) {
+        Ok(files) => files,
+        Err(WalkError::MissingRoot { .. }) => return Ok((0, 0)),
+        Err(e) => return Err(format!("{dir}: {e}")),
+    };
     let mut lines = 0u64;
     let mut n = 0usize;
     for f in files {
@@ -145,30 +151,30 @@ impl Gate for AbiFreezeGate {
         report.push(prove_green(
             cx,
             self,
-            "the tree's hot and cold lanes measure their frozen size",
+            "the tree's condemned lanes are deleted and hold no row",
             &[ROW_FROZEN],
         ));
 
-        // GROWTH: one more line in an existing HOT file.
-        let hot_file = format!("{}/mod.rs", CONDEMNED[0]);
-        let mut grown = Overlay::new();
-        grown.set(
-            hot_file.clone(),
-            format!(
-                "{}// one more line\n",
-                cx.read(&hot_file).unwrap_or_default()
-            ),
+        // THE HOT LANE GROWING BACK. The lane is deleted (row 84) and its row struck: a file there
+        // is a condemned directory with no row at all, UNFROZEN and RED.
+        let mut regrown = Overlay::new();
+        regrown.set(
+            format!("{}/mod.rs", CONDEMNED[0]),
+            "pub struct PlantedHotShape;\n".to_string(),
         );
         report.push(prove_red(
             cx,
             self,
-            "a line appended to the HOT lane is RED, naming the directory",
+            "a deleted HOT lane that grows back is UNFROZEN and RED",
             &[ROW_FROZEN],
-            grown,
-            &["GREW", CONDEMNED[0]],
+            regrown,
+            &["UNFROZEN", CONDEMNED[0]],
         ));
 
-        // A NEW FILE in the COLD lane is growth as well.
+        // THE COLD LANE GROWING BACK. The lane is deleted (row 84, #961) and its row struck, so
+        // a file there is not GROWTH against a row but a condemned directory with no row at all:
+        // UNFROZEN, and RED. This is the case that holds the CONDEMNED loop to a directory that
+        // does not exist on disk, the only shape the loop still guards for this lane.
         let mut planted = Overlay::new();
         planted.set(
             format!("{}/planted.rs", CONDEMNED[1]),
@@ -177,42 +183,46 @@ impl Gate for AbiFreezeGate {
         report.push(prove_red(
             cx,
             self,
-            "a new file in the COLD lane is RED",
+            "a deleted COLD lane that grows back is UNFROZEN and RED",
             &[ROW_FROZEN],
             planted,
-            &["GREW", CONDEMNED[1]],
+            &["UNFROZEN", CONDEMNED[1]],
         ));
 
-        // SLACK: the row above the measurement.
+        // A FROZEN ROW, while one is held, holds its directory to its size both ways. Neither lane
+        // holds one now, so each case plants the row it judges.
         let ledger = cx.read(LEDGER).unwrap_or_default();
+        let hot_row = format!(
+            "{ledger}\n[[frozen]]\ndir = \"{}\"\nlines = \"1\"\n",
+            CONDEMNED[0]
+        );
+
+        // SLACK: a row above its directory's measurement (here, a deleted directory).
         let mut slack = Overlay::new();
-        slack.set(LEDGER, ledger.replacen("lines = \"", "lines = \"9", 1));
+        slack.set(LEDGER, hot_row.clone());
         report.push(prove_red(
             cx,
             self,
             "a frozen row above its directory's measurement is stale slack, and RED",
             &[ROW_FROZEN],
             slack,
-            &["STALE SLACK"],
+            &["STALE SLACK", "strike the row"],
         ));
 
-        // LIFTING THE FREEZE by striking a row is refused.
-        let mut lifted = Overlay::new();
-        lifted.set(
-            LEDGER,
-            ledger.replacen(
-                &format!("dir = \"{}\"", CONDEMNED[0]),
-                "dir = \"crates/busbar-contract/src/abi/not-hot\"",
-                1,
-            ),
+        // GROWTH: one line more than the row.
+        let mut grown = Overlay::new();
+        grown.set(LEDGER, hot_row);
+        grown.set(
+            format!("{}/mod.rs", CONDEMNED[0]),
+            "pub struct One;\npub struct Two;\n".to_string(),
         );
         report.push(prove_red(
             cx,
             self,
-            "a condemned directory with no [[frozen]] row is RED",
+            "a line over a frozen row is RED, naming the directory",
             &[ROW_FROZEN],
-            lifted,
-            &["UNFROZEN", CONDEMNED[0]],
+            grown,
+            &["GREW", CONDEMNED[0]],
         ));
         report
     }

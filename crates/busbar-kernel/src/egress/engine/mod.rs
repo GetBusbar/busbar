@@ -78,8 +78,6 @@ pub use tls::{ClientIdentity, Trust};
 pub type EngineConnector =
     KeyPinObserve<ConnectDeadline<https::HttpsConnector<tunnel::TunnelConnector>>>;
 
-#[cfg(test)]
-pub(crate) use client::RETURN_DELAY_FOR_TESTS;
 /// The pooled egress client — the OWNED pool with dial coalescing (`client.rs`/`pool.rs`),
 /// behind the same `request()` surface the `hyper_util::client::legacy::Client` alias had.
 /// `Full<Bytes>`: every engine egress body is one owned buffer.
