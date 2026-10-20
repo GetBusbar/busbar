@@ -275,60 +275,37 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         ));
     }
 
-    // A plane whose grammar left its `mod.rs` is a plane nothing can locate — and every rule that
-    // names it would then scan zero files, which is the passing answer to a ban. Planted against
-    // the llm plane: mcp, a2a and streaming are DOOR-ONLY planes since P3 DEL-MCP (ARCHITECT
-    // 2026-10-05), FLIP-A2A (#787) and FLIP-STREAMING (#503) and declare no grammar.
+    // THE LLM PLANE IS DOOR-ONLY TOO since its engine crate was deleted (DEV-GREEN row 83): no file
+    // declares its grammar any more, its door row in the composition root's manifest is its
+    // declaration. Taking the `plane-door` axis off that row leaves a roster plane with no home,
+    // which must be PLANE-ROOT-MISSING naming it rather than a plane every rule scans zero files of.
     //
-    // THE LLM PLANE HAS A DOOR ROW TOO (`plane-llm-door = "plane-door"`), and the ownership rule
-    // (`roots::resolve`) consults a door row for any key no declaration claimed. So a plant that
-    // moves only the grammar leaves llm located at its door crate and the row GREEN: that plant
-    // proved nothing about the refusal. The plane is unlocatable only when BOTH are gone, so the
-    // red plant takes both; and the green twin takes the door row alone, so the DECLARATION is
-    // proven to locate the plane by itself rather than riding on the door.
-    let llm_door = "plane-llm-door = \"plane-door\"";
-    let llm_manifest = format!("{}/{}", roots::CRATES, crate::planes::DOOR_MANIFEST);
-    match (
-        plane_grammar_file(cx, "busbar-llm"),
-        cx.read(&llm_manifest).ok().filter(|t| t.contains(llm_door)),
-    ) {
-        (Some((rel, text)), Some(manifest)) => {
-            let mut doorless = Overlay::new();
-            doorless.set(
-                &llm_manifest,
-                manifest.replace(llm_door, "plane-llm-door = \"\""),
-            );
-            report.push(green_case(
-                cx,
-                gate,
-                "a plane whose door row left the manifest is still located by its declaration",
-                &[roots::ROW_PLANE_ROOTS],
-                doorless,
-            ));
-
+    // THE PLANT TAKES THE AXIS, NOT A SPELLING OF THE ROW. The row carries more axes than its door
+    // (`plane-door protocols` since the llm door fills the protocol axis), and a plant keyed on one
+    // exact spelling of it stopped finding the row the day another axis joined it: the RED proof
+    // went to an infra note instead of red. Only the `plane-door` word leaves; every other axis on
+    // the row stays, so the plant moves exactly what locates the plane and nothing else.
+    let llm_manifest_rel = format!("{}/{}", roots::CRATES, crate::planes::DOOR_MANIFEST);
+    match cx
+        .read(&llm_manifest_rel)
+        .ok()
+        .and_then(|text| without_door_axis(&text, "plane-llm-door"))
+    {
+        Some(doorless) => {
             let mut ov = Overlay::new();
-            ov.set(
-                &rel,
-                text.replace(crate::planes::PLANE_GRAMMAR, "pub const MOVED_AWAY"),
-            );
-            ov.set(
-                &llm_manifest,
-                manifest.replace(llm_door, "plane-llm-door = \"\""),
-            );
+            ov.set(&llm_manifest_rel, doorless);
             report.push(tree_case(
                 cx,
                 gate,
-                "a plane whose declaration moved and whose door row left is refused, not silently \
-                 unscanned",
+                "a plane whose declaration moved is refused, not silently unscanned",
                 &[roots::ROW_PLANE_ROOTS],
                 ov,
                 &["PLANE-ROOT-MISSING", "llm"],
             ));
         }
-        _ => report.note_infra_failure(
-            "structure-lint selftest: no file declares the llm plane's grammar, or the manifest \
-             carries no `plane-llm-door = \"plane-door\"` row, so the plane-root rule has nothing \
-             to plant against",
+        None => report.note_infra_failure(
+            "structure-lint selftest: the manifest carries no `plane-llm-door` row with the \
+             `plane-door` axis, so the llm plane-root rule has nothing to plant against",
         ),
     }
 
@@ -1093,20 +1070,6 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
     report
 }
 
-/// The `mod.rs` that declares a plane, and its text.
-fn plane_grammar_file(cx: &Ctx, plane: &str) -> Option<(String, String)> {
-    let files = cx
-        .walk(&crate::ctx::WalkSpec::new([roots::CRATES]).ext("rs"))
-        .ok()?;
-    files
-        .into_iter()
-        .find(|s| {
-            let rel = s.rel_str();
-            rel.contains(&format!("/{plane}/")) && s.text.contains(crate::planes::PLANE_GRAMMAR)
-        })
-        .map(|s| (s.rel_str(), s.text))
-}
-
 /// The first plane sink attach, and its file's text.
 fn sink_file(
     cx: &Ctx,
@@ -1312,4 +1275,40 @@ fn with_census_empty_scope(t: &Tables) -> Tables {
         r.scope = vec!["Cargo.toml".to_string()];
     }
     t
+}
+
+/// `manifest` with the [`crate::planes::PLANE_DOOR_AXIS`] word taken off `row`'s axes, every other
+/// axis on it kept; `None` when no `row = "..."` line carries that axis (the plant has nothing to
+/// take). The axes are whitespace-separated words, as `planes::door_planes` reads them.
+fn without_door_axis(manifest: &str, row: &str) -> Option<String> {
+    let lead = format!("{row} = \"");
+    let mut found = false;
+    let out: Vec<String> = manifest
+        .lines()
+        .map(|line| {
+            let Some(rest) = line.trim_start().strip_prefix(&lead) else {
+                return line.to_string();
+            };
+            let Some((axes, after)) = rest.split_once('"') else {
+                return line.to_string();
+            };
+            let words: Vec<&str> = axes.split_whitespace().collect();
+            if found || !words.contains(&crate::planes::PLANE_DOOR_AXIS) {
+                return line.to_string();
+            }
+            found = true;
+            let kept: Vec<&str> = words
+                .into_iter()
+                .filter(|w| *w != crate::planes::PLANE_DOOR_AXIS)
+                .collect();
+            format!("{lead}{}\"{after}", kept.join(" "))
+        })
+        .collect();
+    found.then(|| {
+        let mut text = out.join("\n");
+        if manifest.ends_with('\n') {
+            text.push('\n');
+        }
+        text
+    })
 }

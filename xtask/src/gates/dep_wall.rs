@@ -47,11 +47,43 @@ pub const ROW_DRAINED: &str = "dep-wall:drained";
 pub const LEDGER: &str = "qa/dep-wall.ledger";
 const CONFIG: &str = "qa/construction.toml";
 
-/// Crates that are a socket or TLS stack by name.
-const BANNED_CRATES: &[&str] = &["hyper-util", "reqwest", "rustls", "tokio-rustls", "socket2"];
+/// Crates that are a socket or TLS stack by name. The TLS stacks are every TLS implementation a Rust
+/// crate binds (rustls, and the platform one behind native-tls, openssl and their tokio/hyper
+/// adapters): THE DESIGN §5 "no plugin opens a socket, dials, binds or does TLS". `mio` is not here:
+/// it is tokio's `net` reactor, judged as `tokio (net)` and through `socket2` (DECISIONS #40(a)
+/// names those two).
+const BANNED_CRATES: &[&str] = &[
+    "hyper-util",
+    "reqwest",
+    "rustls",
+    "tokio-rustls",
+    "socket2",
+    "native-tls",
+    "tokio-native-tls",
+    "hyper-tls",
+    "openssl",
+    "openssl-sys",
+];
 
 /// Paths a plugin's own production source may not name.
 const BANNED_PATHS: &[&str] = &["std::net", "tokio::net"];
+
+/// The items under a banned path that are VALUES, not a socket: an address literal parsed, held or
+/// printed opens nothing, dials nothing, binds nothing and resolves nothing (THE DESIGN §5 bans the
+/// socket, not the address). A path through one of these names no banned path; every other item
+/// under `std::net` (`TcpStream`, `TcpListener`, `UdpSocket`, `ToSocketAddrs`, which resolves
+/// names, `Shutdown`, ...), the bare module (`use std::net;`, `use std::net as n;`) and a glob
+/// (`use std::net::*;`) still do, and nothing under `tokio::net` is a value. When the instrument
+/// must choose, it false-fails.
+const VALUE_PATHS: &[&str] = &[
+    "std::net::IpAddr",
+    "std::net::Ipv4Addr",
+    "std::net::Ipv6Addr",
+    "std::net::SocketAddr",
+    "std::net::SocketAddrV4",
+    "std::net::SocketAddrV6",
+    "std::net::AddrParseError",
+];
 
 /// The legacy plane crates: planes that predate their plugin crate and still ship in-tree.
 ///
@@ -67,10 +99,16 @@ const BANNED_PATHS: &[&str] = &["std::net", "tokio::net"];
 /// scans. Its eight pins in the ledger drained with it and are struck there. `busbar-a2a` likewise
 /// (FLIP-A2A): the a2a plane is its door crate `busbar-plane-a2a`, a `gate.plugin_kinds.plane` row.
 /// `busbar-voice` likewise (FLIP-STREAMING).
-const LEGACY: &[&str] = &["crates/busbar-llm"];
+/// `busbar-llm` likewise, the last of them (DEV-GREEN row 83, coordinator ruling 2026-10-18): the
+/// llm plane is its door crate `busbar-plane-llm`, a `gate.plugin_kinds.plane` row. No legacy engine
+/// crate is left for this list to name.
+const LEGACY: &[&str] = &[];
 
 /// The external source a plugin repository resolves from.
 const EXTERNAL_SOURCE: &str = "git+https://github.com/GetBusbar/";
+
+/// The base a self-test case pins when it states what the merge-base's ledger carried.
+const SYN_BASE: &str = "zz-dep-wall-base";
 
 /// Fewer roots than this is not this workspace: a scope that small proves the wall vacuously.
 const MIN_ROOTS: usize = 10;
@@ -84,6 +122,8 @@ struct Pkg {
     /// `(name, features asked, optional, normal)` per declared dependency.
     deps: Vec<(String, Vec<String>, bool, bool)>,
     features: BTreeMap<String, Vec<String>>,
+    /// The package a renamed dependency's local name stands for (`tk = { package = "tokio" }`).
+    packages: BTreeMap<String, String>,
 }
 
 /// A resolve node: its normal edges `(local name, package id)` and its active features.
@@ -123,6 +163,44 @@ fn read_ledger(text: &str) -> Ledger {
         }
     }
     l
+}
+
+/// THE LEDGER AS THE MERGE-BASE CARRIED IT, and that base's short sha (Q128 xtask p3 #2).
+///
+/// The ledger is drain-only, so a pin or a carrier line the base does not carry is one this change
+/// wrote: the gate reads the base the same way the ceiling ratchet does
+/// ([`crate::gates::construction::ceilings::base_ref`]). A base that cannot be established, or that
+/// carries no readable ledger, is an `Err` and the gate is RED.
+fn base_ledger(cx: &Ctx) -> Result<(String, Ledger), String> {
+    let base = crate::gates::construction::ceilings::base_ref(cx)?;
+    let text = cx.git_show(&base.sha, LEDGER).map_err(|e| {
+        format!(
+            "the base {} carries no readable {LEDGER}: {e}",
+            base.short()
+        )
+    })?;
+    let held = read_ledger(&text);
+    if !held.errors.is_empty() {
+        return Err(format!(
+            "the base {}'s {LEDGER} does not read: {}",
+            base.short(),
+            held.errors.join(" | ")
+        ));
+    }
+    Ok((base.short().to_string(), held))
+}
+
+/// The `[gate.plugin_kinds] transport` directory globs: a carrier is a crate of the transport kind,
+/// by the kind table, never by a substring of its name. Empty when the table does not read, which
+/// admits no carrier.
+fn transport_globs(cx: &Ctx) -> Vec<String> {
+    cx.read(CONFIG)
+        .map(|t| {
+            crate::toml_lite::parse_text(&t)
+                .table("gate.plugin_kinds")
+                .get_list("transport")
+        })
+        .unwrap_or_default()
 }
 
 /// A single-`*` glob, the shape `[gate.plugin_kinds]` uses.
@@ -188,22 +266,56 @@ fn asks(pkg: &Pkg) -> Vec<String> {
         if !normal {
             continue;
         }
-        let asked = |f: &str| features.iter().any(|x| x == f);
-        if name == "tokio" && (asked("net") || asked("full")) {
-            out.push("tokio (net)".to_string());
-        }
-        if name == "redis" && (asked("aio") || features.iter().any(|x| x.ends_with("-comp"))) {
-            out.push("redis (aio)".to_string());
-        }
+        out.extend(asked_of(package_of(pkg, name), features));
     }
     out
 }
 
+/// The package `local` (a dependency's local name in `pkg`) stands for: the renamed package, else
+/// the name itself.
+fn package_of<'a>(pkg: &'a Pkg, local: &'a str) -> &'a str {
+    pkg.packages.get(local).map_or(local, String::as_str)
+}
+
+/// What asking `package` for `features` reaches past the wall.
+fn asked_of(package: &str, features: &[String]) -> Vec<String> {
+    let asked = |f: &str| features.iter().any(|x| x == f);
+    let mut out = Vec::new();
+    if package == "tokio" && (asked("net") || asked("full")) {
+        out.push("tokio (net)".to_string());
+    }
+    if package == "redis" && (asked("aio") || features.iter().any(|x| x.ends_with("-comp"))) {
+        out.push("redis (aio)".to_string());
+    }
+    out
+}
+
+/// What a plugin's OWN `[features]` table asks of a dependency (`net = ["tokio/net"]`,
+/// `"tk?/net"` through a rename), active or not: a feature the plugin declares is one any build can
+/// turn on, and when an instrument must choose, it false-fails. Read for the plugin root only; a
+/// third-party crate's forwards are switched on by workspace unification, not by the plugin.
+fn forwards(pkg: &Pkg) -> Vec<String> {
+    let mut by_dep: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for req in pkg.features.values().flatten() {
+        if let Some((dep, feature)) = req.split_once('/') {
+            by_dep
+                .entry(dep.trim_end_matches('?'))
+                .or_default()
+                .push(feature.to_string());
+        }
+    }
+    by_dep
+        .iter()
+        .flat_map(|(dep, features)| asked_of(package_of(pkg, dep), features))
+        .collect()
+}
+
+/// The measured wall, the number of crates in scope, every package name the workspace resolves, and
+/// every pinned plugin whose own source read no file (a scan that read nothing proved nothing).
+pub type Measured = (Offenders, usize, BTreeSet<String>, Vec<String>);
+
 /// THE MEASUREMENT: every in-scope crate and what its closure reaches past the wall.
-pub fn measure(
-    cx: &Ctx,
-    carriers: &BTreeSet<String>,
-) -> Result<(Offenders, usize, BTreeSet<String>), String> {
+pub fn measure(cx: &Ctx, carriers: &BTreeSet<String>) -> Result<Measured, String> {
     let json: Value = serde_json::from_str(&cx.cargo_metadata("Cargo.toml")?)
         .map_err(|e| format!("`cargo metadata` output did not parse: {e}"))?;
     let mut pkgs: BTreeMap<String, Pkg> = BTreeMap::new();
@@ -234,6 +346,17 @@ pub fn measure(
                 )
             })
             .collect();
+        let packages = p["dependencies"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|d| {
+                Some((
+                    d["rename"].as_str()?.to_string(),
+                    d["name"].as_str()?.to_string(),
+                ))
+            })
+            .collect();
         let features = p["features"]
             .as_object()
             .map(|o| {
@@ -259,6 +382,7 @@ pub fn measure(
                 manifest_path: p["manifest_path"].as_str().unwrap_or_default().to_string(),
                 deps,
                 features,
+                packages,
             },
         );
     }
@@ -320,14 +444,17 @@ pub fn measure(
                     roots.push((id.clone(), Some(dir)));
                 }
             }
-            Some(src) if src.starts_with(EXTERNAL_SOURCE) => roots.push((id.clone(), None)),
+            Some(src) if src.starts_with(EXTERNAL_SOURCE) => {
+                roots.push((id.clone(), Some(format!("crates/{}", p.name))));
+            }
             Some(_) => {}
         }
     }
     let mut out = Offenders::new();
+    let mut unread = Vec::new();
     for (root_id, dir) in &roots {
         let root_name = pkgs[root_id].name.clone();
-        let mut hits = BTreeSet::new();
+        let mut hits: BTreeSet<String> = forwards(&pkgs[root_id]).into_iter().collect();
         let mut seen = BTreeSet::from([root_id.clone()]);
         let mut queue = VecDeque::from([root_id.clone()]);
         while let Some(id) = queue.pop_front() {
@@ -343,13 +470,10 @@ pub fn measure(
             }
         }
         if let Some(dir) = dir {
-            let files = cx
-                .walk(
-                    &WalkSpec::new([format!("{dir}/src")])
-                        .ext("rs")
-                        .allow_empty(),
-                )
-                .unwrap_or_default();
+            let files = own_source(cx, dir, &pkgs[root_id]);
+            if files.is_empty() && pkgs[root_id].source.is_some() {
+                unread.push(root_name.clone());
+            }
             for f in files {
                 let rel = f.rel_str();
                 if rel.contains("/tests/") || rel.ends_with("_tests.rs") {
@@ -363,7 +487,64 @@ pub fn measure(
         }
     }
     let names = pkgs.values().map(|p| p.name.clone()).collect();
-    Ok((out, roots.len(), names))
+    Ok((out, roots.len(), names, unread))
+}
+
+/// A crate's own `src/**/*.rs`, as the tree this context shows it at `dir`.
+///
+/// A PINNED PLUGIN IS READ TOO (Q128 xtask p3 #1). `std::net` and `tokio::net` are no crate edge,
+/// so a plugin pinned from its own repository is judged by its source or not at all. It is read at
+/// `crates/<package>`, where it lived before it left: the BASE layer lays the pinned planes and
+/// transports there ([`Ctx::base`]); every other pinned plugin is read from the checkout cargo
+/// fetched for the rev `Cargo.lock` pins (the directory beside its `manifest_path`), never written
+/// into the tree. A plant at `crates/<package>/src/…` is the top layer and wins over the pinned
+/// bytes either way.
+fn own_source(cx: &Ctx, dir: &str, pkg: &Pkg) -> Vec<crate::ctx::SourceFile> {
+    let src = format!("{dir}/src");
+    let walked = cx
+        .walk(&WalkSpec::new([src.clone()]).ext("rs").allow_empty())
+        .unwrap_or_default();
+    if pkg.source.is_none() || cx.is_dir(dir) {
+        return walked;
+    }
+    let checkout = std::path::Path::new(&pkg.manifest_path)
+        .parent()
+        .map(|d| d.join("src"))
+        .unwrap_or_default();
+    let mut files: BTreeMap<String, crate::ctx::SourceFile> = BTreeMap::new();
+    let mut stack = vec![checkout.clone()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let abs = e.path();
+            if abs.is_dir() {
+                stack.push(abs);
+                continue;
+            }
+            if abs.extension().is_none_or(|x| x != "rs") {
+                continue;
+            }
+            let (Ok(sub), Ok(text)) = (abs.strip_prefix(&checkout), std::fs::read_to_string(&abs))
+            else {
+                continue;
+            };
+            let rel = format!("{src}/{}", sub.to_string_lossy().replace('\\', "/"));
+            files.insert(
+                rel.clone(),
+                crate::ctx::SourceFile {
+                    rel: rel.into(),
+                    abs,
+                    text,
+                },
+            );
+        }
+    }
+    for f in walked {
+        files.insert(f.rel_str(), f);
+    }
+    files.into_values().collect()
 }
 
 /// THE BANNED PATHS ONE SOURCE FILE NAMES, read as PATHS, not as text.
@@ -373,9 +554,11 @@ pub fn measure(
 /// path written in an expression, a type or a macro body counts as one written in a `use`, a
 /// rename of a banned path's prefix (`use std as s;`, `extern crate std as s;`) is followed where
 /// the file uses it, and a glob over such a prefix (`use std::*;`) brings the banned module into
-/// scope and counts. A comment or a string literal names no path. An item under `#[cfg(test)]` (or
-/// `cfg(all(test, ..))`) or `#[test]` is test code, not the plugin's production source. A file
-/// that does not lex falls back to the line scan, which reads more, never less.
+/// scope and counts. A path through an address value type ([`VALUE_PATHS`]: `std::net::Ipv4Addr`,
+/// `SocketAddr`, ..) opens no socket and names no banned path. A comment or a string literal names
+/// no path. An item under `#[cfg(test)]` (or `cfg(all(test, ..))`) or `#[test]` is test code, not
+/// the plugin's production source. A file that does not lex falls back to the line scan, which
+/// reads more, never less.
 pub fn banned_paths(text: &str) -> BTreeSet<&'static str> {
     let Ok(stream) = TokenStream::from_str(text) else {
         let mut hits = BTreeSet::new();
@@ -524,6 +707,13 @@ impl PathScan {
             return;
         }
         let full = self.expand(path);
+        let value = VALUE_PATHS.iter().any(|v| {
+            let segs = segments(v);
+            full.len() >= segs.len() && full.iter().zip(&segs).all(|(a, b)| a == b)
+        });
+        if value {
+            return;
+        }
         for banned in BANNED_PATHS {
             let segs = segments(banned);
             let names = full.len() >= segs.len() && full.iter().zip(&segs).all(|(a, b)| a == b);
@@ -641,7 +831,7 @@ impl Gate for DepWallGate {
 
     fn run(&self, cx: &Ctx) -> Verdict {
         let ledger = read_ledger(&cx.read(LEDGER).unwrap_or_default());
-        let (measured, roots, names) = match measure(cx, &ledger.carriers) {
+        let (measured, roots, names, unread) = match measure(cx, &ledger.carriers) {
             Ok(m) => m,
             Err(e) => {
                 let why = format!("the wall could not be measured: {e}");
@@ -664,10 +854,46 @@ impl Gate for DepWallGate {
                  proves the wall vacuously"
             ));
         }
+        for c in &unread {
+            scope.push(format!(
+                "the pinned plugin `{c}` read no source file: a wall that read none of a plugin's \
+                 own source proves nothing about it"
+            ));
+        }
+        let transports = transport_globs(cx);
+        let base = base_ledger(cx);
+        let mut new: Vec<String> = Vec::new();
+        match &base {
+            Ok((sha, held)) => {
+                for c in ledger.carriers.difference(&held.carriers) {
+                    scope.push(format!(
+                        "`{c}` is exempted as a carrier and the base {sha}'s {LEDGER} carries no \
+                         such line: an exemption is never written in the change that needs it \
+                         (Law 9)"
+                    ));
+                }
+                for (c, o) in ledger.pinned.difference(&held.pinned) {
+                    new.push(format!(
+                        "minted\t{c}\t{o}\t{LEDGER} pins `{c}` reaching `{o}` and the base {sha} \
+                         does not: the ledger only drains, and a pin is never written in the \
+                         change that introduced its offence (Law 9)"
+                    ));
+                }
+            }
+            Err(e) => {
+                let why = format!(
+                    "the ledger cannot be held against its merge-base ({e}): a base that cannot \
+                     be established is RED, never a ledger taken at its own word"
+                );
+                scope.push(why.clone());
+                new.push(why);
+            }
+        }
         for c in &ledger.carriers {
-            if !c.contains("transport") {
+            if !transports.iter().any(|g| glob(g, &format!("crates/{c}"))) {
                 scope.push(format!(
-                    "`{c}` is exempted as a carrier and is not a transport crate"
+                    "`{c}` is exempted as a carrier and is not a transport crate: no \
+                     `[gate.plugin_kinds] transport` glob of {CONFIG} names `crates/{c}`"
                 ));
             } else if !names.contains(c) {
                 scope.push(format!(
@@ -696,16 +922,13 @@ impl Gate for DepWallGate {
             .iter()
             .flat_map(|(c, os)| os.iter().map(move |o| (c.clone(), o.clone())))
             .collect();
-        let new: Vec<String> = now
-            .difference(&ledger.pinned)
-            .map(|(c, o)| {
-                format!(
-                    "new-offender\t{c}\t{c} reaches `{o}` and {LEDGER} does not pin it. No plugin \
-                     opens a socket, dials, binds or does TLS: reach the network through a need, \
-                     and the connector does the rest"
-                )
-            })
-            .collect();
+        new.extend(now.difference(&ledger.pinned).map(|(c, o)| {
+            format!(
+                "new-offender\t{c}\t{c} reaches `{o}` and {LEDGER} does not pin it. No plugin \
+                 opens a socket, dials, binds or does TLS: reach the network through a need, \
+                 and the connector does the rest"
+            )
+        }));
         rows.push(if new.is_empty() {
             Row::pass(
                 ROW_NEW,
@@ -789,6 +1012,73 @@ impl Gate for DepWallGate {
             ov,
             &["new-offender", "busbar-plane-llm", "std::net"],
         ));
+        // THE SAME PLANT IN AN IN-TREE PLUGIN, whose source the wall reads off the disk.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-llm/src/planted_socket.rs",
+            "pub fn dial() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "an in-tree plugin that names a socket path it was never pinned for is a new offender",
+            &[ROW_NEW],
+            ov,
+            &["new-offender", "busbar-llm", "std::net"],
+        ));
+        // AND IN A PINNED PLUGIN THE BASE LAYER DOES NOT LAY: read from its cargo checkout.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-auth-header/src/planted_socket.rs",
+            "pub fn dial() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a pinned auth plugin that names a socket path it was never pinned for is a new offender",
+            &[ROW_NEW],
+            ov,
+            &["new-offender", "busbar-auth-header", "std::net"],
+        ));
+        // A PIN MINTED WITH ITS OFFENCE: the ledger is held to the base, not to itself.
+        let held = cx.read(LEDGER).unwrap_or_default();
+        let based = || {
+            let mut ov = Overlay::new();
+            ov.set_command(crate::gates::construction::ceilings::BASE_PIN_KEY, SYN_BASE);
+            ov.set_command(format!("git-show:{SYN_BASE}:{LEDGER}"), held.clone());
+            ov
+        };
+        let mut ov = based();
+        ov.set(
+            "crates/busbar-llm/src/planted_socket.rs",
+            "pub fn dial() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
+        );
+        ov.set(
+            LEDGER,
+            format!("{}\nbusbar-llm\tstd::net\n", held.trim_end()),
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a pin written in the change that introduced its offence is refused",
+            &[ROW_NEW],
+            ov,
+            &["minted", "busbar-llm", "std::net"],
+        ));
+        // A CARRIER MINTED IN THIS CHANGE, on a real transport crate the workspace resolves.
+        let mut ov = based();
+        ov.set(
+            LEDGER,
+            format!("{}\ncarrier\tbusbar-transport-ws\n", held.trim_end()),
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a carrier exemption the base ledger does not carry is refused",
+            &[ROW_SCOPE],
+            ov,
+            &["busbar-transport-ws", "carries no such line"],
+        ));
         // A DRAINED PIN: a pin for an offence the tree does not have must be struck.
         let mut ov = Overlay::new();
         ov.set(
@@ -830,3 +1120,7 @@ impl Gate for DepWallGate {
 #[cfg(test)]
 #[path = "tests/dep_wall_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/dep_wall_pinned_tests.rs"]
+mod pinned_tests;
