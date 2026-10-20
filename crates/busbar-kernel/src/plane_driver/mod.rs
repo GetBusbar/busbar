@@ -54,6 +54,7 @@
 //! cancelled; the write itself runs on).
 
 mod cancel;
+pub mod door;
 mod epoch;
 mod far_end;
 pub(crate) mod hooks;
@@ -569,10 +570,15 @@ impl PlaneDriver {
         }
     }
 
-    /// The driver's own ticketless `cancel` of `ticket`, on the calling task: its disposition and
-    /// its record writes, or `None` when it did not answer READY.
-    fn cancel_now(&self, ticket: Ticket) -> Option<busbar_contract::plane_calls::Cancelled> {
-        self.calls.cancel(ticket)
+    /// The driver's own ticketless `cancel` of `ticket`, the ticket of the unit keyed `unit`, on
+    /// the calling task: its disposition and its record writes, or `None` when it did not answer
+    /// READY. The unit is named so the plane finds a unit no piece ever reached (audit P-M7).
+    fn cancel_now(
+        &self,
+        ticket: Ticket,
+        unit: u64,
+    ) -> Option<busbar_contract::plane_calls::Cancelled> {
+        self.calls.cancel(ticket, unit)
     }
 }
 

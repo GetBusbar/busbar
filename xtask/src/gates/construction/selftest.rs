@@ -1499,7 +1499,7 @@ fn vocabulary_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<
          pub fn planted_spelled(holds: Vec<Hold>) -> &'static [Hold] {\n    Vec::leak(holds)\n}\n\n\
          pub fn planted_words(words: String) -> &'static str {\n    String::leak(words)\n}\n",
     );
-    let door = "crates/busbar-kernel/src/plane/door.rs";
+    let door = "crates/busbar-kernel/src/plane_driver/door.rs";
     if let Ok(basetext) = cx.read(door) {
         ov.set(
             door,
@@ -1521,7 +1521,7 @@ fn vocabulary_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<
             "zz_planted_leak.rs:2",
             "zz_planted_leak.rs:6",
             "zz_planted_leak.rs:10",
-            "plane/door.rs",
+            "plane_driver/door.rs",
         ],
     ));
 

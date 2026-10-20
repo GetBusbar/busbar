@@ -42,7 +42,7 @@ use std::sync::{Mutex, OnceLock};
 use busbar_contract::plane::{BillableClass, PlaneDeclaration, TrustKeyDecl, TrustRole};
 use busbar_contract::plane_calls::PlaneRegistration;
 
-use crate::plane::config::{ContainerGateInputs, PlaneCfg};
+use crate::config::plane_sections::{ContainerGateInputs, PlaneCfg};
 use crate::plane::registry::{BuildCtx, PlaneDecl, PlaneHooks};
 
 /// The most door planes one process folds into its registry.
@@ -97,7 +97,7 @@ pub fn fold(reg: PlaneRegistration) -> Result<&'static PlaneDecl, String> {
     let declaration = declaration_of(&reg);
     // The named-map surface is the 1.5.3 named-definition maps' (the frozen section list), so a
     // door plane whose verb is one of them answers its CRUD and any other answers none.
-    let named = busbar_kernel::plane::config::NAMED_MAP_SECTIONS.contains(&reg.section);
+    let named = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS.contains(&reg.section);
     let decl = PlaneDecl::assemble(
         declaration,
         HOOK_TABLE[index].clone_hooks(named, !reg.owns.is_empty(), !reg.admin_routes.is_empty()),
@@ -188,6 +188,19 @@ pub struct DoorSection {
 }
 
 impl DoorSection {
+    /// This section as the declared-sections map a plane's `build` reads (`BuildCtx::plane_defs`),
+    /// keyed by its config section.
+    #[must_use]
+    pub fn as_defs(
+        &self,
+    ) -> std::collections::BTreeMap<&'static str, Box<dyn crate::config::plane_sections::PlaneCfg>>
+    {
+        std::collections::BTreeMap::from([(
+            self.section,
+            Box::new(self.clone()) as Box<dyn crate::config::plane_sections::PlaneCfg>,
+        )])
+    }
+
     /// The section `section` as written, with the secret references it holds at its door's
     /// declared paths (`settings.<segment>…`, `*` every key of the map there) read out, so
     /// `--validate` and boot resolve each one as they resolve every other reference.
@@ -424,6 +437,9 @@ fn dealt(section: &str, settings: Vec<u8>) -> Result<Vec<u8>, String> {
     }
     let value: serde_json::Value =
         serde_json::from_slice(&settings).map_err(|e| format!("the section is not JSON: {e}"))?;
+    // The section crosses as the deal hands it: its reserved core-owned sub-keys (its `pools`
+    // among them) are the kernel's and are taken off first, by the one strip every crossing uses.
+    let value = crate::config_validate::deal::strip(section, value, &mut Vec::new());
     serde_json::to_vec(&serde_json::json!({ section: value })).map_err(|e| e.to_string())
 }
 
@@ -512,10 +528,11 @@ fn build<const I: usize>(
 ) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
     let d = door(I)?;
     let mine = |s: &DoorSection| s.section == d.reg.section && s.is_present();
-    let section = match [ctx.agent_defs, ctx.tool_defs]
-        .into_iter()
-        .filter_map(|defs| defs.downcast_ref::<DoorSection>())
-        .find(|s| mine(s))
+    let section = match ctx
+        .plane_defs
+        .get(d.reg.section)
+        .and_then(|defs| defs.as_any().downcast_ref::<DoorSection>())
+        .filter(|s| mine(s))
     {
         Some(s) => s.clone(),
         // ITS ENDPOINT BLOCK ALONE CONFIGURES IT (LAW 7): an owned block carried as written, with no
@@ -524,7 +541,7 @@ fn build<const I: usize>(
             .endpoint_slot
             .as_deref()
             .and_then(|slot| slot.downcast_ref::<DoorOwned>())
-            .is_some_and(crate::plane::config::PlaneEndpointCfg::is_present) =>
+            .is_some_and(crate::config::plane_sections::PlaneEndpointCfg::is_present) =>
         {
             DoorSection::new(d.reg.section, serde_yaml::Value::Null)
         }
@@ -596,10 +613,10 @@ fn claims<const I: usize>(slot: &dyn std::any::Any) -> Vec<(String, &'static str
     out
 }
 
-fn admission<const I: usize>(slot: &dyn std::any::Any) -> Option<super::PlaneAdmission> {
+fn admission<const I: usize>(slot: &dyn std::any::Any) -> Option<crate::plane::PlaneAdmission> {
     let (audience, resource_metadata) =
         slot.downcast_ref::<DoorSlot>()?.facing.admission.clone()?;
-    Some(super::PlaneAdmission {
+    Some(crate::plane::PlaneAdmission {
         audience,
         resource_metadata,
     })
@@ -759,7 +776,7 @@ impl DoorOwned {
     }
 }
 
-impl crate::plane::config::PlaneEndpointCfg for DoorOwned {
+impl crate::config::plane_sections::PlaneEndpointCfg for DoorOwned {
     fn is_present(&self) -> bool {
         match &self.value {
             serde_yaml::Value::Null => false,
@@ -775,7 +792,7 @@ impl crate::plane::config::PlaneEndpointCfg for DoorOwned {
 
 fn parse_endpoint<const I: usize>(
     value: &serde_yaml::Value,
-) -> Result<Box<dyn crate::plane::config::PlaneEndpointCfg>, String> {
+) -> Result<Box<dyn crate::config::plane_sections::PlaneEndpointCfg>, String> {
     let section = door(I)
         .and_then(|d| d.reg.owns.first().copied())
         .unwrap_or("");
@@ -786,7 +803,7 @@ fn parse_endpoint<const I: usize>(
 }
 
 fn lower_endpoint<const I: usize>(
-    endpoint: &dyn crate::plane::config::PlaneEndpointCfg,
+    endpoint: &dyn crate::config::plane_sections::PlaneEndpointCfg,
 ) -> Result<std::sync::Arc<dyn std::any::Any + Send + Sync>, String> {
     endpoint
         .as_any()
@@ -993,7 +1010,7 @@ fn condition_of(
 struct HookRow {
     wire_format_names: fn() -> &'static [&'static str],
     claims: fn(&dyn std::any::Any) -> Vec<(String, &'static str)>,
-    admission: fn(&dyn std::any::Any) -> Option<super::PlaneAdmission>,
+    admission: fn(&dyn std::any::Any) -> Option<crate::plane::PlaneAdmission>,
     build: fn(&BuildCtx) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     config_validate: fn(&str, &serde_json::Value) -> Result<(), String>,
     named_def_list: fn(&dyn crate::plane_host::PlaneSlots) -> Vec<crate::api::NamedDefView>,
@@ -1006,11 +1023,13 @@ struct HookRow {
     openapi: fn() -> serde_json::Value,
     openapi_schemas: Option<crate::plane::registry::OpenapiSchemasHook>,
     #[allow(clippy::type_complexity)]
-    parse_endpoint:
-        fn(&serde_yaml::Value) -> Result<Box<dyn crate::plane::config::PlaneEndpointCfg>, String>,
+    parse_endpoint: fn(
+        &serde_yaml::Value,
+    )
+        -> Result<Box<dyn crate::config::plane_sections::PlaneEndpointCfg>, String>,
     #[allow(clippy::type_complexity)]
     lower_endpoint: fn(
-        &dyn crate::plane::config::PlaneEndpointCfg,
+        &dyn crate::config::plane_sections::PlaneEndpointCfg,
     ) -> Result<std::sync::Arc<dyn std::any::Any + Send + Sync>, String>,
 }
 

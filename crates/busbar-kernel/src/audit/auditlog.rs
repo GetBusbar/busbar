@@ -56,7 +56,7 @@ use crate::audit::journal::NeutralBody;
 use crate::audit::stream_registry::{self, Decode, StreamRecord};
 use crate::audit::{verify_chain, ChainBreak, Framing};
 use crate::audit_ring::{AuditEntry, MAX_AUDIT_ENTRIES};
-use crate::plane::store::{decode, encode, PlaneStore, PlaneStoreView, KIND_AUDIT};
+use crate::store::plane_view::{decode, encode, PlaneStore, PlaneStoreView, KIND_AUDIT};
 use busbar_contract::records::{
     PlaneDisposition, PlaneRecord, PlaneSelector, RecordStoreError, RecordStoreResult,
 };

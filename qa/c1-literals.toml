@@ -76,18 +76,6 @@ item = "openapi"
 count = 6
 
 [[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/plane_host/egress_tests.rs"
-item = "jsonrpc"
-count = 2
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/plane_host/egress_tests.rs"
-item = "streaming"
-count = 1
-
-[[finding]]
 rule = "c1-literals:feature"
 file = "crates/busbar-kernel/Cargo.toml"
 item = "ws (duplex-ws)"
@@ -194,18 +182,6 @@ rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/ingress/protocol.rs"
 item = "https"
 count = 1
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/plane_host/egress_tests.rs"
-item = "http"
-count = 24
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/plane_host/egress_tests.rs"
-item = "https"
-count = 9
 
 [[finding]]
 rule = "c1-literals:literal"

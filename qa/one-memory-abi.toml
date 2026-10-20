@@ -18,37 +18,6 @@ count = 3
 
 [[finding]]
 rule = "one-memory-abi:c-unwind"
-file = "crates/busbar-kernel/src/plane_host/dispatch.rs"
-item = "extern 'C-unwind'"
-count = 5
-
-[[finding]]
-rule = "one-memory-abi:c-unwind"
-file = "crates/busbar-kernel/src/plane_host/egress.rs"
-item = "extern 'C-unwind'"
-count = 5
-
-[[finding]]
-rule = "one-memory-abi:c-unwind"
-file = "crates/busbar-kernel/src/plane_host/identity_admit.rs"
-item = "extern 'C-unwind'"
-count = 1
-
-[[finding]]
-rule = "one-memory-abi:c-unwind"
-file = "crates/busbar-kernel/src/plane_host/journal.rs"
-item = "extern 'C-unwind'"
-count = 6
-
-[[finding]]
-rule = "one-memory-abi:c-unwind"
-file = "crates/busbar-kernel/src/plane_host/pipe.rs"
-item = "extern 'C-unwind'"
-count = 2
-
-[[finding]]
-rule = "one-memory-abi:c-unwind"
 file = "crates/busbar-kernel/src/plane_host/vtable.rs"
 item = "extern 'C-unwind'"
-count = 10
-
+count = 8

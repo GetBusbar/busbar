@@ -57,7 +57,7 @@ use std::thread::ThreadId;
 use indexmap::IndexMap;
 
 use crate::audit::{Chain, ChainBreak, ChainedRecord};
-use crate::plane::store::{encode, PlaneStore};
+use crate::store::plane_view::{encode, PlaneStore};
 use busbar_contract::records::{
     PlaneDisposition, PlaneRecord, PlaneSelector, RecordStoreError, RecordStoreResult,
 };
@@ -609,7 +609,9 @@ impl<R: NeutralRecord> Journal<R> {
     /// RETENTION (the host seam's `journal_compact`): ask the sink to drop `kind` records older than
     /// `before`. The policy (the window) lives at the call site; this owns only the mechanism.
     /// Positions are NOT reset — reopening a scope at seq 1 after a purge would collide with a
-    /// sequence the store may still hold.
+    /// sequence the store may still hold. Test-only since its one production caller (the deleted
+    /// plane-host journal slot) went.
+    #[cfg(test)]
     pub(crate) fn compact_scoped(&self, kind: &str, before: u64) -> RecordStoreResult<u64> {
         match self.sink() {
             Some(store) => store.purge_plane_records_before(kind, before),
