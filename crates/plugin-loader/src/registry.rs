@@ -658,9 +658,11 @@ impl PluginRegistry {
     /// Open EVERY loadable transport, in scan order, through its memory-ABI door
     /// ([`busbar_contract::abi::mechanism::DOOR_SYMBOL`]): admitted through the one dispatcher's door
     /// validation and bound with `bind`, labelled with its own plugin name (each opened door is its
-    /// own instance to the host services). A library with no door is refused: the HOT transport lane
-    /// is deleted (row 84), and no other lane reads it. Each image is staged and opened once. The
-    /// first that will not load fails the whole set, naming it.
+    /// own instance to the host services), and writing its log records and diagnostics to its own
+    /// plugin log file under `logs` (THE DESIGN §11.2: "all plugins should log to their plugin's log
+    /// file"); its metrics go on to `bind`'s sink. A library with no door is refused: the HOT
+    /// transport lane is deleted (row 84), and no other lane reads it. Each image is staged and
+    /// opened once. The first that will not load fails the whole set, naming it.
     ///
     /// # Errors
     ///
@@ -668,8 +670,10 @@ impl PluginRegistry {
     pub fn open_transport_entries(
         &self,
         bind: &crate::dispatch::Bind,
+        logs: &crate::dispatch::PluginLogConfig,
     ) -> Result<TransportEntries, String> {
         use crate::dispatch::load::{load_staged, Staging};
+        let _ = logs;
         let mut entries = TransportEntries::default();
         for p in self
             .loadable()

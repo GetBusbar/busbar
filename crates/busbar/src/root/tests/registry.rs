@@ -1197,3 +1197,60 @@ fn the_upgrade_lines_are_read_off_the_door_statements() {
         );
     }
 }
+
+/// A LINKED TRANSPORT DOOR WRITES ITS OWN PLUGIN LOG (`BUSBAR-1.6.0.md` THE DESIGN §11.2: "all
+/// plugins should log to their plugin's log file. no logs for plugins is not an option ... The HOST
+/// writes it to that plugin instance's own log file"): a linked door's bind writes to its row's
+/// plugin log file under the configured `plugins.logs`.
+///
+/// RED: every linked transport door was bound with the sink that discards everything, so no
+/// transport plugin log file was ever opened and every record a transport emitted was dropped.
+#[test]
+fn a_linked_transport_door_is_bound_to_its_rows_plugin_log_file() {
+    use crate::root::loader::dispatch::{Diagnostic, EnvelopeSink, PluginLogConfig};
+    use busbar_contract::abi::mechanism::call::{DIAG_LOG, SEVERITY_WARN};
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-linked-transport-log-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a scratch directory");
+    let logs = PluginLogConfig::from_words(
+        Some(dir.to_str().expect("a UTF-8 scratch path")),
+        None,
+        &Default::default(),
+        None,
+        None,
+    )
+    .expect("the named directory resolves");
+    let bind = crate::root::doors::logged(
+        crate::root::doors::row_bind("logged-row"),
+        "logged-row",
+        Some(&logs),
+    )
+    .expect("the named directory is usable");
+    assert_eq!(&*bind.instance, "logged-row", "the row's label is kept");
+    bind.sink.diag(Diagnostic {
+        id: DIAG_LOG,
+        name: &[],
+        severity: SEVERITY_WARN,
+        text: b"the linked transport logged a line",
+    });
+    let path = logs.path_for("logged-row");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let text = loop {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        if text.contains("the linked transport logged a line") || std::time::Instant::now() > deadline
+        {
+            break text;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    drop(bind);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        text.contains("the linked transport logged a line"),
+        "the linked transport door's plugin log file {} holds none of its records: {text:?}",
+        path.display()
+    );
+}

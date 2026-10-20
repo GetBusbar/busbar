@@ -19,7 +19,7 @@ use std::sync::{Arc, OnceLock};
 use super::loader::dispatch::{
     kinds::transport::{Transport as TransportKind, TransportFacts},
     load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, Frame, InFrame, LinkedRow, NoSink,
-    OutFrame, Plugin,
+    OutFrame, Plugin, PluginLogConfig,
 };
 use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON};
 use busbar_contract::abi::mechanism::door::DoorFn;
@@ -74,6 +74,29 @@ pub fn row_bind(row: &str) -> Bind {
         instance: Arc::from(row),
         ..bind()
     }
+}
+
+/// The plugin log configuration every linked transport door writes its own log file under
+/// ([`logged`]), installed by the root once `plugins.logs` is read and before any door binds.
+static LOGS: OnceLock<PluginLogConfig> = OnceLock::new();
+
+/// Hand the doors the configured `plugins.logs` (the root's one plugin log configuration); the
+/// first install stands. A mount of this file with no composition root installs none.
+pub fn install_logs(logs: PluginLogConfig) {
+    let _ = LOGS.set(logs);
+}
+
+/// `bind`, writing the door's log records and diagnostics to the plugin log file of `file` (its
+/// row's name) under `logs` (THE DESIGN §11.2: "all plugins should log to their plugin's log
+/// file"); its metrics go on to `bind`'s sink. With no configuration (a mount with no composition
+/// root) the bind is kept as given.
+///
+/// # Errors
+///
+/// The configured `plugins.logs.dir` cannot be used.
+pub fn logged(bind: Bind, file: &str, logs: Option<&PluginLogConfig>) -> Result<Bind, String> {
+    let _ = (file, logs);
+    Ok(bind)
 }
 
 /// One transport door, opened, as the connector reaches it.

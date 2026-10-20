@@ -59,6 +59,29 @@ fn bind() -> Bind {
     }
 }
 
+/// A plugin log configuration over a named scratch directory of this process's own: under a named
+/// directory a sink opens its file as it is bound ([`crate::dispatch::PluginLogConfig::sink`]).
+fn logs() -> crate::dispatch::PluginLogConfig {
+    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    let dir = DIR.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!(
+            "busbar-transport-plugin-log-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        dir
+    });
+    crate::dispatch::PluginLogConfig::from_words(
+        Some(dir.to_str().expect("a UTF-8 scratch path")),
+        None,
+        &Default::default(),
+        None,
+        None,
+    )
+    .expect("the named directory resolves")
+}
+
 /// The fixture's manifest, stating the door's Statement rendering as its signed manifest does (the
 /// door is admitted against it).
 fn manifest() -> crate::sign::Manifest {
@@ -89,7 +112,7 @@ fn a_signed_door_tarball_is_opened_through_the_one_door() {
     let lib = fixture();
     let registry = dropped("door-fixture", manifest(), &lib);
     let entries = registry
-        .open_transport_entries(&bind())
+        .open_transport_entries(&bind(), &logs())
         .expect("the door opens");
     assert_eq!(entries.doors.len(), 1);
     let door = &entries.doors[0];
@@ -140,11 +163,36 @@ fn a_transport_library_with_no_door_is_refused() {
     );
     let registry = dropped("no-door", manifest, &lib);
     let why = registry
-        .open_transport_entries(&bind())
+        .open_transport_entries(&bind(), &logs())
         .err()
         .expect("a library with no door is not a transport");
     assert!(
         why.contains("exports no memory-ABI door"),
         "the refusal names the missing door: {why}"
+    );
+}
+
+/// A DROPPED-IN TRANSPORT WRITES ITS OWN PLUGIN LOG (`BUSBAR-1.6.0.md` THE DESIGN §11.2: "all
+/// plugins should log to their plugin's log file. no logs for plugins is not an option ... The HOST
+/// writes it to that plugin instance's own log file").
+///
+/// RED: every dropped-in transport was bound with the caller's one sink, which the root passes as
+/// the sink that discards everything, so no transport plugin log file was ever opened and every
+/// record a transport emitted was dropped.
+#[test]
+fn a_dropped_in_transport_is_bound_to_its_own_plugin_log_file() {
+    let lib = fixture();
+    let registry = dropped("door-fixture", manifest(), &lib);
+    let logs = logs();
+    let path = logs.path_for("door-fixture");
+    let _ = std::fs::remove_file(&path);
+    let entries = registry
+        .open_transport_entries(&bind(), &logs)
+        .expect("the door opens");
+    assert_eq!(entries.doors.len(), 1);
+    assert!(
+        path.is_file(),
+        "the transport instance's plugin log file {} was never opened: its records go nowhere",
+        path.display()
     );
 }
