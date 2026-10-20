@@ -1148,3 +1148,48 @@ fn the_cost_model_and_the_cap_check_name_no_meter_class() {
         }
     }
 }
+
+/// **THE LIMIT REFUSAL NAMES NO METER CLASS** (audit K4#2; BUSBAR-1.6.0.md l.166: "Nothing in the
+/// kernel parses or understands a protocol, a plugin name or a plane concept"). A blocked cap on a
+/// class answers as every other windowed limit does: a 429 rate limit naming the group, the metric
+/// word the operator configured and the window, the 1.5.5 sentence. The refusal reads the metric as
+/// an opaque word, so it spells no class: `concurrent` and `budget` are the only metric words
+/// with their own answer.
+#[test]
+fn the_limit_refusal_names_no_meter_class() {
+    let src = include_str!("../ingress/mod.rs");
+    for name in [
+        "\"tokens_input\"",
+        "\"tokens_output\"",
+        "\"tokens_cache_read\"",
+        "\"tokens_cache_write\"",
+    ] {
+        assert!(
+            !src.contains(name),
+            "ingress/mod.rs names `{name}`: the limit refusal matches one plane's meter class, \
+             where a capped class is an opaque metric word"
+        );
+    }
+    for metric in ["requests", "tokens", "tokens_cache_write", "seconds_audio"] {
+        let blocked = crate::governance::LimitBlocked::Limit {
+            group: "g".into(),
+            metric,
+            window: Some("minute"),
+            pool: Some("p".into()),
+            downgrade_to: None,
+            retry_after: Some(7),
+        };
+        let (status, kind, message, retry_after) = crate::ingress::limit_refusal("", &blocked);
+        assert_eq!(status, axum::http::StatusCode::TOO_MANY_REQUESTS, "{metric}");
+        assert_eq!(kind, crate::proxy::KIND_RATE_LIMIT, "{metric}");
+        assert_eq!(
+            message,
+            format!(
+                "Rate limit exceeded (group 'g': {metric} per minute, pool 'p'). Please retry \
+                 after the indicated time."
+            ),
+            "{metric}: the 1.5.5 rate-limit sentence"
+        );
+        assert_eq!(retry_after, Some(7), "{metric}");
+    }
+}
