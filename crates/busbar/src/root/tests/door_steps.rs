@@ -8195,3 +8195,40 @@ fn an_unopened_door_plane_is_awaiting_restart_once_a_configuration_writes_its_se
         "awaiting restart is not a refusal: the configuration is accepted and stored"
     );
 }
+
+/// A REQUIRED CONSUMED SECTION WRITTEN EMPTY STILL OPENS ITS PLANE (ARCHITECT row-82 ruling: a
+/// written consumed|required key counts). The previous release required `models:` and accepted it
+/// empty (v1.5.5 crates/busbar/src/config/mod.rs:2626-2632), answering from its catch-all; the
+/// oracle's `neutrality|models-empty|surface` cell is that document. A plane that requires the
+/// section opens on the declaring section the root hands it, so `models: {}` must still hand it the
+/// pair. RED: the pair was handed only when either map had an entry, so the plane stayed unopened
+/// and every path fell to the kernel's catch-all.
+#[test]
+fn a_required_section_written_empty_hands_the_plane_its_sections() {
+    use busbar_contract::section::{RESERVED_MODELS_KEY, RESERVED_POOLS_KEY};
+    use busbar_kernel::plane::registry::{PlaneDecl, PlaneDeclaration, TestRegistryIsolation};
+    use busbar_kernel::test_support::NEUTRAL_FALLBACK;
+    static REQUIRES: PlaneDecl = PlaneDecl {
+        declaration: PlaneDeclaration {
+            key: "requires-the-consumed-section",
+            required_config_sections: &[RESERVED_MODELS_KEY],
+            ..NEUTRAL_FALLBACK.declaration
+        },
+        ..NEUTRAL_FALLBACK
+    };
+    let _registry = TestRegistryIsolation::seeded(&[&REQUIRES]);
+    let deploy = busbar_kernel::config::deploy_from_yaml_str("providers: {}\nmodels: {}\n")
+        .expect("a deployment");
+    let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+    let sections = super::kernel_sections(&cfg);
+    assert_eq!(
+        sections.get(RESERVED_MODELS_KEY),
+        Some(&serde_yaml::Value::Mapping(Default::default())),
+        "the written, empty required section is handed as written: {sections:?}"
+    );
+    assert_eq!(
+        sections.get(RESERVED_POOLS_KEY),
+        Some(&serde_yaml::Value::Mapping(Default::default())),
+        "and the declaring section beside it, so the plane opens: {sections:?}"
+    );
+}
