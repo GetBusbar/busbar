@@ -593,18 +593,25 @@ pub fn discover_planes(linked: &Linked, dropped: Option<&crate::root::loader::Pl
     // THE DEFAULT BUILD'S REQUIRED SECTIONS: what each LINKED plane door's rendered Statement marks
     // required, used or not, so a document missing one keeps 1.5.5's refusal while the plane itself
     // loads only when config uses it. Read off the rendering; nothing is opened.
-    let required: Vec<&'static str> = set
-        .doors
-        .iter()
-        .filter(|c| matches!(c.origin, Origin::Linked(_)))
-        .flat_map(Candidate::required_sections)
-        .map(|s| -> &'static str { Box::leak(s.into_boxed_str()) })
-        .collect();
-    busbar_kernel::plane::registry::install_linked_required_sections(Box::leak(
-        required.into_boxed_slice(),
-    ));
+    // Held for the process in the root's own statics, so the kernel's list borrows them.
+    let names = LINKED_REQUIRED_NAMES.get_or_init(|| {
+        set.doors
+            .iter()
+            .filter(|c| matches!(c.origin, Origin::Linked(_)))
+            .flat_map(Candidate::required_sections)
+            .collect()
+    });
+    let required = LINKED_REQUIRED.get_or_init(|| names.iter().map(String::as_str).collect());
+    busbar_kernel::plane::registry::install_linked_required_sections(required.as_slice());
     let _ = DOOR_CANDIDATES.set(set.doors);
 }
+
+/// The sections the linked plane doors' rendered Statements mark required, as
+/// [`discover_planes`] read them, held for the process.
+static LINKED_REQUIRED_NAMES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// [`LINKED_REQUIRED_NAMES`] as the kernel's required-section list borrows it.
+static LINKED_REQUIRED: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
 
 /// The door planes [`discover_planes`] discovered, waiting for the dispatcher: every one, used or
 /// not (discovery reads the rendering only; nothing is opened).

@@ -1,0 +1,11 @@
+# THE UNLOADED PLANE (law7_unloaded_plane_apply.rs): the plane a 1.5.5-shaped config does not use,
+# and what the test reads of it. Its sections are `unloaded_plane_sections.yaml`. One fact per line:
+#   plane    <name>    the plane's name, as the refusal names it
+#   section  <key>     the section of it the refusal names (the first of the document's root keys
+#                      that uses the plane)
+#   admin    <path>    an admin path (under /api/v1/admin) the plane serves once loaded
+#   door     <path>    the data-listener path of the plane's door
+plane mcp
+section tools
+admin /tools
+door /mcp

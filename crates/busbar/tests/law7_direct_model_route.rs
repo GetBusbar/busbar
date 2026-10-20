@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 const ADMIN_TOKEN: &str = "law7-direct-model-route-admin";
 
-/// The far end's one answer, whatever it is asked: a whole Anthropic message.
+/// The far end's one answer, whatever it is asked: a whole message in the provider's dialect.
 fn upstream_answer() -> serde_json::Value {
     serde_json::json!({
         "id": "msg_law7_direct",
@@ -70,11 +70,18 @@ fn fixture_dir(tag: &str) -> PathBuf {
 /// The 1.5.5 shape: one provider at the far end, one model, keys on the data plane, an admin token;
 /// `pools` appended when given (the plane's verb).
 fn write_configs(dir: &Path, upstream: u16, data: u16, admin: u16, pools: &str) {
+    // The provider catalog row is test data (`fixtures/mock_provider.yaml`, the far end's dialect),
+    // not a literal here; its base URL is pointed at this test's far end.
+    let catalog = include_str!("fixtures/mock_provider.yaml");
+    assert!(
+        catalog.contains("\"http://127.0.0.1:9\""),
+        "mock_provider.yaml states the base URL this test repoints"
+    );
     std::fs::write(
         dir.join("providers.yaml"),
-        format!(
-            "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:{upstream}\"\n  \
-             api_key_env: MOCK_KEY\n"
+        catalog.replace(
+            "\"http://127.0.0.1:9\"",
+            &format!("\"http://127.0.0.1:{upstream}\""),
         ),
     )
     .unwrap();

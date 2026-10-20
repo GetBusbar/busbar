@@ -6,14 +6,18 @@
 //! item 8 (l.980-982): a reload that fails a check "is refused, leaving the running generation
 //! serving".
 //!
-//! The shipped binary boots on a 1.5.5-shaped config, so the `tools:` plane (`mcp`) is discovered
-//! and not loaded. The operator then writes `tools:` (and its endpoint block) into the config file
+//! The shipped binary boots on a 1.5.5-shaped config, so a linked plane that config does not use is
+//! discovered and not loaded. The operator then writes that plane's sections into the config file
 //! and reloads, and posts the same document to `config/apply`: both are refused whole with one
 //! pinned sentence naming the section and the plane, and nothing changes. The live generation's
 //! effective config and version are the same, the plane serves nothing, and no file busbar keeps is
 //! written. The restart that follows loads the plane, and its section is served.
 //!
-//! RED before the fix: no rule judged the document, so the parse refused `tools` as an unknown
+//! Every word about the plane (its name, its sections, its admin path and its door) is DATA:
+//! `tests/fixtures/unloaded_plane.txt` and `tests/fixtures/unloaded_plane_sections.yaml`. This
+//! source names no plane.
+//!
+//! RED before the fix: no rule judged the document, so the parse refused the section as an unknown
 //! field, without saying the plane was not loaded or that a restart takes it.
 #![cfg(unix)]
 #![cfg(linked_every_plane)]
@@ -27,12 +31,64 @@ use std::time::{Duration, Instant};
 
 const ADMIN_TOKEN: &str = "law7-unloaded-plane-admin";
 
-/// The pinned refusal, as the running process answers a document that first writes `tools:`.
-const REFUSAL: &str =
-    "`tools:` is the section of the `mcp` plane, which this process did not load \
-                       because its configuration did not use it at start; a first `tools:` cannot \
-                       take effect on a running process, so the change was refused and nothing \
-                       was changed: write it in the config file and restart.";
+/// The provider catalog row is test data (`fixtures/mock_provider.yaml`), not a literal here.
+const MOCK_PROVIDER: &str = include_str!("fixtures/mock_provider.yaml");
+
+/// The unloaded plane's sections, as DATA, with `{data_port}` and `{admin_port}` to fill.
+const PLANE_SECTIONS: &str = include_str!("fixtures/unloaded_plane_sections.yaml");
+
+/// The unloaded plane, as DATA (`tests/fixtures/unloaded_plane.txt`).
+struct Plane {
+    /// The plane's name, as the refusal names it.
+    name: &'static str,
+    /// The section of it the refusal names.
+    section: &'static str,
+    /// An admin path the plane serves once loaded.
+    admin: &'static str,
+    /// The data-listener path of the plane's door.
+    door: &'static str,
+}
+
+fn plane() -> Plane {
+    let rows: Vec<(&'static str, &'static str)> = include_str!("fixtures/unloaded_plane.txt")
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| {
+            let (fact, value) = l.split_once(' ').expect("`<fact> <value>`");
+            (fact, value.trim())
+        })
+        .collect();
+    let fact = |name: &str| {
+        let found: Vec<&'static str> = rows
+            .iter()
+            .filter(|(f, _)| *f == name)
+            .map(|(_, v)| *v)
+            .collect();
+        assert_eq!(found.len(), 1, "unloaded_plane.txt: exactly one `{name}` row");
+        found[0]
+    };
+    assert_eq!(rows.len(), 4, "unloaded_plane.txt lost or gained a row");
+    Plane {
+        name: fact("plane"),
+        section: fact("section"),
+        admin: fact("admin"),
+        door: fact("door"),
+    }
+}
+
+/// The pinned refusal, as the running process answers a document that first writes the plane's
+/// section.
+fn refusal(plane: &Plane) -> String {
+    format!(
+        "`{section}:` is the section of the `{name}` plane, which this process did not load \
+         because its configuration did not use it at start; a first `{section}:` cannot take \
+         effect on a running process, so the change was refused and nothing was changed: write \
+         it in the config file and restart.",
+        section = plane.section,
+        name = plane.name,
+    )
+}
 
 struct Booted {
     child: Child,
@@ -72,7 +128,8 @@ identity-providers:
 auth:
   chain: [keys]
   signing_key: {{ file: "{signing}" }}
-  admin_auth: [admin-tokens]
+  admin_auth:
+    - admin-tokens
 providers:
   mock:
     api_key: {{ env: MOCK_KEY }}
@@ -84,16 +141,11 @@ models:
     )
 }
 
-/// The `tools:` plane's sections: its declaring section and its endpoint block.
-fn tools_sections(data: u16, admin: u16) -> String {
-    format!(
-        r#"mcp:
-  canonical_uri: "http://127.0.0.1:{data}/mcp"
-  authorization_servers: ["http://127.0.0.1:{admin}"]
-tools:
-  t1: {{ url: "https://t.example/rpc", pin: {{ mechanism: unpinned }} }}
-"#
-    )
+/// The unloaded plane's sections, filled with this run's ports.
+fn plane_sections(data: u16, admin: u16) -> String {
+    PLANE_SECTIONS
+        .replace("{data_port}", &data.to_string())
+        .replace("{admin_port}", &admin.to_string())
 }
 
 fn boot(dir: &Path, data: u16, admin: u16, run: &str) -> Booted {
@@ -204,12 +256,10 @@ fn a_first_section_of_an_unloaded_plane_is_refused_whole_and_served_after_a_rest
             .map_or(0, |d| d.as_nanos()),
     ));
     std::fs::create_dir_all(&dir).unwrap();
+    let plane = plane();
+    let refusal = refusal(&plane);
     let (data, admin_port) = (common::boot::free_port(), common::boot::free_port());
-    std::fs::write(
-        dir.join("providers.yaml"),
-        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n",
-    )
-    .unwrap();
+    std::fs::write(dir.join("providers.yaml"), MOCK_PROVIDER).unwrap();
     let key = Command::new(common::boot::exe())
         .arg("--generate-signing-key")
         .output()
@@ -219,44 +269,39 @@ fn a_first_section_of_an_unloaded_plane_is_refused_whole_and_served_after_a_rest
     let base = base_config(&dir, data, admin_port);
     std::fs::write(dir.join("config.yaml"), &base).unwrap();
 
-    // ── BOOT on the 1.5.5 shape: the `tools:` plane is discovered, not loaded, and serves nothing.
+    // ── BOOT on the 1.5.5 shape: the plane is discovered, not loaded, and serves nothing.
     let b = boot(&dir, data, admin_port, "first");
     let unmounted = admin(&b, "GET", "/no-such-path", None);
     assert_eq!(
         unmounted.0, 404,
         "the unmounted-path control: {unmounted:?}"
     );
-    assert_eq!(admin(&b, "GET", "/tools", None), unmounted);
+    assert_eq!(admin(&b, "GET", plane.admin, None), unmounted);
     let before = admin(&b, "GET", "/config", None);
     assert_eq!(before.0, 200, "{before:?}");
     let kept_before = kept_files(&dir);
 
     // ── RELOAD a config file that first writes the plane's sections: refused whole, pinned.
-    let with_tools = format!("{base}{}", tools_sections(data, admin_port));
-    std::fs::write(dir.join("config.yaml"), &with_tools).unwrap();
+    let with_plane = format!("{base}{}", plane_sections(data, admin_port));
+    std::fs::write(dir.join("config.yaml"), &with_plane).unwrap();
     let (status, body) = admin(&b, "POST", "/config/reload", None);
     assert_eq!(status, 400, "the reload is refused: {body}");
     assert!(
-        body.contains(&format!("config.yaml: {REFUSAL}")),
+        body.contains(&format!("config.yaml: {refusal}")),
         "the reload names the section and the plane in the pinned sentence: {body}"
     );
 
     // ── APPLY the same document: refused whole with the same sentence.
-    let doc: serde_yaml::Value = serde_yaml::from_str(&with_tools).unwrap();
+    let doc: serde_yaml::Value = serde_yaml::from_str(&with_plane).unwrap();
+    let providers: serde_yaml::Value = serde_yaml::from_str(MOCK_PROVIDER).unwrap();
     let apply = serde_json::json!({
         "config": serde_json::to_value(&doc).unwrap(),
-        "providers": {
-            "mock": {
-                "protocol": "anthropic",
-                "base_url": "http://127.0.0.1:9",
-                "api_key_env": "MOCK_KEY",
-            }
-        },
+        "providers": serde_json::to_value(&providers).unwrap(),
     });
     let (status, body) = admin(&b, "POST", "/config/apply", Some(&apply.to_string()));
     assert_eq!(status, 400, "the apply is refused: {body}");
     assert!(
-        body.contains(REFUSAL) && !body.contains("config.yaml: "),
+        body.contains(&refusal) && !body.contains("config.yaml: "),
         "the apply names the section and the plane in the pinned sentence: {body}"
     );
 
@@ -267,14 +312,14 @@ fn a_first_section_of_an_unloaded_plane_is_refused_whole_and_served_after_a_rest
         "the running generation's effective config and version are unchanged"
     );
     assert_eq!(
-        admin(&b, "GET", "/tools", None),
+        admin(&b, "GET", plane.admin, None),
         unmounted,
         "the plane serves nothing after a refused change"
     );
-    let (_, mcp) = request(&b.data, "POST", "/mcp", None, None);
+    let (_, door) = request(&b.data, "POST", plane.door, None, None);
     assert!(
-        !is_plane_door(&mcp),
-        "the plane's door is not mounted after a refused change: {mcp}"
+        !is_plane_door(&door),
+        "the plane's door is not mounted after a refused change: {door}"
     );
     assert_eq!(
         kept_files(&dir),
@@ -286,14 +331,14 @@ fn a_first_section_of_an_unloaded_plane_is_refused_whole_and_served_after_a_rest
     // ── RESTART on the config file: the plane is loaded and its section is served.
     let b = boot(&dir, data, admin_port, "restart");
     assert_eq!(
-        admin(&b, "GET", "/tools", None).0,
+        admin(&b, "GET", plane.admin, None).0,
         200,
         "after a restart the plane serves its section"
     );
-    let (status, mcp) = request(&b.data, "POST", "/mcp", None, None);
+    let (status, door) = request(&b.data, "POST", plane.door, None, None);
     assert!(
-        status == 401 && is_plane_door(&mcp),
-        "after a restart the plane's door answers as that plane's door: {status} {mcp}"
+        status == 401 && is_plane_door(&door),
+        "after a restart the plane's door answers as that plane's door: {status} {door}"
     );
     drop(b);
     let _ = std::fs::remove_dir_all(&dir);
