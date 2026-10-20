@@ -784,7 +784,7 @@ fn an_applied_door_section_carries_its_pools_and_hands_the_plane_no_work_key() {
 /// AN OPEN CLAIM'S LINE TAKES NO AUTH, WHATEVER THE CHAIN (ARCHITECT, FLIP-A2A): a plane's
 /// discovery documents answer a caller who holds no credential yet, with the operator's data chain
 /// configured exactly as without one.
-#[cfg(linked_axis_node)]
+#[cfg(linked_section_pools)]
 #[test]
 fn an_open_claims_line_takes_no_auth_whatever_the_data_chain() {
     use busbar_contract::abi::auth::AuthPoints;
@@ -801,7 +801,7 @@ fn an_open_claims_line_takes_no_auth_whatever_the_data_chain() {
 
 /// THE RED ARM: a claim that is NOT open owes the operator's chain, configured or empty — the open
 /// exception never widens to a line a credential is owed on.
-#[cfg(linked_axis_node)]
+#[cfg(linked_section_pools)]
 #[test]
 fn a_claim_that_is_not_open_owes_the_data_chain_configured_or_empty() {
     use busbar_contract::abi::auth::AuthPoints;
