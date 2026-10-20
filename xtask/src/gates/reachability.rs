@@ -3082,7 +3082,7 @@ impl Gate for ReachabilityGate {
                 );
                 ov.set(
                     CRATE_MANIFEST,
-                    &FIXTURE_LINKED_MANIFEST
+                    FIXTURE_LINKED_MANIFEST
                         .replace("plane-llm = \"busbar-plane-llm\"\n", "")
                         .replace("plane-llm = \"plane protocols\"\n", ""),
                 );
