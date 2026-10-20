@@ -3059,8 +3059,10 @@ impl Gate for ReachabilityGate {
             "`busbar-plane-zzz`",
         ));
         // A NAME IS NOT A THING: a crate named for a roster plane, declaring no key and linked by no
-        // roster row, maps to nothing. (The subject is the llm plane crate, whose roster row links
-        // `busbar-llm`: since FLIP-A2A the a2a row links `busbar-plane-a2a` itself and since
+        // roster row, maps to nothing. (The subject is the llm plane crate with its linked row
+        // planted away: since DEV-GREEN row 83 the fixture's llm row links `busbar-plane-llm` itself,
+        // as the real roster's does, so the case removes that row. Since FLIP-A2A the a2a row links
+        // `busbar-plane-a2a` itself and since
         // FLIP-STREAMING the streaming row links `busbar-plane-streaming`, so each of those crates
         // is mapped by its row and is no longer a crate named and nothing more. The streaming
         // subject this case carried went green on that flip (9bd2a58981); the fixture's missing
@@ -3077,6 +3079,12 @@ impl Gate for ReachabilityGate {
                 ov.set(
                     "crates/busbar-plane-llm/src/lib.rs",
                     "pub struct LlmPlane;\n",
+                );
+                ov.set(
+                    CRATE_MANIFEST,
+                    &FIXTURE_LINKED_MANIFEST
+                        .replace("plane-llm = \"busbar-plane-llm\"\n", "")
+                        .replace("plane-llm = \"plane protocols\"\n", ""),
                 );
                 ov
             }),
