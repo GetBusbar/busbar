@@ -64,9 +64,9 @@ const TOKIO_NET: &str = "tokio:net";
 const PINNED: &[(&str, &str)] = &[];
 
 /// TODAY'S MANIFEST OFFENDERS, struck as the code that needs each one leaves. `hyper-util` and
-/// tokio's `net` left with the engine (u30). `reqwest` is the `test-support` kit's optional edge
-/// (`test_support`'s mock-driving helpers), never on in a shipped build.
-const PINNED_MANIFEST: &[&str] = &["reqwest"];
+/// tokio's `net` left with the engine (u30); `reqwest` left when the test kit's oversized-POST
+/// helper began handing its request to the router itself (E7). Empty: row 130's proof is met.
+const PINNED_MANIFEST: &[&str] = &[];
 
 fn crate_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

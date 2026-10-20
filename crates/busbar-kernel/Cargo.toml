@@ -96,11 +96,6 @@ tower = { workspace = true }
 # `tests/no_socket.rs`). Its test scaffolding asks for it through `test-support` and the
 # dev-dependency below.
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "signal", "io-util", "io-std", "process"] }
-# TEST MACHINERY ONLY since the egress-symmetry migration: every production hop rides the engine,
-# and the remaining reqwest sites are the `test_support` mock-driving helpers this feature-gated
-# edge serves (the differential harness's reference stack lives in substrate under the same
-# discipline). Optional + `test-support`; plain `cargo test -p` reaches it via [dev-dependencies].
-reqwest = { workspace = true, features = ["http2"], optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # The engine-built OAuth mint hops (`egress_auth`) and login-hop client (`auth/token.rs`) form-
@@ -203,7 +198,7 @@ loom-model = ["dep:loom"]
 # capture) is always compiled (ARCHITECT SD-3 queue (4)), so nothing forwards there.
 # `tokio/net`: the test kit's mock servers bind loopback sockets (`test_support`); the shipped
 # kernel asks for no socket layer (THE DESIGN §5).
-test-support = ["dep:reqwest", "tokio/net", "busbar-kernel-identity/stand-in", "busbar-plugin-loader/test-support"]
+test-support = ["tokio/net", "busbar-kernel-identity/stand-in", "busbar-plugin-loader/test-support"]
 # The debug-only per-method micro-timing in `src/timing` (folded from busbar-timing, OWNER Q70).
 # DEFAULT OFF: with this off, `timeit!` expands to `()` and the RAII guards it produces are
 # zero-sized no-ops, so the `drop(_guard)` calls that end a timed span are compiled in ONLY under this
