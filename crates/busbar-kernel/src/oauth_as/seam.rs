@@ -118,3 +118,27 @@ pub fn install_as_plane_seam(seam: AsPlaneSeam) {
 pub(crate) fn seam() -> Option<&'static AsPlaneSeam> {
     SEAM.get()
 }
+
+/// THE WORK HANDED TO THE KERNEL'S ONE CLOCK (`crate::tick::on_clock`), held weakly: the
+/// authorization server's expired-record sweep, one per live generation. The owner keeps the work
+/// alive, never the clock, so letting a generation go takes its sweep off the clock.
+static CLOCK_WORK: std::sync::Mutex<Vec<std::sync::Weak<dyn crate::tick::ClockWork>>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Hold `work` on the clock (`crate::tick::on_clock`).
+pub(crate) fn hold_clock_work(work: std::sync::Weak<dyn crate::tick::ClockWork>) {
+    let mut held = CLOCK_WORK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    held.retain(|w| w.strong_count() > 0);
+    held.push(work);
+}
+
+/// Every live work on the clock, for one beat (`crate::tick::beat`); work let go leaves here.
+pub(crate) fn clock_work() -> Vec<Arc<dyn crate::tick::ClockWork>> {
+    let mut held = CLOCK_WORK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    held.retain(|w| w.strong_count() > 0);
+    held.iter().filter_map(std::sync::Weak::upgrade).collect()
+}
