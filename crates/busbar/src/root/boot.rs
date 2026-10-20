@@ -595,6 +595,59 @@ pub fn discover_planes(linked: &Linked, dropped: Option<&crate::root::loader::Pl
     let _ = DOOR_CANDIDATES.set(set.doors);
 }
 
+/// The declaring sections of the discovered door planes the boot never bound (Law 7: the boot
+/// configuration writes none of their sections). Like a bound plane left unopened, each is
+/// restart-to-apply (`door_steps::Rules::hold_unopened`); the fallback plane is never one.
+#[must_use]
+pub fn unbound_sections() -> Vec<&'static str> {
+    let bound = door_planes();
+    DOOR_CANDIDATES
+        .get()
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .filter(|c| !bound.iter().any(|(instance, _)| *instance == c.name))
+        .filter_map(|c| c.verbs.first())
+        .filter_map(|section| {
+            busbar_kernel::plane::registry::plane_decl_for_config_section(section)
+        })
+        .filter(|decl| !decl.fallback)
+        .map(|decl| decl.config_section)
+        .collect()
+}
+
+/// The `base_url` of every resolved provider (its catalog definition merged with the document's
+/// deployment), noted by `main` once the configuration resolves and before the seal opens the
+/// dropped-in transports ([`transport_uses`]).
+static PROVIDER_URLS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// Note the resolved providers' `base_url`s (`main`, once, before the seal).
+pub fn note_provider_urls(urls: impl IntoIterator<Item = String>) {
+    let _ = PROVIDER_URLS.set(urls.into_iter().collect());
+}
+
+/// WHAT SELECTS A DROPPED-IN TRANSPORT (Law 7; `BUSBAR-1.6.0.md` §4, "a transport loads iff a
+/// configured URL uses a scheme it claims"): the URL schemes the configuration file uses, and those
+/// of the resolved providers' `base_url`s, which a catalog definition carries when the document
+/// does not. And every scheme a linked transport claims: a dropped-in transport claiming one is a
+/// second owner of it, opened so the seal refuses the boot as it refuses a second linked row with
+/// that key (two transports claiming one scheme refuse boot).
+fn transport_uses() -> Uses {
+    let mut uses = plan(&config_path()).reaching(
+        PROVIDER_URLS
+            .get()
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .map(String::as_str),
+    );
+    uses.schemes.extend(
+        crate::LINKED_TRANSPORT_DOORS
+            .iter()
+            .filter_map(|(_, door)| Candidate::linked(*door).ok())
+            .flat_map(|c| c.schemes),
+    );
+    uses
+}
+
 /// The door planes [`discover_planes`] discovered, waiting for the dispatcher.
 pub(crate) static DOOR_CANDIDATES: std::sync::OnceLock<Vec<crate::root::loader::boot::Candidate>> =
     std::sync::OnceLock::new();
@@ -713,7 +766,7 @@ pub fn dropped_transports(
             return Vec::new();
         };
         let opened = registry
-            .open_transport_entries(&crate::root::doors::bind(), &plan(&config_path()))
+            .open_transport_entries(&crate::root::doors::bind(), &transport_uses())
             .and_then(|entries| {
                 entries
                     .doors
