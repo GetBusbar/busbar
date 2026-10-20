@@ -126,6 +126,10 @@ pub struct RootInstall {
     /// the SWITCH-OVER hook axis): every `kind: hook` row, compiled in or dropped in, opened on the
     /// hook kind's ABI over the process's one dispatcher. `None` = no hook opens.
     pub hook_axis: Option<HookAxisBuild>,
+    /// The printed name of each hook row this build LINKS, in manifest order (the root's
+    /// `linked-name` row per `hooks`-axis row): what the operator surface lists as the compiled-in
+    /// hook plugins. The root's data; the kernel and the admin crate spell none of them.
+    pub hook_names: &'static [&'static str],
     /// The root's store axis: what boot opens the configured store through.
     pub store_axis: Option<StoreAxisOf>,
     /// The root's secret axis: every secret plugin it admitted, linked or dropped in, over the
@@ -176,6 +180,9 @@ const STAND_IN: RootInstall = RootInstall {
     registry_build: Some(crate::test_support::registry_stand_in),
     plugins_fetch: Some(crate::test_support::fetch_stand_in),
     hook_axis: Some(crate::test_support::hook_axis_stand_in),
+    // A test build links no hook row of the root's: the operator surface lists none, unless the
+    // root's own test binary hands its names in (`test_support::install_root_hook_names`).
+    hook_names: &[],
     store_axis: Some(crate::test_support::store_axis_stand_in),
     secret_axis: Some(&crate::test_support::SecretsStandIn),
     export_axis: Some(&crate::test_support::export_axis::STAND_IN),
@@ -207,9 +214,26 @@ pub fn install_linked_rows(rows: RootInstall) {
 /// `stores`, the stores this build links.
 pub fn root_rows() -> RootInstall {
     #[cfg(any(test, feature = "test-support"))]
-    let _ = ROOT_ROWS.set(STAND_IN);
+    {
+        let _ = ROOT_ROWS.set(STAND_IN);
+        if let Some(hook_names) = TEST_ROOT_HOOK_NAMES.get().copied() {
+            return RootInstall {
+                hook_names,
+                ..ROOT_ROWS.get().copied().unwrap_or_default()
+            };
+        }
+    }
     ROOT_ROWS.get().copied().unwrap_or_default()
 }
+
+/// The hook names the composition root's OWN test binary hands in, in the root's words (its
+/// generated linked-hook list): a test build's install record reports them in place of the
+/// stand-in's none, whichever read came first, so a document that test binary renders names the
+/// hooks the shipped binary names ([`crate::test_support::install_root_hook_names`]). The first
+/// hand-in stands.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) static TEST_ROOT_HOOK_NAMES: std::sync::OnceLock<&'static [&'static str]> =
+    std::sync::OnceLock::new();
 
 /// THE ROOT'S DOOR onto the auth axis: its linked table's `auths` entries (the first install
 /// stands; the authenticate step holds them) and their names. Every admin auth module — the operator
@@ -875,61 +899,6 @@ pub(crate) fn resolve_signing_key(
         })?;
     let secret = parse_signing_secret(&bytes)?;
     Ok(Some(TokenSigner::from_secret_bytes(&secret, DEFAULT_KID)))
-}
-
-/// Parse resolved bytes into a 32-byte ed25519 PUBLIC key: accept RAW 32 bytes or 64 hex chars. The
-/// verifying-key twin of [`parse_signing_secret`] — same wire shapes (a fleet's `operator.pub` is
-/// distributed either as raw bytes in a file or as 64 hex chars), a distinct error string so a
-/// malformed operator key never reads as a malformed signing key.
-pub(crate) fn parse_operator_public_key(bytes: &[u8]) -> Result<[u8; 32], String> {
-    if bytes.len() == 32 {
-        let mut out = [0u8; 32];
-        out.copy_from_slice(bytes);
-        return Ok(out);
-    }
-    if let Ok(s) = std::str::from_utf8(bytes) {
-        let s = s.trim();
-        if s.len() == 64 {
-            if let Ok(v) = hex::decode(s) {
-                let mut out = [0u8; 32];
-                out.copy_from_slice(&v);
-                return Ok(out);
-            }
-        }
-    }
-    Err(
-        "auth.operator_pub must resolve to a 32-byte ed25519 PUBLIC key (raw 32 bytes or 64 hex \
-         characters)"
-            .to_string(),
-    )
-}
-
-/// Resolve the POLICY-SEALED operator public key. `auth.operator_pub` is a reference to an EXISTING
-/// secret (env/file/plugin) resolving to the raw 32-byte ed25519 VERIFYING key the fleet's operator
-/// ceremony sealed (`operator.pub`). D38's `amend_rate_history` verifies a back-dated correction's
-/// detached signature against it. Fleet-shared: every node resolves the SAME key.
-///
-/// When `auth.operator_pub` is ABSENT this returns `None` — the operator ceremony has not run, which
-/// the composition root seals as [`crate::posture`]'s `OperatorState::Unset`, refusing every
-/// irreducible money-governance verb at the ceremony gate exactly as the release without this key
-/// does. FAIL-CLOSED: a configured-but-unresolvable / malformed operator key refuses boot, so a
-/// fleet that MEANT to seal a key never comes up silently ungated.
-pub fn resolve_operator_public_key(
-    auth: Option<&config::AuthCfg>,
-    resolver: &config::secret::SecretResolver,
-) -> Result<Option<[u8; 32]>, String> {
-    let Some(op) = auth.and_then(|a| a.operator_pub.as_ref()) else {
-        return Ok(None);
-    };
-    let bytes = resolver.resolve_at_config(op, &busbar_contract::config_time::ConfigScope::config_time()).map_err(|e| {
-        format!(
-            "auth.operator_pub did not resolve: {e}. auth.operator_pub is a reference to an EXISTING \
-             secret (env/file/plugin) holding the fleet's sealed operator public key (32 raw bytes \
-             or 64 hex chars — the `operator.pub` your operator ceremony produced), or OMIT \
-             auth.operator_pub entirely if this fleet has not run the operator ceremony."
-        )
-    })?;
-    Ok(Some(parse_operator_public_key(&bytes)?))
 }
 
 /// Validate ONE `secrets:` block key against the plugin registry and return the plugin's CANONICAL

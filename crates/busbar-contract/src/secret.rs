@@ -160,7 +160,7 @@ pub trait SecretResolve: Send + Sync {
     fn resolve_string(&self, secret: &SecretRef) -> Result<String, String>;
 
     /// [`Self::resolve`] at CONFIG TIME, with its proof: the one way a reference to a source that
-    /// reads the disk resolves (THE DESIGN §11.11 R4, OWNER 2026-10-13). Every other source answers
+    /// reads the disk resolves (THE DESIGN Q-DISK R4, OWNER 2026-10-13). Every other source answers
     /// exactly as [`Self::resolve`] does.
     fn resolve_at_config(
         &self,
@@ -205,7 +205,7 @@ pub trait SecretCalls: Send + Sync {
     fn resolve(&self, settings: &[u8]) -> Result<crate::redacted::Secret<Vec<u8>>, SecretRefused>;
 
     /// `resolve` at CONFIG TIME, with its proof ([`ConfigScope`](crate::config_time::ConfigScope)):
-    /// the one way a source that reads the disk resolves (THE DESIGN §11.11 R4, OWNER 2026-10-13).
+    /// the one way a source that reads the disk resolves (THE DESIGN Q-DISK R4, OWNER 2026-10-13).
     /// Every other source answers exactly as [`Self::resolve`] does.
     ///
     /// # Errors

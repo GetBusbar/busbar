@@ -5,8 +5,8 @@
 //!
 //! ## The hole this closes, stated exactly
 //!
-//! A drift quarantine is DERIVED, never stored: `crate::trust::Approval::state` compares the
-//! operator's standing approval against the last observation, and a state nobody stores is a state
+//! A drift quarantine is DERIVED, never stored: the kernel's trust book ([`crate::trust::book`])
+//! compares the operator's approval against the last sighting, and a state nobody stores is a state
 //! nothing can leave stale. That is the right design and it has one consequence — the observation is
 //! in process memory, so a restarted process has none, and a server with no observation answers the
 //! owning plane's "unsighted" digest state, which dispatches against the digest the
@@ -23,9 +23,9 @@
 //!
 //! What is written is not "this server is quarantined". It is "a live observation of this server
 //! disagreed with the approval, at this time" — an OBSERVATION that outlives the process, in exactly
-//! the way the in-memory sighting was always meant to and could not. It is replayed at boot as
-//! [`crate::trust::Sighting::Demoted`], the derivation runs unchanged on top of it, and the
-//! quarantine falls out of the same comparison it always did. Nothing acquires a stored trust state.
+//! the way the in-memory sighting was always meant to and could not. It is replayed at admit
+//! ([`crate::trust::book::TrustBook::admit`]) as a demotion the counterparty's pin must be seen
+//! again to clear. Nothing acquires a stored trust state.
 //!
 //! The boot replay itself — the owning plane's own hydration routine — stays on that plane for now,
 //! because it reaches into that plane's own client to seed the live sightings cache. This module holds
@@ -48,7 +48,7 @@
 //! everywhere else on this seam, a write's `Ok(())` is not evidence of durability: the engine finds
 //! out what its backend kept by READING IT BACK at boot.
 
-use crate::plane::store::{decode, encode, PlaneStore, KIND_DEMOTION, KIND_TRUST_DECISION};
+use crate::store::plane_view::{decode, encode, PlaneStore, KIND_DEMOTION, KIND_TRUST_DECISION};
 use crate::trust::book::RulingRow;
 use busbar_contract::records::{PlaneDisposition, PlaneRecord, PlaneSelector, RecordStoreResult};
 use std::sync::{Arc, Mutex};
