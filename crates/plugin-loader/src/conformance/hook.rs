@@ -507,6 +507,11 @@ fn recall_again(p: &Plugin<Hook>, d: &Dispatcher, r: &Arc<Request>, order_cap: u
     line
 }
 
+/// THE BIND THE HOOK SCRIPT LOADS ITS DOOR WITH, on each leg.
+pub(super) fn bind_for(d: &Dispatcher, s: &Subject) -> crate::dispatch::Bind {
+    s.bind(d, "hook")
+}
+
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let k = s.kind_inputs("hook");
     assert!(k.is_object(), "conformance.json has no `hook` inputs");
@@ -545,7 +550,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let after = Arc::new(Request::of(&k["refresh"]["request"], order_cap));
 
     let d = dispatcher();
-    let p = load::<Hook>(s, leg, s.bind(&d, "hook")).expect("the hook door loads");
+    let p = load::<Hook>(s, leg, bind_for(&d, s)).expect("the hook door loads");
     let mut r = Recorder::new(crossings(&p));
     r.line("facts", 0, || {
         format!(
