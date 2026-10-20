@@ -2810,7 +2810,6 @@ mod dated_rate_card_history {
             card: card(5.0),
             appended_at: busbar_kernel::store::now().saturating_mul(1_000),
             author: Author::Amend {
-                operator_fingerprint: "sha256:operator".to_string(),
                 reason_hash: [7u8; 32],
             },
         });
@@ -3235,7 +3234,6 @@ mod usage_as_of {
             card: card(5.0),
             appended_at: busbar_kernel::store::now().saturating_mul(1_000),
             author: Author::Amend {
-                operator_fingerprint: "sha256:operator".to_string(),
                 reason_hash: [7u8; 32],
             },
         });
