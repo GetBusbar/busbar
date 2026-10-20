@@ -299,20 +299,6 @@ dialect = "anthropic"
 owner = "kernel-neutrality lane"
 
 [[segment-debt]]
-file = "crates/busbar/tests/config_cross_plane.rs"
-line = 44
-text = "anthropic_adaptive_thinking: None,"
-dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar/tests/config_cross_plane.rs"
-line = 68
-text = "anthropic_adaptive_thinking: None,"
-dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
 file = "crates/busbar/tests/endpoints_cross_plane.rs"
 line = 72
 text = "busbar_kernel::proto::PROTO_OPENAI,"
