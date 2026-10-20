@@ -719,6 +719,14 @@ impl<'s> DoorSteps<'s> {
         self.lock().downgraded.clone()
     }
 
+    /// Whether the unit's far end CUT its answer after its head, as the driver told the steps at
+    /// the unit's audit ([`DriverSteps::answered`]): its connection failed, or its send's deadline
+    /// passed, before the answer completed.
+    #[must_use]
+    pub fn cut(&self) -> bool {
+        self.lock().answered.1
+    }
+
     /// WHETHER A BUDGET DOWNGRADE MAY SEND THE UNIT TO `to` (1.5.5's `admit_check` guard, hop by
     /// hop): `to` is a pool of this section not yet visited, the visited set is smaller than the
     /// pool count, and the caller's grant reaches `to` and every pool its `on_exhausted` fallback

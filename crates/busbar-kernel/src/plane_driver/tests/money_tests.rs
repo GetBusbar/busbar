@@ -523,6 +523,29 @@ fn a_door_unit_arriving_at_a_bucket_boundary_is_metered_in_the_bucket_it_arrived
     );
 }
 
+/// AN ANSWER ITS FAR END CUT IS NOT METERED, AND ITS FEE STANDS AS ITS PLANE REPORTED IT (status
+/// row 183): a unit whose 2xx answer the far end cut after its head writes no metering row
+/// (v1.5.5 `proxy/response_body.rs`: a transport error sets `stream_failed`, so neither the
+/// natural end's `ledger_and_meter` (:587) nor the drop's (:633-657) runs), and keeps the fee its
+/// plane reported, as 1.5.5's finish kept the fee of a 2xx head (`ingress/mod.rs:574-575`).
+/// RED: the cut end metered on its head's 2xx alone.
+#[test]
+fn a_cut_answer_meters_nothing_and_keeps_its_reported_fee() {
+    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+    admit(&r);
+    let _ = r.money.checkpoint(&ctx(1), &[fee_reported(1)]);
+    r.money.served(&ctx(1), "m", "acme");
+    r.money.settle_end_as(
+        UnitKey::new(1),
+        UnitEnd {
+            caller_status: 200,
+            cut: true,
+        },
+    );
+    assert!(metering_rows(&r).is_empty(), "a cut answer meters nothing");
+    assert_eq!(usage(&r).1, 5, "the fee its plane reported stands");
+}
+
 /// A unit that failed over ledgers AND meters under the member that served it, never the model
 /// it was opened under. RED: without `served` the tokens sit under `m` and nothing meters.
 #[test]

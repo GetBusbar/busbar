@@ -3641,7 +3641,15 @@ impl DataRoutes {
             .map(|r| r.status)
             .or_else(|| caller.stated())
             .unwrap_or_else(|| refusal_status(ReasonCode::PlanePanic));
-        served.money.settle_end(unit, status);
+        // How the answer ended, not only the status its head carried: an answer its far end cut is
+        // no delivered response, and meters nothing (status row 183).
+        served.money.settle_end_as(
+            unit,
+            busbar_kernel::plane_driver::UnitEnd {
+                caller_status: status,
+                cut: steps.cut(),
+            },
+        );
         // THE REQUEST FAMILIES of the plane serving the `pools` map (the flat card's plane), as the
         // previous release's `ingress::finish_inner` emitted them: for every request its dialect
         // read (decoded, or refused for its body; a path it does not serve, or a verb it does not
