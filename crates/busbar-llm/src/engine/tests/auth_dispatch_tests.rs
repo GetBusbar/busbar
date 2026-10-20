@@ -49,6 +49,7 @@ fn binding(
         allowed_pools: allowed_pools.map(|ps| ps.iter().map(|p| p.to_string()).collect()),
         group: group.map(str::to_string),
         admin_scope: admin_scope.map(str::to_string),
+        verbs: None,
     }
 }
 

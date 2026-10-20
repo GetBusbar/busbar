@@ -481,11 +481,27 @@ impl<S: SafeSlot> Entry for Safe<S> {
 }
 
 /// The reason buffer the host lent an instance-less call: `validate`'s and `open`'s (both
-/// `err_buf`/`err_cap`); `None` for any other slot or when none was lent.
+/// `err_buf`/`err_cap`), the secret kind's `check` (`err_buf`/`err_cap`) and the auth kind's
+/// `target` (`buf`/`buf_cap`); `None` for any other slot or when none was lent.
 ///
 /// # Safety
 /// `input` is the trampoline's copy of the host's `in` for slot `index`.
 unsafe fn lent_reason<I: 'static>(index: u32, input: &I) -> Option<Reason> {
+    let any = input as &dyn Any;
+    if let Some(c) = any.downcast_ref::<crate::abi::secret::CheckIn>() {
+        return (!c.err_buf.is_null() && c.err_cap > 0).then_some(Reason {
+            buf: c.err_buf,
+            cap: c.err_cap,
+            open: false,
+        });
+    }
+    if let Some(t) = any.downcast_ref::<crate::abi::auth::TargetIn>() {
+        return (!t.buf.is_null() && t.buf_cap > 0).then_some(Reason {
+            buf: t.buf,
+            cap: t.buf_cap,
+            open: false,
+        });
+    }
     let (buf, cap, open) = match index {
         slot::VALIDATE => {
             let v = (input as &dyn Any).downcast_ref::<ValidateIn>()?;

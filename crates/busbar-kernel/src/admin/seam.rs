@@ -81,3 +81,42 @@ pub(crate) fn mount_admin(router: axum::Router<Arc<AppHandle>>) -> axum::Router<
         None => router,
     }
 }
+
+/// THE CLOSED ADMIN VERB TABLE, as the kernel reads it: the per-verb allow-list's vocabulary
+/// (#77(9), OWNER-LOCKED, `docs/design/BUSBAR-1.6.0.md` l.2279 — "Each verb is a plain scoped verb
+/// authorized by the per-verb allow-list on the admin token").
+///
+/// The table is `busbar-core-admin`'s (the 66 pinned 1.5.5 operations and the 1.6.0 verbs, each
+/// with its snake-case operation name), and the kernel cannot name it — the same reverse edge
+/// [`AdminMountSeam`] exists for. So the admin service hands in two questions over it, registered
+/// beside the mount by the same `install`: validation asks whether a `role_bindings.…verbs` name
+/// is a verb (and which rung it needs), and the admin gate asks which verb a request line is.
+#[derive(Clone, Copy)]
+pub struct AdminVerbTable {
+    /// The rung the operation NAMED this requires; `None` = the table declares no such operation.
+    pub rung_of: fn(&str) -> Option<busbar_contract::authz::Scope>,
+    /// The operation name a request line (method, path) resolves to; `None` = the table declares
+    /// no such pair.
+    pub verb_at: fn(&str, &str) -> Option<&'static str>,
+}
+
+static VERB_TABLE: OnceLock<AdminVerbTable> = OnceLock::new();
+
+/// Register the closed admin verb table. Called by the admin service's `install`, beside
+/// [`install_admin_mount_seam`]; FIRST-WINS, like it.
+pub fn install_admin_verb_table(table: AdminVerbTable) {
+    let _ = VERB_TABLE.set(table);
+}
+
+/// The rung the admin verb named `name` requires, or `None` when no table is registered or the
+/// table declares no such verb. FAIL CLOSED: a name nothing can vouch for is no verb, so
+/// validation refuses it and a grant never admits it.
+pub fn admin_verb_rung(name: &str) -> Option<busbar_contract::authz::Scope> {
+    VERB_TABLE.get().and_then(|t| (t.rung_of)(name))
+}
+
+/// The admin verb a request line names, or `None` when no table is registered or the table
+/// declares no such pair — which no verb allow-list admits.
+pub fn admin_verb_at(method: &str, path: &str) -> Option<&'static str> {
+    VERB_TABLE.get().and_then(|t| (t.verb_at)(method, path))
+}

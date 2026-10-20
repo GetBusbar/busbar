@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SEAM core's own `router.rs`/`appbuild.rs` call through to reach the authorization-server
-//! plane's runtime object and mount its routes, without naming `busbar_core_oauth2::plane::AsPlane` —
-//! the reverse edge Cargo refuses (`busbar-core-oauth2` depends on `busbar-core`, never the other way).
+//! THE SEAM the kernel's router and app build call through to reach the authorization server's
+//! runtime object and mount its routes, without naming its crate: the reverse edge Cargo refuses
+//! (`busbar-core-oauth2` depends on `busbar-kernel`, never the other way).
 //!
-//! Registered once by the composition root (`crates/busbar`'s `main`), exactly the discipline
-//! `plane::registry::install_planes` documents for the CRUD-shaped planes (MCP/A2A). `oauth_as` is
-//! a SINGLETON plane — no named-definition map, no scope-kind grants, no admin CRUD verbs — so it
-//! rides this small bespoke fn-pointer pair rather than the full `PlaneDecl` vocabulary, which was
-//! built for a different shape of plane and would force several of its fields to fictions here.
+//! Registered once by the composition root, the discipline `plane::registry::install_planes`
+//! documents for the registry planes. `oauth_as` is a SINGLETON (no named-definition map, no
+//! scope-kind grants, no admin CRUD verbs), so it rides this small bespoke fn-pointer set rather
+//! than the full `PlaneDecl` vocabulary, which would force several of its fields to fictions here.
 
 use std::any::Any;
 use std::future::Future;
@@ -98,13 +97,11 @@ pub struct AsPlaneSeam {
 static SEAM: OnceLock<AsPlaneSeam> = OnceLock::new();
 
 /// Register the authorization-server plane's seam. Called EXACTLY ONCE, by the composition root
-/// (`crates/busbar`'s `main`, alongside `plane::registry::install_planes`), before any config is
-/// loaded. `oauth-as` is a NORMAL (always-linked, non-optional) dependency of the shipped binary —
-/// unlike MCP/A2A/voice, `oauth_as:` carries no feature flag — so every real build registers this.
-/// Only busbar-core's OWN test binary (`cargo test -p busbar-core`) never links `busbar-core-oauth2`
-/// (linking it would be the forbidden reverse edge) and so never calls this; that binary also never
-/// configures `oauth_as:` on any `App` it builds, so an unregistered seam and an always-`None` plane
-/// agree with each other there.
+/// (alongside `plane::registry::install_planes`), before any config is loaded. `oauth_as:` carries
+/// no feature flag, so every shipped build registers this. The kernel's own test binary never links
+/// `busbar-core-oauth2` (that would be the forbidden reverse edge) and so never calls this; it also
+/// never configures `oauth_as:` on any `App` it builds, so an unregistered seam and an always-`None`
+/// plane agree with each other there.
 ///
 /// # Panics
 /// If called more than once — one composition root, one registration, the same discipline
