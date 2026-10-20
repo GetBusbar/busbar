@@ -455,7 +455,7 @@ fn the_request_paths_spans_reach_the_collector_as_1_5_5_named_them() {
     let heard = |spans: &[Span]| {
         entries
             .iter()
-            .all(|e| spans.iter().filter(|s| s.name == *e).count() >= named(*e))
+            .all(|e| spans.iter().filter(|s| s.name == *e).count() >= named(e))
             && spans.iter().filter(|s| s.name == "forward").count() >= forwards
     };
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -479,7 +479,7 @@ fn the_request_paths_spans_reach_the_collector_as_1_5_5_named_them() {
         let opened: Vec<&Span> = spans.iter().filter(|s| s.name == *entry).collect();
         assert_eq!(
             opened.len(),
-            named(*entry),
+            named(entry),
             "`{entry}` opens once per row naming it, and for no other row: {spans:?}"
         );
         for span in opened {
