@@ -1331,6 +1331,7 @@ fn queue_won_permit_but_breaker_now_open_never_dispatches() {
         pools,
         token,
         walk,
+        shape: _,
     } = &mut walker;
     let ports = super::ports(n, pools);
     let Step::Wait(wait) = walk.next(&ports, n.affinity, token) else {
