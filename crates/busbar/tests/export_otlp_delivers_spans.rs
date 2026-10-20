@@ -303,10 +303,11 @@ fn unsafe_free_sigterm(pid: u32) {
 
 // ── status row 173: the request path's spans, as 1.5.5 named them ─────────────────────────────────
 
-/// One request of the fixture: the entry span it opens, the `ingress` its `forward` carries, the
-/// head fields it adds, its path and its body.
+/// One request of the fixture: the entry span it opens and the fields that span records, the
+/// `ingress` its `forward` carries, the head fields it adds, its path and its body.
 struct Row {
     entry: Option<&'static str>,
+    entry_fields: Vec<(&'static str, &'static str)>,
     ingress: Option<&'static str>,
     head: Vec<(&'static str, &'static str)>,
     path: &'static str,
@@ -320,21 +321,24 @@ fn rows() -> Vec<Row> {
         .lines()
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .map(|l| {
-            let f: Vec<&'static str> = l.splitn(5, '\t').collect();
-            assert_eq!(f.len(), 5, "a fixture row has five fields: {l}");
-            let head = some(f[2])
-                .map(|h| {
-                    h.split(';')
-                        .filter_map(|kv| kv.split_once(": "))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
+            let f: Vec<&'static str> = l.splitn(6, '\t').collect();
+            assert_eq!(f.len(), 6, "a fixture row has six fields: {l}");
+            let pairs = |field: &'static str, sep: &'static str| {
+                some(field)
+                    .map(|h| {
+                        h.split(';')
+                            .filter_map(|kv| kv.split_once(sep))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            };
             Row {
                 entry: some(f[0]),
-                ingress: some(f[1]),
-                head,
-                path: f[3],
-                body: f[4],
+                entry_fields: pairs(f[1], "="),
+                ingress: some(f[2]),
+                head: pairs(f[3], ": "),
+                path: f[4],
+                body: f[5],
             }
         })
         .collect()
@@ -392,14 +396,16 @@ fn under(spans: &[Span], span: &Span, names: &[&str]) -> bool {
 /// and which `ingress` its `forward` carries are the plane's words, never this crate's. The
 /// collector must receive:
 ///
-/// - each entry span exactly as many times as rows name it, every one with no attribute: a row
-///   whose head field alone decides its entry opens it, and a row whose head field ends the
-///   reading opens none, however its path reads;
+/// - each entry span exactly as many times as rows name it, each carrying exactly the fields its
+///   row names, in order (none for the ladder's spans; `named` its `pool`, `adhoc` its `provider`
+///   and `model`, read off the path): a row whose head field alone decides its entry opens it, and
+///   a row whose head field ends the reading opens none, however its path reads;
 /// - for a row naming its entry and its `ingress`, a `forward` beneath that entry carrying it and
 ///   `op = chat`;
 /// - for a row naming no entry and an `ingress`, a `forward` carrying it under no entry span.
 ///
-/// RED: with the plane stating no entry span, none reaches the collector; with the head fields
+/// RED: with the plane stating no entry span, none reaches the collector; with the path's named
+/// segments uncaptured, `named` and `adhoc` carry no field; with the head fields
 /// unread, the header-only row opens no entry and the header-stop row opens one; with the traces
 /// producer reading only the fields a span opened with, `forward` carries neither `ingress` nor
 /// `op`.
@@ -474,21 +480,35 @@ fn the_request_paths_spans_reach_the_collector_as_1_5_5_named_them() {
     let spans = spans();
     let _ = std::fs::remove_dir_all(&dir);
 
-    // EACH ENTRY SPAN: as many as the rows name, each with no attribute (1.5.5's `skip_all`).
+    // EACH ENTRY SPAN: as many as the rows name, each carrying exactly its row's fields, in order
+    // (1.5.5's `skip_all` plus the `fields(..)` it named).
     for entry in &entries {
-        let opened: Vec<&Span> = spans.iter().filter(|s| s.name == *entry).collect();
+        let mut opened: Vec<Vec<(String, String)>> = spans
+            .iter()
+            .filter(|s| s.name == *entry)
+            .map(|s| {
+                s.attributes
+                    .iter()
+                    .map(|kv| (kv.key.clone(), attribute(s, &kv.key).unwrap_or_default()))
+                    .collect()
+            })
+            .collect();
+        let mut wanted: Vec<Vec<(String, String)>> = rows
+            .iter()
+            .filter(|r| r.entry == Some(*entry))
+            .map(|r| {
+                r.entry_fields
+                    .iter()
+                    .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                    .collect()
+            })
+            .collect();
+        opened.sort();
+        wanted.sort();
         assert_eq!(
-            opened.len(),
-            named(entry),
-            "`{entry}` opens once per row naming it, and for no other row: {spans:?}"
+            opened, wanted,
+            "`{entry}` opens once per row naming it, with that row's fields, and for no other row"
         );
-        for span in opened {
-            assert!(
-                span.attributes.is_empty(),
-                "`{entry}` carries no attribute: {:?}",
-                span.attributes
-            );
-        }
     }
     // EACH ROW NAMING ITS `ingress`: its `forward`, beneath its entry span or under none.
     for row in rows.iter().filter(|r| r.ingress.is_some()) {
