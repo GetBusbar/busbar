@@ -55,16 +55,16 @@
     }
   ],
   "counts": {
-    "total": 2591,
+    "total": 2590,
     "by_plane": {
       "a2a": 468,
-      "core": 1008,
+      "core": 1007,
       "llm": 203,
       "mcp": 912
     },
     "by_family": {
       "a2a": 469,
-      "admin.ops": 329,
+      "admin.ops": 328,
       "admin.plugins": 7,
       "auth.lifecycle": 3,
       "billing": 16,
@@ -9197,7 +9197,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "Disaster recovery; effect lands on the store (204 no body). A plain scoped verb (#77(9)): the oracle's full-scope admin token is admitted with no operator key. "
+      "why": "Removed from 1.6.0 by the architect's v1.5.5-parity ruling: 1.5.5 never served this route and no locked decision adds it. The path is unmounted, so an admitted "
     },
     {
       "id": "admin.ops|PostChainBreak|unauth",
@@ -10708,7 +10708,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "Disaster recovery; effect lands on the store (204 no body). A plain scoped verb (#77(9)): the oracle's full-scope admin token is admitted with no operator key. "
+      "why": "Removed from 1.6.0 by the architect's v1.5.5-parity ruling: 1.5.5 never served this route and no locked decision adds it. The path is unmounted, so an admitted "
     },
     {
       "id": "admin.ops|PostResealEpochFloor|unauth",
@@ -10845,24 +10845,6 @@
       "why": "no credential -> 401 envelope"
     },
     {
-      "id": "admin.ops|PostStoreRestore|bad-body",
-      "plane": "core",
-      "family": "admin.ops",
-      "driver": "http",
-      "outcome": "ok",
-      "request": {
-        "method": "POST",
-        "path": "/api/v1/admin/store-restore",
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": "{}",
-        "auth": "admin",
-        "listener": "admin"
-      },
-      "why": "expect [400]"
-    },
-    {
       "id": "admin.ops|PostStoreRestore|ok",
       "plane": "core",
       "family": "admin.ops",
@@ -10871,14 +10853,12 @@
       "request": {
         "method": "POST",
         "path": "/api/v1/admin/store-restore",
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": "{\"backup_ref\":\"oracle-backup\"}",
+        "headers": {},
+        "body": null,
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "Disaster recovery; effect lands on the store (204 no body). A body naming no `backup_ref` string is 400 invalid_request before the store is reached (bad_body). "
+      "why": "Removed from 1.6.0 by the architect's v1.5.5-parity ruling: 1.5.5 never served this route and no locked decision adds it. The path is unmounted, so an admitted "
     },
     {
       "id": "admin.ops|PostStoreRestore|unauth",

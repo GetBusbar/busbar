@@ -17,8 +17,9 @@
 //! 1. the closed verb table (`admin_codec::verbs::table`): every `(method, path)` the node's
 //!    administrative mount walks through the kernel loop, which is how the 66 legacy operations and
 //!    the 1.6.0 kernel verbs whose effect is bound are answered (a verb declared with no effect
-//!    bound is NOT served — [`unbound_declared_operations`], empty since owner answer Q71(2); the nine the owner removed from 1.6.0 are not
-//!    declared at all — [`REMOVED_OPERATIONS`]);
+//!    bound is NOT served — [`unbound_declared_operations`], empty since owner answer Q71(2); the nine the owner removed from 1.6.0
+//!    and the three disaster-recovery verbs 1.5.5 never served are not declared at all —
+//!    [`REMOVED_OPERATIONS`]);
 //! 2. every named-definition section (`NamedMapSection::sections`), five operations each, which the
 //!    router mounts in one loop — including each plane-owned section;
 //! 3. every plane's admin trust verbs (`PlaneDecl::admin_routes`), which the router mounts in one
@@ -80,13 +81,15 @@ fn unbound_declared_operations() -> BTreeSet<Op> {
         .collect()
 }
 
-/// THE NINE OPERATIONS THE OWNER REMOVED FROM 1.6.0 (2026-09-08: `set_operator_key`, `set_escrow`,
-/// `set_dual_control`, `export_keyset`, `approve`; #77(9), owner answer Q71(1):
-/// `set_overdraft_ceiling`, `set_dispute_max_age`, `resolve_dispute`, `resolve_slice`). They are not verbs, so the table has no row for
-/// them and the node answers each with the unmounted `404` — exactly what it answered while they
-/// were declared-but-unbound, and the published 1.5.5 answer for a path it never had. Each keeps
-/// its admin corpus entry and cells, which are what show that answer did not move.
-const REMOVED_OPERATIONS: [(&str, &str); 9] = [
+/// THE TWELVE OPERATIONS REMOVED FROM 1.6.0: nine by the owner (2026-09-08: `set_operator_key`,
+/// `set_escrow`, `set_dual_control`, `export_keyset`, `approve`; #77(9), owner answer Q71(1):
+/// `set_overdraft_ceiling`, `set_dispute_max_age`, `resolve_dispute`, `resolve_slice`), and the
+/// three disaster-recovery verbs (`chain_break`, `store_restore`, `reseal_epoch_floor`) by the
+/// architect's v1.5.5-parity ruling: 1.5.5 never served them and no locked decision adds them. They
+/// are not verbs, so the table has no row for them and the node answers each with the unmounted
+/// `404` — the published 1.5.5 answer for a path it never had. Each keeps its admin corpus entry
+/// and cells, which are what show that answer did not move.
+const REMOVED_OPERATIONS: [(&str, &str); 12] = [
     ("POST", "/api/v1/admin/operator-key"),
     ("POST", "/api/v1/admin/escrow"),
     ("POST", "/api/v1/admin/dual-control"),
@@ -96,6 +99,9 @@ const REMOVED_OPERATIONS: [(&str, &str); 9] = [
     ("POST", "/api/v1/admin/dispute-max-age"),
     ("POST", "/api/v1/admin/disputes/resolve"),
     ("POST", "/api/v1/admin/slices/resolve"),
+    ("POST", "/api/v1/admin/chain-break"),
+    ("POST", "/api/v1/admin/store-restore"),
+    ("POST", "/api/v1/admin/reseal-epoch-floor"),
 ];
 
 /// The removed operations as [`Op`]s.

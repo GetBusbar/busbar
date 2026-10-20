@@ -32,22 +32,18 @@
 //!    the kernel's mutation limiter, against the node's one process-lifetime
 //!    [`crate::idempotency::IdempotencyCache`]; [`Verbs::execute`] refuses both verbs.
 //!
-//! Only once all of that has admitted the call does anything reach [`crate::governance::Governance`]
-//! or [`busbar_contract::verb_store::Store`]. That holds for the three disaster-recovery verbs too: their effect
-//! lands on the store rather than on governance, but they are new verbs like any other, so they
-//! reach the store only through [`Verbs::chain_break`], [`Verbs::store_restore`] and
-//! [`Verbs::reseal_epoch_floor`], each of which runs the same admission first. The bound store is
-//! not handed out — a caller holding it could have run any of the three with none of the checks,
-//! and nothing in the type system would have asked it not to.
+//! Only once all of that has admitted the call does anything reach [`crate::governance::Governance`].
+//! There is no disaster-recovery verb here and no store this executor reaches: `chain_break`,
+//! `store_restore` and `reseal_epoch_floor` were never 1.5.5 admin operations, no locked decision
+//! adds them, and their paths answer the unmounted `404` exactly as 1.5.5 does.
 
 use crate::governance::{Governance, GovernanceError};
 use crate::rate::{ConfigClassRule, MutationClass, MutationLimiter, RateCheck};
-use crate::refusal::{store_error_into_refusal, ReasonCode, Refusal, RefusalStep};
+use crate::refusal::{ReasonCode, Refusal, RefusalStep};
 use crate::verb::{
     KernelVerb, VerbScope, AUDIT_VERBS, LEDGER_VERBS, LEGACY_VERBS, NEW_VERBS, READ_ONLY_NEW_VERBS,
 };
 use busbar_contract::caps::{AdminVerb, Grant};
-use busbar_contract::verb_store::Store;
 use std::sync::Arc;
 
 /// Resolve the scope a [`KernelVerb`] requires. Legacy verbs read [`LEGACY_VERBS`]; fifteen of the
@@ -93,14 +89,11 @@ pub fn required_scope(verb: KernelVerb) -> VerbScope {
     VerbScope::ReadOnly
 }
 
-/// `Verbs` — the closed kernel-verb executor. Generic over the seams the integrator binds: the
-/// [`Governance`] and [`Store`] record-store adapters. `config_class_rules` is data rather than a
-/// third type parameter — a `&'static` table has no behaviour to seal behind a trait.
-pub struct Verbs<G: Governance, S: Store + ?Sized> {
+/// `Verbs` — the closed kernel-verb executor. Generic over the seam the integrator binds: the
+/// [`Governance`] adapter. `config_class_rules` is data rather than a second type parameter — a
+/// `&'static` table has no behaviour to seal behind a trait.
+pub struct Verbs<G: Governance> {
     governance: G,
-    /// The node's store, shared with the composition that built it; `None` on a node with no
-    /// configured store, where each disaster-recovery verb is refused as a store failure.
-    store: Option<Arc<S>>,
     config_class_rules: &'static [ConfigClassRule],
     /// The node's mutation limiter: built ONCE by the composition root and shared by every `Verbs`
     /// it builds. A `Verbs` lives for one request, so a limiter it built for itself saw an empty
@@ -108,7 +101,7 @@ pub struct Verbs<G: Governance, S: Store + ?Sized> {
     limiter: Arc<MutationLimiter>,
 }
 
-impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
+impl<G: Governance> Verbs<G> {
     /// Build a fresh executor over the bound seams. `config_class_rules` is the composition
     /// root's sealed class table (see [`crate::rate::CONFIG_CLASS_RULES`] for the 1.5.5-parity
     /// default); `limiter` is mandatory: it is the node's, built once for the life of the process,
@@ -116,13 +109,11 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
     /// request forgets every attempt before the next one.
     pub fn new(
         governance: G,
-        store: Option<Arc<S>>,
         config_class_rules: &'static [ConfigClassRule],
         limiter: Arc<MutationLimiter>,
     ) -> Self {
         Verbs {
             governance,
-            store,
             config_class_rules,
             limiter,
         }
@@ -136,8 +127,8 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
     /// spends the principal's mutation budget itself, in front of the handler, exactly as 1.5.5
     /// did. Spending it here as well would count one request twice and refuse at half the budget
     /// 1.5.5 granted. So this limiter spends exactly the verbs no legacy surface answers — the new
-    /// verbs ([`NEW_VERBS`]), whose effects land on the store, the journal and the kernel's books
-    /// and meet no other limiter on their way.
+    /// verbs ([`NEW_VERBS`]), whose effects land on the journal and the kernel's books and meet no
+    /// other limiter on their way.
     fn admit(
         &self,
         verb: KernelVerb,
@@ -217,84 +208,6 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
         self.governance
             .execute_legacy(verb, admin, request)
             .map_err(GovernanceError::into_refusal)
-    }
-
-    /// The bound store, for this crate's own tests to observe what did and did not reach it.
-    /// `cfg(test)` so it is not a way for a caller to route around the gates below.
-    #[cfg(test)]
-    fn store_for_test(&self) -> &S {
-        self.store.as_deref().expect("these tests bind a store")
-    }
-
-    /// The bound store, or the refusal a node with none answers: there is nothing for the verb to
-    /// reach, so it fails as a store failure rather than succeeding over nothing.
-    fn bound_store(&self) -> Result<&S, busbar_contract::verb_store::StoreError> {
-        self.store
-            .as_deref()
-            .ok_or(busbar_contract::verb_store::StoreError::Failed)
-    }
-
-    /// The gate the three disaster-recovery verbs run through before they reach the store.
-    ///
-    /// Identical to what [`Verbs::execute`] runs for any other new verb — scope, then rate class —
-    /// because these three are new verbs; the only thing that makes them different is that their
-    /// effect lands on [`Store`] rather than [`Governance`], and where an effect lands is not a
-    /// reason to be admitted differently. Each is a plain scoped verb (#77(9), OWNER-LOCKED,
-    /// `docs/design/BUSBAR-1.6.0.md` l.2279): no operator key, signature or second approver.
-    fn admit_recovery_verb(
-        &self,
-        verb: KernelVerb,
-        actor: &str,
-        granted: VerbScope,
-        now: u64,
-    ) -> Result<(), Refusal> {
-        self.admit(verb, actor, granted, now).map(|_| ())
-    }
-
-    /// `chain_break` — deliberately break the journal chain. Admitted through
-    /// [`Verbs::admit_recovery_verb`] and only then handed to the store.
-    pub fn chain_break(
-        &self,
-        admin: &Grant<AdminVerb>,
-        actor: &str,
-        granted: VerbScope,
-        now: u64,
-    ) -> Result<(), Refusal> {
-        self.admit_recovery_verb(KernelVerb::ChainBreak, actor, granted, now)?;
-        self.bound_store()
-            .and_then(|store| store.chain_break(admin))
-            .map_err(store_error_into_refusal)
-    }
-
-    /// `store_restore` — restore the store from a named backup. Admitted through
-    /// [`Verbs::admit_recovery_verb`] and only then handed to the store.
-    pub fn store_restore(
-        &self,
-        admin: &Grant<AdminVerb>,
-        actor: &str,
-        granted: VerbScope,
-        now: u64,
-        backup_ref: &str,
-    ) -> Result<(), Refusal> {
-        self.admit_recovery_verb(KernelVerb::StoreRestore, actor, granted, now)?;
-        self.bound_store()
-            .and_then(|store| store.store_restore(admin, backup_ref))
-            .map_err(store_error_into_refusal)
-    }
-
-    /// `reseal_epoch_floor` — reseal the epoch floor after a chain break or restore. Admitted
-    /// through [`Verbs::admit_recovery_verb`] and only then handed to the store.
-    pub fn reseal_epoch_floor(
-        &self,
-        admin: &Grant<AdminVerb>,
-        actor: &str,
-        granted: VerbScope,
-        now: u64,
-    ) -> Result<(), Refusal> {
-        self.admit_recovery_verb(KernelVerb::ResealEpochFloor, actor, granted, now)?;
-        self.bound_store()
-            .and_then(|store| store.reseal_epoch_floor(admin))
-            .map_err(store_error_into_refusal)
     }
 }
 

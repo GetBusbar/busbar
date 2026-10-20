@@ -846,8 +846,7 @@ pub fn mount_node(
         |dispatch| {
             // THE ADMIN DOOR: the deployment's live `admin_auth` chain, read per unit off the same
             // snapshot the kernel middleware reads and `PUT /api/v1/admin/admin-auth` swaps.
-            // Over the book boot opened AND the store boot bound beside it, so the three
-            // disaster-recovery verbs reach the configured store (row 113).
+            // Over the book boot opened.
             let mut units = crate::root::kernel::ProductionUnits::admin_over_book(
                 dispatch,
                 live_admin_door(Arc::clone(app)),

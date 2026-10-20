@@ -1643,11 +1643,11 @@
    "method": "POST",
    "mutating": true,
    "not_found": null,
-   "notes": "Disaster recovery; effect lands on the store (204 no body). A plain scoped verb (#77(9)): the oracle's full-scope admin token is admitted with no operator key. The node's bound verb store applies it. Body not read. Baseline: [204]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "notes": "Removed from 1.6.0 by the architect's v1.5.5-parity ruling: 1.5.5 never served this route and no locked decision adds it. The path is unmounted, so an admitted call answers 404 not_found, byte for byte the published 1.5.5 binary's generic admin-router miss. Body not read. Baseline: [404].",
    "ok": {
     "body": null,
     "expect": [
-     204
+     404
     ],
     "headers": {}
    },
@@ -2616,11 +2616,11 @@
    "method": "POST",
    "mutating": true,
    "not_found": null,
-   "notes": "Disaster recovery; effect lands on the store (204 no body). A plain scoped verb (#77(9)): the oracle's full-scope admin token is admitted with no operator key. The node's bound verb store applies it. Body not read. Baseline: [204]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "notes": "Removed from 1.6.0 by the architect's v1.5.5-parity ruling: 1.5.5 never served this route and no locked decision adds it. The path is unmounted, so an admitted call answers 404 not_found, byte for byte the published 1.5.5 binary's generic admin-router miss. Body not read. Baseline: [404].",
    "ok": {
     "body": null,
     "expect": [
-     204
+     404
     ],
     "headers": {}
    },
@@ -2700,31 +2700,19 @@
    "scope": "full"
   },
   "PostStoreRestore": {
-   "bad_body": {
-    "body": {},
-    "expect": [
-     400
-    ],
-    "headers": {
-     "Content-Type": "application/json"
-    }
-   },
+   "bad_body": null,
    "idempotent": false,
    "if_match": false,
    "method": "POST",
    "mutating": true,
    "not_found": null,
-   "notes": "Disaster recovery; effect lands on the store (204 no body). A body naming no `backup_ref` string is 400 invalid_request before the store is reached (bad_body). A plain scoped verb (#77(9)): the oracle's full-scope admin token is admitted with no operator key. The node's bound verb store applies it. Baseline: ok [204], bad_body [400]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "notes": "Removed from 1.6.0 by the architect's v1.5.5-parity ruling: 1.5.5 never served this route and no locked decision adds it. The path is unmounted, so an admitted call answers 404 not_found, byte for byte the published 1.5.5 binary's generic admin-router miss. Body not read. Baseline: [404].",
    "ok": {
-    "body": {
-     "backup_ref": "oracle-backup"
-    },
+    "body": null,
     "expect": [
-     204
+     404
     ],
-    "headers": {
-     "Content-Type": "application/json"
-    }
+    "headers": {}
    },
    "path": "/api/v1/admin/store-restore",
    "restart": false,

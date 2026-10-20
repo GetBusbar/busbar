@@ -281,20 +281,13 @@ pub enum KernelVerb {
     /// `POST /api/v1/admin/signing-key/rotate`
     PostSigningKeyRotate,
 
-    // ---- 1.6.0 new verbs (12) ----
+    // ---- 1.6.0 new verbs (9) ----
     /// Verify a claim/signature outside the normal request path.
     Verify,
     /// Read plane facts (a plane's own declared facts surface).
     PlaneFacts,
     /// Write a `PlaneRecord` entry.
     PlaneRecordWrite,
-    /// Deliberately break the journal chain (disaster recovery; irreducible; off-node CLI also
-    /// exists on a stopped node).
-    ChainBreak,
-    /// Restore the store from backup (disaster recovery; irreducible; off-node CLI also exists).
-    StoreRestore,
-    /// Reseal the epoch floor after a chain break/restore (irreducible; off-node CLI also exists).
-    ResealEpochFloor,
     /// Commit the schema/version upgrade (irreducible).
     CommitUpgrade,
     /// Manually adjust a ledger figure (irreducible above `adjust_threshold`).
@@ -670,19 +663,18 @@ pub const LEGACY_VERBS: &[LegacyVerbRow] = &[
     ),
 ];
 
-/// The 12 new 1.6.0 verbs: the eight money-governance verbs, plus `amend_rate_history` — the
+/// The 9 new 1.6.0 verbs: the five money-governance verbs, plus `amend_rate_history` — the
 /// back-dated rate-card correction the dated-history design adds — and the three trust verbs over the kernel's trust book (ARCHITECT 2026-10-06).
 /// `set_operator_key`, `set_escrow`, `set_dual_control`, `export_keyset` and `approve` left 1.6.0
-/// by the owner's 2026-09-08 ruling (ARCHITECTURE section 4.7), and `set_overdraft_ceiling`,
-/// `set_dispute_max_age`, `resolve_dispute` and `resolve_slice` by #77(9) (owner answer Q71(1)):
-/// they are not verbs, and their paths are the unmounted `404`.
+/// by the owner's 2026-09-08 ruling (ARCHITECTURE section 4.7), `set_overdraft_ceiling`,
+/// `set_dispute_max_age`, `resolve_dispute` and `resolve_slice` by #77(9) (owner answer Q71(1)),
+/// and `chain_break`, `store_restore` and `reseal_epoch_floor` by the architect's v1.5.5-parity
+/// ruling (1.5.5 never served them and no locked decision adds them): they are not verbs, and
+/// their paths are the unmounted `404`, byte for byte 1.5.5's.
 pub const NEW_VERBS: &[KernelVerb] = &[
     KernelVerb::Verify,
     KernelVerb::PlaneFacts,
     KernelVerb::PlaneRecordWrite,
-    KernelVerb::ChainBreak,
-    KernelVerb::StoreRestore,
-    KernelVerb::ResealEpochFloor,
     KernelVerb::CommitUpgrade,
     KernelVerb::Adjust,
     KernelVerb::AmendRateHistory,
@@ -705,9 +697,6 @@ pub const NEW_VERBS: &[KernelVerb] = &[
 #[must_use]
 pub const fn effect_bound(verb: KernelVerb) -> bool {
     match verb {
-        // Their effect lands on the store (`Verbs::chain_break` / `store_restore` /
-        // `reseal_epoch_floor`).
-        KernelVerb::ChainBreak | KernelVerb::StoreRestore | KernelVerb::ResealEpochFloor => true,
         // Their effect lands on the node's amendment journal (the composition root's
         // `execute_new_verb`).
         KernelVerb::Adjust | KernelVerb::AmendRateHistory => true,
@@ -821,13 +810,10 @@ pub const NAMED_SURFACES: &[KernelVerb] = &[
 #[must_use]
 pub const fn verb_name(verb: KernelVerb) -> Option<&'static str> {
     Some(match verb {
-        // The 9 money-governance verbs.
+        // The 6 money-governance verbs.
         KernelVerb::Verify => "verify",
         KernelVerb::PlaneFacts => "plane_facts",
         KernelVerb::PlaneRecordWrite => "plane_record_write",
-        KernelVerb::ChainBreak => "chain_break",
-        KernelVerb::StoreRestore => "store_restore",
-        KernelVerb::ResealEpochFloor => "reseal_epoch_floor",
         KernelVerb::CommitUpgrade => "commit_upgrade",
         KernelVerb::Adjust => "adjust",
         KernelVerb::AmendRateHistory => "amend_rate_history",

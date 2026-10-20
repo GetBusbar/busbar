@@ -965,9 +965,6 @@ pub fn book(
     Ok(super::durability::NodeBook {
         durability,
         rows,
-        // The disaster-recovery verbs reach the store this book is shipped to, through the same
-        // adapter: one store behind the node, not one per seam (row 113, ruling (B)).
-        verb_store: Some(adapter.verb_store()),
     })
 }
 

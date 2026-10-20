@@ -3,13 +3,13 @@
 
 //! THE 1.6.0 KERNEL VERBS, IN THE ONE DOCUMENT.
 //!
-//! The closed verb table (`admin_codec::verbs`) declares 20 operations 1.6.0 adds to the
-//! administrative surface: the 12 kernel verbs ([`NEW_VERBS`]: nine money-governance, three trust),
+//! The closed verb table (`admin_codec::verbs`) declares 17 operations 1.6.0 adds to the
+//! administrative surface: the 9 kernel verbs ([`NEW_VERBS`]: six money-governance, three trust),
 //! the five ledger views ([`LEDGER_VERBS`]) and the three audit-chain reads ([`AUDIT_VERBS`]). The router in this crate
 //! mounts none of them. The node's administrative mount walks every row the table declares whose
 //! effect is bound through the kernel loop, and it is the composition root's route step that answers them — the ledger and
 //! audit reads render from the node's own book and chain, `adjust` and `amend_rate_history` land on
-//! the node's amendment journal, and the three disaster-recovery verbs land on the store.
+//! the node's amendment journal.
 //!
 //! They used to be described nowhere, or in a side-car document kept beside the served one so the
 //! served bytes need not move. This module is what put them in the one generated document instead:
@@ -22,7 +22,7 @@
 //! node's mount hands it to the surface's own fallback, which answers the unmounted `404` — so this
 //! document does not describe it either: [`operations`] asks the same one question the mount asks.
 //! Since owner answer Q71(2) bound `verify`, `plane_facts`, `plane_record_write` and
-//! `commit_upgrade`, every one of the nine is bound; the three trust verbs are bound with them
+//! `commit_upgrade`, every one of the six is bound; the three trust verbs are bound with them
 //! (ARCHITECT 2026-10-06).
 
 #[cfg(feature = "openapi-schema")]
@@ -662,15 +662,6 @@ pub(crate) struct CommitUpgradeView {
     hash: String,
 }
 
-/// `POST /store-restore`: the backup to restore. There is no default and no empty one.
-#[cfg(feature = "openapi-schema")]
-#[derive(Deserialize, JsonSchema)]
-#[allow(dead_code)]
-pub(crate) struct StoreRestoreReq {
-    /// The backup the operator names. A request that names none is refused before the ceremony.
-    backup_ref: String,
-}
-
 // ── one verb's contract ──────────────────────────────────────────────────────────────────────────
 
 /// What a kernel verb answers when it succeeds.
@@ -680,8 +671,6 @@ enum Success {
     Json(Value, &'static str),
     /// `200` carrying the one generated OpenAPI document.
     Document,
-    /// `204`: the verb's whole result is its effect.
-    NoContent(&'static str),
 }
 
 /// One kernel verb's documented contract.
@@ -766,67 +755,6 @@ fn doc_for(
         ],
     };
     Some(match verb {
-        // ── the three disaster-recovery verbs: their effect lands on the store ──
-        KernelVerb::ChainBreak => VerbDoc {
-            summary: "Deliberately break the journal chain (disaster recovery)",
-            description: "Admitted through the same gates as every other new verb, then handed to \
-                          the store. The request body is not read."
-                .to_string(),
-            success: Success::NoContent("Applied: the chain is broken. No body"),
-            request: None,
-            query: Vec::new(),
-            errors: vec![
-                gated_403(),
-                (
-                    "404",
-                    "`not_found`: the store names no such resource".to_string(),
-                ),
-                unavailable_503("the node could not take the unit, or the store failed"),
-            ],
-        },
-        KernelVerb::StoreRestore => VerbDoc {
-            summary: "Restore the store from a named backup (disaster recovery)",
-            description: "The body names the backup; there is no default. A body that names none \
-                          is refused before it reaches the store. Otherwise admitted through the \
-                          same gates as every other new verb, then handed to the store."
-                .to_string(),
-            success: Success::NoContent("Applied: the store is restored. No body"),
-            request: Some(schema_of(req_gen.subschema_for::<StoreRestoreReq>())),
-            query: Vec::new(),
-            errors: vec![
-                (
-                    "400",
-                    format!(
-                        "`invalid_request`: the body names no `backup_ref` string, or \
-                         {BODY_UNREADABLE}"
-                    ),
-                ),
-                gated_403(),
-                (
-                    "404",
-                    "`not_found`: the store holds no backup under `backup_ref`".to_string(),
-                ),
-                unavailable_503("the node could not take the unit, or the store failed"),
-            ],
-        },
-        KernelVerb::ResealEpochFloor => VerbDoc {
-            summary: "Reseal the epoch floor after a chain break or restore",
-            description: "Admitted through the same gates as every other new verb, then handed to \
-                          the store. The request body is not read."
-                .to_string(),
-            success: Success::NoContent("Applied: the floor is resealed. No body"),
-            request: None,
-            query: Vec::new(),
-            errors: vec![
-                gated_403(),
-                (
-                    "404",
-                    "`not_found`: the store names no such resource".to_string(),
-                ),
-                unavailable_503("the node could not take the unit, or the store failed"),
-            ],
-        },
-
         // ── the four verbs owner answer Q71(2) binds ──
         KernelVerb::Verify => VerbDoc {
             summary: "Verify this node's ledger: checkpoints, sequences, the book and the identity",
@@ -1252,9 +1180,6 @@ pub(crate) fn operations(
                                "type": "object",
                                "description": "An OpenAPI 3.1 document (this document's shape)"}}}}),
                 );
-            }
-            Success::NoContent(description) => {
-                by_status.insert("204".into(), json!({ "description": description }));
             }
         }
         by_status.insert(

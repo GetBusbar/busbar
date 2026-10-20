@@ -201,7 +201,6 @@ fn a_node() -> ANodeWhoseChainThisCellReads {
                 crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
                 held,
                 read,
-                None,
             )
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(
                 Arc::new(ADirectoryThatMintedIt),
@@ -263,7 +262,6 @@ fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
                 crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
                 held,
                 read,
-                None,
             )
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(
                 Arc::new(ADirectoryThatMintedIt),
@@ -495,50 +493,6 @@ async fn the_served_audit_body_is_byte_identical_with_and_without_the_root() {
     );
 }
 
-/// A store that applies each recovery verb, so a root-only verb can end `applied`.
-#[cfg(feature = "root-admin")]
-struct AnApplyingStore;
-
-#[cfg(feature = "root-admin")]
-impl busbar_contract::verb_store::Store for AnApplyingStore {
-    fn chain_break(
-        &self,
-        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        Ok(())
-    }
-
-    fn store_restore(
-        &self,
-        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-        _backup_ref: &str,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        Ok(())
-    }
-
-    fn reseal_epoch_floor(
-        &self,
-        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        Ok(())
-    }
-
-    fn replay_new_verb(
-        &self,
-        _key: &(String, String),
-    ) -> Result<Option<Vec<u8>>, busbar_contract::verb_store::StoreError> {
-        Ok(None)
-    }
-
-    fn commit_new_verb_replay(
-        &self,
-        _key: &(String, String),
-        _response: &[u8],
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        Ok(())
-    }
-}
-
 /// The served rows for one resource that the operator (`admin`) is attributed, as
 /// `(action, outcome)`, newest first. Filtered on the principal because the ring is process-wide
 /// and the step-level cells in `units_admin.rs` seal the same verbs under another identity.
@@ -566,8 +520,7 @@ async fn the_operators_rows_for(router: &axum::Router, resource: &str) -> Vec<(S
 /// The 1.6.0 verbs have no core-admin handler, so nothing wrote their row once the root's RAM ring
 /// went (item 237). Each is walked through the root's mount over the real surface, once, and the
 /// operator's `/audit` page must then carry exactly one row for it on the kernel's durable ring:
-/// `applied` where the effect landed (the three store verbs, under a store that applies),
-/// `rejected` where it did not. A ledger view seals nothing.
+/// `rejected` where the effect did not land. A ledger view seals nothing.
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_none() {
@@ -592,43 +545,17 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
         crate::root::kernel::new_kernel(),
         1 << 20,
         move |dispatch| {
-            let mut units = crate::root::kernel::ProductionUnits::admin_only_sharing(
+            crate::root::kernel::ProductionUnits::admin_only_sharing(
                 dispatch,
                 crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
                 held,
                 read,
-                None,
             )
-            .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
-                ADirectoryThatMintedIt,
-            )));
-            units.store = Some(Arc::new(AnApplyingStore));
-            units
+            .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(
+                Arc::new(ADirectoryThatMintedIt),
+            ))
         },
     );
-
-    let applied = [
-        ("/api/v1/admin/chain-break", "{}", "chain_break"),
-        (
-            "/api/v1/admin/store-restore",
-            r#"{"backup_ref":"nightly"}"#,
-            "store_restore",
-        ),
-        (
-            "/api/v1/admin/reseal-epoch-floor",
-            "{}",
-            "reseal_epoch_floor",
-        ),
-    ];
-    for (path, body, verb) in applied {
-        let (status, _, _) = over(&mounted, "POST", path, body.as_bytes().to_vec()).await;
-        assert_eq!(status, 204, "{verb} applied");
-        assert_eq!(
-            the_operators_rows_for(&mounted, path).await,
-            vec![(verb.to_string(), "applied".to_string())],
-            "{verb}: one applied row on the durable ring"
-        );
-    }
 
     // Only the verbs with a bound effect are walked here; the unbound ones are not served at all
     // (`an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_nothing`).
@@ -662,105 +589,6 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
     }
 }
 
-/// ROW 113 (ruling (B)): A BOOTED NODE'S RECOVERY VERBS REACH ITS CONFIGURED STORE.
-///
-/// The book is the one `root::boot::book` opens over a real App with a governance store, and the
-/// units are the ones `main` composes over it (`ProductionUnits::admin_over_book`). Each of the
-/// three verbs answers `204` and lands on that store. RED (the defect this
-/// replaced): the composition held a refusing stand-in, so each answered the store failure on a
-/// node whose store was right there; drop the book's store, or the units' binding of it, and this
-/// goes red. Then restore -> reseal -> replay over the SAME store: a replay slot committed before
-/// the restore survives it and the reseal, and answers its first bytes.
-#[cfg(feature = "root-admin")]
-#[tokio::test]
-async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_book() {
-    busbar_kernel::snapshot::init();
-    busbar_core_admin::install();
-    // An App with a governance store: the in-tree memory store, as a config that names none gets,
-    // with the record slots the boot book keeps its journal in (H3: a store without them refuses the
-    // boot) over the test's in-memory map.
-    let gov = Arc::new(
-        busbar_kernel::governance::GovState::new(
-            Arc::new(busbar_kernel::governance::MemoryStore::new()),
-            None,
-        )
-        .expect("a governance over the memory store"),
-    );
-    gov.attach_store_calls(crate::root::store_double::RecordSlots::new().calls());
-    let booted = busbar_kernel::test_support::TestApp::new()
-        .governance(gov)
-        .build();
-    let book = crate::root::boot::book(&booted, "test-store").expect("the boot book opens");
-    let store = book
-        .verb_store
-        .clone()
-        .expect("a node with a configured store carries it on its book");
-
-    // A replay slot committed BEFORE the recovery sequence.
-    let key = (
-        "idem-row-113".to_string(),
-        "POST /api/v1/admin/keys".to_string(),
-    );
-    assert_eq!(store.replay_new_verb(&key).expect("the slot reads"), None);
-    store
-        .commit_new_verb_replay(&key, b"first answer")
-        .expect("the slot commits");
-
-    let app = busbar_kernel::test_support::TestApp::new()
-        .admin_chain(vec![])
-        .build();
-    let (_data, bare, _handle) =
-        busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
-    let mounted = mount(
-        bare,
-        crate::root::kernel::new_kernel(),
-        1 << 20,
-        move |dispatch| {
-            // Its OWN full-tier identity, not the operator's: the audit ring is process-wide and
-            // `every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_none` counts the
-            // operator's rows on these same three paths.
-            let door: crate::root::units_admin::AdminDoorFn =
-                Arc::new(|_: &crate::root::units_admin::AdminRequest| {
-                    busbar_kernel::auth::AdminDoor::Identified(
-                        busbar_contract::auth::Principal::from_id("row-113-recovery-operator"),
-                        busbar_contract::authz::Grants::of(busbar_contract::authz::Scope::Full),
-                    )
-                });
-            crate::root::kernel::ProductionUnits::admin_over_book(dispatch, door, &book)
-                .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
-                    ADirectoryThatMintedIt,
-                )))
-        },
-    );
-
-    for (path, body, verb) in [
-        ("/api/v1/admin/chain-break", "{}", "chain_break"),
-        (
-            "/api/v1/admin/store-restore",
-            r#"{"backup_ref":"nightly"}"#,
-            "store_restore",
-        ),
-        (
-            "/api/v1/admin/reseal-epoch-floor",
-            "{}",
-            "reseal_epoch_floor",
-        ),
-    ] {
-        let (status, _, _) = over(&mounted, "POST", path, body.as_bytes().to_vec()).await;
-        assert_eq!(
-            status, 204,
-            "{verb} reached the configured store and applied"
-        );
-    }
-
-    // The slot survived the restore and the reseal, and replays the first answer's bytes.
-    assert_eq!(
-        store.replay_new_verb(&key).expect("the slot reads"),
-        Some(b"first answer".to_vec()),
-        "a committed replay slot survives restore -> reseal"
-    );
-}
-
 /// The 1.6.0 verbs this build binds NO EFFECT to, as `(method, path)`. Empty since owner answer
 /// Q71(2) bound the last four (`verify`, `plane_facts`, `plane_record_write`, `commit_upgrade` —
 /// `the_four_q71_verbs_are_served_and_refuse_by_name`); a verb added to `NEW_VERBS` without an
@@ -768,14 +596,15 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
 #[cfg(feature = "root-admin")]
 const THE_UNBOUND_VERBS: [(&str, &str); 0] = [];
 
-/// The nine verbs the owner removed from 1.6.0 — on 2026-09-08 (`set_operator_key`, `set_escrow`,
-/// `set_dual_control`, `export_keyset`, `approve`) and by #77(9), owner answer Q71(1)
-/// (`set_overdraft_ceiling`, `set_dispute_max_age`, `resolve_dispute`, `resolve_slice`) — as
-/// `(method, path)`. They are no longer in the
-/// table at all; while they were, they were unbound and answered the unmounted `404`. Removing them
-/// must not move that answer by a byte.
+/// The twelve verbs removed from 1.6.0, as `(method, path)`: nine by the owner — on 2026-09-08
+/// (`set_operator_key`, `set_escrow`, `set_dual_control`, `export_keyset`, `approve`) and by
+/// #77(9), owner answer Q71(1) (`set_overdraft_ceiling`, `set_dispute_max_age`, `resolve_dispute`,
+/// `resolve_slice`) — and the three disaster-recovery verbs (`chain_break`, `store_restore`,
+/// `reseal_epoch_floor`) by the architect's v1.5.5-parity ruling: 1.5.5 never served them and no
+/// locked decision adds them. They are not in the table at all, and each answers exactly what 1.5.5
+/// answers for a path it never had: the unmounted `404`, byte for byte.
 #[cfg(feature = "root-admin")]
-const THE_REMOVED_VERBS: [(&str, &str); 9] = [
+const THE_REMOVED_VERBS: [(&str, &str); 12] = [
     ("POST", "/api/v1/admin/operator-key"),
     ("POST", "/api/v1/admin/escrow"),
     ("POST", "/api/v1/admin/dual-control"),
@@ -785,15 +614,56 @@ const THE_REMOVED_VERBS: [(&str, &str); 9] = [
     ("POST", "/api/v1/admin/dispute-max-age"),
     ("POST", "/api/v1/admin/disputes/resolve"),
     ("POST", "/api/v1/admin/slices/resolve"),
+    ("POST", "/api/v1/admin/chain-break"),
+    ("POST", "/api/v1/admin/store-restore"),
+    ("POST", "/api/v1/admin/reseal-epoch-floor"),
 ];
+
+/// Where the committed 1.5.5 golden keeps cell `http.crosscut|admin-unknown|admin`
+/// (`GET /api/v1/admin/nope` under the admin credential), relative to the repository root.
+#[cfg(feature = "root-admin")]
+const THE_1_5_5_UNKNOWN_ADMIN_PATH_GOLDEN: &str =
+    "testing/shadow-oracle/golden/1.5.5/cells/http.crosscut__admin-unknown__admin.json";
+
+/// 1.5.5's OWN ANSWER FOR AN UNKNOWN ADMIN PATH, as the committed 1.5.5 golden recorded it from the
+/// published binary ([`THE_1_5_5_UNKNOWN_ADMIN_PATH_GOLDEN`]). Read from the golden rather than
+/// restated, so the control below is 1.5.5's bytes and not this file's memory of them.
+#[cfg(feature = "root-admin")]
+fn the_1_5_5_unknown_admin_path_answer() -> (u16, String, Vec<u8>) {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = root.join(THE_1_5_5_UNKNOWN_ADMIN_PATH_GOLDEN);
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("read the 1.5.5 golden {}: {e}", path.display()));
+    let golden: serde_json::Value = serde_json::from_str(&text).expect("the golden is JSON");
+    let status = u16::try_from(golden["status"].as_u64().expect("a recorded status"))
+        .expect("a status fits a u16");
+    let content_type = golden["headers"]["content-type"]
+        .as_str()
+        .expect("a recorded content-type")
+        .to_string();
+    let body = serde_json::to_vec(&golden["body"]["json"]).expect("the recorded body re-encodes");
+    let length: usize = golden["headers"]["content-length"]
+        .as_str()
+        .expect("a recorded content-length")
+        .parse()
+        .expect("a numeric content-length");
+    assert_eq!(
+        body.len(),
+        length,
+        "the re-encoded golden body is the recorded wire length, so it is the recorded bytes"
+    );
+    (status, content_type, body)
+}
 
 /// AN ADMIN VERB WHOSE EFFECT IS NOT BOUND IS NOT SERVED (architect ruling 2026-09-24).
 ///
 /// Under a full-scope operator — the grant every gate admits —
-/// each unbound verb (none since Q71(2)) and each of the nine the owner removed (which the table no
-/// longer names) answers EXACTLY what an unmounted path answers (`404 not_found` /
-/// `resource not found`, byte for byte, which is also the published 1.5.5 answer for every one of
-/// these paths) and seals NO audit row. It used to be walked through the gates, sealed a `rejected`
+/// each unbound verb (none since Q71(2)) and each of the twelve removed from 1.6.0 (which the table
+/// no longer names; `chain-break`, `store-restore` and `reseal-epoch-floor` among them) answers
+/// EXACTLY what an unmounted path answers (`404 not_found` / `resource not found`, byte for byte)
+/// — and the unmounted answer is checked against the 1.5.5 golden's recording of an unknown admin
+/// path, so every one of these paths answers as the published 1.5.5 binary does — and seals NO
+/// audit row. It used to be walked through the gates, sealed a `rejected`
 /// row, and then answered the same 404 from a surface with no handler for it. And the set is the
 /// one generic `effect_bound` check's, not a list kept beside it.
 #[cfg(feature = "root-admin")]
@@ -825,14 +695,13 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
                 crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
                 held,
                 read,
-                None,
             )
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(
                 Arc::new(ADirectoryThatMintedIt),
             ))
         },
     );
-    let (unmounted_status, unmounted, _) = over(
+    let (unmounted_status, unmounted, unmounted_headers) = over(
         &mounted,
         "POST",
         "/api/v1/admin/no-such-operation",
@@ -845,17 +714,44 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
         br#"{"error":{"code":"not_found","message":"resource not found"}}"#.to_vec(),
         "the control is the router's generic miss"
     );
+    // And the control is 1.5.5's own answer for an unknown admin path, byte for byte — status,
+    // content type and body as the 1.5.5 golden recorded them from the published binary.
+    let (golden_status, golden_type, golden_body) = the_1_5_5_unknown_admin_path_answer();
+    let content_type_of = |headers: &[(String, String)]| {
+        headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+            .map(|(_, value)| value.clone())
+    };
+    assert_eq!(
+        unmounted_status, golden_status,
+        "the unmounted path answers 1.5.5's status for an unknown admin path"
+    );
+    assert_eq!(
+        content_type_of(&unmounted_headers),
+        Some(golden_type),
+        "the unmounted path declares 1.5.5's content type for an unknown admin path"
+    );
+    assert_eq!(
+        unmounted, golden_body,
+        "the unmounted path answers 1.5.5's body bytes for an unknown admin path"
+    );
     for (method, path) in THE_UNBOUND_VERBS.into_iter().chain(THE_REMOVED_VERBS) {
         let body = if method == "GET" {
             Vec::new()
         } else {
             b"{}".to_vec()
         };
-        let (status, answer, _) = over(&mounted, method, path, body).await;
+        let (status, answer, headers) = over(&mounted, method, path, body).await;
         assert_eq!(
             (status, answer.as_slice()),
             (unmounted_status, unmounted.as_slice()),
             "{method} {path}: an unbound or removed verb answers exactly what an unmounted path answers"
+        );
+        assert_eq!(
+            content_type_of(&headers),
+            content_type_of(&unmounted_headers),
+            "{method} {path}: and declares the same content type"
         );
         assert_eq!(
             the_operators_rows_for(&mounted, path).await,
@@ -1055,7 +951,6 @@ fn a_q71_node_trusting(
                 crate::root::units_admin::door_of_chain(door),
                 held,
                 read,
-                None,
             )
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
                 ADirectoryThatMintedIt,

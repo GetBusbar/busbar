@@ -1,16 +1,18 @@
-//! The closed 66+12+5+3 kernel-verb table, and the pure `(method, path) -> verb` match over it.
+//! The closed 66+9+5+3 kernel-verb table, and the pure `(method, path) -> verb` match over it.
 //!
 //! The 66 come from `generated::verb_table_1_5_5` — mechanically extracted from the pinned
-//! `openapi-1.5.5.json` fixture, treated as ground truth and never regenerated here. The 8 are the
+//! `openapi-1.5.5.json` fixture, treated as ground truth and never regenerated here. The 5 are the
 //! 1.6.0-additive money-governance verbs the design names by name only (`verify`, `plane_facts`,
-//! `plane_record_write`, `chain_break`, `store_restore`, `reseal_epoch_floor`, `commit_upgrade`,
-//! `adjust`) with no HTTP method or path of their own — they are new admin-API surface, not part
-//! of the 1.5.5 tag. Five more the design once named (`set_operator_key`, `set_escrow`,
-//! `set_dual_control`, `export_keyset`, `approve`) left 1.6.0 by the owner's 2026-09-08 ruling, and
-//! four (`set_overdraft_ceiling`, `set_dispute_max_age`, `resolve_dispute`, `resolve_slice`) by
-//! #77(9) (owner answer Q71(1)); none has a row: their paths are unmounted.
+//! `plane_record_write`, `commit_upgrade`, `adjust`) with no HTTP method or path of their own —
+//! they are new admin-API surface, not part of the 1.5.5 tag. Five more the design once named
+//! (`set_operator_key`, `set_escrow`, `set_dual_control`, `export_keyset`, `approve`) left 1.6.0 by
+//! the owner's 2026-09-08 ruling, four (`set_overdraft_ceiling`, `set_dispute_max_age`,
+//! `resolve_dispute`, `resolve_slice`) by #77(9) (owner answer Q71(1)), and three (`chain_break`,
+//! `store_restore`, `reseal_epoch_floor`) by the architect's v1.5.5-parity ruling — 1.5.5 never
+//! served them and no locked decision adds them; none has a row: their paths are unmounted and
+//! answer 1.5.5's own `404`.
 //!
-//! **Judgment call, flagged for review**: the design does not state an HTTP binding for the 8. This
+//! **Judgment call, flagged for review**: the design does not state an HTTP binding for the 5. This
 //! module assigns each one a `POST /api/v1/admin/<kebab-case-verb>` binding — the same shape every
 //! other mutating admin operation in the 1.5.5 table uses — purely so the table has *something*
 //! coherent to resolve against in the closed-loop tests below. `verify` and `plane_facts` are bound
@@ -53,8 +55,8 @@ const fn post_row(path: &'static str, verb: &'static str) -> VerbEntry {
     }
 }
 
-/// The 12 1.6.0-additive kernel verbs: the 9 money-governance verbs (the first eight carry the
-/// synthetic HTTP binding flagged in the module doc; the ninth, `amend_rate_history`, carries the
+/// The 9 1.6.0-additive kernel verbs: the 6 money-governance verbs (the first five carry the
+/// synthetic HTTP binding flagged in the module doc; the sixth, `amend_rate_history`, carries the
 /// design's own binding under `/ledger/`) and the three trust verbs, under the ruling's own paths.
 const NEW_VERBS_1_6_0: &[VerbEntry] = &[
     // `GET`, not `POST`: BUSBAR-1.6.0.md (CG-56) binds the two read-only verbs as `GET`
@@ -65,12 +67,9 @@ const NEW_VERBS_1_6_0: &[VerbEntry] = &[
     get_row("/api/v1/admin/verify", "verify"),
     get_row("/api/v1/admin/plane-facts", "plane_facts"),
     post_row("/api/v1/admin/plane-record-write", "plane_record_write"),
-    post_row("/api/v1/admin/chain-break", "chain_break"),
-    post_row("/api/v1/admin/store-restore", "store_restore"),
-    post_row("/api/v1/admin/reseal-epoch-floor", "reseal_epoch_floor"),
     post_row("/api/v1/admin/commit-upgrade", "commit_upgrade"),
     post_row("/api/v1/admin/adjust", "adjust"),
-    // `amend_rate_history`: unlike the eight above, its path is NOT a judgment call. The
+    // `amend_rate_history`: unlike the five above, its path is NOT a judgment call. The
     // dated rate-card-history design binds it at `POST /api/v1/admin/ledger/amend-rate-history` —
     // under the `/ledger/` prefix the five views share, because it is the one write among them — and
     // `full`, because it corrects what the past cost.
@@ -87,7 +86,7 @@ const NEW_VERBS_1_6_0: &[VerbEntry] = &[
 
 /// The five 1.6.0 ledger views, mounted under one sub-prefix of the admin surface.
 ///
-/// Unlike the 8 above, these paths are NOT a judgment call. `/api/v1/admin/ledger/*` is the prefix
+/// Unlike the 5 above, these paths are NOT a judgment call. `/api/v1/admin/ledger/*` is the prefix
 /// the design names for them, and `/api/v1/admin/ledger/openapi.json` is the path it names for the
 /// document that describes the 1.6.0 operations — a document beside the 1.5.5 one rather than
 /// inside it, because the 1.5.5 document's bytes are pinned and an additive path is not a byte.
@@ -134,10 +133,10 @@ const AUDIT_VERBS_1_6_0: &[VerbEntry] = &[
     get_row("/api/v1/admin/audit/keys", "get_audit_keys"),
 ];
 
-/// How many rows the closed table declares: 66 from the pinned 1.5.5 tag, the 12 1.6.0 kernel
-/// verbs (the nine money-governance verbs and the three trust verbs), the 5 1.6.0 ledger views,
+/// How many rows the closed table declares: 66 from the pinned 1.5.5 tag, the 9 1.6.0 kernel
+/// verbs (the six money-governance verbs and the three trust verbs), the 5 1.6.0 ledger views,
 /// and the 3 audit-chain reads.
-pub(crate) const VERB_COUNT: usize = 66 + 12 + 5 + 3;
+pub(crate) const VERB_COUNT: usize = 66 + 9 + 5 + 3;
 
 // ── THE ROWS AND THEIR NAMES CANNOT DRIFT, AND THE COMPILER IS WHAT SAYS SO ────────────────────
 //
@@ -373,7 +372,7 @@ pub(crate) fn find_verb<'p>(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResolvedVerb {
     /// The operation name — the snake-case `operationId` of the pinned tag for the 66, and the
-    /// design's own spelling for the 8.
+    /// design's own spelling for the 1.6.0 additions.
     pub verb: &'static str,
     /// The HTTP method the table row was extracted under.
     pub method: &'static str,

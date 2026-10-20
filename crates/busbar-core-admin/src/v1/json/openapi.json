@@ -4027,19 +4027,6 @@
         ],
         "type": "object"
       },
-      "StoreRestoreReq": {
-        "description": "`POST /store-restore`: the backup to restore. There is no default and no empty one.",
-        "properties": {
-          "backup_ref": {
-            "description": "The backup the operator names. A request that names none is refused before the ceremony.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "backup_ref"
-        ],
-        "type": "object"
-      },
       "TopologyInfo": {
         "description": "Pool/model/provider counts (`InfoView.topology`).",
         "properties": {
@@ -5865,68 +5852,6 @@
         ],
         "summary": "Flush the credential cache: one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window",
         "x-busbar-required-scope": "full"
-      }
-    },
-    "/api/v1/admin/chain-break": {
-      "post": {
-        "description": "Admitted through the same gates as every other new verb, then handed to the store. The request body is not read.",
-        "operationId": "PostChainBreak",
-        "responses": {
-          "204": {
-            "description": "Applied: the chain is broken. No body"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`not_found`: the store names no such resource"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`unavailable`: the node could not take the unit, or the store failed. The body is the admin error envelope with code `unavailable`"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Deliberately break the journal chain (disaster recovery)",
-        "x-busbar-required-scope": "full",
-        "x-busbar-since": "1.6.0"
       }
     },
     "/api/v1/admin/commit-upgrade": {
@@ -12578,68 +12503,6 @@
         "x-busbar-required-scope": "read-only"
       }
     },
-    "/api/v1/admin/reseal-epoch-floor": {
-      "post": {
-        "description": "Admitted through the same gates as every other new verb, then handed to the store. The request body is not read.",
-        "operationId": "PostResealEpochFloor",
-        "responses": {
-          "204": {
-            "description": "Applied: the floor is resealed. No body"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`not_found`: the store names no such resource"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`unavailable`: the node could not take the unit, or the store failed. The body is the admin error envelope with code `unavailable`"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Reseal the epoch floor after a chain break or restore",
-        "x-busbar-required-scope": "full",
-        "x-busbar-since": "1.6.0"
-      }
-    },
     "/api/v1/admin/restart": {
       "post": {
         "operationId": "PostRestart",
@@ -12832,88 +12695,6 @@
         ],
         "summary": "ROTATE the busbar key-signing key. Rotation is REVOKE-ALL by design: a new signing key means every token minted under the OLD key stops verifying, so every outstanding key must be re-minted. 1.5.0 is single-key, so this reports the intent + current kid; the actual swap is an operator action (replace auth.signing_key / the persisted key file and restart/reload every node in lockstep) (1.5.0)",
         "x-busbar-required-scope": "full"
-      }
-    },
-    "/api/v1/admin/store-restore": {
-      "post": {
-        "description": "The body names the backup; there is no default. A body that names none is refused before it reaches the store. Otherwise admitted through the same gates as every other new verb, then handed to the store.",
-        "operationId": "PostStoreRestore",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/StoreRestoreReq"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "204": {
-            "description": "Applied: the store is restored. No body"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`invalid_request`: the body names no `backup_ref` string, or a request body that could not be read to the operator's size cap"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`not_found`: the store holds no backup under `backup_ref`"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`unavailable`: the node could not take the unit, or the store failed. The body is the admin error envelope with code `unavailable`"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Restore the store from a named backup (disaster recovery)",
-        "x-busbar-required-scope": "full",
-        "x-busbar-since": "1.6.0"
       }
     },
     "/api/v1/admin/tools": {

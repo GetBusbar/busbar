@@ -48,12 +48,14 @@ fn openapi_operations_carry_stable_operation_ids() {
     // one of them noticing the other: 76 was correct for either section alone and wrong for both
     // together.
     //
-    // 101 = those 81 + the 20 operations the 1.6.0 closed verb table adds, every one with its
-    // effect bound since owner answer Q71(2) (9 money-governance verbs, 5 ledger views, 3
+    // 98 = those 81 + the 17 operations the 1.6.0 closed verb table adds, every one with its
+    // effect bound since owner answer Q71(2) (6 money-governance verbs, 5 ledger views, 3
     // audit-chain reads) and the ARCHITECT's 2026-10-06 trust verbs (`GET /trust`,
     // `POST /trust/approve`, `POST /trust/revoke`), which the node's administrative loop answers
-    // and which the one document describes (items 45/46: no side-car document).
-    assert_eq!(checked, 101, "expected exactly 101 admin operations");
+    // and which the one document describes (items 45/46: no side-car document). `chain-break`,
+    // `store-restore` and `reseal-epoch-floor` are not among them: 1.5.5 never served them, so
+    // they answer its unmounted `404` and no document describes them.
+    assert_eq!(checked, 98, "expected exactly 98 admin operations");
     // Spot-check the exact naming scheme against a few representative paths.
     assert_eq!(
         doc["paths"]["/api/v1/admin/keys"]["get"]["operationId"],
@@ -206,13 +208,9 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         // change what it does. Its sibling `POST /agents/{name}/approve` is NOT here — that one
         // carries the fingerprint the operator is attesting they saw, which is the whole trust root.
         ("post", "/api/v1/admin/agents/{name}/connect"),
-        // The 1.6.0 kernel verbs whose body the node's administrative loop never reads: the two
-        // recovery verbs are pure commands (the effect is the store's; the verb IS the argument).
-        // Their siblings that DO take one — `store-restore` (`backup_ref`), `adjust` (the count
-        // correction) and `ledger/amend-rate-history` (the signed correction) — are not here; the
-        // verbs with no effect bound are not served, so not documented at all.
-        ("post", "/api/v1/admin/chain-break"),
-        ("post", "/api/v1/admin/reseal-epoch-floor"),
+        // Every 1.6.0 kernel verb that mutates reads a body — `adjust` (the count correction),
+        // `ledger/amend-rate-history` (the signed correction) and the rest counted below — so none
+        // is here; the verbs with no effect bound are not served, so not documented at all.
     ];
 
     let doc = openapi_doc_seamed();
@@ -271,13 +269,14 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         "every BODYLESS entry must name a real operation; saw {bodyless_seen:?}"
     );
     assert_eq!(
-        declared, 34,
-        "34 mutating operations take a body; a change here is a deliberate API change. 34 = 22 \
+        declared, 33,
+        "33 mutating operations take a body; a change here is a deliberate API change. 33 = 22 \
          + each plane section's PUT and PATCH-settings (both DELETEs are bodyless, above) + the \
          agents plane's approve verb, whose body carries the fingerprint the \
-         operator is attesting they read + the seven 1.6.0 kernel verbs that read one \
-         (`store-restore`, `adjust`, `ledger/amend-rate-history`, since owner answer Q71(2) \
+         operator is attesting they read + the six 1.6.0 kernel verbs that read one \
+         (`adjust`, `ledger/amend-rate-history`, since owner answer Q71(2) \
          `plane-record-write` and `commit-upgrade`, and the ARCHITECT's 2026-10-06 \
-         `trust/approve` and `trust/revoke`, whose body names the trust key)"
+         `trust/approve` and `trust/revoke`, whose body names the trust key; `store-restore` \
+         is not served — 1.5.5 never had it)"
     );
 }

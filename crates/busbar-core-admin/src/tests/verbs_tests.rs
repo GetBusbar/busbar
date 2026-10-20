@@ -9,7 +9,6 @@ use crate::rate::CONFIG_CLASS_RULES;
 use crate::verb::{KernelVerb, VerbScope};
 use crate::verbs::Verbs;
 use busbar_contract::caps::{AdminVerb, Grant};
-use busbar_contract::verb_store::{Store, StoreError};
 use std::sync::Mutex;
 
 /// A fresh node-lifetime limiter, as the composition root builds once per node.
@@ -17,13 +16,8 @@ fn node_limiter() -> std::sync::Arc<crate::rate::MutationLimiter> {
     std::sync::Arc::new(crate::rate::MutationLimiter::new())
 }
 
-fn make_verbs<G: Governance>(gov: G) -> Verbs<G, FakeStore> {
-    Verbs::new(
-        gov,
-        Some(std::sync::Arc::new(FakeStore)),
-        CONFIG_CLASS_RULES,
-        node_limiter(),
-    )
+fn make_verbs<G: Governance>(gov: G) -> Verbs<G> {
+    Verbs::new(gov, CONFIG_CLASS_RULES, node_limiter())
 }
 
 struct FakeGovernance {
@@ -88,33 +82,6 @@ impl Governance for FakeGovernance {
     }
 }
 
-struct FakeStore;
-impl Store for FakeStore {
-    fn chain_break(&self, _admin: &Grant<AdminVerb>) -> Result<(), StoreError> {
-        Ok(())
-    }
-    fn store_restore(
-        &self,
-        _admin: &Grant<AdminVerb>,
-        _backup_ref: &str,
-    ) -> Result<(), StoreError> {
-        Ok(())
-    }
-    fn reseal_epoch_floor(&self, _admin: &Grant<AdminVerb>) -> Result<(), StoreError> {
-        Ok(())
-    }
-    fn replay_new_verb(&self, _key: &(String, String)) -> Result<Option<Vec<u8>>, StoreError> {
-        Ok(None)
-    }
-    fn commit_new_verb_replay(
-        &self,
-        _key: &(String, String),
-        _response: &[u8],
-    ) -> Result<(), StoreError> {
-        Ok(())
-    }
-}
-
 fn admin() -> Grant<AdminVerb> {
     busbar_kernel::test_support::tokens::grant::<AdminVerb>()
 }
@@ -153,15 +120,15 @@ fn readonly_caller_may_read() {
     assert_eq!(out, b"ok");
 }
 
-/// THE SIX VERBS THAT USED TO WAIT ON AN OPERATOR KEY ARE PLAIN SCOPED VERBS (#77(9), OWNER-LOCKED,
+/// THE VERBS THAT USED TO WAIT ON AN OPERATOR KEY ARE PLAIN SCOPED VERBS (#77(9), OWNER-LOCKED,
 /// `docs/design/BUSBAR-1.6.0.md` l.2279: "no verb carries dual control, escrow or operator
 /// signatures. Each verb is a plain scoped verb authorized by the per-verb allow-list on the admin
 /// token").
 ///
 /// A grant that covers the verb (`full`, the 1.5.5 shorthand every mutating verb's allow-list
 /// resolves to) is admitted with nothing else asked: the governance verbs reach the governance
-/// seam and the three recovery verbs reach the store. RED before the fix: each was refused
-/// `OperatorUnset` while no operator key was sealed, and nothing reached either seam.
+/// seam. RED before the fix: each was refused `OperatorUnset` while no operator key was sealed, and
+/// nothing reached the seam.
 #[test]
 fn every_formerly_irreducible_verb_is_admitted_by_its_grant_alone() {
     let admin = admin();
@@ -185,22 +152,10 @@ fn every_formerly_irreducible_verb_is_admitted_by_its_grant_alone() {
             (KernelVerb::AmendRateHistory, "new"),
         ]
     );
-
-    let v = recovery_verbs();
-    v.chain_break(&admin, "alice", VerbScope::Full, 0)
-        .expect("chain_break is admitted by its grant");
-    v.store_restore(&admin, "alice", VerbScope::Full, 0, "backup-1")
-        .expect("store_restore is admitted by its grant");
-    v.reseal_epoch_floor(&admin, "alice", VerbScope::Full, 0)
-        .expect("reseal_epoch_floor is admitted by its grant");
-    assert_eq!(
-        v.store_for_test().reached(),
-        vec!["chain_break", "store_restore", "reseal_epoch_floor"]
-    );
 }
 
 /// The other half of the same rule: a grant that does NOT cover the verb is refused, for every one
-/// of the six, and nothing reaches either seam. The allow-list is the whole of the authorization,
+/// of them, and nothing reaches the seam. The allow-list is the whole of the authorization,
 /// so it is the one thing that must still refuse.
 #[test]
 fn every_formerly_irreducible_verb_is_refused_to_a_grant_that_does_not_cover_it() {
@@ -218,19 +173,6 @@ fn every_formerly_irreducible_verb_is_refused_to_a_grant_that_does_not_cover_it(
         assert_eq!(err.reason, crate::refusal::ReasonCode::Unauthorized);
     }
     assert!(log.lock().unwrap().is_empty());
-
-    let v = recovery_verbs();
-    for err in [
-        v.chain_break(&admin, "alice", VerbScope::ReadOnly, 0)
-            .unwrap_err(),
-        v.store_restore(&admin, "alice", VerbScope::ReadOnly, 0, "backup-1")
-            .unwrap_err(),
-        v.reseal_epoch_floor(&admin, "alice", VerbScope::ReadOnly, 0)
-            .unwrap_err(),
-    ] {
-        assert_eq!(err.reason, crate::refusal::ReasonCode::Unauthorized);
-    }
-    assert!(v.store_for_test().reached().is_empty());
 }
 
 #[test]
@@ -372,7 +314,7 @@ fn the_other_governance_errors_keep_their_own_reasons() {
 
 /// One trust decision through `execute`, as the root's route step makes it.
 fn approve_trust(
-    verbs: &Verbs<FakeGovernance, FakeStore>,
+    verbs: &Verbs<FakeGovernance>,
     admin: &Grant<AdminVerb>,
 ) -> Result<Vec<u8>, crate::refusal::Refusal> {
     verbs.execute(
@@ -395,7 +337,6 @@ fn rate_limit_is_enforced_across_execute_calls() {
     let per_request = || {
         Verbs::new(
             FakeGovernance::new(),
-            Some(std::sync::Arc::new(FakeStore)),
             CONFIG_CLASS_RULES,
             std::sync::Arc::clone(&limiter),
         )
@@ -821,118 +762,4 @@ fn the_two_read_only_new_verbs_answer_a_read_only_credential() {
         .execute(KernelVerb::Adjust, &admin, "alice", VerbScope::Full, 0, b"")
         .expect("a full grant admits a mutating new verb");
     assert_eq!(body, b"new");
-}
-
-/// A store that records which recovery primitive it was asked to perform, so a test can say
-/// "nothing reached the store" and mean it rather than inferring it from a return value.
-struct RecordingStore(Mutex<Vec<&'static str>>);
-
-impl RecordingStore {
-    fn new() -> Self {
-        RecordingStore(Mutex::new(Vec::new()))
-    }
-    fn reached(&self) -> Vec<&'static str> {
-        self.0.lock().unwrap().clone()
-    }
-}
-
-impl Store for RecordingStore {
-    fn chain_break(&self, _admin: &Grant<AdminVerb>) -> Result<(), StoreError> {
-        self.0.lock().unwrap().push("chain_break");
-        Ok(())
-    }
-    fn store_restore(
-        &self,
-        _admin: &Grant<AdminVerb>,
-        _backup_ref: &str,
-    ) -> Result<(), StoreError> {
-        self.0.lock().unwrap().push("store_restore");
-        Ok(())
-    }
-    fn reseal_epoch_floor(&self, _admin: &Grant<AdminVerb>) -> Result<(), StoreError> {
-        self.0.lock().unwrap().push("reseal_epoch_floor");
-        Ok(())
-    }
-    fn replay_new_verb(&self, _key: &(String, String)) -> Result<Option<Vec<u8>>, StoreError> {
-        Ok(None)
-    }
-    fn commit_new_verb_replay(
-        &self,
-        _key: &(String, String),
-        _response: &[u8],
-    ) -> Result<(), StoreError> {
-        Ok(())
-    }
-}
-
-fn recovery_verbs() -> Verbs<FakeGovernance, RecordingStore> {
-    Verbs::new(
-        FakeGovernance::new(),
-        Some(std::sync::Arc::new(RecordingStore::new())),
-        CONFIG_CLASS_RULES,
-        node_limiter(),
-    )
-}
-
-/// The three disaster-recovery verbs are admitted before they reach the store, exactly as every
-/// other new verb is admitted before it reaches governance.
-///
-/// Where a verb's effect lands is not a reason for it to be admitted differently: a read-only
-/// caller is refused all three, and the store is not touched. Handing the bound store out and
-/// trusting the caller to gate it made the check optional.
-#[test]
-fn the_recovery_verbs_are_gated_before_anything_reaches_the_store() {
-    let admin = admin();
-
-    // A read-only caller is refused all three.
-    let v = recovery_verbs();
-    for err in [
-        v.chain_break(&admin, "alice", VerbScope::ReadOnly, 0)
-            .unwrap_err(),
-        v.store_restore(&admin, "alice", VerbScope::ReadOnly, 0, "backup-1")
-            .unwrap_err(),
-        v.reseal_epoch_floor(&admin, "alice", VerbScope::ReadOnly, 0)
-            .unwrap_err(),
-    ] {
-        assert_eq!(err.reason, crate::refusal::ReasonCode::Unauthorized);
-    }
-    assert!(v.store_for_test().reached().is_empty());
-
-    // Admitted, and only then does each one reach its own store primitive.
-    let v = recovery_verbs();
-    v.chain_break(&admin, "alice", VerbScope::Full, 0)
-        .expect("admitted");
-    v.store_restore(&admin, "alice", VerbScope::Full, 0, "backup-1")
-        .expect("admitted");
-    v.reseal_epoch_floor(&admin, "alice", VerbScope::Full, 0)
-        .expect("admitted");
-    assert_eq!(
-        v.store_for_test().reached(),
-        vec!["chain_break", "store_restore", "reseal_epoch_floor"]
-    );
-}
-
-/// A node with NO store (no governance configured) is handed `None`, and each disaster-recovery
-/// verb, once admitted, is refused as a store failure: there is nothing for it to reach. The same
-/// admitted verb over a bound store lands (the tests above), so the refusal is the absence alone.
-#[test]
-fn an_admitted_recovery_verb_on_a_node_with_no_store_is_a_store_failure() {
-    let admin = admin();
-    let v: Verbs<FakeGovernance, RecordingStore> = Verbs::new(
-        FakeGovernance::new(),
-        None,
-        CONFIG_CLASS_RULES,
-        node_limiter(),
-    );
-    let refused = [
-        v.chain_break(&admin, "alice", VerbScope::Full, 0),
-        v.store_restore(&admin, "alice", VerbScope::Full, 0, "backup-1"),
-        v.reseal_epoch_floor(&admin, "alice", VerbScope::Full, 0),
-    ];
-    for r in refused {
-        assert_eq!(
-            r.expect_err("no store, nothing to reach").reason,
-            crate::refusal::ReasonCode::StoreError
-        );
-    }
 }
