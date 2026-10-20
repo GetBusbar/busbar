@@ -201,7 +201,9 @@ impl StoreCalls for RecordSlots {
     ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
         if self.unreadable.load(Ordering::Acquire) {
             return Box::pin(async {
-                Err(StoreFailure::Failed("the test store will not read".to_string()))
+                Err(StoreFailure::Failed(
+                    "the test store will not read".to_string(),
+                ))
             });
         }
         let rows: Vec<(Vec<u8>, RecordBytes)> = self
