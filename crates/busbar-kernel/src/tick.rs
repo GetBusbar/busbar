@@ -301,7 +301,9 @@ static CLOCK: std::sync::Mutex<Vec<std::sync::Weak<dyn ClockWork>>> =
 
 /// Hand `work` to the kernel's clock. It is beaten until its last strong holder lets it go.
 pub fn on_clock(work: std::sync::Weak<dyn ClockWork>) {
-    let mut held = CLOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut held = CLOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     held.retain(|w| w.strong_count() > 0);
     held.push(work);
 }
@@ -310,7 +312,9 @@ pub fn on_clock(work: std::sync::Weak<dyn ClockWork>) {
 /// leaves the clock here. Each work is beaten outside the clock's lock, so a beat may register more.
 pub fn beat(now: std::time::SystemTime) -> Vec<ClockJob> {
     let live: Vec<std::sync::Arc<dyn ClockWork>> = {
-        let mut held = CLOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut held = CLOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         held.retain(|w| w.strong_count() > 0);
         held.iter().filter_map(std::sync::Weak::upgrade).collect()
     };

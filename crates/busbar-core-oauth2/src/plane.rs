@@ -778,7 +778,10 @@ impl busbar_kernel::tick::ClockWork for SweepWork {
         use std::sync::atomic::Ordering;
         let server = self.server.upgrade()?;
         {
-            let mut due = self.due.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut due = self
+                .due
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let at = std::time::Instant::now();
             if at < *due || self.sweeping.swap(true, Ordering::AcqRel) {
                 return None;
