@@ -1143,6 +1143,27 @@ pub(crate) struct TokenEndpoint {
     /// The reply body to a request body, when the endpoint answers by what it was asked (an RFC
     /// 8693 exchange's token names its scope); `None` = the minted replies above.
     answer: Option<fn(&str) -> String>,
+    /// How many exchanges the plugin closed: it closes each one once it has read the token, the
+    /// event a test waits on for a mint (never the wall clock, Law 8; row 176).
+    closes: std::sync::Mutex<usize>,
+    /// Told on each close.
+    closing: tokio::sync::Notify,
+}
+
+impl TokenEndpoint {
+    /// Until the plugin has closed `n` exchanges with this endpoint: the `n`th mint has read its
+    /// token, which the plugin stores in the same crossing.
+    async fn closed(&self, n: usize) {
+        loop {
+            let notified = self.closing.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if *self.closes.lock().unwrap() >= n {
+                return;
+            }
+            notified.await;
+        }
+    }
 }
 
 /// What one open carried: the need, the target, the head target, the body.
@@ -1299,7 +1320,10 @@ impl busbar_contract::conn::Conns for TokenEndpoint {
         id: busbar_contract::conn::ConnId,
     ) -> Result<(), busbar_contract::conn::ConnError> {
         self.replies.lock().unwrap().remove(&id);
-        self.slab.remove(c, id).map(|_| ())
+        let closed = self.slab.remove(c, id).map(|_| ());
+        *self.closes.lock().unwrap() += 1;
+        self.closing.notify_waiters();
+        closed
     }
 }
 
@@ -1316,11 +1340,22 @@ fn presented(answer: Option<&busbar_contract::auth_calls::Fields>) -> Option<Str
 }
 
 /// The linked auth plugin that serves both mint styles (`oauth-client-credentials`, `jwt-bearer`),
-/// its mint connections declared and opened over `table`.
+/// its mint connections declared and opened over `table`, on a dispatcher serving the host services
+/// the root's own does at boot (`root::dispatch::dispatcher`: [`crate::root::serve::LateServices`],
+/// whose `clock.now` is the kernel's clock before any install). ROW 176: a dispatcher serving none
+/// refuses the plugin's `clock.now`, so its `drive` clock never moves past its last `tick`; a mint
+/// that lands on a `drive` (its binding opened after the first `tick`) then never comes due for its
+/// refresh until the next `tick`, half a minute on.
 fn linked_mint_plugin(table: &std::sync::Arc<TokenEndpoint>) -> super::OutboundAuths {
-    let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
+    let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::with_services(
         crate::root::loader::dispatch::DispatchConfig::default(),
+        crate::root::serve::LateServices::new(),
     ));
+    assert!(
+        dispatcher.host_services().is_some(),
+        "the plugin's clock is the host's: a dispatcher serving no host services answers no \
+         `clock.now`"
+    );
     crate::root::connector::install_io(&dispatcher);
     // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
@@ -1429,7 +1464,12 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
         // Before the first mint lands a request carries no credential, as 1.5.5's bearer sent none
         // in its boot window (v1.5.5 `egress_auth/bearer_token.rs:84-98`); once it lands, every
         // request carries it.
-        let first = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        // Each wait is on the endpoint's close of the mint's exchange (the plugin stores the token in
+        // that same crossing), never on the wall clock (Law 8; row 176). HANG_GUARD only turns a
+        // mint that never lands into a failure rather than a hung suite.
+        const HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(120);
+        let first = tokio::time::timeout(HANG_GUARD, async {
+            table.closed(1).await;
             loop {
                 let now = binding
                     .auth
@@ -1439,13 +1479,14 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
                     None => {}
                     other => panic!("only the first minted bearer, or none yet: {other:?}"),
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                tokio::task::yield_now().await;
             }
         })
         .await;
         assert!(first.is_ok(), "the first minted bearer is presented");
         // The refresh lands ahead of the first token's expiry; the next request carries it.
-        let refreshed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let refreshed = tokio::time::timeout(HANG_GUARD, async {
+            table.closed(2).await;
             loop {
                 let now = binding
                     .auth
@@ -1453,7 +1494,7 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
                 if presented(now.as_ref()).as_deref() == Some("Bearer oracle-minted-2") {
                     return;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                tokio::task::yield_now().await;
             }
         })
         .await;
