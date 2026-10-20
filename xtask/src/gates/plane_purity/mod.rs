@@ -109,7 +109,27 @@ pub const HITS_OUT_ENV: &str = "PLANE_PURITY_HITS_OUT";
 /// the same population and is held to the same floor. It was `== 0` here and `1` on the freeze
 /// walk, so a neutral scan that fell to one file passed every ban. Raised as the neutral crates
 /// grow; lowered only in a reviewed diff that names the files that legitimately left.
-pub const NEUTRAL_FLOOR: usize = 1134;
+///
+/// RE-PINNED 1134 -> 1109 at the merge of dev 6d6bd2b0b0, today's measured value (Law 9). The walk
+/// did not shrink; the population did, by deletion on dev (34 files gone, 9 added; renames net to
+/// zero), each in a reviewed commit:
+/// * `busbar-contract/src/abi/hot/{host,mod,pod}.rs`, `abi/hot/tests/{host,pod}_tests.rs` —
+///   299e7688ad (abi/hot deleted, status row 84);
+/// * `busbar-core-admin/src/{posture.rs,tests/posture_tests.rs}` — cf163d3ef3 (#77(9)), and
+///   `admin_codec/meta.rs` — a70a10b242 (admin surface on the claim table);
+/// * `busbar-kernel/src/plane/approvals.rs`, `plane/tests/approvals_tests.rs` — 99f0713a4a;
+/// * `busbar-kernel/src/plane_host/{creds,dispatch,egress,egress_tests,identity_admit,journal,
+///   pipe,pipe_tests,session_meter,slots_through,vtable}.rs` and `plane_host/tests/{creds,dispatch,
+///   identity_admit,journal,session_meter}_tests.rs` — e6fc4808fb, e71b06180e, f63d116d01,
+///   2156f67b9a, 299e7688ad (status rows 82, 84);
+/// * `busbar-kernel/src/trust/{declared,verify}.rs` and `trust/tests/{declared,genericity,
+///   lifecycle,verify_edge,verify}_tests.rs`, `trust/tests/reverify.rs` — 941d19f67f (Q128 p8).
+///
+/// Added: `contract/src/abi/sdk/{hmac.rs,tests/hmac_tests.rs}`, `core-admin/src/v1/json/tests/
+/// named_map_tests.rs`, `kernel-wal/src/tests/quarantine_numbering.rs`, `kernel/src/auth/{admit.rs,
+/// tests/admit_tests.rs}`, `kernel/src/plane_driver/slots.rs`, `kernel/src/tests/clock_tests.rs`,
+/// `kernel/src/tests/members/wal/store_debt_tests.rs`. 1134 - 34 + 9 = 1109.
+pub const NEUTRAL_FLOOR: usize = 1109;
 
 /// THE PLANE WALK'S FLOOR: the `.rs` files the plane population (in-tree and pinned planes) held on
 /// dev, measured (606 on f49c8bf98c, the RED branch's `plane_files`). Same rule as
