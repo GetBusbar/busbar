@@ -586,14 +586,17 @@ impl Gate for PlanePurityGate {
 
         // The OTHER dual-compile spelling. It used to fall through to the vocabulary rules, which
         // sit BELOW the pragma gate — so one trailing comment spliced a plane's source into a
-        // neutral crate under a clean report. The pragma is on the fixture on purpose.
+        // neutral crate under a clean report. The pragma is on the fixture on purpose. Its target
+        // is a plane directory the tree still derives (the one the `#[path]` case above proves
+        // live): the instance directories are derived, so a plant naming a deleted crate
+        // (`busbar-a2a/`, gone with the a2a extraction) names no plane and proves nothing.
         report.push(create(
             cx,
             self,
             "an include! dual-compile, carrying a pragma that must not launder it",
             &[ROW_PATH_INCLUDE],
             &plant_at,
-            "include!(\"../../../busbar-a2a/src/witness.rs\"); // plane-purity: frozen-wire abuse\n",
+            "include!(\"../../../busbar-plane-mcp/src/witness.rs\"); // plane-purity: frozen-wire abuse\n",
             &[ROW_PATH_INCLUDE, "planted_plane_purity.rs:1"],
         ));
 

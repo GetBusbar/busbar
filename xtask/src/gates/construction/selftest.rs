@@ -497,13 +497,17 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         .and_then(|c| c.plane_crates())
         .unwrap_or_default();
     let mut ov = on(base);
+    // Each row names the files carrying the most hits, so a plant must OUT-RANK every real file of
+    // the crate or the row goes red without naming it (the busbar-llm test tree already holds a
+    // file of 217 such lines). PLANTED_REACH sits far above any file the tree carries.
+    const PLANTED_REACH: usize = 2000;
     for p in &planes {
         // item 376 (Q11/Q32): the needle moved from `busbar_core::` (a deleted crate, absorbed
         // into busbar-kernel) to `busbar_kernel::`, so the plant must name the live needle or it
         // adds zero hits and the row it is proving red stays green.
         ov.set(
             format!("crates/{p}/src/zz_planted_ports.rs"),
-            (0..40)
+            (0..PLANTED_REACH)
                 .map(|i| format!("pub fn planted_reach_{i}() {{ busbar_kernel::internals(); }}\n"))
                 .collect::<String>(),
         );
@@ -511,7 +515,7 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
             format!("crates/{p}/src/zz_planted_ports_tests.rs"),
             format!(
                 "#[cfg(test)]\nmod tests {{\n{}}}\n",
-                (0..40)
+                (0..PLANTED_REACH)
                     .map(|i| format!("    fn planted_{i}() {{ busbar_kernel::internals(); }}\n"))
                     .collect::<String>()
             ),
