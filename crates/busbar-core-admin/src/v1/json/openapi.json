@@ -585,7 +585,7 @@
           },
           "scheme": {
             "default": 1,
-            "description": "WHICH FRAMING RULES this entry was sealed under: [`AUDIT_SCHEME_PIPE`] (1) or\n[`AUDIT_SCHEME_LENGTH_PREFIXED`] (2) — see `crate::audit::Framing`.\n\n`#[serde(default)]` to [`AUDIT_SCHEME_PIPE`]: an entry persisted before this field existed\nsimply lacks the key, and an absent tag means exactly scheme 1, because that is what every\nsuch row actually is — no migration of stored data is required. `link` always writes\n[`AUDIT_SCHEME_LENGTH_PREFIXED`] on a FRESH entry; nothing mints scheme 1 going forward. A\nverifier reads this straight off the record (`ChainedRecord::framing`), so a chain mixing\nboth eras checks each entry under the rules it actually used.",
+            "description": "WHICH FRAMING RULES this entry was sealed under: [`AUDIT_SCHEME_PIPE`] (1) or\n[`AUDIT_SCHEME_LENGTH_PREFIXED`] (2) — see `crate::audit::Framing`.\n\n`#[serde(default)]` to [`AUDIT_SCHEME_PIPE`]: an entry persisted before this field existed\nsimply lacks the key, and an absent tag means exactly scheme 1, because that is what every\nsuch row actually is — no migration of stored data is required. A FRESH admin record (the\nseam's `admin_suffix`) is sealed under [`AUDIT_SCHEME_PIPE`], so its `hash` is 1.5.5's own,\nwhenever its `action`, `resource` and `outcome` carry no `|`, and under\n[`AUDIT_SCHEME_LENGTH_PREFIXED`] only when one of them does; the ring's own `link` writes\n[`AUDIT_SCHEME_LENGTH_PREFIXED`]. A verifier reads this straight off the record\n(`ChainedRecord::framing`), so a chain mixing both schemes checks each entry under the rules\nit actually used.",
             "format": "uint8",
             "maximum": 255,
             "minimum": 0,
