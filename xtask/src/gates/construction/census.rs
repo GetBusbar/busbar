@@ -11,6 +11,11 @@
 //! So the COUNTS are pinned, in `[gate.census]`, and this row is owed UNCONDITIONALLY — a literal
 //! in `ids()`, not something derived from the config. That is the property the rest of the owed
 //! register lacks and the only reason this row cannot be deleted the same way its subjects could.
+//!
+//! AND THE RULE CEILINGS ARE HELD AGAINST THE SAME BASE ([`raised_ceilings`]). Every rule reads its
+//! ceiling from the file under judgement (`max_sites`, `max_hits`, a per-crate figure), so a
+//! ceiling raised in the change that adds the site it would have caught was green. Law 9: a
+//! ceiling "refuses every rise from that moment".
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -182,6 +187,7 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
                 moved.insert("plane_crates".to_string(), n as i64);
             }
             bad.extend(lowered_floors(&cfg.doc, &doc, base.short(), &moved));
+            bad.extend(raised_ceilings(&cfg.doc, &doc, base.short(), &now_planes));
         }
         Err(e) => bad.push(e),
     }
@@ -193,7 +199,7 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
             TITLE,
             format!(
                 "{counted} rule-table, plane-crate and kind-glob subject(s) counted, none below \
-                 its pinned floor"
+                 its pinned floor, and no rule ceiling above the base's"
             ),
             counted,
             counted,
@@ -518,6 +524,67 @@ fn glob_matches(pattern: &str, path: &str) -> bool {
                 && !path[head.len()..path.len() - tail.len()].contains('/')
         }
     }
+}
+
+/// THE INTEGERS UNDER `[rules.*]` THAT BOUND NOTHING: how many of the worst offenders a report
+/// lists. Every other integer of a rule table is a ceiling (a `max_*`, a ratchet `ceiling` or
+/// `figure`, a counted `sites`, a per-crate figure) or a matcher setting whose rise narrows what the
+/// rule sees (`min_block_lines`, `shingle_tokens`), and none of them may rise.
+const NOT_CEILINGS: &[&str] = &["top", "top_pairs"];
+
+/// Every integer under `[rules.*]` but [`NOT_CEILINGS`], by `(table, key)`.
+fn rule_ceilings(doc: &Document) -> BTreeMap<(String, String), i64> {
+    let mut out = BTreeMap::new();
+    for (path, t) in doc.tables() {
+        if !path.starts_with("rules.") {
+            continue;
+        }
+        for key in t.keys() {
+            if NOT_CEILINGS.contains(&key.as_str()) {
+                continue;
+            }
+            if let Some(v) = t.int_of(key) {
+                out.insert((path.to_string(), key.clone()), v);
+            }
+        }
+    }
+    out
+}
+
+/// EVERY RULE CEILING THAT ROSE, or was deleted, since the base (Law 9, BUSBAR-1.6.0.md: a ceiling
+/// "refuses every rise from that moment"). A ceiling read from the file under judgement can be
+/// raised in the same change as the violation it would have caught — a fourth pick site and
+/// `max_sites = 4`, a ban's `max_hits = 0` set to 3 — and every rule would read the new number and
+/// pass. So each is compared with the base's copy, the comparison `lowered_floors` makes for the
+/// census floors, in the other direction. Deleting the key is the cheapest rise and is scored as
+/// one; the one deletion that is not a rise is a `max_per_crate` figure for a crate that left
+/// `gate.plane_crates`, whose floor the census already holds against the base.
+fn raised_ceilings(
+    now_doc: &Document,
+    base_doc: &Document,
+    short: &str,
+    plane_crates_now: &[String],
+) -> Vec<String> {
+    let now = rule_ceilings(now_doc);
+    rule_ceilings(base_doc)
+        .into_iter()
+        .filter_map(
+            |((table, key), before)| match now.get(&(table.clone(), key.clone())) {
+                Some(after) if *after > before => Some(format!(
+                "[{table}] {key}: the ceiling rose {before} -> {after} since the base {short}. A \
+                 ceiling refuses every rise (Law 9): drain the sites instead"
+            )),
+                Some(_) => None,
+                None if table.ends_with(".max_per_crate") && !plane_crates_now.contains(&key) => {
+                    None
+                }
+                None => Some(format!(
+                "[{table}] {key}: the ceiling {before} at the base {short} is gone from this tree. \
+                 Deleting a ceiling is the cheapest way to raise it"
+            )),
+            },
+        )
+        .collect()
 }
 
 /// Every integer under `[gate.census]`, including its `plugin_kinds` sub-table, by dotted key.

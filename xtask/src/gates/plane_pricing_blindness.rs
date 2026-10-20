@@ -834,7 +834,35 @@ fn baseline(cx: &Ctx) -> Vec<Debt> {
     let Ok(text) = cx.read(BASELINE) else {
         return Vec::new();
     };
-    let Ok(doc) = crate::toml_doc::parse_str(&text) else {
+    parse_baseline(&text)
+}
+
+/// THE BASELINE AGAINST ITS BASE (Law 9: a ceiling "refuses every rise"): every `(category, file)`
+/// row this change wrote over the base's copy of the baseline. A row written beside the money
+/// reference it records moves that reference off [`ROW_UNDOCUMENTED`] in the same change, so it is
+/// MINTED and refused there. A baseline the base does not carry is its own arming. The base is
+/// `ceiling-census`'s ([`crate::gates::construction::ceilings::base_copy`]); one that cannot be
+/// established is an `Err`, reported RED, never a skipped comparison.
+fn minted_debts(cx: &Ctx, now: &[Debt]) -> Result<Vec<String>, String> {
+    use crate::gates::construction::ceilings;
+    let (base, text) = match ceilings::base_copy(cx, BASELINE)? {
+        (base, Some(text)) => (base, text),
+        (_, None) => return Ok(Vec::new()),
+    };
+    let was = baseline_keys(&parse_baseline(&text));
+    Ok(ceilings::minted(&baseline_keys(now), &was)
+        .into_iter()
+        .map(|(c, f)| {
+            format!(
+                "MINTED {c}@{f}: in no copy of {BASELINE} at the base {}",
+                base.short()
+            )
+        })
+        .collect())
+}
+
+fn parse_baseline(text: &str) -> Vec<Debt> {
+    let Ok(doc) = crate::toml_doc::parse_str(text) else {
         return Vec::new();
     };
     doc.array_of_tables("debt")
@@ -1252,6 +1280,10 @@ impl Gate for PlanePricingBlindnessGate {
             .map(|f| format!("{}@{}", f.category.key(), f.file))
             .collect();
         undocumented.sort();
+        match minted_debts(cx, &debts) {
+            Ok(minted) => undocumented.extend(minted),
+            Err(e) => undocumented.push(e),
+        }
         rows.push(if undocumented.is_empty() {
             Row::pass(
                 ROW_UNDOCUMENTED,
@@ -1264,8 +1296,9 @@ impl Gate for PlanePricingBlindnessGate {
                 "a live money reference in a plane crate is NOT in the baseline",
                 format!(
                     "{} undocumented: {} — a NEW money reference landed in a crate the roster calls \
-                     a plane. Move it kernel-side, or (if it is genuine debt) record it in \
-                     {BASELINE} with the act it performs.",
+                     a plane, or a {BASELINE} row this change wrote records one. Move it \
+                     kernel-side: the baseline is drain-only (Law 9), and a row it did not carry \
+                     at the base is refused.",
                     undocumented.len(),
                     undocumented.join(", ")
                 ),
@@ -1344,6 +1377,39 @@ impl Gate for PlanePricingBlindnessGate {
             FIX,
             &["undocumented"],
         ));
+
+        // THE BASELINE AGAINST ITS BASE (Law 9), over the real tree: a `[[debt]]` row the base's
+        // baseline does not carry is a NEW money reference forgiven by the same change that wrote
+        // it, and reds the undocumented row. The unplanted run is measured against `HEAD` (a
+        // detached battery checkout has no other base); the plant is a synthetic base.
+        {
+            let pinned = crate::gates::construction::ceilings::with_head_pin(cx);
+            let was = cx.read(BASELINE).unwrap_or_default();
+            let mut ov = crate::gates::construction::ceilings::synthetic_base(
+                "zz-plane-pricing-base",
+                BASELINE,
+                was.clone(),
+            );
+            ov.set(
+                BASELINE,
+                format!(
+                    "{was}\n[[debt]]\ncategory = \"{}\"\ncrate = \"busbar-plane-llm\"\n\
+                     file = \"crates/busbar-plane-llm/src/planted_minted.rs\"\ncount = 1\n\
+                     placement = \"production\"\nact = \"{}\"\nreach = \"reachable\"\n\
+                     why = \"planted\"\n",
+                    CATEGORIES[0].key(),
+                    CATEGORIES[0].act()
+                ),
+            );
+            report.push(crate::gates::prove_rows_red(
+                &pinned,
+                self,
+                "a [[debt]] row the base's baseline does not carry is MINTED, and refused",
+                &[ROW_UNDOCUMENTED],
+                ov,
+                &["MINTED", "planted_minted.rs"],
+            ));
+        }
 
         // THE STALE ROW: the fixture baseline names a ghost the tree does not have.
         report.push(prove_rows_red_at(
