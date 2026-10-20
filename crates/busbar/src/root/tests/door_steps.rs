@@ -1124,6 +1124,31 @@ fn a_members_binding_is_opened_with_its_dialects_parameters_under_the_providers_
     assert!(sealed_settings(b"[1]", "https://x", &serde_json::json!({})).is_err());
 }
 
+/// THE SIGNING REGION IS THE DIALLED HOST'S. The dialling stack ends a web URL's authority at a
+/// `\` as at a `/`, so `https://svc-runtime.us-west-2.amazonaws.com\@svc-runtime.eu-west-1...`
+/// dials `us-west-2`, and the region the request is signed for must be read off that same host
+/// (v1.5.5's `host_from_base` folded the `\` first). RED before the one authority split: the
+/// region was read past the `\`, off the text after the `@`, and the signature named a region
+/// the request never reached.
+#[test]
+fn the_signing_region_is_read_off_the_host_the_request_dials() {
+    use super::sealed_settings;
+    let params = br#"{"region":{"host_label_after":["svc-runtime"],"default":"us-east-1"}}"#;
+    for base_url in [
+        "https://svc-runtime.us-west-2.amazonaws.com\\@svc-runtime.eu-west-1.amazonaws.com/",
+        "https://svc-runtime.us-west-2.amazonaws.com\\x@svc-runtime.eu-west-1.amazonaws.com",
+    ] {
+        let dialled = busbar_contract::net::url_host(base_url).expect("the base URL reads a host");
+        assert_eq!(dialled, "svc-runtime.us-west-2.amazonaws.com", "{base_url}");
+        let sealed =
+            sealed_settings(params, base_url, &serde_json::json!({})).expect("the parameters seal");
+        assert_eq!(
+            sealed["region"], "us-west-2",
+            "{base_url}: the region is the dialled host's"
+        );
+    }
+}
+
 // ── the minted credential of a member bound under an OAuth grant (TODO row 22) ─────────────────
 
 /// One open's head fields: `(name, value)`, in the order received.
