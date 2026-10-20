@@ -145,6 +145,9 @@ case "$mode" in
       exit 1
     fi
     rc=0; run_autobahn reference "$port" control || rc=$?
+    # The echo server's own account of the run, beside the client's.
+    echo "== Autobahn echo server (last 200 lines) ==" >&2
+    docker logs --tail 200 "$name" >&2 2>&1 || true
     docker rm -f "$name" >/dev/null 2>&1 || true
     [ "$rc" -eq 3 ] && exit 3
     [ "$rc" -eq 0 ] || exit "$rc"
