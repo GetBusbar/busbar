@@ -1885,7 +1885,6 @@ fn the_chain_holds_counts_and_an_epoch_and_the_rebuilt_book_prices_them() {
         card: doubled,
         appended_at: ARRIVED_MS + 10_000,
         author: busbar_kernel_ledger::cost::Author::Amend {
-            operator_fingerprint: "op".to_string(),
             reason_hash: [0; 32],
         },
     });

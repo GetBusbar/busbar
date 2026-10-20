@@ -12,7 +12,7 @@
 use super::{Journal, NeutralBody};
 use crate::audit::stream_registry::{StreamInput, StreamRecord};
 use crate::audit::{verify_chain, ChainedRecord, Framing};
-use crate::plane::store::{decode, PlaneStore};
+use crate::store::plane_view::{decode, PlaneStore};
 use busbar_contract::records::{PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStoreResult};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
