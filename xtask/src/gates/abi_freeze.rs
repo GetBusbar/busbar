@@ -224,6 +224,31 @@ impl Gate for AbiFreezeGate {
             grown,
             &["GREW", CONDEMNED[0]],
         ));
+
+        // A SIZE ROW THAT MATCHES ITS REGROWN LANE. A `[[frozen]]` row is a hand-kept size integer,
+        // which Law 9 deletes (BUSBAR-1.6.0.md l.2102 "There is no hand-kept size integer in the
+        // tree"): typed at exactly the regrown lane's size it forgave the regrowth. It is RED as a
+        // size integer, and the lane it names is RED as regrown (audit XF HIGH 1).
+        let mut matched = Overlay::new();
+        matched.set(
+            LEDGER,
+            format!(
+                "{ledger}\n[[frozen]]\ndir = \"{}\"\nlines = \"1\"\n",
+                CONDEMNED[0]
+            ),
+        );
+        matched.set(
+            format!("{}/mod.rs", CONDEMNED[0]),
+            "pub struct Regrown;\n".to_string(),
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a size row typed at its regrown lane's size forgives nothing: RED, naming the size integer",
+            &[ROW_FROZEN],
+            matched,
+            &["hand-kept size integer", "REGROWN", CONDEMNED[0]],
+        ));
         report
     }
 }
