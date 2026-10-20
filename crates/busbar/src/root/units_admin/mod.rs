@@ -2558,6 +2558,17 @@ fn render_migration(marker: Option<&busbar_kernel_ledger::migration::MigrationMa
 #[derive(Default)]
 pub struct AdminUnits {
     inner: Mutex<HashMap<UnitKey, AdminInFlight>>,
+    /// Each unit's record-to-be once its audit door handed back its facts and pass: taken where the
+    /// unit's answer is in hand and its one record is sealed ([`AdminNode::answer`]).
+    sealing: Mutex<HashMap<UnitKey, AdminSealing>>,
+}
+
+/// AN ADMIN UNIT'S RECORD, READY TO SEAL (THE DESIGN §1: one fixed record for every unit; U14: a
+/// refused unit gets a record too): what its audit door sealed, and how the unit ended.
+struct AdminSealing {
+    facts: busbar_contract::AuditFacts,
+    pass: Pass<Audit>,
+    ended: Outcome,
 }
 
 /// What one in-flight admin unit carries between its steps.
@@ -2575,6 +2586,8 @@ struct AdminInFlight {
     /// travel past the step that verified it.
     principal: Option<PrincipalId>,
     answer: Option<AdminAnswer>,
+    /// How the unit ended, as its audit step was told: the outcome its one record carries.
+    ended: Option<Outcome>,
 }
 
 impl std::fmt::Debug for AdminUnits {
@@ -2589,6 +2602,7 @@ impl AdminUnits {
     pub fn new() -> Self {
         AdminUnits {
             inner: Mutex::new(HashMap::new()),
+            sealing: Mutex::new(HashMap::new()),
         }
     }
 
@@ -2604,14 +2618,48 @@ impl AdminUnits {
                 listed: None,
                 principal: None,
                 answer: None,
+                ended: None,
             },
         );
     }
 
-    /// Close a unit and take whatever it answered. Called once, on the exit path.
+    /// Close a unit and take whatever it answered. Called once, on the exit path. A record the
+    /// unit never sealed goes with it.
     pub fn close(&self, key: UnitKey) -> Option<AdminAnswer> {
+        self.sealing
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&key);
         let mut table = self.lock();
         table.remove(&key).and_then(|unit| unit.answer)
+    }
+
+    /// Unit `key`'s audit step was told how it ended.
+    fn set_ended(&self, key: UnitKey, outcome: Outcome) {
+        if let Some(unit) = self.lock().get_mut(&key) {
+            unit.ended = Some(outcome);
+        }
+    }
+
+    /// Unit `key`'s audit door handed back its facts and pass (`Units::audited`): held with how it
+    /// ended until its record is sealed. A unit that is not open, or whose end no audit step was
+    /// told, keeps nothing.
+    fn audited(&self, key: UnitKey, facts: busbar_contract::AuditFacts, pass: Pass<Audit>) {
+        let ended = self.lock().get(&key).and_then(|unit| unit.ended);
+        if let Some(ended) = ended {
+            self.sealing
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(key, AdminSealing { facts, pass, ended });
+        }
+    }
+
+    /// Unit `key`'s record-to-be, taken once to seal it.
+    fn take_sealing(&self, key: UnitKey) -> Option<AdminSealing> {
+        self.sealing
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&key)
     }
 
     /// How many units are open. Zero between requests is the property that says nothing leaked.
@@ -3783,6 +3831,7 @@ impl RegisteredUnits for AdminPlane {
         ctx: &UnitCtx,
         outcome: &Outcome,
     ) -> SeatVerdict<Audit> {
+        root.admin.units.set_ended(ctx.key, *outcome);
         audit(&root.admin, token, ctx, outcome)
     }
 
@@ -3793,7 +3842,25 @@ impl RegisteredUnits for AdminPlane {
         ctx: &UnitCtx,
         refusal: &Refusal,
     ) -> SeatVerdict<Audit> {
+        // The outcome the loop ends a refused unit on: the decision's step, else Admit.
+        let ended = Outcome::Refused(
+            refusal
+                .step()
+                .unwrap_or(busbar_contract::caps::StepName::Admit),
+            refusal.reason(),
+        );
+        root.admin.units.set_ended(ctx.key, ended);
         audit_refused(&root.admin, token, ctx, refusal)
+    }
+
+    fn audited(
+        &self,
+        root: &ProductionUnits,
+        ctx: &UnitCtx,
+        facts: busbar_contract::AuditFacts,
+        pass: Pass<Audit>,
+    ) {
+        root.admin.units.audited(ctx.key, facts, pass);
     }
 
     fn encode(
