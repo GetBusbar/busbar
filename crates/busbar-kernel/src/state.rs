@@ -812,6 +812,9 @@ pub struct AppHandle {
     /// served door planes, each refreshed onto a new generation of its section (ARCHITECT
     /// Q-DEL-A2A-APPLY; THE DESIGN §11: plugin memory is "valid to its next refresh generation").
     appliers: std::sync::Mutex<Vec<Applier>>,
+    /// THE DOOR PLANES' RENDERING of a kernel-shaped refusal (ARCHITECT ruling 2026-10-16, 3b B),
+    /// bound once by the composition root that built the doors; unbound, the kernel answers its own.
+    door_refuser: std::sync::OnceLock<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
 }
 
 /// One thing told of every generation a [`AppHandle::swap`] installs.
@@ -826,7 +829,23 @@ impl AppHandle {
             snapshot_host: std::sync::Mutex::new(None),
             attach: std::sync::OnceLock::new(),
             appliers: std::sync::Mutex::new(Vec::new()),
+            door_refuser: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Bind the door planes' rendering of a kernel-shaped refusal (ARCHITECT ruling 2026-10-16,
+    /// 3b B). First binding wins: one set of doors serves one handle.
+    pub fn bind_door_refuser(&self, refuser: busbar_kernel::plane_routes::PlaneRefuseByPathFn) {
+        let _first = self.door_refuser.set(refuser);
+    }
+
+    /// The door plane's rendering of `refusal`, or `None` when no door owns its path or the render
+    /// failed.
+    pub fn door_refusal(
+        &self,
+        refusal: &busbar_kernel::plane_routes::KernelRefusal<'_>,
+    ) -> Option<axum::response::Response> {
+        self.door_refuser.get().and_then(|refuse| refuse(refusal))
     }
 
     /// Tell `applier` of every generation a later [`swap`](Self::swap) installs (a config apply,

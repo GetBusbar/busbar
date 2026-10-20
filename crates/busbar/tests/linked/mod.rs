@@ -40,6 +40,11 @@ pub fn install() {
         for entry in TEST_LINKED {
             register_test_plane_seam(entry);
         }
+        // The linked doors' own dialect declarations, as the root's `register_protocols` installs
+        // them in production (the door row's `protocols` axis).
+        for decls in TEST_LINKED_PROTOCOLS {
+            busbar_kernel::proto::register_test_protocols(decls);
+        }
     });
     let doors = door_rows();
     let (mut seam, mut door) = (0, 0);

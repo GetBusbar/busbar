@@ -510,7 +510,7 @@ fn probing_served(script: Script) -> (PlaneProbes, Arc<Cells>, Arc<Table>) {
     (probes, cells, r.table)
 }
 
-/// F25 row 189: rehomed from crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_health_probe_failure_records_transient.
+/// F25 row 189: rehomed from the retired engine crate's src/engine/tests/forward_pool_integration_tests.rs::test_health_probe_failure_records_transient.
 /// A probe whose far end ANSWERS 500 `{"error":"down"}` records exactly one transient against the
 /// member in the served breaker: its default cell's and its pool cell's error counts each rise by 1.
 #[tokio::test]
@@ -533,7 +533,7 @@ async fn test_health_probe_failure_records_transient() {
     assert_eq!(cells.0.cell(POOL, TRIPPED).err_count(), before.1 + 1);
 }
 
-/// F25 row 221: rehomed from crates/busbar-llm/src/engine/tests/health_tests.rs::test_probe_auth_failure_is_hard_down_not_transient.
+/// F25 row 221: rehomed from the retired engine crate's src/engine/tests/health_tests.rs::test_probe_auth_failure_is_hard_down_not_transient.
 /// A 401 probe answer parks the member hard-down: the default cell is Open and the pool cell carries
 /// the long sticky hard-down cooldown (more than 60 s), and no transient is recorded.
 #[tokio::test]
@@ -568,7 +568,7 @@ async fn test_probe_auth_failure_is_hard_down_not_transient() {
     );
 }
 
-/// F25 row 222: rehomed from crates/busbar-llm/src/engine/tests/health_tests.rs::test_probe_server_error_is_transient_not_hard_down.
+/// F25 row 222: rehomed from the retired engine crate's src/engine/tests/health_tests.rs::test_probe_server_error_is_transient_not_hard_down.
 /// A single 503 probe answer is a transient: one failure is recorded, and the default cell stays
 /// Closed (one sub-threshold transient under the default error-rate breaker), never the hard-down.
 #[tokio::test]
@@ -589,7 +589,7 @@ async fn test_probe_server_error_is_transient_not_hard_down() {
     assert_eq!(cells.0.cell("", TRIPPED).err_count(), 1);
 }
 
-/// F25 row 234: rehomed from crates/busbar-llm/src/engine/tests/health_tests.rs::test_probe_with_an_unrepresentable_timeout_still_classifies.
+/// F25 row 234: rehomed from the retired engine crate's src/engine/tests/health_tests.rs::test_probe_with_an_unrepresentable_timeout_still_classifies.
 /// A probe under a timeout the clock cannot represent (2^63 s) runs to its classification and does
 /// not panic: the far end's 401 still parks the member, its default cell Open.
 #[tokio::test]
