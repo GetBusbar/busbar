@@ -3628,6 +3628,81 @@ mod rehomed_metering {
         assert_eq!(read.tokens().0 + read.tokens().1, 15);
     }
 
+    // ── a caller that leaves while the ended answer's last window is written (row 159 round c) ──
+
+    /// The reply after its far end's whole answer `far` was fed in one last piece: the piece that
+    /// ended it, and whether a caller that leaves now leaves a billable partial.
+    fn ended(ctx: &ReplyCtx<'_>, head: &[(&[u8], &[u8])], far: &[u8]) -> (Piece<'static>, bool) {
+        let mut reply = Reply::new(HOST, ctx, 200, head);
+        let end = owned(reply.feed(HOST, ctx, far, true, AT));
+        assert!(end.done, "the last piece ends the answer");
+        (end, reply.partial())
+    }
+
+    /// ROW 159 ROUND C, plane-llm LLM1 HIGH 1, `$`: an answer the caller reads in the door's
+    /// windows ends in the reply before its last window is written, so a caller that leaves in
+    /// between leaves an ended reply. Whatever that end bills on completion bills on the cancel:
+    /// 1.5.5 billed a translated whole answer at decode (v1.5.5 `proxy/engine/mod.rs:441-446`), a
+    /// failed generation's reported usage (Q31, the four tests above), and a stream's usage at its
+    /// end. RED: every one of these ended replies answered not-partial, so the cancel billed
+    /// nothing (no tokens, no fee).
+    #[test]
+    fn an_ended_answer_that_bills_on_completion_bills_on_a_cancel_in_its_last_window() {
+        let cases: [(&str, &str, bool, &[(&[u8], &[u8])], Vec<u8>); 4] = [
+            (
+                "openai",
+                "cohere",
+                false,
+                JSON_HEAD,
+                cohere_body("COMPLETE"),
+            ),
+            ("openai", "cohere", false, JSON_HEAD, cohere_body("ERROR")),
+            ("cohere", "cohere", false, JSON_HEAD, cohere_body("ERROR")),
+            (
+                "openai",
+                "gemini",
+                true,
+                SSE_HEAD,
+                gemini_stream("MALFORMED_FUNCTION_CALL"),
+            ),
+        ];
+        for (caller, far, stream, head, body) in cases {
+            let (arrived, lane) = ask(caller, far, stream);
+            let ctx = reply_ctx(&arrived, &lane);
+            let (end, partial) = ended(&ctx, head, &body);
+            assert_eq!(
+                (end.units.tokens_in, end.units.tokens_out),
+                (10, 5),
+                "{caller}<-{far}: the end bills the far end's 10 / 5 on completion"
+            );
+            assert!(
+                partial,
+                "{caller}<-{far}: a caller that leaves during the last window bills the 10 / 5 too"
+            );
+        }
+    }
+
+    /// THE CONTROL: an ended answer that bills nothing on completion (a translated stream whose
+    /// reframing gave up, 1.5.5's `billing_failed`) bills nothing on a cancel in its last window.
+    #[test]
+    fn an_ended_answer_that_bills_nothing_bills_nothing_on_a_cancel() {
+        let (arrived, lane) = ask("anthropic", "openai", true);
+        let ctx = reply_ctx(&arrived, &lane);
+        let mut reply = Reply::new(HOST, &ctx, 200, SSE_HEAD);
+        let _ = reply.feed(
+            HOST,
+            &ctx,
+            b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":600,\"completion_tokens\":400}}\n\n",
+            false,
+            AT,
+        );
+        let overflow = vec![b'x'; busbar_plane_llm::codec::eventstream::MAX_FRAME_BYTES + 16];
+        let end = owned(reply.feed(HOST, &ctx, &overflow, true, AT));
+        assert!(end.done);
+        assert_eq!(end.units, Units::default(), "the abort bills nothing");
+        assert!(!reply.partial(), "nor does a cancel in its last window");
+    }
+
     // ── a delivered or undelivered whole answer (crossproto_delivery_billing_tests.rs) ─────────
 
     /// REHOMES `crates/busbar-llm/src/engine/engine_tests/crossproto_delivery_billing_tests.rs::delivered_cross_protocol_response_bills_once`

@@ -1264,6 +1264,67 @@ mod door_units {
         );
     }
 
+    /// An openai caller's chat on the pool, whose anthropic far ends answer in another dialect.
+    const OPENAI_CHAT: &[u8] = br#"{"model":"p","messages":[{"role":"user","content":"hi"}]}"#;
+    const OPENAI_CALLER: &[Field] = &[field(b"content-type", b"application/json")];
+
+    fn arrive_openai(p: &Plugin<Plane>, unit: u64) {
+        let mut a: Frame<ArriveIn, ArriveOut> = Frame::new(z(), z());
+        (a.input.head, a.out.head) = (in_head(), out_head());
+        (a.input.unit, a.input.method, a.input.target) =
+            (unit, text(b"POST"), text(b"/v1/chat/completions"));
+        (a.input.fields, a.input.fields_len) = (OPENAI_CALLER.as_ptr(), OPENAI_CALLER.len());
+        a.input.body = octets(OPENAI_CHAT);
+        assert_eq!(p.call(slot::ARRIVE, &mut a).outcome, Outcome::Ready);
+    }
+
+    /// A CALLER THAT LEAVES WHILE A TRANSLATED WHOLE ANSWER IS WRITTEN ACROSS WINDOWS (row 159 round
+    /// c, plane-llm LLM1 HIGH 1), `$`: an openai caller's answer from an anthropic far end is read
+    /// whole, translated, and written to the caller over several windows; the caller leaves after
+    /// the first. 1.5.5 billed this answer at decode, before writing a byte of it (v1.5.5
+    /// `proxy/engine/mod.rs:441-446` `record_resp_usage(&ir, ..)`: "every exit from this block is a
+    /// delivered response"), so its 7 in / 3 out and its request fee bill. RED: the door read the
+    /// finished whole reply as nothing usable and answered ABORTED, billing no tokens and no fee.
+    #[test]
+    fn a_caller_that_leaves_while_a_translated_whole_answer_is_written_bills_it_as_1_5_5() {
+        let (_d, p) = door();
+        arrive_openai(&p, 35);
+        attempt_with(&p, 35, b"large", 1, OPENAI_CHAT);
+        let first = piece_into(
+            &p,
+            35,
+            FROM_FAR_END,
+            PIECE_HAS_STATUS | PIECE_LAST,
+            200,
+            ANSWER,
+            b"large",
+            0,
+            16,
+        );
+        assert_eq!(first.outcome, Outcome::Ready, "{first:?}");
+        assert!(!first.done, "more of the translated answer is owed: {first:?}");
+        assert!(
+            first.emitted.starts_with('{') && !first.emitted.contains("\"type\":\"message\""),
+            "the caller's first window is its own dialect's answer: {first:?}"
+        );
+        let amounts: Vec<u64> = first.units.iter().map(|(_, n)| *n).collect();
+        assert!(
+            amounts.contains(&7) && amounts.contains(&3),
+            "the answer states the far end's 7 in / 3 out on its first window: {first:?}"
+        );
+        assert!(
+            first
+                .units
+                .contains(&(busbar_plane_llm::plane_door::FEE_CLASS_INDEX, 1)),
+            "and the request's fee unit: {first:?}"
+        );
+        assert_eq!(
+            cancel(&p),
+            busbar_contract::abi::plane::CANCEL_OK_PARTIAL,
+            "a translated whole answer the far end delivered bills its stated units and fee, as 1.5.5 billed it at decode"
+        );
+    }
+
     /// THE CONTROL: a caller that leaves before the first byte of the answer reached it bills nothing.
     #[test]
     fn a_caller_that_leaves_before_the_first_byte_bills_nothing() {
