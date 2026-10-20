@@ -115,6 +115,10 @@ impl busbar_contract::auth_calls::AuthAxis for RootAuthAxis {
         self.0.credential_readers()
     }
 
+    fn issued_credential(&self) -> Option<(String, busbar_contract::auth_calls::IssuedShape)> {
+        self.0.issued_credential()
+    }
+
     fn carriers(&self, module: &str) -> Vec<String> {
         self.0.carriers(module)
     }
