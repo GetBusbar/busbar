@@ -1761,8 +1761,8 @@ fn cfg_any_the_scanner_does_not_mark_a_module_declared_under_a_shipping_any_gate
 
 #[test]
 fn cfg_any_the_structure_lint_corpus_keeps_a_shipping_any_module_in_production() {
-    use xtask::ctx::SourceFile;
     use std::path::PathBuf;
+    use xtask::ctx::SourceFile;
     let file = |rel: &str, text: &str| SourceFile {
         rel: PathBuf::from(rel),
         abs: PathBuf::from(rel),

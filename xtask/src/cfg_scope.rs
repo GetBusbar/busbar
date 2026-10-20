@@ -71,9 +71,11 @@ impl Pred {
         match self {
             Pred::Test => true,
             Pred::All(args) => args.iter().any(Pred::requires_test),
-            Pred::Any(args) => !args.is_empty() && args.iter().all(Pred::is_test_only) && {
-                args.iter().any(Pred::requires_test)
-            },
+            Pred::Any(args) => {
+                !args.is_empty() && args.iter().all(Pred::is_test_only) && {
+                    args.iter().any(Pred::requires_test)
+                }
+            }
             Pred::Feature(_) | Pred::Not(_) | Pred::Other => false,
         }
     }
