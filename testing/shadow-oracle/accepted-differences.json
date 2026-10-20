@@ -407,13 +407,13 @@
       "kind": "improvement",
       "changelog": "Bedrock text blocks no longer open with an empty `contentBlockStart`.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "cells": "^llm\\|bedrock\\|(anthropic|bedrock|cohere|openai|responses)\\|request\\|ok_stream$",
-      "expected_cells": 5,
+      "cells": "^llm\\|bedrock\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|ok_stream$",
+      "expected_cells": 6,
       "classes": [
         "body",
         "headers"
       ],
-      "rationale": "Spec fidelity: on the AWS ConverseStream wire a text block starts with its first contentBlockDelta; contentBlockStart is emitted only for tool-use blocks. 1.5.5 emitted an empty contentBlockStart for text; 1.6.0 matches AWS. Owner rule: maximum spec compliance wins over 1.5.5 bytes.",
+      "rationale": "Spec fidelity: on the AWS ConverseStream wire a text block starts with its first contentBlockDelta; contentBlockStart is emitted only for tool-use blocks. 1.5.5 emitted an empty contentBlockStart for text; 1.6.0 matches AWS. Owner rule: maximum spec compliance wins over 1.5.5 bytes. COUNT 2026-10-20 (status row 86, oracle cause I): 5 -> 6. llm|bedrock|gemini|request|ok_stream joined the corpus on 2026-10-13 (677e192454), after this entry was signed. Its 1.5.5 golden is byte-identical to llm|bedrock|anthropic|request|ok_stream (messageStart, an empty-start contentBlockStart, delta, stop, messageStop, metadata), and its judged difference is body /len 6 -> 5: the text block's contentBlockStart is gone. That is exactly the signed behaviour (\"on the AWS ConverseStream wire a text block starts with its first contentBlockDelta; contentBlockStart is emitted only for tool-use blocks. 1.5.5 emitted an empty contentBlockStart for text; 1.6.0 matches AWS\"), and the regex signed 2026-09-04 (`^llm\\|bedrock\\|[a-z]+\\|request\\|ok_stream$`) already named it. Added by exact upstream name; classes and premise unchanged.",
       "premise": {
         "cell": "llm|bedrock|anthropic|request|ok_stream",
         "status": 200
@@ -438,13 +438,13 @@
       "kind": "improvement",
       "changelog": "Responses API streams carry the lifecycle frames the spec declares:",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "cells": "^llm\\|responses\\|(anthropic|bedrock|cohere|openai|responses)\\|request\\|ok_stream$",
-      "expected_cells": 5,
+      "cells": "^llm\\|responses\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|ok_stream$",
+      "expected_cells": 6,
       "classes": [
         "body",
         "headers"
       ],
-      "rationale": "Spec fidelity: the Responses API stream includes response.content_part.added / response.output_text.done / response.content_part.done with contiguous sequence_number; 1.5.5 omitted them. Owner rule: maximum spec compliance wins over 1.5.5 bytes.",
+      "rationale": "Spec fidelity: the Responses API stream includes response.content_part.added / response.output_text.done / response.content_part.done with contiguous sequence_number; 1.5.5 omitted them. Owner rule: maximum spec compliance wins over 1.5.5 bytes. COUNT 2026-10-20 (status row 86, oracle cause I): 5 -> 6. llm|responses|gemini|request|ok_stream joined the corpus on 2026-10-13 (677e192454), after this entry was signed. Its 1.5.5 golden is byte-identical to llm|responses|anthropic|request|ok_stream except the model name, so the Responses stream writer produces for it the same body this entry already accepts on that sibling. The regex signed 2026-09-04 (`^llm\\|responses\\|[a-z]+\\|request\\|ok_stream$`) already named it. Added by exact upstream name; classes and premise unchanged.",
       "premise": {
         "cell": "llm|responses|anthropic|request|ok_stream",
         "body_contains": "event: response.content_part.added"
@@ -619,13 +619,13 @@
       "kind": "improvement",
       "changelog": "An Anthropic response carries the members its published schema requires.",
       "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
-      "cells": "^llm\\|anthropic\\|((bedrock|cohere|openai|responses)\\|request\\|ok(_stream)?|gemini\\|request\\|ok)$",
-      "expected_cells": 9,
+      "cells": "^llm\\|anthropic\\|(bedrock|cohere|gemini|openai|responses)\\|request\\|ok(_stream)?$",
+      "expected_cells": 10,
       "classes": [
         "body",
         "headers"
       ],
-      "rationale": "Anthropic's published Message / stream-event schemas mark stop_details, container, citations, the cache and service_tier usage members, output_tokens_details and server_tool_use required; 1.5.5 omitted them. 1.6.0 emits the spec's null/zero defaults or the carried value.",
+      "rationale": "Anthropic's published Message / stream-event schemas mark stop_details, container, citations, the cache and service_tier usage members, output_tokens_details and server_tool_use required; 1.5.5 omitted them. 1.6.0 emits the spec's null/zero defaults or the carried value. COUNT 2026-10-20 (status row 86, oracle cause I): 9 -> 10. llm|anthropic|gemini|request|ok_stream joined the corpus on 2026-10-13 (677e192454), after this entry was signed. Its judged difference is the signed behaviour: message_start's message gains `container: null` (\"Anthropic's published Message / stream-event schemas mark stop_details, container, citations, the cache and service_tier usage members ... required; 1.5.5 omitted them. 1.6.0 emits the spec's null/zero defaults\"). The regex signed 2026-09-04 (`(bedrock|cohere|gemini|openai|responses)\\|request\\|ok(_stream)?`) already named it, and this restores exactly that regex. Classes and premise unchanged.",
       "premise": {
         "all": [
           {
