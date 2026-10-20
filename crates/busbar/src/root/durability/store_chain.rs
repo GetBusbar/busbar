@@ -168,6 +168,36 @@ fn warn_torn(node: u64, seq: Option<u64>) {
     }
 }
 
+/// THIS NODE'S CHAIN AS THE STORE KEPT IT, read while `lane` may be putting to it and without the
+/// book's lock: what [`read_chain`] answers, save that a record missing a part is torn only when it
+/// is neither held by the lane after the scan nor whole on a second look. The lane puts in chain
+/// order and only its head is ever part-put, so the whole records read are a prefix of the chain. A
+/// record part-put at the scan is still in the lane when it is copied afterwards, or has left it
+/// whole, in which case the second scan finds it whole.
+///
+/// # Errors
+///
+/// As [`read_chain`].
+pub(super) fn read_chain_beside(lane: &JournalLane, node: u64) -> Result<Vec<Record>, String> {
+    let calls = lane.calls();
+    let (records, mut torn) = scan_chain(calls.as_ref(), node)?;
+    if !torn.is_empty() {
+        let held: std::collections::HashSet<u64> = lane
+            .queued()
+            .into_iter()
+            .filter(|record| record.node == node)
+            .map(|record| record.node_seq)
+            .collect();
+        torn.retain(|seq| !held.contains(seq));
+    }
+    if !torn.is_empty() {
+        let (_, again) = scan_chain(calls.as_ref(), node)?;
+        torn.retain(|seq| again.contains(seq));
+    }
+    warn_torn(node, torn.last().copied());
+    Ok(records)
+}
+
 /// [`read_chain`]'s scan: the whole records the store kept for `node`, oldest first, and the
 /// sequence numbers of those it holds only some parts of, oldest first. A record the lane is still
 /// putting is one of those for as long as the put takes, so whether one is torn is the caller's

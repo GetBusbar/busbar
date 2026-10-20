@@ -2962,10 +2962,10 @@ fn a_restart_over_the_same_store_verifies_the_prior_boots_records() {
         Vec::<String>::new(),
         "the prior boot's records verify under the key the store kept"
     );
-    let (calls, own, keys) = restarted
+    let (lane, own, keys) = restarted
         .stored_walk_inputs()
         .expect("a book over the store");
-    let walk = walk_stored_chains(calls.as_ref(), own, &keys);
+    let walk = walk_stored_chains(&lane, own, &keys);
     assert_eq!(walk.findings, Vec::<String>::new());
 }
 
@@ -3014,13 +3014,13 @@ fn the_stored_walk_does_not_call_this_nodes_record_mid_put_torn() {
     );
     assert_eq!(lane.pending(), 1, "the record is still the lane's");
 
-    let (calls, own, keys) = durability
+    let (lane, own, keys) = durability
         .stored_walk_inputs()
         .expect("a book over the store");
     let cap = busbar_kernel::test_support::warn_capture::WarnCapture::default();
     let walk =
         tracing::subscriber::with_default(tracing_subscriber::registry().with(cap.clone()), || {
-            walk_stored_chains(calls.as_ref(), own, &keys)
+            walk_stored_chains(&lane, own, &keys)
         });
     assert_eq!(walk.findings, Vec::<String>::new(), "the chain verifies");
     assert!(
@@ -3035,7 +3035,7 @@ fn the_stored_walk_does_not_call_this_nodes_record_mid_put_torn() {
     let cap = busbar_kernel::test_support::warn_capture::WarnCapture::default();
     let _ =
         tracing::subscriber::with_default(tracing_subscriber::registry().with(cap.clone()), || {
-            walk_stored_chains(calls.as_ref(), own, &keys)
+            walk_stored_chains(&lane, own, &keys)
         });
     assert_eq!(cap.count(TORN), 1, "a torn record is still reported");
 }
@@ -3087,11 +3087,11 @@ fn a_store_kept_chain_seals_every_record_as_the_store_assigned_node() {
     );
     drained(&restarted);
     assert_eq!(restarted.retained_audit_findings(), Vec::<String>::new());
-    let (calls, own, keys) = restarted
+    let (lane, own, keys) = restarted
         .stored_walk_inputs()
         .expect("a book over the store");
     assert_eq!(own, node);
-    let walk = walk_stored_chains(calls.as_ref(), own, &keys);
+    let walk = walk_stored_chains(&lane, own, &keys);
     assert_eq!(walk.chains, vec![node]);
     assert_eq!(
         walk.findings,
@@ -3297,15 +3297,15 @@ fn two_nodes_on_one_store_never_collide_and_verify_walks_both_chains() {
         second.restart_findings
     );
 
-    let (calls, own, keys) = first.stored_walk_inputs().expect("a book over the store");
-    let walk = walk_stored_chains(calls.as_ref(), own, &keys);
+    let (lane, own, keys) = first.stored_walk_inputs().expect("a book over the store");
+    let walk = walk_stored_chains(&lane, own, &keys);
     let mut both = vec![a, b];
     both.sort_unstable();
     assert_eq!(walk.chains, both, "the walk reads both chains");
     assert_eq!(walk.findings, Vec::<String>::new(), "and both verify");
 
     slots.corrupt(JOURNAL_SCHEMA, &part_key(b, 2, 0));
-    let walk = walk_stored_chains(calls.as_ref(), own, &keys);
+    let walk = walk_stored_chains(&lane, own, &keys);
     assert!(
         walk.findings
             .iter()
@@ -3846,10 +3846,10 @@ fn a_restart_while_the_old_lease_is_live_takes_a_fresh_id() {
         3,
         "the first process's chain is untouched"
     );
-    let (calls, own, keys) = keyed_store_book(&slots, second.id)
+    let (lane, own, keys) = keyed_store_book(&slots, second.id)
         .stored_walk_inputs()
         .expect("a book over the store");
-    let walk = walk_stored_chains(calls.as_ref(), own, &keys);
+    let walk = walk_stored_chains(&lane, own, &keys);
     assert!(walk.chains.contains(&first.id) && walk.chains.contains(&second.id));
 }
 

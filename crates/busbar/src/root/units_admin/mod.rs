@@ -739,10 +739,10 @@ impl LedgerView for NodeLedger {
 
     /// The inputs under the book's lock, the walk (which reads the store) without it.
     fn stored_chain_findings(&self) -> Vec<String> {
-        let Some((calls, own, keys)) = self.lock().stored_walk_inputs() else {
+        let Some((lane, own, keys)) = self.lock().stored_walk_inputs() else {
             return Vec::new();
         };
-        crate::root::durability::walk_stored_chains(calls.as_ref(), own, &keys).findings
+        crate::root::durability::walk_stored_chains(&lane, own, &keys).findings
     }
 
     /// All three under ONE hold of the lock a seal takes, so a checkpoint sealed between reads
