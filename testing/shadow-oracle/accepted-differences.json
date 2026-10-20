@@ -2077,7 +2077,7 @@
     },
     {
       "id": "RULE21-576 the plain gemini route bills toolUsePromptTokenCount as input (ledger x rate card)",
-      "kind": "improvement",
+      "kind": "breaking",
       "changelog": "1.6.0 Improvements: a Gemini turn that used a server-side tool bills the tool-use tokens Google charges for.",
       "by": "owner (Matthew Jackson), RULE 21 2026-10-14 (\"money is bank auditor grade. its either right or its wrong. make it right.\" / \"money - ledger * ratecard\"), applying the 2026-10-02 ruling of entry 576 to the llm wire cell",
       "cells": "^llm\\|gemini\\|gemini\\|request\\|ok_tool_use_tokens@fixture$",
