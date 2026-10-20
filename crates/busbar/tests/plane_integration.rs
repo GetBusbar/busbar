@@ -912,10 +912,28 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
         by_root || door_checked > 0,
         "no door-plane route was walked, so the reciprocal half of the boundary was never asserted"
     );
+    // THE KERNEL'S GUARDED SURFACE, WALKED WHOLE. The floor was 4 while the kernel mounted the
+    // list-models routes (`/v1/models`, `/v1beta/models`) and the two 1.5.5 convenience routes;
+    // those are the pools door's claims now (ARCHITECT 2026-10-16 3b C; DEV-GREEN row 83), walked,
+    // with the same assertions and a floor of 3, over the door's data router
+    // (`root::door_steps::tests::door_boundary::
+    // an_audience_bound_token_is_confined_to_its_door_plane_through_the_composition`). OBSERVATION
+    // POINT MOVED: here, every guarded core route the table names is walked (none skipped), and
+    // the kernel's own `/stats` is among them, so an enumeration that sees no router stays red.
+    let guarded_core = core_routes
+        .iter()
+        .filter(|(path, _, auth)| {
+            *auth != busbar_contract::abi::mechanism::route::RouteAuth::None
+                && !admissible.contains(path)
+        })
+        .count();
     assert!(
-        checked >= 4,
-        "the walk covered only {checked} guarded core routes, which is fewer than the surface this \
-         binary mounts — the enumeration is not seeing the router"
+        checked == guarded_core
+            && checked >= 1
+            && core_routes.iter().any(|(path, _, auth)| path == "/stats"
+                && *auth != busbar_contract::abi::mechanism::route::RouteAuth::None),
+        "the walk covered {checked} of {guarded_core} guarded core routes, and must cover the \
+         kernel's guarded `/stats` — the enumeration is not seeing the router: {core_routes:?}"
     );
 
     // The plugin surface is enumerable through the same boot capture. This app loads no plugins,
