@@ -407,13 +407,13 @@
       "kind": "improvement",
       "changelog": "Bedrock text blocks no longer open with an empty `contentBlockStart`.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "cells": "^llm\\|bedrock\\|(anthropic|bedrock|cohere|openai|responses)\\|request\\|ok_stream$",
-      "expected_cells": 5,
+      "cells": "^llm\\|bedrock\\|(anthropic|bedrock|cohere|openai|responses)\\|request\\|ok_stream$|^llm\\|(anthropic\\|(bedrock|cohere|gemini|openai|responses)|cohere\\|(anthropic|bedrock|gemini|openai|responses)|gemini\\|(anthropic|bedrock|cohere|openai|responses)|openai\\|(anthropic|bedrock|cohere|gemini|responses))\\|request\\|ok_stream_whole_answer$",
+      "expected_cells": 25,
       "classes": [
         "body",
         "headers"
       ],
-      "rationale": "Spec fidelity: on the AWS ConverseStream wire a text block starts with its first contentBlockDelta; contentBlockStart is emitted only for tool-use blocks. 1.5.5 emitted an empty contentBlockStart for text; 1.6.0 matches AWS. Owner rule: maximum spec compliance wins over 1.5.5 bytes.",
+      "rationale": "Spec fidelity: on the AWS ConverseStream wire a text block starts with its first contentBlockDelta; contentBlockStart is emitted only for tool-use blocks. 1.5.5 emitted an empty contentBlockStart for text; 1.6.0 matches AWS. Owner rule: maximum spec compliance wins over 1.5.5 bytes. WIDENED 2026-10-20 (OWNER ruling, PR #1292): the stream-synthesis behaviour (a stream:true request served as a spec-shaped event stream, not a buffered application/json body) also produces its difference on the 20 ok_stream_whole_answer cells of the anthropic, cohere, gemini and openai doors (every backend but the door's own): llm|anthropic|bedrock|request|ok_stream_whole_answer, llm|anthropic|cohere|request|ok_stream_whole_answer, llm|anthropic|gemini|request|ok_stream_whole_answer, llm|anthropic|openai|request|ok_stream_whole_answer, llm|anthropic|responses|request|ok_stream_whole_answer, llm|cohere|anthropic|request|ok_stream_whole_answer, llm|cohere|bedrock|request|ok_stream_whole_answer, llm|cohere|gemini|request|ok_stream_whole_answer, llm|cohere|openai|request|ok_stream_whole_answer, llm|cohere|responses|request|ok_stream_whole_answer, llm|gemini|anthropic|request|ok_stream_whole_answer, llm|gemini|bedrock|request|ok_stream_whole_answer, llm|gemini|cohere|request|ok_stream_whole_answer, llm|gemini|openai|request|ok_stream_whole_answer, llm|gemini|responses|request|ok_stream_whole_answer, llm|openai|anthropic|request|ok_stream_whole_answer, llm|openai|bedrock|request|ok_stream_whole_answer, llm|openai|cohere|request|ok_stream_whole_answer, llm|openai|gemini|request|ok_stream_whole_answer, llm|openai|responses|request|ok_stream_whole_answer. Classes stay body and headers.",
       "premise": {
         "cell": "llm|bedrock|anthropic|request|ok_stream",
         "status": 200
@@ -1052,46 +1052,6 @@
       }
     },
     {
-      "id": "F-014 Bedrock totalTokens counts the cache tokens AWS counts",
-      "kind": "improvement",
-      "by": "owner (Matthew Jackson), 2026-09-05 round-3 audit",
-      "cells": "^llm\\|bedrock\\|([a-z_]+\\|request\\|ok|(anthropic|bedrock|cohere|openai|responses)\\|request\\|ok_stream)$",
-      "expected_cells": 11,
-      "classes": [
-        "body"
-      ],
-      "rationale": "AWS Converse reports inputTokens as the NON-cached input only and documents the full input as inputTokens + cacheReadInputTokens + cacheWriteInputTokens (its worked caching example totals 16 input + 4 output + 695 cache-write as totalTokens 715). 1.5.5's Bedrock writer derived totalTokens = inputTokens + outputTokens while emitting the two cache counts beside it as ADDITIVE siblings, so on a cache-bearing response the published parts summed PAST the published total and a consumer reading totalTokens -- the field AWS points accounting consumers at -- lost every cache token. Both write sites (the buffered Converse body and the streamed metadata frame) now publish the AWS sum. The component fields are untouched, a response with no cache activity is byte-identical to 1.5.5 (the omitted cache buckets add zero), and this is a Bedrock-INGRESS body shape only: nothing Busbar ledgers reads totalTokens, since the Bedrock reader never parses it. The oracle's mock reports no cache tokens, so no recorded cell moves today.",
-      "changelog": "Bedrock `usage.totalTokens` counts the cache tokens AWS counts.",
-      "premise": {
-        "all": [
-          {
-            "cell": "llm|bedrock|responses|request|ok",
-            "pointer": "/usage/cacheWriteInputTokens",
-            "exists": true
-          },
-          {
-            "cell": "llm|bedrock|responses|request|ok",
-            "pointer": "/usage/totalTokens",
-            "equals": 18
-          }
-        ]
-      },
-      "signoff": {
-        "who": "owner (Matthew Jackson)",
-        "when": "2026-09-05",
-        "ruling": "2026-09-05 round-3 audit",
-        "resigned": {
-          "who": "owner (Matthew Jackson)",
-          "when": "2026-09-30",
-          "ruling": "DEV-GREEN re-signoff, group 1 (LLM wire spec-fidelity), all 45 re-signed as they stand"
-        }
-      },
-      "expires": {
-        "baseline": "1.5.5",
-        "by": "2026-12-31"
-      }
-    },
-    {
       "id": "A17 Anthropic billing_error names its own error type",
       "kind": "improvement",
       "by": "owner (Matthew Jackson), 2026-09-05 oracle Phase 0 group-budget-total cell",
@@ -1290,13 +1250,13 @@
       "kind": "improvement",
       "changelog": "**One stream states one id.**",
       "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
-      "cells": "^llm\\|(anthropic|cohere|gemini|openai|responses)\\|((anthropic|bedrock|cohere|openai|responses)\\|request\\|(ok_stream|ok_stream_array|stream_upstream_error@fixture)|gemini\\|request\\|(ok_stream_array|stream_upstream_error@fixture))$",
-      "expected_cells": 31,
+      "cells": "^llm\\|(anthropic|cohere|gemini|openai|responses)\\|((anthropic|bedrock|cohere|openai|responses)\\|request\\|(ok_stream|ok_stream_array|stream_upstream_error@fixture)|gemini\\|request\\|(ok_stream_array|stream_upstream_error@fixture))$|^llm\\|responses\\|responses\\|request\\|stream_upstream_cut$",
+      "expected_cells": 32,
       "classes": [
         "body",
         "headers"
       ],
-      "rationale": "Spec fidelity: a stream is not guaranteed to carry exactly one IR MessageStart. Five of the six readers gate it on their own started flag, but the Anthropic reader emits it 1:1 with the upstream message_start frame, so ANY egress fed from an Anthropic ingress can see two. 1.5.5's Anthropic, OpenAI-Chat, Gemini and Cohere writers each answered the second one by synthesizing a FRESH id, and the Responses writer latched only its sequence_number reset, not response.id -- so one message announced itself twice under two different identities. Every published streaming contract here fixes the id for the life of the message (a native OpenAI stream repeats ONE id on every chunk; a native Gemini stream's responseId is constant; the Responses SDK reads event.response.id on the terminal event to finalize), and the official SDKs latch the id from the FIRST frame that supplies it -- so the client was left correlating against an id nothing else in the stream ever mentions, and the Responses duplicate additionally disagreed with its own response.completed. 1.6.0 gives each of the five writers a per-stream id cell captured on the opening event and replayed thereafter, carried across a mid-stream Protocol::clone for the same reason the sibling open-block state already is. Byte-identical on every stream with a single opening event, which is every stream from the five gating readers. Stream bodies only; no status or usage class is waived. Owner rule: maximum spec compliance wins over 1.5.5 bytes.",
+      "rationale": "Spec fidelity: a stream is not guaranteed to carry exactly one IR MessageStart. Five of the six readers gate it on their own started flag, but the Anthropic reader emits it 1:1 with the upstream message_start frame, so ANY egress fed from an Anthropic ingress can see two. 1.5.5's Anthropic, OpenAI-Chat, Gemini and Cohere writers each answered the second one by synthesizing a FRESH id, and the Responses writer latched only its sequence_number reset, not response.id -- so one message announced itself twice under two different identities. Every published streaming contract here fixes the id for the life of the message (a native OpenAI stream repeats ONE id on every chunk; a native Gemini stream's responseId is constant; the Responses SDK reads event.response.id on the terminal event to finalize), and the official SDKs latch the id from the FIRST frame that supplies it -- so the client was left correlating against an id nothing else in the stream ever mentions, and the Responses duplicate additionally disagreed with its own response.completed. 1.6.0 gives each of the five writers a per-stream id cell captured on the opening event and replayed thereafter, carried across a mid-stream Protocol::clone for the same reason the sibling open-block state already is. Byte-identical on every stream with a single opening event, which is every stream from the five gating readers. Stream bodies only; no status or usage class is waived. Owner rule: maximum spec compliance wins over 1.5.5 bytes. WIDENED 2026-10-20 (OWNER ruling, PR #1292): the Responses writer replays the opening event's captured response.id (and its captured model and created_at) on the in-band response.failed that ends a cut stream, where 1.5.5 minted a fresh id there. That is this entry's behaviour on a cell it did not list: llm|responses|responses|request|stream_upstream_cut (+1). Body and headers only.",
       "premise": {
         "cell": "llm|anthropic|openai|request|ok_stream",
         "status": 200
@@ -1943,13 +1903,13 @@
       "kind": "breaking",
       "changelog": "busbar is invisible to upstreams. On a same-dialect route every client header and body field passes through unchanged, except the fields busbar governs: credential headers (each dialect declares its own, e.g. Authorization, x-api-key, api-key, x-goog-api-key), replaced by busbar's upstream credential; tenant selectors (e.g. OpenAI-Organization, OpenAI-Project), set from busbar's config and never from the caller; the model, which is mapped; hook rewrites; and the HTTP hop-by-hop headers plus Host and Content-Length, re-derived for the upstream connection. On a translated route busbar translates what maps and drops the rest. There are no feature allowlists; beta and version headers are ordinary fields. 1.5.5 forwarded no client header.",
       "by": "owner (Matthew Jackson), 2026-10-02 HARD RULE \"BUSBAR IS INVISIBLE TO UPSTREAMS\" (escalate.q 03:40Z, refined 04:00Z) ; scope extended to the 43 same-dialect cells under the same HARD RULE, owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\"",
-      "cells": "^(concurrency\\|inbound-shed\\|n8|concurrency\\|lane-atcapacity\\|n4|concurrency\\|ok\\|n8|crosscut\\.traps\\|exhausted-retry-after-floor|crosscut\\.traps\\|x-request-id-present|documented\\|changelog\\|retry-after-floor|documented\\|readme\\|six-protocols\\|anthropic|documented\\|readme\\|six-protocols\\|cohere|documented\\|readme\\|six-protocols\\|gemini|documented\\|readme\\|six-protocols\\|openai-chat|documented\\|readme\\|six-protocols\\|openai-responses|egress\\.headers\\|forwarded\\|anthropic-beta|egress\\.headers\\|forwarded\\|openai-beta|llm\\|anthropic\\|anthropic\\|request\\|ok|llm\\|anthropic\\|anthropic\\|request\\|ok_stream|llm\\|anthropic\\|anthropic\\|request\\|upstream_down|llm\\|bedrock\\|bedrock\\|request\\|ok|llm\\|bedrock\\|bedrock\\|request\\|ok_stream|llm\\|bedrock\\|bedrock\\|request\\|upstream_down|llm\\|cohere\\|cohere\\|request\\|ok|llm\\|cohere\\|cohere\\|request\\|ok_stream|llm\\|cohere\\|cohere\\|request\\|upstream_down|llm\\|gemini\\|gemini\\|request\\|ok|llm\\|gemini\\|gemini\\|request\\|ok_stream_array|llm\\|gemini\\|gemini\\|request\\|upstream_down|llm\\|openai\\|openai\\|request\\|ok|llm\\|openai\\|openai\\|request\\|ok_stream|llm\\|openai\\|openai\\|request\\|upstream_down|llm\\|responses\\|responses\\|request\\|ok|llm\\|responses\\|responses\\|request\\|ok_stream|llm\\|responses\\|responses\\|request\\|upstream_down|queue\\|serve\\|n3|queue\\|timeout\\|n2|route\\.failover\\|fb\\|all-down|route\\.failover\\|fb\\|member-down|route\\.failover\\|fo\\|all-down|route\\.failover\\|fo\\|all-down-stream|route\\.failover\\|fo\\|all-up|route\\.failover\\|fo\\|primary-429|route\\.failover\\|fo\\|primary-5xx|route\\.failover\\|fo\\|primary-cut-body|route\\.failover\\|fo\\|primary-cut-stream|route\\.failover\\|fo\\|primary-down|route\\.failover\\|fo\\|primary-slow|route\\.failover\\|fo\\|second-request-after-trip)$",
-      "expected_cells": 45,
+      "cells": "^(concurrency\\|inbound-shed\\|n8|concurrency\\|lane-atcapacity\\|n4|concurrency\\|ok\\|n8|crosscut\\.traps\\|exhausted-retry-after-floor|crosscut\\.traps\\|x-request-id-present|documented\\|changelog\\|retry-after-floor|documented\\|readme\\|six-protocols\\|anthropic|documented\\|readme\\|six-protocols\\|cohere|documented\\|readme\\|six-protocols\\|gemini|documented\\|readme\\|six-protocols\\|openai-chat|documented\\|readme\\|six-protocols\\|openai-responses|egress\\.headers\\|forwarded\\|anthropic-beta|egress\\.headers\\|forwarded\\|openai-beta|llm\\|anthropic\\|anthropic\\|request\\|ok|llm\\|anthropic\\|anthropic\\|request\\|ok_stream|llm\\|anthropic\\|anthropic\\|request\\|upstream_down|llm\\|bedrock\\|bedrock\\|request\\|ok|llm\\|bedrock\\|bedrock\\|request\\|ok_stream|llm\\|bedrock\\|bedrock\\|request\\|upstream_down|llm\\|cohere\\|cohere\\|request\\|ok|llm\\|cohere\\|cohere\\|request\\|ok_stream|llm\\|cohere\\|cohere\\|request\\|upstream_down|llm\\|gemini\\|gemini\\|request\\|ok|llm\\|gemini\\|gemini\\|request\\|ok_stream_array|llm\\|gemini\\|gemini\\|request\\|upstream_down|llm\\|openai\\|openai\\|request\\|ok|llm\\|openai\\|openai\\|request\\|ok_stream|llm\\|openai\\|openai\\|request\\|upstream_down|llm\\|responses\\|responses\\|request\\|ok|llm\\|responses\\|responses\\|request\\|ok_stream|llm\\|responses\\|responses\\|request\\|upstream_down|queue\\|serve\\|n3|queue\\|timeout\\|n2|route\\.failover\\|fb\\|all-down|route\\.failover\\|fb\\|member-down|route\\.failover\\|fo\\|all-down|route\\.failover\\|fo\\|all-down-stream|route\\.failover\\|fo\\|all-up|route\\.failover\\|fo\\|primary-429|route\\.failover\\|fo\\|primary-5xx|route\\.failover\\|fo\\|primary-cut-body|route\\.failover\\|fo\\|primary-cut-stream|route\\.failover\\|fo\\|primary-down|route\\.failover\\|fo\\|primary-slow|route\\.failover\\|fo\\|second-request-after-trip|llm\\|anthropic\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|bedrock\\|bedrock\\|request\\|ok_cachepoint_document@fixture|llm\\|bedrock\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|bedrock\\|bedrock\\|request\\|stream_upstream_cut|llm\\|cohere\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|gemini\\|request\\|ok_stream|llm\\|gemini\\|gemini\\|request\\|ok_stream_array_whole_answer|llm\\|gemini\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|gemini\\|request\\|stream_upstream_cut|llm\\|openai\\|openai\\|request\\|ok_stream_whole_answer|llm\\|responses\\|responses\\|request\\|ok_citation@fixture|llm\\|responses\\|responses\\|request\\|ok_stream_whole_answer|llm\\|responses\\|responses\\|request\\|stream_upstream_error@fixture)$",
+      "expected_cells": 58,
       "classes": [
         "body",
         "effects.egress"
       ],
-      "rationale": "Same-dialect routes forward every client header and body field; 1.5.5 forwarded no client header. The two cells send an anthropic-beta / openai-beta header on a same-dialect route: 1.5.5's upstream request carries neither, the candidate's carries `anthropic-beta: prompt-caching-2024-07-31` / `openai-beta: assistants=v2` and nothing else differs. The translated route (egress.headers|forwarded|anthropic-beta-cross) is identical to 1.5.5 and is NOT in scope: it carries no beta header on either build. The cells for the invisible-upstream rule's other fields (INVISIBLE-UPSTREAM card) join `cells` when recorded. Premise: the same-dialect upstream really carries the header, the translated one does not. KIND NOTE: the signed draft said `additive`, but the additive judge requires the candidate's arrays to be a position-wise superset of 1.5.5's, and the forwarded header lands mid-list (before host and content-length), so C13/C14 scored FAIL `additive: not a superset at /upstream/0/headers/5/0`; `improvement` (additive or strictly better, per this file's own legend) is the kind the register can express. SCOPE EXTENDED 2026-10-05 under the same HARD RULE (owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\"): the oracle drives every cell with curl, so on a SAME-dialect route the upstream receives the caller's own `user-agent: curl/8.5.0` and `accept: */*` where 1.5.5 sent the native SDK's values (BUSBAR-1.6.0.md Part 2 decision 76; owner Q10 scopes user-agent pass-through to same-dialect routes). The acceptance is PRECISE (busbar-release header_accept, PR #158): only the named headers, only these 45 cells, only from the exact golden value to the exact candidate value listed in `headers`; every other difference on these cells, including any other value of these headers, stays a divergence and is judged by the other entries (Q40's lane_state, S-5's chat members, PR2-D9). A translated hop keeps the far dialect's SDK fingerprint and `accept` (cross-dialect hops inside the failover cells are byte-identical to 1.5.5 and untouched). KIND: `breaking` because the register lets only a breaking entry with a changelog line take `effects.egress`; the changelog line is unchanged. Measured: busbar predev 244a861e35 + t-config, engine 99780d7, Latchkey cli-ace59174.",
+      "rationale": "Same-dialect routes forward every client header and body field; 1.5.5 forwarded no client header. The two cells send an anthropic-beta / openai-beta header on a same-dialect route: 1.5.5's upstream request carries neither, the candidate's carries `anthropic-beta: prompt-caching-2024-07-31` / `openai-beta: assistants=v2` and nothing else differs. The translated route (egress.headers|forwarded|anthropic-beta-cross) is identical to 1.5.5 and is NOT in scope: it carries no beta header on either build. The cells for the invisible-upstream rule's other fields (INVISIBLE-UPSTREAM card) join `cells` when recorded. Premise: the same-dialect upstream really carries the header, the translated one does not. KIND NOTE: the signed draft said `additive`, but the additive judge requires the candidate's arrays to be a position-wise superset of 1.5.5's, and the forwarded header lands mid-list (before host and content-length), so C13/C14 scored FAIL `additive: not a superset at /upstream/0/headers/5/0`; `improvement` (additive or strictly better, per this file's own legend) is the kind the register can express. SCOPE EXTENDED 2026-10-05 under the same HARD RULE (owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\"): the oracle drives every cell with curl, so on a SAME-dialect route the upstream receives the caller's own `user-agent: curl/8.5.0` and `accept: */*` where 1.5.5 sent the native SDK's values (BUSBAR-1.6.0.md Part 2 decision 76; owner Q10 scopes user-agent pass-through to same-dialect routes). The acceptance is PRECISE (busbar-release header_accept, PR #158): only the named headers, only these 45 cells, only from the exact golden value to the exact candidate value listed in `headers`; every other difference on these cells, including any other value of these headers, stays a divergence and is judged by the other entries (Q40's lane_state, S-5's chat members, PR2-D9). A translated hop keeps the far dialect's SDK fingerprint and `accept` (cross-dialect hops inside the failover cells are byte-identical to 1.5.5 and untouched). KIND: `breaking` because the register lets only a breaking entry with a changelog line take `effects.egress`; the changelog line is unchanged. Measured: busbar predev 244a861e35 + t-config, engine 99780d7, Latchkey cli-ace59174. WIDENED 2026-10-20 (OWNER ruling, PR #1292): the same signed behaviour (the caller's own user-agent reaches the upstream on a same-dialect route) also produces the user-agent difference on the 13 cells it was not listing -- the stream_whole_answer, cut and @fixture cells of the same-dialect doors: llm|anthropic|anthropic|request|ok_stream_whole_answer, llm|bedrock|bedrock|request|ok_cachepoint_document@fixture, llm|bedrock|bedrock|request|ok_stream_whole_answer, llm|bedrock|bedrock|request|stream_upstream_cut, llm|cohere|cohere|request|ok_stream_whole_answer, llm|gemini|gemini|request|ok_stream, llm|gemini|gemini|request|ok_stream_array_whole_answer, llm|gemini|gemini|request|ok_stream_whole_answer, llm|gemini|gemini|request|stream_upstream_cut, llm|openai|openai|request|ok_stream_whole_answer, llm|responses|responses|request|ok_citation@fixture, llm|responses|responses|request|ok_stream_whole_answer, llm|responses|responses|request|stream_upstream_error@fixture. Each is judged by the oracle (ids in cells.json). The runner's curl is 8.21.0, not 8.5.0, so each exact before/after is also listed with candidate curl/8.21.0; every other difference on these cells stays a divergence.",
       "premise": {
         "all": [
           {
@@ -2012,6 +1972,31 @@
           "name": "user-agent",
           "golden": "google-genai-sdk/0.8.0 gl-python/3.11",
           "candidate": "curl/8.5.0"
+        },
+        {
+          "name": "user-agent",
+          "golden": "OpenAI/Python 1.54.0",
+          "candidate": "curl/8.21.0"
+        },
+        {
+          "name": "user-agent",
+          "golden": "Anthropic/Python 0.39.0",
+          "candidate": "curl/8.21.0"
+        },
+        {
+          "name": "user-agent",
+          "golden": "Boto3/1.35.0 md/Botocore#1.35.0",
+          "candidate": "curl/8.21.0"
+        },
+        {
+          "name": "user-agent",
+          "golden": "cohere-python/5.11.0",
+          "candidate": "curl/8.21.0"
+        },
+        {
+          "name": "user-agent",
+          "golden": "google-genai-sdk/0.8.0 gl-python/3.11",
+          "candidate": "curl/8.21.0"
         },
         {
           "name": "accept",
@@ -3207,12 +3192,12 @@
       "kind": "improvement",
       "changelog": "A translated Anthropic stream that fails part way ends with an `error` event that carries a `request_id`, as Anthropic's published ErrorResponse requires.",
       "by": "owner (Matthew Jackson), rule 22 (2026-10-14): named conformance gaps must be zero; applied by ARCHITECT ruling 2026-10-14 (CONFORMANCE-GAPS)",
-      "cells": "^llm\\|anthropic\\|(bedrock|cohere|gemini|openai|responses)\\|request\\|stream_upstream_error$",
-      "expected_cells": 0,
+      "cells": "^llm\\|anthropic\\|anthropic\\|request\\|stream_upstream_cut$",
+      "expected_cells": 1,
       "classes": [
         "body"
       ],
-      "rationale": "When a translated stream into Anthropic ingress fails part way, busbar writes the `event: error` frame itself. v1.5.5 wrote `{\"type\":\"error\",\"error\":{\"type\",\"message\"}}` (crates/busbar/src/proto/anthropic/writer.rs:626-666 at the v1.5.5 tag), but the event body is Anthropic's ErrorResponse, and the published schema (testing/llm-conformance/spec-digests.tsv row anthropic) REQUIRES `request_id` (nullable). So the llm spec-conformance rig fails such a row on `required`, and owner rule 22 makes that a defect. 1.6.0 adds a minted `req_...` id, the same mint this writer's buffered error envelope already uses (anthropic/auth.rs error_envelope). It is an additive member; an SDK reads it as the event's request id. Body only. No oracle cell records a translated stream failing part way (the stream_upstream_error cells are same-dialect, where the far end's frame is relayed verbatim), so the cells are OWED: `cells` names them and expected_cells is 0, the way ORPH-Q3b writes owed cells. The premise probes the existing translated Anthropic stream cell.",
+      "rationale": "When a translated stream into Anthropic ingress fails part way, busbar writes the `event: error` frame itself. v1.5.5 wrote `{\"type\":\"error\",\"error\":{\"type\",\"message\"}}` (crates/busbar/src/proto/anthropic/writer.rs:626-666 at the v1.5.5 tag), but the event body is Anthropic's ErrorResponse, and the published schema (testing/llm-conformance/spec-digests.tsv row anthropic) REQUIRES `request_id` (nullable). So the llm spec-conformance rig fails such a row on `required`, and owner rule 22 makes that a defect. 1.6.0 adds a minted `req_...` id, the same mint this writer's buffered error envelope already uses (anthropic/auth.rs error_envelope). It is an additive member; an SDK reads it as the event's request id. Body only. SCOPE (OWNER ruling 2026-10-20, PR #1292): the `error` frame is busbar's own wherever a stream is cut after its first event, so the one cell the oracle runs for it is llm|anthropic|anthropic|request|stream_upstream_cut (golden: {\"error\":{\"message\",\"type\"},\"type\":\"error\"}; 1.6.0 adds request_id). The earlier scope named five translated stream_upstream_error cells the oracle never records (Law 10: a name that never runs); it is replaced by the cell that runs. The same-dialect stream_upstream_error@fixture cell relays the far end's frame verbatim and is not in scope. The premise probes the existing translated Anthropic stream cell.",
       "premise": {
         "cell": "llm|anthropic|openai|request|ok_stream",
         "status": 200
@@ -3301,6 +3286,40 @@
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-08",
         "ruling": "#24 and #77(9) OWNER-LOCKED (the admin API is dumb, owner 2026-09-08): amend_rate_history is additive admin surface and no verb carries operator signatures; this scope applied by the coordinator 2026-10-19"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "SPEND-LEDGER a stream that ledgered cost before its upstream error is charged",
+      "kind": "breaking",
+      "changelog": "1.6.0 Changed: a streamed answer whose upstream connection fails after its first byte is billed for the tokens that streamed before the failure. 1.5.5 billed no tokens for it. A mid-stream cut is not a refund.",
+      "by": "owner (Matthew Jackson), 2026-10-20 ruling on PR #1292",
+      "cells": "^llm\\|anthropic\\|anthropic\\|request\\|stream_upstream_error@fixture$",
+      "expected_cells": 1,
+      "classes": [
+        "effects.usage"
+      ],
+      "rationale": "OWNER 2026-10-20: spend is what the plane ledgers; a cut stream that ledgered cost is charged. The cell streams one Anthropic message_start that states 11 input tokens, then an upstream error. 1.5.5 recorded usage {requests 1} with no spend (spend_cents null); 1.6.0 ledgers the 11 input tokens the stream stated before the error and spends 110 cents (11 x the oracle rate card's input_utok 100000 = 1,100,000 utok). The other five stream_upstream_error@fixture cells state no usage before their error, so their usage is 1.5.5's and they are not in scope. The premise holds the candidate to the signed figure: this entry forgives the usage difference only when the candidate spends exactly 110 cents.",
+      "premise": {
+        "all": [
+          {
+            "cell": "llm|anthropic|anthropic|request|stream_upstream_error@fixture",
+            "status": 200
+          },
+          {
+            "cell": "llm|anthropic|anthropic|request|stream_upstream_error@fixture",
+            "pointer": "/effects/usage/spend_cents",
+            "equals": 110
+          }
+        ]
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-20",
+        "ruling": "OWNER 2026-10-20: spend is what the plane ledgers; a cut stream that ledgered cost is charged"
       },
       "expires": {
         "baseline": "1.5.5",
