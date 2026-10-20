@@ -1882,9 +1882,21 @@ async fn a_token_url_stripped_before_the_plane_still_presents_its_basic_on_the_m
         auth.fields(handle, FieldsRequest::default(), 0),
     )
     .await
-    .expect("the first mint lands");
+    .expect("the first ask answers");
+    // With the host's clock served (row 176), the first ask can answer before the mint it set off
+    // has landed. The mint is then waited on at the endpoint's close of its exchange (the plugin
+    // stores the token in that same crossing), never on the wall clock (Law 8), as
+    // `a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer` waits on it.
+    let first = if presented(Some(&first)).is_some() {
+        Some(first)
+    } else {
+        tokio::time::timeout(std::time::Duration::from_secs(120), table.closed(1))
+            .await
+            .expect("the first mint lands");
+        auth.fields_now(handle, &FieldsRequest::default())
+    };
     assert_eq!(
-        presented(Some(&first)).as_deref(),
+        presented(first.as_ref()).as_deref(),
         Some("Bearer oracle-minted-1")
     );
     assert!(table

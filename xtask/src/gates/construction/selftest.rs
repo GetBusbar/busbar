@@ -528,7 +528,8 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
     ));
 
     // THE PLANES THE RULE READS: the legacy list (empty since DEV-GREEN row 83) and the door crates
-    // `[gate.plugin_kinds].plane` matches on disk, the same set `ports-only` holds. A plane-less
+    // `[gate.plugin_kinds].plane` matches, the same set the gate owes `ports-only` rows for (a
+    // pinned door the base layer lays is one of them, and a plant into it is read like any other). A plane-less
     // tree owes no `ports-only:<crate>` row, so there is no row for a plant to turn red.
     let mut planes: Vec<String> = ConstructionGate::cfg(cx)
         .map(|c| {
@@ -536,7 +537,6 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
             v.extend(
                 dirs_for_globs(cx, &c.kind_globs("plane").unwrap_or_default())
                     .iter()
-                    .filter(|d| cx.abs(d.as_str()).join("src").exists())
                     .map(|d| crate_name_of_dir(d)),
             );
             v
