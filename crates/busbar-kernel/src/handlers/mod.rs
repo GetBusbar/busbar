@@ -33,12 +33,12 @@
 //! [`OpDispatch`], the registry-resolved [`chat`] / [`op_for`] / [`protocol_error`] resolvers — those
 //! name the registry singleton — and the host's usage-tap fault reporting the install arms.
 
-// EVERY LLM DIALECT'S HANDLER LIVES IN THE `busbar-llm` PLUGIN CRATE — anthropic, openai-chat,
+// EVERY LLM DIALECT'S HANDLER LIVES IN THE the retired engine crate PLUGIN CRATE — anthropic, openai-chat,
 // gemini, bedrock, cohere and openai-responses — each in its own dialect module's `handler.rs`.
 // They are reachable in the builds that compile the dialects back in as
 // `crate::proto::<dialect>::handler`, and in production only through the registry's
 // `ProtocolDecl::handler`, which is the point. `ChatOperation` RELOCATED to the plugin too at the
-// G6 A4b dissolve (`busbar-llm/src/chat_handle.rs`, netted as `crate::proto::chat_handle`): once
+// G6 A4b dissolve (`the retired engine crate/src/chat_handle.rs`, netted as `crate::proto::chat_handle`): once
 // `IrReq`/`IrResp` dissolved onto `Box<dyn IrHandle>`, the chat codec names the concrete chat IR
 // that now lives in the plugin, so it cannot stay in core. Core names no chat codec in production;
 // chat resolves through the registry like every other operation (see `chat` below).
@@ -213,7 +213,7 @@ impl OpDispatch {
 /// `request_handler(protocol).operation_handler(Chat)`. This is how "the RequestHandler decides which
 /// OperationHandler handles the request" is honored for chat too, not just the JSON ops.
 ///
-/// Post-G6-A4b the chat codec lives in the `busbar-llm` plugin, so this resolves it through the
+/// Post-G6-A4b the chat codec lives in the the retired engine crate plugin, so this resolves it through the
 /// registry the composition root populated — there is no in-core const fallback to name anymore (that
 /// codec is gone from core's production build). The `expect` can only fire in a build that links no
 /// chat-serving protocol at all, which no shipped configuration is: the LLM plugin registers `openai`

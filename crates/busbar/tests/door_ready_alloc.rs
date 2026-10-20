@@ -38,9 +38,9 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome, RawOu
 use busbar_contract::abi::mechanism::door::Door;
 use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpsHead};
 use busbar_contract::abi::plane::{
-    slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, Ops, OutField, PlaneOpenIn, PlaneOpenOut,
-    ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount, CONTRACTS,
-    FROM_FAR_END,
+    slot, ArriveIn, ArriveOut, CatalogIn, CatalogOut, OnPieceIn, OnPieceOut, Ops, OutField,
+    PlaneOpenIn, PlaneOpenOut, ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut,
+    UnitCount, CONTRACTS, FROM_FAR_END,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_plugin_loader::dispatch::{
@@ -150,6 +150,22 @@ disarmed!(refusal, refusal);
 disarmed!(serve, serve);
 disarmed!(project, project);
 
+/// The `catalog` the door answers (the test plane states none, ARCHITECT ruling 2026-10-16, 3b C):
+/// an empty listing, `200`, its body disarmed like every other op's, so the crossing measured is the
+/// host's own.
+extern "C" fn catalog(_: *mut c_void, _: *const c_void, out: *mut c_void) -> RawOutcome {
+    unmeasured(|| {
+        let out = out.cast::<CatalogOut>();
+        // SAFETY: the host lends `catalog` a whole, writable `CatalogOut`.
+        unsafe {
+            std::ptr::addr_of_mut!((*out).status).write_unaligned(200);
+            std::ptr::addr_of_mut!((*out).head.outcome)
+                .write_unaligned(RawOutcome::of(AbiOutcome::Ready));
+        }
+        RawOutcome::of(AbiOutcome::Ready)
+    })
+}
+
 /// The door this binary loads: the test plane's Statement and lifecycle, its request-path ops
 /// wrapped so their bodies run disarmed.
 extern "C" fn door() -> *const Door {
@@ -163,6 +179,7 @@ extern "C" fn door() -> *const Door {
                 refusal: Some(refusal),
                 serve: Some(serve),
                 project: Some(project),
+                catalog: Some(catalog),
                 ..*inner()
             })
         })
@@ -348,6 +365,23 @@ fn crossing(plugin: &Plugin<Plane>, s: u32, b: &mut Bufs, measure: Measure) -> u
                     ..blank_in()
                 },
                 blank_out::<ProjectOut>(),
+            );
+            measure(&mut || ready(s, plugin.call(s, &mut frame).outcome))
+        }
+        slot::CATALOG => {
+            let mut frame = Frame::new(
+                CatalogIn {
+                    method: AbiStr::over(b"GET"),
+                    target: AbiStr::over(STATS),
+                    reply_buf: b.reply.as_mut_ptr(),
+                    reply_cap: b.reply.len(),
+                    fields_buf: b.fields.as_mut_ptr(),
+                    fields_cap: b.fields.len(),
+                    arena_buf: b.arena.as_mut_ptr(),
+                    arena_cap: b.arena.len(),
+                    ..blank_in()
+                },
+                blank_out::<CatalogOut>(),
             );
             measure(&mut || ready(s, plugin.call(s, &mut frame).outcome))
         }
