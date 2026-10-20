@@ -128,8 +128,9 @@ Their coverage was re-pointed, not retired: the mcp and a2a root legs of
 `qa/capability-equality.json` and `qa/teller-steps.json` are the served rider, proven by
 `root/tests/gauntlet_kernel.rs`'s `served_rider_*` tests, which run each plane's own served-leg
 witnesses (`testkit::SERVED`) through the kernel-loop runner `gauntlet_install::install()` registers
-and require the plane's `drive` to have run inside the loop; the money witness
-(`crates/busbar/tests/plane_meter_seam_reachability.rs`) asks the same served leg.
+and require the plane's `drive` to have run inside the loop. (The source-scanning money witness over
+linked planes' billing legs is retired with the last linked plane, DEV-GREEN row 83: every plane
+is a door plane, billed through the kernel plane driver's one money seam.)
 
 ---
 

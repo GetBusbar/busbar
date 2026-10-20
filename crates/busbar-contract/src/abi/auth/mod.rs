@@ -51,7 +51,7 @@ mod points;
 
 pub use check::{
     check_begin_login, check_complete_login, check_fields, check_identify, check_inbound_points,
-    check_points, check_style_decl, FIELDS_HARD_MAX, IDENTITY_GROUPS_HARD_MAX,
+    check_points, check_style_decl, check_target, FIELDS_HARD_MAX, IDENTITY_GROUPS_HARD_MAX,
 };
 
 pub use inbound::{
@@ -60,7 +60,7 @@ pub use inbound::{
 };
 pub use outbound::{
     FieldSpan, FieldsIn, FieldsOut, OpenOutboundIn, OpenOutboundOut, OutboundReadyIn,
-    OutboundReadyOut,
+    OutboundReadyOut, TargetIn, TargetOut,
 };
 pub use points::{AuthPoint, AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
 
@@ -81,6 +81,7 @@ pub const ABI_VERSION: u32 = 3;
 ///     (slot::OPEN_OUTBOUND, offset_of!(Ops, open_outbound)),
 ///     (slot::OUTBOUND_READY, offset_of!(Ops, outbound_ready)),
 ///     (slot::FIELDS, offset_of!(Ops, fields)),
+///     (slot::TARGET, offset_of!(Ops, target)),
 /// ];
 /// assert_eq!(order.len() as u32, KIND_SLOTS);
 /// for (k, (idx, off)) in order.into_iter().enumerate() {
@@ -106,10 +107,12 @@ pub mod slot {
     pub const OUTBOUND_READY: u32 = LIFECYCLE_SLOTS + 4;
     /// `fields`.
     pub const FIELDS: u32 = LIFECYCLE_SLOTS + 5;
+    /// `target`.
+    pub const TARGET: u32 = LIFECYCLE_SLOTS + 6;
 }
 
 /// How many kind ops follow the lifecycle.
-pub const KIND_SLOTS: u32 = 6;
+pub const KIND_SLOTS: u32 = 7;
 /// [`OpsHead::slots`] for auth v3.
 pub const SLOTS: u32 = LIFECYCLE_SLOTS + KIND_SLOTS;
 
@@ -163,6 +166,16 @@ pub struct Ops {
     /// with zero fields = no auth header, so the upstream answers 401: 1.5.5's answer before the
     /// first mint and for an un-encodable key.
     pub fields: Option<Op>,
+    /// The destination one outbound style's credential sends to, for the kernel to judge (the
+    /// need's target is the kernel's to judge, THE DESIGN's needs section): PURE (no I/O, never dials, reads
+    /// only the credential and settings it is handed), called with NO instance (the `instance`
+    /// argument is NULL) at config time and at the generation seal, never pends; `Call`. In
+    /// [`TargetIn`] (fixed 168 B), out [`TargetOut`] (fixed 104 B). READY with a present
+    /// [`TargetOut::target`]: the URL, in the host's buffer. READY with it absent: the style sends
+    /// to no destination of its own. FAILED: why, one line in `head.error` (in the host's buffer),
+    /// rendered verbatim. REFUSED: the plugin does not serve `target` (the SDK's answer for a door
+    /// that wires none): the style names no destination.
+    pub target: Option<Op>,
 }
 
 /// [`AuthTail::caps`]: the plugin serves `verify`.
@@ -451,11 +464,13 @@ unsafe impl super::sdk::door::AbiIn for CompleteLoginIn {}
 unsafe impl super::sdk::door::AbiIn for OpenOutboundIn {}
 unsafe impl super::sdk::door::AbiIn for OutboundReadyIn {}
 unsafe impl super::sdk::door::AbiIn for FieldsIn {}
+unsafe impl super::sdk::door::AbiIn for TargetIn {}
 unsafe impl super::sdk::door::AbiOut for IdentifyOut {}
 unsafe impl super::sdk::door::AbiOut for BeginLoginOut {}
 unsafe impl super::sdk::door::AbiOut for OpenOutboundOut {}
 unsafe impl super::sdk::door::AbiOut for OutboundReadyOut {}
 unsafe impl super::sdk::door::AbiOut for FieldsOut {}
+unsafe impl super::sdk::door::AbiOut for TargetOut {}
 
 super::sdk::door::slot_structs!(
     /// Each auth kind op's `in`/`out` for [`plugin_door!`](crate::plugin_door), per [`Ops`]' docs.
@@ -501,5 +516,6 @@ super::sdk::door::slot_structs!(
         slot::OPEN_OUTBOUND => OpenOutboundIn, OpenOutboundOut;
         slot::OUTBOUND_READY => OutboundReadyIn, OutboundReadyOut;
         slot::FIELDS => FieldsIn, FieldsOut;
+        slot::TARGET => TargetIn, TargetOut;
     }
 );
