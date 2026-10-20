@@ -327,8 +327,8 @@ so a rate correction re-prices past and present windows on the next read. See
 
 ### 4. Pool / lane selection
 
-For a pool target, the LLM plane's engine (`crates/busbar-llm/src/engine/pipeline.rs`
-`forward_with_pool_parsed`, selecting in `crates/busbar-llm/src/engine/select.rs`) selects a member:
+For a pool target, the kernel's plane driver (`crates/busbar-kernel/src/plane_driver/mod.rs`, whose
+walk's far end is `crates/busbar-kernel/src/plane_driver/far_end.rs`) selects a member:
 
 1. **Affinity preference**: if a session header is present and the sticky member is
    usable, use it; otherwise fall through.
@@ -378,7 +378,7 @@ per-dialect edges inside the LLM plane:
 
 Upstream auth is not a writer hook. Each dialect declares its egress scheme (bearer,
 api-key, or SigV4 for Bedrock), and the lane's credential is bound on the `auth`
-plugin serving that style (`crates/busbar-llm/src/engine/credential.rs`).
+plugin serving that style (the walk's far end, `crates/busbar-kernel/src/plane_driver/far_end.rs`).
 
 A `Protocol` bundles a name + reader + writer; `protocol_for` resolves one by name.
 This is the entire reason a "provider" needs no code: any backend speaking a known
@@ -514,9 +514,9 @@ invented for it.
 
 Metrics are emitted at the ingress boundary (`busbar_requests_total`, the duration
 histogram) on EVERY plane, and at each upstream attempt/failure/trip/failover/translation
-(`crates/busbar-kernel/src/telemetry.rs`, `crates/busbar-llm/src/engine/pipeline.rs`). The model plane emits from
+(`crates/busbar-kernel/src/telemetry.rs`, `crates/busbar-kernel/src/plane_driver/far_end.rs`). The model plane emits from
 `ingress::finish_inner` (`crates/busbar-kernel/src/ingress/mod.rs`), every other plane from the plane
-ingress boundary layer (`crates/busbar-kernel/src/plane/observe.rs`), distinguished by a `plane` label. Optional OTLP spans and a request-log webhook
+ingress boundary layer (`crates/busbar-kernel/src/ingress/observe.rs`), distinguished by a `plane` label. Optional OTLP spans and a request-log webhook
 are configured via the `observability` section.
 
 ## How it deploys, simplest first

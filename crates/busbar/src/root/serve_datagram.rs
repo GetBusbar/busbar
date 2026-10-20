@@ -427,9 +427,9 @@ pub(super) struct Opened {
     pub(super) joining: Joining,
 }
 
-/// AN ASSOCIATION NOT YET ON ITS DOOR: it joins only once its unit is admitted (WebRTC-class media
-/// associations exist only for units admitted at the description's accept). Dropped unjoined, its
-/// framing finishes and nothing was ever registered.
+/// AN ASSOCIATION NOT YET ON ITS DOOR: it joins only once its unit is admitted (an association
+/// exists only for a unit admitted at the description's accept). Dropped unjoined, its framing
+/// finishes and nothing was ever registered.
 pub(super) struct Joining {
     door: Arc<ClaimDoor>,
     framing: DatagramFraming,
@@ -449,11 +449,8 @@ impl Opened {
         framer: Arc<dyn busbar_core_connector::framer::FramerDoor>,
         description: &[u8],
     ) -> Result<Self, String> {
-        let cert = Arc::new(
-            busbar_core_connector::dtls::SessionCert::mint().map_err(|e| format!("{e:?}"))?,
-        );
         let (mut framing, _) =
-            DatagramFraming::accept(framer, cert, door.local()).map_err(|r| r.error)?;
+            DatagramFraming::accept_minted(framer, door.local()).map_err(|r| r.error)?;
         let now = Instant::now();
         let y = framing.rendezvous(description, now).map_err(|r| r.error)?;
         let (to_session, from) = mpsc::channel(CALLER_QUEUE);

@@ -112,7 +112,7 @@ impl DepDecl {
 
 /// Split a section header into its segments, honouring the quoting `target.'cfg(unix)'.dependencies`
 /// needs. A dot inside quotes is part of the segment, never a separator.
-fn header_segments(header: &str) -> Vec<String> {
+pub(crate) fn header_segments(header: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
     let mut quote: Option<char> = None;

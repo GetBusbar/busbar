@@ -275,16 +275,17 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         ));
     }
 
-    // A plane whose grammar left its `mod.rs` is a plane nothing can locate — and every rule that
-    // names it would then scan zero files, which is the passing answer to a ban. Planted against
-    // the llm plane: mcp, a2a and streaming are DOOR-ONLY planes since P3 DEL-MCP (ARCHITECT
-    // 2026-10-05), FLIP-A2A (#787) and FLIP-STREAMING (#503) and declare no grammar.
-    match plane_grammar_file(cx, "busbar-llm") {
-        Some((rel, text)) => {
+    // THE LLM PLANE IS DOOR-ONLY TOO since its engine crate was deleted (DEV-GREEN row 83): no file
+    // declares its grammar any more, its door row in the composition root's manifest is its
+    // declaration. Taking the `plane-door` axis off that row leaves a roster plane with no home,
+    // which must be PLANE-ROOT-MISSING naming it rather than a plane every rule scans zero files of.
+    let llm_manifest_rel = format!("{}/{}", roots::CRATES, crate::planes::DOOR_MANIFEST);
+    match cx.read(&llm_manifest_rel) {
+        Ok(text) if text.contains("plane-llm-door = \"plane-door\"") => {
             let mut ov = Overlay::new();
             ov.set(
-                &rel,
-                text.replace(crate::planes::PLANE_GRAMMAR, "pub const MOVED_AWAY"),
+                &llm_manifest_rel,
+                text.replace("plane-llm-door = \"plane-door\"", "plane-llm-door = \"\""),
             );
             report.push(tree_case(
                 cx,
@@ -295,9 +296,9 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
                 &["PLANE-ROOT-MISSING", "llm"],
             ));
         }
-        None => report.note_infra_failure(
-            "structure-lint selftest: no file declares the llm plane's grammar, so the plane-root \
-             rule has nothing to plant against",
+        _ => report.note_infra_failure(
+            "structure-lint selftest: the manifest carries no `plane-llm-door = \"plane-door\"` row, \
+             so the llm plane-root rule has nothing to plant against",
         ),
     }
 
@@ -988,7 +989,7 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         // the tree a rename produces.
         let mut ov = Overlay::new();
         if let Ok(files) =
-            cx.walk(&crate::ctx::WalkSpec::new([format!("{}/plane", addresses.core)]).ext("rs"))
+            cx.walk(&crate::ctx::WalkSpec::new(plane_store::sink_scopes(&addresses)).ext("rs"))
         {
             for s in &files {
                 if s.text.contains("fn set_sink") {
@@ -1062,27 +1063,13 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
     report
 }
 
-/// The `mod.rs` that declares a plane, and its text.
-fn plane_grammar_file(cx: &Ctx, plane: &str) -> Option<(String, String)> {
-    let files = cx
-        .walk(&crate::ctx::WalkSpec::new([roots::CRATES]).ext("rs"))
-        .ok()?;
-    files
-        .into_iter()
-        .find(|s| {
-            let rel = s.rel_str();
-            rel.contains(&format!("/{plane}/")) && s.text.contains(crate::planes::PLANE_GRAMMAR)
-        })
-        .map(|s| (s.rel_str(), s.text))
-}
-
 /// The first plane sink attach, and its file's text.
 fn sink_file(
     cx: &Ctx,
     a: &crate::gates::structure_lint::roots::Addresses,
 ) -> Option<(String, String)> {
     let files = cx
-        .walk(&crate::ctx::WalkSpec::new([format!("{}/plane", a.core)]).ext("rs"))
+        .walk(&crate::ctx::WalkSpec::new(plane_store::sink_scopes(a)).ext("rs"))
         .ok()?;
     files
         .into_iter()
