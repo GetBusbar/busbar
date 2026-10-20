@@ -1675,6 +1675,24 @@
    "fixed_at": null
   },
   {
+   "id": "crates/busbar-plane-a2a-plugin/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-a2a-plugin/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-plane-a2a-plugin/src/tests"
+   ]
+  },
+  {
    "id": "crates/busbar-plane-decisions/src",
    "kind": "production",
    "paths": [
@@ -1741,6 +1759,24 @@
    "report": null,
    "auditor": null,
    "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-plane-decisions-plugin/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-decisions-plugin/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-plane-decisions-plugin/src/tests"
+   ]
   },
   {
    "id": "crates/busbar-plane-llm/src",
@@ -1875,6 +1911,24 @@
    "fixed_at": null
   },
   {
+   "id": "crates/busbar-plane-mcp-plugin/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-mcp-plugin/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-plane-mcp-plugin/src/tests"
+   ]
+  },
+  {
    "id": "crates/busbar-plane-streaming/src",
    "kind": "production",
    "paths": [
@@ -1941,6 +1995,24 @@
    "report": null,
    "auditor": null,
    "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-plane-streaming-plugin/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-streaming-plugin/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-plane-streaming-plugin/src/tests"
+   ]
   },
   {
    "id": "crates/busbar-secret-env/src",
@@ -4092,6 +4164,21 @@
    "fixed_at": null
   },
   {
+   "id": "crates/busbar-plane-a2a-plugin/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-a2a-plugin/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-plane-decisions/src/tests",
    "kind": "test",
    "paths": [
@@ -4111,6 +4198,21 @@
    "kind": "test",
    "paths": [
     "crates/busbar-plane-decisions/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-plane-decisions-plugin/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-decisions-plugin/tests"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -4193,6 +4295,21 @@
    "fixed_at": null
   },
   {
+   "id": "crates/busbar-plane-mcp-plugin/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-mcp-plugin/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-plane-streaming/src/tests",
    "kind": "test",
    "paths": [
@@ -4223,10 +4340,10 @@
    "fixed_at": null
   },
   {
-   "id": "crates/busbar-plane-streaming/examples",
+   "id": "crates/busbar-plane-streaming-plugin/tests",
    "kind": "test",
    "paths": [
-    "crates/busbar-plane-streaming/examples"
+    "crates/busbar-plane-streaming-plugin/tests"
    ],
    "tree_hash": null,
    "audited_at": null,
