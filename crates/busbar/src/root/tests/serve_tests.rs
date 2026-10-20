@@ -4542,6 +4542,352 @@ async fn the_pools_door_seals_one_audit_record_per_unit() {
     assert_eq!(rig.audit_records(), 1, "one record for the one unit");
 }
 
+/// A request the door answers, as the keyed caller sends it: `body` written as given (a body need
+/// not be JSON), its status and body read to the end.
+#[cfg(linked_driver_proofs)]
+async fn send_written(
+    rig: &super::hook_seat_tests::DoorRig,
+    path: &str,
+    fields: &[(&str, &str)],
+    body: &str,
+) -> (u16, Vec<u8>) {
+    use tower::ServiceExt as _;
+    let mut req = axum::http::Request::builder()
+        .method("POST")
+        .uri(path)
+        .header("content-type", "application/json");
+    for (name, value) in fields {
+        req = req.header(*name, *value);
+    }
+    let req = req
+        .body(axum::body::Body::from(body.to_string()))
+        .expect("a request");
+    let response = rig
+        .router
+        .clone()
+        .oneshot(req)
+        .await
+        .expect("the router answers");
+    let status = response.status().as_u16();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .expect("the body")
+        .to_vec();
+    (status, bytes)
+}
+
+/// The records the rig's book sealed once `n` of them are there (bounded wait).
+#[cfg(linked_driver_proofs)]
+async fn sealed(
+    rig: &super::hook_seat_tests::DoorRig,
+    n: usize,
+) -> Vec<busbar_kernel_audit::AuditRecord> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    while rig.audit_records() < n && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    rig.records()
+}
+
+/// ARRIVAL AND ENCODE, ON THE DOOR (root-llm; the door-path successor of the node's
+/// `every_fixture_reaches_the_end_it_names` Malformed fixture and of
+/// `the_route_seam_is_driven_once_by_a_served_unit_and_never_by_a_refused_one`): a served chat is
+/// ONE unit -- one admitted request, dispatched exactly once, one sealed record ending `Completed`;
+/// a body the plane cannot read is a 400 that is never dispatched, moves nothing on the key's
+/// ledger and seals one record refused at arrival, before Admit draws a bucket. RED: a served call
+/// admitted or dispatched twice, or an unreadable body that reaches the far end, the ledger, or no
+/// record.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_answers_each_request_as_one_unit_and_an_unreadable_one_before_anything_is_accounted(
+) {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-arrival";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(rig.chat().await.0, 200);
+    let served = rig.ledger_after(1).await;
+    assert_eq!(served.0, 1, "one admitted request for the one call");
+    assert_eq!(far.served(), 1, "dispatched exactly once");
+
+    let bearer = format!("Bearer {}", rig.token);
+    let (status, _) = send_written(
+        &rig,
+        "/v1/chat/completions",
+        &[("authorization", &bearer)],
+        "{ this is not json ",
+    )
+    .await;
+    assert_eq!(status, 400, "a body the plane cannot read");
+    assert_eq!(far.served(), 1, "never dispatched");
+    assert_eq!(
+        rig.ledger_after(1).await,
+        served,
+        "nothing accounted on the key's ledger"
+    );
+
+    let records = sealed(&rig, 2).await;
+    assert_eq!(records.len(), 2, "one record per unit: {records:?}");
+    assert_eq!(
+        records[0].outcome.unit_end,
+        busbar_contract::caps::Outcome::Completed,
+        "the served unit"
+    );
+    assert!(
+        matches!(
+            records[1].outcome.unit_end,
+            busbar_contract::caps::Outcome::Refused(
+                busbar_contract::caps::StepName::Arrival | busbar_contract::caps::StepName::Decode,
+                _
+            )
+        ),
+        "the unreadable unit ends at arrival, before anything is drawn: {:?}",
+        records[1].outcome
+    );
+}
+
+/// DECODE, ON THE DOOR (root-llm; the door-path successor of the node's
+/// `the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it`): each of the six caller
+/// dialects the door claims decodes a well-formed request into a unit that is served (200,
+/// dispatched once), and refuses a body it cannot read on the same path with a 400 that is never
+/// dispatched. RED: a dialect whose well-formed request is not served, or whose unreadable body
+/// reaches the far end.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_decodes_every_dialect_and_refuses_an_unreadable_body_in_each() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-decode";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let chat = serde_json::json!({"model": "p", "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}]});
+    let word_body = |key: &str| -> serde_json::Value {
+        serde_json::from_str(door_word(key)).expect("a JSON request body")
+    };
+    let dialects = [
+        ("/v1/chat/completions", chat.clone()),
+        (door_word("messages_path"), chat.clone()),
+        (door_word("chat_v2_path"), word_body("chat_v2_body")),
+        (door_word("respond_path"), word_body("respond_body")),
+        (door_word("generate_path"), word_body("generate_body")),
+        (door_word("converse_path"), word_body("converse_body")),
+    ];
+    let bearer = format!("Bearer {}", rig.token);
+    for (served_before, (path, request)) in dialects.into_iter().enumerate() {
+        let (status, _, body) = rig.send("POST", path, Some(request)).await;
+        assert_eq!(status, 200, "{path}: {}", String::from_utf8_lossy(&body));
+        assert_eq!(far.served(), served_before + 1, "{path}: dispatched once");
+        let (status, _) = send_written(
+            &rig,
+            path,
+            &[("authorization", &bearer)],
+            "{ this is not json ",
+        )
+        .await;
+        assert_eq!(status, 400, "{path}: an unreadable body");
+        assert_eq!(
+            far.served(),
+            served_before + 1,
+            "{path}: the unreadable body is never dispatched"
+        );
+    }
+}
+
+/// AUTHENTICATE, ON THE DOOR (root-llm; the door-path successor of the node's
+/// `the_loop_attributes_the_identity_the_door_resolved_and_invents_none`): the key the caller
+/// presents is the one the unit is admitted and charged under, and a bearer this deployment never
+/// minted, or no credential at all, is refused 401 before the plane: nothing dispatched, nothing
+/// accounted, no key invented. RED: a served unit charged to no key, or a refused caller that
+/// reaches the far end or the ledger.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_admits_the_presented_key_and_refuses_an_unknown_one_before_the_plane() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-authenticate";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(rig.chat().await.0, 200, "the presented key is admitted");
+    let charged = rig.ledger_after(1).await;
+    assert_eq!(charged.0, 1, "and the unit is charged to it");
+    let chat = r#"{"model":"p","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}"#;
+    for fields in [
+        &[("authorization", "Bearer not-a-key-this-deployment-minted")][..],
+        &[][..],
+    ] {
+        let (status, _) = send_written(&rig, "/v1/chat/completions", fields, chat).await;
+        assert_eq!(status, 401, "{fields:?}: refused before the plane");
+        assert_eq!(far.served(), 1, "{fields:?}: nothing dispatched");
+        assert_eq!(
+            rig.ledger_after(1).await,
+            charged,
+            "{fields:?}: nothing accounted, no key invented"
+        );
+    }
+}
+
+/// APPROVE, ON THE DOOR (root-llm; the door-path successor of the node's
+/// `a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_changes_nothing`): the
+/// approve step passes a key its grant reaches (the unit is served and ends `Completed`), and a key
+/// whose grant does not reach the pool is stopped BEFORE approve, at verify's destination guard,
+/// with nothing charged and nothing dispatched -- so no unit is ever refused at approve on this
+/// door, and the hook gates are seated after admission at the head of the route leg (spec Part 3
+/// section 12 "Hooks"), never in front of approve. RED: a granted key refused, or the ungranted
+/// one reaching approve, the ledger or the far end.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_approves_a_granted_key_and_an_ungranted_one_never_reaches_approve() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-approve";
+    let published = Withdrawn(instance);
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
+    let granted = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(granted.chat().await.0, 200);
+    let records = sealed(&granted, 1).await;
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(
+        records[0].outcome.unit_end,
+        busbar_contract::caps::Outcome::Completed,
+        "approve passed the granted key"
+    );
+    drop(granted);
+    drop(published);
+
+    let instance = "serve-door-approve-ungranted";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
+    let ungranted = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            allowed_pools: Some(&["denied-elsewhere"]),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(
+        ungranted.chat().await.0,
+        403,
+        "a pool the key may not reach"
+    );
+    assert_eq!(far.served(), 0, "nothing dispatched");
+    let (requests, spend, _, billable) = ungranted.ledger_after(0).await;
+    assert_eq!((requests, spend, billable), (0, 0, 0), "nothing charged");
+    let records = sealed(&ungranted, 1).await;
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert!(
+        matches!(
+            records[0].outcome.unit_end,
+            busbar_contract::caps::Outcome::Refused(busbar_contract::caps::StepName::Verify, _)
+        ),
+        "stopped at verify, before approve: {:?}",
+        records[0].outcome
+    );
+}
+
+/// AUDIT-CHAIN, ON THE DOOR (root-llm; the door-path successor of the node's
+/// `every_unit_the_node_answers_served_or_refused_seals_one_record_on_one_tamper_evident_chain` and
+/// `a_driven_planes_abandoned_end_seals_one_audit_record`): every unit the pools door answers,
+/// served or refused inside the loop (the caller's group allows one request an hour), seals ONE
+/// record on the node's audit chain, the second linked to the first; the chain walks clean, and a
+/// record altered after its seal breaks the walk. RED: a unit sealing no record or two, an unlinked
+/// record, or a forged record the walk accepts.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_pools_door_unit_served_or_refused_seals_one_record_on_one_tamper_evident_chain() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-audit-chain-pools";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
+    let one_an_hour = [busbar_kernel::config::groups::LimitCfg {
+        metric: busbar_kernel::config::groups::LimitMetric::Requests,
+        amount: 1,
+        per: Some(busbar_kernel::config::groups::LimitWindow::Hour),
+        scope: None,
+        on_exhaust: None,
+        downgrade_to: None,
+        admission: None,
+        on_exhaustion: None,
+    }];
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            group: Some(("hourly", &one_an_hour)),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(rig.chat().await.0, 200, "the first unit is served");
+    assert_eq!(
+        rig.chat().await.0,
+        429,
+        "the second is refused by the limit"
+    );
+    assert_eq!(far.served(), 1, "the refused unit is never dispatched");
+
+    let records = sealed(&rig, 2).await;
+    assert_eq!(records.len(), 2, "one record per unit: {records:?}");
+    let (served, refused) = (&records[0], &records[1]);
+    assert_eq!(
+        served.outcome.unit_end,
+        busbar_contract::caps::Outcome::Completed
+    );
+    assert!(
+        matches!(
+            refused.outcome.unit_end,
+            busbar_contract::caps::Outcome::Refused(
+                _,
+                busbar_contract::caps::ReasonCode::RateLimited
+            )
+        ),
+        "the refusal is chained as one: {:?}",
+        refused.outcome
+    );
+    assert_eq!(refused.seq, served.seq + 1, "contiguous");
+    assert_eq!(
+        refused.prev_hash, served.hash,
+        "linked to the record before"
+    );
+    assert!(busbar_kernel_audit::AuditChain::verify_window(&records).is_ok());
+    let mut forged = records.clone();
+    forged[0].outcome.unit_end = refused.outcome.unit_end;
+    assert!(
+        busbar_kernel_audit::AuditChain::verify_window(&forged).is_err(),
+        "a record altered after its seal breaks the chain"
+    );
+}
+
 /// A NODE WHOSE JOURNAL CANNOT REACH ITS STORE FAILS CLOSED, ON THE DOOR (ARCHITECT 2026-10-07 H3
 /// ruling): the node's journal is kept by a configured store that refuses, and the lane to it is
 /// full, so a new unit through the door is answered 503 with the reason, in the caller's dialect
