@@ -941,7 +941,7 @@ pub(super) fn route_over(node: &Node, egress: &Egress, pool: &str) -> Routed {
     })
 }
 
-/// F25 row 95: rehomed from crates/busbar-llm/src/engine/tests/dial_refusal_failover_tests.rs::a_refused_primary_fails_over_to_the_next_lane.
+/// F25 row 95: rehomed from the retired engine crate's src/engine/tests/dial_refusal_failover_tests.rs::a_refused_primary_fails_over_to_the_next_lane.
 /// The primary's dial is refused before any connection opens (the destination guard's refusal, as
 /// the connector reports it to the far end; the name's resolution and the judgement are the
 /// connector's): the walk moves on and the next member answers 200, the primary never got a
@@ -1007,7 +1007,7 @@ fn fallback_probe_rig(script: Script) -> (Node, Arc<RealBreaker>) {
     (node, real)
 }
 
-/// F25 row 118: rehomed from crates/busbar-llm/src/engine/tests/forward_once_pool_cell_tests.rs::test_forward_once_fallback_2xx_closes_pool_cell_not_default.
+/// F25 row 118: rehomed from the retired engine crate's src/engine/tests/forward_once_pool_cell_tests.rs::test_forward_once_fallback_2xx_closes_pool_cell_not_default.
 /// A fallback-pool member whose cell is probing answers 200: it is relayed, the FALLBACK POOL's
 /// cell goes HalfOpen to Closed, and the default cell is untouched (Closed, nothing recorded).
 #[test]
@@ -1036,7 +1036,7 @@ fn test_forward_once_fallback_2xx_closes_pool_cell_not_default() {
     assert!(real.outcomes("", b).is_empty());
 }
 
-/// F25 row 119: rehomed from crates/busbar-llm/src/engine/tests/forward_once_pool_cell_tests.rs::test_forward_once_fallback_transport_error_opens_pool_cell.
+/// F25 row 119: rehomed from the retired engine crate's src/engine/tests/forward_once_pool_cell_tests.rs::test_forward_once_fallback_transport_error_opens_pool_cell.
 /// The same rig with the fallback member's dial refused while its cell is probing: the failed probe
 /// reopens the FALLBACK POOL's cell with a fresh cooldown (Open, not wedged HalfOpen), the chain is
 /// spent, and the default cell is untouched.
@@ -1069,7 +1069,7 @@ fn test_forward_once_fallback_transport_error_opens_pool_cell() {
     );
 }
 
-/// F25 row 120: rehomed from crates/busbar-llm/src/engine/tests/forward_once_pool_cell_tests.rs::test_forward_once_fallback_5xx_fault_trips_and_releases_probe.
+/// F25 row 120: rehomed from the retired engine crate's src/engine/tests/forward_once_pool_cell_tests.rs::test_forward_once_fallback_5xx_fault_trips_and_releases_probe.
 /// The same rig with the probing fallback member answering 503: the 503 is relayed, the probe is
 /// resolved (the cell is not wedged HalfOpen), the cooldown is extended by the backoff so an
 /// immediate admission is refused, a day on the cell admits again, and the default cell is
@@ -1108,7 +1108,7 @@ fn test_forward_once_fallback_5xx_fault_trips_and_releases_probe() {
     assert_eq!(real.cell("", b).state(), BreakerState::Closed);
 }
 
-/// F25 row 121: rehomed from crates/busbar-llm/src/engine/tests/forward_once_pool_cell_tests.rs::test_forward_once_fallback_client_4xx_does_not_trip_breaker.
+/// F25 row 121: rehomed from the retired engine crate's src/engine/tests/forward_once_pool_cell_tests.rs::test_forward_once_fallback_client_4xx_does_not_trip_breaker.
 /// The same rig with the probing fallback member answering 400 (the caller's own fault): the 400 is
 /// relayed, nothing is recorded against the member, the probe is given back (Open, not HalfOpen)
 /// with its expired cooldown intact, so the cell admits again at once; the default cell is
@@ -1143,7 +1143,7 @@ fn test_forward_once_fallback_client_4xx_does_not_trip_breaker() {
     assert_eq!(real.cell("", b).state(), BreakerState::Closed);
 }
 
-/// F25 row 135: rehomed from crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_max_requests_budget_caps_lane_and_counts_ok.
+/// F25 row 135: rehomed from the retired engine crate's src/engine/tests/forward_pool_integration_tests.rs::test_max_requests_budget_caps_lane_and_counts_ok.
 /// A lane with a lifetime budget of 2 in pool `pc`: requests 1 and 2 are served 200, request 3 is
 /// refused 503; the lane's cell holds exactly two successes and no failure, its budget is spent,
 /// and it is no longer usable.
@@ -1190,7 +1190,7 @@ fn test_max_requests_budget_caps_lane_and_counts_ok() {
     assert!(real.unit.try_admit("pc", lane, now).is_err());
 }
 
-/// F25 row 136: rehomed from crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_failover_exclusions_remove_member_from_pool.
+/// F25 row 136: rehomed from the retired engine crate's src/engine/tests/forward_pool_integration_tests.rs::test_failover_exclusions_remove_member_from_pool.
 /// A pool's `failover.exclusions` removes the named member: five requests over a pool of `alpha`
 /// and `beta` with `beta` excluded are all served by `alpha`, and `beta` is never dialled and has
 /// nothing recorded.
@@ -1227,7 +1227,7 @@ fn test_failover_exclusions_remove_member_from_pool() {
     assert_eq!(real.successes("pe"), 5);
 }
 
-/// F25 row 155: rehomed from crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_permit_lifetime_during_stream.
+/// F25 row 155: rehomed from the retired engine crate's src/engine/tests/forward_pool_integration_tests.rs::test_permit_lifetime_during_stream.
 /// A lane of one concurrency slot streams a five-piece answer: the slot is free before the request,
 /// held while the stream is relayed (after its 200 head), and free again once it is drained. The
 /// test is the plane: it states its reading of every far-end piece it is handed, as the plane
@@ -1296,7 +1296,7 @@ fn test_permit_lifetime_during_stream() {
     });
 }
 
-/// F25 row 364: rehomed from crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_repeated_pre_first_byte_failures_trip_breaker.
+/// F25 row 364: rehomed from the retired engine crate's src/engine/tests/ingress_indistinguishability_tests.rs::test_repeated_pre_first_byte_failures_trip_breaker.
 /// Three consecutive streamed attempts on pool `p`'s member, each a 200 head cut before its first
 /// byte: every cut is counted against the pool cell (its error count 1, 2, 3), the cell stays
 /// Closed after the first two and is Open after the third. Through the far end each head records
@@ -1401,7 +1401,7 @@ fn refunded_after_a_post_first_byte_cut(stream: bool) -> bool {
     real.unit.spend_budget(lane)
 }
 
-/// F25 row 366: rehomed from crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_streaming_nonsse_post_first_byte_cut_refunds_the_lane_unit.
+/// F25 row 366: rehomed from the retired engine crate's src/engine/tests/ingress_indistinguishability_tests.rs::test_streaming_nonsse_post_first_byte_cut_refunds_the_lane_unit.
 /// The same post-first-byte transport cut, a lane budget of one: on a buffered (non-SSE) answer the
 /// head's unit comes back (a second spend succeeds); on a streamed (SSE) answer it is kept (a
 /// second spend fails). Both arms in one test: the rule is that they differ.
@@ -1417,7 +1417,7 @@ fn test_streaming_nonsse_post_first_byte_cut_refunds_the_lane_unit() {
     );
 }
 
-/// F25 row 587: rehomed from crates/busbar-llm/src/engine/tests/reroute_pool_tests.rs::a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_serves.
+/// F25 row 587: rehomed from the retired engine crate's src/engine/tests/reroute_pool_tests.rs::a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_serves.
 /// A breaker-healthy primary whose one slot is held is offered by the order, refused by the
 /// admission and passed over inside the one loop: the twin serves 200 and the primary is never
 /// dialled.

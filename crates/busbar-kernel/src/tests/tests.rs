@@ -1642,6 +1642,8 @@ fn secrets_block_rejects_non_secret_kind() {
 /// read.
 #[test]
 fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     crate::snapshot::init();
     const SENTINEL: &str = "sk-sentinel-must-never-be-printed";
     let set_var = format!("BUSBAR_TEST_PROVIDER_KEY_SET_{}", std::process::id());
@@ -1690,10 +1692,12 @@ fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
 /// path for a keyless local upstream rests on this building an App at all.
 ///
 /// What that lane then does on the wire — no auth header, and skipped by the prober — is asserted at
-/// the seams that decide it, in busbar-llm's `auth_style_tests` and `health` tests, rather than
+/// the seams that decide it, in the retired engine crate's `auth_style_tests` and `health` tests, rather than
 /// re-derived here through a lane accessor that exists only for the test.
 #[test]
 fn boot_starts_a_keyless_lane_declared_none() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     crate::snapshot::init();
     let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::none());
     cfg.models
@@ -1725,6 +1729,8 @@ fn model_cfg_for_provider(provider: &str) -> crate::config::ModelCfg {
 /// registry exists) to `validate_secret_refs`, which consults the SAME registry the resolver uses.
 #[test]
 fn secret_ref_plugin_backed_module_passes_when_plugin_present() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let (dir, reg) = secret_registry("secretref-vault-ok");
     // The `vault` alias AND the canonical `acme-secret-vault` name both resolve → both pass.
     for module in ["vault", "acme-secret-vault"] {
@@ -1750,6 +1756,8 @@ fn secret_ref_plugin_backed_module_passes_when_plugin_present() {
 /// (`env`/`file`) nor a loaded plugin — must still FAIL, so the deferral does not weaken the check.
 #[test]
 fn secret_ref_typo_module_still_fails_at_preflight() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let (dir, reg) = secret_registry("secretref-typo");
     let cfg = cfg_with_provider_api_key(crate::config::SecretRef {
         module: "vaultt".to_string(), // typo of the `vault` alias — no such plugin
@@ -1834,6 +1842,8 @@ fn secret_ref_wrong_kind_plugin_fails_at_preflight() {
 /// 1.5.4.
 #[test]
 fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     crate::snapshot::init();
     let cfg = || {
         cfg_with_provider_api_key(crate::config::SecretRef::env(
@@ -2484,6 +2494,8 @@ fn auth_scope_caps_are_keyed_by_provider_name_not_module() {
 /// went live through an apply.
 #[test]
 fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     const REFUSED: &str = "https://refused.root-rules.test";
     struct Refusing;
     impl crate::appbuild::RootRules for Refusing {
@@ -2632,6 +2644,8 @@ fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart
 /// (learned reliability survives every apply).
 #[test]
 fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     crate::snapshot::init();
     let planeless = || {
         cfg_with_provider_api_key(crate::config::SecretRef::env(
@@ -3186,7 +3200,7 @@ pub(crate) fn frozen_str(key: &str) -> String {
         .to_string()
 }
 
-/// F25 row 634: rehomed from crates/busbar-llm/src/engine/tests/wire_tests.rs::unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect.
+/// F25 row 634: rehomed from the retired engine crate's src/engine/tests/wire_tests.rs::unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect.
 /// Pins: an ingress name that resolves to no protocol is answered in the kernel's OWN envelope —
 /// the status as given (503), `application/json`, the agnostic `kind` stated VERBATIM
 /// (`overloaded`, never rewritten onto a dialect's vocabulary), the message verbatim — and with no
@@ -3225,4 +3239,87 @@ async fn unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect() {
         "the kernel's envelope states the agnostic kind verbatim"
     );
     assert_eq!(v["error"]["message"], "everything is on fire");
+}
+
+/// A KERNEL-SHAPED REFUSAL IS RENDERED BY THE DOOR THAT OWNS ITS PATH (ARCHITECT ruling 2026-10-16,
+/// 3b B): the kernel decides the reason, status and words and hands them, with the path and target,
+/// to the bound door renderer; its answer is served as rendered. A path no door owns, or a render
+/// that failed (`None`), gets the kernel's own answer, and the native-API root, the kernel's own
+/// surface, never asks a door. RED arms: the unbound handle, the failed render and the root.
+#[tokio::test]
+async fn a_kernel_refusal_is_rendered_by_the_door_that_owns_its_path() {
+    use busbar_contract::caps::ReasonCode;
+    use busbar_kernel::plane_routes::{KernelRefusal, PlaneRefuseByPathFn};
+    use http_body_util::BodyExt as _;
+    use std::sync::{Arc, Mutex};
+    // (reason, status, words, path, target), as the door renderer was handed them.
+    type Seen = Vec<(ReasonCode, u16, String, String, String)>;
+    let seen: Arc<Mutex<Seen>> = Arc::default();
+    let refuser: PlaneRefuseByPathFn = {
+        let seen = Arc::clone(&seen);
+        Arc::new(move |r: &KernelRefusal<'_>| {
+            seen.lock().unwrap().push((
+                r.reason,
+                r.status,
+                r.text.to_string(),
+                r.path.to_string(),
+                r.target.to_string(),
+            ));
+            (r.path != "/door/failed").then(|| {
+                axum::http::Response::builder()
+                    .status(r.status)
+                    .body(axum::body::Body::from("door"))
+                    .unwrap()
+            })
+        })
+    };
+    let answer = |handle: &crate::state::AppHandle, path: &str| {
+        crate::router::kernel_refusal_response(
+            handle,
+            &residual_planes(),
+            ReasonCode::MethodNotAllowed,
+            path,
+            &format!("{path}?q=1"),
+            axum::http::StatusCode::METHOD_NOT_ALLOWED,
+            crate::taxonomy::ERR_TYPE_INVALID_REQUEST,
+            "method not allowed for this resource",
+        )
+    };
+    let body = |r: axum::response::Response| async move {
+        r.into_body().collect().await.unwrap().to_bytes().to_vec()
+    };
+    let unbound = crate::state::AppHandle::new(crate::test_support::TestApp::new().build());
+    let r = answer(&unbound, "/door/x");
+    assert_eq!(r.status(), axum::http::StatusCode::METHOD_NOT_ALLOWED);
+    assert_ne!(body(r).await, b"door", "no door bound: the kernel answers");
+    let bound = crate::state::AppHandle::new(crate::test_support::TestApp::new().build());
+    bound.bind_door_refuser(refuser);
+    let r = answer(&bound, "/door/x");
+    assert_eq!(r.status(), axum::http::StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(body(r).await, b"door");
+    assert_eq!(
+        seen.lock().unwrap().last().cloned(),
+        Some((
+            ReasonCode::MethodNotAllowed,
+            405,
+            "method not allowed for this resource".to_string(),
+            "/door/x".to_string(),
+            "/door/x?q=1".to_string(),
+        ))
+    );
+    let r = answer(&bound, "/door/failed");
+    assert_ne!(
+        body(r).await,
+        b"door",
+        "a failed render: the kernel answers"
+    );
+    let asked = seen.lock().unwrap().len();
+    let root = format!("{}/info", crate::admin::gate::API_ROOT);
+    let r = answer(&bound, &root);
+    assert_ne!(body(r).await, b"door");
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        asked,
+        "the native-API root asks no door"
+    );
 }
