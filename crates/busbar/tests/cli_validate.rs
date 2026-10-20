@@ -1960,11 +1960,11 @@ models:
     );
 }
 
-/// One provider `lane` whose credential is `api_key` and whose `auth:` block is `auth_block`
-/// (config-side lines, indented under the provider): `--validate`'s exit code and its whole output.
-/// `run_busbar` sets `MOCK_KEY` to `test-key-value`.
+/// One provider `lane` whose credential is `api_key`, presented under the style `style`, with
+/// `extra` (config-side lines, indented under the provider): `--validate`'s exit code and its whole
+/// output. `run_busbar` sets `MOCK_KEY` to `test-key-value`.
 #[cfg(all(linked_section_pools, linked_every_auth))]
-fn validate_provider_auth(tag: &str, api_key: &str, auth_block: &str) -> (i32, String) {
+fn validate_lane(tag: &str, api_key: &str, style: &str, extra: &str) -> (i32, String) {
     let dir = fixture_dir(tag);
     std::fs::write(
         dir.join("providers.yaml"),
@@ -1981,7 +1981,8 @@ fn validate_provider_auth(tag: &str, api_key: &str, auth_block: &str) -> (i32, S
         dir.join("config.yaml"),
         format!(
             "listen: \"127.0.0.1:0\"\nstore: {{module: memory}}\nproviders:\n  lane:\n    \
-             api_key: {api_key}\n{auth_block}models:\n  test-model:\n    provider: lane\n"
+             api_key: {api_key}\n    auth: {style}\n{extra}models:\n  test-model:\n    \
+             provider: lane\n"
         ),
     )
     .unwrap();
@@ -1999,11 +2000,11 @@ fn validate_provider_auth(tag: &str, api_key: &str, auth_block: &str) -> (i32, S
 #[cfg(all(linked_section_pools, linked_every_auth))]
 #[test]
 fn validate_refuses_a_malformed_oauth_client_credential_as_boot_does() {
-    let (code, out) = validate_provider_auth(
-        "oauth-cred-shape",
+    let (code, out) = validate_lane(
+        "cred-shape",
         "{ env: MOCK_KEY }",
-        "    auth: oauth-client-credentials\n    token_url: \"https://127.0.0.1/token\"\n    \
-         scope: oracle\n",
+        "oauth-client-credentials",
+        "    token_url: \"https://127.0.0.1/token\"\n    scope: oracle\n",
     );
     assert_eq!(code, 1, "{out}");
     assert!(
@@ -2018,11 +2019,7 @@ fn validate_refuses_a_malformed_oauth_client_credential_as_boot_does() {
 #[cfg(all(linked_section_pools, linked_every_auth))]
 #[test]
 fn validate_refuses_a_malformed_jwt_bearer_service_account_as_boot_does() {
-    let (code, out) = validate_provider_auth(
-        "jwt-bad-key",
-        "{ file: \"{dir}/sa.json\" }",
-        "    auth: jwt-bearer\n",
-    );
+    let (code, out) = validate_lane("bad-key", "{ file: \"{dir}/sa.json\" }", "jwt-bearer", "");
     assert_eq!(code, 1, "{out}");
     assert!(
         out.contains("jwt-bearer credential (from ") && out.contains(") is invalid: "),
