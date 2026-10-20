@@ -3,12 +3,12 @@
 
 //! The HOST side of the [`PlaneHostVtable`]: the construction point that fills every slot with a
 //! host-side `extern "C-unwind"` fn wired over a real core primitive. After the Phase-1 capability
-//! fan-out (breaker, govern, journal, egress, dispatch) every slot is wired — ZERO `unimplemented!()`
-//! stubs remain — except the trust family and `guard_url`, which are absent: no plane calls them, the
+//! fan-out (breaker, govern) its slots are wired, except the trust family, `guard_url`, the egress,
+//! journal, dispatch and pipe families and `auth_resolve`, which are absent: no plane calls them, the
 //! host services a plane calls are the `HostSlots` families (BUSBAR-1.6.0.md Part 3 §4, SUPERSEDED
 //! 2026-09-28), and `trust.*` is served there. The three PROOF-OF-LIFE impls (`clock_now`,
 //! `metrics_emit`, `govern_admit`) live here; the rest forward into their capability modules
-//! ([`super::breaker`], [`super::govern`], [`super::journal`], [`super::egress`], [`super::dispatch`]).
+//! ([`super::breaker`], [`super::govern`]).
 //!
 //! ## Boundary discipline (reused from `busbar-contract/src/abi/sdk/boundary.rs`)
 //!
@@ -23,8 +23,7 @@
 use super::recover;
 use busbar_contract::abi::hot::host::{HostCtx, PlaneHostVtable};
 use busbar_contract::abi::hot::{
-    AuthQuery, AuthResolved, Decision, Facts, GovRefusal, MeterOutcome, MetricSample, StatusClass,
-    Usage,
+    Decision, Facts, GovRefusal, MeterOutcome, MetricSample, StatusClass, Usage,
 };
 use busbar_contract::abi::shared::DeclStr;
 use busbar_contract::abi::AbiPreamble;
@@ -48,55 +47,12 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         metrics_emit: Some(metrics_emit),
         clock_now: Some(clock_now),
 
-        // ── WIRED capability slots — each forwards into its capability module (breaker / trust /
-        //    egress / journal / dispatch), or a wired local fn (meter_charge, auth_resolve) ────────
+        // ── WIRED capability slots — each forwards into its capability module (breaker), or a
+        //    wired local fn (meter_charge) ────────
         meter_charge: Some(meter_charge),
         breaker_admit: Some(super::breaker::breaker_admit),
         breaker_admit_reason: Some(super::breaker::breaker_admit_reason),
         breaker_settle: Some(super::breaker::breaker_settle),
-        egress_open: Some(super::egress::egress_open),
-        egress_poll: Some(super::egress::egress_poll),
-        egress_write: Some(super::egress::egress_write),
-        egress_close: Some(super::egress::egress_close),
-        egress_fault: Some(super::egress::egress_fault),
-        journal_append: Some(super::journal::journal_append),
-        journal_read: Some(super::journal::journal_read),
-        nested_dispatch: Some(super::dispatch::nested_dispatch),
-        workhandle_open: Some(super::dispatch::workhandle_open),
-        workhandle_resume: Some(super::dispatch::workhandle_resume),
-        auth_resolve: Some(auth_resolve),
-        entitlement_check: Some(super::dispatch::entitlement_check),
-        gate_scan: Some(super::dispatch::gate_scan),
-        // ── The byte-duplex PIPE tier (CLUSTER-3 egress): raw-connection / subprocess byte channels,
-        //    keyed by a `PipeId`, wired over the real governed child process in `super::pipe`. ──────
-        pipe_read: Some(super::pipe::pipe_read),
-        pipe_write: Some(super::pipe::pipe_write),
-        // ── The DURABLE journal seam (minor-9): the slots the kernel's own streams still reach,
-        //    wired over the store-backed `audit::journal::Journal<StreamRecord>` of
-        //    `audit::stream_registry`. A plane's record chains are framed and verified on the
-        //    kernel's record path (`crate::host_chains`, BUSBAR-1.6.0.md Part 3 §5), so the read,
-        //    restore, forget and verify slots no plane reached any more are gone (unwired). ───────
-        journal_register: Some(super::journal::journal_register),
-        journal_append_scoped: Some(super::journal::journal_append_scoped),
-        journal_read_scoped: None,
-        journal_restore: None,
-        journal_seed: Some(super::journal::journal_seed),
-        journal_forget: None,
-        journal_compact: Some(super::journal::journal_compact),
-        journal_verify_scoped: None,
-        // ── The CARD-SIGN seam (minor-10): the host derives the deployment's domain-separated card
-        //    subkey and signs a plane-framed input, so the card SECRET never crosses to the plane.
-        //    Wired only when a plane declares a card-signing domain (the neutral `card-signing`
-        //    capability marker, enabled by that plane); absent otherwise. ──
-        #[cfg(feature = "card-signing")]
-        subkey_sign: Some(card_sign),
-        #[cfg(not(feature = "card-signing"))]
-        subkey_sign: None,
-        // ── WIRED `identity_admit` (minor-17) → the host-side inbound admission in
-        //    `super::identity_admit`: the configured auth chain + the one verdict resolution over the
-        //    caller's own credential, returning an opaque resolved-identity handle. Always wired (the
-        //    host owns the auth chain whatever the plane); no plane feature gates it. ────────────────────
-        identity_admit: Some(super::identity_admit::identity_admit),
         // ── WIRED `counter_add` (minor-25, the METRIC-FAMILY seam) → the recorder, over a family the
         //    emitting plane DECLARED. Always wired; what a plane may add to is its declaration's. ──
         counter_add: Some(counter_add),
@@ -144,47 +100,6 @@ extern "C-unwind" fn wall_clock(_host: HostCtx) -> u64 {
             .unwrap_or(0)
     })
     .unwrap_or(0)
-}
-
-/// WIRED `card_sign` → the REAL host-side card signer over `crate::governance` (see
-/// [`crate::governance::GovState::card_sign`]): derive the deployment's domain-separated agent-card
-/// subkey and sign the plane-framed signing input, writing the 64-byte Ed25519 signature into `out`
-/// on the `Ok` path. The subkey secret is derived and used entirely host-side; only the signature
-/// bytes cross back. `Refused` on a null in/out pointer or a deployment with no card-signing key;
-/// `Fault` on any panic (`out` untouched).
-#[cfg(feature = "card-signing")]
-extern "C-unwind" fn card_sign(
-    host: HostCtx,
-    input_ptr: *const u8,
-    input_len: usize,
-    out: *mut u8,
-) -> StatusClass {
-    catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: recovery invariant (see `recover`).
-        let Some(state) = (unsafe { recover(host) }) else {
-            return StatusClass::Refused;
-        };
-        if input_ptr.is_null() || out.is_null() {
-            return StatusClass::Refused;
-        }
-        // SAFETY: `(input_ptr, input_len)` is a live borrowed range for the call (ABI discipline).
-        let input = unsafe { std::slice::from_raw_parts(input_ptr, input_len) };
-        match state
-            .app
-            .governance
-            .as_ref()
-            .and_then(|g| g.card_sign(input))
-        {
-            Some(sig) => {
-                // SAFETY: `out` is a caller-provided writable range of at least 64 bytes (ABI); `sig`
-                // is a live 64-byte array. Written only on the Ok path (init-only-on-Ok).
-                unsafe { std::ptr::copy_nonoverlapping(sig.as_ptr(), out, 64) };
-                StatusClass::Ok
-            }
-            None => StatusClass::Refused, // no card-signing key → out-buffer left untouched.
-        }
-    }))
-    .unwrap_or(StatusClass::Fault) // caught panic → the distinct fault class, never `Ok`.
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -501,40 +416,3 @@ extern "C-unwind" fn meter_charge(host: HostCtx, usage: *const Usage) -> MeterOu
 }
 // `breaker_admit` / `breaker_settle` are WIRED over the real breaker in `super::breaker` (the BREAKER
 // family fan-out); its vtable slots reference that module directly.
-// The EGRESS family (`egress_open`/`_poll`/`_write`/`_close`/`_fault`) is WIRED in `super::egress`;
-// its vtable slots reference that module directly.
-// journal_append / journal_read are WIRED in `super::journal` (the JOURNAL family, over the real
-// `crate::audit` hash chain). The builder references them directly; no stub lives here.
-// `nested_dispatch` / `workhandle_open` / `workhandle_resume` / `entitlement_check` / `gate_scan`
-// are WIRED in `super::dispatch` (the DISPATCH family); their vtable slots reference that module.
-/// WIRED `auth_resolve` → the REAL principal resolution over `crate::auth` (see
-/// [`super::govern::resolve_auth`]): resolve a credential REF to an OPAQUE host-side reference (NEVER
-/// plaintext), writing the [`AuthResolved`] out-param ONLY on `Ok`. Fail-closed (`Refused`) on a null
-/// query or a query naming no credential; `Fault` on any panic.
-extern "C-unwind" fn auth_resolve(
-    host: HostCtx,
-    query: *const AuthQuery,
-    out: *mut MaybeUninit<AuthResolved>,
-) -> StatusClass {
-    catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: recovery invariant (see `recover`).
-        let Some(state) = (unsafe { recover(host) }) else {
-            return StatusClass::Refused;
-        };
-        if query.is_null() {
-            return StatusClass::Refused;
-        }
-        // SAFETY: a non-null `query` is a live, initialized `AuthQuery` for the call (ABI discipline).
-        let q = unsafe { &*query };
-        match super::govern::resolve_auth(state, q) {
-            Some(resolved) => {
-                // SAFETY: `out` is a writable, aligned `MaybeUninit<AuthResolved>` for the call; the
-                // write publishes ONLY on the Ok path (init-only-on-Ok), tolerating a null slot.
-                unsafe { busbar_contract::abi::write_out(out, resolved) };
-                StatusClass::Ok
-            }
-            None => StatusClass::Refused, // nothing to resolve → out-param left uninitialized.
-        }
-    }))
-    .unwrap_or(StatusClass::Fault) // caught panic → the distinct fault class, never `Ok`.
-}
