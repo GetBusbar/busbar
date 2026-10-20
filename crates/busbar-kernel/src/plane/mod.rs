@@ -89,9 +89,6 @@
 // sites, is what states whether a member of this module is reachable.
 #![cfg_attr(not(test), allow(dead_code))]
 
-pub(crate) mod quarantine;
-/// The durable demotion record, which the root attaches to the kernel's host services.
-pub use quarantine::DemotionRecord;
 pub mod registry;
 /// The door-plane registry fold at its former path: the pinned `busbar-plane-a2a` root suite
 /// (compiled into this workspace's root tests) names `busbar_kernel::plane::door` until its next pin.

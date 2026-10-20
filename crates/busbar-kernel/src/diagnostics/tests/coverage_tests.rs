@@ -57,7 +57,7 @@ const MIGRATED_FILES: &[&str] = &[
     "src/proto/mod.rs",
     // `plane/approvals.rs` is DELETED (status row 82): the spent-approval ledger redeemed nothing,
     // and approval redemption is `records.claim` alone, so no diagnostic of it moved anywhere.
-    "src/plane/quarantine.rs",
+    "src/trust/demotion.rs",
     // `admin/mod.rs`, `admin/v1/service.rs`, `admin/v1/json/handlers.rs` were extracted to the
     // `busbar-admin` crate (1.6.0); their uncoded-diagnostic floor is enforced there now.
     "src/store/planes.rs",
