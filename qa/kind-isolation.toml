@@ -1010,15 +1010,12 @@ half    = "test"
 count   = "1"
 verdict = "allowed"
 cite    = "BUSBAR-1.6.0.md THE DESIGN, §8 (BUSBAR-1.6.0.md:1123-1126): \"Exactly three crates are compiled in and are never plugins; each depends one way on the kernel, names no plugin\"; DECISIONS #5 (BUSBAR-1.6.0.md:2159): \"admin, oauth2 and the connector are NOT plugins. They are the three compiled-in cleanliness crates, one-way dep on core\" — the test binary links the same one-way cleanliness -> kernel edge the shipped half declares (ARCHITECTURE_ALLOWED cleanliness -> kernel)."
-why     = "busbar-core-admin names busbar-kernel: declared dev in the test graph (features test-support, plane-mcp, plane-a2a), 1 declaration(s) at this commit, beside the shipped edge. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+why     = "busbar-core-admin names busbar-kernel: declared dev in the test graph (default-features off, features test-support), 1 declaration(s) at this commit, beside the shipped edge. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: the architecture grants cleanliness -> kernel. What this row holds is the NUMBER."
 
-# THE ADMIN SURFACE'S TEST EDGES WITH THE RETIRING ENGINES. All three were dev-dependencies the
-# merge-base already declared and no row recorded (the `kind-isolation:test-deps` row's three
-# `unlisted-dep-edge` findings on predev d7929b661d); each is written down here with its count, its
-# verdict the one the architecture implies, and its drain. None is introduced here. The two A2A
-# rows (`busbar-core-admin -> busbar-a2a`, `busbar-a2a -> busbar-core-admin`) are STRUCK: FLIP-A2A
-# (#787) deleted busbar-a2a, so neither edge can be taken.
+# THE ADMIN SURFACE'S TEST EDGES WITH THE RETIRING ENGINES are all STRUCK: FLIP-A2A (#787) deleted
+# busbar-a2a, #1161 deleted busbar-llm, and the admin crate's tests run on the kernel's kind-neutral
+# doubles (THE DESIGN §1), so it names no plugin crate in any dependency table.
 
 [[dep]]
 from    = "busbar-plugin-loader"
@@ -1370,8 +1367,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-core-admin"
 axis  = "auth"
-count = "8"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "5"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 8 -> 5: the admin crate's tests run on the kernel's kind-neutral operator double and name the operator credential by its provider words (row 159, audit core-admin-build HIGH 1; law0-slack)"
 
 [[law0]]
 crate = "busbar-core-admin"
@@ -1388,8 +1385,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-core-admin"
 axis  = "instance:auth"
-count = "15"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "1"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 15 -> 1: the admin crate's tests link no auth plugin and spell no operator provider word (row 159, audit core-admin-build HIGH 1; law0-slack)"
 
 [[law0]]
 crate = "busbar-core-admin"
