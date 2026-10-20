@@ -221,7 +221,7 @@ pub struct StatedAdminRoute {
 /// and R2-C: a plane's config section, scope kinds and the rest are DERIVED from its Statement,
 /// never declared in the root). The loader reads them off a door's Statement (`sections`) and its
 /// plane tail, linked or dropped alike, and the kernel folds them into its plane registry before the
-/// config prepass (`busbar_kernel::plane::door::fold`). Every word is kept for the process.
+/// config prepass (`busbar_kernel::plane_driver::door::fold`). Every word is kept for the process.
 #[derive(Clone)]
 pub struct PlaneRegistration {
     /// The plane's registry key: the door's Statement name.

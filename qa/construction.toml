@@ -938,7 +938,9 @@ known_sites = [
   "crates/busbar-kernel/src/config/migrate.rs :: model",
   "crates/busbar-kernel/src/config/migrate.rs :: pools.{pname}.members[].target -> model",
   "crates/busbar-kernel/src/config/mod.rs :: completion",
-  "crates/busbar-kernel/src/config/mod.rs :: agents.{agent}: `hooks:` names `{hook}`, which is not defined in the                      top-level `hooks:` map. Define it there, or remove the reference.",
+  # `crates/busbar-kernel/src/config/mod.rs :: agents.{agent}: `hooks:` names ...` STRUCK: the
+  # message is now written over the section (`{section}.{entry}`), so the plane noun is no longer in
+  # the file.
   "crates/busbar-kernel/src/config/pools.rs :: a bare member name, or a member object `{ model, weight, ... }`",
   # Moved from the retired shared value crate with the code that carries it (#83a SD-8), reviewed
   # there and frozen: the published title of BUSBAR-3020 (docs/diagnostics.md, byte-identical).
@@ -1278,11 +1280,6 @@ known_sites = [
   # was crates/busbar-core/src/plane_host/ (a whole directory) — the eight files of it that carry a
   # reviewed escape, so the seven substrate-origin files the merge added stay uncovered.
   "crates/busbar-kernel/src/plane_host/breaker.rs",
-  "crates/busbar-kernel/src/plane_host/dispatch.rs",
-  "crates/busbar-kernel/src/plane_host/egress.rs",
-  "crates/busbar-kernel/src/plane_host/identity_admit.rs",
-  "crates/busbar-kernel/src/plane_host/journal.rs",
-  "crates/busbar-kernel/src/plane_host/pipe.rs",
   "crates/busbar-kernel/src/plane_host/vtable.rs",
   # was crates/busbar-core/src/plane/registry.rs (R099)
   "crates/busbar-kernel/src/plane/registry.rs",
@@ -1337,8 +1334,8 @@ known_sites = [
   #   The declared-diagnostics catalogue, installed once at boot.
   "crates/busbar/src/root/linked.rs::register_diagnostics",
   #   A door plane's registration words, folded once per key (bounded by MAX_DOOR_PLANES).
-  "crates/busbar-kernel/src/plane/door.rs::fold",
-  "crates/busbar-kernel/src/plane/door.rs::declaration_of",
+  "crates/busbar-kernel/src/plane_driver/door.rs::fold",
+  "crates/busbar-kernel/src/plane_driver/door.rs::declaration_of",
   #   A path pattern's segments, interned once per distinct pattern (the interner answers a pattern
   #   it already holds), the leak-once intern shape of vocabulary.rs `key` above.
   "crates/busbar-contract/src/abi/transport/route.rs::intern_pattern",

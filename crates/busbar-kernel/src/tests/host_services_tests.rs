@@ -2282,6 +2282,30 @@ fn a_purge_runs_under_the_rule_the_instance_declared_for_the_kind() {
     assert!(held("aged", "new-terminal"));
 }
 
+/// A REPLAYED APPROVAL IS REFUSED THROUGH `records.claim` (§11.12: the ONE path for approval
+/// redemption). The approval's nonce is claimed when it is redeemed; presenting the same approval
+/// again inside its window finds the claim taken, so the second redemption is refused.
+#[test]
+fn a_replayed_approval_is_refused_through_records_claim() {
+    let r = rig();
+    let me = caller("inst");
+    let redeem = || {
+        run(|l| {
+            r.s.records_claim(&me, "approval", b"approval-nonce", 60_000, l)
+        })
+    };
+    assert_eq!(
+        redeem().value,
+        svc::CLAIM_WON,
+        "the first redemption is the one that counts"
+    );
+    assert_eq!(
+        redeem().value,
+        svc::CLAIM_TAKEN,
+        "the same approval presented again is refused"
+    );
+}
+
 /// A durable record's store that can refuse to keep a trust decision, and that notes, at every
 /// read of the kept decisions, whether the host lock every caller-scoped service takes was free.
 #[derive(Default)]

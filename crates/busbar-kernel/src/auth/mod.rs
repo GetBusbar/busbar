@@ -2739,6 +2739,8 @@ impl AuthMiddleware {
     }
 }
 
+/// A session's admission outside an HTTP request: the chain and the one verdict resolution.
+pub mod admit;
 /// What the gate holds of the caller: every credential carrier it reads (stripped from every plane's
 /// request) and the caller's credential as a ref only the host presents upstream.
 pub mod caller_credential;
