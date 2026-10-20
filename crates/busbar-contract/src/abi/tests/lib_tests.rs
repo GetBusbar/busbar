@@ -10,7 +10,7 @@ use super::*;
 #[derive(Clone, Copy)]
 struct Pod {
     size: u32,
-    version: u16,
+    _version: u16,
     _reserved: u16,
     tokens: u64,
     flags: u32,
@@ -22,7 +22,7 @@ impl Pod {
     fn whole() -> Pod {
         Pod {
             size: core::mem::size_of::<Pod>() as u32,
-            version: 1,
+            _version: 1,
             _reserved: 0,
             tokens: 10,
             flags: 0,
