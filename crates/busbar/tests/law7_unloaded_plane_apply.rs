@@ -13,9 +13,14 @@
 //! effective config and version are the same, the plane serves nothing, and no file busbar keeps is
 //! written. The restart that follows loads the plane, and its section is served.
 //!
-//! Every word about the plane (its name, its sections, its admin path and its door) is DATA:
-//! `tests/fixtures/unloaded_plane.txt` and `tests/fixtures/unloaded_plane_sections.yaml`. This
-//! source names no plane.
+//! Every word about the plane (its name, its sections, its admin path and its door) is DATA, and
+//! each is read where the tree already states it rather than spelled again: the declaring section
+//! and the admin path are `tests/fixtures/unloaded_plane.txt`; the plane is the linked door row
+//! whose declaring section that is (the manifest's `linked-section` and `linked` rows), named by its
+//! package; its own section and its door path are the tool plane's fixtures
+//! (`tool_plane_section.yaml`, `tool_plane_wire.txt`), and the declaring section's body is
+//! `unloaded_plane_sections.yaml`. This source names no plane, and no fixture repeats a plane word
+//! another already holds.
 //!
 //! RED before the fix: no rule judged the document, so the parse refused the section as an unknown
 //! field, without saying the plane was not loaded or that a restart takes it.
@@ -34,13 +39,20 @@ const ADMIN_TOKEN: &str = "law7-unloaded-plane-admin";
 /// The provider catalog row is test data (`fixtures/mock_provider.yaml`), not a literal here.
 const MOCK_PROVIDER: &str = include_str!("fixtures/mock_provider.yaml");
 
-/// The unloaded plane's sections, as DATA, with `{data_port}` and `{admin_port}` to fill.
-const PLANE_SECTIONS: &str = include_str!("fixtures/unloaded_plane_sections.yaml");
+/// The unloaded plane's own section (the tool plane's, as its integrity suite configures it) and
+/// its declaring section's body, as DATA, with `{data_port}` and `{admin_port}` to fill.
+const PLANE_SECTIONS: [&str; 2] = [
+    include_str!("fixtures/tool_plane_section.yaml"),
+    include_str!("fixtures/unloaded_plane_sections.yaml"),
+];
 
-/// The unloaded plane, as DATA (`tests/fixtures/unloaded_plane.txt`).
+/// The kind prefix every plane package carries; the rest of the package name is the plane's name.
+const PLANE_PREFIX: &str = "busbar-plane-";
+
+/// The unloaded plane, as DATA (`tests/fixtures/unloaded_plane.txt` and the manifest).
 struct Plane {
     /// The plane's name, as the refusal names it.
-    name: &'static str,
+    name: String,
     /// The section of it the refusal names.
     section: &'static str,
     /// An admin path the plane serves once loaded.
@@ -72,13 +84,48 @@ fn plane() -> Plane {
         );
         found[0]
     };
-    assert_eq!(rows.len(), 4, "unloaded_plane.txt lost or gained a row");
+    assert_eq!(rows.len(), 2, "unloaded_plane.txt lost or gained a row");
+    let section = fact("section");
+    // THE PLANE IS THE LINKED DOOR ROW THAT DECLARES THIS SECTION, named by its package.
+    let rows: Vec<String> = common::manifest_table("package.metadata.busbar.linked-section")
+        .into_iter()
+        .filter(|(_, s)| s == section)
+        .map(|(row, _)| row)
+        .collect();
+    assert_eq!(
+        rows.len(),
+        1,
+        "exactly one linked door row declares `{section}`: {rows:?}"
+    );
+    let package = common::manifest_table("package.metadata.busbar.linked")
+        .into_iter()
+        .find(|(row, _)| *row == rows[0])
+        .map(|(_, package)| package)
+        .unwrap_or_else(|| panic!("the door row `{}` links a package", rows[0]));
+    let name = package
+        .strip_prefix(PLANE_PREFIX)
+        .unwrap_or_else(|| panic!("`{package}` is a plane package"))
+        .to_string();
     Plane {
-        name: fact("plane"),
-        section: fact("section"),
+        name,
+        section,
         admin: fact("admin"),
-        door: fact("door"),
+        door: tool_plane_wire("door_path"),
     }
+}
+
+/// The tool plane's wire, as DATA (`tests/fixtures/tool_plane_wire.txt`): one `key = value` per
+/// line.
+fn tool_plane_wire(key: &str) -> &'static str {
+    include_str!("fixtures/tool_plane_wire.txt")
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .find_map(|l| {
+            let (k, v) = l.split_once('=')?;
+            (k.trim() == key).then(|| v.trim())
+        })
+        .unwrap_or_else(|| panic!("tests/fixtures/tool_plane_wire.txt has no `{key}` row"))
 }
 
 /// The pinned refusal, as the running process answers a document that first writes the plane's
@@ -148,6 +195,7 @@ models:
 /// The unloaded plane's sections, filled with this run's ports.
 fn plane_sections(data: u16, admin: u16) -> String {
     PLANE_SECTIONS
+        .concat()
         .replace("{data_port}", &data.to_string())
         .replace("{admin_port}", &admin.to_string())
 }
