@@ -890,6 +890,119 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
     }
 }
 
+/// THE 1.5.5 ORACLE'S AMEND CELLS KEEP THE 1.5.5 ANSWER (oracle cells `ledger|amend|adjusting-entries`
+/// and `ledger|amend|refused-unsigned`, golden `testing/shadow-oracle/golden/1.5.5/cells/`).
+///
+/// Both cells post a correction written in the 1.5.5 rate-card vocabulary — a `rate_card` keyed by
+/// model, a `window`, and none of the members this verb reads a figure from (`rates`,
+/// `per_request_fee`) — one with an `X-Busbar-Signature` header and one without. The published
+/// 1.5.5 binary had no such route and answered both with its router's generic miss: `404`
+/// `{"error":{"code":"not_found","message":"resource not found"}}`, no audit row. #24
+/// (OWNER-LOCKED, `docs/design/BUSBAR-1.6.0.md` l.2202) makes the verb additive with the oracle check
+/// "existing money cells unchanged", so a 1.6.0 node answers that request exactly as 1.5.5 did,
+/// byte for byte, under a full-scope operator and with no operator key anywhere (#77(9), l.2279).
+///
+/// The control proves the verb is still SERVED to the same operator on the same node: a body in the
+/// verb's own vocabulary reaches the verb and is refused by the verb's own shape check (`400`).
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn a_1_5_5_rate_card_correction_answers_the_1_5_5_routers_404_and_seals_nothing() {
+    use tower::ServiceExt;
+
+    busbar_kernel::snapshot::init();
+    busbar_core_admin::install();
+    let app = busbar_kernel::test_support::TestApp::new()
+        .admin_chain(vec![])
+        .build();
+    let (_data, bare, _handle) =
+        busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
+    let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
+    let durability = crate::root::durability::build(
+        &crate::root::durability::DurabilityConfig { data_dir: None },
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        Box::new(rows.clone()),
+    )
+    .expect("a memory-buffered journal cannot fail to open");
+    let held = Arc::new(std::sync::Mutex::new(durability));
+    let read = Arc::new(rows);
+    let mounted = mount(
+        bare,
+        crate::root::kernel::new_kernel(),
+        1 << 20,
+        move |dispatch| {
+            crate::root::kernel::ProductionUnits::admin_only_sharing(
+                dispatch,
+                crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
+                held,
+                read,
+                None,
+            )
+            .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(
+                Arc::new(ADirectoryThatMintedIt),
+            ))
+        },
+    );
+    const PATH: &str = "/api/v1/admin/ledger/amend-rate-history";
+    // The two cells' body, byte for byte (testing/shadow-oracle/cells.json).
+    const THE_CELLS_BODY: &str = r#"{"effective_from":1,"rate_card":{"m-anthropic":{"input_utok":10000000,"output_utok":20000000},"m-bedrock":{"input_utok":10000000,"output_utok":20000000},"m-cd-lane":{"input_utok":10000000,"output_utok":20000000},"m-cohere":{"input_utok":10000000,"output_utok":20000000},"m-gemini":{"input_utok":10000000,"output_utok":20000000},"m-lane-c1":{"input_utok":10000000,"output_utok":20000000},"m-openai-chat":{"input_utok":10000000,"output_utok":20000000},"m-openai-responses":{"input_utok":10000000,"output_utok":20000000},"m-queue-lane":{"input_utok":10000000,"output_utok":20000000}},"reason":"oracle: back-date the window","window":{"day":"2020-01-01"}}"#;
+    const THE_1_5_5_ANSWER: &[u8] = br#"{"error":{"code":"not_found","message":"resource not found"}}"#;
+
+    for signature in [Some("ed25519:oracle-operator-signature"), None] {
+        let mut request = axum::http::Request::builder()
+            .method("POST")
+            .uri(PATH)
+            .header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {THE_OPERATORS_CREDENTIAL}"),
+            )
+            .header(axum::http::header::CONTENT_TYPE, "application/json");
+        if let Some(signature) = signature {
+            request = request.header("X-Busbar-Signature", signature);
+        }
+        let response = mounted
+            .clone()
+            .oneshot(
+                request
+                    .body(axum::body::Body::from(THE_CELLS_BODY))
+                    .expect("the request builds"),
+            )
+            .await
+            .expect("the mounted router answers");
+        let status = response.status().as_u16();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("the answer's body is readable");
+        assert_eq!(
+            (status, bytes.as_ref()),
+            (404, THE_1_5_5_ANSWER),
+            "signature {signature:?}: a 1.5.5 rate-card correction answers 1.5.5's 404, byte for byte"
+        );
+    }
+    assert_eq!(
+        the_operators_rows_for(&mounted, PATH).await,
+        Vec::<(String, String)>::new(),
+        "1.5.5 sealed nothing for this request, and neither does 1.6.0"
+    );
+
+    // THE CONTROL: the verb is served to this operator on this node. A body in its own vocabulary
+    // that moves no figure is the verb's own shape refusal, not the router's miss.
+    let (status, answer, _) = over(
+        &mounted,
+        "POST",
+        PATH,
+        br#"{"effective_from":1,"reason":"names no figure"}"#.to_vec(),
+    )
+    .await;
+    assert_eq!(
+        (status, answer.as_slice()),
+        (
+            400,
+            br#"{"error":{"code":"invalid_request","message":"invalid_request"}}"#.as_slice()
+        ),
+        "the verb is served: its own shape check answers a body in its own vocabulary"
+    );
+}
+
 /// AND THE METER STEP STILL RUNS, AND STILL PRICES AN ADMIN VERB AT NOTHING.
 ///
 /// The admin surface declares NO meter classes, so the honest report is the empty one — and the
