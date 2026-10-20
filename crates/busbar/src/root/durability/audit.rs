@@ -100,7 +100,7 @@ impl Durability {
                 .cloned()
                 .collect();
         }
-        let Ok(Ok(records)) = self.journal.replay() else {
+        let Ok(Ok(records)) = self.chain() else {
             return Vec::new();
         };
         records

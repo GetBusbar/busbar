@@ -5,6 +5,5 @@
 # grew). A directory below its row is RED stale slack: lower the row in the commit that deleted the
 # lines, and strike it when the directory is gone. Never raise a row.
 
-[[frozen]]
-dir = "crates/busbar-contract/src/abi/hot"
-lines = "5578"
+# STRUCK (status row 84): `crates/busbar-contract/src/abi/hot` is deleted; it stays CONDEMNED in
+# the gate, so a directory that grows back there is UNFROZEN and red.

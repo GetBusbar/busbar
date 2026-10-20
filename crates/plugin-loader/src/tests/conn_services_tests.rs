@@ -859,6 +859,44 @@ struct Scripted {
     /// Every read that parked: the caller and the ticket it registered interest under, as the
     /// connector keeps them to wake.
     parked: Mutex<Vec<(InstanceId, u64)>>,
+    /// Armed, a close parks here until released: a transport door wedged in its close.
+    close_gate: Gate,
+}
+
+/// A door double's park: armed, the next caller notes it entered and waits for the release (at
+/// most thirty seconds, so a test that never releases fails rather than hangs).
+#[derive(Default)]
+struct Gate {
+    armed: AtomicBool,
+    entered: AtomicBool,
+    released: AtomicBool,
+}
+
+impl Gate {
+    fn park(&self) {
+        if !self.armed.load(AtomicOrdering::SeqCst) {
+            return;
+        }
+        self.entered.store(true, AtomicOrdering::SeqCst);
+        let since = std::time::Instant::now();
+        while !self.released.load(AtomicOrdering::SeqCst)
+            && since.elapsed() < std::time::Duration::from_secs(30)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    /// Whether a caller parked within `wait`.
+    fn entered_within(&self, wait: std::time::Duration) -> bool {
+        let since = std::time::Instant::now();
+        while !self.entered.load(AtomicOrdering::SeqCst) {
+            if since.elapsed() > wait {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        true
+    }
 }
 
 /// One upgrade call as it reached the table: the stream, the name offered, the trust reference.
@@ -1000,6 +1038,7 @@ impl Conns for Scripted {
         self.facts.lock().unwrap().clone().ok_or(ConnError::Closed)
     }
     fn close(&self, c: InstanceId, id: ConnId) -> Result<(), ConnError> {
+        self.close_gate.park();
         self.slab.remove(c, id).map(|_| ())
     }
 }
@@ -2524,4 +2563,136 @@ fn an_auth_instances_authority_is_held_before_its_needs_are_declared() {
         other.held.lock().unwrap().is_empty(),
         "a non-auth instance keeps the host field it writes"
     );
+}
+
+/// RED (THE DESIGN §11.13 M1, "Every slice built from a plugin-reported length is capped and
+/// validated before it is formed"; audit PL1 #1): a connector slot's buffer stated over the hard
+/// byte maximum (`u32::MAX`) is refused before any slice is formed over it, as NULL with a length
+/// is.
+#[test]
+fn red_a_connector_buffer_over_the_byte_cap_is_refused_before_any_slice() {
+    let mut buf = [0_u8; 8];
+    let over = u32::MAX as usize + 1;
+    // SAFETY: the range is refused before any slice is formed; nothing reads or writes it.
+    let formed = unsafe { super::bytes(buf.as_mut_ptr(), over) }.map(|b| b.len());
+    assert_eq!(
+        formed, None,
+        "a buffer stated over the byte cap was formed into a slice"
+    );
+    // SAFETY: the test's own eight bytes.
+    let within = unsafe { super::bytes(buf.as_mut_ptr(), buf.len()) }.map(|b| b.len());
+    assert_eq!(within, Some(8), "a buffer within the cap is the caller's");
+}
+
+/// RED (THE DESIGN §11.13 M1, "No plugin code (`dlclose` included) runs under a host lock"; audit
+/// PL1 #2): an instance whose last reference is its driver ticket is let go by the recycle that
+/// drops that ticket on its worker. Its drop closes the connection a held stream had open, and that
+/// close reaches a transport door. The door double here parks in its close: while it is parked,
+/// a ticket is still minted on that worker, because the worker's state lock is not held across it.
+#[test]
+fn red_an_instances_last_drop_on_a_worker_closes_with_no_worker_lock_held() {
+    let table = Arc::new(Scripted {
+        framed: true,
+        ..Scripted::default()
+    });
+    let d = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let p = bound_over_by(&table, d.adopter());
+    assert_eq!(open_with(&p, b"{}"), Outcome::Ready);
+    let id = p.instance();
+    let stream = whole_request(&p, 0);
+    assert!(
+        matches!(
+            super::held_conns().get(&(id, stream)).map(|s| &s.conn),
+            Some(super::Conn::Open(_))
+        ),
+        "the whole request is open on the table"
+    );
+    let driver = d.driver(&p, 0).expect("a driver ticket");
+    // The driver ticket now holds the instance's last reference.
+    drop(p);
+    table.close_gate.armed.store(true, AtomicOrdering::SeqCst);
+    d.recycle(driver);
+    let parked = table
+        .close_gate
+        .entered_within(std::time::Duration::from_secs(10));
+    let minted = std::thread::scope(|s| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let d = &d;
+        s.spawn(move || {
+            let _ = tx.send(d.mint(0));
+        });
+        let minted = rx.recv_timeout(std::time::Duration::from_secs(5));
+        // Released whatever happened, so the scope's join never waits on the parked close.
+        table
+            .close_gate
+            .released
+            .store(true, AtomicOrdering::SeqCst);
+        minted
+    });
+    assert!(
+        parked,
+        "the dropped instance's close never reached the table"
+    );
+    let minted = minted.expect(
+        "a mint on the worker blocked while a transport close ran: the instance was let go under \
+         the worker's state lock",
+    );
+    let t = minted.expect("a ticket");
+    d.recycle(t);
+}
+
+/// THE AUTH CALL SIGNS THE AUTHORITY THE SOCKET DIALS. A member binding is asked for its fields over
+/// the request's authority, path and query, and the authority is read where the dialling stack ends
+/// it: at the first `/`, `?`, `#` or (a web scheme) `\`, with the userinfo before its last `@` left
+/// out. RED before the one authority split: the authority ran to the first `/` or `?`, so a `\` or a
+/// `#` let the text after an `@` stand as the host signed, and a userinfo was signed with it.
+#[test]
+fn the_auth_request_signs_the_authority_the_socket_dials() {
+    let binding = busbar_contract::conn::ConnAuth {
+        auth: Arc::new(ByHandle::default()) as Arc<dyn OutboundAuth>,
+        handle: 1,
+        style_flags: 0,
+        points: busbar_contract::abi::auth::AuthPoints::HEAD,
+        passthrough: false,
+        lender: None,
+        per_request: None,
+    };
+    let head = super::Head {
+        method: b"GET".to_vec(),
+        target: Vec::new(),
+        fields: Vec::new(),
+        timeout_ms: 0,
+    };
+    for (target, authority, path, query) in [
+        (
+            "https://svc.example\\@other.example/x?q=1",
+            "svc.example",
+            &b"/@other.example/x"[..],
+            Some(&b"q=1"[..]),
+        ),
+        (
+            "https://user:pw@svc.example/x",
+            "svc.example",
+            &b"/x"[..],
+            None,
+        ),
+        (
+            "https://svc.example#f@other.example/x",
+            "svc.example",
+            &b"/"[..],
+            None,
+        ),
+        (
+            "https://svc.example:8443",
+            "svc.example:8443",
+            &b"/"[..],
+            None,
+        ),
+    ] {
+        let asked = super::auth_request(&binding, &head, target, b"", None)
+            .expect("a non-passthrough binding asks");
+        assert_eq!(asked.authority, authority, "{target}");
+        assert_eq!(asked.path, path, "{target}");
+        assert_eq!(asked.query.as_deref(), query, "{target}");
+    }
 }

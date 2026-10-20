@@ -26,6 +26,9 @@
 # and `oracle-config.sh` — the one file they still SOURCE — is materialized from the engine.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# THE CACHES' HOME: ModernCI's per-check cache dir when it names one, else this checkout's target/.
+# Never $HOME/.cache: every concurrent job on a backend shares it (ModernCI #1827).
+cache_home="${MODERNCI_CACHE_DIR:-$here/target}"
 
 # ── A FILTERED RUN CARRIES ITS FORGIVENESSES' PREMISES ──────────────────────────────────────────
 # An accepted difference forgives its cells only once its PREMISE holds, and the premise probes other
@@ -361,7 +364,7 @@ fi
 # sha256 is the pin's `sha256_linux_<arch>` line. The pin read is the BASE's: $MODERNCI_TO_SHA's
 # testing/shadow-oracle/oracle-rust.pin when ModernCI names a base that holds one (a candidate never
 # picks its own judge; a pin bump judges from the commit after it lands), else this tree's (the first
-# predev -> dev move: dev holds no pin; .ci/predev.yaml says so). A pin with no line for this host's
+# dev -> qa move: .ci/dev.yaml fetches the pinned judge). A pin with no line for this host's
 # architecture has NO JUDGE (red, never another architecture's, never a source build). A `.sig` beside
 # the asset is verified against busbar-release's release key (Ed25519 over "<asset name>\n<sha256>\n",
 # busbar-release-cli update.rs RELEASE_KEY_SPKI) before the bytes are ever made executable; a
@@ -378,6 +381,31 @@ sha256_of() {  # sha256_of <file> — the hex digest, or nothing
   else shasum -a 256 -- "$1" | cut -c1-64; fi
 }
 judge_arch() { local a; a="$(uname -m)"; [ "$a" = arm64 ] && a=aarch64; printf '%s' "$a"; }
+# judge_env — the environment a cached judge was fetched on, and the only one it is reused on: the
+# OS, the architecture and the C library (glibc major.minor, or musl). A judge cached on one host's
+# glibc is never handed to another's (a GLIBC_2.39 binary from one environment refused to start on
+# another, ModernCI #1827). ORACLE_JUDGE_LIBC overrides the C library word (the selftest's plant).
+judge_libc() {
+  if [ -n "${ORACLE_JUDGE_LIBC:-}" ]; then printf '%s' "$ORACLE_JUDGE_LIBC"; return; fi
+  local v
+  v="$(ldd --version 2>&1 | head -n1)"
+  case "$v" in
+    *musl*) printf 'musl' ;;
+    *) v="$(printf '%s' "$v" | grep -oE '[0-9]+\.[0-9]+$')"; printf 'glibc%s' "${v:-unknown}" ;;
+  esac
+}
+judge_env() { printf '%s-%s-%s' "$(uname -s | tr '[:upper:]' '[:lower:]')" "$(judge_arch)" "$(judge_libc)"; }
+# judge_starts <bin> — the judge runs here (its --help answers: busbar-oracle's CLI states no
+# --version, and --help is clap's own); a binary that cannot start on this host (a C library it
+# does not have) is not a judge for it.
+judge_starts() { "$1" --help >/dev/null 2>&1; }
+# token_word — which token the release API is read with, never its value.
+token_word() {
+  if [ -n "${BUSBAR_RELEASE_TOKEN:-}" ]; then printf 'BUSBAR_RELEASE_TOKEN present'
+  elif [ -n "${GH_TOKEN:-}" ]; then printf 'BUSBAR_RELEASE_TOKEN absent, GH_TOKEN present'
+  elif [ -n "${GITHUB_TOKEN:-}" ]; then printf 'BUSBAR_RELEASE_TOKEN absent, GITHUB_TOKEN present'
+  else printf 'no token (BUSBAR_RELEASE_TOKEN, GH_TOKEN and GITHUB_TOKEN are all absent)'; fi
+}
 judge_pin_text() {  # judge_pin_text <repo> — the BASE pin's text (see above)
   local repo="$1" rel="testing/shadow-oracle/oracle-rust.pin"
   if [ -n "${MODERNCI_TO_SHA:-}" ] && git -C "$repo" cat-file -e "$MODERNCI_TO_SHA:$rel" 2>/dev/null; then
@@ -386,15 +414,22 @@ judge_pin_text() {  # judge_pin_text <repo> — the BASE pin's text (see above)
     cat "$repo/$rel"
   fi
 }
-release_api() {  # release_api <url> [<accept> [<out>]] — an authenticated GET; the token never on an argv
+release_api() {  # release_api <url> [<accept> [<out> [<what>]]] — an authenticated GET; the token never on an argv
   local tok="${BUSBAR_RELEASE_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
-  [ -n "$tok" ] || { echo "oracle: no token to read busbar-release's dev-bin release (BUSBAR_RELEASE_TOKEN, GH_TOKEN or GITHUB_TOKEN)" >&2; return 1; }
-  local accept="${2:-application/vnd.github+json}"
-  if [ -n "${3:-}" ]; then
-    printf 'header = "Authorization: Bearer %s"\n' "$tok" | curl -fsSL --retry 3 -K - -H "Accept: $accept" -o "$3" "$1"
-  else
-    printf 'header = "Authorization: Bearer %s"\n' "$tok" | curl -fsSL --retry 3 -K - -H "Accept: $accept" "$1"
+  [ -n "$tok" ] || { echo "oracle: no token to read busbar-release's dev-bin release ($(token_word))" >&2; return 1; }
+  local accept="${2:-application/vnd.github+json}" out="${3:-}" what="${4:-$1}" body code
+  body="$(mktemp)"
+  code="$(printf 'header = "Authorization: Bearer %s"\n' "$tok" \
+    | curl -sSL --retry 3 -K - -H "Accept: $accept" -o "$body" -w '%{http_code}' "$1")" || code="${code:-000}"
+  if [ "$code" != 200 ]; then
+    case "$code" in
+      403) echo "oracle: busbar-release answered 403 (forbidden) for $what: the token cannot read it ($(token_word))" >&2 ;;
+      404) echo "oracle: busbar-release answered 404 (not found) for $what: not published, or the token cannot see it ($(token_word))" >&2 ;;
+      *) echo "oracle: busbar-release answered HTTP $code for $what ($(token_word))" >&2 ;;
+    esac
+    rm -f "$body"; return 1
   fi
+  if [ -n "$out" ]; then mv -f "$body" "$out"; else cat "$body"; rm -f "$body"; fi
 }
 judge_assets() {  # judge_assets <out tsv> — every dev-bin asset as `<id>\t<name>`
   local out="$1" rid page n
@@ -413,7 +448,7 @@ fetch_asset() {  # fetch_asset <source> <name> <out> — <source>: a directory (
   if [ -d "$src" ]; then [ -f "$src/$name" ] && cp "$src/$name" "$out"; return; fi
   id="$(awk -F'\t' -v n="$name" '$2==n{print $1; exit}' "$src")"
   [ -n "$id" ] || return 1
-  release_api "$ORACLE_RELEASE_API/releases/assets/$id" application/octet-stream "$out"
+  release_api "$ORACLE_RELEASE_API/releases/assets/$id" application/octet-stream "$out" "the asset $name"
 }
 verify_judge_sig() {  # verify_judge_sig <pubkey pem> <asset name> <sha256> <sig file (base64)>
   local pem="$1" name="$2" hex="$3" sig="$4" d rc=0
@@ -435,9 +470,15 @@ fetch_judge() {  # fetch_judge <pin text> <cache dir> <source|api> [<pubkey pem>
   [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || { echo "oracle: no judge: the pin names no full 40-hex release_ref" >&2; return 1; }
   [[ "$want" =~ ^[0-9a-f]{64}$ ]] || { echo "oracle: no judge: the pin has no sha256_linux_$arch line, and a host whose architecture the pin does not name has no judge" >&2; return 1; }
   name="busbar-oracle-linux-$arch-$ref"
-  bin="$cache/$want/busbar-oracle"
-  if [ -x "$bin" ] && [ "$(sha256_of "$bin")" = "$want" ]; then printf '%s\n' "$bin"; return 0; fi
+  # Cached by its digest AND the environment it was fetched on (judge_env): never reused on another.
+  bin="$cache/$want/$(judge_env)/busbar-oracle"
+  if [ -x "$bin" ] && [ "$(sha256_of "$bin")" = "$want" ]; then
+    if judge_starts "$bin"; then printf '%s\n' "$bin"; return 0; fi
+    echo "oracle: the cached judge $bin does not start here; deleting it and fetching again" >&2
+    rm -f "$bin"
+  fi
   tmp="$(mktemp -d)"
+  [ "$src" = api ] && echo "oracle: fetching the judge $name from busbar-release's dev-bin release ($(token_word))" >&2
   if [ "$src" = api ]; then judge_assets "$tmp/assets.tsv" || { rm -rf "$tmp"; return 1; }; src="$tmp/assets.tsv"; fi
   fetch_asset "$src" "$name" "$tmp/$name" || { echo "oracle: no judge: $name is not on busbar-release's dev-bin release" >&2; rm -rf "$tmp"; return 1; }
   got="$(sha256_of "$tmp/$name")"
@@ -449,9 +490,13 @@ fetch_judge() {  # fetch_judge <pin text> <cache dir> <source|api> [<pubkey pem>
   if fetch_asset "$src" "$name.sig" "$tmp/$name.sig" 2>/dev/null; then
     verify_judge_sig "$pem" "$name" "$got" "$tmp/$name.sig" || { rm -rf "$tmp"; return 1; }
   fi
-  mkdir -p "$cache/$want"
+  mkdir -p "$(dirname "$bin")"
   mv "$tmp/$name" "$bin.part" && chmod +x "$bin.part" && mv -f "$bin.part" "$bin"
   rm -rf "$tmp"
+  if ! judge_starts "$bin"; then
+    echo "oracle: no judge: the fetched $name does not start on this host ($(judge_env)): $("$bin" --help 2>&1 | head -n 3)" >&2
+    rm -f "$bin"; return 1
+  fi
   printf '%s\n' "$bin"
 }
 if [ "${1:-}" = "fetch-selftest" ]; then
@@ -472,6 +517,35 @@ sha256_linux_$arch=$good"
   if p="$(fetch_judge "$pin_ok" "$st/cache" "$st/rel" 2>/dev/null)" && [ "$("$p")" = planted-judge ]; then
     echo "  [ok]     a cached judge is reused by its digest, with no source"
   else echo "  [FAILED] the cached judge was not reused"; fail=1; fi
+  # THE CACHE IS KEYED BY THE ENVIRONMENT (ModernCI #1827): a judge cached on one C library is
+  # never handed to a host with another, and the same environment reuses it.
+  printf '#!/bin/sh\necho planted-judge\n' >"$st/rel/$name"
+  if ORACLE_JUDGE_LIBC=glibc2.35 fetch_judge "$pin_ok" "$st/cachek" "$st/rel" >/dev/null 2>&1; then
+    rm -f "$st/rel/$name"
+    if ORACLE_JUDGE_LIBC=glibc2.39 fetch_judge "$pin_ok" "$st/cachek" "$st/rel" >/dev/null 2>&1; then
+      echo "  [FAILED] a judge cached on glibc2.35 was handed to a glibc2.39 host"; fail=1
+    else echo "  [ok]     a judge cached on another C library is not reused"; fi
+    if p="$(ORACLE_JUDGE_LIBC=glibc2.35 fetch_judge "$pin_ok" "$st/cachek" "$st/rel" 2>/dev/null)" && [ "$("$p")" = planted-judge ]; then
+      echo "  [ok]     the same environment reuses its cached judge"
+    else echo "  [FAILED] the same environment did not reuse its cached judge"; fail=1; fi
+  else echo "  [FAILED] the keyed fixture judge was not fetched"; fail=1; fi
+  # A JUDGE THAT DOES NOT START is no judge: fetched, it refuses; cached, it is deleted and fetched
+  # again (and refuses the same way when the source holds the same bytes).
+  printf '#!/bin/sh\n[ "$1" = --help ] && exit 127\necho dead-judge\n' >"$st/rel/$name"
+  dead="$(sha256_of "$st/rel/$name")"
+  pin_dead="release_ref=$ref
+sha256_linux_$arch=$dead"
+  if fetch_judge "$pin_dead" "$st/cached" "$st/rel" >/dev/null 2>"$st/err"; then
+    echo "  [FAILED] a judge that does not start was handed out"; fail=1
+  elif grep -q "does not start" "$st/err"; then echo "  [ok]     a fetched judge that does not start refuses"
+  else echo "  [FAILED] the dead-judge refusal did not say so: $(cat "$st/err")"; fail=1; fi
+  kept="$st/cached/$dead/$(judge_env)/busbar-oracle"
+  mkdir -p "$(dirname "$kept")" && cp "$st/rel/$name" "$kept" && chmod +x "$kept"
+  if fetch_judge "$pin_dead" "$st/cached" "$st/rel" >/dev/null 2>"$st/err"; then
+    echo "  [FAILED] a cached judge that does not start was handed out"; fail=1
+  elif grep -q "deleting it" "$st/err" && [ ! -e "$kept" ]; then
+    echo "  [ok]     a cached judge that does not start is deleted, never reused"
+  else echo "  [FAILED] the dead cached judge was not deleted: $(cat "$st/err")"; fail=1; fi
   printf '#!/bin/sh\necho planted-judge\n' >"$st/rel/$name"
   pin_wrong="release_ref=$ref
 sha256_linux_$arch=$(printf 'f%.0s' $(seq 1 64))"
@@ -522,7 +596,7 @@ resolve_bin() {
     printf '%s\n' "$BUSBAR_ORACLE_RUST_BIN"; return 0
   fi
   if [ "$(uname -s)" = Linux ]; then
-    fetch_judge "$(judge_pin_text "$here")" "${XDG_CACHE_HOME:-$HOME/.cache}/busbar-oracle-judge" api || exit 1
+    fetch_judge "$(judge_pin_text "$here")" "$cache_home/busbar-oracle-judge" api || exit 1
     return 0
   fi
   local built="$root/checkout/target/release/$BINNAME"
@@ -622,7 +696,7 @@ export BUSBAR_ORACLE_BIN="$RUST_BIN"
 # BUSBAR_ORACLE_DATA-derived defaults the Python tool derived, so `./bin/oracle <sub> …` is unchanged.
 DATA="$BUSBAR_ORACLE_DATA"
 ROOT="$BUSBAR_ORACLE_PRODUCT_ROOT"
-CACHE="${BUSBAR_ORACLE_CACHE:-$HOME/.cache/busbar-oracle}"
+CACHE="${BUSBAR_ORACLE_CACHE:-$cache_home/busbar-oracle}"
 sub="${1:-}"; shift || true
 
 case "$sub" in
