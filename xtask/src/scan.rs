@@ -509,6 +509,35 @@ pub fn blank_literals(line: &str) -> String {
     blank_code(line, &mut LexState::default())
 }
 
+/// THE LITERAL TEXT OF EVERY LINE OF A FILE, read by THE ONE LEXER with its state carried across
+/// lines: entry `i` holds line `i + 1`'s runs of literal text, in order. A literal that spans lines
+/// yields a run on every line it covers, its inner lines included — which a per-line reader pairing
+/// the quotes it sees cannot do, because on a continued line the first quote is the CLOSE.
+pub fn literal_runs(src: &str) -> Vec<Vec<String>> {
+    let mut st = LexState::default();
+    src.lines()
+        .map(|line| {
+            let chars: Vec<char> = line.chars().collect();
+            let mut runs: Vec<String> = Vec::new();
+            let mut cur = String::new();
+            let mut at = 0;
+            lex_line(&chars, &mut st, |class, n| {
+                let end = (at + n).min(chars.len());
+                if class == Class::Literal {
+                    cur.extend(&chars[at..end]);
+                } else if !cur.is_empty() {
+                    runs.push(std::mem::take(&mut cur));
+                }
+                at = end;
+            });
+            if !cur.is_empty() {
+                runs.push(cur);
+            }
+            runs
+        })
+        .collect()
+}
+
 /// `open` minus `close` over text [`blank_code`] has already blanked. THE ONE COUNTER: every gate
 /// that tracks brace or paren depth calls this and nothing else, so there is no second copy to
 /// forget the blanking step.
