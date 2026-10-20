@@ -42,8 +42,8 @@ use serde_json::{json, Value};
 
 use crate::composition::{units_of, usage_units, USAGE_DONE};
 use crate::door::{
-    arrive, judge, open, piece, result, session, Answer, Arrived, Emission, Opened, Piece, Rig,
-    Session, MODEL, PUBLIC, SESSION,
+    arrive, judge, judge_planted, open, piece, result, session, Answer, Arrived, Emission, Opened,
+    Piece, Rig, Session, MODEL, PUBLIC, SESSION,
 };
 
 /// The door claim that opens a Twilio session: the fifth line of the snapshot (the telephony
@@ -85,21 +85,28 @@ fn bytes_of(v: &Value) -> Vec<u8> {
     serde_json::to_vec(v).unwrap_or_default()
 }
 
-/// What one emitted frame is, in the words the legs compare: the audio a frame hands the far end
-/// (any other far-bound frame is the session's own business and is not described), and the Twilio
-/// frame a caller-bound one is.
-fn describe(e: &Emission) -> Option<String> {
+/// What one emitted frame is, in the words the legs compare. EVERY far-bound frame is described:
+/// the caller's audio as the bytes it hands the far end, any other frame (a session lock, a
+/// `response.cancel`, a `conversation.item.truncate`, a `response.create`) as its whole JSON, so a
+/// frame busbar authors toward the far end is never invisible to a leg (Law 11, `BUSBAR-1.6.0.md`
+/// l.2133-2135: busbar "answers nothing on the caller's behalf"). A caller-bound frame is described
+/// as the Twilio frame it is, or, when it is not one, as its exact bytes.
+fn describe(e: &Emission) -> String {
     let v: Value = serde_json::from_slice(&e.frame).unwrap_or(Value::Null);
     if e.to_far {
-        return (v["type"] == "input_audio_buffer.append").then(|| {
+        return if v["type"] == "input_audio_buffer.append" {
             format!(
                 "far-audio:{}",
                 hex(&unb64(v["audio"].as_str().unwrap_or_default()))
             )
-        });
+        } else if v.is_null() {
+            format!("far-bytes:{}", String::from_utf8_lossy(&e.frame))
+        } else {
+            format!("far-frame:{v}")
+        };
     }
     let sid = v["streamSid"].as_str().unwrap_or_default();
-    Some(match v["event"].as_str() {
+    match v["event"].as_str() {
         Some("media") => format!(
             "caller-media:{sid}:{}",
             v["media"]["payload"].as_str().unwrap_or_default()
@@ -114,7 +121,18 @@ fn describe(e: &Emission) -> Option<String> {
         ),
         Some("clear") => format!("caller-clear:{sid}"),
         _ => format!("caller-other:{}", String::from_utf8_lossy(&e.frame)),
-    })
+    }
+}
+
+/// The frame the telephony session locks the far end with when Twilio's `start` binds the call:
+/// the operator's `streams.session` (the leg's [`SESSION`]: model `m-cap`) with `g711_ulaw` on both
+/// audio formats, as one OpenAI Realtime `session.update`. Twilio configures nothing itself
+/// (THE DESIGN §2 l.418-419 and Part 2 #45: Twilio Media Streams with a µ-law codec; #45: the
+/// caller "cannot override the session's locked instructions").
+fn lock_line() -> String {
+    let lock = json!({"type": "session.update", "session": {"model": MODEL,
+        "input_audio_format": "g711_ulaw", "output_audio_format": "g711_ulaw"}});
+    format!("far-frame:{lock}")
 }
 
 /// Push `steps` through the session on `stream` (the door is open), step by step.
@@ -124,10 +142,7 @@ fn run_steps(p: &Plugin<Plane>, stream: u64, steps: &[Step]) -> Run {
     for st in steps {
         let from = s.emitted();
         s.push(st.from, 0, &st.bytes);
-        let seen: Vec<String> = s.log.emissions[from..]
-            .iter()
-            .filter_map(describe)
-            .collect();
+        let seen: Vec<String> = s.log.emissions[from..].iter().map(describe).collect();
         lines.push(format!("{} -> [{}]", st.label, seen.join(", ")));
     }
     Run {
@@ -962,7 +977,121 @@ fn media_check(o: &MediaObs, first: &[Step], second: &[Step]) -> Result<String, 
     )
 }
 
+/// The far end's tool call, as OpenAI Realtime frames it: the call opens, its arguments stream,
+/// the call closes.
+fn far_tool_call() -> Vec<(&'static str, Value)> {
+    vec![
+        (
+            "far tool call opens",
+            json!({"event_id": "evt_far_10", "type": "response.output_item.added",
+                "response_id": "resp_002", "output_index": 0,
+                "item": {"id": "item_fc_001", "type": "function_call", "status": "in_progress",
+                    "call_id": "call_tw_1", "name": "lookup", "arguments": ""}}),
+        ),
+        (
+            "far tool call arguments",
+            json!({"event_id": "evt_far_11", "type": "response.function_call_arguments.delta",
+                "response_id": "resp_002", "item_id": "item_fc_001", "output_index": 0,
+                "call_id": "call_tw_1", "delta": "{\"q\":1}"}),
+        ),
+        (
+            "far tool call done",
+            json!({"event_id": "evt_far_12", "type": "response.function_call_arguments.done",
+                "response_id": "resp_002", "item_id": "item_fc_001", "output_index": 0,
+                "call_id": "call_tw_1", "name": "lookup", "arguments": "{\"q\":1}"}),
+        ),
+    ]
+}
+
+/// A call whose far end makes a tool call: Twilio's `start` (the session lock goes to the far end),
+/// the call's frames from the far end, each of which must reach the caller AS-IS (its exact bytes)
+/// with nothing sent to the far end for it, then Twilio's `stop`.
+fn tool_steps(fx: &Fixtures) -> Result<Vec<Step>, String> {
+    let start = fx.get("from-twilio.start.json")?;
+    let stop = fx.get("from-twilio.stop.json")?;
+    let mut steps = vec![twilio("start", &start, &[lock_line()])];
+    for (label, v) in far_tool_call() {
+        let relayed = format!("caller-other:{}", String::from_utf8_lossy(&bytes_of(&v)));
+        steps.push(far(label, &v, &[relayed]));
+    }
+    steps.push(twilio("stop", &stop, &[]));
+    Ok(steps)
+}
+
+/// THE PLANTED WRONG DOOR that swallows the tool call on the telephony leg: a far-end frame Twilio
+/// has no event for reaches the caller as nothing.
+fn plant_swallowed(run: &Run) -> Run {
+    let mut planted = run.clone();
+    for line in &mut planted.lines {
+        if let Some((label, seen)) = line.split_once(" -> ") {
+            if seen.contains("caller-other:") {
+                *line = format!("{label} -> []");
+            }
+        }
+    }
+    planted
+}
+
+/// THE PLANTED WRONG DOOR that answers the tool call upstream on the caller's behalf.
+fn plant_answered(run: &Run) -> Run {
+    let mut planted = run.clone();
+    let answer = json!({"type": "conversation.item.create", "item": {
+        "type": "function_call_output", "call_id": "call_tw_1", "output": "{}"}});
+    for line in &mut planted.lines {
+        if line.starts_with("far tool call done -> [") {
+            *line = line.replacen("[", &format!("[far-frame:{answer}, "), 1);
+        }
+    }
+    planted
+}
+
+/// The Twilio tool-call assertion (Law 11, `BUSBAR-1.6.0.md` l.2127-2135: "a tool call on any
+/// session, Twilio included, is relayed down that session as-is"; THE DESIGN §2 l.419: "Tools
+/// mid-session are relayed to the client").
+fn tool_call(rig: &Rig, slice: &str, fx: &Fixtures) -> bool {
+    const SWALLOWED: &dyn Fn(&Run) -> Run = &plant_swallowed;
+    const ANSWERED: &dyn Fn(&Run) -> Run = &plant_answered;
+    let steps = match tool_steps(fx) {
+        Ok(steps) => steps,
+        Err(e) => {
+            result(slice, false, "fixtures", &e);
+            return false;
+        }
+    };
+    let want = wanted(&steps);
+    judge_planted(
+        slice,
+        "a far end's tool call relayed down the Twilio session as-is, never answered",
+        &rig.both(|p| fresh(p, 52, &steps)),
+        &|run: &Run| {
+            if !run.anomalies.is_empty() {
+                return Err(format!("not answered READY: {:?}", run.anomalies));
+            }
+            if run.lines != want {
+                return Err(format!("the door answered {:?}; want {want:?}", run.lines));
+            }
+            if run.done != 1 {
+                return Err(format!("{} end(s); want 1", run.done));
+            }
+            Ok(
+                "the far end's tool call reached the Twilio caller frame for frame, byte for \
+                 byte, and the door sent the far end nothing for it"
+                    .to_string(),
+            )
+        },
+        &[
+            ("the tool call swallowed on the telephony leg", SWALLOWED),
+            ("the tool call answered upstream", ANSWERED),
+        ],
+    )
+}
+
 fn media(rig: &Rig, slice: &str, fx: &Fixtures) -> bool {
+    let relayed = tool_call(rig, slice, fx);
+    media_frames(rig, slice, fx) && relayed
+}
+
+fn media_frames(rig: &Rig, slice: &str, fx: &Fixtures) -> bool {
     let first = fx.sid().and_then(|sid| media_steps(fx, &sid));
     let second = media_steps(fx, OTHER_SID);
     let (Ok(first), Ok(second)) = (first, second) else {

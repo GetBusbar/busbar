@@ -38,7 +38,7 @@ use busbar_plugin_loader::dispatch::Plugin;
 use bytes::Bytes;
 use serde_json::Value;
 
-use crate::door::{judge, open, result, Log, Rig, Session, PUBLIC, SESSION};
+use crate::door::{judge_planted, open, result, Emission, Log, Plant, Rig, Session, PUBLIC, SESSION};
 
 // ── the two dialects ────────────────────────────────────────────────────────────────────────────
 
@@ -586,6 +586,64 @@ pub fn plant_units(log: &Log) -> Log {
     planted
 }
 
+/// THE PLANTED WRONG DOOR that RE-ENCODES instead of relaying bytes (Law 5, `BUSBAR-1.6.0.md`
+/// l.1903: a relay "sends the client's bytes"): the first frame it emits loses a member no reader
+/// models (`event_id`), or gains one, and is re-serialized. Every concept the reader reads is
+/// unchanged, so only a byte-level comparison refuses it. A log with no frame gains one the session
+/// never owed.
+pub fn plant_rewrite(log: &Log) -> Log {
+    let mut planted = log.clone();
+    let first = planted.emissions.iter().enumerate().find_map(|(i, e)| {
+        let v = serde_json::from_slice::<Value>(&e.frame).ok()?;
+        v.as_object().cloned().map(|o| (i, o))
+    });
+    match first {
+        Some((i, mut o)) => {
+            if o.remove("event_id").is_none() {
+                o.insert("event_id".to_string(), Value::from("evt_planted"));
+            }
+            planted.emissions[i].frame = bytes_of(&Value::Object(o));
+        }
+        None => planted.emissions.push(Emission {
+            to_far: false,
+            frame: b"{}".to_vec(),
+            need: 0,
+            verb: String::new(),
+            target: String::new(),
+        }),
+    }
+    planted
+}
+
+/// THE PLANTED WRONG DOOR that DROPS a frame: the last frame it owed is never emitted (a far-end
+/// transcript, `goAway` or `response.output_item.done` the reader decodes to nothing is dropped as
+/// silently as a modelled one). A log with no frame gains one the session never owed.
+pub fn plant_drop(log: &Log) -> Log {
+    let mut planted = log.clone();
+    if planted.emissions.pop().is_none() {
+        planted.emissions.push(Emission {
+            to_far: true,
+            frame: b"{}".to_vec(),
+            need: 0,
+            verb: String::new(),
+            target: String::new(),
+        });
+    }
+    planted
+}
+
+/// The relay legs' planted wrong doors: a phantom unit, a re-encoded frame, a dropped frame.
+pub fn relay_plants() -> [Plant<'static, Log>; 3] {
+    const UNITS: &dyn Fn(&Log) -> Log = &plant_units;
+    const REWRITE: &dyn Fn(&Log) -> Log = &plant_rewrite;
+    const DROP: &dyn Fn(&Log) -> Log = &plant_drop;
+    [
+        ("a token the far end never sent", UNITS),
+        ("a frame re-encoded, not relayed", REWRITE),
+        ("a frame dropped", DROP),
+    ]
+}
+
 /// Judge one relay of `wires` on both doors, with `codec` (the codec half's verdict) folded in.
 fn judge_relay(
     rig: &Rig,
@@ -597,7 +655,7 @@ fn judge_relay(
 ) -> bool {
     let x = expect(dialect, wires);
     let seen = rig.both(|p| relay(p, dialect, wires));
-    judge(
+    judge_planted(
         slice,
         what,
         &seen,
@@ -606,7 +664,7 @@ fn judge_relay(
             let door = relay_check(dialect, log, &x)?;
             Ok(format!("codec: {codec}; door: {door}"))
         },
-        &plant_units,
+        &relay_plants(),
     )
 }
 
@@ -906,7 +964,7 @@ pub fn replay(rig: &Rig, root: &Path) -> i32 {
         let codec = replay_codec(dialect, &wires, codec_skeleton);
         let x = expect(dialect, &wires);
         let seen = rig.both(|p| relay(p, dialect, &wires));
-        let pass = judge(
+        let pass = judge_planted(
             "default",
             &what,
             &seen,
@@ -918,7 +976,7 @@ pub fn replay(rig: &Rig, root: &Path) -> i32 {
                     "codec: {codec}; door: {door}, skeleton {door_skeleton:?} in emitted order"
                 ))
             },
-            &plant_units,
+            &relay_plants(),
         );
         if !pass {
             fails += 1;
