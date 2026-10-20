@@ -335,6 +335,23 @@ fn parse_decls(file: &str, src: &str) -> Vec<TypeDecl> {
             file: file.to_string(),
             fields: Vec::new(),
         };
+        // A TUPLE STRUCT'S PAYLOAD IS ITS FIELDS (audit xtask G HIGH 1), named as Rust names them
+        // (`0`, `1`, …): `FiguresEra(i128, Vec<u8>)` reached through `Held` carries a money-typed
+        // figure onto the chain exactly as a named field would, and a struct with no `name:` line
+        // used to be a type with no fields at all.
+        if !is_enum {
+            if let Some((payload, at)) = tuple_payload(&lines, i, name) {
+                decl.fields
+                    .extend(payload.into_iter().enumerate().map(|(k, ty)| Field {
+                        name: k.to_string(),
+                        ty,
+                        line: at,
+                    }));
+                out.push(decl);
+                i += 1;
+                continue;
+            }
+        }
         // Find the body: a `{` before any `;` opens one; a `;` first is a tuple/unit type with no
         // named fields.
         let mut depth: i32 = 0;
@@ -395,6 +412,88 @@ fn parse_decls(file: &str, src: &str) -> Vec<TypeDecl> {
         i = j.max(i) + 1;
     }
     out
+}
+
+/// THE PAYLOAD OF A TUPLE STRUCT declared on `lines[i]` (`struct Name(A, pub B);`, generics and a
+/// payload wrapped over several lines included): each element's type, visibility stripped, and the
+/// declaration's line. `None` for a struct with a braced body or none.
+fn tuple_payload(lines: &[(usize, String)], i: usize, name: &str) -> Option<(Vec<String>, usize)> {
+    let (no, first) = &lines[i];
+    let mut joined = scan::blank_literals(first);
+    let after_kw = joined.find("struct ")? + "struct ".len();
+    let mut rest_at = after_kw + joined[after_kw..].find(name)? + name.len();
+    // Skip the generics, a balanced `<…>` group.
+    if joined[rest_at..].trim_start().starts_with('<') {
+        rest_at += joined[rest_at..].find('<')?;
+        let mut depth = 0i32;
+        let mut end = None;
+        for (k, c) in joined[rest_at..].char_indices() {
+            match c {
+                '<' => depth += 1,
+                '>' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(rest_at + k + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        rest_at = end?;
+    }
+    if !joined[rest_at..].trim_start().starts_with('(') {
+        return None;
+    }
+    let open = rest_at + joined[rest_at..].find('(')?;
+    // The payload may wrap: join the following lines until its parens balance.
+    let mut j = i;
+    loop {
+        if scan::delta(&joined[open..], '(', ')') <= 0 {
+            break;
+        }
+        j += 1;
+        let (_, more) = lines.get(j)?;
+        joined.push(' ');
+        joined.push_str(&scan::blank_literals(more));
+    }
+    let inner_start = open + 1;
+    let mut depth = 0i32;
+    let mut close = None;
+    for (k, c) in joined[open..].char_indices() {
+        match c {
+            '(' | '<' | '[' => depth += 1,
+            ')' | '>' | ']' => {
+                depth -= 1;
+                if depth == 0 && c == ')' {
+                    close = Some(open + k);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let inner = &joined[inner_start..close?];
+    let mut parts = Vec::new();
+    let (mut depth, mut from) = (0i32, 0usize);
+    for (k, c) in inner.char_indices() {
+        match c {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(&inner[from..k]);
+                from = k + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&inner[from..]);
+    let payload: Vec<String> = parts
+        .into_iter()
+        .map(|p| strip_vis(p.trim()).trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect();
+    Some((payload, *no))
 }
 
 /// One journal record type and the writer that turns it into a journal body.
@@ -536,6 +635,76 @@ fn word_ends(hay: &str, needle: &str) -> Vec<usize> {
 /// Reads of a field that put a COUNT or a flag of it on the chain, not the field itself:
 /// `checkpoint.totals.len()` is how many balances a checkpoint sealed, never their figures.
 const COUNT_READS: &[&str] = &[".len()", ".is_some()", ".is_none()", ".is_empty()"];
+
+/// Every method the writer calls ON THE RECORD it reads (`recv.name(`), by name, once each.
+fn record_methods_called(writer: &str, recv: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for end in word_ends(writer, recv) {
+        let Some(rest) = writer[end..].strip_prefix('.') else {
+            continue;
+        };
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        let after = rest[name.len()..].trim_start();
+        let call = after.starts_with('(') || after.starts_with("::<");
+        if is_ident(&name) && call && !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    out
+}
+
+/// The integer and money words a NUMBER is declared in.
+const NUMBER_WORDS: &[&str] = &[
+    "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize", "Money",
+];
+
+/// Whether `fn name` in `text` returns a number: `Some(true)` when any declaration of it does,
+/// `Some(false)` when it is declared and none does, `None` when `text` declares no `fn name`.
+fn numeric_return(text: &str, name: &str) -> Option<bool> {
+    let code: String = scan::production_lines(text)
+        .into_iter()
+        .map(|(_, l)| scan::blank_literals(&l))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut found = None;
+    for end in word_ends(&code, name) {
+        let before = code[..end - name.len()].trim_end();
+        if !before.ends_with("fn")
+            || before[..before.len() - 2]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            continue;
+        }
+        // The header runs to the `{` or `;` at paren depth zero; the return type follows the
+        // `->` after its last `)`.
+        let mut depth = 0i32;
+        let mut stop = code.len();
+        for (k, c) in code[end..].char_indices() {
+            match c {
+                '(' | '[' => depth += 1,
+                ')' | ']' => depth -= 1,
+                '{' | ';' if depth <= 0 => {
+                    stop = end + k;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let header = &code[end..stop];
+        let returns = header
+            .rfind(')')
+            .and_then(|close| header[close..].find("->").map(|a| &header[close + a + 2..]))
+            .unwrap_or("");
+        let numeric = type_words(returns).any(|w| NUMBER_WORDS.contains(&w));
+        found = Some(found.unwrap_or(false) || numeric);
+    }
+    found
+}
 
 /// Whether the writer hands the record on WHOLE (`journal_body(record)`): an occurrence of its name
 /// that is not a field read. A writer whose argument the derivation could not name is read as
@@ -885,6 +1054,45 @@ fn derive_population(cx: &Ctx) -> Population {
                         figures.push(format!(
                             "`BodyWriter::figure` (a signed ledger figure) in {at}"
                         ));
+                    }
+                    // WHAT A WRITER CALL IS FED (audit xtask G HIGH 1): a NUMBER a method of the
+                    // record computes reads no field, calls no `.figure(` and names no money type,
+                    // and `body.num(self.reserved(None))` puts a priced figure on the chain all the
+                    // same. A method of the record whose declared return is a number (or that this
+                    // reader cannot find) is a value the serialization read cannot judge.
+                    if !root.recv.is_empty() {
+                        let def_text = if def.file == *seam_path {
+                            Some(seam.clone())
+                        } else {
+                            cx.read(&def.file).ok()
+                        };
+                        for method in record_methods_called(&root.writer, &root.recv) {
+                            let numeric = [Some(seam.as_str()), def_text.as_deref()]
+                                .into_iter()
+                                .flatten()
+                                .map(|text| numeric_return(text, &method))
+                                .fold(None, |acc: Option<bool>, r| match (acc, r) {
+                                    (Some(true), _) | (_, Some(true)) => Some(true),
+                                    (Some(false), _) | (_, Some(false)) => Some(false),
+                                    _ => None,
+                                });
+                            match numeric {
+                                Some(false) => {}
+                                Some(true) => figures.push(format!(
+                                    "`{}.{method}()` on {} — a NUMBER a method of the record \
+                                     computes, which {at} puts on the chain: no field holds it, \
+                                     so no field rule can judge it, and a priced figure in a `u64` \
+                                     is a stored price all the same",
+                                    root.recv, root.ty
+                                )),
+                                None => figures.push(format!(
+                                    "`{}.{method}()` on {} — a value a method of the record \
+                                     computes, which {at} puts on the chain, and no declaration of \
+                                     `fn {method}` was found in {} or {} to say it is no number",
+                                    root.recv, root.ty, seam_path, def.file
+                                )),
+                            }
+                        }
                     }
                     let mut chain = vec![(written_fields(&def, &root), def, pool)];
                     let mut read = std::collections::BTreeSet::new();
