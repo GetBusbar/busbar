@@ -2963,3 +2963,12 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/plane_node_seal.rs"]
 mod seal_tests;
+
+/// The node's money cells that name no plane (Law 10): the late arm, the one pricing site and its
+/// card pin, the sweep and its drop guard, the abandoned-end posting site, the dispatch record, the
+/// lane-name interner and the two books agreeing, ported out of `tests/plane_node.rs` so they are
+/// built in every test build, driven through [`Node::drive_borrowed`] (the door path) where they
+/// drive a unit.
+#[cfg(test)]
+#[path = "tests/plane_node_money.rs"]
+mod node_money_tests;

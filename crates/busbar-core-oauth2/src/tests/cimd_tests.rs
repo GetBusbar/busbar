@@ -740,3 +740,70 @@ async fn document_fetches_in_flight_are_bounded() {
         "no fetch past the bound"
     );
 }
+
+/// A document host whose documents on one site never answer, and every other document at once.
+struct OneSlowSite {
+    fetches: std::sync::atomic::AtomicUsize,
+}
+
+impl CimdFetch for OneSlowSite {
+    fn fetch<'a>(
+        &'a self,
+        url: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>>
+    {
+        self.fetches.fetch_add(1, Ordering::SeqCst);
+        let mut doc = document();
+        doc["client_id"] = serde_json::json!(url);
+        let body = serde_json::to_vec(&doc).expect("serialises");
+        let slow = url.contains(".slow.example/");
+        Box::pin(async move {
+            if slow {
+                std::future::pending::<()>().await;
+            }
+            Ok(body)
+        })
+    }
+}
+
+/// RED (audit core-oauth2 r4#4): one site that serves its documents slowly cannot hold every
+/// document fetch. A caller names sixteen documents on hosts under one site, each of which never
+/// answers; a metadata-document client on another site is still fetched and known. Before the fix
+/// the sixteen held every fetch permit, and every uncached client elsewhere read as unknown.
+#[tokio::test]
+async fn one_slow_site_cannot_hold_every_document_fetch() {
+    let fetch = Arc::new(OneSlowSite {
+        fetches: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let handle: Arc<OneSlowSite> = Arc::clone(&fetch);
+    let store = Arc::new(CimdStore::new(
+        MemoryStorage::new(),
+        ceiling(),
+        handle,
+        Vec::new(),
+    ));
+    for i in 0..16 {
+        let store = Arc::clone(&store);
+        tokio::spawn(async move {
+            let _ = store
+                .get_client(&ClientId::new(format!("https://h{i}.slow.example/doc")))
+                .await;
+        });
+    }
+    // Every request naming the slow site has been answered or is fetching.
+    for _ in 0..1000 {
+        tokio::task::yield_now().await;
+    }
+    let found = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        store.get_client(&ClientId::new(URL)),
+    )
+    .await
+    .expect("answered");
+    assert!(
+        matches!(found, Ok(Some(_))),
+        "a client on another site read as unknown while one slow site's fetches were held \
+         ({} fetches started)",
+        fetch.fetches.load(Ordering::SeqCst)
+    );
+}
