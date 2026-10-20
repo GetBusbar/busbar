@@ -373,9 +373,11 @@ async fn the_pools_doors_report_carries_the_end_a_status_line_cannot() {
     }
 }
 
-/// The first frame of a streamed answer that carries its usage beside its content: 600 input and
-/// 400 output tokens, the 1,000 the plane ledgers before the far end cuts.
-const FIRST_FRAME_WITH_USAGE: &str = r#"{"id":"chatcmpl-root","object":"chat.completion.chunk","created":0,"model":"m0","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":null}],"usage":{"prompt_tokens":600,"completion_tokens":400,"total_tokens":1000}}"#;
+/// The first frame of a streamed answer that carries its content, its stop and its usage together:
+/// 600 input and 400 output tokens, the 1,000 the plane ledgers before the far end cuts. The usage
+/// rides the stop: the chat dialect's reader takes a content chunk's `usage` only with its
+/// `finish_reason` (or on a usage-only chunk).
+const FIRST_FRAME_WITH_USAGE: &str = r#"{"id":"chatcmpl-root","object":"chat.completion.chunk","created":0,"model":"m0","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":600,"completion_tokens":400,"total_tokens":1000}}"#;
 
 /// A STREAM ITS FAR END CUT AFTER ITS FIRST FRAME BILLS WHAT ITS PLANE LEDGERED (owner ruling
 /// 2026-10-20: "spend is what it is. if spend occurred it occurred. null is not a fix."). The far
