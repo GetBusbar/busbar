@@ -33,12 +33,12 @@
 //! [`OpDispatch`], the registry-resolved [`chat`] / [`op_for`] / [`protocol_error`] resolvers — those
 //! name the registry singleton — and the host's usage-tap fault reporting the install arms.
 
-// EVERY LLM DIALECT'S HANDLER LIVES IN THE `busbar-llm` PLUGIN CRATE — anthropic, openai-chat,
+// EVERY LLM DIALECT'S HANDLER LIVES IN THE the retired engine crate PLUGIN CRATE — anthropic, openai-chat,
 // gemini, bedrock, cohere and openai-responses — each in its own dialect module's `handler.rs`.
 // They are reachable in the builds that compile the dialects back in as
 // `crate::proto::<dialect>::handler`, and in production only through the registry's
 // `ProtocolDecl::handler`, which is the point. `ChatOperation` RELOCATED to the plugin too at the
-// G6 A4b dissolve (`busbar-llm/src/chat_handle.rs`, netted as `crate::proto::chat_handle`): once
+// G6 A4b dissolve (`the retired engine crate/src/chat_handle.rs`, netted as `crate::proto::chat_handle`): once
 // `IrReq`/`IrResp` dissolved onto `Box<dyn IrHandle>`, the chat codec names the concrete chat IR
 // that now lives in the plugin, so it cannot stay in core. Core names no chat codec in production;
 // chat resolves through the registry like every other operation (see `chat` below).
@@ -47,8 +47,8 @@
 // pre-extraction fixture surface reach the real MCP codec from inside core's own test binary, back
 // when a `ProtocolDecl` was a `busbar-core` type an external crate could not hand to the registry)
 // was DELETED: `ProtocolDecl` now lives in `busbar-substrate`, so core's test binary reads
-// `busbar_mcp::PROTO_DECL` directly (dev-dependency). NOTE THE SCOPE: this was MCP the PROTOCOL; the
-// `mcp/` PLANE (`crate::mcp`) never travelled with the codec and is still core's.
+// `busbar_mcp::PROTO_DECL` directly (dev-dependency). That protocol's plane is its own door
+// plane, outside this crate.
 
 // THE USAGE-TAP FAULT COUNT (row 155): a plane returns a usage-tap fault as data on its door's
 // answer (`abi::plane::OnPieceOut::tap_fault`), and the kernel counts it here on
@@ -213,11 +213,11 @@ impl OpDispatch {
 /// `request_handler(protocol).operation_handler(Chat)`. This is how "the RequestHandler decides which
 /// OperationHandler handles the request" is honored for chat too, not just the JSON ops.
 ///
-/// Post-G6-A4b the chat codec lives in the `busbar-llm` plugin, so this resolves it through the
+/// Post-G6-A4b the chat codec lives in the the retired engine crate plugin, so this resolves it through the
 /// registry the composition root populated — there is no in-core const fallback to name anymore (that
 /// codec is gone from core's production build). The `expect` can only fire in a build that links no
 /// chat-serving protocol at all, which no shipped configuration is: the LLM plugin registers `openai`
-/// and its five siblings, and the sole production caller (`mcp::sampling`) asks for `openai`. The one
+/// and its five siblings, and this crate has no caller of its own. The one
 /// caller that used the old const fallback purely for a chat cell's error vocabulary (`health.rs`)
 /// now calls the neutral `protocol_error` directly (byte-identical to `ChatOperation::extract_error`).
 ///
