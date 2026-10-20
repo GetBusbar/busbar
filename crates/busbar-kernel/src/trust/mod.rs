@@ -50,5 +50,10 @@ pub mod section;
 /// THE KERNEL'S TRUST STATE per instance and counterparty, behind `trust.sight` and `trust.due`.
 pub mod book;
 
+/// THE DURABLE DEMOTION RECORD: a live observation that disagreed with the approval, kept across a
+/// restart, and the one settle rule. The root attaches it to the kernel's host services.
+pub(crate) mod demotion;
+pub use demotion::DemotionRecord;
+
 /// A DOCUMENT'S DETACHED SIGNATURES judged against a declared root key, behind `trust.verify`.
 pub mod signed;
