@@ -2835,7 +2835,7 @@ async fn read_last_as(
 /// a 200 head, read on the answer's last piece — records the breaker's compensating transient (the
 /// head's success, then the transient) and counts NO upstream failure, as 1.5.5 recorded a
 /// stream's terminal error on the breaker alone (v1.5.5 `proxy/response_body.rs:451-479`; the 1.5.5
-/// golden `llm|bedrock|bedrock|request|stream_upstream_error@fixture` carries no
+/// golden's in-band stream-error cells, `stream_upstream_error@fixture`, carry no
 /// `busbar_upstream_failures_total`). RED before the fix: one `transient` failure counted.
 #[tokio::test]
 async fn a_fault_read_inside_a_success_records_the_breaker_and_counts_no_upstream_failure() {

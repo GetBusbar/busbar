@@ -876,8 +876,8 @@ impl EgressFarEnd<'_> {
         // already counted as the answer it was, so it counts no upstream failure, as a cut after
         // the head counts none ([`Self::cut`]). 1.5.5 recorded the stream's terminal error on the
         // breaker, with its trip, and emitted no `busbar_upstream_failures_total` for it (v1.5.5
-        // `crates/busbar/src/proxy/response_body.rs:451-479`; oracle cell
-        // `llm|bedrock|bedrock|request|stream_upstream_error@fixture`).
+        // `crates/busbar/src/proxy/response_body.rs:451-479`; the oracle's in-band stream-error
+        // cells, `stream_upstream_error@fixture`).
         let inside_success =
             held.after_success && matches!(held.class, Some(WireStatusClass::Success));
         let hard = matches!(classified.disposition, Disposition::HardDown);
