@@ -5,8 +5,9 @@
 //! invisible to every gate until [`super::scanner::segment_ci`]. The hits that rule found the day it
 //! landed are DEBT: named here, row by row, owned by the neutrality lane, and DRAIN-ONLY. A listed
 //! segment-only hit is excluded from the DIALECT counts every gate keeps (so no ceiling moves), an
-//! UNLISTED one counts as a normal DIALECT hit and is refused by `plane-purity:segment-debt`, and a
-//! row whose line no longer exists is stale and refused too — the list can only shrink.
+//! UNLISTED one counts as a normal DIALECT hit and is refused by `plane-purity:segment-debt`, a
+//! row whose line no longer exists is stale and refused too, and a row the base's copy of the list
+//! does not carry is MINTED and refused ([`minted`]) — the list can only shrink.
 //!
 //! A row matches a hit on FILE and TEXT, never on line: line numbers drift with every edit above
 //! them and the text is the key. `line` is informational. Matching is ROW BY ROW: each live
@@ -73,6 +74,34 @@ pub fn load(cx: &Ctx) -> Result<Vec<Debt>, String> {
         return Ok(Vec::new());
     }
     parse(&cx.read(SEGMENT_DEBT_TOML)?)
+}
+
+/// THE LIST AGAINST ITS BASE (Law 9: a ceiling "refuses every rise"). Every row this change wrote
+/// over the base's copy of the list, as a multiset on (file, text): a row added beside a new
+/// segment hit forgives it with every row green, so an added row is MINTED and refused. A list the
+/// base does not carry is its own arming. The base is `ceiling-census`'s
+/// ([`crate::gates::construction::ceilings::base_copy`]); one that cannot be established is an
+/// `Err`, which the row reports RED, never a skipped comparison.
+pub fn minted(cx: &Ctx, now: &[Debt]) -> Result<Vec<String>, String> {
+    use crate::gates::construction::ceilings;
+    let (base, text) = match ceilings::base_copy(cx, SEGMENT_DEBT_TOML)? {
+        (base, Some(text)) => (base, text),
+        (_, None) => return Ok(Vec::new()),
+    };
+    let was = parse(&text)
+        .map_err(|e| format!("the base {}'s copy does not parse: {e}", base.short()))?;
+    let key = |d: &Debt| (d.file.clone(), d.text.clone());
+    let now: Vec<(String, String)> = now.iter().map(key).collect();
+    let was: Vec<(String, String)> = was.iter().map(key).collect();
+    Ok(ceilings::minted(&now, &was)
+        .into_iter()
+        .map(|(file, text)| {
+            format!(
+                "{file} `{text}`: in no copy of {SEGMENT_DEBT_TOML} at the base {}",
+                base.short()
+            )
+        })
+        .collect())
 }
 
 /// The list written back out in the shape [`parse`] reads. Used by the self-test to lay a row onto

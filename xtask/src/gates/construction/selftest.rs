@@ -496,13 +496,17 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         return r;
     }
     let mut ov = on(base);
+    // Each row names the files carrying the most hits, so a plant must OUT-RANK every real file of
+    // the crate or the row goes red without naming it (the busbar-llm test tree already holds a
+    // file of 217 such lines). PLANTED_REACH sits far above any file the tree carries.
+    const PLANTED_REACH: usize = 2000;
     for p in &planes {
         // item 376 (Q11/Q32): the needle moved from `busbar_core::` (a deleted crate, absorbed
         // into busbar-kernel) to `busbar_kernel::`, so the plant must name the live needle or it
         // adds zero hits and the row it is proving red stays green.
         ov.set(
             format!("crates/{p}/src/zz_planted_ports.rs"),
-            (0..40)
+            (0..PLANTED_REACH)
                 .map(|i| format!("pub fn planted_reach_{i}() {{ busbar_kernel::internals(); }}\n"))
                 .collect::<String>(),
         );
@@ -510,7 +514,7 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
             format!("crates/{p}/src/zz_planted_ports_tests.rs"),
             format!(
                 "#[cfg(test)]\nmod tests {{\n{}}}\n",
-                (0..40)
+                (0..PLANTED_REACH)
                     .map(|i| format!("    fn planted_{i}() {{ busbar_kernel::internals(); }}\n"))
                     .collect::<String>()
             ),
@@ -1159,6 +1163,55 @@ fn census_base_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report
         garbled,
         &["does not parse"],
     ));
+
+    // A CEILING RAISED IN THE CHANGE THAT NEEDS IT (Law 9: a ceiling "refuses every rise"). The
+    // fixture's base copy of the ceilings file is the fixture itself, so this plant raises a
+    // zero-armed ban and a per-crate count ratchet against that base: each is the edit that would
+    // make a new violation green in the same commit, and each is RED on the census row.
+    let Ok(text) = cx.read(CEILINGS) else {
+        r.note_infra_failure("the ceilings file could not be read, so no ceiling can be raised");
+        return r;
+    };
+    let crate_figure = ConstructionGate::cfg(cx).ok().and_then(|cfg| {
+        let table = cfg.doc.table_or_empty("rules.ports-only.max_per_crate");
+        let name = table.keys().first().cloned()?;
+        let figure = table.int_of(&name)?;
+        Some((name, figure))
+    });
+    let raised =
+        ceilings::set_int(&text, "rules.lean-core", "max_hits", 3).and_then(
+            |t| match &crate_figure {
+                Some((name, figure)) => {
+                    ceilings::set_int(&t, "rules.ports-only.max_per_crate", name, figure + 1)
+                }
+                None => Some(t),
+            },
+        );
+    match (raised, crate_figure) {
+        (Some(raised), Some((name, figure))) => {
+            let mut ov = on(base);
+            ov.set(CEILINGS, raised);
+            let rose = format!("{figure} -> {}", figure + 1);
+            r.push(prove_rows_red(
+                cx,
+                gate,
+                "a rule ceiling raised against the base is refused: a zero-armed ban and a \
+                 per-crate count ratchet",
+                &[census::ROW_CENSUS],
+                ov,
+                &[
+                    "[rules.lean-core] max_hits",
+                    "0 -> 3",
+                    name.as_str(),
+                    rose.as_str(),
+                ],
+            ));
+        }
+        _ => r.note_infra_failure(
+            "[rules.lean-core] max_hits or a [rules.ports-only.max_per_crate] figure could not be \
+             raised, so the rule that refuses a raised ceiling is unproven",
+        ),
+    }
     r
 }
 
