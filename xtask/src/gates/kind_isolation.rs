@@ -3923,7 +3923,14 @@ fn rule_registry(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, ship: bool)
             for decl in c.deps.iter().chain(c.dev_deps.iter()) {
                 let Some(p) = &decl.path else { continue };
                 let target = join_rel(&c.dir, p);
-                if dirs.contains(target.as_str()) || off_tree_dirs.contains_key(&target) {
+                // A directory the tree walk skips is unread on disk whatever a planted overlay
+                // shows the census: a dot-segment or `target/` is never walked.
+                let skipped = target
+                    .split('/')
+                    .any(|seg| seg.starts_with('.') || seg == "target");
+                if !skipped
+                    && (dirs.contains(target.as_str()) || off_tree_dirs.contains_key(&target))
+                {
                     continue;
                 }
                 offenders.push(format!(
