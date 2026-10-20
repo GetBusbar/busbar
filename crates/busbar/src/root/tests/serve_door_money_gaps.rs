@@ -370,6 +370,81 @@ async fn the_pools_doors_report_carries_the_end_a_status_line_cannot() {
     }
 }
 
+/// The first frame of a streamed answer that carries its usage beside its content: 600 input and
+/// 400 output tokens, the 1,000 the plane ledgers before the far end cuts.
+const FIRST_FRAME_WITH_USAGE: &str = r#"{"id":"chatcmpl-root","object":"chat.completion.chunk","created":0,"model":"m0","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":null}],"usage":{"prompt_tokens":600,"completion_tokens":400,"total_tokens":1000}}"#;
+
+/// A STREAM ITS FAR END CUT AFTER ITS FIRST FRAME BILLS WHAT ITS PLANE LEDGERED (owner ruling
+/// 2026-10-20: "spend is what it is. if spend occurred it occurred. null is not a fix."). The far
+/// end streams one frame carrying 600 input and 400 output tokens under a 200 head, then cuts the
+/// stream before its end. The plane ledgered those 1,000 tokens, so the door takes that ledger as
+/// final: the key's ledger holds the 1,000 tokens, its group's spend derives 100 cents against
+/// the card (1,000 micro-units a token, no request fee), and one metering row carries 600 in and
+/// 400 out. Core does not override the plane's ledger because of the cut or the caller's status.
+///
+/// RED: the cut stream's ledgered tokens dropped, its charge withheld, or its metering row skipped
+/// (status row 183, as #1282 wrote it).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_bills_what_its_plane_ledgered_for_a_stream_cut_after_its_first_frame() {
+    let _one = PUBLISHING.lock().await;
+    let instance = "door-gap-cut-stream-plane-ledger";
+    let _published = Published(instance);
+    let far = far_end_scripted(Script {
+        head: STREAM_HEAD.to_string(),
+        pieces: vec![(0, frame(FIRST_FRAME_WITH_USAGE)), (50, Vec::new())],
+        finish: None,
+    })
+    .await;
+    let card = card_of("{ input_utok: 1000, output_utok: 1000 }");
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            budget_cents: Some(1_000_000_000),
+            rate_card: Some(&card),
+            fee_cents: Some(0),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let charged_at = now();
+    let (status, _, body) = rig
+        .send("POST", "/v1/chat/completions", Some(streamed_chat()))
+        .await;
+    let text = String::from_utf8_lossy(&body).to_string();
+    assert_eq!(status, 200, "the stream had begun: {text}");
+    assert!(
+        !text.contains("[DONE]"),
+        "precondition: the far end cut the stream before its end: {text}"
+    );
+    assert_eq!(
+        rig.tokens_after().await,
+        1000,
+        "the 1,000 tokens the plane ledgered are the key's"
+    );
+    let derived = rig
+        .gov
+        .derived_bucket_usage(
+            &rig.app.cost,
+            &format!("group:{instance}-group@day"),
+            "day",
+            true,
+            now(),
+        )
+        .expect("usage read");
+    assert_eq!(derived.tokens, 1000, "the group's bucket holds them");
+    assert_eq!(
+        derived.spend_cents, 100,
+        "and they are charged: 1,000 tokens at 1,000 micro-units each"
+    );
+    let rows = metering_rows(&rig, charged_at);
+    assert_eq!(rows.len(), 1, "one metering row: {rows:?}");
+    assert!(
+        rows[0].starts_with("m0/") && rows[0].contains(" in=600 out=400 "),
+        "the row carries what the plane ledgered: {rows:?}"
+    );
+}
+
 // ── GAP 6: rerank pricing on both books ────────────────────────────────────────────────────────
 
 /// The open class a rerank's far end bills (`plane_node.rs`'s `SEARCH_UNITS`).
