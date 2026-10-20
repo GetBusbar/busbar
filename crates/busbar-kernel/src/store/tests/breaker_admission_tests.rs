@@ -3,10 +3,10 @@
 
 //! The degenerate-cell semantics of [`PlaneBreakers`], on the mocked clock: trip on the core
 //! thresholds, per-cell hard-down isolation, single-flight half-open recovery, owner-checked
-//! probe release. Each plane consumer's own call sites are proven in their own batteries; this
-//! file pins the store-side contract those batteries stand on.
+//! probe release. The dispatch call sites are proven in their own batteries; this file pins the
+//! store-side contract those batteries stand on.
 
-use super::super::planes::PlaneBreakers;
+use super::super::breaker_admission::PlaneBreakers;
 use super::super::{set_now_for_test, BreakerState, Unavailable};
 use crate::breaker::{CanonicalSignal, StatusClass};
 
@@ -24,10 +24,10 @@ fn signal(class: StatusClass) -> CanonicalSignal {
 fn transient_failures_trip_and_fast_fail() {
     set_now_for_test(1_000);
     let b = PlaneBreakers::new();
-    let key = busbar_kernel::store::tool_key("fs");
+    let key = String::from("a:fs");
     assert!(b.try_admit(&key, 0).is_ok(), "a fresh cell admits");
     // Recorded without interleaved admissions. The cell stays ADMITTING throughout the first four:
-    // on this plane a sub-threshold transient does not bench the member (see
+    // a sub-threshold transient does not bench the member (see
     // `BreakerCfg::bench_below_trip_threshold` — the benching cooldown is the "prefer a sibling"
     // half of a rule whose other half is a failover an UNPOOLED target does not have). The FIFTH
     // failure crosses the error-rate threshold and TRIPS, which is the first thing that refuses
@@ -45,14 +45,14 @@ fn transient_failures_trip_and_fast_fail() {
 
 /// An Auth signal (401/403) is a HARD DOWN: the cell trips on the FIRST failure — and ONLY that
 /// cell. The isolation half is the whole reason `record_signal` uses the per-cell hard-down: every
-/// plane target shares lane 0, so an all-cells write would trip every other target.
+/// target shares lane 0, so an all-cells write would trip every other target.
 #[test]
 fn hard_down_trips_immediately_and_only_its_own_cell() {
     set_now_for_test(2_000);
     let b = PlaneBreakers::new();
-    let fs = busbar_kernel::store::tool_key("fs");
-    let other_tool = busbar_kernel::store::tool_key("search");
-    let agent = busbar_kernel::store::agent_key("planner");
+    let fs = String::from("a:fs");
+    let other = String::from("a:search");
+    let third = String::from("b:planner");
 
     let epoch = b.try_admit(&fs, 0).expect("closed cell admits");
     b.record_signal(&fs, 0, &signal(StatusClass::Auth));
@@ -60,25 +60,27 @@ fn hard_down_trips_immediately_and_only_its_own_cell() {
 
     assert!(matches!(b.state(&fs), BreakerState::Open { .. }));
     assert!(b.try_admit(&fs, 0).is_err(), "tripped target must refuse");
-    // The neighbours are untouched — the keyspace isolation the plane-qualified keys exist for.
-    assert!(b.try_admit(&other_tool, 0).is_ok());
-    assert!(b.try_admit(&agent, 0).is_ok());
+    // The neighbours are untouched — each key is its own cell.
+    assert!(b.try_admit(&other, 0).is_ok());
+    assert!(b.try_admit(&third, 0).is_ok());
 }
 
-/// The two plane prefixes cannot collide: a target registered under one plane prefix and one
-/// registered under the other that happen to share a bare name have DISTINCT cells.
+/// Two keys that share a bare name under different prefixes have DISTINCT cells.
 #[test]
-fn tool_and_agent_keys_never_collide() {
+fn two_prefixed_keys_of_one_name_never_share_a_cell() {
     set_now_for_test(3_000);
     let b = PlaneBreakers::new();
-    let tool = busbar_kernel::store::tool_key("planner");
-    let agent = busbar_kernel::store::agent_key("planner");
-    assert_ne!(tool, agent);
-    let epoch = b.try_admit(&tool, 0).expect("admits");
-    b.record_signal(&tool, 0, &signal(StatusClass::Auth));
-    b.release(&tool, 0, epoch);
-    assert!(b.try_admit(&tool, 0).is_err());
-    assert!(b.try_admit(&agent, 0).is_ok(), "the agent cell is its own");
+    let first = String::from("a:planner");
+    let second = String::from("b:planner");
+    assert_ne!(first, second);
+    let epoch = b.try_admit(&first, 0).expect("admits");
+    b.record_signal(&first, 0, &signal(StatusClass::Auth));
+    b.release(&first, 0, epoch);
+    assert!(b.try_admit(&first, 0).is_err());
+    assert!(
+        b.try_admit(&second, 0).is_ok(),
+        "the second cell is its own"
+    );
 }
 
 /// RECOVERY IS A SINGLE-FLIGHT PROBE: once the cooldown expires exactly ONE caller is admitted
@@ -88,7 +90,7 @@ fn tool_and_agent_keys_never_collide() {
 fn half_open_probe_is_single_flight_and_success_closes() {
     set_now_for_test(10_000);
     let b = PlaneBreakers::new();
-    let key = busbar_kernel::store::agent_key("planner");
+    let key = String::from("b:planner");
     for _ in 0..5 {
         b.record_signal(&key, 0, &signal(StatusClass::ServerError));
     }
@@ -118,7 +120,7 @@ fn half_open_probe_is_single_flight_and_success_closes() {
 fn failed_probe_reopens() {
     set_now_for_test(20_000);
     let b = PlaneBreakers::new();
-    let key = busbar_kernel::store::tool_key("fs");
+    let key = String::from("a:fs");
     for _ in 0..5 {
         b.record_signal(&key, 0, &signal(StatusClass::ServerError));
     }
@@ -137,7 +139,7 @@ fn failed_probe_reopens() {
 fn abandoned_probe_release_unwedges_the_cell() {
     set_now_for_test(30_000);
     let b = PlaneBreakers::new();
-    let key = busbar_kernel::store::tool_key("fs");
+    let key = String::from("a:fs");
     for _ in 0..5 {
         b.record_signal(&key, 0, &signal(StatusClass::ServerError));
     }
@@ -152,12 +154,12 @@ fn abandoned_probe_release_unwedges_the_cell() {
 }
 
 /// A ClientFault-shaped signal records NOTHING against the cell — the caller's bad input is never a
-/// lane penalty, on any plane.
+/// lane penalty.
 #[test]
 fn client_fault_never_penalizes() {
     set_now_for_test(40_000);
     let b = PlaneBreakers::new();
-    let key = busbar_kernel::store::tool_key("fs");
+    let key = String::from("a:fs");
     for _ in 0..20 {
         b.record_signal(&key, 0, &signal(StatusClass::ClientError));
     }
@@ -170,7 +172,7 @@ fn client_fault_never_penalizes() {
 fn retry_after_is_the_exact_cooldown() {
     set_now_for_test(50_000);
     let b = PlaneBreakers::new();
-    let key = busbar_kernel::store::agent_key("planner");
+    let key = String::from("b:planner");
     b.record_signal(&key, 0, &signal(StatusClass::Auth));
     // Hard-down parks the cell with the sticky cooldown (default 1800s).
     let ra = b.retry_after_secs(&key, 0);
@@ -184,10 +186,9 @@ fn retry_after_is_the_exact_cooldown() {
 /// leaves the cell Closed AND ADMITTING — the tightest statement of the defect that had an
 /// out-of-tree plugin's conformance battery red for five commits.
 ///
-/// The primary plane's identical FSM benches a lane here on purpose, because the walk then prefers a
-/// sibling and the caller is still served. On this plane the walk only has somewhere to go when the
-/// operator declared a pool, and the UNPOOLED single registration is
-/// the canonical case — so benching the only member is a 15-120s outage for every caller, bought
+/// A pooled walk could prefer a sibling here and still serve the caller, but the walk only has
+/// somewhere to go when the operator declared a pool, and the UNPOOLED single registration is the
+/// canonical case — so benching the only member is a 15-120s outage for every caller, bought
 /// with one blip and announced as "open after repeated failures". `bench_below_trip_threshold` is
 /// a per-breaker setting, so a pooled cell inherits the conservative answer and is routed around on
 /// a TRIP instead.
@@ -195,7 +196,7 @@ fn retry_after_is_the_exact_cooldown() {
 fn one_sub_threshold_transient_leaves_the_cell_admitting() {
     set_now_for_test(2_000);
     let b = PlaneBreakers::new();
-    let key = busbar_kernel::store::tool_key("fs");
+    let key = String::from("a:fs");
     b.record_signal(&key, 0, &signal(StatusClass::ServerError));
     assert!(
         matches!(b.state(&key), BreakerState::Closed),

@@ -184,7 +184,7 @@ fn an_arrival_opens_the_first_fact_it_meets_else_its_claims_span() {
         vec!["entry_span_test_affix"]
     );
     assert!(
-        opened(&spans, 0, "GET", "/own/x", &[]).is_empty(),
+        opened(&spans, 1, "GET", "/own/x", &[]).is_empty(),
         "another verb"
     );
     assert!(

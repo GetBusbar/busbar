@@ -425,7 +425,7 @@ fn trust_sight_judges_from_the_admitted_entries_and_writes_the_demotion() {
     assert_eq!(sight("moved").value, svc::TRUST_DRIFTED);
     let demoted = r.s.demotions.get().unwrap().record.list();
     assert_eq!(demoted.len(), 1);
-    assert_eq!(demoted[0].server, demotion_key("inst", "cp"));
+    assert_eq!(demoted[0].upstream, demotion_key("inst", "cp"));
     assert_eq!(sight("moved").value, svc::TRUST_QUARANTINED);
     assert_eq!(sight("fp").value, svc::TRUST_SAME);
     assert!(r.s.demotions.get().unwrap().record.list().is_empty());
@@ -2206,6 +2206,30 @@ fn an_admit_parked_in_the_store_never_stalls_another_instances_host_service() {
         answered,
         Ok(Outcome::Ready),
         "a host service of another instance answers while an admit is parked in the store plugin"
+    );
+}
+
+/// A REPLAYED APPROVAL IS REFUSED THROUGH `records.claim` (§11.12: the ONE path for approval
+/// redemption). The approval's nonce is claimed when it is redeemed; presenting the same approval
+/// again inside its window finds the claim taken, so the second redemption is refused.
+#[test]
+fn a_replayed_approval_is_refused_through_records_claim() {
+    let r = rig();
+    let me = caller("inst");
+    let redeem = || {
+        run(|l| {
+            r.s.records_claim(&me, "approval", b"approval-nonce", 60_000, l)
+        })
+    };
+    assert_eq!(
+        redeem().value,
+        svc::CLAIM_WON,
+        "the first redemption is the one that counts"
+    );
+    assert_eq!(
+        redeem().value,
+        svc::CLAIM_TAKEN,
+        "the same approval presented again is refused"
     );
 }
 

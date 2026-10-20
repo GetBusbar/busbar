@@ -2446,6 +2446,44 @@ fn replay_gov() -> std::sync::Arc<crate::governance::GovState> {
     )
 }
 
+/// RED (Q128 arch u27 LOW): the signed ingress claims the replay key its verified identity asks
+/// for, under its verifier, as the data chain and the admin door claim theirs (THE DESIGN §6
+/// "Inbound verify", l.845-846): the first presentation wins the claim, the same key inside its TTL
+/// loses it, and an identity that asks for no claim is never refused for one. RED before: the
+/// signed arm never claimed, so a replayed signed request was admitted every time.
+#[test]
+fn the_signed_ingress_claims_its_identitys_replay_key() {
+    use busbar_contract::auth_calls::{Replay, VerifiedIdentity};
+    let gov = replay_gov();
+    let now = busbar_kernel::store::now();
+    let asks = VerifiedIdentity {
+        subject: "subject".into(),
+        replay: Some(Box::new(Replay {
+            key: "message-1".into(),
+            ttl_secs: 300,
+        })),
+        ..VerifiedIdentity::default()
+    };
+    assert!(
+        signed_replay_claimed(Some(gov.as_ref()), "verifier", &asks, now),
+        "the first presentation wins its claim"
+    );
+    assert!(
+        !signed_replay_claimed(Some(gov.as_ref()), "verifier", &asks, now),
+        "the same key inside its TTL is a replay"
+    );
+    let none = VerifiedIdentity {
+        subject: "subject".into(),
+        ..VerifiedIdentity::default()
+    };
+    for _ in 0..2 {
+        assert!(
+            signed_replay_claimed(Some(gov.as_ref()), "verifier", &none, now),
+            "an identity asking for no claim is never refused for one"
+        );
+    }
+}
+
 /// RED (K3 #9): a signed message replayed inside its claim's TTL is refused. The first delivery
 /// claims `door/<key>` and is admitted; the same key again is `Denied`; another key is admitted;
 /// and with no governance to claim in, an identity that asks for a claim is `Denied` (fail-closed).

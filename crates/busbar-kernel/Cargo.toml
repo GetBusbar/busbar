@@ -185,7 +185,7 @@ plane-mcp = ["dispatch"]
 # Phase-B B1 FORWARDS to substrate, exactly as `plane-mcp` does — `Due::from_verify_decision` and the
 # other relocated `#[cfg(feature = "plane-a2a")]` sites now live in substrate, so this must turn the
 # substrate marker on with it.
-plane-a2a = ["card-signing", "relay"]
+plane-a2a = ["relay"]
 # THE NEUTRAL INBOUND WS CAPABILITY — arms the core-side duplex session mount (router.rs,
 # `mount_plane_session`) that answers a door plane's session upgrade. NAMES NO PLANE: any duplex
 # plane turns on the same capability. Forwards to the neutral `runtime` (which arms `axum/ws` and the
@@ -199,17 +199,6 @@ duplex-ws  = ["runtime"]
 dispatch = []
 relay = []
 runtime = ["axum/ws"]
-# ── NEUTRAL CAPABILITY MARKERS (plane-purity) ──────────────────────────────────────────────────────
-# The neutral crates must name NO plane token in source (enforced by the plane-purity
-# lint). These pure markers stand in for the `#[cfg(feature = "plane-mcp"/"plane-a2a")]` gates that
-# guarded a CAPABILITY rather than a plane's mere presence, so the gated source names a capability, not
-# a plane. Each is enabled ONLY transitively by the plane feature(s) that supply the capability, so its
-# truth value — and thus every gated item's compilation — is byte-identical to the plane-token gate it
-# replaced:
-#   card-signing  — the host card-sign vtable slot (`plane_host::vtable::card_sign`), wired only when a
-#                   plane declares a card-signing domain. Enabled by `plane-a2a` only (was `plane-a2a`),
-#                   matching `governance::GovState::card_sign`.
-card-signing = []
 # FORWARDS to substrate: the relocated `admin::v1` data helpers (`NamedDefView`'s `schemars` derive
 # and `set_response_schema`) live behind substrate's matching feature, and core re-exports them, so
 # enabling this must enable substrate's so the re-exported view keeps its schema impl in lock-step.
