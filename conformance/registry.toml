@@ -180,12 +180,11 @@ not_run_reason = "planned 1.6.0 — self-hosted OIDF leg not yet green; claim is
 [[suite]]
 id = "slsa-verifier"
 standard = "SLSA provenance (v1.0)"
-plan = "slsa-verifier over the release attestations"
+plan = "each dev commit's busbar binaries, verified by slsa-verifier against SLSA provenance from busbar's own slsa-dev-provenance run"
 tier = "conformant"
 label = "SLSA"
 verdict = "conformance-verdict-slsa-verifier"
 public = "true"
-not_run_reason = "planned 1.6.0 — slsa-verifier leg not yet wired as an arm-or-red verdict"
 
 [[suite]]
 id = "tls"

@@ -127,9 +127,9 @@
     },
     {
       "claim": null,
-      "plan": "slsa-verifier over the release attestations",
+      "plan": "each dev commit's busbar binaries, verified by slsa-verifier against SLSA provenance from busbar's own slsa-dev-provenance run",
       "public": true,
-      "reason": "planned 1.6.0 — slsa-verifier leg not yet wired as an arm-or-red verdict",
+      "reason": "no verdict artifact for this commit",
       "standard": "SLSA provenance (v1.0)",
       "status": "not-run",
       "suite": "slsa-verifier",
