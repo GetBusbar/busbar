@@ -770,8 +770,11 @@ busbar-transport-grpc = ["http", "http-body", "hyper"]
 # bytes with no runtime (handshake feature only; ws #21 dropped the tokio wrapper).
 busbar-transport-ws = ["httparse", "httpdate", "tungstenite"]
 # The MCP plane's outbound wire (fold A5, ARCHITECT 2026-09-29 under the PLUGIN LIBRARIES ruling):
-# the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry.
-busbar-plane-mcp = ["base64", "indexmap"]
+# the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry. The
+# same ruling applied to its argument guard: url is the WHATWG reader a fetching client reads an
+# argument string with, and idna_adapter selects that reader's IDNA backend at the version this
+# build pins (both as the streaming and a2a planes' url).
+busbar-plane-mcp = ["base64", "indexmap", "url", "idna_adapter"]
 # The streaming plane's door reads the deployment's public base URL once (`door::absolute`).
 busbar-plane-streaming = ["url"]
 # The same ruling applied to a plane: the `agents:` grammar keeps its registrations in the order an
