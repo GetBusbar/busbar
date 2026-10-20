@@ -78,7 +78,9 @@ pub(super) fn refused(stream: &Shared, rendered: Option<Rendered>) -> Response {
         || (refusal_status(ReasonCode::PlanePanic), Vec::new()),
         |r| (r.status, r.body),
     );
-    let block = lock(stream).take().map(|mut s| s.refuse(&body, status));
+    let block = lock(stream)
+        .take()
+        .map(|mut s| s.refuse(&body, status, false));
     match block {
         Some(Ok(block)) => whole(status, &block),
         _ => stated((status, Vec::new()), Body::empty()),
@@ -121,12 +123,13 @@ impl FramedCaller {
     /// status the claim's numbering does not have is refused before it crosses, and the stream
     /// is closed as a plane fault instead), sent as the answer's trailers.
     fn finish(&self, status: u32, message: &[u8], details: &[u8]) {
+        let head_sent = self.inner.stated().is_some();
         let Some(mut s) = lock(&self.stream).take() else {
             return;
         };
         let block = s
             .finish(status, message, details)
-            .or_else(|_| s.refuse(&[], refusal_status(ReasonCode::PlanePanic)));
+            .or_else(|_| s.refuse(&[], refusal_status(ReasonCode::PlanePanic), head_sent));
         let Ok(block) = block else {
             return;
         };
@@ -206,7 +209,7 @@ impl Stated for FramedCaller {
         let Some(mut s) = lock(&self.stream).take() else {
             return;
         };
-        let Ok(block) = s.refuse(&[], refusal_status(reason)) else {
+        let Ok(block) = s.refuse(&[], refusal_status(reason), true) else {
             return;
         };
         let sender = self

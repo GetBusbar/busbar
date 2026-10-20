@@ -1609,6 +1609,11 @@ pub fn owned_anchors_refusal<P: AsRef<str>>(
 pub struct Rules {
     /// The owned trust anchors the composed door planes name, held as each plane is composed.
     owned_anchors: Mutex<Vec<&'static str>>,
+    /// The declaring sections of the door planes the boot bound but did not open (their section
+    /// absent from the boot configuration), held once the boot composed its planes
+    /// ([`Rules::hold_unopened`]). A door plane is opened once, at boot, so a configuration that
+    /// writes one of these is restart-to-apply ([`Rules::planes_awaiting_restart`]).
+    unopened: Mutex<Vec<&'static str>>,
 }
 
 impl Rules {
@@ -1627,9 +1632,43 @@ impl Rules {
             }
         }
     }
+
+    /// Hold the declaring sections of the door planes the boot left unopened (`sections`): each a
+    /// plane bound through its door whose section the boot configuration did not write.
+    pub fn hold_unopened(&self, sections: impl IntoIterator<Item = &'static str>) {
+        let mut held = self
+            .unopened
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for section in sections {
+            if !held.contains(&section) {
+                held.push(section);
+            }
+        }
+    }
+}
+
+/// Does `cfg` write the plane whose declaring section is `section` (Law 7, BUSBAR-1.6.0.md l.547:
+/// a plane loads iff its verb is present)? The declaring section selects; an owned, consumed or
+/// required section does not on its own.
+pub(crate) fn writes_plane(section: &str, cfg: &busbar_kernel::config::RootCfg) -> bool {
+    cfg.plane_sections.contains(section)
 }
 
 impl busbar_kernel::appbuild::RootRules for Rules {
+    fn planes_awaiting_restart(&self, cfg: &busbar_kernel::config::RootCfg) -> Vec<&'static str> {
+        let mut out: Vec<&'static str> = self
+            .unopened
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .copied()
+            .filter(|section| writes_plane(section, cfg))
+            .collect();
+        out.sort_unstable();
+        out
+    }
+
     fn check(&self, cfg: &busbar_kernel::config::RootCfg) -> Result<(), String> {
         let anchors = self
             .owned_anchors
@@ -1754,7 +1793,17 @@ pub fn kernel_sections(
             yaml(Value::Object(providers)),
         );
     }
-    if !models.is_empty() || !pools.is_empty() {
+    // A WRITTEN consumed|required key counts, even an empty one (ARCHITECT row-82 ruling): a
+    // section some registered plane requires is written in every document that parsed (the pre-pass
+    // refuses one that omits it, `busbar_kernel::config::prepass`), so it is handed as written. The
+    // previous release accepted `models: {}` and answered from its catch-all (v1.5.5
+    // crates/busbar/src/config/mod.rs:2626-2632; ingress/dispatch.rs:292-319).
+    let required = |key: &'static str| {
+        busbar_kernel::plane::registry::plane_decls()
+            .iter()
+            .any(|d| d.required_config_sections.contains(&key))
+    };
+    if !models.is_empty() || !pools.is_empty() || required(RESERVED_MODELS_KEY) {
         out.insert(RESERVED_MODELS_KEY, yaml(Value::Object(models)));
         out.insert(RESERVED_POOLS_KEY, yaml(Value::Object(pools)));
     }
@@ -3507,6 +3556,17 @@ pub fn member_routes(
                 .resolve_at_config(&r.provider.credential, scope)
                 .map_err(|e| format!("provider '{}' credential: {e}", r.name))?
         };
+        // A service-account credential naming its key file is read here, at configuration time,
+        // through the secret kind's file source: the serving plugin is handed the JSON and opens no
+        // file (Q128 audit ruling (a)).
+        let credential = if r.style == SERVICE_ACCOUNT_STYLE {
+            busbar_kernel::config_validate::service_account_json(credential, |file| {
+                reach.secrets.resolve_at_config(file, scope)
+            })
+            .map_err(|e| format!("provider '{}' (jwt-bearer auth): {e}", r.name))?
+        } else {
+            credential
+        };
         let settings = sealed_params(&r.name, &r.style, r.provider, &credential)?.to_json();
         let (auth, decl) = reach.auths.serving(&r.style, &settings)?.ok_or_else(|| {
             format!(
@@ -3627,12 +3687,14 @@ pub fn sealed_settings(
     Ok(serde_json::Value::Object(sealed))
 }
 
-/// The host of `base_url`: after its scheme, before its port, path, query or fragment.
+/// The host of `base_url`, the one the request dials: its authority read by the one split
+/// ([`busbar_contract::net::url_authority`]), before its port.
 fn base_url_host(base_url: &str) -> &str {
-    let rest = base_url.split_once("://").map_or(base_url, |(_, r)| r);
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let authority = authority.rsplit_once('@').map_or(authority, |(_, a)| a);
-    authority.split(':').next().unwrap_or("")
+    busbar_contract::net::url_authority(base_url)
+        .host_port
+        .split(':')
+        .next()
+        .unwrap_or("")
 }
 
 /// The dotted label of `host` right after the first of `after`, when it reads as a dashed name
