@@ -455,7 +455,7 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
                 "a listed terminal-site entry that no longer calls either verb",
                 &["terminal-sites"],
                 ov,
-                &[&format!("stale entry {stale_entry}")],
+                &[format!("stale entry {stale_entry}").as_str()],
             ));
         } else {
             r.note_infra_failure(
