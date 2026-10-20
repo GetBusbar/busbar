@@ -295,10 +295,12 @@ pub fn vocabulary(
     // teach the census its name; `plugins.yaml` files it under its kind with the `module:` word an
     // operator writes (`alias`). Owned by its plugin crate, so it is never counted against itself.
     // An alias under [`MIN_NEEDLE_LEN`] still attributes a constant that spells it, and is no needle.
-    for (kind, alias, krate) in registry_aliases(registry) {
-        let Some(k) = axes.iter().copied().find(|k| *k == kind) else {
-            continue;
-        };
+    // The registry's kind word is read onto this gate's kind table first (`hook` -> `hooks`, row
+    // 159 XC2#2): compared as written, both hook plugins were dropped without a word. A word the
+    // table maps onto nothing is refused, never skipped.
+    let (aliases, unmapped) = registry_axis_aliases(registry);
+    v.unattributed.extend(unmapped);
+    for (k, alias, krate) in aliases {
         census.entry(alias.clone()).or_default().insert(k);
         if !is_needle(&alias) {
             v.short.push((k, alias, format!("plugins.yaml {krate}")));
@@ -1050,6 +1052,37 @@ pub fn registry_aliases(text: &str) -> Vec<(String, String, String)> {
     out
 }
 
+/// Every `plugins.yaml` alias filed under one of the five axes, as `(axis, alias, crate)`, with the
+/// registry's kind word read onto this gate's kind table through the one mapping the inputs rule
+/// holds the registry to (`REGISTRY_KIND_KEYS`: the registry says `hook` where the table says
+/// `hooks`). An entry of `plane` or `transport` maps onto a kind whose bare ids the ordinary columns
+/// already count, so it is no instance axis's. An entry whose kind word maps onto NO kind is
+/// returned as a refusal (`registry-kind-unmapped`): an alias this row cannot place is an instance
+/// it cannot count (BUSBAR-1.6.0.md: "The instance census must read plugins.yaml aliases and
+/// manifest names, so it can see external plugins").
+pub fn registry_axis_aliases(text: &str) -> (Vec<(&'static str, String, String)>, Vec<String>) {
+    let axes = axes();
+    let (mut out, mut refused) = (Vec::new(), Vec::new());
+    for (kind, alias, krate) in registry_aliases(text) {
+        let Some(ours) = super::super::inputs::REGISTRY_KIND_KEYS
+            .iter()
+            .find(|(word, _)| *word == kind)
+            .map(|(_, ours)| *ours)
+        else {
+            refused.push(format!(
+                "registry-kind-unmapped\t{REGISTRY} {krate}\t`kind: {kind}` (alias `{alias}`) maps \
+                 onto no kind of this gate's table, so its alias reaches no instance axis. An \
+                 instance name this row cannot place is one it cannot count."
+            ));
+            continue;
+        };
+        if let Some(k) = axes.iter().copied().find(|k| *k == ours) {
+            out.push((k, alias, krate));
+        }
+    }
+    (out, refused)
+}
+
 /// ONE INSTANCE NAME PER AXIS, read off the tree's own vocabulary — never typed into a fixture.
 /// A module-name constant is preferred (it is the compiled-in name the breach is made of); an axis
 /// with none falls back to its first census id.
@@ -1350,11 +1383,8 @@ pub fn selftest<'a>(
     // axis under [`MIN_NEEDLE_LEN`] is planted the same way, and the cell stays at zero: GREEN.
     // The same plant plus one comparison against a real registry alias of the same tree (`vault`
     // today, read off `plugins.yaml`, never typed here) is that axis's `unlisted-instance`: RED.
-    let axis_aliases: Vec<(String, String, String)> =
-        registry_aliases(&cx.read(REGISTRY).unwrap_or_default())
-            .into_iter()
-            .filter(|(k, _, _)| axes().contains(&k.as_str()))
-            .collect();
+    let axis_aliases: Vec<(&'static str, String, String)> =
+        registry_axis_aliases(&cx.read(REGISTRY).unwrap_or_default()).0;
     let mut short_body = String::from(
         "pub extern \"C\" fn planted_one() {}\n\
          pub fn planted_two(c: &str) -> bool {\n    c == \"c\"\n}\n",
@@ -1379,7 +1409,7 @@ pub fn selftest<'a>(
     let long = axis_aliases
         .iter()
         .filter(|(_, a, _)| is_needle(a))
-        .find(|(k, _, _)| k == "secret")
+        .find(|(k, _, _)| *k == "secret")
         .or_else(|| axis_aliases.iter().find(|(_, a, _)| is_needle(a)));
     match long {
         Some((kind, alias, _)) => {

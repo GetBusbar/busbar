@@ -53,7 +53,7 @@ const PLUGIN_REGISTRY: &str = "plugins.yaml";
 /// population the loader will act on. The way four vocabularies stay one is that each is mapped,
 /// once, in the file that reads it; a word here that maps onto nothing is this one starting to
 /// drift.
-const REGISTRY_KIND_KEYS: &[(&str, &str)] = &[
+pub(super) const REGISTRY_KIND_KEYS: &[(&str, &str)] = &[
     ("store", "store"),
     ("auth", "auth"),
     ("hook", "hooks"),

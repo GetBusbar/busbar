@@ -80,10 +80,10 @@ fn the_registry_hook_aliases_reach_the_hooks_axis_and_an_unmapped_kind_is_refuse
         .map(|(i, a)| format!("pub const PLANTED_HOOK_{i}: &str = \"{a}\";\n"))
         .collect();
     ov.set(CORE_PLANT, body);
-    let at = registry
+    let head = registry
         .find("\nplugins:\n")
-        .expect("plugins.yaml has a top-level `plugins:` list")
-        + "\nplugins:\n".len();
+        .expect("plugins.yaml has a top-level `plugins:` list");
+    let at = head + "\nplugins:\n".len();
     ov.set(
         REGISTRY,
         format!(
