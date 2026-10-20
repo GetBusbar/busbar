@@ -985,3 +985,97 @@ fn every_decode_refusal_reads_the_released_bytes_in_every_dialect_and_none() {
         }
     }
 }
+
+/// THE KERNEL-SHAPED REFUSALS, RENDERED BY THE PLANE (ARCHITECT ruling 2026-10-16, 3b B): the kernel
+/// decides the reason, the status and the words — a method no route at the path takes
+/// (`MethodNotAllowed`, 405), a body over the cap (`BodyTooLarge`, 413) — and the plane renders the
+/// body in the dialect its path rule reads off the target, byte for byte the previous release's
+/// recorded answer. RED arms: the reason's own word is never the message, and a reason classed
+/// otherwise would wear another kind.
+#[test]
+fn the_kernels_method_and_size_refusals_read_as_the_previous_release_answered() {
+    use busbar_contract::abi::plane::reason_code;
+    use busbar_contract::caps::ReasonCode;
+    const METHOD: &str = "method not allowed for this resource";
+    const OVERSIZED: &str = "request body exceeds the maximum allowed size";
+    for (cell, target, reason, status, text) in [
+        (
+            "http.crosscut__wrong-method__GET-messages",
+            "/v1/messages",
+            ReasonCode::MethodNotAllowed,
+            405,
+            METHOD,
+        ),
+        (
+            "http.crosscut__413__anthropic",
+            "/v1/messages",
+            ReasonCode::BodyTooLarge,
+            413,
+            OVERSIZED,
+        ),
+        (
+            "http.crosscut__413__openai",
+            "/v1/chat/completions",
+            ReasonCode::BodyTooLarge,
+            413,
+            OVERSIZED,
+        ),
+        (
+            "http.crosscut__413__gemini-path",
+            "/v1beta/models/m-gemini:generateContent",
+            ReasonCode::BodyTooLarge,
+            413,
+            OVERSIZED,
+        ),
+    ] {
+        let r = kernel_refusal(
+            HOST,
+            envelope_for(target),
+            reason_code(reason),
+            status,
+            text,
+            0,
+        );
+        assert_matches(cell, &r);
+        assert!(
+            !String::from_utf8_lossy(&r.body).contains(reason.as_str()),
+            "{cell}: the kernel's words, not the reason's"
+        );
+    }
+}
+
+/// EVERY DIALECT, AS THE PREVIOUS RELEASE'S KERNEL WROTE IT (ARCHITECT ruling 2026-10-16, 3b B): the
+/// previous release answered these three refusals with the dialect's own error writer over
+/// `(status, kind, message)` — 405 `invalid_request` "method not allowed for this resource", 413
+/// `request_too_large` "request body exceeds the maximum allowed size", and a handler panic's 500
+/// `api_error` "internal error". The plane's rendering of the kernel's reason is that same writing,
+/// field for field and byte for byte, in all six dialects. RED arm: the reason classes are what pick
+/// the kind, so a reason classed otherwise breaks the equality.
+#[test]
+fn the_kernels_refusals_are_the_previous_releases_writing_in_every_dialect() {
+    use busbar_contract::abi::plane::reason_code;
+    use busbar_contract::caps::ReasonCode;
+    use busbar_contract::protocol::{KIND_API_ERROR, KIND_INVALID_REQUEST, KIND_REQUEST_TOO_LARGE};
+    use busbar_plane_llm::exchange::refuse::render;
+    for d in SIX {
+        for (reason, status, kind, text) in [
+            (
+                ReasonCode::MethodNotAllowed,
+                405,
+                KIND_INVALID_REQUEST,
+                "method not allowed for this resource",
+            ),
+            (
+                ReasonCode::BodyTooLarge,
+                413,
+                KIND_REQUEST_TOO_LARGE,
+                "request body exceeds the maximum allowed size",
+            ),
+            (ReasonCode::Internal, 500, KIND_API_ERROR, "internal error"),
+        ] {
+            let by_reason = kernel_refusal(HOST, d, reason_code(reason), status, text, 0);
+            let as_written = render(HOST, d, status, kind, text, 0);
+            assert_eq!(by_reason, as_written, "{d} {reason}");
+        }
+    }
+}

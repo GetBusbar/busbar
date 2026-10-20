@@ -11,7 +11,6 @@
 // there. Unconditional (the neutral seam names no plane feature — the items are public API whichever
 // planes are compiled in).
 #![allow(unused_imports)]
-#![cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
 #[cfg(test)]
 #[path = "tests/catalogue_tests.rs"]
 mod catalogue_tests;
@@ -36,9 +35,6 @@ pub struct Caller<'a> {
     /// Seconds, for the key-expiry comparison. The caller's clock, so a test can move it.
     pub now: u64,
     /// The registry generation this ask is being judged under.
-    // A2A-only field: the A2A catalogue walk consults it, the MCP one does not, so with `plane-a2a`
-    // off (and MCP on) it is read nowhere.
-    #[cfg_attr(not(feature = "relay"), allow(dead_code))]
     pub generation: Generations,
 }
 
@@ -148,7 +144,7 @@ pub fn judge<'i, I: CatalogueItem>(
     let mut grants: Vec<Grant<'_>> = Vec::new();
     item.required_grants(query, &mut grants);
     // THE FAIL-CLOSED FLOOR, and it is checked before the gate rather than by it: an EMPTY grant
-    // list is honest at `validate_request`'s door (some asks legitimately need no grant) and is
+    // list is honest at `validate_visibility`'s door (some asks legitimately need no grant) and is
     // never honest for an item in an inventory.
     if grants.is_empty() {
         return Err(item.ungranted());
@@ -176,9 +172,6 @@ pub fn entitled<'i, I: CatalogueItem + 'i>(
 }
 
 /// The entitled subset as ITEMS — the same walk, for a caller that has no use for the fitness value.
-// MCP-only helper: the MCP plane's catalogue calls this, the A2A plane renders differently, so with
-// `plane-mcp` off (and A2A on) it has no caller.
-#[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
 pub fn visible<'i, I: CatalogueItem + 'i>(
     items: impl IntoIterator<Item = &'i I>,
     caller: &Caller<'_>,
