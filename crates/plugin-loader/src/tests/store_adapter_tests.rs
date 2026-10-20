@@ -272,4 +272,3 @@ fn the_published_operations_pass_through_the_adapter_to_the_plugin() {
         "the row is the plugin's, not the shim's"
     );
 }
-
