@@ -487,8 +487,6 @@ fn strip_tests(stream: TokenStream) -> TokenStream {
     out.into_iter().collect()
 }
 
-/// The path reader [`banned_paths`] runs: renames of a banned path's prefix, and the hits.
-#[derive(Default)]
 /// The keywords that are never a path segment (`crate`, `self`, `super` and `Self` are, so they are
 /// absent): one before a leading `::` (`use ::std::net`, `pub ::x`) starts no path.
 const NOT_A_SEGMENT: &[&str] = &[
@@ -497,6 +495,8 @@ const NOT_A_SEGMENT: &[&str] = &[
     "return", "static", "struct", "trait", "true", "type", "unsafe", "use", "where", "while",
 ];
 
+/// The path reader [`banned_paths`] runs: renames of a banned path's prefix, and the hits.
+#[derive(Default)]
 struct PathScan {
     aliases: BTreeMap<String, Vec<String>>,
     hits: BTreeSet<&'static str>,
