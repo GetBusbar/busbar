@@ -540,21 +540,122 @@ const MONEY_TYPED_FLOOR: usize = 24;
 
 /// Every production file among `files` that names a [`MONEY_TYPES`] type in code (comments and
 /// literals blanked).
-fn money_typed_files(files: &[crate::ctx::SourceFile]) -> Vec<crate::ctx::SourceFile> {
+fn money_typed_files(
+    cx: &Ctx,
+    files: &[crate::ctx::SourceFile],
+    walk: Walk,
+) -> Vec<crate::ctx::SourceFile> {
     files
         .iter()
-        .filter(|f| {
-            if !MONEY_TYPES.iter().any(|t| f.text.contains(t)) {
-                return false;
-            }
-            let mut st = scan::LexState::default();
-            f.text.lines().any(|l| {
-                let code = scan::blank_code(l, &mut st);
-                MONEY_TYPES.iter().any(|t| word_hit(&code, t))
-            })
-        })
+        .filter(|f| money_reading(cx, f, walk).names)
         .cloned()
         .collect()
+}
+
+/// Whether a file names a [`MONEY_TYPES`] type in code (comments and literals blanked).
+fn names_money_type(text: &str) -> bool {
+    if !MONEY_TYPES.iter().any(|t| text.contains(t)) {
+        return false;
+    }
+    let mut st = scan::LexState::default();
+    text.lines().any(|l| {
+        let code = scan::blank_code(l, &mut st);
+        MONEY_TYPES.iter().any(|t| word_hit(&code, t))
+    })
+}
+
+/// What the derived money population reads off one file: whether it names a money type and, if
+/// it does, which [`MONEY_TYPES`] it declares (by index).
+struct MoneyReading {
+    names: bool,
+    declares: Vec<bool>,
+}
+
+fn read_money(text: &str) -> MoneyReading {
+    let names = names_money_type(text);
+    MoneyReading {
+        names,
+        declares: if names {
+            MONEY_TYPES.iter().map(|t| declares_type(text, t)).collect()
+        } else {
+            Vec::new()
+        },
+    }
+}
+
+/// [`read_money`] of one walked file, memoised on the file ([`scan::file_reading`]) unless `walk`
+/// says the full walk.
+fn money_reading(cx: &Ctx, f: &crate::ctx::SourceFile, walk: Walk) -> std::sync::Arc<MoneyReading> {
+    static MEMO: scan::FileReadingMemo<MoneyReading> = std::sync::OnceLock::new();
+    if walk.memoised {
+        scan::file_reading(&MEMO, cx, f, read_money)
+    } else {
+        std::sync::Arc::new(read_money(&f.text))
+    }
+}
+
+/// THE PLANE CRATES THE COUNT-READ SCAN WALKS ([`crate::gates::kind_isolation::plane_kind_crates`]),
+/// memoised for a tree whose manifests are the unplanted tree's.
+///
+/// The census behind it walks the WHOLE repository for every `Cargo.toml` and folds the base
+/// layer's pinned crates into that listing, which made it the dearest single read of a gate run:
+/// a self-test case paid for it once per case although no case of this battery plants a manifest.
+/// What this gate reads of it — each plane crate's name and manifest, or the census's refusal — is
+/// a function of the `.toml` files (every manifest, the root manifest's pins and the kind registry)
+/// and the base layer alone. So it is read once per (root, base layer and its size) while the
+/// overlay touches no `.toml`, and read afresh for any tree that plants one, or when `walk` says
+/// the full walk.
+fn plane_crates(
+    cx: &Ctx,
+    walk: Walk,
+) -> Result<Vec<crate::gates::kind_isolation::PlaneKindCrate>, String> {
+    type Memo = std::collections::HashMap<
+        (std::path::PathBuf, Option<usize>),
+        Result<Vec<crate::gates::kind_isolation::PlaneKindCrate>, String>,
+    >;
+    static MEMO: std::sync::OnceLock<std::sync::Mutex<Memo>> = std::sync::OnceLock::new();
+    let plants_a_manifest = cx
+        .overlay()
+        .is_some_and(|ov| ov.paths().any(|p| p.to_string_lossy().ends_with(".toml")));
+    if !walk.memoised || plants_a_manifest {
+        return crate::gates::kind_isolation::plane_kind_crates(cx);
+    }
+    let key = (
+        cx.root().to_path_buf(),
+        cx.base().map(|b| b.paths().count()),
+    );
+    let memo = MEMO.get_or_init(Default::default);
+    if let Some(hit) = memo
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&key)
+    {
+        return hit.clone();
+    }
+    let read = crate::gates::kind_isolation::plane_kind_crates(cx);
+    memo.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(key, read.clone());
+    read
+}
+
+/// Whether a per-file reading may come from its memo or must be taken afresh — the shape
+/// `kind-isolation`'s matrix keeps (`matrix::Walk`). A self-test case is a gate run over a tree one
+/// plant away from the last; the gate reads ~1 900 crate-source files per run (the derived money
+/// population, the persisted-record census) and the count-read areas, so the battery used to lex
+/// the unchanged tree once per case. The memoised verdict is held equal to the full walk's on
+/// planted trees (`the_memoised_verdict_is_the_full_walk_on_planted_trees`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Walk {
+    /// `true`: every per-file reading from its memo where one is held (the gate's own path).
+    /// `false`: every per-file reading taken afresh, no memo read or written (the reference).
+    memoised: bool,
+}
+
+impl Walk {
+    const MEMOISED: Walk = Walk { memoised: true };
+    #[cfg(test)]
+    const FULL: Walk = Walk { memoised: false };
 }
 
 /// Is `name` declared as a `struct`, `enum`, `type` or `trait` in `text`?
@@ -1029,6 +1130,7 @@ const PERSISTED_CENSUS_FLOOR: usize = 60;
 fn persisted_record_homes(
     cx: &Ctx,
     files: Vec<crate::ctx::SourceFile>,
+    walk: Walk,
 ) -> Vec<crate::ctx::SourceFile> {
     production_only(
         cx,
@@ -1038,16 +1140,56 @@ fn persisted_record_homes(
             .collect(),
     )
     .into_iter()
-    .filter(|f| {
-        if !f.text.contains("Serialize") {
-            return false;
-        }
-        let mut st = scan::LexState::default();
-        f.text
-            .lines()
-            .any(|l| word_hit(&scan::blank_code(l, &mut st), "Serialize"))
-    })
+    .filter(|f| persisted_reading(cx, f, walk).home)
     .collect()
+}
+
+/// Whether a file names `Serialize` in code (comments and literals blanked).
+fn names_serialize(text: &str) -> bool {
+    if !text.contains("Serialize") {
+        return false;
+    }
+    let mut st = scan::LexState::default();
+    text.lines()
+        .any(|l| word_hit(&scan::blank_code(l, &mut st), "Serialize"))
+}
+
+/// What the persisted-count discriminator reads off one file: whether it is a persisted-record
+/// home and, if it is, the header line of every `struct` body that holds a `Count` and names no
+/// [`SCALE_DISCRIMINATORS`] entry, in [`struct_bodies`] order.
+struct PersistedReading {
+    home: bool,
+    unscaled: Vec<usize>,
+}
+
+fn read_persisted(text: &str) -> PersistedReading {
+    let home = names_serialize(text);
+    let unscaled = if home {
+        struct_bodies(text)
+            .into_iter()
+            .filter(|(_, body)| {
+                word_hit(body, "Count") && !SCALE_DISCRIMINATORS.iter().any(|d| word_hit(body, d))
+            })
+            .map(|(line, _)| line)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    PersistedReading { home, unscaled }
+}
+
+/// [`read_persisted`] of one walked file, memoised the same way.
+fn persisted_reading(
+    cx: &Ctx,
+    f: &crate::ctx::SourceFile,
+    walk: Walk,
+) -> std::sync::Arc<PersistedReading> {
+    static MEMO: scan::FileReadingMemo<PersistedReading> = std::sync::OnceLock::new();
+    if walk.memoised {
+        scan::file_reading(&MEMO, cx, f, read_persisted)
+    } else {
+        std::sync::Arc::new(read_persisted(&f.text))
+    }
 }
 
 /// What a record must name beside a `Count` for the mantissa to mean anything. Any of them: the
@@ -1137,8 +1279,35 @@ type IntakeSpans = std::collections::BTreeMap<String, Vec<(usize, usize)>>;
 /// A line INSIDE a declared intake boundary's body is skipped: that is the configured decimal being
 /// converted, which #44 permits. Every other line of the same file is scanned, which is the whole
 /// difference between "this file is a boundary" and "this function is a boundary".
+#[cfg(test)]
 fn scan_file(rel: &str, text: &str, exempt: &IntakeSpans, offenders: &mut Vec<String>) {
-    let spans = exempt.get(rel).map(Vec::as_slice).unwrap_or(&[]);
+    push_float_findings(rel, &float_hits(text), exempt, offenders);
+}
+
+/// Scan one walked file for the banned floats, appending findings, its float hits memoised on the
+/// file ([`scan::file_reading`]) unless `walk` says the full walk. The exempt spans are applied
+/// after the reading, so they are not an input of the memoised half.
+fn scan_walked(
+    cx: &Ctx,
+    f: &crate::ctx::SourceFile,
+    walk: Walk,
+    exempt: &IntakeSpans,
+    offenders: &mut Vec<String>,
+) {
+    static MEMO: scan::FileReadingMemo<Vec<(usize, String)>> = std::sync::OnceLock::new();
+    let hits = if walk.memoised {
+        scan::file_reading(&MEMO, cx, f, float_hits)
+    } else {
+        std::sync::Arc::new(float_hits(&f.text))
+    };
+    push_float_findings(&f.rel_str(), &hits, exempt, offenders);
+}
+
+/// Every float on every line of `text`, as `(1-based line, token)`, in the order a line's findings
+/// are written: the [`FLOAT_TOKENS`] words, then the other spellings, then the carriers. A pure
+/// function of the text — which lines a boundary exempts is [`push_float_findings`]'s.
+fn float_hits(text: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
     let mut in_block = false;
     let mut lex = scan::LexState::default();
     for (i, raw) in text.lines().enumerate() {
@@ -1149,23 +1318,37 @@ fn scan_file(rel: &str, text: &str, exempt: &IntakeSpans, offenders: &mut Vec<St
         // version string `"1.0"` is not a float, and `1.0` in code is.
         let blanked = scan::blank_code(raw, &mut lex);
         let line = i + 1;
-        if spans
-            .iter()
-            .any(|(first, last)| line >= *first && line <= *last)
-        {
-            continue;
-        }
         for token in FLOAT_TOKENS {
             if word_hit(&code, token) {
-                offenders.push(finding(rel, line, token));
+                out.push((line, (*token).to_string()));
             }
         }
         for spelled in float_spellings(&blanked) {
-            offenders.push(finding(rel, line, &spelled));
+            out.push((line, spelled));
         }
         for carried in float_carriers(&blanked) {
-            offenders.push(finding(rel, line, &carried));
+            out.push((line, carried));
         }
+    }
+    out
+}
+
+/// The findings of one file's float hits, less every line inside a declared boundary's span.
+fn push_float_findings(
+    rel: &str,
+    hits: &[(usize, String)],
+    exempt: &IntakeSpans,
+    offenders: &mut Vec<String>,
+) {
+    let spans = exempt.get(rel).map(Vec::as_slice).unwrap_or(&[]);
+    for (line, token) in hits {
+        if spans
+            .iter()
+            .any(|(first, last)| *line >= *first && *line <= *last)
+        {
+            continue;
+        }
+        offenders.push(finding(rel, *line, token));
     }
 }
 
@@ -1659,33 +1842,44 @@ fn if_let_else_zero(flat: &Flat, start: usize, body: usize) -> Option<usize> {
     is_zero_value(&flat.text[open..close]).then_some(close)
 }
 
-/// Every defaulted JSON-number read in one file, by shape — MEMOISED on the file's bytes.
+/// Every defaulted JSON-number read in one file, by shape, and — for a file with any — the `fn`
+/// items they can sit in. MEMOISED ON THE FILE ([`scan::file_reading`]) unless `walk` says the full
+/// walk.
 ///
 /// The reading is a pure function of the text, and it is the dearest thing this gate does: one
 /// byte-by-byte word scan per accessor per file. A self-test case IS a gate run over a tree one
 /// plant away from the last, so the battery used to re-read every count-read area's unchanged files
-/// once per case — 36 times. The verdict over the hits (which allowance each one uses, which file
-/// it is in) is still taken fresh on every run.
-fn scan_count_reads(text: &str) -> std::sync::Arc<Vec<CountHit>> {
-    use std::hash::{Hash, Hasher};
-    static MEMO: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::BTreeMap<u64, std::sync::Arc<Vec<CountHit>>>>,
-    > = std::sync::OnceLock::new();
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    text.hash(&mut h);
-    let key = h.finish();
-    let memo = MEMO.get_or_init(Default::default);
-    if let Some(found) = memo.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
-        return std::sync::Arc::clone(found);
+/// once per case. It was memoised on the file's BYTES, which still hashed every count-read area
+/// (the kernel, both LLM crates and every plane) on every run; an unchanged file is now looked up
+/// by its stable key and only a planted one is read. The verdict over the hits (which allowance
+/// each one uses, which file it is in) is still taken fresh on every run.
+fn count_reading(cx: &Ctx, f: &crate::ctx::SourceFile, walk: Walk) -> std::sync::Arc<CountReading> {
+    static MEMO: scan::FileReadingMemo<CountReading> = std::sync::OnceLock::new();
+    if walk.memoised {
+        scan::file_reading(&MEMO, cx, f, read_counts)
+    } else {
+        std::sync::Arc::new(read_counts(&f.text))
     }
-    let hits = std::sync::Arc::new(read_count_hits(text));
-    memo.lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(key, std::sync::Arc::clone(&hits));
-    hits
 }
 
-/// The reading [`scan_count_reads`] remembers.
+/// What [`count_reading`] remembers of one file.
+struct CountReading {
+    hits: Vec<CountHit>,
+    /// [`fn_items`], taken only for a file with a hit (an item is only ever looked up for a hit).
+    items: Vec<(String, usize, usize)>,
+}
+
+fn read_counts(text: &str) -> CountReading {
+    let hits = read_count_hits(text);
+    let items = if hits.is_empty() {
+        Vec::new()
+    } else {
+        fn_items(text)
+    };
+    CountReading { hits, items }
+}
+
+/// Every defaulted JSON-number read in one file, by shape.
 fn read_count_hits(text: &str) -> Vec<CountHit> {
     let flat = flatten(text);
     let mut hits = Vec::new();
@@ -1960,21 +2154,9 @@ fn walk_area(cx: &Ctx, area: &CountRoot) -> Result<Vec<crate::ctx::SourceFile>, 
     Ok(files)
 }
 
-impl Gate for NoFloatMoneyGate {
-    fn name(&self) -> &'static str {
-        "no-float-money"
-    }
-
-    fn owed(&self) -> Vec<String> {
-        vec![
-            ROW_SCAN_FLOOR.to_string(),
-            ROW_NO_FLOAT.to_string(),
-            ROW_COUNT_READ.to_string(),
-            ROW_COUNT_SCALE.to_string(),
-        ]
-    }
-
-    fn run(&self, cx: &Ctx) -> Verdict {
+impl NoFloatMoneyGate {
+    /// THE GATE RUN, its per-file readings memoised or taken afresh as `walk` says.
+    fn run_with(cx: &Ctx, walk: Walk) -> Verdict {
         // The ledger crate WHOLE, card-build file included, minus the test-scope files, held to its floor.
         // The card build's conversion is exempt by named item ([`MONEY_INTAKE`]), never by file.
         let ledger_spec = WalkSpec::new([LEDGER_SRC]).ext("rs");
@@ -2135,7 +2317,7 @@ impl Gate for NoFloatMoneyGate {
         let (crate_src, crate_src_problems) = crate_src_files(cx);
         float_scan_problems.extend(crate_src_problems);
         let crate_src = production_only(cx, crate_src);
-        let money_typed = money_typed_files(&crate_src);
+        let money_typed = money_typed_files(cx, &crate_src, walk);
         if money_typed.len() < MONEY_TYPED_FLOOR {
             float_scan_problems.push(format!(
                 "the derived money population holds {} production file(s) naming a money type, \
@@ -2144,8 +2326,11 @@ impl Gate for NoFloatMoneyGate {
                 money_typed.len()
             ));
         }
-        for t in MONEY_TYPES {
-            if !money_typed.iter().any(|f| declares_type(&f.text, t)) {
+        for (i, t) in MONEY_TYPES.iter().enumerate() {
+            if !money_typed
+                .iter()
+                .any(|f| money_reading(cx, f, walk).declares.get(i) == Some(&true))
+            {
                 float_scan_problems.push(format!(
                     "the money type `{t}` is declared in no production file — every file that \
                      named only it has dropped out of the derived money population; rename it in \
@@ -2298,16 +2483,16 @@ impl Gate for NoFloatMoneyGate {
         }
 
         for f in &ledger_files {
-            scan_file(&f.rel_str(), &f.text, &intake_spans, &mut offenders);
+            scan_walked(cx, f, walk, &intake_spans, &mut offenders);
         }
         for f in &governance_files {
-            scan_file(&f.rel_str(), &f.text, &intake_spans, &mut offenders);
+            scan_walked(cx, f, walk, &intake_spans, &mut offenders);
         }
         for f in &whole_crate_files {
-            scan_file(&f.rel_str(), &f.text, &intake_spans, &mut offenders);
+            scan_walked(cx, f, walk, &intake_spans, &mut offenders);
         }
         for f in &named_files {
-            scan_file(&f.rel_str(), &f.text, &intake_spans, &mut offenders);
+            scan_walked(cx, f, walk, &intake_spans, &mut offenders);
         }
         offenders.sort();
         offenders.dedup();
@@ -2336,7 +2521,7 @@ impl Gate for NoFloatMoneyGate {
         // provider's body, so every crate the kind census calls a plane is a count-read area, named
         // or not: the decision plane read a billed usage figure in no area at all. Its `src/` is
         // walked whole; a plane whose source reads as empty is refused, never scanned as zero hits.
-        match crate::gates::kind_isolation::plane_kind_crates(cx) {
+        match plane_crates(cx, walk) {
             Ok(planes) => {
                 for plane in planes {
                     let dir = plane
@@ -2376,13 +2561,12 @@ impl Gate for NoFloatMoneyGate {
             if !scanned.insert(rel.clone()) {
                 continue;
             }
-            let hits = scan_count_reads(&f.text);
-            if hits.is_empty() {
+            let reading = count_reading(cx, f, walk);
+            if reading.hits.is_empty() {
                 continue;
             }
-            let items = fn_items(&f.text);
-            for hit in hits.iter() {
-                let item = enclosing_fn(&items, hit.line);
+            for hit in &reading.hits {
+                let item = enclosing_fn(&reading.items, hit.line);
                 let allowed = ALLOWED_COUNT_READS
                     .iter()
                     .enumerate()
@@ -2410,16 +2594,10 @@ impl Gate for NoFloatMoneyGate {
         // crate-source listing the derived money population took above (a listing or read failure
         // is already a scan-set problem there).
         let mut scale_offenders = Vec::new();
-        let homes = persisted_record_homes(cx, crate_src);
+        let homes = persisted_record_homes(cx, crate_src, walk);
         for home in &homes {
             let rel = home.rel_str();
-            for (line, body) in struct_bodies(&home.text) {
-                if !word_hit(&body, "Count") {
-                    continue;
-                }
-                if SCALE_DISCRIMINATORS.iter().any(|d| word_hit(&body, d)) {
-                    continue;
-                }
+            for line in &persisted_reading(cx, home, walk).unscaled {
                 scale_offenders.push(format!(
                     "{rel}:{line}: a persisted struct holds a `Count` and names no scale"
                 ));
@@ -2470,6 +2648,25 @@ impl Gate for NoFloatMoneyGate {
             row_count_read(&count_scan),
             row_count_scale(&scale_offenders),
         ])
+    }
+}
+
+impl Gate for NoFloatMoneyGate {
+    fn name(&self) -> &'static str {
+        "no-float-money"
+    }
+
+    fn owed(&self) -> Vec<String> {
+        vec![
+            ROW_SCAN_FLOOR.to_string(),
+            ROW_NO_FLOAT.to_string(),
+            ROW_COUNT_READ.to_string(),
+            ROW_COUNT_SCALE.to_string(),
+        ]
+    }
+
+    fn run(&self, cx: &Ctx) -> Verdict {
+        Self::run_with(cx, Walk::MEMOISED)
     }
 
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
@@ -3585,18 +3782,111 @@ mod tests {
     /// unchanged files on every gate run, so the 36-case battery paid for it 36 times.
     #[test]
     fn the_count_read_scan_reads_an_unchanged_file_once() {
-        let src = "fn zz_memo_probe(v: &Value) -> u64 { v.as_u64().unwrap_or(0) }\n";
-        let a = scan_count_reads(src);
-        let b = scan_count_reads(src);
+        let base = Ctx::workspace().expect("workspace context");
+        let rel = "crates/busbar-kernel/src/zz_memo_probe.rs";
+        let file = |cx: &Ctx| crate::ctx::SourceFile {
+            rel: std::path::PathBuf::from(rel),
+            abs: cx.abs(rel),
+            text: cx.read(rel).expect("the planted probe reads"),
+        };
+        let mut ov = Overlay::new();
+        ov.set(
+            rel,
+            "fn zz_memo_probe(v: &Value) -> u64 { v.as_u64().unwrap_or(0) }\n",
+        );
+        let planted = base.with_overlay(ov);
+        let a = count_reading(&planted, &file(&planted), Walk::MEMOISED);
+        let b = count_reading(&planted, &file(&planted), Walk::MEMOISED);
         assert!(
             std::sync::Arc::ptr_eq(&a, &b),
             "the second ask is answered from the memo"
         );
-        let c = scan_count_reads("fn zz_memo_probe_two() {}\n");
+        assert_eq!(a.hits.len(), 1, "the planted read is a hit");
+        let mut ov = Overlay::new();
+        ov.set(rel, "fn zz_memo_probe_two() {}\n");
+        let replanted = base.with_overlay(ov);
+        let c = count_reading(&replanted, &file(&replanted), Walk::MEMOISED);
         assert!(
             !std::sync::Arc::ptr_eq(&a, &c),
             "changed bytes are a new reading"
         );
+        assert!(
+            c.hits.is_empty(),
+            "the changed bytes are read, not remembered"
+        );
+    }
+
+    /// THE MEMOISED VERDICT IS THE FULL WALK'S, on the real tree and on planted ones: a float in a
+    /// derived money file, a money type renamed away, a float inside an exempt boundary, a defaulted
+    /// count read in a plane, a persisted record with no scale, and a named money file removed —
+    /// each measured cold, again warm (every memo filled by the trees before it), and in full with
+    /// no memo read or written.
+    #[test]
+    fn the_memoised_verdict_is_the_full_walk_on_planted_trees() {
+        let base = cx();
+        let edit = |path: &str, e: Edit| {
+            let mut ov = Overlay::new();
+            e.apply(&base, path, &mut ov)
+                .unwrap_or_else(|why| panic!("{path}: the plant did not apply ({why})"));
+            ov
+        };
+        let teller = "crates/busbar-kernel/src/teller.rs";
+        let mut renamed = Overlay::new();
+        renamed.set(
+            teller,
+            base.read(teller)
+                .expect("teller reads")
+                .replace("AccrualMeter", "PlantedAccrualGauge"),
+        );
+        let mut removed = Overlay::new();
+        removed.remove(std::path::Path::new(BINARY_MONEY_FILES[0]));
+        let plants = [
+            Overlay::new(),
+            edit(
+                "crates/busbar-kernel/src/settlement.rs",
+                Edit::Append(
+                    "\npub fn planted_money_drift(units: u64) -> u64 { (units as f64 * 1.5) as u64 }\n"
+                        .to_string(),
+                ),
+            ),
+            renamed,
+            body_plant(
+                &base,
+                NOT_MONEY_RATIO.file,
+                NOT_MONEY_RATIO.function,
+                "let _planted_ratio: f64 = 0.5;",
+            )
+            .expect("the ratio body plant"),
+            edit(
+                "crates/busbar-plane-llm/src/planted_spelling.rs",
+                Edit::Create(
+                    "use serde_json::Value as Json;\npub fn planted(v: &Json) -> u64 {\n    v.as_u64().unwrap_or(0)\n}\n"
+                        .to_string(),
+                ),
+            ),
+            edit(
+                "crates/busbar-contract/src/records.rs",
+                Edit::Append(
+                    "\npub struct PlantedRow {\n    pub tokens: Count,\n    pub model: String,\n}\n"
+                        .to_string(),
+                ),
+            ),
+            removed,
+        ];
+        for (i, ov) in plants.into_iter().enumerate() {
+            let cx = base.with_overlay(ov);
+            let memoised = NoFloatMoneyGate::run_with(&cx, Walk::MEMOISED);
+            let again = NoFloatMoneyGate::run_with(&cx, Walk::MEMOISED);
+            let full = NoFloatMoneyGate::run_with(&cx, Walk::FULL);
+            assert_eq!(
+                memoised.rows, full.rows,
+                "plant {i}: the memoised verdict is not the full walk's"
+            );
+            assert_eq!(
+                again.rows, full.rows,
+                "plant {i}: the warm memoised verdict is not the full walk's"
+            );
+        }
     }
 
     use super::*;
@@ -3935,7 +4225,7 @@ mod tests {
         let cx = cx();
         let (files, problems) = crate_src_files(&cx);
         assert!(problems.is_empty(), "{problems:?}");
-        let typed = money_typed_files(&production_only(&cx, files));
+        let typed = money_typed_files(&cx, &production_only(&cx, files), Walk::MEMOISED);
         let rels: std::collections::BTreeSet<String> = typed.iter().map(|f| f.rel_str()).collect();
         for want in [
             "crates/busbar-kernel/src/settlement.rs",
@@ -3963,7 +4253,7 @@ mod tests {
                    .and_then(crate::usage_count::read_count_u64)\n        .unwrap_or(0)\n}\n\
                    fn g(v: &Value) -> u64 { read_count_u64(v).unwrap_or_default() }\n\
                    fn h(v: &Value) -> Option<u64> { read_count_u64(v) }\n";
-        let hits = scan_count_reads(src);
+        let hits = read_count_hits(src);
         let lines: Vec<(usize, &str)> = hits.iter().map(|h| (h.line, h.accessor)).collect();
         assert_eq!(
             lines,
@@ -3983,7 +4273,7 @@ mod tests {
                    \x20   let g = match v.as_u64() { Some(n) => n, None => return Err(Refused) };\n\
                    \x20   let h = match v.as_u64() { Some(0) => 1, Some(n) => n, None => 7 };\n\
                    }\n";
-        let hits = scan_count_reads(src);
+        let hits = read_count_hits(src);
         let lines: Vec<usize> = hits.iter().map(|h| h.line).collect();
         assert_eq!(lines, vec![2, 3], "the hits were {lines:?}");
     }

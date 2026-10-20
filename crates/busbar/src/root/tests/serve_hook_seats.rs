@@ -527,6 +527,42 @@ pub(crate) struct RigOpts<'a> {
     /// The deployment's `limits.request_body_max_bytes` (`None`: the default): the translation cap
     /// the kernel hands the door in its settings, which the plane enforces (row 155).
     pub request_body_max_bytes: Option<usize>,
+    /// The node's book keeps its journal in a configured store that refuses, and the lane to it is
+    /// full ([`full_journal_book`]): the node fails closed on every new unit (H3).
+    pub full_journal: bool,
+}
+
+/// A NODE'S BOOK WHOSE JOURNAL CANNOT REACH ITS STORE: the journal is kept by a configured store
+/// that refuses every write, the lane to it holds one batch, and three appends have filled it, so
+/// the node's `journal_refusal` names the full journal and the store (`test-store`).
+pub(crate) fn full_journal_book() -> Arc<std::sync::Mutex<crate::root::durability::Durability>> {
+    let slots = crate::root::store_double::RecordSlots::new();
+    slots.refuse(true);
+    let lane = crate::root::durability::JournalLane::with_capacity(slots.calls(), "test-store", 1)
+        .expect("the lane starts");
+    let book = Arc::new(std::sync::Mutex::new(
+        crate::root::durability::build_on_store(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            0,
+            lane,
+            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+            Box::new(|| None),
+            None,
+        )
+        .expect("the store reads back"),
+    ));
+    let token = busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>();
+    for _ in 0..3 {
+        let _lost = book.lock().unwrap().journal.append(
+            &token,
+            busbar_contract::caps::StepName::Meter,
+            &[busbar_kernel_wal::Entry::new(
+                busbar_kernel_wal::RecordClass::Load,
+                Vec::new(),
+            )],
+        );
+    }
+    book
 }
 
 /// `text`, each line indented by `by` spaces (empty lines dropped).
@@ -979,7 +1015,12 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     gov.hydrate_budgets(&cost, 0).expect("hydrate");
     let node = Arc::new(Node::new());
     let book = crate::root::durability::node_book_over(Box::new(|| CARD.pin()));
-    node.bind_book(Arc::clone(&book.durability));
+    let durability = if opts.full_journal {
+        full_journal_book()
+    } else {
+        Arc::clone(&book.durability)
+    };
+    node.bind_book(Arc::clone(&durability));
     let post = Arc::new(NodeEndPost::new(Arc::clone(&node)));
     let site = Arc::clone(&post);
     let book_money = Arc::clone(&gov);
@@ -1197,7 +1238,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         door_table,
         token: token.expose(&busbar_kernel::seal::lend()).to_string(),
         app,
-        book: Arc::clone(&book.durability),
+        book: durability,
         key_id: key.id.to_string(),
         gov,
         appliers,

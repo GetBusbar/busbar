@@ -595,11 +595,9 @@ fn blank_admin_token_refuses_to_start() {
             "the refusal names the admin credential: {err}"
         );
         if !blank.is_empty() {
-            // A WHITESPACE-only value must be refused AS whitespace-only, not merely refused.
-            // The secret resolver now catches it first ("resolved to a BLANK file (whitespace
-            // only)"), ahead of the admin trim guard ("EMPTY/whitespace-only"); either guard is
-            // the refusal this case owes, and both name the whitespace, so the assertion holds
-            // the reason rather than one guard's exact wording.
+            // A WHITESPACE-only value must be refused AS whitespace-only, not merely refused. The
+            // `file:` source resolves it untouched, as 1.5.5 did, and the admin credential's own
+            // trim guard ("EMPTY/whitespace-only", 1.5.5's) is the refusal this case owes.
             assert!(
                 err.contains("whitespace"),
                 "a whitespace-only token must be refused as whitespace-only: {err}"
