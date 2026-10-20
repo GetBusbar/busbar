@@ -988,11 +988,15 @@ impl Gate for DeferralWordsGate {
 
         // REPORT-ONLY: a planted deferral in the doc set is REPORTED, never red (the script's default
         // mode lists and exits 0).
+        // The base is pinned and holds the planted document too, so `:no-rise` reads no rise: this
+        // case proves the SCAN rows report rather than score; the rise is proven RED above.
+        let planted = "docs/design/1.6.0-PLANTED.md";
+        let planted_text =
+            "# planted\nThe remaining call sites are deferred to a follow-on release.\n";
         let mut ov = Overlay::new();
-        ov.set(
-            "docs/design/1.6.0-PLANTED.md",
-            "# planted\nThe remaining call sites are deferred to a follow-on release.\n",
-        );
+        based(&mut ov);
+        ov.set_command(format!("git-show:{base}:{planted}"), planted_text);
+        ov.set(planted, planted_text);
         report.push(prove_green(
             &cx.with_overlay(ov),
             self,
@@ -1066,8 +1070,10 @@ impl Gate for DeferralWordsGate {
         let mut c = Controls::committed();
         c.b3 = caught;
         c.residue.remove(&0);
+        let mut widened = with(&c);
+        based(&mut widened);
         report.push(prove_green(
-            &cx.with_overlay(with(&c)),
+            &cx.with_overlay(widened),
             self,
             "batch 3: a residue phrase widened into a caught one, with its pin struck, is green",
             &[ROW_B3_REGRESSED, ROW_B3_STALE],
