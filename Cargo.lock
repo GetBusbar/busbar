@@ -848,12 +848,11 @@ dependencies = [
 [[package]]
 name = "busbar-plane-mcp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=f14caf3e37e0d9256a1af974af24cdc015a5146d#f14caf3e37e0d9256a1af974af24cdc015a5146d"
+source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=9a238349927cfcc829ac743b025daef3c223be56#9a238349927cfcc829ac743b025daef3c223be56"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
  "bytes",
- "idna_adapter",
  "indexmap",
  "serde",
  "serde_json",
