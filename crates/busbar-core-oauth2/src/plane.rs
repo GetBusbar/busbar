@@ -758,7 +758,7 @@ pub(crate) fn sweep_on_clock(server: &Arc<AsServer>, every: std::time::Duration)
         due: std::sync::Mutex::new(std::time::Instant::now() + every),
         sweeping: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
-    let on_clock: Arc<dyn busbar_kernel::tick::ClockWork> = Arc::clone(&work);
+    let on_clock: Arc<dyn busbar_kernel::tick::ClockWork> = Arc::<SweepWork>::clone(&work);
     busbar_kernel::tick::on_clock(Arc::downgrade(&on_clock));
     Sweeper { work }
 }
