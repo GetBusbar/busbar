@@ -1640,16 +1640,16 @@
           {
             "cell": "admin.ops|GetAudit|ok",
             "pointer": "/items/0/scheme",
-            "equals": 2
+            "equals": 1
           },
           {
             "cell": "admin.ops|GetAudit|ok",
             "pointer": "/items/3/scheme",
-            "equals": 2
+            "equals": 1
           }
         ]
       },
-      "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): GET /api/v1/admin/audit's four items each GAIN `scheme: 2`; every 1.5.5 member is unchanged. kind=additive so the runner still proves the candidate a JSON superset of the 1.5.5 page — a changed or removed audit member stays red. PREMISE (evaluated): the served entries carry scheme 2."
+      "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): GET /api/v1/admin/audit's four items each GAIN `scheme: 1` (1.5.5 hash kept; scheme 2 only for records with '|'), Q41 ruling 2026-10-20; every 1.5.5 member is unchanged. kind=additive so the runner still proves the candidate a JSON superset of the 1.5.5 page — a changed or removed audit member stays red. PREMISE (evaluated): the served entries carry scheme 2."
     },
     {
       "id": "Q41 an audit entry carries its record's scheme (teller audit-record script)",
@@ -1680,7 +1680,7 @@
           {
             "cell": "admin.ops|GetAudit|ok",
             "pointer": "/items/0/scheme",
-            "equals": 2
+            "equals": 1
           },
           {
             "cell": "teller|audit-record",
@@ -1694,7 +1694,7 @@
           }
         ]
       },
-      "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): the only difference is effects.script /audit_after/items/0/scheme and /newest_entry/scheme: absent -> 2. effects.script is a money-rated class, so only kind=breaking may take it. PREMISE (evaluated): the served audit entries carry scheme 2 and the teller step still seals exactly one key.create record (the step's own contract)."
+      "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): the only difference is effects.script /audit_after/items/0/scheme and /newest_entry/scheme: absent -> 1 (1.5.5 hash kept; scheme 2 only for records with '|'), Q41 ruling 2026-10-20. effects.script is a money-rated class, so only kind=breaking may take it. PREMISE (evaluated): the served audit entries carry scheme 2 and the teller step still seals exactly one key.create record (the step's own contract)."
     },
     {
       "id": "#34 a new audit record signs under digest v3, which drops currency",
