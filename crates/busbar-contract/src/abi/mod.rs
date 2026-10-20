@@ -2,40 +2,29 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! **THE busbar plugin interface** — the memory ABI (`BUSBAR-1.6.0.md` THE DESIGN, the plugin ABI:
-//! plugins speak the memory ABI only) over the shared mechanism, one folder per kind, and the HOT
-//! lane's shapes, which the legacy planes' host still names until it is deleted.
+//! plugins speak the memory ABI only) over the shared mechanism, one folder per kind.
 //!
 //! * [`mechanism`] and `abi/<kind>/` — the ONE memory ABI: one door, one call shape, one
 //!   lifecycle, and each kind's own operations, shapes and version.
-//! * [`hot`] — the HOT lane (was `busbar-plane-abi`). A `#[repr(C)]` fn-pointer vtable no plugin
-//!   image loads through any more: every plane and transport loads through its door (row 84). Its
-//!   shapes stay while the legacy planes' host names them, and go with it.
-//! * The COLD/JSON lane, which THE DESIGN's plugin ABI abolished, is deleted, with the handshake
-//!   (`busbar_abi`, `busbar_plugin_kind`) the HOT lane shared with it. A 1.5.5 JSON-contract plugin
-//!   is refused at boot naming the rebuild against the 1.6.0 SDK (the plugin ABI's "no legacy
-//!   loading").
+//! * The HOT lane (`abi::hot`, a `#[repr(C)]` fn-pointer vtable) and the COLD/JSON lane, which THE
+//!   DESIGN's plugin ABI abolished, are deleted (status row 84), with the handshake (`busbar_abi`,
+//!   `busbar_plugin_kind`) they shared. A 1.5.5 JSON-contract plugin is refused at boot naming the
+//!   rebuild against the 1.6.0 SDK (the plugin ABI's "no legacy loading").
 //!
 //! # The shared root (this module)
 //!
-//! The HOT lane obeys this cross-boundary discipline, hoisted here so there is one definition:
+//! The cross-boundary discipline, hoisted here so there is one definition:
 //!
 //! 1. **The airlock preamble** ([`AbiPreamble`], [`check_preamble`]) — a `#[repr(C)]` header FROZEN
 //!    FOR ALL TIME. Its three fields (`magic`, `abi_major`, `abi_minor`) may NEVER be reordered,
 //!    resized, or removed. A major mismatch or a magic mismatch is fail-closed (the seam refuses),
 //!    so an incompatible peer can never be reached across the boundary.
-//! 2. **Sized-struct / append-only discipline** — every cross-boundary POD struct LEADS with a
-//!    `size`/`version` and a receiver reads a field only when `size` proves the sender wrote it (see
+//! 2. **Sized-struct / append-only discipline** — a cross-boundary POD struct that LEADS with a
+//!    `size` is read field by field only where `size` proves the sender wrote it (see
 //!    [`field_present`] / [`read_sized_field`]). New fields may ONLY be appended; a peer that
 //!    predates a field simply never reads it. Reorder/resize/insert = a MAJOR airlock bump.
 //! 3. **The out-param write discipline** ([`write_out`]) — the init-only-on-Ok rule a callee uses to
 //!    publish a large POD result into a caller slot without a `Vec` return.
-//!
-//! # Neutrality
-//!
-//! The HOT lane's capability surface was DERIVED from a primitive taxonomy, not ENUMERATED from any
-//! one protocol plane: no type, function, variant, or carrier name under [`hot`] may contain a
-//! protocol/role noun. A CI witness (`scripts/plane-abi-neutrality.sh`) greps the [`hot`] tree for
-//! the banned set and asserts zero.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
@@ -85,7 +74,6 @@ macro_rules! slot_table {
 }
 
 pub mod host;
-pub mod hot;
 pub mod sdk;
 
 // THE ONE MEMORY ABI (the design's locked plugin ABI: one place for every shape): the shared
@@ -96,7 +84,7 @@ pub mod hook;
 pub mod mechanism;
 pub mod plane;
 pub mod secret;
-/// The shapes the memory ABI's connection table carries that the condemned HOT lane named first.
+/// The shapes the memory ABI's connection table carries that the retired HOT lane named first.
 pub mod shared;
 pub mod store;
 pub mod transport;
@@ -127,7 +115,7 @@ pub(crate) fn kernel_root(seal: crate::caps::KernelSeal) -> Box<dyn std::any::An
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// 1. The airlock preamble — FROZEN FOR ALL TIME. Shared by both lanes.
+// 1. The airlock preamble — FROZEN FOR ALL TIME.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// The magic value every plugin-ABI peer stamps into [`AbiPreamble::magic`]. A wrong magic means the
@@ -327,7 +315,7 @@ pub fn check_preamble(peer: &AbiPreamble) -> Result<(), PreambleError> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// 2. Sized-struct discipline — the append-only field-read guard. Shared by both lanes.
+// 2. Sized-struct discipline — the append-only field-read guard.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// True iff a sender who advertised `advertised_size` bytes definitely WROTE the field that ends at
@@ -357,9 +345,8 @@ pub const fn field_present(advertised_size: u32, field_end: usize) -> bool {
 ///
 /// It does NOT rescue a peer that stamps an over-large `size` over a struct SHORTER than this
 /// build's — no clamp can, because nothing on this side can measure the peer's real extent. That
-/// residual is why the analogous claim on the host vtable is REFUSED outright rather than clamped
-/// (see `hot::host::PlaneHostVtable::check`): a wrong POD field is bad data, a wrong vtable slot is a
-/// fn-pointer this side then CALLS.
+/// residual is why the analogous claim on a slot table is REFUSED outright rather than clamped: a
+/// wrong POD field is bad data, a wrong slot is a fn-pointer this side then CALLS.
 #[inline]
 #[must_use]
 pub const fn honoured_size(advertised_size: u32, struct_size: usize) -> u32 {
@@ -402,10 +389,18 @@ pub const fn pointee_size<T>(_p: *const T) -> usize {
 /// the guard takes a pointer.
 ///
 /// ```
-/// use busbar_contract::abi::{read_sized_field, hot::Facts};
-/// let g = Facts::new(10, 100, 1, 0, 0, b"pool");
-/// // `tokens` lives within every non-truncated `Facts`, so it reads as `Some`.
-/// assert_eq!(read_sized_field!(&*g, g.size, Facts, tokens), Some(10));
+/// use busbar_contract::abi::read_sized_field;
+/// #[repr(C)]
+/// struct Shape {
+///     size: u32,
+///     tokens: u64,
+/// }
+/// let whole = Shape { size: core::mem::size_of::<Shape>() as u32, tokens: 10 };
+/// // `tokens` lies within a whole `Shape`, so it reads as `Some`.
+/// assert_eq!(read_sized_field!(&whole, whole.size, Shape, tokens), Some(10));
+/// // A sender whose `size` stops before `tokens` never wrote it: `None`.
+/// let short = Shape { size: 4, tokens: 10 };
+/// assert_eq!(read_sized_field!(&short, short.size, Shape, tokens), None);
 /// ```
 #[macro_export]
 macro_rules! read_sized_field {
@@ -439,10 +434,10 @@ macro_rules! read_sized_field {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// 3. The out-param write discipline — init-only-on-Ok. Shared by both lanes.
+// 3. The out-param write discipline — init-only-on-Ok.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/// Write `value` into a caller-provided `&mut MaybeUninit<T>` out-slot, the ONLY way a hot host-call
+/// Write `value` into a caller-provided `&mut MaybeUninit<T>` out-slot, the ONLY way a host call
 /// returns a large POD without a `Vec`. Mirrors `plugin-sdk/boundary.rs`: the callee fully writes the
 /// slot INSIDE its `catch_unwind` and marks it initialized ONLY on the Ok path — so a caller that
 /// sees a non-`Ok` status must treat the slot as still uninitialized and never read it. A null `out`
