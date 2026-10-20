@@ -1240,7 +1240,8 @@ fn a_linked_transport_door_is_bound_to_its_rows_plugin_log_file() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let text = loop {
         let text = std::fs::read_to_string(&path).unwrap_or_default();
-        if text.contains("the linked transport logged a line") || std::time::Instant::now() > deadline
+        if text.contains("the linked transport logged a line")
+            || std::time::Instant::now() > deadline
         {
             break text;
         }
