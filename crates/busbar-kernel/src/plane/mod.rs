@@ -89,9 +89,6 @@
 // sites, is what states whether a member of this module is reachable.
 #![cfg_attr(not(test), allow(dead_code))]
 
-pub(crate) mod quarantine;
-/// The durable demotion record, which the root attaches to the kernel's host services.
-pub use quarantine::DemotionRecord;
 pub mod registry;
 /// The door-plane registry fold at its former path: the pinned `busbar-plane-a2a` root suite
 /// (compiled into this workspace's root tests) names `busbar_kernel::plane::door` until its next pin.
@@ -204,6 +201,22 @@ pub fn plane_decl(key: &str) -> &'static registry::PlaneDecl {
 /// another plane's dialect spelling end up in one series meaning two things.
 pub fn wire_format_names(key: &str) -> &'static [&'static str] {
     (plane_decl(key).wire_format_names)()
+}
+
+/// EVERY DIALECT A PROVIDER'S `protocol` MAY NAME: each registered plane's declared provider
+/// dialects ([`registry::PlaneDecl::provider_dialects`]), in registration order and each plane's
+/// own order, each once (ARCHITECT ruling 2026-10-16, item 3; BUSBAR-1.6.0.md #49: the kernel
+/// reads declared data and names no dialect). A build that registers none accepts no provider.
+pub fn provider_dialects() -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for d in registry::plane_decls() {
+        for name in (d.provider_dialects)() {
+            if !out.contains(name) {
+                out.push(name);
+            }
+        }
+    }
+    out
 }
 
 /// The plane's ONE wire format, when it has exactly one — otherwise `None`.
@@ -826,6 +839,7 @@ const fn neutral_sibling_decl(
             caller_credential_refusal: None,
         },
         wire_format_names: || &[],
+        provider_dialects: || &[],
         claims: |_| Vec::new(),
         admission: |_| None,
         build: |_| None,

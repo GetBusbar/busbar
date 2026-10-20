@@ -139,7 +139,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             errors.push(format!(
                 "model '{}' has default_max_tokens: 0; must be > 0 (or omit it to use the {} fallback)",
                 model_name,
-                crate::proto::DEFAULT_MAX_TOKENS
+                crate::config::limits::DEFAULT_MAX_TOKENS
             ));
         }
         // A `max_concurrent: 0` lane builds a `Semaphore::new(0)` at startup (main.rs), which never
@@ -313,17 +313,13 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // provider sweep (not just its protocol arm) is a function a test can drive against an EMPTY
     // set. See `validate_providers_with` for why the empty set is the load-bearing case.
     //
-    // Read through `registry().codec_protocols()` rather than the `known_protocols()` re-export:
-    // both yield the same codec set (`known_protocols` IS `registry().codec_protocols()`), but the
-    // `registry()` accessor SEEDS core's own-test built-in tail first, where the bare re-export does
-    // not. Under the test-support surface, validation can be a test's FIRST registry read (an
-    // app-boot fixture that never hit a request path), and an unseeded read would spuriously see an
-    // empty codec set and refuse a valid provider. Production is unaffected — there `registry()` is
-    // the direct substrate re-export and the composition root installed the protocols in `main`.
+    // The known set is the registered planes' DECLARED provider dialects
+    // (`plane::provider_dialects`, ARCHITECT ruling 2026-10-16 item 3): each plane states which
+    // of its dialects a provider's `protocol` may name, as data, and the kernel names none.
     //
     // UNIONED with every CONFIGURED plane's OWN declared dialects (`PlaneCfg::known_dialects`,
     // P2-243/P2-decvalidate) — a plane like the decisions plane speaks a dialect with no translating
-    // IR (jev), so it is never a `busbar-llm-codec` wire codec and would otherwise be an "unknown
+    // IR (jev), so it is never a provider dialect the fallback plane declares and would otherwise be an "unknown
     // protocol" here on the very config `resolve`'s own `known_dialects` cross-check (below) just
     // accepted. Read from the STATIC plane registry via each decl's `default_section` hook — a
     // plane's own dialect restriction is a declared CONSTANT, so a throwaway default instance
@@ -333,9 +329,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // fallback plane, or its declared section is in `plane_sections`): a linked plane with no
     // config section serves nothing, so its dialect is no legal `protocol:` — and a 1.5.5 config's
     // unknown-protocol refusal lists 1.5.5's protocols, not `jev` (oracle cell BOOT-020).
-    let mut known_protocols: Vec<&str> = crate::proto::registry::registry()
-        .codec_protocols()
-        .to_vec();
+    let mut known_protocols: Vec<&str> = crate::plane::provider_dialects();
     for decl in crate::plane::registry::plane_decls()
         .iter()
         .filter(|d| d.fallback || cfg.plane_sections.contains(d.config_section))

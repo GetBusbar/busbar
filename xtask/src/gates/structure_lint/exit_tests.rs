@@ -85,7 +85,7 @@ fn item_183_the_axis_ban_judges_the_money_path_and_the_contract() {
 fn item_184_a_duplicate_between_llm_and_a2a_is_seen() {
     let mut ov = Overlay::new();
     ov.set(
-        "crates/busbar-llm/src/planted_llm_a2a_copy.rs",
+        "crates/busbar-plane-llm/src/planted_llm_a2a_copy.rs",
         "pub fn planted_llm_a2a_copy() {}\n",
     );
     ov.set(
@@ -97,7 +97,7 @@ fn item_184_a_duplicate_between_llm_and_a2a_is_seen() {
         UNLEDGERED,
         &[
             "`planted_llm_a2a_copy`",
-            "llm:crates/busbar-llm/src/planted_llm_a2a_copy.rs:1",
+            "llm:crates/busbar-plane-llm/src/planted_llm_a2a_copy.rs:1",
             "a2a:crates/busbar-plane-a2a/src/a2a/planted_llm_a2a_copy.rs:1",
         ],
     );
@@ -121,11 +121,11 @@ fn item_223_a_third_plane_copy_of_a_plane_helper_is_seen_and_a_signed_claim_does
         .expect("the ledger signs `config.rs` for mcp and a2a");
     let mut ov = Overlay::new();
     ov.set(
-        "crates/busbar-llm/src/planted_llm_a2a_helper.rs",
+        "crates/busbar-plane-llm/src/planted_llm_a2a_helper.rs",
         "pub fn planted_llm_a2a_helper() {}\n",
     );
     ov.set(
-        "crates/busbar-llm/src/config.rs",
+        "crates/busbar-plane-llm/src/config.rs",
         "pub fn planted_llm_config() {}\n",
     );
     ov.set(
@@ -137,9 +137,9 @@ fn item_223_a_third_plane_copy_of_a_plane_helper_is_seen_and_a_signed_claim_does
         UNLEDGERED,
         &[
             "`planted_llm_a2a_helper`",
-            "llm:crates/busbar-llm/src/planted_llm_a2a_helper.rs:1",
+            "llm:crates/busbar-plane-llm/src/planted_llm_a2a_helper.rs:1",
             &format!("`{}`", signed.name),
-            "llm:crates/busbar-llm/src/config.rs",
+            "llm:crates/busbar-plane-llm/src/config.rs",
             "the ledger row signs for a2a+mcp only",
         ],
     );
@@ -161,6 +161,12 @@ fn item_224_the_plane_set_is_derived_not_spelled() {
     );
     ov.set(
         "crates/busbar-planted-twin/src/llm/mod.rs",
+        "pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl = PLANTED;\n",
+    );
+    // A SECOND grammar claim on `llm`: the retired engine crate used to be the first (DEV-GREEN
+    // row 83 deleted it), and the door row is consulted only for a key no declaration claimed.
+    ov.set(
+        "crates/busbar-planted-triplet/src/llm/mod.rs",
         "pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl = PLANTED;\n",
     );
     let v = run(ov);

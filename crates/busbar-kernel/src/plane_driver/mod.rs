@@ -62,7 +62,9 @@ mod money;
 mod needs;
 mod probe;
 mod route;
+pub mod route_tables;
 pub mod serve;
+pub mod slots;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -98,7 +100,7 @@ pub use hooks::{
     UnitHooks, CONTENT_ROLE, GATE_UNAVAILABLE, GATE_UNAVAILABLE_STATUS, STAGE_GONE,
 };
 pub use hooks::{GatedHooks, GatedScan, GenerationHost, HookOrder, HostGatedHooks, PrincipalKeys};
-pub use money::{Accrued, Checkpointer, EndPost, FeeRefund, PlaneMoney, UnitMoney};
+pub use money::{Accrued, Checkpointer, EndPost, FeeRefund, PlaneMoney, UnitEnd, UnitMoney};
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
 pub use probe::PlaneProbes;
 pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick, RoutedScope, SessionCaller};
@@ -1084,7 +1086,38 @@ impl PlaneDriver {
         }
     }
 
-    /// A UNIT-LESS REFUSAL (spec Part 3 section 12, "Refusals": "for a refusal with no unit — the
+    /// A KERNEL-SHAPED REFUSAL (ARCHITECT ruling 2026-10-16, 3b B): a refusal the kernel decides
+    /// before any unit exists, outside the auth chain (a method no route at the path takes, a body
+    /// over the cap, a request handler that panicked). The kernel decides `reason`, `status` and the
+    /// `text`; the plane's `refusal` renders the body in `dialect` for `target`. No unit, no
+    /// principal, nothing charged. `None` when the render failed: the kernel answers its own
+    /// generic refusal then.
+    #[must_use]
+    pub fn refuse_kernel(
+        &self,
+        reason: ReasonCode,
+        status: u32,
+        text: &str,
+        dialect: u32,
+        target: &[u8],
+    ) -> Option<Rendered> {
+        let input = RefusalIn {
+            cause: REFUSAL_KERNEL,
+            status,
+            dialect,
+            reason: reason_code(reason),
+            text: AbiStr::over(text.as_bytes()),
+            unit: 0,
+            target: AbiStr::over(target),
+            ..blank_in()
+        };
+        let rendered = self.render_refusal(input, None);
+        // A render that failed (the plane faulted or answered nothing) is no answer: the kernel
+        // writes its own generic one.
+        (!rendered.body.is_empty() || !rendered.fields.is_empty()).then_some(rendered)
+    }
+
+    /// A DOOR ROUTE'S UNIT-LESS REFUSAL (spec Part 3 section 12, "a refusal the kernel decides for a
     /// TARGET, which the plane renders by its own path rule"): `reason`, decided by the kernel before
     /// any unit exists (an unauthenticated caller at the door), rendered by the plane's `refusal` in
     /// `dialect` (the matched route's `refusal_dialect`) for `target`, at the status the plane's tail
@@ -1102,6 +1135,84 @@ impl PlaneDriver {
             ..blank_in()
         };
         self.render_refusal(input, None)
+    }
+
+    /// A CATALOG ROUTE'S LISTING (ARCHITECT ruling 2026-10-16, 3b C; `abi::plane::CLAIM_CATALOG`):
+    /// the plane's pure `catalog` renders `names` (the kernel's, its visibility rule applied) for the
+    /// request `method`, `target` and head `fields`, with no unit: nothing is minted, audited or
+    /// metered. `None` when the plane renders none (it serves no catalog, or its answer failed).
+    #[must_use]
+    pub fn catalog_unitless(
+        &self,
+        method: &[u8],
+        target: &[u8],
+        head: &[(Vec<u8>, Vec<u8>)],
+        names: &[String],
+    ) -> Option<Rendered> {
+        use busbar_contract::abi::plane::{CatalogIn, CatalogOut};
+        let fields: Vec<Field> = head
+            .iter()
+            .map(|(n, v)| Field {
+                name: AbiStr::over(n),
+                value: AbiStr::over(v),
+            })
+            .collect();
+        let listed: Vec<AbiStr> = names.iter().map(|n| AbiStr::over(n.as_bytes())).collect();
+        let caps = self.config.caps;
+        let (mut reply, mut out_fields, mut arena) = (
+            vec![0u8; caps.reply],
+            vec![NO_FIELD; caps.fields],
+            vec![0u8; caps.arena],
+        );
+        let mut input = CatalogIn {
+            method: AbiStr::over(method),
+            target: AbiStr::over(target),
+            fields: fields.as_ptr(),
+            fields_len: fields.len(),
+            names: listed.as_ptr(),
+            names_len: listed.len(),
+            reply_buf: reply.as_mut_ptr(),
+            reply_cap: reply.len(),
+            fields_buf: out_fields.as_mut_ptr(),
+            fields_cap: out_fields.len(),
+            arena_buf: arena.as_mut_ptr(),
+            arena_cap: arena.len(),
+            ..blank_in()
+        };
+        let mut o: CatalogOut = blank_out();
+        let outcome = self.calls.catalog(&mut input, &mut o, &mut |short, i| {
+            reply.resize((short.reply_needed as usize).max(reply.len()), 0);
+            out_fields.resize(
+                (short.fields_needed as usize).max(out_fields.len()),
+                NO_FIELD,
+            );
+            arena.resize((short.arena_needed as usize).max(arena.len()), 0);
+            (i.reply_buf, i.reply_cap) = (reply.as_mut_ptr(), reply.len());
+            (i.fields_buf, i.fields_cap) = (out_fields.as_mut_ptr(), out_fields.len());
+            (i.arena_buf, i.arena_cap) = (arena.as_mut_ptr(), arena.len());
+        });
+        if outcome != AbiOutcome::Ready {
+            return None;
+        }
+        let span = |s: Span| {
+            let start = s.offset as usize;
+            arena
+                .get(start..start.saturating_add(s.len as usize))
+                .unwrap_or_default()
+                .to_vec()
+        };
+        Some(Rendered {
+            status: o.status,
+            fields: out_fields
+                .iter()
+                .take(o.fields_written as usize)
+                .map(|f| (span(f.name), span(f.value)))
+                .collect(),
+            body: reply
+                .get(..o.reply_written as usize)
+                .unwrap_or_default()
+                .to_vec(),
+        })
     }
 }
 
@@ -1308,7 +1419,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         let (streamed, cut) = {
             let st = self.lock();
             let success = st.facts.status == 0 || (200..300).contains(&st.facts.status);
-            (st.facts.streamed && success, st.facts.cut)
+            (st.facts.content && success, st.facts.cut)
         };
         self.steps.answered(ctx, streamed, cut);
         self.steps.audit(token, ctx, outcome)
