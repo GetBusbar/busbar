@@ -91,8 +91,15 @@ pub fn entries(
     doors
         .iter()
         .map(|(key, door)| {
+            // Its row's own plugin log file (THE DESIGN §11.2), under the configured `plugins.logs`.
+            let bind = crate::root::doors::logged(
+                crate::root::doors::bind(),
+                key,
+                crate::root::doors::installed_logs(),
+            )
+            .map_err(|e| format!("transport `{key}`: {e}"))?;
             let plugin = LinkedRow::of(*door)
-                .and_then(|row| load_linked::<TransportKind>(&row, crate::root::doors::bind()))
+                .and_then(|row| load_linked::<TransportKind>(&row, bind))
                 .map_err(|e| format!("transport `{key}`: {e}"))?;
             let door: Arc<dyn FramerDoor> =
                 Arc::new(crate::root::doors::Dispatched::open(plugin, settings)?);

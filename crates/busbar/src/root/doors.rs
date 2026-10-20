@@ -86,6 +86,11 @@ pub fn install_logs(logs: PluginLogConfig) {
     let _ = LOGS.set(logs);
 }
 
+/// The plugin log configuration [`install_logs`] installed, if one was.
+pub fn installed_logs() -> Option<&'static PluginLogConfig> {
+    LOGS.get()
+}
+
 /// `bind`, writing the door's log records and diagnostics to the plugin log file of `file` (its
 /// row's name) under `logs` (THE DESIGN §11.2: "all plugins should log to their plugin's log
 /// file"); its metrics go on to `bind`'s sink. With no configuration (a mount with no composition
@@ -95,8 +100,18 @@ pub fn install_logs(logs: PluginLogConfig) {
 ///
 /// The configured `plugins.logs.dir` cannot be used.
 pub fn logged(bind: Bind, file: &str, logs: Option<&PluginLogConfig>) -> Result<Bind, String> {
-    let _ = (file, logs);
-    Ok(bind)
+    let Some(logs) = logs else {
+        return Ok(bind);
+    };
+    let sink = logs.sink(
+        file,
+        busbar_contract::abi::mechanism::KindCode::Transport,
+        Arc::clone(&bind.sink),
+    )?;
+    Ok(Bind {
+        sink: Arc::new(sink),
+        ..bind
+    })
 }
 
 /// One transport door, opened, as the connector reaches it.
@@ -344,8 +359,11 @@ pub fn build(
     riding: Riding,
 ) -> Arc<HostWire> {
     LinkedRow::of(door)
-        .and_then(|linked| load_linked::<TransportKind>(&linked, row_bind(row)))
         .map_err(|e| e.to_string())
+        .and_then(|linked| {
+            let bind = logged(row_bind(row), row, installed_logs())?;
+            load_linked::<TransportKind>(&linked, bind).map_err(|e| e.to_string())
+        })
         .and_then(|plugin| Dispatched::open(plugin, settings))
         .and_then(|door| HostWire::new(Arc::new(door)))
         .map(|wire| Arc::new(ride(wire, riding)))

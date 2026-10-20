@@ -673,7 +673,6 @@ impl PluginRegistry {
         logs: &crate::dispatch::PluginLogConfig,
     ) -> Result<TransportEntries, String> {
         use crate::dispatch::load::{load_staged, Staging};
-        let _ = logs;
         let mut entries = TransportEntries::default();
         for p in self
             .loadable()
@@ -682,6 +681,14 @@ impl PluginRegistry {
         {
             let name = &p.manifest.name;
             let stated = p.manifest.stated_rendering()?;
+            // Its own plugin log file (THE DESIGN §11.2), its metrics on to the caller's sink.
+            let sink = logs
+                .sink(
+                    name,
+                    busbar_contract::abi::mechanism::KindCode::Transport,
+                    std::sync::Arc::clone(&bind.sink),
+                )
+                .map_err(|e| format!("transport plugin '{name}': {e}"))?;
             let (lib, staged) = crate::stage::load_library_from_bytes(&p.lib_bytes, name)?;
             match load_staged::<crate::dispatch::kinds::transport::Transport>(
                 lib,
@@ -689,6 +696,7 @@ impl PluginRegistry {
                 stated.as_deref(),
                 crate::dispatch::Bind {
                     instance: std::sync::Arc::from(name.as_str()),
+                    sink: std::sync::Arc::new(sink),
                     ..bind.clone()
                 },
             )

@@ -361,6 +361,9 @@ fn main() {
     }
     let dispatcher = root::dispatch::boot(WORKERS.0, late_services.clone());
     root::doors::install_dispatcher(dispatcher);
+    // Every linked transport door writes its own plugin log file under the configured
+    // `plugins.logs` (read by the scan above), as every other kind's instance does.
+    root::doors::install_logs(root::boot::plugin_logs().clone());
     // PROTOCOL REGISTRATION FIRST — before the CLI flags, because `--validate` reads the protocol
     // set. This is the composition root's whole knowledge of the protocol crates: one line per
     // linked dialect, handed to the registry seam before anything reads it. A dialect absent from
