@@ -29,6 +29,10 @@
 //!     "attempt": { "to_far_end": false },                  // optional: the ATTEMPT is taken, the
 //!                                                          // request rides the caller's body
 //!     "arrive_each": true,                                 // optional: every unit arrives first
+//!     "serve_first": [                                     // optional: admin requests served
+//!       { "route": 0, "target": "/admin/x",                // after `start`, before any unit
+//!         "fields": [["<name>", "<value>"], ...],          // optional
+//!         "body": "<the request body>" } ],                // optional
 //!     "claimed":   { "unit": 7, "method": "POST", "target": "/v1/x",  // arrive: READY
 //!                    "claim": 0,                          // optional: the snapshot claim (0)
 //!                    "fields": [["<name>", "<value>"], ...],          // optional: its head
@@ -87,6 +91,19 @@
 //! `trust.serves` from the tables the inputs state, `clock.now` at `0`, and refuses every other
 //! service, so a plane that gates what a caller may see and call on the kernel's answers runs its
 //! gating here. Stating none, the dispatcher serves what it serves today.
+//!
+//! THE FAR ENDS (the inputs' top-level `far_ends`, as every kind's suite reads them): the plane's
+//! declared needs are bound to a connection table that answers each declared URL with its stated
+//! status, fields and body, and refuses a dial to any URL it does not declare as unreachable. So a
+//! plane that gathers its own state over its connection needs (`dial`, `exchange`) gathers it from
+//! the declared far ends, and a plane that dials anything else is refused, as an unreachable far
+//! end refuses it. Stating none, the needs are bound as they are today.
+//!
+//! `serve_first`: each request is crossed on the plane's `serve` op after `start` (steps `serve
+//! first #<n>`, in order), on a request ticket with its buffers lent, as an operator's admin call
+//! reaches a running instance; `route` is the admin route's index in the snapshot's admin routes.
+//! A plane whose units need state an admin request brings (and that request gathers from the far
+//! ends) is brought to it here as production brings it, before the claimed unit arrives.
 //!
 //! `arrive_each`: the narrow, short and empty units arrive (as the claimed one, steps `<leg>
 //! arrive`) and the narrow and short ones send the caller's body after their ATTEMPT (`<leg>
@@ -1200,6 +1217,51 @@ struct Inputs {
     /// ATTEMPT, for a plane that holds a unit's state from its arrival.
     arrive_each: bool,
     refusal: (u32, Vec<u8>),
+    /// THE ADMIN REQUESTS SERVED FIRST (`plane.serve_first`), each crossed on the plane's `serve`
+    /// op after `start` and before any unit arrives, as an operator's admin call reaches a running
+    /// instance: a plane whose units need state it gathers itself (over its own connection needs,
+    /// from the far ends `far_ends` declares) is brought to it the way production brings it.
+    serve_first: Vec<ServeFirst>,
+}
+
+/// One admin request [`Inputs::serve_first`] names: the plane's admin route (its index in the
+/// snapshot's `admin_routes`), the request target, its head fields and its body.
+struct ServeFirst {
+    route: u32,
+    target: Vec<u8>,
+    fields: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+impl ServeFirst {
+    fn all(v: &Value) -> Vec<Self> {
+        let Some(rows) = v.as_array() else {
+            assert!(
+                v.is_null(),
+                "conformance.json: plane.serve_first must be an array"
+            );
+            return Vec::new();
+        };
+        rows.iter()
+            .map(|r| Self {
+                route: small(
+                    num(&r["route"], "serve_first[].route"),
+                    "serve_first[].route",
+                ),
+                target: text(&r["target"], "serve_first[].target"),
+                fields: if r["fields"].is_null() {
+                    Vec::new()
+                } else {
+                    pairs(&r["fields"], "serve_first[].fields")
+                },
+                body: if r["body"].is_null() {
+                    Vec::new()
+                } else {
+                    text(&r["body"], "serve_first[].body")
+                },
+            })
+            .collect()
+    }
 }
 
 impl Inputs {
@@ -1253,6 +1315,7 @@ impl Inputs {
                 ),
                 text(&k["refusal"]["text"], "refusal.text"),
             ),
+            serve_first: ServeFirst::all(&k["serve_first"]),
         }
     }
 }
@@ -1325,7 +1388,8 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let d = k.carried.host.clone().map_or_else(dispatcher, |h| {
         Arc::new(Dispatcher::with_services(DispatchConfig::default(), h))
     });
-    let p = load::<Plane>(s, leg, s.bind(&d, "plane")).expect("the plane door loads");
+    // Its declared needs reach the far ends the inputs state (`far_ends`), when they state any.
+    let p = load::<Plane>(s, leg, super::bind_far(&d, "plane", s)).expect("the plane door loads");
     // The loaded instance is admitted on what its Statement declares, as the kernel admits it.
     if let Some(h) = &k.carried.host {
         h.admit(&p.declared());
@@ -1364,6 +1428,17 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let driver = d.driver(&p, 0);
     r.line("hydrate", 1, || generation(&p, slot::HYDRATE, 1));
     r.line("start", 1, || generation(&p, slot::START, 1));
+    for (n, first) in k.serve_first.iter().enumerate() {
+        r.line(&format!("serve first #{n}"), 1, || {
+            let fields = field_list(&first.fields);
+            serve(&p, &d, |i| {
+                i.route = first.route;
+                i.target = abi(&first.target);
+                (i.fields, i.fields_len) = (fields.as_ptr(), fields.len());
+                i.body = octets(&first.body);
+            })
+        });
+    }
     r.line("arrive claimed", 1, || arrive(&p, &k.claimed, &k.request));
     r.line("arrive unclaimed", 1, || {
         arrive(&p, &k.unclaimed, &k.request)
@@ -1491,35 +1566,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             f.out.status
         )
     });
-    r.line("serve", 1, || {
-        // On a request ticket, its buffers lent to the op, as the kernel serves an admin route.
-        let mut lend = Arc::new(ServeLend {
-            reply: [0; 512],
-            arena: [0; 256],
-            fields: [z(); 2],
-        });
-        let me = Arc::get_mut(&mut lend).expect("unshared");
-        let mut f: Frame<ServeIn, ServeOut> = Frame::new(input(), output());
-        (f.input.reply_buf, f.input.reply_cap) = (me.reply.as_mut_ptr(), me.reply.len());
-        (f.input.fields_buf, f.input.fields_cap) = (me.fields.as_mut_ptr(), me.fields.len());
-        (f.input.arena_buf, f.input.arena_cap) = (me.arena.as_mut_ptr(), me.arena.len());
-        let (c, f) = on_ticket_frame(
-            &p,
-            &d,
-            slot::SERVE,
-            f,
-            DeadlineClass::Call,
-            deadline(),
-            lend as Lent,
-        );
-        let out = f.map_or_else(output, |f| f.out);
-        format!(
-            "{} status={} reply_written={}",
-            called(&c),
-            out.status,
-            out.reply_written
-        )
-    });
+    r.line("serve", 1, || serve(&p, &d, |_| {}));
     r.line("project", 1, || {
         let mut arena = [0_u8; 256];
         let mut signals = [z::<SignalEntry>(); 4];
@@ -1646,6 +1693,38 @@ struct ServeLend {
 unsafe impl Send for ServeLend {}
 // SAFETY: as above.
 unsafe impl Sync for ServeLend {}
+
+/// ONE ADMIN REQUEST on the plane's `serve` op: on a request ticket, its buffers lent to the op,
+/// as the kernel serves an admin route; `request` fills the route, target, fields and body.
+fn serve(p: &Plugin<Plane>, d: &Arc<Dispatcher>, request: impl FnOnce(&mut ServeIn)) -> String {
+    let mut lend = Arc::new(ServeLend {
+        reply: [0; 512],
+        arena: [0; 256],
+        fields: [z(); 2],
+    });
+    let me = Arc::get_mut(&mut lend).expect("unshared");
+    let mut f: Frame<ServeIn, ServeOut> = Frame::new(input(), output());
+    request(&mut f.input);
+    (f.input.reply_buf, f.input.reply_cap) = (me.reply.as_mut_ptr(), me.reply.len());
+    (f.input.fields_buf, f.input.fields_cap) = (me.fields.as_mut_ptr(), me.fields.len());
+    (f.input.arena_buf, f.input.arena_cap) = (me.arena.as_mut_ptr(), me.arena.len());
+    let (c, f) = on_ticket_frame(
+        p,
+        d,
+        slot::SERVE,
+        f,
+        DeadlineClass::Call,
+        deadline(),
+        lend as Lent,
+    );
+    let out = f.map_or_else(output, |f| f.out);
+    format!(
+        "{} status={} reply_written={}",
+        called(&c),
+        out.status,
+        out.reply_written
+    )
+}
 
 /// The step labelled `label`'s answer.
 fn answer<'f>(fold: &'f Fold, label: &str) -> &'f str {

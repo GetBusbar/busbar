@@ -316,8 +316,18 @@ impl DeclaredConns for HttpsConns {
         target: Option<&str>,
         trust: Option<&str>,
     ) -> Result<(), ConnError> {
-        let unresolved = (!spec.target_from.is_empty() && target.is_none())
-            || (!spec.trust_from.is_empty() && trust.is_none());
+        // As the connector reads a need: a member-target path (`settings.*.<key>`) is pinned by no
+        // one target or anchor (each member's route is sealed at its own), and an anchor in an
+        // OWNED section is optional (absent, the public roots alone); any other path that
+        // resolved to nothing refuses the need.
+        let per_member = |path: &str| busbar_contract::section::member_target(path).is_some();
+        let optional_trust = busbar_contract::section::owned_path(&spec.trust_from).is_some();
+        let unresolved =
+            (!spec.target_from.is_empty() && !per_member(&spec.target_from) && target.is_none())
+                || (!spec.trust_from.is_empty()
+                    && !per_member(&spec.trust_from)
+                    && !optional_trust
+                    && trust.is_none());
         let answer =
             if spec.transport.is_empty() || spec.transport != self.facts.transport || unresolved {
                 Err(ConnError::Refused)
