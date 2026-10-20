@@ -539,6 +539,19 @@ fn charge_once(
     pool: &str,
     unit: u64,
 ) -> Charged {
+    charge_once_at(app, key, pools, pool, unit, busbar_kernel::store::now())
+}
+
+/// [`charge_once`], the unit having arrived at `arrived` (epoch seconds): the instant the door
+/// hands its money steps (`DoorCaller::arrived`, the node's one arrival reading).
+fn charge_once_at(
+    app: &std::sync::Arc<busbar_kernel::state::App>,
+    key: &std::sync::Arc<busbar_contract::records::VirtualKey>,
+    pools: &DoorPools,
+    pool: &str,
+    unit: u64,
+    arrived: u64,
+) -> Charged {
     use busbar_kernel::plane_driver::{DriverSteps as _, EndPost, PlaneMoney};
     let facts = super::door_facts("", &["pool"], &[], &[], "door", Vec::new());
     let gov = std::sync::Arc::clone(app.governance.as_ref().expect("a governed generation"));
@@ -556,7 +569,7 @@ fn charge_once(
             principal: busbar_contract::caps::PrincipalId::new(key.id.as_str()),
             key: Some(std::sync::Arc::clone(key)),
             open: false,
-            arrived: busbar_kernel::store::now(),
+            arrived,
             records: None,
             depth: 0,
             credential: None,
@@ -8102,5 +8115,109 @@ fn an_unopened_door_plane_is_awaiting_restart_once_a_configuration_writes_its_se
     assert!(
         rules.check(&cfg).is_ok(),
         "awaiting restart is not a refusal: the configuration is accepted and stored"
+    );
+}
+
+// ── the admission window (#29, admission side) ────────────────────────────────────────────────
+
+/// THE DOOR'S ADMISSION CHECK READS THE ARRIVAL'S WINDOW, NOT THE CLOCK (#29, admission side).
+/// Door successor of `plane_node.rs::the_admission_check_reads_the_arrival_window_and_not_the_clock`
+/// (legacy `ingress_integration_tests.rs::test_admit_check_uses_charged_at_window_not_clock`,
+/// coverage map row 381), on the `$` door of the plane serving the `pools` map (`DoorSteps::charge`,
+/// handed the unit's arrival as `serve.rs` hands it `node.arrived()`). 1.5.5 behaviour, as the
+/// original pinned it: a key's group holds one 1-cent fee a day, and that fee was already charged
+/// into a PAST day; a unit arriving in that past day is refused over budget (429) against the
+/// window it arrived in, where the spend lives; a unit arriving now, in today's empty window, is
+/// admitted.
+///
+/// RED: the door's check keyed off a fresh clock read, admitting the past-day unit against today's
+/// empty window (its charge overshooting the cap of the day it arrived in).
+#[test]
+fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() {
+    use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
+    use busbar_kernel::governance::SECS_PER_DAY;
+    use busbar_kernel::test_support::engine_kit::{EngineTestKit as _, CORE_ENGINE_KIT};
+    // The original's `budget_per_day(FEE_CENTS)` at its `FEE_CENTS = 1` flat fee.
+    let gov = CORE_ENGINE_KIT
+        .governance(CORE_ENGINE_KIT.scratch_store(), None, None)
+        .expect("governance");
+    let groups = std::collections::BTreeMap::from([(
+        "team".to_string(),
+        busbar_kernel::config::groups::GroupCfg {
+            parent: None,
+            enabled: true,
+            limits: vec![LimitCfg {
+                metric: LimitMetric::Budget,
+                amount: 1,
+                per: Some(LimitWindow::Day),
+                scope: None,
+                on_exhaust: None,
+                downgrade_to: None,
+                admission: None,
+                on_exhaustion: None,
+            }],
+            ..Default::default()
+        },
+    )]);
+    let cost = CORE_ENGINE_KIT.cost_parts(None, 1, &groups);
+    let (key, _secret) = gov
+        .create_key(
+            busbar_kernel::governance::NewKeySpec {
+                name: "dev".to_string(),
+                group: Some("team".to_string()),
+                ..Default::default()
+            },
+            1_700_000_000,
+        )
+        .expect("a key");
+    let app = busbar_kernel::test_support::TestApp::new()
+        .governance_kit(gov)
+        .keys_chain()
+        .cost_kit(cost)
+        .build();
+    let key = std::sync::Arc::new(key);
+    let gov = std::sync::Arc::clone(app.governance.as_ref().expect("a governed generation"));
+
+    // The original's `EPOCH`.
+    let past_day: u64 = 1_700_000_000;
+    assert_ne!(
+        past_day / SECS_PER_DAY,
+        busbar_kernel::store::now() / SECS_PER_DAY,
+        "precondition: the arrival day is not today"
+    );
+    gov.try_admit(&app.cost, &key, "", past_day)
+        .expect("the first request fits the cap exactly");
+    assert_eq!(
+        gov.derived_bucket_usage(&app.cost, "group:team@day", "day", true, past_day)
+            .expect("usage read")
+            .spend_cents,
+        1,
+        "precondition: the arrival day's window is at its cap"
+    );
+
+    let pools = pools(DOWNGRADE_SECTION);
+    let refused = charge_once_at(&app, &key, &pools, "frontier", 1, past_day);
+    let reason = refused
+        .admitted
+        .map_err(|(reason, _)| reason)
+        .expect_err("the unit is refused against the window it arrived in, where the spend lives");
+    assert_eq!(reason, busbar_contract::caps::ReasonCode::OverBudget);
+    assert_eq!(
+        busbar_kernel::plane_driver::refusal_status(reason),
+        429,
+        "an over-budget refusal answers 429"
+    );
+    let admitted = charge_once_at(
+        &app,
+        &key,
+        &pools,
+        "frontier",
+        2,
+        busbar_kernel::store::now(),
+    );
+    assert_eq!(
+        admitted.admitted,
+        Ok(()),
+        "today's window is empty, so a unit arriving now is admitted"
     );
 }

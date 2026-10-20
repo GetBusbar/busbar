@@ -9817,3 +9817,10 @@ async fn the_pools_door_bills_no_tokens_for_an_answer_it_cannot_translate() {
         "an untranslated answer bills no tokens"
     );
 }
+
+// THE DOOR PATH'S MONEY CELLS that succeed the node's legacy answer path's own (`plane_node.rs`,
+// retired by #1161): each a gap that path alone witnessed, or one of its money cells whose door
+// successor asserted only part of it.
+#[cfg(linked_driver_proofs)]
+#[path = "serve_door_money_gaps.rs"]
+mod door_money_gaps;
