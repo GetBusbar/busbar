@@ -408,3 +408,34 @@ fn an_ip_literal_is_exactly_what_the_standard_parser_accepts() {
         );
     }
 }
+
+/// THE VERBATIM HOST READER keeps what the shared reader normalises: a trailing root dot stays
+/// (`example.com.` is not `example.com`), a percent-encoded host is not decoded, and an IPv6
+/// literal is unbracketed as `Ipv6Addr` displays it; the authority is read exactly as
+/// `parse_url` reads it. RED against `url_host`, which drops the dot.
+#[test]
+fn the_verbatim_host_keeps_the_root_dot_the_shared_reader_drops() {
+    use crate::net::{url_host, url_host_verbatim};
+    assert_eq!(
+        url_host_verbatim("http://example.com./x").as_deref(),
+        Some("example.com.")
+    );
+    assert_eq!(
+        url_host("http://example.com./x").as_deref(),
+        Some("example.com")
+    );
+    assert_eq!(
+        url_host_verbatim("https://user@example.com:8443/p?q").as_deref(),
+        Some("example.com")
+    );
+    assert_eq!(
+        url_host_verbatim("foo://ex%41mple/").as_deref(),
+        Some("ex%41mple")
+    );
+    assert_eq!(
+        url_host_verbatim("http://[::ffff:a9fe:a9fe]/").as_deref(),
+        Some("::ffff:169.254.169.254")
+    );
+    assert_eq!(url_host_verbatim("file:///etc/passwd"), None);
+    assert_eq!(url_host_verbatim("mailto:a@b"), None);
+}

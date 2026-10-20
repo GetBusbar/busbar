@@ -637,6 +637,14 @@ fn forbidden_in_host(c: char) -> bool {
 /// [`UrlRefusal`] when the string has no scheme, no authority, no usable host, a malformed bracket
 /// or port, or a backslash inside a [`UrlFamily::Generic`] authority.
 pub fn parse_url(url: &str) -> Result<UrlParts, UrlRefusal> {
+    read_url(url, false)
+}
+
+/// [`parse_url`]'s reading, the host kept VERBATIM when `verbatim`: an IPv6 literal unbracketed
+/// (as [`Ipv6Addr`] displays it), any other host exactly as spelled (no percent-decode, no root
+/// dot dropped, no character refused but an empty host). Otherwise the host is normalised
+/// ([`normalize_host`]) and a host carrying a forbidden character is refused.
+fn read_url(url: &str, verbatim: bool) -> Result<UrlParts, UrlRefusal> {
     let cleaned = strip_whatwg_removed(url);
     let s = cleaned.as_ref();
     let (scheme, after) = s.split_once(':').ok_or(UrlRefusal::NoScheme)?;
@@ -674,22 +682,31 @@ pub fn parse_url(url: &str) -> Result<UrlParts, UrlRefusal> {
     };
     let (host, port) = if let Some(inner) = host_port.strip_prefix('[') {
         let (literal, after) = inner.split_once(']').ok_or(UrlRefusal::Bracket)?;
-        if literal.parse::<Ipv6Addr>().is_err() {
+        let Ok(addr) = literal.parse::<Ipv6Addr>() else {
             return Err(UrlRefusal::Bracket);
-        }
+        };
         let port = match after {
             "" => None,
             p => Some(p.strip_prefix(':').ok_or(UrlRefusal::Bracket)?),
         };
-        (literal.to_string(), port)
+        let host = if verbatim {
+            addr.to_string()
+        } else {
+            literal.to_string()
+        };
+        (host, port)
     } else {
         let (raw, port) = match host_port.rsplit_once(':') {
             Some((h, _)) if h.contains(':') => return Err(UrlRefusal::Bracket),
             Some((h, p)) => (h, Some(p)),
             None => (host_port, None),
         };
-        let host = normalize_host(raw);
-        if host.is_empty() || host.contains(forbidden_in_host) {
+        let host = if verbatim {
+            raw.to_string()
+        } else {
+            normalize_host(raw)
+        };
+        if host.is_empty() || (!verbatim && host.contains(forbidden_in_host)) {
             return Err(UrlRefusal::NoHost);
         }
         (host, port)
@@ -720,6 +737,16 @@ pub fn parse_url(url: &str) -> Result<UrlParts, UrlRefusal> {
 #[must_use]
 pub fn url_host(url: &str) -> Option<String> {
     parse_url(url).ok().map(|p| p.host)
+}
+
+/// The host of a URL of any scheme as SPELLED, read as [`parse_url`] reads the authority but not
+/// normalised: an IPv6 literal unbracketed (as [`Ipv6Addr`] displays it), any other host exactly
+/// as written, a trailing root dot KEPT (`example.com.` is not `example.com` here). For a caller
+/// whose rule compares the host a URL reader serialised, byte for byte; `None` when it reads no
+/// host.
+#[must_use]
+pub fn url_host_verbatim(url: &str) -> Option<String> {
+    read_url(url, true).ok().map(|p| p.host)
 }
 
 /// The host of a DIAL TARGET, which may be spelled as a URL or as a bare `host`, `host:port`,
