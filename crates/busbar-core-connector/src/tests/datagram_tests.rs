@@ -849,13 +849,20 @@ fn dialling_a_check_from_a_path_the_judge_refuses_is_never_probed_handed_up_or_b
         r.deliver(refused, &answer(&probe, FAR_PWD));
     }
     r.pump(20);
-    assert_eq!(r.host.bound(), Some(r.far.addr), "a refused path is never bound");
+    assert_eq!(
+        r.host.bound(),
+        Some(r.far.addr),
+        "a refused path is never bound"
+    );
     assert!(
         r.elsewhere.iter().all(|(to, _)| *to != refused),
         "a refused path is sent no byte: {:?}",
         r.elsewhere
     );
-    assert!(!r.host.owns(refused), "a refused path is not the association's");
+    assert!(
+        !r.host.owns(refused),
+        "a refused path is not the association's"
+    );
     assert!(
         r.seen()
             .iter()
@@ -877,7 +884,11 @@ fn dialling_a_check_from_a_path_the_judge_refuses_is_never_probed_handed_up_or_b
         .pop()
         .expect("core probed the admitted path");
     r.deliver(admitted, &answer(&probe, FAR_PWD));
-    assert_eq!(r.host.bound(), Some(admitted), "an admitted, proven path binds");
+    assert_eq!(
+        r.host.bound(),
+        Some(admitted),
+        "an admitted, proven path binds"
+    );
 }
 
 // ── the port's demultiplexer ────────────────────────────────────────────────────────────────────

@@ -78,10 +78,8 @@ fn every_channel_message_reaches_the_reader_empty_ones_and_past_the_bound() {
             recv: Mutex::new(Vec::new()),
             timer: Mutex::new(None),
         };
-        let pairing = crate::datagram::Pairing::new(
-            Arc::new(NoLeg),
-            "127.0.0.1:1".parse().unwrap(),
-        );
+        let pairing =
+            crate::datagram::Pairing::new(Arc::new(NoLeg), "127.0.0.1:1".parse().unwrap());
         let now = std::time::Instant::now();
         let _ = leg.take(&pairing, vec![message(b""), message(b"x")], now);
         let mut buf = [0_u8; 4];

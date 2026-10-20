@@ -875,7 +875,10 @@ fn a_full_stream_takes_nothing_more_until_the_framer_says_it_is_writable() {
             .expect("a piece")
             .expect("not failed")
             .expect("not ended");
-        assert_eq!(p.bytes, b"z", "the writable piece is never a piece the reader reads");
+        assert_eq!(
+            p.bytes, b"z",
+            "the writable piece is never a piece the reader reads"
+        );
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(5), saw)
                 .await
