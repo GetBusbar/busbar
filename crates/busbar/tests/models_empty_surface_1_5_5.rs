@@ -65,13 +65,34 @@ fn fixture_dir() -> PathBuf {
     d
 }
 
+/// The cell's own provider catalog (`testing/shadow-oracle/cells.json`), its capture URL pointed
+/// at a port nothing answers on: the provider the cell's document names, as the oracle wrote it.
+fn cell_providers() -> String {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testing/shadow-oracle/cells.json"
+    );
+    let cells: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).expect("the oracle's cells"))
+            .expect("the cells parse");
+    let cell = cells["cells"]
+        .as_array()
+        .expect("the cell list")
+        .iter()
+        .find(|c| c["id"] == CELL)
+        .unwrap_or_else(|| panic!("the oracle holds `{CELL}`"));
+    cell["capture"]["providers"]
+        .as_str()
+        .expect("the cell's provider catalog")
+        .replace("{CAPTURE_URL}", "http://127.0.0.1:9")
+}
+
+/// The cell this test is the root's copy of.
+const CELL: &str = "neutrality|models-empty|surface";
+
 /// The cell's document, its credentials aside: one provider, `models` written empty, no `pools`.
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
-    std::fs::write(
-        dir.join("providers.yaml"),
-        "p:\n  protocol: openai\n  base_url: \"http://127.0.0.1:9\"\n",
-    )
-    .unwrap();
+    std::fs::write(dir.join("providers.yaml"), cell_providers()).unwrap();
     std::fs::write(
         dir.join("config.yaml"),
         format!(
