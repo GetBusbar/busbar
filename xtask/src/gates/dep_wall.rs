@@ -68,6 +68,23 @@ const BANNED_CRATES: &[&str] = &[
 /// Paths a plugin's own production source may not name.
 const BANNED_PATHS: &[&str] = &["std::net", "tokio::net"];
 
+/// The items under a banned path that are VALUES, not a socket: an address literal parsed, held or
+/// printed opens nothing, dials nothing, binds nothing and resolves nothing (THE DESIGN §5 bans the
+/// socket, not the address). A path through one of these names no banned path; every other item
+/// under `std::net` (`TcpStream`, `TcpListener`, `UdpSocket`, `ToSocketAddrs`, which resolves
+/// names, `Shutdown`, ...), the bare module (`use std::net;`, `use std::net as n;`) and a glob
+/// (`use std::net::*;`) still do, and nothing under `tokio::net` is a value. When the instrument
+/// must choose, it false-fails.
+const VALUE_PATHS: &[&str] = &[
+    "std::net::IpAddr",
+    "std::net::Ipv4Addr",
+    "std::net::Ipv6Addr",
+    "std::net::SocketAddr",
+    "std::net::SocketAddrV4",
+    "std::net::SocketAddrV6",
+    "std::net::AddrParseError",
+];
+
 /// The legacy plane crates: planes that predate their plugin crate and still ship in-tree.
 ///
 /// `busbar-llm-codec` and `busbar-voice-codec` are not here: owner ruling R7 (2026-09-27, #39: no
@@ -534,9 +551,11 @@ fn own_source(cx: &Ctx, dir: &str, pkg: &Pkg) -> Vec<crate::ctx::SourceFile> {
 /// path written in an expression, a type or a macro body counts as one written in a `use`, a
 /// rename of a banned path's prefix (`use std as s;`, `extern crate std as s;`) is followed where
 /// the file uses it, and a glob over such a prefix (`use std::*;`) brings the banned module into
-/// scope and counts. A comment or a string literal names no path. An item under `#[cfg(test)]` (or
-/// `cfg(all(test, ..))`) or `#[test]` is test code, not the plugin's production source. A file
-/// that does not lex falls back to the line scan, which reads more, never less.
+/// scope and counts. A path through an address value type ([`VALUE_PATHS`]: `std::net::Ipv4Addr`,
+/// `SocketAddr`, ..) opens no socket and names no banned path. A comment or a string literal names
+/// no path. An item under `#[cfg(test)]` (or `cfg(all(test, ..))`) or `#[test]` is test code, not
+/// the plugin's production source. A file that does not lex falls back to the line scan, which
+/// reads more, never less.
 pub fn banned_paths(text: &str) -> BTreeSet<&'static str> {
     let Ok(stream) = TokenStream::from_str(text) else {
         let mut hits = BTreeSet::new();
@@ -685,6 +704,13 @@ impl PathScan {
             return;
         }
         let full = self.expand(path);
+        let value = VALUE_PATHS.iter().any(|v| {
+            let segs = segments(v);
+            full.len() >= segs.len() && full.iter().zip(&segs).all(|(a, b)| a == b)
+        });
+        if value {
+            return;
+        }
         for banned in BANNED_PATHS {
             let segs = segments(banned);
             let names = full.len() >= segs.len() && full.iter().zip(&segs).all(|(a, b)| a == b);

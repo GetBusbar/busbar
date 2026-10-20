@@ -97,6 +97,32 @@ fn a_comment_a_literal_a_neighbour_or_test_code_names_no_banned_path() {
 }
 
 #[test]
+fn an_address_value_names_no_banned_path_and_a_socket_beside_it_still_does() {
+    // What the pinned tcp and http transports write: an address literal parsed, opening nothing.
+    for text in [
+        "use std::net::SocketAddr; fn f(a: &str) -> bool { a.parse::<SocketAddr>().is_ok() }",
+        "fn f(b: &str) { let _ = b.parse::<std::net::Ipv4Addr>(); }",
+        "use std::net::{IpAddr, Ipv6Addr, SocketAddrV4, SocketAddrV6, AddrParseError};",
+        "use std as s; fn f() { let _ = s::net::Ipv4Addr::LOCALHOST; }",
+    ] {
+        assert!(paths(text).is_empty(), "{text}");
+    }
+    // A socket, a resolver, the bare module or a glob beside a value is still a banned path.
+    for text in [
+        "use std::net::{Ipv4Addr, TcpStream};",
+        "use std::net::{SocketAddr, ToSocketAddrs};",
+        "fn f() { let _ = std::net::UdpSocket::bind(\"a:1\"); }",
+        "use std::net; fn f() -> net::Ipv4Addr { net::Ipv4Addr::LOCALHOST }",
+        "use std::net::{self, SocketAddr};",
+        "use std::net as n;",
+        "use std::net::*;",
+    ] {
+        assert_eq!(paths(text), ["std::net"], "{text}");
+    }
+    assert_eq!(paths("use tokio::net::TcpStream;"), ["tokio::net"]);
+}
+
+#[test]
 fn a_file_that_does_not_lex_is_read_line_by_line_rather_than_skipped() {
     assert_eq!(
         paths("fn f() { std::net::TcpStream::connect(\"a\"); "),
