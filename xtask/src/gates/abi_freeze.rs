@@ -1,22 +1,20 @@
-//! `cargo xtask gate abi-freeze` — THE CONDEMNED ABI LANES DO NOT GROW.
+//! `cargo xtask gate abi-freeze` — THE CONDEMNED ABI LANES STAY DELETED.
 //!
-//! `busbar-contract/src/abi/hot` and `abi/cold` are the HOT and COLD plugin lanes.
-//! `BUSBAR-1.6.0.md` THE DESIGN, §11 replaces both with the one memory ABI, and both directories
-//! are deleted when the last plugin moves onto it. Every line added to either lane in the meantime
-//! is a line written only to be deleted, and a contract ceiling raised to hold it.
+//! `busbar-contract/src/abi/hot` and `abi/cold` were the HOT and COLD plugin lanes.
+//! `BUSBAR-1.6.0.md` THE DESIGN, §11 replaced both with the one memory ABI, and both directories
+//! are deleted (status row 84; the cold lane in #961). A line written there is a line written only
+//! to be deleted, so:
 //!
-//! So each condemned directory is FROZEN at its measured size in `qa/abi-freeze.toml`:
+//! * a condemned directory that holds any file is RED (`REGROWN`): the work belongs in the memory
+//!   ABI. The walk sees the disk, the base layer and the overlay, so a lane laid back by any of
+//!   them is seen;
+//! * a `[[frozen]]` row in `qa/abi-freeze.toml` is RED whatever it says. A row held a lane to a
+//!   typed line count, and that is a hand-kept size integer, which Law 9 deletes
+//!   (BUSBAR-1.6.0.md l.2100-2102: "No CI rung measures or blocks on size ... There is no
+//!   hand-kept size integer in the tree"). A row typed at a regrown lane's size used to forgive
+//!   the regrowth; nothing forgives it now (audit XF HIGH 1).
 //!
-//! * a directory that measures MORE than its row is RED: the lane grew, and the growth belongs
-//!   in the memory ABI;
-//! * a directory that measures LESS than its row is RED too: that is stale slack, and slack is
-//!   room to grow back into. Lower the row on the commit that deleted the lines, or strike it
-//!   once the directory is gone;
-//! * a row whose directory reads as nothing while the row still holds lines is the same stale
-//!   slack, and names the strike.
-//!
-//! The measure is every line of every file under the directory, whatever its extension. A frozen
-//! lane's tests die with it, so they are frozen with it.
+//! Nothing here counts lines: the measure is "does the lane exist", never "how big is it".
 
 use crate::ctx::{Ctx, Overlay, WalkError, WalkSpec};
 use crate::gates::{prove_green, prove_red, Gate, Report};
@@ -24,95 +22,70 @@ use crate::ledger::{Row, Verdict};
 
 pub const ROW_FROZEN: &str = "abi-freeze:frozen";
 
-/// The ledger: one `[[frozen]]` row per condemned directory.
+/// The ledger that once held one `[[frozen]]` size row per lane. It holds none now, and any row
+/// it holds is RED.
 pub const LEDGER: &str = "qa/abi-freeze.toml";
 
-/// The directories this gate refuses to see unfrozen. A ledger that drops one is RED, so the
-/// freeze cannot be lifted by deleting its row.
+/// The directories that must stay deleted. Each is judged on every run; no ledger row lifts one.
 pub const CONDEMNED: &[&str] = &[
-    // qa-names: crates/busbar-contract/src/abi/hot -- xtask/src/gates/abi_freeze.rs -- the hot lane is deleted (row 84); it stays condemned so a directory that grows back there is UNFROZEN and red, and this declaration reds the day the path exists again
+    // qa-names: crates/busbar-contract/src/abi/hot -- xtask/src/gates/abi_freeze.rs -- the hot lane is deleted (row 84); it stays condemned so a directory that grows back there is REGROWN and red, and this declaration reds the day the path exists again
     "crates/busbar-contract/src/abi/hot",
-    // qa-names: crates/busbar-contract/src/abi/cold -- xtask/src/gates/abi_freeze.rs -- the cold lane is deleted (row 84, #961); it stays condemned so a directory that grows back there is UNFROZEN and red, and this declaration reds the day the path exists again
+    // qa-names: crates/busbar-contract/src/abi/cold -- xtask/src/gates/abi_freeze.rs -- the cold lane is deleted (row 84, #961); it stays condemned so a directory that grows back there is REGROWN and red, and this declaration reds the day the path exists again
     "crates/busbar-contract/src/abi/cold",
 ];
 
-/// Every line of every file under `dir`, and how many files that is.
+/// Every file under `dir`, whatever its extension.
 ///
-/// THE WALK IS ASKED, NOT THE DIRECTORY. This used to open with `cx.exists(dir)`, a stat that no
-/// overlay can answer for a directory the overlay alone lays: a deleted lane growing back is
-/// exactly such a directory, and it measured zero, so the UNFROZEN rule below never saw it. The
-/// walk resolves a root from the disk, the base layer AND the overlay, and refuses only a root
-/// none of them lays, which is the one "nothing here" this measure turns into zero.
-fn measure(cx: &Ctx, dir: &str) -> Result<(u64, usize), String> {
-    let files = match cx.list(&WalkSpec::new([dir]).allow_empty()) {
-        Ok(files) => files,
-        Err(WalkError::MissingRoot { .. }) => return Ok((0, 0)),
-        Err(e) => return Err(format!("{dir}: {e}")),
-    };
-    let mut lines = 0u64;
-    let mut n = 0usize;
-    for f in files {
-        let rel = f.to_string_lossy().replace('\\', "/");
-        let text = cx.read(&rel).unwrap_or_default();
-        lines += text.lines().count() as u64;
-        n += 1;
+/// THE WALK IS ASKED, NOT THE DIRECTORY. A `cx.exists(dir)` stat cannot see a directory only the
+/// overlay lays, and a deleted lane growing back is exactly such a directory. The walk resolves a
+/// root from the disk, the base layer AND the overlay, and refuses only a root none of them lays,
+/// which is the one "nothing here" this turns into no files.
+fn files_under(cx: &Ctx, dir: &str) -> Result<Vec<String>, String> {
+    match cx.list(&WalkSpec::new([dir]).allow_empty()) {
+        Ok(files) => Ok(files
+            .into_iter()
+            .map(|f| f.to_string_lossy().replace('\\', "/"))
+            .collect()),
+        Err(WalkError::MissingRoot { .. }) => Ok(Vec::new()),
+        Err(e) => Err(format!("{dir}: {e}")),
     }
-    Ok((lines, n))
 }
 
-/// The `[[frozen]]` rows as `(dir, lines)`, or why the ledger could not be read.
-fn rows(cx: &Ctx) -> Result<Vec<(String, u64)>, String> {
+/// The `dir` of every `[[frozen]]` row, or why the ledger could not be read. An absent ledger
+/// holds no row.
+fn size_rows(cx: &Ctx) -> Result<Vec<String>, String> {
+    if !cx.exists(LEDGER) {
+        return Ok(Vec::new());
+    }
     let text = cx.read(LEDGER)?;
     let doc = crate::toml_lite::parse_text(&text);
-    let mut out = Vec::new();
-    for t in doc.array_table("frozen") {
-        let dir = t
-            .get_one("dir")
-            .ok_or_else(|| format!("{LEDGER}: a [[frozen]] row has no `dir`"))?
-            .to_string();
-        let lines = t
-            .get_one("lines")
-            .ok_or_else(|| format!("{LEDGER}: [[frozen]] {dir} has no `lines`"))?
-            .trim()
-            .parse::<u64>()
-            .map_err(|e| format!("{LEDGER}: [[frozen]] {dir} `lines` is not a count: {e}"))?;
-        out.push((dir, lines));
-    }
-    Ok(out)
+    Ok(doc
+        .array_table("frozen")
+        .iter()
+        .map(|t| t.get_one("dir").unwrap_or("(no dir)").to_string())
+        .collect())
 }
 
 fn findings(cx: &Ctx) -> Result<(Vec<String>, String), String> {
-    let rows = rows(cx)?;
     let mut bad = Vec::new();
-    let mut seen = Vec::new();
-    for (dir, frozen) in &rows {
-        let (now, files) = measure(cx, dir)?;
-        seen.push(format!("{dir} {now}/{frozen} line(s) over {files} file(s)"));
-        if now > *frozen {
-            bad.push(format!(
-                "GREW {dir}: {frozen} -> {now} line(s). This lane is condemned (the memory ABI replaces it); \
-                 the growth belongs in the memory ABI, not here"
-            ));
-        } else if now < *frozen {
-            let what = if now == 0 {
-                "strike the row".to_string()
-            } else {
-                format!("lower the row to {now}")
-            };
-            bad.push(format!(
-                "STALE SLACK {dir}: frozen at {frozen}, measures {now} — {what} in the commit that \
-                 deleted the lines, or the lane can grow back into it"
-            ));
-        }
+    for dir in size_rows(cx)? {
+        bad.push(format!(
+            "SIZE ROW {dir}: a [[frozen]] row in {LEDGER} is a hand-kept size integer, which Law 9 \
+             deletes (BUSBAR-1.6.0.md l.2102); strike it -- a condemned lane is held deleted, not \
+             held to a size"
+        ));
     }
+    let mut seen = Vec::new();
     for dir in CONDEMNED {
-        if !rows.iter().any(|(d, _)| d == dir) {
-            let (now, _) = measure(cx, dir)?;
-            if now > 0 {
-                bad.push(format!(
-                    "UNFROZEN {dir}: {now} line(s) and no [[frozen]] row in {LEDGER}"
-                ));
-            }
+        let files = files_under(cx, dir)?;
+        seen.push(format!("{dir}: {} file(s)", files.len()));
+        if !files.is_empty() {
+            bad.push(format!(
+                "REGROWN {dir}: {} file(s) ({}) under a deleted, condemned lane; the work belongs \
+                 in the memory ABI (THE DESIGN §11)",
+                files.len(),
+                files.join(", ")
+            ));
         }
     }
     Ok((bad, seen.join("; ")))
@@ -133,12 +106,12 @@ impl Gate for AbiFreezeGate {
         let row = match findings(cx) {
             Ok((bad, seen)) if bad.is_empty() => Row::pass(
                 ROW_FROZEN,
-                "the condemned abi/hot and abi/cold lanes measure exactly their frozen size",
+                "the condemned abi/hot and abi/cold lanes are deleted and no size row stands",
                 seen,
             ),
             Ok((bad, _)) => Row::fail(
                 ROW_FROZEN,
-                "a condemned ABI lane is not at its frozen size",
+                "a condemned ABI lane holds a file, or a size row stands",
                 bad.join(" | "),
             ),
             Err(why) => Row::fail(ROW_FROZEN, "the abi-freeze ledger could not be read", why),
@@ -155,8 +128,7 @@ impl Gate for AbiFreezeGate {
             &[ROW_FROZEN],
         ));
 
-        // THE HOT LANE GROWING BACK. The lane is deleted (row 84) and its row struck: a file there
-        // is a condemned directory with no row at all, UNFROZEN and RED.
+        // THE HOT LANE GROWING BACK. The lane is deleted (row 84): a file there is RED.
         let mut regrown = Overlay::new();
         regrown.set(
             format!("{}/mod.rs", CONDEMNED[0]),
@@ -165,64 +137,43 @@ impl Gate for AbiFreezeGate {
         report.push(prove_red(
             cx,
             self,
-            "a deleted HOT lane that grows back is UNFROZEN and RED",
+            "a deleted HOT lane that grows back is REGROWN and RED",
             &[ROW_FROZEN],
             regrown,
-            &["UNFROZEN", CONDEMNED[0]],
+            &["REGROWN", CONDEMNED[0]],
         ));
 
-        // THE COLD LANE GROWING BACK. The lane is deleted (row 84, #961) and its row struck, so
-        // a file there is not GROWTH against a row but a condemned directory with no row at all:
-        // UNFROZEN, and RED. This is the case that holds the CONDEMNED loop to a directory that
-        // does not exist on disk, the only shape the loop still guards for this lane.
+        // THE COLD LANE GROWING BACK, with a file no `.rs` walk would read: every file counts.
         let mut planted = Overlay::new();
         planted.set(
-            format!("{}/planted.rs", CONDEMNED[1]),
-            "pub struct PlantedColdShape;\n".to_string(),
+            format!("{}/planted.json", CONDEMNED[1]),
+            "{}\n".to_string(),
         );
         report.push(prove_red(
             cx,
             self,
-            "a deleted COLD lane that grows back is UNFROZEN and RED",
+            "a deleted COLD lane that grows back, in any file, is REGROWN and RED",
             &[ROW_FROZEN],
             planted,
-            &["UNFROZEN", CONDEMNED[1]],
+            &["REGROWN", CONDEMNED[1]],
         ));
 
-        // A FROZEN ROW, while one is held, holds its directory to its size both ways. Neither lane
-        // holds one now, so each case plants the row it judges.
         let ledger = cx.read(LEDGER).unwrap_or_default();
         let hot_row = format!(
             "{ledger}\n[[frozen]]\ndir = \"{}\"\nlines = \"1\"\n",
             CONDEMNED[0]
         );
 
-        // SLACK: a row above its directory's measurement (here, a deleted directory).
-        let mut slack = Overlay::new();
-        slack.set(LEDGER, hot_row.clone());
+        // A SIZE ROW ALONE (its directory deleted) is a hand-kept size integer, and RED.
+        let mut row_alone = Overlay::new();
+        row_alone.set(LEDGER, hot_row.clone());
         report.push(prove_red(
             cx,
             self,
-            "a frozen row above its directory's measurement is stale slack, and RED",
+            "a [[frozen]] size row is RED on its own, naming the size integer",
             &[ROW_FROZEN],
-            slack,
-            &["STALE SLACK", "strike the row"],
-        ));
-
-        // GROWTH: one line more than the row.
-        let mut grown = Overlay::new();
-        grown.set(LEDGER, hot_row);
-        grown.set(
-            format!("{}/mod.rs", CONDEMNED[0]),
-            "pub struct One;\npub struct Two;\n".to_string(),
-        );
-        report.push(prove_red(
-            cx,
-            self,
-            "a line over a frozen row is RED, naming the directory",
-            &[ROW_FROZEN],
-            grown,
-            &["GREW", CONDEMNED[0]],
+            row_alone,
+            &["SIZE ROW", "hand-kept size integer", CONDEMNED[0]],
         ));
 
         // A SIZE ROW THAT MATCHES ITS REGROWN LANE. A `[[frozen]]` row is a hand-kept size integer,
@@ -230,13 +181,7 @@ impl Gate for AbiFreezeGate {
         // tree"): typed at exactly the regrown lane's size it forgave the regrowth. It is RED as a
         // size integer, and the lane it names is RED as regrown (audit XF HIGH 1).
         let mut matched = Overlay::new();
-        matched.set(
-            LEDGER,
-            format!(
-                "{ledger}\n[[frozen]]\ndir = \"{}\"\nlines = \"1\"\n",
-                CONDEMNED[0]
-            ),
-        );
+        matched.set(LEDGER, hot_row);
         matched.set(
             format!("{}/mod.rs", CONDEMNED[0]),
             "pub struct Regrown;\n".to_string(),

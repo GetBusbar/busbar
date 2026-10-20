@@ -8,6 +8,11 @@
 //! (`docs/llm-translation-matrix.md`), so a matrix edited by hand, or left stale beside an edited
 //! mapping file, is the same drift. This gate compiles every mapping file afresh and is RED, naming
 //! the file, when any committed output differs from (or is missing beside) its compile.
+//!
+//! The set it compiles is not "whatever mapping files exist": it is the dialect roster the plane
+//! declares ([`crate::dialect::roster`]: every codec module that declares or holds a `map.gen.rs`),
+//! which must equal the mapping-file stems and hold at least [`crate::dialect::DIALECT_FLOOR`]
+//! dialects. A deleted mapping file whose table stays compiled in is RED, naming the dialect.
 
 use crate::ctx::{Ctx, Overlay};
 use crate::gates::{prove_green, prove_red, Gate, Report};
@@ -27,6 +32,13 @@ impl Gate for DialectMapGate {
     }
 
     fn run(&self, cx: &Ctx) -> Verdict {
+        if let Err(why) = crate::dialect::roster(cx) {
+            return Verdict::of(vec![Row::fail(
+                ROW_DRIFT,
+                "the dialect mapping files are not the dialects the plane declares",
+                why,
+            )]);
+        }
         let row = match crate::dialect::compile_all(cx) {
             Err(why) => Row::fail(ROW_DRIFT, "a dialect mapping file does not compile", why),
             Ok(compiled) => {
