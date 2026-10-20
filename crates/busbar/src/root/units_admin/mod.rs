@@ -3841,3 +3841,7 @@ pub use claims::RootClaimJournal;
 #[cfg(test)]
 #[path = "tests/units_admin.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/admin_unit_records.rs"]
+mod admin_unit_records;
