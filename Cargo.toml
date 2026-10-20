@@ -5,7 +5,6 @@ members = [
     "crates/busbar-core-connector",
     "crates/busbar-core-admin",
     "crates/busbar-core-oauth2",
-    "crates/busbar-llm",
     "crates/busbar-contract",
     "crates/busbar-kernel",
     "crates/busbar-kernel-identity",
@@ -131,7 +130,7 @@ busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev 
 # THE DECISIONS PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
 # decisions plane's door row (`plane-decisions`, `busbar_plane_decisions::plane_door::door`). Its
 # dropped-in cdylib twin (`busbar-plane-decisions-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-decisions", rev = "938d17974212f44f8fa31cfce8e8e89880bdf309" }
+busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-decisions", rev = "b3e74232c96e1403b6c4c42ac1dfd5a19c12b344" }
 # THE A2A PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the a2a
 # plane's door row (`plane-a2a-door`, `busbar_plane_a2a::agent_door::door`), whose own root cells it
 # states under its `links` name. Its dropped-in cdylib twin (`busbar-plane-a2a-plugin`) and its gates
@@ -141,7 +140,7 @@ busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev 
 # streaming plane's door row (`plane-streaming`, `busbar_plane_streaming::door::door`), whose own root
 # cells it states under its `links` name, and the voice conformance harness drives. Its dropped-in
 # cdylib twin (`busbar-plane-streaming-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "240a79202d2bfd3036fa70049f873d4f2cd3b0e5" }
+busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "02459b162c41109034284acfcfd6e4c51edf6c7e" }
 arc-swap = "1"
 async-trait = "0.1"
 axum = "0.8"
@@ -261,7 +260,6 @@ oauth-as = { version = "1.0.0", features = [
 # the `otlp` sink (GetBusbar/busbar-export-otlp) posts with the proto's publisher's types, never with the
 # sink's own encoder. Not in any shipped build.
 opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "trace"] }
-proptest = "1"
 # DER minting on ring only. `pem` (and its base64 0.23) is a test-only need: the members whose tests
 # write PEM add the feature on their dev/test-support declaration.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
