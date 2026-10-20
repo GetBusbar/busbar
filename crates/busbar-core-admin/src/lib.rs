@@ -139,8 +139,8 @@ mod test_seams {
         SEAM_ONCE.call_once(|| {
             // The operator credential's double, before anything resolves the auth axis.
             busbar_kernel::test_support::operator_double::install();
-            busbar_kernel::test_support::register_neutral_test_plane();
-            busbar_kernel::test_support::register_neutral_test_protocols();
+            // The kernel's neutral seam: its synthetic protocols and the neutral fallback plane.
+            (busbar_kernel::testkit::TEST_SEAM.install)();
             super::install();
         });
     }

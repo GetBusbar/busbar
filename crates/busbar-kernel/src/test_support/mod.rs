@@ -528,7 +528,7 @@ pub struct LaneSpec {
     // NAME — the codec itself is resolved by-name from the installed registry at dispatch, never held
     // here. Storing the interned `&'static str` (a neutral `PROTO_*` const) instead of an
     // `Arc<crate::proto::Protocol>` lets the routing/dispatch suites build lanes without naming the
-    // witnessed busbar-llm codec, so the witness can be deleted at the final flip.
+    // witnessed the retired engine crate codec, so the witness can be deleted at the final flip.
     protocol: &'static str,
     max: usize,
     api_key: busbar_contract::redacted::Secret<String>,
@@ -2087,24 +2087,6 @@ pub mod hook_double;
 /// credential's row in place of the composition root's plugin (kind-neutral, under the stand-in
 /// operator words). See [`operator_double`].
 pub mod operator_double;
-
-/// The kernel's neutral synthetic protocol set (`proto/tests/neutral_protocols.rs`, the rows the
-/// kernel's own test binary validates and routes over), for a dependent crate's test binary that
-/// needs a protocol registry without linking a plane crate. The kernel's own test binary already
-/// loads the file as its built-in list, so it reads that one copy.
-#[cfg(not(test))]
-#[path = "../proto/tests/neutral_protocols.rs"]
-mod neutral_protocols;
-
-/// Register the kernel's neutral synthetic protocols into this test binary's protocol registry
-/// (idempotent per name, order kept) — the kind-neutral stand-in for a linked plane's dialects.
-pub fn register_neutral_test_protocols() {
-    #[cfg(not(test))]
-    let decls = neutral_protocols::NEUTRAL_PROTOCOLS;
-    #[cfg(test)]
-    let decls = crate::proto::registry::builtin_decls();
-    crate::proto::register_test_protocols(decls);
-}
 
 /// The ranking hook double (R-FIX3): the door that stands in for the root's linked ranking row in a
 /// test build. Linked only.
