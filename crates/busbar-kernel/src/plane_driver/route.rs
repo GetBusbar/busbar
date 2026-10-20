@@ -766,7 +766,8 @@ impl<'u> Pumping<'u> {
         let cancelled = match done.map(|d| (d.disposition, d.outcome)) {
             Some((Some(d), _)) => Some((d, std::mem::take(&mut self.cancel_writes))),
             Some((None, AbiOutcome::Fault)) => None,
-            _ => (self.driver.cancel_now(self.ticket)).map(|c| (c.disposition, c.writes)),
+            _ => (self.driver.cancel_now(self.ticket, self.ctx.key.get()))
+                .map(|c| (c.disposition, c.writes)),
         };
         // THE CANCELLED UNIT'S ROW (SEAM-L(r)): what its `cancel` wrote, under its principal.
         if let Some((_, writes)) = &cancelled {

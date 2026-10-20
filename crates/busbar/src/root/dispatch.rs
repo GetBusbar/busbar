@@ -76,7 +76,9 @@ pub fn auth_axis(
     registry: Arc<crate::root::loader::PluginRegistry>,
 ) -> Arc<dyn busbar_contract::auth_calls::AuthAxis> {
     Arc::new(RootAuthAxis(
-        crate::root::loader::auth_axis::AuthRows::new(registry, dispatcher()).with_conns(conns),
+        crate::root::loader::auth_axis::AuthRows::new(registry, dispatcher())
+            .with_conns(conns)
+            .with_logs(|| crate::root::boot::plugin_logs().clone()),
     ))
 }
 
@@ -111,6 +113,14 @@ impl busbar_contract::auth_calls::AuthAxis for RootAuthAxis {
 
     fn credential_readers(&self) -> Vec<String> {
         self.0.credential_readers()
+    }
+
+    fn carriers(&self, module: &str) -> Vec<String> {
+        self.0.carriers(module)
+    }
+
+    fn default_inbound_style(&self) -> Result<Vec<String>, String> {
+        self.0.default_inbound_style()
     }
 
     fn check_outbound(

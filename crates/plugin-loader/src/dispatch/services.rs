@@ -21,8 +21,8 @@
 //!   kinds the caller's Statement declares, [`UNDECLARED_KIND`] otherwise), `work.open` /
 //!   `work.find` / `work.settle` / `work.resume`, `unit.nest`, `content.scan` and `hook.call`
 //!   (for the unit the crossing serves), `verify.lookup` / `verify.store` (the caller's own
-//!   single-flight verify cache), `disk.append` (to the destinations the caller was granted,
-//!   [`NO_DESTINATION`] otherwise) and `snapshot.read` (the host's metric families, laid out in the
+//!   single-flight verify cache), `disk.append` (to the destinations the caller was granted; any
+//!   other answers FAILED at the open step, [`NO_DESTINATION`]) and `snapshot.read` (the host's metric families, laid out in the
 //!   caller's buffer by [`super::snapshot`], to the crossing the kernel granted them). Every slot of
 //!   the table is served.
 //! * **Who called.** The instance's [`Caller`], stated at bind, is handed to every service that is
@@ -408,24 +408,21 @@ fn caller(ctx: HostCtx) -> Option<Caller> {
     super::handle::resolve(ctx)?.caller.get().cloned()
 }
 
-/// A checked range of the caller's, copied: `None` for NULL with a length.
+/// A checked range of the caller's, copied: `None` for NULL with a length, or a length over the
+/// hard byte maximum (refused before any slice is formed, THE DESIGN §11.13 M1).
 fn bytes_of(s: AbiStr, field: &'static str) -> Option<Vec<u8>> {
     check::text(s, field).ok()?;
-    if s.len == 0 {
-        return Some(Vec::new());
-    }
-    // SAFETY: a checked range of the caller's, live for the call; copied before any pend.
-    Some(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }.to_vec())
+    // SAFETY: a range of the caller's, live for the call, its length capped by `lent_str` before
+    // the slice is formed; copied before any pend.
+    unsafe { super::validate::lent_str(s) }.map(<[u8]>::to_vec)
 }
 
-/// A checked blob of the caller's, copied: `None` for NULL with a length.
+/// A checked blob of the caller's, copied: `None` for NULL with a length, or a length over the hard
+/// byte maximum (refused before any slice is formed, THE DESIGN §11.13 M1).
 fn blob_of(b: Blob, field: &'static str) -> Option<Vec<u8>> {
     check::listed(b.ptr, b.len, field).ok()?;
-    if b.len == 0 {
-        return Some(Vec::new());
-    }
-    // SAFETY: a checked range of the caller's, live for the call; copied before any pend.
-    Some(unsafe { std::slice::from_raw_parts(b.ptr, b.len) }.to_vec())
+    // SAFETY: as `bytes_of`.
+    unsafe { super::validate::lent(b.ptr, b.len) }.map(<[u8]>::to_vec)
 }
 
 /// A checked UTF-8 string of the caller's, copied: `None` for NULL with a length or bad UTF-8.
@@ -553,15 +550,12 @@ extern "C" fn dest_judge(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
             {
                 return Answered::fault();
             }
-            // SAFETY: a checked range of the caller's, live for the call; copied before any pend.
-            let dest = if i.dest.len == 0 {
-                String::new()
-            } else {
-                String::from_utf8_lossy(unsafe {
-                    std::slice::from_raw_parts(i.dest.ptr, i.dest.len)
-                })
-                .into_owned()
+            // SAFETY: a checked range of the caller's, live for the call, its length capped before
+            // the slice is formed; copied before any pend.
+            let Some(dest) = (unsafe { super::validate::lent_str(i.dest) }) else {
+                return Answered::fault();
             };
+            let dest = String::from_utf8_lossy(dest).into_owned();
             let provider = Arc::clone(&served.provider);
             // SAFETY: `into` checked above; the caller's buffers, where the judged addresses go.
             unsafe {
@@ -719,8 +713,10 @@ fn destination(ctx: HostCtx, key: &str) -> Option<busbar_contract::services::Dis
 /// file the host bound for it (granted from its manifest, bound from its settings at open), and
 /// the bytes go to the kernel's bounded disk lane, which pends the call until the append is done.
 /// On READY and FAILED the result slot gets what the lane reported: the rotation before the append,
-/// and on READY the whole of the bytes. A key the caller was not granted is REFUSED
-/// ([`NO_DESTINATION`]) before anything is written.
+/// and on READY the whole of the bytes. A key the caller was not granted (or one its settings left
+/// unbound) is never opened: it answers FAILED at the [`svc::DISK_OPEN_FAILED`] step, in the host's
+/// words ([`NO_DESTINATION`]), before anything is written, so the sink reports it as the one line it
+/// reports a file it could not open with, as 1.5.5's file sink did (its BUSBAR-7074).
 extern "C" fn disk_append(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     slot(
         ctx,
@@ -741,7 +737,19 @@ extern "C" fn disk_append(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
                 return Answered::fault();
             };
             let Some(dest) = destination(ctx, &key) else {
-                return Answered::bare(Outcome::Refused, NO_DESTINATION);
+                // SAFETY: the caller's result slot, checked non-NULL by `check_disk_append_in`.
+                unsafe {
+                    i.result.write_unaligned(DiskWritten {
+                        size: size_of::<DiskWritten>() as u32,
+                        rotated: 0,
+                        faults: 0,
+                        _reserved: [0; 2],
+                        written: 0,
+                    });
+                }
+                let mut a = Answered::bare(Outcome::Failed, NO_DESTINATION);
+                a.value = svc::DISK_OPEN_FAILED;
+                return a;
             };
             let whole = bytes.len() as u64;
             let provider = Arc::clone(&served.provider);

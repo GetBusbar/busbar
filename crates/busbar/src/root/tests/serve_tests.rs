@@ -2429,15 +2429,17 @@ mod tools_door {
         repeatable: &[&str],
     ) -> serde_yaml::Value {
         let key = surface("section");
-        let pools: std::collections::BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg> =
-            [(
-                name.to_string(),
-                busbar_kernel::failover::CandidatePoolCfg {
-                    members: members.iter().map(|m| (*m).to_string()).collect(),
-                    repeatable: repeatable.iter().map(|m| (*m).to_string()).collect(),
-                },
-            )]
-            .into();
+        let pools: std::collections::BTreeMap<
+            String,
+            busbar_kernel::config::pools::CandidatePoolCfg,
+        > = [(
+            name.to_string(),
+            busbar_kernel::config::pools::CandidatePoolCfg {
+                members: members.iter().map(|m| (*m).to_string()).collect(),
+                repeatable: repeatable.iter().map(|m| (*m).to_string()).collect(),
+            },
+        )]
+        .into();
         let mut sections = crate::root::serve::with_pools([(key, section)].into(), &[(key, pools)]);
         sections.remove(key).expect("the section is handed back")
     }
@@ -4502,6 +4504,55 @@ async fn the_pools_door_seals_one_audit_record_per_unit() {
     assert_eq!(rig.chat().await.0, 200);
     let _ = rig.ledger_after(1).await;
     assert_eq!(rig.audit_records(), 1, "one record for the one unit");
+}
+
+/// A NODE WHOSE JOURNAL CANNOT REACH ITS STORE FAILS CLOSED, ON THE DOOR (ARCHITECT 2026-10-07 H3
+/// ruling): the node's journal is kept by a configured store that refuses, and the lane to it is
+/// full, so a new unit through the door is answered 503 with the reason, in the caller's dialect
+/// (the plane's `refusal` renders it for the target, kind `overloaded`, the bytes the node's
+/// handed path answered: `ingress_error(dialect, 503, overloaded, reason)`), before anything is
+/// dispatched or charged, and nothing the journal holds is dropped. RED before the fix: the door
+/// answered a bare 502 (`plane_panic`) with an empty body, because nothing asked the node's
+/// `journal_refusal` before the borrowed drive declined the unit.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_refuses_a_new_unit_503_with_the_reason_while_its_journal_is_full() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-full-journal";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            full_journal: true,
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, head, body) = rig.chat().await;
+    let text = String::from_utf8_lossy(&body);
+    assert_eq!(status, 503, "{text}");
+    assert_eq!(
+        head.get("content-type").and_then(|v| v.to_str().ok()),
+        Some("application/json"),
+        "the caller's dialect envelope: {text}"
+    );
+    let answer: serde_json::Value = serde_json::from_slice(&body).expect("a JSON envelope");
+    let message = answer["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("journal is full") && message.contains("`test-store`"),
+        "the reason names the full journal and the store: {answer}"
+    );
+    assert!(answer["error"]["type"].is_string(), "{answer}");
+    assert_eq!(far.served(), 0, "nothing dispatched");
+    let (requests, spend, _, billable) = rig.ledger_after(0).await;
+    assert_eq!((requests, spend, billable), (0, 0, 0), "nothing charged");
+    assert_eq!(
+        rig.book.lock().unwrap().journal.dropped_total(),
+        0,
+        "no record is dropped"
+    );
 }
 
 /// HOOKS-GATE: a rejecting gate refuses the door's traffic before dispatch.
@@ -7996,12 +8047,18 @@ mod pools_door_money {
         );
     }
 
-    /// A STREAM THAT DIED BILLS WHAT IT STREAMED AND KEEPS ITS FEE (F25 row 720; legacy
-    /// `meter::a_stream_that_died_bills_the_tokens_it_streamed_and_keeps_the_fee_it_earned`): a
-    /// streamed answer whose far end reports its usage (11 in, 7 out) and is then cut before its
-    /// end bills those 18 tokens, keeps its one fee (billable 1, the 200 that went out is not
-    /// reversed), and its sealed record reports one line per streamed tier: input 11, output 7. RED:
-    /// the streamed tokens dropped, the fee reversed, or the tiers merged.
+    /// A STREAM ITS FAR END CUT BILLS NO TOKENS AND KEEPS ITS FEE (F25 row 720; legacy
+    /// `meter::a_stream_that_died_bills_the_tokens_it_streamed_and_keeps_the_fee_it_earned`,
+    /// corrected to BUSBAR-1.6.0.md, Budgets, l.1014-1019, status row 183): a streamed answer whose
+    /// far end reports its usage (11 in, 7 out) and then cuts the stream before its end bills NO
+    /// tokens, as 1.5.5 billed none (v1.5.5 `crates/busbar/src/proxy/response_body.rs`: the
+    /// transport error sets `stream_failed` (:283) and the drop-time gate bills no tokens (:642);
+    /// oracle cell `route.failover|fo|primary-cut-stream`, golden usage `{"requests":1}`, tokens
+    /// 0). It keeps its one request and its one fee (billable 1: the 200 that went out is not
+    /// reversed, v1.5.5 `crates/busbar/src/ingress/mod.rs:574-575`), and its sealed record is
+    /// Partial with no token line. A stream the CALLER left is the other case: it bills what the far
+    /// end had reported (`:633-660`). RED: the cut stream's reported tokens billed, or the fee
+    /// reversed.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_bills_a_dead_stream_tokens_and_keeps_its_fee() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8029,24 +8086,20 @@ mod pools_door_money {
             .send("POST", "/v1/chat/completions", Some(streamed_chat()))
             .await;
         assert_eq!(status, 200, "the stream had begun");
-        assert_eq!(
-            rig.tokens_after().await,
-            18,
-            "the streamed tokens are the charge"
-        );
-        let (_, _, _, billable) = rig.ledger_after(1).await;
+        let (requests, _, _, billable) = rig.ledger_after(1).await;
+        assert_eq!(requests, 1, "the request unit still counts");
         assert_eq!(billable, 1, "the fee it earned is kept");
         let record = sealed_as(&rig, busbar_kernel_audit::FinishClass::Partial).await;
-        let mut lines = token_lines(&record);
-        lines.retain(|(_, quantity)| *quantity > 0);
-        lines.sort();
         assert_eq!(
-            lines,
-            vec![
-                (busbar_contract::records::UNIT_INPUT.to_string(), 11),
-                (busbar_contract::records::UNIT_OUTPUT.to_string(), 7)
-            ],
-            "one line per streamed tier"
+            rig.tokens_after().await,
+            0,
+            "a stream its far end cut bills no tokens"
+        );
+        assert_eq!(
+            reported(&record),
+            0,
+            "its record reports no token either: {:?}",
+            token_lines(&record)
         );
     }
 }
@@ -9815,3 +9868,10 @@ async fn the_pools_door_bills_no_tokens_for_an_answer_it_cannot_translate() {
         "an untranslated answer bills no tokens"
     );
 }
+
+// THE DOOR PATH'S MONEY CELLS that succeed the node's legacy answer path's own (`plane_node.rs`,
+// retired by #1161): each a gap that path alone witnessed, or one of its money cells whose door
+// successor asserted only part of it.
+#[cfg(linked_driver_proofs)]
+#[path = "serve_door_money_gaps.rs"]
+mod door_money_gaps;
