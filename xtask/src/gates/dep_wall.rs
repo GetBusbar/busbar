@@ -489,6 +489,14 @@ fn strip_tests(stream: TokenStream) -> TokenStream {
 
 /// The path reader [`banned_paths`] runs: renames of a banned path's prefix, and the hits.
 #[derive(Default)]
+/// The keywords that are never a path segment (`crate`, `self`, `super` and `Self` are, so they are
+/// absent): one before a leading `::` (`use ::std::net`, `pub ::x`) starts no path.
+const NOT_A_SEGMENT: &[&str] = &[
+    "async", "await", "break", "const", "continue", "dyn", "else", "enum", "extern", "false", "fn",
+    "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref",
+    "return", "static", "struct", "trait", "true", "type", "unsafe", "use", "where", "while",
+];
+
 struct PathScan {
     aliases: BTreeMap<String, Vec<String>>,
     hits: BTreeSet<&'static str>,
@@ -551,10 +559,16 @@ impl PathScan {
         while i < toks.len() {
             match &toks[i] {
                 TokenTree::Ident(id) => {
-                    let word = id.to_string();
-                    let word = word.strip_prefix("r#").unwrap_or(&word).to_string();
+                    let spelled = id.to_string();
+                    let raw = spelled.starts_with("r#");
+                    let word = spelled.strip_prefix("r#").unwrap_or(&spelled).to_string();
                     if sep {
                         chain.push(word);
+                    } else if !raw && word != "as" && NOT_A_SEGMENT.contains(&word.as_str()) {
+                        // A keyword is no path segment: it ends the path before it and starts none,
+                        // so `use ::std::net` reads `::std::net`, not `use::std::net`.
+                        self.judge(&chain, false);
+                        chain.clear();
                     } else if word == "as" && !chain.is_empty() {
                         self.judge(&chain, false);
                         if let Some(TokenTree::Ident(name)) = toks.get(i + 1) {
