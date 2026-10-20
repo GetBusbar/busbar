@@ -1411,6 +1411,77 @@ pub fn selftest<'a>(
             format!("{REGISTRY} files no alias of {MIN_NEEDLE_LEN}+ characters under any axis"),
         ))),
     }
+    // THE REGISTRY'S `hook` IS THE TABLE'S `hooks` (row 159, XC2#2). `plugins.yaml` files both hook
+    // plugins as `kind: hook` and the axis is `hooks`; compared as written, both aliases were
+    // dropped and a core crate dispatching on a hook plugin's name was invisible to the matrix and
+    // to both Law 0 rows. Every hook alias the live registry files (read off `plugins.yaml`, never
+    // typed here), written by the neutral fixture, is that axis's `unlisted-instance`: RED.
+    let hook_aliases: Vec<&str> = axis_aliases
+        .iter()
+        .filter(|(k, a, _)| *k == "hooks" && is_needle(a))
+        .map(|(_, a, _)| a.as_str())
+        .collect();
+    if hook_aliases.is_empty() {
+        report.push(crate::gates::CasePlan::from(super::super::unplantable(
+            "the registry's hook aliases reach the `hooks` instance axis",
+            &[ROW_MATRIX],
+            &["instance"],
+            format!("{REGISTRY} files no `kind: hook` alias of {MIN_NEEDLE_LEN}+ characters"),
+        )));
+    } else {
+        let body: String = hook_aliases
+            .iter()
+            .enumerate()
+            .map(|(i, a)| format!("pub const PLANTED_HOOK_{i}: &str = \"{a}\";\n"))
+            .collect();
+        report.push(prove_rows_red(
+            cx,
+            gate,
+            format!(
+                "a `kind: hook` registry alias ({}) written in core is a `hooks` instance",
+                hook_aliases.join(", ")
+            ),
+            &[ROW_MATRIX],
+            super::fixture_files(&[("planted_hook_alias.rs", body.as_str())]),
+            &[
+                "unlisted-instance",
+                &super::fixture_subject("hooks"),
+                "planted_hook_alias.rs",
+            ],
+        ));
+    }
+    // A REGISTRY KIND WORD THE TABLE MAPS ONTO NOTHING IS REFUSED, never skipped: its alias would
+    // reach no axis, and an alias this row cannot place is one it cannot count.
+    let registry = cx.read(REGISTRY).unwrap_or_default();
+    match registry.find("\nplugins:\n") {
+        Some(at) => {
+            let split = at + "\nplugins:\n".len();
+            let mut ov = crate::ctx::Overlay::new();
+            ov.set(
+                REGISTRY,
+                format!(
+                    "{}  - repo: busbar-plantedkind-zorblat\n    kind: plantedkind\n    alias: \
+                     zorblat\n    crate: busbar-plantedkind-zorblat-plugin\n{}",
+                    &registry[..split],
+                    &registry[split..]
+                ),
+            );
+            report.push(prove_rows_red(
+                cx,
+                gate,
+                "a registry entry whose kind word maps onto no kind of the table is refused",
+                &[ROW_MATRIX],
+                ov,
+                &["registry-kind-unmapped", "plantedkind", "zorblat"],
+            ));
+        }
+        None => report.push(crate::gates::CasePlan::from(super::super::unplantable(
+            "a registry entry whose kind word maps onto no kind is refused",
+            &[ROW_MATRIX],
+            &["instance"],
+            format!("{REGISTRY} has no top-level `plugins:` list to plant an entry into"),
+        ))),
+    }
     // A NAMED SHAPE RESERVATION (ARCHITECT ruling on #787). A `[[shape-word]]` row reserves ONE
     // spelling of a word that is a shape (the 1.5.5 placement key `header`): the constant its
     // holder names, in the file it names. GREEN with the row; the same row beside a second spelling
