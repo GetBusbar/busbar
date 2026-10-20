@@ -189,7 +189,7 @@ pub fn admit_check(
         // bucket label, not an internal credential handle. Server-side tracing records the
         // full detail either way.
         tracing::info!(key_id = %key.id, blocked = ?blocked, "governance: limit bucket blocked admission");
-        let (status, kind, message, retry_after) = limit_refusal(proto, &blocked);
+        let (status, kind, message, retry_after) = limit_refusal(&blocked);
         let mut resp = ingress_error(proto, status, kind, &message);
         // Standard `Retry-After` for a rolling window so a well-behaved SDK backs off the
         // right amount ('total' never rolls: no header).
@@ -203,12 +203,11 @@ pub fn admit_check(
     }
 }
 
-/// THE LIMIT REFUSAL a blocked admission is answered with: its status in `proto`, its kind word,
+/// THE LIMIT REFUSAL a blocked admission is answered with: its status, its kind word,
 /// its message (naming the group, metric and window, never the key), and its Retry-After seconds
 /// (a rolling window's; `total` never rolls). One spelling, read by every door that admits.
 #[must_use]
 pub fn limit_refusal(
-    proto: &str,
     blocked: &crate::governance::LimitBlocked,
 ) -> (StatusCode, &'static str, String, Option<u64>) {
     use crate::governance::LimitBlocked;
@@ -258,12 +257,9 @@ pub fn limit_refusal(
             retry_after,
             ..
         } => (
-            // The native quota status is the writer's (every dialect answers 429 today;
-            // Bedrock's is ThrottlingException, a Converse-declared error). The writer owns
-            // that mapping.
-            crate::proto::decl_for(proto)
-                .and_then(|d| StatusCode::from_u16(d.quota_exceeded_status).ok())
-                .unwrap_or(StatusCode::TOO_MANY_REQUESTS),
+            // The quota status is 429 on every dialect (accepted difference C-22); the plane
+            // that words the refusal states its own.
+            StatusCode::TOO_MANY_REQUESTS,
             crate::proxy::KIND_INSUFFICIENT_QUOTA,
             format!(
                 "You have exceeded your current quota (group '{group}' budget per {}{} \
@@ -310,9 +306,7 @@ pub fn limit_refusal(
         // FAIL-CLOSED: a key bound to a group this node's config does not know is not
         // admitted; the message names the missing bucket so the operator can fix it.
         LimitBlocked::MissingGroup(group) => (
-            crate::proto::decl_for(proto)
-                .and_then(|d| StatusCode::from_u16(d.quota_exceeded_status).ok())
-                .unwrap_or(StatusCode::TOO_MANY_REQUESTS),
+            StatusCode::TOO_MANY_REQUESTS,
             crate::proxy::KIND_INSUFFICIENT_QUOTA,
             format!(
                 "Your quota configuration is incomplete (group '{group}' is not \

@@ -3078,7 +3078,17 @@ async fn a_kernel_refusal_is_rendered_by_the_door_that_owns_its_path() {
     let unbound = crate::state::AppHandle::new(crate::test_support::TestApp::new().build());
     let r = answer(&unbound, "/door/x");
     assert_eq!(r.status(), axum::http::StatusCode::METHOD_NOT_ALLOWED);
-    assert_ne!(body(r).await, b"door", "no door bound: the kernel answers");
+    // The kernel's own answer words no dialect: the neutral envelope, whatever dialects the
+    // registry holds (RED: a dialect's writer shaping it).
+    let own: serde_json::Value = serde_json::from_slice(&body(r).await).expect("JSON");
+    assert_eq!(
+        own,
+        serde_json::json!({"error": {
+            "message": "method not allowed for this resource",
+            "type": crate::taxonomy::ERR_TYPE_INVALID_REQUEST,
+        }}),
+        "no door bound: the kernel answers its own neutral envelope"
+    );
     let bound = crate::state::AppHandle::new(crate::test_support::TestApp::new().build());
     bound.bind_door_refuser(refuser);
     let r = answer(&bound, "/door/x");

@@ -5672,7 +5672,9 @@ mod pools_door_walk_and_breaker {
         let message = answer["error"]["message"].as_str().unwrap_or("");
         assert_eq!(
             message,
-            busbar_kernel::proto::vendor_auth_failure_message(door_word("messages_dialect")),
+            // 1.5.5's own sentence for the messages dialect, as its unauthenticated golden cell
+            // records it.
+            "invalid x-api-key",
             "the dialect's own sentence: {answer}"
         );
         assert!(!message.contains("lane"), "{answer}");

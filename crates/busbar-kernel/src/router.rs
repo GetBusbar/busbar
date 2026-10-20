@@ -69,8 +69,9 @@ pub fn fallback_error_response(
 /// A KERNEL-SHAPED REFUSAL'S ANSWER (ARCHITECT ruling 2026-10-16, 3b B): the kernel decides
 /// `reason` and `status` and words `message`; the door plane that owns `path` (the guest list's own
 /// reading, whatever the verb) renders the body through its refusal hook, in its dialect for
-/// `target`. The native-API root keeps the kernel's frozen envelope (it is the kernel's own
-/// surface), and a path no door owns, or a render that failed, gets the kernel's own answer.
+/// `target`; a path no door's line takes is the fallback plane's to render by its own path rule.
+/// The native-API root keeps the kernel's frozen envelope (it is the kernel's own surface), and a
+/// refusal no plane renders gets the kernel's own neutral answer: the kernel words no dialect.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn kernel_refusal_response(
     handle: &state::AppHandle,
@@ -92,9 +93,9 @@ pub(crate) fn kernel_refusal_response(
             path,
             target,
         };
-        if let Some(rendered) = handle.door_refusal(&refusal) {
-            return rendered;
-        }
+        return handle
+            .door_refusal(&refusal)
+            .unwrap_or_else(|| crate::ingress::native::kernel_refusal(status, kind, message));
     }
     fallback_error_response(planes, path, status, kind, message)
 }
@@ -1250,7 +1251,9 @@ pub fn build_split_routers_serving_doors(
     );
     let data = apply_common_layers(
         data,
-        data_core_routes.with_door_refusals(refusals),
+        data_core_routes
+            .with_door_refusals(refusals)
+            .with_kernel_refuser(std::sync::Arc::clone(&handle)),
         &handle,
         request_body_max_bytes,
         server_timing_enabled,

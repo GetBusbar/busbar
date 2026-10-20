@@ -75,6 +75,20 @@ pub(crate) struct CoreRouteTable {
     /// THE DOOR ROUTES' UNIT-LESS REFUSALS (spec Part 3 section 12): each door route's plane
     /// rendering, at the route's own path and method. Empty on every router that serves no door.
     door_refusals: Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
+    /// THE HANDLE WHOSE DOOR PLANES RENDER A KERNEL-SHAPED REFUSAL (ARCHITECT ruling 2026-10-16,
+    /// 3b B): what words a `401` on a path no door route takes at its verb. `None` on every router
+    /// that serves no door.
+    kernel_refuser: Option<KernelRefuser>,
+}
+
+/// The data router's handle, as the auth middleware asks its door planes for a refusal's words.
+#[derive(Clone)]
+struct KernelRefuser(std::sync::Arc<crate::state::AppHandle>);
+
+impl std::fmt::Debug for KernelRefuser {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("KernelRefuser")
+    }
 }
 
 impl CoreRouteTable {
@@ -101,6 +115,27 @@ impl CoreRouteTable {
     ) -> Self {
         self.door_refusals = refusals;
         self
+    }
+
+    /// This table with `handle` recorded as the one whose door planes render a kernel-shaped
+    /// refusal on a path no door route takes ([`Self::kernel_refusal`]).
+    #[must_use]
+    pub(crate) fn with_kernel_refuser(
+        mut self,
+        handle: std::sync::Arc<crate::state::AppHandle>,
+    ) -> Self {
+        self.kernel_refuser = Some(KernelRefuser(handle));
+        self
+    }
+
+    /// The door planes' rendering of `refusal` (the plane whose line takes its path, else the
+    /// fallback plane), or `None` when this router serves no door, none renders it, or the render
+    /// failed: the kernel answers its own.
+    pub(crate) fn kernel_refusal(
+        &self,
+        refusal: &busbar_kernel::plane_routes::KernelRefusal<'_>,
+    ) -> Option<axum::response::Response> {
+        self.kernel_refuser.as_ref()?.0.door_refusal(refusal)
     }
 
     /// The unit-less refusal of the door route `(path, method)` matches, or `None` when the request

@@ -826,7 +826,7 @@ impl<'s> DoorSteps<'s> {
                     // previous release's words (`busbar_kernel::ingress::limit_refusal`).
                     if self.facts.plane.is_empty() {
                         self.lock().refused.1 =
-                            Some(busbar_kernel::ingress::limit_refusal("", &blocked).2);
+                            Some(busbar_kernel::ingress::limit_refusal(&blocked).2);
                     }
                     return Err(refusal_for(&blocked));
                 }

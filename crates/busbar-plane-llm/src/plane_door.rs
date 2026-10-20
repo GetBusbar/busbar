@@ -1635,6 +1635,8 @@ slot!(
         let given = input.get();
         let held = guard(&door.units).remove(&given.unit);
         let host = door.host();
+        // The status the rendering states where it is not the kernel's (`0` = the kernel's).
+        let mut restated = 0u32;
         let rendered = match &held {
             Some(UnitState {
                 declined: Some(d), ..
@@ -1665,6 +1667,18 @@ slot!(
                     _ => String::from_utf8_lossy(input.field(|i| &i.text).bytes()).into_owned(),
                 };
                 let status = u16::try_from(given.status).unwrap_or(500);
+                // Before `arrive` the target's path rule names the dialect, and its status too.
+                let status = match arrived {
+                    None if given.cause != REFUSAL_GATE => {
+                        let path_status =
+                            refuse::status_before_arrive(envelope, given.reason, status);
+                        if path_status != status {
+                            restated = u32::from(path_status);
+                        }
+                        path_status
+                    }
+                    _ => status,
+                };
                 if given.cause == REFUSAL_GATE {
                     refuse::gate_refusal(&host, envelope, status, &text)
                 } else {
@@ -1698,6 +1712,7 @@ slot!(
         out.set(|o| &o.fields_needed, fnd as u32);
         out.set(|o| &o.arena_written, aw as u64);
         out.set(|o| &o.arena_needed, and as u64);
+        out.set(|o| &o.status, restated);
         if short {
             // The driver re-calls once with the buffers this named: the unit stays for it.
             if let Some(unit) = held {

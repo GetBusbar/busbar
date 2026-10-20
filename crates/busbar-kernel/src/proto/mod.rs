@@ -117,8 +117,9 @@ pub fn residual_default_dialect() -> Option<&'static str> {
 // top-level `message` for cohere, the `message` beside `__type` for bedrock). It MUST read like the
 // copy the REAL vendor returns for a bad/missing credential and carry NO busbar-internal vocabulary
 // ("lane", "virtual key", "passthrough", …): any such word is a deterministic protocol tell that
-// also discloses busbar's auth model. Canonical source of truth; `auth.rs::vendor_auth_failure_message`
-// is a thin delegation wrapper to this, not a copy. Strings sampled from real 401/403 bodies:
+// also discloses busbar's auth model. The plane that words a bad credential reads it off its own
+// declaration (its `refusal` renders the 401); the kernel reads none. Strings sampled from real
+// 401/403 bodies:
 //   anthropic → "invalid x-api-key"; openai/responses → "Incorrect API key provided.";
 //   gemini → "API key not valid. Please pass a valid API key."; cohere → "invalid api token";
 //   bedrock → "" (AWS conveys AccessDenied via __type / x-amzn-errortype, not message prose).
