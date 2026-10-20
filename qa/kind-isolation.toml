@@ -1521,8 +1521,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-core-admin"
 axis  = "auth"
-count = "8"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "5"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 8 -> 5: the admin crate's tests run on the kernel's kind-neutral operator double and name the operator credential by its provider words (row 159, audit core-admin-build HIGH 1; law0-slack)"
 
 [[law0]]
 crate = "busbar-core-admin"
@@ -1539,8 +1539,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-core-admin"
 axis  = "instance:auth"
-count = "15"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "1"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 15 -> 1: the admin crate's tests link no auth plugin and spell no operator provider word (row 159, audit core-admin-build HIGH 1; law0-slack)"
 
 [[law0]]
 crate = "busbar-core-admin"

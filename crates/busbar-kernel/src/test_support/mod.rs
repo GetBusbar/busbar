@@ -2090,14 +2090,20 @@ pub mod operator_double;
 
 /// The kernel's neutral synthetic protocol set (`proto/tests/neutral_protocols.rs`, the rows the
 /// kernel's own test binary validates and routes over), for a dependent crate's test binary that
-/// needs a protocol registry without linking a plane crate.
+/// needs a protocol registry without linking a plane crate. The kernel's own test binary already
+/// loads the file as its built-in list, so it reads that one copy.
+#[cfg(not(test))]
 #[path = "../proto/tests/neutral_protocols.rs"]
 mod neutral_protocols;
 
 /// Register the kernel's neutral synthetic protocols into this test binary's protocol registry
 /// (idempotent per name, order kept) — the kind-neutral stand-in for a linked plane's dialects.
 pub fn register_neutral_test_protocols() {
-    crate::proto::register_test_protocols(neutral_protocols::NEUTRAL_PROTOCOLS);
+    #[cfg(not(test))]
+    let decls = neutral_protocols::NEUTRAL_PROTOCOLS;
+    #[cfg(test)]
+    let decls = crate::proto::registry::builtin_decls();
+    crate::proto::register_test_protocols(decls);
 }
 
 /// The ranking hook double (R-FIX3): the door that stands in for the root's linked ranking row in a
