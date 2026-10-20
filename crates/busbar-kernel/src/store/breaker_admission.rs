@@ -1,51 +1,43 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HANDLE SECONDARY PLANE CONSUMERS SHARE ON THE ONE BREAKER — the degenerate single-member cell
-//! of the breaker-all-planes audit's closing design, and nothing more.
-//!
-//! ## What this is and, as loudly, what it is not
-//!
-//! A secondary plane consumer gets TRIP + FAST-FAIL against the same breaker FSM the primary plane
-//! has always used: [`LaneRuntime::try_admit_breaker`] over a [`HealthState`] cell, closed →
-//! open on the core thresholds, recovered by the same single-flight half-open probe. There is NO
-//! second state machine here — every method below is a thin resolution of a plane-qualified key
-//! onto the one cell store, and the FSM transitions all run in `store::in_memory`.
-//!
-//! This is deliberately NOT failover and NOT pools: nothing here SELECTS among candidates. The
-//! selection loop is [`crate::failover::walk`], which the reroute-parity unit mounts on every plane
-//! consumer's dispatch path; it reaches these same cells through [`PlaneBreakers::runtime`] and this
-//! module stays what it was — a plane consumer's handle on the one cell store, plus the recording
+//! BREAKER ADMISSION FOR A REGISTERED TARGET — the per-target cells a plane's dispatch is admitted
+//! through on the one breaker (THE DESIGN §1: the breaker is one of the kernel's valves), the RAII
+//! [`Admission`] token whose `Drop` releases a won recovery probe (Part 3 §4), and the recording
 //! half of the disposition pipeline.
 //!
-//! ## The key, per the audit
+//! ## What this is and what it is not
 //!
-//! Cells are `(pool, lane)`-keyed strings-plus-index. The pool string is PLANE-QUALIFIED at this
-//! boundary — each secondary plane consumer's pool names carry their own prefix — which is the
-//! audit's own rule for the keyspace: the primary plane keeps bare pool names, so a qualified pool
-//! name can never collide with the primary plane's, and distinct prefixes cannot collide with each
-//! other. The NAME is a registered target's id for the degenerate single-member cell, or a
-//! qualified pool name for a pooled one — and config validation refuses a pool whose name collides
-//! with a registration id on its own plane, so the two spellings cannot alias one cell. The LANE is
-//! the member's position in the pool's ordered `members:` list (the audit's allocation rule); a
-//! degenerate cell's one member is position 0.
+//! A target gets TRIP + FAST-FAIL against the one breaker FSM: [`LaneRuntime::try_admit_breaker`]
+//! over a [`HealthState`] cell, closed → open on the core thresholds, recovered by the same
+//! single-flight half-open probe. There is NO second state machine here — every method below is a
+//! thin resolution of a key onto the one cell store, and the FSM transitions all run in
+//! `store::in_memory`.
 //!
-//! ## Why a private single-lane [`HealthState`] rather than the primary plane's store
+//! Nothing here SELECTS among candidates; selection is the route walk's. This module is the
+//! admission and recording handle on the cells, and nothing more.
+//!
+//! ## The key
+//!
+//! Cells are `(pool, lane)`-keyed strings-plus-index. The NAME is a registered target's key for
+//! the degenerate single-member cell, or a pool name for a pooled one — and config validation
+//! refuses a pool whose name collides with a registration id in its own section, so the two
+//! spellings cannot alias one cell. The LANE is the member's position in the pool's ordered
+//! `members:` list; a degenerate cell's one member is position 0.
+//!
+//! ## Why a private lane table rather than a shared store
 //!
 //! The cell FSM is `(pool, lane)`-scoped, but the store's LANE-GLOBAL gates (dead, budget,
 //! permits) and its all-cells writes (`record_hard_down_all_cells`, `recover_lane`) index
-//! `lanes[lane]` — the primary plane's lanes. Recording a secondary-plane target's 401 into the
-//! primary plane's store at lane 0 would trip whatever occupies index 0, and a deployment with no
-//! primary-plane lanes at all would panic on the index. So the plane cells live in their own
-//! one-lane `HealthState`: same type, same FSM code, same thresholds, zero copies of any transition
-//! — and the primary plane's store is byte-untouched, which is the audit's "existing breaker suite
-//! passes unedited" guard. The `HardDown` write goes through the per-cell
-//! [`HealthState::record_hard_down_for`], never the all-cells primitive, because on a shared lane
-//! index "all cells" would be every OTHER registered target too.
+//! `lanes[lane]`. Recording one target's 401 into a shared store at lane 0 would trip whatever
+//! occupies index 0, and a store with no lanes at all would panic on the index. So these cells
+//! live in their own `HealthState`: same type, same FSM code, same thresholds, zero copies of any
+//! transition. The `HardDown` write goes through the per-cell [`HealthState::record_hard_down_for`],
+//! never the all-cells primitive, because on a shared lane index "all cells" would be every OTHER
+//! registered target too.
 
-// This is the handle secondary plane consumers share on the breaker: every item exists for an
-// out-of-tree plane consumer's registered-target dispatch. With every such consumer compiled out
-// nothing holds it, so its items read dead — scoped to exactly that config.
+// Every item here exists for a plane's registered-target dispatch. With no plane consumer compiled
+// in nothing holds it, so its items read dead — scoped to exactly that config.
 #![allow(dead_code)]
 
 use busbar_kernel::store::BreakerCfg;
@@ -55,22 +47,20 @@ use super::{LaneRuntime, Unavailable};
 use crate::diagnostics::{diag_warn, PLANE_BREAKER_HARD_DOWN, PLANE_BREAKER_TRIPPED};
 use std::sync::Arc;
 
-/// One process-lifetime handle: every registered target's availability cell, shared by whichever
-/// secondary plane consumers are mounted.
+/// One process-lifetime handle: every registered target's availability cell, shared by every
+/// mounted plane.
 ///
-/// Held on [`crate::state::App`] and carried across a config apply the way the primary plane's
-/// store is — learned reliability must survive a snapshot swap, or every apply un-trips every dead
-/// upstream.
+/// Held on [`crate::state::App`] and carried across a config apply — learned reliability must
+/// survive a snapshot swap, or every apply un-trips every dead upstream.
 pub struct PlaneBreakers {
     /// [`MAX_POOL_MEMBERS`] identical lanes — one per possible member position — never dead, never
     /// budgeted, permits never consulted (`try_admit_breaker` is the queue-shaped admission:
     /// breaker only, no permit acquisition). All per-target state lives in the per-pool cells keyed
-    /// by the plane-qualified strings; the lane table exists only because the cell store's
+    /// by their keys; the lane table exists only because the cell store's
     /// lane-global gates index it, and every entry is the same inert placeholder.
     health: HealthState,
     /// The core defaults (ADR-0002): error-rate trip over a 30s window, 15s→120s cooldown backoff.
-    /// Deliberately NOT operator-tunable per plane consumer's own config section — that absence
-    /// stays until someone asks, as `docs/circuit-breaker.md` already discloses.
+    /// Not operator-tunable per section, as `docs/circuit-breaker.md` discloses.
     cfg: BreakerCfg,
     /// FALSE for the [`Self::new_inert`] handle a planeless config gets: the lane table is EMPTY
     /// (none of the [`MAX_POOL_MEMBERS`] placeholder cells — their preallocated outcome windows
@@ -150,46 +140,34 @@ impl PlaneBreakers {
                     .collect(),
             ),
             cfg: BreakerCfg {
-                // THE ONE FIELD THIS PLANE DOES NOT TAKE FROM THE PRIMARY PLANE'S DEFAULTS, and the
-                // reason survives the arrival of reroute: a plane target is DEGENERATE unless an
-                // operator put it in a pool, and the unpooled single
+                // A target is DEGENERATE unless an operator put it in a pool, and the unpooled single
                 // registration is the canonical case. ADR-0002's sub-threshold cooldown is the
                 // "prefer a sibling" half of a rule whose other half is "fail over to the next
-                // candidate"; with no sibling declared there is nothing to prefer, and benching
-                // the only member is not a preference, it is a 15-120s outage for every caller of
-                // that server, minted by ONE transient blip and rendered as `-32030
-                // upstream_unavailable` ... "open after repeated failures".
+                // candidate"; with no sibling declared there is nothing to prefer, and benching the
+                // only member is a 15-120s outage for every caller of that target, minted by ONE
+                // transient blip.
                 //
                 // This is a per-BREAKER setting, not a per-cell one, so it is set for the
-                // conservative case and a pooled cell inherits it: a pooled member is deprioritised
-                // by a TRIP, which `failover::walk` already routes around, rather than by a
-                // sub-threshold bench. So these cells refuse on a TRIP and nothing less:
-                // error-rate >= 0.5 over >= 5 outcomes in 30s, exactly the contract ADR-0002 and
-                // `docs/circuit-breaker.md` publish for this plane. An upstream's own `Retry-After`
-                // is still honoured.
+                // conservative case and a pooled cell inherits it: a pooled member is passed over on
+                // a TRIP, not on a sub-threshold bench. So these cells refuse on a TRIP and nothing
+                // less: error-rate >= 0.5 over >= 5 outcomes in 30s, the contract ADR-0002 and
+                // `docs/circuit-breaker.md` publish. An upstream's own `Retry-After` is still
+                // honoured.
                 bench_below_trip_threshold: false,
                 ..BreakerCfg::default()
             },
         }
     }
 
-    // R5-store: `PlaneBreakers::{tool_key, agent_key}` DELETED. Both were one-line delegations to
-    // `busbar_kernel::store::{tool_key, agent_key}` — the prefix spellings had already moved down
-    // to the neutral substrate — and both had ZERO production callers in the whole workspace (they
-    // carried `#[allow(dead_code)]` for exactly that reason). The keyspace rule is unchanged and
-    // single-sourced where it now lives; every caller left names the substrate directly.
-
-    /// ADMIT ONE DISPATCH against the target's cell — [`LaneRuntime::try_admit_breaker`], the same
-    /// admission the primary plane's queue dispatch makes. `lane` is the member's position in its
+    /// ADMIT ONE DISPATCH against the target's cell — [`LaneRuntime::try_admit_breaker`], the one
+    /// breaker-only admission. `lane` is the member's position in its
     /// pool (0 for a degenerate cell). `Ok(Some(epoch))` carries the single-flight probe owner token
     /// (this admit WON a probe); `Ok(None)` is a Closed-and-ready no-op admit that won NO probe (so
     /// there is nothing to release). On a probe win the dispatch MUST end in exactly one of
     /// `record_success` / `record_signal` / [`Self::release`] or a won recovery probe is leaked and
     /// the cell wedges HalfOpen. Production call sites use [`Self::admit`], whose RAII token cannot be
     /// leaked by a dropped future — and which releases nothing on the `None` path.
-    // One plane consumer admits directly through this RAII pair, while another reaches the same
-    // cell via `failover::walk` + [`Self::adopt`]. So with the first plane consumer's feature off
-    // (and the second's on) neither this nor [`Self::admit`] has a caller.
+    // A configuration with no plane consumer compiled in has no caller of this or [`Self::admit`].
     #[allow(dead_code)]
     pub(crate) fn try_admit(&self, key: &str, lane: usize) -> Result<Option<u64>, Unavailable> {
         // Inert (planeless config): structurally unreachable — no plane is mounted, so nothing
@@ -205,7 +183,7 @@ impl PlaneBreakers {
     /// [`Self::try_admit`] as an RAII token. The owner-checked release runs on DROP, which is the
     /// only shape that survives every way a dispatch can end without recording — a refusal between
     /// admission and the wire, a caller that disconnected (axum drops the handler future), a task
-    /// runner aborted by `tasks/cancel`. An explicit release call misses the dropped-future cases,
+    /// runner aborted by a cancel. An explicit release call misses the dropped-future cases,
     /// and a missed release wedges the cell HalfOpen forever.
     #[allow(dead_code)]
     pub(crate) fn admit(
@@ -247,10 +225,9 @@ impl PlaneBreakers {
     }
 
     /// RECORD ONE NORMALIZED FAILURE through the ONE classifier ([`crate::breaker::classify`],
-    /// Stage 2) onto the target's cell. The plane's own Stage-1 normalizer produced `sig`; this is
-    /// the same disposition split `failover::record_outcome` makes, minus the all-cells hard-down
-    /// (see the module header: on a shared degenerate lane, "all cells" would be every other
-    /// target). Returns the disposition so a caller can log it without re-deciding.
+    /// Stage 2) onto the target's cell. The plane's own Stage-1 normalizer produced `sig`; the
+    /// hard-down is per cell (see the module header: on a shared degenerate lane, "all cells" would
+    /// be every other target). Returns the disposition so a caller can log it without re-deciding.
     pub fn record_signal(
         &self,
         key: &str,
@@ -307,8 +284,7 @@ impl PlaneBreakers {
                      failure (auth/billing); dispatches fast-fail for the sticky cooldown"
                 );
             }
-            // The target is healthy and the request was wrong for it — record nothing, exactly as
-            // the primary plane's walk records nothing.
+            // The target is healthy and the request was wrong for it — record nothing.
             crate::breaker::Disposition::ContextLength => {}
         }
         disposition
@@ -370,8 +346,7 @@ impl PlaneBreakers {
     }
 
     /// FORCE one target's cell Open until `until` — the test-only inverse of [`Self::reset`], for
-    /// batteries whose subject is what a dispatch does when a member is ALREADY tripped (a pinned
-    /// plane-consumer task refusal) without having to burn real failures to get there.
+    /// batteries whose subject is what a dispatch does when a member is ALREADY tripped without having to burn real failures to get there.
     #[cfg(any(test, feature = "test-support"))]
     pub fn force_open(&self, key: &str, lane: usize, until: u64) {
         self.health.force_open_in(key, lane, until);
@@ -401,5 +376,5 @@ impl Drop for Admission {
 }
 
 #[cfg(test)]
-#[path = "tests/planes_tests.rs"]
-mod planes_tests;
+#[path = "tests/breaker_admission_tests.rs"]
+mod breaker_admission_tests;

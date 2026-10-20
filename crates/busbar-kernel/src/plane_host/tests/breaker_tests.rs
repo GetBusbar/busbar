@@ -175,7 +175,6 @@ fn task_admit_bears_the_probe_in_the_durable_scope_and_settles() {
             // The breaker slots attribute nothing to a plane. See `HostState::emitter`.
             emitter: None,
             caller: None,
-            destinations: None,
         };
         // Mint like a real dispatch guard would (see the twin comment above): no open `HostGeneration`
         // ⇒ a born-dead handle `recover` would refuse.
@@ -235,7 +234,6 @@ fn task_admit_releases_the_probe_when_the_durable_scope_drops_unsettled() {
             // The breaker slots attribute nothing to a plane. See `HostState::emitter`.
             emitter: None,
             caller: None,
-            destinations: None,
         };
         // Mint like a real dispatch guard would (see the twin comments above).
         let generation = HostGeneration::open();

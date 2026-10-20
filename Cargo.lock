@@ -579,7 +579,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-otlp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=9c73d9aa582a37fc9b22bd2a61689e20f8803ee1#9c73d9aa582a37fc9b22bd2a61689e20f8803ee1"
+source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=23b31a2771f14dfbe0a93e40846002d0fa13f2fb#23b31a2771f14dfbe0a93e40846002d0fa13f2fb"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -591,7 +591,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-otlp-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=9c73d9aa582a37fc9b22bd2a61689e20f8803ee1#9c73d9aa582a37fc9b22bd2a61689e20f8803ee1"
+source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=23b31a2771f14dfbe0a93e40846002d0fa13f2fb#23b31a2771f14dfbe0a93e40846002d0fa13f2fb"
 dependencies = [
  "busbar-contract",
  "busbar-export-otlp",
@@ -933,7 +933,7 @@ dependencies = [
 [[package]]
 name = "busbar-store-memory"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=0db18e38aa720a6a01e1f8a5a4e03b645aca7ccc#0db18e38aa720a6a01e1f8a5a4e03b645aca7ccc"
+source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=3d0ac5eed987d171d3b004c77caa23b21c1f4c0b#3d0ac5eed987d171d3b004c77caa23b21c1f4c0b"
 dependencies = [
  "busbar-contract",
  "sha2",

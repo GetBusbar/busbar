@@ -801,3 +801,59 @@ fn normalize_rel(p: &str) -> String {
     }
     parts.join("/")
 }
+
+/// One memo of a per-file reading ([`file_reading`]): a cell per key, handed out under the lock and
+/// FILLED OUTSIDE it, so concurrent cases that need the same file take one reading between them.
+pub type FileReadingMemo<T> = std::sync::OnceLock<
+    std::sync::Mutex<
+        std::collections::HashMap<String, std::sync::Arc<std::sync::OnceLock<std::sync::Arc<T>>>>,
+    >,
+>;
+
+/// `read(f.text)`, MEMOISED ON THE KEY [`cfg_test_module_files`] KEYS A FILE'S DECLARATIONS ON. A
+/// file the overlay does not touch is read from disk (or the base layer), so its ABSOLUTE PATH is a
+/// promise that its bytes are the same for the life of the process; a planted file is keyed on its
+/// path AND its bytes, so a plant is always a reading of its own.
+///
+/// A self-test case IS a gate run over a tree one plant away from the last. A gate that re-reads
+/// every unchanged file of a whole-tree scan on every run pays for the scan once per case; keying
+/// the unchanged files on their bytes would still hash the whole tree every time. Keyed this way a
+/// run reads its planted files and looks the rest up. Same bytes, same reading, so the memo cannot
+/// change a verdict — and each gate that reads through here holds its memoised verdict equal to a
+/// full walk's on planted trees in its own tests.
+pub fn file_reading<T: Send + Sync + 'static>(
+    memo: &'static FileReadingMemo<T>,
+    cx: &crate::ctx::Ctx,
+    f: &crate::ctx::SourceFile,
+    read: impl FnOnce(&str) -> T,
+) -> std::sync::Arc<T> {
+    use std::hash::{Hash, Hasher};
+    let planted = cx
+        .overlay()
+        .is_some_and(|ov| ov.paths().any(|p| *p == f.rel));
+    let key = if planted {
+        let mut a = std::collections::hash_map::DefaultHasher::new();
+        f.text.hash(&mut a);
+        let mut b = std::collections::hash_map::DefaultHasher::new();
+        (f.text.len(), &f.text).hash(&mut b);
+        0x5ca_u32.hash(&mut b);
+        format!(
+            "planted\u{0}{}\u{0}{}\u{0}{:016x}{:016x}",
+            f.rel_str(),
+            f.text.len(),
+            a.finish(),
+            b.finish()
+        )
+    } else {
+        format!("stable\u{0}{}", f.abs.to_string_lossy())
+    };
+    let cell = memo
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(key)
+        .or_default()
+        .clone();
+    cell.get_or_init(|| std::sync::Arc::new(read(&f.text)))
+        .clone()
+}

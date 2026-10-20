@@ -131,18 +131,16 @@ pub fn inert_durable_keys_banner(
 /// in-flight TASK state lives only in the resolved store, so on the RAM store it is dropped on
 /// restart and any task that was mid-flight breaks on its next request. This returns a sharper warn
 /// NAMING that consequence — but ONLY when the RAM store is resolved AND a stateful plane is actually
-/// configured (`tools_stateful` = a `tools:` server or tool-pool is present; `agents_stateful` = an
-/// `agents:` agent or agent-pool is present — the config sections, named here rather than the planes
-/// they feed). A deployment with no container plane configured is STATELESS — a restart costs it
+/// configured (`stateful` = a registration in a plane's declared section, or a plane pool, is
+/// present). A deployment with no container plane configured is STATELESS — a restart costs it
 /// nothing — so it gets only the generic notice: a sharper warn there would be noise that trains
 /// operators to ignore warnings. This is a WARN, never a boot-block: a durable store is opt-in and
 /// RAM is the convenience default, so busbar does not refuse to start.
 pub fn stateful_plane_ephemeral_store_warn(
     store_is_memory: bool,
-    tools_stateful: bool,
-    agents_stateful: bool,
+    stateful: bool,
 ) -> Option<&'static str> {
-    if store_is_memory && (tools_stateful || agents_stateful) {
+    if store_is_memory && stateful {
         Some(
             "Stateful plane task state will NOT survive a restart — in-flight tasks will break on the next \
              request. Configure a durable store plugin.",
@@ -1319,17 +1317,13 @@ pub fn build_app_from_config(
         // validation above refused an absent block.
         let g = cfg.store.clone().ok_or_else(config::store_required)?;
         // Is a STATEFUL container plane actually configured? Those planes carry per-task state that
-        // the RAM store drops on restart. "Configured" = any `tools:` server / `agents:` agent OR any
-        // tool-pool / agent-pool; the pool maps are always typed (present regardless of which planes
-        // are compiled in), while the def sections are only typed when their plane is compiled
-        // in. A bare `tools:`/`agents:` entry (the common case, no failover pool) is just as stateful
-        // as a pooled one, so both are checked. Computed here so the sharper warn below can fire only
-        // for a stateful deployment — never for a deployment with no container plane configured.
-        // Data-driven: `tool_defs`/`agent_defs` are always the neutral `Box<dyn PlaneCfg>`; with the
-        // owning plane compiled out the section is the raw carrier whose `def_names()` is empty, so
-        // these read identically to the former per-feature branches without naming a plane feature.
-        let tools_stateful = !cfg.tool_defs.def_names().is_empty() || !cfg.tool_pools.is_empty();
-        let agents_stateful = !cfg.agent_defs.def_names().is_empty() || !cfg.agent_pools.is_empty();
+        // the RAM store drops on restart. "Configured" = any registration in a plane's declared
+        // section OR any plane pool. A bare registration (the common case, no failover pool) is just
+        // as stateful as a pooled one, so both are checked. Computed here so the sharper warn below
+        // can fire only for a stateful deployment — never for a deployment with no container plane
+        // configured.
+        let stateful = cfg.plane_defs.values().any(|d| !d.def_names().is_empty())
+            || cfg.plane_pools.values().any(|p| !p.is_empty());
         // The configured store, resolved and opened on the store AXIS whichever door its row came
         // in by (DECISIONS #2 rule (1)). A row that states itself ephemeral keeps nothing across a
         // restart, which the operator is told before it opens.
@@ -1346,9 +1340,7 @@ pub fn build_app_from_config(
             // (naming the consequence) ONLY when a stateful plane is configured — a deploy with no
             // container plane configured keeps just the generic notice. Additive to, not a
             // replacement for, the notice above.
-            if let Some(msg) =
-                stateful_plane_ephemeral_store_warn(true, tools_stateful, agents_stateful)
-            {
+            if let Some(msg) = stateful_plane_ephemeral_store_warn(true, stateful) {
                 diag_warn!(STATEFUL_PLANE_EPHEMERAL_STORE, "{msg}");
             }
         }
@@ -1545,63 +1537,43 @@ pub fn build_app_from_config(
     //
     // Empty on every deployment that attaches nothing, which is every deployment that does not
     // spell the key — so the dispatch paths' lookups cost one hash probe against an empty map.
-    // The `tools:` per-container gates read the typed `tools:` registry, which exists only when
-    // the owning plane is compiled in. With that plane compiled out there is no registry, so the
-    // map is empty. Data-driven: `container_gates()` is a neutral `PlaneCfg` method; with the owning plane compiled
-    // out the section is the raw carrier that answers empty containers/section-hooks, so `resolve_
-    // container_gates` yields the same empty map the former `#[cfg(not)]` branch built by hand — no
-    // plane feature named.
-    let tools_gates = {
-        let g = cfg.tool_defs.container_gates();
-        hooks::resolve_container_gates(
+    // Each plane's per-container gates and rewrite chains, read off its declared section through the
+    // neutral `container_gates` seam and keyed by the plane's own decl key, so this composition names
+    // no plane. A section the document does not write contributes nothing; reading its key finds
+    // nothing, which is the same answer an empty map gives.
+    let mut plane_gates = std::collections::BTreeMap::new();
+    let mut plane_rewrites = std::collections::BTreeMap::new();
+    for (section, defs) in &cfg.plane_defs {
+        let Some(decl) = crate::plane::registry::plane_decl_for_config_section(section) else {
+            continue;
+        };
+        let g = defs.container_gates();
+        let containers = || {
             g.containers
                 .iter()
-                .map(|(name, hooks)| (name.as_str(), hooks.as_slice())),
-            &g.section_hooks,
-            &cfg.hooks,
-            &hook_env,
-            app_config_version,
-        )
-    };
-    let agents_gates = {
-        let g = cfg.agent_defs.container_gates();
-        hooks::resolve_container_gates(
-            g.containers
-                .iter()
-                .map(|(name, hooks)| (name.as_str(), hooks.as_slice())),
-            &g.section_hooks,
-            &cfg.hooks,
-            &hook_env,
-            app_config_version,
-        )
-    };
-    // THE TAP/TRANSFORM twins of the two gate maps above: each plane's per-container `prompt: rw`
-    // rewrite chains, resolved once per generation exactly like the gates. Empty on every deployment
-    // that attaches no rewrite hook, so the transform firing sites stay zero-cost / byte-identical.
-    let tools_rewrites = {
-        let g = cfg.tool_defs.container_gates();
-        hooks::resolve_container_rewrites(
-            g.containers
-                .iter()
-                .map(|(name, hooks)| (name.as_str(), hooks.as_slice())),
-            &g.section_hooks,
-            &cfg.hooks,
-            &hook_env,
-            app_config_version,
-        )
-    };
-    let agents_rewrites = {
-        let g = cfg.agent_defs.container_gates();
-        hooks::resolve_container_rewrites(
-            g.containers
-                .iter()
-                .map(|(name, hooks)| (name.as_str(), hooks.as_slice())),
-            &g.section_hooks,
-            &cfg.hooks,
-            &hook_env,
-            app_config_version,
-        )
-    };
+                .map(|(name, hooks)| (name.as_str(), hooks.as_slice()))
+        };
+        plane_gates.insert(
+            decl.key,
+            hooks::resolve_container_gates(
+                containers(),
+                &g.section_hooks,
+                &cfg.hooks,
+                &hook_env,
+                app_config_version,
+            ),
+        );
+        plane_rewrites.insert(
+            decl.key,
+            hooks::resolve_container_rewrites(
+                containers(),
+                &g.section_hooks,
+                &cfg.hooks,
+                &hook_env,
+                app_config_version,
+            ),
+        );
+    }
 
     // EVERY fallible step of THIS build has now succeeded, so `rotate_gov_credentials` (if any) is
     // ready to run. It is NOT invoked here, though: `GovState` is a process-lifetime `Arc` shared
@@ -1671,11 +1643,10 @@ pub fn build_app_from_config(
                     // "one lowering, one Arc" holds), or a raw-carried plane's `(section, value)`.
                     // `None` when the plane's section carries none. Names no plane resource type.
                     endpoint_slot: cfg.endpoint_resources.get(decl.config_section).cloned(),
-                    // The neutral registry section, erased as `&dyn Any` via `PlaneCfg::as_any` so
-                    // `BuildCtx` names no plane-owned config type; the `agents:` container plane's
-                    // `build` closure downcasts it back to its own typed config.
-                    agent_defs: cfg.agent_defs.as_any(),
-                    tool_defs: cfg.tool_defs.as_any(),
+                    // Every declared section this document writes, by config section, behind the
+                    // neutral `PlaneCfg` seam: a plane's `build` reads its own and names no
+                    // plane-owned config type.
+                    plane_defs: &cfg.plane_defs,
                     public_url: cfg.public_url.as_deref(),
                     // THE PRIOR GENERATION'S SLOTS, so a plane's `build` can CARRY accumulated
                     // coordination off its own prior runtime object across this apply — the same
@@ -1688,38 +1659,6 @@ pub fn build_app_from_config(
             })
             .collect()
     };
-
-    // THE `tools:` CONTAINER PLANE'S PER-GENERATION RUNTIME, carried in `plane_slots` under its
-    // ALWAYS-PRESENT companion key (`runtime_slot_key(<its decl key>)`), distinct from the plane's decl
-    // key, whose slot is config-conditional and drives the dispatch door. Built ONCE through the
-    // plane's own type-erasing `build_runtime` seam (from the neutral `tool_defs` section, erased via
-    // `PlaneCfg::as_any`) so this composition names no plane-owned runtime type. It bundles the
-    // catalogue snapshot (which takes the next PIN GENERATION on construction, so every config apply —
-    // even one that changes nothing about `tools:` — moves the generation and a call admitted under the
-    // previous one is refused at dispatch), the `tools:` registry, the fresh connection pool, the
-    // CARRIED-ACROSS-APPLY sightings / roots-epochs / sampling-spend and the verify-on-call coalescer
-    // (all accumulated evidence, not intent — see that plane's own `build` fn). Composing it beside the
-    // `App` keeps the swap atomic: the whole `Arc<App>` is replaced under one lock, so the catalogue and
-    // the config that produced it never disagree. With that plane compiled out there is no built-in
-    // decl, so no slot is inserted and nothing downcasts it (no accessor exists then).
-    if let Some((slot_key, runtime_slot)) = crate::plane::registry::plane_decl_for_config_section(
-        busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
-    )
-    .and_then(|d| {
-        d.build_runtime
-            .map(|f| (crate::state::runtime_slot_key(d.key), f))
-    })
-    .map(|(slot_key, f)| {
-        (
-            slot_key,
-            f(
-                cfg.tool_defs.as_any(),
-                prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
-            ),
-        )
-    }) {
-        plane_slots.insert(slot_key, runtime_slot);
-    }
 
     // THE FALLBACK PLANE'S RUNTIME for this config generation — the pool/lane/failover/egress bundle,
     // carried in `plane_slots` under its ALWAYS-PRESENT companion key (`runtime_slot_key(<fallback
@@ -1854,10 +1793,10 @@ pub fn build_app_from_config(
             // deployment protects no such audience).
             let protected_resources: Vec<String> = cfg
                 .endpoint_resources
-                .get(busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2])
+                .get(crate::config::plane_sections::EndpointSection::OWNER)
                 .and_then(|slot| {
                     crate::plane::registry::plane_decl_for_config_section(
-                        busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
+                        crate::config::plane_sections::EndpointSection::OWNER,
                     )
                     .and_then(|d| (d.admission)(slot.as_ref()))
                 })
@@ -1867,10 +1806,10 @@ pub fn build_app_from_config(
             // Built through the seam (`crate::oauth_as::seam`), not `crate::oauth_as::plane::AsPlane`
             // directly: the concrete plane type lives in the sibling `busbar-core-oauth2` crate, which
             // core cannot name (the one-way dependency runs the other direction). The seam's `build`
-            // also spawns the plane's own expired-record sweeper — the same "how do I come alive"
-            // act this call site used to perform inline (`Storage::sweep_expired` is the only thing
-            // that reclaims anything in `oauth-as`, and it runs when it is called and never
-            // otherwise; spawned once per generation).
+            // also hands the plane's expired-record sweep to the kernel's one clock — the same "how
+            // do I come alive" act this call site used to perform inline (`Storage::sweep_expired`
+            // is the only thing that reclaims anything in `oauth-as`, and it runs when it is called
+            // and never otherwise; registered once per generation, beaten by `crate::tick::beat`).
             // The PRIOR generation's server goes in with it: what the server holds carries across
             // the swap, so a reload does not void its tokens, clients, sessions and replay ledgers.
             // The deployment's store, when one is configured: the server keeps its records there,
@@ -1911,7 +1850,7 @@ pub fn build_app_from_config(
         // dead tool server or agent. Boot starts fresh (reliability is never persisted; the
         // store-or-RAM rule).
         // "What is not configured must not be loaded": a config with NO plane content — no mounted
-        // plane slot, no `tools:`/`agents:` registration, no `tool_pools:`/`agent_pools:` — gets the
+        // plane slot, no registration in a declared section, no plane pool — gets the
         // INERT handle (empty lane table; see `PlaneBreakers::new_inert` for the ~130 KiB the 8
         // placeholder cells' preallocated windows/stripes otherwise cost every planeless idle
         // process). A PROVISIONED prior is always reused (learned reliability survives every apply,
@@ -1924,10 +1863,8 @@ pub fn build_app_from_config(
             let planes_configured = crate::plane::registry::plane_decls()
                 .iter()
                 .any(|d| plane_slots.contains_key(d.key))
-                || !cfg.tool_defs.def_names().is_empty()
-                || !cfg.agent_defs.def_names().is_empty()
-                || !cfg.tool_pools.is_empty()
-                || !cfg.agent_pools.is_empty();
+                || cfg.plane_defs.values().any(|d| !d.def_names().is_empty())
+                || cfg.plane_pools.values().any(|p| !p.is_empty());
             match prior {
                 Some(p) if p.plane_breakers.is_provisioned() || !planes_configured => {
                     Arc::clone(&p.plane_breakers)
@@ -1955,24 +1892,16 @@ pub fn build_app_from_config(
         incremental_scan: std::env::var_os("BUSBAR_INCREMENTAL_SCAN")
             .is_some_and(|v| !v.is_empty() && v != "0"),
         // The failover pools, resolved-verbatim per generation (the CELLS above are process-
-        // lifetime; the pool DECLARATIONS are config like any other).
-        tool_pools: cfg.tool_pools.clone(),
-        // The GENERIC per-plane failover pool map, keyed by each plane's stable decl key (the
-        // `agents:` container plane's `agent_pools:` set; the `tools:` container plane's
-        // `tool_pools:` set keeps its own dedicated field above).
-        plane_pools: {
-            // Keyed by the DECL KEY of the plane that owns the `agents:` section — resolved from the
-            // registry, never spelled as a literal — so this composition names no plane. A compiled-out
-            // plane has no decl for its section, so nothing is inserted; the pool read treats an absent
-            // key identically to the former empty-value entry.
-            let mut m = std::collections::BTreeMap::new();
-            if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
-            ) {
-                m.insert(decl.key, cfg.agent_pools.clone());
-            }
-            m
-        },
+        // lifetime; the pool DECLARATIONS are config like any other): each plane's pools, keyed by
+        // its stable decl key, resolved from the registry so this composition names no plane.
+        plane_pools: cfg
+            .plane_pools
+            .iter()
+            .filter_map(|(section, pools)| {
+                crate::plane::registry::plane_decl_for_config_section(section)
+                    .map(|decl| (decl.key, pools.clone()))
+            })
+            .collect(),
         auth: auth_mw.clone(),
         rewrite_hooks,
         tap_hooks,
@@ -1985,43 +1914,10 @@ pub fn build_app_from_config(
         pool_orderings,
         pool_decision_gates,
         pool_rewrite_chains,
-        // The GENERIC per-plane per-container submission-gate map, keyed by each plane's stable decl
-        // key — in place of the former per-plane `tools_gates`/`agents_gates` fields. Each
-        // plane's resolved gate map (built above, empty when its feature is off) goes under its key.
-        plane_gates: {
-            // Keyed by each owning plane's DECL KEY, resolved from the registry rather than named as a
-            // literal: the `tools:` section's plane takes `tools_gates`, the `agents:` section's
-            // plane takes `agents_gates`. A compiled-out plane has no decl for its section, so its
-            // (empty) gate map is simply not inserted — byte-identical to the former empty-value entry.
-            let mut m = std::collections::BTreeMap::new();
-            if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
-            ) {
-                m.insert(decl.key, tools_gates);
-            }
-            if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
-            ) {
-                m.insert(decl.key, agents_gates);
-            }
-            m
-        },
-        // THE TAP twin of `plane_gates`, built identically: each plane's rewrite-chain map under its
-        // decl key, empty (hence not inserted) for a compiled-out plane.
-        plane_rewrites: {
-            let mut m = std::collections::BTreeMap::new();
-            if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
-            ) {
-                m.insert(decl.key, tools_rewrites);
-            }
-            if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
-            ) {
-                m.insert(decl.key, agents_rewrites);
-            }
-            m
-        },
+        // The GENERIC per-plane per-container submission-gate map and its rewrite-chain twin, keyed by
+        // each plane's stable decl key (built above).
+        plane_gates,
+        plane_rewrites,
         hook_env: hook_env.clone(),
         hook_registry: cfg.hooks.clone(),
         requested_signals: hooks::requested_signals(&cfg.hooks),
@@ -2034,10 +1930,6 @@ pub fn build_app_from_config(
         // resolved config (the EFFECTIVE base+overlay shape).
         identity_providers: cfg.identity_providers.clone(),
         export_defs: cfg.export_defs.clone(),
-        // TYPE-ERASED into `App` so it names no plane-owned config type — the SAME resolved object
-        // (a clone, not a reparse), so the admin view and gates are byte-identical. The `agents:`
-        // container plane downcasts it back inside its own module.
-        agent_defs: cfg.agent_defs.clone_arc_any(),
         // THE `agents:` CONTAINER PLANE, built only when `agents:` defines one, is NOT mirrored into a
         // typed `App` field any more: it lives solely in its `plane_slots` entry (built once by
         // `PlaneDecl::build`), and every reader reaches it through that plane's own runtime accessors,
@@ -2105,18 +1997,11 @@ pub fn build_app_from_config(
         // runtime accessor, which downcasts that slot inside the plane.
         plane_slots,
         oauth_as: oauth_as_plane.clone(),
-        // CARRIED ACROSS THE APPLY for the same reason, and it is the same class of mistake: an
-        // approval already spent is evidence, not intent, and a config apply that forgot it would
-        // hand every outstanding confirmation back to whoever still holds it.
-        spent_token_ledger: prior.map_or_else(
-            || Arc::new(crate::plane::approvals::SpentTokenLedger::new()),
-            |p| p.spent_token_ledger.clone(),
-        ),
         // CARRIED ACROSS THE APPLY, and here the reason is sharper than for the two above: the
         // durable sink is attached to this instance once at boot, so rebuilding it on an apply would
         // silently detach it and every later quarantine would stop being written down.
         demotion_record: prior.map_or_else(
-            || Arc::new(crate::plane::quarantine::DemotionRecord::new()),
+            || Arc::new(crate::trust::demotion::DemotionRecord::new()),
             |p| p.demotion_record.clone(),
         ),
         auth_scope_caps: cfg
