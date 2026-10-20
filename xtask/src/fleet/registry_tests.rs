@@ -123,3 +123,27 @@ fn every_plugin_digest_row_parses_and_the_sans_io_plugins_are_pinned_on_the_1_6_
         )]
     );
 }
+
+/// RED (oracle `webrequest|transform|rewrite`: no response, the candidate process gone): the
+/// webrequest-hook 1.6 build pin must be a commit whose `busbar-contract` speaks the host's hook
+/// memory ABI. `RequestView::session` was appended at f261d0a6e0 (2026-10-04, a pre-tag v1 layout
+/// edit, no ABI bump), and `RequestView` sits INSIDE `DecideIn`, so every `DecideIn` field after it
+/// moved 24 bytes. A plugin built before that edit reads the host's frame at its old offsets: on
+/// `transform` it takes the host's `reject_message_cap` (2048) for `rewrite_buf` and writes the
+/// rewrite through it, and the node dies; on `decide` it sees no candidates and writes a reject
+/// message where no buffer is. 97c0d9c2ad builds against busbar 4abda5b63e (2026-10-02, before the
+/// edit); the hook-webrequest dev head 884996ccd2 builds against 7263f4e61b (2026-10-19, after it),
+/// its logic byte-identical to 97c0d9c2ad (only CI, tests and the contract pin moved).
+#[test]
+fn the_webrequest_hook_1_6_pin_speaks_the_hosts_hook_abi() {
+    let tsv = Ctx::workspace().unwrap().read(PLUGIN_DIGESTS).unwrap();
+    let pins: Vec<&str> = tsv
+        .lines()
+        .filter(|r| r.starts_with("webrequest-hook\tsrc:") && r.ends_with("\t1.6"))
+        .collect();
+    assert_eq!(
+        pins,
+        ["webrequest-hook\tsrc:884996ccd2998dcd8ee495b1eb70c80fd9496156\tbuild:busbar-hook-webrequest\t-\t1.6"],
+        "the webrequest-hook 1.6 build pin predates the hook ABI's appended RequestView::session"
+    );
+}
