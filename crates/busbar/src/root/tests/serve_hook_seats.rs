@@ -45,10 +45,6 @@ use crate::root::loader::dispatch::{
 };
 use crate::root::plane_node::{Node, NodeEndPost};
 
-// The plane the node is handed, as the manifest's linked table names it (the `node` axis): the
-// legacy row's test seams the registry rows that own the `pools:`/`models:` sections come from.
-include!(concat!(env!("OUT_DIR"), "/node_plane.rs"));
-
 // The words of the plane under proof that these cells read as data (`DRIVER_WORDS`: the plane's own
 // `tests/on_driver/words.txt`, from the manifest's driver-proofs row).
 include!(concat!(env!("OUT_DIR"), "/driver_words.rs"));
@@ -96,6 +92,25 @@ pub(super) fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
         .expect("the driver-proofs row links the door serving the `pools` map")
 }
 
+/// THE REGISTRY ROWS THE DEPLOYMENT WRITES INTO, as the composition root installs them: the linked
+/// protocol declarations (the door row's `protocols` axis) and the row the door serving the `pools`
+/// map folds to, which owns the `pools:`/`models:` sections. The door is the plane's one
+/// registration (DEV-GREEN row 83), so its Statement is the row. Idempotent.
+pub(super) fn install_door_seams() {
+    static ROW: std::sync::OnceLock<&'static busbar_kernel::plane::registry::PlaneDecl> =
+        std::sync::OnceLock::new();
+    for decls in crate::LINKED.protocols {
+        busbar_kernel::proto::register_test_protocols(decls);
+    }
+    let row = ROW.get_or_init(|| {
+        use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
+        let reg = registration(linked_probe(pools_door(), "pools-door-row"))
+            .expect("the door serving the `pools` map binds");
+        busbar_kernel::plane::door::fold(reg).expect("the door folds")
+    });
+    busbar_kernel::plane::registry::register_test_plane(row);
+}
+
 /// The card history the served unit is pinned to at its door: one entry, no price.
 static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
     std::sync::LazyLock::new(|| {
@@ -110,6 +125,11 @@ static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
         );
         holder
     });
+
+/// [`CARD`]'s pin: the history a rig that names no card of its own pins its units to.
+fn card_pin() -> Option<crate::root::kernel::PinnedHistory> {
+    CARD.pin()
+}
 
 /// The marker the rewrite hook plants in the prompt; a tap payload carrying it saw the rewrite.
 pub(super) const REWRITTEN: &str = "rewritten-by-the-global-rewrite-seat";
@@ -451,7 +471,7 @@ struct Ran {
 /// HOW A RIG IS BUILT: the far ends of its pool `p`'s members (each a model `m<i>` on a provider
 /// of its own, at `weight`), the gate's verdict, and the key's all-time budget.
 #[derive(Clone, Copy, Default)]
-pub(super) struct RigOpts<'a> {
+pub(crate) struct RigOpts<'a> {
     /// Each member's far-end port and weight, in order.
     pub members: &'a [(u16, u32)],
     /// The global gate rejects with 451.
@@ -515,6 +535,14 @@ pub(super) struct RigOpts<'a> {
     /// The node's book keeps its journal in a configured store that refuses, and the lane to it is
     /// full ([`full_journal_book`]): the node fails closed on every new unit (H3).
     pub full_journal: bool,
+    /// The deployment's `rate_card:` (`None`: no card, billing off): the governance book prices
+    /// the key's counts against it.
+    pub rate_card: Option<&'a BTreeMap<String, busbar_kernel::config::RateEntryCfg>>,
+    /// The flat request fee, in cents (`None`: 1 cent).
+    pub fee_cents: Option<i64>,
+    /// The card history a unit is pinned to at its door, which the node's book prices its line
+    /// against (`None`: the rig's own priceless card).
+    pub pin: Option<fn() -> Option<crate::root::kernel::PinnedHistory>>,
 }
 
 /// A NODE'S BOOK WHOSE JOURNAL CANNOT REACH ITS STORE: the journal is kept by a configured store
@@ -560,9 +588,15 @@ fn indented(text: &str, by: usize) -> String {
 
 /// THE POOLS DOOR, SERVED END TO END, as production composes it: the data router built with the
 /// door's claims, a keyed caller's token, the generation's App and the node's book.
-pub(super) struct DoorRig {
+pub(crate) struct DoorRig {
     /// The data router.
     pub router: axum::Router,
+    /// Every route the door mounts on that router: `(path, method, auth)`, as built.
+    pub door_table: Vec<(
+        String,
+        String,
+        busbar_contract::abi::mechanism::route::RouteAuth,
+    )>,
     /// The caller's bearer token.
     pub token: String,
     /// The generation.
@@ -785,7 +819,7 @@ impl DoorRig {
 /// BUILD THE RIG: the door serving the `pools` map, linked and bound through the loader's one load
 /// on the process connector, over `opts`' far ends, its egress the model-serving walk over the
 /// kernel's lane cells, its hooks the kernel's stage with the four probed seats installed.
-pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
+pub(crate) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
     try_rig(instance, opts)
         .await
         .unwrap_or_else(|e| panic!("the door serving the pools map composes: {e}"))
@@ -793,9 +827,9 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
 
 /// [`rig`], the composition's refusal answered rather than panicked on: what the root's boot dies
 /// on.
-pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result<DoorRig, String> {
+pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result<DoorRig, String> {
     // The registry rows that own the `pools:`/`models:` sections the deployment writes.
-    node_plane::testkit::install_test_seams();
+    install_door_seams();
     busbar_kernel::snapshot::init();
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
         block_private_addresses: opts.refuse_private,
@@ -956,10 +990,11 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         .into_iter()
         .chain(configured)
         .collect();
-    let cost = if groups.is_empty() {
-        CostModel::flat(1)
+    let fee = opts.fee_cents.unwrap_or(1);
+    let cost = if groups.is_empty() && opts.rate_card.is_none() {
+        CostModel::flat(fee)
     } else {
-        CostModel::resolve_parts(None, 1, &groups)
+        CostModel::resolve_parts(opts.rate_card, fee, &groups)
     };
     let (key, token) = gov
         .mint_signed(
@@ -993,7 +1028,8 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     }
     gov.hydrate_budgets(&cost, 0).expect("hydrate");
     let node = Arc::new(Node::new());
-    let book = crate::root::durability::node_book_over(Box::new(|| CARD.pin()));
+    let pin = opts.pin.unwrap_or(card_pin);
+    let book = crate::root::durability::node_book_over(Box::new(pin));
     let durability = if opts.full_journal {
         full_journal_book()
     } else {
@@ -1199,17 +1235,17 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
             );
         })
     };
-    let doors = door_routes(
-        served,
-        || CARD.pin(),
-        &[],
-        &busbar_kernel::base_data_core_lines(&app),
-    )
-    .expect("its claims mount");
+    let doors = door_routes(served, pin, &[], &busbar_kernel::base_data_core_lines(&app))
+        .expect("its claims mount");
+    let door_table = doors
+        .iter()
+        .map(|d| (d.path.clone(), d.method.as_str().to_string(), d.auth))
+        .collect();
     let (router, _admin, _handle) =
         busbar_kernel::build_split_routers_serving(Arc::clone(&app), doors, 1 << 20, 0, false);
     Ok(DoorRig {
         router,
+        door_table,
         token: token.expose(&busbar_kernel::seal::lend()).to_string(),
         app,
         book: durability,

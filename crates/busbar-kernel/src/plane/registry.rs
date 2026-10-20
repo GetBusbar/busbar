@@ -616,7 +616,7 @@ pub fn build_dispatch(
 }
 
 // `registry_tests` MOVED to `crates/busbar/tests/registry_cross_plane.rs` (the A6/HostCtx dev-dependency-cycle
-// cleanup): most of it drove the REAL `busbar_llm`/`busbar_mcp` and agent-engine `PLANE_DECL`s and their
+// cleanup): most of it drove the REAL the retired engine crate/`busbar_mcp` and agent-engine `PLANE_DECL`s and their
 // real runtime objects, which only type-checks with ONE `busbar_kernel` in the graph — an
 // integration-test target, never this `#[cfg(test)]` unit module. See that file's header. The two
 // `#[cfg(test)]` seams it used to reach through (`builtin_plane_decls`, `default_section_plane_test_runtime`
@@ -826,6 +826,12 @@ plane_behaviour! {
     /// `Plane::wire_formats` and `Plane::has_superset_ir` stay DERIVED from this list's length, so
     /// the superset-IR rule remains a rule rather than a fact about today's planes.
     wire_format_names: fn() -> &'static [&'static str],
+
+    /// THE DIALECTS A PROVIDER'S `protocol` MAY NAME, of those this plane speaks, in its order
+    /// (ARCHITECT ruling 2026-10-16, item 3; BUSBAR-1.6.0.md #49: declared data). A door plane's
+    /// are the dialects its tail's `dialect_auth` lines flag `DIALECT_PROVIDER`. The boot accepts a
+    /// provider whose `protocol` some registered plane lists here, and its refusal lists them all.
+    provider_dialects: fn() -> &'static [&'static str],
 
     /// THE PATHS THIS PLANE ANSWERS ON, and the wire format each is spoken in, computed from the
     /// plane's own RUNTIME OBJECT (its app slot, type-erased as `&dyn Any`). Every `(path, wire)`
@@ -1068,7 +1074,7 @@ plane_behaviour! {
     /// this at most once per scrape/discovery read and falls back to the substrate-resident
     /// [`crate::plane_driver::route_tables::EMPTY_VIEW`] when the plane contributed no runtime slot (the zero-plane binary).
     /// `None` for a plane whose runtime exposes no routing tables (MCP/A2A: they contribute no
-    /// `EngineTablesView`); the LLM plane sets it once its `NativeRuntime` lives in `busbar-llm`.
+    /// `EngineTablesView`); the LLM plane sets it once its `NativeRuntime` lives in the retired engine crate.
     #[allow(clippy::type_complexity)]
     viewer:
         Option<fn(&(dyn std::any::Any + Send + Sync)) -> &dyn crate::plane_driver::route_tables::EngineTablesView>,

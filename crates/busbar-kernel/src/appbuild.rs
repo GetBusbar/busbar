@@ -972,17 +972,22 @@ pub fn build_app_from_config(
         // The provider entry's lane-capability keys, carried unread in its table and resolved
         // against the lane's wire model by `ir::lane_caps` (architect ruling LANECAPS-MOVE).
         let lane_caps = legacy.lane_caps(facts.upstream_model.as_deref().unwrap_or(&ld.member));
-        let Some(protocol) = crate::proto::lane_protocol_name(provider_cfg.dialect()) else {
-            // The "supported:" roster is DERIVED from the registry (`known_protocols()`), not a
-            // hand-maintained literal: the codec dialects are whatever the linked plane crates
-            // registered, so a build with the fallback plane compiled out names only what it actually
-            // serves (and a build with a new dialect names it) — the deletion-test property at the
-            // vocabulary level. Empty roster is a real answer.
+        // The "supported:" roster is the planes' DECLARED provider dialects
+        // (`plane::provider_dialects`, ARCHITECT ruling 2026-10-16 item 3), not a hand-maintained
+        // literal and not a codec list: a build with the plane that declares them compiled out names
+        // only what it actually serves, and a build with a new dialect names it. Empty roster is a
+        // real answer.
+        let providers = crate::plane::provider_dialects();
+        let Some(protocol) = providers
+            .iter()
+            .copied()
+            .find(|d| *d == provider_cfg.dialect())
+        else {
             return Err(format!(
                 "provider '{}' uses unknown protocol '{}' (supported: {})",
                 ld.route,
                 provider_cfg.dialect(),
-                crate::proto::known_protocols().join(", ")
+                providers.join(", ")
             ));
         };
         // Reuse the single env read captured in the lanes_data loop above (same source of truth as
