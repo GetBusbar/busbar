@@ -88,8 +88,9 @@ pub trait Checkpointer: Send + Sync {
 pub struct UnitEnd {
     /// The status the unit's caller was answered with (its head's, once a head went out).
     pub caller_status: u32,
-    /// The far end CUT the answer after its head: its connection failed, or its send's deadline
-    /// passed, before it completed (the driver's `cut` fact, `DriverSteps::answered`).
+    /// The far end CUT the unit's streamed answer after its head: its connection failed, or its
+    /// send's deadline passed, before it completed (the driver's `cut` fact,
+    /// `DriverSteps::answered`, on a unit whose caller asked for a stream).
     pub cut: bool,
 }
 
@@ -180,6 +181,8 @@ struct Open {
     dirty: bool,
     /// The flush epoch the unit's last checkpoint was handed over in: at most one per epoch.
     flushed: Option<u64>,
+    /// The far end CUT the unit's answer ([`PlaneMoney::far_cut`]): it bills no usage.
+    cut: bool,
 }
 
 /// THE KERNEL'S MONEY STEPS for one plane instance's units.
@@ -269,6 +272,7 @@ impl PlaneMoney {
                 laned: false,
                 dirty: false,
                 flushed: None,
+                cut: false,
             },
         );
     }
@@ -292,7 +296,7 @@ impl PlaneMoney {
         );
     }
 
-    /// [`PlaneMoney::settle_end`], told HOW the unit's answer ended ([`UnitEnd`]): an answer its far
+    /// [`PlaneMoney::settle_end`], told HOW the unit's answer ended ([`UnitEnd`]): a stream its far
     /// end CUT is no delivered response, so it meters nothing, whatever status its head carried
     /// (v1.5.5 `crates/busbar/src/proxy/response_body.rs`: a transport error sets `stream_failed`
     /// and `ended` (:283, :306, :409), so the natural end's `ledger_and_meter` (:587) never runs,
@@ -311,7 +315,7 @@ impl PlaneMoney {
             // A DELIVERED end meters one request against the serving member, tokens or none
             // (v1.5.5 proxy/usage.rs:31-40 and :99-106); an answer its far end cut was not
             // delivered (status row 183).
-            if (200..=299).contains(&caller_status) && !cut {
+            if (200..=299).contains(&caller_status) && !cut && !open.cut {
                 self.meter(m, open.provider.as_deref(), &counts);
             }
         }
@@ -334,6 +338,24 @@ impl PlaneMoney {
                     }
                 }
             }
+        }
+    }
+
+    /// THE FAR END CUT UNIT `key`'S STREAMED ANSWER after its head (the driver's `cut` fact: its
+    /// connection failed, or its send's deadline passed, before the answer completed). Such a
+    /// stream is no delivered response, so it bills no usage: its usage counts are dropped here,
+    /// and only its fee units stay, so the fee stands as the plane reported it (BUSBAR-1.6.0.md,
+    /// Budgets: a stream cut by the far end set `stream_failed` and the drop-time gate billed no
+    /// tokens, v1.5.5 `crates/busbar/src/proxy/response_body.rs:283` and `:642`; the request unit
+    /// still counts, and 1.5.5's finish kept the fee of a 2xx head,
+    /// `crates/busbar/src/ingress/mod.rs:574-575`). Its end meters nothing
+    /// ([`PlaneMoney::settle_end_as`]). A caller that LEFT is not a cut: its bill is the cancel
+    /// bill ([`MoneySeam::cancelled`]).
+    pub fn far_cut(&self, key: UnitKey) {
+        if let Some(open) = self.lock().get_mut(&key) {
+            let m = &open.money;
+            open.last.retain(|u| m.fee.is_fee(u.class));
+            open.cut = true;
         }
     }
 

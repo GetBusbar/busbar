@@ -356,6 +356,12 @@ async fn the_pools_doors_report_carries_the_end_a_status_line_cannot() {
             "{label}: no usage frame streamed before the end, so there is no token to bill"
         );
         assert_eq!(rig.tokens_after().await, 0, "{label}: no token ledgered");
+        let (requests, _, _, _) = rig.ledger_after(0).await;
+        assert_eq!(
+            requests, 1,
+            "{label}: the request unit still counts (oracle cell \
+             `route.failover|fo|primary-cut-stream`, golden usage {{\"requests\":1}})"
+        );
         assert_eq!(
             metering_rows(&rig, charged_at),
             Vec::<String>::new(),
