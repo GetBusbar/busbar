@@ -18,7 +18,7 @@
   "accepted": [
     {
       "id": "D-1 diagnostic codes",
-      "cells": "^(auth\\.lifecycle|boot\\.refusal|boot\\.warning|cli|config\\.migrate|cooldown|documented|hazard|neutrality|plugins\\.load|plugins\\.store-persist|teller|boot\\.deprecated-env|egress\\.image-detail)\\|",
+      "cells": "^(auth\\.lifecycle|boot\\.refusal|boot\\.warning|cli|config\\.migrate|cooldown|documented|hazard|neutrality|plugins\\.load|plugins\\.store-persist|teller|boot\\.deprecated-env|egress\\.image-detail)\\|([^L]|L[^A]|LA[^W]|LAW[^0])",
       "expected_cells": 495,
       "kind": "improvement",
       "changelog": "Every error and warning line carries a diagnostic code.",
@@ -407,7 +407,7 @@
       "kind": "improvement",
       "changelog": "Bedrock text blocks no longer open with an empty `contentBlockStart`.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "cells": "^llm\\|bedrock\\|[a-z]+\\|request\\|ok_stream$",
+      "cells": "^llm\\|bedrock\\|(anthropic|bedrock|cohere|openai|responses)\\|request\\|ok_stream$",
       "expected_cells": 5,
       "classes": [
         "body",
@@ -438,7 +438,7 @@
       "kind": "improvement",
       "changelog": "Responses API streams carry the lifecycle frames the spec declares:",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "cells": "^llm\\|responses\\|[a-z]+\\|request\\|ok_stream$",
+      "cells": "^llm\\|responses\\|(anthropic|bedrock|cohere|openai|responses)\\|request\\|ok_stream$",
       "expected_cells": 5,
       "classes": [
         "body",
@@ -619,7 +619,7 @@
       "kind": "improvement",
       "changelog": "An Anthropic response carries the members its published schema requires.",
       "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
-      "cells": "^llm\\|anthropic\\|(bedrock|cohere|gemini|openai|responses)\\|request\\|ok(_stream)?$",
+      "cells": "^llm\\|anthropic\\|((bedrock|cohere|openai|responses)\\|request\\|ok(_stream)?|gemini\\|request\\|ok)$",
       "expected_cells": 9,
       "classes": [
         "body",
@@ -1055,7 +1055,7 @@
       "id": "F-014 Bedrock totalTokens counts the cache tokens AWS counts",
       "kind": "improvement",
       "by": "owner (Matthew Jackson), 2026-09-05 round-3 audit",
-      "cells": "^llm\\|bedrock\\|[a-z_]+\\|request\\|ok(_stream)?$",
+      "cells": "^llm\\|bedrock\\|([a-z_]+\\|request\\|ok|(anthropic|bedrock|cohere|openai|responses)\\|request\\|ok_stream)$",
       "expected_cells": 11,
       "classes": [
         "body"
@@ -1220,7 +1220,7 @@
       "kind": "improvement",
       "changelog": "**An Anthropic `redacted_thinking` block closes only if it opened.**",
       "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
-      "cells": "^llm\\|anthropic\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|ok_stream$",
+      "cells": "^llm\\|anthropic\\|(anthropic|bedrock|cohere|openai|responses)\\|request\\|ok_stream$",
       "expected_cells": 5,
       "classes": [
         "body",
@@ -1251,7 +1251,7 @@
       "kind": "improvement",
       "changelog": "**A streamed chat `usage` trailer arrives even when the stream ended without a stop reason.**",
       "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
-      "cells": "^llm\\|openai\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|ok_stream$",
+      "cells": "^llm\\|openai\\|(anthropic|bedrock|cohere|openai|responses)\\|request\\|ok_stream$",
       "expected_cells": 5,
       "classes": [
         "body",
@@ -1290,7 +1290,7 @@
       "kind": "improvement",
       "changelog": "**One stream states one id.**",
       "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
-      "cells": "^llm\\|(anthropic|cohere|gemini|openai|responses)\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|(ok_stream|ok_stream_array|stream_upstream_error@fixture)$",
+      "cells": "^llm\\|(anthropic|cohere|gemini|openai|responses)\\|((anthropic|bedrock|cohere|openai|responses)\\|request\\|(ok_stream|ok_stream_array|stream_upstream_error@fixture)|gemini\\|request\\|(ok_stream_array|stream_upstream_error@fixture))$",
       "expected_cells": 31,
       "classes": [
         "body",
@@ -2077,7 +2077,7 @@
     },
     {
       "id": "RULE21-576 the plain gemini route bills toolUsePromptTokenCount as input (ledger x rate card)",
-      "kind": "improvement",
+      "kind": "breaking",
       "changelog": "1.6.0 Improvements: a Gemini turn that used a server-side tool bills the tool-use tokens Google charges for.",
       "by": "owner (Matthew Jackson), RULE 21 2026-10-14 (\"money is bank auditor grade. its either right or its wrong. make it right.\" / \"money - ledger * ratecard\"), applying the 2026-10-02 ruling of entry 576 to the llm wire cell",
       "cells": "^llm\\|gemini\\|gemini\\|request\\|ok_tool_use_tokens@fixture$",
@@ -2404,7 +2404,7 @@
       "kind": "breaking",
       "changelog": "1.6.0 Changed: a streamed answer whose upstream connection fails after its first byte is billed for the tokens that streamed before the failure. 1.5.5 billed no tokens for it. A mid-stream cut is not a refund.",
       "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #62 (OWNER-LOCKED 2026-09-20)",
-      "cells": "^llm\\|[a-z]+\\|[a-z]+\\|request\\|stream_upstream_cut$",
+      "cells": "^llm\\|anthropic\\|anthropic\\|request\\|stream_upstream_cut$",
       "expected_cells": 1,
       "classes": [
         "effects.usage"
@@ -2429,7 +2429,7 @@
       "kind": "improvement",
       "changelog": "On a same-dialect route the caller receives every upstream response header except hop-by-hop fields, Content-Length, Content-Encoding and the dialect's tenant- and credential-derived headers; 1.5.5 relayed only Content-Type and the dialect's request-id headers.",
       "by": "owner (Matthew Jackson), STANDING RULE LLM DIALECT FIDELITY (2026-10-02), F2 response headers; ARCHITECT ruling 2026-10-02 (FOLD-LLM option B)",
-      "cells": "^llm\\|(anthropic\\|anthropic|bedrock\\|bedrock|cohere\\|cohere|gemini\\|gemini|openai\\|openai|responses\\|responses)\\|request\\|(ok|ok_stream|ok_stream_array|ok_cachepoint_document@fixture|ok_tool_use_tokens@fixture|ok_citation@fixture|stream_upstream_error@fixture)$",
+      "cells": "^llm\\|((anthropic\\|anthropic|bedrock\\|bedrock|cohere\\|cohere|openai\\|openai|responses\\|responses)\\|request\\|(ok|ok_stream|ok_stream_array|ok_cachepoint_document@fixture|ok_tool_use_tokens@fixture|ok_citation@fixture|stream_upstream_error@fixture)|gemini\\|gemini\\|request\\|(ok|ok_stream_array|ok_cachepoint_document@fixture|ok_tool_use_tokens@fixture|ok_citation@fixture|stream_upstream_error@fixture))$",
       "expected_cells": 21,
       "classes": [
         "headers"
