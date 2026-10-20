@@ -27,7 +27,7 @@ use busbar_contract::protocol::EgressAuthHeaders;
 use busbar_contract::redacted::Secret;
 use http::{HeaderName, HeaderValue};
 
-use crate::proto::SigningContext;
+use busbar_contract::protocol::SigningContext;
 
 /// Produces the outbound auth headers for a single upstream request.
 ///
@@ -302,9 +302,11 @@ pub fn prebuild_auth(
         timestamp_epoch: 0,
         upstream_creds: UpstreamCreds::Own,
     };
-    Some(crate::proto::convert_headers(
-        credential.headers_for(api_key, &ctx),
-    ))
+    let mut headers = http::header::HeaderMap::new();
+    for (name, value) in credential.headers_for(api_key, &ctx) {
+        headers.insert(name, value);
+    }
+    Some(headers)
 }
 
 #[cfg(test)]
