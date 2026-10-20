@@ -1540,7 +1540,8 @@ pub fn reading(
     use std::hash::{Hash, Hasher};
     use std::sync::{Arc, Mutex, OnceLock};
     type Cell = Arc<OnceLock<Arc<Reading>>>;
-    static MEMO: OnceLock<Mutex<BTreeMap<(usize, u64, u64), Cell>>> = OnceLock::new();
+    type Memo = Mutex<BTreeMap<(usize, u64, u64), Cell>>;
+    static MEMO: OnceLock<Memo> = OnceLock::new();
     let declared_text = format!("{declared:?}");
     let len: usize = files.iter().map(|(p, t)| p.len() + t.len()).sum();
     let mut a = std::collections::hash_map::DefaultHasher::new();

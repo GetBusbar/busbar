@@ -363,9 +363,9 @@ struct Scanned {
 type Cell<T> = Arc<OnceLock<Arc<T>>>;
 /// `(path, bytes)` key -> the file's [`test_scope`] lines.
 static SCOPE_MEMO: OnceLock<Mutex<BTreeMap<FileKey, Cell<Vec<ScopeLine>>>>> = OnceLock::new();
+type HitsMemo = Mutex<BTreeMap<(FileKey, Vec<String>), Cell<Vec<usize>>>>;
 /// `((path, bytes) key, needles)` -> the indices of the lines whose `counted` copy carries one.
-static HITS_MEMO: OnceLock<Mutex<BTreeMap<(FileKey, Vec<String>), Cell<Vec<usize>>>>> =
-    OnceLock::new();
+static HITS_MEMO: OnceLock<HitsMemo> = OnceLock::new();
 
 /// The memo key of one file: its length and two independent hashes of its path and bytes.
 type FileKey = (usize, u64, u64);

@@ -356,8 +356,8 @@ fn markers_memo(rel: &str, text: &str) -> std::sync::Arc<Vec<String>> {
     use std::hash::{Hash, Hasher};
     use std::sync::{Arc, Mutex, OnceLock};
     type Cell = Arc<OnceLock<Arc<Vec<String>>>>;
-    static MEMO: OnceLock<Mutex<std::collections::BTreeMap<(usize, u64, u64), Cell>>> =
-        OnceLock::new();
+    type Memo = Mutex<std::collections::BTreeMap<(usize, u64, u64), Cell>>;
+    static MEMO: OnceLock<Memo> = OnceLock::new();
     let mut a = std::collections::hash_map::DefaultHasher::new();
     (rel, text).hash(&mut a);
     let mut b = std::collections::hash_map::DefaultHasher::new();

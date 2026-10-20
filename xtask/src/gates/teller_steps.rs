@@ -536,7 +536,7 @@ impl<'c> CellOwners<'c> {
         }
 
         if let Some((_, base)) = SOURCE_DIRS.iter().find(|(ns, _)| *ns == namespace) {
-            if let Some(owner) = self.declared_in_source(*base, rest) {
+            if let Some(owner) = self.declared_in_source(base, rest) {
                 return Some(owner);
             }
         }
@@ -684,7 +684,8 @@ fn oracle_ids_of(text: &str) -> std::sync::Arc<BTreeSet<String>> {
     use std::hash::{Hash, Hasher};
     use std::sync::{Arc, Mutex, OnceLock};
     type Cell = Arc<OnceLock<Arc<BTreeSet<String>>>>;
-    static MEMO: OnceLock<Mutex<BTreeMap<(usize, u64, u64), Cell>>> = OnceLock::new();
+    type Memo = Mutex<BTreeMap<(usize, u64, u64), Cell>>;
+    static MEMO: OnceLock<Memo> = OnceLock::new();
     let mut a = std::collections::hash_map::DefaultHasher::new();
     text.hash(&mut a);
     let mut b = std::collections::hash_map::DefaultHasher::new();
