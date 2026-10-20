@@ -706,8 +706,9 @@ impl DoorApply {
 
 /// THE SECTION A CONFIG APPLY REFRESHES A DOOR PLANE ONTO: the plane's slot in the generation `app`
 /// installed (its section as written), carrying the unified pools that generation resolved for the
-/// plane's section `section_key` ([`installed_door_pools`]: each plane's pools off the generic
-/// per-plane pool map `App::plane_pools`), as the boot composition carries them
+/// plane's section `section_key` (its own pools off the generic per-plane pool map
+/// `App::plane_pools` under the key its slot is under, else [`installed_door_pools`]), as the boot
+/// composition carries them
 /// ([`with_pools`]); a generation with no slot for the plane keeps the section it serves now.
 #[must_use]
 pub fn applied_section(
@@ -723,8 +724,15 @@ pub fn applied_section(
     else {
         return now.section.clone();
     };
-    let pools = installed_door_pools(app);
-    section_with_pools(section_key, &slot.section.value, &pools)
+    // The generation's per-plane pool map is keyed by the plane's key, the key its slot is under:
+    // read there first, so an apply carries the plane's pools whatever the registry holds (an apply
+    // never re-resolves the plane through the registry to find its own pools).
+    if let Some(own) = app.plane_pools(plane) {
+        let mut section = slot.section.value.clone();
+        pools_into(&mut section, own);
+        return section;
+    }
+    section_with_pools(section_key, &slot.section.value, &installed_door_pools(app))
 }
 
 /// EVERY SERVED DOOR PLANE'S APPLY, kept when the planes move into the data routes, for the
