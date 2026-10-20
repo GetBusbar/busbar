@@ -2044,7 +2044,7 @@ impl TestApp {
         // to a caller.
         if let Some(durable) = plane_durable_store {
             // Narrowed to the plane surface exactly as boot does — these are plane sinks.
-            let plane_store = crate::plane::store::PlaneStoreView::narrow(durable);
+            let plane_store = crate::store::plane_view::PlaneStoreView::narrow(durable);
             app.spent_token_ledger.set_sink(plane_store.clone());
             app.demotion_record.set_sink(plane_store);
         }

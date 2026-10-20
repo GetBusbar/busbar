@@ -96,13 +96,6 @@ pub(crate) mod quarantine;
 /// The durable demotion record, which the root attaches to the kernel's host services.
 pub use quarantine::DemotionRecord;
 pub mod registry;
-// `store` is a core-internal plane primitive. Its module is widened to `pub` ONLY under the
-// test-support surface so an extracted plane's own test binary can name the durable-body
-// helpers it exercises (`StoreNamedTestExt`, `KIND_TASK_EVENT`, `task_event_row_from_body`); the
-// tamper-critical `encode` stays `pub(crate)` regardless (see `store::encode`), so widening the
-// module does NOT hand any out-of-crate caller the row-forging primitive.
-// W4.b P2: widened to `pub` (planes absorbed substrate's neutral PlaneStore here); `encode` stays pub(crate).
-pub mod store;
 // A durable task set and its per-task provenance chain were RELOCATED wholesale to a plane crate
 // in the 1.7.0 plane extraction: a task is a SINGLE-plane mechanism, so it lives on the plane that
 // owns it, backed by the generic neutral `PlaneRecord` store. Core names none of it.
@@ -916,10 +909,6 @@ mod sections_tests;
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 
-// The plane store seam's narrowing adapter: the `PlaneStore` trait a plane persists through and the
-// `PlaneStoreView` that narrows a real `busbar_contract::records::RecordStore` to it. Both name only `busbar_contract` leaf
-// types, so they live here; core re-exports them from `busbar_kernel::plane::store`.
-
 // Phase-C config-seam: the NEUTRAL config-seam CONTRACTS a plane's config section is read through
 // (`PlaneCfg`/`PlaneEndpointCfg`/`ContainerGateInputs`) and the parse-time bare-hook-reference rule
 // (`refuse_cross_plane_reference`). They name only `busbar_contract::secret_ref::SecretRef` + `serde_json`/`std`, so
@@ -932,15 +921,6 @@ mod sections_tests;
 // `PlaneDecl` and every seam type its fields name without a path back to core. Core re-exports each
 // from `busbar_kernel::plane::registry`, and keeps the population glue + the concrete `BootCtx` (which
 // borrows the core-live `App`) that implements `PlaneBootCtx`.
-
-// SEAM-FIX #1 (axis-C): the NEUTRAL DURABLE-HANDLE ENGINE — the plane-agnostic async-handle /
-// durable-session capability (registry of cross-request handles, durable write-through, retention
-// sweep, boot rehydrate, inbound-push cursor, scoped anti-enumeration read). Lifted here out of the
-// A2A plane's task store so every plane consumes ONE substrate-single-compiled engine rather than
-// reaching into another plane. It names no plane noun: a plane's row is held opaquely behind
-// `Arc<dyn Any>` beside a neutral `HandleMeta` projection, and the plane supplies its shape/statuses/
-// vocab/digest through the entry-point callbacks.
-pub mod handle_engine;
 
 /// A PLANE'S OAUTH RESOURCE-SERVER ADMISSION FACTS — the audience a token must carry to be spent on
 /// this plane's mount, and the RFC 9728 metadata URL a refused caller is pointed at. A neutral POD so
