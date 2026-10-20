@@ -1882,9 +1882,21 @@ async fn a_token_url_stripped_before_the_plane_still_presents_its_basic_on_the_m
         auth.fields(handle, FieldsRequest::default(), 0),
     )
     .await
-    .expect("the first mint lands");
+    .expect("the first ask answers");
+    // With the host's clock served (row 176), the first ask can answer before the mint it set off
+    // has landed. The mint is then waited on at the endpoint's close of its exchange (the plugin
+    // stores the token in that same crossing), never on the wall clock (Law 8), as
+    // `a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer` waits on it.
+    let first = if presented(Some(&first)).is_some() {
+        Some(first)
+    } else {
+        tokio::time::timeout(std::time::Duration::from_secs(120), table.closed(1))
+            .await
+            .expect("the first mint lands");
+        auth.fields_now(handle, &FieldsRequest::default())
+    };
     assert_eq!(
-        presented(Some(&first)).as_deref(),
+        presented(first.as_ref()).as_deref(),
         Some("Bearer oracle-minted-1")
     );
     assert!(table
@@ -1996,7 +2008,7 @@ fn a_registration_member_is_reached_at_its_own_target() {
 /// in) and bound through the loader's one load, its need declared on the connector, exactly as its
 /// linked row binds it. The dropped-in fold of the same door is the plane crate's own
 /// conformance suite (`tests/conformance.rs`, one transcript through both loads).
-#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
 pub(crate) mod tool_door {
     use std::collections::BTreeMap;
     use std::sync::Arc;
@@ -4296,7 +4308,7 @@ pub(crate) mod tool_door {
 /// THE DOOR PLANE'S BOUNDARY, AT THE COMPOSITION ROOT (ARCHITECT Q-L3B-KHARNESS: a door plane's
 /// claims are mounted by the composition root at the data router's construction, Q-SW1, so these
 /// assertions live where the mount does; the kernel keeps no HOT-route assumption).
-#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
 pub(crate) mod door_boundary {
     use std::sync::Arc;
 
@@ -4403,6 +4415,132 @@ pub(crate) mod door_boundary {
         }
     }
 
+    /// THE MODEL PLANE'S HALF OF THE BOUNDARY: the door that serves the `pools` map, composed as
+    /// production composes it ([`crate::root::serve::hook_seat_tests::rig`]), its key minted on the
+    /// same signing secret as this module's rig. A sibling of that key bound to `audience` (the tool
+    /// door's resource) is no credential on any guarded route of that router; its plain sibling is
+    /// admitted on each. Returns every guarded path walked, as requested.
+    #[cfg(linked_driver_proofs)]
+    async fn pools_door_walk(audience: &str) -> Vec<String> {
+        use crate::root::serve::hook_seat_tests::{rig as pools_rig, RigOpts};
+        let instance = "door-boundary-pools";
+        let _published = Published(instance);
+        let rig = pools_rig(
+            instance,
+            RigOpts {
+                members: &[(1, 1)],
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
+        let verifier = TokenVerifier::single(signer.kid(), signer.verifying_key());
+        let generation = verifier
+            .verify(&rig.token, 1_700_000_000, None)
+            .expect("plain claims")
+            .generation;
+        let bound = signer.mint_for_audience(
+            &rig.key_id,
+            4_000_000_000,
+            generation.as_deref(),
+            audience,
+            Some("client-1"),
+        );
+        // A route pattern as one concrete request path: a capture is any non-empty segment, and a
+        // pattern this cannot render PANICS rather than being skipped.
+        fn concrete(pattern: &str) -> String {
+            let mut out = String::new();
+            for seg in pattern.split('/').skip(1) {
+                out.push('/');
+                if seg.starts_with('{') && seg.ends_with('}') {
+                    out.push_str(match seg {
+                        "{name}" => "p",
+                        "{provider}" => "oai0",
+                        "{model}" => "m0",
+                        s if s.starts_with("{*") => "probe",
+                        other => panic!(
+                            "route pattern segment {other} has no fixture value: give it one, \
+                             never skip the route"
+                        ),
+                    });
+                } else {
+                    out.push_str(seg);
+                }
+            }
+            if out.is_empty() {
+                "/".to_string()
+            } else {
+                out
+            }
+        }
+        let body = serde_json::json!({
+            "model": "p",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 16
+        });
+        let mut routes = busbar_kernel::base_data_route_method_view(&rig.app);
+        routes.extend(rig.door_table.iter().cloned());
+        let mut walked: Vec<String> = Vec::new();
+        for (pattern, verb, auth) in &routes {
+            if *auth == RouteAuth::None {
+                continue;
+            }
+            let path = concrete(pattern);
+            let (anon, _, _) = rig.send_bare(verb, &path, Some(body.clone()), &[]).await;
+            let header = format!("Bearer {bound}");
+            let (with_bound, _, _) = rig
+                .send_bare(
+                    verb,
+                    &path,
+                    Some(body.clone()),
+                    &[("authorization", header.as_str())],
+                )
+                .await;
+            assert_eq!(
+                with_bound, anon,
+                "an audience-bound door token is no credential on {verb} {path}"
+            );
+            let (plain, _, _) = rig.send(verb, &path, Some(body.clone())).await;
+            assert_ne!(
+                plain, anon,
+                "the plain sibling is admitted on {verb} {path}"
+            );
+            walked.push(path);
+        }
+        // THE 1.5.5 CONVENIENCE PATHS (`/{name}/v1/messages`, `/{provider}/{model}/v1/messages`),
+        // served through the door's `/` claim: an anonymous caller is refused 401, the bound
+        // sibling is no credential, and a keyed caller is admitted (moved here, unchanged, from the
+        // kernel's walk in `crates/busbar/tests/plane_integration.rs`, whose router no longer mounts
+        // them).
+        for path in ["/p/v1/messages", "/oai0/m0/v1/messages"] {
+            let (anon, _, _) = rig.send_bare("POST", path, Some(body.clone()), &[]).await;
+            assert_eq!(
+                anon, 401,
+                "an anonymous caller is refused on the convenience route POST {path}"
+            );
+            let header = format!("Bearer {bound}");
+            let (with_bound, _, _) = rig
+                .send_bare(
+                    "POST",
+                    path,
+                    Some(body.clone()),
+                    &[("authorization", header.as_str())],
+                )
+                .await;
+            assert_eq!(
+                with_bound, anon,
+                "an audience-bound door token is no credential on POST {path}"
+            );
+            let (plain, _, _) = rig.send("POST", path, Some(body.clone())).await;
+            assert!(
+                plain != 401 && plain != 403,
+                "a keyed caller is admitted on the convenience route POST {path}: {plain}"
+            );
+            walked.push(path.to_string());
+        }
+        walked
+    }
+
     /// THE PLANE-BOUNDARY RATCHET (1.6.0), driven by the ROUTER TABLE rather than by a hand-listed
     /// sample: an access token minted for the door plane's resource is admissible on that plane and
     /// nowhere else. The walk covers every core route the kernel mounts and every route the
@@ -4413,6 +4551,9 @@ pub(crate) mod door_boundary {
     /// here; `declared_public` is the mirror ratchet: a route mounted `RouteAuth::None` answers
     /// everyone, so adding one must be a deliberate act that shows up here. The test's NAME is pinned
     /// by `qa/design-bindings.json` (PB-33) and the structure-lint choke-point table.
+    // Its model-plane half walks the door that serves the `pools` map, composed by the driver-proofs
+    // rig, so the cell is compiled where that rig is.
+    #[cfg(linked_driver_proofs)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_audience_bound_token_is_confined_to_its_door_plane_through_the_composition() {
         let _one = PUBLISHING.lock().await;
@@ -4615,13 +4756,33 @@ pub(crate) mod door_boundary {
             door_checked > 0,
             "the door's half of the boundary was asserted"
         );
-        // The kernel's own guarded routes (`/stats`, `/v1/models`, `/v1beta/models`): the convenience
-        // body-ingress routes are a plane's and mount only where a plane installs body ingress (the
-        // kernel owns no route that exists for one plugin, BUSBAR-1.6.0.md l.4093), which this rig
-        // does not; a door claims its own paths and is walked in the door arm above.
+        // THE MODEL PLANE'S ROUTES, served by the door that serves the `pools` map: the 1.5.5
+        // convenience paths (`/{name}/v1/messages`, `/{provider}/{model}/v1/messages`) and the
+        // list-models routes (`/v1/models`, `/v1beta/models`, ARCHITECT 2026-10-16 3b C) are that
+        // door's claims, its `/` claim catching every path no more specific claim takes (DEV-GREEN
+        // row 83). The same binding's audience-bound sibling buys exactly nothing on any of them, and
+        // its plain sibling is admitted: walked over the data router built with that door's claims.
+        let moved = pools_door_walk(&audience).await;
+        checked += moved.len();
+        // THE FOUR ROUTES THAT MOVED onto that door are each walked guarded, by name: the floor that
+        // counted them on the kernel's router counts them here, and a route the door no longer
+        // guards (or no longer serves) is red, never absorbed by a count of the others.
+        for path in [
+            "/v1/models",
+            "/v1beta/models",
+            "/p/v1/messages",
+            "/oai0/m0/v1/messages",
+        ] {
+            assert!(
+                moved.iter().any(|walked| walked == path),
+                "{path} moved onto the pools door and must be walked guarded there: {moved:?}"
+            );
+        }
+        // The guarded routes beside the door's own: the kernel's (`/stats`) and the model plane's
+        // door's four moved routes, so the floor is the four plus the kernel's own.
         assert!(
-            checked >= 3,
-            "the walk covered only {checked} guarded core routes — it is not seeing the router"
+            checked >= 5,
+            "the walk covered only {checked} guarded routes — it is not seeing the router"
         );
         for path in &boot_plugin_paths {
             let url = format!("http://{addr}{path}");
@@ -4907,7 +5068,7 @@ pub(crate) mod door_boundary {
 /// A fleet is two compositions reading one governance book (one key registry, one signing key),
 /// each binding its own handle on one durable journal; a restart is a composition dropped and a
 /// fresh one on the same journal.
-#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
 mod spent_ledger {
     use busbar_kernel::test_support::durable_store::{durable_cfg, open_durable};
 
@@ -5171,7 +5332,7 @@ mod spent_ledger {
 /// sampling ask reaches the caller with `inputRequests` verbatim under busbar's sealed state; the
 /// caller's retry goes back to the member that asked, carrying the caller's answers and the
 /// upstream's own state verbatim; a forged state and an ungranted ask are refused.
-#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
 mod upstream_ask_relay {
     use std::sync::Arc;
 
@@ -5315,7 +5476,7 @@ mod upstream_ask_relay {
 }
 
 /// `subscriptions/listen` ON THE HTTP CARRIER, A K6 SESSION (ARCHITECT round 5 Q-L3B-K6-HTTP (a)).
-#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
 #[path = "door_listen.rs"]
 mod door_listen;
 
@@ -5323,7 +5484,7 @@ mod door_listen;
 /// task-supporting `tools/call` is answered with a task, its continuation runs as a nested unit of
 /// the plane's own claim WITHOUT any poll, after the creating unit has exited, and `tasks/get`,
 /// `tasks/cancel` and the `-32021` gate answer as the served engine's tasks did.
-#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
 mod task_continuation {
     use busbar_kernel::governance::{NewKeySpec, PLANE_LANE_SEP};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -6082,7 +6243,7 @@ mod task_continuation {
 /// `hook_tap_tests`), each scenario driven through the door's composition: the same hook documents
 /// (`kind: gate` on the hermetic test cdylib), the same attaches (`tools.hooks`, the section-level
 /// list every server takes), the same verdicts, read off the far end the door dials.
-#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
 pub(crate) mod hook_parity {
     use super::tool_door::{send_as, surface, tool_server, Footing, Rig};
     use crate::root::serve::planes_tests::{Published, PUBLISHING};
@@ -6440,7 +6601,7 @@ pub(crate) mod hook_parity {
 /// and its script, inline here), one long-lived child per registration, greeted once, its every
 /// exchange — verify-on-call's tool list, the relayed call over the kernel's walk, the reply to its
 /// own request — on that one child, correlated by id.
-#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
 pub(crate) mod program_member {
     use axum::http::StatusCode;
 
@@ -6635,7 +6796,7 @@ mod program_member_supervised {
 /// busbar's sealed state (correlated with `work.*`); the caller's retry writes its answer to the
 /// child under the child's own id and the call the child still owed is answered; a partial answer,
 /// a spent state and a forged one are refused; an ungranted ask is refused on the child's input.
-#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
 mod program_member_ask {
     use axum::http::StatusCode;
 
@@ -8394,5 +8555,53 @@ fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() {
         admitted.admitted,
         Ok(()),
         "today's window is empty, so a unit arriving now is admitted"
+    );
+}
+
+/// LEGACY the retired engine crate's `src/unit/tests/verify.rs::asking_whether_a_name_is_configured_allocates_nothing`
+/// (coordinator ruling 2026-10-17: no-alloc is a Law). ASKING WHETHER A NAME IS CONFIGURED ALLOCATES
+/// NOTHING: the destination guard asks it on every request, so the probe answers from the door's
+/// own pools and entries as they are held, never from a projection built per call. Eight pools, so
+/// an answer that allocates per pool cannot hide in a slack bound, and both answers are asked: a
+/// name that is a pool, one that is an entry, and one that is nothing, because a probe that
+/// allocated only on the miss would still allocate on the request path.
+///
+/// Measured on jemalloc's per-thread allocated-bytes counter, the binary's own allocator.
+/// RED: a probe that builds a list of the configured names to search allocates on every call.
+#[cfg(not(target_env = "msvc"))]
+#[test]
+fn asking_whether_a_name_is_configured_allocates_nothing() {
+    use busbar_kernel::door::PoolView as _;
+    use tikv_jemalloc_ctl::thread as jethread;
+    let mut yaml = String::from("m: {}\npools:\n");
+    for i in 0..8 {
+        yaml.push_str(&format!("  p{i}:\n    members: [m]\n"));
+    }
+    let p = pools(&yaml);
+    let app = busbar_kernel::test_support::TestApp::new().build();
+    let view = super::DoorPoolView {
+        pools: &p,
+        key: None,
+        app: &app,
+    };
+    let allocated = || {
+        jethread::allocatedp::read()
+            .map(|m| m.get())
+            .expect("jemalloc's per-thread counter reads")
+    };
+    // Warm the counter's own read before the measured window.
+    let _ = allocated();
+    let before = allocated();
+    let pool = view.is_configured(std::hint::black_box("p3"));
+    let entry = view.is_configured(std::hint::black_box("m"));
+    let miss = view.is_configured(std::hint::black_box("nothing-by-that-name"));
+    let after = allocated();
+    assert!(pool, "p3 is a configured pool");
+    assert!(entry, "m is a configured entry");
+    assert!(!miss, "nothing by that name is configured");
+    assert_eq!(
+        after - before,
+        0,
+        "a membership probe on the request path allocates nothing"
     );
 }

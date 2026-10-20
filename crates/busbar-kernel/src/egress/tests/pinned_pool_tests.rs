@@ -195,7 +195,7 @@ fn the_refusing_resolver_names_the_invariant_and_the_name() {
     );
 }
 
-/// F25 row 106: rehomed from crates/busbar-llm/src/engine/tests/egress_differential_tests.rs::
+/// F25 row 106: rehomed from the retired engine crate's src/engine/tests/egress_differential_tests.rs::
 /// the_pin_never_consults_the_resolver_and_the_doctrine_refuses_other_names, on the served engine.
 /// The pin makes the resolver STRUCTURALLY unreachable for the pinned host: a REBINDING resolver
 /// (the fixture first, `203.0.113.9` after) wired in as the client's DNS is never consulted for the
