@@ -364,10 +364,10 @@ pub fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     migrate_providers(&mut root, &mut changes);
     migrate_hooks_block(&mut root, &mut changes, &mut todos);
     migrate_pools(&mut root, &mut changes, &mut todos);
-    // 1.6.0 UNIFIED POOLS: fold the unreleased 1.6.0-dev `tool_pools:`/`agent_pools:` sections into
-    // the ONE neutral `pools:` map. Runs AFTER `migrate_pools` so any name-collision todo it raises
-    // is against the settled pool names already in the unified map. Members of those existing pools
-    // are left exactly as written — the 1.5.5 member grammar is the 1.6.0 grammar.
+    // 1.6.0 POOLS UNDER THEIR VERB: move the unreleased 1.6.0-dev `tool_pools:`/`agent_pools:`
+    // sections under their section's reserved `pools` sub-key. Runs AFTER `migrate_pools`, so the
+    // top-level `pools:` it reads is settled. Members of the top-level pools are left exactly as
+    // written — the 1.5.5 member grammar is the 1.6.0 grammar.
     migrate_unified_pools(&mut root, &mut changes, &mut todos);
     // 1.5.3 HARD rename of the tap `at:` vocabulary. Runs AFTER migrate_hooks_block (which builds
     // the inline-ref lists carrying the `at:` field) so every hook ref exists to rewrite.
@@ -1766,54 +1766,87 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
     }
 }
 
-/// 1.6.0-dev → 1.6.0 UNIFIED `pools:`: FOLD the unreleased `tool_pools:`/`agent_pools:` sections
-/// INTO `pools:`. Those sections only ever existed in 1.6.0 development builds and already carry the
-/// uniform grammar (`members: [bare-name]` + `repeatable:`), so the fold is a plain map merge into
-/// the ONE neutral `pools:` section. A pool-name collision across the three sections is left for the
-/// operator (a todo) — it is a real ambiguity, not something the tool may silently pick.
+/// 1.6.0-dev → 1.6.0 POOLS UNDER THEIR VERB (THE DESIGN §4 POOLS-VERBS): the unreleased
+/// `tool_pools:`/`agent_pools:` sections MOVE to their section's reserved `pools` sub-key, and a
+/// top-level `pools:` entry that names no `models:` entry is reported for the operator to move. The top-level
+/// `pools:` is the fallback plane's alone, as in 1.5.5. The grammar is unchanged (`members:` by bare
+/// name, `repeatable:`), so the move is a plain map move. A name collision is left for the operator
+/// (a todo): it is a real ambiguity, not something the tool may silently pick.
 ///
-/// Rich-member `pools:` entries are deliberately NOT rewritten here. The 1.5.5 member grammar (a rich
-/// `{ model, weight, ... }` object) is still the 1.6.0 grammar, and the 1.6.0 config is the 1.5.5
-/// config unchanged plus new top-level sections. Rewriting members to bare names would
-/// make this migrator's output diverge from what the 1.5.5 binary emitted for the same input, and
-/// a released config must migrate byte-for-byte the same way across the two versions.
+/// Rich-member `pools:` entries (a `{ model, weight, ... }` member) are the fallback plane's and are
+/// never moved: the 1.5.5 member grammar is still the 1.6.0 grammar, and a released config must
+/// migrate byte-for-byte the same way across the two versions.
 fn migrate_unified_pools(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<String>) {
-    for section in ["tool_pools", "agent_pools"] {
-        let Some(Value::Mapping(folded)) = take(root, section) else {
-            continue;
-        };
-        // Ensure a `pools:` mapping exists to merge into.
-        if !matches!(root.get(Value::from("pools")), Some(Value::Mapping(_))) {
-            root.insert("pools".into(), Value::Mapping(Mapping::new()));
-        }
-        let Some(Value::Mapping(pools)) = root.get_mut(Value::from("pools")) else {
-            // Unreachable given the insert above, but keep the section rather than dropping it.
-            root.insert(section.into(), Value::Mapping(folded));
-            continue;
-        };
-        // Un-foldable (name-collision) entries are collected and re-attached under the old section
-        // key AFTER the `pools` borrow ends — `--validate` then rejects the stale section loudly.
-        let mut collisions: Mapping = Mapping::new();
-        for (name, def) in folded {
-            if pools.contains_key(&name) {
-                todos.push(format!(
-                    "`{section}.{}` could not be folded into `pools:`: a pool of that name already \
-                     exists. 1.6.0 has ONE neutral `pools:` map with globally-unique names — rename \
-                     one of the two and re-run `--migrate-config`.",
-                    name.as_str().unwrap_or("?")
-                ));
-                collisions.insert(name, def);
-            } else {
-                changes.push(format!(
-                    "{section}.{} -> pools.{} (unified `pools:`)",
-                    name.as_str().unwrap_or("?"),
-                    name.as_str().unwrap_or("?")
-                ));
-                pools.insert(name, def);
+    use busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS;
+    let pools_key = busbar_contract::section::RESERVED_POOLS_KEY;
+    let sections = [NAMED_MAP_SECTIONS[2], NAMED_MAP_SECTIONS[3]];
+    // The unreleased per-plane pool sections, by the section their pools move under.
+    let mut moving: Vec<(String, &'static str, Value, Value)> = Vec::new();
+    for (old, section) in [("tool_pools", sections[0]), ("agent_pools", sections[1])] {
+        if let Some(Value::Mapping(folded)) = take(root, old) {
+            for (name, def) in folded {
+                moving.push((old.to_string(), section, name, def));
             }
         }
-        if !collisions.is_empty() {
-            root.insert(section.into(), Value::Mapping(collisions));
+    }
+    // A top-level `pools:` entry whose members are all bare names and none a `models:` entry belongs
+    // to another plane. Which one is that plane's grammar, so the operator moves it (a todo).
+    let model = |root: &Mapping, member: &str| -> bool {
+        matches!(root.get(Value::from("models")), Some(Value::Mapping(m)) if m.contains_key(Value::from(member)))
+    };
+    if let Some(Value::Mapping(pools)) = root.get(Value::from(pools_key)) {
+        for (name, def) in pools {
+            let Some(n) = name.as_str() else { continue };
+            if busbar_contract::section::RESERVED_SECTION_KEYS.contains(&n) {
+                continue;
+            }
+            let bare: Option<Vec<&str>> = def
+                .get("members")
+                .and_then(Value::as_sequence)
+                .and_then(|m| m.iter().map(Value::as_str).collect());
+            if bare.is_some_and(|m| !m.is_empty() && !m.iter().any(|x| model(root, x))) {
+                todos.push(format!(
+                    "`{pools_key}.{n}` names no `models:` entry: the top-level `{pools_key}:` is the \
+                     model plane's alone. Move it under the section of the plane its members are \
+                     registered on (`<section>.{pools_key}.{n}`), with the same `members:` and \
+                     `repeatable:`."
+                ));
+            }
+        }
+    }
+    // An entry that cannot move stays where it was written, so `--validate` refuses it loudly.
+    let mut left: Vec<(String, Value, Value)> = Vec::new();
+    for (old, section, name, def) in moving {
+        let n = name.as_str().unwrap_or("?").to_string();
+        if !matches!(root.get(Value::from(section)), Some(Value::Mapping(_))) {
+            root.insert(section.into(), Value::Mapping(Mapping::new()));
+        }
+        let Some(Value::Mapping(sec)) = root.get_mut(Value::from(section)) else {
+            continue;
+        };
+        if !matches!(sec.get(Value::from(pools_key)), Some(Value::Mapping(_))) {
+            sec.insert(pools_key.into(), Value::Mapping(Mapping::new()));
+        }
+        let Some(Value::Mapping(dest)) = sec.get_mut(Value::from(pools_key)) else {
+            continue;
+        };
+        if dest.contains_key(&name) {
+            todos.push(format!(
+                "`{old}.{n}` could not be moved to `{section}.{pools_key}`: a pool of that name \
+                 already exists there. Rename one of the two and re-run `--migrate-config`."
+            ));
+            left.push((old, name, def));
+            continue;
+        }
+        changes.push(format!("{old}.{n} -> {section}.{pools_key}.{n}"));
+        dest.insert(name, def);
+    }
+    for (old, name, def) in left {
+        if !matches!(root.get(Value::from(old.as_str())), Some(Value::Mapping(_))) {
+            root.insert(old.as_str().into(), Value::Mapping(Mapping::new()));
+        }
+        if let Some(Value::Mapping(back)) = root.get_mut(Value::from(old.as_str())) {
+            back.insert(name, def);
         }
     }
 }

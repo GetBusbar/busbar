@@ -346,13 +346,14 @@ fn a_pin_that_cannot_be_produced_turns_check_red_naming_it() {
     assert!(err.contains(sha), "names the commit: {err}");
 }
 
-/// RED (d): ONLY A PLUGIN KIND'S LOGIC CRATE IN THE DEFAULT DISTRIBUTION IS MOUNTED. The cdylib twin,
-/// a git dependency of no plugin kind, a plugin only a dev-dependency names and a plugin behind a
-/// feature `default` leaves off are all `git+` packages of the lock, and none of them is mounted —
-/// the three that are not the twin carry commits no repository has, so reading any of them would
-/// be an error here.
+/// RED (d): ONLY A PLUGIN KIND'S LOGIC CRATE IN THE DEFAULT DISTRIBUTION IS MOUNTED — AND A PLANE'S
+/// CDYLIB TWIN BESIDE IT. A git dependency of no plugin kind, a plugin only a dev-dependency names
+/// and a plugin behind a feature `default` leaves off are all `git+` packages of the lock, and none
+/// of them is mounted (they carry commits no repository has, so reading any of them would be an
+/// error here). The plane's twin is mounted from its logic crate's repository and commit (ARCHITECT
+/// ruling on busbar #1269: the twin's `export_door!` image is audited, never by nobody).
 #[test]
-fn a_cdylib_twin_and_a_non_plugin_git_dep_are_not_mounted() {
+fn a_plane_twin_is_mounted_and_a_non_plugin_git_dep_is_not() {
     let s = Scratch::new("twin");
     let v1 = s.plugin_commit(LIB_V1);
     s.fill_cargo_db();
@@ -367,10 +368,21 @@ fn a_cdylib_twin_and_a_non_plugin_git_dep_are_not_mounted() {
         .into_iter()
         .map(|p| p.package)
         .collect();
-    assert_eq!(pins, vec![LOGIC.to_string()]);
+    assert_eq!(pins, vec![LOGIC.to_string(), format!("{LOGIC}-plugin")]);
     let all = g.files_at("HEAD").expect("HEAD lists");
+    assert!(
+        all.contains_key(&format!("crates/{LOGIC}-plugin/src/lib.rs")),
+        "the plane's twin is mounted at crates/<package>-plugin"
+    );
+    let mounted = g.mounted_at("HEAD").expect("the mounts read");
+    let derived = audit::derive_scopes(&s.busbar(), &mounted);
+    assert!(
+        derived
+            .iter()
+            .any(|sc| sc.get("id").as_str() == Some(format!("crates/{LOGIC}-plugin/src").as_str())),
+        "the twin's production code is a scope of its own"
+    );
     for absent in [
-        "crates/busbar-plane-demo-plugin/",
         "crates/left-pad/",
         "crates/busbar-auth-devonly/",
         "crates/busbar-export-off/",
@@ -383,8 +395,34 @@ fn a_cdylib_twin_and_a_non_plugin_git_dep_are_not_mounted() {
     assert!(all.contains_key("crates/busbar-plane-demo/src/lib.rs"));
     assert!(
         !all.keys().any(|k| k.contains("README")),
-        "only the logic crate's directory is mounted, not the plugin repo"
+        "only the crates' directories are mounted, not the plugin repo"
     );
+}
+
+/// RED (d2): A PLANE TWIN THE PINNED COMMIT DOES NOT CARRY IS RED, NAMING IT. The logic crate is
+/// pinned and readable; its repository at that commit has no `-plugin` package, so the universe
+/// refuses rather than reading the plane without its twin.
+#[test]
+fn a_plane_twin_the_pin_does_not_carry_is_red_naming_it() {
+    let s = Scratch::new("twinless");
+    s.plugin_commit(LIB_V1);
+    git(&s.plugin(), &["rm", "-r", "-q", "plane-demo-plugin"]);
+    let v1 = commit(&s.plugin(), "no twin");
+    s.fill_cargo_db();
+    s.busbar_commit(
+        Some(("https://example.invalid/GetBusbar/busbar-plane-demo", &v1)),
+        None,
+    );
+    let g = s.git();
+    let err = match g.files_at("HEAD") {
+        Ok(_) => panic!("a plane whose twin cannot be read must not list"),
+        Err(e) => e,
+    };
+    assert!(
+        err.contains(&format!("{LOGIC}-plugin")),
+        "names the twin: {err}"
+    );
+    assert!(err.contains(&v1), "names the commit: {err}");
 }
 
 /// RED (e): THE TREE WINS. A pinned package whose `crates/<package>` is still on disk is read from

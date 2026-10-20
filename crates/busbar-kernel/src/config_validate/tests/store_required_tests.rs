@@ -18,6 +18,8 @@ const NO_STORE: &str = "listen: \"127.0.0.1:8080\"\nproviders:\n  acme:\n    api
 /// Without the refusal arm in `validate` the config validates and the first assertion fails.
 #[test]
 fn a_config_without_a_store_block_is_refused() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let mut cfg =
         crate::test_support::cfg_with_provider_api_key(config::SecretRef::env("ACME_KEY"));
     assert!(

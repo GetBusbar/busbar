@@ -7,9 +7,9 @@
 //! money evidence, so it lives on the DURABLE per-principal journal stream, survives a restart and
 //! replays, and never touches the bounded in-RAM admin audit ring.
 
-use crate::plane::store::KIND_RESIDUAL;
 use crate::plane_host::{JournalHost, USAGE_RESIDUAL_ACTION};
 use crate::residual_log::{settle, ResidualTestHarness};
+use crate::store::plane_view::KIND_RESIDUAL;
 use busbar_contract::records::{
     PlaneRecordRef, PlaneSelector, RecordStore, RecordStoreError, RecordStoreResult,
 };
@@ -125,8 +125,8 @@ impl RecordStore for DurableResidualStore {
     }
 }
 
-fn plane_store(store: &Arc<dyn RecordStore>) -> Arc<dyn crate::plane::store::PlaneStore> {
-    crate::plane::store::PlaneStoreView::narrow(store.clone())
+fn plane_store(store: &Arc<dyn RecordStore>) -> Arc<dyn crate::store::plane_view::PlaneStore> {
+    crate::store::plane_view::PlaneStoreView::narrow(store.clone())
 }
 
 /// ONE ROW PER NON-EMPTY MAP, ON THE DURABLE PER-PRINCIPAL JOURNAL, AND IT SURVIVES A REPLAY. The row
