@@ -21,8 +21,10 @@
 //!    HIGH, MEDIUM, LOW), a scope, its evidence and the Law or DESIGN line it is graded against. An
 //!    open BLOCK fails the audit. A finding is closed only with the change that closed it named.
 //! 3. **THE AUDIT LEDGER IS CLEAN.** `cargo xtask ledger --check`'s computation, run here on the
-//!    same tree. A red ledger is a BLOCK; each scope it holds open at HIGH or MEDIUM is listed as a
-//!    finding at that severity, so the record says where the debt is.
+//!    same tree. A red ledger is a BLOCK, and so is a ledger below its floor whatever its rules say:
+//!    every production scope `clean` (two zero rounds from distinct auditors at the current hash),
+//!    over a denominator that is not empty. Each scope it holds open at HIGH or MEDIUM is listed as
+//!    a finding at that severity, so the record says where the debt is.
 //! 4. **AN UNREADABLE ENTRY IS A BLOCK, NEVER GUESSED.** A severity outside the four, a status
 //!    outside `open`/`closed`, a closed finding naming no change, a finding with no scope or no
 //!    evidence: each is a BLOCK naming what is wrong. A record nobody can read cannot pass.
@@ -197,6 +199,9 @@ pub struct LedgerView {
     /// The scopes held open at HIGH/MEDIUM, each as `--check` prints it.
     pub opens: Vec<String>,
     pub scopes: usize,
+    /// The floor's denominator: the production scopes, and how many of them are `clean`.
+    pub production: usize,
+    pub production_clean: usize,
     pub clean_pct: f64,
 }
 
@@ -215,9 +220,14 @@ impl LedgerView {
                 ("unreachable-commits", f.unreachable.len()),
                 ("phantom-paths", f.phantom.len()),
                 ("fixed-unconfirmed", f.owed.len()),
+                ("excuse-drift", f.excuses.len()),
+                ("shape-drift", f.shapes.len()),
+                ("below-floor", f.unclean.len()),
             ],
             opens: f.opens.clone(),
             scopes: f.scopes,
+            production: f.production,
+            production_clean: f.production_clean,
             clean_pct: f.clean_pct,
         }
     }
@@ -453,7 +463,11 @@ pub fn judge(inp: &Inputs<'_>) -> Report {
             json!({ "readable": false, "error": e })
         }
         Ok(l) => {
-            if l.red {
+            // "A CLEAN AUDIT LEDGER" IS THE FLOOR MET, judged here and not taken on the check's
+            // word: every production scope clean, over a denominator that is not empty. A view
+            // whose rules are all quiet while that is false is still not a clean ledger.
+            let floor_met = l.production > 0 && l.production_clean == l.production;
+            if l.red || !floor_met {
                 let rules: Vec<String> = l
                     .rules
                     .iter()
@@ -466,8 +480,12 @@ pub fn judge(inp: &Inputs<'_>) -> Report {
                     crate::audit::REGISTER_REL,
                     "the audit ledger is not clean",
                     &format!(
-                        "`cargo xtask ledger --check` is red: {}; production clean {:.1}% of {} scope(s)",
+                        "`cargo xtask ledger --check` is red: {}; floor: {}; {} of {} production \
+                         scope(s) clean ({:.1}% of production LOC), {} scope(s) in all",
                         rules.join(", "),
+                        audit_cmd::FLOOR,
+                        l.production_clean,
+                        l.production,
                         l.clean_pct,
                         l.scopes
                     ),
@@ -497,8 +515,11 @@ pub fn judge(inp: &Inputs<'_>) -> Report {
             }
             json!({
                 "readable": true,
-                "clean": !l.red,
+                "clean": !l.red && floor_met,
+                "floor": audit_cmd::FLOOR,
                 "scopes": l.scopes,
+                "production_scopes": l.production,
+                "production_clean": l.production_clean,
                 "production_clean_pct": (l.clean_pct * 10.0).round() / 10.0,
                 "rules": l.rules.iter().map(|(r, n)| json!({ "rule": r, "count": n })).collect::<Vec<_>>(),
             })
@@ -606,6 +627,8 @@ mod tests {
             rules: vec![("open-high-medium", 0)],
             opens: vec![],
             scopes: 3,
+            production: 3,
+            production_clean: 3,
             clean_pct: 100.0,
         })
     }
@@ -779,6 +802,8 @@ mod tests {
                 "crates/b/src  round 1  MEDIUM=3".to_string(),
             ],
             scopes: 2,
+            production: 2,
+            production_clean: 0,
             clean_pct: 0.0,
         });
         let r = run(Some(&record(&format!("\"{HEAD}\""), "[]")), ledger);
@@ -799,3 +824,7 @@ mod tests {
         assert_eq!(titles(&r, "BLOCK"), ["the audit ledger could not be read"]);
     }
 }
+
+#[cfg(test)]
+#[path = "tests/q128_floor_tests.rs"]
+mod floor_tests;

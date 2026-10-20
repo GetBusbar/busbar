@@ -25,7 +25,7 @@
 
 use crate::audit::journal::{Journal, JournalError, NeutralRecord, Reframe};
 use crate::audit::{frame_prelude, ChainLabels, ChainedRecord, Digest, Framing};
-use crate::plane::store::PlaneStore;
+use crate::store::plane_view::PlaneStore;
 use busbar_contract::records::{RecordStoreError, RecordStoreResult};
 use std::any::Any;
 use std::collections::HashMap;

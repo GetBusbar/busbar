@@ -363,7 +363,12 @@ fn production_units_is_the_kernels_units_trait() {
 fn the_arrival_door_opens_a_hold_that_reserves_nothing() {
     let kernel = new_kernel();
     let door = AdmissionDoor;
-    let hold = busbar_kernel::inflight::arrival_hold(&kernel, &door, PrincipalId::new("k-7"));
+    let hold = busbar_kernel::inflight::arrival_hold(
+        &kernel,
+        &door,
+        PrincipalId::new("k-7"),
+        kernel.next_call(),
+    );
     assert_eq!(hold.reserved(), 0);
     assert_eq!(hold.principal(), &PrincipalId::new("k-7"));
 }
@@ -612,23 +617,25 @@ fn the_holder_hands_a_reader_the_whole_history_and_an_unresolved_node_none() {
     );
 }
 
-/// The seam the usage read asks through answers with the PROCESS history and nothing of its own.
+/// The read the usage view asks through answers with the PROCESS history and nothing of its own:
+/// the date half's `history` (what `busbar_kernel::rate_apply::dated_history` hands the admin
+/// usage read and the budget book) is the holder's.
 ///
 /// A delegation is the whole implementation, so the assertion is that the two readings agree —
 /// an implementor that built its own history would answer a different length the moment the
 /// process's moved, and an invoice would be priced against a history no apply ever reached.
 #[test]
-fn the_usage_seam_answers_with_the_process_history() {
-    use busbar_core_admin::v1::service::UsageRateHistory as _;
+fn the_usage_read_answers_with_the_process_history() {
+    use busbar_kernel::rate_apply::RateEpoch as _;
     assert_eq!(
-        RootUsageHistory.history().map(|h| h.len()),
+        CardRepricer.history().map(|h| h.len()),
         ROOT_CARD.history().map(|h| h.len()),
-        "the seam answers from a history the process never resolved"
+        "the read answers from a history the process never resolved"
     );
     assert_eq!(
-        RootUsageHistory.history().and_then(|h| h.head()),
+        CardRepricer.history().and_then(|h| h.head()),
         ROOT_CARD.history().and_then(|h| h.head()),
-        "the seam and the holder disagree about which entry is the head"
+        "the read and the holder disagree about which entry is the head"
     );
 }
 
@@ -660,10 +667,19 @@ fn the_boot_install_raises_both_halves_of_the_rate_seam_and_main_calls_it() {
         "the boot install stopped raising the DATE half — a metering cell would carry no instant \
          finer than its UTC day and a mid-day card edit would reprice the whole day (#79): {body}"
     );
+    // The READ half rides the date half: the dater's `history` is what the usage read and the
+    // budget book price through (`rate_apply::dated_history`).
+    let dater = kernel
+        .split("impl busbar_kernel::rate_apply::RateEpoch for CardRepricer {")
+        .nth(1)
+        .expect("the root implements the rate dater")
+        .split("\n}")
+        .next()
+        .expect("its impl closes");
     assert!(
-        body.contains("install_usage_rate_history"),
-        "the boot install stopped raising the READ half — the usage read would price off the \
-         newest card again (#79): {body}"
+        dater.contains("fn history(&self)") && dater.contains("ROOT_CARD.history()"),
+        "the rate dater stopped handing over the process history — the usage read would price off \
+         the newest card again (#79): {dater}"
     );
     // The call: a root unit's configuration step runs it, `main.rs` runs every enabled unit's
     // configuration step, and the generated table this binary compiles carries that unit.
@@ -933,7 +949,7 @@ fn cards_on_chain(book: &Arc<Mutex<crate::root::durability::Durability>>) -> usi
 
 /// `GET /admin/usage`'s dated derivation of one metering row of `input` tokens on [`FLAT_LANE`]
 /// dated `priced_from_ms`, through `holder`'s history — the history the read is handed
-/// (`RootUsageHistory` hands the process holder's).
+/// (the rate dater hands the process holder's).
 fn usage_row_micros(holder: &RootHistory, priced_from_ms: u64, input: u64) -> i64 {
     let history = holder.history().expect("a resolved history");
     let live = history

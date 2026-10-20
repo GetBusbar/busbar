@@ -45,8 +45,11 @@
 //! No `unsafe` is written here outside the tests' framer entry, which writes a host sink through its
 //! raw pointers as a plugin does.
 //!
-//! No thread is started here, per connection or otherwise: every socket's readiness is the
-//! registering worker's reactor's, and every wait is not-ready with a wake.
+//! No thread is started per connection: every socket's readiness is the registering worker's
+//! reactor's, and every wait is not-ready with a wake. The threads that are started: a name lookup
+//! runs on one of its own (the system resolver blocks), at most [`compose::MAX_PENDING_LOOKUPS`]
+//! at once; the spawn environment keeps one refresher ([`spawn_env`]); a plugin download runs on a
+//! scoped one of its own ([`fetch`]).
 
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
@@ -2174,9 +2177,10 @@ impl Connector {
                 .get(&(caller, need, desc.member.to_owned()))
                 .is_some_and(|at| at.eq_ignore_ascii_case(planned.authority()));
         // A TARGET THE NEED'S CONFIG NAMES IS THE OPERATOR'S OWN (THE DESIGN §5 egress-class
-        // table, owner-signed 2026-09-27): in a request-data class its address is judged as
-        // operator infrastructure. A provider need keeps its class: it is refused a private
-        // address unless allowlisted (ARCHITECT ruling CRATES-14, `guard::judged_class`).
+        // table, owner-signed 2026-09-27) in the egress default class only: its address is judged
+        // as operator infrastructure. An open-web need keeps its class (public https only, Q128
+        // ruling 14), and a provider need is refused a private address unless allowlisted
+        // (ARCHITECT ruling CRATES-14, `guard::judged_class`).
         let judged_class = guard::judged_class(egress_class, declared_target.is_some());
         // THE DECLARED TARGET (1.5.5's per-module target guarantee, on every need): a need whose
         // config names its target dials that target and no other.
@@ -2335,7 +2339,8 @@ impl Conns for Connector {
                 door,
                 io: Arc::clone(&self.io),
             };
-            let conn = Connection::spawn(&via, &program, &env, dial).map_err(|f| map(&f))?;
+            // A one-shot line is no member: it carries no supervision key.
+            let conn = Connection::spawn(&via, &program, &env, dial, 0).map_err(|f| map(&f))?;
             // A program is a dialled, single-use line (no pool, no judgement): its one exchange
             // rides EXCHANGE_STREAM, as a freshly dialled connection's does.
             let line = Line::new(conn);
@@ -2372,14 +2377,13 @@ impl Conns for Connector {
             return self.slab.insert(caller, need, held);
         }
         // A UNIX-DOMAIN TARGET (`unix:/path`; ARCHITECT ruling 2026-10-03 12:10Z, VALKEY-UNIX):
-        // served to an operator-infrastructure (or loopback-allowed) need as a raw stream, every
-        // other class refused; there is no address to resolve or judge. A need whose config names
-        // its target dials that path and no other.
+        // served to an operator-infrastructure need as a raw stream, every other class refused
+        // (loopback-allowed included: there is no address to judge, so its loopback rule and
+        // the node's own ports could not hold). A need whose config names its target dials that
+        // path and no other.
         if let Some(path) = socket::unix_path(target) {
-            if !matches!(
-                egress_class,
-                EGRESS_OPERATOR_INFRASTRUCTURE | EGRESS_LOOPBACK_ALLOWED
-            ) || declared_target.as_deref().is_some_and(|d| d != target)
+            if egress_class != EGRESS_OPERATOR_INFRASTRUCTURE
+                || declared_target.as_deref().is_some_and(|d| d != target)
             {
                 return Err(ConnError::Refused);
             }

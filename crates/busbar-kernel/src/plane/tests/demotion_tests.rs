@@ -22,7 +22,7 @@
 //! the loader's both-ways fold (its `store_conformance_tests`).
 
 use crate::plane::quarantine::{DemotionRecord, DemotionRow};
-use crate::plane::store::{decode, KIND_DEMOTION};
+use crate::store::plane_view::{decode, KIND_DEMOTION};
 use crate::test_support::durable_store::{durable_cfg, open_durable};
 use busbar_contract::records::{PlaneSelector, RecordStore, RecordStoreResult};
 
@@ -43,9 +43,9 @@ impl<T: RecordStore + ?Sized> DemotionStoreTestExt for T {}
 /// A `DemotionRecord` with a fresh handle on the durable store `cfg` names.
 fn node(cfg: &str) -> DemotionRecord {
     let d = DemotionRecord::new();
-    d.set_sink(crate::plane::store::PlaneStoreView::narrow(open_durable(
-        cfg,
-    )));
+    d.set_sink(crate::store::plane_view::PlaneStoreView::narrow(
+        open_durable(cfg),
+    ));
     d
 }
 
@@ -234,7 +234,7 @@ fn with_no_durable_sink_a_demotion_is_recorded_nowhere() {
 #[test]
 fn the_memory_store_keeps_demotions_only_for_the_life_of_the_process() {
     let d = DemotionRecord::new();
-    d.set_sink(crate::plane::store::PlaneStoreView::narrow(
+    d.set_sink(crate::store::plane_view::PlaneStoreView::narrow(
         std::sync::Arc::new(crate::governance::MemoryStore::new()),
     ));
     d.record("fs", "quarantined", 100);
@@ -246,7 +246,7 @@ fn the_memory_store_keeps_demotions_only_for_the_life_of_the_process() {
 
     // The restart: a new process gets a new map, and the demotion is not in it.
     let restarted = DemotionRecord::new();
-    restarted.set_sink(crate::plane::store::PlaneStoreView::narrow(
+    restarted.set_sink(crate::store::plane_view::PlaneStoreView::narrow(
         std::sync::Arc::new(crate::governance::MemoryStore::new()),
     ));
     assert!(

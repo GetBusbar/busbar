@@ -85,7 +85,7 @@ fn a_refusals_neutral_status_reaches_the_framer_on_every_re_call() {
     let (mut f, _) = Framing::begin(door.clone(), SIDE_DIAL, "t", &Established::default()).unwrap();
     f.bufs = Buffers::new(7, 5, 1);
     let sent: Vec<u8> = (0..200).collect();
-    let y = f.refuse(Some(1), &sent, 401).unwrap();
+    let y = f.refuse(Some(1), &sent, 401, false).unwrap();
     assert_eq!(y.wire, sent);
     let statuses = door.refused_statuses.lock().unwrap().clone();
     assert!(statuses.len() > 1, "re-called while it owed more");
@@ -248,4 +248,35 @@ fn a_payload_piece_inside_an_open_block_is_refused_and_a_failure_drops_the_block
     assert!(l.open.is_empty(), "the failed stream's block is gone");
     assert_eq!(l.take(3, fields(false, true), b"a: b\r\n"), Ok(()));
     assert_eq!(l.take(3, FieldPiece::Payload, b"body"), Ok(()));
+}
+
+/// RED (Law 0: a plugin is isolated to its ABI, and holds no host worker): a framer that keeps
+/// answering that it owes more (`YIELD_MORE`) and writes nothing FAULTs its framing after a bounded
+/// number of re-calls. Re-called with no bound, it spun the host worker forever.
+#[test]
+fn a_framer_that_owes_more_forever_and_writes_nothing_faults() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let door = Arc::new(TestDoor::new(
+        "spin",
+        &["spin"],
+        &[],
+        Knobs {
+            spin: true,
+            ..Knobs::default()
+        },
+    ));
+    let (answer, answered) = mpsc::channel();
+    std::thread::spawn(move || {
+        let begun = Framing::begin(door, SIDE_DIAL, "t", &Established::default())
+            .map(|_| ())
+            .map_err(|r| r.outcome);
+        let _ = answer.send(begun);
+    });
+    assert_eq!(
+        answered.recv_timeout(Duration::from_secs(5)),
+        Ok(Err(busbar_contract::abi::mechanism::call::Outcome::Fault)),
+        "the framing faults within its bound"
+    );
 }

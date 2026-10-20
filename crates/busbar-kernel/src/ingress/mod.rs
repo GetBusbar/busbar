@@ -572,13 +572,13 @@ fn finish_inner(
     // rendered series/values are identical to the macro emission. Unregistered label values (e.g.
     // a bare test `App`) fall back to the cached-handle helpers in `metrics.rs` inside the helper.
     // This plane labels its own requests from in here rather than at the plane ingress
-    // boundary (`plane::observe`), and that is a consequence of the spine's rule rather than a
+    // boundary (`ingress::observe`), and that is a consequence of the spine's rule rather than a
     // carve-out: this plane speaks several dialects, so `ingress_protocol` is a fact only its reader
     // knows (`Plane::sole_wire_format` is `None` for it). This is the v1.5.4 request path: it emits
     // `busbar_requests_total` / `busbar_request_duration_seconds` with the exact 1.5.4 label set
     // `{ingress_protocol, pool, outcome}` and NO `plane` label, so a deployment with only this plane's
     // `/metrics` scrape is byte-identical to 1.5.4. Other mounted planes emit their own
-    // `busbar_plane_*` families from `plane::observe` instead — same helper, same `outcome`
+    // `busbar_plane_*` families from `ingress::observe` instead — same helper, same `outcome`
     // vocabulary, one family apart.
     let elapsed = started.elapsed();
     crate::telemetry::request_finished(
@@ -676,6 +676,9 @@ pub mod native;
 
 /// The protocol catch-all.
 pub mod dispatch;
+/// THE PLANE INGRESS BOUNDARY: one request-observability layer over every mounted plane's door, and
+/// the [`observe::Counted`] marker a plane's handler sets on a response it has already labelled.
+pub mod observe;
 // `protocol_dispatch` is the axum catch-all fallback the core router mounts and nothing outside core
 // names, so it stays crate-private — keeping the confidential `CallerToken` it takes off the public
 // seam. (The universal resolved-op ingress it used to hold — `operation_resolved`/`operation_ingress`

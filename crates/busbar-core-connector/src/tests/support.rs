@@ -60,6 +60,11 @@ pub struct Knobs {
     /// Every field block the framing yields states this declared body length
     /// (`PIECE_HAS_DECLARED_LEN`).
     pub declared_len: Option<u64>,
+    /// Every byte the framing ingests is also answered back to the far end (as a framer answers a
+    /// ping with a pong, unasked by the caller).
+    pub echo: bool,
+    /// Every answer the framing gives says it owes more (`YIELD_MORE`), whatever it wrote.
+    pub spin: bool,
 }
 
 #[derive(Default)]
@@ -74,6 +79,8 @@ struct State {
     piece: Option<usize>,
     fields: bool,
     declared_len: Option<u64>,
+    echo: bool,
+    spin: bool,
 }
 
 /// One `begin` crossing's opening head fields, name and value.
@@ -99,6 +106,8 @@ pub struct TestDoor {
     pub begun_fields: Mutex<Vec<OpeningFields>>,
     /// The target every `begin` crossing was handed (`BeginIn::target`), in order.
     pub begun_targets: Mutex<Vec<Vec<u8>>>,
+    /// The supervision key every `dial` crossing carried (`DialIn::supervision_key`), in order.
+    pub dialled_keys: Mutex<Vec<u64>>,
 }
 
 impl TestDoor {
@@ -147,6 +156,7 @@ impl TestDoor {
             refused_statuses: Mutex::new(Vec::new()),
             begun_fields: Mutex::new(Vec::new()),
             begun_targets: Mutex::new(Vec::new()),
+            dialled_keys: Mutex::new(Vec::new()),
         }
     }
 
@@ -282,7 +292,7 @@ fn answer(st: &mut State, sink: &FramerSink, o: &mut FramerOut, silence: Option<
         y.pieces_len = 1;
     }
     let mut flags = 0;
-    if !st.outbound.is_empty() || !st.inbound.is_empty() {
+    if st.spin || !st.outbound.is_empty() || !st.inbound.is_empty() {
         flags |= YIELD_MORE;
     } else if st.ended {
         flags |= YIELD_ENDED;
@@ -405,6 +415,8 @@ impl FramerDoor for TestDoor {
                     piece: self.knobs.piece,
                     fields: self.knobs.fields,
                     declared_len: self.knobs.declared_len,
+                    echo: self.knobs.echo,
+                    spin: self.knobs.spin,
                     ..State::default()
                 };
                 answer(&mut st, &i.sink, o, silence);
@@ -445,6 +457,9 @@ impl FramerDoor for TestDoor {
                     let bytes = raw(i.bytes, i.len);
                     st.heard |= !bytes.is_empty();
                     st.inbound.extend(bytes);
+                    if st.echo {
+                        st.outbound.extend(bytes);
+                    }
                     st.ended |= i.end != 0;
                     answer(st, &i.sink, o, silence);
                     ("ingest", ok)
@@ -651,6 +666,7 @@ impl TestDoor {
                 ),
             ),
             Carry::Dial(i, o) => {
+                self.dialled_keys.lock().unwrap().push(i.supervision_key);
                 // SAFETY: the connector's destination, live for the call.
                 let d = unsafe { &*i.dest };
                 let r = if d.kind == DEST_PROGRAM {

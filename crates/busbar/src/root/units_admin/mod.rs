@@ -55,8 +55,8 @@ use crate::root::kernel::{ProductionUnits, RegisteredUnits};
 use crate::root::ledger_identity::{LedgerSnapshot, LegacySnapshot};
 use busbar_core_admin::rate::{MutationClass, CONFIG_CLASS_RULES};
 use busbar_core_admin::{
-    verb_name, ApprovalState, KernelVerb, PostureCtx, VerbScope, AUDIT_VERBS, LEDGER_VERBS,
-    LEGACY_VERBS, NAMED_SURFACES, NEW_VERBS,
+    verb_name, KernelVerb, VerbScope, AUDIT_VERBS, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES,
+    NEW_VERBS,
 };
 use busbar_kernel_ledger::{
     checkpoint::{AnchoredHead, Checkpoint, CheckpointVerifier},
@@ -1061,7 +1061,7 @@ pub struct CoreGovernance {
     /// Where a sealed rate-card amendment is made durable, where a root bound one. `None` refuses
     /// `amend_rate_history` (`Store`): a correction nothing can record is not applied.
     amendments: Option<Arc<AmendmentJournal>>,
-    /// Who submitted this unit's call and under which dual-control posture it was admitted.
+    /// Who submitted this unit's call.
     attribution: AmendAttribution,
     /// The scope the caller was admitted under. `adjust` hands it to the kernel half, which
     /// refuses anything below `full` whatever the verbs unit decided. `ReadOnly` until a root says
@@ -1101,7 +1101,6 @@ impl CoreGovernance {
             amendments: None,
             attribution: AmendAttribution {
                 principal: String::new(),
-                dual_control: None,
             },
             granted: VerbScope::ReadOnly,
             pools: no_pools(),
@@ -1181,27 +1180,25 @@ impl busbar_core_admin::Governance for CoreGovernance {
         verb: KernelVerb,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         request: &[u8],
-        operator: busbar_core_admin::OperatorState,
     ) -> Result<Vec<u8>, busbar_core_admin::GovernanceError> {
         // `amend_rate_history` is the one new verb whose effect is NOT the mounted router's:
         // its correction lands on this root's own dated rate-card history, which no 1.5.5 handler
-        // knows about. The scope, rate class, operator ceremony and dual control were already run by
-        // the verbs unit before this seam was reached — the verb is in the irreducible set — so this
-        // half speaks only to the correction's own shape and to verifying it was signed by the
-        // operator key the fleet sealed, before it lands the effect.
+        // knows about. The scope and rate class were already run by the verbs unit before this seam
+        // was reached, and that is the whole of its authorization: a plain scoped verb (#77(9),
+        // OWNER-LOCKED, `docs/design/BUSBAR-1.6.0.md` l.2279 — no verb carries dual control, escrow
+        // or operator signatures). This half speaks only to the correction's own shape and effect.
         if verb == KernelVerb::AmendRateHistory {
             return amend_rate_history_effect(
                 &crate::root::kernel::ROOT_CARD,
                 self.amendments.as_deref(),
                 request,
                 self.request.at,
-                operator,
                 &self.attribution,
             );
         }
         // `adjust` (item 404, owner ruling Q9): a correction to a recorded unit's COUNTS, sealed on
-        // the node amendment journal by the kernel's half. Its scope, rate class and the irreducible
-        // gate ran in the verbs unit before this seam; the kernel half re-checks the scope and
+        // the node amendment journal by the kernel's half. Its scope and rate class ran in the verbs
+        // unit before this seam; the kernel half re-checks the scope and
         // refuses a count below zero or a blank reason. What the counts WERE is read from the book,
         // by the digest of the journal record the correction names — never from the body.
         if verb == KernelVerb::Adjust {
@@ -1215,9 +1212,8 @@ impl busbar_core_admin::Governance for CoreGovernance {
             })
             .map(|answer| answer.pack());
         }
-        // The four verbs owner answer Q71(2) binds (see `bound`). Admitted by the verbs unit —
-        // scope, rate class, and for the irreducible `commit_upgrade` the operator ceremony — before
-        // this seam was reached; none of them is the mounted router's.
+        // The four verbs owner answer Q71(2) binds (see `bound`). Admitted by the verbs unit — scope
+        // and rate class — before this seam was reached; none of them is the mounted router's.
         match verb {
             KernelVerb::Verify => {
                 return bound::verify_effect(self.ledger.as_ref()).map(|a| a.pack());
@@ -1328,9 +1324,9 @@ fn json_answer(body: Vec<u8>) -> AdminAnswer {
     }
 }
 
-/// Whether `view` already holds `correction`: an amendment entry by the same signer for the same
+/// Whether `view` already holds `correction`: an amendment entry by the same author for the same
 /// reason over the same window, carrying every figure the correction names. That is what the same
-/// signed body produces each time it is applied, so a second one is a replay (TODO M28).
+/// body produces each time it is applied, so a second one is a replay (TODO M28).
 fn already_applied(
     view: busbar_kernel_ledger::cost::HistoryView<'_>,
     correction: &crate::root::kernel::Correction,
@@ -1355,37 +1351,32 @@ fn already_applied(
 }
 
 /// The effect half of `amend_rate_history`: decode the correction, validate its shape, append
-/// the signed back-dated entry to this root's dated rate-card history, and answer with the entry it
+/// the back-dated entry to this root's dated rate-card history, and answer with the entry it
 /// sealed.
 ///
 /// The append is [`crate::root::kernel::RootHistory::amend`], which rewrites nothing: the entry the
 /// correction out-ranks stays exactly as booked, and recompute reprices the corrected window against
 /// the new entry. Every refusal here is a client-safe `GovernanceError`: a malformed body, a window
 /// that corrects nothing, or a correction that moves no price is `Validation` (400); a history with
-/// no opening entry to correct is `NotFound` (404). The verb's scope (`full`), rate class, operator
-/// ceremony and dual control ran before this seam — the verb is irreducible — so this half assumes an
-/// admitted call and adjudicates the correction itself: its shape, its cryptographic signature
-/// against the operator key the fleet sealed, and its effect.
+/// no opening entry to correct is `NotFound` (404). The verb's scope (`full`) and rate class ran
+/// before this seam, so this half assumes an admitted call and adjudicates the correction itself:
+/// its shape and its effect.
 ///
-/// The signature is the D38 hardening (`docs/design/BUSBAR-1.6.0.md #79`; the sealed-key
-/// posture is `busbar-unit-verbs/src/posture.rs:28-32`). `operator` carries the single sealed
-/// ed25519 verifying key; the body's `operator_fingerprint` must equal `sha256(key)` (a which-key
-/// confirmation, not a registry lookup — there is one operator key), and the detached `signature`
-/// must verify (STRICT) against that key over the canonical correction payload. An unknown
-/// fingerprint or a signature that does not verify is a client-safe `Validation` (400), the same
-/// refusal shape a missing signer already produces — the presence-only checks below still refuse the
-/// no-signer/window/price cases at the exact byte they did before, and the cryptographic check is
-/// reached only by a body that already carries a well-formed signer and signature.
+/// A PLAIN SCOPED VERB (#77(9), OWNER-LOCKED, `docs/design/BUSBAR-1.6.0.md` l.2279: "no verb
+/// carries dual control, escrow or operator signatures. Each verb is a plain scoped verb authorized
+/// by the per-verb allow-list on the admin token"; #24 l.2202 makes it a real verb and no more). The
+/// body carries no signer and no signature, and a body that still names `operator_fingerprint` or
+/// `signature` has them ignored like any other member this verb does not read: nothing about the
+/// correction is verified against an operator key, because there is none.
 ///
 /// It names no figure on the wire. The corrected rates go into the card, never into the answer, so
 /// the control surface stays free of money vocabulary; the answer is the seq an invoice will cite,
-/// the window it corrected, who signed it and the digest of why.
+/// the window it corrected, the (empty) `operator_fingerprint` slot and the digest of why.
 fn amend_rate_history_effect(
     history: &crate::root::kernel::RootHistory,
     journal: Option<&AmendmentJournal>,
     body: &[u8],
     arrival_secs: u64,
-    operator: busbar_core_admin::OperatorState,
     attribution: &AmendAttribution,
 ) -> Result<Vec<u8>, busbar_core_admin::GovernanceError> {
     use busbar_core_admin::GovernanceError;
@@ -1417,19 +1408,10 @@ fn amend_rate_history_effect(
         return Err(GovernanceError::Validation);
     }
 
-    // The signer and the signature. `amend_rate_history` is `full` + operator signature, so a
-    // correction that names neither is refused at the shape, before it can touch the history.
-    let operator_fingerprint = obj
-        .get("operator_fingerprint")
-        .and_then(serde_json::Value::as_str)
-        .filter(|s| !s.is_empty())
-        .ok_or(GovernanceError::Validation)?
-        .to_string();
-    let signature = obj
-        .get("signature")
-        .and_then(serde_json::Value::as_str)
-        .filter(|s| !s.is_empty())
-        .ok_or(GovernanceError::Validation)?;
+    // NO SIGNER AND NO SIGNATURE (#77(9)). The durable record and the answer keep their
+    // `operator_fingerprint` / `signature` slots so neither shape moves; this node writes them empty,
+    // because no operator signs a correction.
+    let operator_fingerprint = String::new();
 
     // The reason is free text and is not the record; its SHA-256 is, so the sealed entry is
     // fixed-width and the text cannot be edited under it.
@@ -1512,41 +1494,6 @@ fn amend_rate_history_effect(
         return Err(GovernanceError::Validation);
     }
 
-    // The cryptographic seam (D38 hardening). A well-formed correction is now verified against the
-    // single operator key the fleet sealed — not merely checked for the presence of a signer. This
-    // is reached only after every shape refusal above, so the no-signer/window/price cases keep
-    // refusing at the exact byte they did before this seam existed.
-    //
-    // The `operator_fingerprint` is a WHICH-KEY confirmation: it must equal `sha256(sealed key)`.
-    // There is exactly one operator key (a single key sealed in `Policy`, not a registry), so a
-    // fingerprint that does not name it is a correction signed for a key this fleet does not hold —
-    // an unknown signer — and is refused. The detached signature then must verify (STRICT, refusing
-    // small-order keys and non-canonical signatures) against that key over the canonical payload the
-    // operator signed. Every failure here is the client-safe `Validation`, the same 400 a missing
-    // signer already produced.
-    let busbar_core_admin::OperatorState::Set(operator_key) = operator else {
-        // The operator gate admits `amend_rate_history` only under `Set`, so this is unreachable in
-        // an admitted call; refusing rather than trusting an unverified correction is the only safe
-        // reading if the seam is ever reached without a sealed key.
-        return Err(GovernanceError::Validation);
-    };
-    let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&operator_key)
-        .map_err(|_| GovernanceError::Validation)?;
-    let expected_fingerprint = busbar_kernel_ledger::digest::sha256_hex(&operator_key);
-    if operator_fingerprint != expected_fingerprint {
-        return Err(GovernanceError::Validation);
-    }
-    let signature_bytes: [u8; 64] = hex::decode(signature)
-        .ok()
-        .and_then(|raw| raw.try_into().ok())
-        .ok_or(GovernanceError::Validation)?;
-    verifying_key
-        .verify_strict(
-            &canonical_amend_payload(obj),
-            &ed25519_dalek::Signature::from_bytes(&signature_bytes),
-        )
-        .map_err(|_| GovernanceError::Validation)?;
-
     // The append. Milliseconds, because the history dates every instant in them; a correction written
     // "now" is written at the arrival it was admitted under, never a fresh clock read.
     let appended_at_ms = arrival_secs.saturating_mul(1000);
@@ -1555,8 +1502,7 @@ fn amend_rate_history_effect(
     // leave was the root's legacy admin ring: a thousand in-memory entries behind a seam that does
     // nothing, four strings and no figure — erased by a thousand admin calls or one restart. The
     // record now goes onto the node's one journal, carrying every figure the correction sealed, the
-    // signer, the dual-control posture it was admitted under and the exact signed bytes with their
-    // signature, so an auditor can re-verify it without trusting this node.
+    // principal that submitted it and the canonical bytes of the correction.
     //
     // AHEAD, not after: an amendment the journal will not take is REFUSED (`Store`) and the history
     // is not touched, so no correction can price a window without its durable record. A history with
@@ -1575,9 +1521,6 @@ fn amend_rate_history_effect(
     if history.is_empty() {
         return Err(GovernanceError::NotFound);
     }
-    let dual_control = attribution
-        .dual_control
-        .ok_or(GovernanceError::Validation)?;
     let journal = journal.ok_or(GovernanceError::Store)?;
     // WHERE THE STORE KEEPS THE JOURNAL, nothing is recorded while it is refusing the journal's
     // records: the correction is refused 503 with the reason (ARCHITECT 2026-10-07 H3 ruling (d)).
@@ -1598,14 +1541,14 @@ fn amend_rate_history_effect(
     };
     let seq = history
         .amend(&correction, |card, base| {
-            // A SIGNED CORRECTION APPLIES ONCE (TODO M28). The signature covers the window, the
-            // cells, the fee and the reason, and nothing that makes one submission different from
-            // the next — so the same signed bytes, sent again after a later correction moved the
-            // window on, would put the earlier price back with no new operator act. Under the apply
-            // lock (this closure runs inside it, ahead of the seal), a correction the history
-            // already holds — same signer, same reason, same window, same figures — is refused and
-            // nothing is recorded. Re-asserting a price on purpose is a new correction: sign it with
-            // the reason it is being re-asserted for.
+            // A CORRECTION APPLIES ONCE (TODO M28). The body names the window, the cells, the fee
+            // and the reason, and nothing that makes one submission different from the next — so
+            // the same bytes, sent again after a later correction moved the window on, would put
+            // the earlier price back with no new operator act. Under the apply lock (this closure
+            // runs inside it, ahead of the seal), a correction the history already holds — same
+            // reason, same window, same figures — is refused and nothing is recorded. Re-asserting
+            // a price on purpose is a new correction: send it with the reason it is being
+            // re-asserted for.
             if history
                 .pin()
                 .is_some_and(|pinned| already_applied(pinned.view(), &correction))
@@ -1637,9 +1580,10 @@ fn amend_rate_history_effect(
                 operator_fingerprint: operator_fingerprint.clone(),
                 reason_hash,
                 principal: attribution.principal.clone(),
-                dual_control: dual_control_word(dual_control).to_string(),
+                // The record's posture slot keeps its shape: one principal, no checker (#77(9)).
+                dual_control: "single".to_string(),
                 signed_payload: canonical_amend_payload(obj),
-                signature: signature.to_string(),
+                signature: String::new(),
             };
             journal
                 .seal_policy(amendment_body(&record), arrival_secs)
@@ -1692,28 +1636,12 @@ fn amend_rate_history_effect(
     Ok(json_answer(out.into_bytes()).pack())
 }
 
-/// Who asked for a correction and under which dual-control posture it was admitted — the two facts
-/// the verbs unit resolved at Route and the durable amendment record states.
-///
-/// `dual_control` is an option because the posture seam may fail to resolve; the verbs unit refuses
-/// such a call before the effect, so `None` here is refused rather than recorded as a guess.
+/// Who asked for a correction — the fact the verbs unit resolved at Route and the durable amendment
+/// record states.
 #[derive(Debug, Clone)]
 pub struct AmendAttribution {
-    /// The authenticated principal that submitted the correction (not the signer — that is the
-    /// operator key the body's fingerprint names).
+    /// The authenticated principal that submitted the correction.
     pub principal: String,
-    /// The dual-control posture the verb was admitted under. This release seals no dual-control
-    /// posture (see [`SealedPosture`]), so a production record says `single`: one signer, no
-    /// checker — stated on the record rather than implied.
-    pub dual_control: Option<busbar_core_admin::DualControl>,
-}
-
-/// The word a durable record uses for a dual-control posture.
-fn dual_control_word(dual_control: busbar_core_admin::DualControl) -> &'static str {
-    match dual_control {
-        busbar_core_admin::DualControl::Single => "single",
-        busbar_core_admin::DualControl::Required => "required",
-    }
 }
 
 /// The domain tag every durable amendment record's body opens with, so a `Policy`-class journal
@@ -1735,8 +1663,12 @@ const AMENDMENT_RECORD_TAG_V2: &str = "busbar/rate-amendment/v2";
 const AMENDMENT_RECORD_TAG_V1: &str = "busbar/rate-amendment/v1";
 
 /// One sealed rate-card amendment, as the node's journal keeps it: every figure the correction put
-/// on the history, who signed it, who submitted it, under which posture, and the exact bytes the
-/// signature covers.
+/// on the history, who submitted it, and the canonical bytes of the correction.
+///
+/// The `operator_fingerprint`, `dual_control` and `signature` slots keep the `v3` shape a record
+/// already on a journal was written in. Under #77(9) (OWNER-LOCKED, `docs/design/BUSBAR-1.6.0.md`
+/// l.2279: no verb carries dual control or operator signatures) this node writes them as the empty
+/// fingerprint, `single` and the empty signature.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AmendmentRecord {
     /// Start of the corrected window, milliseconds.
@@ -1766,17 +1698,19 @@ pub struct AmendmentRecord {
     /// `None` is a cell the card could not represent: UNPRICED, so a hit on it refuses (#42) — never
     /// a zero.
     pub rates: Vec<(String, String, Option<u64>)>,
-    /// The signer: `sha256(operator key)`, hex.
+    /// Empty on every record this node writes (#77(9): no operator signs a correction); a record
+    /// written before that ruling holds `sha256(operator key)`, hex.
     pub operator_fingerprint: String,
     /// `sha256(reason)`.
     pub reason_hash: [u8; 32],
     /// The authenticated principal that submitted it.
     pub principal: String,
-    /// `single` or `required`.
+    /// `single` on every record this node writes (#77(9): no verb carries dual control).
     pub dual_control: String,
-    /// The canonical payload the signature covers.
+    /// The canonical payload of the correction ([`canonical_amend_payload`]).
     pub signed_payload: Vec<u8>,
-    /// The detached ed25519 signature, hex.
+    /// Empty on every record this node writes (#77(9)); a record written before that ruling holds
+    /// the detached ed25519 signature, hex.
     pub signature: String,
 }
 
@@ -2064,20 +1998,13 @@ fn exact_nano_rate(text: &str) -> Option<u64> {
     Some(value)
 }
 
-/// The exact bytes the operator's detached signature is verified over.
+/// The canonical bytes of a correction, as the durable amendment record keeps them.
 ///
 /// A domain-separated, order-fixed serialization of the correction's SEMANTIC fields — everything the
-/// amendment means, and nothing about how it was transported or which key is confirming itself.
-/// `signature` is excluded (it is the thing being verified) and `operator_fingerprint` is excluded
-/// (it is the which-key confirmation, checked separately against `sha256(key)`); every other field is
-/// rendered from the parsed body, in a fixed order, each on its own line. Because it is a pure
-/// function of the parsed body's semantic fields, the operator who signs the correction and this seam
-/// which verifies it derive byte-identical inputs regardless of how the transport spelled the JSON —
-/// and a test reproduces the signing input by calling this same function over the same body.
-///
-/// The domain-separation prefix binds a signature to THIS operation: a signature captured over one
-/// operation's bytes cannot be replayed as another's, because no other operation signs a payload that
-/// begins with this line.
+/// amendment means, and nothing about how it was transported: every field is rendered from the
+/// parsed body, in a fixed order, each on its own line, so two spellings of the same JSON record the
+/// same bytes. Nothing verifies a signature over them (#77(9)); the bytes stay on the record so an
+/// auditor reads exactly what was corrected.
 fn canonical_amend_payload(obj: &serde_json::Map<String, serde_json::Value>) -> Vec<u8> {
     let mut payload = String::from("busbar/amend-rate-history/v1\n");
     // `currency` is NOT in this list, and its absence is load-bearing rather than tidy: the field
@@ -2645,6 +2572,9 @@ struct AdminInFlight {
     request: AdminRequest,
     verb: Option<ResolvedVerb>,
     granted: Option<VerbScope>,
+    /// The per-verb allow-list the door identified the caller with, when its bindings grant verbs
+    /// BY NAME (#77(9) l.2279); `None` = the rung alone decides, as it did in 1.5.5.
+    listed: Option<busbar_kernel::auth::VerbAllowList>,
     /// Who the auth unit said is calling, as the loop sealed it. Kept here rather than re-derived
     /// downstream because the credential that was presented is NOT the identity that was resolved:
     /// the identity is what a record attributes to, and the credential is a secret that must not
@@ -2677,6 +2607,7 @@ impl AdminUnits {
                 request,
                 verb: None,
                 granted: None,
+                listed: None,
                 principal: None,
                 answer: None,
             },
@@ -2739,6 +2670,16 @@ impl AdminUnits {
     fn set_granted(&self, key: UnitKey, granted: VerbScope) {
         if let Some(unit) = self.lock().get_mut(&key) {
             unit.granted = Some(granted);
+        }
+    }
+
+    fn listed(&self, key: UnitKey) -> Option<busbar_kernel::auth::VerbAllowList> {
+        self.lock().get(&key).and_then(|u| u.listed.clone())
+    }
+
+    fn set_listed(&self, key: UnitKey, listed: busbar_kernel::auth::VerbAllowList) {
+        if let Some(unit) = self.lock().get_mut(&key) {
+            unit.listed = Some(listed);
         }
     }
 
@@ -2824,13 +2765,6 @@ pub struct AdminBinding {
     /// and it REFUSES the three reads rather than rendering an empty head — an unbound chain and a
     /// chain that has sealed nothing are different facts, and only the second is a measurement.
     pub audit: Option<Arc<dyn AuditView>>,
-    /// Where the money-governance posture is read from.
-    ///
-    /// A third seam, and it has to be one: the two gates the 17 verbs are checked against are sealed
-    /// state, not request state, so nothing on the request can answer them and nothing this file
-    /// holds is entitled to decide them. Bound to [`UnsealedPosture`] until a root binds a reader for
-    /// the journal the ceremony writes.
-    pub posture: Arc<dyn PostureView>,
     /// Where a sealed rate-card amendment is made durable: the node's own journal. `None` until a
     /// root binds one, and `amend_rate_history` refuses while it is `None` — an amendment is never
     /// applied without its durable record (item 30).
@@ -2867,108 +2801,6 @@ pub struct AdminBinding {
     pub units: AdminUnits,
 }
 
-/// Where the two sealed gates a money-governance verb is checked against are read from.
-///
-/// The verbs unit takes both as plain values and says so: resolving them is the integrator's, which
-/// is this file. What the integrator may NOT do is invent them — a posture invented at the call site
-/// is a gate that reports whatever the call site wrote rather than what the fleet sealed, which is
-/// the same thing as no gate at all in one direction and an unliftable refusal in the other.
-///
-/// So the answer is an option, and `None` means "this node cannot read what the fleet sealed". A
-/// verb whose posture is unresolved is refused by the verbs unit rather than admitted under a
-/// guessed one, which is the only safe reading: a reader that has stopped working must not look like
-/// a fleet that never ran a ceremony.
-pub trait PostureView: Send + Sync {
-    /// The posture this verb is checked against, and this actor's approval standing for it.
-    ///
-    /// The actor is named because the approval half is per-maker: whether an `approve` exists for a
-    /// pending mutation, and whether its approver is somebody other than the principal now asking,
-    /// is a question about this caller and not about the node.
-    fn resolve(&self, verb: KernelVerb, actor: &str) -> Option<(PostureCtx, ApprovalState)>;
-}
-
-/// The posture of a node that has sealed no policy at all.
-///
-/// Exactly what the design says a fresh install and an upgrade are, said as data rather than assumed
-/// at the call site: no operator ceremony has run, so the irreducible verbs that need one are
-/// refused, and dual control is single, so every other mutation applies immediately. The approval
-/// standing is `NotYetApproved` because nothing has approved anything — under `Single` it is never
-/// consulted, and stating the true value rather than a convenient one is what stops this default
-/// from becoming a pass the moment a real posture is bound beside it.
-///
-/// This is a statement about a node with no journal, NOT a fallback for one whose journal could not
-/// be read. That case answers `None` and is refused.
-#[derive(Debug, Default)]
-pub struct UnsealedPosture;
-
-impl PostureView for UnsealedPosture {
-    fn resolve(&self, _verb: KernelVerb, _actor: &str) -> Option<(PostureCtx, ApprovalState)> {
-        Some((
-            PostureCtx {
-                operator: busbar_core_admin::OperatorState::Unset,
-                dual_control: busbar_core_admin::DualControl::Single,
-            },
-            ApprovalState::NotYetApproved,
-        ))
-    }
-}
-
-/// The posture a running node reports from what its fleet actually sealed — the composition root's
-/// production [`PostureView`], bound over [`AdminBinding::with_posture_view`] in place of
-/// [`UnsealedPosture`].
-///
-/// It carries ONE piece of sealed state: the operator-ceremony key, resolved once at boot from
-/// `auth.operator_pub` (a fleet-shared `operator.pub`, [`busbar_kernel::preflight::resolve_operator_public_key`]).
-/// Present ⇒ [`OperatorState::Set`] with the raw 32-byte verifying key, which lifts the ceremony gate
-/// for the sealed key and hands D38's `amend_rate_history` the key it verifies a correction's
-/// signature against; ABSENT ⇒ [`OperatorState::Unset`], and this view then reports the EXACT posture
-/// [`UnsealedPosture`] does — a fresh install that has not run the ceremony — so binding it over an
-/// unset key is byte-for-byte identical to the default it replaces.
-///
-/// The other two halves are the fresh-install truth rather than a guess: `dual_control` is
-/// [`DualControl::Single`] and the approval standing is [`ApprovalState::NotYetApproved`], because
-/// this release seals NO dual-control posture and keeps NO pending-approval journal for a node to read
-/// a maker-checker state out of. Stating the true values rather than inventing a `Required`/`Approved`
-/// pair is what keeps this view from becoming a gate that reports whatever it wishes; when a later
-/// increment seals those, they resolve here beside the operator key, through this same seam.
-///
-/// [`OperatorState::Set`]: busbar_core_admin::OperatorState::Set
-/// [`OperatorState::Unset`]: busbar_core_admin::OperatorState::Unset
-/// [`DualControl::Single`]: busbar_core_admin::DualControl::Single
-#[derive(Debug, Clone, Copy)]
-pub struct SealedPosture {
-    operator: busbar_core_admin::OperatorState,
-}
-
-impl SealedPosture {
-    /// Build the production posture from the boot-resolved operator public key. `Some(key)` ⇒ the
-    /// ceremony ran and sealed `key`; `None` ⇒ it has not, which is [`OperatorState::Unset`] and is
-    /// byte-identical to [`UnsealedPosture`].
-    ///
-    /// [`OperatorState::Unset`]: busbar_core_admin::OperatorState::Unset
-    #[must_use]
-    pub fn new(operator_key: Option<[u8; 32]>) -> Self {
-        SealedPosture {
-            operator: match operator_key {
-                Some(key) => busbar_core_admin::OperatorState::Set(key),
-                None => busbar_core_admin::OperatorState::Unset,
-            },
-        }
-    }
-}
-
-impl PostureView for SealedPosture {
-    fn resolve(&self, _verb: KernelVerb, _actor: &str) -> Option<(PostureCtx, ApprovalState)> {
-        Some((
-            PostureCtx {
-                operator: self.operator,
-                dual_control: busbar_core_admin::DualControl::Single,
-            },
-            ApprovalState::NotYetApproved,
-        ))
-    }
-}
-
 impl std::fmt::Debug for AdminBinding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AdminBinding")
@@ -2992,7 +2824,6 @@ impl AdminBinding {
             door,
             ledger: Arc::new(UnopenedLedger),
             audit: None,
-            posture: Arc::new(UnsealedPosture),
             amendments: None,
             claims: None,
             pools: no_pools(),
@@ -3040,13 +2871,6 @@ impl AdminBinding {
     #[must_use]
     pub fn with_claim_journal(mut self, journal: Arc<RootClaimJournal>) -> Self {
         self.claims = Some(journal);
-        self
-    }
-
-    /// Bind the money-governance gates to the posture a fleet actually sealed.
-    #[must_use]
-    pub fn with_posture_view(mut self, posture: Arc<dyn PostureView>) -> Self {
-        self.posture = posture;
         self
     }
 }
@@ -3177,17 +3001,25 @@ pub(crate) fn authenticate(
     let Some(request) = binding.units.request(ctx.key) else {
         return SeatVerdict::refuse(token, Refusal::new(ReasonCode::Unauthenticated));
     };
-    let (principal, grants) = match (binding.door)(&request) {
+    let (principal, grants, listed) = match (binding.door)(&request) {
         busbar_kernel::auth::AdminDoor::Open => (
             busbar_kernel_identity::principal::ANONYMOUS.to_string(),
             busbar_contract::authz::Grants::of(busbar_contract::authz::Scope::Full),
+            None,
         ),
         busbar_kernel::auth::AdminDoor::Identified(principal, grants) => {
             let revoked = bindings.revocations().zip(request.credential.as_deref());
             if revoked.is_some_and(|(set, credential)| set.is_revoked(credential)) {
                 return SeatVerdict::refuse(token, Refusal::new(ReasonCode::Revoked));
             }
-            (principal.id, grants)
+            (principal.id, grants, None)
+        }
+        busbar_kernel::auth::AdminDoor::Listed(principal, grants, list) => {
+            let revoked = bindings.revocations().zip(request.credential.as_deref());
+            if revoked.is_some_and(|(set, credential)| set.is_revoked(credential)) {
+                return SeatVerdict::refuse(token, Refusal::new(ReasonCode::Revoked));
+            }
+            (principal.id, grants, Some(list))
         }
         busbar_kernel::auth::AdminDoor::Denied => {
             return SeatVerdict::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
@@ -3205,6 +3037,10 @@ pub(crate) fn authenticate(
     };
     if let Some(rung) = rung {
         binding.units.set_granted(ctx.key, rung);
+    }
+    // The verbs the caller holds BY NAME, for approve to read beside the rung (#77(9) l.2279).
+    if let Some(list) = listed {
+        binding.units.set_listed(ctx.key, list);
     }
     SeatVerdict::proceed(
         token,
@@ -3266,6 +3102,16 @@ pub(crate) fn approve(
     binding.units.set_granted(ctx.key, granted);
     if !granted.allows(scope_as_verb_scope(needed)) {
         return SeatVerdict::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
+    }
+    // THE PER-VERB ALLOW-LIST (#77(9), OWNER-LOCKED, `docs/design/BUSBAR-1.6.0.md` l.2279): a
+    // caller holding verbs BY NAME is admitted only to a verb its list reaches — the closed table's
+    // name for this operation, as decode resolved it — and refused with the same scope ending as a
+    // rung it does not hold. A caller with no list is decided by the rung alone, as before.
+    if let Some(list) = binding.units.listed(ctx.key) {
+        let verb = binding.units.verb(ctx.key).map(|resolved| resolved.verb);
+        if !list.admits(verb, needed) {
+            return SeatVerdict::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
+        }
     }
     SeatVerdict::proceed(token, busbar_contract::ScopeFacts::default())
 }
@@ -3353,19 +3199,11 @@ pub(crate) fn route(
         return SeatVerdict::proceed(token, busbar_contract::RoutePlan::default());
     }
 
-    // The same identity the record attributes to, so the rate-limit bucket, the audit row and the
-    // maker half of the maker-checker rule all name one actor. Keying any of them on the credential
-    // instead let one principal be two by presenting a second token.
+    // The same identity the record attributes to, so the rate-limit bucket and the audit row name
+    // one actor. Keying either on the credential instead let one principal be two by presenting a
+    // second token. Nothing else is resolved: every verb is a plain scoped verb (#77(9),
+    // OWNER-LOCKED, `docs/design/BUSBAR-1.6.0.md` l.2279), authorized by the grant Approve recorded.
     let actor = actor_of(binding, ctx.key);
-    // Both gates come from the seam, together, because they are one question about one fleet asked
-    // at one moment. An unresolvable posture travels as `None` and the verbs unit refuses the verb
-    // for it: the two gates exist to stop an irreversible money operation, so a node that cannot say
-    // what its fleet sealed must not run one.
-    let resolved_posture = binding.posture.resolve(verb, &actor);
-    let (posture, approval) = match resolved_posture {
-        Some((posture, approval)) => (Some(posture), approval),
-        None => (None, busbar_core_admin::ApprovalState::NotYetApproved),
-    };
 
     let verbs =
         busbar_core_admin::Verbs::new(
@@ -3380,7 +3218,6 @@ pub(crate) fn route(
                 binding.amendments.clone(),
                 AmendAttribution {
                     principal: actor.clone(),
-                    dual_control: posture.map(|p| p.dual_control),
                 },
             )
             .granted(granted)
@@ -3400,40 +3237,32 @@ pub(crate) fn route(
         );
 
     // THE THREE DISASTER-RECOVERY VERBS REACH THE STORE, not the governance seam. They are new
-    // verbs and are admitted exactly as every other new verb is — scope, rate class, then the
-    // operator ceremony and dual control — but their effect lands on `Store` rather than on a
+    // verbs and are admitted exactly as every other new verb is — scope, then rate class — but
+    // their effect lands on `Store` rather than on a
     // handler, and the unit gives each of them its own entry point for precisely that reason.
     // Sending them through `execute` sent them to `execute_new_verb`, which asks the mounted router
-    // for a path that release never had: the ceremony ran, the gates passed, and the caller got a
-    // 404 from the surface underneath. Breaking a journal chain is not an operation that should be
+    // for a path that release never had: the gates passed, and the caller got a 404 from the
+    // surface underneath. Breaking a journal chain is not an operation that should be
     // able to look like it happened when it did not, nor to look like it did not when it had.
     if let Some(recovery) = recovery_verb(verb) {
         let ran = match recovery {
-            RecoveryVerb::ChainBreak => {
-                verbs.chain_break(admin, &actor, granted, request.at, posture, approval)
-            }
+            RecoveryVerb::ChainBreak => verbs.chain_break(admin, &actor, granted, request.at),
             RecoveryVerb::StoreRestore => {
                 // The backup the operator named. There is no default and no empty one: restoring
                 // "whatever the store thinks" is the single most destructive thing this surface can
-                // be asked to do by accident, so a request that names none is refused before the
-                // ceremony rather than resolved to something.
+                // be asked to do by accident, so a request that names none is refused before it
+                // reaches the store rather than resolved to something.
                 match backup_ref_of(&request.body) {
-                    Some(backup_ref) => verbs.store_restore(
-                        admin,
-                        &actor,
-                        granted,
-                        request.at,
-                        posture,
-                        approval,
-                        &backup_ref,
-                    ),
+                    Some(backup_ref) => {
+                        verbs.store_restore(admin, &actor, granted, request.at, &backup_ref)
+                    }
                     None => {
                         return SeatVerdict::refuse(token, Refusal::new(ReasonCode::DecodeFailed));
                     }
                 }
             }
             RecoveryVerb::ResealEpochFloor => {
-                verbs.reseal_epoch_floor(admin, &actor, granted, request.at, posture, approval)
+                verbs.reseal_epoch_floor(admin, &actor, granted, request.at)
             }
         };
         return match ran {
@@ -3445,16 +3274,7 @@ pub(crate) fn route(
         };
     }
 
-    match verbs.execute(
-        verb,
-        admin,
-        &actor,
-        granted,
-        request.at,
-        posture,
-        approval,
-        &request.body,
-    ) {
+    match verbs.execute(verb, admin, &actor, granted, request.at, &request.body) {
         Ok(packed) => match AdminAnswer::unpack(&packed) {
             Some(answer) => {
                 binding.units.set_answer(ctx.key, answer);
@@ -3602,10 +3422,6 @@ fn verbs_reason(reason: busbar_core_admin::ReasonCode) -> ReasonCode {
         V::Unauthorized => ReasonCode::ScopeDenied,
         V::RateLimited => ReasonCode::RateLimited,
         V::NotFound => ReasonCode::NoDestination,
-        V::InsufficientApprovers | V::SelfApproval | V::PayloadMismatch | V::ApprovalPending => {
-            ReasonCode::HookVeto
-        }
-        V::OperatorUnset => ReasonCode::ScopeDenied,
         V::IdempotencyInFlight | V::Conflict => ReasonCode::OpenSlotBusy,
         V::Validation => ReasonCode::DecodeFailed,
         V::StoreError | V::Internal => ReasonCode::DurabilityUnavailable,

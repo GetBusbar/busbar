@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::auth::FACT_READS_CREDENTIALS;
+use busbar_contract::abi::auth::{FACT_DEFAULT_INBOUND_STYLE, FACT_READS_CREDENTIALS};
 use busbar_contract::abi::mechanism::door::REWRITE_ALIAS;
 use busbar_contract::abi::mechanism::rendering::read;
 use busbar_contract::auth_calls::AuthCalls;
@@ -211,6 +211,55 @@ impl AuthRows {
             .collect()
     }
 
+    /// The carriers the auth row answering `module` states (its Statement's carrier word marks, in
+    /// order); none when no row answers it, its door will not load, or it states none.
+    #[must_use]
+    pub fn carriers(&self, module: &str) -> Vec<String> {
+        let Some(row) = self.row(module) else {
+            return Vec::new();
+        };
+        match self.load(row, &row.manifest.alias, false) {
+            Ok(Door::Memory(plugin, _)) => plugin
+                .context::<AuthFacts>()
+                .map(|f| f.carriers.clone())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// THE HOST'S DEFAULT INBOUND STYLE: the carriers of the one auth row whose Statement states
+    /// `FACT_DEFAULT_INBOUND_STYLE` (a row whose door will not load states nothing here), linked
+    /// rows first, then the plugins directory's; none when no row states it.
+    ///
+    /// # Errors
+    /// Two or more rows state it: [`two_default_inbound_styles`] names them, and boot is refused.
+    pub fn default_inbound_style(&self) -> Result<Vec<String>, String> {
+        let rows = self
+            .registry
+            .linked()
+            .iter()
+            .chain(self.registry.loadable());
+        let stating: Vec<(String, Vec<String>)> = rows
+            .filter(|p| p.manifest.kind == AUTH)
+            .filter_map(|row| {
+                let alias = &row.manifest.alias;
+                let Ok(Door::Memory(plugin, _)) = self.load(row, alias, false) else {
+                    return None;
+                };
+                let facts = plugin.context::<AuthFacts>()?;
+                (facts.facts & FACT_DEFAULT_INBOUND_STYLE != 0)
+                    .then(|| (alias.clone(), facts.carriers.clone()))
+            })
+            .collect();
+        match stating.as_slice() {
+            [] => Ok(Vec::new()),
+            [(_, carriers)] => Ok(carriers.clone()),
+            many => Err(two_default_inbound_styles(
+                &many.iter().map(|(a, _)| a.as_str()).collect::<Vec<_>>(),
+            )),
+        }
+    }
+
     /// ONE VERIFIER PER CREDENTIAL KIND: a row whose Statement declares it reads a credential kind
     /// refuses to open while another auth row declares the same kind (1.5.5 had one built-in
     /// inbound verifier per credential kind and no way to declare a second, so there is no 1.5.5
@@ -397,6 +446,14 @@ impl busbar_contract::auth_calls::AuthAxis for AuthRows {
         AuthRows::credential_readers(self)
     }
 
+    fn carriers(&self, module: &str) -> Vec<String> {
+        AuthRows::carriers(self, module)
+    }
+
+    fn default_inbound_style(&self) -> Result<Vec<String>, String> {
+        AuthRows::default_inbound_style(self)
+    }
+
     fn open(
         &self,
         module: &str,
@@ -405,6 +462,18 @@ impl busbar_contract::auth_calls::AuthAxis for AuthRows {
     ) -> Result<Arc<dyn AuthCalls>, String> {
         AuthRows::open(self, module, label, settings)
     }
+}
+
+/// THE REFUSAL when more than one auth row states the host's default inbound style
+/// (`FACT_DEFAULT_INBOUND_STYLE`): where a caller's credential sits on a line the config leaves
+/// without a style would be two answers, so boot names the rows and stops.
+#[must_use]
+pub fn two_default_inbound_styles(rows: &[&str]) -> String {
+    format!(
+        "more than one auth plugin states the default inbound style ({}): at most one may; \
+         remove all but one",
+        rows.join(", ")
+    )
 }
 
 #[cfg(test)]
