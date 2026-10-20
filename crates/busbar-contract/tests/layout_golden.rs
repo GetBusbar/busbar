@@ -14,11 +14,9 @@
 //! ([`layout_breaks`]).
 
 use busbar_contract::abi::host::conn::{ConnCtx, ConnSlots, WireOpenDesc, WirePiece};
-use busbar_contract::abi::hot::host::PlaneHostVtable;
-use busbar_contract::abi::hot::*;
 use busbar_contract::abi::shared::{DeclStr, WireConnFacts, WireField};
 use busbar_contract::abi::AbiPreamble;
-// THE ONE MEMORY ABI (M0 ABI-SPEC): aliased, so a name the hot lane also uses cannot collide.
+// THE ONE MEMORY ABI (M0 ABI-SPEC): aliased, so a name two kinds share cannot collide.
 use busbar_contract::abi::mechanism::call::{
     AbiStr as MechStr, Blob as MechBlob, Diag as MechDiag, Envelope as MechEnvelope,
     Field as MechField, InHead as MechInHead, MetricEntry as MechMetricEntry,
@@ -135,424 +133,6 @@ fn compute_layout() -> String {
 
     record!(s, AbiPreamble, [magic, abi_major, abi_minor]);
 
-    record!(
-        s,
-        Facts,
-        [
-            size,
-            version,
-            _reserved,
-            tokens,
-            budget_remaining,
-            tenant_id,
-            priority,
-            flags,
-            pool_name_ptr,
-            pool_name_len,
-            identity_id_ptr,
-            identity_id_len,
-            group_ptr,
-            group_len
-        ]
-    );
-    record!(
-        s,
-        Usage,
-        [
-            size,
-            version,
-            component,
-            _reserved,
-            amount,
-            admission,
-            key_id_ptr,
-            key_id_len,
-            model_ptr,
-            model_len,
-            provider_ptr,
-            provider_len,
-            units_ptr,
-            units_len
-        ]
-    );
-    record!(
-        s,
-        Key,
-        [
-            size,
-            version,
-            _reserved,
-            scope,
-            _reserved2,
-            key_ptr,
-            key_len,
-            drift_state
-        ]
-    );
-    record!(
-        s,
-        Signal,
-        [
-            size,
-            version,
-            class,
-            _reserved,
-            latency_nanos,
-            bytes,
-            fault_class,
-            fault_flags,
-            _reserved2,
-            _reserved3,
-            retry_after_secs,
-            provider_signal_ptr,
-            provider_signal_len
-        ]
-    );
-    record!(
-        s,
-        AdmitRefusal,
-        [size, version, reason, _reserved, retry_after_secs]
-    );
-    record!(
-        s,
-        GovRefusal,
-        [size, version, _reserved, retry_after_secs, reason_len]
-    );
-    record!(
-        s,
-        GuardVerdict,
-        [size, version, _reserved, verdict, class, _reserved2, reason_len]
-    );
-    record!(
-        s,
-        EgressDesc,
-        [
-            size,
-            version,
-            kind,
-            _reserved,
-            allowlist_scope,
-            _reserved2,
-            target_ptr,
-            target_len,
-            client_identity_ref,
-            credential_ref,
-            verb_ptr,
-            verb_len,
-            headers_ptr,
-            headers_len,
-            body_ptr,
-            body_len,
-            cred_header_ptr,
-            cred_header_len,
-            cred_scheme_ptr,
-            cred_scheme_len,
-            env_ptr,
-            env_len,
-            cwd_ptr,
-            cwd_len,
-            stderr_inherit,
-            _reserved3,
-            trust_anchor_ref,
-            timeout_ms,
-            resolved_addr,
-            resolved_addr_kind,
-            _reserved4
-        ]
-    );
-    record!(
-        s,
-        EgressHead,
-        [
-            size,
-            version,
-            status_code,
-            observed_spki_ptr,
-            observed_spki_len,
-            resp_headers_ptr,
-            resp_headers_len,
-            client_identity_offered,
-            _reserved4
-        ]
-    );
-    record!(s, EgressOpen, [size, version, _reserved, id, pipe, head]);
-    record!(
-        s,
-        EgressFault,
-        [
-            size,
-            version,
-            fail_class,
-            _reserved,
-            status_code,
-            _reserved2,
-            cause_len,
-            url_len
-        ]
-    );
-    record!(s, FramingDesc, [size, version, framing, digests_scope]);
-    record!(
-        s,
-        JournalQuery,
-        [size, version, _reserved, scope, _reserved2, from_seq, limit]
-    );
-    record!(
-        s,
-        JournalStreamDesc,
-        [
-            size,
-            version,
-            framing,
-            digests_scope,
-            kind_id,
-            _reserved,
-            kind_ptr,
-            kind_len
-        ]
-    );
-    record!(
-        s,
-        ReframeOut,
-        [
-            size,
-            version,
-            digests_scope,
-            _r,
-            seq,
-            prev_len,
-            hash_len,
-            suffix_len
-        ]
-    );
-    record!(
-        s,
-        RestoredHdr,
-        [
-            size,
-            version,
-            _reserved,
-            scopes,
-            records,
-            empty_scopes,
-            chain_breaks
-        ]
-    );
-    record!(
-        s,
-        ChainBreakHdr,
-        [size, version, broke, _reserved, _reserved2, at_index, seq]
-    );
-    record!(
-        s,
-        VerifyChainHdr,
-        [size, version, verified, _reserved, _reserved2, at_index, seq]
-    );
-    record!(
-        s,
-        OpDesc,
-        [
-            size,
-            version,
-            _reserved,
-            depth,
-            _reserved2,
-            correlation_id,
-            work_ptr,
-            work_len
-        ]
-    );
-    record!(
-        s,
-        OpResult,
-        [size, version, class, _reserved, body_len, seq]
-    );
-    record!(
-        s,
-        WorkHandleDesc,
-        [size, version, _reserved, scope, ttl_secs, correlation_id]
-    );
-    record!(
-        s,
-        VerifyVerdict,
-        [size, version, outcome, _reserved, lease, digest_ptr, digest_len]
-    );
-    record!(
-        s,
-        AuthQuery,
-        [
-            size,
-            version,
-            _reserved,
-            credential_ref,
-            audience_ptr,
-            audience_len
-        ]
-    );
-    record!(
-        s,
-        AuthResolved,
-        [
-            size,
-            version,
-            _reserved,
-            _reserved2,
-            resolved_ref,
-            expires_unix
-        ]
-    );
-    record!(
-        s,
-        IdentityQuery,
-        [
-            size,
-            version,
-            _reserved,
-            token_present,
-            _reserved2,
-            token_ptr,
-            token_len,
-            audience_ptr,
-            audience_len,
-            resource_ptr,
-            resource_len
-        ]
-    );
-    record!(
-        s,
-        IdentityAdmitted,
-        [size, version, outcome, _reserved, _reserved2, identity]
-    );
-    record!(
-        s,
-        MetricSample,
-        [
-            size, version, _reserved, _reserved2, value_bits, name_ptr, name_len, labels_ptr,
-            labels_len
-        ]
-    );
-    record!(
-        s,
-        VerifyQuery,
-        [
-            size,
-            version,
-            _reserved,
-            last_checked_present,
-            _reserved2,
-            ttl_ms,
-            now_ms,
-            last_checked_ms
-        ]
-    );
-    record!(
-        s,
-        ApprovalQuery,
-        [size, version, _reserved, scope, _reserved2, expires_at, now, key_ptr, key_len]
-    );
-    record!(
-        s,
-        CounterpartyRef,
-        [
-            size,
-            version,
-            _reserved,
-            scope,
-            _reserved2,
-            ref_ptr,
-            ref_len,
-            identity_live,
-            grant_outcome,
-            registration_state,
-            artifact_outcome,
-            fact_flags,
-            _reserved3,
-            _reserved4,
-            generation_admitted,
-            generation_live
-        ]
-    );
-    record!(
-        s,
-        CallerRef,
-        [size, version, _reserved, scope, _reserved2, ref_ptr, ref_len]
-    );
-    record!(
-        s,
-        TargetRef,
-        [size, version, _reserved, scope_kind, _reserved2, ref_ptr, ref_len]
-    );
-    record!(
-        s,
-        ContentChunk,
-        [size, version, is_final, _reserved, session_id, offset, data_ptr, data_len]
-    );
-
-    // The two vtable headers (preamble + sized header), then the slots themselves. (Slot offsets do
-    // NOT "follow deterministically" from the header — every slot is one pointer wide, so the
-    // offsets are identical under any permutation and only the recorded NAME→offset pairing
-    // distinguishes them.)
-    // `__size`/`__align`; pinning the header offsets + total size catches any reshuffle.
-    // The host vtable: the two headers AND every fn-pointer slot. Pinning only the headers left the
-    // gate blind to the one drift a golden is uniquely able to catch — two slots of the SAME
-    // signature swapping places. Sizes and offsets are then identical, every build still compiles,
-    // and a published plugin silently calls the wrong host capability through the right-looking
-    // slot. Recording each slot's own offset by NAME is what makes that a failure.
-    record!(
-        s,
-        PlaneHostVtable,
-        [
-            abi,
-            size,
-            version,
-            govern_admit,
-            meter_charge,
-            breaker_admit,
-            breaker_settle,
-            verify_lookup,
-            verify_store,
-            egress_open,
-            egress_poll,
-            egress_write,
-            egress_close,
-            journal_append,
-            journal_read,
-            nested_dispatch,
-            workhandle_open,
-            workhandle_resume,
-            drift_quarantine,
-            approval_redeem,
-            metrics_emit,
-            clock_now,
-            auth_resolve,
-            trust_evaluate,
-            entitlement_check,
-            gate_scan,
-            breaker_admit_reason,
-            verify_decide,
-            approval_redeem_q,
-            govern_admit_reason,
-            pipe_read,
-            pipe_write,
-            egress_fault,
-            journal_register,
-            journal_append_scoped,
-            journal_read_scoped,
-            journal_restore,
-            journal_seed,
-            journal_forget,
-            journal_compact,
-            journal_verify_scoped,
-            subkey_sign,
-            guard_url,
-            identity_admit,
-            counter_add,
-            // The host services (minor 30).
-            entropy_fill,
-            wall_clock,
-            tap_fault_latch,
-            translate_cap
-        ]
-    );
     // The borrowed string, the connection facts and the borrowed field the connection table
     // carries (`abi::shared`).
     record!(s, DeclStr, [ptr, len]);
@@ -1425,9 +1005,9 @@ fn compute_layout() -> String {
     record!(
         s,
         pkind::Ops,
-        [head, arrive, on_piece, refusal, serve, hydrate, start, project]
+        [head, arrive, on_piece, refusal, serve, hydrate, start, project, catalog]
     );
-    record!(s, pkind::DialectAuth, [dialect, _reserved, style, params]);
+    record!(s, pkind::DialectAuth, [dialect, flags, style, params]);
     record!(s, pkind::OpClass, [op, name]);
     record!(s, pkind::BillableClass, [class, family]);
     record!(s, pkind::RouteCost, [class, _reserved, weight]);
@@ -1721,6 +1301,29 @@ fn compute_layout() -> String {
             audit,
             records_written,
             records_needed
+        ]
+    );
+    record!(
+        s,
+        pkind::CatalogIn,
+        [
+            head, method, target, fields, fields_len, names, names_len, reply_buf, reply_cap,
+            fields_buf, fields_cap, arena_buf, arena_cap
+        ]
+    );
+    record!(
+        s,
+        pkind::CatalogOut,
+        [
+            head,
+            reply_written,
+            reply_needed,
+            arena_written,
+            arena_needed,
+            status,
+            fields_written,
+            fields_needed,
+            _reserved
         ]
     );
     record!(s, pkind::PlaneDriveIn, [drive, sessions_buf, sessions_cap]);

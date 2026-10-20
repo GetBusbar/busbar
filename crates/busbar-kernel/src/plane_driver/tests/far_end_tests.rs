@@ -1171,7 +1171,7 @@ async fn the_planes_fields_go_out_but_the_per_connection_mechanics() {
     );
 }
 
-/// F25 row 83: rehomed from crates/busbar-llm/src/engine/tests/client_header_forwarding_tests.rs::
+/// F25 row 83: rehomed from the retired engine crate's src/engine/tests/client_header_forwarding_tests.rs::
 /// hop_by_hop_host_and_length_are_re_derived. MECHANICS: the caller's hop-by-hop fields (and a field
 /// its `connection` nominates), `host` and `content-length` never reach the upstream; the upstream
 /// connection derives its own. Every field of the legacy matrix is handed over and only the trace
@@ -1262,7 +1262,7 @@ impl Telemetry for Labels {
     fn queued(&self, _: &str, _: i64) {}
 }
 
-/// F25 row 124: rehomed from crates/busbar-llm/src/engine/tests/forward_once_pool_cell_tests.rs::
+/// F25 row 124: rehomed from the retired engine crate's src/engine/tests/forward_once_pool_cell_tests.rs::
 /// test_metric_pool_label_resolves_model_for_default_cell. The upstream METRIC pool label resolves
 /// the default (`""`) cell, shared by every direct route, to the ROUTED lane's model name (so those
 /// series correlate with `busbar_requests_total`), lane by lane; a NAMED pool keeps its name
@@ -1392,7 +1392,7 @@ async fn a_plane_field_name_that_is_not_a_token_is_refused_before_the_dial() {
     assert!(r.book.observed.lock().unwrap().is_empty());
 }
 
-/// F25 row 75: rehomed from crates/busbar-llm/src/engine/tests/auth_style_tests.rs::
+/// F25 row 75: rehomed from the retired engine crate's src/engine/tests/auth_style_tests.rs::
 /// test_host_from_base_backslash_authority_matches_wire_host (its signed-host half; the dialler's
 /// reading of each URL is pinned in busbar-kernel-egress's `net_tests`). A WHATWG reader ends a web
 /// URL's authority at the first `\` exactly as at `/`, so the host the auth call signs must be the

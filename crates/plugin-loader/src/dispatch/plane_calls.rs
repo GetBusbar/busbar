@@ -136,6 +136,19 @@ impl PlaneCalls for PlaneInstance {
         self.pure(slot::REFUSAL, input, out, grow)
     }
 
+    fn catalog(
+        &self,
+        input: &mut busbar_contract::abi::plane::CatalogIn,
+        out: &mut busbar_contract::abi::plane::CatalogOut,
+        grow: Grow<
+            '_,
+            busbar_contract::abi::plane::CatalogIn,
+            busbar_contract::abi::plane::CatalogOut,
+        >,
+    ) -> Outcome {
+        self.pure(slot::CATALOG, input, out, grow)
+    }
+
     fn project(
         &self,
         input: &mut ProjectIn,
