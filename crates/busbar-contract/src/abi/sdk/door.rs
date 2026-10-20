@@ -118,6 +118,11 @@ unsafe impl AbiOut for CancelOut {}
 /// SLOT LAYOUT rule). Its `Lifecycle`'s `out` at slot `open` leads with the lifecycle's `OpenOut`
 /// (a [`Safe`](crate::abi::sdk::safe::Safe) `open` writes the instance there), and its `in` there
 /// with the lifecycle's `OpenIn` (a failed `open` writes its reason into `OpenIn::err_buf`).
+///
+/// # Safety (the all-absent table)
+///
+/// Every field of the table is an integer or an `Option` of a function pointer, so the all-zero
+/// bit pattern is a valid table with every op absent ([`absent_table`]).
 pub unsafe trait KindOps: Copy + 'static {
     /// The kind this table belongs to; the door's `kind` and `kind_abi` follow from it.
     const KIND: KindCode;

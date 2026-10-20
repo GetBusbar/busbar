@@ -3766,6 +3766,7 @@ mod plane_fees_on_admin_usage {
                     caller_credential_refusal: None,
                 },
                 wire_format_names: || &[],
+                provider_dialects: || &[],
                 claims: |_| Vec::new(),
                 admission: |_| None,
                 build: |_| None,

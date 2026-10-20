@@ -528,7 +528,7 @@ pub struct LaneSpec {
     // NAME — the codec itself is resolved by-name from the installed registry at dispatch, never held
     // here. Storing the interned `&'static str` (a neutral `PROTO_*` const) instead of an
     // `Arc<crate::proto::Protocol>` lets the routing/dispatch suites build lanes without naming the
-    // witnessed busbar-llm codec, so the witness can be deleted at the final flip.
+    // witnessed the retired engine crate codec, so the witness can be deleted at the final flip.
     protocol: &'static str,
     max: usize,
     api_key: busbar_contract::redacted::Secret<String>,
@@ -2082,6 +2082,11 @@ pub fn hook_axis_stand_in(
 /// THE HOOK DOUBLE (OWNER 2026-10-03, no test plugins): the kernel's hook port answered in
 /// process. See [`hook_double`].
 pub mod hook_double;
+
+/// The operator-credential double: the `kind: auth` door a test binary links as the operator
+/// credential's row in place of the composition root's plugin (kind-neutral, under the stand-in
+/// operator words). See [`operator_double`].
+pub mod operator_double;
 
 /// The ranking hook double (R-FIX3): the door that stands in for the root's linked ranking row in a
 /// test build. Linked only.
