@@ -51,7 +51,7 @@
 //! its data-plane routes, its admin verbs, and its OpenAPI fragment; and, as of
 //! [`PlaneDecl::hydrate`] / [`PlaneDecl::start`], the BOOT seam: how a plane restores its durable
 //! state before a listener binds and starts its background work after. A plane's boot hooks read a
-//! [`BootCtx`] whose store surface is [`PlaneStore`](crate::plane::store::PlaneStore) and never the
+//! [`BootCtx`] whose store surface is [`PlaneStore`](crate::store::plane_view::PlaneStore) and never the
 //! audit-carrying `Store` (invariant (a)). This file is the proof that the control's mechanism
 //! transfers to the plane axis — the vocabulary half, joined by the slot half, the surface half and
 //! the boot half — and the honest measure of how much of the plane problem is covered.
@@ -68,7 +68,7 @@
 
 /// EVERYTHING A PLANE'S BOOT HOOKS ([`PlaneDecl::hydrate`], [`PlaneDecl::start`]) MAY READ, and
 /// DELIBERATELY nothing that carries the audit chain, the governance context or the signing seed
-/// (invariant (a)). Its surface names [`PlaneStore`](crate::plane::store::PlaneStore) — never
+/// (invariant (a)). Its surface names [`PlaneStore`](crate::store::plane_view::PlaneStore) — never
 /// `Store`, `audit::Chain` or `GovCtx` — so a hook can restore a plane's own durable state but cannot
 /// reach the append-only chain or the token mint through it.
 ///
@@ -86,7 +86,7 @@ pub struct BootCtx {
     /// The PLANE-NARROWED durable store — task / call / demotion / spent methods only, never the
     /// audit-carrying `Store`. `Some` in the hydrate phase whenever governance configured a store;
     /// `None` in the start phase (a start hook restores nothing).
-    pub store: Option<std::sync::Arc<dyn crate::plane::store::PlaneStore>>,
+    pub store: Option<std::sync::Arc<dyn crate::store::plane_view::PlaneStore>>,
 
     /// HYDRATE phase — the freshly-built `App`, off which a hydrate hook attaches its own
     /// write-through sinks (`spent_token_ledger`, `demotion_record`) and restores them. `None` in the start
@@ -108,7 +108,7 @@ impl BootCtx {
     /// THE HYDRATE-PHASE CONTEXT: the plane-narrowed store and the freshly-built app. No listener
     /// exists yet, so there is no handle, no shutdown broadcast and no card-issuer key to publish.
     pub fn for_hydrate(
-        store: Option<std::sync::Arc<dyn crate::plane::store::PlaneStore>>,
+        store: Option<std::sync::Arc<dyn crate::store::plane_view::PlaneStore>>,
         app: &std::sync::Arc<crate::state::App>,
     ) -> Self {
         BootCtx {
@@ -182,7 +182,9 @@ impl PlaneBootCtx for BootCtx {
     /// THE PLANE-NARROWED DURABLE STORE, or `None` under `store: memory` — the generic handle a
     /// plane drives its own task-set boot (sink attach + rehydrate) off, so no plane-specific boot
     /// logic lives in this core seam. Just clones the phase-carried `Option<Arc<dyn PlaneStore>>`.
-    fn plane_store(&self) -> Option<std::sync::Arc<dyn busbar_kernel::plane::store::PlaneStore>> {
+    fn plane_store(
+        &self,
+    ) -> Option<std::sync::Arc<dyn busbar_kernel::store::plane_view::PlaneStore>> {
         self.store.clone()
     }
 
@@ -637,55 +639,13 @@ pub struct BuildCtx<'a> {
     /// `OnceLock`) off its own prior runtime object across a config apply without the composition root
     /// naming the plane's runtime type. Reached by key through [`crate::plane_host::PlaneSlots::plane_slot`]
     /// and downcast inside the plane's own `build`, exactly as the runtime accessors downcast the live
-    /// slot. The A2A plane reads it to carry its `VerifyGate` and card-fetch `OnceLock`; a plane with no
-    /// carry-over ignores it.
+    /// slot. A plane with no carry-over ignores it.
     pub prior: Option<&'a dyn crate::plane_host::PlaneSlots>,
     /// THIS GENERATION'S RESOLVED `providers:` (catalog-merged), from which a door plane's probe is
     /// handed the dialect facts of the providers its section references, as its served instance
     /// is; `None` = none (a test build that states none).
     pub providers:
         Option<&'a std::collections::HashMap<String, crate::config::providers::ResolvedProvider>>,
-    /// THE HOSTLESS-EGRESS DRIVER of the App this generation builds, handed to a plane's `build` on
-    /// this context rather than read off a process-wide static: a plane that runs a governed hop
-    /// holds the driver of the App that built it, so two Apps in one process each drive their own.
-    /// [`EgressDriver::core`] in the App build; `Default` (no driver) where a test states none.
-    pub hostless: EgressDriver,
-}
-
-/// THE HOSTLESS-EGRESS DRIVER A PLANE'S `build` IS HANDED ([`BuildCtx::hostless`]): the
-/// neutral `&dyn HostlessEgress` a plane runs a governed hop through, or none. A field of the
-/// build context in every build, empty in a build that compiles no egress seam, so a test that
-/// spells a `BuildCtx` literal states `Default::default()` whatever features are unified.
-#[derive(Clone, Copy, Default)]
-pub struct EgressDriver(
-    #[cfg(all(feature = "egress-seam", any(feature = "dispatch", feature = "relay")))]
-    Option<&'static dyn crate::egress::seam::HostlessEgress>,
-);
-
-impl EgressDriver {
-    /// The App's own driver: the core-backed `CoreHostlessEgress` (the `plane_host` FFI egress
-    /// vtable) where the egress seam is compiled, none where it is not.
-    #[must_use]
-    pub fn core() -> Self {
-        #[cfg(all(feature = "egress-seam", any(feature = "dispatch", feature = "relay")))]
-        {
-            Self(Some(&crate::egress::seam::CoreHostlessEgress))
-        }
-        #[cfg(not(all(feature = "egress-seam", any(feature = "dispatch", feature = "relay"))))]
-        {
-            Self()
-        }
-    }
-}
-
-#[cfg(all(feature = "egress-seam", any(feature = "dispatch", feature = "relay")))]
-impl EgressDriver {
-    /// The driver, or `None` when this context carries none: a plane that gets `None` has no egress
-    /// backend behind it and refuses the hop rather than inventing one.
-    #[must_use]
-    pub fn get(self) -> Option<&'static dyn crate::egress::seam::HostlessEgress> {
-        self.0
-    }
 }
 
 /// A PLANE BOOT HOOK — [`PlaneDecl::hydrate`] or [`PlaneDecl::start`]. Handed the [`PlaneBootCtx`] for
@@ -736,8 +696,8 @@ pub trait PlaneBootCtx {
     /// that OWNS its durable subsystem (the A2A task set) drives its own `PlaneRecord` reads/writes off
     /// this handle at boot — attaching it as its registry's sink and running its own rehydrate — rather
     /// than reaching a core-owned engine through a named boot method. Neutral: the handle is the generic
-    /// [`crate::plane::store::PlaneStore`], naming no plane type.
-    fn plane_store(&self) -> Option<std::sync::Arc<dyn crate::plane::store::PlaneStore>>;
+    /// [`crate::store::plane_view::PlaneStore`], naming no plane type.
+    fn plane_store(&self) -> Option<std::sync::Arc<dyn crate::store::plane_view::PlaneStore>>;
 
     /// THE DEPLOYMENT'S PUBLIC CARD-ISSUER KEY, in the start phase — the `kid` and base64 SPKI the A2A
     /// start hook stashes on the plane's own card slot and publishes for an operator to pin busbar by.

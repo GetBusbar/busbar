@@ -16,7 +16,7 @@
 //! coherent to resolve against in the closed-loop tests below. `verify` and `plane_facts` are bound
 //! `GET` and read-only, as BUSBAR-1.6.0.md binds them in its HTTP-binding paragraph (CG-56), so
 //! the (method, path) gate agrees with the row without a carve-out; every other 1.6.0 verb is
-//! marked `full`, matching the design's statement that the irreducible/dual-controlled set is entirely mutating.
+//! marked `full`, because every one of them mutates.
 //! If the real HTTP binding differs, only this table's literals need to change — the match logic
 //! (`find_verb`, path-pattern matching) does not know these are synthetic.
 
@@ -73,7 +73,7 @@ const NEW_VERBS_1_6_0: &[VerbEntry] = &[
     // `amend_rate_history`: unlike the eight above, its path is NOT a judgment call. The
     // dated rate-card-history design binds it at `POST /api/v1/admin/ledger/amend-rate-history` —
     // under the `/ledger/` prefix the five views share, because it is the one write among them — and
-    // `full` + irreducible, because it corrects what the past cost.
+    // `full`, because it corrects what the past cost.
     post_row(
         "/api/v1/admin/ledger/amend-rate-history",
         "amend_rate_history",
@@ -420,6 +420,32 @@ impl ResolvedVerb {
 #[must_use]
 pub fn resolve(method: &str, path: &str) -> Option<ResolvedVerb> {
     find_verb(method, path).map(|(entry, _params)| ResolvedVerb::of(entry))
+}
+
+/// The rung the operation NAMED `name` requires, or `None` when the closed table names no such
+/// operation — the per-verb allow-list's vocabulary (#77(9), OWNER-LOCKED,
+/// `docs/design/BUSBAR-1.6.0.md` l.2279: `role_bindings.<provider>.<role>.verbs: [ … ]` names
+/// operations by exactly the name a row carries here). Handed to the kernel through
+/// `busbar_kernel::admin::seam::AdminVerbTable`, which validation and the admin gate read.
+#[must_use]
+pub fn named_rung(name: &str) -> Option<busbar_contract::authz::Scope> {
+    use busbar_contract::authz::Scope;
+    (all_verbs().iter())
+        .find(|entry| entry.verb == name)
+        .map(|entry| {
+            if entry.read_only {
+                Scope::ReadOnly
+            } else {
+                Scope::Full
+            }
+        })
+}
+
+/// The operation NAME a request line resolves to — [`resolve`]'s row, by the name an allow-list
+/// spells it with (see [`named_rung`]).
+#[must_use]
+pub fn name_at(method: &str, path: &str) -> Option<&'static str> {
+    resolve(method, path).map(|resolved| resolved.verb)
 }
 
 /// Every row the closed table declares, in the order the table holds them.

@@ -26,6 +26,8 @@
 //!     "pool": "<the pool an ATTEMPT names>",              // optional
 //!     "caller_ref": "<the caller's reference>",           // optional: on every piece
 //!     "host": { "entitled": [...], "trusted": [...] },     // optional: the kernel services served
+//!     // (top level, beside "plane") "far_ends": [...]       // optional: what the plane's own
+//!     //                                                    // needs reach, as the auth script's
 //!     "attempt": { "to_far_end": false },                  // optional: the ATTEMPT is taken, the
 //!                                                          // request rides the caller's body
 //!     "arrive_each": true,                                 // optional: every unit arrives first
@@ -404,11 +406,35 @@ struct Given<'a> {
 }
 
 /// What every piece carries beside its own: the member (and pool) an ATTEMPT names, and the
-/// caller's reference.
+/// caller's reference; and the host the inputs state, which keeps the record writes a READY
+/// answer carries, as the kernel's flush writes them, so the plane reads them back.
 struct Carried {
     member: Vec<u8>,
     pool: Option<Vec<u8>>,
     caller_ref: Option<Vec<u8>>,
+    host: Option<Arc<host::Host>>,
+}
+
+impl Carried {
+    /// Keep the `RECORD_PUT` writes `piece`'s answer carried, when it answered READY.
+    fn keep(&self, piece: &Piece, c: &Called, o: &OnPieceOut) {
+        use busbar_contract::abi::mechanism::call::Outcome;
+        let Some(h) = &self.host else {
+            return;
+        };
+        if c.outcome != Outcome::Ready {
+            return;
+        }
+        let bytes = |s: Span| {
+            let (from, len) = (s.offset as usize, s.len as usize);
+            piece.arena.get(from..from.checked_add(len)?)
+        };
+        for r in &piece.records[..(o.records_written as usize).min(CAP)] {
+            if let (RECORD_PUT, Some(key), Some(value)) = (r.op, bytes(r.key), bytes(r.value)) {
+                h.keep(r.kind, key, value);
+            }
+        }
+    }
 }
 
 /// The host list a SHORT answer is met with at capacity 0.
@@ -651,8 +677,13 @@ fn on_piece(
         Arc::clone(&piece) as Lent,
         Duration::ZERO,
     );
+    let called = answered(&done);
+    if !done.short {
+        let out = done.frame.as_ref().map_or_else(output, |f| f.out);
+        c.keep(&piece, &called, &out);
+    }
     Pieced {
-        called: answered(&done),
+        called,
         short: done.short,
         piece,
         frame: done.frame,
@@ -693,6 +724,9 @@ fn short_then(
         Duration::ZERO,
     );
     let out = again.frame.as_ref().map_or_else(output, |f| f.out);
+    if !again.short {
+        c.keep(&first.piece, &answered(&again), &out);
+    }
     format!(
         "{head} then={}",
         line(&first.piece, &answered(&again), &out)
@@ -1089,6 +1123,7 @@ fn sessions(
             member: member.clone(),
             pool: c.pool.clone(),
             caller_ref: c.caller_ref.clone(),
+            host: c.host.clone(),
         });
         let c = own.as_ref().unwrap_or(c);
         for (label, act) in &s.steps {
@@ -1191,6 +1226,7 @@ impl Inputs {
                 member: text(&k["member"], "member"),
                 pool: optional(&k["pool"], "pool"),
                 caller_ref: optional(&k["caller_ref"], "caller_ref"),
+                host: None,
             },
             claimed: Arrival::of(&k["claimed"], "claimed"),
             unclaimed: Arrival::of(&k["unclaimed"], "unclaimed"),
@@ -1278,21 +1314,36 @@ fn generation(p: &Plugin<Plane>, s: u32, generation: u64) -> String {
 }
 
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
-    let k = Inputs::of(s.kind_inputs("plane"));
+    let mut k = Inputs::of(s.kind_inputs("plane"));
+    // The kernel services the plugin's inputs state (`plane.host`), served on the leg's dispatcher;
+    // stating none, a dispatcher that serves none. Each leg's host is its own: what one leg's plane
+    // wrote, drew or claimed, the other's never sees.
+    k.carried.host = host::Host::of(&s.kind_inputs("plane")["host"]).map(Arc::new);
     let settings = leg.settings(s);
     let answer = (k.status, k.head.as_slice());
     let url = k.public_url.as_deref();
     let (c, claim) = (&k.carried, k.claimed.claim);
 
-    // The kernel services the plugin's inputs state (`plane.host`), served on the leg's dispatcher;
-    // stating none, a dispatcher that serves none.
-    let d = host::Host::of(&s.kind_inputs("plane")["host"]).map_or_else(dispatcher, |h| {
-        std::sync::Arc::new(Dispatcher::with_services(
-            DispatchConfig::default(),
-            std::sync::Arc::new(h),
-        ))
+    let d = k.carried.host.clone().map_or_else(dispatcher, |h| {
+        Arc::new(Dispatcher::with_services(DispatchConfig::default(), h))
     });
-    let p = load::<Plane>(s, leg, s.bind(&d, "plane")).expect("the plane door loads");
+    // The plane's own declared needs (a card it fetches, a callback it delivers) reach the far
+    // ends its inputs state (`far_ends`), as the auth script's do; naming none, the leg's table.
+    let far = s.far_table();
+    let bound = match &far {
+        Some(table) => crate::dispatch::Bind {
+            conns: crate::dispatch::ConnTable::Host(
+                Arc::clone(table) as Arc<dyn busbar_contract::conn::DeclaredConns>
+            ),
+            ..super::bind(&d, "plane")
+        },
+        None => s.bind(&d, "plane"),
+    };
+    let p = load::<Plane>(s, leg, bound).expect("the plane door loads");
+    // The loaded instance is admitted on what its Statement declares, as the kernel admits it.
+    if let Some(h) = &k.carried.host {
+        h.admit(&p.declared());
+    }
     let billable = p.served().billable_classes;
     let mut r = Recorder::new(crossings(&p));
     r.line("facts", 0, || {
@@ -1535,6 +1586,17 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     }
     let fold = r.fold();
     contract(&fold, s.kind_inputs("plane"));
+    // AN UNREACHED SCHEME WAS NEVER TOUCHED (row 114): the claim conformance.json states is that
+    // no open of this fold rode one; an open that did is the scheme reached, not unreached.
+    if let Some(table) = &far {
+        let tried = table.unreached_opens();
+        assert!(
+            tried.is_empty(),
+            "the fold opened a need over an unreached scheme {tried:?}: conformance.json says the \
+             suite never reaches it, so either the plane reached it (the claim is wrong) or the \
+             scheme is exercised here and needs a far end, not an unreached entry"
+        );
+    }
     let unreported = unreported_classes(&fold, &billable);
     assert!(
         unreported.is_empty(),
@@ -2017,3 +2079,7 @@ fn judge(label: &str, line: &str, want: &Value, short: Option<&str>) {
 #[cfg(test)]
 #[path = "../tests/conformance_plane_sessions_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/conformance_plane_host_tests.rs"]
+mod host_tests;

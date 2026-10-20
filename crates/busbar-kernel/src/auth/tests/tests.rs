@@ -16,6 +16,7 @@ fn binding(
         allowed_pools: allowed_pools.map(|ps| ps.iter().map(|p| p.to_string()).collect()),
         group: group.map(str::to_string),
         admin_scope: admin_scope.map(str::to_string),
+        verbs: None,
     }
 }
 
@@ -507,6 +508,25 @@ fn test_synth_key_reserved_id_prefixes_refused() {
     }
 }
 
+/// The operator credential's second carrier, as the linked operator plugin states it (test data:
+/// the kernel names no credential line).
+const X_ADMIN_TOKEN: &str = "x-admin-token";
+
+/// The client token the default inbound style yields on `req` (a test binary's stand-in axis
+/// answers the double's style: the linked header auth's three carriers, in 1.5.5 order).
+fn extract(req: &Request<Body>) -> Option<String> {
+    AuthMiddleware::new_builtin(&crate::config::AuthCfg::default_none())
+        .extract_client_token(req.headers())
+}
+
+/// The admin candidate the operator credential's carriers yield on `headers` (the double's).
+fn admin_candidate(headers: &HeaderMap) -> Option<String> {
+    carried_credential(
+        &header_names(&crate::test_support::outbound_auth::double_operator_carriers()),
+        headers,
+    )
+}
+
 /// Helper: build a request with a single header set, for `extract_client_token` unit tests.
 fn req_with(name: &str, value: &str) -> Request<Body> {
     Request::builder()
@@ -519,30 +539,21 @@ fn req_with(name: &str, value: &str) -> Request<Body> {
 #[test]
 fn test_extract_client_token_authorization_bearer() {
     let req = req_with("authorization", "Bearer tok-abc");
-    assert_eq!(
-        AuthMiddleware::extract_client_token(&req),
-        Some("tok-abc".to_string())
-    );
+    assert_eq!(extract(&req), Some("tok-abc".to_string()));
 }
 
 #[test]
 fn test_extract_client_token_x_api_key() {
     // Anthropic SDK carrier: raw token, no scheme prefix.
     let req = req_with("x-api-key", "tok-x-api-key");
-    assert_eq!(
-        AuthMiddleware::extract_client_token(&req),
-        Some("tok-x-api-key".to_string())
-    );
+    assert_eq!(extract(&req), Some("tok-x-api-key".to_string()));
 }
 
 #[test]
 fn test_extract_client_token_x_goog_api_key() {
     // Gemini SDK carrier: raw token, no scheme prefix.
     let req = req_with("x-goog-api-key", "tok-x-goog-api-key");
-    assert_eq!(
-        AuthMiddleware::extract_client_token(&req),
-        Some("tok-x-goog-api-key".to_string())
-    );
+    assert_eq!(extract(&req), Some("tok-x-goog-api-key".to_string()));
 }
 
 #[test]
@@ -555,10 +566,7 @@ fn test_extract_client_token_precedence_is_authorization_first() {
         .header("x-goog-api-key", "from-goog")
         .body(Body::empty())
         .unwrap();
-    assert_eq!(
-        AuthMiddleware::extract_client_token(&req),
-        Some("from-auth".to_string())
-    );
+    assert_eq!(extract(&req), Some("from-auth".to_string()));
 
     // Without Authorization, x-api-key wins over x-goog-api-key.
     let req = Request::builder()
@@ -567,10 +575,7 @@ fn test_extract_client_token_precedence_is_authorization_first() {
         .header("x-goog-api-key", "from-goog")
         .body(Body::empty())
         .unwrap();
-    assert_eq!(
-        AuthMiddleware::extract_client_token(&req),
-        Some("from-x-api-key".to_string())
-    );
+    assert_eq!(extract(&req), Some("from-x-api-key".to_string()));
 }
 
 #[test]
@@ -582,10 +587,7 @@ fn test_extract_client_token_empty_carrier_falls_through() {
         .header("x-goog-api-key", "tok-x-goog-api-key")
         .body(Body::empty())
         .unwrap();
-    assert_eq!(
-        AuthMiddleware::extract_client_token(&req),
-        Some("tok-x-goog-api-key".to_string())
-    );
+    assert_eq!(extract(&req), Some("tok-x-goog-api-key".to_string()));
 }
 
 #[test]
@@ -594,7 +596,7 @@ fn test_extract_client_token_none_when_no_carrier() {
         .uri("/v1/messages")
         .body(Body::empty())
         .unwrap();
-    assert_eq!(AuthMiddleware::extract_client_token(&req), None);
+    assert_eq!(extract(&req), None);
 }
 
 #[test]
@@ -618,7 +620,7 @@ fn test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key
             .body(Body::empty())
             .expect("test request must build");
         assert_eq!(
-            AuthMiddleware::extract_client_token(&req),
+            extract(&req),
             Some("tok".to_string()),
             "a non-bearer Authorization ('{non_bearer}') must fall through to x-api-key"
         );
@@ -641,7 +643,7 @@ fn test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_ap
         .body(Body::empty())
         .expect("test request must build");
     assert_eq!(
-        AuthMiddleware::extract_client_token(&req),
+        extract(&req),
         Some("goog-tok".to_string()),
         "a non-bearer Authorization must fall through to x-goog-api-key"
     );
@@ -738,7 +740,7 @@ fn test_extract_admin_header_token_empty_filtered() {
     // unit test fails against it; the filtered helper now yields `None`.
     let blank = req_with(X_ADMIN_TOKEN, "");
     assert_eq!(
-        admin_carriers(blank.headers()).1,
+        admin_candidate(blank.headers()),
         None,
         "a blank x-admin-token must be treated as absent (None)"
     );
@@ -748,7 +750,7 @@ fn test_extract_admin_header_token_empty_filtered() {
     // trim, matching extract_client_token's carrier filter exactly.
     let present = req_with(X_ADMIN_TOKEN, "admintok");
     assert_eq!(
-        admin_carriers(present.headers()).1,
+        admin_candidate(present.headers()),
         Some("admintok".to_string()),
         "a non-empty x-admin-token must be carried verbatim"
     );
@@ -758,7 +760,7 @@ fn test_extract_admin_header_token_empty_filtered() {
         .uri("/api/v1/admin/keys")
         .body(Body::empty())
         .expect("test request must build");
-    assert_eq!(admin_carriers(absent.headers()).1, None);
+    assert_eq!(admin_candidate(absent.headers()), None);
 }
 
 /// The `admin.forbidden` audit is bounded by the SAME per-(principal, window) counter
@@ -2219,11 +2221,14 @@ fn external_door_app(
             calls: std::sync::Arc::new(LentCredentialDoor(otherwise)),
         },
     );
+    // The operator credential's row still states the admin lines the candidate is read from: the
+    // carriers the build opened it with, kept across the swap of the chain's modules.
+    let carriers = app.admin_modules.operator.carriers().to_vec();
     std::sync::Arc::get_mut(&mut app)
         .expect("freshly built App Arc is unshared")
         .admin_modules = std::sync::Arc::new(AdminAuthChain {
         modules,
-        operator: Operator::new(crate::config::operator_provider()),
+        operator: Operator::new(crate::config::operator_provider()).with_carriers(carriers),
     });
     app
 }
@@ -3364,5 +3369,361 @@ async fn test_admin_prefix_is_boundary_safe() {
         "the admin branch's frozen {{error:{{code}}}} envelope must not answer a non-admin path: {env}"
     );
 
+    handle.abort();
+}
+
+/// THE SIGNED-REQUEST VERIFIER NAMES ITS LINES ON EVERY ARM (THE DESIGN §6.3, l.925: "Every auth
+/// called names its credential lines whatever its verdict, and the transport strips the union").
+/// The gate keeps the lines the verifier's answer named, whatever its verdict, and a faulted
+/// answer is a refusal even when its verdict reads as an identity. RED: the gate read only
+/// `.verified` off the answer, so the named lines were dropped and never struck before the plane.
+#[test]
+fn a_signed_verify_keeps_the_lines_its_auth_named_whatever_its_verdict() {
+    use busbar_contract::auth_calls::VerifiedIdentity;
+    let named = vec![
+        Strip::field("x-double-signature"),
+        Strip::query("x-double-key"),
+    ];
+    let identity = Verified::Identity(VerifiedIdentity {
+        subject: "double-id".into(),
+        ..VerifiedIdentity::default()
+    });
+    for verified in [
+        identity.clone(),
+        Verified::Pass,
+        Verified::Reject,
+        Verified::Failed,
+        Verified::Overloaded,
+    ] {
+        let answer = VerifyAnswer {
+            strips: named.clone(),
+            ..VerifyAnswer::from(verified.clone())
+        };
+        let mut strips = vec![Strip::field("x-earlier-line")];
+        assert_eq!(signed_verdict_of(answer, false, &mut strips), verified);
+        assert_eq!(
+            strips,
+            [vec![Strip::field("x-earlier-line")], named.clone()].concat(),
+            "{verified:?}: the verifier's named lines join the union"
+        );
+    }
+    let faulted = VerifyAnswer {
+        strips: named.clone(),
+        ..VerifyAnswer::from(identity)
+    };
+    let mut strips = Vec::new();
+    assert_eq!(
+        signed_verdict_of(faulted, true, &mut strips),
+        Verified::Failed,
+        "a faulted verify never admits"
+    );
+    assert_eq!(strips, named, "a faulted verify's named lines are kept");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// Row 159, K3#1 (ARCHITECT ruling 2026-10-17): THE KERNEL NAMES NO INBOUND CREDENTIAL LINE. The
+// lines a caller's credential sits on are the default inbound style's, the carrier marks of the one
+// auth row stating `FACT_DEFAULT_INBOUND_STYLE`, walked in its Statement's order; the operator
+// credential's lines are its row's own marks.
+
+/// A verify-only fixture whose Statement states the default inbound style over lines no 1.5.5
+/// build ever read: what the kernel reads is the style's words, not its own.
+struct OtherStyle;
+
+impl busbar_contract::abi::sdk::auth_door::VerifyPlugin for OtherStyle {
+    fn open(_settings: &[u8], _secrets: &[&[u8]]) -> Result<Self, &'static str> {
+        Ok(Self)
+    }
+
+    fn verify(
+        &self,
+        _request: &busbar_contract::abi::sdk::auth_door::VerifyView<'_>,
+    ) -> busbar_contract::abi::sdk::auth_door::Answer {
+        busbar_contract::abi::sdk::auth_door::Verdict::Pass.into()
+    }
+}
+
+const OTHER_MARKS: &[busbar_contract::abi::mechanism::door::MarkWord] = &[
+    busbar_contract::abi::sdk::auth_door::carrier("x-other-key"),
+    busbar_contract::abi::sdk::auth_door::carrier("authorization"),
+];
+
+const OTHER_TAIL: &busbar_contract::abi::auth::AuthTail =
+    &busbar_contract::abi::sdk::auth_door::verify_tail(
+        busbar_contract::abi::auth::FACT_DEFAULT_INBOUND_STYLE,
+        busbar_contract::abi::auth::AuthPoints::HEAD,
+    );
+
+mod other_style {
+    busbar_contract::auth_verify_door!(
+        super::OtherStyle,
+        busbar_contract::abi::sdk::auth_door::with_tail(
+            busbar_contract::abi::mechanism::door::Statement {
+                mark_words: super::OTHER_MARKS.as_ptr(),
+                mark_words_len: super::OTHER_MARKS.len(),
+                ..busbar_contract::abi::sdk::door::statement("other-style", "1.0.0", 4)
+            },
+            super::OTHER_TAIL,
+        )
+    );
+}
+
+/// `chain: [keys]` over a registry linking the fixture style.
+fn other_style_chain() -> AuthMiddleware {
+    let registry = busbar_plugin_loader::PluginRegistry::empty()
+        .link(vec![busbar_plugin_loader::LinkedPlugin::auth_door(
+            "other-style",
+            other_style::door,
+        )])
+        .expect("the fixture links");
+    AuthMiddleware::new(
+        &chain_cfg(&["keys"]),
+        &std::sync::Arc::new(registry),
+        &crate::config::secret::SecretResolver::builtins_only(),
+    )
+    .expect("the chain builds")
+}
+
+/// RED on a kernel that names its own carriers: the credential is read off the style's own lines,
+/// in the style's order, and a line the style does not state carries nothing (`x-api-key` is no
+/// line of this style).
+#[test]
+fn the_client_token_is_read_off_the_default_inbound_styles_own_lines() {
+    let mw = other_style_chain();
+    let mut headers = HeaderMap::new();
+    headers.insert("x-api-key", HeaderValue::from_static("from-x-api-key"));
+    assert_eq!(mw.extract_client_token(&headers), None);
+    headers.insert(
+        "authorization",
+        HeaderValue::from_static("Bearer from-bearer"),
+    );
+    assert_eq!(
+        mw.extract_client_token(&headers),
+        Some("from-bearer".to_string())
+    );
+    headers.insert("x-other-key", HeaderValue::from_static("from-other"));
+    assert_eq!(
+        mw.extract_client_token(&headers),
+        Some("from-other".to_string()),
+        "the style's first line wins"
+    );
+    let names: Vec<&str> = mw.carriers().iter().map(HeaderName::as_str).collect();
+    assert_eq!(names, ["x-other-key", "authorization"]);
+}
+
+/// The host strips the default inbound style's lines from every plane's request, whichever carried
+/// the credential, and the operator credential's own lines when an admin chain is configured.
+#[test]
+fn the_gate_strips_the_styles_lines_and_the_operator_credentials() {
+    let app = crate::test_support::TestApp::new()
+        .admin_chain(vec![crate::config::operator_provider().to_string()])
+        .build();
+    let consumed = gate_consumed(&app, false, false);
+    let mut headers = HeaderMap::new();
+    for name in [
+        "authorization",
+        "x-api-key",
+        "x-goog-api-key",
+        X_ADMIN_TOKEN,
+        "x-trace",
+    ] {
+        headers.insert(HeaderName::from_static(name), HeaderValue::from_static("v"));
+    }
+    consumed.strip(&mut headers);
+    let kept: Vec<String> = headers.keys().map(|n| n.as_str().to_string()).collect();
+    assert_eq!(kept, ["x-trace"]);
+}
+
+// ── #77(9) l.2279: the per-verb allow-list on a role binding ────────────────────────────────────
+
+/// An app whose admin chain is the `test-scope-module` stand-in (`grp:<role>` identifies a principal
+/// carrying exactly that role), ceilinged at `cap`, binding `ops` to `ops` — with the closed admin
+/// verb table's kind-neutral double registered, so a `verbs:` name has a rung.
+fn verbs_app(ops: crate::config::RoleBindingCfg, cap: &str) -> std::sync::Arc<crate::state::App> {
+    crate::test_support::install_admin_verb_table_double();
+    let mut app = crate::test_support::TestApp::new()
+        .admin_chain(vec!["test-scope-module".to_string()])
+        .role_bindings(bindings_for("test-scope-module", &[("ops", ops)]))
+        .build();
+    let a = std::sync::Arc::get_mut(&mut app).expect("unshared App Arc");
+    a.auth_scope_caps
+        .insert("test-scope-module".to_string(), cap.to_string());
+    app
+}
+
+/// A binding parsed off its config text, as an operator writes it under
+/// `auth.role_bindings.<provider>.<role>:`.
+fn verbs_binding(yaml: &str) -> crate::config::RoleBindingCfg {
+    serde_yaml::from_str(yaml).expect("`verbs:` is a role-binding key")
+}
+
+/// THE DOOR READS THE ALLOW-LIST. A role granting verbs BY NAME is identified WITH its list: the
+/// matrix holds every rung a named verb needs (here `full`, for one mutation), and the list holds
+/// exactly the names. RED before #77(9)'s allow-list: `RoleBindingCfg` had no `verbs`, so the door
+/// had nothing to read and the principal, holding no `admin_scope`, earned no grant at all.
+#[test]
+fn a_role_granting_verbs_by_name_is_identified_with_its_allow_list() {
+    use busbar_contract::authz::{Grants, Scope};
+    crate::snapshot::init();
+    let app = verbs_app(verbs_binding("verbs: [post_config_apply]"), "full");
+    let door = admin_door(
+        &app,
+        "POST",
+        "/api/v1/admin/config/apply",
+        &admin_headers(Some("grp:ops"), None),
+    );
+    let AdminDoor::Listed(principal, grants, list) = door else {
+        panic!("a role granting verbs by name is identified with its list, got {door:?}");
+    };
+    assert_eq!(principal.id, "test:ops");
+    assert_eq!(
+        grants,
+        Grants::of(Scope::Full),
+        "the matrix reaches the named verb's rung"
+    );
+    assert_eq!(list.rungs, Grants::default(), "no rung is held whole");
+    assert!(
+        list.admits(Some("post_config_apply"), Scope::Full),
+        "the named verb is admitted"
+    );
+    assert!(
+        !list.admits(Some("post_keys"), Scope::Full),
+        "a mutation the list does not name is not"
+    );
+    assert!(
+        !list.admits(Some("get_keys"), Scope::ReadOnly),
+        "nor is a read the list does not name: a named list is not a rung"
+    );
+    assert!(
+        !list.admits(None, Scope::ReadOnly),
+        "and a path the table names no verb for is no verb"
+    );
+}
+
+/// `verbs: "*"` IS `admin_scope: full`: the same door verdict, value for value — an `Identified`
+/// principal holding the full rung, no list. RED before the allow-list: the key did not parse.
+#[test]
+fn verbs_star_is_exactly_admin_scope_full() {
+    crate::snapshot::init();
+    let star = verbs_app(verbs_binding("verbs: \"*\""), "full");
+    let full = verbs_app(binding(None, None, Some("full")), "full");
+    let headers = admin_headers(Some("grp:ops"), None);
+    for (method, path) in [
+        ("POST", "/api/v1/admin/config/apply"),
+        ("GET", "/api/v1/admin/keys"),
+    ] {
+        let by_star = admin_door(&star, method, path, &headers);
+        assert!(matches!(by_star, AdminDoor::Identified(..)), "{by_star:?}");
+        assert_eq!(
+            by_star,
+            admin_door(&full, method, path, &headers),
+            "{method} {path}: `verbs: \"*\"` must be exactly `admin_scope: full`"
+        );
+    }
+}
+
+/// A binding with NO `verbs` key is judged exactly as before: `read-only` and `full` stay the
+/// 1.5.5 shorthands, an `Identified` verdict with the rung, never a list.
+#[test]
+fn a_binding_without_verbs_is_judged_by_its_rung_alone() {
+    use busbar_contract::authz::{Grants, Scope};
+    crate::snapshot::init();
+    let headers = admin_headers(Some("grp:ops"), None);
+    for (scope, rung) in [("read-only", Scope::ReadOnly), ("full", Scope::Full)] {
+        let app = verbs_app(binding(None, None, Some(scope)), "full");
+        let door = admin_door(&app, "POST", "/api/v1/admin/config/apply", &headers);
+        let AdminDoor::Identified(_, grants) = door else {
+            panic!("{scope}: a binding with no `verbs` key is never listed, got {door:?}");
+        };
+        assert_eq!(grants, Grants::of(rung), "{scope}");
+    }
+}
+
+/// The provider's `max_admin_scope:` caps a NAMED verb exactly as it caps an `admin_scope`: under a
+/// `read-only` ceiling a named mutation is dropped and only the named read stays held.
+#[test]
+fn the_providers_ceiling_caps_a_named_verb() {
+    use busbar_contract::authz::{Grants, Scope};
+    crate::snapshot::init();
+    let app = verbs_app(
+        verbs_binding("verbs: [get_keys, post_config_apply]"),
+        "read-only",
+    );
+    let door = admin_door(
+        &app,
+        "GET",
+        "/api/v1/admin/keys",
+        &admin_headers(Some("grp:ops"), None),
+    );
+    let AdminDoor::Listed(_, grants, list) = door else {
+        panic!("the named read survives the ceiling, got {door:?}");
+    };
+    assert_eq!(grants, Grants::of(Scope::ReadOnly));
+    assert!(list.admits(Some("get_keys"), Scope::ReadOnly));
+    assert!(
+        !list.admits(Some("post_config_apply"), Scope::Full),
+        "a named mutation above the provider's ceiling is not held"
+    );
+}
+
+/// THE ADMIN GATE ENFORCES THE LIST, at the one chokepoint every admin path crosses: the named
+/// mutation passes authorization (no admin surface is mounted in this binary, so it then falls
+/// through — anything but 401/403), a mutation the list does not name is the 403 a missing rung
+/// gets, in its envelope. RED before the allow-list: the `verbs` key did not exist, so the
+/// principal held no grant and the named mutation was refused too.
+#[tokio::test]
+async fn the_admin_gate_admits_only_the_listed_verbs() {
+    crate::snapshot::init();
+    let app = verbs_app(verbs_binding("verbs: [post_config_apply]"), "full");
+    let (base, handle) = serve_app(app).await;
+    let client = reqwest::Client::new();
+    let listed = client
+        .post(format!("{base}/api/v1/admin/config/apply"))
+        .bearer_auth("grp:ops")
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(
+        listed.status().as_u16(),
+        401,
+        "the listed role authenticates"
+    );
+    assert_ne!(
+        listed.status().as_u16(),
+        403,
+        "the listed verb must pass authorization, got {}",
+        listed.status()
+    );
+    for (method, path) in [
+        (reqwest::Method::POST, "/api/v1/admin/keys"),
+        (reqwest::Method::GET, "/api/v1/admin/keys"),
+    ] {
+        let refused = client
+            .request(method.clone(), format!("{base}{path}"))
+            .bearer_auth("grp:ops")
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            refused.status().as_u16(),
+            403,
+            "{method} {path}: a verb the list does not name is refused"
+        );
+        let needed = if method == reqwest::Method::GET {
+            "read-only"
+        } else {
+            "full"
+        };
+        assert_eq!(
+            refused.text().await.unwrap(),
+            format!(
+                "{{\"error\":{{\"code\":\"forbidden\",\"message\":\"this endpoint requires the \
+                 `{needed}` admin scope\"}}}}"
+            ),
+            "{method} {path}: the refusal is the existing scope refusal, byte for byte"
+        );
+    }
     handle.abort();
 }

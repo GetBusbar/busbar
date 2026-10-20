@@ -46,7 +46,7 @@ use crate::audit::stream_registry::{
     self, handle as stream_handle, Decode, StreamHandle, StreamInput, StreamRecord,
 };
 use crate::audit::{Chain, ChainedRecord, Framing};
-use crate::plane::store::PlaneStoreView;
+use crate::store::plane_view::PlaneStoreView;
 use busbar_contract::abi::hot::host::{HostCtx, JournalReframeFn};
 use busbar_contract::abi::hot::{
     ChainBreakHdr, Framing as AbiFraming, FramingDesc, JournalQuery, JournalStreamDesc, RawFraming,

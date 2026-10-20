@@ -11,7 +11,7 @@
 //! over a `DispatchScope` are untouched — the move is a pure relocation, not a code change.
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
-use crate::plane::handle_engine::{
+use crate::host_work::handle_engine::{
     ChainPosition, DurableHandleEngine, HandleDenied, HandleEngineError, MutateError, Mutation,
     ScopedMutateError, SubmitRecord, SweepBounds,
 };
@@ -379,7 +379,7 @@ impl SessionScope {
     /// this submit may claim touches only settled handles; a live session stays until it is settled.
     ///
     /// The caller's `plan` MUST stamp the returned [`SubmitRecord`] with THIS session's [`id`](Self::id)
-    /// and a [`HandleMeta`](crate::plane::handle_engine::HandleMeta) owner equal to this session's
+    /// and a [`HandleMeta`](crate::host_work::handle_engine::HandleMeta) owner equal to this session's
     /// [`owner`](Self::owner): the session keys every later scoped call on that pair, so a genesis under
     /// a diverging owner/id would leave this session unable to read or resume what it just opened.
     pub fn open<P, R>(
