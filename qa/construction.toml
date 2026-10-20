@@ -766,8 +766,9 @@ busbar-transport-webrtc = ["str0m", "ring", "aes", "zeroize"]
 busbar-transport-http = ["futures", "http", "http-body-util", "hyper", "hyper-util", "memchr", "tokio", "tokio-util"]
 # The pinned grpc framer: hyper's http and http-body types for the gRPC framing over HTTP/2.
 busbar-transport-grpc = ["http", "http-body", "hyper"]
-# The pinned ws framer: tokio-tungstenite's frame codec (handshake feature only).
-busbar-transport-ws = ["tokio-tungstenite"]
+# The pinned ws framer: tungstenite's frame codec and handshake machines, driven over the host's
+# bytes with no runtime (handshake feature only; ws #21 dropped the tokio wrapper).
+busbar-transport-ws = ["tungstenite"]
 # The MCP plane's outbound wire (fold A5, ARCHITECT 2026-09-29 under the PLUGIN LIBRARIES ruling):
 # the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry.
 busbar-plane-mcp = ["base64", "indexmap"]
@@ -1281,9 +1282,10 @@ known_sites = [
   "crates/busbar-kernel/src/plane/registry.rs",
   # was crates/busbar-core/src/router.rs (R099)
   "crates/busbar-kernel/src/router.rs",
-  # was crates/busbar-substrate/src/plane/handle_engine.rs::sweep (R100); `sweep` is still the
+  # was crates/busbar-substrate/src/plane/handle_engine.rs::sweep (R100), then
+  # crates/busbar-kernel/src/plane/handle_engine.rs::sweep (D2 item 15, a rename); `sweep` is still the
   # enclosing function — the escape is at :858, the fn opens at :820.
-  "crates/busbar-kernel/src/plane/handle_engine.rs::sweep",
+  "crates/busbar-kernel/src/host_work/handle_engine.rs::sweep",
   # was crates/busbar-substrate/src/plane_host/mod.rs — MERGED into the core-descended kernel file
   # of the same name by 5fa320208 (+1775 lines). The one escape there (:2433) is substrate's.
   "crates/busbar-kernel/src/plane_host/mod.rs",
@@ -1789,9 +1791,10 @@ fee_fields = ["per_request_fee", "per_request_fee_cents", "fee_cents"]
 #          derivation, and it is the card crate's own convention -- `absent_in`/`from_config` take a
 #          bare `i64` with no `Option`, so "no fee named" is 0 everywhere, not just here.
 #   :1247  the STRING LITERAL `"per_request_fee"` in `canonical_amend_payload`'s fixed key list.
-#          It reads no fee at all: it names the JSON key so the operator's detached ed25519
-#          signature COVERS the fee. Deleting it to quiet a grep would take the fee outside the
-#          signed payload -- a security regression bought with a green row.
+#          It reads no fee at all: it names the JSON key so the correction's canonical payload,
+#          which the durable amendment record keeps, CARRIES the fee. No operator signature covers
+#          it any more (#77(9), BUSBAR-1.6.0.md l.2279: no verb carries operator signatures);
+#          deleting the key would take the fee out of the recorded payload.
 #
 # NONE of the four stores a price (#77(3)), writes a price into a durable book, computes money in
 # binary floating point (#77(8)/#81), or prices against any card at all -- they never price. What
@@ -1835,8 +1838,8 @@ fee_fields = ["per_request_fee", "per_request_fee_cents", "fee_cents"]
 # so no plane and no root file spells a fee -- the read lives where the card lives." That discipline
 # is real and it still holds for every root file but this one. THE ONE EXCEPTION IS FORCED BY THE
 # WIRE: an admin verb that accepts a correction must spell the operator's own field name to parse
-# it and must spell it again to sign it (#47 fixes the spelling; the signature makes it
-# load-bearing). So the grant is exactly one file, with the count it was reviewed at, and a fifth
+# it and must spell it again to record it in the canonical payload (#47 fixes the spelling; the
+# durable record makes it load-bearing). So the grant is exactly one file, with the count it was reviewed at, and a fifth
 # read in that same file is RED again.
 fee_reader_crates = ["busbar-kernel-ledger", "busbar-kernel", "busbar-core-admin"]
 max_fee_readers = 0
@@ -1849,7 +1852,7 @@ max_fee_readers = 0
 [rules.one-pricing-site.fee_allowed.amend-rate-history]
 path = "crates/busbar/src/root/units_admin/mod.rs"
 max = 4
-because = "#79 names this file as the engine of the signed back-dated correction and was locked five days after the code landed; the verb parses the operator's own `per_request_fee` wire field (#47 fixes that spelling), covers it with the operator's ed25519 signature, and relays it unchanged to `RateCard::from_micro_rates_in` -- it appends a CARD to the dated history and never derives, stores or computes a price"
+because = "#79 names this file as the engine of the signed back-dated correction and was locked five days after the code landed; the verb parses the operator's own `per_request_fee` wire field (#47 fixes that spelling), names it in the canonical payload the durable amendment record keeps (no operator signature since #77(9)), and relays it unchanged to `RateCard::from_micro_rates_in` -- it appends a CARD to the dated history and never derives, stores or computes a price"
 
 [rules.one-pricing-site.allowed.cost-unit]
 path = "crates/busbar-kernel-ledger/src/cost/"

@@ -4,7 +4,7 @@
 //! Tests for `crates/busbar-substrate/src/plane_host/scope.rs`.
 
 use super::*;
-use crate::plane::handle_engine::{HandleMeta, SealedEvent};
+use crate::host_work::handle_engine::{HandleMeta, SealedEvent};
 use busbar_contract::records::{PlaneDisposition, PlaneRecord};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;

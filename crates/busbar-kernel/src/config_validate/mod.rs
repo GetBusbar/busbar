@@ -993,6 +993,30 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                         ));
                     }
                 }
+                // Rule (verbs, #77(9) l.2279): the per-verb allow-list is `"*"` or a list of the
+                // closed admin table's operation names. Any other shape, and any name the table
+                // does not declare, is refused: an allow-list entry that grants nothing must never
+                // sit inert while the operator believes it granted.
+                match binding.verb_grant() {
+                    None | Some(Ok(crate::config::VerbGrant::All)) => {}
+                    Some(Err(shape)) => errors.push(format!(
+                        "role_bindings.{module}.{role}.verbs must be \"{all}\" or a list of admin \
+                         verb names, not {shape}",
+                        all = crate::config::ALL_ADMIN_VERBS
+                    )),
+                    Some(Ok(crate::config::VerbGrant::Named(names))) => {
+                        for name in names {
+                            if crate::admin::seam::admin_verb_rung(&name).is_none() {
+                                errors.push(format!(
+                                    "role_bindings.{module}.{role}.verbs names unknown admin verb \
+                                     '{name}': expected \"{all}\" or operation names from the \
+                                     admin verb table (e.g. get_keys, post_keys)",
+                                    all = crate::config::ALL_ADMIN_VERBS
+                                ));
+                            }
+                        }
+                    }
+                }
                 if let Some(group) = binding.group.as_deref() {
                     if !cfg.groups.contains_key(group) {
                         errors.push(format!(
@@ -2418,11 +2442,23 @@ fn validate_providers_with(
                      service-account JSON or key file), so there is nothing to declare keyless"
                 ));
             }
+            let config_time = busbar_contract::config_time::ConfigScope::config_time();
             let cred = crate::config::secret::resolve_linked_string_at_config(
                 &provider_cfg.api_key,
-                &busbar_contract::config_time::ConfigScope::config_time(),
+                &config_time,
             )
             .unwrap_or_default();
+            // A credential naming its key file is read as the build reads it, in the same words.
+            let cred = match service_account_json(cred.into_bytes(), |file| {
+                crate::config::secret::SecretResolver::builtins_only()
+                    .resolve_at_config(file, &config_time)
+            }) {
+                Ok(json) => String::from_utf8(json).unwrap_or_default(),
+                Err(e) => {
+                    errors.push(format!("provider '{provider_name}' (jwt-bearer auth): {e}"));
+                    String::new()
+                }
+            };
             if !cred.trim().is_empty() {
                 // THE NEED'S TARGET IS THE KERNEL'S TO JUDGE (THE DESIGN §5; ARCHITECT ruling
                 // 2026-09-28, Q2 (a)): the service account's `token_uri`, under the SAME operator
@@ -2522,15 +2558,47 @@ fn outbound_credential_refusals(
         .unwrap_or_default()
 }
 
-/// THE SERVICE ACCOUNT'S TOKEN ENDPOINT: the `token_uri` of the service-account JSON a `jwt-bearer`
-/// credential carries inline (it starts with `{`) or names as a key file, else Google's default
-/// endpoint — 1.5.5's `ServiceAccount` (`egress_auth/jwt_bearer.rs`, v1.5.5: `token_uri` defaults to
-/// `https://oauth2.googleapis.com/token`). `Err` when the JSON cannot be read or parsed (the auth
-/// plugin serving the style names why, in its own words).
+/// THE SERVICE ACCOUNT A `jwt-bearer` CREDENTIAL CARRIES, as bytes of its JSON (Q128 audit
+/// ruling (a), restating its M4). 1.5.5 took the credential as the service-account JSON inline
+/// (it starts with `{`) or as the path of its key file, and both stay valid. A path is read HERE,
+/// at configuration time, through the secret kind's file source (`read_file`, handed the file
+/// reference), so the auth plugin is handed the JSON and never opens a file. A file that cannot be
+/// read refuses in 1.5.5's words (`egress_auth/jwt_bearer.rs`, v1.5.5), and the credential, which
+/// names the file, is never rendered.
 ///
 /// # Errors
 ///
-/// The credential cannot be read or is not the service-account JSON.
+/// The key file the credential names cannot be read.
+pub fn service_account_json(
+    credential: Vec<u8>,
+    read_file: impl FnOnce(&busbar_contract::secret_ref::SecretRef) -> Result<Vec<u8>, String>,
+) -> Result<Vec<u8>, String> {
+    let named = match std::str::from_utf8(&credential) {
+        Ok(text) if !text.trim_start().starts_with('{') && !text.trim().is_empty() => {
+            text.trim().to_string()
+        }
+        _ => return Ok(credential),
+    };
+    let file = busbar_contract::secret_ref::SecretRef::file(named.clone());
+    read_file(&file).map_err(|e| {
+        // The file source's refusal names the path; only its reason is 1.5.5's to show.
+        let why = e.split_once(" cannot resolve: ").map_or_else(
+            || e.replace(&named, "<key file>"),
+            |(_, why)| why.to_string(),
+        );
+        format!("could not read service-account key file named by this lane's credential: {why}")
+    })
+}
+
+/// THE SERVICE ACCOUNT'S TOKEN ENDPOINT: the `token_uri` of the service-account JSON a `jwt-bearer`
+/// credential carries ([`service_account_json`] reads a key file the credential names into it),
+/// else Google's default endpoint — 1.5.5's `ServiceAccount` (`egress_auth/jwt_bearer.rs`, v1.5.5:
+/// `token_uri` defaults to `https://oauth2.googleapis.com/token`). `Err` when the JSON cannot be
+/// parsed (the auth plugin serving the style names why, in its own words).
+///
+/// # Errors
+///
+/// The credential is not the service-account JSON.
 pub fn service_account_token_uri(credential: &str) -> Result<String, String> {
     // The service account's shape as its auth plugin reads it, so a JSON this cannot read is one
     // the plugin refuses, in its own words. The key is required and never held.
@@ -2542,14 +2610,7 @@ pub fn service_account_token_uri(credential: &str) -> Result<String, String> {
         private_key: serde::de::IgnoredAny,
         token_uri: Option<String>,
     }
-    let parsed: TokenUri = if credential.trim_start().starts_with('{') {
-        serde_json::from_str(credential).map_err(|e| e.to_string())?
-    } else {
-        let json = zeroize::Zeroizing::new(
-            std::fs::read_to_string(credential).map_err(|e| e.to_string())?,
-        );
-        serde_json::from_str(&json).map_err(|e| e.to_string())?
-    };
+    let parsed: TokenUri = serde_json::from_str(credential).map_err(|e| e.to_string())?;
     Ok(parsed
         .token_uri
         .unwrap_or_else(|| "https://oauth2.googleapis.com/token".to_string()))

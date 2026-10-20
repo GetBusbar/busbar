@@ -937,6 +937,7 @@ async fn test_metrics_requires_auth_in_chain_mode() {
             allowed_pools: None,
             group: None,
             admin_scope: None,
+            verbs: None,
         },
     );
     let mut role_bindings = busbar_kernel::config::auth::RoleBindings::new();

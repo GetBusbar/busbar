@@ -394,9 +394,10 @@ pub trait PlaneCalls: Send + Sync {
         grow: Grow<'_, ProjectIn, ProjectOut>,
     ) -> Outcome;
 
-    /// The host's own ticketless `cancel` of `ticket`: the disposition it answered and the record
-    /// writes it carried (SEAM-L(r)), or `None` when it did not answer READY.
-    fn cancel(&self, ticket: Ticket) -> Option<Cancelled>;
+    /// The host's own ticketless `cancel` of `ticket`, the ticket of the unit keyed `unit` (its
+    /// `ArriveIn::unit`; `0` for none): the disposition it answered and the record writes it
+    /// carried (SEAM-L(r)), or `None` when it did not answer READY.
+    fn cancel(&self, ticket: Ticket, unit: u64) -> Option<Cancelled>;
 
     /// A request ticket for one unit; `None` when none can be minted.
     fn mint(&self) -> Option<Ticket>;

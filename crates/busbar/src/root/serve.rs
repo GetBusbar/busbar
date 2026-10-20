@@ -31,7 +31,6 @@ use busbar_contract::services::{
 };
 use busbar_kernel::host_records::QUEUE_CAP;
 use busbar_kernel::host_services::{BlockingPool, DestJudge, KernelServices, SignKey};
-use busbar_kernel::plane::store::KIND_DEMOTION;
 use busbar_kernel::plane::DemotionRecord;
 use busbar_kernel::plane_driver::serve::{publish, ServeRoute, ServeTable};
 use busbar_kernel::plane_driver::{
@@ -40,6 +39,7 @@ use busbar_kernel::plane_driver::{
 };
 /// The stream `Content-Type` every declared protocol states, folded at boot.
 use busbar_kernel::proto::streaming_content_types as declared_stream_media;
+use busbar_kernel::store::plane_view::KIND_DEMOTION;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::root::boot::DoorPlane;
@@ -3359,7 +3359,7 @@ impl DataRoutes {
                 Ok(messages) => messages,
                 Err(why) => {
                     let status = refusal_status(ReasonCode::DecodeFailed);
-                    return match stream.refuse(why.error.as_bytes(), status) {
+                    return match stream.refuse(why.error.as_bytes(), status, false) {
                         Ok(block) => serve_framed::whole(status, &block),
                         Err(_) => stated((status, Vec::new()), Body::empty()),
                     };

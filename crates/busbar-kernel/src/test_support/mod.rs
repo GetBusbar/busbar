@@ -2032,7 +2032,7 @@ impl TestApp {
         // to a caller.
         if let Some(durable) = plane_durable_store {
             // Narrowed to the plane surface exactly as boot does — these are plane sinks.
-            let plane_store = crate::plane::store::PlaneStoreView::narrow(durable);
+            let plane_store = crate::store::plane_view::PlaneStoreView::narrow(durable);
             app.demotion_record.set_sink(plane_store);
         }
         // Register the process-wide admin `audit` seam stream ONCE (no-sink), the way the call/task
@@ -2357,6 +2357,35 @@ pub use busbar_kernel_identity::operator::{
 /// and lists none. The first hand-in stands.
 pub fn install_root_hook_names(names: &'static [&'static str]) {
     let _ = crate::preflight::TEST_ROOT_HOOK_NAMES.set(names);
+}
+
+/// THE CLOSED ADMIN VERB TABLE, as a kind-neutral double: three operations of the admin surface,
+/// by the names its pinned table spells them with — one read and two mutations — so a kernel test of
+/// the per-verb allow-list (#77(9) l.2279) has a vocabulary without linking the admin service, which
+/// registers the real table. The first install stands (the seam is process-wide), so every kernel
+/// test that needs a table calls this one.
+pub fn install_admin_verb_table_double() {
+    use busbar_contract::authz::Scope;
+    fn rung_of(name: &str) -> Option<Scope> {
+        match name {
+            "get_keys" => Some(Scope::ReadOnly),
+            "post_keys" | "post_config_apply" => Some(Scope::Full),
+            _ => None,
+        }
+    }
+    fn verb_at(method: &str, path: &str) -> Option<&'static str> {
+        let path = path.split('?').next().unwrap_or(path);
+        match (method, path) {
+            ("GET", "/api/v1/admin/keys") => Some("get_keys"),
+            ("POST", "/api/v1/admin/keys") => Some("post_keys"),
+            ("POST", "/api/v1/admin/config/apply") => Some("post_config_apply"),
+            _ => None,
+        }
+    }
+    crate::admin::seam::install_admin_verb_table(crate::admin::seam::AdminVerbTable {
+        rung_of,
+        verb_at,
+    });
 }
 
 /// The builtin-only `SecretResolver` (env/file sugar, no plugin modules) for a dependent crate's

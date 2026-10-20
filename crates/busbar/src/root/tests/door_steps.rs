@@ -1426,19 +1426,24 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
             table.declared.lock().unwrap()
         );
 
-        // The first request waits for the first mint (no empty credential), then carries it.
-        let first = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            binding
-                .auth
-                .fields(binding.handle, FieldsRequest::default(), 0),
-        )
-        .await
-        .expect("the first mint lands");
-        assert_eq!(
-            presented(Some(&first)).as_deref(),
-            Some("Bearer oracle-minted-1")
-        );
+        // Before the first mint lands a request carries no credential, as 1.5.5's bearer sent none
+        // in its boot window (v1.5.5 `egress_auth/bearer_token.rs:84-98`); once it lands, every
+        // request carries it.
+        let first = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let now = binding
+                    .auth
+                    .fields_now(binding.handle, &FieldsRequest::default());
+                match presented(now.as_ref()).as_deref() {
+                    Some("Bearer oracle-minted-1") => return,
+                    None => {}
+                    other => panic!("only the first minted bearer, or none yet: {other:?}"),
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        assert!(first.is_ok(), "the first minted bearer is presented");
         // The refresh lands ahead of the first token's expiry; the next request carries it.
         let refreshed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
