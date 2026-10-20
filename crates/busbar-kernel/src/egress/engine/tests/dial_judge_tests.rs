@@ -426,7 +426,7 @@ async fn a_pinned_client_refuses_a_literal_that_is_not_its_pin() {
     assert!(fixture.records().is_empty(), "no connection was opened");
 }
 
-/// F25 row 104: rehomed from crates/busbar-llm/src/engine/tests/egress_differential_tests.rs::
+/// F25 row 104: rehomed from the retired engine crate's src/engine/tests/egress_differential_tests.rs::
 /// plaintext_status_and_body_are_identical_across_stacks. The two-stack differential is gone with
 /// the reqwest stack; what it pinned is the served engine's observation of one plaintext hop on the
 /// pinned production posture: status 200, no `Location`, the body byte for byte, no peer identity

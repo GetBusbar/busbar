@@ -31,8 +31,9 @@ fn a_cached_disabled_gate_does_not_resample_the_environment() {
     // about) and prove the env is not consulted while it holds — by setting the env to something
     // that would flip the answer to `true` if the cached branch fell through to the general case.
     ENABLED.store(1, Ordering::Relaxed);
-    // SAFETY-of-intent: `env::set_var` in a test process is racy against other threads reading
-    // the environment, which is exactly why this whole test runs under `gate_lock`.
+    // `env::set_var` in a multi-threaded test binary is racy against any other thread reading
+    // the environment. `gate_lock` serializes only the timing tests, not the rest of the binary,
+    // so the variable is set for the one `enabled()` call below and removed straight after.
     unsafe { std::env::set_var("BUSBAR_TIMING", "1") };
     let result = std::panic::catch_unwind(enabled);
     unsafe { std::env::remove_var("BUSBAR_TIMING") };

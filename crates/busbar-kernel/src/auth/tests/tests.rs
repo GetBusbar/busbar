@@ -16,6 +16,7 @@ fn binding(
         allowed_pools: allowed_pools.map(|ps| ps.iter().map(|p| p.to_string()).collect()),
         group: group.map(str::to_string),
         admin_scope: admin_scope.map(str::to_string),
+        verbs: None,
     }
 }
 
@@ -153,8 +154,8 @@ fn admin_scope_bindings_are_module_scoped() {
 }
 
 // `assert_uuid_v4_shaped` moved with its callers (the synthetic request-id shape of one dialect's
-// auth failure) to `crates/busbar-llm/src/engine/tests/auth_native_envelope_tests.rs`; its sibling
-// `test_synth_amzn_request_id_is_uuid_v4` already lives in busbar-llm beside that codec.
+// auth failure) to the retired engine crate's `src/engine/tests/auth_native_envelope_tests.rs`; its sibling
+// `test_synth_amzn_request_id_is_uuid_v4` already lives in the retired engine crate beside that codec.
 
 #[test]
 fn test_constant_time_eq_same() {
@@ -319,7 +320,7 @@ fn test_empty_chain_is_open_front_door() {
 }
 
 // `test_open_door_regardless_of_upstream_creds` MOVED to `tests/auth_cross_plane.rs`:
-// `App::upstream_creds()` reads through `engine_tables_view()`, which only the REAL `busbar_llm`
+// `App::upstream_creds()` reads through `engine_tables_view()`, which only the REAL the retired engine crate
 // plane's `build_runtime` populates with the configured `upstream_credentials` — an
 // integration-test target, never this `#[cfg(test)]` unit module (see `endpoints_cross_plane.rs`'s
 // header for the same reason).
@@ -648,7 +649,7 @@ fn test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_ap
     );
 }
 
-// THE VENDOR-SHAPED AUTH-FAILURE TESTS live in the LLM plane, in `crates/busbar-llm/src/engine/
+// THE VENDOR-SHAPED AUTH-FAILURE TESTS live in the LLM plane, in the retired engine crate's `src/engine/
 // tests/auth_native_envelope_tests.rs`. They pin what each LLM dialect's registered
 // writer answers a bad credential with (the residual dialect a path resolves to, the per-dialect
 // envelope / status / headers / copy, the router-ingress coverage) — the plane's behaviour reached
@@ -691,7 +692,7 @@ fn test_unauthorized_body_carries_no_busbar_vocabulary() {
     // — a deterministic proxy tell that also discloses the per-virtual-key enable/disable model.
     // Sweep the ingress path shapes (incl. the admin-looking and unknown-path fallbacks) through
     // `unauthorized_response` itself and assert no leaked token appears anywhere in the JSON. The
-    // plane's twin, busbar-llm `engine/tests/auth_native_envelope_tests.rs`, sweeps the same
+    // plane's twin, the retired engine crate `engine/tests/auth_native_envelope_tests.rs`, sweeps the same
     // data-plane paths through the live stack, including the one path shape named after its dialect.
     const FORBIDDEN: &[&str] = &[
         "virtual key",
@@ -2445,6 +2446,44 @@ fn replay_gov() -> std::sync::Arc<crate::governance::GovState> {
     )
 }
 
+/// RED (Q128 arch u27 LOW): the signed ingress claims the replay key its verified identity asks
+/// for, under its verifier, as the data chain and the admin door claim theirs (THE DESIGN §6
+/// "Inbound verify", l.845-846): the first presentation wins the claim, the same key inside its TTL
+/// loses it, and an identity that asks for no claim is never refused for one. RED before: the
+/// signed arm never claimed, so a replayed signed request was admitted every time.
+#[test]
+fn the_signed_ingress_claims_its_identitys_replay_key() {
+    use busbar_contract::auth_calls::{Replay, VerifiedIdentity};
+    let gov = replay_gov();
+    let now = busbar_kernel::store::now();
+    let asks = VerifiedIdentity {
+        subject: "subject".into(),
+        replay: Some(Box::new(Replay {
+            key: "message-1".into(),
+            ttl_secs: 300,
+        })),
+        ..VerifiedIdentity::default()
+    };
+    assert!(
+        signed_replay_claimed(Some(gov.as_ref()), "verifier", &asks, now),
+        "the first presentation wins its claim"
+    );
+    assert!(
+        !signed_replay_claimed(Some(gov.as_ref()), "verifier", &asks, now),
+        "the same key inside its TTL is a replay"
+    );
+    let none = VerifiedIdentity {
+        subject: "subject".into(),
+        ..VerifiedIdentity::default()
+    };
+    for _ in 0..2 {
+        assert!(
+            signed_replay_claimed(Some(gov.as_ref()), "verifier", &none, now),
+            "an identity asking for no claim is never refused for one"
+        );
+    }
+}
+
 /// RED (K3 #9): a signed message replayed inside its claim's TTL is refused. The first delivery
 /// claims `door/<key>` and is admitted; the same key again is `Denied`; another key is admitted;
 /// and with no governance to claim in, an identity that asks for a claim is `Denied` (fail-closed).
@@ -2665,7 +2704,7 @@ async fn an_admin_identity_replayed_is_denied_and_its_named_lines_ride_out() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// THE AUTH x DISPATCH ROWS, DRIVEN THROUGH THE SERVED DOOR (F25 rehome of busbar-llm's
+// THE AUTH x DISPATCH ROWS, DRIVEN THROUGH THE SERVED DOOR (F25 rehome of the retired engine crate's
 // `engine/tests/auth_dispatch_tests.rs`). The served data plane installs each plane claim as a
 // door route at the data-plane bar (`RouteAuth::Key`, `build_split_routers_serving_doors`), so the
 // kernel's `auth_middleware` decides admission before the plane is asked anything. These tests
@@ -2826,7 +2865,7 @@ fn admitted(gov: &str, key: &str, principal: &str) -> String {
     format!("gov={gov} key={key} principal={principal}")
 }
 
-/// F25 row 49: rehomed from crates/busbar-llm/src/engine/tests/auth_dispatch_tests.rs::test_chain_accepts_all_carriers_and_native_401.
+/// F25 row 49: rehomed from the retired engine crate's src/engine/tests/auth_dispatch_tests.rs::test_chain_accepts_all_carriers_and_native_401.
 /// Pins: a chain-identified, role-bound token is admitted 200 on each of the three carriers
 /// (Authorization, x-api-key, x-goog-api-key); a wrong token, an identified-but-unbound
 /// principal and no credential are each 401 with an `application/json` envelope carrying `error`.
@@ -2893,7 +2932,7 @@ async fn test_chain_accepts_all_carriers_and_native_401() {
     handle.abort();
 }
 
-/// F25 row 50: rehomed from crates/busbar-llm/src/engine/tests/auth_dispatch_tests.rs::test_disabled_virtual_key_is_rejected_401.
+/// F25 row 50: rehomed from the retired engine crate's src/engine/tests/auth_dispatch_tests.rs::test_disabled_virtual_key_is_rejected_401.
 /// Pins, in one rig (`chain: [keys]` + active governance): a disabled signed key 401, an unknown
 /// key `sk-vk-nope` 401, and an enabled key of the same shape 200 under its own key id.
 #[tokio::test]
@@ -2923,7 +2962,7 @@ async fn test_disabled_virtual_key_is_rejected_401() {
     handle.abort();
 }
 
-/// F25 row 51: rehomed from crates/busbar-llm/src/engine/tests/auth_dispatch_tests.rs::test_governance_accepts_vendor_carriers_and_native_401.
+/// F25 row 51: rehomed from the retired engine crate's src/engine/tests/auth_dispatch_tests.rs::test_governance_accepts_vendor_carriers_and_native_401.
 /// Pins: under `chain: [keys]` + active governance, a minted signed key (allowed on `pa`) is
 /// admitted 200 via `x-goog-api-key` and via `x-api-key`; an unknown key via `x-goog-api-key` is 401
 /// with `application/json`.
@@ -2958,7 +2997,7 @@ async fn test_governance_accepts_vendor_carriers_and_native_401() {
     handle.abort();
 }
 
-/// F25 row 52: rehomed from crates/busbar-llm/src/engine/tests/auth_dispatch_tests.rs::test_governance_revoked_signed_token_key_rejected.
+/// F25 row 52: rehomed from the retired engine crate's src/engine/tests/auth_dispatch_tests.rs::test_governance_revoked_signed_token_key_rejected.
 /// Pins: a live signed key is admitted 200; after `revoke` (which leaves `enabled` true)
 /// `is_revoked` holds and the SAME token is refused 401.
 #[tokio::test]
@@ -2988,7 +3027,7 @@ async fn test_governance_revoked_signed_token_key_rejected() {
     handle.abort();
 }
 
-/// F25 row 53: rehomed from crates/busbar-llm/src/engine/tests/auth_dispatch_tests.rs::test_governance_inert_without_admin_token_static_token_admitted.
+/// F25 row 53: rehomed from the retired engine crate's src/engine/tests/auth_dispatch_tests.rs::test_governance_inert_without_admin_token_static_token_admitted.
 /// Pins: an INERT engine (no admin token) does not supersede the static chain — the chain's
 /// bound token `grp:static` is admitted 200 and `not-the-token` is still 401.
 #[tokio::test]
@@ -3036,7 +3075,7 @@ async fn test_governance_inert_without_admin_token_static_token_admitted() {
     handle.abort();
 }
 
-/// F25 row 54: rehomed from crates/busbar-llm/src/engine/tests/auth_dispatch_tests.rs::test_governance_inert_without_admin_token_open_relay_admits.
+/// F25 row 54: rehomed from the retired engine crate's src/engine/tests/auth_dispatch_tests.rs::test_governance_inert_without_admin_token_open_relay_admits.
 /// Pins: an INERT engine (no admin token), no auth chain, `upstream_credentials: own` — a request
 /// with no credential is admitted 200 anonymous (the open relay is not superseded).
 #[tokio::test]
@@ -3064,7 +3103,7 @@ async fn test_governance_inert_without_admin_token_open_relay_admits() {
     handle.abort();
 }
 
-/// F25 row 55: rehomed from crates/busbar-llm/src/engine/tests/auth_dispatch_tests.rs::test_governance_active_with_admin_token_enforces_minted_key.
+/// F25 row 55: rehomed from the retired engine crate's src/engine/tests/auth_dispatch_tests.rs::test_governance_active_with_admin_token_enforces_minted_key.
 /// Pins, in one rig (`chain: [keys]` + ACTIVE governance): the minted signed key 200, an unknown
 /// token `sk-vk-unknown` 401.
 #[tokio::test]
@@ -3095,7 +3134,7 @@ async fn test_governance_active_with_admin_token_enforces_minted_key() {
     handle.abort();
 }
 
-/// F25 row 56: rehomed from crates/busbar-llm/src/engine/tests/auth_dispatch_tests.rs::test_inert_governance_persisted_key_is_not_enforced_static_chain_wins.
+/// F25 row 56: rehomed from the retired engine crate's src/engine/tests/auth_dispatch_tests.rs::test_inert_governance_persisted_key_is_not_enforced_static_chain_wins.
 /// Pins: a store that still holds a key (scoped to pool `restricted` only) under an INERT engine
 /// confers nothing — the persisted secret is 401 from the static chain, and the chain's own token
 /// is admitted 200 under the chain's key, never the persisted one.
@@ -3161,7 +3200,7 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
     handle.abort();
 }
 
-/// F25 row 58: rehomed from crates/busbar-llm/src/engine/tests/auth_dispatch_tests.rs::test_1_5_2_open_chain_admin_token_no_credential_admits_anon.
+/// F25 row 58: rehomed from the retired engine crate's src/engine/tests/auth_dispatch_tests.rs::test_1_5_2_open_chain_admin_token_no_credential_admits_anon.
 /// Pins: `chain: []` + governance with an admin token and a minted key + no credential → 200
 /// ANONYMOUS (no key, no principal).
 #[tokio::test]
@@ -3181,7 +3220,7 @@ async fn test_1_5_2_open_chain_admin_token_no_credential_admits_anon() {
     handle.abort();
 }
 
-/// F25 row 59: rehomed from crates/busbar-llm/src/engine/tests/auth_dispatch_tests.rs::test_1_5_2_open_chain_inserts_default_govctx_no_500.
+/// F25 row 59: rehomed from the retired engine crate's src/engine/tests/auth_dispatch_tests.rs::test_1_5_2_open_chain_inserts_default_govctx_no_500.
 /// Pins: an open-chain request carries a DEFAULT governance context to the handler (never a 500
 /// `MissingExtension`): not 500, exactly 200, and the handler saw the context attached.
 #[tokio::test]
@@ -3205,7 +3244,7 @@ async fn test_1_5_2_open_chain_inserts_default_govctx_no_500() {
     handle.abort();
 }
 
-/// F25 row 60: rehomed from crates/busbar-llm/src/engine/tests/auth_dispatch_tests.rs::test_1_5_2_open_chain_valid_vkey_ignored_not_metered.
+/// F25 row 60: rehomed from the retired engine crate's src/engine/tests/auth_dispatch_tests.rs::test_1_5_2_open_chain_valid_vkey_ignored_not_metered.
 /// Pins: `chain: []` + admin token + a VALID key voluntarily presented → 200 PURE ANONYMOUS: the
 /// gate resolves no key (so nothing downstream can meter one) and the key's ledger records no spend.
 #[tokio::test]
@@ -3242,7 +3281,7 @@ async fn test_1_5_2_open_chain_valid_vkey_ignored_not_metered() {
     handle.abort();
 }
 
-/// F25 row 61: rehomed from crates/busbar-llm/src/engine/tests/auth_dispatch_tests.rs::test_1_5_2_keys_chain_valid_vkey_admits.
+/// F25 row 61: rehomed from the retired engine crate's src/engine/tests/auth_dispatch_tests.rs::test_1_5_2_keys_chain_valid_vkey_admits.
 /// Pins: `chain: [keys]` + a valid enabled signed key → 200, admitted under that key.
 #[tokio::test]
 async fn test_1_5_2_keys_chain_valid_vkey_admits() {
@@ -3261,7 +3300,7 @@ async fn test_1_5_2_keys_chain_valid_vkey_admits() {
     handle.abort();
 }
 
-/// F25 row 65: rehomed from crates/busbar-llm/src/engine/tests/auth_native_envelope_tests.rs::test_unauthorized_body_carries_no_busbar_vocabulary.
+/// F25 row 65: rehomed from the retired engine crate's src/engine/tests/auth_native_envelope_tests.rs::test_unauthorized_body_carries_no_busbar_vocabulary.
 /// Pins: over the live stack (token mode, a wrong credential, no plane mounted), the auth-failure
 /// body for EVERY data-plane path shape the legacy swept — including `/v1/responses` and
 /// `/model/anthropic.claude/converse` — is JSON and names none of busbar's auth vocabulary.
@@ -3322,7 +3361,7 @@ async fn test_unauthorized_body_carries_no_busbar_vocabulary_on_the_live_stack()
     handle.abort();
 }
 
-/// F25 row 71: rehomed from crates/busbar-llm/src/engine/tests/auth_native_envelope_tests.rs::test_admin_prefix_is_boundary_safe.
+/// F25 row 71: rehomed from the retired engine crate's src/engine/tests/auth_native_envelope_tests.rs::test_admin_prefix_is_boundary_safe.
 /// Pins: `/apix/v1/messages` (a path that merely starts with the bytes `/api`) with a wrong token is
 /// refused by the NORMAL data-plane branch — a 401 in the residual dialect's native
 /// `application/json` envelope with `error.type == "authentication_error"` — never the admin
@@ -3531,4 +3570,198 @@ fn the_gate_strips_the_styles_lines_and_the_operator_credentials() {
     consumed.strip(&mut headers);
     let kept: Vec<String> = headers.keys().map(|n| n.as_str().to_string()).collect();
     assert_eq!(kept, ["x-trace"]);
+}
+
+// ── #77(9) l.2279: the per-verb allow-list on a role binding ────────────────────────────────────
+
+/// An app whose admin chain is the `test-scope-module` stand-in (`grp:<role>` identifies a principal
+/// carrying exactly that role), ceilinged at `cap`, binding `ops` to `ops` — with the closed admin
+/// verb table's kind-neutral double registered, so a `verbs:` name has a rung.
+fn verbs_app(ops: crate::config::RoleBindingCfg, cap: &str) -> std::sync::Arc<crate::state::App> {
+    crate::test_support::install_admin_verb_table_double();
+    let mut app = crate::test_support::TestApp::new()
+        .admin_chain(vec!["test-scope-module".to_string()])
+        .role_bindings(bindings_for("test-scope-module", &[("ops", ops)]))
+        .build();
+    let a = std::sync::Arc::get_mut(&mut app).expect("unshared App Arc");
+    a.auth_scope_caps
+        .insert("test-scope-module".to_string(), cap.to_string());
+    app
+}
+
+/// A binding parsed off its config text, as an operator writes it under
+/// `auth.role_bindings.<provider>.<role>:`.
+fn verbs_binding(yaml: &str) -> crate::config::RoleBindingCfg {
+    serde_yaml::from_str(yaml).expect("`verbs:` is a role-binding key")
+}
+
+/// THE DOOR READS THE ALLOW-LIST. A role granting verbs BY NAME is identified WITH its list: the
+/// matrix holds every rung a named verb needs (here `full`, for one mutation), and the list holds
+/// exactly the names. RED before #77(9)'s allow-list: `RoleBindingCfg` had no `verbs`, so the door
+/// had nothing to read and the principal, holding no `admin_scope`, earned no grant at all.
+#[test]
+fn a_role_granting_verbs_by_name_is_identified_with_its_allow_list() {
+    use busbar_contract::authz::{Grants, Scope};
+    crate::snapshot::init();
+    let app = verbs_app(verbs_binding("verbs: [post_config_apply]"), "full");
+    let door = admin_door(
+        &app,
+        "POST",
+        "/api/v1/admin/config/apply",
+        &admin_headers(Some("grp:ops"), None),
+    );
+    let AdminDoor::Listed(principal, grants, list) = door else {
+        panic!("a role granting verbs by name is identified with its list, got {door:?}");
+    };
+    assert_eq!(principal.id, "test:ops");
+    assert_eq!(
+        grants,
+        Grants::of(Scope::Full),
+        "the matrix reaches the named verb's rung"
+    );
+    assert_eq!(list.rungs, Grants::default(), "no rung is held whole");
+    assert!(
+        list.admits(Some("post_config_apply"), Scope::Full),
+        "the named verb is admitted"
+    );
+    assert!(
+        !list.admits(Some("post_keys"), Scope::Full),
+        "a mutation the list does not name is not"
+    );
+    assert!(
+        !list.admits(Some("get_keys"), Scope::ReadOnly),
+        "nor is a read the list does not name: a named list is not a rung"
+    );
+    assert!(
+        !list.admits(None, Scope::ReadOnly),
+        "and a path the table names no verb for is no verb"
+    );
+}
+
+/// `verbs: "*"` IS `admin_scope: full`: the same door verdict, value for value — an `Identified`
+/// principal holding the full rung, no list. RED before the allow-list: the key did not parse.
+#[test]
+fn verbs_star_is_exactly_admin_scope_full() {
+    crate::snapshot::init();
+    let star = verbs_app(verbs_binding("verbs: \"*\""), "full");
+    let full = verbs_app(binding(None, None, Some("full")), "full");
+    let headers = admin_headers(Some("grp:ops"), None);
+    for (method, path) in [
+        ("POST", "/api/v1/admin/config/apply"),
+        ("GET", "/api/v1/admin/keys"),
+    ] {
+        let by_star = admin_door(&star, method, path, &headers);
+        assert!(matches!(by_star, AdminDoor::Identified(..)), "{by_star:?}");
+        assert_eq!(
+            by_star,
+            admin_door(&full, method, path, &headers),
+            "{method} {path}: `verbs: \"*\"` must be exactly `admin_scope: full`"
+        );
+    }
+}
+
+/// A binding with NO `verbs` key is judged exactly as before: `read-only` and `full` stay the
+/// 1.5.5 shorthands, an `Identified` verdict with the rung, never a list.
+#[test]
+fn a_binding_without_verbs_is_judged_by_its_rung_alone() {
+    use busbar_contract::authz::{Grants, Scope};
+    crate::snapshot::init();
+    let headers = admin_headers(Some("grp:ops"), None);
+    for (scope, rung) in [("read-only", Scope::ReadOnly), ("full", Scope::Full)] {
+        let app = verbs_app(binding(None, None, Some(scope)), "full");
+        let door = admin_door(&app, "POST", "/api/v1/admin/config/apply", &headers);
+        let AdminDoor::Identified(_, grants) = door else {
+            panic!("{scope}: a binding with no `verbs` key is never listed, got {door:?}");
+        };
+        assert_eq!(grants, Grants::of(rung), "{scope}");
+    }
+}
+
+/// The provider's `max_admin_scope:` caps a NAMED verb exactly as it caps an `admin_scope`: under a
+/// `read-only` ceiling a named mutation is dropped and only the named read stays held.
+#[test]
+fn the_providers_ceiling_caps_a_named_verb() {
+    use busbar_contract::authz::{Grants, Scope};
+    crate::snapshot::init();
+    let app = verbs_app(
+        verbs_binding("verbs: [get_keys, post_config_apply]"),
+        "read-only",
+    );
+    let door = admin_door(
+        &app,
+        "GET",
+        "/api/v1/admin/keys",
+        &admin_headers(Some("grp:ops"), None),
+    );
+    let AdminDoor::Listed(_, grants, list) = door else {
+        panic!("the named read survives the ceiling, got {door:?}");
+    };
+    assert_eq!(grants, Grants::of(Scope::ReadOnly));
+    assert!(list.admits(Some("get_keys"), Scope::ReadOnly));
+    assert!(
+        !list.admits(Some("post_config_apply"), Scope::Full),
+        "a named mutation above the provider's ceiling is not held"
+    );
+}
+
+/// THE ADMIN GATE ENFORCES THE LIST, at the one chokepoint every admin path crosses: the named
+/// mutation passes authorization (no admin surface is mounted in this binary, so it then falls
+/// through — anything but 401/403), a mutation the list does not name is the 403 a missing rung
+/// gets, in its envelope. RED before the allow-list: the `verbs` key did not exist, so the
+/// principal held no grant and the named mutation was refused too.
+#[tokio::test]
+async fn the_admin_gate_admits_only_the_listed_verbs() {
+    crate::snapshot::init();
+    let app = verbs_app(verbs_binding("verbs: [post_config_apply]"), "full");
+    let (base, handle) = serve_app(app).await;
+    let client = reqwest::Client::new();
+    let listed = client
+        .post(format!("{base}/api/v1/admin/config/apply"))
+        .bearer_auth("grp:ops")
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(
+        listed.status().as_u16(),
+        401,
+        "the listed role authenticates"
+    );
+    assert_ne!(
+        listed.status().as_u16(),
+        403,
+        "the listed verb must pass authorization, got {}",
+        listed.status()
+    );
+    for (method, path) in [
+        (reqwest::Method::POST, "/api/v1/admin/keys"),
+        (reqwest::Method::GET, "/api/v1/admin/keys"),
+    ] {
+        let refused = client
+            .request(method.clone(), format!("{base}{path}"))
+            .bearer_auth("grp:ops")
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            refused.status().as_u16(),
+            403,
+            "{method} {path}: a verb the list does not name is refused"
+        );
+        let needed = if method == reqwest::Method::GET {
+            "read-only"
+        } else {
+            "full"
+        };
+        assert_eq!(
+            refused.text().await.unwrap(),
+            format!(
+                "{{\"error\":{{\"code\":\"forbidden\",\"message\":\"this endpoint requires the \
+                 `{needed}` admin scope\"}}}}"
+            ),
+            "{method} {path}: the refusal is the existing scope refusal, byte for byte"
+        );
+    }
+    handle.abort();
 }
