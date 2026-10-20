@@ -45,6 +45,24 @@ pub fn envelope_dialect(ingress: Ingress) -> &'static str {
         .unwrap_or("")
 }
 
+/// THE KERNEL'S OWN REFUSAL: the answer when no plane renders one (no plane's line and no fallback
+/// plane takes the path, or the plane's render failed). The kernel speaks no dialect (spec §1, "It
+/// is a byte pump"), so it is the neutral envelope, `application/json`, at the kernel's status: the
+/// bytes a build that links no dialect has always answered.
+pub(crate) fn kernel_refusal(status: StatusCode, kind: &str, message: &str) -> Response {
+    use axum::response::IntoResponse;
+    let envelope = crate::proxy::agnostic_error_envelope(kind, message);
+    let body = crate::json::to_string(&envelope).unwrap_or_else(|_| envelope.to_string());
+    Response::builder()
+        .status(status)
+        .header(
+            axum::http::header::CONTENT_TYPE,
+            crate::proxy::APPLICATION_JSON,
+        )
+        .body(axum::body::Body::from(body))
+        .unwrap_or_else(|_| status.into_response())
+}
+
 /// Render `status`/`kind`/`message` in the dialect the resolved `ingress` is spoken in.
 ///
 /// The `kind` is the protocol-agnostic error category dialect writers map to their own vocabulary

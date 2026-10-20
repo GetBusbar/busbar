@@ -69,8 +69,9 @@ pub fn fallback_error_response(
 /// A KERNEL-SHAPED REFUSAL'S ANSWER (ARCHITECT ruling 2026-10-16, 3b B): the kernel decides
 /// `reason` and `status` and words `message`; the door plane that owns `path` (the guest list's own
 /// reading, whatever the verb) renders the body through its refusal hook, in its dialect for
-/// `target`. The native-API root keeps the kernel's frozen envelope (it is the kernel's own
-/// surface), and a path no door owns, or a render that failed, gets the kernel's own answer.
+/// `target`; a path no door's line takes is the fallback plane's to render by its own path rule.
+/// The native-API root keeps the kernel's frozen envelope (it is the kernel's own surface), and a
+/// refusal no plane renders gets the kernel's own neutral answer: the kernel words no dialect.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn kernel_refusal_response(
     handle: &state::AppHandle,
@@ -92,9 +93,9 @@ pub(crate) fn kernel_refusal_response(
             path,
             target,
         };
-        if let Some(rendered) = handle.door_refusal(&refusal) {
-            return rendered;
-        }
+        return handle
+            .door_refusal(&refusal)
+            .unwrap_or_else(|| crate::ingress::native::kernel_refusal(status, kind, message));
     }
     fallback_error_response(planes, path, status, kind, message)
 }
@@ -424,9 +425,6 @@ pub(crate) fn base_data_router(
     crate::core_routes::CoreRouteTable,
 ) {
     use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
-    // A door plane whose claim is the whole tree (`/` and every path under it) claims the
-    // convenience surfaces' paths too, so the kernel mounts none of its own there.
-    let door_claims_root = doors.iter().any(|d| d.path.starts_with("/{*"));
     // EVERY core route is mounted through `CoreRouter::route`, which takes the handler and the
     // admission bar in ONE act (`core_routes`): a route the auth middleware knows nothing about is
     // not a thing this function can produce.
@@ -468,26 +466,6 @@ pub(crate) fn base_data_router(
     // The list-models discovery surface (`GET /v1/models`, `GET /v1beta/models`) is no kernel
     // route: the plane that claims it as a CATALOG route renders it, unit-less, over the names
     // `endpoints::catalog_names` computes (ARCHITECT ruling 2026-10-16, 3b C).
-    // THE CONVENIENCE SURFACES hand their unit to a body-model arrival, so they are mounted only
-    // where a plane registered one and no door plane claims the whole tree (a plane served through
-    // its door parses these paths itself).
-    let router = if crate::ingress::arrival::any_body_ingress() && !door_claims_root {
-        router
-            .route(
-                "/{name}/v1/messages",
-                RouteMethod::Post,
-                RouteAuth::Key,
-                ingress::named,
-            )
-            .route(
-                "/{provider}/{model}/v1/messages",
-                RouteMethod::Post,
-                RouteAuth::Key,
-                ingress::adhoc,
-            )
-    } else {
-        router
-    };
     // THE PLANES' DATA ROUTES, contributed through the registry rather than named here. For every
     // registered plane with a `mount` fn AND a runtime object this generation (its slot), the plane's
     // own `mount` mounts its routes from that slot, each door opening only when that plane's own
@@ -1250,7 +1228,9 @@ pub fn build_split_routers_serving_doors(
     );
     let data = apply_common_layers(
         data,
-        data_core_routes.with_door_refusals(refusals),
+        data_core_routes
+            .with_door_refusals(refusals)
+            .with_kernel_refuser(std::sync::Arc::clone(&handle)),
         &handle,
         request_body_max_bytes,
         server_timing_enabled,

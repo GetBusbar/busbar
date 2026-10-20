@@ -864,13 +864,13 @@ impl ProtocolWriter for GeminiWriter {
         // `API_KEY_INVALID` (domain `googleapis.com`, service metadata
         // `generativelanguage.googleapis.com`). The `google-genai` SDK and many clients key their
         // auth-error handling off `details[].reason == "API_KEY_INVALID"`, so omitting the array on
-        // our auth-failure envelope (produced by `auth.rs::unauthorized_response` for a
-        // Gemini-inferred path) is a deterministic proxy tell on exactly the auth-failure surface.
+        // our auth-failure envelope (the plane's `refusal` for a Gemini-shaped target) is a
+        // deterministic proxy tell on exactly the auth-failure surface.
         //
-        // The Gemini auth-failure path (`auth.rs::auth_failure_status_and_kind`) calls this with
+        // The Gemini auth-failure render (`exchange::refuse::kernel_refusal`) calls this with
         // status 400, kind `invalid_request_error` (→ INVALID_ARGUMENT), and the distinctive
         // canonical bad-key message `"API key not valid. Please pass a valid API key."`
-        // (`proto::vendor_auth_failure_message("gemini")`). We gate the `details[]` array on that
+        // (the declaration's `auth_failure_message`). We gate the `details[]` array on that
         // exact triple so ONLY the bad-key 400 grows the ErrorInfo — a generic malformed-request
         // 400/INVALID_ARGUMENT (which carries a DIFFERENT message and does NOT carry API_KEY_INVALID
         // at real Google) is left untouched, so we neither under-fill the auth surface nor over-fill

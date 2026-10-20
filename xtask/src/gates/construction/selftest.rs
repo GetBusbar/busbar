@@ -53,7 +53,9 @@ use crate::gates::construction::tree::{crate_name_of_dir, dirs_for_globs};
 use crate::gates::construction::{
     ceilings, census, external, rules, rules2, ConstructionGate, CEILINGS, UNSAFE_HALVES,
 };
-use crate::gates::{prove_red, prove_rows_green, prove_rows_red, Case, Expect, Gate, Report};
+use crate::gates::{
+    prove_green, prove_red, prove_rows_green, prove_rows_red, Case, Expect, Gate, Report,
+};
 
 /// The three delegated answers as the real tree gives them, captured once. Every plant starts from
 /// a clone of this, so a case that is not about a delegated input never pays for one.
@@ -402,8 +404,8 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         "crates/busbar-plane-llm/src/zz_planted_shape.rs",
         "pub fn planted_second_attempt_site() {\n    let _ = \
          ctx.client().get().request(method, url);\n}\n\npub fn planted_extra_door() {\n    \
-         unit.finish_inner(end);\n}\n\npub fn planted_door_caller() {\n    \
-         finish_admitted(end);\n    finish_rejected(end);\n}\n\npub fn planted_pick_a() {\n    \
+         served.money.settle_end(unit, 200);\n}\n\npub fn planted_door_caller() {\n    \
+         served.money.settle_end_as(unit, end);\n}\n\npub fn planted_pick_a() {\n    \
          pick_among(lanes);\n}\n\npub fn planted_pick_b() {\n    pick_among(lanes);\n}\n",
     );
     // A second unit attempt goes where the rule scans (a crate that drives a unit's walk).
@@ -517,11 +519,11 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
     // ITEM 190: THE TERMINAL RENAMED AWAY. Every call of the configured name vanishes with it, so
     // "zero extra sites" used to pass; the floor refuses a terminal that no longer resolves.
     let mut ov = on(base);
-    let home = "crates/busbar-kernel/src/ingress/mod.rs";
+    let home = "crates/busbar-kernel/src/plane_driver/money.rs";
     if let Ok(basetext) = cx.read(home) {
         ov.set(
             home,
-            basetext.replace("finish_inner", "finish_inner_renamed_away"),
+            basetext.replace("settle_end_as", "settle_end_as_renamed_away"),
         );
     }
     r.push(prove_red(
@@ -534,8 +536,48 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         &["does not resolve"],
     ));
 
+    // THE DOOR PATH'S TWO MONEY TERMINALS, EACH PINNED TO ITS DOORS BY IMPL TYPE (ARCHITECT ruling
+    // 2026-10-20, row 82 D2): a third caller of `PlaneMoney::settle_end` and of
+    // `PlaneMoney::settle_end_as`, from a method of the request routes the config does not name,
+    // is red, and names the planted caller.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar/src/root/zz_planted_third_caller.rs",
+        "impl DataRoutes {\n    fn zz_planted_third_caller(&self, served: &ServedPlane) {\n        \
+         served.money.settle_end(unit, 200);\n        \
+         served.money.settle_end_as(unit, end);\n    }\n}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a third caller of each door money terminal",
+        &["single-terminal"],
+        ov,
+        &[
+            "DataRoutes::zz_planted_third_caller",
+            "zz_planted_third_caller.rs",
+        ],
+    ));
+
+    // AN UNRELATED `fn settle_end` ON ANOTHER TYPE IS NEITHER COUNTED NOR ALLOWED: the terminal is
+    // `PlaneMoney::settle_end`, and a method of the same name on a type of its own, called through
+    // `self`, is that type's business.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar/src/root/zz_planted_unrelated_settle_end.rs",
+        "pub struct ZzUnrelated;\n\nimpl ZzUnrelated {\n    fn settle_end(&self) {}\n\n    \
+         fn zz_caller(&self) {\n        self.settle_end();\n    }\n}\n",
+    );
+    r.push(prove_green(
+        &cx.with_overlay(ov),
+        gate,
+        "a same-named method on another type is not the terminal",
+        &["single-terminal"],
+    ));
+
     // THE PLANES THE RULE READS: the legacy list (empty since DEV-GREEN row 83) and the door crates
-    // `[gate.plugin_kinds].plane` matches on disk, the same set `ports-only` holds. A plane-less
+    // `[gate.plugin_kinds].plane` matches, the same set the gate owes `ports-only` rows for (a
+    // pinned door the base layer lays is one of them, and a plant into it is read like any other). A plane-less
     // tree owes no `ports-only:<crate>` row, so there is no row for a plant to turn red.
     let mut planes: Vec<String> = ConstructionGate::cfg(cx)
         .map(|c| {
@@ -543,7 +585,6 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
             v.extend(
                 dirs_for_globs(cx, &c.kind_globs("plane").unwrap_or_default())
                     .iter()
-                    .filter(|d| cx.abs(d.as_str()).join("src").exists())
                     .map(|d| crate_name_of_dir(d)),
             );
             v

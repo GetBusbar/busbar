@@ -2815,23 +2815,37 @@ pub fn door_mounts(
     // takes, a body over the cap, a request handler that panicked. The kernel decides the reason,
     // the status and the words; the plane whose line the guest list matches for the path, whatever
     // the verb (its own reading, the one the router mounts by), renders the body through its
-    // `refusal`, in the line's refusal dialect, for the target. A failed render is `None`: the
-    // kernel answers its own.
+    // `refusal`, in the line's refusal dialect, for the target. A path no plane's line takes (a
+    // kernel route's, or none) is the FALLBACK plane's (`abi::plane::TAIL_FALLBACK`, the catch-all
+    // every unclaimed path is): it renders the refusal by its own path rule for the target, as the
+    // previous release's residual answered it (spec Part 3 section 12, "Refusals"). A failed render,
+    // or no fallback plane served, is `None`: the kernel answers its own.
     let refuse_by_path: busbar_kernel::plane_routes::PlaneRefuseByPathFn = {
         let routes = Arc::clone(&routes);
+        let fallback = routes
+            .served
+            .planes
+            .iter()
+            .position(|p| p.live.served_facts.fallback);
         Arc::new(move |r: &busbar_kernel::plane_routes::KernelRefusal<'_>| {
-            let Matched::MethodMiss(line) = routes.guests.matched("", r.path, &[]) else {
-                return None;
+            let owner = match routes.guests.matched("", r.path, &[]) {
+                Matched::MethodMiss(line) => match &line.claimant {
+                    Claimant::Plane(instance) => routes
+                        .of_line
+                        .get(&(instance.clone(), line.route.rung))
+                        .map(|&(plane, _)| (plane, line.dialect)),
+                    _ => None,
+                },
+                _ => None,
             };
-            let Claimant::Plane(instance) = &line.claimant else {
-                return None;
-            };
-            let (plane, _) = *routes.of_line.get(&(instance.clone(), line.route.rung))?;
+            // The fallback plane's dialect index is unread for a unit-less refusal: the plane
+            // renders the target by its own path rule.
+            let (plane, dialect) = owner.or_else(|| fallback.map(|plane| (plane, 0)))?;
             let rendered = routes.served.planes[plane].driver.refuse_kernel(
                 r.reason,
                 u32::from(r.status),
                 r.text,
-                line.dialect,
+                dialect,
                 r.target.as_bytes(),
             )?;
             Some(stated(

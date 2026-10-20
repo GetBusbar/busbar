@@ -475,16 +475,6 @@ pub fn array_stream_shim_key_for(protocol_name: &str) -> Option<&'static str> {
         .and_then(|d| d.array_stream_shim_key)
 }
 
-/// The vendor-plausible auth-failure wire MESSAGE for an ingress protocol, dispatched through
-/// `ProtocolDecl::auth_failure_message` so the per-vendor copy lives in the declaration, not here. An
-/// unknown protocol falls back to the default generic copy.
-pub fn vendor_auth_failure_message(proto: &str) -> &'static str {
-    registry()
-        .decl(proto)
-        .map(|d| d.auth_failure_message)
-        .unwrap_or("authentication failed")
-}
-
 /// Resolve a provider's configured protocol NAME to the registry's interned `&'static str` for the
 /// lane-build path, or `None` for an unknown name or one that declares no wire codec (MCP/A2A are not
 /// lane protocols).
