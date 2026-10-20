@@ -1371,7 +1371,7 @@ fn already_applied(
 ///
 /// It names no figure on the wire. The corrected rates go into the card, never into the answer, so
 /// the control surface stays free of money vocabulary; the answer is the seq an invoice will cite,
-/// the window it corrected, the (empty) `operator_fingerprint` slot and the digest of why.
+/// the window it corrected and the digest of why.
 fn amend_rate_history_effect(
     history: &crate::root::kernel::RootHistory,
     journal: Option<&AmendmentJournal>,
@@ -1408,10 +1408,9 @@ fn amend_rate_history_effect(
         return Err(GovernanceError::Validation);
     }
 
-    // NO SIGNER AND NO SIGNATURE (#77(9)). The durable record and the answer keep their
-    // `operator_fingerprint` / `signature` slots so neither shape moves; this node writes them empty,
-    // because no operator signs a correction.
-    let operator_fingerprint = String::new();
+    // NO SIGNER AND NO SIGNATURE (#77(9)). The answer and the history entry name no signer; the
+    // durable `v3` record keeps its `operator_fingerprint` / `signature` slots (no record shape
+    // moves) and this node writes them empty, because no operator signs a correction.
 
     // The reason is free text and is not the record; its SHA-256 is, so the sealed entry is
     // fixed-width and the text cannot be edited under it.
@@ -1532,10 +1531,7 @@ fn amend_rate_history_effect(
         effective_from,
         effective_until,
         appended_at: appended_at_ms,
-        author: busbar_kernel_ledger::cost::Author::Amend {
-            operator_fingerprint: operator_fingerprint.clone(),
-            reason_hash,
-        },
+        author: busbar_kernel_ledger::cost::Author::Amend { reason_hash },
         cells: entries,
         fee: per_request_fee,
     };
@@ -1577,7 +1573,7 @@ fn amend_rate_history_effect(
                         (lane, class, nanos)
                     })
                     .collect(),
-                operator_fingerprint: operator_fingerprint.clone(),
+                operator_fingerprint: String::new(),
                 reason_hash,
                 principal: attribution.principal.clone(),
                 // The record's posture slot keeps its shape: one principal, no checker (#77(9)).
@@ -1628,8 +1624,6 @@ fn amend_rate_history_effect(
     }
     out.push_str(",\"amended_at\":");
     out.push_str(&appended_at_ms.to_string());
-    out.push_str(",\"operator_fingerprint\":");
-    json_string(&operator_fingerprint, &mut out);
     out.push_str(",\"reason_sha256\":");
     json_string(&hex::encode(reason_hash), &mut out);
     out.push('}');
