@@ -251,7 +251,7 @@ checks:
     # backend probed to have all of these, and says which one is missing otherwise.
     requires: [cc, docker, docker-compose, docker-amd64, python3-venv, curl, git]
     # The rig logs, fetched with `modernci call artifact --check conformance` (a red suite's reason).
-    outputs: [target/conformance-record]
+    outputs: [target/conformance-record, testing/ws-conformance/reports]
   verify-done:
     # The done-oracle, full run: exit 0 only (3 is a --fast, provisional answer). Its PARITY group
     # obtains the judge through bin/oracle as the oracle check does (BUSBAR_RELEASE_TOKEN).
