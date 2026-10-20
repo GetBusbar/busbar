@@ -225,6 +225,27 @@ pub fn request_path_fn_size(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String>
 
 // ── 3. ports-only / ports-only-tests ─────────────────────────────────────────────────────────────
 
+/// THE PLANES ON THIS TREE: the plane kind's crates, plus any legacy engine `gate.plane_crates`
+/// still lists. That list is empty since the last engine crate was deleted (DEV-GREEN row 83), and
+/// a per-plane rule over no plane passes by reading nothing (Law 10); every door crate the
+/// `[gate.plugin_kinds].plane` globs match on the tree is a plane the per-plane rules hold.
+fn planes_on_tree(tree: &Tree, cfg: &Cfg) -> Result<Vec<String>, String> {
+    let plane_globs = cfg.kind_globs("plane")?;
+    let mut planes = cfg.plane_crates()?;
+    for rel in tree.files.keys() {
+        let krate = tree.crate_of(rel);
+        let dir = format!("crates/{krate}");
+        if rel.starts_with("crates/")
+            && plane_globs.iter().any(|g| fnmatch(&dir, g))
+            && !planes.contains(&krate)
+        {
+            planes.push(krate);
+        }
+    }
+    planes.sort();
+    Ok(planes)
+}
+
 pub fn ports_only(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let prod = cfg.rule("ports-only")?;
     let test = cfg.rule("ports-only-tests")?;
@@ -242,7 +263,7 @@ pub fn ports_only(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let _ = (prod, test);
 
     let mut rows = Vec::new();
-    for crate_name in cfg.plane_crates()? {
+    for crate_name in planes_on_tree(tree, cfg)? {
         // A plane is BOTH halves: the crate under its own name and the pure `-codec` crate it shed.
         let mut prefixes = vec![format!("crates/{crate_name}/")];
         for extra in codecs.list_of(&crate_name) {
@@ -1206,22 +1227,7 @@ pub fn one_teller_loop(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let per_plane = need_int(c, "max_callers_per_plane_crate", "one-teller-loop")?;
     let legacy_verb = need_str(c, "legacy_verb", "one-teller-loop")?;
     let max_legacy = need_int(c, "max_legacy_sites", "one-teller-loop")?;
-    // THE PLANES ARE THE PLANE KIND'S CRATES, plus any legacy engine `gate.plane_crates` still
-    // lists. That list is empty since the last engine crate was deleted (DEV-GREEN row 83), and a
-    // per-plane ceiling over no plane passes by reading nothing; every door crate the
-    // `[gate.plugin_kinds].plane` globs match is a plane this rule holds to one loop entry.
-    let plane_globs = cfg.kind_globs("plane")?;
-    let mut planes = cfg.plane_crates()?;
-    for rel in tree.files.keys() {
-        let krate = tree.crate_of(rel);
-        let dir = format!("crates/{krate}");
-        if rel.starts_with("crates/")
-            && plane_globs.iter().any(|g| fnmatch(&dir, g))
-            && !planes.contains(&krate)
-        {
-            planes.push(krate);
-        }
-    }
+    let planes = planes_on_tree(tree, cfg)?;
 
     let mut per_crate: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (rel, l) in call_sites(tree, loop_verb, None)? {

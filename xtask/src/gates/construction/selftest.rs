@@ -486,12 +486,23 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         &["does not resolve"],
     ));
 
-    let planes = ConstructionGate::cfg(cx)
-        .and_then(|c| c.plane_crates())
+    // THE PLANES THE RULE READS: the legacy list (empty since DEV-GREEN row 83) and the door crates
+    // `[gate.plugin_kinds].plane` matches on disk, the same set `ports-only` holds. A plane-less
+    // tree owes no `ports-only:<crate>` row, so there is no row for a plant to turn red.
+    let mut planes: Vec<String> = ConstructionGate::cfg(cx)
+        .map(|c| {
+            let mut v = c.plane_crates().unwrap_or_default();
+            v.extend(
+                dirs_for_globs(cx, &c.kind_globs("plane").unwrap_or_default())
+                    .iter()
+                    .filter(|d| cx.abs(d.as_str()).join("src").exists())
+                    .map(|d| crate_name_of_dir(d)),
+            );
+            v
+        })
         .unwrap_or_default();
-    // No legacy engine crate is listed any more (DEV-GREEN row 83): the gate owes no
-    // `ports-only:<crate>` row, so there is no row for a plant to turn red. The census row
-    // (`plane_crates = 0`, its deletion named) is what holds the list at empty.
+    planes.sort();
+    planes.dedup();
     if planes.is_empty() {
         return r;
     }
