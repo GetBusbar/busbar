@@ -49,7 +49,7 @@ hex = { workspace = true }
 getrandom = { workspace = true }
 # THE LLM PLANE, through its memory-ABI door: the edge `plane-llm` carries through its door row
 # (`plane-llm-door`, see that feature). Every llm arrival is served through the plane driver.
-busbar-plane-llm = { path = "../busbar-plane-llm", optional = true }
+busbar-plane-llm = { workspace = true, optional = true }
 # THE MCP PLANE, through its memory-ABI door: the edge `plane-mcp` carries through its door row
 # (`plane-mcp-door`, see that feature).
 busbar-plane-mcp = { workspace = true, optional = true }
@@ -582,7 +582,7 @@ http = { workspace = true }
 async-trait = { workspace = true }
 # The llm plane's door, a `door:` row of `test-linked` above: linked in every build's tests,
 # whatever plane features the build enables.
-busbar-plane-llm = { path = "../busbar-plane-llm" }
+busbar-plane-llm = { workspace = true }
 # The served planes' test kits: `testkit::SERVED` (their served-leg witnesses) is `test-support` only.
 # The MCP and A2A planes' doors, `door:` rows of `test-linked` above: linked in every build's tests,
 # whatever plane features the build enables (a single-plane build's tests still install the whole

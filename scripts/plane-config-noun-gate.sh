@@ -156,7 +156,8 @@ NAMED_NOUNS="streams agents tools"
 section_nouns() {
   local k dir declfile noun ref refcrate out=""
   for k in $PLANE_KEYS; do
-    dir="$(plane_key_src "$k")"
+    # A plane pinned from its own repo is read from its checkout (`plane_root_dir`, row 106).
+    dir="$(plane_root_dir "$(plane_key_src "$k")")"
     # The noun is read from the file that DECLARES the plane's `pub const PLANE_DECL`, never a test
     # fixture that restates a section_section for a different plane.
     declfile="$(grep -rlE 'pub const PLANE_DECL' "$dir" 2>/dev/null | grep -vE '/tests/|(^|[/_])tests?\.rs$' | head -1)"

@@ -14,7 +14,6 @@ members = [
     "crates/busbar-kernel-breaker",
     "crates/busbar-kernel-wal",
     "crates/busbar-kernel-audit",
-    "crates/busbar-plane-llm",
     "crates/plugin-loader",
     "testing/ws-conformance/subject",
     "testing/voice-conformance/harness",
@@ -141,6 +140,11 @@ busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev 
 # cells it states under its `links` name, and the voice conformance harness drives. Its dropped-in
 # cdylib twin (`busbar-plane-streaming-plugin`) and its gates live in that repo's plugin CI.
 busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "253b5b2791122f07e74647a9f21efe51aa00ab7d" }
+# THE LLM PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the llm
+# plane's door row (`plane-llm-door`, `busbar_plane_llm::plane_door::door`), whose own root cells it
+# states under its `links` name. Its dropped-in cdylib twin (`busbar-plane-llm-plugin`) and its gates
+# live in that repo's plugin CI.
+busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "1fa5a5bd84759f24d5d63a87aa6716303424f193" }
 arc-swap = "1"
 async-trait = "0.1"
 axum = "0.8"

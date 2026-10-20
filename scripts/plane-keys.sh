@@ -167,6 +167,27 @@ plane_key_src() {
   printf 'crates/busbar-%s/src' "${od:-$1}"
 }
 
+# plane_root_dir <repo-relative dir> -> where that directory's bytes are: the path itself when it is
+# on disk, or, for a `crates/busbar-plane-*` path no crate on disk is, the same path inside the
+# checkout cargo resolved for the rev the root's Cargo.lock pins (a plane that left for its own repo,
+# row 106; read there, never copied: spec #39). Prints nothing when neither holds it, which every
+# caller refuses: a root nothing holds is a scan of zero files.
+plane_root_dir() { # $1 = repo-relative directory, read from the current directory
+  if [ -d "$1" ]; then printf '%s\n' "$1"; return 0; fi
+  case "$1" in crates/busbar-plane-*) ;; *) return 0 ;; esac
+  [ -f Cargo.toml ] || return 0
+  local rest="${1#crates/}" pkg inner dir
+  pkg="${rest%%/*}"; inner="${rest#"$pkg"}"
+  dir="$(cargo metadata --format-version 1 2>/dev/null | python3 -I -c '
+import json, os, sys
+for p in json.load(sys.stdin)["packages"]:
+    if p["name"] == sys.argv[1] and (p.get("source") or "").startswith("git+"):
+        print(os.path.dirname(p["manifest_path"])); break
+' "$pkg")" || true
+  if [ -n "$dir" ] && [ -d "$dir$inner" ]; then printf '%s%s\n' "$dir" "$inner"; fi
+  return 0
+}
+
 # require_plane_key_roots — every gate keyed on PLANE_KEYS calls this before it scans: a key whose
 # root is not a directory is scanned as ZERO files, and zero is the passing answer to every ban
 # (row 115). Prints the missing roots and returns 1; a caller exits on it.
@@ -174,7 +195,7 @@ require_plane_key_roots() {
   local k r missing=""
   for k in $PLANE_KEYS; do
     r="$(plane_key_src "$k")"
-    [ -d "$r" ] || missing="${missing:+$missing }$r"
+    [ -n "$(plane_root_dir "$r")" ] || missing="${missing:+$missing }$r"
   done
   [ -z "$missing" ] && return 0
   printf 'plane-keys: a PLANE_KEYS root is not a directory on disk: %s -- a gate keyed on it would scan zero files and pass every ban\n' "$missing" >&2
