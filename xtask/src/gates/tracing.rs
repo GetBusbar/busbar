@@ -53,8 +53,11 @@ const EXCLUDE_TESTS_DIR: &str = "/tests/";
 /// ~150:1 (977 files, 5 attributes), so every span could leave the tree with every file still
 /// read. Armed at the measured count (arrival.rs 3, ingress/mod.rs 2); it has no override, and
 /// lowering it is a reviewable source edit that says which span went where. It is the gate's
-/// positive control, not a file count.
-const SPAN_FLOOR: usize = 5;
+/// positive control, not a file count. LOWERED 5 -> 2 with the retired engine crate's deletion
+/// (DEV-GREEN row 83, coordinator ruling 2026-10-18): the three spans of its test kit's arrival
+/// shell (`gemini_ingress`, `bedrock_converse`, `bedrock_invoke`) left the tree with it; the two
+/// left are the kernel ingress's `named` and `adhoc`.
+const SPAN_FLOOR: usize = 2;
 
 /// The two findings, spelled ONCE so both the gate and its legacy translator write them the same
 /// way and a parity diff can only be about which spans were found.
