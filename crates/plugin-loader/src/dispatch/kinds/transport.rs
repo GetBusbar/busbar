@@ -220,7 +220,7 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
             .map(|s| owned(s.path, "settings"))
             .collect::<Result<_, _>>()?,
         ported: rows.first().is_some_and(|row| {
-            let port = busbar_contract::abi::hot::transport::code::selector_form(
+            let port = busbar_contract::abi::shared::code::selector_form(
                 busbar_contract::SelectorForm::Port,
             );
             row.selector_forms.len > 0
@@ -353,6 +353,7 @@ impl Kind for Transport {
                     i.name_cap as u64,
                     i.alpn_cap as u64,
                     offer,
+                    i.defaults_cap as u64,
                 )
             }
             slot::BEGIN => framer(a, a.input::<BeginIn>()?.sink),
@@ -376,9 +377,12 @@ impl Kind for Transport {
         }
         match a.slot {
             slot::ARRIVAL => a.out::<ArrivalOut>().is_ok_and(|o| o.peer_needed != 0),
-            slot::LOCATE => a
-                .out::<LocateOut>()
-                .is_ok_and(|o| o.authority_needed != 0 || o.name_needed != 0 || o.alpn_needed != 0),
+            slot::LOCATE => a.out::<LocateOut>().is_ok_and(|o| {
+                o.authority_needed != 0
+                    || o.name_needed != 0
+                    || o.alpn_needed != 0
+                    || o.defaults_needed != 0
+            }),
             _ => false,
         }
     }

@@ -353,6 +353,7 @@ pub fn register_stores(linked: &Linked) {
             registry_build: Some(crate::root::boot::registry),
             plugins_fetch: Some(crate::root::boot::plugins_fetch),
             hook_axis: Some(crate::root::hooks::axis),
+            hook_names: crate::LINKED_HOOK_NAMES,
             store_axis: Some(store_axis),
             secret_axis: Some(secrets),
             export_axis: Some(&crate::root::exports::EXPORTS),
@@ -502,7 +503,7 @@ pub fn plane_rows(linked: &Linked) -> Result<Vec<&'static PlaneDecl>, String> {
 /// #7: the route tables, the view, the health loop and `on_swap` are the KERNEL's). The door's own
 /// tail states whether it is the fallback plane (`TAIL_FALLBACK`), the core's readers (the
 /// `/metrics` lane gauges, `/v1/models`, the keys and service-operations views) walk the kernel's
-/// own [`busbar_kernel::plane_host::ConfigTables`], built from the same resolved lanes and pools,
+/// own [`busbar_kernel::plane_driver::route_tables::ConfigTables`], built from the same resolved lanes and pools,
 /// the provider merge is the kernel's `merge_provider_fallback`, and the health probes are the
 /// kernel's probe units on the door's sealed egress (`root::serve::arm_probes`). So a legacy row of
 /// the door's key yields the plane axis whole, its `build_runtime`, `viewer`, `resolve_provider`,
@@ -544,7 +545,7 @@ pub(crate) fn door_probe_dispatcher() -> Arc<crate::root::loader::dispatch::Disp
 /// and R2-C): every plane [`crate::root::boot::discover_planes`] discovered through a door, linked
 /// or dropped, bound once through the loader's one load on the process's one dispatcher (booted as main's first act,
 /// before any plane registers and before the config prepass), and its Statement
-/// folded into a registry row by the kernel (`busbar_kernel::plane::door::fold`). The row's every
+/// folded into a registry row by the kernel (`busbar_kernel::plane_driver::door::fold`). The row's every
 /// word is the door's; a door owns the plane axis for its key, a linked legacy row of the same key
 /// keeping only its other axes ([`doors_own_their_plane_keys`]), and two doors registering one key
 /// refuse the boot naming both. A door that will not bind refuses the boot, as its load would.
@@ -592,7 +593,7 @@ fn door_rows() -> Result<Vec<&'static PlaneDecl>, String> {
     refuse_a_key_two_doors_register(&named)?;
     registrations
         .into_iter()
-        .map(|(_, reg)| busbar_kernel::plane::door::fold(reg))
+        .map(|(_, reg)| busbar_kernel::plane_driver::door::fold(reg))
         .collect()
 }
 
@@ -905,13 +906,12 @@ fn catalogue_entries(
 /// THE ROOT-BOUND SEAMS an enabled entry drives, each bound once and only when some entry drives it
 /// (the manifest's `plane-sections` axis, emitted by the build script as a `linked_*` cfg): the
 /// parse-time section list a cross-plane hook refusal reads. The `egress` axis binds nothing here:
-/// the hostless-egress driver is the App's, handed to each plane on its build context
-/// (`BuildCtx::hostless`). The egress-trust host is installed by `run` once the configuration
-/// loads, over the destination guard.
+/// a plane dials through the one connector. The egress-trust host is installed by `run` once the
+/// configuration loads, over the destination guard.
 pub fn register_seams() {
     #[cfg(linked_plane_sections)]
-    busbar_kernel::plane::config::install_plane_sections(
-        busbar_kernel::plane::config::config_sections,
+    busbar_kernel::config::plane_sections::install_plane_sections(
+        busbar_kernel::config::plane_sections::config_sections,
     );
 }
 
