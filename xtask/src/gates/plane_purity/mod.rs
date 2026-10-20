@@ -130,9 +130,10 @@ pub const HITS_OUT_ENV: &str = "PLANE_PURITY_HITS_OUT";
 /// tests/admit_tests.rs}`, `kernel/src/plane_driver/slots.rs`, `kernel/src/tests/clock_tests.rs`,
 /// `kernel/src/tests/members/wal/store_debt_tests.rs`. 1134 - 34 + 9 = 1109.
 ///
-/// TIGHTENED 1109 -> 1110, the walk's measured value on this branch (Law 9: the floor pins at
-/// today's measure).
-pub const NEUTRAL_FLOOR: usize = 1110;
+/// HELD at 1109: the walk's measure of this branch merged with dev ed49b64120 (ModernCI gates on
+/// 8729b322bf/b68455c852, `neutral_files=1109`). A floor of 1110 over that tree reds every row the
+/// floor guards; the floor pins at today's measure (Law 9) and rises with it.
+pub const NEUTRAL_FLOOR: usize = 1109;
 
 /// THE PLANE WALK'S FLOOR: the `.rs` files the plane population (in-tree and pinned planes) held on
 /// dev, measured (606 on f49c8bf98c, the RED branch's `plane_files`). Same rule as
