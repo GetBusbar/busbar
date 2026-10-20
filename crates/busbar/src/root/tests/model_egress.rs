@@ -118,3 +118,47 @@ fn the_all_pools_credential_default_reaches_every_pool_without_its_own_and_every
         "with no default set, every member is reached with its own credential"
     );
 }
+
+/// LEGACY the retired engine crate's `src/engine/tests/ingress_integration_tests.rs::test_forward_resolved_by_model_uses_lane_default_breaker_cell`.
+/// A ROUTE NAMING A MODEL DIRECTLY RECORDS ON THE LANE-DEFAULT CELL (`""`), the one cell 1.5.5's
+/// `/<model>/v1/messages` and its by-model forward both selected: one transient on the direct
+/// route's pool arms a cooldown on the lane's `""` cell and none under the model's own name, so a
+/// model's breaker state is not split by the shape of the route that reached it.
+/// RED: a direct route recorded under the model's name leaves the `""` cell's cooldown at 0.
+#[test]
+fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
+    let app = TestApp::new()
+        .lane(LaneSpec::new("m0", "wire-under-test", "http://127.0.0.1:9"))
+        .build();
+    let mut cells = cells_over(Arc::clone(&app), &[]);
+    cells.direct.insert("m0".to_owned());
+    let token = busbar_kernel::test_support::tokens::pass();
+    let now = wall_secs();
+
+    cells.observe(
+        "m0",
+        DestinationId::new(0),
+        Outcome::Transient { retry_after: None },
+        now,
+        &token,
+    );
+    assert!(
+        app.store.cooldown_remaining_in("", 0, now) > 0,
+        "the direct route's fault arms the lane-default cell"
+    );
+    // NO OUTCOME IS RECORDED UNDER THE MODEL'S OWN NAME. Read through the cell's outcome window,
+    // not its cooldown: any read of a pool cell creates it on first touch, and a created cell
+    // INHERITS the lane's current health (the store's `pool_cell`: state, cooldown and streak,
+    // never the window), so its cooldown reads the lane's whatever the route recorded. The window
+    // is the cell's own record: empty unless the fault was observed into that cell.
+    assert_eq!(
+        app.store.error_rate_in("", 0, now),
+        Some(1.0),
+        "the lane-default cell's window holds the direct route's one fault"
+    );
+    assert_eq!(
+        app.store.error_rate_in("m0", 0, now),
+        None,
+        "no cell is kept under the model's own name"
+    );
+}
