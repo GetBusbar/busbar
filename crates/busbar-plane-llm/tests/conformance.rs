@@ -1302,7 +1302,10 @@ mod door_units {
             16,
         );
         assert_eq!(first.outcome, Outcome::Ready, "{first:?}");
-        assert!(!first.done, "more of the translated answer is owed: {first:?}");
+        assert!(
+            !first.done,
+            "more of the translated answer is owed: {first:?}"
+        );
         assert!(
             first.emitted.starts_with('{') && !first.emitted.contains("\"type\":\"message\""),
             "the caller's first window is its own dialect's answer: {first:?}"

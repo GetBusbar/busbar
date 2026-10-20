@@ -548,8 +548,7 @@ fn a_cohere_thinking_ask_reaches_no_foreign_backend_as_in_1_5_5() {
             out.pointer("/generationConfig/thinkingConfig").is_none(),
             "{thinking}: {out}"
         );
-        let cohere = crate::codec::proto_codec::protocol_for("cohere")
-            .expect("cohere");
+        let cohere = crate::codec::proto_codec::protocol_for("cohere").expect("cohere");
         let ir = cohere.reader().read_request(&body).expect("read_request");
         assert_eq!(ir.reasoning, None, "{thinking}: no ask is promoted");
         let out = cohere

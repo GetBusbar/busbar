@@ -432,7 +432,11 @@ fn only_an_enabled_budget_leaves_an_anthropic_caller_as_in_1_5_5() {
         "thinking": {"type": "enabled", "budget_tokens": 6000}
     });
     let ir = AnthropicReader.read_request(&budget).expect("parses");
-    assert_eq!(ir.reasoning, Some(IrReasoningAsk::Budget(6000)), "the 1.5.5 promotion stands");
+    assert_eq!(
+        ir.reasoning,
+        Some(IrReasoningAsk::Budget(6000)),
+        "the 1.5.5 promotion stands"
+    );
 }
 
 /// ROW 159 ROUND C, plane-llm LLM2 HIGH 2, `$`: an OFF ask (an OpenAI `reasoning_effort: "none"`)

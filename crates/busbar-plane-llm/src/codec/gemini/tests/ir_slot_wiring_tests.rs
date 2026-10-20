@@ -392,7 +392,10 @@ fn ir09_anthropic_thinking_disabled_reaches_no_gemini_backend_as_in_1_5_5() {
         "{flash}"
     );
     let pro = gw().write_request_for_model(crate::codec::test_host::HOST, &ir, "gemini-2.5-pro");
-    assert!(pro.pointer("/generationConfig/thinkingConfig").is_none(), "{pro}");
+    assert!(
+        pro.pointer("/generationConfig/thinkingConfig").is_none(),
+        "{pro}"
+    );
 }
 
 /// GEM-10 / IR-11 across the seam: an Anthropic hosted web search / code execution reaches a
