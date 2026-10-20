@@ -383,11 +383,18 @@
 # busbar-oracle-linux-<arch>-<release_ref>.sha256; each asset's .sig verifies (Ed25519, over
 # `<asset name>\n<sha256>\n`) against .github/release-key.pub.pem.
 #
+# 2026-10-20 (status row 186): moved b853a0b8db65 -> 02f7e3af0eba, busbar-release main, which carries #405 (via
+# #407): the generator's literal cell auth.lifecycle|aws-credential-chain-without-keys (POST /keys with
+# issue_aws_credential under a chain without keys, a script cell; 2591 -> 2592 cells). Its cells.json row, owed-baseline
+# row, scripts-allowlist row and add-only 1.5.5 golden (oracle-rerecord, recorded from the published 1.5.5) land with this
+# commit. The digests are dev-bin's busbar-oracle-linux-<arch>-<release_ref>.sha256; each asset's .sig verifies (Ed25519,
+# over `<asset name>\n<sha256>\n`) against .github/release-key.pub.pem.
+#
 # To move the pin: set release_ref to the new busbar-release commit and each sha256_linux_<arch> to the
 # sha256 of its dev-bin busbar-oracle-linux-<arch>-<release_ref> asset (the .sha256 beside it).
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=b853a0b8db65ed6418b84c5d99edd16790c3db70
-sha256_linux_x86_64=1f40959492f2241d640ab9f9d6c0c22766206e35b7d7145cb56390464af8a1eb
-sha256_linux_aarch64=c33de913dd9c1e9f30ccc41062c158bb73866d61a83a40def9012718dcdb5278
+release_ref=02f7e3af0ebaa3d70e155c4d8e9d63838ceada5e
+sha256_linux_x86_64=8fbcc10d84ae631577511529ad644657a5a321c655975fd73612911b90d7c470
+sha256_linux_aarch64=09598ed395d1cc19971576fd919387fae248aab4e5eccbeb77a2d57c398b9927
 crate=busbar-release-oracle
 bin=busbar-oracle
