@@ -214,6 +214,44 @@ fn writings(cx: &Ctx) -> Result<(Vec<Writing>, Vec<usize>), String> {
     Ok((found, quotes_used))
 }
 
+/// Where a plant finds a writing: the phrase after the number, or the phrase before it.
+#[derive(Clone, Copy)]
+enum Shape {
+    After(&'static str),
+    Before(&'static str),
+}
+
+/// `text` with its first writing of `owed` in `shape` rewritten to `owed + 1`, a figure the
+/// enumeration does not state. `None` when no line writes `owed` in that shape: the self-test's
+/// plant then leaves the tree as it is, and the runner refuses a plant that changed nothing.
+fn with_stale(text: &str, shape: Shape, owed: u64) -> Option<String> {
+    let digits = owed.to_string().len();
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        let start = match shape {
+            Shape::After(phrase) => line
+                .match_indices(phrase)
+                .find(|(at, _)| number_ending_at(line, *at) == Some(owed))
+                .map(|(at, _)| at - digits),
+            Shape::Before(phrase) => line
+                .match_indices(phrase)
+                .map(|(at, _)| at + phrase.len())
+                .find(|at| number_starting_at(line, *at) == Some(owed)),
+        };
+        if let Some(start) = start {
+            let at = offset + start;
+            return Some(format!(
+                "{}{}{}",
+                &text[..at],
+                owed + 1,
+                &text[at + digits..]
+            ));
+        }
+        offset += line.len();
+    }
+    None
+}
+
 pub struct HookParityCountGate;
 
 impl Gate for HookParityCountGate {
@@ -294,61 +332,89 @@ impl Gate for HookParityCountGate {
             "the tree writes the hook parity suite's size one way",
             &[ROW_WRITTEN],
         ));
+        // EVERY PLANT IS DERIVED FROM THE TREE IT PLANTS INTO. These used to be literal spec text
+        // (`the 181 v1.5.5 hook tests: 69`, `green on the driver — 181:`) swapped for a literal
+        // stale figure (178, 184); the spec's sentences were reworded around the same figures, the
+        // literal matched nothing, and two cases "planted" the bytes the tree already had. Now each
+        // plant finds the writing THROUGH THE GATE'S OWN SHAPES, at the figure the enumeration
+        // owes, and writes a figure the enumeration does not state in its place: a reworded
+        // sentence moves the plant with it, a changed enumeration moves its figures with it, and a
+        // writing that is gone leaves the overlay unchanged, which the runner reports as a plant
+        // that changed nothing rather than a pass.
         let spec = cx.read(DOCS[0]).unwrap_or_default();
-        let plants: [(&str, &str, &str); 4] = [
+        let figures = owed(cx).ok();
+        let plants: [(&str, Shape, Figure); 4] = [
             (
-                "a stale 178 written back into the spec is RED",
-                "the 181 v1.5.5 hook tests: 69",
-                "the 178 v1.5.5 hook tests: 69",
+                "a stale size written back into the spec is RED",
+                Shape::After(" v1.5.5 hook tests"),
+                Figure::Size,
             ),
             (
                 "a split that no longer sums is RED",
-                "69 of llm origin",
-                "70 of llm origin",
+                Shape::After(" of llm origin"),
+                Figure::Llm,
             ),
             (
                 "the flip gate's figure is read where it is written",
-                "green on the driver — 181:",
-                "green on the driver — 184:",
+                Shape::Before("every hook test green on the driver — "),
+                Figure::Size,
             ),
             (
                 "the kernel-side split is read where it is written",
-                "112 of kernel, loader and ranking origin",
-                "114 of kernel, loader and ranking origin",
+                Shape::After(" of kernel, loader and ranking origin"),
+                Figure::Rest,
             ),
         ];
-        for (name, from, to) in plants {
+        for (name, shape, figure) in plants {
+            let want = figures.map(|o| figure.of(o));
+            let planted = want.and_then(|w| with_stale(&spec, shape, w));
+            let naming = match (want, &planted) {
+                (Some(w), Some(_)) => format!("writes {} where the suite owes {w}", w + 1),
+                _ => "where the suite owes".to_string(),
+            };
             let mut ov = Overlay::new();
-            ov.set(DOCS[0], spec.replacen(from, to, 1));
+            ov.set(DOCS[0], planted.unwrap_or_else(|| spec.clone()));
             report.push(prove_red(
                 cx,
                 self,
                 name,
                 &[ROW_WRITTEN],
                 ov,
-                &["where the suite owes"],
+                &[naming.as_str()],
             ));
         }
-        // THE SOURCE MOVES, THE WRITINGS DO NOT: an enumeration that says 182 reds every 181.
+        // THE SOURCE MOVES, THE WRITINGS DO NOT: an enumeration one larger reds every writing of
+        // today's figure. The constants are rewritten at the values the file states, read the way
+        // the gate reads them, so the plant follows the enumeration wherever it goes.
         let source = cx.read(SOURCE).unwrap_or_default();
         let mut ov = Overlay::new();
-        ov.set(
-            SOURCE,
-            source
-                .replacen(
-                    "HOOK_PARITY_TESTS: usize = 181",
-                    "HOOK_PARITY_TESTS: usize = 182",
-                    1,
-                )
-                .replacen("CORE_ORIGIN: usize = 112", "CORE_ORIGIN: usize = 113", 1),
-        );
+        let mut moved_to = String::from("where the suite owes");
+        if let Some(o) = figures {
+            ov.set(
+                SOURCE,
+                source
+                    .replacen(
+                        &format!("HOOK_PARITY_TESTS: usize = {};", o.size),
+                        &format!("HOOK_PARITY_TESTS: usize = {};", o.size + 1),
+                        1,
+                    )
+                    .replacen(
+                        &format!("CORE_ORIGIN: usize = {};", o.rest),
+                        &format!("CORE_ORIGIN: usize = {};", o.rest + 1),
+                        1,
+                    ),
+            );
+            moved_to = format!("where the suite owes {}", o.size + 1);
+        } else {
+            ov.set(SOURCE, source);
+        }
         report.push(prove_red(
             cx,
             self,
             "every writing is held to the enumeration's constant, read from its file",
             &[ROW_WRITTEN],
             ov,
-            &["where the suite owes 182"],
+            &[moved_to.as_str()],
         ));
         let m4 = QUOTED[0].0;
         let text = cx.read(m4).unwrap_or_default();
@@ -395,6 +461,28 @@ mod tests {
         );
         assert!(writings_on("the hook tests run on the driver").is_empty());
         assert!(writings_on("~~184~~ v1.5.5 hook tests").is_empty());
+    }
+
+    #[test]
+    fn a_plant_rewrites_the_writing_it_finds_and_nothing_else() {
+        let spec = "x\nthe ~~184~~ 181 v1.5.5 hook tests: ~~70~~ 69 of llm origin\n\
+                    every hook test green on the driver — 181 (~~184~~)\n";
+        let planted = with_stale(spec, Shape::After(" v1.5.5 hook tests"), 181).expect("found");
+        assert!(
+            planted.contains("~~184~~ 182 v1.5.5 hook tests"),
+            "{planted}"
+        );
+        let planted = with_stale(
+            spec,
+            Shape::Before("every hook test green on the driver — "),
+            181,
+        )
+        .expect("found");
+        assert!(planted.contains("driver — 182 (~~184~~)"), "{planted}");
+        let planted = with_stale(spec, Shape::After(" of llm origin"), 69).expect("found");
+        assert!(planted.contains("~~70~~ 70 of llm origin"), "{planted}");
+        // A writing that is not there is NOT a plant: no silent no-op text comes back.
+        assert!(with_stale(spec, Shape::After(" of llm origin"), 68).is_none());
     }
 
     #[test]

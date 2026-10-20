@@ -171,6 +171,15 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 /// The transport kind's ABI version: new in 1.6.0 (v1.5.5 had no transport kind ABI), so it ships `1`.
 pub const ABI_VERSION: u32 = 1;
 
+/// The transport kind's generation as the Rust face states it (`Plugin::abi`): [`ABI_VERSION`]
+/// itself, defined here and nowhere else, so a bump of the kind's version moves it and there is no
+/// second number to fall behind (THE DESIGN, the ABI folders: an ABI version constant lives under `abi/`).
+pub const TRANSPORT_ABI: crate::transport::AbiVersion =
+    crate::transport::AbiVersion(ABI_VERSION as u16);
+
+// The Rust face is a `u16`: a kind version that outgrew it would truncate, so it refuses to build.
+const _: () = assert!(ABI_VERSION <= u16::MAX as u32);
+
 /// [`crate::abi::mechanism::call::InHead::op`] of each transport op, in table order: kind op `k` is
 /// [`LIFECYCLE_SLOTS`]` + k`.
 pub mod slot {
@@ -873,6 +882,11 @@ pub struct DialIn {
     pub head: InHead,
     /// The destination.
     pub dest: *const Destination,
+    /// THE SUPERVISION KEY of the member this dial runs a program for, opaque: minted fresh for
+    /// each member and kept while the member's program is unchanged across re-declarations, so a
+    /// carrier that supervises what it runs resets its supervision exactly when the member is new.
+    /// `0` = no member identity (an authority dial, or a program no member runs). Appended.
+    pub supervision_key: u64,
 }
 
 /// `dial`'s `out`.
@@ -1017,6 +1031,16 @@ pub struct LocateIn {
     pub accept: u32,
     /// Alignment padding.
     pub _accept_reserved: u32,
+    /// HOST buffer for THE FRAMER'S OWN HEAD LINES on a request to `target`: the field lines its
+    /// wire adds to an outgoing head that does not state them (a default it would otherwise write
+    /// at `encode`). The host adds each the request does not carry to the head BEFORE the auth
+    /// kind signs it, so the auth signs the complete head and nothing is added after it (THE
+    /// DESIGN section 6, step 5); the framer then writes the head as handed and adds no line of
+    /// its own. Field lines, `name: value` CRLF each. Appended: a framer that predates it states
+    /// none, and adds its defaults at `encode` as before.
+    pub defaults_buf: *mut u8,
+    /// Its capacity.
+    pub defaults_cap: usize,
 }
 
 /// `locate`'s `out`.
@@ -1045,6 +1069,10 @@ pub struct LocateOut {
     pub alpn_written: u64,
     /// Short answer: the bytes `alpn_buf` needs.
     pub alpn_needed: u64,
+    /// Bytes of `defaults_buf` written ([`LocateIn::defaults_buf`]); `0` = the framer adds no line.
+    pub defaults_written: u64,
+    /// Short answer: the bytes `defaults_buf` needs.
+    pub defaults_needed: u64,
 }
 
 /// Every framer op's `out`.
@@ -1203,6 +1231,14 @@ pub struct RefuseIn {
     pub status: u32,
     /// Alignment padding.
     pub _reserved2: u32,
+    /// `1` = a response head already went out on this stream, set by the host, which sent it; the
+    /// framer then writes the refusal as closing lines only. `0` = no head went out (and always on
+    /// a refusal for the whole connection): the refusal is the whole answer, and the framer writes
+    /// head lines only here, for an answer that is its closing lines alone. Appended (Q128 grpc
+    /// L1): a framer cannot tell from its own state whether the host answered the head.
+    pub head_sent: u32,
+    /// Alignment padding.
+    pub _reserved3: u32,
 }
 
 /// `finish`'s `in` (the framer's `close`).

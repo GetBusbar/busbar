@@ -547,6 +547,58 @@ impl Drop for Meta {
     fn drop(&mut self) {
         self.give_back();
         self.reply.settle(Outcome::Fault, false);
+        hold_past_lock(&self.instance);
+    }
+}
+
+std::thread_local! {
+    /// THE INSTANCES A WORKER LOOP LETS GO WITH NO LOCK HELD (THE DESIGN §11.13 M1, "No plugin code
+    /// (`dlclose` included) runs under a host lock"): `Some` on a dispatcher worker's own thread
+    /// while [`run`] runs. An op's [`Meta`] and a driver ticket's [`Driver`] are let go while the
+    /// worker's state lock is held, and either may hold an instance's last reference, whose drop
+    /// closes its connections (a transport's code) and unloads its library. Each keeps its instance
+    /// here instead, and the loop lets the list go once the lock is released.
+    static LET_GO: std::cell::RefCell<Option<Vec<Arc<Instance>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Keep `instance` past a drop made under the worker's lock: on a worker loop's own thread the loop
+/// takes it by [`let_go`] and drops it with the lock released; on any other thread nothing is kept.
+fn hold_past_lock(instance: &Arc<Instance>) {
+    // `try_with`: a drop made while the thread itself is ending keeps nothing.
+    let _ = LET_GO.try_with(|l| {
+        if let Some(held) = l.borrow_mut().as_mut() {
+            held.push(Arc::clone(instance));
+        }
+    });
+}
+
+/// The instances held past the worker's lock so far, to be dropped by the caller once it has let
+/// the lock go.
+fn let_go() -> Vec<Arc<Instance>> {
+    LET_GO.with(|l| {
+        l.borrow_mut()
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
+    })
+}
+
+/// A worker loop's [`LET_GO`] list for its life: armed when made, and on the way out (every
+/// return of [`run`], after its lock guard is gone) what is left is let go and the list disarmed.
+struct LetGo;
+
+impl LetGo {
+    fn arm() -> Self {
+        LET_GO.with(|l| *l.borrow_mut() = Some(Vec::new()));
+        Self
+    }
+}
+
+impl Drop for LetGo {
+    fn drop(&mut self) {
+        let left = LET_GO.with(|l| l.borrow_mut().take());
+        drop(left);
     }
 }
 
@@ -659,6 +711,13 @@ pub(crate) struct Driver {
     frame: Option<Box<dyn DriveFrame>>,
     pending: bool,
     wake_at_ns: u64,
+}
+
+impl Drop for Driver {
+    /// A driver ticket is let go under the worker's lock (a recycle): its instance is held past it.
+    fn drop(&mut self) {
+        hold_past_lock(&self.instance);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1435,10 +1494,19 @@ pub(crate) fn next_count(count: u32) -> Option<u32> {
 /// THE WORKER LOOP: messages, then timers, then one runnable action; sleep until the next timer
 /// or message.
 pub(crate) fn run(w: Arc<Worker>, rx: Receiver<Msg>, env: Arc<Env>) {
+    // Made before the lock guard, so every return lets the guard go first and this second.
+    let _let_go = LetGo::arm();
     // Inside the process's runtime once it is known, for the rest of this worker's life.
     let mut entered: Option<tokio::runtime::EnterGuard<'static>> = None;
     let mut st = w.lock();
     loop {
+        // What the last turn let go under the lock is dropped with it released (§11.13 M1).
+        let late = let_go();
+        if !late.is_empty() {
+            drop(st);
+            drop(late);
+            st = w.lock();
+        }
         if entered.is_none() {
             if let Some(handle) = env.runtime.get() {
                 let handle: &'static tokio::runtime::Handle = Box::leak(Box::new(handle.clone()));
@@ -1468,7 +1536,9 @@ pub(crate) fn run(w: Arc<Worker>, rx: Receiver<Msg>, env: Arc<Env>) {
             }
             continue;
         }
+        let late = let_go();
         drop(st);
+        drop(late);
         let m = rx.recv_timeout(wait);
         st = w.lock();
         match m {

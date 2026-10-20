@@ -111,6 +111,11 @@ static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
         holder
     });
 
+/// [`CARD`]'s pin: the history a rig that names no card of its own pins its units to.
+fn card_pin() -> Option<crate::root::kernel::PinnedHistory> {
+    CARD.pin()
+}
+
 /// The marker the rewrite hook plants in the prompt; a tap payload carrying it saw the rewrite.
 pub(super) const REWRITTEN: &str = "rewritten-by-the-global-rewrite-seat";
 
@@ -512,6 +517,50 @@ pub(super) struct RigOpts<'a> {
     /// The deployment's `limits.request_body_max_bytes` (`None`: the default): the translation cap
     /// the kernel hands the door in its settings, which the plane enforces (row 155).
     pub request_body_max_bytes: Option<usize>,
+    /// The node's book keeps its journal in a configured store that refuses, and the lane to it is
+    /// full ([`full_journal_book`]): the node fails closed on every new unit (H3).
+    pub full_journal: bool,
+    /// The deployment's `rate_card:` (`None`: no card, billing off): the governance book prices
+    /// the key's counts against it.
+    pub rate_card: Option<&'a BTreeMap<String, busbar_kernel::config::RateEntryCfg>>,
+    /// The flat request fee, in cents (`None`: 1 cent).
+    pub fee_cents: Option<i64>,
+    /// The card history a unit is pinned to at its door, which the node's book prices its line
+    /// against (`None`: the rig's own priceless card).
+    pub pin: Option<fn() -> Option<crate::root::kernel::PinnedHistory>>,
+}
+
+/// A NODE'S BOOK WHOSE JOURNAL CANNOT REACH ITS STORE: the journal is kept by a configured store
+/// that refuses every write, the lane to it holds one batch, and three appends have filled it, so
+/// the node's `journal_refusal` names the full journal and the store (`test-store`).
+pub(crate) fn full_journal_book() -> Arc<std::sync::Mutex<crate::root::durability::Durability>> {
+    let slots = crate::root::store_double::RecordSlots::new();
+    slots.refuse(true);
+    let lane = crate::root::durability::JournalLane::with_capacity(slots.calls(), "test-store", 1)
+        .expect("the lane starts");
+    let book = Arc::new(std::sync::Mutex::new(
+        crate::root::durability::build_on_store(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            0,
+            lane,
+            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+            Box::new(|| None),
+            None,
+        )
+        .expect("the store reads back"),
+    ));
+    let token = busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>();
+    for _ in 0..3 {
+        let _lost = book.lock().unwrap().journal.append(
+            &token,
+            busbar_contract::caps::StepName::Meter,
+            &[busbar_kernel_wal::Entry::new(
+                busbar_kernel_wal::RecordClass::Load,
+                Vec::new(),
+            )],
+        );
+    }
+    book
 }
 
 /// `text`, each line indented by `by` spaces (empty lines dropped).
@@ -920,10 +969,11 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         .into_iter()
         .chain(configured)
         .collect();
-    let cost = if groups.is_empty() {
-        CostModel::flat(1)
+    let fee = opts.fee_cents.unwrap_or(1);
+    let cost = if groups.is_empty() && opts.rate_card.is_none() {
+        CostModel::flat(fee)
     } else {
-        CostModel::resolve_parts(None, 1, &groups)
+        CostModel::resolve_parts(opts.rate_card, fee, &groups)
     };
     let (key, token) = gov
         .mint_signed(
@@ -957,8 +1007,14 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     }
     gov.hydrate_budgets(&cost, 0).expect("hydrate");
     let node = Arc::new(Node::new());
-    let book = crate::root::durability::node_book_over(Box::new(|| CARD.pin()));
-    node.bind_book(Arc::clone(&book.durability));
+    let pin = opts.pin.unwrap_or(card_pin);
+    let book = crate::root::durability::node_book_over(Box::new(pin));
+    let durability = if opts.full_journal {
+        full_journal_book()
+    } else {
+        Arc::clone(&book.durability)
+    };
+    node.bind_book(Arc::clone(&durability));
     let post = Arc::new(NodeEndPost::new(Arc::clone(&node)));
     let site = Arc::clone(&post);
     let book_money = Arc::clone(&gov);
@@ -1158,20 +1214,15 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
             );
         })
     };
-    let doors = door_routes(
-        served,
-        || CARD.pin(),
-        &[],
-        &busbar_kernel::base_data_core_lines(&app),
-    )
-    .expect("its claims mount");
+    let doors = door_routes(served, pin, &[], &busbar_kernel::base_data_core_lines(&app))
+        .expect("its claims mount");
     let (router, _admin, _handle) =
         busbar_kernel::build_split_routers_serving(Arc::clone(&app), doors, 1 << 20, 0, false);
     Ok(DoorRig {
         router,
         token: token.expose(&busbar_kernel::seal::lend()).to_string(),
         app,
-        book: Arc::clone(&book.durability),
+        book: durability,
         key_id: key.id.to_string(),
         gov,
         appliers,

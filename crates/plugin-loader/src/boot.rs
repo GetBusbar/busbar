@@ -992,6 +992,7 @@ impl Secrets {
     }
 
     /// Overwrite every secret byte with zero.
+    #[allow(unsafe_code)] // REVIEWED: a volatile write, so the zeroing is never elided
     fn wipe(&mut self) {
         for b in &mut self.0 {
             for byte in b.iter_mut() {
@@ -1031,5 +1032,6 @@ fn bind_one(c: &Candidate, bind: Bind) -> Result<Bound, String> {
 }
 
 #[cfg(test)]
+#[allow(unsafe_code)] // TEST ONLY: raw doors
 #[path = "tests/boot_tests.rs"]
 mod tests;

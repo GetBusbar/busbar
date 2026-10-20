@@ -33,7 +33,6 @@ fn overlapping_history() -> History {
         card: card_at(3.0),
         appended_at: 900,
         author: Author::Amend {
-            operator_fingerprint: "op-1".to_string(),
             reason_hash: [7u8; 32],
         },
     });

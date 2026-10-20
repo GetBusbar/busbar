@@ -175,7 +175,6 @@ fn a_back_dated_correction_reprices_exactly_its_window_and_nothing_outside_it() 
         ),
         appended_at: 9_000_000,
         author: Author::Amend {
-            operator_fingerprint: "op".to_string(),
             reason_hash: [0u8; 32],
         },
     });

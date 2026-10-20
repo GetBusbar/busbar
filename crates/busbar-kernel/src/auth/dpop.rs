@@ -12,8 +12,9 @@
 //!    `htu`, `iat` window, `ath`, single-use `jti`, and the proof key's thumbprint equal to the
 //!    token's `cnf.jkt`). Proven, the token goes to the chain exactly as a bearer would, so the
 //!    chain still verifies its signature, issuer and audience. Anything else is refused.
-//! 2. **A DPoP-bound token presented as a bearer** (any carrier) is refused: s7.1, a bound token
-//!    without its proof is a stolen token.
+//! 2. **A DPoP-bound token presented as a bearer** (any carrier), with an authorization server
+//!    configured, is refused: s7.1, a bound token without its proof is a stolen token. With none,
+//!    it is a bearer like any other, as 1.5.5 judged it.
 //! 3. **Everything else is untouched**, and that is most requests: a token that was never bound
 //!    takes the bearer path it always took, and with no authorization server configured an
 //!    `Authorization: DPoP` header is what it was in 1.5.5 — not a credential carrier.
@@ -84,7 +85,13 @@ pub(crate) async fn judge(
             SenderConstraint::Refused
         };
     }
-    if bearer.is_some_and(is_dpop_bound) {
+    // A bound bearer is refused only where this deployment runs the authorization server that
+    // binds tokens (THE DESIGN §2 PORT R7/R8, l.364: the default is 1.5.5's behaviour; Law 7,
+    // l.1917: nothing runs without its verb configured). PARITY: with no `oauth_as:` a token
+    // carrying `cnf.jkt` is a bearer like any other, as 1.5.5 judged it (v1.5.5
+    // `crates/busbar/src/auth/mod.rs`:1504-1515: every non-signed request went straight to the
+    // chain, and 1.5.5 had no DPoP code at all).
+    if app.oauth_as.is_some() && bearer.is_some_and(is_dpop_bound) {
         return SenderConstraint::Refused;
     }
     SenderConstraint::Unconstrained
