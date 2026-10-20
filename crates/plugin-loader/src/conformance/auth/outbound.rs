@@ -29,7 +29,7 @@
 //!                         "respond": { "status": 200, "body": "<the token response>" } }, ... ],
 //!   "expires_in": <the first token's lifetime, seconds>,
 //!   "refreshed_fields": [["name", "value"(, flags)], ...],
-//!   "refusal": "Refused" | "Failed" | "Pending" }
+//!   "refusal": "Refused" | "Failed" | "Pending" | "Ready" }
 //! ```
 //!
 //! An ON-DEMAND minting style (one exchanged per call, one token cell per scope, no refresh ahead of
@@ -64,7 +64,8 @@
 //! EXACTLY ONE new exchange (refresh-ahead), and the next `fields` writes `refreshed_fields`. Then
 //! a FAILING endpoint, on an instance of its own: every exchange answers status 500, the mint
 //! `tick` makes exactly one, and `fields` answers the declared `refusal` (its shape recorded in the
-//! transcript), `outbound_ready` 0. Every instance: `outbound_ready` 1, `close` 1, and `fields`
+//! transcript; `Ready` with no fields where the style, as 1.5.5's bearer did, sends no credential
+//! before its first token), `outbound_ready` 0. Every instance: `outbound_ready` 1, `close` 1, and `fields`
 //! after `close` 0 (the host refuses an op on a closed instance before any crossing). The inbound
 //! and login families the tail does not declare answer REFUSED.
 //!
@@ -1284,11 +1285,12 @@ fn contract(fold: &Fold, styles: &[Style]) {
         let Some(m) = x.minting.as_ref().filter(|m| m.on_demand.is_none()) else {
             continue;
         };
-        assert!(
-            !at(&l("fields before the first mint")).starts_with("Ready"),
-            "{}: nothing is presented before a token is minted: {}",
-            l("fields before the first mint"),
-            at(&l("fields before the first mint"))
+        assert_eq!(
+            at(&l("fields before the first mint")),
+            "Ready fields=[]",
+            "{}: before the first mint a call answers READY with no fields, so the upstream \
+             answers 401 (THE DESIGN, outbound auth)",
+            l("fields before the first mint")
         );
         assert_eq!(
             at(&l("refresh due ahead of expiry")),

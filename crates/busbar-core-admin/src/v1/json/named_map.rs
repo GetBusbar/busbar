@@ -567,6 +567,13 @@ async fn apply(
                 &snapshot.plugin_routes,
                 &installed.boot_route_paths,
             );
+            // …and, on the same discipline, a mutation that FIRST writes the section of a plane the
+            // process did not open at boot: stored and validated, but the plane is opened once, at
+            // process start, so it serves nothing until a restart (the build gave it no slot).
+            let awaiting_restart = (
+                awaiting_restart,
+                busbar_kernel::state::planes_awaiting_restart_added(&installed, &snapshot),
+            );
             // PERSIST-then-SWAP, fail-closed: the overlay takes the change FIRST; only if disk
             // accepts it does the engine swap. `commit_then` (not `commit`) so a governance
             // credential rotation fires only once persist AND swap have both returned `Ok`.
@@ -632,7 +639,7 @@ async fn apply(
             super::service(&handle)
                 .get_named_def(section, &name)
                 .await
-                .map(|def| MutatedDefView::new(def, awaiting_restart)),
+                .map(|def| MutatedDefView::new(def, awaiting_restart.0, awaiting_restart.1)),
         ),
         version,
     )
@@ -654,8 +661,10 @@ pub(crate) struct MutatedDefView {
     def: crate::v1::contract::NamedDefView,
     /// The plugin-route PATHS this mutation declared that the process cannot serve until it restarts,
     /// because the axum router registers each path once, at boot, and a config apply swaps only
-    /// `Arc<App>`. Empty (and omitted) for every mutation that adds no such path — including every
-    /// REMOVAL, which genuinely does apply live.
+    /// `Arc<App>`; then the plane SECTIONS it first wrote whose plane the process did not open at
+    /// boot (a plane is opened once, at process start, when its section is configured). Empty (and
+    /// omitted) for every mutation that adds neither — including every REMOVAL, which genuinely
+    /// does apply live.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     reload_to_apply: Vec<String>,
     /// The operator-facing sentence for [`Self::reload_to_apply`]; omitted with it.
@@ -664,22 +673,50 @@ pub(crate) struct MutatedDefView {
 }
 
 impl MutatedDefView {
-    /// Wrap one stored definition with the restart signal, if any.
-    fn new(def: crate::v1::contract::NamedDefView, awaiting_restart: Vec<String>) -> Self {
-        let note = (!awaiting_restart.is_empty()).then(|| {
-            format!(
-                "stored and applied, EXCEPT the newly declared route(s) {} — each plugin route path \
-                 is registered on the HTTP router once, at process start, and a config apply swaps \
-                 only the config snapshot, so a route that did not exist at boot keeps answering 404 \
-                 until the next RESTART (removing one, by contrast, takes effect immediately)",
-                awaiting_restart.join(", ")
-            )
-        });
+    /// Wrap one stored definition with the restart signal, if any: the route `paths` and the plane
+    /// `planes` this mutation introduced that the process cannot serve until it restarts.
+    fn new(
+        def: crate::v1::contract::NamedDefView,
+        paths: Vec<String>,
+        planes: Vec<String>,
+    ) -> Self {
+        let note = restart_note(&paths, &planes);
+        let mut reload_to_apply = paths;
+        reload_to_apply.extend(planes);
         Self {
             def,
-            reload_to_apply: awaiting_restart,
+            reload_to_apply,
             note,
         }
+    }
+}
+
+/// THE OPERATOR'S SENTENCE for a restart-to-apply signal: the newly declared route `paths` (each
+/// registered on the router once, at boot) and the plane sections `planes` first written for a
+/// plane the process did not open at boot (each plane opened once, at boot, Law 7). `None` when
+/// neither.
+/// The routes-only sentence is the one this answer has always given.
+pub(crate) fn restart_note(paths: &[String], planes: &[String]) -> Option<String> {
+    let routes = (!paths.is_empty()).then(|| {
+        format!(
+            "stored and applied, EXCEPT the newly declared route(s) {} — each plugin route path \
+             is registered on the HTTP router once, at process start, and a config apply swaps \
+             only the config snapshot, so a route that did not exist at boot keeps answering 404 \
+             until the next RESTART (removing one, by contrast, takes effect immediately)",
+            paths.join(", ")
+        )
+    });
+    let planes = (!planes.is_empty()).then(|| {
+        format!(
+            "stored and validated, but the plane section(s) {} serve nothing until the next \
+             RESTART — a plane is opened once, at process start, when its section is configured, \
+             and this process started without it",
+            planes.join(", ")
+        )
+    });
+    match (routes, planes) {
+        (Some(r), Some(p)) => Some(format!("{r}; {p}")),
+        (r, p) => r.or(p),
     }
 }
 
@@ -725,10 +762,16 @@ fn validate_definition(
         )));
     }
     let Some(obj) = def.as_object() else {
-        return Err(AdminError::Validation(format!(
-            "a {} definition must be an object",
-            section.singular()
-        )));
+        // 1.5.5's sentence, byte for byte, for a section whose entries name a `module:` (its wire
+        // bytes: Q128 core-admin u19); a section with no plugin behind it has no `module` to show.
+        return Err(AdminError::Validation(if section.requires_module() {
+            format!(
+                "a {} definition must be an object (`{{\"module\": …}}`)",
+                section.singular()
+            )
+        } else {
+            format!("a {} definition must be an object", section.singular())
+        }));
     };
     // `module:` is required only of a PLUGIN-INSTANCE section. A `tools:` or an `agents:` entry is
     // a remote endpoint somebody else runs; there is no plugin behind either to name, and demanding
@@ -921,3 +964,7 @@ pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
     }
     out
 }
+
+#[cfg(test)]
+#[path = "tests/named_map_tests.rs"]
+mod tests;

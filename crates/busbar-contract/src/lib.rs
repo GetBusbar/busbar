@@ -32,7 +32,7 @@ pub mod auth_calls;
 pub mod authz;
 // THE PLUGIN ABI AND ITS AUTHOR-SIDE SDK (DECISIONS #84: the SDK and the contract share one definition,
 // "the plugin contract", so they MERGE; #83: contract = shapes). `abi` is the former `busbar-plugin`
-// (the shared airlock root, the COLD JSON lane `abi::cold`, the HOT `#[repr(C)]` lane `abi::hot`) and
+// (the shared airlock root; its COLD JSON and HOT `#[repr(C)]` lanes are deleted, status row 84) and
 // `abi::sdk` is the former `busbar-plugin-sdk` (the export macros, the one export boundary, the one
 // dropped-in door). Module-path-only moves: every item keeps its name, and every `#[repr(C)]` layout is
 // unchanged (`tests/layout_golden.rs`). `#[allow(missing_docs, missing_debug_implementations)]`

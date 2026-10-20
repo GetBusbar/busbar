@@ -4,7 +4,33 @@
 //! Tests for `crates/busbar-plugin/src/lib.rs`.
 
 use super::*;
-use crate::abi::hot::Facts;
+
+/// A sized POD of the shape the guard reads: a leading `size`, then fields appended in order.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Pod {
+    size: u32,
+    _version: u16,
+    _reserved: u16,
+    tokens: u64,
+    flags: u32,
+    tail_ptr: *const u8,
+    tail_len: usize,
+}
+
+impl Pod {
+    fn whole() -> Pod {
+        Pod {
+            size: core::mem::size_of::<Pod>() as u32,
+            _version: 1,
+            _reserved: 0,
+            tokens: 10,
+            flags: 0,
+            tail_ptr: core::ptr::null(),
+            tail_len: 0,
+        }
+    }
+}
 
 #[test]
 fn preamble_layout_is_frozen() {
@@ -74,16 +100,28 @@ fn check_preamble_refuses_a_peer_of_the_pre_resize_layout() {
 
 #[test]
 fn sized_field_guard_hides_truncated_tail() {
-    let g = Facts::new(10, 100, 1, 0, 0, b"pool");
+    let g = Pod::whole();
     // A full-size struct reveals a tail field.
-    assert_eq!(read_sized_field!(&*g, g.size, Facts, flags), Some(0));
+    assert_eq!(read_sized_field!(&g, g.size, Pod, flags), Some(0));
     // A sender that advertised only the preamble reveals nothing past it.
-    let mut truncated = *g;
+    let mut truncated = g;
     truncated.size = 6; // size(u32)=4 + version(u16)=2 — preamble only
     assert_eq!(
-        read_sized_field!(&truncated, truncated.size, Facts, flags),
+        read_sized_field!(&truncated, truncated.size, Pod, flags),
         None
     );
+}
+
+/// A peer's attested size is CLAMPED to this build's struct: an over-claim never widens the read
+/// window, and a shorter claim is honoured verbatim (the append-only rule).
+#[test]
+fn an_over_large_attested_size_is_clamped_to_this_builds_struct() {
+    let ours = core::mem::size_of::<Pod>();
+    assert_eq!(honoured_size(u32::MAX, ours), ours as u32);
+    assert_eq!(honoured_size(ours as u32 + 1, ours), ours as u32);
+    // A shorter claim is honoured verbatim — that is the append-only rule, untouched.
+    assert_eq!(honoured_size(16, ours), 16);
+    assert_eq!(honoured_size(ours as u32, ours), ours as u32);
 }
 
 #[test]
@@ -98,93 +136,30 @@ fn write_out_publishes_on_ok_and_tolerates_null() {
     unsafe { write_out(core::ptr::null_mut::<MaybeUninit<u64>>(), 99_u64) };
 }
 
-// ── The minor-20 Usage keyed-unit tail (1.6.0 M1): pack/decode + sized-guard back-compat ────────
-
-#[test]
-fn usage_units_pack_decode_round_trips() {
-    use crate::abi::hot::pod::{decode_usage_units, pack_usage_units};
-    use crate::abi::hot::{AdmissionId, Usage, UsageComponent};
-
-    let mut units = std::collections::BTreeMap::new();
-    units.insert("classifications".to_string(), 3u64);
-    units.insert("search".to_string(), 42u64);
-    let packed = pack_usage_units(&units);
-
-    let key = b"vk_1";
-    let model = b"cmd-r";
-    let provider = b"prov-a";
-    let guard = Usage::with_units(
-        UsageComponent::Queries,
-        1,
-        AdmissionId(7),
-        key,
-        model,
-        provider,
-        &packed,
-    );
-    // A full minor-20 Usage decodes the exact map back.
-    assert_eq!(unsafe { decode_usage_units(&*guard) }, units);
-}
-
-#[test]
-fn usage_units_tail_hidden_from_a_pre_minor_20_sender() {
-    use crate::abi::hot::pod::{decode_usage_units, pack_usage_units};
-    use crate::abi::hot::{AdmissionId, Usage, UsageComponent};
-
-    let mut units = std::collections::BTreeMap::new();
-    units.insert("search".to_string(), 9u64);
-    let packed = pack_usage_units(&units);
-    let guard = Usage::with_units(
-        UsageComponent::Queries,
-        1,
-        AdmissionId(1),
-        b"k",
-        b"m",
-        b"p",
-        &packed,
-    );
-
-    // Simulate an older peer that advertised only the minor-5 size (everything before `units_ptr`):
-    // the sized-struct guard must hide `units_ptr`/`units_len`, so the host ledgers `amount` alone.
-    let mut old = *guard;
-    old.size = core::mem::offset_of!(Usage, units_ptr) as u32;
-    assert_eq!(read_sized_field!(&old, old.size, Usage, units_ptr), None);
-    assert!(
-        unsafe { decode_usage_units(&old) }.is_empty(),
-        "a pre-minor-20 sender must expose NO keyed units (append-only back-compat)"
-    );
-
-    // The current sender (full size) still exposes them.
-    assert_eq!(unsafe { decode_usage_units(&*guard) }, units);
-}
-
 /// The sized-field guard must be safe to point at a peer buffer that is SHORTER than the struct it
-/// describes. Reading through a `&Usage` cannot be: the reference asserts the full 96 bytes are a
-/// valid, dereferenceable `Usage` the instant it is formed, which over a 64-byte peer buffer is a
-/// claim about memory that does not exist. The pointer form makes the advertised size the only thing
-/// consulted, and touches nothing past it.
+/// describes. Reading through a reference cannot be: a `&Pod` asserts the whole struct is valid and
+/// dereferenceable the instant it is formed, which over a shorter peer buffer is a claim about memory
+/// that does not exist. The pointer form makes the advertised size the only thing consulted, and
+/// touches nothing past it.
 #[test]
 fn sized_field_guard_reads_a_buffer_shorter_than_the_struct() {
-    use crate::abi::hot::pod::decode_usage_units;
-    use crate::abi::hot::Usage;
-
-    // A peer that advertises only the pre-units prefix, in a buffer that is only that long — there
-    // are no bytes at all where `units_ptr`/`units_len` would sit.
-    const PREFIX: usize = 64;
+    // A peer that advertises only the prefix before `tail_ptr`, in a buffer that is only that long —
+    // there are no bytes at all where `tail_ptr`/`tail_len` would sit.
+    const PREFIX: usize = core::mem::offset_of!(Pod, tail_ptr);
     // Deliberately a HEAP buffer, not the array clippy would prefer: the point of the test is that
     // the allocation ENDS at `PREFIX`, so a read past it is a real out-of-bounds access that Miri or
     // ASan will flag. A stack array is surrounded by other live stack bytes and would swallow it.
     #[allow(clippy::useless_vec)]
     let mut buf = vec![0u8; PREFIX];
     buf[..4].copy_from_slice(&(PREFIX as u32).to_ne_bytes());
-    let p = buf.as_ptr().cast::<Usage>();
+    let p = buf.as_ptr().cast::<Pod>();
 
     // `p` addresses `PREFIX` live bytes whose leading `size` says exactly that; the guard reads
     // nothing beyond it.
-    assert_eq!(read_sized_field!(p, PREFIX as u32, Usage, units_ptr), None);
-    assert_eq!(read_sized_field!(p, PREFIX as u32, Usage, units_len), None);
-    // SAFETY: as above — the hidden tail means the decoder yields an empty map without a read.
-    assert!(unsafe { decode_usage_units(p) }.is_empty());
+    assert_eq!(read_sized_field!(p, PREFIX as u32, Pod, tail_ptr), None);
+    assert_eq!(read_sized_field!(p, PREFIX as u32, Pod, tail_len), None);
+    // A field inside the prefix still reads.
+    assert_eq!(read_sized_field!(p, PREFIX as u32, Pod, tokens), Some(0));
 }
 
 /// THE AUTH TAIL'S FACT BITS are distinct single bits, the default inbound style among them (row
