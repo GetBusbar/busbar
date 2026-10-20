@@ -3388,7 +3388,9 @@ fn a_raw_affix_target_is_a_prefix_a_star_and_a_suffix() {
         check_claims(&[claim("V", "/model/*/converse", CLAIM_RAW_AFFIX)], 0),
         Ok(())
     );
-    assert!(check_claims(&[claim("V", "/t", CLAIM_RAW_AFFIX << 1)], 0).is_err());
+    // `CLAIM_RAW_AFFIX << 1` is `CLAIM_ENTRY` now (status row 173): the first bit past the known
+    // claim bits stays refused.
+    assert!(check_claims(&[claim("V", "/t", CLAIM_ENTRY << 1)], 0).is_err());
 }
 
 /// A RAW AFFIX MATCHES THE RAW PATH AS BYTES, so the previous release's rule (`starts_with` the
