@@ -298,12 +298,12 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
         tail.dialects_len as u64,
     )
     .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
-    let mut declared = declared(&tail);
-    declared.ticket_prefix = ticket_prefix(st)?;
+    let mut decl = declared(&tail);
+    decl.ticket_prefix = ticket_prefix(st)?;
     Ok(PlaneFacts {
         bounds: Bounds::of(&tail),
         refusal_statuses,
-        declared,
+        declared: decl,
         served: ServedFacts {
             section: sections
                 .iter()
