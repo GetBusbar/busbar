@@ -8,8 +8,11 @@
 //! its own, claimed on a one-level `/twilio` path prefix). Its inbound auth is
 //! `busbar-auth-webhook-signature`, variant twilio (l.847-852). Every Twilio frame is `event`-tagged
 //! JSON (<https://www.twilio.com/docs/voice/media-streams/websocket-messages>): Twilio sends
-//! `connected`, `start`, `media`, `mark`, `dtmf` and `stop`; busbar sends `media`, `mark` and
-//! `clear`.
+//! `connected`, `start`, `media`, `mark`, `dtmf` and `stop`; a sender may write `media`, `mark` and
+//! `clear`. The legs hold busbar to `media` and `clear`; no spec line asks it to write a `mark`,
+//! so what the caller is told when the far end's audio ends is not fixed here (only that the far
+//! end is sent nothing for it). Every far-bound frame is described, and a far end's tool call must
+//! reach the caller as-is (Law 11, `BUSBAR-1.6.0.md` l.2133-2135).
 //!
 //! The session behind the Twilio door is the telephony session: the caller speaks Twilio, the far
 //! end is the realtime dialect locked to `g711_ulaw` both ways. Caller frames are pushed as caller
@@ -63,6 +66,9 @@ struct Step {
     from: u32,
     bytes: Vec<u8>,
     expect: Vec<String>,
+    /// No spec line fixes what the caller is told for this frame: only the far-bound frames are
+    /// judged (they must be `expect`), and the caller-bound ones are the plane's own.
+    caller_open: bool,
 }
 
 /// What a run of steps showed.
@@ -99,6 +105,8 @@ fn describe(e: &Emission) -> String {
                 "far-audio:{}",
                 hex(&unb64(v["audio"].as_str().unwrap_or_default()))
             )
+        } else if v["type"] == "session.update" {
+            lock_of(&v["session"])
         } else if v.is_null() {
             format!("far-bytes:{}", String::from_utf8_lossy(&e.frame))
         } else {
@@ -124,15 +132,45 @@ fn describe(e: &Emission) -> String {
     }
 }
 
-/// The frame the telephony session locks the far end with when Twilio's `start` binds the call:
-/// the operator's `streams.session` (the leg's [`SESSION`]: model `m-cap`) with `g711_ulaw` on both
-/// audio formats, as one OpenAI Realtime `session.update`. Twilio configures nothing itself
+/// A far-bound `session.update`, in the words the legs compare: its two audio formats, read in
+/// either OpenAI Realtime session shape (`input_audio_format`, or `audio.input.format.type`), and
+/// every other member it sets beyond the model and the shape's own `type`. Which shape the far end
+/// is told in is the plane's to choose; what it locks is judged.
+fn lock_of(session: &Value) -> String {
+    let format_of = |flat: &str, side: &str| {
+        let named = session[flat]
+            .as_str()
+            .or_else(|| session["audio"][side]["format"]["type"].as_str());
+        match named {
+            Some("g711_ulaw" | "audio/pcmu") => "mulaw".to_string(),
+            Some(other) => other.to_string(),
+            None => "unset".to_string(),
+        }
+    };
+    let known = ["model", "type", "audio", "input_audio_format", "output_audio_format"];
+    let more: Vec<&str> = session
+        .as_object()
+        .map(|o| {
+            o.keys()
+                .map(String::as_str)
+                .filter(|k| !known.contains(k))
+                .collect()
+        })
+        .unwrap_or_default();
+    format!(
+        "far-lock:in={},out={},more={more:?}",
+        format_of("input_audio_format", "input"),
+        format_of("output_audio_format", "output")
+    )
+}
+
+/// What the telephony session locks the far end with when Twilio's `start` binds the call: the
+/// operator's `streams.session` (the leg's [`SESSION`] sets only the model) with µ-law on both
+/// audio formats, as one `session.update`, and nothing else. Twilio configures nothing itself
 /// (THE DESIGN §2 l.418-419 and Part 2 #45: Twilio Media Streams with a µ-law codec; #45: the
 /// caller "cannot override the session's locked instructions").
 fn lock_line() -> String {
-    let lock = json!({"type": "session.update", "session": {"model": MODEL,
-        "input_audio_format": "g711_ulaw", "output_audio_format": "g711_ulaw"}});
-    format!("far-frame:{lock}")
+    "far-lock:in=mulaw,out=mulaw,more=[]".to_string()
 }
 
 /// Push `steps` through the session on `stream` (the door is open), step by step.
@@ -163,11 +201,57 @@ fn fresh(p: &Plugin<Plane>, stream: u64, steps: &[Step]) -> Run {
     run
 }
 
-fn wanted(steps: &[Step]) -> Vec<String> {
-    steps
-        .iter()
-        .map(|s| format!("{} -> [{}]", s.label, s.expect.join(", ")))
-        .collect()
+fn want_line(s: &Step) -> String {
+    let open = if s.caller_open {
+        " (far-bound frames only; the caller side is not fixed)"
+    } else {
+        ""
+    };
+    format!("{} -> [{}]{open}", s.label, s.expect.join(", "))
+}
+
+/// Where `run` departs from `steps`: every step's frames exactly as it expects, except a step whose
+/// caller side no spec line fixes, of which the far-bound frames alone are judged.
+fn departs(run: &Run, steps: &[Step]) -> Option<String> {
+    if run.lines.len() != steps.len() {
+        return Some(format!(
+            "{} step(s) answered, {} pushed: {:?}",
+            run.lines.len(),
+            steps.len(),
+            run.lines
+        ));
+    }
+    for (line, st) in run.lines.iter().zip(steps) {
+        let ok = if st.caller_open {
+            let far: Option<Vec<&str>> = line
+                .strip_prefix(st.label.as_str())
+                .and_then(|rest| rest.strip_prefix(" -> ["))
+                .and_then(|rest| rest.strip_suffix(']'))
+                .map(|rest| rest.split(", ").filter(|i| i.starts_with("far-")).collect());
+            far.is_some_and(|far| far == st.expect)
+        } else {
+            *line == want_line(st)
+        };
+        if !ok {
+            return Some(format!(
+                "the door answered `{line}`; want `{}` (all: {:?})",
+                want_line(st),
+                run.lines
+            ));
+        }
+    }
+    None
+}
+
+/// `line` with `item` among the frames it shows.
+fn with_item(line: &str, item: &str) -> String {
+    match line.strip_suffix("[]") {
+        Some(head) => format!("{head}[{item}]"),
+        None => match line.strip_suffix(']') {
+            Some(head) => format!("{head}, {item}]"),
+            None => format!("{line} [{item}]"),
+        },
+    }
 }
 
 /// A frame from Twilio, expecting `expect` back.
@@ -177,7 +261,13 @@ fn twilio(label: &str, v: &Value, expect: &[String]) -> Step {
         from: FROM_CALLER,
         bytes: bytes_of(v),
         expect: expect.to_vec(),
+        caller_open: false,
     }
+}
+
+/// Twilio's `start`: the call is bound and the far end is told the session's lock, nothing else.
+fn twilio_start(label: &str, v: &Value) -> Step {
+    twilio(label, v, &[lock_line()])
 }
 
 /// A frame from the far end, expecting `expect` back.
@@ -187,6 +277,19 @@ fn far(label: &str, v: &Value, expect: &[String]) -> Step {
         from: FROM_FAR_END,
         bytes: bytes_of(v),
         expect: expect.to_vec(),
+        caller_open: false,
+    }
+}
+
+/// The far end's `response.output_audio.done`. Twilio Media Streams has no event for it, and no
+/// spec line or ruling asks busbar to write Twilio a `mark` for it (THE DESIGN §2 l.418-419, Part 2
+/// #45: Twilio Media Streams with a µ-law codec, nothing more; streaming is new in 1.6.0, so 1.5.5
+/// has no bytes here, Part 2 #45 "1.5.5 parity N/A — it had no streaming", 1.6.0-QUESTIONS.md
+/// Q102). What reaches the caller for it is the plane's own; the far end must be sent nothing.
+fn far_audio_done(label: &str) -> Step {
+    Step {
+        caller_open: true,
+        ..far(label, &far_done(), &[])
     }
 }
 
@@ -377,7 +480,7 @@ fn fixture_steps(fx: &Fixtures, name: &str, v: &Value) -> Result<Vec<Step>, Stri
     let start = fx.get("from-twilio.start.json")?;
     let sid = fx.sid()?;
     let nothing: &[String] = &[];
-    let opening = || twilio("start", &start, nothing);
+    let opening = || twilio_start("start", &start);
     let delta_b64 = payload_of(&fx.get("to-twilio.media.json")?);
     let heard = format!("caller-media:{sid}:{delta_b64}");
     let delta = || {
@@ -388,9 +491,8 @@ fn fixture_steps(fx: &Fixtures, name: &str, v: &Value) -> Result<Vec<Step>, Stri
         )
     };
     Ok(match name {
-        "from-twilio.connected.json" | "from-twilio.start.json" => {
-            vec![twilio(name, v, nothing)]
-        }
+        "from-twilio.connected.json" => vec![twilio(name, v, nothing)],
+        "from-twilio.start.json" => vec![twilio_start(name, v)],
         "from-twilio.media.json" => {
             let audio = format!("far-audio:{}", hex(&unb64(&payload_of(v))));
             vec![opening(), twilio(name, v, &[audio])]
@@ -410,7 +512,7 @@ fn fixture_steps(fx: &Fixtures, name: &str, v: &Value) -> Result<Vec<Step>, Stri
         "to-twilio.mark.json" => vec![
             opening(),
             delta(),
-            far(name, &far_done(), &[format!("caller-mark:{sid}:named")]),
+            far_audio_done(name),
         ],
         "to-twilio.clear.json" => vec![
             opening(),
@@ -435,7 +537,6 @@ fn judge_steps(
     ends: u32,
     codec: &Result<String, String>,
 ) -> bool {
-    let want = wanted(steps);
     let seen = rig.both(|p| fresh(p, 77, steps));
     judge(
         slice,
@@ -446,8 +547,8 @@ fn judge_steps(
             if !run.anomalies.is_empty() {
                 return Err(format!("not answered READY: {:?}", run.anomalies));
             }
-            if run.lines != want {
-                return Err(format!("the door answered {:?}; want {want:?}", run.lines));
+            if let Some(e) = departs(run, steps) {
+                return Err(e);
             }
             if run.done != ends {
                 return Err(format!("{} end(s); want {ends}", run.done));
@@ -460,7 +561,7 @@ fn judge_steps(
         &|run: &Run| {
             let mut planted = run.clone();
             if let Some(last) = planted.lines.last_mut() {
-                last.push_str(" +far-audio:dead");
+                *last = with_item(last, "far-audio:dead");
             }
             planted
         },
@@ -546,7 +647,11 @@ fn transcript_steps(fx: &Fixtures) -> Result<(Vec<Step>, u32, String), String> {
                     .then(|| format!("far-audio:{}", hex(&unb64(&payload_of(ev)))))
                     .into_iter()
                     .collect();
-                steps.push(twilio(&label, ev, &audio));
+                steps.push(if event == "start" {
+                    twilio_start(&label, ev)
+                } else {
+                    twilio(&label, ev, &audio)
+                });
             }
             Some("server") => {
                 let step = match event.as_str() {
@@ -555,7 +660,7 @@ fn transcript_steps(fx: &Fixtures) -> Result<(Vec<Step>, u32, String), String> {
                         &far_delta(&payload_of(ev)),
                         &[format!("caller-media:{sid}:{}", payload_of(ev))],
                     ),
-                    "mark" => far(&label, &far_done(), &[format!("caller-mark:{sid}:named")]),
+                    "mark" => far_audio_done(&label),
                     "clear" => far(
                         &label,
                         &far_speech_started(),
@@ -668,7 +773,7 @@ fn route_script(p: &Plugin<Plane>, fx: &Fixtures) -> RouteObs {
         40,
         &[
             twilio("connected", &connected, nothing),
-            twilio("start", &start, nothing),
+            twilio_start("start", &start),
         ],
     );
     let before_start = run_steps(p, 41, &[twilio("media", &media, nothing)]);
@@ -676,7 +781,7 @@ fn route_script(p: &Plugin<Plane>, fx: &Fixtures) -> RouteObs {
         p,
         42,
         &[
-            twilio("start", &start, nothing),
+            twilio_start("start", &start),
             twilio("media", &media, &heard),
             twilio(
                 "media on another call",
@@ -689,7 +794,7 @@ fn route_script(p: &Plugin<Plane>, fx: &Fixtures) -> RouteObs {
         p,
         43,
         &[
-            twilio("start", &start, nothing),
+            twilio_start("start", &start),
             twilio(
                 "type-tagged append",
                 &json!({"type": "input_audio_buffer.append", "audio": base64_encode(&audio)}),
@@ -781,7 +886,14 @@ fn route_check(o: &RouteObs) -> Result<String, String> {
             o.dialect
         ));
     }
+    let start = format!("start -> [{}]", lock_line());
     quiet(&o.handshake, 2).map_err(|e| format!("connected then start was not quiet: {e}"))?;
+    if o.handshake.lines != ["connected -> []".to_string(), start.clone()] {
+        return Err(format!(
+            "connected then start did not lock the far end and nothing else: {:?}",
+            o.handshake.lines
+        ));
+    }
     quiet(&o.before_start, 1).map_err(|e| format!("media before start: {e}"))?;
     if o.before_start.lines != ["media -> []"] {
         return Err(format!(
@@ -790,7 +902,7 @@ fn route_check(o: &RouteObs) -> Result<String, String> {
         ));
     }
     let want_after = [
-        "start -> []".to_string(),
+        start.clone(),
         format!("media -> [far-audio:{}]", hex(&[7_u8; 160])),
         "media on another call -> []".to_string(),
     ];
@@ -802,7 +914,7 @@ fn route_check(o: &RouteObs) -> Result<String, String> {
         ));
     }
     quiet(&o.typed, 2).map_err(|e| format!("a type-tagged frame: {e}"))?;
-    if o.typed.lines != ["start -> []", "type-tagged append -> []"] {
+    if o.typed.lines != [start, "type-tagged append -> []".to_string()] {
         return Err(format!(
             "an OpenAI type-tagged frame was taken for Twilio audio: {:?}",
             o.typed.lines
@@ -812,7 +924,8 @@ fn route_check(o: &RouteObs) -> Result<String, String> {
         "the Twilio claim is on the ws transport at the one-level /twilio prefix with the \
          webhook-signature alternative alone (an upgrade line no other door shares), arrives for \
          a principal on the session model's DIRECT route, and the session opens on the \
-         event-tagged start frame: no audio before it, audio after it, none for another call's \
+         event-tagged start frame, which locks the far end to the operator's session in µ-law \
+         and sends it nothing else: no audio before it, audio after it, none for another call's \
          streamSid, none from a type-tagged frame. Refusing a missing signature 401, the \
          HMAC-SHA1 X-Twilio-Signature verify and the boot admitting the claim are the kernel's \
          and the auth plugin's"
@@ -865,7 +978,7 @@ fn media_steps(fx: &Fixtures, sid: &str) -> Result<Vec<Step>, String> {
     let reply = payload_of(&out_media);
     let mut steps = vec![
         twilio("connected", &connected, nothing),
-        twilio("start", &start_here, nothing),
+        twilio_start("start", &start_here),
     ];
     for n in 1..=3_u8 {
         let audio: Vec<u8> = (0..160)
@@ -883,11 +996,7 @@ fn media_steps(fx: &Fixtures, sid: &str) -> Result<Vec<Step>, String> {
         &far_delta(&reply),
         &[format!("caller-media:{sid}:{reply}")],
     ));
-    steps.push(far(
-        "far audio done",
-        &far_done(),
-        &[format!("caller-mark:{sid}:named")],
-    ));
+    steps.push(far_audio_done("far audio done"));
     steps.push(twilio("mark echo", &mark, nothing));
     steps.push(far(
         "far audio again",
@@ -947,12 +1056,8 @@ fn media_check(o: &MediaObs, first: &[Step], second: &[Step]) -> Result<String, 
                 run.anomalies
             ));
         }
-        let want = wanted(steps);
-        if run.lines != want {
-            return Err(format!(
-                "{what} was answered {:?}; want {want:?}",
-                run.lines
-            ));
+        if let Some(e) = departs(run, steps) {
+            return Err(format!("{what}: {e}"));
         }
         if run.done != 1 {
             return Err(format!("{what} ended {} time(s); want once", run.done));
@@ -968,11 +1073,12 @@ fn media_check(o: &MediaObs, first: &[Step], second: &[Step]) -> Result<String, 
         return Err(format!("an ended call still answered: {:?}", o.after_end));
     }
     Ok(
-        "inbound media reaches the far end as the caller's audio, byte for byte (start and \
-         connected, dtmf and the mark echo reach it as nothing); the far end's audio is written \
-         back as media frames on the call's own streamSid (a second call carries its own), the \
-         end of its audio as a named mark, a barge-in as clear; stop ends the call once and the \
-         ended call is refused on every side"
+        "inbound media reaches the far end as the caller's audio, byte for byte (start locks the \
+         far end to the operator's session in µ-law; connected, dtmf and the mark echo reach it \
+         as nothing); the far end's audio is written back as media frames on the call's own \
+         streamSid (a second call carries its own), a barge-in as clear, and the end of its \
+         audio sends the far end nothing; stop ends the call once and the ended call is refused \
+         on every side"
             .to_string(),
     )
 }
@@ -1009,7 +1115,7 @@ fn far_tool_call() -> Vec<(&'static str, Value)> {
 fn tool_steps(fx: &Fixtures) -> Result<Vec<Step>, String> {
     let start = fx.get("from-twilio.start.json")?;
     let stop = fx.get("from-twilio.stop.json")?;
-    let mut steps = vec![twilio("start", &start, &[lock_line()])];
+    let mut steps = vec![twilio_start("start", &start)];
     for (label, v) in far_tool_call() {
         let relayed = format!("caller-other:{}", String::from_utf8_lossy(&bytes_of(&v)));
         steps.push(far(label, &v, &[relayed]));
@@ -1058,7 +1164,6 @@ fn tool_call(rig: &Rig, slice: &str, fx: &Fixtures) -> bool {
             return false;
         }
     };
-    let want = wanted(&steps);
     judge_planted(
         slice,
         "a far end's tool call relayed down the Twilio session as-is, never answered",
@@ -1067,8 +1172,8 @@ fn tool_call(rig: &Rig, slice: &str, fx: &Fixtures) -> bool {
             if !run.anomalies.is_empty() {
                 return Err(format!("not answered READY: {:?}", run.anomalies));
             }
-            if run.lines != want {
-                return Err(format!("the door answered {:?}; want {want:?}", run.lines));
+            if let Some(e) = departs(run, &steps) {
+                return Err(e);
             }
             if run.done != 1 {
                 return Err(format!("{} end(s); want 1", run.done));
@@ -1105,7 +1210,7 @@ fn media_frames(rig: &Rig, slice: &str, fx: &Fixtures) -> bool {
     };
     judge(
         slice,
-        "Twilio media in and out, mark, clear, and the one end",
+        "Twilio media in and out, clear, and the one end",
         &rig.both(|p| media_script(p, &first, &second)),
         &|o: &MediaObs| media_check(o, &first, &second),
         &|o: &MediaObs| {
