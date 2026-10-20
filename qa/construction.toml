@@ -1274,7 +1274,7 @@ known_sites = [
   # was crates/busbar-core/src/plane_host/ (a whole directory) — the eight files of it that carry a
   # reviewed escape, so the seven substrate-origin files the merge added stay uncovered.
   "crates/busbar-kernel/src/plane_host/breaker.rs",
-  "crates/busbar-kernel/src/plane_host/vtable.rs",
+  # `plane_host/vtable.rs` STRUCK (status row 84): the file is deleted with the HOT lane.
   # was crates/busbar-core/src/plane/registry.rs (R099)
   "crates/busbar-kernel/src/plane/registry.rs",
   # was crates/busbar-core/src/router.rs (R099)
