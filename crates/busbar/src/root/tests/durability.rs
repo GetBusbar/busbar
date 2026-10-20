@@ -2969,6 +2969,77 @@ fn a_restart_over_the_same_store_verifies_the_prior_boots_records() {
     assert_eq!(walk.findings, Vec::<String>::new());
 }
 
+/// **THE WALK OF EVERY STORED CHAIN DOES NOT CALL THIS NODE'S RECORD MID-PUT TORN.** The walk
+/// (`/admin/verify`) reads the store without the book's lock while the lane's worker puts this
+/// node's records part by part. A record whose first part is in the store and which the lane still
+/// holds is being put, not torn, and the walk says nothing about it. A record missing a part that
+/// the node does not hold is torn, and the walk still says so.
+///
+/// RED before the fix: the walk read this node's chain with the plain stored read and warned "the
+/// stored journal holds a record whose parts are not all there" for the lane's record mid-put.
+#[test]
+fn the_stored_walk_does_not_call_this_nodes_record_mid_put_torn() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    const TORN: &str = "parts are not all there";
+    let slots = crate::root::store_double::RecordSlots::new();
+    let mut durability = keyed_store_book(&slots, 27);
+    durability
+        .seal_unit(audit_inputs(1), audit_pass(), &token())
+        .expect("sealed");
+    drained(&durability);
+
+    // A body past one slot's bound: two parts at the least. The store takes the first, no more.
+    slots.take_then_refuse(1);
+    durability
+        .journal
+        .append(
+            &token(),
+            StepName::Meter,
+            &[busbar_kernel_wal::Entry::new(
+                RecordClass::Load,
+                vec![7u8; 1_000],
+            )],
+        )
+        .expect("handed to the lane");
+    let newest = durability.journal.next_seq() - 1;
+    let lane = durability.lane().expect("a book over the store");
+    assert!(
+        lane.wait_acked(
+            durability.journal.node(),
+            newest,
+            std::time::Duration::from_secs(5)
+        )
+        .is_err(),
+        "the store took the first part and refused the next"
+    );
+    assert_eq!(lane.pending(), 1, "the record is still the lane's");
+
+    let (calls, own, keys) = durability
+        .stored_walk_inputs()
+        .expect("a book over the store");
+    let cap = busbar_kernel::test_support::warn_capture::WarnCapture::default();
+    let walk =
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(cap.clone()), || {
+            walk_stored_chains(calls.as_ref(), own, &keys)
+        });
+    assert_eq!(walk.findings, Vec::<String>::new(), "the chain verifies");
+    assert!(
+        !cap.contains(TORN),
+        "a record the lane still holds is not torn: {:?}",
+        cap.messages()
+    );
+
+    // A part with no first part, past anything the node holds: torn, and said so.
+    let stray = newest + 10;
+    slots.put_row(JOURNAL_SCHEMA, &part_key(own, stray, 1), &[0, 2, 9]);
+    let cap = busbar_kernel::test_support::warn_capture::WarnCapture::default();
+    let _ =
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(cap.clone()), || {
+            walk_stored_chains(calls.as_ref(), own, &keys)
+        });
+    assert_eq!(cap.count(TORN), 1, "a torn record is still reported");
+}
+
 /// **ON A CHAIN THE STORE KEEPS, EVERY RECORD NAMES THE NODE THE STORE ASSIGNED** (THE DESIGN §1:
 /// "when (wall + monotonic, node)"; H3 with #662): an audit record's `node` is the id its chain is
 /// keyed by and `/admin/verify` walks it under, the same before a restart and after it — not the
