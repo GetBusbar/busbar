@@ -140,7 +140,11 @@ CORE_ROOTS="crates/busbar-kernel/src crates/busbar-contract/src crates/busbar-co
 #
 # `tools` IS KEPT THE SAME WAY (ruling 2026-10-18): the MCP plane's 1.5.5 customer config key, out
 # of the scan since mcp left PLANE_KEYS (5e52651535), when the floor followed it down 17 -> 10.
-NAMED_NOUNS="streams agents tools"
+#
+# `pools` IS KEPT THE SAME WAY (rows 106/107): the LLM plane's 1.5.5 customer config key, which this
+# gate read off the llm door's SECTION_DECLARING section while `llm` was in PLANE_KEYS. The plane left
+# for its own repo and `llm` left PLANE_KEYS, so the noun is kept by name rather than dropped.
+NAMED_NOUNS="pools streams agents tools"
 
 # Resolve the four section nouns from each plane crate's DECLARED PlaneDecl.config_section — never a
 # restated literal. `<key> -> crates/busbar-<key>/src`; read the `config_section: "<noun>",` line.
@@ -156,8 +160,7 @@ NAMED_NOUNS="streams agents tools"
 section_nouns() {
   local k dir declfile noun ref refcrate out=""
   for k in $PLANE_KEYS; do
-    # A plane pinned from its own repo is read from its checkout (`plane_root_dir`, row 106).
-    dir="$(plane_root_dir "$(plane_key_src "$k")")"
+    dir="$(plane_key_src "$k")"
     # The noun is read from the file that DECLARES the plane's `pub const PLANE_DECL`, never a test
     # fixture that restates a section_section for a different plane.
     declfile="$(grep -rlE 'pub const PLANE_DECL' "$dir" 2>/dev/null | grep -vE '/tests/|(^|[/_])tests?\.rs$' | head -1)"

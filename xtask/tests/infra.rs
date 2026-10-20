@@ -558,12 +558,13 @@ fn the_comment_splitter_reads_raw_strings_chars_lifetimes_and_nesting() {
 fn the_plane_key_contract_matches_plane_keys_sh() {
     // `mcp` left the legacy-engine roster at P3 DEL-MCP (ARCHITECT 2026-10-05), `a2a` at FLIP-A2A and
     // `voice` at FLIP-STREAMING (crates/busbar-voice deleted).
-    assert_eq!(planes::PLANE_KEYS, ["llm"]);
+    // `llm` left it at its extraction (rows 106/107): the legacy-engine roster is empty.
+    assert!(planes::PLANE_KEYS.is_empty());
     assert!(planes::plane_keys_protocol().is_empty());
     // `decisions` (#48) is kind-only from birth: it never had a legacy-engine crate.
     assert_eq!(
         planes::PLANE_KEYS_KIND_ONLY,
-        ["mcp", "a2a", "streaming", "decisions"]
+        ["llm", "mcp", "a2a", "streaming", "decisions"]
     );
     // READ THE SHELL'S KEYS TOO: the two rosters are one list.
     let keys_line = std::fs::read_to_string(repo_root().join("scripts/plane-keys.sh"))
@@ -597,18 +598,14 @@ fn the_plane_key_contract_matches_plane_keys_sh() {
         "xtask::planes::PLANE_KEYS_KIND_ONLY and scripts/plane-keys.sh's PLANE_KEYS_KIND_ONLY are ONE list"
     );
     let src = planes::plane_src_roots();
-    // The llm key's root is its door crate since the retired engine crate was deleted (DEV-GREEN
-    // row 83): a key pointing at a deleted directory judges nothing (row 115).
-    assert_eq!(src[0], "crates/busbar-plane-llm/src");
-    // The root is read through the context's base layer: the door crate left for its own repo
-    // (row 106) and is laid at the path it had from the checkout of the rev the root pins, so a gate
-    // keyed on it scans the pinned bytes, never zero files.
-    let c = cx();
+    // The legacy-engine roster is empty since the llm extraction (rows 106/107), so it lists no
+    // root; a key that comes back must name a root on disk (below).
+    assert!(src.is_empty(), "{src:?}");
     for r in &src {
         assert!(
-            c.is_dir(r),
-            "plane key root `{r}` is listed but is not a directory in this tree or its pinned planes \
-             -- a gate keyed on it would scan zero files and pass every ban silently"
+            repo_root().join(r).is_dir(),
+            "plane key root `{r}` is listed but is not a directory in this tree -- a gate keyed on \
+             it would scan zero files and pass every ban silently"
         );
     }
     // The shell's twin mapping says the same: `plane_ondisk_key llm` is `plane-llm`.

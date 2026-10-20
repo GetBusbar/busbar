@@ -43,7 +43,12 @@ use std::path::{Path, PathBuf};
 /// and located by its door row ([`door_planes`]) wherever a gate resolves the plane's home. `a2a` IS
 /// STRUCK the same way (FLIP-A2A): `crates/busbar-a2a` is deleted and the A2A plane is
 /// `busbar-plane-a2a`, served through its memory-ABI door (`plane-a2a-door`) and located by that row.
-pub const PLANE_KEYS: [&str; 1] = ["llm"];
+/// `llm` IS STRUCK the same way at its extraction (rows 106/107): `crates/busbar-llm` was deleted
+/// (DEV-GREEN row 83) and `busbar-plane-llm` left this tree for GetBusbar/busbar-plane-llm, pinned;
+/// the plane-kind regime reads it from the pin and its door row (`plane-llm-door`) locates it. The
+/// roster is EMPTY: every gate keyed on it reports 0 of 0 legacy-engine roots, and a key that comes
+/// back is read, and refused if its root is missing, exactly as before.
+pub const PLANE_KEYS: [&str; 0] = [];
 
 /// Plane keys with NO legacy-engine crate: the plane lives only in its plane-kind crate
 /// `busbar-plane-<key>` and is located by its door row ([`door_planes`]). Twin of
@@ -56,7 +61,10 @@ pub const PLANE_KEYS: [&str; 1] = ["llm"];
 /// `decisions` (#48, the fifth plane) has never had a legacy-engine crate: it is one plane-kind
 /// crate, `busbar-plane-decisions`, located by its door row alone (`plane-decisions`, FLIP-DECISIONS).
 /// Off this list, a door row that vanished took it off structure-lint's roster with no finding.
-pub const PLANE_KEYS_KIND_ONLY: [&str; 4] = ["mcp", "a2a", "streaming", "decisions"];
+///
+/// `llm` joined at its extraction (rows 106/107): its one crate is `busbar-plane-llm`, pinned from
+/// its own repo and located by its `plane-llm-door` row.
+pub const PLANE_KEYS_KIND_ONLY: [&str; 5] = ["llm", "mcp", "a2a", "streaming", "decisions"];
 
 /// The default ownership grammar. Overridable for a fixture tree, the way
 /// `PLANE_ROOTS_GRAMMAR` is in the shell.
@@ -155,8 +163,8 @@ pub fn plane_keys_protocol() -> Vec<&'static str> {
 /// coordinator ruling 2026-10-18): [`plane_key_crate`] maps the key to `busbar-plane-llm`, the home
 /// structure-lint's plane roster already resolves for it. A key left pointing at a deleted directory
 /// is a gate judging nothing (row 115); every gate keyed on these roots refuses a missing one
-/// ([`missing_plane_key_roots`]). At the extraction (row 106) `llm` moves to
-/// [`PLANE_KEYS_KIND_ONLY`] as mcp, a2a and streaming did.
+/// ([`missing_plane_key_roots`]). At the extraction (row 106) `llm` moved to
+/// [`PLANE_KEYS_KIND_ONLY`] as mcp, a2a and streaming did, so this list is empty today.
 pub fn plane_src_roots() -> Vec<String> {
     PLANE_KEYS.iter().map(|k| plane_key_src(k)).collect()
 }

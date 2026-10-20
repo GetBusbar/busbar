@@ -192,10 +192,15 @@ proto_crate_names() { # underscore crate names of every protocol / plane / trans
   globs="$(plugin_kind_globs "$root/qa/construction.toml" plane transport)" \
     || die "cannot read [gate.plugin_kinds].plane/.transport from $root/qa/construction.toml -- no needle set without it"
   [ -n "$globs" ] || die "[gate.plugin_kinds] in $root/qa/construction.toml names no plane/transport glob"
-  [ -n "${PLANE_KEYS:-}" ] || die "PLANE_KEYS is empty -- scripts/plane-keys.sh was not sourced"
-  # A key whose root is not on disk is refused, never skipped: skipping it is a needle set that
-  # silently lost a plane (row 115). llm's root is its door crate (DEV-GREEN row 83).
+  # PLANE_KEYS IS EMPTY since the llm extraction (rows 106/107): every plane is kind-only, its crate
+  # a needle through the kind table's globs and the root's pins below. An empty roster is stated with
+  # its denominator, never read as a pass by silence (Law 8); `PLANE_KEYS_LOCKED` proves the file was
+  # sourced. A key that comes back is read, and a root of it that is not on disk is refused, never
+  # skipped: skipping it is a needle set that silently lost a plane (row 115).
+  [ -n "${PLANE_KEYS_LOCKED:-}" ] || die "PLANE_KEYS_LOCKED is empty -- scripts/plane-keys.sh was not sourced"
+  local nkeys; nkeys="$(printf '%s\n' $PLANE_KEYS | grep -c . || true)"
   ( cd "$root" && require_plane_key_roots ) || die "a PLANE_KEYS root is not on disk under $root -- no needle set without it"
+  note "PLANE_KEYS legacy-engine roots on disk: $nkeys of $nkeys (${PLANE_KEYS:-none}; kind-only, needles by kind: $PLANE_KEYS_KIND_ONLY)" >&2
   (
     cd "$root" || exit 1
     for k in $PLANE_KEYS; do
@@ -399,10 +404,12 @@ if [ "${1:-}" = "--selftest" ]; then
   else
     st_fail=1; note "SELF-TEST NEEDLE case FAILED: a newly added kind crate is not a needle (got: $(printf '%s' "$st_fix_needles" | tr '\n' ' '))"
   fi
-  # RED: a PLANE_KEYS root that is not on disk is refused, never skipped (row 115).
+  # RED: a PLANE_KEYS root that is not on disk is refused, never skipped (row 115). The live roster
+  # is empty (rows 106/107), so the arm plants a key: a legacy-engine key that comes back with no
+  # root on disk must go red, which is what keeps the empty roster armed.
   mkdir -p "$st_tmp/keyless/qa"
   cp qa/construction.toml "$st_tmp/keyless/qa/"
-  if ( proto_crate_names "$st_tmp/keyless" ) >/dev/null 2>&1; then
+  if ( PLANE_KEYS="selftestzz" proto_crate_names "$st_tmp/keyless" ) >/dev/null 2>&1; then
     st_fail=1; note "SELF-TEST NEEDLE case FAILED: a tree missing a PLANE_KEYS root still yielded a needle set"
   else
     note "self-test RED: a tree missing a PLANE_KEYS root is refused, not scanned without the plane"
