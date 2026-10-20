@@ -70,8 +70,7 @@ pub use rigs::{
     MCP_NODE_VERSION, VOICE_PLANE, WEBRTC_SUITE,
 };
 pub use slsa::{
-    decide_slsa, dev_bin_assets, provenance_commit, SlsaRun, DEV_BIN_REPO, SOURCE_BRANCH,
-    SOURCE_URI,
+    decide_slsa, dev_bin_assets, provenance_commit, SlsaRun, SOURCE_BRANCH, SOURCE_URI,
 };
 pub use subject::{b64url, base_config};
 pub use tls::{decide_tls, TlsRun};
