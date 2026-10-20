@@ -85,6 +85,8 @@ pub struct Op<'a> {
     issued: u32,
     /// Where `issued` stood when this entry began.
     entered_at: u32,
+    /// The instance's read buffers its wire ops read into (none for an op with no instance).
+    reads: Option<&'a super::wire::ReadBufs>,
 }
 
 impl std::fmt::Debug for Op<'_> {
@@ -110,13 +112,19 @@ impl Op<'static> {
             checkout: None,
             issued: 0,
             entered_at: 0,
+            reads: None,
         }
     }
 }
 
 impl<'a> Op<'a> {
     /// The door's op for one entry: fresh, or resuming what was parked.
-    pub(crate) fn enter(ticket: Ticket, host: Option<&'a Host>, parked: Option<Parked>) -> Self {
+    pub(crate) fn enter(
+        ticket: Ticket,
+        host: Option<&'a Host>,
+        parked: Option<Parked>,
+        reads: Option<&'a super::wire::ReadBufs>,
+    ) -> Self {
         let mut op = Self {
             ticket,
             resuming: parked.is_some(),
@@ -125,6 +133,7 @@ impl<'a> Op<'a> {
             checkout: None,
             issued: 0,
             entered_at: 0,
+            reads,
         };
         if let Some(mut p) = parked {
             op.state = p.state.take();
@@ -144,6 +153,11 @@ impl<'a> Op<'a> {
             host: self.host.copied(),
             ticket: self.ticket,
         }
+    }
+
+    /// The instance's read buffers (none for an op with no instance).
+    pub(crate) fn reads(&self) -> Option<&'a super::wire::ReadBufs> {
+        self.reads
     }
 
     /// Whether this entry made a connector service (a PENDING on 0 needs one in flight).

@@ -40,7 +40,6 @@ pub const TOKEN_PREFIX: &str = "bbk_";
 /// The DER prefix of an Ed25519 SubjectPublicKeyInfo, RFC 8410 section 4: `SEQUENCE { SEQUENCE {
 /// OID 1.3.101.112 }, BIT STRING }`. Fixed-length and fully determined; prefixed to the 32 raw key
 /// bytes to render busbar's PUBLIC card-issuer key in the ONE spelling the verifier accepts.
-#[cfg_attr(not(feature = "relay"), allow(dead_code))]
 const ED25519_KEY_INFO_PREFIX: [u8; 12] = [
     0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
 ];
@@ -196,9 +195,6 @@ impl TokenSigner {
     ///
     /// The secret NEVER leaves this method: callers get 32 derived bytes, not
     /// [`Self::secret_bytes`].
-    // A2A-only: the sole caller is the A2A agent-card signing path (`crate::a2a::sign`), so with
-    // `plane-a2a` off (and MCP on) it has no caller.
-    #[cfg_attr(not(feature = "relay"), allow(dead_code))]
     pub fn derived_subkey_seed(&self, domain: &str) -> [u8; 32] {
         subkey_seed(&self.key.to_bytes(), domain)
     }
@@ -207,7 +203,6 @@ impl TokenSigner {
     /// primitive behind the plane host `card_sign` seam. Deterministic Ed25519 over the plane-framed
     /// signing input; the subkey is expanded from [`Self::derived_subkey_seed`] and the secret NEVER
     /// leaves this method — the plane receives only the 64 signature bytes.
-    #[cfg_attr(not(feature = "relay"), allow(dead_code))]
     pub fn sign_with_card_subkey(&self, domain: &str, input: &[u8]) -> [u8; 64] {
         let key = SigningKey::from_bytes(&self.derived_subkey_seed(domain));
         key.sign(input).to_bytes()
@@ -217,7 +212,6 @@ impl TokenSigner {
     /// counterparty pins busbar by. The PUBLIC half of the same domain-derived card subkey
     /// [`Self::sign_with_card_subkey`] signs with, rendered through the ONE Ed25519 SPKI spelling the
     /// verifier accepts, so a value emitted here and a value that verifier reads back cannot drift.
-    #[cfg_attr(not(feature = "relay"), allow(dead_code))]
     pub fn card_subkey_key_info_base64(&self, domain: &str) -> String {
         let key = SigningKey::from_bytes(&self.derived_subkey_seed(domain));
         let mut der = Vec::with_capacity(ED25519_KEY_INFO_PREFIX.len() + 32);
@@ -377,10 +371,6 @@ impl TokenVerifier {
 /// plane, for a function whose body mentions none of them. The context string is versioned, so
 /// changing this derivation is a new key rather than a silently different one under the same name —
 /// which is also why the bytes it emits are pinned by known-answer vectors in the tests below.
-// Its one production caller today is [`SigningKey::derived_subkey_seed`], reached only from the A2A
-// card-signing path; so with `plane-a2a` off (and MCP on) it has no non-test caller. Kept generic
-// (not plane-gated) because it is key hygiene any future plane may derive through.
-#[cfg_attr(not(feature = "relay"), allow(dead_code))]
 fn subkey_seed(secret: &[u8; 32], domain: &str) -> [u8; 32] {
     busbar_kernel_ledger::digest::sha256_of(&[b"busbar/subkey/v1", secret, domain.as_bytes()])
 }

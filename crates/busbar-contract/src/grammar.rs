@@ -24,6 +24,11 @@ pub enum PathSeg {
     Var,
     /// Every remaining segment.
     Tail,
+    /// ONE OR MORE segments of any value, spelled `{name+}`: a placeholder that spans the arriving
+    /// path's own `/` (a raw one, as an unencoded identifier carries, or none, as an encoded one
+    /// does), then hands the rest of the pattern what follows. At most one per pattern (ARCHITECT
+    /// ruling 2026-10-16, 3b A).
+    Plus,
 }
 
 /// One segment of a path pattern as the matcher reads it: a literal borrowed for the call, so a
@@ -36,6 +41,8 @@ pub enum SegRef<'a> {
     Var,
     /// Every remaining segment.
     Tail,
+    /// One or more segments of any value ([`PathSeg::Plus`]).
+    Plus,
 }
 
 impl PathSeg {
@@ -46,6 +53,7 @@ impl PathSeg {
             PathSeg::Lit(l) => SegRef::Lit(l),
             PathSeg::Var => SegRef::Var,
             PathSeg::Tail => SegRef::Tail,
+            PathSeg::Plus => SegRef::Plus,
         }
     }
 }
@@ -540,47 +548,115 @@ pub fn pattern_matches(pattern: &[PathSeg], path: &str) -> bool {
     segs_match(pattern.iter().map(PathSeg::seg_ref), path)
 }
 
-/// [`pattern_matches`] over borrowed segments: the one body both read.
+/// [`pattern_matches`] over borrowed segments: the one body both read. Allocation-free: a
+/// [`SegRef::Plus`] tries each split of the path it spans by re-walking a clone of the pattern's rest.
 #[must_use]
-pub fn segs_match<'a>(pattern: impl IntoIterator<Item = SegRef<'a>>, path: &str) -> bool {
-    let mut segs = segments(path);
-    for seg in pattern {
+pub fn segs_match<'a, I>(pattern: I, path: &str) -> bool
+where
+    I: IntoIterator<Item = SegRef<'a>>,
+    I::IntoIter: Clone,
+{
+    walk(pattern.into_iter(), path)
+}
+
+/// The path's next non-empty segment and what follows it, or `None` when none is left.
+fn next_seg(path: &str) -> Option<(&str, &str)> {
+    let path = path.trim_start_matches('/');
+    if path.is_empty() {
+        return None;
+    }
+    Some(
+        path.find('/')
+            .map_or((path, ""), |i| (&path[..i], &path[i..])),
+    )
+}
+
+/// [`segs_match`]'s walk over the pattern's remaining segments and the path's remaining bytes.
+fn walk<'a>(mut pattern: impl Iterator<Item = SegRef<'a>> + Clone, mut path: &str) -> bool {
+    while let Some(seg) = pattern.next() {
         match seg {
-            SegRef::Tail => {
-                // A tail is the last segment of a pattern and swallows whatever remains,
-                // including nothing.
-                return true;
-            }
-            SegRef::Lit(lit) => match segs.next() {
-                Some(s) if s == lit => {}
+            // A tail is the last segment of a pattern and swallows whatever remains, including
+            // nothing.
+            SegRef::Tail => return true,
+            SegRef::Lit(lit) => match next_seg(path) {
+                Some((s, rest)) if s == lit => path = rest,
                 _ => return false,
             },
-            SegRef::Var => {
-                if segs.next().is_none() {
+            SegRef::Var => match next_seg(path) {
+                Some((_, rest)) => path = rest,
+                None => return false,
+            },
+            // One segment at least, then as many more as the rest of the pattern leaves.
+            SegRef::Plus => {
+                let Some((_, mut rest)) = next_seg(path) else {
                     return false;
+                };
+                loop {
+                    if walk(pattern.clone(), rest) {
+                        return true;
+                    }
+                    match next_seg(rest) {
+                        Some((_, more)) => rest = more,
+                        None => return false,
+                    }
                 }
             }
         }
     }
-    segs.next().is_none()
+    next_seg(path).is_none()
 }
 
 /// Whether two patterns can match one path.
 ///
 /// Per segment, a variable overlaps any literal and a tail overlaps every remaining segment, both
-/// conservatively — the design says so in as many words.
+/// conservatively — the design says so in as many words. A [`PathSeg::Plus`] is a variable followed
+/// by any number of further variables, and the walk tries every count of them, so two patterns that
+/// differ only after it (`/model/{id+}/converse` and `/model/{id+}/converse-stream`) are disjoint.
 fn patterns_overlap(a: &[PathSeg], b: &[PathSeg]) -> bool {
-    let mut i = 0;
-    loop {
-        match (a.get(i), b.get(i)) {
-            (None, None) => return true,
-            (Some(PathSeg::Tail), _) | (_, Some(PathSeg::Tail)) => return true,
-            (None, _) | (_, None) => return false,
-            (Some(PathSeg::Lit(x)), Some(PathSeg::Lit(y))) if x != y => return false,
-            // A variable segment overlaps any single segment.
-            _ => {}
+    tokens_overlap(&tokens(a), &tokens(b))
+}
+
+/// One step of a pattern for [`tokens_overlap`]: a literal segment, one segment of any value, or
+/// any number of segments (none included).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tok {
+    Lit(&'static str),
+    One,
+    Many,
+}
+
+/// A pattern as [`Tok`]s: a variable is one segment, a tail any number, a plus one then any number.
+fn tokens(pattern: &[PathSeg]) -> Vec<Tok> {
+    let mut out = Vec::with_capacity(pattern.len() + 1);
+    for seg in pattern {
+        match *seg {
+            PathSeg::Lit(l) => out.push(Tok::Lit(l)),
+            PathSeg::Var => out.push(Tok::One),
+            PathSeg::Tail => out.push(Tok::Many),
+            PathSeg::Plus => out.extend([Tok::One, Tok::Many]),
         }
-        i += 1;
+    }
+    out
+}
+
+/// Whether some path is spelled by both token runs.
+fn tokens_overlap(a: &[Tok], b: &[Tok]) -> bool {
+    match (a.split_first(), b.split_first()) {
+        (None, None) => true,
+        (Some((Tok::Many, ra)), _) => {
+            tokens_overlap(ra, b) || b.split_first().is_some_and(|(_, rb)| tokens_overlap(a, rb))
+        }
+        (_, Some((Tok::Many, rb))) => {
+            tokens_overlap(a, rb) || a.split_first().is_some_and(|(_, ra)| tokens_overlap(ra, b))
+        }
+        (None, Some(_)) | (Some(_), None) => false,
+        (Some((x, ra)), Some((y, rb))) => {
+            let one = match (x, y) {
+                (Tok::Lit(p), Tok::Lit(q)) => p == q,
+                _ => true,
+            };
+            one && tokens_overlap(ra, rb)
+        }
     }
 }
 
@@ -590,12 +666,16 @@ fn patterns_overlap(a: &[PathSeg], b: &[PathSeg]) -> bool {
 /// literals, then exactly one segment of any value — so the comparison is the segment walk that
 /// already exists, with the prefix read as that pattern rather than as a string.
 fn prefix_overlaps_pattern(prefix: &str, pattern: &[PathSeg]) -> bool {
+    // A plus spans a count of segments this walk does not place: conservatively, they may meet.
+    if pattern.iter().any(|s| matches!(s, PathSeg::Plus)) {
+        return true;
+    }
     let mut i = 0usize;
     for literal in segments(prefix) {
         match pattern.get(i) {
             // The pattern ran out while the prefix still had segments to place.
             None => return false,
-            Some(PathSeg::Tail) => return true,
+            Some(PathSeg::Tail | PathSeg::Plus) => return true,
             Some(PathSeg::Var) => {}
             Some(PathSeg::Lit(l)) if *l == literal => {}
             Some(PathSeg::Lit(_)) => return false,
@@ -628,7 +708,10 @@ fn prefix_overlaps_pattern(prefix: &str, pattern: &[PathSeg]) -> bool {
 /// pattern ending in a tail, which can spell whatever is asked of it, and a literal carrying a
 /// doubled slash, which a path may also carry because the segment walk drops empty segments.
 fn fragment_overlaps_pattern(literal: &str, pattern: &[PathSeg], at_end: bool) -> bool {
-    if pattern.iter().any(|s| matches!(s, PathSeg::Tail)) {
+    if pattern
+        .iter()
+        .any(|s| matches!(s, PathSeg::Tail | PathSeg::Plus))
+    {
         return true;
     }
     let piece = |k: usize| literal.split('/').nth(k).unwrap_or("");
