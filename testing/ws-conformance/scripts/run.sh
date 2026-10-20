@@ -15,7 +15,8 @@
 # MODES
 #   --selftest            prove the parser + arm-state logic bite (no Docker, runs anywhere)
 #   --subject-arm          build the ws-conformance-subject bin and report whether it is ARMED
-#   --control               run Autobahn against the pinned reference echo server (Docker)
+#   --control               run Autobahn against its own strict echo server, from the same pinned
+#                           image (`wstest -m echoserver`): the known-good peer (Docker)
 #   --negative-control      run Autobahn against the deliberately broken echo server (Docker); MUST be RED
 #   --subject                run Autobahn against the busbar ws-conformance-subject (Docker); ARMED OR RED
 #
@@ -118,13 +119,33 @@ case "$mode" in
   --selftest) selftest ;;
   --subject-arm) subject_arm ;;
   --control)
-    echo "$mode: Docker-live mode; runs in CI (crossbario/autobahn-testsuite vs the reference echo peer)." >&2
-    log="$(mktemp)"; node "$ROOT/reference/echo-server.mjs" >"$log" 2>&1 & pid=$!
-    port=""
-    for _ in $(seq 1 50); do port="$(sed -n 's/^REFERENCE_PORT=//p' "$log")"; [ -n "$port" ] && break; sleep 0.1; done
-    [ -n "$port" ] || { echo "reference echo server never printed REFERENCE_PORT" >&2; kill "$pid" 2>/dev/null; exit 1; }
+    echo "$mode: Docker-live mode; runs in CI (crossbario/autobahn-testsuite vs its own echo server)." >&2
+    # THE KNOWN-GOOD PEER is Autobahn's own echo server, from the same pinned image the fuzzing
+    # client runs: the reference implementation the suite's strict grades are written against
+    # (it fails a fragmented text message on its first invalid UTF-8 byte, 6.4.x). An npm `ws`
+    # peer was graded NON-STRICT there, so the control could never pass and busbar was never judged.
+    if ! command -v docker >/dev/null 2>&1; then
+      echo "Docker is unavailable in this environment. Docker-live Autobahn runs are CI-only." >&2
+      exit 3
+    fi
+    port="$(node -e 'const s=require("net").createServer().listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')"
+    name="ws-conformance-reference-$$"
+    docker run -d --name "$name" --network host \
+      crossbario/autobahn-testsuite@sha256:519915fb568b04c9383f70a1c405ae3ff44ab9e35835b085239c258b6fac3074 \
+      wstest -m echoserver -w "ws://127.0.0.1:$port" --webport 0 >/dev/null
+    up=false
+    for _ in $(seq 1 600); do
+      if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then up=true; break; fi
+      sleep 0.2
+    done
+    if [ "$up" != "true" ]; then
+      echo "Autobahn's echo server never listened on 127.0.0.1:$port" >&2
+      docker logs "$name" >&2 2>&1 || true
+      docker rm -f "$name" >/dev/null 2>&1 || true
+      exit 1
+    fi
     rc=0; run_autobahn reference "$port" control || rc=$?
-    kill "$pid" 2>/dev/null || true
+    docker rm -f "$name" >/dev/null 2>&1 || true
     [ "$rc" -eq 3 ] && exit 3
     [ "$rc" -eq 0 ] || exit "$rc"
     node "$PARSER" --report "$REPORTS_DIR/control/index.json" --armed true --commit "${GITHUB_SHA:-local}" --out "$REPORTS_DIR/control/verdict.json"
