@@ -108,6 +108,9 @@ fn p_item_refusal_reason_collapse_only_the_nodes_own_faults_are_node_faults() {
             ReasonCode::PlanePanic,
             ReasonCode::TaskLost,
             ReasonCode::SecretPlaceholder,
+            // ARCHITECT 2026-10-16 ruling 3b B: the kernel's own `INTERNAL` refusal, which the
+            // owning plane renders (1.5.5's generic 500), is a fault of this node.
+            ReasonCode::Internal,
         ]
     );
 }

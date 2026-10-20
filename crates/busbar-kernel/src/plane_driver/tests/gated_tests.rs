@@ -104,7 +104,7 @@ fn a_pool_route_binds_only_a_member_of_the_recorded_pool() {
     );
 }
 
-/// F25 row 218: rehomed from crates/busbar-llm/src/engine/tests/gate_policy_503_literals_tests.rs::
+/// F25 row 218: rehomed from the retired engine crate's src/engine/tests/gate_policy_503_literals_tests.rs::
 /// the_refusal_literal_is_the_shared_constant. The refusal a failed load-bearing hook produces is
 /// ONE constant at 1.5.5's literal and status, and the gate-first stage serves it as it is, so the
 /// two seats cannot drift into two different client-visible refusals.
