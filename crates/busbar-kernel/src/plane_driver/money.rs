@@ -83,6 +83,17 @@ pub trait Checkpointer: Send + Sync {
     fn checkpoint(&self, key: UnitKey, accrued: &Accrued);
 }
 
+/// HOW A UNIT'S ANSWER ENDED, as the composition root hands it to [`PlaneMoney::settle_end_as`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnitEnd {
+    /// The status the unit's caller was answered with (its head's, once a head went out).
+    pub caller_status: u32,
+    /// The far end CUT the unit's streamed answer after its head: its connection failed, or its
+    /// send's deadline passed, before it completed (the driver's `cut` fact,
+    /// `DriverSteps::answered`, on a unit whose caller asked for a stream).
+    pub cut: bool,
+}
+
 /// One unit's money facts, as the composition root knows them when it admits the unit.
 #[derive(Clone)]
 pub struct UnitMoney {
@@ -170,6 +181,8 @@ struct Open {
     dirty: bool,
     /// The flush epoch the unit's last checkpoint was handed over in: at most one per epoch.
     flushed: Option<u64>,
+    /// The far end CUT the unit's answer ([`PlaneMoney::far_cut`]): it bills no usage.
+    cut: bool,
 }
 
 /// THE KERNEL'S MONEY STEPS for one plane instance's units.
@@ -259,6 +272,7 @@ impl PlaneMoney {
                 laned: false,
                 dirty: false,
                 flushed: None,
+                cut: false,
             },
         );
     }
@@ -273,6 +287,24 @@ impl PlaneMoney {
     /// never here, and is refunded nothing, as 1.5.5's dropped request never reached that arm. The
     /// unit's facts are closed either way.
     pub fn settle_end(&self, key: UnitKey, caller_status: u32) {
+        self.settle_end_as(
+            key,
+            UnitEnd {
+                caller_status,
+                cut: false,
+            },
+        );
+    }
+
+    /// [`PlaneMoney::settle_end`], told HOW the unit's answer ended ([`UnitEnd`]): a stream its far
+    /// end CUT is no delivered response, so it meters nothing, whatever status its head carried
+    /// (v1.5.5 `crates/busbar/src/proxy/response_body.rs`: a transport error sets `stream_failed`
+    /// and `ended` (:283, :306, :409), so the natural end's `ledger_and_meter` (:587) never runs,
+    /// and the drop's (:633-657) returns on `stream_failed`). The flat fee stays as the unit's
+    /// [`FeeRefund`] rule decides it: 1.5.5's finish refunded on the head's status alone
+    /// (`crates/busbar/src/ingress/mod.rs:574-575`), so a cut 2xx kept its fee.
+    pub fn settle_end_as(&self, key: UnitKey, end: UnitEnd) {
+        let UnitEnd { caller_status, cut } = end;
         let Some(open) = self.lock().remove(&key) else {
             return;
         };
@@ -281,8 +313,9 @@ impl PlaneMoney {
             let counts = reported(&open.last);
             self.ledger(m, &counts);
             // A DELIVERED end meters one request against the serving member, tokens or none
-            // (v1.5.5 proxy/usage.rs:31-40 and :99-106).
-            if (200..=299).contains(&caller_status) {
+            // (v1.5.5 proxy/usage.rs:31-40 and :99-106); an answer its far end cut was not
+            // delivered (status row 183).
+            if (200..=299).contains(&caller_status) && !cut && !open.cut {
                 self.meter(m, open.provider.as_deref(), &counts);
             }
         }
@@ -305,6 +338,24 @@ impl PlaneMoney {
                     }
                 }
             }
+        }
+    }
+
+    /// THE FAR END CUT UNIT `key`'S STREAMED ANSWER after its head (the driver's `cut` fact: its
+    /// connection failed, or its send's deadline passed, before the answer completed). Such a
+    /// stream is no delivered response, so it bills no usage: its usage counts are dropped here,
+    /// and only its fee units stay, so the fee stands as the plane reported it (BUSBAR-1.6.0.md,
+    /// Budgets: a stream cut by the far end set `stream_failed` and the drop-time gate billed no
+    /// tokens, v1.5.5 `crates/busbar/src/proxy/response_body.rs:283` and `:642`; the request unit
+    /// still counts, and 1.5.5's finish kept the fee of a 2xx head,
+    /// `crates/busbar/src/ingress/mod.rs:574-575`). Its end meters nothing
+    /// ([`PlaneMoney::settle_end_as`]). A caller that LEFT is not a cut: its bill is the cancel
+    /// bill ([`MoneySeam::cancelled`]).
+    pub fn far_cut(&self, key: UnitKey) {
+        if let Some(open) = self.lock().get_mut(&key) {
+            let m = &open.money;
+            open.last.retain(|u| m.fee.is_fee(u.class));
+            open.cut = true;
         }
     }
 

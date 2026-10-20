@@ -2385,6 +2385,31 @@
       }
     },
     {
+      "id": "#62 a stream whose translation aborts after its first byte bills what streamed",
+      "kind": "breaking",
+      "changelog": "1.6.0 Changed: a translated stream that busbar cannot keep translating after its first byte is billed for the tokens the far end reported before the abort. 1.5.5 billed no tokens for it. A mid-stream cut is not a refund.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #62 (OWNER-LOCKED 2026-09-20)",
+      "cells": "^llm\\|[a-z]+\\|[a-z]+\\|request\\|stream_translate_abort$",
+      "expected_cells": 0,
+      "classes": [
+        "effects.usage"
+      ],
+      "rationale": "v1.5.5 crates/busbar/src/proxy/response_body.rs (the `billing_failed` gate) billed no tokens for a cross-dialect stream whose StreamTranslate aborted after the first byte, though the far end had reported its usage before the abort (v1.5.5 crates/busbar/src/proxy/tests/ingress_indistinguishability_tests.rs:3091, ledgered 0). Spec Part 2 #62 (OWNER-LOCKED 2026-09-20: a mid-stream cut is NOT a refund; the customer pays for what actually streamed) governs 1.6.0: a translate abort after the first byte is a mid-stream cut, and the far end's reported usage is the units the llm plane reports (crates/busbar-plane-llm/src/exchange/reply/mod.rs). The breaker transient is unchanged from 1.5.5. Its two siblings already billed so in both releases' terms: a caller that leaves after the usage chunk (1.5.5 billed 1000 too) and one that leaves after the abort. The plane's cell is crates/busbar-plane-llm/tests/exchange_reply.rs::rehomed_streaming_translate_abort_trips_breaker_and_skips_billing (600 + 400 = 1000). No oracle cell aborts a translation mid-stream: the cell is OWED, `cells` names it and expected_cells is 0, as the client-cancel #62 entry writes its owed cell. The premise probes the existing streamed failover cell.",
+      "premise": {
+        "cell": "route.failover|fb|member-down-stream-openai",
+        "status": 200
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-20",
+        "ruling": "BUSBAR-1.6.0.md Part 2 #62 (OWNER-LOCKED 2026-09-20, LOCKED AGREED); applied to the translate abort by ARCHITECT ruling 2026-10-17"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
       "id": "S-16 same-dialect response headers are the upstream's, all but the governed",
       "kind": "improvement",
       "changelog": "On a same-dialect route the caller receives every upstream response header except hop-by-hop fields, Content-Length, Content-Encoding and the dialect's tenant- and credential-derived headers; 1.5.5 relayed only Content-Type and the dialect's request-id headers.",
