@@ -4325,7 +4325,7 @@ pub(crate) mod door_boundary {
     /// door's resource) is no credential on any guarded route of that router; its plain sibling is
     /// admitted on each. Returns how many guarded routes were walked.
     #[cfg(linked_driver_proofs)]
-    async fn llm_door_walk(audience: &str) -> usize {
+    async fn pools_door_walk(audience: &str) -> usize {
         use crate::root::serve::hook_seat_tests::{rig as pools_rig, RigOpts};
         let instance = "door-boundary-pools";
         let _published = Published(instance);
@@ -4665,7 +4665,7 @@ pub(crate) mod door_boundary {
         // door's claims, its `/` claim catching every path no more specific claim takes (DEV-GREEN
         // row 83). The same binding's audience-bound sibling buys exactly nothing on any of them, and
         // its plain sibling is admitted: walked over the data router built with that door's claims.
-        checked += llm_door_walk(&audience).await;
+        checked += pools_door_walk(&audience).await;
         // The guarded routes beside the door's own: the kernel's (`/stats`) and the model plane's
         // door's. The convenience and list-models routes are that door's claims, walked above.
         assert!(
