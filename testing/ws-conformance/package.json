@@ -2,7 +2,7 @@
   "name": "ws-conformance",
   "private": true,
   "type": "module",
-  "description": "Autobahn|Testsuite harness: parser and negative-control peer for busbar's ws transport (the control peer is Autobahn's own echo server).",
+  "description": "Autobahn|Testsuite harness: parser and negative-control peer for busbar's ws transport (the control peer is reference/echo_server.py, on the Python websockets package).",
   "scripts": {
     "selftest": "node bin/parse-autobahn-report.mjs --selftest",
     "broken": "node broken/broken-echo-server.mjs"

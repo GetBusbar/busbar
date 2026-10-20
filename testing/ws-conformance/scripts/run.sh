@@ -15,8 +15,8 @@
 # MODES
 #   --selftest            prove the parser + arm-state logic bite (no Docker, runs anywhere)
 #   --subject-arm          build the ws-conformance-subject bin and report whether it is ARMED
-#   --control               run Autobahn against its own strict echo server, from the same pinned
-#                           image (`wstest -m echoserver`): the known-good peer (Docker)
+#   --control               run Autobahn against the known peer: an echo server on the Python
+#                           `websockets` package, pinned and hash-locked (Docker)
 #   --negative-control      run Autobahn against the deliberately broken echo server (Docker); MUST be RED
 #   --subject                run Autobahn against the busbar ws-conformance-subject (Docker); ARMED OR RED
 #
@@ -119,36 +119,21 @@ case "$mode" in
   --selftest) selftest ;;
   --subject-arm) subject_arm ;;
   --control)
-    echo "$mode: Docker-live mode; runs in CI (crossbario/autobahn-testsuite vs its own echo server)." >&2
-    # THE KNOWN-GOOD PEER is Autobahn's own echo server, from the same pinned image the fuzzing
-    # client runs: the reference implementation the suite's strict grades are written against
-    # (it fails a fragmented text message on its first invalid UTF-8 byte, 6.4.x). An npm `ws`
-    # peer was graded NON-STRICT there, so the control could never pass and busbar was never judged.
-    if ! command -v docker >/dev/null 2>&1; then
-      echo "Docker is unavailable in this environment. Docker-live Autobahn runs are CI-only." >&2
-      exit 3
-    fi
-    port="$(node -e 'const s=require("net").createServer().listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')"
-    name="ws-conformance-reference-$$"
-    docker run -d --name "$name" --network host \
-      crossbario/autobahn-testsuite@sha256:519915fb568b04c9383f70a1c405ae3ff44ab9e35835b085239c258b6fac3074 \
-      wstest -m echoserver -w "ws://127.0.0.1:$port" --webport 0 >/dev/null
-    up=false
-    for _ in $(seq 1 600); do
-      if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then up=true; break; fi
-      sleep 0.2
-    done
-    if [ "$up" != "true" ]; then
-      echo "Autobahn's echo server never listened on 127.0.0.1:$port" >&2
-      docker logs "$name" >&2 2>&1 || true
-      docker rm -f "$name" >/dev/null 2>&1 || true
-      exit 1
-    fi
+    echo "$mode: Docker-live mode; runs in CI (crossbario/autobahn-testsuite vs the Python websockets echo peer)." >&2
+    # THE KNOWN PEER: an echo server on the Python `websockets` package, pinned and hash-locked
+    # (reference/requirements.txt), installed into a venv of its own for this run.
+    venv="$(mktemp -d)"
+    python3 -m venv "$venv"
+    "$venv/bin/pip" install --quiet --disable-pip-version-check --no-deps --only-binary :all: \
+      --require-hashes -r "$ROOT/reference/requirements.txt"
+    log="$(mktemp)"; "$venv/bin/python" "$ROOT/reference/echo_server.py" >"$log" 2>&1 & pid=$!
+    port=""
+    for _ in $(seq 1 100); do port="$(sed -n 's/^REFERENCE_PORT=//p' "$log")"; [ -n "$port" ] && break; sleep 0.1; done
+    [ -n "$port" ] || { echo "reference echo server never printed REFERENCE_PORT" >&2; cat "$log" >&2; kill "$pid" 2>/dev/null; exit 1; }
     rc=0; run_autobahn reference "$port" control || rc=$?
-    # The echo server's own account of the run, beside the client's.
-    echo "== Autobahn echo server (last 200 lines) ==" >&2
-    docker logs --tail 200 "$name" >&2 2>&1 || true
-    docker rm -f "$name" >/dev/null 2>&1 || true
+    kill "$pid" 2>/dev/null || true
+    echo "== reference echo server log ==" >&2
+    cat "$log" >&2 || true
     [ "$rc" -eq 3 ] && exit 3
     [ "$rc" -eq 0 ] || exit "$rc"
     node "$PARSER" --report "$REPORTS_DIR/control/index.json" --armed true --commit "${GITHUB_SHA:-local}" --out "$REPORTS_DIR/control/verdict.json"
