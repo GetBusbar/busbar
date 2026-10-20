@@ -819,7 +819,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:billing|key-usage|upstream-down-refunded, test:test_flat_fee_charge_and_refund_use_charged_at_window, test:a_pre_routing_refusal_leaves_a_prior_charge_intact, test:a_dispatch_record_is_written_on_the_book_under_its_units_facts"
+   "verdict_detail": "oracle-cell:billing|key-usage|upstream-down-refunded, test:test_flat_fee_charge_and_refund_use_charged_at_window, test:a_pre_routing_refusal_leaves_a_prior_charge_intact, test:crates/busbar/src/root/tests/plane_node_money.rs::a_dispatch_record_is_written_on_the_book_under_its_units_facts"
   },
   {
    "id": "PB-17",
@@ -4050,7 +4050,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:rerank_resp_billing_is_flat, test:rerank_resp_billing_counts_search_units_as_an_open_class, test:a_reranks_search_units_reach_the_price_on_both_books"
+   "verdict_detail": "test:rerank_resp_billing_is_flat, test:rerank_resp_billing_counts_search_units_as_an_open_class, test:crates/busbar/src/root/tests/plane_node_money.rs::a_reranks_search_units_reach_the_price_on_both_books"
   },
   {
    "id": "PB-88",
