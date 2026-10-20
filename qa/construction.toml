@@ -364,10 +364,21 @@ max_hits = 0
 [rules.single-terminal]
 why = """The request terminal is where a unit's end is sealed and posted once. Every extra caller \
 is a second place the money can be counted, or not counted. The named wrappers are the only \
-doors; anything else calling the terminal is a finding."""
-terminal = "finish_inner"
-allowed_callers = ["finish", "finish_admitted", "finish_rejected"]
+doors; anything else calling the terminal is a finding. Since the old ingress terminal \
+(finish_inner) was deleted with the kernel's body-ingress (row 82 D2), the door path's money \
+terminal is the one judged (ARCHITECT ruling 2026-10-20): PlaneMoney::settle_end_as, reached \
+from PlaneMoney::settle_end and the request drive, and PlaneMoney::settle_end, reached from the \
+session end. Each terminal is spelled Type::fn and matched by its impl type, so a same-named \
+method on another type (the node's own Node::settle_end) is neither counted nor allowed."""
 max_extra_sites = 0
+
+[rules.single-terminal.settle_end_as]
+terminal = "PlaneMoney::settle_end_as"
+allowed_callers = ["PlaneMoney::settle_end", "DataRoutes::drive"]
+
+[rules.single-terminal.settle_end]
+terminal = "PlaneMoney::settle_end"
+allowed_callers = ["DataRoutes::session"]
 
 # ── 7. duplicate-dispatch (informational) ────────────────────────────────────────────────────────
 [rules.duplicate-dispatch]
