@@ -1164,25 +1164,12 @@ half    = "test"
 count   = "1"
 verdict = "allowed"
 cite    = "BUSBAR-1.6.0.md THE DESIGN, §8 (BUSBAR-1.6.0.md:1123-1126): \"Exactly three crates are compiled in and are never plugins; each depends one way on the kernel, names no plugin\"; DECISIONS #5 (BUSBAR-1.6.0.md:2159): \"admin, oauth2 and the connector are NOT plugins. They are the three compiled-in cleanliness crates, one-way dep on core\" — the test binary links the same one-way cleanliness -> kernel edge the shipped half declares (ARCHITECTURE_ALLOWED cleanliness -> kernel)."
-why     = "busbar-core-admin names busbar-kernel: declared dev in the test graph (features test-support, plane-mcp, plane-a2a), 1 declaration(s) at this commit, beside the shipped edge. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+why     = "busbar-core-admin names busbar-kernel: declared dev in the test graph (default-features off, features test-support), 1 declaration(s) at this commit, beside the shipped edge. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: the architecture grants cleanliness -> kernel. What this row holds is the NUMBER."
 
-# THE ADMIN SURFACE'S TEST EDGES WITH THE RETIRING ENGINES. All three were dev-dependencies the
-# merge-base already declared and no row recorded (the `kind-isolation:test-deps` row's three
-# `unlisted-dep-edge` findings on predev d7929b661d); each is written down here with its count, its
-# verdict the one the architecture implies, and its drain. None is introduced here. The two A2A
-# rows (`busbar-core-admin -> busbar-a2a`, `busbar-a2a -> busbar-core-admin`) are STRUCK: FLIP-A2A
-# (#787) deleted busbar-a2a, so neither edge can be taken.
-
-[[dep]]
-from    = "busbar-core-admin"
-to      = "busbar-llm"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "A cleanliness crate's dependency is ONE-WAY onto the kernel (DECISIONS #5; BUSBAR-1.6.0.md:3780, R2/#37): `cleanliness -> legacy` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the edge is test-only and pre-existing at predev d7929b661d."
-why     = "busbar-core-admin names busbar-llm: declared dev in the test graph (features test-support) so the moved cross-plane drift test registers the plane decls and the self-enveloping admin-verb backing through its testkit. 1 declaration(s) at this commit, absent from every release build. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "dies with the retiring LLM engine: the drift test drives the llm plane crate's surface, and the dev-dependency is deleted."
+# THE ADMIN SURFACE'S TEST EDGES WITH THE RETIRING ENGINES are all STRUCK: FLIP-A2A (#787) deleted
+# busbar-a2a, and the admin crate's tests run on the kernel's kind-neutral doubles (THE DESIGN §1), so
+# its dev-dependency on the llm crate is deleted.
 
 [[dep]]
 from    = "busbar-plugin-loader"

@@ -2083,6 +2083,23 @@ pub fn hook_axis_stand_in(
 /// process. See [`hook_double`].
 pub mod hook_double;
 
+/// The operator-credential double: the `kind: auth` door a test binary links as the operator
+/// credential's row in place of the composition root's plugin (kind-neutral, under the stand-in
+/// operator words). See [`operator_double`].
+pub mod operator_double;
+
+/// The kernel's neutral synthetic protocol set (`proto/tests/neutral_protocols.rs`, the rows the
+/// kernel's own test binary validates and routes over), for a dependent crate's test binary that
+/// needs a protocol registry without linking a plane crate.
+#[path = "../proto/tests/neutral_protocols.rs"]
+mod neutral_protocols;
+
+/// Register the kernel's neutral synthetic protocols into this test binary's protocol registry
+/// (idempotent per name, order kept) — the kind-neutral stand-in for a linked plane's dialects.
+pub fn register_neutral_test_protocols() {
+    crate::proto::register_test_protocols(neutral_protocols::NEUTRAL_PROTOCOLS);
+}
+
 /// The ranking hook double (R-FIX3): the door that stands in for the root's linked ranking row in a
 /// test build. Linked only.
 pub mod ranking_double;
