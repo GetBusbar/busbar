@@ -4324,9 +4324,9 @@ pub(crate) mod door_boundary {
     /// production composes it ([`crate::root::serve::hook_seat_tests::rig`]), its key minted on the
     /// same signing secret as this module's rig. A sibling of that key bound to `audience` (the tool
     /// door's resource) is no credential on any guarded route of that router; its plain sibling is
-    /// admitted on each. Returns how many guarded routes were walked.
+    /// admitted on each. Returns every guarded path walked, as requested.
     #[cfg(linked_driver_proofs)]
-    async fn pools_door_walk(audience: &str) -> usize {
+    async fn pools_door_walk(audience: &str) -> Vec<String> {
         use crate::root::serve::hook_seat_tests::{rig as pools_rig, RigOpts};
         let instance = "door-boundary-pools";
         let _published = Published(instance);
@@ -4385,7 +4385,7 @@ pub(crate) mod door_boundary {
         });
         let mut routes = busbar_kernel::base_data_route_method_view(&rig.app);
         routes.extend(rig.door_table.iter().cloned());
-        let mut walked = 0usize;
+        let mut walked: Vec<String> = Vec::new();
         for (pattern, verb, auth) in &routes {
             if *auth == RouteAuth::None {
                 continue;
@@ -4410,7 +4410,7 @@ pub(crate) mod door_boundary {
                 plain, anon,
                 "the plain sibling is admitted on {verb} {path}"
             );
-            walked += 1;
+            walked.push(path);
         }
         // THE 1.5.5 CONVENIENCE PATHS (`/{name}/v1/messages`, `/{provider}/{model}/v1/messages`),
         // served through the door's `/` claim: an anonymous caller is refused 401, the bound
@@ -4441,6 +4441,7 @@ pub(crate) mod door_boundary {
                 plain != 401 && plain != 403,
                 "a keyed caller is admitted on the convenience route POST {path}: {plain}"
             );
+            walked.push(path.to_string());
         }
         walked
     }
@@ -4666,12 +4667,27 @@ pub(crate) mod door_boundary {
         // door's claims, its `/` claim catching every path no more specific claim takes (DEV-GREEN
         // row 83). The same binding's audience-bound sibling buys exactly nothing on any of them, and
         // its plain sibling is admitted: walked over the data router built with that door's claims.
-        checked += pools_door_walk(&audience).await;
+        let moved = pools_door_walk(&audience).await;
+        checked += moved.len();
+        // THE FOUR ROUTES THAT MOVED onto that door are each walked guarded, by name: the floor that
+        // counted them on the kernel's router counts them here, and a route the door no longer
+        // guards (or no longer serves) is red, never absorbed by a count of the others.
+        for path in [
+            "/v1/models",
+            "/v1beta/models",
+            "/p/v1/messages",
+            "/oai0/m0/v1/messages",
+        ] {
+            assert!(
+                moved.iter().any(|walked| walked == path),
+                "{path} moved onto the pools door and must be walked guarded there: {moved:?}"
+            );
+        }
         // The guarded routes beside the door's own: the kernel's (`/stats`) and the model plane's
-        // door's. The convenience and list-models routes are that door's claims, walked above.
+        // door's four moved routes, so the floor is the four plus the kernel's own.
         assert!(
-            checked >= 3,
-            "the walk covered only {checked} guarded core routes — it is not seeing the router"
+            checked >= 5,
+            "the walk covered only {checked} guarded routes — it is not seeing the router"
         );
         for path in &boot_plugin_paths {
             let url = format!("http://{addr}{path}");
