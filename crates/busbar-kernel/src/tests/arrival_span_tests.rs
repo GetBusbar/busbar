@@ -187,9 +187,10 @@ fn an_arrival_opens_the_first_fact_it_meets_else_its_claims_span() {
         opened(&spans, 1, "GET", "/own/x", &[]).is_empty(),
         "another verb"
     );
-    assert!(
-        opened(&spans, 0, "POST", "/z/signed", &[]).is_empty(),
-        "a raw affix stating no span is no fact"
+    assert_eq!(
+        name(opened(&spans, 0, "POST", "/z/signed", &[])),
+        vec!["entry_span_test_own"],
+        "a raw affix stating no span is no fact: the reading passes it to the claim's own span"
     );
     assert!(
         opened(&spans, 1, "POST", "/q", &[]).is_empty(),

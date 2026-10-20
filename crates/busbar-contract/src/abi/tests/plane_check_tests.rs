@@ -1125,8 +1125,11 @@ fn a_claim_states_only_known_flags() {
     // A signed-ingress path is a known flag (ARCHITECT ruling 2026-10-16, 3b A).
     let signed = claim("V", "/t", CLAIM_EXACT | CLAIM_SIGNED_INGRESS);
     assert_eq!(check_claims(&[signed], 1), Ok(()));
-    // RED: a bit none of the known claim bits.
-    let unknown = claim("V", "/t", CLAIM_RAW_AFFIX << 1);
+    // An entry fact is a known flag (status row 173).
+    let entry = claim("V", "path:/t/*", CLAIM_ENTRY);
+    assert_eq!(check_claims(&[entry], 1), Ok(()));
+    // RED: a bit none of the known claim bits, the first past `CLAIM_ENTRY`.
+    let unknown = claim("V", "/t", CLAIM_ENTRY << 1);
     assert_eq!(
         check_claims(&[unknown], 1),
         f(Rule::UnknownCode, "claim.flags")
