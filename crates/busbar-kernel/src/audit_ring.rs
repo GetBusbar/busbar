@@ -117,10 +117,16 @@ const ADMIN_LOG: &str = "admin";
 /// always sealed with.
 pub const AUDIT_SCHEME_PIPE: u8 = 1;
 
-/// Scheme 2: length-prefixed — the framing that makes the split between fields unforgeable, so a
-/// caller-controlled `|` inside `resource` (or any other field) can no longer move a field boundary
-/// and collide two different mutations onto one digest. `link` seals every entry built fresh under
-/// this scheme; it is what closes the collision [`AUDIT_SCHEME_PIPE`] admits.
+/// Scheme 2: length-prefixed content — the framing that makes the split between the caller-supplied
+/// fields unforgeable, so a caller-controlled `|` inside `resource` (or any other field) can no
+/// longer move a field boundary and collide two different mutations onto one digest. It is what
+/// closes the collision [`AUDIT_SCHEME_PIPE`] admits.
+///
+/// THE RECIPE IS THE ONE THE DURABLE SEAM SEALS, byte for byte: the admin stream's `prev_hash|seq`
+/// prelude (pipe-joined; neither field is caller text), then
+/// [`crate::audit::auditlog::audit_suffix_safe`] (a marker byte, then `ts`/`action`/`resource`/
+/// `outcome`/`principal` each length-prefixed). A served record that says scheme 2 recomputes under
+/// exactly the bytes its `hash` was minted over (Q128 p12#1; THE DESIGN §1 "integrity (prev hash)").
 pub const AUDIT_SCHEME_LENGTH_PREFIXED: u8 = 2;
 
 /// The [`AuditEntry::scheme`] a store's silence means. A free function because `serde`'s `default`
@@ -200,10 +206,30 @@ impl ChainedRecord for AuditEntry {
         self.hash = hash;
     }
 
-    /// `sha256(prev_hash | seq | ts | action | resource | outcome | principal)` — the formula
-    /// `busbar_contract::records::AuditRecord` publishes, fed field by field instead of being formatted here.
+    /// Scheme 1: `sha256(prev_hash | seq | ts | action | resource | outcome | principal)` — the
+    /// formula `busbar_contract::records::AuditRecord` publishes (v1.5.5
+    /// `crates/busbar/src/admin/audit.rs:61-73`), fed field by field instead of being formatted here.
+    /// Scheme 2: the seam's own bytes, `prev_hash|seq` then the length-prefixed safe suffix (see
+    /// [`AUDIT_SCHEME_LENGTH_PREFIXED`]); fed through [`Digest::raw`], which ignores the builder's
+    /// framing, so the recipe is the same whichever framing `framing` names.
     /// Note there is no scope field: this chain has exactly one scope, so nothing distinguishes it.
     fn digest_fields(&self, d: &mut Digest) {
+        if self.scheme == AUDIT_SCHEME_LENGTH_PREFIXED {
+            d.raw(&crate::audit::frame_prelude(
+                Framing::PipeSeparated,
+                &self.prev_hash,
+                None,
+                self.seq,
+            ))
+            .raw(&crate::audit::auditlog::audit_suffix_safe(
+                self.ts,
+                &self.action,
+                &self.resource,
+                &self.outcome,
+                &self.principal,
+            ));
+            return;
+        }
         d.text(&self.prev_hash)
             .num(self.seq)
             .num(self.ts)

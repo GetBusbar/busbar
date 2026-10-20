@@ -4,8 +4,8 @@
 //! **THE FOUR 1.6.0 ADMIN VERBS OWNER ANSWER Q71(2) BINDS**: `verify`, `plane_facts`,
 //! `plane_record_write` and `commit_upgrade` — additive, `x-busbar-since 1.6.0`, the same shape as
 //! the core admin verbs of Q56. Every one is admitted by the verbs unit before it reaches this file
-//! (scope, rate class, the operator ceremony for the irreducible `commit_upgrade`, dual control), so
-//! each effect here speaks only to its own body and its own effect.
+//! (scope, then rate class: a plain scoped verb, #77(9) OWNER-LOCKED), so each effect here speaks
+//! only to its own body and its own effect.
 //!
 //! * `GET /api/v1/admin/verify` — [`verify_effect`]: the ledger's own verifier
 //!   ([`busbar_kernel_ledger::verify`]) over what the node holds — every sealed checkpoint re-hashes
@@ -43,7 +43,7 @@ pub fn no_planes() -> PlaneLookup {
 }
 
 /// Where `plane_record_write` lands one record: the plane-facing store seam
-/// (`busbar_kernel::plane::store::PlaneStore::upsert_plane_record`). `Err` carries the store's own
+/// (`busbar_kernel::store::plane_view::PlaneStore::upsert_plane_record`). `Err` carries the store's own
 /// words, for the node's log only.
 pub type PlaneRecordSink = Arc<dyn Fn(&PlaneRecord) -> Result<(), String> + Send + Sync>;
 
@@ -510,7 +510,7 @@ pub fn live_records(app: Arc<busbar_kernel::state::AppHandle>) -> PlaneRecordSin
             .governance
             .as_ref()
             .ok_or_else(|| "no record store is configured".to_string())?;
-        busbar_kernel::plane::store::PlaneStoreView::narrow(gov.store())
+        busbar_kernel::store::plane_view::PlaneStoreView::narrow(gov.store())
             .upsert_plane_record(record.view())
             .map_err(|e| e.0)
     })
