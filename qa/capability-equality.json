@@ -77,11 +77,11 @@
   },
   "root_legs": {
     "root-llm": {
-      "file": "crates/busbar/src/root/tests/plane_node.rs",
+      "file": "crates/busbar/src/root/tests/serve_tests.rs",
       "columns": [
         "llm"
       ],
-      "note": "the LLM plane over the loop: LlmNode::answer driving the kernel's ten steps, compared against the shipped entry point on six fixtures"
+      "note": "the LLM plane served through its memory-ABI door on the kernel's plane driver (the pools door): each loop cell drives a keyed caller through the data router built with the door's claims, the kernel's hook stage, the model-serving walk over the kernel's lane cells and the node's book, and asserts the capability where it lands"
     },
     "root-mcp": {
       "file": "crates/busbar/src/root/serve.rs",
@@ -453,12 +453,12 @@
       "capability": "audit-chain",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar/src/root/tests/plane_node.rs::every_unit_the_node_answers_served_or_refused_seals_one_record_on_one_tamper_evident_chain",
-      "note": "the llm plane is served through the root's node (Node::answer, plane-llm on the node axis): every unit it answers, served (a dispatched completion) or refused (a body the arrival step cannot read), seals ONE record on the node's audit chain (busbar-kernel-audit, journalled as audit.v4 on the node's book), the second the first's successor; the chain walks clean, and a record altered after its seal breaks the walk. This is the node's per-unit chain, not the per-principal request chain proxy/reqlog.rs kept (deleted by the P2 ruling, escalate.q DEL-REQLOG Q1). Watched red: a node whose Driven::audited drops the audit door's pass (root/plane_node.rs) seals nothing.",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::every_pools_door_unit_served_or_refused_seals_one_record_on_one_tamper_evident_chain",
+      "note": "the llm plane is served through its door on the plane driver: every unit it answers, served (a dispatched completion) or refused (the caller's group allows one request an hour), seals ONE record on the node's audit chain (busbar-kernel-audit, journalled on the node's book), the second the first's successor; the chain walks clean, and a record altered after its seal breaks the walk. Watched red: a unit sealing no record or two, an unlinked record, or a forged record the walk accepts.",
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/tests/plane_node.rs::a_driven_planes_abandoned_end_seals_one_audit_record"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::every_pools_door_unit_served_or_refused_seals_one_record_on_one_tamper_evident_chain"
       }
     },
     {
@@ -527,7 +527,7 @@
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/tests/plane_node.rs::the_loop_leaves_the_money_where_the_shipped_plane_leaves_it"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_leaves_a_streamed_and_a_failed_units_money_where_1_5_5_left_it"
       }
     },
     {
@@ -598,7 +598,7 @@
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/tests/plane_node.rs::every_fixture_reaches_the_end_it_names"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_classifies_by_the_mapped_code_not_the_status"
       }
     },
     {
@@ -933,7 +933,7 @@
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/tests/plane_node.rs::the_switched_table_names_every_dialect_the_plane_names"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_doors_catalogue_shows_a_restricted_key_only_what_it_reaches"
       }
     },
     {
