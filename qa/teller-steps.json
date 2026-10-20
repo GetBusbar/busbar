@@ -132,7 +132,7 @@
           "state": "proven",
           "leg": "root-llm",
           "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_decodes_every_dialect_and_refuses_an_unreadable_body_in_each",
-          "note": "each of the six caller dialects the door claims decodes a well-formed request into a served, once-dispatched unit, and the same path refuses an unreadable body with a 400 that never reaches the far end"
+          "note": "each of the six caller dialects the door claims decodes a well-formed request into a served, once-dispatched unit, and the same path refuses an unreadable body with a 400 that never reaches the far end; its refusal arms -- a body naming no model is the dialect's 400 and an unserved action its 404, neither dispatched nor accounted -- are proven beside it by serve_tests.rs::the_pools_door_refuses_a_body_naming_no_model_400_and_an_unserved_action_404"
         }
       },
       "authenticate": {
@@ -143,7 +143,7 @@
           "state": "proven",
           "leg": "root-llm",
           "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_admits_the_presented_key_and_refuses_an_unknown_one_before_the_plane",
-          "note": "the key the caller presents is the one its unit is admitted and charged under, while a bearer this deployment never minted and a request carrying no credential are refused 401 before the plane, dispatching and accounting nothing"
+          "note": "the key the caller presents is the one its unit is admitted and charged under, while a bearer this deployment never minted and a request carrying no credential are refused 401 before the plane, dispatching and accounting nothing; a key this deployment minted whose exp has passed is refused 401 before the plane too (serve_tests.rs::the_pools_door_refuses_an_expired_key_before_the_plane)"
         }
       },
       "verify": {
@@ -165,7 +165,7 @@
           "state": "proven",
           "leg": "root-llm",
           "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_approves_a_granted_key_and_an_ungranted_one_never_reaches_approve",
-          "note": "approve passes a key its grant reaches (sealed Completed), and a key whose grant misses the pool is sealed refused at verify, so approve is never the step that refuses on this door; the hook gates sit after admission at the route leg's head"
+          "note": "approve passes a key its grant reaches (sealed Completed), and a key whose grant misses the pool is sealed refused at verify, so approve is never the step that refuses on this door; the hook gates sit after admission at the route leg's head; a vetoing gate stops the unit undialled, nets no spend and seals one record refused for the veto (serve_tests.rs::the_pools_doors_veto_stops_the_unit_undialled_unbilled_and_sealed_as_a_veto)"
         }
       },
       "admit": {
