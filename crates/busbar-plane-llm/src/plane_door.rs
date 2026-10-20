@@ -305,7 +305,6 @@ const fn dialect_auth(i: usize) -> DialectAuth {
                 ..Blob::ZERO
             }
         },
-        ..DialectAuth::ZERO
     }
 }
 
