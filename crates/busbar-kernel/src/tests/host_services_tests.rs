@@ -184,7 +184,9 @@ fn rig() -> Rig {
 /// A durable demotion record over `store`.
 fn demotions(store: &Arc<MemoryStore>) -> Arc<DemotionRecord> {
     let d = DemotionRecord::default();
-    d.set_sink(crate::plane::store::PlaneStoreView::narrow(store.clone()));
+    d.set_sink(crate::store::plane_view::PlaneStoreView::narrow(
+        store.clone(),
+    ));
     Arc::new(d)
 }
 
@@ -2065,4 +2067,295 @@ fn a_declared_chain_the_host_cannot_keep_refuses_the_admit() {
         let s = r.s.sign(&caller("chained"), b"x");
         assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_ADMITTED));
     }
+}
+
+/// A plane store whose read of the operator's kept trust rulings parks, once armed, until the test releases it: the
+/// store-plugin crossing an admit makes (audit K4 #6).
+struct ParkingStore {
+    armed: std::sync::atomic::AtomicBool,
+    entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+}
+
+impl crate::store::plane_view::PlaneStore for ParkingStore {
+    fn upsert_plane_record(
+        &self,
+        _: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Ok(())
+    }
+    fn get_plane_record(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    fn append_plane_record(
+        &self,
+        _: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_plane_records(
+        &self,
+        kind: &str,
+        _: &busbar_contract::records::PlaneSelector,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
+        if kind != crate::store::plane_view::KIND_DEMOTION && self.armed.load(Ordering::SeqCst) {
+            if let Some(entered) = self.entered.lock().unwrap().take() {
+                entered.send(()).unwrap();
+            }
+            if let Some(release) = self.release.lock().unwrap().take() {
+                let _ = release.recv();
+            }
+        }
+        Ok(Vec::new())
+    }
+    fn list_plane_record_parents(
+        &self,
+        _: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn purge_plane_records_before(
+        &self,
+        _: &str,
+        _: u64,
+    ) -> busbar_contract::records::RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn delete_plane_record(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Ok(())
+    }
+    fn redeem_plane_token(
+        &self,
+        _: &str,
+        _: &str,
+        _: u64,
+        _: u64,
+    ) -> busbar_contract::records::RecordStoreResult<bool> {
+        Ok(false)
+    }
+    fn plane_token_live(
+        &self,
+        _: &str,
+        _: &str,
+        _: u64,
+        _: u64,
+    ) -> busbar_contract::records::RecordStoreResult<bool> {
+        Ok(false)
+    }
+}
+
+/// NO PLUGIN CODE RUNS UNDER A HOST LOCK (§11.13 M1; audit K4 #6): while an instance's first admit
+/// is parked in the store plugin reading the operator's kept trust rulings, a caller-scoped host
+/// service of another instance, on another thread, still answers.
+#[test]
+fn an_admit_parked_in_the_store_never_stalls_another_instances_host_service() {
+    use std::sync::mpsc::channel;
+    use std::time::Duration;
+    let (entered_tx, entered_rx) = channel();
+    let (release_tx, release_rx) = channel();
+    let store = Arc::new(ParkingStore {
+        armed: std::sync::atomic::AtomicBool::new(false),
+        entered: Mutex::new(Some(entered_tx)),
+        release: Mutex::new(Some(release_rx)),
+    });
+    let record = DemotionRecord::default();
+    record.set_sink(store.clone());
+    let s = Arc::new(
+        KernelServices::new()
+            .with_signer(Arc::new(FixedKey))
+            .with_demotions(Arc::new(record), SECTION_KEY),
+    );
+    s.admit(
+        "inst",
+        InstanceFacts {
+            signing: Some(Signing {
+                domain: "dom".into(),
+                kid_prefix: "p-".into(),
+            }),
+            ..InstanceFacts::default()
+        },
+    )
+    .unwrap();
+    store.armed.store(true, Ordering::SeqCst);
+    let admitting = {
+        let s = Arc::clone(&s);
+        std::thread::spawn(move || s.admit("other", InstanceFacts::default()))
+    };
+    entered_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the second admit reached the store's read of the kept trust rulings");
+    let (answer_tx, answer_rx) = channel();
+    {
+        let s = Arc::clone(&s);
+        std::thread::spawn(move || {
+            let _ = answer_tx.send(s.sign(&caller("inst"), b"data").outcome);
+        });
+    }
+    let answered = answer_rx.recv_timeout(Duration::from_secs(5));
+    release_tx.send(()).unwrap();
+    admitting.join().unwrap().unwrap();
+    assert_eq!(
+        answered,
+        Ok(Outcome::Ready),
+        "a host service of another instance answers while an admit is parked in the store plugin"
+    );
+}
+
+/// A durable record's store that can refuse to keep a trust decision, and that notes, at every
+/// read of the kept decisions, whether the host lock every caller-scoped service takes was free.
+#[derive(Default)]
+struct Probe {
+    refuse_decisions: std::sync::atomic::AtomicBool,
+    kernel: OnceLock<std::sync::Weak<KernelServices>>,
+    lock_free_at_read: Mutex<Vec<bool>>,
+}
+
+impl crate::store::plane_view::PlaneStore for Probe {
+    fn upsert_plane_record(
+        &self,
+        record: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        let kind = record.to_record().kind;
+        if kind == crate::store::plane_view::KIND_TRUST_DECISION
+            && self.refuse_decisions.load(Ordering::SeqCst)
+        {
+            return Err("the store is down".into());
+        }
+        Ok(())
+    }
+    fn get_plane_record(
+        &self,
+        _kind: &str,
+        _id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    fn append_plane_record(
+        &self,
+        _record: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_plane_records(
+        &self,
+        kind: &str,
+        _selector: &busbar_contract::records::PlaneSelector,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
+        if kind == crate::store::plane_view::KIND_TRUST_DECISION {
+            if let Some(k) = self.kernel.get().and_then(std::sync::Weak::upgrade) {
+                let free = k.instances.try_lock().is_ok();
+                self.lock_free_at_read.lock().unwrap().push(free);
+            }
+        }
+        Ok(Vec::new())
+    }
+    fn list_plane_record_parents(
+        &self,
+        _kind: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn purge_plane_records_before(
+        &self,
+        _kind: &str,
+        _before: u64,
+    ) -> busbar_contract::records::RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn delete_plane_record(
+        &self,
+        _kind: &str,
+        _id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Ok(())
+    }
+    fn redeem_plane_token(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> busbar_contract::records::RecordStoreResult<bool> {
+        Ok(false)
+    }
+    fn plane_token_live(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> busbar_contract::records::RecordStoreResult<bool> {
+        Ok(false)
+    }
+}
+
+/// A kernel whose durable record keeps through `probe`.
+fn probed(probe: &Arc<Probe>) -> Arc<KernelServices> {
+    let d = DemotionRecord::default();
+    d.set_sink(Arc::clone(probe) as Arc<dyn crate::store::plane_view::PlaneStore>);
+    let k = Arc::new(
+        KernelServices::new()
+            .with_pool(Arc::new(Inline))
+            .with_demotions(Arc::new(d), SECTION_KEY),
+    );
+    let _ = probe.kernel.set(Arc::downgrade(&k));
+    k
+}
+
+/// A DECISION THE STORE REFUSED IS NOT IN FORCE (Q128 p5#2; THE DESIGN §11.12 l.1617-1619). The
+/// operator is told the approval failed, and the counterparty stays unapproved in this process as
+/// it will after a restart. RED arm: the book took the approval before the store was asked, so
+/// `trust_judge` answered `Ok` after the refused keep.
+#[test]
+fn a_trust_decision_the_store_refused_never_takes_effect() {
+    use crate::trust::book::{Ruling, TrustFacts};
+    let probe = Arc::new(Probe::default());
+    let k = probed(&probe);
+    k.admit("inst", trusting(None)).unwrap();
+    let me = caller("inst");
+    assert_eq!(
+        run(|l| k.trust_sight(&me, "cp", "h1", l)).value,
+        svc::TRUST_NEW
+    );
+    let whole = TrustFacts {
+        counterparty: "cp",
+        item: None,
+        digest: None,
+    };
+    probe.refuse_decisions.store(true, Ordering::SeqCst);
+    assert!(matches!(
+        k.trust_rule("inst/cp", Ruling::Approve),
+        Err(TrustRefused::Store(_))
+    ));
+    assert_eq!(
+        k.trust_judge("inst", &whole),
+        Err(Distrust::NotApproved),
+        "an approval nothing kept was not made"
+    );
+    let s = k.trust_decide(
+        &me,
+        busbar_contract::services::TrustKeyRef {
+            counterparty: "cp",
+            item: None,
+        },
+        Some("h1"),
+        true,
+    );
+    assert_eq!(s.error, DECISION_UNKEPT);
+    assert_eq!(k.trust_judge("inst", &whole), Err(Distrust::NotApproved));
+    probe.refuse_decisions.store(false, Ordering::SeqCst);
+    k.trust_rule("inst/cp", Ruling::Approve).unwrap();
+    assert_eq!(
+        k.trust_judge("inst", &whole),
+        Ok(()),
+        "kept, it is in force"
+    );
 }

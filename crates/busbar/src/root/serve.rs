@@ -31,13 +31,13 @@ use busbar_contract::services::{
 };
 use busbar_kernel::host_records::QUEUE_CAP;
 use busbar_kernel::host_services::{BlockingPool, DestJudge, KernelServices, SignKey};
-use busbar_kernel::plane::store::KIND_DEMOTION;
 use busbar_kernel::plane::DemotionRecord;
 use busbar_kernel::plane_driver::serve::{publish, ServeRoute, ServeTable};
 use busbar_kernel::plane_driver::{
     refusal_status, BufferCaps, CallerEnd, DriverConfig, Egress, HeadFields, MoneySeam,
     PlaneDriver, PlaneMoney, Rendered, SessionCaller,
 };
+use busbar_kernel::store::plane_view::KIND_DEMOTION;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::root::boot::DoorPlane;
@@ -913,6 +913,21 @@ impl Served {
             .flat_map(|p| p.live.served_facts.need_trust.iter().copied())
             .collect()
     }
+
+    /// The declaring sections of the planes among `doors` this composition did not open (what the
+    /// root's rules hold as restart-to-apply, `door_steps::Rules::hold_unopened`). The fallback
+    /// plane is never one: its generation is built at every apply, as the previous release built
+    /// it.
+    #[must_use]
+    pub fn unopened(&self, doors: &[(String, DoorPlane)]) -> Vec<&'static str> {
+        doors
+            .iter()
+            .filter(|(instance, _)| !self.planes.iter().any(|p| p.instance == *instance))
+            .map(|(_, plugin)| plugin.served())
+            .filter(|served| !served.fallback)
+            .map(|served| served.section)
+            .collect()
+    }
 }
 
 impl Served {
@@ -952,6 +967,9 @@ impl Checkpoints {
     /// One tick: bump the epoch, then hand each running unit's checkpoint to the node's book
     /// ([`PlaneMoney::flush_checkpoints`]). Answers how many were journaled.
     fn tick(&self) -> usize {
+        // THE NODE'S LEASE ON ITS HOST NAME, refreshed on this same tick (Q128): a node with no data
+        // directory keeps journaling under its host's id only while it holds it.
+        crate::root::durability::refresh_held_lease();
         self.epoch.bump();
         self.money
             .iter()
@@ -3102,27 +3120,38 @@ impl DataRoutes {
             &self.post,
             &units,
             (self.pin)(),
+            served.facts.audit_kind,
         ) else {
             let _ = verdict.send(Err(None));
             return;
         };
-        let status = match opened {
+        let admitted = match opened {
             // The open's hook stage (K5, ARCHITECT Q-L5B-PROJECT) runs before the caller is
-            // answered: a hook that stops it is answered in the plane's rendering, never upgraded.
+            // answered: a hook that stops it is answered in the plane's rendering, never upgraded,
+            // and the session's record says it was refused there.
             SessionOpen::Admitted {
                 route,
                 destinations,
-            } if units.open_hooks(&route, &ctx).await.is_ok()
-                && attach
+            } => match units.open_hooks(&route, &ctx).await {
+                Err(reason) => {
+                    self.post.stopped(unit, reason);
+                    None
+                }
+                Ok(()) => attach
                     .admitted
                     .take()
-                    .is_none_or(|admitted| admitted(unit.get()).is_ok()) =>
-            {
+                    .is_none_or(|admitted| admitted(unit.get()).is_ok())
+                    .then_some((route, destinations)),
+            },
+            SessionOpen::Refused => None,
+        };
+        let status = match admitted {
+            Some((route, destinations)) => {
                 let _ = verdict.send(Ok(()));
                 let _ended = units.session(&route, &ctx, &destinations).await;
                 attach.answered
             }
-            _ => {
+            None => {
                 let rendered = units.take_rendered();
                 let status = rendered
                     .as_ref()
@@ -3135,6 +3164,9 @@ impl DataRoutes {
         if let Some(ended) = attach.ended.take() {
             ended(unit.get());
         }
+        // The session's record carries what it consumed, read before its money closes.
+        self.post
+            .reported(unit, report_of(&served.money, unit, &live.facts));
         slot.finish(&self.post);
         served.money.settle_end(unit, status);
     }
@@ -3332,7 +3364,7 @@ impl DataRoutes {
                 Ok(messages) => messages,
                 Err(why) => {
                     let status = refusal_status(ReasonCode::DecodeFailed);
-                    return match stream.refuse(why.error.as_bytes(), status) {
+                    return match stream.refuse(why.error.as_bytes(), status, false) {
                         Ok(block) => serve_framed::whole(status, &block),
                         Err(_) => stated((status, Vec::new()), Body::empty()),
                     };
@@ -3579,6 +3611,7 @@ impl DataRoutes {
                 late,
                 (self.pin)(),
                 nesting.as_ref().map(|n| &n.parent),
+                live.facts.audit_kind,
             )
             .instrument(span.clone())
             .await
