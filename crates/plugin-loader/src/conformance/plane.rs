@@ -1628,7 +1628,22 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         d.recycle(driver);
     }
     let fold = r.fold();
-    contract(&fold, s.kind_inputs("plane"));
+    // A broken contract names its line and then the whole fold, so a plane repo whose suite fails
+    // reads every step's answer (the cause is often a step before the one the contract names).
+    if let Err(broken) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        contract(&fold, s.kind_inputs("plane"));
+    })) {
+        let why = broken
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| broken.downcast_ref::<&str>().map(|w| (*w).to_string()))
+            .unwrap_or_default();
+        let steps: Vec<String> = fold
+            .iter()
+            .map(|st| format!("  {}: {}", st.label, st.answer))
+            .collect();
+        panic!("{why}\nthe {leg:?} fold:\n{}", steps.join("\n"));
+    }
     // AN UNREACHED SCHEME WAS NEVER TOUCHED (row 114): the claim conformance.json states is that
     // no open of this fold rode one; an open that did is the scheme reached, not unreached.
     if let Some(table) = &far {
