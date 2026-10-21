@@ -2280,3 +2280,138 @@ fn oversize_service_lengths_child() {
     assert!(blob_of(blob, "test.blob").is_none(), "a blob over the cap");
     assert_eq!(bytes_of(over(&b), "test.bytes"), Some(b.to_vec()));
 }
+
+/// Whether `d`'s instance is still served: a ticketless `clock.now` through its context. A
+/// quarantined instance's context names nothing, so the host answers it REFUSED.
+fn still_served(d: &Double) -> bool {
+    let mut reading = ClockReading {
+        size: 0,
+        _reserved: 0,
+        wall_ns: 0,
+        mono_ns: 0,
+    };
+    let i = ClockNowIn {
+        head: head(op::CLOCK_NOW, Ticket::NONE, 0, size_of::<ClockNowIn>()),
+        reading: &mut reading,
+    };
+    let mut o = blank();
+    HOST_SLOTS.clock_now.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o).outcome()
+        == Outcome::Ready
+}
+
+/// RED (status row 189, THE DESIGN §11.2: a host answer belongs to exactly one request): a handle
+/// on a ticket is bound to the service it was first used for. busbar-plane-a2a reused handle 0 of
+/// one ticket for its card load and then for `entitlement.check`, and the host handed the check
+/// the stored answer of the first service. Here the first service is `records.claim`, whose
+/// CLAIM_WON is the same number as ENTITLED: the stale answer reads as "entitled". The reuse is a
+/// plugin fault: answered FAULT, the second service never reaches the kernel, never the first
+/// service's answer, and the instance is quarantined as a forged context is.
+#[test]
+fn a_handle_reused_for_another_service_is_fault_and_quarantines_never_the_stale_answer() {
+    let d = double();
+    let (ret, o) = call_claim(&d, &claim_in(1));
+    assert_eq!((ret.outcome(), o.value), (Outcome::Ready, svc::CLAIM_WON));
+    assert!(still_served(&d));
+
+    let check = EntitlementCheckIn {
+        head: head(
+            op::ENTITLEMENT_CHECK,
+            TICKET,
+            0,
+            size_of::<EntitlementCheckIn>(),
+        ),
+        target: text("item:card"),
+    };
+    let mut o = blank();
+    let ret =
+        HOST_SLOTS.entitlement_check.unwrap()(d.ctx, std::ptr::from_ref(&check).cast(), &mut o);
+    assert_eq!(
+        (ret.outcome(), o.value),
+        (Outcome::Fault, 0),
+        "a handle reused for another service is a plugin fault, never the first service's answer"
+    );
+    assert!(
+        !d.route
+            .provider
+            .scoped
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, what, _)| *what == "entitlement.check"),
+        "the reused handle's service never reaches the kernel"
+    );
+    assert!(
+        !still_served(&d),
+        "the instance that reused the handle is quarantined"
+    );
+}
+
+/// RED (status row 189): a handle is bound to the REQUEST it was first used for, too. The same
+/// service on the same handle naming another key is a plugin fault, never the first key's record.
+#[test]
+fn a_handle_reused_for_another_request_of_one_service_is_fault_and_quarantines() {
+    let d = double();
+    let get = |key: &'static str, buf: &mut [u8; 16], spans: &mut [ItemSpan; 1]| {
+        let i = RecordsGetIn {
+            head: head(op::RECORDS_GET, TICKET, 0, size_of::<RecordsGetIn>()),
+            kind: text("approval"),
+            key: text(key),
+            into: bufs(buf, spans),
+        };
+        let mut o = blank();
+        let ret = HOST_SLOTS.records_get.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+        (ret.outcome(), o)
+    };
+    let (mut buf, mut spans) = ([0u8; 16], [NO_SPAN; 1]);
+    let (outcome, o) = get("k1", &mut buf, &mut spans);
+    assert_eq!((outcome, o.value), (Outcome::Ready, svc::FOUND));
+    assert_eq!(&buf[..4], b"k1=v");
+
+    let (mut buf, mut spans) = ([0u8; 16], [NO_SPAN; 1]);
+    let (outcome, o) = get("k2", &mut buf, &mut spans);
+    assert_eq!(
+        outcome,
+        Outcome::Fault,
+        "another request on a used handle is a plugin fault"
+    );
+    assert_eq!(o.len, 0);
+    assert_eq!(
+        buf, [0u8; 16],
+        "the first request's record is never handed out"
+    );
+    assert_eq!(
+        d.route.provider.scoped.lock().unwrap().len(),
+        1,
+        "the second request never reaches the kernel"
+    );
+    assert!(!still_served(&d), "the instance is quarantined");
+}
+
+/// GREEN on both sides of row 189: the legitimate re-poll of the SAME request on the same handle
+/// (PENDING, then READY once the kernel answers) is the one re-use a handle allows. The plugin may
+/// rebuild the request between polls (other buffers, the same bytes); the re-poll reads the stored
+/// answer, the kernel is asked once, and the instance is never quarantined for it.
+#[test]
+fn a_repoll_of_the_same_request_on_its_handle_reads_the_answer_and_is_never_a_fault() {
+    let d = double();
+    let first = String::from("https://api.example.com/v1");
+    let poll = |dest: &str| {
+        let mut i = judge_in("", TICKET, 7, DEST_RESOLVE);
+        i.dest = over(dest.as_bytes());
+        call_judge(&d, &i)
+    };
+    assert_eq!(poll(&first).0.outcome(), Outcome::Pending);
+    let rebuilt = first.clone();
+    drop(first);
+    assert_eq!(
+        poll(&rebuilt).0.outcome(),
+        Outcome::Pending,
+        "the same request re-polled before the answer is still running"
+    );
+    let later = d.route.provider.held.lock().unwrap().pop().unwrap();
+    later(Stored::ready(DEST_INTERNAL));
+    let (ret, o) = poll(&rebuilt);
+    assert_eq!((ret.outcome(), o.value), (Outcome::Ready, DEST_INTERNAL));
+    assert_eq!(d.route.provider.judged.load(Ordering::SeqCst), 1);
+    assert!(still_served(&d), "a re-poll is never a fault");
+}
