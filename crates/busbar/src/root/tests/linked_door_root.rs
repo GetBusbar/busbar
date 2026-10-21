@@ -163,7 +163,13 @@ macro_rules! door_root {
 door_root!(wire, "door-root-wire", "door-root-wire", [], 1);
 // A door-root wire whose tail names a layer and whose claim carries no session: what it states is
 // read, never a default.
-door_root!(layered, "door-root-layered", "door-root-layered", ["door-root-under"], 0);
+door_root!(
+    layered,
+    "door-root-layered",
+    "door-root-layered",
+    ["door-root-under"],
+    0
+);
 // A door whose Statement is named one thing and whose own claim is another.
 door_root!(misnamed, "door-root-named", "door-root-claimed", [], 1);
 
@@ -175,7 +181,11 @@ door_root!(misnamed, "door-root-named", "door-root-claimed", [], 1);
 #[test]
 fn a_door_root_row_links_with_the_key_layers_and_session_its_statement_states() {
     let row = linked_transport!(wire::door);
-    assert_eq!((row.key)(), "door-root-wire", "the key is the door's own claim");
+    assert_eq!(
+        (row.key)(),
+        "door-root-wire",
+        "the key is the door's own claim"
+    );
     assert!(
         (row.composes_over)().is_empty(),
         "the layers are the tail's: none"
@@ -192,7 +202,11 @@ fn a_door_root_row_links_with_the_key_layers_and_session_its_statement_states() 
     let built = compose(&[row], Dropped::NONE, &TransportSettings::default())
         .expect("the door-root row composes");
     let keys: Vec<&str> = built.iter().map(|(r, _)| r.key).collect();
-    assert_eq!(keys, ["door-root-wire"], "the fold registers it under its key");
+    assert_eq!(
+        keys,
+        ["door-root-wire"],
+        "the fold registers it under its key"
+    );
     assert_eq!(
         built[0].1.key(),
         "door-root-wire",
@@ -204,7 +218,10 @@ fn a_door_root_row_links_with_the_key_layers_and_session_its_statement_states() 
     let layered = linked_transport!(layered::door);
     assert_eq!((layered.key)(), "door-root-layered");
     assert_eq!((layered.composes_over)(), ["door-root-under"]);
-    assert!(!row_facts(layered::door).session, "its claim row carries no session");
+    assert!(
+        !row_facts(layered::door).session,
+        "its claim row carries no session"
+    );
 }
 
 /// RED: A DOOR WHOSE OWN CLAIM IS NOT ITS STATEMENT'S NAME IS REFUSED AT BOOT. The reader refuses it

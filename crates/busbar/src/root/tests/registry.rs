@@ -712,10 +712,7 @@ fn the_fold_builds_bottom_up_in_composes_over_order() {
         );
         last = Some(at);
         // … and the schemes it claims past its own register right after it, in its order.
-        let past: Vec<&str> = (entry.claims)()
-            .into_iter()
-            .filter(|c| *c != key)
-            .collect();
+        let past: Vec<&str> = (entry.claims)().into_iter().filter(|c| *c != key).collect();
         for (n, claim) in past.iter().enumerate() {
             assert_eq!(
                 position(claim),

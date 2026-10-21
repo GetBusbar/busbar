@@ -44,7 +44,11 @@ fn the_line_carrier_is_the_claim_a_row_declares_opening_on_its_first_line() {
 fn two_claims_opening_on_their_first_line_are_refused() {
     let rows = [
         row(|| "pipe-wire", || vec!["pipe-wire"], || vec!["pipe-wire"]),
-        row(|| "other-pipe", || vec!["other-pipe"], || vec!["other-pipe"]),
+        row(
+            || "other-pipe",
+            || vec!["other-pipe"],
+            || vec!["other-pipe"],
+        ),
     ];
     let refusal = line_carrier(&rows).expect_err("two line carriers are ambiguous");
     assert!(refusal.contains("`pipe-wire`"), "{refusal}");
