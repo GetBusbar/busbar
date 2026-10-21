@@ -67,8 +67,8 @@ busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-e
 # The env source's logic crate is also the door the loader's secret conformance suite links; its cdylib
 # crate (`busbar-secret-env-plugin`, same repo) is NOT a dependency: it is built from this pinned
 # checkout by the build:dlopen-cdylibs step and dlopened.
-busbar-secret-env = { git = "https://github.com/GetBusbar/busbar-secret-env", rev = "046296aecc8088128dee36971f8da8cd8fd79175" }
-busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", rev = "3186c8664591e407ad0487fafa081f393769382d" }
+busbar-secret-env = { git = "https://github.com/GetBusbar/busbar-secret-env", rev = "2cd7e1c6f70397e964d61fa47b1cc64c65ecf2e1" }
+busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", rev = "c1891cf96aa83ddb43239ead823749049c803f25" }
 # THE REQUEST-LOG WEBHOOK SINK: the one home of its pinned rev (a rev bump is this one edit). `busbar`
 # links the logic crate; `busbar-plugin-loader`'s conformance test builds the cdylib crate. Same repo,
 # same rev, one resolved copy in Cargo.lock.
@@ -141,7 +141,7 @@ busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev 
 # streaming plane's door row (`plane-streaming`, `busbar_plane_streaming::door::door`), whose own root
 # cells it states under its `links` name, and the voice conformance harness drives. Its dropped-in
 # cdylib twin (`busbar-plane-streaming-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "02459b162c41109034284acfcfd6e4c51edf6c7e" }
+busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "03cb3eb5d9c98b010c57fac4f75eabf874361d60" }
 arc-swap = "1"
 async-trait = "0.1"
 axum = "0.8"
@@ -338,6 +338,11 @@ tokio-tungstenite = { version = "0.29", default-features = false, features = ["h
 # generated in the plane from the vendored `a2a.proto` (below), with it. Already in the lock and the
 # shipped artifact through opentelemetry-otlp.
 prost = { version = "0.14", default-features = false, features = ["std"] }
+# The Public Suffix List, compiled in: the authorization server's metadata-document fetch bounds
+# fetches per REGISTRABLE domain (busbar-core-oauth2 `cimd::site_of`), so the tenants of a shared
+# suffix (`github.io`, `co.uk`) are separate sites and one owner's many hosts are one. `no_std`, no
+# dependency but its own types crate.
+psl = "2.1"
 tower = "0.5"
 tracing = "0.1.44"
 tracing-core = "0.1"
