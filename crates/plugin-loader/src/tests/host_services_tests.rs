@@ -1899,7 +1899,7 @@ fn disk_append_writes_only_to_a_granted_bound_destination() {
         key: "path".into(),
         path: "/var/log/busbar/requests.jsonl".into(),
         rotate_at: Some(1024 * 1024),
-        keep: busbar_contract::services::DISK_KEEP,
+        rotate: busbar_contract::services::DiskRotate::Truncate,
     };
     wake.bound.write().unwrap().push(bound.clone());
     // A key the instance was not granted, even with a path under it.

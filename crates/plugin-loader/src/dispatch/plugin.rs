@@ -772,8 +772,8 @@ impl Instance {
     /// Bind each DESTINATION key the instance was granted to the file `settings` (the settings
     /// `open` or `refresh` hands the plugin) give it, before the plugin sees them: a non-empty path
     /// under the key, rotated at the `rotate_mb` (the host's rotation key,
-    /// [`busbar_contract::services::DISK_ROTATE_KEY`]) beside it, keeping
-    /// [`busbar_contract::services::DISK_KEEP`] archives. A key the settings leave unset is not
+    /// [`busbar_contract::services::DISK_ROTATE_KEY`]) beside it by truncation in place, as 1.5.5
+    /// rotated it ([`busbar_contract::services::DiskRotate::Truncate`]). A key the settings leave unset is not
     /// bound, and `disk.append` refuses it. A refresh re-binds, so a changed path moves the file.
     fn bind_destinations(&self, settings: Blob) {
         let Some(keys) = self.wake.destinations.get() else {
@@ -799,7 +799,10 @@ impl Instance {
                         key: key.clone(),
                         path: path.to_owned(),
                         rotate_at,
-                        keep: busbar_contract::services::DISK_KEEP,
+                        // 1.5.5 parity: the request-log file sink truncated in place at
+                        // `rotate_mb` (Q128 arch u50). The data-keeping rename, PENDING OWNER, is
+                        // `DiskRotate::Rename { keep: DISK_KEEP }`.
+                        rotate: busbar_contract::services::DiskRotate::Truncate,
                     }
                 })
             })
