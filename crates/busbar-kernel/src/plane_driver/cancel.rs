@@ -103,6 +103,11 @@ pub(crate) struct Facts {
     pub(crate) far_end_answered: bool,
     /// A byte of the reply reached the caller.
     pub(crate) streamed: bool,
+    /// A byte of the reply reached the caller from a piece that carried the far end's bytes (or a
+    /// piece of the kernel's, for an answer the plane makes itself): the answer's CONTENT began.
+    /// A byte the plane writes on a far-end piece that carried none (its own closing frame for an
+    /// answer cut before its first byte) is not content, so that unit ended before its first byte.
+    pub(crate) content: bool,
     /// The far end CUT the answer after its head (its connection failed, or the send's deadline
     /// passed): the plane was handed its last piece with `PIECE_CUT`.
     pub(crate) cut: bool,

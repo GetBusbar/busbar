@@ -28,7 +28,7 @@
 
 use std::sync::Arc;
 
-use busbar_kernel::ingress::arrival::{BodyIngressEntry, PathIngressEntry};
+use busbar_kernel::ingress::arrival::BodyIngressEntry;
 use busbar_kernel::plane::registry::PlaneDecl;
 use busbar_kernel::plane::registry::PlaneDeclaration;
 use busbar_kernel::plane_host::EngineHost;
@@ -74,8 +74,6 @@ pub struct Linked {
     )],
     /// Protocol declarations, appended to the installed protocol set in this order.
     pub protocols: &'static [&'static [&'static busbar_kernel::proto::ProtocolDecl]],
-    /// URL-model arrivals, by protocol name.
-    pub path_ingress: &'static [&'static [PathIngressEntry]],
     /// Body-model arrivals, by protocol name.
     pub body_ingress: &'static [&'static [BodyIngressEntry]],
     /// Installers of the protocol-axis seams an entry provides beside its declarations (a completion
@@ -311,21 +309,18 @@ pub struct BookCtx<'a> {
     pub app: &'a busbar_kernel::state::App,
 }
 
-/// THE PROTOCOL AXIS: every entry's declarations and its path- and body-model arrivals, then each
-/// entry's protocol-axis seams — and the node axis, which those arrivals hand their units to: every
-/// entry on it is handed the node a root unit drives it through.
+/// THE PROTOCOL AXIS: every entry's declarations and its body-model arrivals, then each entry's
+/// protocol-axis seams. A dialect whose model rides the URL has no arrival here: its plane's door
+/// claims and serves those paths (ARCHITECT 2026-10-16 ruling 3 item 1). Then the node axis, which
+/// those arrivals hand their units to: every entry on it is handed the node a root unit drives it
+/// through.
 pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
     let installed: Vec<&'static busbar_kernel::proto::ProtocolDecl> = linked
         .protocols
         .iter()
         .flat_map(|decls| decls.iter().copied())
         .collect();
-    let path_ingress: Vec<PathIngressEntry> = linked
-        .path_ingress
-        .iter()
-        .flat_map(|arrivals| arrivals.iter().copied())
-        .collect();
-    busbar_kernel::proto::install_protocols_with_path_ingress(installed, path_ingress);
+    busbar_kernel::proto::install_protocols(installed);
     let body_ingress: Vec<BodyIngressEntry> = linked
         .body_ingress
         .iter()
@@ -503,7 +498,7 @@ pub fn plane_rows(linked: &Linked) -> Result<Vec<&'static PlaneDecl>, String> {
 /// #7: the route tables, the view, the health loop and `on_swap` are the KERNEL's). The door's own
 /// tail states whether it is the fallback plane (`TAIL_FALLBACK`), the core's readers (the
 /// `/metrics` lane gauges, `/v1/models`, the keys and service-operations views) walk the kernel's
-/// own [`busbar_kernel::plane_host::ConfigTables`], built from the same resolved lanes and pools,
+/// own [`busbar_kernel::plane_driver::route_tables::ConfigTables`], built from the same resolved lanes and pools,
 /// the provider merge is the kernel's `merge_provider_fallback`, and the health probes are the
 /// kernel's probe units on the door's sealed egress (`root::serve::arm_probes`). So a legacy row of
 /// the door's key yields the plane axis whole, its `build_runtime`, `viewer`, `resolve_provider`,

@@ -52,6 +52,8 @@ pub const MAX_DOOR_PLANES: usize = 16;
 struct Folded {
     reg: PlaneRegistration,
     dialects: &'static [&'static str],
+    /// The dialects its tail flags `DIALECT_PROVIDER`, in its order.
+    provider_dialects: &'static [&'static str],
     decl: PlaneDecl,
 }
 
@@ -103,9 +105,16 @@ pub fn fold(reg: PlaneRegistration) -> Result<&'static PlaneDecl, String> {
         HOOK_TABLE[index].clone_hooks(named, !reg.owns.is_empty(), !reg.admin_routes.is_empty()),
     );
     let dialects: &'static [&'static str] = reg.dialects.clone().leak();
+    let provider_dialects: &'static [&'static str] = (reg.dialects.iter())
+        .zip(&reg.dialect_flags)
+        .filter(|(_, f)| *f & busbar_contract::abi::plane::DIALECT_PROVIDER != 0)
+        .map(|(d, _)| *d)
+        .collect::<Vec<_>>()
+        .leak();
     let folded = DOORS[index].get_or_init(|| Folded {
         reg,
         dialects,
+        provider_dialects,
         decl,
     });
     *next = index + 1;
@@ -501,6 +510,10 @@ fn wire_formats<const I: usize>() -> &'static [&'static str] {
     door(I).map_or(&[], |d| d.dialects)
 }
 
+fn provider_dialects<const I: usize>() -> &'static [&'static str] {
+    door(I).map_or(&[], |d| d.provider_dialects)
+}
+
 /// A door plane's runtime slot for one generation: its section, and what its `open` faces the world
 /// with over that section and the deployment's public base URL.
 #[derive(Debug, Clone)]
@@ -660,13 +673,13 @@ pub fn listed<'a>(
 
 /// The generation's slot of the door at `I`, off the neutral slot seam.
 fn slot_of<const I: usize>(
-    slots: &dyn crate::plane_host::PlaneSlots,
+    slots: &dyn crate::plane_driver::slots::PlaneSlots,
 ) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
     slots.plane_slot(door(I)?.reg.key).cloned()
 }
 
 fn named_def_list<const I: usize>(
-    slots: &dyn crate::plane_host::PlaneSlots,
+    slots: &dyn crate::plane_driver::slots::PlaneSlots,
 ) -> Vec<crate::api::NamedDefView> {
     let (Some(d), Some(slot)) = (door(I), slot_of::<I>(slots)) else {
         return Vec::new();
@@ -683,7 +696,7 @@ fn named_def_list<const I: usize>(
 }
 
 fn named_def_get<const I: usize>(
-    slots: &dyn crate::plane_host::PlaneSlots,
+    slots: &dyn crate::plane_driver::slots::PlaneSlots,
     name: &str,
 ) -> Option<crate::api::NamedDefView> {
     let d = door(I)?;
@@ -698,7 +711,7 @@ fn named_def_get<const I: usize>(
 }
 
 fn registry_contains<const I: usize>(
-    slots: &dyn crate::plane_host::PlaneSlots,
+    slots: &dyn crate::plane_driver::slots::PlaneSlots,
     name: &str,
 ) -> bool {
     let Some(slot) = slot_of::<I>(slots) else {
@@ -708,7 +721,7 @@ fn registry_contains<const I: usize>(
         .is_some_and(|s| s.section.contains_def(name))
 }
 
-fn reresolve_gates<const I: usize>(next: &mut dyn crate::plane_host::ContainerGateSink) {
+fn reresolve_gates<const I: usize>(next: &mut dyn crate::plane_driver::slots::ContainerGateSink) {
     let Some(d) = door(I) else {
         return;
     };
@@ -1009,14 +1022,17 @@ fn condition_of(
 /// One table index's hooks, as data a `const` table can hold.
 struct HookRow {
     wire_format_names: fn() -> &'static [&'static str],
+    provider_dialects: fn() -> &'static [&'static str],
     claims: fn(&dyn std::any::Any) -> Vec<(String, &'static str)>,
     admission: fn(&dyn std::any::Any) -> Option<crate::plane::PlaneAdmission>,
     build: fn(&BuildCtx) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     config_validate: fn(&str, &serde_json::Value) -> Result<(), String>,
-    named_def_list: fn(&dyn crate::plane_host::PlaneSlots) -> Vec<crate::api::NamedDefView>,
-    named_def_get: fn(&dyn crate::plane_host::PlaneSlots, &str) -> Option<crate::api::NamedDefView>,
-    registry_contains: fn(&dyn crate::plane_host::PlaneSlots, &str) -> bool,
-    reresolve_gates: fn(&mut dyn crate::plane_host::ContainerGateSink),
+    named_def_list:
+        fn(&dyn crate::plane_driver::slots::PlaneSlots) -> Vec<crate::api::NamedDefView>,
+    named_def_get:
+        fn(&dyn crate::plane_driver::slots::PlaneSlots, &str) -> Option<crate::api::NamedDefView>,
+    registry_contains: fn(&dyn crate::plane_driver::slots::PlaneSlots, &str) -> bool,
+    reresolve_gates: fn(&mut dyn crate::plane_driver::slots::ContainerGateSink),
     parse_section: fn(&serde_yaml::Value) -> Result<Box<dyn PlaneCfg>, String>,
     default_section: fn() -> Box<dyn PlaneCfg>,
     admin_routes: fn(&dyn std::any::Any) -> Vec<crate::admin_verbs::AdminRouteSpec>,
@@ -1037,6 +1053,7 @@ impl HookRow {
     const fn of<const I: usize>() -> HookRow {
         HookRow {
             wire_format_names: wire_formats::<I>,
+            provider_dialects: provider_dialects::<I>,
             claims: claims::<I>,
             admission: admission::<I>,
             build: build::<I>,
@@ -1060,6 +1077,7 @@ impl HookRow {
     fn clone_hooks(&self, named: bool, owns: bool, admin: bool) -> PlaneHooks {
         PlaneHooks {
             wire_format_names: self.wire_format_names,
+            provider_dialects: self.provider_dialects,
             claims: self.claims,
             admission: self.admission,
             build: self.build,

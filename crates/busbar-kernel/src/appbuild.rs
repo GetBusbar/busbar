@@ -925,17 +925,22 @@ pub fn build_app_from_config(
         // The provider entry's lane-capability keys, carried unread in its table and resolved
         // against the lane's wire model by `ir::lane_caps` (architect ruling LANECAPS-MOVE).
         let lane_caps = legacy.lane_caps(facts.upstream_model.as_deref().unwrap_or(&ld.member));
-        let Some(protocol) = crate::proto::lane_protocol_name(provider_cfg.dialect()) else {
-            // The "supported:" roster is DERIVED from the registry (`known_protocols()`), not a
-            // hand-maintained literal: the codec dialects are whatever the linked plane crates
-            // registered, so a build with the fallback plane compiled out names only what it actually
-            // serves (and a build with a new dialect names it) — the deletion-test property at the
-            // vocabulary level. Empty roster is a real answer.
+        // The "supported:" roster is the planes' DECLARED provider dialects
+        // (`plane::provider_dialects`, ARCHITECT ruling 2026-10-16 item 3), not a hand-maintained
+        // literal and not a codec list: a build with the plane that declares them compiled out names
+        // only what it actually serves, and a build with a new dialect names it. Empty roster is a
+        // real answer.
+        let providers = crate::plane::provider_dialects();
+        let Some(protocol) = providers
+            .iter()
+            .copied()
+            .find(|d| *d == provider_cfg.dialect())
+        else {
             return Err(format!(
                 "provider '{}' uses unknown protocol '{}' (supported: {})",
                 ld.route,
                 provider_cfg.dialect(),
-                crate::proto::known_protocols().join(", ")
+                providers.join(", ")
             ));
         };
         // Reuse the single env read captured in the lanes_data loop above (same source of truth as
@@ -1651,7 +1656,7 @@ pub fn build_app_from_config(
                     // THE PRIOR GENERATION'S SLOTS, so a plane's `build` can CARRY accumulated
                     // coordination off its own prior runtime object across this apply — the same
                     // neutral `&dyn PlaneSlots` a container plane's `build_runtime` receives below.
-                    prior: prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
+                    prior: prior.map(|p| p as &dyn busbar_kernel::plane_driver::slots::PlaneSlots),
                     // The resolved providers: a door plane's probe is handed its referenced ones.
                     providers: Some(&cfg.providers),
                 };
@@ -1696,7 +1701,7 @@ pub fn build_app_from_config(
     // plaintexts + rate-card-derived costs + resolved context/tokens are in `lane_inputs`/`pool_inputs`).
     // THE KERNEL'S OWN TABLES over the same resolved sections, for the read seam when no plane
     // contributes a runtime of its own.
-    let config_tables = Arc::new(busbar_kernel::plane_host::ConfigTables::of(
+    let config_tables = Arc::new(busbar_kernel::plane_driver::route_tables::ConfigTables::of(
         &lane_inputs,
         &pool_inputs,
         &by_model,
@@ -1747,7 +1752,7 @@ pub fn build_app_from_config(
     if let Some(f) = fallback.and_then(|d| d.build_runtime) {
         let slot = f(
             &fallback_build_input as &dyn std::any::Any,
-            prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
+            prior.map(|p| p as &dyn busbar_kernel::plane_driver::slots::PlaneSlots),
         );
         plane_slots.insert(fallback_runtime_key, slot);
     }
