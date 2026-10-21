@@ -5,7 +5,6 @@ members = [
     "crates/busbar-core-connector",
     "crates/busbar-core-admin",
     "crates/busbar-core-oauth2",
-    "crates/busbar-llm",
     "crates/busbar-contract",
     "crates/busbar-kernel",
     "crates/busbar-kernel-identity",
@@ -57,8 +56,8 @@ busbar-auth-oidc = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev 
 busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "cc59d737972c1b881a164b437d63c4f29f6a15c1" }
 busbar-export-file = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "06176694c96bc30803046f5d38a95f541f5aa2a0" }
 busbar-export-file-plugin = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "06176694c96bc30803046f5d38a95f541f5aa2a0" }
-busbar-export-otlp = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "d4e24f17b57ae9e16026fbe6a56a1e8966773e51" }
-busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "d4e24f17b57ae9e16026fbe6a56a1e8966773e51" }
+busbar-export-otlp = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "1ce8ebd578c88b5fae02477078f7ab20892bb18b" }
+busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "1ce8ebd578c88b5fae02477078f7ab20892bb18b" }
 busbar-export-prometheus = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "65346c953856af5030ab141a55d59e458c608bff" }
 busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "65346c953856af5030ab141a55d59e458c608bff" }
 # THE SECRET SOURCES (THE DESIGN, "Plugins"; ARCHITECT 2026-10-02 WIRE-SECRET): `busbar` links each logic
@@ -123,7 +122,7 @@ busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport
 # both-ways fixture. The kernel names it under no name: its test build links the in-crate R-FIX3
 # double (`busbar_kernel::test_support::store_double`), and the root's `linked_store_double` tests
 # prove the double states what this door states.
-busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "0db18e38aa720a6a01e1f8a5a4e03b645aca7ccc" }
+busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "3d0ac5eed987d171d3b004c77caa23b21c1f4c0b" }
 # THE MCP PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the mcp plane's
 # door row (`plane-mcp-door`, `busbar_plane_mcp::tool_door::door`) and installs in every build's tests.
 # Its dropped-in cdylib twin (`busbar-plane-mcp-plugin`) and its gates live in that repo's plugin CI.
@@ -131,7 +130,7 @@ busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev 
 # THE DECISIONS PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
 # decisions plane's door row (`plane-decisions`, `busbar_plane_decisions::plane_door::door`). Its
 # dropped-in cdylib twin (`busbar-plane-decisions-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-decisions", rev = "938d17974212f44f8fa31cfce8e8e89880bdf309" }
+busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-decisions", rev = "b3e74232c96e1403b6c4c42ac1dfd5a19c12b344" }
 # THE A2A PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the a2a
 # plane's door row (`plane-a2a-door`, `busbar_plane_a2a::agent_door::door`), whose own root cells it
 # states under its `links` name. Its dropped-in cdylib twin (`busbar-plane-a2a-plugin`) and its gates
@@ -141,7 +140,7 @@ busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev 
 # streaming plane's door row (`plane-streaming`, `busbar_plane_streaming::door::door`), whose own root
 # cells it states under its `links` name, and the voice conformance harness drives. Its dropped-in
 # cdylib twin (`busbar-plane-streaming-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "55f953f3a450cfc4a1624f809dc4c69e06aa3243" }
+busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "253b5b2791122f07e74647a9f21efe51aa00ab7d" }
 arc-swap = "1"
 async-trait = "0.1"
 axum = "0.8"
@@ -261,7 +260,6 @@ oauth-as = { version = "1.0.0", features = [
 # the `otlp` sink (GetBusbar/busbar-export-otlp) posts with the proto's publisher's types, never with the
 # sink's own encoder. Not in any shipped build.
 opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "trace"] }
-proptest = "1"
 # DER minting on ring only. `pem` (and its base64 0.23) is a test-only need: the members whose tests
 # write PEM add the feature on their dev/test-support declaration.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }

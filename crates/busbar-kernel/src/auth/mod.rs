@@ -137,6 +137,8 @@ pub struct AuthMiddleware {
 /// ONE HOST-HELD CREDENTIAL'S VERIFIER: the opened instance, the credential kinds it reads through
 /// `records.secret` (opaque words), and the carrier lines its credential sits on (its own words).
 struct CredentialReader {
+    /// The `kind: auth` plugin this verifier is (the name its replay claims are made under).
+    name: String,
     calls: std::sync::Arc<dyn AuthCalls>,
     kinds: Vec<String>,
     carriers: Vec<HeaderName>,
@@ -213,6 +215,22 @@ fn replay_claimed(
     gov.store()
         .redeem_plane_token(AUTH_REPLAY, &token, expires_at, now)
         .unwrap_or(false)
+}
+
+/// THE SIGNED INGRESS'S REPLAY CLAIM (THE DESIGN §6 "Inbound verify", l.845-846: "a verified
+/// identity may carry a replay_key and replay_ttl_secs, and the verify caller claims the record
+/// (auth-replay, plugin/key, ttl) ... already TAKEN is 401"): the claim `id` asks for, made under
+/// the verifier `reader` exactly as the data chain and the admin door make theirs. `true` when the
+/// identity asks for none, or when this call won the claim.
+fn signed_replay_claimed(
+    gov: Option<&crate::governance::GovState>,
+    reader: &str,
+    id: &busbar_contract::auth_calls::VerifiedIdentity,
+    now: u64,
+) -> bool {
+    id.replay
+        .as_deref()
+        .is_none_or(|replay| replay_claimed(gov, reader, replay, now))
 }
 
 /// THE LINES THE CHAIN'S AUTHS NAMED, struck before any plane sees the request (THE DESIGN §6.4:
@@ -875,6 +893,7 @@ impl AuthMiddleware {
                     })?;
                 if let Some(calls) = calls {
                     readers.push(CredentialReader {
+                        name: module.to_string(),
                         kinds: calls.credential_kinds(),
                         issued: calls.issued_shape(),
                         carriers: calls
@@ -2427,12 +2446,11 @@ pub(crate) async fn auth_middleware(
     // running chain names `keys` AND the ingress dialect declares a signed ingress AND the request
     // carries one of the verifier's own carrier lines (the kernel names no credential line). Gating
     // on `keys_in_chain` keeps an OPEN `chain:[]` open. A credential that is not the verifier's
-    // (it PASSes) takes the unchanged token path below. The "which dialect signs" decision is a
-    // DECLARED protocol fact (`ProtocolDecl::ingress_auth`), never a name-branch.
-    let ingress_signed = crate::proto::decl_for(crate::ingress::native::envelope_dialect(
-        ingress_for_path(&app, &path),
-    ))
-    .is_some_and(|d| d.uses_sigv4_ingress_auth());
+    // (it PASSes) takes the unchanged token path below. Which paths are signed is a DECLARED plane
+    // fact, never a name-branch and never a path-shape guess: a door plane states its signed paths
+    // on raw-affix claims (`CLAIM_SIGNED_INGRESS` on `CLAIM_RAW_AFFIX`, ARCHITECT rulings 2026-10-16,
+    // 3b A and B, and 2026-10-17), looked up by the raw path whatever the verb.
+    let ingress_signed = core_routes.signed_ingress(&path);
     // The lines the chain's positions named for the transport, struck once the request is admitted.
     let mut strips = Vec::new();
     // The pre-step is CONFINED TO THE RESIDUAL PLANE (`admission.is_none()`). An audience-bound
@@ -2478,6 +2496,14 @@ pub(crate) async fn auth_middleware(
                                 .then(|| (*key).clone())
                         })
                     });
+                    // THE REPLAY CLAIM, won before admitting exactly as every other verify
+                    // caller wins it: a key the identity asks to be admitted once is claimed under
+                    // this verifier; a claim already taken is the same opaque refusal.
+                    if key.is_some()
+                        && !signed_replay_claimed(app.governance.as_deref(), &reader.name, &id, now)
+                    {
+                        return Err(unauthorized_response(&app, &path, door.as_ref()));
+                    }
                     match key {
                         Some(key) => Some(ChainVerdict::Identified {
                             module: crate::config::KEYS_MODULE.to_string(),
@@ -2745,6 +2771,8 @@ impl AuthMiddleware {
     }
 }
 
+/// A session's admission outside an HTTP request: the chain and the one verdict resolution.
+pub mod admit;
 /// What the gate holds of the caller: every credential carrier it reads (stripped from every plane's
 /// request) and the caller's credential as a ref only the host presents upstream.
 pub mod caller_credential;

@@ -337,6 +337,12 @@ fn is_os_context(rel: &str, b: &[u8], i: usize, j: usize) -> bool {
     if rel.ends_with(".toml") && before_text.trim().is_empty() {
         return false;
     }
+    // THE PROSE RULE IS FOR PROSE. In Rust source a whole-word `unix` in CODE (`fn unix()`,
+    // `let c = unix;`, `unix(p)`) is an identifier, and an identifier named for the carrier is the
+    // carrier: only a comment or a string literal is read by its neighbours below.
+    if rel.ends_with(".rs") && !in_rust_prose(b, i) {
+        return false;
+    }
     // Written as a word, it is the operating system, unless the next word makes it the socket
     // ("a unix socket", "the unix-domain carrier", "the unix wire"). A clock or platform word on
     // either side ("Unix seconds", "Unix-only") is the operating system as well.
@@ -351,6 +357,25 @@ fn is_os_context(rel: &str, b: &[u8], i: usize, j: usize) -> bool {
         return true;
     }
     !CARRIER_WORDS.contains(&after.as_str())
+}
+
+/// Whether byte `i` of the Rust line `b` sits in a `//` comment or inside a string literal.
+fn in_rust_prose(b: &[u8], i: usize) -> bool {
+    let line = String::from_utf8_lossy(b);
+    if super::comment_start(&line).is_some_and(|c| c <= i) {
+        return true;
+    }
+    let mut in_str = false;
+    let mut k = 0usize;
+    while k < i.min(b.len()) {
+        match b[k] {
+            b'\\' if in_str => k += 1,
+            b'"' => in_str = !in_str,
+            _ => {}
+        }
+        k += 1;
+    }
+    in_str
 }
 
 /// A following word that makes a whole-word `unix` the carrier rather than the operating system.
@@ -481,10 +506,14 @@ mod tests {
             "/// Portable across Unix/Windows via getrandom",
             "// On unix each of the N data-plane workers runs its own accept loop",
             "/// Unix file mode for the temp file.",
-            "# THE THREAD-PER-CORE BOOT SEAM, the one unix data-plane topology",
         ] {
             assert!(masked("crates/busbar-kernel/src/a.rs", s), "{s}");
         }
+        // A `#` comment is prose in a manifest (crates/busbar/Cargo.toml), not in Rust.
+        assert!(masked(
+            "crates/busbar/Cargo.toml",
+            "# THE THREAD-PER-CORE BOOT SEAM, the one unix data-plane topology"
+        ));
         assert!(masked(
             "crates/busbar-transport-tcp/src/claims.rs",
             "// refuses unix://, which is not a tcp target"
@@ -508,6 +537,11 @@ mod tests {
             "// the `unix` carrier opens a path",
             "# THE UNIX WIRE'S LINKED ROW",
             "busbar-transport-unix = { path = \"../busbar-transport-unix\" }",
+            // A whole-word identifier in code is the carrier, not prose (Q128).
+            "fn unix() {}",
+            "pub fn unix(p: &Path) -> Carrier {}",
+            "let c = unix;",
+            "fn dial() { unix(p) }",
         ] {
             assert!(!masked("crates/busbar-kernel/src/a.rs", s), "{s}");
         }

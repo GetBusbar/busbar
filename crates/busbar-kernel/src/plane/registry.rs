@@ -89,7 +89,7 @@ pub struct BootCtx {
     pub store: Option<std::sync::Arc<dyn crate::store::plane_view::PlaneStore>>,
 
     /// HYDRATE phase — the freshly-built `App`, off which a hydrate hook attaches its own
-    /// write-through sinks (`spent_token_ledger`, `demotion_record`) and restores them. `None` in the start
+    /// write-through sink (`demotion_record`) and restores them. `None` in the start
     /// phase, where the app has been moved into the router builder and only the handle remains.
     pub app: Option<std::sync::Arc<crate::state::App>>,
 
@@ -139,16 +139,15 @@ impl PlaneBootCtx for BootCtx {
         self.store.is_some()
     }
 
-    /// ATTACH A PLANE'S DURABLE WRITE-THROUGH SINKS — the spent-approval ledger and the
-    /// upstream-demotion record — to the plane-narrowed store, in the hydrate phase. Named HERE, core
+    /// ATTACH A PLANE'S DURABLE WRITE-THROUGH SINK — the upstream-demotion record — to the
+    /// plane-narrowed store, in the hydrate phase. Named HERE, core
     /// side, so the plane's own hydrate hook attaches them without its own code naming an `App` field:
-    /// the sink fields (`spent_token_ledger`, `demotion_record`) are core-owned and the store is the
+    /// the sink field (`demotion_record`) is core-owned and the store is the
     /// core `PlaneStore`, so neither crosses the plane seam. A no-op unless BOTH the freshly-built app
     /// (hydrate phase) and a configured store are present — byte-identical to the old inline
-    /// `app.spent_token_ledger.set_sink(store.clone()); app.demotion_record.set_sink(store)`.
+    /// `app.demotion_record.set_sink(store)`.
     fn attach_durable_sinks(&self) {
         if let (Some(app), Some(store)) = (self.app.as_ref(), &self.store) {
-            app.spent_token_ledger.set_sink(store.clone());
             app.demotion_record.set_sink(store.clone());
         }
     }
@@ -555,7 +554,7 @@ pub fn plane_decl_for_config_section(section: &str) -> Option<&'static PlaneDecl
 ///   path would serve an unauthenticated resource. That is refused here with a named error rather
 ///   than mounted, so a future plane cannot lower its own bar to nothing by omitting an admission.
 ///   A claim is ADMITTED by an audience the plane binds, or — for a plane served through its door
-///   ([`super::door::is_door`]) — by the kernel's key-verify chain (`key_chain`: the data chain
+///   ([`crate::plane_driver::door::is_door`]) — by the kernel's key-verify chain (`key_chain`: the data chain
 ///   verifies the busbar key), which admits a door claim exactly as it admits any data-plane path.
 ///   A door claim with neither is refused, as any plane's is.
 pub fn build_dispatch(
@@ -573,7 +572,7 @@ pub fn build_dispatch(
         let claims = (decl.claims)(slot);
         let admission = (decl.admission)(slot);
         // R2: a claimed path with no admission path is a door with no lock. Refuse the boot.
-        let key_admitted = key_chain && super::door::is_door(decl);
+        let key_admitted = key_chain && crate::plane_driver::door::is_door(decl);
         if !claims.is_empty() && admission.is_none() && !key_admitted {
             return Err(format!(
                 "plane `{}` mounts {} path(s) but bound no admission; a mounted plane must bind an \
@@ -594,7 +593,7 @@ pub fn build_dispatch(
 }
 
 // `registry_tests` MOVED to `crates/busbar/tests/registry_cross_plane.rs` (the A6/HostCtx dev-dependency-cycle
-// cleanup): most of it drove the REAL `busbar_llm`/`busbar_mcp` and agent-engine `PLANE_DECL`s and their
+// cleanup): most of it drove the REAL the retired engine crate/`busbar_mcp` and agent-engine `PLANE_DECL`s and their
 // real runtime objects, which only type-checks with ONE `busbar_kernel` in the graph — an
 // integration-test target, never this `#[cfg(test)]` unit module. See that file's header. The two
 // `#[cfg(test)]` seams it used to reach through (`builtin_plane_decls`, `default_section_plane_test_runtime`
@@ -623,24 +622,22 @@ pub struct BuildCtx<'a> {
     /// that plane's `build` hands its plugin over the ABI. `None` for a plane whose section carries
     /// no resource.
     pub endpoint_slot: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
-    // The A2A registry the A2A plane's `build` lowers, TYPE-ERASED so this seam names no `crate::a2a`
-    // config type — reached through `RootCfg::agent_defs`'s neutral `PlaneCfg::as_any` (`AgentsCfg`
-    // with the plane compiled in, the raw capture without it). The A2A `build` closure downcasts it
-    // back inside its own module; no other plane reads it, and it is built and consumed synchronously
-    // here, so the erased `&dyn Any` needs no `Send + Sync` bound.
-    pub agent_defs: &'a dyn std::any::Any,
-    /// The `tools:` registry section, erased as `agent_defs` is (`RootCfg::tool_defs`): a door
-    /// plane whose verb it is reads the section its door judged off it.
-    pub tool_defs: &'a dyn std::any::Any,
+    /// EVERY DECLARED SECTION this generation writes, by config section, behind the neutral
+    /// [`crate::config::plane_sections::PlaneCfg`] seam (`RootCfg::plane_defs`): a plane's `build`
+    /// reads its own section off it and names no other plane's.
+    pub plane_defs: &'a std::collections::BTreeMap<
+        &'static str,
+        Box<dyn crate::config::plane_sections::PlaneCfg>,
+    >,
     pub public_url: Option<&'a str>,
     /// THE PRIOR GENERATION'S SLOT MAP, or `None` on a fresh boot — the same neutral
-    /// [`crate::plane_host::PlaneSlots`] seam `build_runtime` receives, so a plane's `build` can CARRY
+    /// [`crate::plane_driver::slots::PlaneSlots`] seam `build_runtime` receives, so a plane's `build` can CARRY
     /// accumulated coordination state (verify-on-call coalescing epochs, a boot-resolved transport
     /// `OnceLock`) off its own prior runtime object across a config apply without the composition root
-    /// naming the plane's runtime type. Reached by key through [`crate::plane_host::PlaneSlots::plane_slot`]
+    /// naming the plane's runtime type. Reached by key through [`crate::plane_driver::slots::PlaneSlots::plane_slot`]
     /// and downcast inside the plane's own `build`, exactly as the runtime accessors downcast the live
     /// slot. A plane with no carry-over ignores it.
-    pub prior: Option<&'a dyn crate::plane_host::PlaneSlots>,
+    pub prior: Option<&'a dyn crate::plane_driver::slots::PlaneSlots>,
     /// THIS GENERATION'S RESOLVED `providers:` (catalog-merged), from which a door plane's probe is
     /// handed the dialect facts of the providers its section references, as its served instance
     /// is; `None` = none (a test build that states none).
@@ -765,7 +762,7 @@ pub type OpenapiSchemasHook = fn(
 pub type OpenapiSchemasHook = fn(std::convert::Infallible);
 
 /// THE SCHEMAS HOOK OF THE DOOR PLANE AT `I` (ARCHITECT Q2): the `components.schemas` its admin
-/// OpenAPI blob states ([`crate::plane::door::stated_schemas`]), inserted into the generator's
+/// OpenAPI blob states ([`crate::plane_driver::door::stated_schemas`]), inserted into the generator's
 /// definitions as written. `None` in a build that generates no document.
 #[cfg(feature = "openapi-schema")]
 pub(crate) const fn stated_schemas_hook<const I: usize>() -> Option<OpenapiSchemasHook> {
@@ -784,7 +781,7 @@ fn stated_schemas<const I: usize>(
     _req_gen: &mut schemars::SchemaGenerator,
     _paths: &mut serde_json::Map<String, serde_json::Value>,
 ) {
-    if let Some(schemas) = crate::plane::door::stated_schemas::<I>() {
+    if let Some(schemas) = crate::plane_driver::door::stated_schemas::<I>() {
         schema_gen.definitions_mut().extend(schemas);
     }
 }
@@ -806,6 +803,12 @@ plane_behaviour! {
     /// `Plane::wire_formats` and `Plane::has_superset_ir` stay DERIVED from this list's length, so
     /// the superset-IR rule remains a rule rather than a fact about today's planes.
     wire_format_names: fn() -> &'static [&'static str],
+
+    /// THE DIALECTS A PROVIDER'S `protocol` MAY NAME, of those this plane speaks, in its order
+    /// (ARCHITECT ruling 2026-10-16, item 3; BUSBAR-1.6.0.md #49: declared data). A door plane's
+    /// are the dialects its tail's `dialect_auth` lines flag `DIALECT_PROVIDER`. The boot accepts a
+    /// provider whose `protocol` some registered plane lists here, and its refusal lists them all.
+    provider_dialects: fn() -> &'static [&'static str],
 
     /// THE PATHS THIS PLANE ANSWERS ON, and the wire format each is spoken in, computed from the
     /// plane's own RUNTIME OBJECT (its app slot, type-erased as `&dyn Any`). Every `(path, wire)`
@@ -930,7 +933,7 @@ plane_behaviour! {
     /// plane with no live registry this generation. `None` for a plane whose section is not a
     /// named-definition map (the LLM plane; `proto`).
     ///
-    /// Handed the neutral [`crate::plane_host::PlaneSlots`] seam (NOT `&App`), so a plane crate reads
+    /// Handed the neutral [`crate::plane_driver::slots::PlaneSlots`] seam (NOT `&App`), so a plane crate reads
     /// its own per-generation runtime object off the snapshot without the callback naming a core type;
     /// an in-core plane (A2A) recovers its snapshot through the seam's `as_any` hatch.
     // Read only through the admin named-def surface, which the two plane sections drive; with neither
@@ -938,31 +941,31 @@ plane_behaviour! {
     #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     #[allow(clippy::type_complexity)]
     named_def_list:
-        Option<fn(&dyn crate::plane_host::PlaneSlots) -> Vec<crate::api::NamedDefView>>,
+        Option<fn(&dyn crate::plane_driver::slots::PlaneSlots) -> Vec<crate::api::NamedDefView>>,
 
     /// PROJECT ONE NAMED-DEFINITION REGISTRATION by name onto the shared read view — the single-entry
     /// twin of [`Self::named_def_list`], the plane half of `GET /api/v1/admin/<section>/{name}`.
     /// `None` (the fn returns `None`) when the plane has no entry by that name; the FIELD is `None` for
-    /// a plane with no named-definition map. Handed the same neutral [`crate::plane_host::PlaneSlots`]
+    /// a plane with no named-definition map. Handed the same neutral [`crate::plane_driver::slots::PlaneSlots`]
     /// seam as [`Self::named_def_list`].
     #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     #[allow(clippy::type_complexity)]
     named_def_get:
-        Option<fn(&dyn crate::plane_host::PlaneSlots, &str) -> Option<crate::api::NamedDefView>>,
+        Option<fn(&dyn crate::plane_driver::slots::PlaneSlots, &str) -> Option<crate::api::NamedDefView>>,
 
     /// IS `name` A LIVE REGISTRATION on this plane's effective snapshot — the read-side membership
     /// check the admin write path consults so it names no plane registry type. `None` for a plane with
     /// no named-definition map.
     #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     #[allow(clippy::type_complexity)]
-    registry_contains: Option<fn(&dyn crate::plane_host::PlaneSlots, &str) -> bool>,
+    registry_contains: Option<fn(&dyn crate::plane_driver::slots::PlaneSlots, &str) -> bool>,
 
     /// RE-RESOLVE THIS PLANE'S PER-REGISTRATION HOOK GATES against the next snapshot — the plane half
     /// of the config-swap gate rebuild. Reads the plane's own registry off the `&mut App` and writes
     /// its own gate field back, so `admin::v1::service::reresolve_plane_gates` names no plane registry
     /// type. `None` for a plane with no per-registration hook gates (the LLM plane).
     #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
-    reresolve_gates: Option<fn(&mut dyn crate::plane_host::ContainerGateSink)>,
+    reresolve_gates: Option<fn(&mut dyn crate::plane_driver::slots::ContainerGateSink)>,
 
     /// ATTACH THIS PLANE'S ADMIN TRUST-VERB SCHEMAS to the OpenAPI document — the plane half of the
     /// schema pass in `busbar_core_admin::v1::json::handlers::openapi_doc`. Handed the SHARED response
@@ -989,26 +992,26 @@ plane_behaviour! {
     /// `GovCtx`, or an `audit::Chain`. A plane whose swap-time work needs one of those is not cleanly
     /// separable through this seam.
     on_swap: Option<
-        fn(prior: &dyn crate::plane_host::PlaneSlots, next: &dyn crate::plane_host::PlaneSlots),
+        fn(prior: &dyn crate::plane_driver::slots::PlaneSlots, next: &dyn crate::plane_driver::slots::PlaneSlots),
     >,
 
     /// PARSE THIS PLANE'S TOP-LEVEL REGISTRY SECTION from a positionless `serde_yaml::Value` into its
-    /// own typed config, boxed as the neutral [`crate::plane::config::PlaneCfg`] — the seam
+    /// own typed config, boxed as the neutral [`crate::config::plane_sections::PlaneCfg`] — the seam
     /// `DeployCfg`'s `tools:`/`agents:` field deserializes through, so core names no plane config type.
     /// `None` for a plane with no registry section (the LLM / `proto` planes).
     #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     #[allow(clippy::type_complexity)]
     parse_section:
-        Option<fn(&serde_yaml::Value) -> Result<Box<dyn crate::plane::config::PlaneCfg>, String>>,
+        Option<fn(&serde_yaml::Value) -> Result<Box<dyn crate::config::plane_sections::PlaneCfg>, String>>,
 
     /// PARSE THIS PLANE'S TOP-LEVEL ENDPOINT block (the MCP plane's `mcp:` door) from a positionless
-    /// `serde_yaml::Value`, boxed as the neutral [`crate::plane::config::PlaneEndpointCfg`] — the seam
+    /// `serde_yaml::Value`, boxed as the neutral [`crate::config::plane_sections::PlaneEndpointCfg`] — the seam
     /// `DeployCfg`'s `mcp:` field deserializes through. `None` for a plane with no endpoint block
     /// (every plane but MCP).
     #[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
     #[allow(clippy::type_complexity)]
     parse_endpoint: Option<
-        fn(&serde_yaml::Value) -> Result<Box<dyn crate::plane::config::PlaneEndpointCfg>, String>,
+        fn(&serde_yaml::Value) -> Result<Box<dyn crate::config::plane_sections::PlaneEndpointCfg>, String>,
     >,
 
     /// LOWER THIS PLANE'S ENDPOINT block into its validated runtime resource, type-erased as
@@ -1019,7 +1022,7 @@ plane_behaviour! {
     #[allow(clippy::type_complexity)]
     lower_endpoint: Option<
         fn(
-            &dyn crate::plane::config::PlaneEndpointCfg,
+            &dyn crate::config::plane_sections::PlaneEndpointCfg,
         ) -> Result<std::sync::Arc<dyn std::any::Any + Send + Sync>, String>,
     >,
 
@@ -1027,45 +1030,45 @@ plane_behaviour! {
     /// seam `appbuild` composes the MCP runtime slot (`plane_slots[runtime_slot_key(<mcp decl key>)]`) through,
     /// so core names no plane runtime type. The first argument is the plane's own section, erased as
     /// `&dyn Any` (its `PlaneCfg::as_any`); `prior` is the previous generation's snapshot for
-    /// carry-over, read through the neutral [`crate::plane_host::PlaneSlots`] seam (NOT `&App`).
+    /// carry-over, read through the neutral [`crate::plane_driver::slots::PlaneSlots`] seam (NOT `&App`).
     /// `None` for a plane whose runtime is not carried through this seam (A2A's lives in `plane_slots`
     /// under its decl key; the LLM plane's is the many `App` fields it already reads).
     #[allow(clippy::type_complexity)]
     build_runtime: Option<
         fn(
             &dyn std::any::Any,
-            prior: Option<&dyn crate::plane_host::PlaneSlots>,
+            prior: Option<&dyn crate::plane_driver::slots::PlaneSlots>,
         ) -> std::sync::Arc<dyn std::any::Any + Send + Sync>,
     >,
 
-    /// PROJECT THIS PLANE'S PER-GENERATION RUNTIME SLOT into the NEUTRAL [`crate::plane_host::EngineTablesView`]
+    /// PROJECT THIS PLANE'S PER-GENERATION RUNTIME SLOT into the NEUTRAL [`crate::plane_driver::route_tables::EngineTablesView`]
     /// read seam — the cold/scrape-path viewer the core-resident `/metrics`, `/v1/models` and telemetry
     /// label readers reach a data-plane's routing tables through WITHOUT naming the plane's concrete
     /// `Lane`/`WeightedLane`/runtime type. The argument is the plane's own runtime object (the value
     /// `build_runtime` inserted into `plane_slots[runtime_slot_key(<decl key>)]`), erased as `&dyn Any`;
     /// the plane downcasts it to its own runtime type inside the plane crate and returns a borrow as the
-    /// substrate trait object. Core's [`crate::plane_host::PlaneSlots`]-driven `engine_tables_view` calls
+    /// substrate trait object. Core's [`crate::plane_driver::slots::PlaneSlots`]-driven `engine_tables_view` calls
     /// this at most once per scrape/discovery read and falls back to the substrate-resident
-    /// [`crate::plane_host::EMPTY_VIEW`] when the plane contributed no runtime slot (the zero-plane binary).
+    /// [`crate::plane_driver::route_tables::EMPTY_VIEW`] when the plane contributed no runtime slot (the zero-plane binary).
     /// `None` for a plane whose runtime exposes no routing tables (MCP/A2A: they contribute no
-    /// `EngineTablesView`); the LLM plane sets it once its `NativeRuntime` lives in `busbar-llm`.
+    /// `EngineTablesView`); the LLM plane sets it once its `NativeRuntime` lives in the retired engine crate.
     #[allow(clippy::type_complexity)]
     viewer:
-        Option<fn(&(dyn std::any::Any + Send + Sync)) -> &dyn crate::plane_host::EngineTablesView>,
+        Option<fn(&(dyn std::any::Any + Send + Sync)) -> &dyn crate::plane_driver::route_tables::EngineTablesView>,
 
     /// PRUNE THIS PLANE'S VERIFY-ON-CALL COALESCING STATE to the subjects the freshly-built generation
     /// still fronts — the seam `appbuild` runs after building the `App`, so the carried per-subject
     /// flights/latches do not leak one dead entry per removed registration. `None` for a plane with no
     /// verify-on-call gate (the LLM / `proto` planes).
-    retain_verify_gates: Option<fn(&dyn crate::plane_host::PlaneSlots)>,
+    retain_verify_gates: Option<fn(&dyn crate::plane_driver::slots::PlaneSlots)>,
 
-    /// THIS PLANE'S EMPTY REGISTRY SECTION, boxed as the neutral [`crate::plane::config::PlaneCfg`] —
+    /// THIS PLANE'S EMPTY REGISTRY SECTION, boxed as the neutral [`crate::config::plane_sections::PlaneCfg`] —
     /// the value `DeployCfg`'s `#[serde(default)]` `tools:`/`agents:` field takes when the section is
     /// ABSENT, so the default is the plane's own `Default` (byte-identical to the pre-seam
     /// `ToolsCfg::default()`) rather than a re-parse of an empty document. `None` for a plane with no
     /// registry section (the LLM / `proto` planes).
     #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
-    default_section: Option<fn() -> Box<dyn crate::plane::config::PlaneCfg>>,
+    default_section: Option<fn() -> Box<dyn crate::config::plane_sections::PlaneCfg>>,
 
     /// MERGE ONE PROVIDER'S CATALOG DEFINITION (`providers.yaml`, [`crate::config::providers::ProviderDef`])
     /// WITH ITS OPERATOR DEPLOYMENT (`config.yaml`'s `providers:` entry,
