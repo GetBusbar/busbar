@@ -225,9 +225,17 @@ fn a_signed_request_with_an_altered_body_is_refused_with_the_recorded_refusal() 
         let want = want.as_str().expect("a header value");
         let got = refused.header(name);
         if want == "<UUID>" {
-            assert!(got.is_some(), "the refusal carries `{name}`: {}", refused.text);
+            assert!(
+                got.is_some(),
+                "the refusal carries `{name}`: {}",
+                refused.text
+            );
         } else {
-            assert_eq!(got, Some(want), "the refusal's `{name}` is the oracle cell's");
+            assert_eq!(
+                got,
+                Some(want),
+                "the refusal's `{name}` is the oracle cell's"
+            );
         }
     }
     assert!(
