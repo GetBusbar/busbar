@@ -258,16 +258,20 @@ impl BreakerCfg {
     /// `build_runtime` reconstructs from (money-path Phase 3-4 C). Lossless over every field the FSM
     /// reads. `honor_retry_after`/`bench_below_trip_threshold` are always `true` on the provider path,
     /// carried anyway so a future divergence cannot silently drop.
-    pub fn to_breaker_input(&self) -> crate::plane_host::BreakerInput {
-        crate::plane_host::BreakerInput {
+    pub fn to_breaker_input(&self) -> crate::plane_driver::route_input::BreakerInput {
+        crate::plane_driver::route_input::BreakerInput {
             base_cooldown_secs: self.base_cooldown_secs,
             max_cooldown_secs: self.max_cooldown_secs,
             honor_retry_after: self.honor_retry_after,
             bench_below_trip_threshold: self.bench_below_trip_threshold,
-            trip: crate::plane_host::TripInput {
+            trip: crate::plane_driver::route_input::TripInput {
                 mode: match self.trip.mode {
-                    TripMode::ErrorRate => crate::plane_host::TripModeInput::ErrorRate,
-                    TripMode::Consecutive => crate::plane_host::TripModeInput::Consecutive,
+                    TripMode::ErrorRate => {
+                        crate::plane_driver::route_input::TripModeInput::ErrorRate
+                    }
+                    TripMode::Consecutive => {
+                        crate::plane_driver::route_input::TripModeInput::Consecutive
+                    }
                 },
                 window_s: self.trip.window_s,
                 threshold: self.trip.threshold,
@@ -282,7 +286,7 @@ impl BreakerCfg {
     /// names only this pub constructor and the neutral input type).
     ///
     /// [`to_breaker_input`]: Self::to_breaker_input
-    pub fn from_breaker_input(i: &crate::plane_host::BreakerInput) -> Self {
+    pub fn from_breaker_input(i: &crate::plane_driver::route_input::BreakerInput) -> Self {
         Self {
             base_cooldown_secs: i.base_cooldown_secs,
             max_cooldown_secs: i.max_cooldown_secs,
@@ -290,8 +294,12 @@ impl BreakerCfg {
             bench_below_trip_threshold: i.bench_below_trip_threshold,
             trip: TripConfig {
                 mode: match i.trip.mode {
-                    crate::plane_host::TripModeInput::ErrorRate => TripMode::ErrorRate,
-                    crate::plane_host::TripModeInput::Consecutive => TripMode::Consecutive,
+                    crate::plane_driver::route_input::TripModeInput::ErrorRate => {
+                        TripMode::ErrorRate
+                    }
+                    crate::plane_driver::route_input::TripModeInput::Consecutive => {
+                        TripMode::Consecutive
+                    }
                 },
                 window_s: i.trip.window_s,
                 threshold: i.trip.threshold,
@@ -701,6 +709,18 @@ pub trait LaneRuntime: Send + Sync + 'static {
         pool: &str,
         lane: usize,
         what: &str,
+        cfg: &BreakerCfg,
+        retry_after: Option<u64>,
+    ) -> bool;
+    /// [`Self::record_transient_in`] at the caller's `now` (whole seconds), not the store's own
+    /// clock read: a walk records an attempt's failure at the instant its admission and its shed
+    /// read, so the cooldown it arms and the wait a shed then advertises are measured on one clock.
+    /// 1.5.5's store took the record's `now_time` the same way (`availability.rs:500-513`).
+    fn record_transient_in_at(
+        &self,
+        pool: &str,
+        lane: usize,
+        now: u64,
         cfg: &BreakerCfg,
         retry_after: Option<u64>,
     ) -> bool;

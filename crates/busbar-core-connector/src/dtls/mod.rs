@@ -44,6 +44,12 @@
 //! guard refused is never admitted, so nothing but the bound path and admitted candidates ever
 //! receives a byte.
 //!
+//! A dialling association ([`Association::set_dialling`]) hears ONLY admitted candidates: a
+//! verified check from any other path (one no candidate named) is kept here, unheard and unprobed,
+//! and no bind to it is accepted. The host judges such a path with the same guard first
+//! ([`Association::unadmitted_check`]) and, if the guard admits it, admits it as a candidate before
+//! the check is ingested.
+//!
 //! Consent freshness (RFC 7675 §5.1): the bound path is re-probed every [`CONSENT_INTERVAL`]; with
 //! no proof for [`CONSENT_TIMEOUT`] the association fails and sends nothing more.
 //!
@@ -318,6 +324,8 @@ pub struct Association {
     candidates: HashSet<SocketAddr>,
     /// Core's probes say ICE-CONTROLLING (the dialling side) rather than ICE-CONTROLLED.
     controlling: bool,
+    /// The dialling side: only admitted candidates may be heard or bound.
+    dialling: bool,
     proven: HashMap<SocketAddr, Instant>,
     probes: HashMap<[u8; 12], (SocketAddr, Instant)>,
     tie_breaker: [u8; 8],
@@ -366,6 +374,7 @@ impl Association {
             heard: HashMap::new(),
             candidates: HashSet::new(),
             controlling: false,
+            dialling: false,
             proven: HashMap::new(),
             probes: HashMap::new(),
             tie_breaker,
@@ -399,6 +408,11 @@ impl Association {
                     }
                 }
                 if stun::is_verified_check(datagram, &self.keys) {
+                    if self.dialling && !self.candidates.contains(&path) {
+                        // A path the host's destination guard never admitted: not heard, not
+                        // probed, not handed up.
+                        return Verdict::Kept;
+                    }
                     self.hear(path, now);
                     if !self.proven.contains_key(&path) {
                         self.probe(path, now);
@@ -440,7 +454,7 @@ impl Association {
         if self.failed.is_some() {
             return Err(BindRefused::Failed);
         }
-        if !self.heard.contains_key(&path) && !self.candidates.contains(&path) {
+        if !self.admitted(path) {
             return Err(BindRefused::Unchecked);
         }
         self.wanted = Some(path);
@@ -472,7 +486,7 @@ impl Association {
         if self.bound != Some(old) {
             return Err(BindRefused::NotBound);
         }
-        if !self.heard.contains_key(&new) && !self.candidates.contains(&new) {
+        if !self.admitted(new) {
             return Err(BindRefused::Unchecked);
         }
         self.wanted = Some(new);
@@ -517,6 +531,32 @@ impl Association {
         self.candidates.insert(path);
         self.probe(path, now);
         true
+    }
+
+    /// Make this the dialling side (module docs): core's probes say ICE-CONTROLLING, and only a
+    /// path the host admitted as a candidate ([`Self::admit_candidate`]) is ever heard, probed or
+    /// bound. Set before any datagram is ingested; there is no way back.
+    pub fn set_dialling(&mut self) {
+        self.dialling = true;
+        self.controlling = true;
+    }
+
+    /// Whether `datagram` from `path` is a verified check this DIALLING association will not hear
+    /// because the host never admitted `path`: the host's cue to judge `path` with its destination
+    /// guard and admit it ([`Self::admit_candidate`]) before ingesting, or let it be dropped. Always
+    /// `false` on the accepting side and once the association failed.
+    #[must_use]
+    pub fn unadmitted_check(&self, path: SocketAddr, datagram: &[u8]) -> bool {
+        self.dialling
+            && self.failed.is_none()
+            && !self.candidates.contains(&path)
+            && stun::is_verified_check(datagram, &self.keys)
+    }
+
+    /// Whether a bind to `path` may be accepted: an admitted candidate, or (the accepting side
+    /// only) a heard path.
+    fn admitted(&self, path: SocketAddr) -> bool {
+        self.candidates.contains(&path) || (!self.dialling && self.heard.contains_key(&path))
     }
 
     /// Seal `plaintext` (SCTP, for the data channels) as DTLS application data toward the bound path.

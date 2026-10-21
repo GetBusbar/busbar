@@ -156,18 +156,14 @@ impl std::error::Error for AnchorError {}
 ///
 /// **The requirement this trait cannot enforce.** An anchor sink that the node can rewrite proves
 /// nothing, and there is no way for an implementation to demonstrate to this crate that it is out
-/// of reach. So the requirement is stated, and the default is labelled self-attestation through
-/// [`CheckpointAnchor::is_self_attesting`].
+/// of reach. So the requirement is stated, and the default is named for what it is
+/// ([`SelfAttestingAnchor`]); the root labels a self-attested head on the ledger endpoint.
 pub trait CheckpointAnchor {
     /// Put it there. An implementation should read back what it wrote and report a mismatch.
     fn anchor(&mut self, checkpoint: &Checkpoint) -> Result<(), AnchorError>;
 
     /// The most recently anchored checkpoint's identity, if there is one.
     fn head(&self) -> Result<Option<AnchoredHead>, AnchorError>;
-
-    /// Whether this sink is inside the node's own write authority. The default local file anchor
-    /// answers `true`, and says so on the ledger endpoint rather than quietly.
-    fn is_self_attesting(&self) -> bool;
 }
 
 /// What the anchor sink says the last anchored checkpoint was.
@@ -213,6 +209,58 @@ pub struct Checkpoint {
     pub body_hash: [u8; 32],
     /// The signature over that body, if a signer was available.
     pub signature: Option<Signature>,
+}
+
+/// A SEALED CHECKPOINT WITHOUT ITS BALANCES: everything [`Checkpoint`] holds but the totals, and
+/// how many balances it sealed.
+///
+/// What a node keeps of the checkpoints it sealed (Q128 kernel-ledger HIGH 1, ARCHITECT ruling A1):
+/// a full copy of the book per kept checkpoint is what grew memory with uptime, so the totals are
+/// not kept. A reader that needs them re-derives them from the chain, and [`Self::with_totals`]
+/// rejoins them to this head; the body digest then says whether the re-derived figures are the
+/// ones that were sealed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckpointHead {
+    /// Which checkpoint in the deployment's sequence.
+    pub checkpoint_seq: u64,
+    /// Which node sealed it.
+    pub node: u64,
+    /// When, in whole seconds.
+    pub wall: u64,
+    /// Every node chain's head at the moment of sealing.
+    pub heads: Vec<ChainHead>,
+    /// How many balances it sealed.
+    pub balances: usize,
+    /// How far the backup had got.
+    pub backup_watermark: u64,
+    /// The store's sequence high-water at the moment of sealing.
+    pub store_seq_high_water: u64,
+    /// The history snapshot the sealed totals were derived against.
+    pub history_seq: Option<HistorySeq>,
+    /// The digest of the sealed body.
+    pub body_hash: [u8; 32],
+    /// The signature over that body, if a signer was available.
+    pub signature: Option<Signature>,
+}
+
+impl CheckpointHead {
+    /// The checkpoint again, with `totals` as its balances. The body digest is NOT recomputed:
+    /// [`Checkpoint::body_hash_verifies`] on the result says whether these are the sealed figures.
+    #[must_use]
+    pub fn with_totals(&self, totals: BTreeMap<(TotalsKey, WindowStart), Totals>) -> Checkpoint {
+        Checkpoint {
+            checkpoint_seq: self.checkpoint_seq,
+            node: self.node,
+            wall: self.wall,
+            heads: self.heads.clone(),
+            totals,
+            backup_watermark: self.backup_watermark,
+            store_seq_high_water: self.store_seq_high_water,
+            history_seq: self.history_seq,
+            body_hash: self.body_hash,
+            signature: self.signature.clone(),
+        }
+    }
 }
 
 impl Checkpoint {
@@ -312,6 +360,23 @@ impl Checkpoint {
         checkpoint.body_hash = checkpoint.body_digest();
         checkpoint.signature = secret.map(|secret| secret.sign(&body)).transpose()?;
         Ok(checkpoint)
+    }
+
+    /// This checkpoint without its balances: what a node keeps of a seal ([`CheckpointHead`]).
+    #[must_use]
+    pub fn head(&self) -> CheckpointHead {
+        CheckpointHead {
+            checkpoint_seq: self.checkpoint_seq,
+            node: self.node,
+            wall: self.wall,
+            heads: self.heads.clone(),
+            balances: self.totals.len(),
+            backup_watermark: self.backup_watermark,
+            store_seq_high_water: self.store_seq_high_water,
+            history_seq: self.history_seq,
+            body_hash: self.body_hash,
+            signature: self.signature.clone(),
+        }
     }
 
     /// The totals this checkpoint sealed for one balance, zeros if it sealed none.
@@ -488,8 +553,7 @@ fn push_text(body: &mut Vec<u8>, text: &str) {
 ///
 /// It keeps the head in memory rather than naming a path, because this crate does not open files —
 /// the point being made here is about TRUST, not about storage. Whatever the integrator binds
-/// underneath, it answers `true` to [`CheckpointAnchor::is_self_attesting`] as long as the node can
-/// write to it.
+/// underneath, its head is self-attested as long as the node can write to it.
 #[derive(Debug, Default)]
 pub struct SelfAttestingAnchor {
     head: Option<AnchoredHead>,
@@ -520,9 +584,5 @@ impl CheckpointAnchor for SelfAttestingAnchor {
 
     fn head(&self) -> Result<Option<AnchoredHead>, AnchorError> {
         Ok(self.head.clone())
-    }
-
-    fn is_self_attesting(&self) -> bool {
-        true
     }
 }
