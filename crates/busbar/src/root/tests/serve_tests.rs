@@ -12127,7 +12127,11 @@ mod model_door_root_cells {
             "a gate denying at the reject default",
             &mut failures,
         );
-        vetoed_once(&denied, "a gate denying at the reject default", &mut failures);
+        vetoed_once(
+            &denied,
+            "a gate denying at the reject default",
+            &mut failures,
+        );
         assert!(
             failures.is_empty(),
             "{} finding(s) at the approve seat:\n{}",
@@ -12155,7 +12159,9 @@ mod model_door_root_cells {
             busbar_contract::caps::ReasonCode::HookVeto,
         );
         if ends != [veto] {
-            out.push(format!("{what}: the unit sealed {ends:?}, not its veto {veto:?}"));
+            out.push(format!(
+                "{what}: the unit sealed {ends:?}, not its veto {veto:?}"
+            ));
         }
     }
 
