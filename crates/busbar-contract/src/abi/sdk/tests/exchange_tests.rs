@@ -639,6 +639,67 @@ fn the_framed_fields_are_the_head_the_exchange_sends() {
     assert!(Exchange::send(b"raw".to_vec()).framed_fields().is_empty());
 }
 
+/// A reply of two body pieces, `first` then `second` bytes long.
+fn body_reply(first: usize, second: usize) -> Vec<Scripted> {
+    let body = |n: usize| -> &'static [u8] { Box::leak(vec![b'x'; n].into_boxed_slice()) };
+    vec![
+        piece(REPLY_HEAD, 200, b"", b"", b""),
+        piece(REPLY_BODY, 0, b"", b"", body(first)),
+        piece(REPLY_BODY, 0, b"", b"", body(second)),
+        piece(REPLY_END, 0, b"", b"", b""),
+    ]
+}
+
+/// RED: a reply whose body passes the exchange's lowered limit is refused as one past `REPLY_MAX`
+/// is: the same failure, the same text.
+#[test]
+fn a_reply_over_the_exchanges_limit_is_refused() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let r = run(
+        body_reply(60, 41),
+        false,
+        Exchange::request(post())
+            .expect("a request")
+            .reply_limit(100),
+        None,
+        |c, st| exchange(c, st, 0, None),
+    );
+    assert_eq!(
+        r.answered.expect_err("the reply passes the limit"),
+        ConnFailure::Failed(REPLY_OVER_BOUND.to_string())
+    );
+}
+
+/// RED: a reply whose body is exactly the limit passes whole.
+#[test]
+fn a_reply_at_the_exchanges_limit_passes() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let r = run(
+        body_reply(60, 40),
+        false,
+        Exchange::request(post())
+            .expect("a request")
+            .reply_limit(100),
+        None,
+        |c, st| exchange(c, st, 0, None),
+    );
+    assert_eq!(r.answered.expect("at the limit").body.len(), 100);
+}
+
+/// RED: a limit above `REPLY_MAX` clamps to it, and an exchange that sets none holds `REPLY_MAX`.
+#[test]
+fn a_limit_above_reply_max_clamps() {
+    let req = || Exchange::request(post()).expect("a request");
+    assert_eq!(req().reply_ceiling, REPLY_MAX);
+    assert_eq!(req().reply_limit(REPLY_MAX + 1).reply_ceiling, REPLY_MAX);
+    assert_eq!(req().reply_limit(usize::MAX).reply_ceiling, REPLY_MAX);
+    assert_eq!(req().reply_limit(7).reply_ceiling, 7);
+}
+
 /// RED (Q128, a send-once caller's leak): an exchange that FAILS after it established its stream
 /// closes the stream before it answers, as a whole one does, so a caller that sends once and moves
 /// on holds nothing per failed delivery. The far end answers no reply piece; a stream that is not

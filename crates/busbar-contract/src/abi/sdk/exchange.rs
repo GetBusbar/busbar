@@ -145,6 +145,9 @@ pub struct Exchange {
     /// The stream the exchange established, once it has: what a caller that gives the exchange up
     /// closes on the host ([`Exchange::stream`]).
     stream: Option<u64>,
+    /// The most this exchange's reply body may reach ([`Exchange::reply_limit`]); never above
+    /// [`REPLY_MAX`].
+    reply_ceiling: usize,
 }
 
 fn piece(kind: u32) -> Box<RequestPiece> {
@@ -177,7 +180,17 @@ impl Exchange {
             observed: None,
             head_only: false,
             stream: None,
+            reply_ceiling: REPLY_MAX,
         }
+    }
+
+    /// Lower the most this exchange's reply body may reach to `bytes`. A value above [`REPLY_MAX`]
+    /// clamps to it: the ceiling is lowered, never raised. A reply past it is refused as one past
+    /// [`REPLY_MAX`] is ([`REPLY_OVER_BOUND`]).
+    #[must_use]
+    pub fn reply_limit(mut self, bytes: usize) -> Self {
+        self.reply_ceiling = bytes.min(REPLY_MAX);
+        self
     }
 
     /// The stream this exchange established, once it has: a caller that abandons the exchange
@@ -454,7 +467,7 @@ fn exchange_once(
             }
             REPLY_BODY if fresh => {
                 state.reply.body.extend_from_slice(&state.buf[..got.len]);
-                if state.reply.body.len() > REPLY_MAX {
+                if state.reply.body.len() > state.reply_ceiling {
                     return failed(REPLY_OVER_BOUND);
                 }
             }

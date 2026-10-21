@@ -878,3 +878,106 @@ fn the_agreed_protocol_is_one_the_handshake_offered() {
     ));
     assert!(protocol_name_list(&[vec![b'x'; 256]]).is_empty());
 }
+
+/// RED (Q128 arch u22 MEDIUM 4; `busbar_contract::abi::transport`, "A STREAM'S OWN BACKPRESSURE":
+/// "the host emits nothing more on that stream, holding whatever feeds it (not-ready, with a
+/// wake), until the framer hands a `PIECE_WRITABLE` piece"): once the framer answers an emit
+/// `YIELD_STREAM_FULL`, the connection takes nothing more on that stream (`Ok(0)`, the writer's
+/// waker parked on the socket) until the far end's bytes bring the framer's writable piece; then
+/// the held write goes out, and the writable piece itself never reaches the reader. The host kept
+/// emitting past the mark, which a framer is entitled to fail the stream for.
+#[test]
+fn a_full_stream_takes_nothing_more_until_the_framer_says_it_is_writable() {
+    worker().block_on(async {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let far = l.local_addr().unwrap().to_string();
+        let (go, went) = tokio::sync::oneshot::channel::<()>();
+        let (seen, saw) = tokio::sync::oneshot::channel::<Vec<u8>>();
+        tokio::spawn(async move {
+            let (mut s, _) = l.accept().await.unwrap();
+            let mut first = [0_u8; 1];
+            s.read_exact(&mut first).await.unwrap();
+            let _ = went.await;
+            // The window opens: the framer's writable piece, then one message.
+            s.write_all(b"wz").await.unwrap();
+            let mut second = [0_u8; 1];
+            s.read_exact(&mut second).await.unwrap();
+            let _ = seen.send([first, second].concat());
+            let mut rest = Vec::new();
+            let _ = s.read_to_end(&mut rest).await;
+        });
+        let door = Arc::new(TestDoor::new(
+            "messages",
+            &["messages"],
+            &[],
+            Knobs {
+                messages: Some(EXCHANGE_STREAM),
+                full_at: Some(1),
+                ..Knobs::default()
+            },
+        ));
+        let mut c = Connection::dial(door, &crate::support::via(), dial(&far)).expect("dials");
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), taken(&mut c, b"a"))
+                .await
+                .expect("the first message is taken"),
+            Ok(1)
+        );
+        tokio::time::timeout(Duration::from_secs(5), opened(&mut c))
+            .await
+            .expect("the connection opens and its framing begins");
+        let waker = std::task::Waker::noop();
+        let mut cx = std::task::Context::from_waker(waker);
+        assert_eq!(
+            c.write(b"b", true, false, &mut cx),
+            Ok(0),
+            "the stream is full: nothing more is taken on it"
+        );
+        let _ = go.send(());
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), taken(&mut c, b"b"))
+                .await
+                .expect("the writable piece releases the held write"),
+            Ok(1)
+        );
+        let p = tokio::time::timeout(Duration::from_secs(5), next(&mut c))
+            .await
+            .expect("a piece")
+            .expect("not failed")
+            .expect("not ended");
+        assert_eq!(
+            p.bytes, b"z",
+            "the writable piece is never a piece the reader reads"
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), saw)
+                .await
+                .expect("the far end heard both")
+                .unwrap(),
+            b"ab"
+        );
+        c.close();
+    });
+}
+
+/// Write `bytes` as a whole message, waiting while the connection takes none of them.
+async fn taken(c: &mut Connection, bytes: &[u8]) -> Result<usize, Failure> {
+    futures::future::poll_fn(|cx| match c.write(bytes, true, false, cx) {
+        Ok(0) => std::task::Poll::Pending,
+        r => std::task::Poll::Ready(r),
+    })
+    .await
+}
+
+/// Drive the connection until it is open (its framing begun, its early writes framed).
+async fn opened(c: &mut Connection) {
+    futures::future::poll_fn(|cx| {
+        let _ = c.poll_ready(cx);
+        if c.is_open() {
+            std::task::Poll::Ready(())
+        } else {
+            std::task::Poll::Pending
+        }
+    })
+    .await;
+}

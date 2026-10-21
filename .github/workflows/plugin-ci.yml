@@ -696,6 +696,28 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           path: plugin
+      # The same busbar the linux test job uses: a plugin test that reads BUSBAR_CHECKOUT (the
+      # end-to-end tests) or BUSBAR_GOLDEN_DIR must find it here too, or coverage runs it red.
+      - name: busbar at the pin
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: GetBusbar/busbar
+          ref: ${{ needs.pin.outputs.sha }}
+          path: busbar
+      - name: the test environment (as the linux job sets it)
+        env:
+          CHECKOUT: ${{ inputs.busbar_checkout }}
+        run: |
+          set -euo pipefail
+          {
+            echo "BUSBAR_GOLDEN_DIR=$GITHUB_WORKSPACE/busbar/testing/shadow-oracle/golden"
+            if [ "$CHECKOUT" = true ]; then
+              echo "BUSBAR_CHECKOUT=$GITHUB_WORKSPACE/busbar"
+              echo "BUSBAR_TARGET_DIR=$GITHUB_WORKSPACE/busbar/target"
+              echo "CARGO_PROFILE_RELEASE_LTO=off"
+              echo "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16"
+            fi
+          } >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: llvm-tools-preview
