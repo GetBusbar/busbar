@@ -2353,7 +2353,9 @@ impl Gate for TellerStepsGate {
         // only under a feature CI's test build lacks.
         let manifest = base_cx.read(MANIFEST_REL).unwrap_or_default();
         let target = format!("{BUSBAR_TESTS}a_target_no_ci_build_has.rs");
-        let own_plants: [(&str, String, Vec<(String, String)>, &str); 2] = [
+        // (label, cited `file::fn`, the files it plants, the word its refusal must name)
+        type OwnPlant = (&'static str, String, Vec<(String, String)>, &'static str);
+        let own_plants: [OwnPlant; 2] = [
             (
                 "a capability-equality cell's own test under a cfg no CI build enables",
                 format!("{llm_leg_file}::a_cell_no_ci_build_compiles"),
