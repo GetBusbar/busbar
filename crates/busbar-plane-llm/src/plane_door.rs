@@ -614,15 +614,15 @@ impl UnitState {
 /// ends leaves NOTHING of it here, its ticket binding included (THE DESIGN section 2: what a plugin
 /// keeps is bounded by its units), so neither map grows with the units the instance has served.
 #[derive(Debug)]
-pub struct Book<S> {
+pub struct UnitBook<S> {
     units: HashMap<u64, S>,
     tickets: HashMap<Ticket, u64>,
     ticket_of: HashMap<u64, Ticket>,
 }
 
-impl<S> Default for Book<S> {
+impl<S> Default for UnitBook<S> {
     fn default() -> Self {
-        Book {
+        UnitBook {
             units: HashMap::new(),
             tickets: HashMap::new(),
             ticket_of: HashMap::new(),
@@ -630,13 +630,13 @@ impl<S> Default for Book<S> {
     }
 }
 
-impl<S> Book<S> {
+impl<S> UnitBook<S> {
     /// The unit is held under `unit` (its `arrive`, or its state put back after a call).
     pub fn hold(&mut self, unit: u64, state: S) {
         self.units.insert(unit, state);
     }
 
-    /// The unit leaves the map for a call; its ticket binding stays until it [`Book::ends`].
+    /// The unit leaves the map for a call; its ticket binding stays until it [`UnitBook::ends`].
     pub fn take(&mut self, unit: u64) -> Option<S> {
         self.units.remove(&unit)
     }
@@ -684,7 +684,7 @@ impl<S> Book<S> {
 pub struct LlmDoor {
     generations: Generations<PlaneSnapshot>,
     shapings: Mutex<BTreeMap<u64, Arc<Shaping>>>,
-    book: Mutex<Book<UnitState>>,
+    book: Mutex<UnitBook<UnitState>>,
     services: Option<Services>,
     /// The receivers the `webhooks:` section switched on at open.
     webhooks: Webhooks,
@@ -1456,7 +1456,7 @@ slot!(
         let door = LlmDoor {
             generations: Generations::new(),
             shapings: Mutex::new(BTreeMap::from([(open.generation, Arc::new(shaping))])),
-            book: Mutex::new(Book::default()),
+            book: Mutex::new(UnitBook::default()),
             services: open.host().and_then(|h| Services::of(&h)),
             webhooks,
         };

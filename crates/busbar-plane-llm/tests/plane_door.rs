@@ -634,12 +634,12 @@ fn the_plane_declares_its_published_key_and_is_the_fallback() {
 #[test]
 fn every_way_a_unit_ends_leaves_nothing_in_the_doors_book() {
     use busbar_contract::abi::mechanism::ticket::Ticket;
-    use busbar_plane_llm::plane_door::Book;
+    use busbar_plane_llm::plane_door::UnitBook;
     let t = |slot| Ticket {
         slot,
         generation: 1,
     };
-    let mut book = Book::<&str>::default();
+    let mut book = UnitBook::<&str>::default();
 
     // Refused after an attempt: `arrive`, a piece on its ticket, then the kernel's `refusal`.
     book.hold(7, "refused");
