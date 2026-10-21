@@ -42,7 +42,7 @@
 //! > **Interchangeability is a CHECKABLE FACT, not an operator's assertion. Two candidates are
 //! > interchangeable iff the pins busbar already computes AGREE.**
 //!
-//! [`walk`] enforces exactly that: every failover hop must present the SAME `interchange_key` as the
+//! [`walk_with`] enforces exactly that: every failover hop must present the SAME `interchange_key` as the
 //! primary, and a candidate that presents `None` (nothing approved yet) or a different key is
 //! REFUSED — [`Refusal::NotInterchangeable`] — rather than quietly served. An operator declaring a
 //! pool has therefore asserted only *"these two names are the same deployment"*; busbar checks the
@@ -110,18 +110,13 @@
 // the pin check nor the repeat-safety rule, so those two safety rules would have had to be bolted on
 // or lost on the plugins that need them most.
 //
-// MOUNTED. Resident plugins consume this seam directly: a candidate set is walked before a dispatch
-// leg, and submission admission walks a pool the same way. Call sites record outcomes through the
-// shared breaker store's own signal recorder — the same Stage-2 classifier this module's
-// `record_outcome` wraps — rather than through `record_outcome` itself, because a shared lane table
-// across pools means the all-cells hard-down write in `record_outcome` would trip every OTHER pool's
-// member at the same position. `record_outcome`/`record_success` remain the halves exercised directly
-// by `tests/failover_tests.rs`, and keep a narrow dead-code allow saying so.
+// MOUNTED. A plugin that walks a candidate set calls [`walk_with`] with its own order and its own
+// admission, and records each outcome through the shared breaker store's own signal recorder (the
+// same Stage-2 `breaker::classify`). This module carries no recorder of its own and no breaker-only
+// spelling of the walk: a verb with no production construction site does not ship (BUSBAR-1.6.0.md
+// Part 1 l.1932-1935).
 
-use busbar_kernel::store::LaneRuntime;
-
-// The disposition halves a plugin's dispatch engine drives (`walk`, `record_outcome`,
-// `record_success`) live here, over `busbar_kernel::store::LaneRuntime` and `crate::breaker`. The
+// The selection loop a plugin's dispatch engine drives ([`walk_with`]) lives here. The
 // operator's pool vocabulary — the `CandidatePoolCfg` serde shape, `Repeatable`, and the failover
 // budget's defaults and bound — is configuration, not walk machinery: it lives in
 // `crate::config::pools`, and is re-exported here at its historical `failover::` path only for the
@@ -131,110 +126,6 @@ pub use crate::config::pools::{
     CandidatePoolCfg, Repeatable, DEFAULT_FAILOVER_CAP, DEFAULT_FAILOVER_DEADLINE_SECS,
     MAX_FAILOVER_DEADLINE_SECS,
 };
-
-/// THE SEAM'S SPELLING OF [`walk_with`]: the operator's `members:` order, admitted breaker-only.
-///
-/// A plugin's entry point when it wants breaker-only admission over its own declared order. It adds
-/// NO selection logic — it names the two things a plugin supplies ([`InOrder`] and
-/// [`LaneRuntime::try_admit_breaker`]) and hands them to the one loop.
-// No production caller now: both planes drive [`walk_with`] with the host `breaker_admit` seam
-// directly (CLUSTER-1), so the breaker-only spelling survives only for the failover unit tests, which
-// drive it under `#[cfg(test)]`.
-// `pub` (was `pub(crate)`): a disposition half a plane's relocating engine drives. A `pub` fn is
-// never dead, so the `not(test)` dead-code allow is a harmless no-op the Phase-6 tighten-back drops.
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn walk<'a, C: Candidate>(
-    store: &dyn LaneRuntime,
-    pool: &str,
-    members: &'a [C],
-    attempt: &Attempt<'_>,
-    now: u64,
-) -> Result<Admitted<'a, C, Option<u64>>, Refusal> {
-    let mut order = InOrder::new(attempt.tried, members.len());
-    // These planes render their refusal from `Refusal` itself (which already carries every reason by
-    // name), so the positional buffer is local and dropped here.
-    let mut passed_over = Vec::new();
-    walk_with(
-        pool,
-        members,
-        attempt,
-        &mut order,
-        &mut passed_over,
-        &mut |_position, member| store.try_admit_breaker(pool, member.lane(), now),
-    )
-}
-
-/// RECORD WHAT THE UPSTREAM DID, through the ONE classifier and onto the ONE breaker cell.
-///
-/// [`crate::breaker::classify`] is protocol-agnostic already — it consumes a `CanonicalSignal` a
-/// per-protocol normalizer produced — so a plane hands its normalized signal here and inherits
-/// cause-attributed disposition verbatim: a caller's bad arguments never penalize an upstream, an
-/// auth or billing failure is a hard down rather than a slow bleed, and a transient failure is what
-/// eventually trips the cell so the NEXT request reroutes before its first byte.
-///
-/// Returns the [`crate::breaker::Disposition`] taken, so a plane can shape its own answer without
-/// re-deciding it.
-// `pub` (was `pub(crate)`): the disposition writer the relocated engine records through. Its `cfg: &busbar_kernel::store::BreakerCfg` arg names a
-// still-crate-private carrier the engine passes back verbatim, so a narrow `#[allow(private_interfaces)]`
-// keeps `BreakerCfg` `pub(crate)` (reversible in Phase 6).
-#[allow(private_interfaces)]
-#[cfg_attr(not(test), allow(dead_code))] // see the module note: the plane call sites record via
-                                         // `PlaneBreakers::record_signal` (per-cell hard-down).
-pub fn record_outcome<C: Candidate>(
-    store: &dyn LaneRuntime,
-    pool: &str,
-    candidate: &C,
-    signal: &crate::breaker::CanonicalSignal,
-    cfg: &busbar_kernel::store::BreakerCfg,
-) -> crate::breaker::Disposition {
-    let disposition = crate::breaker::classify(signal);
-    let lane = candidate.lane();
-    match disposition {
-        crate::breaker::Disposition::ClientFault => store.record_client_fault(lane),
-        crate::breaker::Disposition::TransientUpstream => {
-            // Rate limits carry the upstream's own stated floor, so they go through the arm that
-            // honours `Retry-After`; every other transient is the plain transient arm. This split is a
-            // property of the signal itself, not of the protocol, so it holds for any plugin's signal.
-            if signal.class == crate::breaker::StatusClass::RateLimit {
-                store.record_rate_limit_in(
-                    pool,
-                    lane,
-                    busbar_kernel::store::now(),
-                    cfg,
-                    signal.retry_after,
-                );
-            } else {
-                store.record_transient_in(
-                    pool,
-                    lane,
-                    signal.provider_signal.as_deref().unwrap_or("upstream"),
-                    cfg,
-                    signal.retry_after,
-                );
-            }
-        }
-        crate::breaker::Disposition::HardDown => {
-            // A hard down is a property of the SHARED upstream, not of one pool fronting it, so it is
-            // recorded across every cell for that lane rather than just the pool that observed it.
-            store.record_hard_down_all_cells(
-                lane,
-                signal.provider_signal.as_deref().unwrap_or("hard_down"),
-            );
-        }
-        // The LANE is healthy and the request was simply wrong for it. Record nothing; the caller
-        // fails over WITHOUT penalising anybody.
-        crate::breaker::Disposition::ContextLength => {}
-    }
-    disposition
-}
-
-/// The success half of [`record_outcome`], kept separate because a success closes a HalfOpen cell and
-/// resets its accumulator, and that is a different write from any failure.
-// `pub` (was `pub(crate)`): the success half of `record_outcome`. Signature names only `pub`/neutral types, so no leak allow is needed.
-#[cfg_attr(not(test), allow(dead_code))] // twin of `record_outcome`'s allow, same argument.
-pub fn record_success<C: Candidate>(store: &dyn LaneRuntime, pool: &str, candidate: &C) {
-    store.record_success_in(pool, candidate.lane());
-}
 
 #[cfg(test)]
 #[path = "tests/failover_tests.rs"]
@@ -248,9 +139,9 @@ use crate::store::Unavailable;
 ///
 /// Implementing this is the ENTIRE cost of teaching a plane to fail over. The selection order, the
 /// interchangeability check, the retry-safety rule, the breaker admission and the disposition are all
-/// inherited from this module, and the circuit breaker itself is
-/// [`LaneRuntime::try_admit_breaker`] — the same one the model plane has always used, called from
-/// [`walk`] and from nowhere else on these planes.
+/// inherited from this module, and the circuit breaker itself is the one
+/// [`busbar_kernel::store::LaneRuntime`] cell every plane's admission reaches through
+/// [`walk_with`].
 pub trait Candidate {
     /// The operator-facing name of this candidate, for refusals and audit rows. A plane spells its own
     /// (`"search-eu"`, `"planner@eu"`); core never parses it.
@@ -263,9 +154,9 @@ pub trait Candidate {
 
     /// THE PIN — what makes two candidates interchangeable, as a value busbar ALREADY COMPUTED.
     ///
-    /// On the MCP plane this is the approved schema digest of the tool being called on this server;
-    /// on the A2A plane it is the approved canonical card fingerprint. It is deliberately NOT an
-    /// operator-written equivalence label: a label asserts, a digest CHECKS.
+    /// A plane whose pin is an approved digest hands that digest back (an approved schema digest, an
+    /// approved canonical card fingerprint, or an equivalent artifact identity). It is deliberately
+    /// NOT an operator-written equivalence label: a label asserts, a digest CHECKS.
     ///
     /// `None` means NOTHING IS APPROVED YET, which is not a wildcard — it is the one answer that can
     /// never match another candidate, so a pending registration can never be failed over TO or FROM.
@@ -287,7 +178,8 @@ pub enum Stage {
 ///
 /// Core's refusal. Every variant carries the pool and enough to name a repair, and every one maps to
 /// a token in [`crate::audit::vocab`] via [`Refusal::reason`] — the shared vocabulary, because a
-/// refusal spelled one way for MCP and another for A2A is a refusal an auditor cannot read across.
+/// refusal spelled one way on one plane and another on the next is a refusal an auditor cannot read
+/// across.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
     /// The pool names no candidate at all. An operator error, caught at the seam rather than
@@ -315,8 +207,8 @@ pub enum Refusal {
 
 impl Refusal {
     /// The AUDIT WORD for this refusal, from [`crate::audit::vocab`]. Core decides; a plane renders.
-    // MCP-only reader: the MCP dispatch path audits a failover refusal by this word; the A2A relay
-    // renders its own, so with `plane-mcp` off (and A2A on) this has no caller.
+    // Read by a plane that audits its failover refusal by this word; a build with no such plane
+    // compiled in has no caller.
     #[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
     pub fn reason(&self) -> &'static str {
         match self {
@@ -383,9 +275,9 @@ impl std::fmt::Display for Refusal {
 /// A CANDIDATE THAT MAY BE DISPATCHED TO, and the admission token it now owns.
 ///
 /// Only [`walk_with`] can build one, so a dispatch that skipped the breaker does not compile. `token`
-/// is whatever the plane's admission handed back: on the MCP/A2A planes that is the bare probe epoch
-/// from [`LaneRuntime::try_admit_breaker`]; on the model plane it is the [`crate::store::Admit`]
-/// carrying the probe epoch AND the concurrency permit that plane also needs. Both are the SAME
+/// is whatever the plane's admission handed back: the bare probe epoch from a breaker-only
+/// admission ([`busbar_kernel::store::LaneRuntime::try_admit_breaker`]), or the
+/// [`crate::store::Admit`] carrying the probe epoch AND a concurrency permit. Both are the SAME
 /// breaker FSM and the SAME single-flight probe — the token differs only by whether a permit rides
 /// along (see `store::in_memory::availability`: `try_admit` is `try_admit_breaker` plus a permit
 /// acquisition, nothing else). The caller releases the probe OWNER-CHECKED via
@@ -415,34 +307,22 @@ impl<'a, C: Candidate, T> Admitted<'a, C, T> {
         self.candidate
     }
     /// Its position in the pool. `0` is the primary; anything else means a reroute happened.
-    // MCP-only reader: the MCP dispatch path reads back the chosen position; the A2A relay does not,
-    // so with `plane-mcp` off (and A2A on) this has no caller.
+    // Read by a plane that reads back the chosen position; a build with no such plane compiled in
+    // has no caller.
     #[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
     pub fn position(&self) -> usize {
         self.position
     }
-    /// The plane's admission token — probe epoch (MCP/A2A) or `Admit` (the model plane's probe epoch
-    /// plus its concurrency permit). Consumed by value: an admission is used once.
+    /// The plane's admission token — a bare probe epoch, or an `Admit` (a probe epoch plus a
+    /// concurrency permit). Consumed by value: an admission is used once.
     pub fn into_token(self) -> T {
-        self.token
-    }
-}
-
-impl<'a, C: Candidate> Admitted<'a, C, u64> {
-    /// The single-flight probe owner token, for the owner-checked release after the outcome is
-    /// recorded. The MCP/A2A spelling of [`Admitted::into_token`].
-    // No production caller now: both planes win+register their probe through the host `breaker_admit`
-    // seam (CLUSTER-1), so the bare-epoch spelling survives only for the failover unit tests, which
-    // exercise it under `#[cfg(test)]`.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn probe_epoch(&self) -> u64 {
         self.token
     }
 }
 
 /// WHAT THIS REQUEST HAS ALREADY DONE, and what it is allowed to do next.
 ///
-/// The four facts [`walk`] needs about the REQUEST, as opposed to the pool — bundled because they
+/// The four facts [`walk_with`] needs about the REQUEST, as opposed to the pool — bundled because they
 /// travel together and are meaningless apart: `stage` and `repeatable` are only ever read against
 /// each other, and both are only ever consulted because `tried` is non-empty. A caller building one
 /// of these has the whole safety question in front of it in one place, rather than four positional
@@ -450,7 +330,7 @@ impl<'a, C: Candidate> Admitted<'a, C, u64> {
 #[derive(Debug, Clone, Copy)]
 pub struct Attempt<'r> {
     /// Positions in the pool this request has ALREADY been dispatched to (or has already refused).
-    /// `walk` never mutates it: a caller records the position it dispatched to and calls again.
+    /// `walk_with` never mutates it: a caller records the position it dispatched to and calls again.
     /// EMPTY means this is the request's first selection, which is never a repeat of anything.
     pub tried: &'r [usize],
     /// Whether anything has left busbar for this request yet. See [`Stage`].
@@ -465,10 +345,10 @@ pub struct Attempt<'r> {
 
 /// WHERE THE NEXT CANDIDATE COMES FROM — the one thing [`walk_with`] does NOT own.
 ///
-/// The loop is one; the ORDER is a plane's. The MCP and A2A planes read `members:` in the order the
-/// operator wrote it ([`InOrder`]). The model plane's order is SMOOTH WEIGHTED ROUND ROBIN, which is
-/// STATEFUL — it cannot be handed over as a precomputed list because each pick mutates the SWRR
-/// accumulator and a refused pick must re-run the selection over the remaining set. So the order is
+/// The loop is one; the ORDER is a plane's. A plane may read `members:` in the order the operator
+/// wrote it, or supply a STATEFUL order (a smooth weighted round robin, say), which cannot be handed
+/// over as a precomputed list because each pick mutates its accumulator and a refused pick must
+/// re-run the selection over the remaining set. So the order is
 /// asked for one candidate at a time, and `refused` reports what the walk did with the previous
 /// answer, which is exactly what a generator needs to advance.
 ///
@@ -485,54 +365,11 @@ pub trait Order {
     fn next(&mut self, refused: Option<usize>) -> Option<usize>;
 }
 
-/// THE OPERATOR'S ORDER: `members:` as written, skipping anything already `tried`.
-///
-/// The MCP and A2A order, and the one the seam's own [`walk`] uses. `members[0]` is the primary and
-/// the rest are its declared twins, so "first admissible in declaration order" is the whole policy —
-/// there is no weighting to apply because two deployments of ONE image are not a load-balancing
-/// decision, they are a same-or-nothing choice.
-// The declaration-order walk is driven only by the MCP and A2A dispatch paths; with BOTH planes
-// compiled out nothing constructs or drives it, so it reads dead in that config alone.
-#[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
-pub struct InOrder<'a> {
-    tried: &'a [usize],
-    cursor: usize,
-    len: usize,
-}
-
-impl<'a> InOrder<'a> {
-    #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
-    pub fn new(tried: &'a [usize], len: usize) -> Self {
-        Self {
-            tried,
-            cursor: 0,
-            len,
-        }
-    }
-}
-
-impl Order for InOrder<'_> {
-    fn next(&mut self, _refused: Option<usize>) -> Option<usize> {
-        // A refused position is never revisited because the cursor only moves forward — the walk's
-        // own `refused` bookkeeping is redundant here, which is why it is ignored rather than
-        // re-checked.
-        while self.cursor < self.len {
-            let position = self.cursor;
-            self.cursor += 1;
-            if !self.tried.contains(&position) {
-                return Some(position);
-            }
-        }
-        None
-    }
-}
-
 /// THE WALK: pick the next candidate in `members` that this request may be sent to, and admit it
 /// through THE circuit breaker.
 ///
-/// There is exactly ONE selection loop and this is it. Every plane reaches it: MCP and A2A through
-/// [`walk`], the model plane through `proxy::select::pick_among`, which supplies an SWRR [`Order`]
-/// and the permit-carrying admission and owns NO loop of its own.
+/// There is exactly ONE selection loop and this is it. A plane that fails over reaches it with its
+/// own [`Order`] and its own admission, and owns NO loop of its own.
 ///
 /// The order of the checks is the contract, because the first failure is what the operator is told:
 ///
@@ -542,12 +379,13 @@ impl Order for InOrder<'_> {
 ///    early on purpose: it is a statement about the REQUEST, and no upstream's health can change it.
 /// 3. **Do the pins agree?** Every hop after the primary must present the primary's exact
 ///    `interchange_key`. Checked before admission so a mismatched candidate is never given a probe.
-/// 4. **Will the breaker have it?** The plane's `admit` — [`LaneRuntime::try_admit_breaker`] on the
-///    MCP/A2A planes, [`crate::store::LaneRuntime::try_admit`] (the same breaker plus a concurrency
-///    permit) on the model plane — walked in `order` until one admits.
+/// 4. **Will the breaker have it?** The plane's `admit` — a breaker-only admission
+///    ([`busbar_kernel::store::LaneRuntime::try_admit_breaker`]) or
+///    [`crate::store::LaneRuntime::try_admit`] (the same breaker plus a concurrency permit) — walked
+///    in `order` until one admits.
 ///
-/// `admit` is a hook and not a hardcoded call for ONE reason and it is not extensibility: the model
-/// plane must acquire its concurrency permit and win the breaker probe ATOMICALLY (see `try_admit`'s
+/// `admit` is a hook and not a hardcoded call for ONE reason and it is not extensibility: a plane
+/// that holds concurrency permits must acquire its permit and win the breaker probe ATOMICALLY (see `try_admit`'s
 /// capacity-peek-before-probe-CAS argument — splitting them wedged a tripped-and-saturated lane
 /// forever). It is the SAME FSM, the SAME cell and the SAME single-flight probe either way; only the
 /// permit rides along. A plane cannot use this hook to admit a candidate the breaker refused,
@@ -556,8 +394,8 @@ impl Order for InOrder<'_> {
 /// `passed_over` is filled with `(position, why)` for EVERY candidate this walk could not admit, in
 /// the order it considered them — on the success path as well as the refusal path, because a plane
 /// that reroutes still owes its operator the reasons the earlier members were skipped. It is an
-/// out-parameter rather than a field of the two results precisely because BOTH results need it: the
-/// model plane's `on_exhausted` disposition reads it to decide 503-vs-queue-vs-spill, and it needs
+/// out-parameter rather than a field of the two results precisely because BOTH results need it: a
+/// plane's `on_exhausted` disposition reads it to decide 503-vs-queue-vs-spill, and it needs
 /// the reasons whether the walk ended in a dispatch or in a shed. The walk CLEARS it first, so a
 /// caller reusing one buffer across failover hops reports this hop's exhaustion, never a stale one.
 pub fn walk_with<'a, C: Candidate, T>(
