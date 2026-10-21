@@ -56,7 +56,11 @@ const USAGE: &str = "\
 usage:
   cargo xtask q128 audit [--record <path>] [--out <path>]
     judge the Q128 architecture audit on the current tree; writes target/q128-audit.json;
-    exit 0 no open BLOCK, 1 an open BLOCK, 2 wrong arguments, 3 the result could not be written";
+    exit 0 no open BLOCK, 1 an open BLOCK, 2 wrong arguments, 3 the result could not be written
+  cargo xtask q128 record --candidate <rev> --auditor <name> --findings <file.json> [--record <path>]
+    write the auditor's record: the commit read (whose tree must be this tree in every path but
+    the record), who read it, and the findings (a JSON array); exit 0 written, 1 refused,
+    2 wrong arguments, 3 the record could not be written";
 
 /// The result file, under the workspace root.
 fn default_out(root: &Path) -> PathBuf {
@@ -70,6 +74,9 @@ pub fn main(root: &Path, args: &[String]) -> i32 {
         eprintln!("{USAGE}");
         return 2;
     };
+    if sub == "record" {
+        return record_main(root, rest);
+    }
     if sub != "audit" {
         eprintln!("xtask q128: unknown subcommand `{sub}`\n{USAGE}");
         return 2;
@@ -568,8 +575,163 @@ pub struct RecordInputs<'a> {
 /// THE RECORD, WRITTEN BY THE COMMAND AND NEVER BY HAND. Refused, naming why, when the candidate
 /// does not resolve or its tree is not this tree in every path but the record, when no auditor is
 /// named, or when a finding breaks the record's format.
-pub fn record_text(_inp: &RecordInputs<'_>) -> Result<String, String> {
-    Err("q128 record is not written yet".to_string())
+pub fn record_text(inp: &RecordInputs<'_>) -> Result<String, String> {
+    let about = inp
+        .existing
+        .and_then(|t| serde_json::from_str::<Value>(t).ok())
+        .and_then(|v| v.get("about").and_then(Value::as_str).map(str::to_string))
+        .ok_or_else(|| {
+            format!(
+                "{} has no readable `about`: the record is rewritten over the committed one, \
+                 which states the format it is judged by",
+                inp.record_path
+            )
+        })?;
+    let c = inp
+        .candidate
+        .filter(|c| is_full_oid(c))
+        .ok_or_else(|| "the candidate does not resolve to a commit".to_string())?;
+    let Some(tree) = (inp.tree_of)(c) else {
+        return Err(format!(
+            "the candidate {c} does not resolve in this repository"
+        ));
+    };
+    if inp.head_tree != Some(tree.as_str()) {
+        // The judge's rule, held before the record exists: every path but the record is the
+        // candidate's, or the audit is of another tree.
+        match (inp.changed)(c) {
+            None => {
+                return Err(format!(
+                    "git could not list the paths that differ between {c} and HEAD"
+                ))
+            }
+            Some(ps) => {
+                let other: Vec<&str> = ps
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|p| *p != inp.record_path)
+                    .collect();
+                if ps.is_empty() || !other.is_empty() {
+                    return Err(format!(
+                        "the candidate {c} is another tree: {} path(s) other than the record \
+                         differ from HEAD: {}",
+                        other.len(),
+                        other
+                            .iter()
+                            .take(10)
+                            .copied()
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+            }
+        }
+    }
+    let auditor = inp.auditor.trim();
+    if auditor.is_empty() {
+        return Err("no auditor is named: an independent audit says who made it".to_string());
+    }
+    let findings: Vec<Value> = match serde_json::from_str::<Value>(inp.findings) {
+        Ok(Value::Array(a)) => a,
+        Ok(_) => return Err("the findings are not a JSON array (no findings is [])".to_string()),
+        Err(e) => return Err(format!("the findings are not JSON: {e}")),
+    };
+    let unreadable: Vec<String> = findings
+        .iter()
+        .enumerate()
+        .map(|(i, f)| read_finding(inp.record_path, i, f))
+        .filter(|f| f.get("id").is_none())
+        .map(|f| {
+            format!(
+                "{}: {}",
+                f["title"].as_str().unwrap_or(""),
+                f["evidence"].as_str().unwrap_or("")
+            )
+        })
+        .collect();
+    if !unreadable.is_empty() {
+        return Err(format!(
+            "finding(s) outside the record's format: {}",
+            unreadable.join(" | ")
+        ));
+    }
+    let doc = json!({
+        "about": about,
+        "candidate": c,
+        "auditor": auditor,
+        "findings": findings,
+    });
+    let mut out = Vec::new();
+    let fmt = serde_json::ser::PrettyFormatter::with_indent(b" ");
+    let mut ser = serde_json::Serializer::with_formatter(&mut out, fmt);
+    serde::Serialize::serialize(&doc, &mut ser).map_err(|e| e.to_string())?;
+    Ok(String::from_utf8_lossy(&out).into_owned() + "\n")
+}
+
+/// `cargo xtask q128 record`: write [`RECORD_REL`] (or `--record`) from the auditor's reading.
+fn record_main(root: &Path, rest: &[String]) -> i32 {
+    let mut record = root.join(RECORD_REL);
+    let (mut candidate, mut auditor, mut findings) = (None, None, None);
+    let mut i = 0;
+    while i < rest.len() {
+        let (flag, val) = (rest[i].as_str(), rest.get(i + 1));
+        match (flag, val) {
+            ("--record", Some(v)) => record = PathBuf::from(v),
+            ("--candidate", Some(v)) => candidate = Some(v.clone()),
+            ("--auditor", Some(v)) => auditor = Some(v.clone()),
+            ("--findings", Some(v)) => findings = Some(PathBuf::from(v)),
+            _ => {
+                eprintln!("xtask q128 record: unexpected argument `{flag}`\n{USAGE}");
+                return 2;
+            }
+        }
+        i += 2;
+    }
+    let (Some(candidate), Some(auditor), Some(findings)) = (candidate, auditor, findings) else {
+        eprintln!("xtask q128 record: --candidate, --auditor and --findings are required\n{USAGE}");
+        return 2;
+    };
+    let findings_text = match std::fs::read_to_string(&findings) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("xtask q128 record: {}: {e}", findings.display());
+            return 2;
+        }
+    };
+    let existing = std::fs::read_to_string(&record).ok();
+    let resolved = rev(root, &format!("{candidate}^{{commit}}"));
+    let record_path = display_rel(root, &record);
+    let head_tree = rev(root, "HEAD^{tree}");
+    let text = match record_text(&RecordInputs {
+        existing: existing.as_deref(),
+        candidate: resolved.as_deref(),
+        auditor: &auditor,
+        findings: &findings_text,
+        record_path: &record_path,
+        head_tree: head_tree.as_deref(),
+        tree_of: &|c: &str| rev(root, &format!("{c}^{{tree}}")),
+        changed: &|c: &str| changed_paths(root, c),
+    }) {
+        Ok(t) => t,
+        Err(why) => {
+            eprintln!("xtask q128 record: refused: {why}");
+            return 1;
+        }
+    };
+    if let Err(e) = std::fs::write(&record, text) {
+        eprintln!(
+            "xtask q128 record: could not write {}: {e}",
+            record.display()
+        );
+        return 3;
+    }
+    println!(
+        "q128 record: {} names candidate {} read by {}; commit it on top of that candidate",
+        record_path,
+        resolved.as_deref().unwrap_or("?"),
+        auditor.trim()
+    );
+    0
 }
 
 /// One finding of the auditor's record, held to the format. A finding that breaks it becomes a BLOCK
