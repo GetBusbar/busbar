@@ -727,13 +727,22 @@ pub(crate) fn dropped() -> Option<&'static crate::root::loader::PluginRegistry> 
     DROPPED.get().copied()
 }
 
-/// EVERY LINKED PLUGIN'S DOOR: each plane, export, auth, hook, secret and store row's, then the
-/// linked memory-ABI `transports` (the connector's doors). Each states its `declares` on its own
-/// Statement, as its dropped-in copy states it on the signed one (compiled in = dropped in).
+/// EVERY LINKED PLUGIN'S DOOR: each plane and export row's, then [`stated_doors`]. Each states its
+/// `declares` on its own Statement, as its dropped-in copy states it on the signed one (compiled in
+/// = dropped in).
 pub fn linked_doors(linked: &Linked, transports: &[DoorFn]) -> Vec<DoorFn> {
     let mut doors: Vec<DoorFn> = linked.plane_doors.to_vec();
     doors.extend(linked.export_doors.iter().map(|d| d.door));
-    doors.extend(linked.auths.iter().map(|&(_, _, door)| door));
+    doors.extend(stated_doors(linked, transports));
+    doors
+}
+
+/// THE LINKED DOORS NO REGISTRY ROW CARRIES THE `declares` OF: each auth, hook, secret and store
+/// row's, then the linked memory-ABI `transports` (the connector's doors). A plane door's are read
+/// off its Statement beside them ([`register_diagnostics`]); an export row's ride its row in the
+/// boot registry ([`linked_exports`]), read there with the dropped-in rows'.
+pub fn stated_doors(linked: &Linked, transports: &[DoorFn]) -> Vec<DoorFn> {
+    let mut doors: Vec<DoorFn> = linked.auths.iter().map(|&(_, _, door)| door).collect();
     doors.extend_from_slice(linked.hook_doors);
     doors.extend_from_slice(linked.secrets);
     doors.extend((linked.stores)().iter().map(|&(_, _, door, _)| door));
@@ -878,14 +887,20 @@ static DROPPED: std::sync::OnceLock<&'static crate::root::loader::PluginRegistry
     std::sync::OnceLock::new();
 
 /// THE DIAGNOSTICS AXIS: every entry's owned diagnostics, and every first-party plugin's DECLARED
-/// ones (K9a S3), installed once. A declaration the catalogue refuses refuses the boot.
-pub fn register_diagnostics(linked: &Linked) {
+/// ones (K9a S3), installed once: every linked plugin's, read off its own Statement (the plane
+/// doors and the [`stated_doors`]; `transports` are the linked transport doors) or its boot
+/// registry row (an export's), and every dropped-in one's. A linked plugin's codes join exactly as
+/// its dropped-in copy's would (compiled in = dropped in). A declaration the catalogue refuses
+/// refuses the boot.
+pub fn register_diagnostics(linked: &Linked, transports: &[DoorFn]) {
     let mut installed: Vec<&'static busbar_contract::diagnostic::Diagnostic> = linked
         .diagnostics
         .iter()
         .flat_map(|diags| diags.iter().copied())
         .collect();
-    match door_declared_diagnostics(linked.plane_doors, linked.declares_of, &installed) {
+    let mut doors: Vec<DoorFn> = linked.plane_doors.to_vec();
+    doors.extend(stated_doors(linked, transports));
+    match door_declared_diagnostics(&doors, linked.declares_of, &installed) {
         Ok(declared) => installed.extend(declared),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
@@ -902,6 +917,15 @@ pub fn register_diagnostics(linked: &Linked) {
         }
     }
     busbar_kernel::diagnostics::install_diagnostics(installed.leak());
+}
+
+/// The build's diagnostics axis as boot installs it ([`register_diagnostics`] over the build's own
+/// linked tables), installed ONCE for the test binary: a second install panics by design, and every
+/// test that reads the catalogue or writes a declared line reads this one.
+#[cfg(test)]
+pub(crate) fn install_catalogue_once() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| register_diagnostics(&crate::LINKED, crate::LINKED_TRANSPORT_DOORS));
 }
 
 /// PLUGIN DIAGNOSTICS (K9a S3): the catalogue entries `registry`'s plugins DECLARE
@@ -928,7 +952,7 @@ pub fn declared_diagnostics(
     Ok(declared)
 }
 
-/// THE DIAGNOSTICS LINKED PLANE DOORS DECLARE (each door's Statement `declares`, read by
+/// THE DIAGNOSTICS LINKED `doors` DECLARE (each door's Statement `declares`, read by
 /// `declares_of`; first-party by being linked), each judged as a dropped plugin's declaration is
 /// ([`declared_diagnostics`]).
 ///

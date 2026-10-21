@@ -602,9 +602,9 @@ A token-exchange request presented a principal id that is unsafe as a self-serve
 - **Since:** 1.6.0
 - **Slug:** `egress-apikey-invalid-bytes`
 
-A configured static egress credential contains bytes that are invalid in a header value (an ASCII control character, such as a trailing newline), so the auth plugin omits the auth header and the upstream rejects the request with 401. It is raised on each request that would have carried the header.
+A configured static egress credential contains bytes that are invalid in an HTTP header value (an ASCII control character, such as a trailing newline), so the plugin omits the auth header and the upstream rejects the request with 401. It is raised on each request that would have carried the header.
 
-**What to do:** Fix the credential's configured value: strip the control character (often a trailing newline in the secret's source). Egress to that upstream 401s until it is fixed.
+**What to do:** Fix the credential's configured value (strip the control character, often a trailing newline from a file or env source). Egress to that upstream 401s until it is fixed.
 
 <a id="egress-oauth-token-invalid-bytes"></a>
 ### BUSBAR-4014 — Minted OAuth token contains invalid header bytes (auth header omitted)
@@ -781,6 +781,17 @@ A create_key request listed an `allowed_pools` entry that names no configured po
 An update_key request body did not parse as valid JSON, so busbar returns a generic 400, logging only the body's byte length (never the raw serde error or an input fragment). Mirror of BUSBAR-4027 for the update path. This is a CLIENT-side bad request, so it is emitted at debug.
 
 **What to do:** None — self-heals; the client must send well-formed JSON. Persistent volume from one caller indicates a broken client worth fixing.
+
+<a id="credential-invalid-bytes"></a>
+### BUSBAR-4030 — Auth credential contains invalid header bytes (credential header omitted)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `credential-invalid-bytes`
+
+A credential from a credential-family table contains bytes invalid in an HTTP header value (for example a trailing newline), so the plugin omits the credential header and the upstream returns 401. It is raised on each request that would have carried the header, naming the protocol and the header.
+
+**What to do:** Fix the credential's configured value (strip the control character, often a trailing newline from a file or env source). Egress to that upstream 401s until it is fixed.
 
 ## 5xxx — Proxy & routing
 
@@ -1620,9 +1631,9 @@ The request carried more stop sequences than the target protocol's documented ca
 - **Since:** 1.6.0
 - **Slug:** `proto-auth-invalid-header-bytes`
 
-An egress authorization credential contains bytes that are not valid in an HTTP header (e.g. an ASCII control character), so the Authorization header is omitted entirely rather than sent malformed — the upstream will reject the request with 401. The key itself is never logged, only the protocol name. It is raised on each request that would have carried the header.
+An egress authorization credential contains bytes that are not valid in an HTTP header value (an ASCII control character, such as a trailing newline), so the plugin omits the Authorization header rather than sending it malformed, and the upstream rejects the request with 401. The key itself is never logged, only the protocol name. It is raised on each request that would have carried the header.
 
-**What to do:** Fix the misconfigured lane's credential — the configured secret contains invalid header bytes. The protocol name in the log line locates the lane.
+**What to do:** Fix the misconfigured lane's credential: the configured secret contains invalid header bytes. The protocol name in the log line locates the lane.
 
 <a id="proto-drop-provider-metadata"></a>
 ### BUSBAR-7088 — Cross-protocol transcode dropped response-side provider metadata

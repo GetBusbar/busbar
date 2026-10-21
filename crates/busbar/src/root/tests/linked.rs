@@ -275,8 +275,8 @@ fn no_linked_plugin_declares_a_code_the_kernel_catalogue_holds() {
     let mut both = Vec::new();
     for door in linked_doors(&crate::LINKED, crate::LINKED_TRANSPORT_DOORS) {
         let name = door_name(door).expect("a linked door states its name");
-        let json = (crate::LINKED.declares_of)(door)
-            .unwrap_or_else(|e| panic!("plugin '{name}': {e}"));
+        let json =
+            (crate::LINKED.declares_of)(door).unwrap_or_else(|e| panic!("plugin '{name}': {e}"));
         let Some(json) = json else {
             continue;
         };
