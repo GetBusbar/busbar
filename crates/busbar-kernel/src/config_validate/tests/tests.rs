@@ -2587,12 +2587,10 @@ fn test_reject_cidr_metadata_entries() {
 
 /// RED (HIGH, the list entry read as written while every target is mapped): a metadata host-list
 /// entry is read as a target's host is read, through UTS #46. A full-width blocked entry blocks the
-/// ASCII target it maps to (it matched nothing, and the target was dialled); an entry UTS #46
-/// refuses, or one the guard cannot judge once mapped (a `%` outside a zone id, a number that is no
-/// IPv4 address), names no host at all, so the configuration is refused at load, naming the key,
-/// the entry and the reason, in each of the three lists.
+/// ASCII target it maps to (it matched nothing, and the target was dialled), and an allow entry
+/// written the same way lifts it.
 #[test]
-fn test_metadata_list_entries_are_mapped_and_an_unmappable_one_is_refused() {
+fn test_metadata_list_entries_are_mapped() {
     // `１０.９９.９９.９９` and `ｍｅｔａ.example`.
     let full_width_ip = "\u{ff11}\u{ff10}.\u{ff19}\u{ff19}.\u{ff19}\u{ff19}.\u{ff19}\u{ff19}";
     let full_width_name = "\u{ff4d}\u{ff45}\u{ff54}\u{ff41}.example";
@@ -2606,105 +2604,219 @@ fn test_metadata_list_entries_are_mapped_and_an_unmappable_one_is_refused() {
             ssrf_blocked_host(target, &[], false, &[entry.to_string()]).is_some(),
             "the entry `{entry}` must block `{target}`"
         );
-        // And an allow entry written the same way lifts it.
         assert!(
             ssrf_blocked_host(target, &[entry.to_string()], false, &[entry.to_string()]).is_none(),
             "the allow entry `{entry}` must lift `{target}`"
         );
     }
-    let unmappable = "b\u{fc}cher\u{ff1c}.example";
-    let refused_entry = |errs: &[String], key: &str, entry: &str| {
-        errs.iter()
-            .any(|e| e.starts_with(&format!("{key} entry '{entry}' maps to no host")))
-    };
-    let refused = |errs: &[String], key: &str| refused_entry(errs, key, unmappable);
-    let one = || {
-        let mut providers = HashMap::new();
-        providers.insert(
-            "p".to_string(),
-            make_provider(proto_b(), "https://api.vendor-a.example.com", "API_KEY"),
-        );
-        providers
-    };
-    let cfg = make_root_cfg_with_blocked(one(), vec![unmappable.to_string()]);
-    let errs = validate(&cfg).expect_err("an unmappable blocked entry refuses the config");
+}
+
+/// Metadata host-list entries that name no host the guard judges, one per class: UTS #46 refuses
+/// it, a `%` outside an IPv6 zone id, a last label that reads as a number but is no IPv4 address
+/// (ASCII and full width). v1.5.5 booted with every one of them and matched it to nothing: its
+/// validator refused only a `/` entry (v1.5.5 crates/busbar/src/config_validate/mod.rs:1998-2005).
+const NO_HOST_ENTRIES: [&str; 10] = [
+    "b\u{fc}cher\u{ff1c}.example",
+    "%6c%6fcalhost",
+    "169%2e254%2e169%2e254",
+    "1.2.3.4.5",
+    "999.1.1.1",
+    "foo.127",
+    "x.0",
+    "db.1",
+    "0x",
+    "\u{ff11}.\u{ff12}.\u{ff13}.\u{ff14}.\u{ff15}",
+];
+
+/// A config valid on its own: the baseline `test_validate_empty_chain_carries_no_requirement`
+/// validates clean.
+fn no_host_entries_baseline() -> RootCfg {
+    crate::test_support::register_neutral_test_plane();
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    cfg.auth = Some(make_auth_chain(&[], crate::auth::UpstreamCreds::Own));
+    cfg
+}
+
+/// RED (1.5.5 parity): a metadata host-list entry that names no host BOOTS, as it did on 1.5.5, in
+/// each of the three lists. It is dropped from matching, and config load names the key and the
+/// entry in exactly one warning line (BUSBAR-3024), worded as the refusal it replaces.
+#[test]
+fn test_a_metadata_entry_naming_no_host_boots_with_one_warning_line() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let entries: Vec<String> = NO_HOST_ENTRIES.iter().map(|e| e.to_string()).collect();
+    let mut cfg = no_host_entries_baseline();
+    cfg.blocked_metadata_hosts = entries.clone();
+    cfg.allow_metadata_hosts = entries.clone();
+    cfg.providers
+        .get_mut("myprovider")
+        .expect("valid_maps names `myprovider`")
+        .allow_metadata_hosts = entries.clone();
+
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let result = tracing::subscriber::with_default(subscriber, || validate(&cfg));
     assert!(
-        refused(&errs, "security.blocked_metadata_hosts"),
-        "{errs:?}"
+        result.is_ok(),
+        "a metadata entry naming no host booted on 1.5.5 and must boot now; got: {result:?}"
     );
-    let mut cfg = make_root_cfg(one(), HashMap::new(), HashMap::new());
-    cfg.allow_metadata_hosts = vec![unmappable.to_string()];
-    let errs = validate(&cfg).expect_err("an unmappable allow entry refuses the config");
-    assert!(refused(&errs, "security.allow_metadata_hosts"), "{errs:?}");
-    let mut providers = HashMap::new();
-    providers.insert(
-        "prov".to_string(),
-        make_provider_allow_hosts("https://api.vendor-a.example.com", &[unmappable]),
-    );
-    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
-    let errs = validate(&cfg).expect_err("an unmappable provider allow entry refuses the config");
-    assert!(
-        refused(&errs, "provider 'prov' allow_metadata_hosts"),
-        "{errs:?}"
-    );
-    // An entry UTS #46 maps that the guard still cannot judge (it would drop it, matching nothing)
-    // is refused at load too: a `%` outside a zone id, a number that is no IPv4 address, written
-    // in ASCII or full width.
-    for entry in [
-        "%6c%6fcalhost",
-        "1.2.3.4.5",
-        "\u{ff11}.\u{ff12}.\u{ff13}.\u{ff14}.\u{ff15}",
-        "0x",
+    let msgs = cap.messages();
+    for key in [
+        "security.blocked_metadata_hosts",
+        "security.allow_metadata_hosts",
+        "provider 'myprovider' allow_metadata_hosts",
     ] {
-        let cfg = make_root_cfg_with_blocked(one(), vec![entry.to_string()]);
-        let errs = validate(&cfg).expect_err("an unjudgeable blocked entry refuses the config");
-        assert!(
-            refused_entry(&errs, "security.blocked_metadata_hosts", entry),
-            "{entry}: {errs:?}"
-        );
-        let mut cfg = make_root_cfg(one(), HashMap::new(), HashMap::new());
-        cfg.allow_metadata_hosts = vec![entry.to_string()];
-        let errs = validate(&cfg).expect_err("an unjudgeable allow entry refuses the config");
-        assert!(
-            refused_entry(&errs, "security.allow_metadata_hosts", entry),
-            "{entry}: {errs:?}"
-        );
+        for entry in NO_HOST_ENTRIES {
+            let head = format!("{key} entry '{entry}' maps to no host: ");
+            let lines: Vec<&String> = msgs.iter().filter(|m| m.starts_with(&head)).collect();
+            assert_eq!(
+                lines.len(),
+                1,
+                "one warning line for `{entry}` in {key}: {msgs:?}"
+            );
+            assert!(
+                lines[0].contains("so it matches nothing and is dropped. ")
+                    && lines[0].contains("diag=BUSBAR-3024"),
+                "the warning names the entry as dropped and carries BUSBAR-3024: {}",
+                lines[0]
+            );
+        }
     }
-    // The refusal names the key, the entry and why, and how to write it, so one edit fixes it.
-    let cfg =
-        make_root_cfg_with_blocked(one(), vec!["db.1".to_string(), "%6c%6fcalhost".to_string()]);
-    let errs = validate(&cfg).expect_err("unjudgeable entries refuse the config");
+    assert_eq!(
+        msgs.iter()
+            .filter(|m| m.contains("maps to no host"))
+            .count(),
+        3 * NO_HOST_ENTRIES.len(),
+        "exactly one line per dropped entry per key: {msgs:?}"
+    );
+
+    // The exact lines, one per reason, as the operator reads them.
     for said in [
         "security.blocked_metadata_hosts entry 'db.1' maps to no host: its last label reads as a \
-         number but it is no IPv4 address a URL client reads, so it would silently match nothing. \
-         Write an address as a dotted quad, or a name whose last label is not a number, or remove \
-         it",
-        "security.blocked_metadata_hosts entry '%6c%6fcalhost' maps to no host: it holds a '%' \
-         escape outside an IPv6 zone id, which a URL client decodes before it dials, so it would \
-         silently match nothing. Write the host decoded (the name or address it spells), or \
-         remove it",
+         number but it is no IPv4 address a URL client reads, so it matches nothing and is \
+         dropped. Write an address as a dotted quad, or a name whose last label is not a number, \
+         or remove it",
+        "security.allow_metadata_hosts entry '%6c%6fcalhost' maps to no host: it holds a '%' \
+         escape outside an IPv6 zone id, which a URL client decodes before it dials, so it \
+         matches nothing and is dropped. Write the host decoded (the name or address it spells), \
+         or remove it",
+        "provider 'myprovider' allow_metadata_hosts entry 'b\u{fc}cher\u{ff1c}.example' maps to \
+         no host: UTS #46 refuses it, so it is no name a URL client would dial, so it matches \
+         nothing and is dropped. Write the host in ASCII (an internationalized name as its \
+         punycode 'xn--' form), or remove it",
     ] {
-        assert!(errs.iter().any(|e| e == said), "{said}: {errs:?}");
+        assert!(
+            msgs.iter()
+                .any(|m| m == &format!("{said} diag=BUSBAR-3024")),
+            "{said}: {msgs:?}"
+        );
     }
-    // Mappable and judgeable entries are never refused as unmappable.
-    let mut cfg = make_root_cfg(one(), HashMap::new(), HashMap::new());
+
+    // Mappable and judgeable entries boot with no warning at all.
+    let mut cfg = no_host_entries_baseline();
     cfg.blocked_metadata_hosts = vec![
-        full_width_ip.to_string(),
+        "\u{ff11}\u{ff10}.\u{ff19}\u{ff19}.\u{ff19}\u{ff19}.\u{ff19}\u{ff19}".to_string(),
         "169.254.169.254".to_string(),
         "2852039166".to_string(),
+        "0177.0.0.1".to_string(),
         "fd00:ec2::254".to_string(),
+        "fe80::1%eth0".to_string(),
         "metadata.google.internal.".to_string(),
     ];
     cfg.allow_metadata_hosts = vec![
-        full_width_name.to_string(),
+        "\u{ff4d}\u{ff45}\u{ff54}\u{ff41}.example".to_string(),
         "metadata.example.com".to_string(),
     ];
-    if let Err(errs) = validate(&cfg) {
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let result = tracing::subscriber::with_default(subscriber, || validate(&cfg));
+    assert!(result.is_ok(), "mappable entries boot; got: {result:?}");
+    assert_eq!(
+        cap.count("maps to no host"),
+        0,
+        "a mappable entry is never warned about: {:?}",
+        cap.messages()
+    );
+}
+
+/// The dropped entries leave the hardened guard whole: with every list full of entries that name
+/// no host (the `%`-escaped spelling of the IMDS address among them, as an allow entry), the real
+/// internal targets are still refused, at the config's own reader and at boot.
+#[test]
+fn test_a_dropped_metadata_entry_lifts_no_real_target() {
+    let entries: Vec<String> = NO_HOST_ENTRIES.iter().map(|e| e.to_string()).collect();
+    for target in [
+        "https://169.254.169.254/latest/meta-data/",
+        "https://169.254.170.2/v2/credentials",
+        "https://metadata.google.internal/computeMetadata/v1/",
+        "https://100.100.100.200/latest/meta-data/",
+    ] {
         assert!(
-            !errs.iter().any(|e| e.contains("maps to no host")),
-            "a mappable or ASCII entry must not be refused as unmappable; got: {errs:?}"
+            ssrf_blocked_host(target, &entries, false, &entries).is_some(),
+            "a dropped allow entry must lift nothing: `{target}` stays blocked"
         );
     }
+    let mut cfg = no_host_entries_baseline();
+    cfg.blocked_metadata_hosts = entries.clone();
+    cfg.allow_metadata_hosts = entries.clone();
+    let provider = cfg
+        .providers
+        .get_mut("myprovider")
+        .expect("valid_maps names `myprovider`");
+    provider.allow_metadata_hosts = entries.clone();
+    provider.base_url = "https://169.254.169.254/".into();
+    let errs = validate(&cfg).expect_err("the IMDS address stays refused");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("targets a blocked cloud-metadata host")),
+        "the metadata check still refuses the IMDS base_url: {errs:?}"
+    );
+    assert!(
+        !errs.iter().any(|e| e.contains("maps to no host")),
+        "an entry naming no host is a warning, never an error: {errs:?}"
+    );
+}
+
+/// TWIN (1.5.5 parity): a `/` entry is the one class 1.5.5 refused at boot (v1.5.5
+/// crates/busbar/src/config_validate/mod.rs:1998-2005, called at :68-77 and :320-324), so it is
+/// still refused with 1.5.5's exact text and gets no warning line of its own.
+#[test]
+fn test_a_cidr_metadata_entry_is_refused_with_the_1_5_5_text() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let mut cfg = no_host_entries_baseline();
+    cfg.blocked_metadata_hosts = vec!["169.254.0.0/16".to_string()];
+    cfg.allow_metadata_hosts = vec!["10.0.0.0/8".to_string()];
+    cfg.providers
+        .get_mut("myprovider")
+        .expect("valid_maps names `myprovider`")
+        .allow_metadata_hosts = vec!["169.254.169.254/32".to_string()];
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let errs = tracing::subscriber::with_default(subscriber, || validate(&cfg))
+        .expect_err("a CIDR entry is refused at boot, as on 1.5.5");
+    for (key, entry) in [
+        ("security.blocked_metadata_hosts", "169.254.0.0/16"),
+        ("security.allow_metadata_hosts", "10.0.0.0/8"),
+        (
+            "provider 'myprovider' allow_metadata_hosts",
+            "169.254.169.254/32",
+        ),
+    ] {
+        let said = format!(
+            "{key} entry '{entry}' contains '/' (CIDR is not supported here): these lists are matched by EXACT IP or hostname, so a CIDR/slash entry silently never matches and is a no-op. List exact IPs/hostnames instead (e.g. '169.254.169.254', not '169.254.0.0/16')"
+        );
+        assert!(errs.iter().any(|e| e == &said), "{said}: {errs:?}");
+    }
+    assert_eq!(
+        cap.count("maps to no host"),
+        0,
+        "a CIDR entry gets only its 1.5.5 refusal: {:?}",
+        cap.messages()
+    );
 }
 
 #[test]

@@ -7,8 +7,9 @@ use std::collections::{HashMap, HashSet};
 
 use crate::config::RootCfg;
 use crate::diagnostics::{
-    diag_warn, CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT,
-    CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS, CONFIG_RATE_CARD_ALL_ZERO,
+    diag_warn, CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_METADATA_ENTRY_NAMES_NO_HOST,
+    CONFIG_OPEN_ADMIN_MINT, CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS,
+    CONFIG_RATE_CARD_ALL_ZERO,
 };
 use crate::plane::registry::plane_decl_for;
 use busbar_contract::abi::export::CheckPhase;
@@ -97,16 +98,13 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         &cfg.allow_metadata_hosts,
         &mut errors,
     );
-    reject_unmappable_metadata_entries(
+    // An entry that names no host the guard judges booted on 1.5.5 and matched nothing there. It
+    // still boots, is dropped from matching, and is named in one warning line each.
+    warn_unmappable_metadata_entries(
         "security.blocked_metadata_hosts",
         &cfg.blocked_metadata_hosts,
-        &mut errors,
     );
-    reject_unmappable_metadata_entries(
-        "security.allow_metadata_hosts",
-        &cfg.allow_metadata_hosts,
-        &mut errors,
-    );
+    warn_unmappable_metadata_entries("security.allow_metadata_hosts", &cfg.allow_metadata_hosts);
 
     // The reasoning effort table drives word<->number projection at the egress seam (the
     // cross-protocol thinking carry). A zero entry would project thinking budgets below the floor
@@ -2071,29 +2069,42 @@ fn reject_cidr_metadata_entries(key: &str, entries: &[String], errors: &mut Vec<
     }
 }
 
-/// Push an error for every entry in a metadata host-list config key that names no host the
-/// destination guard can judge. An entry is read as a destination's host is read
+/// Warn once for every entry in a metadata host-list config key that names no host the destination
+/// guard can judge. An entry is read as a destination's host is read
 /// (`busbar_kernel_egress::trust::net::list_entry_host`: a non-ASCII entry mapped by UTS #46 to the
 /// ASCII name or address a URL client dials), so a full-width `１６９.２５４.１６９.２５４` names
 /// `169.254.169.254`; and it must then be a host the guard judges
 /// (`busbar_contract::net::judged_host`, the guard's one reading of every target and entry). An
 /// entry UTS #46 refuses, one holding a `%` outside an IPv6 zone id, or one ending in a number that
-/// is no IPv4 address a URL client reads (`1.2.3.4.5`, `１.２.３.４.５`) matches no destination: the
-/// guard drops it, so it is refused here at load, naming the key, the entry and the reason, and the
-/// guard and this validation agree on every entry that boots.
-fn reject_unmappable_metadata_entries(key: &str, entries: &[String], errors: &mut Vec<String>) {
+/// is no IPv4 address a URL client reads (`1.2.3.4.5`, `１.２.３.４.５`) matches no destination.
+///
+/// 1.5.5 booted with such an entry and it matched nothing (it compared raw strings, and refused only
+/// a `/`, `reject_cidr_metadata_entries`), so the configuration still boots: the guard drops the
+/// entry from matching (`HostSet::parse`), the built-in denylist still blocks every real target, and
+/// this names the key, the entry and the reason in one warning line
+/// ([`CONFIG_METADATA_ENTRY_NAMES_NO_HOST`]). A `/` entry is left to its own 1.5.5 refusal.
+fn warn_unmappable_metadata_entries(key: &str, entries: &[String]) {
     for entry in entries {
-        if let Some((why, fix)) = unmappable_metadata_entry(entry) {
-            errors.push(format!(
-                "{key} entry '{entry}' maps to no host: {why}, so it would silently match \
-                 nothing. {fix}"
-            ));
+        if let Some(line) = unmappable_metadata_warning(key, entry) {
+            diag_warn!(CONFIG_METADATA_ENTRY_NAMES_NO_HOST, "{line}");
         }
     }
 }
 
+/// The warning line for one metadata host-list entry that names no host, or `None` when it names
+/// one or is a `/` entry, which 1.5.5 refuses on its own ([`warn_unmappable_metadata_entries`]).
+fn unmappable_metadata_warning(key: &str, entry: &str) -> Option<String> {
+    if entry.contains('/') {
+        return None;
+    }
+    let (why, fix) = unmappable_metadata_entry(entry)?;
+    Some(format!(
+        "{key} entry '{entry}' maps to no host: {why}, so it matches nothing and is dropped. {fix}"
+    ))
+}
+
 /// Why a metadata host-list entry names no host the guard judges, and how to write it instead;
-/// `None` when it names one ([`reject_unmappable_metadata_entries`]).
+/// `None` when it names one ([`warn_unmappable_metadata_entries`]).
 fn unmappable_metadata_entry(entry: &str) -> Option<(&'static str, &'static str)> {
     let trimmed = entry.trim();
     if busbar_kernel_egress::trust::net::list_entry_host(trimmed).is_err() {
@@ -2264,10 +2275,9 @@ fn validate_providers_with(
             &provider_cfg.allow_metadata_hosts,
             errors,
         );
-        reject_unmappable_metadata_entries(
+        warn_unmappable_metadata_entries(
             &format!("provider '{provider_name}' allow_metadata_hosts"),
             &provider_cfg.allow_metadata_hosts,
-            errors,
         );
         let allow_overrides: Vec<String> = provider_cfg
             .allow_metadata_hosts

@@ -1334,11 +1334,51 @@ fn nat64_dns64_synthesis_of_imds_is_refused_even_under_allow_private() {
 // ── THE MAPPED HOST, IN EVERY ARM: a list entry, a bare authority and a resolved name are read as
 // a URL's host is read (UTS #46), so each is judged and resolved as the name a URL client dials. ──
 
+/// 1.5.5 PARITY: an entry that names no host the guard judges (UTS #46 refuses it, a `%` outside an
+/// IPv6 zone id, a last label that reads as a number but is no IPv4 address) matched nothing on
+/// 1.5.5 and boots now; it is dropped from both lists, and the real internal targets stay refused,
+/// by `ssrf_blocked_host` and by `check_structure`'s denylist alike, when every such entry is an
+/// allow entry (the `%`-escaped IMDS address among them).
+#[test]
+fn a_list_entry_that_names_no_host_is_dropped_and_lifts_no_real_target() {
+    let entries: Vec<String> = [
+        "b\u{fc}cher\u{ff1c}.example",
+        "%6c%6fcalhost",
+        "169%2e254%2e169%2e254",
+        "1.2.3.4.5",
+        "999.1.1.1",
+        "foo.127",
+        "x.0",
+        "0x",
+    ]
+    .iter()
+    .map(|e| e.to_string())
+    .collect();
+    let lists = Denylist::new(&entries, &entries, false);
+    for target in [
+        "https://169.254.169.254/latest/meta-data/",
+        "https://metadata.google.internal/computeMetadata/v1/",
+        "169.254.169.254:80",
+    ] {
+        assert!(
+            ssrf_blocked_host(target, &entries, false, &entries).is_some(),
+            "`{target}` stays blocked"
+        );
+        assert!(
+            matches!(
+                check_structure(target, &[], private_ok(), &lists),
+                Err(NetworkRefusal::MetadataDenied(_))
+            ),
+            "`{target}` stays blocked in the structural check"
+        );
+    }
+}
+
 /// RED (HIGH): an operator's list entry is read as a target's host is read. A full-width blocked
 /// entry blocks the ASCII target it maps to, in each spelling a target may take, and a full-width
 /// allow entry lifts the metadata name it maps to; the entries were kept as written, so the blocked
 /// one matched nothing and the target was dialled. An ASCII entry is read as before, and an entry
-/// UTS #46 refuses names nothing (configuration load refuses it, naming it).
+/// UTS #46 refuses names nothing (it is dropped, and configuration load names it in a warning).
 #[test]
 fn a_list_entry_is_read_as_a_targets_host_is_read() {
     // `１０.９９.９９.９９` and `ｍｅｔａ.example`.

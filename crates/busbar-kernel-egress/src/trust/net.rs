@@ -711,14 +711,19 @@ pub fn list_entry_host(entry: &str) -> Result<std::borrow::Cow<'_, str>, UrlRefu
 
 impl HostSet {
     /// Canonicalize a list of operator-written entries, each read as a target's host is
-    /// ([`list_entry_host`]). An entry that maps to nothing is refused at configuration load; one
-    /// that reaches here anyway names nothing and is not kept.
+    /// ([`list_entry_host`]). An entry that names no host the guard judges (UTS #46 refuses it, a
+    /// `%` outside an IPv6 zone id, a last label that reads as a number but is no IPv4 address)
+    /// could match no target: it is dropped here, as 1.5.5 matched it to nothing, and configuration
+    /// load names it in a warning line.
     fn parse(entries: &[String]) -> Self {
         let mut set = HostSet::default();
         for entry in entries {
             let Ok(mapped) = list_entry_host(entry) else {
                 continue;
             };
+            if judged_host(&mapped).is_err() {
+                continue;
+            }
             let norm = mapped.trim_end_matches('.');
             if norm.is_empty() {
                 continue;
