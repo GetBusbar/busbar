@@ -865,13 +865,18 @@ fn parse_url_raw(url: &str) -> Result<(UrlParts, String), UrlRefusal> {
     ))
 }
 
-/// One of `url`'s SPECIAL schemes (WHATWG: `http`, `https`, `ws`, `wss`, `ftp`, `file`), whose host
-/// `url` 2.5.8 maps by UTS #46 (`Host::parse`); every other scheme's host is opaque to it
+/// One of `url`'s SPECIAL schemes with a dialled host (WHATWG: the four web schemes and `ftp`), whose
+/// host `url` 2.5.8 maps by UTS #46 (`Host::parse`); every other scheme's host is opaque to it
 /// (`Host::parse_opaque`). Takes a lower-case scheme.
+///
+/// WHATWG's sixth special scheme, the local-file one, is not here: `url` reads its host by a grammar
+/// of its own (`Parser::get_file_host`: `localhost` read as no host, a drive letter as a path), which
+/// this reader does not follow for it either, and no busbar path dials it, sends it or names its
+/// host on a wire. Its host is read as any other non-web scheme's.
 #[must_use]
 pub fn is_special_scheme(scheme: &str) -> bool {
-    // The four web schemes are [`UrlFamily::Web`]'s one list; `url` adds two more.
-    UrlFamily::of(scheme) == UrlFamily::Web || matches!(scheme, "ftp" | "file")
+    // The four web schemes are [`UrlFamily::Web`]'s one list; `url` adds `ftp` to them.
+    UrlFamily::of(scheme) == UrlFamily::Web || scheme == "ftp"
 }
 
 /// The port `url` 2.5.8 elides for a (lower-case) scheme (`url::parser::default_port`): an explicit
