@@ -28,6 +28,7 @@
 
 pub mod build;
 pub mod json;
+pub mod runs;
 pub mod selftest;
 pub mod tables;
 pub mod verify;
@@ -42,7 +43,8 @@ use build::{ARCH_REL, CELLS_REL, GOLDEN_LEDGER_REL, OUT_JSON_REL, OUT_MD_REL};
 use json::J;
 
 /// The files the context's BASE layer lays (the pinned planes, at `crates/<package>`), as
-/// `(rel, text)`: what [`verify::Ctx::add_laid`] indexes beside the disk walk.
+/// `(rel, text)`: what [`verify::Ctx::add_laid`] indexes beside the disk walk, the `.rs` files among
+/// them only where [`runs::laid_runs`] shows a CI runs them.
 pub fn laid_files(cx: &Ctx) -> Vec<(String, String)> {
     cx.base()
         .into_iter()
@@ -80,7 +82,8 @@ impl DesignBindingsGate {
             cx.root(),
             &cx.abs(GOLDEN_LEDGER_REL),
         )?;
-        ctx.add_laid(&laid_files(cx))?;
+        let laid = laid_files(cx);
+        ctx.add_laid(&laid, &runs::laid_runs(cx, &laid))?;
         if let Some(planted) = cx.overlay_command(NOTE_TABLE_KEY) {
             let table: Vec<(String, String)> = planted
                 .split('\n')

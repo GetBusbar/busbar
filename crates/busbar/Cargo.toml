@@ -530,6 +530,9 @@ row = "auth-admin-tokens"
 # THE DRIVER PROOFS of a plane served through its door (BUSBAR-1.6.0.md Part 3 section 12, the hook
 # gate on the driver): cargo feature -> the plane crate whose `tests/on_driver/` holds the
 # plane-origin hook cases (`mod.rs`) and the words the root's door cells read as data (`words.txt`).
+# The plane crate states that directory under its `links` name (`cargo::metadata=driver=<dir>`, read
+# as `DEP_BUSBAR_DOOR_CELLS_<CRATE>_DRIVER`), as it states its root cells, so a pinned plane and a
+# path one resolve alike and a crate that states none fails the suite, naming it.
 # Test builds only: `build.rs` emits `$OUT_DIR/driver_proofs.rs` (the `#[path]` that
 # `tests/hook_parity_driver` compiles beside its rig) and `$OUT_DIR/driver_words.rs`
 # (`DRIVER_WORDS`), so the composition root's sources name neither the plane nor its dialects: the

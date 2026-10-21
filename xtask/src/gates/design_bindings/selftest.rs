@@ -821,8 +821,9 @@ mod tests {
         let cx = Ctx::workspace().expect("workspace context");
         let mut base = crate::ctx::Overlay::new();
         base.set(REL, format!("#[test]\nfn {NAME}() {{}}\n"));
-        let laid =
-            DesignBindingsGate::inputs(&cx.with_base(base)).expect("inputs over the laid plane");
+        // The plane's repo is a registered plugin repo, so its CI runs its `tests/laid.rs` target.
+        let laid = DesignBindingsGate::inputs(&cx.with_base(base).with_overlay(registered(&cx)))
+            .expect("inputs over the laid plane");
         assert!(
             laid.ctx.idx.get(NAME).is_some_and(|f| f.contains(REL)),
             "the laid file's test fn is not indexed under {REL}"
@@ -849,6 +850,97 @@ mod tests {
             super::super::verify::note_witness_offenders(&bare_ctx),
             vec![("PB-0".to_string(), REL.to_string())],
             "a note citing a file nobody lays was accepted"
+        );
+    }
+
+    /// `cx`'s plugin registry with the planted plane `busbar-plane-zz` as one more plugin repo.
+    fn registered(cx: &Ctx) -> Overlay {
+        let mut ov = Overlay::new();
+        let registry = cx.read("plugins.yaml").expect("the plugin registry");
+        ov.set(
+            "plugins.yaml",
+            format!("{registry}\n  - repo: busbar-plane-zz\n    kind: plane\n"),
+        );
+        ov
+    }
+
+    /// LAW 10 (no proof cites a test that never runs), on the pinned planes. A laid plane's
+    /// `tests/on_driver/` has no `main.rs`, so the plane's own `cargo test` never builds it; only a
+    /// composition-root suite that compiles it runs it. With no root row naming the plane, its
+    /// test is not indexed and a citation of it is refused, naming why (RED). With the root's
+    /// driver-proofs row naming it, on a feature the default build turns on, the same test
+    /// resolves (GREEN). A laid file the plane's own targets reach resolves either way.
+    #[test]
+    fn a_laid_plane_test_counts_only_where_a_ci_runs_it() {
+        const TARGET: &str = "crates/busbar-plane-zz/tests/target.rs";
+        const SEAM: &str = "crates/busbar-plane-zz/tests/on_driver/seam.rs";
+        const RUN: &str = "a_laid_target_test_runs_in_the_plane_repos_ci";
+        const DRIVEN: &str = "a_laid_driver_proof_runs_only_through_a_root_suite";
+        let cx = Ctx::workspace().expect("workspace context");
+        let mut base = Overlay::new();
+        base.set(TARGET, format!("#[test]\nfn {RUN}() {{}}\n"));
+        base.set(
+            "crates/busbar-plane-zz/tests/on_driver/mod.rs",
+            "pub(crate) mod seam;\n",
+        );
+        base.set(SEAM, format!("#[test]\nfn {DRIVEN}() {{}}\n"));
+        let cite = |path: &str, name: &str| {
+            jobj! { "kind" => json::s("test"), "ref" => json::s(format!("{path}::{name}")) }
+        };
+
+        // RED: registered, but no root row compiles its driver proofs.
+        let cx_red = cx.with_base(base.clone());
+        let red = DesignBindingsGate::inputs(&cx_red.with_overlay(registered(&cx_red)))
+            .expect("inputs with no root row");
+        assert!(
+            super::super::verify::check_verdict(&cite(TARGET, RUN), &red.ctx).0,
+            "a test the plane's own cargo test target declares was refused"
+        );
+        assert!(
+            !red.ctx.idx.contains_key(DRIVEN),
+            "a test no CI runs was indexed"
+        );
+        let (ok, why) = super::super::verify::check_verdict(&cite(SEAM, DRIVEN), &red.ctx);
+        assert!(!ok, "a citation of a test no CI runs resolved");
+        assert!(
+            why.contains("no CI runs it"),
+            "the refusal does not say the file runs nowhere: {why}"
+        );
+
+        // GREEN: the root's driver-proofs row names the plane on a default feature.
+        let mut ov = registered(&cx_red);
+        let manifest = cx
+            .read("crates/busbar/Cargo.toml")
+            .expect("the root manifest");
+        let header = "[package.metadata.busbar.driver-proofs]\n";
+        let default = "\ndefault = [";
+        assert!(
+            manifest.contains(header) && manifest.contains(default),
+            "the root manifest has no driver-proofs table or no default line"
+        );
+        ov.set(
+            "crates/busbar/Cargo.toml",
+            manifest
+                .replacen(
+                    header,
+                    &format!("{header}plane-zz-door = \"busbar-plane-zz\"\n"),
+                    1,
+                )
+                .replacen(
+                    default,
+                    "\nplane-zz-door = []\ndefault = [\"plane-zz-door\", ",
+                    1,
+                ),
+        );
+        let green =
+            DesignBindingsGate::inputs(&cx_red.with_overlay(ov)).expect("inputs with the row");
+        assert!(
+            green.ctx.idx.get(DRIVEN).is_some_and(|f| f.contains(SEAM)),
+            "a driver proof the root's suite compiles is not indexed"
+        );
+        assert!(
+            super::super::verify::check_verdict(&cite(SEAM, DRIVEN), &green.ctx).0,
+            "a citation of a driver proof the root's suite runs was refused"
         );
     }
 

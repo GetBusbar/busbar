@@ -75,8 +75,12 @@ pub struct Ctx {
     /// witness must resolve into. See [`symbol_index`].
     pub symbols: BTreeSet<String>,
     /// Every file the context's BASE layer lays (the pinned planes, at `crates/<package>`), by
-    /// path: a note's cited path resolves against these as it does against the disk.
+    /// path: a note's cited path resolves against these as it does against the disk. A laid `.rs`
+    /// file is here only when a CI runs it (see [`Ctx::add_laid`]).
     pub laid: BTreeSet<String>,
+    /// Every laid `.rs` file no CI runs (Law 10): indexed for nothing, and a citation of it is
+    /// refused by name.
+    pub unrun: BTreeSet<String>,
 }
 
 impl Ctx {
@@ -125,6 +129,7 @@ impl Ctx {
                 BTreeSet::new()
             },
             laid: BTreeSet::new(),
+            unrun: BTreeSet::new(),
         })
     }
 
@@ -133,14 +138,30 @@ impl Ctx {
     /// ([`crate::ctx::Ctx::workspace`]), not on disk, so the disk walk above never sees it. Each
     /// `(rel, text)` here is one laid file: a `.rs` under `crates/` has its test fns indexed under
     /// `rel` and its `fn` names and stem joined to the witness symbols, exactly as a file on disk
-    /// would; every laid path, of any kind, is one a NOTE may cite ([`Ctx::is_laid`]). A citation of
-    /// a test the pinned plane declares then resolves as it did when the plane lived here, and one
-    /// it does not declare is refused as before.
-    pub fn add_laid(&mut self, laid: &[(String, String)]) -> Result<(), String> {
+    /// would; every laid path is one a NOTE may cite ([`Ctx::is_laid`]). A citation of a test the
+    /// pinned plane declares then resolves as it did when the plane lived here, and one it does not
+    /// declare is refused as before.
+    ///
+    /// LAID IS NOT RUN (Law 10: no proof cites a test that never runs). A laid `.rs` file counts
+    /// only when it is in `runs`, the files [`super::runs::laid_runs`] shows a CI runs (the plane
+    /// repo's own `cargo test` targets, or a composition-root suite that compiles it). Any other
+    /// laid `.rs` file goes to [`Ctx::unrun`]: none of its fns is indexed or a witness symbol, and
+    /// a note may not cite its path.
+    pub fn add_laid(
+        &mut self,
+        laid: &[(String, String)],
+        runs: &BTreeSet<String>,
+    ) -> Result<(), String> {
         let (attr, func) = test_patterns()?;
         for (rel, text) in laid {
+            let source =
+                rel.starts_with("crates/") && rel.ends_with(".rs") && !rel.contains("/target/");
+            if source && !runs.contains(rel) {
+                self.unrun.insert(rel.clone());
+                continue;
+            }
             self.laid.insert(rel.clone());
-            if !rel.starts_with("crates/") || !rel.ends_with(".rs") || rel.contains("/target/") {
+            if !source {
                 continue;
             }
             index_tests(rel, text, &attr, &func, &mut self.idx);
@@ -277,7 +298,7 @@ fn runnable_text(path: &Path) -> String {
     strip_unrunnable(&text)
 }
 
-fn strip_unrunnable(text: &str) -> String {
+pub(super) fn strip_unrunnable(text: &str) -> String {
     text.split('\n')
         .map(|l| {
             let t = l.trim_start_matches([' ', '\t']);
@@ -393,6 +414,16 @@ pub fn check_verdict(c: &J, ctx: &Ctx) -> (bool, String) {
             if let Some((path, name)) = r.rsplit_once("::") {
                 if ctx.idx.get(name).is_some_and(|f| f.contains(path)) {
                     return (true, String::new());
+                }
+                if ctx.unrun.contains(path) {
+                    return (
+                        false,
+                        format!(
+                            "test:{r} (the pinned plane lays that file, but no CI runs it: no \
+                             cargo test target of the plane's repo and no composition-root suite \
+                             reaches it, and a test that never runs proves nothing)"
+                        ),
+                    );
                 }
                 return (
                     false,
