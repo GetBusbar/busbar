@@ -156,6 +156,13 @@ impl CoreRouteTable {
             .find(|r| r.route.method == rm && route_matches(&r.route.path, path))
     }
 
+    /// THE DIALECT AN AUTHENTICATION REFUSAL AT `(path, method)` IS TAPPED UNDER: the refusal
+    /// dialect the door plane states for the route the request matches, or `None` when it matches
+    /// none.
+    pub(crate) fn refusal_dialect(&self, path: &str, method: &Method) -> Option<&'static str> {
+        self.door_refusal(path, method).map(|r| r.dialect)
+    }
+
     /// Whether a door plane flags `path` a SIGNED path (`abi::plane::CLAIM_SIGNED_INGRESS`; ARCHITECT
     /// ruling 2026-10-16, 3b A): some raw-affix claim of a door plane (`abi::plane::CLAIM_RAW_AFFIX`,
     /// ARCHITECT ruling 2026-10-17), whatever its verb, whose prefix and suffix the raw `path` starts

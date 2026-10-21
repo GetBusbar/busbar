@@ -1339,25 +1339,27 @@ fn ingress_for_path(app: &crate::state::App, path: &str) -> crate::plane::Ingres
 }
 
 /// THE DOOR ROUTE A REQUEST MATCHES, as the auth middleware words a `401` on it: the route's plane
-/// rendering, the request target it renders for, and the dialect the plane states for the route's
-/// refusals (spec Part 3 section 12, "Refusals").
+/// rendering and the request target it renders for (spec Part 3 section 12, "Refusals").
 struct DoorRefusal {
     /// The route's plane rendering.
     refuse: busbar_kernel::plane_routes::PlaneRefuseFn,
     /// The request target (path and query) it renders for.
     target: String,
-    /// The route's refusal dialect, as its door states it.
-    dialect: &'static str,
 }
 
 /// THE DIALECT AN AUTHENTICATION REFUSAL IS TAPPED UNDER (the `ingress_protocol` a `response` tap
-/// is told): the dialect the door route's plane states for the route's refusals, else a mounted
-/// plane's own first wire format, else none. The kernel reads it off the plane's statement and
+/// is told): the dialect the door plane states for the refusals of the route the request's path
+/// matches (`CoreRouteTable::refusal_dialect`), else a mounted plane's own first wire format, else
+/// none. The kernel reads it off the plane's statement and
 /// never off the path's shape (spec Part 1, Law 5: dialects are internal to their plane), so the
 /// tap and the answer the plane rendered name one dialect.
-fn denial_dialect(app: &crate::state::App, path: &str, door: Option<&DoorRefusal>) -> &'static str {
-    match door {
-        Some(door) => door.dialect,
+fn denial_dialect(
+    app: &crate::state::App,
+    path: &str,
+    dialect: Option<&'static str>,
+) -> &'static str {
+    match dialect {
+        Some(dialect) => dialect,
         None => ingress_for_path(app, path)
             .shaping_wire_format()
             .unwrap_or(""),
@@ -2038,9 +2040,10 @@ fn unauthorized_with_completion_taps(
     core_routes: &crate::core_routes::CoreRouteTable,
     path: &str,
     door: Option<&DoorRefusal>,
+    tap_dialect: Option<&'static str>,
 ) -> Response {
     let refused = unauthorized_response(app, core_routes, path, door);
-    let proto = denial_dialect(app, path, door);
+    let proto = denial_dialect(app, path, tap_dialect);
     if !app.tap_hooks_response.is_empty() {
         // An auth denial never reaches `forward_with_pool_parsed` (no `RequestCtx` is ever built for
         // it), so it has no id from that path — stamp a fresh one here from the SAME process-wide
@@ -2143,8 +2146,9 @@ pub(crate) async fn auth_middleware(
                     .uri()
                     .path_and_query()
                     .map_or_else(|| path.clone(), |t| t.as_str().to_owned()),
-                dialect: spec.dialect,
             });
+    // The dialect an authentication refusal here is tapped under, read off the door routes.
+    let tap_dialect = core_routes.refusal_dialect(&path, req.method());
 
     // CORE HTTP ROUTES: every first-party route declared its admission bar at the moment it was
     // mounted (`core_routes`), so this middleware asserts nothing about any particular path. The
@@ -2634,6 +2638,7 @@ pub(crate) async fn auth_middleware(
                 core_routes,
                 &path,
                 door.as_ref(),
+                tap_dialect,
             ));
         }
         Err(IdentityRefusal::NoGrant) => {
@@ -2650,6 +2655,7 @@ pub(crate) async fn auth_middleware(
                 core_routes,
                 &path,
                 door.as_ref(),
+                tap_dialect,
             ));
         }
     }
