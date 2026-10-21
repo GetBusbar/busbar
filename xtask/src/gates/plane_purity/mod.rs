@@ -133,7 +133,21 @@ pub const HITS_OUT_ENV: &str = "PLANE_PURITY_HITS_OUT";
 /// HELD at 1109: the walk's measure of this branch merged with dev ed49b64120 (ModernCI gates on
 /// 8729b322bf/b68455c852, `neutral_files=1109`). A floor of 1110 over that tree reds every row the
 /// floor guards; the floor pins at today's measure (Law 9) and rises with it.
-pub const NEUTRAL_FLOOR: usize = 1109;
+///
+/// RE-PINNED 1109 -> 1108 at the merge of dev 13c06298f5, today's measured value (ModernCI gates on
+/// this branch merged with dev e76e736ce8: `neutral_files=1108`; `git ls-tree` of the neutral
+/// kinds' `src/*.rs` counts 1109 on dev b9c4eda7dc and 1108 on 13c06298f5). The walk did not
+/// shrink; the population did, by deletion on dev (3 files gone, 2 added since b9c4eda7dc), each
+/// in a reviewed commit:
+/// * `busbar-contract/src/transport/driver.rs` — 0b74624007 (the second inbound seam deleted,
+///   Q128 contract, #1201);
+/// * `busbar-kernel/src/failover/{mod.rs,tests/failover_tests.rs}` — efa6e2478d (D2, the kernel's
+///   failover module deleted with its last rider, status row 82, #1299).
+///
+/// Added: `kernel/src/test_support/operator_double.rs` (3c6eca3201, #1327) and
+/// `kernel/src/test_support/tests/ranking_double_tests.rs` (9fa1dacdf8, #1237).
+/// 1109 - 3 + 2 = 1108.
+pub const NEUTRAL_FLOOR: usize = 1108;
 
 /// THE PLANE WALK'S FLOOR: the `.rs` files the plane population (in-tree and pinned planes) held on
 /// dev, measured (606 on f49c8bf98c, the RED branch's `plane_files`). Same rule as
