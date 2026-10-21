@@ -1272,11 +1272,12 @@ mod tests {
     fn only_a_rust_literal_that_begins_with_cargo_is_a_command() {
         let mut out = Vec::new();
         let prose = "the alloc gate. (It read '-p busbar-core' here for as long as ci.yml did.)";
-        let line = format!("    (\"cargo test -p busbar-llm --lib alloc_gate\", \"{prose}\"),");
+        let line =
+            format!("    (\"cargo test -p busbar-plane-llm --lib alloc_gate\", \"{prose}\"),");
         scan_rust_commands("full_gate.rs", &line, &mut out);
         assert_eq!(
             out.iter().map(|s| s.pkg.as_str()).collect::<Vec<_>>(),
-            vec!["busbar-llm"],
+            vec!["busbar-plane-llm"],
             "prose that quotes a dead selector is not a command: {out:?}"
         );
         // ...and a doc comment is not scanned at all. THE PACKAGE HERE IS A LIVE ONE ON PURPOSE:
@@ -1356,8 +1357,8 @@ mod tests {
         scan_json_commands(
             "qa/x.json",
             "{\n  \"run\": \"m=$(cargo metadata --locked); cargo build -p busbar-kernel\",\n\
-             \x20 \"summary\": \"it ran `cargo test -p busbar-llm --lib x` and found nothing\",\n\
-             \x20 \"positive_control\": \"cargo test -p busbar-llm usage (run in the pin)\"\n}\n",
+             \x20 \"summary\": \"it ran `cargo test -p busbar-plane-llm --lib x` and found nothing\",\n\
+             \x20 \"positive_control\": \"cargo test -p busbar-plane-llm usage (run in the pin)\"\n}\n",
             &mut out,
         );
         assert_eq!(

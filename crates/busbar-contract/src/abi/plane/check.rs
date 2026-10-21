@@ -23,20 +23,20 @@ pub use crate::abi::mechanism::check::{Fault, Rule};
 use super::reason_of;
 use super::{units_bill, UNITS_FLOOR};
 use super::{
-    AdminRoute, ArriveOut, BillableClass, Claim, DialectAuth, OnPieceOut, OutField, PinMechanism,
-    PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain, RecordWrite, RefusalOut,
-    RefusalStatus, RouteCost, ServeOut, TrustKey, UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL,
-    CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED, CLAIM_EXACT, CLAIM_OPEN,
-    CLAIM_PATTERN, CLAIM_RAW_AFFIX, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END,
-    EMIT_TO_FAR_END, EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP,
-    INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
-    INGRESS_SUBSCRIPTION, MAX_METRIC_LANES, MAX_REFUSAL_TEXT, MECHANISM_PEER_KEY, MECHANISM_ROOT,
-    PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT,
-    REFUSAL_ANY_DIALECT, REFUSED_UNSUPPORTED_ACTION, ROUTE_CARRIES_OWN_TOKEN, ROUTE_COUNTED,
-    ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_ONCE, ROUTE_POOL, ROUTE_PUBLIC, ROUTE_SCOPE,
-    ROUTE_SCOPE_LOCAL, ROUTE_SESSION, ROUTE_STREAM, SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK,
-    TAIL_HOOKS_GATED, TAIL_PROBES, TAIL_REFUSED_PIECE, TAP_FAULT_NONE, TRUST_ITEM_APPROVALS,
-    TRUST_PIN, TRUST_PRIVATE_REACH, UNITS_ESTIMATED, VERDICT_HARD,
+    AdminRoute, ArriveOut, BillableClass, CatalogOut, Claim, DialectAuth, OnPieceOut, OutField,
+    PinMechanism, PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain, RecordWrite,
+    RefusalOut, RefusalStatus, RouteCost, ServeOut, TrustKey, UnitCount, CANCEL_ABORTED,
+    CANCEL_OK_PARTIAL, CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED,
+    CLAIM_CATALOG, CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN, CLAIM_RAW_AFFIX, CLAIM_SIGNED_INGRESS,
+    DIALECT_PROVIDER, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
+    EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION,
+    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION, MAX_METRIC_LANES,
+    MAX_REFUSAL_TEXT, MECHANISM_PEER_KEY, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT,
+    PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT, REFUSAL_ANY_DIALECT, REFUSED_UNSUPPORTED_ACTION,
+    ROUTE_CARRIES_OWN_TOKEN, ROUTE_COUNTED, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_ONCE, ROUTE_POOL,
+    ROUTE_PUBLIC, ROUTE_SCOPE, ROUTE_SCOPE_LOCAL, ROUTE_SESSION, ROUTE_STREAM, SHAPE_PIECEWISE,
+    SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED, TAIL_PROBES, TAIL_REFUSED_PIECE, TAP_FAULT_NONE,
+    TRUST_ITEM_APPROVALS, TRUST_PIN, TRUST_PRIVATE_REACH, UNITS_ESTIMATED, VERDICT_HARD,
 };
 use crate::abi::hook::{
     signal, MessageView, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
@@ -918,6 +918,34 @@ pub fn check_serve(
     )
 }
 
+/// `catalog`: the reply is valid.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_catalog(
+    outcome: Outcome,
+    out: &CatalogOut,
+    fields_buf: &[OutField],
+    caps: &Caps,
+) -> Result<(), Fault> {
+    code(u64::from(out._reserved), 0, 0, "catalog._reserved")?;
+    reply(
+        outcome,
+        [
+            "catalog.reply",
+            "catalog.fields",
+            "catalog.arena",
+            "catalog",
+        ],
+        (out.reply_written, out.reply_needed),
+        (out.fields_written, out.fields_needed),
+        (out.arena_written, out.arena_needed),
+        fields_buf,
+        caps,
+    )
+}
+
 /// The lifecycle `cancel`'s disposition: on READY, one of the plane's three (`0` = unwritten is
 /// FAULT); on any other outcome the op did not answer a disposition, and it must be unwritten.
 ///
@@ -968,11 +996,11 @@ pub fn check_cancel_records(
 }
 
 /// A generation snapshot (`open`/`refresh`): its own size, the generation asked for, lists within
-/// [`MAX_ROUTES`] and never counted with a NULL pointer. Its elements: [`check_claims`],
-/// [`check_admin_routes`], [`check_listed`].
+/// [`MAX_ROUTES`] and never counted with a NULL pointer, and arrival spans `0` or one per claim. Its
+/// elements: [`check_claims`], [`check_admin_routes`], [`check_listed`], [`check_arrival_spans`].
 ///
-/// The size is this build's, or that of a snapshot published before [`PlaneSnapshot::listed`]
-/// was appended (data structs grow by append under `honoured_size`): `s` is then the host's copy
+/// The size is this build's, or that of a snapshot published before [`PlaneSnapshot::listed`] or
+/// [`PlaneSnapshot::arrival_spans`] was appended (data structs grow by append under `honoured_size`): `s` is then the host's copy
 /// of the publisher's own bytes over zeros, so its appended fields read as none.
 ///
 /// # Errors
@@ -982,6 +1010,7 @@ pub fn check_snapshot(s: &PlaneSnapshot, generation: u64) -> Result<(), Fault> {
     let size = s.size as usize;
     if size != core::mem::size_of::<PlaneSnapshot>()
         && size != core::mem::offset_of!(PlaneSnapshot, listed)
+        && size != core::mem::offset_of!(PlaneSnapshot, arrival_spans)
     {
         return Err(fault(Rule::Foreign, "snapshot.size"));
     }
@@ -1007,7 +1036,32 @@ pub fn check_snapshot(s: &PlaneSnapshot, generation: u64) -> Result<(), Fault> {
     if s.listed_len as u64 > MAX_ROUTES {
         return Err(fault(Rule::OverMax, "snapshot.listed"));
     }
-    listed(s.listed, s.listed_len, "snapshot.listed")
+    listed(s.listed, s.listed_len, "snapshot.listed")?;
+    if s.arrival_spans_len != 0 && s.arrival_spans_len != s.claims_len {
+        return Err(fault(Rule::Contradiction, "snapshot.arrival_spans"));
+    }
+    listed(
+        s.arrival_spans,
+        s.arrival_spans_len,
+        "snapshot.arrival_spans",
+    )
+}
+
+/// Every arrival span a snapshot states ([`PlaneSnapshot::arrival_spans`]): empty (that claim opens
+/// none), or a name of at most [`super::MAX_ARRIVAL_SPAN`] bytes. Its characters (`[a-z0-9_]`) are
+/// judged by the host when it copies it.
+///
+/// # Errors
+///
+/// The rule a name breaks.
+pub fn check_arrival_spans(names: &[AbiStr]) -> Result<(), Fault> {
+    for n in names {
+        text(*n, "snapshot.arrival_spans")?;
+        if n.len > super::MAX_ARRIVAL_SPAN {
+            return Err(fault(Rule::OverMax, "snapshot.arrival_spans"));
+        }
+    }
+    Ok(())
 }
 
 /// Every name a snapshot lists: non-empty text. Its UTF-8 is judged by the host when it copies it.
@@ -1037,7 +1091,14 @@ pub fn check_claims(claims: &[Claim], dialects_len: u64) -> Result<(), Fault> {
         named(c.carrier, "claim.carrier")?;
         bits(
             u64::from(c.flags),
-            u64::from(CLAIM_OPEN | CLAIM_EXACT | CLAIM_PATTERN | CLAIM_RAW_AFFIX),
+            u64::from(
+                CLAIM_OPEN
+                    | CLAIM_EXACT
+                    | CLAIM_PATTERN
+                    | CLAIM_CATALOG
+                    | CLAIM_SIGNED_INGRESS
+                    | CLAIM_RAW_AFFIX,
+            ),
             "claim.flags",
         )?;
         if dialects_len > 0 || c.refusal_dialect != 0 {
@@ -1055,21 +1116,34 @@ pub fn check_claims(claims: &[Claim], dialects_len: u64) -> Result<(), Fault> {
 }
 
 /// THE PATTERN GRAMMAR, once: the target starts with `/`, and each `/`-separated segment is a
-/// brace-free literal or a whole placeholder `{name}` with a non-empty, brace-free name. A pattern
-/// names at least one placeholder; one that names none is an exact target.
+/// brace-free literal or a whole placeholder with a non-empty, brace-free name: `{name}` takes one
+/// segment, `{name+}` one or more (it spans the arriving path's own `/`, raw or none; ARCHITECT
+/// ruling 2026-10-16, 3b A). A pattern names at least one placeholder, and at most one `{name+}`;
+/// one that names none is an exact target.
 fn pattern_shape(target: &str) -> Result<(), Fault> {
     let bad = || fault(Rule::Contradiction, "claim.pattern");
     let rest = target.strip_prefix('/').ok_or_else(bad)?;
-    let mut placeholders = 0;
+    let (mut placeholders, mut spans) = (0, 0);
     for seg in rest.split('/') {
         match seg.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
-            Some(n) if !n.is_empty() && !n.contains(['{', '}']) => placeholders += 1,
+            Some(n) if !n.is_empty() && !n.contains(['{', '}']) => {
+                placeholders += 1;
+                if let Some(name) = n.strip_suffix('+') {
+                    if name.is_empty() || name.contains('+') {
+                        return Err(bad());
+                    }
+                    spans += 1;
+                }
+            }
             None if !seg.is_empty() && !seg.contains(['{', '}']) => {}
             _ => return Err(bad()),
         }
     }
     if placeholders == 0 {
         return Err(fault(Rule::Missing, "claim.pattern"));
+    }
+    if spans > 1 {
+        return Err(fault(Rule::Contradiction, "claim.pattern.spans"));
     }
     Ok(())
 }
@@ -1085,6 +1159,13 @@ fn pattern_shape(target: &str) -> Result<(), Fault> {
 /// with no placeholder.
 pub fn check_claim_target(target: &str, flags: u32) -> Result<(), Fault> {
     if flags & CLAIM_EXACT != 0 && flags & CLAIM_PATTERN != 0 {
+        return Err(fault(Rule::Contradiction, "claim.flags"));
+    }
+    // A signed path is read off a raw affix alone, and a raw affix mounts no route, so it lists no
+    // catalog (ARCHITECT ruling 2026-10-17).
+    if (flags & CLAIM_SIGNED_INGRESS != 0 && flags & CLAIM_RAW_AFFIX == 0)
+        || flags & (CLAIM_RAW_AFFIX | CLAIM_CATALOG) == CLAIM_RAW_AFFIX | CLAIM_CATALOG
+    {
         return Err(fault(Rule::Contradiction, "claim.flags"));
     }
     if flags & CLAIM_RAW_AFFIX != 0 {
@@ -1118,8 +1199,8 @@ pub fn raw_affix_matches(target: &str, path: &str) -> bool {
 }
 
 /// A [`CLAIM_PATTERN`] target read as its segment pattern, by the one grammar
-/// ([`check_claim_target`]): each literal segment is a [`PathSeg::Lit`], each placeholder one
-/// [`PathSeg::Var`].
+/// ([`check_claim_target`]): each literal segment is a [`PathSeg::Lit`], each `{name}` one
+/// [`PathSeg::Var`] and a `{name+}` one [`PathSeg::Plus`].
 ///
 /// # Errors
 ///
@@ -1130,7 +1211,9 @@ pub fn claim_pattern(target: &'static str) -> Result<Vec<PathSeg>, Fault> {
     Ok(target[1..]
         .split('/')
         .map(|seg| {
-            if seg.starts_with('{') {
+            if seg.starts_with('{') && seg.ends_with("+}") {
+                PathSeg::Plus
+            } else if seg.starts_with('{') {
                 PathSeg::Var
             } else {
                 PathSeg::Lit(seg)
@@ -1309,6 +1392,11 @@ pub fn check_sections(sections: &[Section]) -> Result<(), Fault> {
 pub fn check_dialect_auth(entries: &[DialectAuth], dialects_len: u64) -> Result<(), Fault> {
     for d in entries {
         index(d.dialect, dialects_len, "dialect_auth.dialect")?;
+        bits(
+            u64::from(d.flags),
+            u64::from(DIALECT_PROVIDER),
+            "dialect_auth.flags",
+        )?;
         named(d.style, "dialect_auth.style")?;
         crate::abi::mechanism::check::blob(
             &d.params,

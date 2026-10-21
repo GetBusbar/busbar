@@ -3,7 +3,7 @@
 
 //! CROSS-PLANE MIGRATE→RESOLVE TESTS, relocated here from `src/config/tests/migrate_tests.rs` (the
 //! "fix the 85" pass after the A6/HostCtx dev-dependency-cycle cleanup): the fixture below configures
-//! a real `tools:`/`agents:` block and then asserts on `cfg.tool_pools`/`cfg.agent_pools`, which only
+//! a real `tools:`/`agents:` block and then asserts on `cfg.plane_pools`, which only
 //! exist once a registered plane actually claims each section — `resolve()` refuses a
 //! `tools:`/`agents:` section as "compiled without the plane that owns it" unless the owning plane
 //! is registered. `tools:` is a linked plane's; `agents:` is the roster's DOOR row (a
@@ -119,18 +119,18 @@ agent_pools:
     busbar_kernel::config_validate::validate(&cfg)
         .unwrap_or_else(|e| panic!("migrated config must validate clean on 1.6.0: {e:?}"));
 
-    // The tool/agent pools folded into the ONE neutral `pools:` map and resolve by INFERRED kind:
-    // `search` (tool members) onto the tool-kind pool map, `planner` (agent members) onto the
-    // agent-kind pool map, and the model pool `fast` onto the model-kind pool map.
+    // The tool/agent pools moved under their verbs (`tools.pools`, `agents.pools`) and resolve
+    // onto those planes' failover maps; the model pool `fast` stays on the model plane.
+    let pools_of = |section: &str| cfg.plane_pools.get(section).cloned().unwrap_or_default();
     assert!(
-        cfg.tool_pools.contains_key("search"),
-        "the folded tool pool resolves onto the `tools:` plane's failover map: {:?}",
-        cfg.tool_pools.keys().collect::<Vec<_>>()
+        pools_of("tools").contains_key("search"),
+        "the moved tool pool resolves onto the `tools:` plane's failover map: {:?}",
+        cfg.plane_pools
     );
     assert!(
-        cfg.agent_pools.contains_key("planner"),
-        "the folded agent pool resolves onto the `agents:` plane's failover map: {:?}",
-        cfg.agent_pools.keys().collect::<Vec<_>>()
+        pools_of("agents").contains_key("planner"),
+        "the moved agent pool resolves onto the `agents:` plane's failover map: {:?}",
+        cfg.plane_pools
     );
     assert!(
         cfg.pools.contains_key("fast"),
@@ -138,14 +138,14 @@ agent_pools:
     );
 }
 
-/// A POOL OF A PLANE'S ENTRIES REFUSES EVERY FIELD ITS PLANE DOES NOT HONOUR (Q128 arch u28 HIGH,
-/// coordinator ruling: a field the path does not honour is refused, naming it). The projection onto
-/// a plane keeps `members:` by name, `repeatable:` and `breaker:`; each other family below was
-/// dropped without a word, so a gate the operator wrote on such a pool never fired. One RED per
-/// field family, on pools of `tools:` entries and of `agents:` entries alike, and a control: the
-/// carried fields alone resolve. RED before: every case resolved clean, the field gone. No 1.5.5
-/// config reaches this path: v1.5.5's deployment grammar (crates/busbar/src/config/mod.rs:2573,
-/// `deny_unknown_fields`) has no plane sections.
+/// A POOL UNDER A PLANE'S VERB REFUSES EVERY FIELD ITS PLANE DOES NOT HONOUR (Q128 arch u28 HIGH,
+/// coordinator ruling: a field the path does not honour is refused, naming it). A plane's pool is
+/// the reserved `pools` sub-key of its own section and carries `members:` by bare name and
+/// `repeatable:`; each other family below used to be dropped without a word by the old projection
+/// of a top-level pool onto a plane, so a gate the operator wrote on such a pool never fired. One RED
+/// per field family, on pools of `tools:` entries and of `agents:` entries alike, and a control: the
+/// carried fields alone resolve. No 1.5.5 config reaches this path: v1.5.5's deployment grammar
+/// (crates/busbar/src/config/mod.rs:2573, `deny_unknown_fields`) has no plane sections.
 #[test]
 fn a_plane_pool_refuses_each_field_its_plane_does_not_honour() {
     register_planes();
@@ -173,50 +173,57 @@ agents:
     pin: { mechanism: unpinned }
 "#;
     let defs: std::collections::HashMap<String, ProviderDef> = std::collections::HashMap::new();
-    let resolve_pool = |members: &str, extra: &str| {
-        let raw = format!("{base}pools:\n  p:\n    members: {members}\n{extra}");
+    let resolve_pool = |section: &str, members: &str, extra: &str| {
+        let mut doc: serde_yaml::Value = serde_yaml::from_str(base).expect("the base parses");
+        let pool: serde_yaml::Value =
+            serde_yaml::from_str(&format!("members: {members}\n{extra}")).expect("the pool parses");
+        doc[section]["pools"] = serde_yaml::from_str("{}").unwrap();
+        doc[section]["pools"]["p"] = pool;
+        let raw = serde_yaml::to_string(&doc).expect("the config renders");
         let deploy: DeployCfg =
             deploy_from_yaml_str(&raw).unwrap_or_else(|e| panic!("the config parses: {e}\n{raw}"));
         resolve(&deploy, &defs)
             .map(|_| ())
             .map_err(|e| format!("{e:?}"))
     };
-    for members in ["[search-eu, search-us]", "[planner-eu, planner-us]"] {
+    for (section, members) in [
+        ("tools", "[search-eu, search-us]"),
+        ("agents", "[planner-eu, planner-us]"),
+    ] {
         // The control: what the plane honours resolves.
-        resolve_pool(members, "    repeatable: [read]\n")
+        resolve_pool(section, members, "repeatable: [read]\n")
             .unwrap_or_else(|e| panic!("a carried field is refused for {members}: {e}"));
         for (extra, named) in [
-            ("    hooks: [audit]\n", "`hooks:`"),
-            ("    hooks: [cheapest]\n", "`hooks:`"),
-            ("    failover: { max_hops: 2 }\n", "`failover:`"),
-            ("    on_exhausted: reject\n", "`on_exhausted:`"),
-            ("    affinity: { mode: session }\n", "`affinity:`"),
+            ("hooks: [audit]\n", "hooks"),
+            ("failover: { max_hops: 2 }\n", "failover"),
+            ("on_exhausted: reject\n", "on_exhausted"),
+            ("affinity: { mode: session }\n", "affinity"),
             (
-                "    upstream_credentials: passthrough\n",
-                "`upstream_credentials:`",
+                "upstream_credentials: passthrough\n",
+                "upstream_credentials",
             ),
-            (
-                "    weights: { search-eu: 3, planner-eu: 3 }\n",
-                "`weights:`",
-            ),
-            ("    tier: large\n", "`tier:`"),
-            ("    attempt_timeout_ms: 500\n", "`attempt_timeout_ms:`"),
+            ("weights: { x: 3 }\n", "weights"),
+            ("tier: large\n", "tier"),
+            ("attempt_timeout_ms: 500\n", "attempt_timeout_ms"),
         ] {
-            let refused = resolve_pool(members, extra);
+            let refused = resolve_pool(section, members, extra);
             assert!(
-                refused.as_ref().is_err_and(|e| e.contains(named)),
-                "a pool of {members} must refuse {named}, naming it: {refused:?}"
+                refused
+                    .as_ref()
+                    .is_err_and(|e| e.contains(&format!("{section}.pools"))
+                        && e.contains(&format!("unknown field `{named}`"))),
+                "a {section} pool must refuse `{named}:`, naming it: {refused:?}"
             );
         }
         let rich = members
             .replace("[", "[{ model: ")
             .replacen(", ", ", weight: 3 }, ", 1);
-        let refused = resolve_pool(&rich, "");
+        let refused = resolve_pool(section, &rich, "");
         assert!(
             refused
                 .as_ref()
-                .is_err_and(|e| e.contains("a member's own keys beside its name")),
-            "a pool of {members} must refuse a member's own keys: {refused:?}"
+                .is_err_and(|e| e.contains(&format!("{section}.pools"))),
+            "a {section} pool must refuse a member's own keys: {refused:?}"
         );
     }
 }

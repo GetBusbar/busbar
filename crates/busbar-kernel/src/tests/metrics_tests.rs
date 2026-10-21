@@ -897,6 +897,7 @@ macro_rules! gauge_plane {
                 caller_credential_refusal: None,
             },
             wire_format_names: || &[],
+            provider_dialects: || &[],
             claims: |_| Vec::new(),
             admission: |_| None,
             build: |_| None,

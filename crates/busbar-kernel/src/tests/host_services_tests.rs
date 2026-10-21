@@ -184,7 +184,9 @@ fn rig() -> Rig {
 /// A durable demotion record over `store`.
 fn demotions(store: &Arc<MemoryStore>) -> Arc<DemotionRecord> {
     let d = DemotionRecord::default();
-    d.set_sink(crate::plane::store::PlaneStoreView::narrow(store.clone()));
+    d.set_sink(crate::store::plane_view::PlaneStoreView::narrow(
+        store.clone(),
+    ));
     Arc::new(d)
 }
 
@@ -423,7 +425,7 @@ fn trust_sight_judges_from_the_admitted_entries_and_writes_the_demotion() {
     assert_eq!(sight("moved").value, svc::TRUST_DRIFTED);
     let demoted = r.s.demotions.get().unwrap().record.list();
     assert_eq!(demoted.len(), 1);
-    assert_eq!(demoted[0].server, demotion_key("inst", "cp"));
+    assert_eq!(demoted[0].upstream, demotion_key("inst", "cp"));
     assert_eq!(sight("moved").value, svc::TRUST_QUARANTINED);
     assert_eq!(sight("fp").value, svc::TRUST_SAME);
     assert!(r.s.demotions.get().unwrap().record.list().is_empty());
@@ -2075,7 +2077,7 @@ struct ParkingStore {
     release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
 }
 
-impl crate::plane::store::PlaneStore for ParkingStore {
+impl crate::store::plane_view::PlaneStore for ParkingStore {
     fn upsert_plane_record(
         &self,
         _: busbar_contract::records::PlaneRecordRef<'_>,
@@ -2100,7 +2102,7 @@ impl crate::plane::store::PlaneStore for ParkingStore {
         kind: &str,
         _: &busbar_contract::records::PlaneSelector,
     ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
-        if kind != crate::plane::store::KIND_DEMOTION && self.armed.load(Ordering::SeqCst) {
+        if kind != crate::store::plane_view::KIND_DEMOTION && self.armed.load(Ordering::SeqCst) {
             if let Some(entered) = self.entered.lock().unwrap().take() {
                 entered.send(()).unwrap();
             }
@@ -2207,6 +2209,30 @@ fn an_admit_parked_in_the_store_never_stalls_another_instances_host_service() {
     );
 }
 
+/// A REPLAYED APPROVAL IS REFUSED THROUGH `records.claim` (§11.12: the ONE path for approval
+/// redemption). The approval's nonce is claimed when it is redeemed; presenting the same approval
+/// again inside its window finds the claim taken, so the second redemption is refused.
+#[test]
+fn a_replayed_approval_is_refused_through_records_claim() {
+    let r = rig();
+    let me = caller("inst");
+    let redeem = || {
+        run(|l| {
+            r.s.records_claim(&me, "approval", b"approval-nonce", 60_000, l)
+        })
+    };
+    assert_eq!(
+        redeem().value,
+        svc::CLAIM_WON,
+        "the first redemption is the one that counts"
+    );
+    assert_eq!(
+        redeem().value,
+        svc::CLAIM_TAKEN,
+        "the same approval presented again is refused"
+    );
+}
+
 /// A durable record's store that can refuse to keep a trust decision, and that notes, at every
 /// read of the kept decisions, whether the host lock every caller-scoped service takes was free.
 #[derive(Default)]
@@ -2216,13 +2242,13 @@ struct Probe {
     lock_free_at_read: Mutex<Vec<bool>>,
 }
 
-impl crate::plane::store::PlaneStore for Probe {
+impl crate::store::plane_view::PlaneStore for Probe {
     fn upsert_plane_record(
         &self,
         record: busbar_contract::records::PlaneRecordRef<'_>,
     ) -> busbar_contract::records::RecordStoreResult<()> {
         let kind = record.to_record().kind;
-        if kind == crate::plane::store::KIND_TRUST_DECISION
+        if kind == crate::store::plane_view::KIND_TRUST_DECISION
             && self.refuse_decisions.load(Ordering::SeqCst)
         {
             return Err("the store is down".into());
@@ -2247,7 +2273,7 @@ impl crate::plane::store::PlaneStore for Probe {
         kind: &str,
         _selector: &busbar_contract::records::PlaneSelector,
     ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
-        if kind == crate::plane::store::KIND_TRUST_DECISION {
+        if kind == crate::store::plane_view::KIND_TRUST_DECISION {
             if let Some(k) = self.kernel.get().and_then(std::sync::Weak::upgrade) {
                 let free = k.instances.try_lock().is_ok();
                 self.lock_free_at_read.lock().unwrap().push(free);
@@ -2298,7 +2324,7 @@ impl crate::plane::store::PlaneStore for Probe {
 /// A kernel whose durable record keeps through `probe`.
 fn probed(probe: &Arc<Probe>) -> Arc<KernelServices> {
     let d = DemotionRecord::default();
-    d.set_sink(Arc::clone(probe) as Arc<dyn crate::plane::store::PlaneStore>);
+    d.set_sink(Arc::clone(probe) as Arc<dyn crate::store::plane_view::PlaneStore>);
     let k = Arc::new(
         KernelServices::new()
             .with_pool(Arc::new(Inline))

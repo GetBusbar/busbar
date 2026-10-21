@@ -164,7 +164,7 @@ fn the_persisted_record_census_clears_its_floor() {
     let all = cx
         .walk(&WalkSpec::new([PERSISTED_CENSUS_ROOT]).ext("rs"))
         .expect("the census walk");
-    let homes = persisted_record_homes(&cx, all);
+    let homes = persisted_record_homes(&cx, all, Walk::MEMOISED);
     let rels: Vec<String> = homes.iter().map(|f| f.rel_str()).collect();
     eprintln!("persisted-record census: {} home(s)", rels.len());
     assert!(
@@ -178,5 +178,5 @@ fn the_persisted_record_census_clears_its_floor() {
     ] {
         assert!(rels.iter().any(|r| r == want), "{want} is not a home");
     }
-    assert!(persisted_record_homes(&cx, Vec::new()).is_empty());
+    assert!(persisted_record_homes(&cx, Vec::new(), Walk::MEMOISED).is_empty());
 }
