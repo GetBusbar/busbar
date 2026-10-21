@@ -3803,7 +3803,11 @@ fn a_position_identifying_a_reserved_id_is_refused_by_the_data_plane_walk() {
         });
         let verdict = mw.run_chain(Some("a-credential"));
         if reserved {
-            assert_eq!(verdict, ChainVerdict::Denied, "{id}: a module may not name it");
+            assert_eq!(
+                verdict,
+                ChainVerdict::Denied,
+                "{id}: a module may not name it"
+            );
         } else {
             assert!(
                 matches!(&verdict, ChainVerdict::Identified { principal, .. } if principal.id == id),

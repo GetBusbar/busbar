@@ -6185,7 +6185,10 @@ fn the_credential_read_does_the_same_work_for_a_known_and_an_unknown_id() {
 /// key synthesis both read.
 #[test]
 fn the_reserved_id_list_is_the_one_governance_mints_under() {
-    let mut minted = [crate::governance::VK_ID_PREFIX, crate::cost::GROUP_BUCKET_PREFIX];
+    let mut minted = [
+        crate::governance::VK_ID_PREFIX,
+        crate::cost::GROUP_BUCKET_PREFIX,
+    ];
     let mut reserved = busbar_kernel_identity::principal::RESERVED_ID_PREFIXES;
     minted.sort_unstable();
     reserved.sort_unstable();

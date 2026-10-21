@@ -997,11 +997,7 @@ fn a_q71_node_trusting(
         1 << 20,
         move |dispatch| {
             let mut units = crate::root::kernel::ProductionUnits::admin_only_sharing(
-                dispatch,
-                door,
-                held,
-                read,
-                None,
+                dispatch, door, held, read, None,
             )
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
                 ADirectoryThatMintedIt,

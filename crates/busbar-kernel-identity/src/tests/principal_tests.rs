@@ -12,7 +12,15 @@ fn the_reserved_prefixes_and_only_they_are_reserved() {
     for id in ["group:", "group:acme", "vk_", "vk_deadbeefdeadbeef"] {
         assert!(id_is_reserved(id), "{id} is reserved");
     }
-    for id in ["", "admin", "anonymous", "user:group:acme", "idp:vk_1", "VK_1", "Group:acme"] {
+    for id in [
+        "",
+        "admin",
+        "anonymous",
+        "user:group:acme",
+        "idp:vk_1",
+        "VK_1",
+        "Group:acme",
+    ] {
         assert!(!id_is_reserved(id), "{id} is not reserved");
     }
 }

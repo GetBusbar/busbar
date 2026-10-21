@@ -2715,7 +2715,10 @@ pub(crate) fn open_door() -> AdminDoorFn {
 /// authorized); anything else, a missing credential included, is denied. A stated posture like
 /// [`open_door`], not a walk: production's door is the kernel's admin chain.
 #[cfg(test)]
-pub(crate) fn door_identifying(credential: &'static str, principal_id: &'static str) -> AdminDoorFn {
+pub(crate) fn door_identifying(
+    credential: &'static str,
+    principal_id: &'static str,
+) -> AdminDoorFn {
     use busbar_kernel::auth::AdminDoor;
     Arc::new(move |request: &AdminRequest| {
         if request.credential.as_deref() != Some(credential) {
@@ -2726,7 +2729,10 @@ pub(crate) fn door_identifying(credential: &'static str, principal_id: &'static 
         } else {
             busbar_contract::authz::Grants::default()
         };
-        AdminDoor::Identified(busbar_contract::auth::Principal::from_id(principal_id), grants)
+        AdminDoor::Identified(
+            busbar_contract::auth::Principal::from_id(principal_id),
+            grants,
+        )
     })
 }
 

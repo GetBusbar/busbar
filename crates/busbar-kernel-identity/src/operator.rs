@@ -357,7 +357,10 @@ impl Operator {
     pub fn new(op: &str) -> Self {
         Self {
             cred: OperatorCredential::Unanswered,
-            names: (!op.is_empty()).then(|| op.to_string()).into_iter().collect(),
+            names: (!op.is_empty())
+                .then(|| op.to_string())
+                .into_iter()
+                .collect(),
             carriers: Vec::new(),
         }
     }

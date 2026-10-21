@@ -965,7 +965,10 @@ impl crate::root::auth_bindings::VirtualKeyDirectory for Denylist {
 /// would be a probe answered for a string nothing verified.
 #[cfg(feature = "root-admin")]
 fn a_door_that_identifies_the_operator() -> AdminDoorFn {
-    door_identifying("admin-token", crate::root::auth_bindings::ADMIN_PRINCIPAL_ID)
+    door_identifying(
+        "admin-token",
+        crate::root::auth_bindings::ADMIN_PRINCIPAL_ID,
+    )
 }
 
 /// Walk one request through the whole loop against a node whose door identifies the operator
@@ -1048,9 +1051,9 @@ fn a_door_that_identifies_somebody_else() -> AdminDoorFn {
 #[cfg(feature = "root-admin")]
 fn answer_at_the_closed_door(door: AdminDoorFn, credential: Option<&str>) -> AdminAnswer {
     let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), door)
-    .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
-        Denylist(false),
-    )));
+        .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+            Denylist(false),
+        )));
     let mut request = a_request();
     request.credential = credential.map(str::to_string);
     AdminNode::new(crate::root::kernel::new_kernel(), units).answer(request)
@@ -1136,8 +1139,10 @@ fn the_refusal_the_loop_hands_back_is_the_frozen_envelope_byte_for_byte() {
 #[cfg(feature = "root-admin")]
 #[test]
 fn a_caller_the_door_identifies_as_somebody_else_is_answered_with_the_scope_it_needed() {
-    let refused =
-        answer_at_the_closed_door(a_door_that_identifies_somebody_else(), Some("a-tenants-token"));
+    let refused = answer_at_the_closed_door(
+        a_door_that_identifies_somebody_else(),
+        Some("a-tenants-token"),
+    );
     assert_eq!(
         refused.status, 403,
         "an identified caller with no grant is the authorization ending, not the door's"

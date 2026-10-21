@@ -224,7 +224,10 @@ fn an_unjudged_admin_verdict_is_the_1_5_5_refusal() {
 #[test]
 fn no_words_make_no_operator() {
     let none = crate::operator::Operator::new("");
-    assert!(!none.is(""), "an empty provider is not the operator credential");
+    assert!(
+        !none.is(""),
+        "an empty provider is not the operator credential"
+    );
     assert!(
         !none.mints(Some(""), "", ""),
         "with no words handed in, nothing is minted as the operator"
@@ -245,7 +248,10 @@ fn no_words_make_no_operator() {
         |_: &str| Err("not opened".to_string()),
     )
     .expect("an unanswered credential opens");
-    assert!(!opened.is(""), "an opened credential with no words answers for nothing");
+    assert!(
+        !opened.is(""),
+        "an opened credential with no words answers for nothing"
+    );
 }
 
 /// ONE WRITER OF THE OPERATOR'S WORDS. The first install stands, the same install again changes
