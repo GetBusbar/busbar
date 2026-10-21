@@ -30,17 +30,21 @@ impl HookCalls for Seen {
             })
             .unwrap_or_default();
         self.0.lock().unwrap().push(models);
-        let (outcome, out) =
-            frame.answer_decide(&busbar_contract::abi::sdk::hook::Verdict::Abstain);
-        Box::pin(std::future::ready(Answered::Answer {
-            outcome,
-            out,
-            error: None,
-            frame,
-        }))
+        // The answer is built inside the future: an out-record holds the call's raw out-pointers
+        // and is not `Send`, so a future that carries a built one is not either.
+        Box::pin(async move {
+            let (outcome, out) =
+                frame.answer_decide(&busbar_contract::abi::sdk::hook::Verdict::Abstain);
+            Answered::Answer {
+                outcome,
+                out,
+                error: None,
+                frame,
+            }
+        })
     }
     fn transform(&self, _: Arc<DecideFrame>, _: Duration) -> Pending<Answered<TransformOut>> {
-        Box::pin(std::future::ready(Answered::TimedOut))
+        Box::pin(async { Answered::TimedOut })
     }
     fn notify(&self, _: Arc<NotifyFrame>, _: Duration) -> Pending<()> {
         Box::pin(std::future::ready(()))
