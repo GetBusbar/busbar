@@ -1155,6 +1155,7 @@ pub(super) mod session_door {
                 })
             },
             gov: Arc::clone(&gov),
+            journal: None,
         });
         let mut served = match compose_planes(
             &[(instance.to_string(), Arc::new(plane))],

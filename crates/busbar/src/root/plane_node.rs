@@ -2459,6 +2459,13 @@ impl busbar_kernel_egress::ports::Journal for NodeEndPost {
     fn abandoned(&self, _record: &busbar_kernel_egress::ports::Dispatched) {}
 }
 
+/// THE HOOKS A DRIVEN UNIT'S HOOK STAGE RAN, held with the unit's other facts until its one record
+/// is sealed (THE DESIGN §1: the record's "controls (... hooks applied)"), as its walk's dispatch
+/// is. A unit with no open facts keeps nothing.
+impl busbar_kernel::plane_driver::HookJournal for NodeEndPost {
+    fn hooks_ran(&self, _record: &busbar_kernel::plane_driver::HooksRan) {}
+}
+
 /// THE RUNNING UNIT'S CHECKPOINT, ON THE NODE'S BOOK (THE DESIGN §7): the root's flush tick hands
 /// each driven unit's accrual so far here ([`busbar_kernel::plane_driver::PlaneMoney::flush_checkpoints`]),
 /// and it is journaled as a `unit.accrued` record under the facts the unit was opened with at
@@ -2666,13 +2673,16 @@ impl Sealing {
     ) {
         let Sealing { seal, ran } = self;
         let refused = matches!(outcome, Outcome::Refused(..));
-        // THE CONTROLS THE UNIT REALLY RAN UNDER (THE DESIGN §1: hold/settle seqs): the hold its
-        // admission opened on the chain and the settlement its one line closed it with, by seq —
-        // refs, never an amount. The hook facts stay unset: the plane's hook taps run inside its
-        // own leg and the audit step's facts carry none of them across to the node.
+        // THE CONTROLS THE UNIT REALLY RAN UNDER (THE DESIGN §1: "hold/settle seqs, slice, hooks
+        // applied"): the hold its admission opened on the chain and the settlement its one line
+        // closed it with, by seq — refs, never an amount — and every hook its hook stage reported
+        // running, in order, with its head; a hook that failed is recorded failed, never dropped.
+        let hooks_applied = Vec::new();
+        let hook_failed = false;
         let controls = Controls {
             hold_ref: ran.hold.map(|seq| seq.to_string()),
             settle_ref: line.settled_at.map(|seq| seq.to_string()),
+            hooks_applied,
             ..Controls::default()
         };
         let inputs = AuditInputs {
@@ -2693,7 +2703,7 @@ impl Sealing {
                 unit_end: outcome,
                 step: outcome.step(),
                 finish: audit_finish(seal.facts.finish),
-                hook_failed: false,
+                hook_failed,
                 emission_delta: 0,
                 stale_policy: false,
             },

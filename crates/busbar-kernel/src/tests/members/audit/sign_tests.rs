@@ -19,8 +19,8 @@ use busbar_kernel_audit::expose;
 use busbar_kernel_audit::heads::{HeadHistory, HEAD_SAMPLE_SECONDS};
 use busbar_kernel_audit::recipe::{digest_fields, digest_over, DigestValue};
 use busbar_kernel_audit::record::{
-    Audit, AuditChain, AuditInputs, AuditRecord, Controls, FinishClass, HookApplied, OpClassId,
-    OutcomeFacts, QuantitySource, Subject, Usage, UsageLine, What,
+    Audit, AuditChain, AuditInputs, AuditRecord, Controls, FinishClass, HookApplied, HookHead,
+    OpClassId, OutcomeFacts, QuantitySource, Subject, Usage, UsageLine, What,
 };
 use busbar_kernel_audit::sign::{AuditKeySet, AuditSigningKey, AuditVerifyingKey, KeyError};
 use busbar_kernel_audit::test_support;
@@ -99,6 +99,8 @@ fn inputs(unit: u64) -> AuditInputs {
             policy_epoch: 7,
             hooks_applied: vec![HookApplied {
                 hook: "compress".into(),
+                head: HookHead::Modify,
+                failed: false,
             }],
             replayed: true,
             children: vec![UnitKey::new(unit + 1000), UnitKey::new(unit + 1001)],
@@ -256,6 +258,12 @@ fn altering_any_field_breaks_the_signature_including_the_cosmetic_ones() {
         ("the order of two usage lines", |r| r.usage.lines.swap(0, 1)),
         ("a hook's name", |r| {
             r.controls.hooks_applied[0].hook = "compres".into()
+        }),
+        ("a hook's head", |r| {
+            r.controls.hooks_applied[0].head = HookHead::Pass
+        }),
+        ("whether a hook failed", |r| {
+            r.controls.hooks_applied[0].failed = true
         }),
         ("the correlation hash", |r| {
             r.correlation_hash = Some("0".repeat(64))

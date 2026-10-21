@@ -28,9 +28,10 @@ use busbar_contract::hook_wire::reply::{clamp_reject_status, sanitize_reject_mes
 use busbar_contract::hooks::TransformOutcome;
 
 use super::super::{DriverSteps, FarEnd, PlaneUnits};
-use super::{veto_by, HookBinder, Projection, RewriteChain, Stopped};
+use super::{rewrite_applied, veto_by, HookBinder, Projection, RewriteChain, Stopped};
 use crate::hooks::gate::{decide_door, DoorSubject, GateVerdict, ScanSubstrate};
 use crate::hooks::ResolvedPolicy;
+use busbar_kernel_audit::record::HookApplied;
 
 /// The order a plane's request-stage hooks run in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -127,8 +128,21 @@ impl HookBinder for HostGatedHooks {
 
 impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
     /// THE GATE-FIRST REQUEST STAGE (module doc): the entry's gates over the projection, then its
-    /// rewrite chain. Nothing is bound for the entry: the unit pays nothing more.
+    /// rewrite chain. Nothing is bound for the entry: the unit pays nothing more. The hooks it ran
+    /// are reported to the driver's hook journal however it ended.
     pub(crate) async fn gated_stage(&self, binder: &dyn HookBinder) -> Result<(), Stopped> {
+        let mut ran = Vec::new();
+        let stage = self.run_gated_stage(binder, &mut ran).await;
+        self.report_hooks(ran);
+        stage
+    }
+
+    /// [`Self::gated_stage`], each hook that ran pushed onto `ran` as it answered.
+    async fn run_gated_stage(
+        &self,
+        binder: &dyn HookBinder,
+        ran: &mut Vec<HookApplied>,
+    ) -> Result<(), Stopped> {
         let mut view: Projection = self.project(None)?;
         let (principal, recorded, route) = {
             let st = self.lock();
@@ -172,7 +186,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 status,
                 message,
                 hook,
-            } = decide_door(&hooks.gates, &door).await
+            } = decide_door(&hooks.gates, &door, ran).await
             {
                 tracing::info!(
                     entry = %view.pool,
@@ -197,6 +211,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             }
             let outcome = hook.transform(&req, *timeout).await;
             drop(req);
+            ran.push(rewrite_applied(hook.name(), &outcome));
             match outcome {
                 TransformOutcome::Rewrite(rw) => {
                     let bytes = super::rewrite_bytes(&rw);

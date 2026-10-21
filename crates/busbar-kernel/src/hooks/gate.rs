@@ -59,6 +59,7 @@
 
 use crate::hooks::{Candidate, ResolvedPolicy, RoutingContext, RoutingDecision, RoutingRequest};
 use busbar_contract::ir::facts::{ContentItem, IrFacts, ScreenedContent, Slot};
+use busbar_kernel_audit::record::{HookApplied, HookHead};
 use std::borrow::Cow;
 
 /// The answer a firing site acts on. Deliberately NOT the model plane's `PolicyOutcome`: that type
@@ -233,6 +234,17 @@ pub(crate) async fn decide(
     gates: &[(u16, ResolvedPolicy)],
     subject: &GateSubject<'_>,
 ) -> GateVerdict {
+    decide_noting(gates, subject, &mut Vec::new()).await
+}
+
+/// [`decide`], each gate that ran pushed onto `ran` in the order it ran, with its decision head and
+/// whether it failed (THE DESIGN §1: the audit record's "controls (... hooks applied)"). A gate the
+/// incremental scan had nothing new for was not asked and is not pushed.
+pub(crate) async fn decide_noting(
+    gates: &[(u16, ResolvedPolicy)],
+    subject: &GateSubject<'_>,
+    ran: &mut Vec<HookApplied>,
+) -> GateVerdict {
     if gates.is_empty() {
         return GateVerdict::Proceed;
     }
@@ -306,7 +318,9 @@ pub(crate) async fn decide(
                     error = %e,
                     "request gate failed; applying its on_error"
                 );
-                if let Some(v) = fail_closed(on_error, policy.name()) {
+                let closed = fail_closed(on_error, policy.name());
+                ran.push(failed_gate(policy.name(), closed.is_some()));
+                if let Some(v) = closed {
                     return v;
                 }
                 continue;
@@ -319,12 +333,24 @@ pub(crate) async fn decide(
                     timeout_ms = timeout.as_millis() as u64,
                     "request gate deadline exceeded; applying its on_error"
                 );
-                if let Some(v) = fail_closed(on_error, policy.name()) {
+                let closed = fail_closed(on_error, policy.name());
+                ran.push(failed_gate(policy.name(), closed.is_some()));
+                if let Some(v) = closed {
                     return v;
                 }
                 continue;
             }
         };
+        // The gate answered: a reject stops the unit; nothing else acts on these protocols.
+        ran.push(HookApplied {
+            hook: policy.name().to_string(),
+            head: if matches!(decision, RoutingDecision::Reject { .. }) {
+                HookHead::Veto
+            } else {
+                HookHead::Pass
+            },
+            failed: false,
+        });
         match decision {
             RoutingDecision::Reject { status, message } => {
                 return GateVerdict::Reject {
@@ -357,6 +383,20 @@ pub(crate) async fn decide(
         }
     }
     GateVerdict::Proceed
+}
+
+/// A gate keyed `hook` that could not answer, as it ran: a veto when its `on_error` closed, else a
+/// pass. The failure is kept either way.
+fn failed_gate(hook: &str, closed: bool) -> HookApplied {
+    HookApplied {
+        hook: hook.to_string(),
+        head: if closed {
+            HookHead::Veto
+        } else {
+            HookHead::Pass
+        },
+        failed: true,
+    }
 }
 
 /// A failed gate's terminal, as a verdict. `Some` only for `reject` — the two ranking terminals
@@ -467,9 +507,9 @@ pub(crate) struct DoorSubject<'a> {
 }
 
 /// FIRE THE GATES OF A REQUEST SERVED THROUGH A PLANE'S DOOR (ARCHITECT RULING 2026-10-03,
-/// the session half): the same [`decide`] the engine fired, over the plane's
-/// projected `{tool, arguments}`, with the incremental scan KEYED ON THE VIEW'S SESSION, bound to
-/// the caller principal and the hook generation exactly as the engine's was
+/// the session half): the same [`decide`] the engine fired (each gate that ran pushed onto `ran`),
+/// over the plane's projected `{tool, arguments}`, with the incremental scan KEYED ON THE VIEW'S
+/// SESSION, bound to the caller principal and the hook generation exactly as the engine's was
 /// ([`IncrementalScan::derive_session_key`]). A request whose view names no session, or a node
 /// that did not opt in, screens the whole projection every time. A projected body that is not the
 /// invoke document is screened as a call to no tool with `null` arguments (the engine's own
@@ -477,6 +517,7 @@ pub(crate) struct DoorSubject<'a> {
 pub(crate) async fn decide_door(
     gates: &[(u16, ResolvedPolicy)],
     door: &DoorSubject<'_>,
+    ran: &mut Vec<HookApplied>,
 ) -> GateVerdict {
     if gates.is_empty() {
         return GateVerdict::Proceed;
@@ -511,7 +552,7 @@ pub(crate) async fn decide_door(
         incremental,
         session,
     };
-    decide(gates, &subject).await
+    decide_noting(gates, &subject, ran).await
 }
 
 /// The system slot, flattened — `None` when the request has none, which is what the wire contract

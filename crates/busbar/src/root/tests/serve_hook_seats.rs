@@ -1178,6 +1178,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
             Arc::new(move || busbar_kernel::plane_host::engine_host(&app))
         },
         gov: Arc::clone(&gov),
+        journal: None,
     };
     let sections: BTreeMap<&'static str, serde_yaml::Value> = sections;
     let served = compose_planes(

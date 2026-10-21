@@ -96,8 +96,8 @@ pub use far_end::{
 };
 pub use hooks::{
     Bind, BoundHooks, CallerFacts, CallerKey, CandidateFacts, Candidates, Constraint, GroupScope,
-    HookBinder, HookRead, HostHooks, Projection, Restrict, RewriteChain, SessionStage, StageTaps,
-    UnitHooks, CONTENT_ROLE, STAGE_GONE,
+    HookBinder, HookJournal, HookRead, HooksRan, HostHooks, Projection, Restrict, RewriteChain,
+    SessionStage, StageTaps, UnitHooks, CONTENT_ROLE, STAGE_GONE,
 };
 pub use hooks::{GatedHooks, GatedScan, GenerationHost, HookOrder, HostGatedHooks, PrincipalKeys};
 pub use money::{Accrued, Checkpointer, EndPost, FeeRefund, PlaneMoney, UnitEnd, UnitMoney};
@@ -242,6 +242,9 @@ pub struct PlaneDriver {
     sessions: Mutex<HashMap<u64, Arc<Notify>>>,
     /// Which hooks bind to a unit of this plane; `None` = none ever does.
     hooks: Option<Arc<dyn HookBinder>>,
+    /// Where the hook stage reports the hooks each unit ran (`None` = nowhere: no record names
+    /// them).
+    hook_journal: Option<Arc<dyn HookJournal>>,
     /// The instance's label, as admitted to the services: what its trust entries are admitted
     /// and judged under.
     label: Arc<str>,
@@ -394,6 +397,7 @@ impl PlaneDriver {
             services,
             sessions: Mutex::default(),
             hooks: None,
+            hook_journal: None,
             label: Arc::from(&*d.label),
             audit: Arc::new(CoreAudit),
             refused_piece: false,
@@ -478,6 +482,14 @@ impl PlaneDriver {
     #[must_use]
     pub fn with_refused_piece(mut self) -> Self {
         self.refused_piece = true;
+        self
+    }
+
+    /// Report the hooks each unit's hook stage ran to `journal` (THE DESIGN §1: the audit record's
+    /// "controls (... hooks applied)"): the node its record is sealed on.
+    #[must_use]
+    pub fn with_hook_journal(mut self, journal: Arc<dyn HookJournal>) -> Self {
+        self.hook_journal = Some(journal);
         self
     }
 

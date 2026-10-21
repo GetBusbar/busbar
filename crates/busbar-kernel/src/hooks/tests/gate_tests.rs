@@ -907,7 +907,10 @@ async fn the_door_paths_incremental_scan_keys_on_the_views_session() {
                     now_ms: 0,
                 }),
             };
-            matches!(decide_door(gates, &door).await, GateVerdict::Proceed)
+            matches!(
+                decide_door(gates, &door, &mut Vec::new()).await,
+                GateVerdict::Proceed
+            )
         }
     };
     let alice: &'static busbar_contract::records::VirtualKey = Box::leak(Box::new(alice));
