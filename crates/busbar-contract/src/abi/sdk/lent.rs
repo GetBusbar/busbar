@@ -42,6 +42,77 @@ use crate::abi::sdk::out::{Out, Scalar};
 /// A borrow of data the HOST lent the current call. Only the SDK makes one (the trampoline, from
 /// its copy of the host's `in`, and the accessors below, from what that `in` points to), so every
 /// pointer inside it is the host's, valid for `'a`.
+///
+/// SEALED (status row 194): it has no `Deref`, so the host's string is never copied out of it.
+///
+/// ```compile_fail,E0615
+/// use busbar_contract::abi::auth::BeginLoginIn;
+/// use busbar_contract::abi::mechanism::call::AbiStr;
+/// use busbar_contract::abi::sdk::Lent;
+/// fn body(input: Lent<'_, BeginLoginIn>) {
+///     let _copied: AbiStr = input.state;
+/// }
+/// ```
+///
+/// GREEN, its twin: the accessor reads the string, bound to the call.
+///
+/// ```
+/// use busbar_contract::abi::auth::BeginLoginIn;
+/// use busbar_contract::abi::sdk::Lent;
+/// fn body(input: Lent<'_, BeginLoginIn>) {
+///     let _read: &[u8] = input.state().bytes();
+/// }
+/// ```
+///
+/// RED: nor is its struct handed out whole (`get`), nor a field picked by reference (`field`).
+///
+/// ```compile_fail,E0624
+/// use busbar_contract::abi::auth::BeginLoginIn;
+/// use busbar_contract::abi::sdk::Lent;
+/// fn body(input: Lent<'_, BeginLoginIn>) {
+///     let _whole: &BeginLoginIn = input.get();
+/// }
+/// ```
+///
+/// ```compile_fail,E0624
+/// use busbar_contract::abi::auth::BeginLoginIn;
+/// use busbar_contract::abi::sdk::Lent;
+/// fn body(input: Lent<'_, BeginLoginIn>) {
+///     let _picked = input.field(|i| &i.state).bytes();
+/// }
+/// ```
+///
+/// GREEN, their twin: the field's own accessor.
+///
+/// ```
+/// use busbar_contract::abi::auth::BeginLoginIn;
+/// use busbar_contract::abi::sdk::Lent;
+/// fn body(input: Lent<'_, BeginLoginIn>) {
+///     let _picked = input.state().bytes();
+/// }
+/// ```
+///
+/// RED: a lent list's string is not copied into a `'static` list either.
+///
+/// ```compile_fail,E0614
+/// use busbar_contract::abi::auth::BeginLoginIn;
+/// use busbar_contract::abi::mechanism::call::AbiStr;
+/// use busbar_contract::abi::sdk::Lent;
+/// fn keep(input: Lent<'_, BeginLoginIn>) -> &'static [AbiStr] {
+///     let kept: Vec<AbiStr> = input.scopes().iter().map(|s| *s).collect();
+///     Box::leak(kept.into_boxed_slice())
+/// }
+/// ```
+///
+/// GREEN, its twin: the element is read where it is lent.
+///
+/// ```
+/// use busbar_contract::abi::auth::BeginLoginIn;
+/// use busbar_contract::abi::sdk::Lent;
+/// fn keep(input: Lent<'_, BeginLoginIn>) -> usize {
+///     input.scopes().iter().map(|s| s.bytes().len()).sum()
+/// }
+/// ```
 #[derive(Debug)]
 pub struct Lent<'a, T> {
     lent: &'a T,

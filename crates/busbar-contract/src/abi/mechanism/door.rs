@@ -234,6 +234,26 @@ const _: &[(&str, usize)] = Statement::LAYOUT;
 /// const STATEMENT: Statement = statement("echo", "1.0.0", 8).with_diag_ids(&DIAG_IDS);
 /// assert_eq!(STATEMENT.diag_ids().len(), 1);
 /// ```
+///
+/// RED (status row 194): a list's pointer and length are not set by hand, so they cannot disagree.
+///
+/// ```compile_fail,E0616
+/// use busbar_contract::abi::mechanism::call::AbiStr;
+/// use busbar_contract::abi::sdk::door::statement;
+/// const DIAG_IDS: [AbiStr; 1] = [AbiStr::of("echo.refused")];
+/// let mut s = statement("echo", "1.0.0", 8);
+/// s.diag_ids = DIAG_IDS.as_ptr();
+/// ```
+///
+/// GREEN, its twin: the setter states the pointer and its length together.
+///
+/// ```
+/// use busbar_contract::abi::mechanism::call::AbiStr;
+/// use busbar_contract::abi::sdk::door::statement;
+/// const DIAG_IDS: [AbiStr; 1] = [AbiStr::of("echo.refused")];
+/// let mut s = statement("echo", "1.0.0", 8);
+/// s = s.with_diag_ids(&DIAG_IDS);
+/// ```
 impl Statement {
     abi_lists! {
         families, families_len: MetricFamily => families_ptr, with_families, with_raw_families;

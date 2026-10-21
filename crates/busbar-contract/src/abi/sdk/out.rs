@@ -31,9 +31,9 @@
 //!
 //! ```compile_fail,E0277
 //! use busbar_contract::abi::mechanism::call::{AbiStr, OutHead};
-//! fn body(mut out: busbar_contract::abi::sdk::Out<'_, OutHead>, s: &String) {
-//!     // An `AbiStr` is not a `Scalar`: its pointer would outlive `s`.
-//!     out.set(|o| &o.error, AbiStr { ptr: s.as_ptr(), len: s.len() });
+//! fn body(mut out: busbar_contract::abi::sdk::Out<'_, OutHead>) {
+//!     // An `AbiStr` is not a `Scalar`: a writer names its memory, never `set`.
+//!     out.set(|o| &o.error, AbiStr::of("refused"));
 //! }
 //! ```
 //!
@@ -47,15 +47,27 @@
 //! ```compile_fail,E0277
 //! use busbar_contract::abi::mechanism::call::Blob;
 //! use busbar_contract::abi::export::StatusOut;
-//! fn body(mut out: busbar_contract::abi::sdk::Out<'_, StatusOut>, b: &[u8]) {
-//!     out.set(|o| &o.status, Blob { ptr: b.as_ptr(), len: b.len(), fmt: 1, flags: 0 });
+//! fn body(mut out: busbar_contract::abi::sdk::Out<'_, StatusOut>) {
+//!     out.set(|o| &o.status, Blob::of(b"{}").with_fmt(1));
 //! }
 //! ```
 //!
-//! ```compile_fail,E0594
+//! SEALED (status row 194): `get` reads a pointer-free field alone, so a string a writer named (a
+//! host buffer lent for the call, a leased one) is never copied out of the `out`.
+//!
+//! ```compile_fail,E0277
 //! use busbar_contract::abi::mechanism::call::{AbiStr, OutHead};
-//! fn body(out: busbar_contract::abi::sdk::Out<'_, OutHead>, s: &'static str) {
-//!     out.get().error = AbiStr { ptr: s.as_ptr(), len: s.len() }; // `get` is read-only
+//! fn body(out: busbar_contract::abi::sdk::Out<'_, OutHead>) {
+//!     let _copied: AbiStr = out.get(|o| &o.error);
+//! }
+//! ```
+//!
+//! GREEN, its twin: a number reads.
+//!
+//! ```
+//! use busbar_contract::abi::mechanism::call::OutHead;
+//! fn body(out: busbar_contract::abi::sdk::Out<'_, OutHead>) {
+//!     let _read: u64 = out.get(|o| &o.wake_at_ns);
 //! }
 //! ```
 

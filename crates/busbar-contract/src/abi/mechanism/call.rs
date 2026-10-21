@@ -205,6 +205,20 @@ const _: &[(&str, usize)] = AbiStr::LAYOUT;
 /// [`AbiStr::from_raw_parts`]. A read of the bytes is `unsafe` ([`AbiStr::bytes`]): a value
 /// copied out of a call's `in` names memory the host lent for that call alone. A plugin reads the
 /// strings the host lends it through [`Lent`](crate::abi::sdk::Lent).
+///
+/// RED (status row 194): safe code cannot state a pointer and a length by hand.
+///
+/// ```compile_fail,E0451
+/// use busbar_contract::abi::mechanism::call::AbiStr;
+/// const NAME: AbiStr = AbiStr { ptr: "echo".as_ptr(), len: 4 };
+/// ```
+///
+/// GREEN, its twin: the same string through its constructor.
+///
+/// ```
+/// use busbar_contract::abi::mechanism::call::AbiStr;
+/// const NAME: AbiStr = AbiStr::of("echo");
+/// ```
 impl AbiStr {
     /// No string: a NULL pointer, zero length.
     pub const ABSENT: AbiStr = AbiStr {

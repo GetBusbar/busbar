@@ -158,6 +158,28 @@ enum Lease {
 /// answer names ONE lease (`head.lease`): what it leases more than once is CHAINED under that
 /// lease as its parts `(lease, 0)`, `(lease, 1)`, ... — map entries, no list to allocate — and the
 /// host's one release of it frees every part.
+///
+/// SEALED (status row 194): the raw string or payload over leased memory is the SDK's; a plugin
+/// leases through its `out`'s writers, which name the memory where the host reads it.
+///
+/// ```compile_fail,E0624
+/// use busbar_contract::abi::mechanism::call::{AbiStr, OutHead};
+/// use busbar_contract::abi::sdk::life::Leases;
+/// fn body(leases: &Leases, head: &mut OutHead) {
+///     let _raw: AbiStr = leases.str(head, String::from("kept"));
+/// }
+/// ```
+///
+/// GREEN, its twin: the `out` writer.
+///
+/// ```
+/// use busbar_contract::abi::mechanism::call::OutHead;
+/// use busbar_contract::abi::sdk::life::Leases;
+/// use busbar_contract::abi::sdk::Out;
+/// fn body(leases: &Leases, mut out: Out<'_, OutHead>) {
+///     out.lease_str(|o| &o.error, leases, String::from("kept"));
+/// }
+/// ```
 #[derive(Default)]
 pub struct Leases {
     next: AtomicU64,
