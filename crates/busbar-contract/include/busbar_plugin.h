@@ -860,6 +860,14 @@ typedef uint32_t bb_plane_RefusalCode;
 #define BB_PLANE_RefusalCode_CredentialUnavailable ((bb_plane_RefusalCode)43)
 #define BB_PLANE_RefusalCode_MethodNotAllowed ((bb_plane_RefusalCode)44)
 #define BB_PLANE_RefusalCode_Internal ((bb_plane_RefusalCode)45)
+#define BB_PLANE_RefusalCode_UnsentNoAttempt ((bb_plane_RefusalCode)46)
+#define BB_PLANE_RefusalCode_UnsentNoRoute ((bb_plane_RefusalCode)47)
+#define BB_PLANE_RefusalCode_UnsentNeedUnbound ((bb_plane_RefusalCode)48)
+#define BB_PLANE_RefusalCode_UnsentTargetNotPath ((bb_plane_RefusalCode)49)
+#define BB_PLANE_RefusalCode_UnsentFieldName ((bb_plane_RefusalCode)50)
+#define BB_PLANE_RefusalCode_UnsentUnrecorded ((bb_plane_RefusalCode)51)
+#define BB_PLANE_RefusalCode_UnsentAuthFailed ((bb_plane_RefusalCode)52)
+#define BB_PLANE_RefusalCode_UnsentOpenRefused ((bb_plane_RefusalCode)53)
 
 /* ---- forward declarations ---- */
 typedef struct bb_mech_AbiStr bb_mech_AbiStr;
@@ -4109,7 +4117,7 @@ struct bb_hio_SpawnIn {
     size_t env_len;
 };
 
-/* ---- layout proof: 292 of 296 structures are pinned by the golden ---- */
+/* ---- layout proof: 296 of 296 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
@@ -4119,6 +4127,10 @@ struct bb_hio_SpawnIn {
 #define BB_ALIGNOF(t) _Alignof(t)
 #endif
 
+BB_ASSERT(sizeof(bb_mech_AbiStr) == 16, "bb_mech_AbiStr: size");
+BB_ASSERT(BB_ALIGNOF(bb_mech_AbiStr) == 8, "bb_mech_AbiStr: alignment");
+BB_ASSERT(offsetof(bb_mech_AbiStr, ptr) == 0, "bb_mech_AbiStr.ptr: offset");
+BB_ASSERT(offsetof(bb_mech_AbiStr, len) == 8, "bb_mech_AbiStr.len: offset");
 BB_ASSERT(sizeof(bb_mech_Span) == 8, "bb_mech_Span: size");
 BB_ASSERT(BB_ALIGNOF(bb_mech_Span) == 4, "bb_mech_Span: alignment");
 BB_ASSERT(offsetof(bb_mech_Span, offset) == 0, "bb_mech_Span.offset: offset");
@@ -5628,6 +5640,11 @@ BB_ASSERT(offsetof(bb_transport_DatagramRoute, offset) == 0, "bb_transport_Datag
 BB_ASSERT(offsetof(bb_transport_DatagramRoute, len) == 8, "bb_transport_DatagramRoute.len: offset");
 BB_ASSERT(offsetof(bb_transport_DatagramRoute, path) == 16, "bb_transport_DatagramRoute.path: offset");
 BB_ASSERT(offsetof(bb_transport_DatagramRoute, lane) == 20, "bb_transport_DatagramRoute.lane: offset");
+BB_ASSERT(sizeof(bb_transport_DatagramPath) == 24, "bb_transport_DatagramPath: size");
+BB_ASSERT(BB_ALIGNOF(bb_transport_DatagramPath) == 8, "bb_transport_DatagramPath: alignment");
+BB_ASSERT(offsetof(bb_transport_DatagramPath, path) == 0, "bb_transport_DatagramPath.path: offset");
+BB_ASSERT(offsetof(bb_transport_DatagramPath, _reserved) == 4, "bb_transport_DatagramPath._reserved: offset");
+BB_ASSERT(offsetof(bb_transport_DatagramPath, addr) == 8, "bb_transport_DatagramPath.addr: offset");
 BB_ASSERT(sizeof(bb_transport_DatagramLane) == 96, "bb_transport_DatagramLane: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_DatagramLane) == 8, "bb_transport_DatagramLane: alignment");
 BB_ASSERT(offsetof(bb_transport_DatagramLane, size) == 0, "bb_transport_DatagramLane.size: offset");
@@ -5993,6 +6010,21 @@ BB_ASSERT(offsetof(bb_transport_AdoptIn, facts) == 96, "bb_transport_AdoptIn.fac
 BB_ASSERT(offsetof(bb_transport_AdoptIn, leftover) == 104, "bb_transport_AdoptIn.leftover: offset");
 BB_ASSERT(offsetof(bb_transport_AdoptIn, leftover_len) == 112, "bb_transport_AdoptIn.leftover_len: offset");
 BB_ASSERT(offsetof(bb_transport_AdoptIn, sink) == 120, "bb_transport_AdoptIn.sink: offset");
+BB_ASSERT(sizeof(bb_transport_FieldPredicate) == 40, "bb_transport_FieldPredicate: size");
+BB_ASSERT(BB_ALIGNOF(bb_transport_FieldPredicate) == 8, "bb_transport_FieldPredicate: alignment");
+BB_ASSERT(offsetof(bb_transport_FieldPredicate, op) == 0, "bb_transport_FieldPredicate.op: offset");
+BB_ASSERT(offsetof(bb_transport_FieldPredicate, _reserved) == 4, "bb_transport_FieldPredicate._reserved: offset");
+BB_ASSERT(offsetof(bb_transport_FieldPredicate, name) == 8, "bb_transport_FieldPredicate.name: offset");
+BB_ASSERT(offsetof(bb_transport_FieldPredicate, value) == 24, "bb_transport_FieldPredicate.value: offset");
+BB_ASSERT(sizeof(bb_transport_RouteMatch) == 48, "bb_transport_RouteMatch: size");
+BB_ASSERT(BB_ALIGNOF(bb_transport_RouteMatch) == 8, "bb_transport_RouteMatch: alignment");
+BB_ASSERT(offsetof(bb_transport_RouteMatch, methods) == 0, "bb_transport_RouteMatch.methods: offset");
+BB_ASSERT(offsetof(bb_transport_RouteMatch, path_form) == 4, "bb_transport_RouteMatch.path_form: offset");
+BB_ASSERT(offsetof(bb_transport_RouteMatch, path) == 8, "bb_transport_RouteMatch.path: offset");
+BB_ASSERT(offsetof(bb_transport_RouteMatch, fields) == 24, "bb_transport_RouteMatch.fields: offset");
+BB_ASSERT(offsetof(bb_transport_RouteMatch, fields_len) == 32, "bb_transport_RouteMatch.fields_len: offset");
+BB_ASSERT(offsetof(bb_transport_RouteMatch, rung) == 40, "bb_transport_RouteMatch.rung: offset");
+BB_ASSERT(offsetof(bb_transport_RouteMatch, _reserved) == 44, "bb_transport_RouteMatch._reserved: offset");
 BB_ASSERT(sizeof(bb_hconn_Need) == 144, "bb_hconn_Need: size");
 BB_ASSERT(BB_ALIGNOF(bb_hconn_Need) == 8, "bb_hconn_Need: alignment");
 BB_ASSERT(offsetof(bb_hconn_Need, direction) == 0, "bb_hconn_Need.direction: offset");

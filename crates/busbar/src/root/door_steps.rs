@@ -753,8 +753,8 @@ impl<'s> DoorSteps<'s> {
     /// Whether the unit's far end CUT its STREAMED answer after its head, as the driver told the
     /// steps at the unit's audit ([`DriverSteps::answered`]): the caller asked for the answer
     /// streamed (`ROUTE_STREAM`), and its connection failed, or its send's deadline passed, before
-    /// the answer completed. A whole (non-stream) answer cut by its far end is not one: it bills
-    /// what its far end reported (owner ruling Q31, oracle cell `route.failover|fo|primary-cut-body`).
+    /// the answer completed. A whole (non-stream) answer cut by its far end is not one. Neither
+    /// changes the bill: the unit bills what its plane ledgered (owner ruling 2026-10-20).
     #[must_use]
     pub fn stream_cut(&self) -> bool {
         let u = self.lock();
@@ -967,15 +967,10 @@ impl DriverSteps for DoorSteps<'_> {
         }
     }
 
-    fn answered(&self, ctx: &UnitCtx, streamed: bool, cut: bool) {
+    fn answered(&self, _ctx: &UnitCtx, streamed: bool, cut: bool) {
+        // A stream the far end cut bills what its plane ledgered, as any other: the cut is a fact
+        // of the unit's end, never a reason to drop its usage (owner ruling 2026-10-20).
         self.lock().answered = (streamed, cut);
-        // A stream the far end cut bills no usage (status row 183): its money steps drop the usage
-        // it reported before its line is read and its end settled.
-        if self.stream_cut() {
-            if let Some(money) = self.money {
-                money.far_cut(ctx.key);
-            }
-        }
     }
 
     fn usage_tap_fault(&self, _ctx: &UnitCtx, dialect: u32, reason: &'static str) {
@@ -1585,8 +1580,9 @@ pub fn compose_egress(
 /// validated `{section: value}` object per `open`/`refresh`): the kernel-owned sections it reads
 /// ([`kernel_sections`]), the providers its members are reached through ([`provider_routes`]) and
 /// the model-serving pools' bounds ([`crate::root::model_egress::ModelPools`]). Projected from each
-/// resolved configuration as it is built (`busbar_kernel::appbuild::set_config_projection`), and
-/// read back when that generation is swapped in.
+/// resolved configuration as it is built (the root's install record,
+/// `busbar_kernel::preflight::RootInstall::config_projection`), and read back when that generation
+/// is swapped in.
 #[derive(Debug)]
 pub struct DoorConfig {
     /// The kernel-owned sections, and beside them every plane section the configuration carries RAW
