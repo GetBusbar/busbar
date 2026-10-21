@@ -182,7 +182,9 @@ fn assert_hot_path_delta_under_budget() {
         // `black_box` the slot: without it the compiler devirtualises the indirect call back into
         // the direct one and the delta is a measurement of nothing.
         let f = black_box(vt.clock_now).expect("clock_now slot is armed");
-        black_box(f(black_box(null), black_box(input), black_box(out)));
+        // SAFETY: the bench's own `host_clock_now` behind the table, over the bench's live
+        // `in`/`out`; it reads no context.
+        black_box(unsafe { f(black_box(null), black_box(input), black_box(out)) });
     });
 
     let p50_delta_nanos = vtable_p50.saturating_sub(direct_p50);
@@ -305,7 +307,9 @@ fn assert_zero_per_token_host_calls() {
         if cross_per_token {
             // The RED shape: a host crossing PER TOKEN, which the budget forbids.
             let f = vt.clock_now.expect("clock_now slot is armed");
-            let answered = f(null, call.input(), call.out());
+            // SAFETY: the bench's own `host_clock_now` behind the table, over the bench's live
+            // `in`/`out`; it reads no context.
+            let answered = unsafe { f(null, call.input(), call.out()) };
             sink = sink.wrapping_add(u64::from(answered.outcome() == Outcome::Ready));
         }
     }
@@ -340,7 +344,9 @@ fn hot_path(c: &mut Criterion) {
     c.bench_function("HOT_PATH_VTABLE_CALL", |b| {
         b.iter(|| {
             let f = black_box(vt.clock_now).expect("clock_now slot is armed");
-            black_box(f(black_box(null), black_box(input), black_box(out)))
+            // SAFETY: the bench's own `host_clock_now` behind the table, over the bench's live
+            // `in`/`out`; it reads no context.
+            black_box(unsafe { f(black_box(null), black_box(input), black_box(out)) })
         });
     });
 
@@ -359,11 +365,15 @@ fn hot_path(c: &mut Criterion) {
     c.bench_function("TRANSPORT_DOOR_CALL", |b| {
         b.iter(|| {
             let f = read_slot(black_box(ops_ptr));
-            black_box(f(
-                black_box(std::ptr::null_mut()),
-                black_box(std::ptr::null()),
-                black_box(std::ptr::null_mut()),
-            ))
+            // SAFETY: the bench's own `carrier_read` behind the table; it reads none of its
+            // arguments.
+            black_box(unsafe {
+                f(
+                    black_box(std::ptr::null_mut()),
+                    black_box(std::ptr::null()),
+                    black_box(std::ptr::null_mut()),
+                )
+            })
         });
     });
 

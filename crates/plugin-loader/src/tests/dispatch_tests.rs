@@ -787,12 +787,16 @@ mod open_faults_on_its_resume {
             let ops = real();
             if !instance.is_null() {
                 let close: Op = ops.close.expect("the test plugin closes");
-                close(instance, input, out);
+                // SAFETY: this planted slot forwards the host's own arguments for this crossing,
+                // unchanged, to the test plugin's real slot of the same type.
+                unsafe { close(instance, input, out) };
                 FREED.store(instance as usize, Ordering::SeqCst);
                 return RawOutcome::of(Outcome::Fault);
             }
             let open: Op = ops.open.expect("the test plugin opens");
-            let opened = open(instance, input, out);
+            // SAFETY: this planted slot forwards the host's own arguments for this crossing,
+            // unchanged, to the test plugin's real slot of the same type.
+            let opened = unsafe { open(instance, input, out) };
             if opened != RawOutcome::of(Outcome::Ready) {
                 return opened;
             }
@@ -818,7 +822,9 @@ mod open_faults_on_its_resume {
                 STALE.fetch_add(1, Ordering::SeqCst);
                 return RawOutcome::of(Outcome::Fault);
             }
-            real().close.expect("the test plugin closes")(instance, input, out)
+            // SAFETY: this planted slot forwards the host's own arguments for this crossing,
+            // unchanged, to the test plugin's real slot of the same type.
+            unsafe { real().close.expect("the test plugin closes")(instance, input, out) }
         }
 
         /// The real `tick`, unless it is handed the freed box.
@@ -831,7 +837,9 @@ mod open_faults_on_its_resume {
                 STALE.fetch_add(1, Ordering::SeqCst);
                 return RawOutcome::of(Outcome::Fault);
             }
-            real().tick.expect("the test plugin ticks")(instance, input, out)
+            // SAFETY: this planted slot forwards the host's own arguments for this crossing,
+            // unchanged, to the test plugin's real slot of the same type.
+            unsafe { real().tick.expect("the test plugin ticks")(instance, input, out) }
         }
 
         fn door() -> *const Door {
@@ -876,7 +884,9 @@ mod open_faults_on_its_resume {
             .outcome;
 
         let (wake, ctx, ticket) = WAKE.lock().unwrap().take().expect("the open pended");
-        wake(ctx, ticket);
+        // SAFETY: the host's own wake and the context it handed beside it in this open's tables,
+        // the dispatcher `d` alive.
+        unsafe { wake(ctx, ticket) };
         let opened = reply.wait(WAIT).expect("the open answers");
         assert_eq!(opened.outcome, Outcome::Fault);
         assert_ne!(FREED.load(Ordering::SeqCst), 0, "the resume freed the box");
@@ -979,7 +989,11 @@ mod open_left_live_is_closed {
             input: *const c_void,
             out: *mut c_void,
         ) -> RawOutcome {
-            let opened = real().open.expect("the test plugin opens")(instance, input, out);
+            // SAFETY: this planted slot forwards the host's own arguments for this crossing,
+            // unchanged, to the test plugin's real slot of the same type.
+            let opened = unsafe {
+                real().open.expect("the test plugin opens")(instance, input, out)
+            };
             if opened != RawOutcome::of(Outcome::Ready) {
                 return opened;
             }
@@ -1011,7 +1025,9 @@ mod open_left_live_is_closed {
             };
             live.swap_remove(at);
             let close: Op = real().close.expect("the test plugin closes");
-            close(instance, input, out)
+            // SAFETY: this planted slot forwards the host's own arguments for this crossing,
+            // unchanged, to the test plugin's real slot of the same type.
+            unsafe { close(instance, input, out) }
         }
 
         fn door() -> *const Door {

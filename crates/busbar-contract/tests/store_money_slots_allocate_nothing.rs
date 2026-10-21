@@ -448,11 +448,15 @@ fn out_head() -> OutHead {
 }
 
 fn call<I, O>(op: Option<Op>, instance: *mut c_void, input: &I, out: &mut O) -> Outcome {
-    op.expect("every slot is filled")(
-        instance,
-        ptr::from_ref(input).cast(),
-        ptr::from_mut(out).cast(),
-    )
+    // SAFETY: the macro door's slot, `instance` what its `open` answered (or NULL before one), and
+    // the caller's `in`/`out` of the slot's types borrowed for the call.
+    unsafe {
+        op.expect("every slot is filled")(
+            instance,
+            ptr::from_ref(input).cast(),
+            ptr::from_mut(out).cast(),
+        )
+    }
     .outcome()
 }
 

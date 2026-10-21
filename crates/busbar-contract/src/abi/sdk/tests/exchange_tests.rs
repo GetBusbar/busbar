@@ -262,15 +262,18 @@ static SLOTS: ConnectorSlots = ConnectorSlots {
 };
 
 fn host() -> Host {
-    Host::of(&HostTables {
-        size: std::mem::size_of::<HostTables>() as u32,
-        _reserved: 0,
-        ctx: HostCtx::NONE,
-        wake: None,
-        conns: &SLOTS,
-        services: std::ptr::null(),
-        io: std::ptr::null(),
-    })
+    // SAFETY: test tables: their context and every table they name outlive each use of the value.
+    unsafe {
+        Host::from_raw(&HostTables {
+            size: std::mem::size_of::<HostTables>() as u32,
+            _reserved: 0,
+            ctx: HostCtx::NONE,
+            wake: None,
+            conns: &SLOTS,
+            services: std::ptr::null(),
+            io: std::ptr::null(),
+        })
+    }
 }
 
 const TICKET: Ticket = Ticket {

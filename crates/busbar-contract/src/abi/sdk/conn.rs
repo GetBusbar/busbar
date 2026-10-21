@@ -136,8 +136,41 @@ unsafe impl Sync for Host {}
 impl Host {
     /// The tables `tables` names: what `open` was handed (`OpenIn::host`), for a kind whose SDK
     /// wrapper is not yet in this crate (the auth kind's outbound mint reaches its need through it).
+    ///
+    /// SEALED (status row 159): the tables arrive as a [`Lent`](crate::abi::sdk::lent::Lent),
+    /// which only the SDK makes from the `in` a real host lent the call, so safe code cannot hand
+    /// a forged context, wake or table here.
+    ///
+    /// ```compile_fail,E0308
+    /// use busbar_contract::abi::mechanism::ticket::{HostCtx, HostTables};
+    /// use busbar_contract::abi::sdk::conn::Host;
+    /// let tables = HostTables {
+    ///     size: core::mem::size_of::<HostTables>() as u32,
+    ///     _reserved: 0,
+    ///     ctx: HostCtx::NONE,
+    ///     wake: None,
+    ///     conns: core::ptr::NonNull::dangling().as_ptr(),
+    ///     services: core::ptr::null(),
+    ///     io: core::ptr::null(),
+    /// };
+    /// let _ = Host::of(&tables); // a hand-built table is no `Lent`
+    /// ```
     #[must_use]
-    pub const fn of(tables: &HostTables) -> Self {
+    pub fn of(tables: crate::abi::sdk::lent::Lent<'_, HostTables>) -> Self {
+        // SAFETY: a `Lent` is the SDK's proof the tables are the ones a real host lent this call,
+        // and the mechanism's host-table rule keeps them valid for the instance's life.
+        unsafe { Self::from_raw(tables.get()) }
+    }
+
+    /// The tables `tables` names, for a host or harness that holds them raw.
+    ///
+    /// # Safety
+    ///
+    /// `tables` are the tables a real host lent this instance's `open`: `ctx` the host's own for
+    /// that instance, `wake` the host's, and each table pointer NULL or the host's live table, all
+    /// valid for every use of the value.
+    #[must_use]
+    pub const unsafe fn from_raw(tables: &HostTables) -> Self {
         // The I/O table was appended: tables whose `size` ends before it hand none.
         let io = if tables.size as usize >= std::mem::size_of::<HostTables>() {
             tables.io
@@ -165,7 +198,9 @@ impl Host {
     /// wake for a stale ticket is dropped; tables with no wake make it a no-op.
     pub fn wake(&self, ticket: Ticket) {
         if let Some(wake) = self.wake {
-            wake(self.ctx, ticket);
+            // SAFETY: `WakeFn`'s contract: `ctx` and `wake` came together from host-lent tables
+            // (`Host::of`, or `Host::from_raw`'s caller vouched for them).
+            unsafe { wake(self.ctx, ticket) };
         }
     }
 
@@ -173,15 +208,19 @@ impl Host {
     /// wrappers; `None` when the host offers none.
     #[must_use]
     pub fn services(&self) -> Option<crate::abi::sdk::services::Services> {
-        crate::abi::sdk::services::Services::of(&HostTables {
-            size: std::mem::size_of::<HostTables>() as u32,
-            _reserved: 0,
-            ctx: self.ctx,
-            wake: self.wake,
-            conns: self.conns,
-            services: self.services,
-            io: self.io,
-        })
+        // SAFETY: these are the fields of host-lent tables (`Host::of`, or `Host::from_raw`'s
+        // caller vouched for them), handed on whole.
+        unsafe {
+            crate::abi::sdk::services::Services::from_raw(&HostTables {
+                size: std::mem::size_of::<HostTables>() as u32,
+                _reserved: 0,
+                ctx: self.ctx,
+                wake: self.wake,
+                conns: self.conns,
+                services: self.services,
+                io: self.io,
+            })
+        }
     }
 
     /// The connector for ONE entry of the op running on `ticket`.
@@ -407,7 +446,11 @@ impl Connector<'_> {
             needed_items: 0,
             error: absent(),
         };
-        let answered = f(self.host.ctx, std::ptr::from_ref(&input).cast(), &mut out).outcome();
+        // SAFETY: `ServiceFn`'s contract: `f` and `ctx` came together from host-lent tables
+        // (`Host::of`, or `Host::from_raw`'s caller vouched for them); `input` is a local `in` of
+        // this service's type, its head stamped above, and `out` a local `ServiceOut`.
+        let answered =
+            unsafe { f(self.host.ctx, std::ptr::from_ref(&input).cast(), &mut out) }.outcome();
         (answered, out)
     }
 

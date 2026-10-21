@@ -6,7 +6,8 @@
 //! A plugin of any kind is two crates (abi-v2, the door's "crate shape"):
 //!
 //! * the LOGIC crate invokes [`plugin_door!`](crate::plugin_door) once. It expands, IN THAT CRATE,
-//!   to `pub extern "C" fn door() -> *const Door` — a [`DoorFn`](crate::abi::mechanism::door::DoorFn) answering a `'static`
+//!   to `pub unsafe extern "C" fn door() -> *const Door` — a
+//!   [`DoorFn`](crate::abi::mechanism::door::DoorFn) answering a `'static`
 //!   [`Door`] (magic [`DOOR_MAGIC`], [`MECHANISM_VERSION`], the kind, the kind's ABI version, the
 //!   plugin's [`Statement`] and its ops table). No `#[no_mangle]`: a composition root that links
 //!   several plugins links several `door` functions, one per crate, and a compiled-in row holds
@@ -335,15 +336,20 @@ impl<S: Slot> Entry for S {
 
 /// THE TRAMPOLINE every table entry is: `S`'s body behind the SDK's checks (the module doc), under
 /// the call capture `H` keeps. `INDEX` is the slot's index in its kind's table; an `in.op` naming
-/// another slot is a fault.
-extern "C" fn trampoline<S: Entry, H: CaptureHome, const INDEX: u32>(
+/// another slot is a fault. `unsafe` (status row 159): it is an [`Op`], entered only under
+/// [`Op`]'s contract.
+///
+/// # Safety
+///
+/// [`Op`]'s: the caller vouches for `instance`, `input` and `out`.
+unsafe extern "C" fn trampoline<S: Entry, H: CaptureHome, const INDEX: u32>(
     instance: *mut c_void,
     input: *const c_void,
     out: *mut c_void,
 ) -> RawOutcome {
-    // SAFETY: the host passes `in`/`out` of this slot's types and the instance `open` answered
-    // (the call convention); `enter` checks NULL and the heads' sizes before reading or writing
-    // beyond them.
+    // SAFETY: the caller holds `Op`'s contract: `in`/`out` of this slot's types and the instance
+    // `open` answered; `enter` checks NULL and the heads' sizes before reading or writing beyond
+    // them.
     RawOutcome::of(unsafe { enter::<S, H>(INDEX, instance, input.cast(), out.cast()) })
 }
 
@@ -631,7 +637,9 @@ pub const fn door<T: KindOps>(
 /// THE DOOR MACRO. The door, Statement and table are `const` items: `'static`, but Rust does not
 /// promise one address per `const`, so a host compares a door's contents, never its address.
 /// Invoked once, in a plugin's LOGIC crate; expands there to
-/// `pub extern "C" fn door() -> *const Door` over a `'static` door, Statement and ops table.
+/// `pub unsafe extern "C" fn door() -> *const Door` over a `'static` door, Statement and ops table.
+/// The door is a [`DoorFn`](crate::abi::mechanism::door::DoorFn), so it is `unsafe` (status row
+/// 159) like every slot it leads to; its body is the macro's own and reads no argument.
 ///
 /// ```ignore
 /// busbar_contract::plugin_door! {
@@ -743,7 +751,12 @@ macro_rules! plugin_door {
 
         /// This plugin's door: the `'static` `Door` a compiled-in row holds and `export_door!`
         /// forwards to.
-        pub extern "C" fn door() -> *const $crate::abi::mechanism::door::Door {
+        ///
+        /// # Safety
+        ///
+        /// The `DoorFn` contract: this image is loaded. The body
+        /// takes no argument and answers a `'static` door.
+        pub unsafe extern "C" fn door() -> *const $crate::abi::mechanism::door::Door {
             use $crate::abi::mechanism::lifecycle as __lc;
             use $crate::abi::sdk::door as __sdk;
             // A `path` fragment cannot open a struct literal; an alias can.
@@ -829,10 +842,16 @@ macro_rules! export_door {
         );
 
         /// The ONE symbol this plugin image exports.
+        ///
+        /// # Safety
+        ///
+        /// The `DoorFn` contract: this image is loaded.
         #[unsafe(no_mangle)]
-        pub extern "C" fn busbar_plugin_door() -> *const $crate::abi::mechanism::door::Door {
+        pub unsafe extern "C" fn busbar_plugin_door() -> *const $crate::abi::mechanism::door::Door {
             const __DOOR_FN: $crate::abi::mechanism::door::DoorFn = $door;
-            __DOOR_FN()
+            // SAFETY: the caller holds `DoorFn`'s contract for this image, and `__DOOR_FN` is this
+            // image's own door (the logic crate's, linked into it).
+            unsafe { __DOOR_FN() }
         }
     };
 }

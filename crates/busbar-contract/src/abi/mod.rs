@@ -38,7 +38,8 @@ use core::mem::MaybeUninit;
 ///
 /// Every slot is `extern "C"` (THE DESIGN, the signed kind-ABI design's finding M3: unwinding across
 /// a foreign cdylib is undefined behaviour, so a slot catches its own panic and answers its fault
-/// byte, and a panic that escapes it aborts).
+/// byte, and a panic that escapes it aborts), and `unsafe` (status row 159): a slot dereferences
+/// the raw pointers it is handed, so only a caller that vouches for them may enter it.
 macro_rules! slot_table {
     (
         extern "C";
@@ -52,7 +53,13 @@ macro_rules! slot_table {
     ) => {
         $(
             $(#[$sdoc])*
-            pub type $alias = extern "C" fn($($arg: $ty),*) -> $ret;
+            ///
+            /// # Safety
+            ///
+            /// The caller guarantees `ctx` is the context the host handed this instance, still
+            /// live (the host that minted it outlives every call), and every pointer argument is
+            /// valid for the reads or writes its slot's doc states, for the call's length.
+            pub type $alias = unsafe extern "C" fn($($arg: $ty),*) -> $ret;
         )*
         slot_table!(@table $(#[$doc])* $table { $($slot: $alias),* });
     };
@@ -370,6 +377,15 @@ pub const fn pointee_size<T>(_p: *const T) -> usize {
     core::mem::size_of::<T>()
 }
 
+/// The byte size of the field `project` names in a `T`, read off the projection's TYPE: the
+/// projection is never called, so no `T` need exist. [`read_sized_field!`] measures a field's END
+/// offset with it, in safe code (status row 159: the macro's only `unsafe` is its caller's).
+#[inline]
+#[must_use]
+pub const fn field_size<T, F>(_project: for<'a> fn(&'a T) -> &'a F) -> usize {
+    core::mem::size_of::<F>()
+}
+
 /// Read a `Copy` field from a sized POD struct ONLY if its advertised `size` proves the sender wrote
 /// it, yielding `Option<FieldTy>`. This is the mechanical form of the append-only rule: a field
 /// appended in a later minor is `None` when read from an older sender's struct, never undefined.
@@ -383,7 +399,8 @@ pub const fn pointee_size<T>(_p: *const T) -> usize {
 /// the sender's own bytes is ever touched and no alignment the peer did not promise is assumed.
 ///
 /// # Safety
-/// The macro expands inline, so its obligation is documented rather than compiler-enforced: `ptr`
+/// The caller's, and COMPILER-ENFORCED (status row 159): the expansion dereferences `ptr`
+/// outside any `unsafe` block of its own, so it compiles only inside the caller's `unsafe`. `ptr`
 /// must address at least `size` live, initialized bytes laid out as the leading prefix of `$struct`.
 /// It need not be aligned, and it need NOT be a whole `$struct` — that latitude is the entire reason
 /// the guard takes a pointer.
@@ -397,10 +414,20 @@ pub const fn pointee_size<T>(_p: *const T) -> usize {
 /// }
 /// let whole = Shape { size: core::mem::size_of::<Shape>() as u32, tokens: 10 };
 /// // `tokens` lies within a whole `Shape`, so it reads as `Some`.
-/// assert_eq!(read_sized_field!(&whole, whole.size, Shape, tokens), Some(10));
+/// // SAFETY: `&whole` addresses a whole, live `Shape`.
+/// assert_eq!(unsafe { read_sized_field!(&whole, whole.size, Shape, tokens) }, Some(10));
 /// // A sender whose `size` stops before `tokens` never wrote it: `None`.
 /// let short = Shape { size: 4, tokens: 10 };
-/// assert_eq!(read_sized_field!(&short, short.size, Shape, tokens), None);
+/// // SAFETY: as above.
+/// assert_eq!(unsafe { read_sized_field!(&short, short.size, Shape, tokens) }, None);
+/// ```
+///
+/// RED (status row 159): safe code cannot read through a pointer it made up.
+///
+/// ```compile_fail,E0133
+/// use busbar_contract::abi::mechanism::call::InHead;
+/// use busbar_contract::abi::read_sized_field;
+/// let _ = read_sized_field!(0x1000 as *const InHead, 64, InHead, size);
 /// ```
 #[macro_export]
 macro_rules! read_sized_field {
@@ -411,22 +438,18 @@ macro_rules! read_sized_field {
         // compiled. See `honoured_size`.
         let advertised: u32 =
             $crate::abi::honoured_size($size, ::core::mem::size_of::<$struct>());
-        // The field's END offset, derived WITHOUT touching `p`: a full-size `MaybeUninit` probe is a
-        // real, correctly-sized, correctly-aligned allocation, and `addr_of!` only computes an
-        // address — it never reads the uninitialized bytes. Const-folds to a literal.
-        let probe = ::core::mem::MaybeUninit::<$struct>::uninit();
+        // The field's END offset, derived WITHOUT touching `p`: its offset and its type's size,
+        // read off a projection that is never called. Const-folds to a literal.
         let end = ::core::mem::offset_of!($struct, $field)
-            + $crate::abi::pointee_size(
-                // SAFETY: `probe` is a whole, aligned `$struct`; `addr_of!` performs no read.
-                unsafe { ::core::ptr::addr_of!((*probe.as_ptr()).$field) },
-            );
+            + $crate::abi::field_size::<$struct, _>(|s| &s.$field);
         if $crate::abi::field_present(advertised, end) {
-            // SAFETY: `field_present` just proved the sender's advertised size reaches THROUGH this
-            // field, so the projection lands inside the caller-guaranteed live prefix, and
-            // `read_unaligned` copies it out without forming a reference or assuming alignment.
-            ::core::option::Option::Some(unsafe {
-                ::core::ptr::read_unaligned(::core::ptr::addr_of!((*p).$field))
-            })
+            // NO `unsafe` OF ITS OWN (status row 159): the caller's `unsafe` vouches for `p`, and
+            // `field_present` just proved the sender's advertised size reaches THROUGH this field,
+            // so the projection lands inside the caller-guaranteed live prefix; `read_unaligned`
+            // copies it out without forming a reference or assuming alignment.
+            ::core::option::Option::Some(::core::ptr::read_unaligned(::core::ptr::addr_of!(
+                (*p).$field
+            )))
         } else {
             ::core::option::Option::None
         }

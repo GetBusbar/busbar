@@ -170,7 +170,10 @@ impl<'h> Io<'h> {
                 len: 0,
             },
         };
-        match f(self.ctx, std::ptr::from_ref(&input).cast(), &mut out).outcome() {
+        // SAFETY: `ServiceFn`'s contract: `f` and `ctx` came together from host-lent tables (an
+        // `Io` is made only by `Host::io`, `pub(crate)`); `input` is a local `in` of this
+        // slot's type, its head stamped above, and `out` a local `ServiceOut`.
+        match unsafe { f(self.ctx, std::ptr::from_ref(&input).cast(), &mut out) }.outcome() {
             Outcome::Ready => Poll::Ready(Ok(out)),
             Outcome::Pending => Poll::Pending,
             Outcome::Failed => Poll::Ready(Err(IoFailure::Failed(host_text(out.error)))),

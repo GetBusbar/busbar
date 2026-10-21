@@ -16,7 +16,7 @@ use std::ptr;
 use busbar_contract::abi::mechanism::call::{
     Blob, Envelope, InHead, Op, OutHead, Outcome, RawOutcome, BLOB_ABSENT,
 };
-use busbar_contract::abi::mechanism::door::Door;
+use busbar_contract::abi::mechanism::door::{Door, DoorFn};
 use busbar_contract::abi::mechanism::lifecycle::{
     slot, CancelIn, CancelOut, GenIn, OpenIn, OpenOut, OpsHead, TickOut, ValidateIn,
     LIFECYCLE_SLOTS,
@@ -159,11 +159,15 @@ fn out_head(size: usize) -> OutHead {
 }
 
 fn call<I, O>(op: Option<Op>, input: &I, out: &mut O) -> Outcome {
-    op.expect("the macro fills every slot")(
-        ptr::null_mut(),
-        ptr::from_ref(input).cast(),
-        ptr::from_mut(out).cast(),
-    )
+    // SAFETY: the dropped-in door's slot, entered with no instance (no slot of the fixture reads
+    // one) and the caller's `in`/`out` borrowed for the call.
+    unsafe {
+        op.expect("the macro fills every slot")(
+            ptr::null_mut(),
+            ptr::from_ref(input).cast(),
+            ptr::from_mut(out).cast(),
+        )
+    }
     .outcome()
 }
 
@@ -185,8 +189,8 @@ fn the_dropped_in_door_answers_and_a_panicking_slot_is_fault_not_abort() {
     // SAFETY: `DOOR_SYMBOL` is NUL-terminated.
     let sym = unsafe { dlsym(lib, DOOR_SYMBOL.as_ptr().cast()) };
     assert!(!sym.is_null(), "no busbar_plugin_door");
-    // SAFETY: the symbol is the macro's `extern "C" fn() -> *const Door`.
-    let door_fn: extern "C" fn() -> *const Door = unsafe { std::mem::transmute(sym) };
+    // SAFETY: the symbol is the macro's `unsafe extern "C" fn() -> *const Door`, a `DoorFn`.
+    let door_fn: DoorFn = unsafe { std::mem::transmute(sym) };
     // SAFETY: the door is `'static` in the loaded image, which is never unloaded here.
     let door = unsafe { &*door_fn() };
     assert_eq!(door.magic, DOOR_MAGIC);

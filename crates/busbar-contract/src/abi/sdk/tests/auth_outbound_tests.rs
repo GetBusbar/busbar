@@ -228,8 +228,16 @@ fn out_head(size: usize) -> OutHead {
 }
 
 fn cross<I, O>(op: Option<RawOp>, instance: *mut std::ffi::c_void, i: &I, o: &mut O) -> Outcome {
-    op.expect("every slot is filled")(instance, ptr::from_ref(i).cast(), ptr::from_mut(o).cast())
-        .outcome()
+    // SAFETY: the slot is the macro door's, `instance` what its `open` answered (or NULL before
+    // one), and `i`/`o` borrow the caller's `in`/`out` of the slot's types for the call.
+    unsafe {
+        op.expect("every slot is filled")(
+            instance,
+            ptr::from_ref(i).cast(),
+            ptr::from_mut(o).cast(),
+        )
+    }
+    .outcome()
 }
 
 fn opened(t: &Ops) -> *mut std::ffi::c_void {

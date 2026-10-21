@@ -580,7 +580,11 @@ impl Drop for OpenEnded<'_> {
 /// ([`crate::ffi_thread`]). [`Instance::cross_gated`] calls it only from inside
 /// [`crate::ffi_thread::on_plugin_thread`]; a lifecycle slot entered on any other thread trips the
 /// assertion.
-pub(crate) fn enter_lifecycle(
+///
+/// # Safety
+///
+/// [`Op`]'s contract for `op`, `instance`, `input` and `output` (status row 159).
+pub(crate) unsafe fn enter_lifecycle(
     what: &str,
     op: Op,
     instance: *mut c_void,
@@ -588,7 +592,8 @@ pub(crate) fn enter_lifecycle(
     output: *mut c_void,
 ) -> RawOutcome {
     crate::ffi_thread::debug_assert_permanent(what);
-    op(instance, input, output)
+    // SAFETY: the caller holds `Op`'s contract for these arguments.
+    unsafe { op(instance, input, output) }
 }
 
 pub(crate) fn is_lifecycle(s: u32) -> bool {
@@ -1069,7 +1074,12 @@ impl Instance {
                 let _acting = super::worker::acting_for(acting);
                 let _unit = super::services::serving(unit);
                 with_crossing(Some(self), || {
-                    enter_lifecycle((self.op_name)(s), op, instance, input, output)
+                    // SAFETY: THE ONE CROSSING (status row 159): `op` is a slot of the door this
+                    // plugin
+                    // loaded, its image held open by `self`; `instance` is what its `open`
+                    // answered (NULL before one); `input`/`output` are the host's own frame of the
+                    // slot's types, `out` zeroed and sized above, alive across the call.
+                    unsafe { enter_lifecycle((self.op_name)(s), op, instance, input, output) }
                 })
             });
             match routed {
@@ -1080,7 +1090,11 @@ impl Instance {
             }
         } else {
             with_crossing(Some(self), || {
-                op(instance, input.cast_const().cast(), out.cast())
+                // SAFETY: THE ONE CROSSING (status row 159): `op` is a slot of the door this
+                // plugin loaded, its image held open by `self`; `instance` is what its `open`
+                // answered (NULL before one); `input`/`out` are the host's own frame of the
+                // slot's types, `out` zeroed and sized above, alive across the call.
+                unsafe { op(instance, input.cast_const().cast(), out.cast()) }
             })
         };
         if s == slot::OPEN

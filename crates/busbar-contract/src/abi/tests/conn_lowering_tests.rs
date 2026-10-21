@@ -447,7 +447,8 @@ fn a_descriptor_without_the_head_words_states_none() {
         head_target: garbage,
     };
     let mut conn = 0_u64;
-    assert_eq!(open(host.ctx(), 0, &d, &mut conn).result(), Ok(()));
+    // SAFETY: the host's own slot over the context `host` keeps alive; `d` and `conn` are locals.
+    assert_eq!(unsafe { open(host.ctx(), 0, &d, &mut conn) }.result(), Ok(()));
     // SAFETY: the host's own table over the context `host` keeps alive.
     let pa = unsafe { HostConns::new(slots, host.ctx()) };
     let mut buf = [0_u8; 16];
@@ -459,7 +460,8 @@ fn a_descriptor_without_the_head_words_states_none() {
     );
     d.size = OPEN_DESC_HEADLESS as u32 - 8;
     assert_eq!(
-        open(host.ctx(), 0, &d, &mut conn).result(),
+        // SAFETY: as above; `d` now states a size short of its head words, which the slot refuses.
+        unsafe { open(host.ctx(), 0, &d, &mut conn) }.result(),
         Err(ConnError::Fault)
     );
 }
@@ -506,24 +508,36 @@ impl Conns for Panics {
 
 /// RED (THE DESIGN, the signed kind-ABI design's finding M3, `BUSBAR-1.6.0.md` l.1515): every slot
 /// of the host's table is `extern "C"`, never `extern "C-unwind"` — the bindings below are typed
-/// `extern "C"`, and a `C-unwind` slot does not coerce to them, so this does not compile against
-/// one — and a host that panics in every operation answers [`ConnOutcome::Fault`] from each of the
+/// `unsafe extern "C"` (status row 159), and a `C-unwind` slot does not coerce to them, so this
+/// does not compile against one — and a host that panics in every operation answers [`ConnOutcome::Fault`] from each of the
 /// six slots. Nothing unwinds across the table: a panic escaping an `extern "C"` slot aborts the
 /// process, so this test reaching its end is the proof that each slot caught its own.
 #[test]
 fn a_panicking_slot_answers_fault_without_unwinding() {
     let slots = host_slots();
-    let open: extern "C" fn(ConnCtx, u32, *const WireOpenDesc, *mut u64) -> RawConnOutcome =
+    let open: unsafe extern "C" fn(ConnCtx, u32, *const WireOpenDesc, *mut u64) -> RawConnOutcome =
         slots.open.unwrap();
-    let write: extern "C" fn(ConnCtx, u64, *const u8, usize, u8, *mut usize) -> RawConnOutcome =
-        slots.write.unwrap();
-    let read: extern "C" fn(ConnCtx, u64, u64, *mut u8, usize, *mut WirePiece) -> RawConnOutcome =
-        slots.read.unwrap();
-    let wait: extern "C" fn(ConnCtx, *const u64, usize, u64, *mut usize) -> RawConnOutcome =
+    let write: unsafe extern "C" fn(
+        ConnCtx,
+        u64,
+        *const u8,
+        usize,
+        u8,
+        *mut usize,
+    ) -> RawConnOutcome = slots.write.unwrap();
+    let read: unsafe extern "C" fn(
+        ConnCtx,
+        u64,
+        u64,
+        *mut u8,
+        usize,
+        *mut WirePiece,
+    ) -> RawConnOutcome = slots.read.unwrap();
+    let wait: unsafe extern "C" fn(ConnCtx, *const u64, usize, u64, *mut usize) -> RawConnOutcome =
         slots.wait.unwrap();
-    let facts: extern "C" fn(ConnCtx, u64, *mut WireConnFacts) -> RawConnOutcome =
+    let facts: unsafe extern "C" fn(ConnCtx, u64, *mut WireConnFacts) -> RawConnOutcome =
         slots.facts.unwrap();
-    let close: extern "C" fn(ConnCtx, u64) -> RawConnOutcome = slots.close.unwrap();
+    let close: unsafe extern "C" fn(ConnCtx, u64) -> RawConnOutcome = slots.close.unwrap();
 
     let host = Box::new(ConnHost::new(Arc::new(Panics), InstanceId(1)));
     let ctx = host.ctx();
@@ -549,17 +563,22 @@ fn a_panicking_slot_answers_fault_without_unwinding() {
     // SAFETY: as above.
     let mut out_facts: WireConnFacts = unsafe { core::mem::zeroed() };
     let fault = RawConnOutcome(ConnOutcome::Fault as u8);
-    let answered = [
-        ("open", open(ctx, NEED.0, &desc, &mut conn)),
-        ("write", write(ctx, 1, b"x".as_ptr(), 1, 0, &mut n)),
-        (
-            "read",
-            read(ctx, 1, 0, buf.as_mut_ptr(), buf.len(), &mut piece),
-        ),
-        ("wait", wait(ctx, std::ptr::null(), 0, 0, &mut ready)),
-        ("facts", facts(ctx, 1, &mut out_facts)),
-        ("close", close(ctx, 1)),
-    ];
+    // SAFETY: the host's own slots over the context `host` (boxed, alive to the end) minted;
+    // every pointer borrows a local of the slot's type for the call, and `wait`'s empty set is
+    // NULL with a zero length.
+    let answered = unsafe {
+        [
+            ("open", open(ctx, NEED.0, &desc, &mut conn)),
+            ("write", write(ctx, 1, b"x".as_ptr(), 1, 0, &mut n)),
+            (
+                "read",
+                read(ctx, 1, 0, buf.as_mut_ptr(), buf.len(), &mut piece),
+            ),
+            ("wait", wait(ctx, std::ptr::null(), 0, 0, &mut ready)),
+            ("facts", facts(ctx, 1, &mut out_facts)),
+            ("close", close(ctx, 1)),
+        ]
+    };
     for (slot, outcome) in answered {
         assert_eq!(outcome, fault, "the {slot} slot's panic must answer FAULT");
         assert_eq!(outcome.result(), Err(ConnError::Fault), "{slot}");

@@ -1371,7 +1371,8 @@ mod dropped_image {
         let door: DoorFn = *unsafe { lib.get::<DoorFn>(b"busbar_plugin_door\0") }
             .expect("the image exports its door");
         std::mem::forget(lib);
-        DROPPED_DOOR.store(door().cast_mut(), Ordering::SeqCst);
+        // SAFETY: `door` was read from the fixture image, held open (leaked) above.
+        DROPPED_DOOR.store(unsafe { door() }.cast_mut(), Ordering::SeqCst);
         let e = distinct(test_door::<TheDroppedImagesDoor>, &path).expect_err("one image twice");
         assert!(e.contains("answers the LINKED door"), "{e}");
     }
