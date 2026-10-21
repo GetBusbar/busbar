@@ -451,13 +451,13 @@ mod resumed_open {
 }
 
 /// RED (Q-P4-7): the store script writes, and looks up, the credential kind the plugin's
-/// `conformance.json` names (`store.credential_kind`: the one kind the shipped store schemas hold,
-/// `sigv4` in 1.5.5's), never a kind of its own a schema-constrained store refuses; a
-/// `conformance.json` that names none is refused by name.
+/// `conformance.json` names (`store.credential_kind`: the one kind the shipped store schemas hold),
+/// never a kind of its own a schema-constrained store refuses; a `conformance.json` that names none
+/// is refused by name.
 #[test]
 fn the_store_script_writes_the_credential_kind_the_plugin_names() {
     use super::store::{secret, Inputs};
-    assert_eq!(secret("sigv4", "c1", "k1", "pub1").meta.kind, "sigv4");
+    assert_eq!(secret("signed", "c1", "k1", "pub1").meta.kind, "signed");
     let none = serde_json::json!({ "node": 1 });
     let text = std::panic::catch_unwind(|| Inputs::of(&none).credential_kind.to_owned())
         .expect_err("no credential kind named");
@@ -670,21 +670,30 @@ mod namespace_hooks {
 #[test]
 fn red_declares_needs_that_are_not_the_statements_are_refused() {
     use super::declared_needs_are;
-    let http = ["http".to_owned()];
-    let tcp_http = ["http".to_owned(), "tcp".to_owned()];
-    assert_eq!(declared_needs_are(r#"{"needs": ["http"]}"#, &http), Ok(()));
+    let framed = ["framed".to_owned()];
+    let stream_framed = ["framed".to_owned(), "stream".to_owned()];
     assert_eq!(
-        declared_needs_are(r#"{"needs": ["tcp", "http", "tcp"]}"#, &tcp_http),
+        declared_needs_are(r#"{"needs": ["framed"]}"#, &framed),
+        Ok(())
+    );
+    assert_eq!(
+        declared_needs_are(
+            r#"{"needs": ["stream", "framed", "stream"]}"#,
+            &stream_framed
+        ),
         Ok(())
     );
     assert_eq!(declared_needs_are(r#"{"contract_abi": {}}"#, &[]), Ok(()));
-    let e = declared_needs_are(r#"{"needs": ["http", "tcp"]}"#, &http).unwrap_err();
-    assert!(e.contains(r#"names ["tcp"] the Statement does not"#), "{e}");
-    let e = declared_needs_are(r#"{"needs": ["http"]}"#, &tcp_http).unwrap_err();
-    assert!(e.contains(r#"misses ["tcp"]"#), "{e}");
-    let e = declared_needs_are(r#"{}"#, &http).unwrap_err();
-    assert!(e.contains(r#"misses ["http"]"#), "{e}");
-    assert!(declared_needs_are(r#"{"needs": "http"}"#, &http).is_err());
+    let e = declared_needs_are(r#"{"needs": ["framed", "stream"]}"#, &framed).unwrap_err();
+    assert!(
+        e.contains(r#"names ["stream"] the Statement does not"#),
+        "{e}"
+    );
+    let e = declared_needs_are(r#"{"needs": ["framed"]}"#, &stream_framed).unwrap_err();
+    assert!(e.contains(r#"misses ["stream"]"#), "{e}");
+    let e = declared_needs_are(r#"{}"#, &framed).unwrap_err();
+    assert!(e.contains(r#"misses ["framed"]"#), "{e}");
+    assert!(declared_needs_are(r#"{"needs": "framed"}"#, &framed).is_err());
 }
 
 /// The declares file is found at the workspace root or one directory below it.
@@ -1426,5 +1435,272 @@ mod no_shared_state {
         });
         assert!(refused.is_err(), "a second environment was accepted");
         assert_eq!(std::env::var(VAR).as_deref(), Ok("one"), "and never set");
+    }
+}
+
+/// A HOOK'S FAR ENDS ARE SERVED AS EVERY OTHER KIND'S (the suite's module docs, `far_ends`: "each
+/// instance the suite opens is bound to a connection table serving them"). The hook script bound
+/// its door with [`Subject::bind`], which never reads `far_ends`, so a hook whose declared need
+/// reaches a far end was handed no table serving it, and the documented far ends were never served
+/// to a hook at all. RED: the bind the hook script makes, for a subject naming one far end, must
+/// hand the instance a table over which that far end is reached and answers.
+mod hook_far_ends {
+    use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
+    use busbar_contract::conn::{InstanceId, NeedId, OpenDesc, PieceKind};
+
+    use super::super::{dispatcher, hook, Subject};
+    use crate::dispatch::ConnTable;
+    use crate::hook_door_conformance_tests::hook_door_plugin::conforming;
+    use crate::stand_in::FramedFacts;
+
+    const FAR: &str = "https://far-end.conformance.invalid/verdict";
+    const BODY: &str = r#"{"verdict":"abstain"}"#;
+
+    #[test]
+    fn a_hooks_declared_far_end_is_reachable_through_the_bind_the_hook_script_makes() {
+        let inputs = serde_json::json!({
+            "far_ends": [{ "url": FAR, "cert_pem": null, "status": 200, "body": BODY }]
+        })
+        .to_string();
+        let s = Subject::new(conforming::door, "hook_door", &inputs);
+        let d = dispatcher();
+        let ConnTable::Host(table) = hook::bind_for(&d, &s).conns else {
+            panic!(
+                "the hook script bound its door with no connection table serving the far ends its \
+                 inputs name: a hook's declared far end is unreachable"
+            );
+        };
+        // Reached as the hook's own declared need reaches it: over the framed transport, naming
+        // the far end as its target.
+        let need = ReadNeed {
+            direction: 0,
+            egress_class: 0,
+            transport: FramedFacts::stand_in().transport,
+            auth: String::new(),
+            target_from: String::new(),
+            trust_from: String::new(),
+            details: ReadBlob {
+                fmt: 0,
+                flags: 0,
+                bytes: Vec::new(),
+            },
+            timeout_ms: 0,
+        };
+        let (owner, id) = (InstanceId(41), NeedId(0));
+        table
+            .declare(owner, id, &need, None, None)
+            .expect("the hook's need declares on the far-end table");
+        let conn = table
+            .open(
+                owner,
+                id,
+                &OpenDesc {
+                    target: FAR,
+                    ..OpenDesc::default()
+                },
+            )
+            .unwrap_or_else(|e| panic!("the hook's far end {FAR} is unreachable: {e:?}"));
+        let mut buf = [0u8; 256];
+        let head = table.read(owner, conn, 0, &mut buf).expect("the head");
+        assert_eq!(
+            (head.kind, head.status_code),
+            (PieceKind::Fields, Some(200))
+        );
+        let body = table.read(owner, conn, 0, &mut buf).expect("the body");
+        assert_eq!(body.kind, PieceKind::Body);
+        assert_eq!(&buf[..body.len], BODY.as_bytes());
+        // A URL the inputs do not name is still refused: the table serves the far ends, not the world.
+        assert!(table
+            .open(
+                owner,
+                id,
+                &OpenDesc {
+                    target: "https://elsewhere.conformance.invalid/",
+                    ..OpenDesc::default()
+                },
+            )
+            .is_err());
+    }
+}
+
+/// A HOOK THAT DECLARED `hook.orders: false` IS JUDGED ON ABSTAIN-ONLY (ARCHITECT ruling, status
+/// row 194; the hook script's module docs). An undeclared hook still must produce the long order
+/// that walks the re-call; a declaring hook that orders FAILS (the RED arm).
+mod hook_orders {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::sync::Arc;
+
+    use super::super::hook::{abstain_only, contract, recall_request, Request};
+    use super::super::{fold, Leg, Subject};
+    use super::step;
+    use crate::hook_door_conformance_tests::hook_door_plugin::{conforming, ordering};
+    use crate::sign::{Declares, HookDecl};
+
+    fn request(label: &str, expect: serde_json::Value) -> Arc<Request> {
+        Arc::new(Request::of(
+            &serde_json::json!({
+                "label": label,
+                "op": "decide",
+                "candidates": [{ "idx": 0 }, { "idx": 1 }, { "idx": 2 }],
+                "expect": expect,
+            }),
+            2,
+        ))
+    }
+
+    fn abstains() -> Arc<Request> {
+        request("abstains", serde_json::json!({ "verb": "abstain" }))
+    }
+
+    fn long_order() -> Arc<Request> {
+        request(
+            "long",
+            serde_json::json!({ "verb": "prefer", "order": [2, 1, 0] }),
+        )
+    }
+
+    fn declaring(orders: bool) -> Declares {
+        Declares {
+            hook: Some(HookDecl { orders }),
+            ..Declares::default()
+        }
+    }
+
+    /// The inputs of an abstain-only hook set over the conforming fixture.
+    fn inputs() -> String {
+        let abstain = |label: &str| {
+            serde_json::json!({
+                "label": label,
+                "op": "decide",
+                "candidates": [{ "idx": 0 }],
+                "expect": { "verb": "abstain" },
+            })
+        };
+        serde_json::json!({
+            "settings": { "reject_over_messages": 3 },
+            "hook": {
+                "bad_settings": ["[]"],
+                "order_cap": 2,
+                "requests": [abstain("abstains")],
+                "refresh": {
+                    "settings": { "reject_over_messages": 4 },
+                    "request": abstain("abstains again"),
+                },
+            },
+        })
+        .to_string()
+    }
+
+    fn panics(f: impl FnOnce()) -> String {
+        let e = catch_unwind(AssertUnwindSafe(f)).expect_err("the fold fails");
+        e.downcast_ref::<String>()
+            .cloned()
+            .or_else(|| e.downcast_ref::<&str>().map(|s| (*s).to_string()))
+            .unwrap_or_default()
+    }
+
+    /// An undeclared hook still must produce a long order (unchanged): abstain-only is refused for
+    /// it, a long order is the re-call's request.
+    #[test]
+    fn an_undeclared_hook_must_still_produce_a_long_order() {
+        let none = [abstains()];
+        let e = recall_request(true, &none).err().expect("no long order");
+        assert!(e.contains("longer than hook.order_cap"), "{e}");
+        let both = [abstains(), long_order()];
+        let found = recall_request(true, &both)
+            .expect("a long order")
+            .expect("the re-call's request");
+        assert!(Arc::ptr_eq(found, &both[1]));
+    }
+
+    #[test]
+    fn a_hook_declaring_no_orders_is_judged_on_abstain_only() {
+        let none = [abstains()];
+        assert!(recall_request(false, &none)
+            .expect("abstain-only")
+            .is_none());
+        let both = [abstains(), long_order()];
+        let e = recall_request(false, &both)
+            .err()
+            .expect("an expected order");
+        assert!(
+            e.contains("`hook.orders: false`") && e.contains("'long'"),
+            "{e}"
+        );
+        assert!(abstain_only(&none).is_ok() && abstain_only(&both).is_err());
+    }
+
+    /// The steps a passing hook fold has, its requests answering `answers`.
+    fn passing(answers: &[(&str, &str)], recall: bool) -> Vec<super::Step> {
+        let mut f = vec![
+            step("validate", "Ready lease=false", 1, 1),
+            step("validate bad #0", "Failed lease=false why", 1, 1),
+            step("open", "Ready lease=false", 1, 1),
+            step("open bad", "Failed lease=false why", 1, 1),
+            step("tick", "Ready next=0", 1, 1),
+            step("refresh", "Ready lease=false", 1, 1),
+            step("refresh bad", "Failed lease=false why", 1, 1),
+            step("close", "Ready lease=false", 1, 1),
+            step("decide unopened", "Refused lease=false", 0, 0),
+            step("decide after close", "Fault lease=false", 0, 0),
+        ];
+        f.extend(answers.iter().map(|(l, a)| step(l, a, 1, 1)));
+        if recall {
+            f.push(step(
+                "re-call short again",
+                "Failed lease=false x then Fault lease=false",
+                2,
+                2,
+            ));
+        }
+        f
+    }
+
+    /// RED: a declaring hook whose fold answers an order FAILS the contract, even when the order is
+    /// the very answer the script expected; a declaring hook that abstains passes with no re-call;
+    /// an undeclared one is held to the re-call as before.
+    #[test]
+    fn red_a_hook_declaring_no_orders_fails_the_contract_when_it_orders() {
+        let abstain = (
+            "abstains",
+            "Ready lease=false | verb=abstain recalled=false",
+        );
+        let expect = [("abstains".to_string(), abstain.1.to_string())];
+        contract(&passing(&[abstain], false), &expect, false).expect("abstain-only passes");
+        let ordered = (
+            "abstains",
+            "Ready lease=false | verb=prefer order=[1] recalled=false",
+        );
+        let want = [("abstains".to_string(), ordered.1.to_string())];
+        let e = contract(&passing(&[ordered], false), &want, false)
+            .expect_err("an order from a hook that declared none");
+        assert!(e.contains("`hook.orders: false` and ordered"), "{e}");
+        assert!(
+            contract(&passing(&[abstain], false), &expect, true).is_err(),
+            "an undeclared hook is held to the re-call"
+        );
+        contract(&passing(&[abstain], true), &expect, true).expect("an undeclared hook re-calls");
+    }
+
+    /// The whole fold over the fixtures, linked: a hook declaring no orders that abstains passes;
+    /// the same set over a door that orders FAILS; an undeclared abstain-only set is refused.
+    #[test]
+    fn the_fold_judges_a_declared_abstain_only_hook() {
+        let declared = |door, orders| {
+            Subject::new(door, "hook_door", &inputs()).with_declares(declaring(orders))
+        };
+        let honest = fold(&declared(conforming::door, false), Leg::Linked);
+        assert!(honest.iter().all(|s| s.label != "re-call short again"));
+        let text = panics(|| {
+            fold(&declared(ordering::door, false), Leg::Linked);
+        });
+        assert!(text.contains("`hook.orders: false` and ordered"), "{text}");
+        let text = panics(|| {
+            fold(
+                &Subject::new(conforming::door, "hook_door", &inputs()),
+                Leg::Linked,
+            );
+        });
+        assert!(text.contains("longer than hook.order_cap"), "{text}");
     }
 }

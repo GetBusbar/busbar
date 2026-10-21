@@ -261,14 +261,13 @@ impl AuditSigningKey {
     /// A 32-BYTE SECRET DERIVED FROM THIS KEY under `label`: HMAC-SHA256 keyed by the seed, over
     /// the label. Material for another key the deployment keyset roots (the caller-reference key,
     /// row 159 H2), never the seed: the seed cannot be recovered from it, and another label gives
-    /// an unrelated secret. The copy of the seed it keys with is wiped before this returns.
+    /// an unrelated secret. Keyed through the wiped HMAC ([`crate::wiped`]): the copy of the seed,
+    /// the padded key and every hash state derived from it are wiped before this returns.
     #[must_use]
     pub fn derived_secret(&self, label: &[u8]) -> [u8; 32] {
         let mut seed = self.inner.to_bytes();
-        let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &seed);
+        let out = crate::wiped::hmac_sha256(&seed, label);
         seed.zeroize();
-        let mut out = [0u8; 32];
-        out.copy_from_slice(ring::hmac::sign(&key, label).as_ref());
         out
     }
 
