@@ -22,8 +22,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::ctx::Ctx;
 use crate::gates::construction::ceilings::{base_ref, Base};
 use crate::gates::construction::model::{plain, py_list, CRow, Cfg};
+use crate::gates::construction::rules2;
+use crate::gates::construction::tree::Tree;
 use crate::gates::construction::{dirs_for_globs, CEILINGS};
-use crate::toml_doc::Document;
+use crate::toml_doc::{Document, Value};
 
 pub const ROW_CENSUS: &str = "ceiling-census";
 
@@ -191,12 +193,17 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
                 now_deleted.contains(dir) && !cx.abs(dir).exists()
             });
             bad.extend(problems);
+            let remeasure =
+                |table: &str, key: &str| base_remeasure(cx, &cfg.doc, &base.sha, &doc, table, key);
+            let (measured, problems) = measured_ceilings(&cfg.doc, &doc, &remeasure);
+            bad.extend(problems);
             bad.extend(raised_ceilings(
                 &cfg.doc,
                 &doc,
                 base.short(),
                 &now_planes,
                 &struck,
+                &measured,
             ));
         }
         Err(e) => bad.push(e),
@@ -569,19 +576,23 @@ fn rule_ceilings(doc: &Document) -> BTreeMap<(String, String), i64> {
 /// census floors, in the other direction. Deleting the key is the cheapest rise and is scored as
 /// one. Two deletions are not rises: a `max_per_crate` figure for a crate that left
 /// `gate.plane_crates`, whose floor the census already holds against the base, and a rule table
-/// whose whole subject was deleted with a ledgered crate ([`struck_rule_tables`]).
+/// whose whole subject was deleted with a ledgered crate ([`struck_rule_tables`]). One rise is not
+/// a rise: a ceiling SET from 0 in the change whose detector first makes that debt visible
+/// ([`measured_ceilings`]); from any other figure, or in any change after that one, it is refused.
 fn raised_ceilings(
     now_doc: &Document,
     base_doc: &Document,
     short: &str,
     plane_crates_now: &[String],
     struck: &BTreeSet<String>,
+    measured: &BTreeSet<(String, String)>,
 ) -> Vec<String> {
     let now = rule_ceilings(now_doc);
     rule_ceilings(base_doc)
         .into_iter()
         .filter_map(
             |((table, key), before)| match now.get(&(table.clone(), key.clone())) {
+                Some(_) if before == 0 && measured.contains(&(table.clone(), key.clone())) => None,
                 Some(after) if *after > before => Some(format!(
                 "[{table}] {key}: the ceiling rose {before} -> {after} since the base {short}. A \
                  ceiling refuses every rise (Law 9): drain the sites instead"
@@ -598,6 +609,379 @@ fn raised_ceilings(
             },
         )
         .collect()
+}
+
+/// THE LEDGER OF CEILINGS SET BY THE CHANGE THAT FIRST MEASURES THEIR DEBT:
+/// `[gate.census.measured]`.
+pub const MEASURED: &str = "gate.census.measured";
+
+/// THE RULES WHOSE CEILINGS A MEASUREMENT MAY SET, each with its DETECTOR KEYS: the keys whose
+/// values that rule matches the tree with (ARCHITECT ruling on a6's second review of #1454). Prose
+/// (`why`), a ledger of debt or exemptions, a path it skips and a ceiling are not detectors, and
+/// neither is a key the rule does not read. A rule is listed only where [`base_remeasure`] can run
+/// it over the base, so every ceiling a measurement sets is checked against the base's own count.
+const MEASURABLE: &[(&str, &[&str])] = &[
+    (
+        "kernel-no-protocol-registry",
+        &[
+            "scope_globs",
+            "names",
+            "fn_names",
+            "store_cells",
+            "store_holds",
+        ],
+    ),
+    ("unit-no-wall-clock", &["scope_globs", "forbidden"]),
+];
+
+/// The detector keys of `rule`, when the census can re-measure it ([`MEASURABLE`]).
+fn detectors_of(rule: &str) -> Option<&'static [&'static str]> {
+    MEASURABLE
+        .iter()
+        .find(|(r, _)| *r == rule)
+        .map(|(_, keys)| *keys)
+}
+
+/// One `[gate.census.measured]` value, read by its fields: `<detector>[, <detector>…] -- <why>;
+/// drain: <ref>`. The drain is the `;`-separated field that starts `drain:`; the word anywhere else
+/// in the prose is not one.
+struct MeasuredWhy {
+    detectors: Vec<String>,
+    drain: Option<String>,
+}
+
+fn parse_measured(value: &str) -> MeasuredWhy {
+    let (detectors, why) = value.split_once(" -- ").unwrap_or(("", value));
+    MeasuredWhy {
+        detectors: detectors
+            .split(',')
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+            .map(str::to_string)
+            .collect(),
+        drain: why
+            .split(';')
+            .find_map(|field| field.trim().strip_prefix("drain:"))
+            .map(|r| r.trim().to_string()),
+    }
+}
+
+/// A drain reference names something a reader can open: a PR (`#1454`), a status row (`row 82`)
+/// or a file (`crates/busbar-kernel/src/preflight.rs`). SYNTAX ONLY, by ruling: it is not looked up
+/// as a PR, a row or a path that exists. The drain is the reviewer's pointer; what keeps a measured
+/// ceiling honest is the base re-measure ([`base_remeasure`]), which no reference can satisfy.
+fn names_a_ref(r: &str) -> bool {
+    let digit_at = |s: &str| s.chars().next().is_some_and(|c| c.is_ascii_digit());
+    let pr = r.match_indices('#').any(|(i, _)| digit_at(&r[i + 1..]));
+    let lower = r.to_ascii_lowercase();
+    let row = lower.match_indices("row ").any(|(i, _)| {
+        digit_at(&lower[i + 4..]) && (i == 0 || !lower.as_bytes()[i - 1].is_ascii_alphanumeric())
+    });
+    let file = r
+        .split_whitespace()
+        .map(|t| t.trim_matches(|c: char| "`'\"(),;:".contains(c)))
+        .any(|t| {
+            t.contains('/')
+                && t.rsplit('/').next().is_some_and(|leaf| {
+                    leaf.contains('.') && !leaf.starts_with('.') && !leaf.ends_with('.')
+                })
+        });
+    pr || row || file
+}
+
+/// THE CEILINGS A DETECTOR CHANGE MEASURED INTO BEING (ARCHITECT rulings on #1454, the #1418
+/// MINTED precedent): debt that was in the tree, unseen, until this change's detector could see it
+/// may be SET at its measured count in that same change, and only then. Each entry of
+/// `[gate.census.measured]` is `"rules.<table>.<key>" = "<detector key>[, <detector key>…] -- <why>;
+/// drain: <PR, row or file>"`, and it excuses the rise of that one ceiling only when ALL hold:
+///   * the base does not carry the entry (it is this change's own; at any base after it, it
+///     excuses nothing, and the figure it set is then held like every other);
+///   * the ceiling was 0 at the base (a ceiling is SET from nothing; a rise from N stays refused);
+///   * (a) every named detector is a detector key of that rule ([`MEASURABLE`]; never prose, a
+///     ledger or a ceiling), the base carried it, and its value differs from the base's;
+///   * (b) the figure equals the BASE re-measured with this tree's rule and the base's own
+///     exemptions, never counting a stale one (`remeasure`): the sites it covers were all at the
+///     base, newly seen, so it never covers a site this change adds;
+///   * (c) the reason carries a `drain:` field that names a PR, a row or a file ([`names_a_ref`],
+///     syntax only).
+/// An entry that fails any condition is RED with every reason it fails, and excuses nothing; the
+/// ledger is add-only against the base.
+fn measured_ceilings(
+    now_doc: &Document,
+    base_doc: &Document,
+    remeasure: &dyn Fn(&str, &str) -> Result<i64, String>,
+) -> (BTreeSet<(String, String)>, Vec<String>) {
+    let ledger = |doc: &Document| -> Vec<(String, String)> {
+        let t = doc.table_or_empty(MEASURED);
+        t.keys()
+            .iter()
+            .map(|k| {
+                (
+                    k.trim().trim_matches('"').to_string(),
+                    t.str_of(k).unwrap_or_default().trim().to_string(),
+                )
+            })
+            .collect()
+    };
+    let now = ledger(now_doc);
+    let base = ledger(base_doc);
+    let mut problems: Vec<String> = base
+        .iter()
+        .filter(|(b, _)| !now.iter().any(|(n, _)| n == b))
+        .map(|(b, _)| {
+            format!("[{MEASURED}] `{b}` was removed since the base; the ledger is add-only")
+        })
+        .collect();
+    let mut out = BTreeSet::new();
+    for (entry, value) in &now {
+        if base.iter().any(|(b, _)| b == entry) {
+            // Measured at an earlier base: the figure it set is that base's, held like any other.
+            continue;
+        }
+        let Some((table, key)) = entry
+            .rsplit_once('.')
+            .filter(|(t, k)| t.starts_with("rules.") && !k.is_empty())
+        else {
+            problems.push(format!(
+                "[{MEASURED}] `{entry}` names no `rules.<table>.<key>` ceiling"
+            ));
+            continue;
+        };
+        let rule = table.strip_prefix("rules.").unwrap_or(table);
+        let MeasuredWhy { detectors, drain } = parse_measured(value);
+        let mut wrong: Vec<String> = Vec::new();
+        match drain.as_deref() {
+            None => wrong.push(
+                "its reason carries no `drain:` field (`<detector>, … -- <why>; drain: <PR, row \
+                 or file>`)"
+                    .to_string(),
+            ),
+            Some(r) if !names_a_ref(r) => wrong.push(format!(
+                "its drain `{r}` names no PR (`#<n>`), status row (`row <n>`) or file"
+            )),
+            Some(_) => {}
+        }
+        let (Some(now_t), Some(base_t)) = (now_doc.table(table), base_doc.table(table)) else {
+            wrong.push(format!(
+                "the rule table [{table}] is not in both this tree and the base, so no detector \
+                 change can be shown"
+            ));
+            problems.push(format!(
+                "[{MEASURED}] `{entry}` excuses nothing: {}",
+                wrong.join("; ")
+            ));
+            continue;
+        };
+        match base_t.int_of(key) {
+            Some(0) => {}
+            Some(b) => wrong.push(format!(
+                "the ceiling was {b} at the base; a measured ceiling is SET from 0, and a rise \
+                 from any figure is refused (Law 9)"
+            )),
+            None => wrong.push(format!(
+                "the base carries no `{key}` in [{table}] for it to be SET from 0"
+            )),
+        }
+        let matchers = detectors_of(rule);
+        if matchers.is_none() {
+            wrong.push(format!(
+                "the census cannot re-measure [{table}] at the base (it re-measures {}), so no \
+                 ceiling of it is set by measurement",
+                MEASURABLE
+                    .iter()
+                    .map(|(r, _)| format!("[rules.{r}]"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if detectors.is_empty() {
+            wrong.push(
+                "it names no detector key: name the matcher this change widened (`<key>, <key> \
+                 -- <why>; drain: <ref>`)"
+                    .to_string(),
+            );
+        }
+        for d in &detectors {
+            if !matchers.is_some_and(|m| m.contains(&d.as_str())) {
+                wrong.push(format!(
+                    "`{d}` is not a detector key of [{table}] (prose, a ledger, a ceiling and a \
+                     key the rule does not match with never count)"
+                ));
+            } else if base_t.get(d).is_none() {
+                wrong.push(format!(
+                    "detector `{d}` is new against the base: it did not change, it appeared"
+                ));
+            } else if now_t.get(d) == base_t.get(d) {
+                wrong.push(format!("detector `{d}` did not change since the base"));
+            }
+        }
+        match now_t.int_of(key) {
+            None => wrong.push(format!("this tree carries no integer `{key}` in [{table}]")),
+            Some(_) if matchers.is_none() => {}
+            Some(set_to) => match remeasure(table, key) {
+                Ok(at_base) if at_base == set_to => {}
+                Ok(at_base) => wrong.push(format!(
+                    "the base re-measured with this tree's rule counts {at_base} under `{key}` \
+                     and the ceiling is set to {set_to}: a measured ceiling covers only debt the \
+                     base already held, newly seen, so it must equal the base's re-measure"
+                )),
+                Err(e) => wrong.push(format!(
+                    "the base could not be re-measured with this tree's rule, so no site is \
+                     shown to pre-date this change: {e}"
+                )),
+            },
+        }
+        if wrong.is_empty() {
+            out.insert((table.to_string(), key.to_string()));
+        } else {
+            problems.push(format!(
+                "[{MEASURED}] `{entry}` excuses nothing: {}",
+                wrong.join("; ")
+            ));
+        }
+    }
+    (out, problems)
+}
+
+/// The overlay key a self-test plants to answer `git diff --name-only <sha>` plus the untracked
+/// files (see [`base_view`]): one path per line.
+pub const DIFF_NAMES_KEY: &str = "git-diff-names";
+
+/// The ceiling a re-measure probes a key with, to find the rows that key holds: no rule's real
+/// ceiling is this figure.
+const PROBE: i64 = 987_654_321;
+
+/// THIS TREE AS THE BASE `sha` HAD IT, for every `.rs` file the scan reads: each path that differs
+/// from the base (`git diff --name-only <sha>`, the untracked files, and every path the overlay
+/// claims) is read back at the base, or made absent where the base has no such file. The rest of
+/// the tree is the base's already.
+fn base_view(cx: &Ctx, sha: &str) -> Result<Ctx, String> {
+    let mut changed: BTreeSet<String> = BTreeSet::new();
+    match cx.overlay_command(&format!("{DIFF_NAMES_KEY}:{sha}")) {
+        Some(text) => changed.extend(
+            text.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string),
+        ),
+        None => {
+            changed.extend(cx.git_lines(&["diff", "--name-only", "--no-renames", sha, "--"])?);
+            changed.extend(cx.git_lines(&["ls-files", "--others", "--exclude-standard"])?);
+        }
+    }
+    let mut ov = cx.overlay().cloned().unwrap_or_default();
+    changed.extend(ov.paths().map(|p| p.to_string_lossy().replace('\\', "/")));
+    for rel in changed.iter().filter(|r| r.ends_with(".rs")) {
+        match cx.git_show(sha, rel) {
+            Ok(text) => ov.set(rel, text),
+            Err(_) => ov.remove(rel),
+        }
+    }
+    Ok(cx.with_overlay(ov))
+}
+
+/// THE LEDGERS A RE-MEASURE READS AS THE BASE HAD THEM (ARCHITECT ruling on a6's third review of
+/// #1454). An exemption this change writes names a store this change may have added: read with this
+/// tree's list, a new store exempted here is a stale name at the base and is counted there, which
+/// lets a second new store sit under the ceiling it set. Read with the base's list, the base's count
+/// is the stores the base held that its own ledger did not name: debt already there.
+const BASE_LEDGERS: &[&str] = &["exempt_stores"];
+
+/// THE RULE TABLE A RE-MEASURE RUNS WITH: this tree's PARSED ceilings file with `table.key` set to
+/// [`PROBE`] and each of [`BASE_LEDGERS`] set to the base's PARSED value (an empty list when the
+/// base has none). Edited as values, never as text: a comment in the file (`exempt_stores = [ # ]
+/// store_holds = ['.',`) is a comment to the parser, so no key can be smuggled into the re-measure.
+/// And it FAILS CLOSED unless every other key of that table equals this tree's parsed value, so the
+/// re-measure runs this tree's rule and nothing else.
+fn probed_doc(
+    now_doc: &Document,
+    base_doc: &Document,
+    table: &str,
+    key: &str,
+) -> Result<Document, String> {
+    let now_t = now_doc
+        .table(table)
+        .ok_or_else(|| format!("this tree has no [{table}] to re-measure"))?;
+    if now_t.int_of(key).is_none() {
+        return Err(format!("[{table}] has no integer `{key}` to probe"));
+    }
+    let mut doc = now_doc.with_value(table, key, Value::Int(PROBE));
+    for ledger in BASE_LEDGERS {
+        let was = base_doc
+            .table(table)
+            .and_then(|t| t.get(ledger))
+            .cloned()
+            .unwrap_or(Value::Array(Vec::new()));
+        let strings = was
+            .as_array()
+            .is_some_and(|items| items.iter().all(|v| v.as_str().is_some()));
+        if !strings {
+            return Err(format!(
+                "the base's [{table}] {ledger} is not a list of strings, so the base is not \
+                 re-measured"
+            ));
+        }
+        doc = doc.with_value(table, ledger, was);
+    }
+    let probed_t = doc
+        .table(table)
+        .ok_or_else(|| format!("[{table}] left the probed file"))?;
+    let skipped = |k: &str| k == key || BASE_LEDGERS.contains(&k);
+    let moved: Vec<&String> = probed_t
+        .keys()
+        .iter()
+        .chain(now_t.keys().iter())
+        .filter(|k| !skipped(k.as_str()) && probed_t.get(k) != now_t.get(k))
+        .collect();
+    if !moved.is_empty() {
+        return Err(format!(
+            "the re-measure's [{table}] differs from this tree's at {}, so it would not run this \
+             tree's rule",
+            moved
+                .iter()
+                .map(|k| format!("`{k}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    Ok(doc)
+}
+
+/// THE BASE RE-MEASURED WITH THIS TREE'S RULE: `[table]`'s rule run over [`base_view`] with
+/// [`probed_doc`] (this tree's parsed ceilings, the base's own exemptions), and the count of the
+/// rows `key` holds (the most any one of them counts). A stale exemption is never counted: the base
+/// is re-measured for the stores it HOLDS, not for names its ledger lost. Only the rules of
+/// [`MEASURABLE`] are run; any other is an error, so nothing it would set is excused.
+fn base_remeasure(
+    cx: &Ctx,
+    now_doc: &Document,
+    sha: &str,
+    base_doc: &Document,
+    table: &str,
+    key: &str,
+) -> Result<i64, String> {
+    let cfg = Cfg {
+        doc: probed_doc(now_doc, base_doc, table, key)?,
+    };
+    let roots = cfg.scan_roots()?;
+    let tree = Tree::load(&base_view(cx, sha)?, &roots, &cfg.test_path_fragments()?)?;
+    let rows = match table.strip_prefix("rules.").unwrap_or(table) {
+        "kernel-no-protocol-registry" => rules2::kernel_no_protocol_registry(&tree, &cfg)?,
+        "unit-no-wall-clock" => rules2::unit_no_wall_clock(&tree, &cfg)?,
+        other => return Err(format!("the census has no re-measure for [rules.{other}]")),
+    };
+    rows.iter()
+        .filter(|r| r.threshold == PROBE)
+        .map(|r| {
+            let stale = r
+                .offenders
+                .iter()
+                .filter(|o| o.starts_with("stale exemption "))
+                .count();
+            r.current - stale as i64
+        })
+        .max()
+        .ok_or_else(|| format!("no row of [{table}] is held to `{key}`"))
 }
 
 /// THE LEDGER OF RULE TABLES STRUCK WITH THEIR SUBJECT: `[gate.census.deleted_rules]`.
@@ -976,7 +1360,8 @@ mod tests {
             struck.is_empty() && problems.is_empty(),
             "{struck:?} {problems:?}"
         );
-        let out = raised_ceilings(&now, &doc(RULE_BASE), "abc1234", &[], &struck);
+        let none = BTreeSet::new();
+        let out = raised_ceilings(&now, &doc(RULE_BASE), "abc1234", &[], &struck, &none);
         assert_eq!(out.len(), 2, "{out:?}");
         let blank = doc("[gate.census.deleted_rules]\n\"rules.a\" = \"\"\n");
         let (struck, problems) = struck_rule_tables(&blank, &doc(RULE_BASE), gone_dir);
@@ -995,7 +1380,9 @@ mod tests {
         let (struck, problems) = struck_rule_tables(&now, &doc(RULE_BASE), gone_dir);
         assert!(problems.is_empty(), "{problems:?}");
         assert_eq!(struck, set(&["rules.a", "rules.b"]));
-        assert!(raised_ceilings(&now, &doc(RULE_BASE), "abc1234", &[], &struck).is_empty());
+        let none = BTreeSet::new();
+        let out = raised_ceilings(&now, &doc(RULE_BASE), "abc1234", &[], &struck, &none);
+        assert!(out.is_empty(), "{out:?}");
     }
 
     /// A ledger entry for a table whose subject is still in the tree excuses nothing, and neither
@@ -1024,5 +1411,257 @@ mod tests {
         let (_, problems) = struck_rule_tables(&doc(RULE_BASE), &doc(&base), gone_dir);
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(problems[0].contains("add-only"), "{problems:?}");
+    }
+
+    const DEBT_BASE: &str = "[rules.kernel-no-protocol-registry]\nwhy = \"the kernel holds no \
+                             registry\"\nstore_cells = [\"OnceLock\"]\nmax_hits = 0\nmax_debt = 0\n";
+    const DEBT_WIDER: &str = "[rules.kernel-no-protocol-registry]\nwhy = \"the kernel holds no \
+                              registry\"\nstore_cells = [\"OnceLock\", \"RefCell\"]\nmax_hits = \
+                              0\nmax_debt = 4\n";
+    const MEASURED_ROW: &str = "[gate.census.measured]\n\"rules.kernel-no-protocol-registry.\
+                                max_debt\" = \"store_cells -- four sites the wider cells first \
+                                see; drain: status row 82\"\n";
+
+    /// The ceilings judged against the base, with the base re-measured at `at_base`.
+    fn rises_at(now: &str, base: &str, at_base: i64) -> (Vec<String>, Vec<String>) {
+        let (measured, problems) = measured_ceilings(&doc(now), &doc(base), &|_, _| Ok(at_base));
+        let out = raised_ceilings(
+            &doc(now),
+            &doc(base),
+            "abc1234",
+            &[],
+            &BTreeSet::new(),
+            &measured,
+        );
+        (out, problems)
+    }
+
+    /// The same, with the base re-measuring exactly the four sites the fixture sets.
+    fn rises(now: &str, base: &str) -> (Vec<String>, Vec<String>) {
+        rises_at(now, base, 4)
+    }
+
+    /// RED: a plain rise of a debt ceiling from 0 is refused (Law 9), detector widened or not.
+    #[test]
+    fn a_plain_rise_from_zero_is_still_refused() {
+        let (out, problems) = rises(DEBT_WIDER, DEBT_BASE);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(out[0].contains("0 -> 4"), "{out:?}");
+    }
+
+    /// THE RULED WAY IN (#1454, the #1418 MINTED precedent): SET from 0, in the change whose
+    /// detector first sees the debt, at exactly the base's re-measure, with its entry naming the
+    /// widened matcher and a drain that names a row.
+    #[test]
+    fn a_ceiling_set_from_zero_with_its_detector_change_is_green() {
+        let (out, problems) = rises(&format!("{DEBT_WIDER}\n{MEASURED_ROW}"), DEBT_BASE);
+        assert!(
+            problems.is_empty() && out.is_empty(),
+            "{problems:?} {out:?}"
+        );
+    }
+
+    /// RED: the entry with no detector change, from a figure other than 0, or carried by the base
+    /// excuses nothing; nor does a ledger key named as its detector.
+    #[test]
+    fn a_measured_entry_without_its_detector_change_or_from_n_or_at_the_base_is_red() {
+        let same = DEBT_WIDER.replace(", \"RefCell\"", "");
+        let (out, problems) = rises(&format!("{same}\n{MEASURED_ROW}"), DEBT_BASE);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(problems[0].contains("did not change"), "{problems:?}");
+
+        let from_two = DEBT_BASE.replace("max_debt = 0", "max_debt = 2");
+        let (out, problems) = rises(&format!("{DEBT_WIDER}\n{MEASURED_ROW}"), &from_two);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(problems[0].contains("SET from 0"), "{problems:?}");
+
+        let next_base = format!(
+            "{}\n{MEASURED_ROW}",
+            DEBT_BASE.replace("max_debt = 0", "max_debt = 4")
+        );
+        let more = DEBT_WIDER.replace("max_debt = 4", "max_debt = 5");
+        let (out, problems) = rises(&format!("{more}\n{MEASURED_ROW}"), &next_base);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(out.len() == 1 && out[0].contains("4 -> 5"), "{out:?}");
+
+        let ledger_only = format!(
+            "{DEBT_WIDER}\n{}",
+            MEASURED_ROW.replacen("store_cells --", "debt_stores --", 1)
+        );
+        let (out, problems) = rises(&ledger_only, DEBT_BASE);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(problems[0].contains("not a detector key"), "{problems:?}");
+    }
+
+    /// RED (a6's second review of #1454, abuse 1): a word added to the rule's `why` is not a
+    /// detector change, and a reason that only mentions draining names no drain.
+    #[test]
+    fn a_prose_key_named_as_the_detector_excuses_nothing() {
+        let now = DEBT_WIDER
+            .replace(", \"RefCell\"", "")
+            .replace("holds no registry", "holds no planted registry");
+        let entry = "[gate.census.measured]\n\"rules.kernel-no-protocol-registry.max_debt\" = \
+                     \"why -- nobody will drain this\"\n";
+        let (out, problems) = rises(&format!("{now}\n{entry}"), DEBT_BASE);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(
+            problems[0].contains("`why` is not a detector key"),
+            "{problems:?}"
+        );
+        assert!(problems[0].contains("no `drain:` field"), "{problems:?}");
+    }
+
+    /// RED (abuse 2): a key new against the base is not a detector that changed, and the word
+    /// `drain` with no field after it names nothing.
+    #[test]
+    fn a_key_new_against_the_base_excuses_nothing() {
+        let now = DEBT_WIDER
+            .replace(", \"RefCell\"", "")
+            .replace("max_hits = 0", "max_hits = 0\nzz_unused = \"x\"");
+        let entry = "[gate.census.measured]\n\"rules.kernel-no-protocol-registry.max_debt\" = \
+                     \"zz_unused -- drain\"\n";
+        let (out, problems) = rises(&format!("{now}\n{entry}"), DEBT_BASE);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(
+            problems[0].contains("`zz_unused` is not a detector key"),
+            "{problems:?}"
+        );
+        assert!(problems[0].contains("no `drain:` field"), "{problems:?}");
+        // A real detector key the base did not carry appeared; it did not change.
+        let holds = "store_holds = [\"Vec\"]\n";
+        let now = format!("{DEBT_WIDER}{holds}").replace(", \"RefCell\"", "");
+        let entry = MEASURED_ROW.replace("store_cells --", "store_holds --");
+        let (out, problems) = rises(&format!("{now}\n{entry}"), DEBT_BASE);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(
+            problems[0].contains("`store_holds` is new against the base"),
+            "{problems:?}"
+        );
+    }
+
+    /// RED (abuse 3): a real detector changed, but the ceiling covers a site the base did not
+    /// hold (the base re-measures 0), and `drain: soon` names no PR, row or file.
+    #[test]
+    fn a_ceiling_over_the_base_re_measure_excuses_nothing() {
+        let now = DEBT_WIDER
+            .replace("max_debt = 4", "max_debt = 0")
+            .replace("max_hits = 0", "max_hits = 1");
+        let entry = "[gate.census.measured]\n\"rules.kernel-no-protocol-registry.max_hits\" = \
+                     \"store_cells -- a new cell; drain: soon\"\n";
+        let (out, problems) = rises_at(&format!("{now}\n{entry}"), DEBT_BASE, 0);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(out[0].contains("max_hits"), "{out:?}");
+        assert!(
+            problems[0].contains("counts 0 under `max_hits`"),
+            "{problems:?}"
+        );
+        assert!(
+            problems[0].contains("drain `soon` names no"),
+            "{problems:?}"
+        );
+        // And a figure under the base's re-measure is no more the measured count than one over.
+        let (_, problems) = rises_at(&format!("{DEBT_WIDER}\n{MEASURED_ROW}"), DEBT_BASE, 5);
+        assert!(
+            problems[0].contains("counts 5 under `max_debt`"),
+            "{problems:?}"
+        );
+        // A base that cannot be re-measured shows no site pre-dates the change.
+        let (measured, problems) = measured_ceilings(
+            &doc(&format!("{DEBT_WIDER}\n{MEASURED_ROW}")),
+            &doc(DEBT_BASE),
+            &|_, _| Err("planted".to_string()),
+        );
+        assert!(measured.is_empty(), "{measured:?}");
+        assert!(
+            problems[0].contains("could not be re-measured"),
+            "{problems:?}"
+        );
+    }
+
+    /// RED: an entry renamed, or removed and written again under another key, is a removal from an
+    /// add-only ledger; and a rule the census cannot re-measure sets no ceiling by measurement.
+    #[test]
+    fn a_renamed_entry_or_an_unmeasurable_rule_excuses_nothing() {
+        let base = format!("{DEBT_BASE}\n{MEASURED_ROW}");
+        let renamed = MEASURED_ROW.replace(".max_debt", ".max_debts");
+        let (measured, problems) = measured_ceilings(
+            &doc(&format!("{DEBT_WIDER}\n{renamed}")),
+            &doc(&base),
+            &|_, _| Ok(4),
+        );
+        assert!(measured.is_empty(), "{measured:?}");
+        assert!(
+            problems.iter().any(|p| p.contains("add-only")),
+            "{problems:?}"
+        );
+
+        let other = "[rules.lean-core]\nwords = [\"a\"]\nmax_hits = 0\n";
+        let wider = "[rules.lean-core]\nwords = [\"a\", \"b\"]\nmax_hits = 2\n\
+                     [gate.census.measured]\n\"rules.lean-core.max_hits\" = \"words -- two; \
+                     drain: #1454\"\n";
+        let (out, problems) = rises_at(wider, other, 2);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(problems[0].contains("cannot re-measure"), "{problems:?}");
+    }
+
+    /// The base's ledger replaces this tree's in a re-measure ON THE PARSED DOCUMENT: a `]` in a
+    /// comment closes nothing (a6's third review: `exempt_stores = [ # ] store_holds = ['.',`), and
+    /// every other key of the table is this tree's.
+    #[test]
+    fn a_ledger_is_replaced_on_the_parsed_document_and_nothing_else_moves() {
+        let now = doc(
+            "[rules.k]\nwhy = \"x\"\nstore_holds = ['Vec']\nexempt_stores = [ # ] store_holds = \
+             ['.',\n  \"new [u8] ]\",\n]\nmax_stores = 13\n",
+        );
+        let base = doc("[rules.k]\nstore_holds = ['Vec']\nexempt_stores = [\"was\"]\n");
+        let t = now.table("rules.k").expect("k");
+        assert_eq!(t.list_of("store_holds"), vec!["Vec"]);
+        assert_eq!(t.list_of("exempt_stores"), vec!["new [u8] ]"]);
+        let probed = probed_doc(&now, &base, "rules.k", "max_stores").expect("probed");
+        let p = probed.table("rules.k").expect("k");
+        assert_eq!(p.int_of("max_stores"), Some(PROBE));
+        assert_eq!(p.list_of("exempt_stores"), vec!["was"]);
+        assert_eq!(p.list_of("store_holds"), vec!["Vec"]);
+        assert_eq!(p.str_of("why"), Some("x"));
+        // A base with no ledger is an empty one; a base ledger that is not a list is refused.
+        let bare = probed_doc(&now, &doc("[rules.k]\n"), "rules.k", "max_stores").expect("bare");
+        assert!(bare
+            .table("rules.k")
+            .expect("k")
+            .list_of("exempt_stores")
+            .is_empty());
+        let odd = doc("[rules.k]\nexempt_stores = 3\n");
+        assert!(probed_doc(&now, &odd, "rules.k", "max_stores").is_err());
+        assert!(probed_doc(&now, &base, "rules.k", "max_debt").is_err());
+        assert!(probed_doc(&now, &base, "rules.y", "max_stores").is_err());
+    }
+
+    /// The drain field names a PR, a row or a file, and nothing else is one.
+    #[test]
+    fn a_drain_names_a_pr_a_row_or_a_file() {
+        for good in [
+            "#1454",
+            "status row 82",
+            "Row 159 drain lanes",
+            "crates/busbar-kernel/src/preflight.rs",
+        ] {
+            assert!(names_a_ref(good), "{good}");
+        }
+        for bad in [
+            "soon",
+            "",
+            "lane-d2-drain-installed-doors",
+            "arrow 5",
+            "a/b",
+            "#x",
+        ] {
+            assert!(!names_a_ref(bad), "{bad}");
+        }
+        assert_eq!(
+            parse_measured("a -- b; drain: #1").drain.as_deref(),
+            Some("#1")
+        );
+        assert_eq!(parse_measured("a -- will drain soon").drain, None);
     }
 }
