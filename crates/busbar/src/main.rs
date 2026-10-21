@@ -65,8 +65,9 @@ use busbar_kernel::REQUEST_ACTIVITY_TICKS;
 ///
 /// This is the piece that would have PREVENTED the ~20% "regression" incident: a non-PGO or
 /// non-release build self-reports `pgo=false` / `profile=debug` instead of masquerading as a code
-/// regression. CI asserts these values (the build-provenance gate), so a mis-built binary can neither
-/// be misdiagnosed nor shipped green. Format is `key=value` space-separated, stable for grep/awk.
+/// regression. The optimized release build (`scripts/pgo-build.sh`) asserts these values through
+/// `scripts/build-provenance-gate.sh`; no CI check runs that gate. Format is `key=value`
+/// space-separated, stable for grep/awk.
 pub(crate) fn build_info_line() -> String {
     format!(
         "profile={profile} opt-level={opt} lto={lto} debug-assertions={da} pgo={pgo} \

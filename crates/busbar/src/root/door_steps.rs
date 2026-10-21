@@ -2021,9 +2021,14 @@ pub struct OutboundAuths {
     linked: Vec<busbar_kernel::preflight::LinkedAuth>,
     dropped: Option<&'static crate::root::loader::PluginRegistry>,
     conns: crate::root::loader::dispatch::ConnTable,
-    /// Every auth row's outbound facts, read once at the first serving (each row bound once to
-    /// read them), so a serving binds only the row it opens.
-    facts: std::sync::OnceLock<Vec<AuthRowFacts>>,
+    /// Each linked row's outbound facts, READ off its door's `'static` Statement at the first
+    /// serving: no row is bound to read them (Law 7; ARCHITECT ruling 2026-10-20: reading a row's
+    /// static declaration, its kind tail included, is reading, not loading).
+    linked_facts: std::sync::OnceLock<Vec<AuthRowFacts>>,
+    /// Each dropped-in row's outbound facts, read only when no linked row states a style asked
+    /// for. A dropped row's auth tail is in its library alone (its signed rendering states the
+    /// tail's size, never its styles), so each is bound once to read them.
+    dropped_facts: std::sync::OnceLock<Vec<AuthRowFacts>>,
     /// The opened instances, by key: opened OUTSIDE the map's lock (THE DESIGN §11.13 M1: the
     /// plugin's validate and open crossings never run under a host lock).
     opened: crate::root::loader::open_once::OpenOnce<
@@ -2081,7 +2086,8 @@ impl OutboundAuths {
             linked: linked.to_vec(),
             dropped,
             conns,
-            facts: std::sync::OnceLock::new(),
+            linked_facts: std::sync::OnceLock::new(),
+            dropped_facts: std::sync::OnceLock::new(),
             opened: crate::root::loader::open_once::OpenOnce::new(),
             #[cfg(test)]
             bound: Mutex::default(),
@@ -2171,26 +2177,59 @@ impl OutboundAuths {
         }
     }
 
-    /// Every auth row's outbound facts, linked first, then dropped in, read once: each row is bound
-    /// once to read them, then let go. A row that will not load is passed over.
-    fn facts(&self) -> &[AuthRowFacts] {
-        use crate::root::loader::dispatch::auth_outbound::outbound_styles;
-        self.facts.get_or_init(|| {
-            let linked = self
-                .linked
+    /// The rows stating the outbound `style`, in the order a serving tries them: the linked rows
+    /// whose Statement states it, then (read only once no linked row served it) the dropped-in rows
+    /// stating it.
+    fn stating<'a>(&'a self, style: &'a str) -> impl Iterator<Item = &'a AuthRowFacts> + 'a {
+        self.linked_facts()
+            .iter()
+            .chain(std::iter::once_with(move || self.dropped_facts()).flatten())
+            .filter(move |row| row.styles.iter().any(|s| s.name == style))
+    }
+
+    /// Every linked row's outbound facts, read once off its door's `'static` Statement: the styles
+    /// its auth tail states, and whether a need of its takes its target from its settings
+    /// (`target_from`: one instance per binding's settings). No row is bound. A row whose
+    /// Statement a bind refuses states nothing here.
+    fn linked_facts(&self) -> &[AuthRowFacts] {
+        use crate::root::loader::dispatch::kinds::auth::stated_facts;
+        use crate::root::loader::dispatch::LinkedRow;
+        self.linked_facts.get_or_init(|| {
+            self.linked
                 .iter()
                 .enumerate()
-                .map(|(i, (name, _, _))| ((*name).to_string(), AuthRowDoor::Linked(i)));
-            let dropped = self
-                .dropped
+                .filter_map(|(i, (name, _, door))| {
+                    let styles = stated_facts(*door).ok()?.styles;
+                    let per_binding = LinkedRow::of(*door)
+                        .ok()
+                        .and_then(|row| {
+                            busbar_contract::abi::mechanism::rendering::read(&row.statement).ok()
+                        })
+                        .is_some_and(|r| r.needs.iter().any(|n| !n.target_from.is_empty()));
+                    Some(AuthRowFacts {
+                        name: (*name).to_string(),
+                        door: AuthRowDoor::Linked(i),
+                        styles,
+                        per_binding,
+                    })
+                })
+                .collect()
+        })
+    }
+
+    /// Every dropped-in row's outbound facts, read once: each row is bound once to read them (its
+    /// tail is in its library alone), then let go. A row that will not load is passed over.
+    fn dropped_facts(&self) -> &[AuthRowFacts] {
+        use crate::root::loader::dispatch::auth_outbound::outbound_styles;
+        self.dropped_facts.get_or_init(|| {
+            self.dropped
                 .map_or(&[][..], |r| r.loadable())
                 .iter()
                 .enumerate()
                 .filter(|(_, r)| r.manifest.kind == "auth")
-                .map(|(i, r)| (r.manifest.name.clone(), AuthRowDoor::Dropped(i)));
-            linked
-                .chain(dropped)
-                .filter_map(|(name, door)| {
+                .filter_map(|(i, r)| {
+                    let name = r.manifest.name.clone();
+                    let door = AuthRowDoor::Dropped(i);
                     let plugin = self.load(&name, door)?;
                     Some(AuthRowFacts {
                         styles: outbound_styles(&plugin),
@@ -2241,7 +2280,7 @@ impl OutboundAuths {
             Some((stripped, userinfo)) => (stripped, userinfo.clone().or(presented)),
             None => (settings, presented),
         };
-        for row in self.facts() {
+        for row in self.stating(style) {
             let Some(decl) = row.styles.iter().find(|s| s.name == style).cloned() else {
                 continue;
             };
@@ -2601,10 +2640,7 @@ impl OutboundAuths {
     ) -> Result<Vec<String>, String> {
         use crate::root::loader::dispatch::auth_outbound::OutboundInstance;
         use crate::root::loader::dispatch::ConnTable;
-        for row in self.facts() {
-            if !row.styles.iter().any(|s| s.name == style) {
-                continue;
-            }
+        for row in self.stating(style) {
             let Some(plugin) = self.load_with(&row.name, row.door, ConnTable::NoNeeds) else {
                 continue;
             };
