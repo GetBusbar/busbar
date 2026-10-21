@@ -235,7 +235,7 @@ def main():
          env_prov={"tz": "UTC"})
 
     # --- RED: a baseline whose own floors are implausible is refused rather than trusted.
-    #     Without this, re-recording during a broken run makes every later run vacuous.
+    #     Without this, re-recording during a broken run makes every run after it vacuous.
     tiny = {"REQ-000": "PASS"}
     case("implausible_baseline_is_refused", report(tiny), baseline(tiny), 2, "implausible")
 
