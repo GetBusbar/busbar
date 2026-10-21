@@ -508,24 +508,39 @@ async fn closed_by(exit: Exit) -> u32 {
     }
 }
 
-/// EVERY EXIT CLOSES AN ARRIVED UNIT EXACTLY ONCE: whichever way a unit that crossed `arrive`
-/// leaves (completed, answered locally, refused at its arrival, its identity, the door or the
-/// screen, its caller gone at the screen or mid-answer, a panic unwinding it, failed before or after
-/// its answer began, past its deadline, drained by a reload, the walk out of members after a
-/// failover or a dial that brought nothing back, a refusal handed as a piece first, a session
-/// ended), the plane has exactly one closing call for it once the sweep has run. RED before the
-/// fix: the screen's two exits and the failure after the answer began had none.
+/// The closing calls a unit leaving by `exit` has. One on every exit but two, which predate the
+/// guard and which it leaves as they are: a unit cut by its deadline or a drain before any byte of
+/// its answer has the `cancel` that stops its op (Part 3 section 12, "Cancel": the driver's facts
+/// bill from its disposition) and then the `refusal` that renders the caller's answer (the
+/// encode seat, "the plane's rendering of the refusal"). Neither can go without changing what the
+/// unit bills or what the caller reads, and the guard owes such a unit nothing: a third call would
+/// be the guard's.
+fn expected(exit: Exit) -> u32 {
+    match exit {
+        Exit::PastTheDeadline | Exit::Drained => 2,
+        _ => 1,
+    }
+}
+
+/// EVERY EXIT CLOSES AN ARRIVED UNIT, AND THE GUARD NEVER ADDS A CALL: whichever way a unit that
+/// crossed `arrive` leaves (completed, answered locally, refused at its arrival, its identity, the
+/// door or the screen, its caller gone at the screen or mid-answer, a panic unwinding it, failed
+/// before or after its answer began, past its deadline, drained by a reload, the walk out of
+/// members after a failover or a dial that brought nothing back, a refusal handed as a piece first,
+/// a session ended), the plane has exactly one closing call for it once the sweep has run, but for
+/// the two [`expected`] names. RED before the fix: the screen's two exits and the failure after the
+/// answer began had none.
 #[tokio::test]
 async fn every_exit_closes_an_arrived_unit_exactly_once() {
     let mut wrong = Vec::new();
     for exit in EXITS {
         let n = closed_by(exit).await;
-        if n != 1 {
-            wrong.push((exit, n));
+        if n != expected(exit) {
+            wrong.push((exit, n, expected(exit)));
         }
     }
     assert!(
         wrong.is_empty(),
-        "closing calls per exit, where not one: {wrong:?}"
+        "(exit, closing calls, expected), where they differ: {wrong:?}"
     );
 }
