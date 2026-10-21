@@ -141,10 +141,10 @@ pub const NEUTRAL_FLOOR: usize = 1109;
 ///
 /// RE-PINNED 606 -> 488 at the merge of dev 1ed9f8995d (#1161), today's measured value (Law 9; lowered,
 /// never raised). The walk did not shrink; the population did, by deletion of the retired engine
-/// crate in a reviewed commit (#1161). 606 was 247 (`busbar-plane-llm`) + 85 (`busbar-plane-mcp`)
-/// + 22 (`busbar-plane-decisions`) + 83 (`busbar-plane-a2a`) + 50 (`busbar-plane-streaming`) + 119
-/// (`busbar-llm`); 488 is the same five planes with `busbar-plane-llm` at 248 (+1, `exchange/catalog.rs`
-/// added). The 119 files that legitimately left, all `.rs` under `crates/busbar-llm/src`:
+/// crate in a reviewed commit (#1161). 606 was 247 (`busbar-plane-llm`) + 85 (`busbar-plane-mcp`) +
+/// 22 (`busbar-plane-decisions`) + 83 (`busbar-plane-a2a`) + 50 (`busbar-plane-streaming`) + 119
+/// (`busbar-llm`); 488 is the same five planes with `busbar-plane-llm` at 248 (+1,
+/// `exchange/catalog.rs` added). The 119 files that legitimately left, all `.rs` under `crates/busbar-llm/src`:
 /// * `busbar-llm/src/{arrival.rs, lib.rs, native_ingress.rs, openai_responses_webhook.rs}`;
 /// * `busbar-llm/src/engine/attempt/{assemble.rs, buffered.rs, classify.rs, mod.rs, respond.rs, send.rs}`;
 /// * `busbar-llm/src/engine/attempt/tests/{assemble.rs, failed_generation.rs}`;
