@@ -765,9 +765,9 @@ fn parse_url_raw(url: &str) -> Result<(UrlParts, String), UrlRefusal> {
     };
     let (host, raw_host, port) = if let Some(inner) = host_port.strip_prefix('[') {
         let (literal, after) = inner.split_once(']').ok_or(UrlRefusal::Bracket)?;
-        let Ok(addr) = literal.parse::<Ipv6Addr>() else {
+        if literal.parse::<Ipv6Addr>().is_err() {
             return Err(UrlRefusal::Bracket);
-        };
+        }
         let port = match after {
             "" => None,
             p => Some(p.strip_prefix(':').ok_or(UrlRefusal::Bracket)?),
