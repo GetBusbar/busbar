@@ -262,6 +262,39 @@ fn a_first_party_plugins_declared_codes_join_the_catalogue_and_nothing_else_does
     }
 }
 
+/// ONE OWNER PER DIAGNOSTIC CODE: the code that RAISES a diagnostic owns its catalogue entry, so no
+/// linked plugin declares a code the kernel's catalogue (`REGISTRY`) also holds. Read off every
+/// linked plugin's own Statement (`linked_doors`, by the root's one `declares` reader), which is
+/// the document its dropped-in build packs into the signed manifest: a code both hold refuses that
+/// build's boot ("the catalogue already holds that code"), while the linked build boots, so one
+/// plugin would behave two ways. RED with busbar-auth-header's Statement declaring BUSBAR-4013 and
+/// BUSBAR-7087 while the kernel's catalogue still held both.
+#[test]
+fn no_linked_plugin_declares_a_code_the_kernel_catalogue_holds() {
+    use busbar_kernel::diagnostics::REGISTRY;
+    let mut both = Vec::new();
+    for door in linked_doors(&crate::LINKED, crate::LINKED_TRANSPORT_DOORS) {
+        let name = door_name(door).expect("a linked door states its name");
+        let json = (crate::LINKED.declares_of)(door)
+            .unwrap_or_else(|e| panic!("plugin '{name}': {e}"));
+        let Some(json) = json else {
+            continue;
+        };
+        let declares = crate::root::loader::sign::Declares::from_declares_json(json.as_bytes())
+            .unwrap_or_else(|e| panic!("plugin '{name}': its `declares` section: {e}"));
+        for d in &declares.diagnostics {
+            if REGISTRY.iter().any(|r| r.code == d.code) {
+                both.push(format!("{name}: BUSBAR-{:04}", d.code));
+            }
+        }
+    }
+    assert!(
+        both.is_empty(),
+        "a linked plugin declares a code the kernel's catalogue also holds (one code, one owner: \
+         the code that raises it): {both:?}"
+    );
+}
+
 /// K5d (DECISIONS #2 rule (1), #40) — THE LINKED STORE AND THE RANKING HOOKS ARE ROWS OF THE ROOT'S
 /// LINKED TABLES. The kernel names neither; `main` hands the `stores`/`hooks` tables to the kernel's
 /// cold-kind axis (`root::linked::register_stores` -> `preflight::install_linked_rows`), which

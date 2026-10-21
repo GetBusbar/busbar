@@ -727,6 +727,20 @@ pub(crate) fn dropped() -> Option<&'static crate::root::loader::PluginRegistry> 
     DROPPED.get().copied()
 }
 
+/// EVERY LINKED PLUGIN'S DOOR: each plane, export, auth, hook, secret and store row's, then the
+/// linked memory-ABI `transports` (the connector's doors). Each states its `declares` on its own
+/// Statement, as its dropped-in copy states it on the signed one (compiled in = dropped in).
+pub fn linked_doors(linked: &Linked, transports: &[DoorFn]) -> Vec<DoorFn> {
+    let mut doors: Vec<DoorFn> = linked.plane_doors.to_vec();
+    doors.extend(linked.export_doors.iter().map(|d| d.door));
+    doors.extend(linked.auths.iter().map(|&(_, _, door)| door));
+    doors.extend_from_slice(linked.hook_doors);
+    doors.extend_from_slice(linked.secrets);
+    doors.extend((linked.stores)().iter().map(|&(_, _, door, _)| door));
+    doors.extend_from_slice(transports);
+    doors
+}
+
 /// A linked door's Statement `name`.
 fn door_name(door: DoorFn) -> Result<String, String> {
     let row = crate::root::loader::dispatch::LinkedRow::of(door).map_err(|e| e.to_string())?;
