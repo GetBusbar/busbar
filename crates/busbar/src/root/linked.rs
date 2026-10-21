@@ -28,7 +28,6 @@
 
 use std::sync::Arc;
 
-use busbar_kernel::ingress::arrival::BodyIngressEntry;
 use busbar_kernel::plane_driver::row::PlaneDecl;
 use busbar_kernel::plane_driver::row::PlaneDeclaration;
 use busbar_kernel::plane_host::EngineHost;
@@ -72,8 +71,6 @@ pub struct Linked {
         busbar_contract::abi::mechanism::door::DoorFn,
         &'static str,
     )],
-    /// Body-model arrivals, by protocol name.
-    pub body_ingress: &'static [&'static [BodyIngressEntry]],
     /// Installers of the protocol-axis seams an entry provides beside its declarations (a completion
     /// synthesizer, a stream-translator factory), each set once.
     pub protocol_seams: &'static [fn()],
@@ -98,10 +95,6 @@ pub struct Linked {
     /// The operator credential's provider word: the key the manifest's operator row states
     /// (`[package.metadata.busbar.operator-auth]`), linked in this build or not.
     pub operator_auth: &'static str,
-    /// The kernel-loop axes (#28): the declaration key of each plane `gauntlet_install::install()`
-    /// flips onto the unified loop's ONE-SHOT runner, and of each it flips onto the SESSION runner.
-    pub gauntlet_one_shot: &'static [&'static str],
-    pub gauntlet_session: &'static [&'static str],
     /// The transport axis (#3, #30): each linked wire's key, declared layers and build, in manifest
     /// order — the boot seal folds them bottom-up (see `crate::root::registry`).
     pub transports: &'static [LinkedTransport],
@@ -307,18 +300,12 @@ pub struct BookCtx<'a> {
     pub app: &'a busbar_kernel::state::App,
 }
 
-/// THE PROTOCOL AXIS: every entry's body-model arrivals, then each entry's protocol-axis seams. A
-/// dialect whose model rides the URL has no arrival here: its plane's door claims and serves those
-/// paths (ARCHITECT 2026-10-16 ruling 3 item 1). No dialect declaration installs anywhere: a plane
-/// resolves its own dialects (spec Part 1, Law 5). Then the node axis, which those arrivals
-/// hand their units to: every entry on it is handed the node a root unit drives it through.
+/// THE PROTOCOL AXIS: each entry's protocol-axis seams. No arrival installs anywhere: a plane's door
+/// claims and serves its own paths (ARCHITECT 2026-10-16 ruling 3 item 1), and the kernel keeps no
+/// protocol-keyed arrival table (status row 82, D2). No dialect declaration installs anywhere: a
+/// plane resolves its own dialects (spec Part 1, Law 5). Then the node axis: every entry on it is
+/// handed the node a root unit drives it through.
 pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
-    let body_ingress: Vec<BodyIngressEntry> = linked
-        .body_ingress
-        .iter()
-        .flat_map(|arrivals| arrivals.iter().copied())
-        .collect();
-    busbar_kernel::ingress::arrival::install_body_ingress(body_ingress);
     for install in linked.protocol_seams {
         install();
     }
@@ -1010,10 +997,6 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/linked_secret_sources.rs"]
 mod secret_source_tests;
-
-#[cfg(all(test, linked_operator_auth, linked_axis_body_ingress))]
-#[path = "tests/linked_auth.rs"]
-mod auth_tests;
 
 #[cfg(test)]
 #[path = "tests/linked_canonical.rs"]

@@ -3255,6 +3255,7 @@ mod tools_door {
                 ledger: Ledger::Memory,
                 book: None,
                 guarded: true,
+                limits: Vec::new(),
             },
             &|app| app,
         );

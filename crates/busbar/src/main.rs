@@ -258,8 +258,8 @@ include!(concat!(env!("OUT_DIR"), "/linked.rs"));
 // admin crate names no hook plugin.
 include!(concat!(env!("OUT_DIR"), "/linked_hook_names.rs"));
 
-/// REGISTER THE LINKED ARRIVALS — the composition root's one write into the body-ingress, protocol
-/// seam and node axes, over every entry in [`LINKED`] (see [`root::linked::register_protocols`]).
+/// REGISTER THE LINKED ARRIVALS — the composition root's one write into the protocol seam and node
+/// axes, over every entry in [`LINKED`] (see [`root::linked::register_protocols`]).
 /// No dialect declaration installs anywhere: a plane resolves its own dialects (spec Part 1, Law 5)
 /// and the root reads a plane's facts off its door (BUSBAR-1.6.0.md l.4965).
 fn register_protocols() {
@@ -367,12 +367,6 @@ fn main() {
     // list through `config::plane_sections::config_sections()`, so the plane axis must be installed before
     // any reader — including the CLI flags — can run.
     register_planes();
-    // HOST-SELECTION SEAM INSTALL (loop unification, DECISIONS #28), after the planes are registered
-    // and mirroring `busbar_admin::install()`: inject the kernel-loop runners into the neutral
-    // per-capability-keyed seam. LIVE — it flips every plane in the build onto the unified kernel
-    // loop, whose runner opens a zero hold and reports no evidence, so
-    // each plane's own metering inside `drive` stays what settles (item 125, measured money-neutral).
-    root::gauntlet_install::install();
     // DIAGNOSTICS REGISTRATION, same slot and the same reason: a rendered catalog or a `by_code`
     // lookup must see every linked plane's owned codes, so the diagnostics axis is installed before
     // any reader. Each linked entry contributes its owned diagnostics; a no-planes build installs

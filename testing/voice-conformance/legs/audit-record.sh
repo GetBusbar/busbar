@@ -15,7 +15,7 @@
 #
 # NOT THE DOOR'S: the door does not write the session's audit row — the plane is a pure kind and the
 # kernel writes the one fixed record at the unit's audit step (served leg:
-# crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_audits_each_call_once). The plane's
+# crates/busbar/src/root/tests/serve_tests.rs::a_session_door_mint_is_served_under_the_providers_credential). The plane's
 # `session_unit` keeps a session row internally, but the door surfaces none (no record kind declared).
 
 # shellcheck source=../lib/conform-bin.sh disable=SC1091

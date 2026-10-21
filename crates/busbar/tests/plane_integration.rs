@@ -698,18 +698,13 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     }
     // THE BODY-INGRESS CONVENIENCE ROUTES (1.5.5 surface, `/{name}/v1/messages`,
     // `/{provider}/{model}/v1/messages`): OBSERVATION POINT MOVED (DEV-GREEN row 83, ARCHITECT
-    // option (a) on #1161). No plane installs a kernel body-model arrival any more, so the kernel's
-    // router mounts neither path: the door that serves the `pools` map serves both through its `/`
+    // option (a) on #1161). The kernel keeps no body-model arrival table at all (status row 82, D2),
+    // so its router mounts neither path: the door that serves the `pools` map serves both through its `/`
     // claim, mounted by the composition root. The confinement this walk held on them (an
     // audience-bound token buys nothing there, its plain sibling is admitted) is walked where that
     // door is mounted: `root::door_steps::tests::door_boundary::
     // an_audience_bound_token_is_confined_to_its_door_plane_through_the_composition`, over every
     // guarded route of the door's data router. Here, the kernel's half: it mounts neither.
-    assert!(
-        !busbar_kernel::ingress::arrival::any_body_ingress(),
-        "a kernel body-model arrival is installed again: the convenience routes would be the \
-         kernel's, and this walk would owe them the confinement assertions"
-    );
     for pattern in BODY_INGRESS_ROUTES {
         assert!(
             !core_routes.iter().any(|(path, _, _)| path == pattern),

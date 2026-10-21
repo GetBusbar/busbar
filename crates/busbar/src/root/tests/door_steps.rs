@@ -2457,6 +2457,26 @@ pub(crate) mod tool_door {
                 )
                 .expect("governance"),
             );
+            // The group the key is minted into, when the footing names limits: its cost model is
+            // the governance book's and the App's, so admission judges the key against them.
+            let group = format!("agents-{instance}");
+            let groups: BTreeMap<String, busbar_kernel::config::GroupCfg> =
+                if footing.limits.is_empty() {
+                    BTreeMap::new()
+                } else {
+                    BTreeMap::from([(
+                        group.clone(),
+                        busbar_kernel::config::GroupCfg {
+                            limits: footing.limits.clone(),
+                            ..Default::default()
+                        },
+                    )])
+                };
+            let cost = if groups.is_empty() {
+                CostModel::flat(1)
+            } else {
+                CostModel::resolve_parts(None, 1, &groups)
+            };
             // A fleet node reads the first node's book: one key registry, one signing key.
             let (gov, key, token) = match footing.book {
                 Some(first) => (
@@ -2470,14 +2490,14 @@ pub(crate) mod tool_door {
                             NewKeySpec {
                                 name: "agent".to_string(),
                                 allowed_pools,
+                                group: (!groups.is_empty()).then(|| group.clone()),
                                 ..Default::default()
                             },
                             4_000_000_000,
                             1_700_000_000,
                         )
                         .expect("mint");
-                    gov.hydrate_budgets(&CostModel::flat(1), 0)
-                        .expect("hydrate");
+                    gov.hydrate_budgets(&cost, 0).expect("hydrate");
                     (
                         gov,
                         Arc::new(key),
@@ -2634,12 +2654,16 @@ pub(crate) mod tool_door {
             let live = Arc::clone(&composed.live);
             let plane_key = composed.facts.plane.clone();
             served.post = Some(Arc::clone(&post));
-            let app = configure(
-                busbar_kernel::test_support::TestApp::new()
+            let app = configure({
+                let app = busbar_kernel::test_support::TestApp::new()
                     .keys_chain()
-                    .governance(Arc::clone(&gov))
-                    .cost(CostModel::flat(1)),
-            )
+                    .governance(Arc::clone(&gov));
+                if groups.is_empty() {
+                    app.cost(cost)
+                } else {
+                    app.groups_tree(groups).cost(cost)
+                }
+            })
             .build();
             let _ = live_app.set(Arc::clone(&app));
             // The kernel re-resolves each unit's principal over this generation, as the root
@@ -3085,6 +3109,9 @@ pub(crate) mod tool_door {
         /// `destinations.block_private_addresses`); `false` admits loopback, where the test servers
         /// listen.
         pub(crate) guarded: bool,
+        /// The limits of the group the rig's key is minted into; none (the default) mints the key
+        /// into no group.
+        pub(crate) limits: Vec<busbar_kernel::config::groups::LimitCfg>,
     }
 
     impl Footing<'_> {
@@ -3094,6 +3121,7 @@ pub(crate) mod tool_door {
                 ledger: Ledger::Memory,
                 book: None,
                 guarded: false,
+                limits: Vec::new(),
             }
         }
     }
@@ -3373,6 +3401,113 @@ pub(crate) mod tool_door {
         );
         assert_eq!(rig.admitted(), 0, "nothing charged");
         assert!(heard.try_recv().is_err(), "nothing dialled");
+        assert!(rig.all_ended(), "no unit left open");
+    }
+
+    /// THE AUTHENTICATE STEP, A FORGED CREDENTIAL: a bearer the book never minted (the caller's
+    /// own token with its signature altered) is refused exactly as no credential is, before
+    /// anything is charged or dialled; the real token beside it is served.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_forged_bearer_is_refused_before_anything_is_charged_or_dialled() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-forged";
+        let _published = Published(instance);
+        let (port, mut heard) = tool_server().await;
+        let rig = Rig::new(instance, port, None);
+
+        let forged = {
+            let mut t = rig.token.clone();
+            let last = t.pop().expect("a token is not empty");
+            t.push(if last == 'A' { 'B' } else { 'A' });
+            t
+        };
+        let (status, body) = send(&rig.router, Some(&forged), CALL).await;
+        let refused = u16::try_from(refusal_status(ReasonCode::Unauthenticated)).expect("a status");
+        assert_eq!(
+            status.as_u16(),
+            refused,
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
+        assert_eq!(rig.admitted(), 0, "nothing charged");
+        assert!(heard.try_recv().is_err(), "nothing dialled");
+        assert!(rig.all_ended(), "no unit left open");
+
+        let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the real token is served: {}",
+            String::from_utf8_lossy(&body)
+        );
+        assert_eq!(
+            rig.admitted(),
+            1,
+            "the authenticated call is the one charged"
+        );
+    }
+
+    /// THE ADMIT STEP: a key whose group allows one request an hour is served once, and its second
+    /// call is refused by the group's limit before it is sent — the server hears the first
+    /// `tools/call` and never the second — with only the served call charged and every unit ended.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tools_call_past_the_callers_request_limit_is_refused_before_it_dials() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-over-limit";
+        let _published = Published(instance);
+        let (port, mut heard) = tool_server().await;
+        let one_an_hour = busbar_kernel::config::groups::LimitCfg {
+            metric: busbar_kernel::config::groups::LimitMetric::Requests,
+            amount: 1,
+            per: Some(busbar_kernel::config::groups::LimitWindow::Hour),
+            scope: None,
+            on_exhaust: None,
+            downgrade_to: None,
+            admission: None,
+            on_exhaustion: None,
+        };
+        let rig = Rig::with(
+            instance,
+            port,
+            None,
+            None,
+            None,
+            Footing {
+                limits: vec![one_an_hour],
+                ..Footing::own()
+            },
+            &|app| app,
+        );
+        let calls = |heard: &mut tokio::sync::mpsc::UnboundedReceiver<String>| {
+            let mut n = 0usize;
+            while let Ok(r) = heard.try_recv() {
+                if r.contains("\"tools/call\"") {
+                    n += 1;
+                }
+            }
+            n
+        };
+
+        let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "within its limit the call is served: {}",
+            String::from_utf8_lossy(&body)
+        );
+        assert_eq!(calls(&mut heard), 1, "the served call reached the server");
+        assert_eq!(rig.admitted(), 1, "one admitted request");
+
+        let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
+        let refused = u16::try_from(refusal_status(ReasonCode::RateLimited)).expect("a status");
+        assert_eq!(
+            status.as_u16(),
+            refused,
+            "past its limit the call is refused: {}",
+            String::from_utf8_lossy(&body)
+        );
+        assert_eq!(calls(&mut heard), 0, "the refused call was never sent");
+        assert_eq!(rig.admitted(), 1, "only the served call is charged");
         assert!(rig.all_ended(), "no unit left open");
     }
 
@@ -5122,6 +5257,7 @@ mod spent_ledger {
                 ledger,
                 book,
                 guarded: false,
+                limits: Vec::new(),
             },
         )
     }
@@ -6095,6 +6231,7 @@ mod task_continuation {
                 ledger: Ledger::Rows(std::sync::Arc::clone(rows), max_live),
                 book,
                 guarded: false,
+                limits: Vec::new(),
             },
         )
     }

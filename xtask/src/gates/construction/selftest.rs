@@ -624,39 +624,40 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         ],
     ));
 
-    // THE DEBT ONLY FALLS. Two plants on the counted list of plane- and protocol-keyed stores: a
-    // store drained without striking its row (the count falls under the ceiling, and the row is
-    // stale), and the list grown past its ceiling.
-    let rule_cfg = ConstructionGate::cfg(cx).ok();
-    let debt: Vec<String> = rule_cfg
-        .as_ref()
-        .and_then(|c| c.rule("kernel-no-protocol-registry").ok())
-        .map(|t| t.list_of("debt_stores"))
-        .unwrap_or_default();
-    match debt
-        .first()
-        .and_then(|d| d.split(" -- ").next()?.split_once("::"))
-    {
-        Some((file, name)) => {
-            let mut ov = on(base);
-            if let Ok(text) = cx.read(file) {
-                ov.set(file, text.replace(name, &format!("{name}_ZZ_DRAINED")));
-            }
-            r.push(prove_red(
-                cx,
-                gate,
-                "a debt store drained without its row struck and its ceiling lowered",
-                &[rules2::ROW_STORE_DEBT],
-                ov,
-                &["drained debt", name],
-            ));
+    // THE DEBT ONLY FALLS. Two plants on the counted list of plane- and protocol-keyed stores,
+    // planted through the ceilings file so they hold whatever the list holds today: a store that is
+    // gone left on the list under a ceiling raised to cover it (the count falls under the ceiling,
+    // and the row is stale), and the list grown past its ceiling.
+    if let Ok(text) = cx.read(CEILINGS) {
+        let mut ov = on(base);
+        let drained = ceilings::add_to_list(
+            &text,
+            "rules.kernel-no-protocol-registry",
+            "debt_stores",
+            &["crates/busbar-kernel/src/zz_drained.rs::ZZ_DRAINED -- planted".to_string()],
+        )
+        .and_then(|t| {
+            let max = ConstructionGate::cfg(cx)
+                .ok()
+                .and_then(|c| {
+                    c.rule("kernel-no-protocol-registry")
+                        .ok()
+                        .and_then(|t| t.int_of("max_debt"))
+                })
+                .unwrap_or(0);
+            ceilings::set_int(&t, "rules.kernel-no-protocol-registry", "max_debt", max + 1)
+        });
+        if let Some(drained) = drained {
+            ov.set(CEILINGS, drained);
         }
-        None => r.push(Case {
-            name: "a debt store drained without its row struck and its ceiling lowered".to_string(),
-            covers: strings(&[rules2::ROW_STORE_DEBT]),
-            expected: Expect::Red { naming: vec![] },
-            got: Expect::Skipped,
-        }),
+        r.push(prove_red(
+            cx,
+            gate,
+            "a debt store drained without its row struck and its ceiling lowered",
+            &[rules2::ROW_STORE_DEBT],
+            ov,
+            &["drained debt", "ZZ_DRAINED"],
+        ));
     }
     if let Ok(text) = cx.read(CEILINGS) {
         let mut ov = on(base);

@@ -1322,17 +1322,6 @@ pub trait GauntletPlane: Send + Sync {
     /// in-place dispatch. Takes `self: Box<Self>` so the plane moves its owned per-request payload
     /// (body/parsed form/grant) into the engine; object-safe, so `run_gauntlet` drives it as `dyn`.
     async fn drive(self: Box<Self>, req: GauntletRequest<'_>) -> axum::response::Response;
-
-    /// THIS PLANE'S CAPABILITY KEY, for the composition-tier host-selection seam
-    /// ([`register_gauntlet_runner`]). `None` (the DEFAULT) means "run me on the substrate loop,
-    /// exactly as today" — so with nothing overridden and nothing registered, every path is
-    /// byte-identical to the shipped release. A plane opts onto the unified kernel loop by returning
-    /// its key AND the composition root registering a runner under it (an oracle-gated flip, #29).
-    /// NEUTRAL: the trait names no plane; each plane spells its own key, and the seam only ever
-    /// compares strings.
-    fn capability_key(&self) -> Option<&str> {
-        None
-    }
 }
 
 /// The successful OPEN-PASS ADMISSION result of the session gate in [`run_gauntlet_session`] — the request cleared the verify-before-
@@ -1347,103 +1336,15 @@ pub struct Admitted {
     pub correlation_id: u64,
 }
 
-// THE SUBSTRATE TELLER LOOP IS GONE (W2.b, DECISIONS #28). The gauntlet's old seat on that loop — the
-// `GauntletAdapter` (a pass-through `TellerPlane`), `gauntlet_unit`, and the `admit_open` open-pass gate —
-// was deleted with `busbar-substrate/src/teller/`. Every shipped plane now rides the UNIFIED
-// `busbar_kernel::teller` loop via a registered runner on the host-selection seam below; the fallback for
-// an unregistered/test plane is the inline verify-then-drive in `run_gauntlet[_session]`, byte-identical
-// to what that adapter loop produced (it wrapped nothing).
+// THE SUBSTRATE TELLER LOOP IS GONE (W2.b, DECISIONS #28), and so is the per-capability-keyed table
+// of kernel-loop runners the composition root once filled beside it (status row 82, D2: the kernel
+// holds no plane- or protocol-keyed registry). No linked row put a plane on either kernel-loop axis,
+// so the table was always empty and every call took the inline verify-then-drive below, which is
+// therefore the whole of the sequence.
 
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// THE COMPOSITION-TIER HOST-SELECTION SEAM (loop unification, DECISIONS #28).
-//
-// A per-capability-keyed registry of KERNEL-LOOP runners the composition root installs at boot
-// (mirrors the admin-mount-seam, busbar-core/src/admin/seam.rs). The kernel loop lives in
-// `busbar-kernel`, which this tier does not depend on, so the runners are FN-POINTERS root injects.
-// The gauntlet free fns below consult the registry by the request's plane capability key: if a
-// runner is registered, route to it; UNSET (the default) runs today's substrate loop, byte-identical.
-// NEUTRAL: the seam names no plane — it is a `&str`-keyed table, exactly as `AdminUnitTable` is
-// `ctx.key`-keyed. Per-plane flip = registering that one plane's runner, oracle-gated (#29).
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
-/// A kernel-loop one-shot runner, as the composition root injects it: the kernel-loop twin of
-/// [`run_gauntlet`], erased to a fn-pointer so this tier need not name `busbar-kernel`.
-pub type GauntletRunner = for<'a> fn(
-    GauntletRequest<'a>,
-    Box<dyn GauntletPlane + 'a>,
-) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = axum::response::Response> + Send + 'a>,
->;
-
-/// A kernel-loop session runner, the kernel-loop twin of [`run_gauntlet_session`].
-pub type SessionRunner = for<'a> fn(
-    GauntletRequest<'a>,
-    Box<dyn GauntletPlane + 'a>,
-) -> Result<Admitted, axum::response::Response>;
-
-static ONE_SHOT_RUNNERS: std::sync::RwLock<
-    std::collections::BTreeMap<&'static str, GauntletRunner>,
-> = std::sync::RwLock::new(std::collections::BTreeMap::new());
-
-static SESSION_RUNNERS: std::sync::RwLock<std::collections::BTreeMap<&'static str, SessionRunner>> =
-    std::sync::RwLock::new(std::collections::BTreeMap::new());
-
-/// Register a kernel-loop one-shot runner for a plane capability key. Composition root only, at boot.
-/// Last-write-wins and idempotent. Registering a key is the per-plane FLIP onto the unified loop.
-pub fn register_gauntlet_runner(key: &'static str, runner: GauntletRunner) {
-    ONE_SHOT_RUNNERS
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(key, runner);
-}
-
-/// Register a kernel-loop session runner for a plane capability key. Composition root only, at boot.
-pub fn register_session_runner(key: &'static str, runner: SessionRunner) {
-    SESSION_RUNNERS
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(key, runner);
-}
-
-/// Whether a one-shot kernel-loop runner is registered for this capability key — i.e. whether that
-/// plane has been FLIPPED onto the unified kernel loop. The read-side twin of
-/// [`register_gauntlet_runner`], for a composition-root boot assertion or a per-plane cutover
-/// regression test. NEUTRAL: a bare `&str` lookup that names no plane.
-#[must_use]
-pub fn gauntlet_runner_registered(key: &str) -> bool {
-    one_shot_runner(key).is_some()
-}
-
-/// Whether a SESSION kernel-loop runner is registered for this capability key — i.e. whether that
-/// session plane (voice/streaming) has been FLIPPED onto the unified kernel loop's session admit. The
-/// read-side twin of [`register_session_runner`], for a composition-root boot assertion or a per-plane
-/// cutover regression test. NEUTRAL: a bare `&str` lookup that names no plane.
-#[must_use]
-pub fn session_runner_registered(key: &str) -> bool {
-    session_runner(key).is_some()
-}
-
-fn one_shot_runner(key: &str) -> Option<GauntletRunner> {
-    ONE_SHOT_RUNNERS
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(key)
-        .copied()
-}
-
-fn session_runner(key: &str) -> Option<SessionRunner> {
-    SESSION_RUNNERS
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(key)
-        .copied()
-}
-
-/// THE SHARED GAUNTLET SEQUENCE — the ONE request path every protocol plane rides. It consults the
-/// host-selection seam first: a plane whose capability key has a kernel-loop runner registered rides
-/// the UNIFIED `busbar_kernel::teller` loop; every other plane (a not-yet-flipped or test plane) runs
-/// the inline verify-then-`drive` fallback below, byte-identical to the deleted substrate Teller loop
-/// this seam used to ride (that loop wrapped nothing — see the fallback comment).
+/// THE SHARED GAUNTLET SEQUENCE — the ONE request path every protocol plane rides: the plane's own
+/// verify-then-`drive`, byte-identical to the deleted substrate Teller loop it used to ride (that loop
+/// wrapped nothing — see the body).
 /// Stage 1 identity is already resolved (threaded via `req.gov`); the path runs the plane's
 /// `verify_destination` at Verify, in the correct PRE-ADMISSION position, and only if it proceeds the
 /// plane's `drive` at Route (its own byte-identical engine + metering). Returns the plane's (possibly
@@ -1453,14 +1354,8 @@ pub async fn run_gauntlet(
     req: GauntletRequest<'_>,
     plane: Box<dyn GauntletPlane + '_>,
 ) -> axum::response::Response {
-    let selected = plane.capability_key().and_then(one_shot_runner);
-    if let Some(runner) = selected {
-        return runner(req, plane).await;
-    }
-    // NO kernel-loop runner registered for this key. With W2.b every shipped plane is flipped onto the
-    // unified kernel loop, so this arm is the DEFAULT only for a plane not (yet) flipped or a test
-    // plane. It runs the plane's OWN two-stage sequence inline — verify STRICTLY before drive — which
-    // is BYTE-IDENTICAL to the (now-deleted) substrate Teller loop the gauntlet used to ride: that loop
+    // The plane's OWN two-stage sequence inline — verify STRICTLY before drive — which is
+    // BYTE-IDENTICAL to the (now-deleted) substrate Teller loop the gauntlet used to ride: that loop
     // proceeded every step, opened an empty hold, settled nothing, and returned the plane's `drive`
     // response (or its own pre-charge refusal) verbatim. The loop wrapped nothing, so inlining it
     // removes only the redundant loop, not any behaviour (the kernel-vs-substrate shadow-compare proved
@@ -1473,8 +1368,7 @@ pub async fn run_gauntlet(
 
 /// THE SESSION SIBLING of [`run_gauntlet`] — the OPEN-PASS admission for a live, session-oriented plane
 /// (voice/duplex) that has no one-shot `drive`-shaped Response to return. It runs the SAME
-/// verify-STRICTLY-before-charge gate (a registered kernel-loop session runner, else the inline
-/// fallback) and returns the [`Admitted`] result instead of
+/// verify-STRICTLY-before-charge gate and returns the [`Admitted`] result instead of
 /// driving a request: the plane's own reserve/bind/open + socket bind proceed only on `Ok`, so a `Refuse`
 /// costs ZERO bytes and ZERO charge (nothing opened before the gate cleared). Distinct from
 /// [`run_gauntlet`] (one Response) but a TRUE sibling — they share the one verify-before-charge gate, so
@@ -1491,11 +1385,7 @@ pub fn run_gauntlet_session(
     req: GauntletRequest<'_>,
     plane: Box<dyn GauntletPlane + '_>,
 ) -> Result<Admitted, axum::response::Response> {
-    let selected = plane.capability_key().and_then(session_runner);
-    if let Some(runner) = selected {
-        return runner(req, plane);
-    }
-    // NO kernel-loop session runner registered for this key — the inline open-pass admit, BYTE-IDENTICAL
+    // The inline open-pass admit, BYTE-IDENTICAL
     // to the (now-deleted) substrate `admit_open`: it ran the SAME verify-STRICTLY-before-charge gate
     // through the substrate Teller's `open_unit` over a pass-through adapter that opened an empty hold
     // and settled nothing, returning `Admitted` (the request's own correlation) on a pass or the plane's

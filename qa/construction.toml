@@ -1490,12 +1490,10 @@ store_exempt_path_fragments = ["/test_support/", "/testkit.rs", "/testkit/"]
 # THE DEBT: installed stores keyed by plane or protocol identity, which the kernel still holds (status
 # row 82, D2: core names zero plane types). Counted, not exempt: `max_debt` is the count, the list may
 # not grow, and a drained entry is struck and `max_debt` lowered in the same commit (Law 9).
-debt_stores = [
-  "crates/busbar-kernel/src/ingress/arrival.rs::INSTALLED_BODY_INGRESS -- the body-arrival table the root installs, keyed by protocol name",
-  "crates/busbar-kernel/src/plane_host/mod.rs::ONE_SHOT_RUNNERS -- kernel-loop one-shot runners the root registers, keyed by plane capability",
-  "crates/busbar-kernel/src/plane_host/mod.rs::SESSION_RUNNERS -- kernel-loop session runners the root registers, keyed by plane capability",
-]
-max_debt = 3
+# DRAINED 3 -> 0 (status row 82, D2): the body-arrival table and the two kernel-loop runner tables
+# are deleted with their seams; no linked row ever filled them.
+debt_stores = []
+max_debt = 0
 # Every other installed store the kernel holds today, `path::STATIC -- why`: none is keyed by plane,
 # dialect or protocol identity. It only shrinks.
 exempt_stores = [

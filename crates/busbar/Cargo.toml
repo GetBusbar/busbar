@@ -392,11 +392,9 @@ plane-streaming = "busbar-plane-streaming"
 plane-a2a-door = "busbar-plane-a2a"
 
 # What each linked feature's crate registers (keyed by the feature, as the linked row is), axis by axis: `plane` (PLANE_DECLARATION + PLANE_HOOKS, joined
-# kernel-side), `body-ingress`, `protocol-seams`, `diagnostics`,
+# kernel-side), `protocol-seams`, `diagnostics`,
 # `on-host`, `compose`, `exports` — each an item of the crate's entry
 # module — and the root-bound seams it drives: `egress`, `plane-sections`.
-# `gauntlet-one-shot` / `gauntlet-session`: the plane rides the unified kernel loop (#28) —
-# `gauntlet_install::install()` flips its `PLANE_DECLARATION.key` onto the one-shot or session runner.
 # `claims`: the pure plane the boot seal registers (`PLANE`) and the claims it declares (`CLAIMS`).
 # `node`: the entry's `install_node`, handed the node a root unit drives the entry's units through.
 # `transport`: a wire's `KEY`, `COMPOSES_OVER` and `build(lower, &TransportSettings)`.
@@ -573,9 +571,8 @@ tokio-rustls = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 http = { workspace = true }
-# The loop-unify shadow-compare test (`root::gauntlet_kernel`) implements a deterministic
-# `GauntletPlane` to drive both the substrate gauntlet and the kernel rider on one input; the trait
-# is `#[async_trait]`, so its test impl needs the macro.
+# The root's tests implement `#[async_trait]` traits (`root/tests/serve_hook_seats.rs`), so their
+# test impls need the macro.
 async-trait = { workspace = true }
 # The llm plane's door, a `door:` row of `test-linked` above: linked in every build's tests,
 # whatever plane features the build enables.

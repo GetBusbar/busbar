@@ -158,9 +158,9 @@ pub fn pool_label<'a>(app: &Arc<App>, model: &'a str) -> &'a str {
 // its wire reader". This is the envelope half of that.
 pub mod jsonrpc;
 
-/// THE NEUTRAL PATH-MODEL ARRIVAL SEAM — the `ArrivalHost` ABI a URL-model dialect calls to reach the
-/// core request pipeline, and the protocol-name-keyed side-table the composition root registers those
-/// arrivals through. Absorbed from busbar-substrate (W4.b P2).
+/// THE NEUTRAL ARRIVAL SEAM — the `ArrivalHost` ABI a dialect calls to reach the core request
+/// pipeline. The kernel keeps no side-table of arrivals (status row 82, D2). Absorbed from
+/// busbar-substrate (W4.b P2).
 pub mod arrival;
 /// THE NEUTRAL INBOUND BYTE-DUPLEX TRANSPORT — the byte half of a single full-duplex channel.
 /// Absorbed from busbar-substrate (W4.b P2).
