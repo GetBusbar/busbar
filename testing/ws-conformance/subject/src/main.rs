@@ -35,9 +35,23 @@ mod loader {
     pub use busbar_plugin_loader::*;
 }
 
-/// A door, admitted through the one dispatcher under its row's name and opened.
-fn open(key: &str, door: busbar_contract::abi::mechanism::door::DoorFn) -> Arc<dyn FramerDoor> {
+/// The name a door's Statement states: the key its row is bound under. Read off the door, the
+/// one public item a plugin crate has (BUSBAR-1.6.0.md l.3567), never off the crate's internals.
+fn stated_key(door: busbar_contract::abi::mechanism::door::DoorFn) -> String {
+    let stated = loader::dispatch::rendering_of(door)
+        .unwrap_or_else(|e| panic!("ws-conformance-subject: a door states no Statement: {e}"));
+    busbar_contract::abi::mechanism::rendering::read(&stated)
+        .unwrap_or_else(|e| {
+            panic!("ws-conformance-subject: a door's Statement does not read: {e:?}")
+        })
+        .name
+}
+
+/// A door, admitted through the one dispatcher under its Statement's name and opened.
+fn open(door: busbar_contract::abi::mechanism::door::DoorFn) -> Arc<dyn FramerDoor> {
     use loader::dispatch::{kinds::transport::Transport as TransportKind, load_linked, LinkedRow};
+    let key = stated_key(door);
+    let key = key.as_str();
     let plugin = LinkedRow::of(door)
         .and_then(|row| load_linked::<TransportKind>(&row, doors::row_bind(key)))
         .unwrap_or_else(|e| panic!("ws-conformance-subject: the `{key}` door is refused: {e}"));
@@ -52,19 +66,13 @@ fn open(key: &str, door: busbar_contract::abi::mechanism::door::DoorFn) -> Arc<d
 
 /// The `ws` door.
 fn ws_door() -> Arc<dyn FramerDoor> {
-    open(
-        busbar_transport_ws::linked::KEY,
-        busbar_transport_ws::door::door,
-    )
+    open(busbar_transport_ws::door)
 }
 
 /// The carrier it frames over: the `tcp` door, served from the host's I/O.
 fn carrier() -> busbar_core_connector::compose::Via {
     busbar_core_connector::compose::Via {
-        door: open(
-            busbar_transport_tcp::linked::KEY,
-            busbar_transport_tcp::door::door,
-        ),
+        door: open(busbar_transport_tcp::door),
         io: busbar_core_connector::hostio::process(),
     }
 }

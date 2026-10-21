@@ -59,8 +59,19 @@ enum Break {
 /// The `webrtc` door, admitted through the one dispatcher under its row's name and opened.
 fn door() -> Arc<dyn FramerDoor> {
     use loader::dispatch::{kinds::transport::Transport as TransportKind, load_linked, LinkedRow};
-    let key = busbar_transport_webrtc::linked::KEY;
-    let plugin = LinkedRow::of(busbar_transport_webrtc::door::door)
+    // The key the row is bound under is the name the door's Statement states: read off the door,
+    // the crate's one public item (BUSBAR-1.6.0.md l.3567).
+    let door = busbar_transport_webrtc::door;
+    let stated = loader::dispatch::rendering_of(door).unwrap_or_else(|e| {
+        panic!("webrtc-conformance-subject: the door states no Statement: {e}")
+    });
+    let key = busbar_contract::abi::mechanism::rendering::read(&stated)
+        .unwrap_or_else(|e| {
+            panic!("webrtc-conformance-subject: its Statement does not read: {e:?}")
+        })
+        .name;
+    let key = key.as_str();
+    let plugin = LinkedRow::of(door)
         .and_then(|row| load_linked::<TransportKind>(&row, doors::row_bind(key)))
         .unwrap_or_else(|e| panic!("webrtc-conformance-subject: the `{key}` door is refused: {e}"));
     Arc::new(
