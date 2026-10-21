@@ -121,7 +121,7 @@
           "state": "proven",
           "leg": "root-llm",
           "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_answers_each_request_as_one_unit_and_an_unreadable_one_before_anything_is_accounted",
-          "note": "on the llm plane's door a served chat is one unit (one admitted request, dispatched once, sealed Completed), and a body the plane cannot read is refused 400 at arrival with nothing dispatched, nothing on the key's ledger and one record sealed before Admit draws a bucket"
+          "note": "on the llm plane's door a served chat is one unit (one admitted request, dispatched once, sealed Completed), and a body the plane cannot read is the arrival step's own parse refusal (400), taken before a model exists, with nothing dispatched, nothing on the key's ledger and one record sealed before Admit draws a bucket"
         }
       },
       "decode": {
@@ -131,8 +131,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_decodes_every_dialect_and_refuses_an_unreadable_body_in_each",
-          "note": "each of the six caller dialects the door claims decodes a well-formed request into a served, once-dispatched unit, and the same path refuses an unreadable body with a 400 that never reaches the far end; its refusal arms -- a body naming no model is the dialect's 400 and an unserved action its 404, neither dispatched nor accounted -- are proven beside it by serve_tests.rs::the_pools_door_refuses_a_body_naming_no_model_400_and_an_unserved_action_404"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_decodes_every_dialect_it_mounts_in_every_shape",
+          "note": "each of the six caller dialects the door words name driven through the door in every decode shape it has, each leg on its own deployment, and held to what the shipped path answers: a named model reaches the door and is served once, a body-model request with no model is the ladder's own 400 (all four body-model dialects), a malformed body is step 0's parse refusal (all six), and a verb the dialects declare that the door does not serve is the endpoint's own 404 -- seventeen legs, none of the refusals dialled or charged"
         }
       },
       "authenticate": {
@@ -142,8 +142,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_admits_the_presented_key_and_refuses_an_unknown_one_before_the_plane",
-          "note": "the key the caller presents is the one its unit is admitted and charged under, while a bearer this deployment never minted and a request carrying no credential are refused 401 before the plane, dispatching and accounting nothing; a key this deployment minted whose exp has passed is refused 401 before the plane too (serve_tests.rs::the_pools_door_refuses_an_expired_key_before_the_plane)"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_settles_a_keyless_unit_on_the_anonymous_actor_never_a_turned_away_key",
+          "note": "credentials through the deployment's own data door: the live bearer is admitted and the record its unit seals names the key the door resolved, while a bearer this deployment never minted, one whose exp has passed (of a key it minted) and no credential are all refused 401 before the plane -- no unit, no dial, no record naming the turned-away key, nothing charged to it -- and the shape the door leaves when it binds no key (a credential-less caller on an open front door) settles on the anonymous actor rather than on any key"
         }
       },
       "verify": {
@@ -164,8 +164,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_approves_a_granted_key_and_an_ungranted_one_never_reaches_approve",
-          "note": "approve passes a key its grant reaches (sealed Completed), and a key whose grant misses the pool is sealed refused at verify, so approve is never the step that refuses on this door; the hook gates sit after admission at the route leg's head; a vetoing gate stops the unit undialled, nets no spend and seals one record refused for the veto (serve_tests.rs::the_pools_doors_veto_stops_the_unit_undialled_unbilled_and_sealed_as_a_veto)"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_doors_seated_gate_stops_a_unit_and_a_passing_gate_changes_nothing",
+          "note": "a gate seated on the door's live mount driven both ways: a seat that vetoes stops the unit -- the gate's own refusal (451) in the caller's JSON envelope, the upstream never dialled, nothing charged (its admission kept and fee refunded, as 1.5.5), no metering row and one link on the chain sealed as the veto -- and a seat that does not veto is consulted and the unit answers the same served end; the mount seats no gate in front of the admission charge (the veto ends at Route after the drawn admission: a veto moved in front of a charge would change what is billed), and a gate-first seat at Approve stops the unit undialled and unadmitted (crates/busbar-kernel/tests/plane_driver.rs::a_gate_first_plane_screens_its_entry_before_the_far_end_and_stops_at_the_gates_status)"
         }
       },
       "admit": {
@@ -186,8 +186,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_tries_each_member_once_before_its_terminal",
-          "note": "the route leg's walk over the pool: a two-member pool whose far ends both fail answers 503 after exactly one attempt per member, each member dialled once and none retried within the request"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_walks_every_fixture_to_the_answer_the_shipped_path_gave",
+          "note": "the walk the route step drives, compared byte for byte with the shipped path's answer on all six fixtures: the buffered and streamed answers as 1.5.5 re-emitted them, the malformed and pool-ACL refusals as 1.5.5's own recording, the over-budget and unknown-model refusals in 1.5.5's writer's words; and per fixture the far-end dials, the admissions drawn and the member's breaker"
         }
       },
       "meter": {
@@ -197,8 +197,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_leaves_a_streamed_and_a_failed_units_money_where_1_5_5_left_it",
-          "note": "a streamed unit's far-end report (11 in, 7 out) is metered once into one row for the key, and a failed unit keeps its admitted request with no tokens and no metering row, where 1.5.5 left both"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_leaves_each_fixtures_money_where_the_shipped_path_left_it",
+          "note": "the delivered fixtures' usage and spend, field by field at the shipped path's values: the streamed unit accrues its reported 11 in and 7 out at stream end and the buffered one its 1 in and 1 out, each one admission and exactly one metering row (in, out, cache read, cache write, requests, billable); the refused fixtures meter nothing and a post-door refusal keeps its admission"
         }
       },
       "audit": {
@@ -208,8 +208,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::every_pools_door_unit_served_or_refused_seals_one_record_on_one_tamper_evident_chain",
-          "note": "every unit the door answers, served or refused by the group's hourly limit, seals one record on the node's chain linked to the one before; the window verifies and a record altered after its seal breaks it"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_seals_one_record_per_unit_end_on_one_chain_and_none_without_a_unit",
+          "note": "a driven unit's end seals exactly one audit record -- a served unit and an abandoned one each one record, linked on one chain that verifies and detects a forgery -- and a request that never became a unit seals none; the node-side half, an abandoned unit whose audit door never answered sealing none, is crates/busbar/src/root/tests/plane_node_money.rs::a_driven_planes_abandoned_end_seals_one_audit_record, built in every test build"
         }
       },
       "encode": {
@@ -220,7 +220,7 @@
           "state": "proven",
           "leg": "root-llm",
           "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_answers_each_request_as_one_unit_and_an_unreadable_one_before_anything_is_accounted",
-          "note": "the exit encodes and posts once per unit: the served call is dispatched and admitted exactly once, and the refused unreadable body is encoded as its 400 without a dispatch or any posting on the ledger"
+          "note": "the exit encodes and posts once per unit: the served call is dispatched and admitted exactly once, and the refused unreadable body is encoded as its 400 without a dispatch or any posting on the ledger; the one-terminal-per-unit count is crates/busbar-kernel/src/ingress/tests/terminal_tests.rs"
         }
       }
     },

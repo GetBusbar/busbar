@@ -81,7 +81,7 @@
       "columns": [
         "llm"
       ],
-      "note": "the LLM plane served through its memory-ABI door on the kernel's plane driver (the pools door): each loop cell drives a keyed caller through the data router built with the door's claims, the kernel's hook stage, the model-serving walk over the kernel's lane cells and the node's book, and asserts the capability where it lands"
+      "note": "the LLM plane served through its memory-ABI door on the kernel's plane driver (the pools door): each loop cell drives a keyed caller through the data router built with the door's claims, the kernel's hook stage, the model-serving walk over the kernel's lane cells and the node's book, and asserts the capability where it lands, the six fixtures' answers compared byte for byte against the ones the shipped path gave"
     },
     "root-mcp": {
       "file": "crates/busbar/src/root/serve.rs",
@@ -458,7 +458,7 @@
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/tests/serve_tests.rs::every_pools_door_unit_served_or_refused_seals_one_record_on_one_tamper_evident_chain"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_seals_one_record_per_unit_end_on_one_chain_and_none_without_a_unit"
       }
     },
     {
@@ -527,7 +527,7 @@
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_leaves_a_streamed_and_a_failed_units_money_where_1_5_5_left_it"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::the_model_door_leaves_each_fixtures_money_where_the_shipped_path_left_it"
       }
     },
     {
