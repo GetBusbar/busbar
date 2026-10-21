@@ -50,7 +50,7 @@ use busbar_contract::abi::host::conn::connector::{
 };
 use busbar_contract::abi::host::service::{ClockReading, MAX_RANDOM_FILL};
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, InHead, OutHead, Outcome, Span, BLOB_ABSENT, BLOB_OCTETS,
+    AbiStr, Blob, InHead, OutHead, Outcome, Span, BLOB_ABSENT,
 };
 use busbar_contract::abi::mechanism::door::SECTION_REQUIRED;
 use busbar_contract::abi::mechanism::door::{
@@ -446,21 +446,23 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     stream_ceiling_secs: 0,
 };
 
-/// The Statement's extensions: the plane's provider keys ([`crate::meta::PROVIDER_KEYS`]) under the
-/// contract's one key for them, built at compile time.
-const EXTENSIONS: &[u8] = &extensions::entry::<
-    { extensions::entry_len(EXT_PROVIDER_KEYS, PROVIDER_KEYS.as_bytes()) },
->(EXT_PROVIDER_KEYS, PROVIDER_KEYS.as_bytes());
+busbar_contract::statement_extensions!(
+    /// The Statement's extensions, built at compile time: the plane's provider keys
+    /// ([`crate::meta::PROVIDER_KEYS`]) under the contract's one key for them, and its whole
+    /// `declares` document ([`crate::DECLARES`]) under `EXT_DECLARES` (ARCHITECT ruling 2026-10-21;
+    /// BUSBAR-1.6.0.md l.246: the Statement's `declares` is "metric series, diagnostics,
+    /// structured answers"), which a composition root reads off this door rather than off the
+    /// crate, linked or dropped in alike.
+    EXTENSIONS: [
+        (EXT_PROVIDER_KEYS, PROVIDER_KEYS.as_bytes()),
+        (extensions::EXT_DECLARES, crate::DECLARES.as_bytes()),
+    ]
+);
 
 /// THE STATEMENT: the plane's key and version, its sections, its needs, its tail and its extensions.
 pub const STATEMENT: Statement = Statement {
     kind_tail: ptr::from_ref(TAIL).cast::<KindTailHead>(),
-    extensions: Blob {
-        ptr: EXTENSIONS.as_ptr(),
-        len: EXTENSIONS.len(),
-        fmt: BLOB_OCTETS,
-        flags: 0,
-    },
+    extensions: EXTENSIONS,
     sections: SECTIONS.as_ptr(),
     sections_len: SECTIONS.len(),
     needs: NEEDS.as_ptr(),

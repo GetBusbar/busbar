@@ -475,25 +475,11 @@ pub(crate) fn linked_source(
         out.push_str(&format!("{d}, "));
     }
     out.push_str("],\n");
-    // NO STATEMENT HOME for the `declares` document a `linked-declares` row names (a crate's
-    // `DECLARES`, here and for the plane doors below): the Statement carries metric families,
-    // diagnostic ids and answers, never the document's needs or destinations.
-    // EACH LINKED SECRET DOOR'S DECLARED METADATA: `(door, declares)`, the JSON its
-    // `[package.metadata.busbar.linked-declares]` row names (the crate's `declares.json`), read as a
-    // dropped-in copy's signed `declares` is (its disk need, THE DESIGN §11.11 R4). A secret door
-    // with no such row declares none.
-    out.push_str("    secret_declares: &[");
-    for ((_, list), (feature, krate)) in linked.iter().zip(&on) {
-        if !list.iter().any(|a| a == SECRET_AXIS) {
-            continue;
-        }
-        if let Some(path) =
-            metadata_value(manifest, "package.metadata.busbar.linked-declares", feature)
-        {
-            out.push_str(&format!("({}, {path}), ", door_of(krate)));
-        }
-    }
-    out.push_str("],\n");
+    // EACH LINKED DOOR'S `declares`, read off its own Statement (ARCHITECT ruling 2026-10-21;
+    // BUSBAR-1.6.0.md l.246: the Statement's `declares` is "metric series, diagnostics, structured
+    // answers", the whole document as one JSON payload), by the root's one reader, as a dropped-in
+    // copy's is read off its signed Statement. No row names a crate's `DECLARES`.
+    out.push_str("    declares_of: crate::root::linked::stated_declares,\n");
     // Each door row's place among the plane rows (how many `plane` rows precede it in manifest
     // order): a door plane's registry row folds in at its row's place, so the layering order is the
     // manifest's whichever axis a plane registers on.
@@ -505,26 +491,6 @@ pub(crate) fn linked_source(
         }
         if axes.iter().any(|a| a == "plane") {
             planes_before += 1;
-        }
-    }
-    out.push_str("],\n");
-    // EACH LINKED PLANE DOOR'S DECLARED METADATA: `(crate, door, declares)`, the JSON its
-    // `[package.metadata.busbar.linked-declares]` row names (the crate's `declares.json`), read as
-    // every default-linked plugin's `declares` section is, beside the door it belongs to (so the
-    // root finds a bound door plane's declaration by its Statement). A door row with no such row
-    // declares none.
-    out.push_str("    plane_door_declares: &[");
-    for (feature, krate) in &on {
-        let is_door = axes
-            .iter()
-            .any(|(f, a)| f == feature && a.split_whitespace().any(|x| x == PLANE_DOOR_AXIS));
-        if !is_door {
-            continue;
-        }
-        if let Some(path) =
-            metadata_value(manifest, "package.metadata.busbar.linked-declares", feature)
-        {
-            out.push_str(&format!("({krate:?}, {}, {path}), ", door_of(krate)));
         }
     }
     out.push_str("],\n");
@@ -614,13 +580,11 @@ pub(crate) fn linked_source(
     out.push_str("    export_doors: &[");
     for ((_, list), (_, krate)) in linked.iter().zip(&on) {
         if list.iter().any(|a| a == EXPORT_DOOR_AXIS) {
-            let c = ident(krate);
-            // Its name is its door's Statement `name` (`LinkedDoorExport::name`) and its alias the
-            // Statement's `REWRITE_ALIAS` rewrite (`LinkedDoorExport::alias`). NO STATEMENT HOME
-            // for `DECLARES` (the Statement carries metric families, diagnostic ids and answers,
-            // never the whole `declares` document), so it is still read off the crate.
+            // Its name is its door's Statement `name` (`LinkedDoorExport::name`), its alias the
+            // Statement's `REWRITE_ALIAS` rewrite (`LinkedDoorExport::alias`) and its `declares`
+            // the Statement's document (`Linked::declares_of`).
             out.push_str(&format!(
-                "crate::root::linked::LinkedDoorExport {{ declares: {c}::DECLARES, door: {} }}, ",
+                "crate::root::linked::LinkedDoorExport {{ door: {} }}, ",
                 door_of(krate)
             ));
         }

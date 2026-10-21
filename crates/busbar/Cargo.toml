@@ -448,16 +448,6 @@ plane-a2a-door = "plane-door"
 # module: no Statement field carries them.
 plane-llm-door = "busbar_plane_llm::plane_door"
 
-# Each linked plane door's declared metadata (its manifest `declares` section, as JSON): the item that
-# holds it. A door row with no row here declares nothing.
-[package.metadata.busbar.linked-declares]
-plane-llm-door = "busbar_plane_llm::DECLARES"
-plane-mcp-door = "busbar_plane_mcp::DECLARES"
-plane-a2a-door = "busbar_plane_a2a::DECLARES"
-# The file source reads the disk (`"disk": true`): the host resolves it only at config time, on its
-# disk lane, never from a request path (BUSBAR-1.6.0.md l.1464-1469, R4).
-secret-file = "busbar_secret_file::DECLARES"
-
 # Each linked plane door's DECLARING section (the one its Statement flags `SECTION_DECLARING`): the
 # build sets `linked_section_<section>` when the row's feature is on, so a test that needs "the plane
 # that declares this section is linked" gates on the section rather than on a feature that spells one

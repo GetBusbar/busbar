@@ -47,3 +47,26 @@ fn an_entry_built_at_compile_time_is_the_encoded_entry() {
     let empty: [u8; entry_len("e", b"")] = entry("e", b"");
     assert_eq!(get(&empty, "e"), Some(&b""[..]));
 }
+
+/// THE ONE-CALL WRITER (`statement_extensions!` over `concat`): the bytes built at compile time are
+/// the bytes `encode` writes for the same entries, the blob states their length as octets, and the
+/// `declares` document reads back off them by its key. RED: a writer that drops or reorders an
+/// entry, or a reader that misses `EXT_DECLARES`.
+#[test]
+fn the_statement_extensions_writer_is_encode_at_compile_time() {
+    const DECLARES: &[u8] = br#"{"breaker":{"bench_below_trip_threshold":false}}"#;
+    const ENTRIES: &[(&str, &[u8])] = &[
+        ("other", b"\x01\x02".as_slice()),
+        (super::EXT_DECLARES, DECLARES),
+    ];
+    const BYTES: [u8; super::entries_len(ENTRIES)] = super::concat(ENTRIES);
+    assert_eq!(BYTES.as_slice(), encode(ENTRIES).as_slice());
+    assert_eq!(super::declares(&BYTES), Some(DECLARES));
+    assert_eq!(super::declares(&encode(&[("other", b"x")])), None);
+    crate::statement_extensions!(EXT: [
+        ("other", b"\x01\x02"),
+        (super::EXT_DECLARES, DECLARES),
+    ]);
+    assert_eq!(EXT.fmt, crate::abi::mechanism::call::BLOB_OCTETS);
+    assert_eq!(EXT.len, BYTES.len());
+}

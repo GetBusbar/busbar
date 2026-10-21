@@ -107,7 +107,8 @@ fn linked_rows() -> (Vec<Row>, Vec<String>) {
     rows.extend(stores.map(|s| Row::of(&busbar_kernel::preflight::linked_store_row(s))));
     let auths = crate::LINKED.auths.iter();
     rows.extend(auths.map(|a| Row::of(&busbar_kernel::preflight::linked_auth_row(a))));
-    let exports = linked_exports(crate::LINKED.export_doors).expect("the export rows state");
+    let exports = linked_exports(crate::LINKED.export_doors, crate::LINKED.declares_of)
+        .expect("the export rows state");
     rows.extend(exports.iter().map(Row::of));
     for door in crate::LINKED.secrets {
         let c = Candidate::linked(*door).expect("a linked secret states itself");

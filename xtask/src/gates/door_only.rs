@@ -320,9 +320,8 @@ impl Gate for DoorOnlyGate {
             file,
             "pub static PLANTED_SEAM: std::sync::OnceLock<fn() -> u8> = std::sync::OnceLock::new();\n",
         );
-        // A GENERATED ROW naming `<crate>::linked::KEY`: the first linked secret or plane door
-        // row is given a declares row naming that item, which the generator writes verbatim into
-        // the root's table.
+        // A GENERATED ROW naming `<crate>::linked::DIAGNOSTICS`: the first linked secret or plane
+        // door row is given an entry axis whose item the generator writes into the root's table.
         let generated = match generated_plant(cx) {
             Ok(plant) => plant,
             Err(e) => {
@@ -355,7 +354,7 @@ impl Gate for DoorOnlyGate {
                 ),
                 (
                     ROW_PATH,
-                    "a generated linked row naming <crate>::linked::KEY is RED, naming the path",
+                    "a generated linked row naming <crate>::linked::DIAGNOSTICS is RED, naming the path",
                     generated.0,
                     vec![GENERATOR, generated.1],
                 ),
@@ -372,38 +371,43 @@ impl Gate for DoorOnlyGate {
     }
 }
 
-/// The generated-row plant: [`ROOT_MANIFEST`] with a `linked-declares` row, ahead of every other,
-/// for the first linked row on the secret or plane door axis, naming `<crate>::linked::KEY`; and
-/// that path.
+/// The generated-row plant: [`ROOT_MANIFEST`] with the first linked secret or plane door row also
+/// filling the `diagnostics` axis through a `linked-entry` row naming `<crate>::linked`, so the
+/// generator writes `<crate>::linked::DIAGNOSTICS` into the root's table; and that path. (A door row
+/// itself names only `<crate>::door`; an entry axis is the one place a manifest row still makes the
+/// generator spell a crate's item.)
 fn generated_plant(cx: &Ctx) -> Result<(Overlay, &'static str), String> {
     let manifest = cx
         .read(ROOT_MANIFEST)
         .map_err(|e| format!("{ROOT_MANIFEST}: {e}"))?;
     let axes = linked_gen::metadata_map(&manifest, "package.metadata.busbar.linked-axes");
-    let (feature, krate) = linked_gen::metadata_map(&manifest, "package.metadata.busbar.linked")
-        .into_iter()
-        .find(|(feature, krate)| {
-            one_abi::is_plugin_crate(krate)
-                && axes.iter().any(|(f, list)| {
-                    f == feature
-                        && list
-                            .split_whitespace()
-                            .any(|a| a == "secret-doors" || a == "plane-door")
-                })
-        })
-        .ok_or_else(|| format!("{ROOT_MANIFEST} links no secret or plane door row to plant on"))?;
-    let header = "[package.metadata.busbar.linked-declares]";
-    if !manifest.contains(header) {
+    let (feature, krate, list) =
+        linked_gen::metadata_map(&manifest, "package.metadata.busbar.linked")
+            .into_iter()
+            .find_map(|(feature, krate)| {
+                if !one_abi::is_plugin_crate(&krate) {
+                    return None;
+                }
+                let list = axes.iter().find(|(f, _)| *f == feature)?.1.clone();
+                list.split_whitespace()
+                    .any(|a| a == "secret-doors" || a == "plane-door")
+                    .then_some((feature, krate, list))
+            })
+            .ok_or_else(|| {
+                format!("{ROOT_MANIFEST} links no secret or plane door row to plant on")
+            })?;
+    let row = format!("\n{feature} = \"{list}\"");
+    if !manifest.contains(&row) {
         return Err(format!(
-            "{ROOT_MANIFEST} has no `{header}` table to plant in"
+            "{ROOT_MANIFEST} spells no `{}` axes row to plant on",
+            row.trim()
         ));
     }
-    let path: &'static str =
-        Box::leak(format!("{}::linked::KEY", linked_gen::ident(&krate)).into_boxed_str());
+    let id = linked_gen::ident(&krate);
+    let path: &'static str = Box::leak(format!("{id}::linked::DIAGNOSTICS").into_boxed_str());
+    let planted = manifest.replacen(&row, &format!("\n{feature} = \"{list} diagnostics\""), 1)
+        + &format!("\n[package.metadata.busbar.linked-entry]\n{feature} = \"{id}::linked\"\n");
     let mut ov = Overlay::new();
-    ov.set(
-        ROOT_MANIFEST,
-        manifest.replacen(header, &format!("{header}\n{feature} = \"{path}\""), 1),
-    );
+    ov.set(ROOT_MANIFEST, planted);
     Ok((ov, path))
 }

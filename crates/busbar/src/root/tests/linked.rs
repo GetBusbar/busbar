@@ -30,7 +30,10 @@ fn a_linked_export_row_and_a_different_dropped_in_plugin_spelling_its_module_ref
     });
     for (name, alias) in doors {
         let scan = || export_row_registry(alias, "k9e-dropped", alias, "busbar", &release, vec![]);
-        let rows = || linked_exports(crate::LINKED.export_doors).expect("the linked export rows");
+        let rows = || {
+            linked_exports(crate::LINKED.export_doors, crate::LINKED.declares_of)
+                .expect("the linked export rows")
+        };
         // RED ARM: both doors claim the module, as two different plugins.
         let refused = scan()
             .link(rows())
@@ -58,7 +61,8 @@ fn a_linked_export_row_and_a_different_dropped_in_plugin_spelling_its_module_ref
 
 /// A LINKED DECLARES THAT STATES `needs` BOOTS (ARCHITECT ruling (b), 2026-10-07): a networked
 /// plugin's `declares.json` states `needs` for the conformance suite and the fleet render, and the
-/// root reads a linked export row's `DECLARES` through the one reader of a declares document, which
+/// root reads a linked export row's Statement `declares` through the one reader of a declares
+/// document, which
 /// checks and drops it. Over the real linked export rows, each restated with `needs` (as a
 /// networked sink's own repo states it) reads to the same manifest section as without and links
 /// into the registry. RED ARM: a malformed `needs` (not a list) refuses the rows, naming the
@@ -74,24 +78,23 @@ fn a_linked_export_declares_stating_needs_boots() {
     let first = doors
         .first()
         .expect("an export door is linked under the axis");
-    // Every row as linked, restated with `needs`.
-    let restated = |needs: &str| -> Vec<crate::root::linked::LinkedDoorExport> {
-        doors
-            .iter()
-            .map(|d| {
-                let mut doc: serde_json::Value =
-                    serde_json::from_str(d.declares).expect("the linked row's declares is JSON");
-                doc["needs"] = serde_json::from_str(needs).expect("a needs value");
-                crate::root::linked::LinkedDoorExport {
-                    declares: Box::leak(doc.to_string().into_boxed_str()),
-                    ..*d
-                }
-            })
-            .collect()
-    };
-    let plain = linked_exports(doors).expect("the linked export rows");
-    let networked = linked_exports(&restated(r#"["scheme-a", "scheme-b"]"#))
-        .expect("a linked declares stating `needs` reads");
+    // Every row as linked, its Statement's `declares` restated with `needs`.
+    fn restated(door: DoorFn, needs: &str) -> Result<Option<String>, String> {
+        let stated = crate::root::linked::stated_declares(door)?.unwrap_or_else(|| "{}".into());
+        let mut doc: serde_json::Value =
+            serde_json::from_str(&stated).expect("the linked row's declares is JSON");
+        doc["needs"] = serde_json::from_str(needs).expect("a needs value");
+        Ok(Some(doc.to_string()))
+    }
+    fn networked_needs(door: DoorFn) -> Result<Option<String>, String> {
+        restated(door, r#"["scheme-a", "scheme-b"]"#)
+    }
+    fn malformed_needs(door: DoorFn) -> Result<Option<String>, String> {
+        restated(door, r#""scheme-a""#)
+    }
+    let plain = linked_exports(doors, crate::LINKED.declares_of).expect("the linked export rows");
+    let networked =
+        linked_exports(doors, networked_needs).expect("a linked declares stating `needs` reads");
     assert_eq!(
         networked
             .iter()
@@ -107,7 +110,7 @@ fn a_linked_export_declares_stating_needs_boots() {
         .link(networked)
         .expect("the rows link: the boot proceeds");
     // RED ARM: a malformed `needs` refuses the rows, naming the first row read.
-    let Err(refused) = linked_exports(&restated(r#""scheme-a""#)) else {
+    let Err(refused) = linked_exports(doors, malformed_needs) else {
         panic!("a `needs` that is not a list must refuse the rows");
     };
     assert!(
@@ -319,7 +322,7 @@ fn the_linked_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
 #[test]
 fn the_secret_axis_resolves_the_linked_sources_over_the_one_dispatcher() {
     use busbar_contract::secret::SecretAxis;
-    let axis = super::link_secrets(crate::LINKED.secrets, crate::LINKED.secret_declares)
+    let axis = super::link_secrets(crate::LINKED.secrets, crate::LINKED.declares_of)
         .expect("the linked secret doors state");
     assert!(axis.linked("env") && axis.linked("file") && !axis.answers("vault"));
     let env = axis.shared("env").expect("env opens");
@@ -548,7 +551,10 @@ fn every_linked_section_row_is_a_linked_doors_declaring_section() {
 fn the_linked_scrape_sink_renders_the_recorder_snapshot_byte_identically() {
     let module = busbar_kernel::test_support::export_axis::scrape_module();
     let registry = PluginRegistry::empty()
-        .link(linked_exports(crate::LINKED.export_doors).expect("the linked export rows"))
+        .link(
+            linked_exports(crate::LINKED.export_doors, crate::LINKED.declares_of)
+                .expect("the linked export rows"),
+        )
         .expect("the linked rows alone");
     assert!(
         !module.is_empty(),
