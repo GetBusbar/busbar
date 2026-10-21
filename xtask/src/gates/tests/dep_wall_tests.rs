@@ -222,24 +222,37 @@ fn the_memoised_readings_equal_the_fresh_readings() {
         *banned_paths_memo(planted[4])
     );
 
-    let checkout = cx.abs(dir);
-    let src = "crates/zz-pinned/src";
-    let memo = checkout_source_memo(&checkout, src);
-    let fresh = checkout_source(&checkout, src);
-    assert!(!fresh.is_empty(), "the checkout read no file");
-    assert_eq!(
-        memo.iter()
-            .map(|(k, f)| (k.clone(), f.rel_str(), f.abs.clone(), f.text.clone()))
-            .collect::<Vec<_>>(),
-        fresh
-            .iter()
-            .map(|(k, f)| (k.clone(), f.rel_str(), f.abs.clone(), f.text.clone()))
-            .collect::<Vec<_>>()
-    );
-    assert!(std::sync::Arc::ptr_eq(
-        &memo,
-        &checkout_source_memo(&checkout, src)
-    ));
+    // Every pinned plugin's cargo checkout, as [`own_source`] reads it when no layer lays it.
+    let ws = workspace(&cx).expect("the workspace resolves");
+    let mut read = 0;
+    for p in ws.pkgs.values() {
+        if !p
+            .source
+            .as_deref()
+            .is_some_and(|s| s.starts_with(EXTERNAL_SOURCE))
+        {
+            continue;
+        }
+        let checkout = std::path::Path::new(&p.manifest_path)
+            .parent()
+            .map(|d| d.join("src"))
+            .unwrap_or_default();
+        let src = format!("crates/{}/src", p.name);
+        let memo = checkout_source_memo(&checkout, &src);
+        let fresh = checkout_source(&checkout, &src);
+        read += fresh.len();
+        let flat = |m: &BTreeMap<String, crate::ctx::SourceFile>| {
+            m.iter()
+                .map(|(k, f)| (k.clone(), f.rel_str(), f.abs.clone(), f.text.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(flat(&memo), flat(&fresh), "{}", p.name);
+        assert!(std::sync::Arc::ptr_eq(
+            &memo,
+            &checkout_source_memo(&checkout, &src)
+        ));
+    }
+    assert!(read > 0, "no pinned plugin's checkout read a file");
 
     let flat = |w: &Workspace| {
         let pkgs = w
