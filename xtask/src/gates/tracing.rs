@@ -683,6 +683,52 @@ impl Gate for TracingGate {
             ],
         ));
 
+        // A SPAN MACRO UNDER ANOTHER NAME, AND A LEVEL NAMED LIKE HOTPATH_LEVEL, ARE NOT ESCAPES.
+        // `use tracing::info_span as quiet_span;` makes `quiet_span!` an INFO span, and
+        // `NOT_HOTPATH_LEVEL` is another constant whose name merely ends like the one item.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-core/src/planted_evading_spans.rs",
+            "use tracing::info_span as quiet_span;\n\
+             use tracing::Level;\n\n\
+             const NOT_HOTPATH_LEVEL: Level = Level::INFO;\n\n\
+             pub fn f() {\n\
+             \x20   let _a = quiet_span!(\"forward\");\n\
+             \x20   let _b = tracing::span!(NOT_HOTPATH_LEVEL, \"forward_once\");\n\
+             }\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a renamed span macro and a level constant named like HOTPATH_LEVEL are flagged",
+            &[ROW_LEVEL],
+            ov,
+            &[
+                "2 finding(s)",
+                "planted_evading_spans.rs:7",
+                "planted_evading_spans.rs:8",
+            ],
+        ));
+
+        // A BARE `HOTPATH_LEVEL` IS THE ONE ITEM ONLY WHILE NOTHING ELSE BINDS THE NAME: a file
+        // declaring its own `HOTPATH_LEVEL` at INFO makes the short spelling another constant.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-core/src/planted_shadowed_hotpath.rs",
+            "const HOTPATH_LEVEL: tracing::Level = tracing::Level::INFO;\n\n\
+             pub fn f() {\n\
+             \x20   let _a = tracing::span!(HOTPATH_LEVEL, \"forward\");\n\
+             }\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a bare HOTPATH_LEVEL a file binds again is not the one item",
+            &[ROW_LEVEL],
+            ov,
+            &["1 finding(s)", "planted_shadowed_hotpath.rs:4"],
+        ));
+
         // ITEM 228: THE SUBJECT FLOOR. Every production span becomes a hand-rolled `span!`; the
         // file walk still clears 130, and the scan must still refuse to call the empty subject
         // clean.
