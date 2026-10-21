@@ -836,6 +836,20 @@ mod tests {
             !bare.ctx.idx.contains_key(NAME),
             "a test fn nobody lays was indexed: the index reads something other than the tree"
         );
+        // A NOTE citing the laid file by path resolves against the layer, and against nothing else.
+        let note = vec![("PB-0".to_string(), format!("the witness is {REL}"))];
+        let (mut laid_ctx, mut bare_ctx) = (laid.ctx, bare.ctx);
+        laid_ctx.notes.clone_from(&note);
+        bare_ctx.notes = note;
+        assert!(
+            super::super::verify::note_witness_offenders(&laid_ctx).is_empty(),
+            "a note citing the laid file was refused"
+        );
+        assert_eq!(
+            super::super::verify::note_witness_offenders(&bare_ctx),
+            vec![("PB-0".to_string(), REL.to_string())],
+            "a note citing a file nobody lays was accepted"
+        );
     }
 
     const NOTE_CASE: &str =

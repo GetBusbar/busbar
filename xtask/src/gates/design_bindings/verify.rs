@@ -74,6 +74,9 @@ pub struct Ctx {
     /// Every `fn` name and `.rs` stem under `crates/` and `xtask/` — the set a NOTE's named
     /// witness must resolve into. See [`symbol_index`].
     pub symbols: BTreeSet<String>,
+    /// Every file the context's BASE layer lays (the pinned planes, at `crates/<package>`), by
+    /// path: a note's cited path resolves against these as it does against the disk.
+    pub laid: BTreeSet<String>,
 }
 
 impl Ctx {
@@ -121,6 +124,7 @@ impl Ctx {
             } else {
                 BTreeSet::new()
             },
+            laid: BTreeSet::new(),
         })
     }
 
@@ -129,11 +133,13 @@ impl Ctx {
     /// ([`crate::ctx::Ctx::workspace`]), not on disk, so the disk walk above never sees it. Each
     /// `(rel, text)` here is one laid file: a `.rs` under `crates/` has its test fns indexed under
     /// `rel` and its `fn` names and stem joined to the witness symbols, exactly as a file on disk
-    /// would. A citation of a test the pinned plane declares then resolves as it did when the
-    /// plane lived here, and one it does not declare is refused as before.
+    /// would; every laid path, of any kind, is one a NOTE may cite ([`Ctx::is_laid`]). A citation of
+    /// a test the pinned plane declares then resolves as it did when the plane lived here, and one
+    /// it does not declare is refused as before.
     pub fn add_laid(&mut self, laid: &[(String, String)]) -> Result<(), String> {
         let (attr, func) = test_patterns()?;
         for (rel, text) in laid {
+            self.laid.insert(rel.clone());
             if !rel.starts_with("crates/") || !rel.ends_with(".rs") || rel.contains("/target/") {
                 continue;
             }
@@ -144,6 +150,12 @@ impl Ctx {
             index_symbols(text, &mut self.symbols);
         }
         Ok(())
+    }
+
+    /// Whether the BASE layer lays `path` itself or any file under it (`path` as a directory).
+    pub fn is_laid(&self, path: &str) -> bool {
+        let dir = format!("{}/", path.trim_end_matches('/'));
+        self.laid.contains(path) || self.laid.iter().any(|p| p.starts_with(&dir))
     }
 
     fn note_reason(&self, pb: &str) -> Option<&str> {
@@ -740,7 +752,7 @@ pub fn note_witness_offenders(ctx: &Ctx) -> Vec<(String, String)> {
             out.push((pb.clone(), tok.to_string()));
         }
         for path in cited_paths(text) {
-            if seen.insert(path) && !ctx.root.join(path).exists() {
+            if seen.insert(path) && !ctx.root.join(path).exists() && !ctx.is_laid(path) {
                 out.push((pb.clone(), path.to_string()));
             }
         }
