@@ -761,6 +761,7 @@ fn an_applied_door_section_carries_its_pools_and_hands_the_plane_no_work_key() {
     let applied = section_with_pools(key, &written, &pools);
     assert_eq!(
         crate::root::door_steps::DoorPools::of(&applied)
+            .expect("the pools")
             .pools()
             .get("files")
             .cloned(),
@@ -858,4 +859,57 @@ async fn every_declared_stream_type_goes_piece_by_piece_and_the_serve_path_spell
             .expect("the body");
         assert_eq!(&body[..], b"hello world", "the bytes as written");
     }
+}
+
+/// THE CLAIM DOORS' BINDS (row 132): a served plane's INBOUND need whose `target_from` block in its
+/// section states a `listen` is bound there, under the need's transport and its own index, and the
+/// setting is named as the operator spells it. An outbound need, a need with no `target_from`, a
+/// block that states no `listen` and a plane whose section is absent bind nothing; an address that
+/// is not `ip:port` refuses the composition, naming the setting.
+#[test]
+fn a_planes_inbound_need_binds_at_the_listen_its_block_states() {
+    use crate::root::loader::boot::BindOwner;
+    use busbar_contract::abi::host::conn::connector::{DIRECTION_INBOUND, DIRECTION_OUTBOUND};
+    let facts = crate::root::loader::dispatch::kinds::plane::ServedFacts {
+        section: "a-section",
+        need_auths: vec![
+            (DIRECTION_OUTBOUND, "none"),
+            (DIRECTION_INBOUND, "none"),
+            (DIRECTION_INBOUND, "none"),
+            (DIRECTION_INBOUND, "none"),
+        ],
+        need_targets: vec!["far", "media", "", "quiet"],
+        need_transports: vec!["out-t", "in-t", "bare-t", "quiet-t"],
+        ..Default::default()
+    };
+    let doc = |yaml: &str| -> BTreeMap<&'static str, serde_yaml::Value> {
+        BTreeMap::from([("a-section", serde_yaml::from_str(yaml).expect("yaml"))])
+    };
+    let sections =
+        doc("far: {listen: \"127.0.0.1:7000\"}\nmedia: {listen: \"127.0.0.1:7001\"}\nquiet: {}\n");
+    let binds = super::need_binds("inst", &facts, &sections).expect("binds");
+    assert_eq!(
+        binds.len(),
+        1,
+        "only the inbound need whose block states a listen"
+    );
+    let b = &binds[0];
+    assert_eq!(b.transport, "in-t");
+    assert_eq!(b.at, "a-section.media");
+    assert_eq!(b.listen_setting(), "a-section.media.listen");
+    assert_eq!(b.listen, "127.0.0.1:7001".parse().unwrap());
+    assert!(matches!(
+        &b.owner,
+        BindOwner::Need { instance, need: 1, .. } if instance == "inst"
+    ));
+    assert!(
+        super::need_binds("inst", &facts, &BTreeMap::new())
+            .expect("no section")
+            .is_empty(),
+        "a plane whose section is absent binds nothing"
+    );
+    assert_eq!(
+        super::need_binds("inst", &facts, &doc("media: {listen: \"nowhere\"}\n")).unwrap_err(),
+        "a-section.media.listen: `nowhere` is not an ip:port address"
+    );
 }

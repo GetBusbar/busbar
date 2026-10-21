@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! HTTP HEADER VALUE HELPERS SHARED ACROSS AUTH MECHANISMS: pure, stateless, kind-neutral —
-//! neither touches an ABI shape nor holds state — and needed by more than one auth-kind plugin
-//! crate (`busbar-auth-header`'s static schemes, `busbar-auth-sigv4`'s signed value and session
-//! token, `busbar-auth-oauth`'s minted bearer), so each duplicating it would be the same helper
+//! HTTP HEADER VALUE HELPERS SHARED ACROSS AUTH MECHANISMS: pure, stateless, kind-neutral — neither
+//! touches an ABI shape nor holds state — and needed by more than one auth-kind plugin crate (a
+//! static-scheme provider's header value, a request-signing provider's signed value and session
+//! token, a token-minting provider's bearer), so each duplicating it would be the same helper
 //! copied three times. MOVED VERBATIM from the identity unit's `egress_auth/mod.rs` in the kernel,
 //! then staged `busbar-auth-outbound::present` (KERNEL<>PLUGINS step 22); this is its one home now
 //! (KERNEL<>PLUGINS AUTH-SPLIT).

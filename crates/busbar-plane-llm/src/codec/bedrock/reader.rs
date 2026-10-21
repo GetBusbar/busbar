@@ -9,6 +9,7 @@ impl ProtocolReader for BedrockReader {
         // `usage` in the body; the last `"usage"` in the tail is then the guardrail's, which names
         // no token count and read as a ZERO-token turn. Walk back to the last `usage` object that
         // names a token count; none in the tail is no recovery (the caller's floor), never zero.
+        // The guardrail's policy units are then read off that trailing `trace`, as buffered.
         const KEY: &[u8] = b"\"usage\"";
         let mut end = tail.len();
         while let Some(at) = tail[..end].windows(KEY.len()).rposition(|w| w == KEY) {
@@ -21,7 +22,22 @@ impl ProtocolReader for BedrockReader {
                     // The per-TTL cache-write split rides the same `usage` object a truncated
                     // body still carries, so a body too large to buffer whole reports the same
                     // breakdown a small one does.
-                    return Some(read_bedrock_usage(Some(&v)).ok()?.to_token_usage());
+                    let mut usage = read_bedrock_usage(Some(&v)).ok()?;
+                    // THE GUARDRAIL POLICY UNITS the buffered and streamed reads bill (LEDGER-100,
+                    // #42): the answer's `trace` follows the turn's `usage` on the wire, so it is
+                    // in the tail too, and an oversized answer that ran a guardrail ledgers the
+                    // same units a small one does. Only a `trace` after the turn's `usage` is the
+                    // answer's own; one before it lies inside the output.
+                    if let Some(trace) = super::super::usage_tail::isolate_tail_usage_object(
+                        &tail[at..],
+                        b"\"trace\"",
+                    ) {
+                        let mut holder = serde_json::Map::new();
+                        holder.insert(TRACE.to_string(), trace);
+                        usage.detail.open_units =
+                            guardrail_units(&serde_json::Value::Object(holder)).ok()?;
+                    }
+                    return Some(usage.to_token_usage());
                 }
             }
             end = at;
