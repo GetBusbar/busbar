@@ -814,8 +814,9 @@ fn measure_with(cx: &Ctx, crates: &[CrateInfo], walk: Walk) -> Result<Measured, 
     // file reads (the same answer whoever fills it), shared under a lock.
     let wire_locks: std::sync::Mutex<BTreeMap<String, BTreeSet<String>>> =
         std::sync::Mutex::new(BTreeMap::new());
-    // FROZEN 1.5.5 BYTES IN PLACE (ARCHITECT ruling 2026-10-21, [`frozen`]): a hit on the same line
-    // a named artifact carried at `v1.5.5`, unchanged, is that release's wire.
+    // FROZEN 1.5.5 CUSTOMER-OBSERVABLE BYTES IN PLACE (ARCHITECT ruling 2026-10-21, [`frozen`]): on
+    // the same line a named artifact carried at the pinned v1.5.5, unchanged, a JSON document's hit
+    // is that release's wire, and so is a Rust artifact's hit INSIDE A STRING LITERAL; nothing else.
     let frozen_lines = frozen::load(cx);
     let scanned = crate::par::par_map(&files, |(rel, text)| {
         // OWNER 2026-10-03: "Cargo.toml is ignored blanketly from this check" (see the module doc).
@@ -900,6 +901,12 @@ fn measure_with(cx: &Ctx, crates: &[CrateInfo], walk: Walk) -> Result<Measured, 
                 m
             }
         };
+        // A RUST ARTIFACT'S FROZEN LINES ARE READ WITHOUT THEIR LITERALS: the identifiers, comments,
+        // doc comments and locals on them count as anywhere else ([`frozen::literals_struck`]).
+        let masked = match frozen::literals_struck(&frozen_lines, rel, text, &masked) {
+            Some(struck) => std::sync::Arc::new(struck),
+            None => masked,
+        };
         let hits = match walk {
             Walk::Memoised => scan_file(per_kind, &dir, rel, &masked),
             Walk::Full => scan_fresh(per_kind, &dir, rel, &masked),
@@ -908,7 +915,7 @@ fn measure_with(cx: &Ctx, crates: &[CrateInfo], walk: Walk) -> Result<Measured, 
         // hit's line is looked up in the file's line list, read once, rather than by walking the
         // text from its start once per hit — and only when the witness grant can excuse a hit of
         // this crate at all.
-        let frozen_mask = frozen::mask(&frozen_lines, rel, text);
+        let frozen_mask = frozen::exempt_lines(&frozen_lines, rel, text);
         let lines: Vec<&str> = if hits
             .iter()
             .any(|h| super::witness_may_apply(&granted, c, h.kind))
@@ -4395,7 +4402,7 @@ pub fn selftest<'a>(
                     .map(|(_, n)| n.clone())
                     .unwrap_or_default()
             };
-            let grown: [(&str, String); 6] = [
+            let grown: [(&str, String); 5] = [
                 (
                     "crates/busbar-core-admin/src/v1/json/openapi.json",
                     "\"x-planted\": \"busbar-plane-mcp\"\n".to_string(),
@@ -4411,10 +4418,6 @@ pub fn selftest<'a>(
                 (
                     "crates/busbar-kernel/src/config/migrate_export.rs",
                     format!("pub const PLANTED_STORE: &str = \"{}\";\n", name("store")),
-                ),
-                (
-                    "crates/busbar-kernel/src/config/tests/migrate_tests.rs",
-                    format!("pub const PLANTED_AUTH: &str = \"{}\";\n", name("auth")),
                 ),
                 (
                     "crates/busbar-contract/src/secret_ref.rs",
@@ -4438,7 +4441,6 @@ pub fn selftest<'a>(
                     "busbar-kernel \u{d7} plane",
                     "busbar-kernel \u{d7} instance:export",
                     "busbar-kernel \u{d7} instance:store",
-                    "busbar-kernel \u{d7} instance:auth",
                     "busbar-contract \u{d7} instance:secret",
                 ],
             ));
@@ -4451,30 +4453,47 @@ pub fn selftest<'a>(
         ))),
     }
 
-    // THE EXEMPTION IS POSITIONAL: THE SAME LINE, NOT AN EQUAL STRING ([`frozen::mask`], ARCHITECT
-    // ruling 2026-10-21). Both sides are planted: the artifact's real bytes at `v1.5.5` with one
-    // instance-naming line appended (`git-show:v1.5.5:<path>`), and the artifact in this tree.
-    // GREEN: the line stands where the release had it, unchanged, and no cell grows. RED, each its
-    // own case: the line EDITED in place, the line MOVED to the top, and the line left in place with
-    // a COPY written at a new position (the 1.6.0 `"streams"` key of the schema snapshot, whose text
-    // was a 1.5.5 line elsewhere in the file) — each grows its cell over the merge-base.
+    // THE EXEMPTION IS POSITIONAL AND READS ONLY CUSTOMER-OBSERVABLE BYTES ([`frozen`], ARCHITECT
+    // ruling 2026-10-21 as amended). Both sides are planted: the artifact's bytes at the pinned
+    // release with the planted lines appended ([`frozen::show_key`]), and the artifact in this tree.
+    // GREEN: a JSON line and a Rust string literal standing unchanged where the release had them. RED,
+    // each its own case: the line EDITED in place, MOVED to the top, or COPIED to a new position (the
+    // 1.6.0 `"streams"` key of the schema snapshot, whose text was a 1.5.5 line elsewhere); an
+    // IDENTIFIER and a COMMENT on an unchanged Rust line; a line of migrate_tests.rs, test code no
+    // customer observes; and a release read through anything but the pinned tag (a branch named
+    // v1.5.5, a moved tag). Each grows its cell over the merge-base.
     {
+        // The test file the release shipped beside migrate.rs: no artifact, whatever its bytes.
+        const TESTS_HERE: &str = "crates/busbar-kernel/src/config/tests/migrate_tests.rs";
+        // qa-names: crates/busbar/src/config/tests/migrate_tests.rs -- xtask/src/gates/kind_isolation/matrix.rs -- v1.5.5 path read via git show at the pinned tag
+        const TESTS_RELEASED: &str = "crates/busbar/src/config/tests/migrate_tests.rs";
         let rust = frozen::artifact("crates/busbar-kernel/src/config/migrate.rs");
         let json = frozen::artifact("crates/busbar-kernel/src/config/config-schema.snapshot.json");
-        // (path here, `<tag>:<path>` at the release, its bytes there, its bytes here)
-        type Sides = (&'static str, &'static str, String, String);
+        // (path here, the release's overlay key, its path at the release, its bytes there, here)
+        type Sides = (&'static str, String, &'static str, String, String);
         let sides = |a: Option<&'static frozen::Artifact>| -> Result<Sides, String> {
             let a = a.ok_or("the artifact is not in frozen::ARTIFACTS")?;
-            let (tag, at) = a
-                .released
-                .split_once(':')
-                .ok_or_else(|| format!("{} names no <tag>:<path>", a.released))?;
-            let then = cx.git_show(tag, at)?;
+            let then = frozen::released_bytes(cx, a)?;
             let now = cx.read(a.path)?;
-            Ok((a.path, a.released, then, now))
+            Ok((a.path, frozen::show_key(a), a.released, then, now))
         };
-        match (instances::one_name_per_axis(cx), sides(rust), sides(json)) {
-            (Ok(names), Ok(rs), Ok(js)) => {
+        let tests = || -> Result<Sides, String> {
+            let commit = frozen::release_commit(cx)?;
+            Ok((
+                TESTS_HERE,
+                format!("git-show:{commit}:{TESTS_RELEASED}"),
+                TESTS_RELEASED,
+                cx.git_show(commit, TESTS_RELEASED)?,
+                cx.read(TESTS_HERE)?,
+            ))
+        };
+        match (
+            instances::one_name_per_axis(cx),
+            sides(rust),
+            sides(json),
+            tests(),
+        ) {
+            (Ok(names), Ok(rs), Ok(js), Ok(ts)) => {
                 let export = names
                     .iter()
                     .find(|(axis, _)| *axis == "export")
@@ -4483,19 +4502,22 @@ pub fn selftest<'a>(
                 let line = format!("pub const PLANTED_EXPORT: &str = \"{export}\";");
                 let edited = format!("pub const PLANTED_EXPORT_EDITED: &str = \"{export}\";");
                 let key = "\"x-planted\": \"busbar-plane-llm\",".to_string();
-                // One artifact's two sides: its release bytes with `released` appended, and `now`.
+                // A plane's bare id in each of a Rust line's three readings: the literal (exempt on
+                // a frozen line), an identifier and a comment (never exempt).
+                let in_literal = "pub const PLANTED_ROUTE: &str = \"mcp\";".to_string();
+                let in_ident = "pub const PLANTED_MCP_ROUTE: &str = \"route\";".to_string();
+                let in_comment = "// PLANTED: the mcp route.".to_string();
+                // One file's two sides: its release bytes with `released` appended, and `now`.
                 let both = |side: &Sides, released: &str, now: String| {
-                    let (path, at, then, _) = side;
+                    let (path, show, _, then, _) = side;
                     let mut ov = crate::ctx::Overlay::new();
-                    ov.set_command(
-                        format!("git-show:{at}"),
-                        format!("{}\n{released}\n", then.trim_end()),
-                    );
+                    ov.set_command(show.clone(), format!("{}\n{released}\n", then.trim_end()));
                     ov.set(*path, now);
                     ov
                 };
-                let rs_now = rs.3.trim_end().to_string();
-                let js_now = js.3.trim_end().to_string();
+                let rs_now = rs.4.trim_end().to_string();
+                let js_now = js.4.trim_end().to_string();
+                let ts_now = ts.4.trim_end().to_string();
                 report.push(prove_rows_green(
                     cx,
                     gate,
@@ -4507,31 +4529,104 @@ pub fn selftest<'a>(
                         format!("{js_now}\n{key}\n"),
                     )),
                 ));
+                report.push(prove_rows_green(
+                    cx,
+                    gate,
+                    "a plane's id inside a string literal on an unchanged 1.5.5 Rust line is exempt",
+                    &[ROW_LAW0_BASE],
+                    both(&rs, &in_literal, format!("{rs_now}\n{in_literal}\n")),
+                ));
                 let rust_red = [
-                    ("EDITED in place", format!("{rs_now}\n{edited}\n")),
-                    ("MOVED to a new position", format!("{line}\n{rs_now}\n")),
+                    (
+                        "a frozen 1.5.5 line EDITED in place counts",
+                        both(&rs, &line, format!("{rs_now}\n{edited}\n")),
+                        "busbar-kernel \u{d7} instance:export",
+                    ),
+                    (
+                        "a frozen 1.5.5 line MOVED to a new position counts",
+                        both(&rs, &line, format!("{line}\n{rs_now}\n")),
+                        "busbar-kernel \u{d7} instance:export",
+                    ),
+                    (
+                        "a 1.5.5 line COPIED to a new position counts there, beside the original \
+                         in place",
+                        both(&js, &key, format!("{key}\n{js_now}\n{key}\n")),
+                        "busbar-kernel \u{d7} plane",
+                    ),
+                    (
+                        "an IDENTIFIER on an unchanged 1.5.5 Rust line counts: only literals are \
+                         customer bytes",
+                        both(&rs, &in_ident, format!("{rs_now}\n{in_ident}\n")),
+                        "busbar-kernel \u{d7} plane",
+                    ),
+                    (
+                        "a COMMENT on an unchanged 1.5.5 Rust line counts: only literals are \
+                         customer bytes",
+                        both(&rs, &in_comment, format!("{rs_now}\n{in_comment}\n")),
+                        "busbar-kernel \u{d7} plane",
+                    ),
+                    (
+                        "a line of migrate_tests.rs counts though 1.5.5 shipped it: test code is \
+                         no customer-observable artifact",
+                        both(&ts, &line, format!("{ts_now}\n{line}\n")),
+                        "busbar-kernel \u{d7} instance:export",
+                    ),
                 ];
-                for (how, now) in rust_red {
+                for (how, ov, cell) in rust_red {
                     report.push(prove_rows_red(
                         cx,
                         gate,
-                        format!("a frozen 1.5.5 line {how} counts"),
+                        how,
                         &[ROW_LAW0_BASE],
-                        both(&rs, &line, now),
+                        ov,
+                        &["law0-grown", cell],
+                    ));
+                }
+                // THE RELEASE IS READ THROUGH THE PINNED TAG AND NOTHING ELSE. Each plant carries
+                // the release's bytes with the planted line under every name a resolver could take
+                // (`v1.5.5:<path>`, which a branch answers when the tag is gone, and the pinned
+                // commit's), and the tree carries the same line: a resolver that read any of them
+                // would exempt it. The strict one refuses the release and the line counts.
+                let (_, show, released, then, _) = &rs;
+                let with_line = format!("{}\n{line}\n", then.trim_end());
+                let shadowed = |tag: &str| {
+                    let mut ov = crate::ctx::Overlay::new();
+                    ov.set_command(frozen::rev_parse_key(frozen::RELEASE_TAG_REF), tag);
+                    ov.set_command(
+                        frozen::rev_parse_key(&format!("refs/heads/{}", frozen::RELEASE)),
+                        frozen::RELEASE_COMMIT,
+                    );
+                    ov.set_command(
+                        format!("git-show:{}:{released}", frozen::RELEASE),
+                        with_line.clone(),
+                    );
+                    ov.set_command(show.clone(), with_line.clone());
+                    ov.set(rs.0, format!("{rs_now}\n{line}\n"));
+                    ov
+                };
+                for (how, tag) in [
+                    (
+                        "a BRANCH named v1.5.5 is refused: the release is read only through \
+                         refs/tags/v1.5.5",
+                        String::new(),
+                    ),
+                    (
+                        "a MOVED v1.5.5 tag is refused: the tag must be the pinned tag object",
+                        "0".repeat(40),
+                    ),
+                ] {
+                    report.push(prove_rows_red(
+                        cx,
+                        gate,
+                        how,
+                        &[ROW_LAW0_BASE],
+                        shadowed(&tag),
                         &["law0-grown", "busbar-kernel \u{d7} instance:export"],
                     ));
                 }
-                report.push(prove_rows_red(
-                    cx,
-                    gate,
-                    "a 1.5.5 line COPIED to a new position counts there, beside the original in place",
-                    &[ROW_LAW0_BASE],
-                    both(&js, &key, format!("{key}\n{js_now}\n{key}\n")),
-                    &["law0-grown", "busbar-kernel \u{d7} plane"],
-                ));
             }
-            (n, r, j) => {
-                let why = [n.err(), r.err(), j.err()]
+            (n, r, j, t) => {
+                let why = [n.err(), r.err(), j.err(), t.err()]
                     .into_iter()
                     .flatten()
                     .collect::<Vec<_>>()

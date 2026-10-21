@@ -800,10 +800,14 @@ pub fn measure_reserved(
         let Some(c) = by_dir.get(dir.as_str()) else {
             continue;
         };
-        let lits = file_literals(rel, text);
-        // A FROZEN 1.5.5 LINE IN PLACE ([`super::frozen`], ARCHITECT ruling 2026-10-21): the same
-        // line a named artifact carried at `v1.5.5`, unchanged, is that release's wire.
-        let frozen_mask = super::frozen::mask(frozen, rel, text);
+        // A FROZEN 1.5.5 CUSTOMER-OBSERVABLE LINE IN PLACE ([`super::frozen`], ARCHITECT ruling
+        // 2026-10-21): on the same line a named artifact carried at the pinned v1.5.5, unchanged, a
+        // JSON document's literal is that release's wire (the line is skipped below), and so is a
+        // Rust artifact's real string literal, whose content is struck before the literals are read;
+        // a quoted name in a comment on that line is no literal and still counts.
+        let struck = super::frozen::literals_struck(frozen, rel, text, text);
+        let lits = file_literals(rel, struck.as_deref().unwrap_or(text));
+        let frozen_mask = super::frozen::exempt_lines(frozen, rel, text);
         let reserving: Vec<usize> = shapes
             .iter()
             .enumerate()
