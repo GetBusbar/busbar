@@ -166,34 +166,6 @@ dialect = "anthropic"
 owner = "kernel-neutrality lane"
 
 [[segment-debt]]
-file = "crates/busbar/src/root/door_steps.rs"
-line = 1339
-text = "\"anthropic_adaptive_thinking\","
-dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar/src/root/door_steps.rs"
-line = 1340
-text = "p.anthropic_adaptive_thinking.map(|v| json!(v)),"
-dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar/src/root/door_steps.rs"
-line = 1360
-text = "\"anthropic_adaptive_thinking\","
-dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar/src/root/door_steps.rs"
-line = 1361
-text = "r.anthropic_adaptive_thinking.map(|v| json!(v)),"
-dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
 file = "crates/busbar/src/root/tests/declared_credentials.rs"
 line = 132
 text = "const ANTHROPIC_FAMILIES: &[CredentialFamily] = &["

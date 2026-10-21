@@ -25,9 +25,9 @@ use crate::store::{HealthState, LaneData};
 #[allow(unused_imports)]
 use crate::{
     admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
-    durable, endpoints, export, failover, governance, handlers, hooks, ingress, ir, json, limits,
-    oauth_as, observability, operation, plugin_routes, profile, proxy, ratelimit, snapshot, state,
-    store, telemetry, tls, transport, trust,
+    durable, endpoints, export, governance, handlers, hooks, ingress, ir, json, limits, oauth_as,
+    observability, operation, plugin_routes, profile, proxy, ratelimit, snapshot, state, store,
+    telemetry, tls, transport, trust,
 };
 use busbar_kernel::plane_host::{
     AffinityInput, AuthStyleInput, ClientSettingsInput, FailoverInput, HealthInput,
