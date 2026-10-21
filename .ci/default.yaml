@@ -445,3 +445,6 @@ checks:
       ./bin/oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
       ./bin/oracle replay --golden testing/shadow-oracle/golden/1.5.5 --candidate target/oracle/recordings/candidate --out target/oracle/reports/dev --strict
     needs: [gates]
+    # The candidate recording, handed to any check that `needs: [oracle]` (content-addressed, laid
+    # into the needing check's slot on any machine).
+    outputs: [target/oracle/recordings]
