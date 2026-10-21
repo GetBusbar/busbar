@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! MEMBER PROGRAMS through the connection table (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)): one
+//! MEMBER PROGRAMS through the connection table: one
 //! long-lived program per (instance, need, member), every open on the member a lease on it.
 
 use std::sync::Arc;
@@ -697,7 +697,7 @@ async fn drain(c: &Connector, id: ConnId, bound: Duration) -> usize {
     read
 }
 
-/// RED (resource bounds; THE DESIGN §5, back-pressure): every frame the program writes is kept for
+/// RED (resource bounds, back-pressure): every frame the program writes is kept for
 /// every open lease until it reads it, so a lease that does not read holds the program back, as a
 /// holder that does not read holds a line's far end back. Kept with no cap, a lease that never read
 /// grew host memory by everything the program wrote while another lease read on; once it reads,

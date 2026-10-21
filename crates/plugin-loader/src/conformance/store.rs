@@ -30,7 +30,7 @@
 //! A draw must fit its cap once and not twice (the second reserve is the EXHAUSTED one).
 //!
 //! THE PINS (M6/contract): every op is ONE crossing — a replay, a refusal and a conflict
-//! included: the `op_id` dedupe (H4) is the store's to answer, so the host crosses to ask — but:
+//! included: the `op_id` dedupe is the store's to answer, so the host crosses to ask — but:
 //!
 //! * a bridge READ answered under a LEASE is TWO, the read and its lease's `release`
 //!   ([`LEASED`]). The SDK leases a found record, a non-empty list and every ledger (a window
@@ -543,9 +543,9 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     });
 
     // ── audit and denylist ──
-    r.line("audit 1", 1, || ans(b.append_audit(&audit(1, "a"))));
-    r.line("audit 2", 1, || ans(b.append_audit(&audit(2, "b"))));
-    r.line("audit 2 forked", 1, || {
+    r.line("ledger 1", 1, || ans(b.append_audit(&audit(1, "a"))));
+    r.line("ledger 2", 1, || ans(b.append_audit(&audit(2, "b"))));
+    r.line("ledger 2 forked", 1, || {
         ans(b.append_audit(&audit(2, "forked")))
     });
     r.line("audit", LEASED, || ans(b.list_audit()));
@@ -902,8 +902,8 @@ fn contract(fold: &Fold, i: &Inputs<'_>) {
         "cred c1",
         "key+cred k2",
         "revoke c1",
-        "audit 1",
-        "audit 2",
+        "ledger 1",
+        "ledger 2",
         "deny x",
         "upsert t1",
         "append e1",
@@ -939,7 +939,7 @@ fn contract(fold: &Fold, i: &Inputs<'_>) {
     for label in [
         "delete absent",
         "relive plain",
-        "audit 2 forked",
+        "ledger 2 forked",
         "audit batch fork",
     ] {
         assert!(

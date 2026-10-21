@@ -6,7 +6,7 @@
 //! The scope types ([`DispatchScope`], [`DurableScope`], [`SessionScope`]) and the settle vocabulary
 //! they carry ([`AdmissionId`], [`Settle`], [`Settled`], [`SettleAdmission`]) are the kernel's own
 //! plain Rust types: no plugin is on the other side of them, so none is an ABI shape (BUSBAR-1.6.0.md
-//! THE DESIGN §11.5 l.1338-1349; the old HOT lane they were borrowed from is retired, §11.11
+//! l.1338-1349; the old HOT lane they were borrowed from is retired
 //! l.1444-1446).
 
 use crate::breaker::CanonicalSignal;

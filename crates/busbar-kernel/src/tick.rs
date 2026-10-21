@@ -16,7 +16,7 @@
 //! **Drain** is how a node stops without cutting anyone off mid-sentence, and the fleet rule is how
 //! a node decides whether stopping is even the right thing to do when it cannot reach the store.
 //!
-//! **The beat** is the clock lending itself to the compiled-in crates (THE DESIGN §1: "one clock,
+//! **The beat** is the clock lending itself to the compiled-in crates ("one clock,
 //! which also drives every plugin's tick"). A crate with time-driven work starts no timer and no
 //! task of its own: it hands the work to [`on_clock`], and the kernel's cadence
 //! ([`crate::host_services::KernelServices::flushes`]) beats it ([`beat`]) and runs what each beat
@@ -187,8 +187,8 @@ pub fn fleet_action(
 /// What the sweep settled for one unit: its sealed end, the one line it was posted from, and the
 /// unit's audit pass.
 ///
-/// THE DESIGN §1 (`BUSBAR-1.6.0.md` l.190-197): "The audit step writes one fixed record, for every
-/// plane ... never optional"; §7 U14 (l.1061-1065): one audit record per unit, sealed at its one line.
+/// (`BUSBAR-1.6.0.md` l.190-197): "The audit step writes one fixed record, for every
+/// plane... never optional": one audit record per unit, sealed at its one line.
 /// A unit the sweep settles never reached its own audit step, so the sweep hands its caller the pass
 /// that step would have been lent, beside the exact line the posting settled, and the caller seals
 /// the unit's one record from both where it writes the line. A settled unit and its pass come back
@@ -251,7 +251,7 @@ pub fn sweep_settle(
                 // whose plane DID report before its task disappeared is settled at the figure it
                 // reported, unflagged, exactly as the writer says.
                 let estimated = flags.contains(PostingFlags::ESTIMATED);
-                // Under the class the unit reported, as the exit writes it (THE DESIGN §7,
+                // Under the class the unit reported, as the exit writes it
                 // `BUSBAR-1.6.0.md` l.1066-1070: the one line resolves reported classes); the
                 // kernel's own class only when the unit reported none.
                 let line = UsageLine {

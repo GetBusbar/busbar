@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE OPERATOR SURFACE'S TESTS LINK NO PLUGIN (THE DESIGN §1, BUSBAR-1.6.0.md l.179-181: "Kernel
+//! THE OPERATOR SURFACE'S TESTS LINK NO PLUGIN ("Kernel
 //! tests use kind-neutral doubles ... The one place a plugin name appears is the composition root's
 //! manifest: its `Cargo.toml` dependency, its feature and its linked row. The cleanliness crates
-//! (§8) obey the same rule.").
+//! obey the same rule.").
 //!
 //! This crate's manifest names the kernel's crates and third-party libraries, and nothing that is a
 //! plugin: no plugin crate as a dependency of any kind, no metadata table listing plugins to link

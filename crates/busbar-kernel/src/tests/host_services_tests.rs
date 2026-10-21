@@ -414,7 +414,7 @@ fn trust_sight_judges_from_the_admitted_entries_and_writes_the_demotion() {
     let sight = |h: &str| run(|l| r.s.trust_sight(&me, "cp", h, l));
     // Before any approval every sighting reports pending, the declared fingerprint (coordinator
     // 2026-10-07, #555 point ii) or another hash, which drifts nothing and writes no demotion
-    // (#555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is Pending;
+    // (predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is Pending;
     // the retired agent engine's registry lowers every registration unpinned).
     assert_eq!(sight("moved").value, svc::TRUST_NEW);
     assert!(r.s.demotions.get().unwrap().record.list().is_empty());
@@ -442,12 +442,10 @@ fn the_operators_trust_decisions_are_kept_and_replayed_at_a_restart() {
     use crate::trust::book::Ruling;
     let r = rig();
     let me = caller("inst");
-    // Unreached before any approval, a declared fingerprint is pending (coordinator 2026-10-07,
-    // #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is Pending).
+    // Unreached before any approval, a declared fingerprint is pending (no pin is Pending).
     assert_eq!(r.s.trust_unreached(&me, "cp").value, svc::TRUST_NEW);
-    // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
-    // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
-    // Pending, and :312, only a pin can change; the retired agent engine's registry).
+    // Approved first: before an approval a declared fingerprint drifts nothing (no pin is
+    // Pending, and only a pin can change; the retired agent engine's registry).
     r.s.trust_rule("inst/cp", Ruling::Approve).unwrap();
     assert_eq!(
         run(|l| r.s.trust_sight(&me, "cp", "moved", l)).value,
@@ -663,9 +661,8 @@ fn trust_state_answers_the_counterparty_and_its_items_as_the_admin_list_does() {
 fn a_durable_demotion_is_replayed_at_admit() {
     let r = rig();
     let me = caller("inst");
-    // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
-    // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
-    // Pending, and :312, only a pin can change; the retired agent engine's registry).
+    // Approved first: before an approval a declared fingerprint drifts nothing (no pin is
+    // Pending, and only a pin can change; the retired agent engine's registry).
     r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)
         .unwrap();
     assert_eq!(
@@ -793,9 +790,8 @@ fn trusting(pin: Option<&str>) -> InstanceFacts {
 #[test]
 fn a_demotion_in_one_instance_is_never_replayed_into_another_with_the_same_counterparty() {
     let r = rig();
-    // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
-    // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
-    // Pending, and :312, only a pin can change; the retired agent engine's registry).
+    // Approved first: before an approval a declared fingerprint drifts nothing (no pin is
+    // Pending, and only a pin can change; the retired agent engine's registry).
     r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)
         .unwrap();
     assert_eq!(
@@ -1018,9 +1014,8 @@ fn a_demotion_is_written_on_the_pool_and_the_sighting_answers_after_it() {
     let held = Arc::new(Held::default());
     let s = restarted(&r).with_pool(Arc::new(Arc::clone(&held)));
     s.admit("inst", trusting(Some("fp"))).unwrap();
-    // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
-    // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
-    // Pending, and :312, only a pin can change; the retired agent engine's registry).
+    // Approved first: before an approval a declared fingerprint drifts nothing (no pin is
+    // Pending, and only a pin can change; the retired agent engine's registry).
     s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)
         .unwrap();
     let (slot, later) = recorder();
@@ -1815,7 +1810,7 @@ fn a_dead_or_expired_key_sees_nothing() {
     }
 }
 
-/// THE PRINCIPAL AS IT STANDS (ARCHITECT round 4 Q-L3B-SURFACES (a)): with the root's live
+/// THE PRINCIPAL AS IT STANDS: with the root's live
 /// re-resolution attached, every entitlement is judged against the principal re-resolved per ask:
 /// a principal revoked after admission is entitled to nothing and no longer stands
 /// (`ENTITLEMENT_STANDING`), and one whose grant narrowed sees the narrowed grant. Unattached, an
@@ -2152,7 +2147,7 @@ impl crate::store::plane_view::PlaneStore for ParkingStore {
     }
 }
 
-/// NO PLUGIN CODE RUNS UNDER A HOST LOCK (§11.13 M1; audit K4 #6): while an instance's first admit
+/// NO PLUGIN CODE RUNS UNDER A HOST LOCK: while an instance's first admit
 /// is parked in the store plugin reading the operator's kept trust rulings, a caller-scoped host
 /// service of another instance, on another thread, still answers.
 #[test]
@@ -2209,7 +2204,7 @@ fn an_admit_parked_in_the_store_never_stalls_another_instances_host_service() {
     );
 }
 
-/// A REPLAYED APPROVAL IS REFUSED THROUGH `records.claim` (§11.12: the ONE path for approval
+/// A REPLAYED APPROVAL IS REFUSED THROUGH `records.claim` (the ONE path for approval
 /// redemption). The approval's nonce is claimed when it is redeemed; presenting the same approval
 /// again inside its window finds the claim taken, so the second redemption is refused.
 #[test]
@@ -2334,7 +2329,7 @@ fn probed(probe: &Arc<Probe>) -> Arc<KernelServices> {
     k
 }
 
-/// A DECISION THE STORE REFUSED IS NOT IN FORCE (Q128 p5#2; THE DESIGN §11.12 l.1617-1619). The
+/// A DECISION THE STORE REFUSED IS NOT IN FORCE (Q128 p5#2.12 l.1617-1619). The
 /// operator is told the approval failed, and the counterparty stays unapproved in this process as
 /// it will after a restart. RED arm: the book took the approval before the store was asked, so
 /// `trust_judge` answered `Ok` after the refused keep.

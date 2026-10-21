@@ -3510,7 +3510,7 @@ mod rehomed_metering {
     }
 
     /// REHOMES `crates/busbar-llm/src/engine/attempt/tests/failed_generation.rs::buffered_cohere_error_is_an_error_a_breaker_fault_and_charges_10_5`
-    /// (map row 5). 1.5.5 (item 302, Q31): a whole cohere `finish_reason: "ERROR"` to a chat
+    ///. 1.5.5: a whole cohere `finish_reason: "ERROR"` to a chat
     /// caller is a 502 with no `finish_reason` in the body, a transient fault on the far end, an
     /// error end, and the far end's reported 10 in / 5 out (15 tokens) still billed.
     /// RED: a failed generation delivered as a 200 success, no breaker fault, or its usage dropped

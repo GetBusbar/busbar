@@ -284,7 +284,7 @@ fn at_the_node_width_the_jev_ledger_is_the_callers_bucket() {
     assert!(judge_jev_ledger(&bucketed(&[("vk_caller", "", "", 1, "41")]), "vk_caller").is_err());
 }
 
-/// THE MODEL-RESOLUTION BOOT (THE DESIGN §2, the decisions bullet): two models, the second with an
+/// THE MODEL-RESOLUTION BOOT (the decisions bullet): two models, the second with an
 /// `upstream_model`, each priced.
 #[test]
 fn the_models_subject_configures_two_models_one_with_an_upstream_model() {
@@ -305,7 +305,7 @@ fn the_models_subject_configures_two_models_one_with_an_upstream_model() {
             "{m}"
         );
     }
-    // THE DESIGN §7: the card prices `decision`, `input_tokens` and `output_tokens`, all three
+    // the card prices `decision`, `input_tokens` and `output_tokens`, all three
     // required (0 = free), on both subjects.
     let main = xtask::conformance_record::jev_subject_config(
         41000,
@@ -367,7 +367,7 @@ fn the_upstream_model_is_spliced_into_what_the_far_end_receives() {
         .contains("\"model\""));
 }
 
-/// THE `nanojev` BOOT (THE DESIGN §2, the decisions bullet): a NanoJev model on a `nanojev`
+/// THE `nanojev` BOOT (the decisions bullet): a NanoJev model on a `nanojev`
 /// provider beside the jev one, each priced.
 #[test]
 fn the_nanojev_subject_configures_a_nanojev_provider_and_model() {
@@ -1134,7 +1134,7 @@ fn the_mcp_rig_pins_a_node_its_toolchain_accepts_on_every_runner_platform() {
     );
 }
 
-/// THE ATTESTED BUILD THE RIG FETCHES (ARCHITECT ruling 2026-10-17, A1): busbar's own Actions run on
+/// THE ATTESTED BUILD THE RIG FETCHES: busbar's own Actions run on
 /// each push to dev publishes, on busbar-release's dev-bin, the binary and its in-toto provenance
 /// under these names; the rig asks for exactly HEAD's pair on its own architecture, and verifies
 /// it against busbar's repository and branch.

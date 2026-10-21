@@ -2223,8 +2223,7 @@ fn validate_providers_with(
             || (host_is_local && scheme_is(base_url, "http"));
         if !scheme_ok {
             // What an error may repeat of the base URL: a `user:pass@` the operator wrote is
-            // ACCEPTED (and stripped where the base URL enters the served flow, as 1.5.5 did — row
-            // 74, F25), so it never surfaces in a message. The host stays: it is the diagnosis.
+            // ACCEPTED (and stripped where the base URL enters the served flow, as 1.5.5 did), so it never surfaces in a message. The host stays: it is the diagnosis.
             let plaintext = scheme_is(base_url, "http");
             let base_url = busbar_kernel_egress::trust::net::redact_userinfo(base_url);
             errors.push(if plaintext {
@@ -2251,7 +2250,7 @@ fn validate_providers_with(
             // CGNAT, public) is allowed — so local models just work. The three escape hatches (this
             // provider's `allow_metadata_hosts`, the global `security.allow_metadata_hosts`, and the
             // nuclear `security.allow_all_metadata`) carve exceptions (then `ssrf_blocked_host`
-            // returns None). The base URL is repeated with its userinfo redacted (row 74, F25).
+            // returns None). The base URL is repeated with its userinfo redacted.
             let base_url = busbar_kernel_egress::trust::net::redact_userinfo(base_url);
             errors.push(format!(
                 "provider '{provider_name}' base_url '{base_url}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts to unblock it for all providers, or set security.allow_all_metadata: true to disable the guard entirely — and security.blocked_metadata_hosts extends the denylist)"
@@ -2357,7 +2356,7 @@ fn validate_providers_with(
                     || (host_private && scheme_is(tu, "http"));
                 if !tu_scheme_ok {
                     // Repeated with its userinfo redacted: a `user:pass@` in token_url is accepted
-                    // and rides the mint as 1.5.5's did (row 74, F25), never a message.
+                    // and rides the mint as 1.5.5's did, never a message.
                     let plaintext = scheme_is(tu, "http");
                     let tu = busbar_kernel_egress::trust::net::redact_userinfo(tu);
                     errors.push(if plaintext {
@@ -2454,7 +2453,7 @@ fn validate_providers_with(
                 }
             };
             if !cred.trim().is_empty() {
-                // THE NEED'S TARGET IS THE KERNEL'S TO JUDGE (THE DESIGN §5; ARCHITECT ruling
+                // THE NEED'S TARGET IS THE KERNEL'S TO JUDGE
                 // 2026-09-28, Q2 (a)): the service account's `token_uri`, under the SAME operator
                 // metadata posture as every other destination, before the key material is judged —
                 // 1.5.5's order. The service account's own shape (its JSON, its key) is the serving
@@ -2626,7 +2625,7 @@ pub fn vet_token_uri(token_uri: &str, posture: &MetadataPosture) -> Result<(), S
         .unwrap_or(false);
     if !(scheme_is(token_uri, "https") || (host_private && scheme_is(token_uri, "http"))) {
         // Repeated with its userinfo redacted: a `user:pass@` in token_uri rides the mint as
-        // 1.5.5's did (row 74, F25), never a message.
+        // 1.5.5's did, never a message.
         let token_uri = busbar_kernel_egress::trust::net::redact_userinfo(token_uri);
         return Err(format!(
             "service-account token_uri must use https for a public host (got '{token_uri}'); it receives the signed JWT assertion, so plaintext http is permitted only for a private/loopback endpoint"

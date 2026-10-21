@@ -2278,7 +2278,7 @@ fn serde_default_fns_return_their_documented_constants() {
 }
 
 /// RED (row 155 B1; BUSBAR-1.6.0.md #49: the kernel contains zero transport-protocol literals; THE
-/// DESIGN §4: "A plane receives, at open, the dialect fields of the providers it references and
+/// "A plane receives, at open, the dialect fields of the providers it references and
 /// resolves model -> dialect itself"): the kernel supplies NO dialect for a provider entry that omits
 /// `protocol:`. The key stays empty; the default dialect is the speaking plane's own. (Base: the
 /// kernel filled in its own `DEFAULT_PROTOCOL` dialect name, so this read that name.) The catalog

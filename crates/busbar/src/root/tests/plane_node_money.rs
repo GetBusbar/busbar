@@ -1084,13 +1084,13 @@ fn lose_a_unit(node: &Node, key: UnitKey, op_class: &'static str, hold: Option<u
 
 /// Q128 p29#5: A SWEPT UNIT SEALS EXACTLY ONE AUDIT RECORD, AND ITS AMOUNT IS ITS LEDGER LINE.
 ///
-/// THE DESIGN §1 (`BUSBAR-1.6.0.md` l.190-197): "The audit step writes one fixed record, for every
-/// plane ... never optional"; §7 U14 (l.1061-1065): one audit record per unit, sealed at its one
+/// (`BUSBAR-1.6.0.md` l.190-197): "The audit step writes one fixed record, for every
+/// plane... never optional": one audit record per unit, sealed at its one
 /// line. A unit whose task disappeared is ended by the node's sweep, never by its own exit, so the
 /// record is the sweep's to seal: outcome `Failed(at, TaskLost)`, finish `Error`, the operation class
 /// the unit's guard recorded, the hold its admission opened, and the posted line by its registered
 /// class. The swept unit's evidence went with its task, so its line is the estimated zero under the
-/// kernel's own class: a money figure no registration declares and a record may not hold (§1
+/// kernel's own class: a money figure no registration declares and a record may not hold
 /// l.193-195, #43, #77(3)), so the record names no line and its amount, zero, is the zero the line
 /// moved. And the record reads back, as every record on the journal must at the next boot.
 ///
@@ -1916,7 +1916,7 @@ fn a_dispatch_record_is_written_on_the_book_under_its_units_facts() {
 }
 
 /// THE RECORD'S AMOUNT IS COUNTS AND A CARD VERSION, NEVER A PRICE (`BUSBAR-1.6.0.md` THE DESIGN
-/// §1, "The amount is the unit's counts plus the rate-card version, never a price"; §7).
+/// "The amount is the unit's counts plus the rate-card version, never a price").
 ///
 /// A unit whose exit settles a non-zero figure (the settlement writer's money, in nano-units) seals
 /// its record beside that line. The record names what the unit reported, by class; the exit's

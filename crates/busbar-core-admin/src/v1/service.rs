@@ -232,7 +232,7 @@ pub(crate) fn usage_refusal(
 ///
 /// The history is the kernel's rate dater's ([`busbar_kernel::rate_apply::dated_history`]) — the
 /// one the composition root installs at boot and the budget ledger's reads price by — so this crate
-/// holds no seam of its own (R6). `None` for a build that installed no dater, or a node that has
+/// holds no seam of its own. `None` for a build that installed no dater, or a node that has
 /// resolved no configuration yet: the read then derives exactly as the previous release did.
 fn dated_rate_history() -> Option<Arc<busbar_kernel::cost::History>> {
     busbar_kernel::rate_apply::dated_history()
@@ -688,7 +688,7 @@ pub fn auth_modules_compiled_in() -> Vec<&'static str> {
 /// The removable hook plugins COMPILED INTO this binary: the hook rows this build LINKS, by the name
 /// every surface prints, read off the composition root's install record
 /// (`busbar_kernel::preflight::RootInstall::hook_names`) as the store catalog reads its `stores`.
-/// This crate names no hook plugin (Law 1) and holds no seam of its own (R6): the list is the
+/// This crate names no hook plugin and holds no seam of its own: the list is the
 /// root's data. Excludes the always-present, non-removable weighted SWRR floor, which is reported
 /// separately (as `weighted_floor` / the `weighted` compiled-in entry).
 pub(crate) fn hook_plugins_compiled_in() -> Vec<&'static str> {

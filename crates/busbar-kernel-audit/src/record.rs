@@ -198,7 +198,7 @@ pub struct AuditRecord {
     /// WHEN, on the node's monotonic clock, so a wall clock that jumped cannot reorder a unit's own
     /// events.
     pub mono: u64,
-    /// WHICH NODE SEALED IT (THE DESIGN §1: "when (wall + monotonic, node)"): the node half of every
+    /// WHICH NODE SEALED IT ("when (wall + monotonic, node)"): the node half of every
     /// `op_id` the sealing process mints, a non-zero draw of the OS CSPRNG. Nodes share one store,
     /// and a monotonic reading compares only against readings of the same node, so the record names
     /// the node its `mono` belongs to. Digested from recipe `v4`, so neither the digest, the

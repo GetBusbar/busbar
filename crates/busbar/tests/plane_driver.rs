@@ -6,7 +6,7 @@
 //! path, handed to the kernel's plane driver as the contract's `PlaneCalls`, and driven by the one
 //! loop (`run_unit_async` / `open_unit`) through every case in `plane_driver_cases.rs`. Beside
 //! them: a plane's `drive` through the dispatcher's own driver ticket, the crossing's cost, and
-//! the duplex session (K6) the driver pumps after `open_unit` admitted it.
+//! the duplex session the driver pumps after `open_unit` admitted it.
 
 #[path = "../../busbar-kernel/tests/common/mod.rs"]
 mod common;
@@ -1117,7 +1117,7 @@ fn a_public_route_carrying_its_own_token_is_lent_authorization_and_nothing_else(
     }
 }
 
-// ── duplex sessions (K6) ─────────────────────────────────────────────────────────────────────────
+// ── duplex sessions ─────────────────────────────────────────────────────────────────────────
 
 /// One line of a session caller's script.
 #[derive(Debug, Clone, Copy)]
@@ -1237,7 +1237,7 @@ where
 /// The lane the test steps' Verify seals: the one destination a session's turns may reach.
 const SEALED: &str = "fixture-lane";
 
-/// A DUPLEX SESSION, both ways (K6): the caller's pieces cross on the session's caller-side
+/// A DUPLEX SESSION, both ways: the caller's pieces cross on the session's caller-side
 /// ticket, under the unit's stream, and the plane's answers reach the caller; the caller's last
 /// piece ends it, and its one cleanup runs once. Nothing reaches the far end without a turn.
 #[tokio::test]

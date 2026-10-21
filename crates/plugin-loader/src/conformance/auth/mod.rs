@@ -484,8 +484,8 @@ fn verify_now(p: &Plugin<Auth>, case: &mut Presented) -> String {
 }
 
 /// `frame` SUBMITTED as `verify` on `ticket`, awaited: through the suite's lending submit
-/// ([`super::submit_on`]), `lend` the [`Presented`] its pointers name, which the op OWNS (THE
-/// DESIGN §2), so a `verify` the watchdog abandons never reads freed memory.
+/// ([`super::submit_on`]), `lend` the [`Presented`] its pointers name, which the op OWNS,
+/// so a `verify` the watchdog abandons never reads freed memory.
 fn submit_verify(
     p: &Plugin<Auth>,
     d: &Dispatcher,
@@ -841,7 +841,7 @@ fn secret_or_absent(v: &serde_json::Value, key: &str, bytes: &[u8]) -> Blob {
 }
 
 /// THE MEMORY ONE `complete_login` LENDS THE PLUGIN: the callback's words, the submitted form
-/// fields and the host's identity buffer. Lent whole to the op (THE DESIGN §2), so its pointers
+/// fields and the host's identity buffer. Lent whole to the op, so its pointers
 /// stay valid however the call ends.
 struct LoginLend {
     words: [Vec<u8>; 5],
@@ -863,8 +863,8 @@ unsafe impl Sync for LoginLend {}
 /// names. The redirect flow's callback (`code`, `state`, `nonce`, `redirect_uri`,
 /// `code_verifier`), or the credential flow's `submitted` form fields (`{ "<name>": "<value>" }`),
 /// each value a secret blob as the host lends every submitted field. Through the suite's lending
-/// submit ([`super::on_ticket_frame`]): everything it names is in a [`LoginLend`] the op OWNS (THE
-/// DESIGN §2), so a login the watchdog abandons never reads freed memory.
+/// submit ([`super::on_ticket_frame`]): everything it names is in a [`LoginLend`] the op OWNS,
+/// so a login the watchdog abandons never reads freed memory.
 fn complete_submitted(p: &Plugin<Auth>, d: &Dispatcher, complete: &serde_json::Value) -> String {
     let submitted: Vec<(String, Vec<u8>)> = complete["submitted"]
         .as_object()
@@ -1076,7 +1076,7 @@ fn inbound_and_login(s: &Subject, leg: Leg, k: &serde_json::Value, st: &Stated) 
         );
     }
 
-    // THE HOST'S CLOCK (`clock.now`, THE DESIGN §1: the kernel's one clock, served to every
+    // THE HOST'S CLOCK (`clock.now`: the kernel's one clock, served to every
     // instance): a door reading no host credential is served by a host holding none, which still
     // answers the wall clock a login's token expiry is judged at.
     let d = match &hosts {

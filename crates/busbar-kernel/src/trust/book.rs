@@ -14,7 +14,7 @@
 //!   operator's INTENT, not an observation (coordinator ruling 2026-10-07, OWNER 2026-09-28): it
 //!   approves nothing. The counterparty stays pending until the operator approves it: every
 //!   sighting answers [`Sight::New`], at the declared fingerprint or any other hash, and nothing
-//!   drifts before the approval (coordinator 2026-10-07, #555 round 3); the last verdict is
+//!   drifts before the approval; the last verdict is
 //!   [`Sight::New`]; the Approve step refuses it and every item there; and it is listed NEW. A
 //!   demotion replayed for it still holds it quarantined until its pin is seen again.
 //! * **Drift.** A hash other than the pin answers [`Sight::Drifted`] once and demotes the
@@ -304,7 +304,7 @@ pub struct RulingRow {
     /// (mechanism, root, key and fingerprint), `None` for one that declares no pin. A kept decision
     /// replays only over the same declaration, so an approval never rides a declaration that
     /// changed while the process was down, exactly as an in-process re-admit starts the
-    /// counterparty afresh (THE DESIGN §11.12 l.1617-1619, the trust lifecycle is kernel state). A
+    /// counterparty afresh (l.1617-1619, the trust lifecycle is kernel state). A
     /// row kept before this field existed reads `None` and so replays only over a pinless
     /// registration.
     #[serde(default)]
@@ -517,7 +517,7 @@ impl TrustBook {
     /// THE DECISION, JUDGED AND NOT YET TAKEN: what [`Self::decide`] would do, as the durable fact
     /// to keep, with the book unchanged. The caller keeps the fact durably and only then takes it
     /// ([`Self::apply`]), so a decision that could not be kept never takes effect in this process
-    /// (THE DESIGN §11.12 l.1617-1619: the trust lifecycle and its record are durable kernel state;
+    /// (l.1617-1619: the trust lifecycle and its record are durable kernel state;
     /// Q128 p5#2).
     ///
     /// # Errors

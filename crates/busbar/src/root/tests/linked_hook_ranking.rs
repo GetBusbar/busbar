@@ -304,7 +304,7 @@ fn hook_words(r: &rendering::Read) -> Vec<String> {
 /// hook tests, which run against the double, judge the door the binary ships. Both Statements
 /// rendered: the same kind, `max_inflight`, flag marks, hook words and tail, and the tail's facts
 /// the same (class and grants, as the hook axis reads them); the name is the double's own (the
-/// kernel names no plugin, C1). Both opened: the same refusals, byte for byte once each door's own
+/// kernel names no plugin). Both opened: the same refusals, byte for byte once each door's own
 /// name is read as one. Both asked: the same decision on every 1.5.5 parity case.
 ///
 /// RED by flipping any copied literal or rule in the double (e.g. `least_busy` ascending).
@@ -314,7 +314,7 @@ async fn the_kernel_ranking_double_states_what_the_linked_ranking_door_states() 
     let double = read(ranking_double::door);
     assert_ne!(
         double.name, real.name,
-        "the double states its own name: the kernel names no plugin (C1)"
+        "the double states its own name: the kernel names no plugin"
     );
     assert_eq!(double.name, ranking_double::NAME, "the Statement name");
     assert_eq!(double.kind, real.kind);
@@ -330,7 +330,7 @@ async fn the_kernel_ranking_double_states_what_the_linked_ranking_door_states() 
     for word in hook_words(&real) {
         let settings = serde_json::json!({ "policy": word });
         let facts = |axis: &Arc<dyn HookAxis>| axis.probe(&word, &word, &settings);
-        // The door's facts, its Statement name read as the double's own (C1).
+        // The door's facts, its Statement name read as the double's own.
         let want = facts(&linked).map(|(stated, problems)| {
             let stated = stated.map(|f| HookFacts {
                 name: ranking_double::NAME.to_string(),

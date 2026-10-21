@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE ADMISSION AND CONNECTION RED ARMS every plugin's run carries, whatever its kind (`BUSBAR-1.6.0.md`
-//! §2: a plugin is admitted only as the Statement its row or signed manifest states, only as the
+//! a plugin is admitted only as the Statement its row or signed manifest states, only as the
 //! kind it is asked for, and it reaches the network only over the needs it declared, on
 //! connections of its own instance). Each arm drives the plugin's own door into the misbehaviour
 //! and requires the host to refuse it, and each keeps an honest twin that must pass beside it:

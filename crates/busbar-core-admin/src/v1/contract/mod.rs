@@ -967,7 +967,7 @@ pub struct UsageView {
     #[serde(serialize_with = "serialize_usage_currency")]
     #[cfg_attr(feature = "openapi-schema", schemars(with = "String"))]
     pub currency: (),
-    /// THE RATE-CARD VERSION THIS READ WAS PRICED AT (#44, Q93): the seq of the dated rate-card
+    /// THE RATE-CARD VERSION THIS READ WAS PRICED AT: the seq of the dated rate-card
     /// history snapshot every row of this response resolved its card through: the `?as_of` the caller
     /// named, else the history's head when the read was taken. Asking `?as_of=<this>` again re-derives
     /// the same figures, so an invoice cut from this response names the card that priced it. `null`

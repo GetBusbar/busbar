@@ -262,7 +262,7 @@ pub fn load(cx: &Ctx) -> Result<Matrix, String> {
 /// WHERE THE LOOP'S STEPS ARE DECLARED. The kernel's teller (`crates/busbar-kernel/src/teller.rs`)
 /// does not restate them: it imports the step markers and `StepName` from the contract, whose
 /// `StepName::ALL` (step.rs:67, the enum at step.rs:42) is "every step, in the order the loop runs
-/// them". The spec's list is THE DESIGN §1 (docs/design/BUSBAR-1.6.0.md:153-154) and its #72 row
+/// them". The spec's list is (docs/design/-154) and its #72 row
 /// (:2266), which cites this file.
 pub const KERNEL_STEPS_REL: &str = "crates/busbar-contract/src/caps/step.rs";
 

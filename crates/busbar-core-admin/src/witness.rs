@@ -7,7 +7,7 @@
 //! The recording layer of the v1 router (this crate) writes it; the over-claim audit in this crate's
 //! tests reads it. The keys are neutral strings (the operation's relative path, the HTTP method, the
 //! error kind's `Debug` name, an optional condition's `Debug` name). Relocated from the kernel's
-//! `admin_witness` (D4): the kernel's `taxonomy::observed` keeps only the response `Tag`.
+//! `admin_witness`: the kernel's `taxonomy::observed` keeps only the response `Tag`.
 
 use std::collections::BTreeSet;
 use std::sync::Mutex;

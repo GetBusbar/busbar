@@ -6,7 +6,7 @@
 //! One question: **who is calling?** This crate holds the walk that answers it over a configured
 //! chain of modules, the types a module and its answer are written in, the caller reference a plane
 //! attributes a request with, and the operator credential's words. It is not an authenticate step:
-//! the kernel's one chain serves that (BUSBAR-1.6.0.md THE DESIGN §11.11 R3).
+//! the kernel's one chain serves that.
 //!
 //! ## What it holds
 //!
@@ -14,7 +14,7 @@
 //!   pass continues. The door is open only when the chain declares no module **and** no keys arm.
 //!   All-pass with a keys arm runs the keys arm; all-pass without one denies.
 //! - **No credential cache.** A verified credential is cached by the auth plugin that verified it,
-//!   inside itself, and dropped on its `refresh` (BUSBAR-1.6.0.md THE DESIGN §11.11 R3, Q-INCACHE);
+//!   inside itself, and dropped on its `refresh`;
 //!   the walk keeps none.
 //! - **The module and the principal.** [`AuthModule`] and its three answers, [`AuthOutcome`]; and
 //!   [`Principal`]. The anonymous principal has no bucket and renders its actor id as the literal

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ONE WIPED HMAC-SHA256 (coordinator ruling 2026-10-18, Q128 auth-sigv4 round 2 (a)): the HMAC
+//! THE ONE WIPED HMAC-SHA256 the HMAC
 //! an auth plugin keys over secret material ([`hmac_sha256`]). Every key-derived value — the padded
 //! key, the inner and outer pad blocks, the SHA-256 chaining states and the inner digest — lives in
 //! a buffer wiped on drop, and so does the answer (THE DESIGN section 6: "auth material is

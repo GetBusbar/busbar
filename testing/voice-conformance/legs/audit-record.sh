@@ -5,7 +5,7 @@
 # shellcheck disable=SC2034  # LEG_KIND/LEG_STATUS/LEG_SLICES are read by voice-conformance.sh on source
 #
 # LEG: audit-record — the audit kind and operation the kernel's ONE row per unit is written under, and
-# no row of the door's own beside it (BUSBAR-1.6.0.md THE DESIGN §1, the fixed record; Part 3 §12 "audit").
+# no row of the door's own beside it (the fixed record; "audit").
 #
 # THE DOOR'S HALF (judged, linked AND dropped door): the tail states the `streaming_session` audit kind
 # and the one `streaming.session.open` operation class; every one of the five doors' units arrives

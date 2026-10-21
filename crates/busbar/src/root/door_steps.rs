@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE KERNEL STEPS OF A UNIT SERVED THROUGH A PLANE'S DOOR (SERVE-WIRE step 33, the serving slice;
-//! `BUSBAR-1.6.0.md` Part 3 §12 "One unit, step by step", THE DESIGN §7): the steps the kernel
+//! `BUSBAR-1.6.0.md` "One unit, step by step"): the steps the kernel
 //! answers around the plane's own seats (decode, route and encode are the plane driver's), one
 //! [`DoorSteps`] per unit. Generic over the plane's tail: it names no plane.
 //!
@@ -476,7 +476,7 @@ fn refusal_for(blocked: &LimitBlocked) -> Refusal {
 }
 
 /// The budget mode a unit of `key` runs under: any governing limit in its group chain that cuts
-/// (`on_exhaustion: cut-stream`) cuts; otherwise the unit finishes (THE DESIGN §7, Budgets).
+/// (`on_exhaustion: cut-stream`) cuts; otherwise the unit finishes (Budgets).
 fn exhaustion_of(app: &App, key: &VirtualKey) -> ExhaustionMode {
     let mut limits = Vec::new();
     let mut seen = Vec::new();
@@ -611,7 +611,7 @@ impl std::fmt::Debug for DoorSteps<'_> {
 /// Who a unit is, as the data door saw it arrive.
 #[derive(Debug, Clone)]
 pub struct DoorCaller {
-    /// The principal the unit is billed to (THE DESIGN §7, Attribution).
+    /// The principal the unit is billed to (Attribution).
     pub principal: PrincipalId,
     /// The caller's governance key, when the auth gate resolved one.
     pub key: Option<Arc<VirtualKey>>,
@@ -659,7 +659,7 @@ impl<'s> DoorSteps<'s> {
         }
     }
 
-    /// The same steps for a NESTED unit (`unit.nest`, THE DESIGN §11.12 unit row): a child of the
+    /// The same steps for a NESTED unit (`unit.nest`.12 unit row): a child of the
     /// unit whose hold cell is `parent`, so its door accrues against the parent's admission (an
     /// accrual of nothing at admission; its reported units are its own line, at its end, under the
     /// same principal) rather than opening a reservation of its own.
@@ -1158,7 +1158,7 @@ impl Units for DoorSteps<'_> {
         _leases: &GroupLeaseSlip,
     ) -> SeatVerdict<Admit> {
         // A UNIT THE PLANE ANSWERS ITSELF (ROUTE_LOCAL, ARCHITECT Q-L3B-LOCAL): admitted with no
-        // route walk; only far-end-reported units bill (§7), so it holds and charges nothing, and
+        // route walk; only far-end-reported units bill, so it holds and charges nothing, and
         // is audited as every unit is.
         // A local unit whose plane EXPECTS units (its admission estimate) is charged as any keyed
         // unit is: the plane's own round, on the caller's budget (the served engine charged busbar's
@@ -1382,7 +1382,7 @@ pub fn label_bound(
 // ── the egress ───────────────────────────────────────────────────────────────────────────────────
 
 /// THE EGRESS OF ONE DOOR PLANE, sealed for a generation (`BUSBAR-1.6.0.md` Part 3 §12 "The route
-/// pump": the route step is the kernel's existing egress walk; Part 4 Axis 3 / THE DESIGN §5: the
+/// pump": the route step is the kernel's existing egress walk; Part 4 Axis 3 / the
 /// host owns the allow-list, pin, breaker and meter valves, and the wire is the connector's): the
 /// plane instance `caller`'s connection table `conns` (the connector its needs were declared on),
 /// one member per entry `routes` seals (each named by its (plane key, entry), Q-FL3), a pool per
@@ -1703,7 +1703,7 @@ impl busbar_kernel::appbuild::RootRules for Rules {
 // ── the kernel-owned sections a door plane reads ────────────────────────────────────────────────
 
 /// THE KERNEL-OWNED SECTIONS A DOOR PLANE MAY READ, as the configuration validated and resolved
-/// them (spec Part 1 §4: "A plane's settings reach it as ONE validated JSON object `{section:
+/// them (spec "A plane's settings reach it as ONE validated JSON object `{section:
 /// value}` per open/refresh, reserved keys and secrets stripped"; "A plane receives, at open, the
 /// dialect fields of the providers it references and resolves model -> dialect itself"): `providers`
 /// (catalog-merged, each provider's dialect fields: no `base_url`, no credential reference, no
@@ -1829,16 +1829,16 @@ pub fn kernel_sections(
     out
 }
 
-// ── the members' routes (THE DESIGN §6 steps 2-3) ──────────────────────────────────────────────
+// ── the members' routes (steps 2-3) ──────────────────────────────────────────────
 
-/// ONE `providers:` ENTRY as a door plane's member reaches it (THE DESIGN §6 step 2; #50, #51): the
+/// ONE `providers:` ENTRY as a door plane's member reaches it: the
 /// `base_url` it dials, its default `protocol` and `error_map` (the dialect fields its plane is handed
 /// at open), its credential reference, the `auth:` style it states (`None` = its plane's dialect
 /// default) and the parameters that style is opened with.
 #[derive(Debug, Clone)]
 pub struct ProviderRoute {
     /// `base_url`, as the operator (or the catalog) spelled it, less any `user:pass@`: 1.5.5 dialled,
-    /// sent and signed the host after it (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`; row 74, F25),
+    /// sent and signed the host after it (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`),
     /// so the member's route, its sealed reach, its binding and every dial read that host alone.
     pub base_url: String,
     /// The basic credential that userinfo spelled, read at configuration time and held by the root:
@@ -1870,7 +1870,7 @@ pub struct StyleParams {
     /// `token_url`, where stated.
     pub token_url: Option<String>,
     /// `token_uri`, the service account's token endpoint (ARCHITECT 2026-10-04 parity ruling, THE
-    /// DESIGN §5 `loopback-allowed`: "auth mint endpoints (`token_url`, `token_uri`)"): the target
+    /// `loopback-allowed`: "auth mint endpoints (`token_url`, `token_uri`)"): the target
     /// of the serving plugin's `settings.token_uri` need, judged as 1.5.5 judged it.
     pub token_uri: Option<String>,
     /// `scope`, where stated.
@@ -1999,15 +1999,15 @@ type Serving = (
     crate::root::loader::dispatch::kinds::auth::OutboundStyle,
 );
 
-/// THE AUTH PLUGINS A MEMBER'S STYLE MAY BE SERVED BY (THE DESIGN §6 step 3: the auth plugin that
+/// THE AUTH PLUGINS A MEMBER'S STYLE MAY BE SERVED BY (the auth plugin that
 /// serves the style opens the binding): the build's linked `auths` rows, then the plugins
 /// directory's `kind: auth` rows (compiled-in = dropped-in), each loaded through the loader's one
 /// load on the process's dispatcher, its declared needs on the process's connection table (THE
-/// DESIGN §5: an auth plugin that mints reaches its token endpoint through its own need). The first
+/// an auth plugin that mints reaches its token endpoint through its own need). The first
 /// whose tail states the style serves it. Its instance is opened once and serves every binding of
 /// every style it states; a plugin whose needs take their target from its settings (`target_from`)
 /// is opened once per binding's settings instead, so each need is declared pinned to that binding's
-/// endpoint (PB-100). Every instance opened runs its tick schedule on its driver ticket (§6.5: a
+/// endpoint. Every instance opened runs its tick schedule on its driver ticket (a
 /// minted credential refreshes ahead of expiry on `tick`).
 pub struct OutboundAuths {
     dispatcher: Arc<crate::root::loader::dispatch::Dispatcher>,
@@ -2017,7 +2017,7 @@ pub struct OutboundAuths {
     /// Every auth row's outbound facts, read once at the first serving (each row bound once to
     /// read them), so a serving binds only the row it opens.
     facts: std::sync::OnceLock<Vec<AuthRowFacts>>,
-    /// The opened instances, by key: opened OUTSIDE the map's lock (THE DESIGN §11.13 M1: the
+    /// The opened instances, by key: opened OUTSIDE the map's lock (the
     /// plugin's validate and open crossings never run under a host lock).
     opened: crate::root::loader::open_once::OpenOnce<
         String,
@@ -2202,7 +2202,7 @@ impl OutboundAuths {
     }
 
     /// [`Self::serving`], with `presented` the Basic value a token endpoint's userinfo spelled
-    /// when the host stripped it before the settings reached a plane (row 74, F25): presented on the
+    /// when the host stripped it before the settings reached a plane: presented on the
     /// mint exactly as one [`endpoint_userinfo`] reads off the settings is.
     ///
     /// # Errors
@@ -2215,7 +2215,7 @@ impl OutboundAuths {
         presented: Option<crate::root::userinfo::UserinfoBasic>,
     ) -> Result<Option<Serving>, String> {
         use crate::root::loader::dispatch::auth_outbound::OutboundInstance;
-        // A token endpoint spelled `user:pass@` (row 74, F25): the plugin is opened over, and its
+        // A token endpoint spelled `user:pass@`: the plugin is opened over, and its
         // binding handed, the stripped endpoint, and the userinfo rides its mint as 1.5.5 sent it
         // ([`endpoint_userinfo`]); or the host already stripped it and hands its Basic value here.
         let endpoint = endpoint_userinfo(settings);
@@ -2298,7 +2298,7 @@ impl OutboundAuths {
 /// `token_url` (`oauth-client-credentials`) and the service account's `token_uri` (`jwt-bearer`).
 const TOKEN_ENDPOINT_SETTINGS: [&str; 2] = ["token_url", "token_uri"];
 
-/// A TOKEN ENDPOINT SPELLED `user:pass@`, AS 1.5.5 REACHED IT (row 74, F25). 1.5.5 POSTed the client
+/// A TOKEN ENDPOINT SPELLED `user:pass@`, AS 1.5.5 REACHED IT. 1.5.5 POSTed the client
 /// credentials with reqwest to `token_url` as written (v1.5.5
 /// `oauth_client_credentials.rs:119-126` in its egress-auth tree, `.post(&self.token_url)
 /// .form(..)`), and reqwest 0.12.28's builder took the userinfo out of the URL and sent it FIRST as
@@ -2716,7 +2716,7 @@ pub fn process_auths() -> Arc<OutboundAuths> {
     }))
 }
 
-/// WHAT A DOOR PLANE'S MEMBERS ARE REACHED THROUGH, for the process (THE DESIGN §6 steps 2-3, §5):
+/// WHAT A DOOR PLANE'S MEMBERS ARE REACHED THROUGH, for the process (steps 2-3):
 /// the deployment's providers, the secret seam their credentials resolve through, the auth plugins
 /// that serve a style, the connector the planes' needs were declared on, and the client-level
 /// ceiling a streamed answer is bounded by.
@@ -2775,7 +2775,7 @@ const PASSTHROUGH: &str = "passthrough";
 /// scheme, as the previous release forwarded it.
 const PASSTHROUGH_STYLE: &str = "bearer";
 
-/// The style a `token_exchange:` registration is bound under (ARCHITECT round 5 Q-L3B-EXCHANGE (B)):
+/// The style a `token_exchange:` registration is bound under:
 /// RFC 8693, busbar's own subject token exchanged per call for the caller's down-scope.
 const TOKEN_EXCHANGE_STYLE: &str = "oauth-token-exchange";
 
@@ -2861,7 +2861,7 @@ fn token_exchange_binding(
 /// over that header). The kernel presents it on every request to the member through the auth
 /// kind's per-request call, which reads the binding's current handle and nothing else; the
 /// credential is re-resolved OFF the request path, by the host's refresher once per lease
-/// (`lease_ttl_ms`, [`refresher`]; ARCHITECT ruling on #787, THE DESIGN §11: no blocking, plugin
+/// (`lease_ttl_ms`, [`refresher`]; on no blocking, plugin
 /// memory valid to its next refresh generation). `None` when the registration states no such
 /// block.
 ///
@@ -3056,7 +3056,7 @@ impl PerHop {
     /// handle; a changed one is opened (outside every lock a hop could wait on) and swapped in
     /// whole; one that no longer resolves, or whose new value will not bind, empties the cell (fail
     /// closed). Off the request path only: the binding's build, and the [`refresher`]'s own thread,
-    /// each holding the config-time proof (THE DESIGN §11.11 R4: a refresh is config time).
+    /// each holding the config-time proof (a refresh is config time).
     fn refresh(&self, scope: &busbar_contract::config_time::ConfigScope) {
         let _one = self
             .refreshing
@@ -3240,8 +3240,8 @@ pub(crate) fn refresh_credentials() {
     refresher::refresh_all();
 }
 
-/// THE DOOR'S OWN REQUESTS TO ITS REGISTRATION MEMBERS carry each member's binding (round 4 (d):
-/// "admin connect + verify-on-call fetches use the same binding"): every registration member's
+/// THE DOOR'S OWN REQUESTS TO ITS REGISTRATION MEMBERS carry each member's binding
+/// ("admin connect + verify-on-call fetches use the same binding"): every registration member's
 /// route with an auth binding (`routes`, on the plane's member-target need `served` states) is held
 /// on the plane's connection table `table`, its passthrough credential lent from the unit records
 /// `units` by the unit the request is made inside. The connector keys a binding by (`instance`,
@@ -3319,7 +3319,7 @@ fn ridden(
         .collect()
 }
 
-/// THE MEMBERS' ROUTES of one door plane (THE DESIGN §6 steps 2-3, sealed at its composition):
+/// THE MEMBERS' ROUTES of one door plane (steps 2-3, sealed at its composition):
 /// each entry of its section's model-serving map, by the provider it names (#49), is reached at
 /// that provider's `base_url`, under the style the provider's `auth:` states, else the plane's
 /// default for the member's dialect (its entry's `protocol`/`dialect` override, else the
@@ -3357,7 +3357,7 @@ pub fn member_routes(
     // the first as its own, each other one riding beside it at the target it names.
     let member_targets = member_target_needs(served);
     let member_target = member_targets.first().copied();
-    // A PROGRAM MEMBER (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)): where the plane's need states
+    // A PROGRAM MEMBER: where the plane's need states
     // the member-program path, an entry whose registration names a program is reached at its own
     // long-lived program, which the connector keeps per member (the loader declared each one from
     // the instance's settings); its route's base is the member's own name, the open's target.
@@ -3481,11 +3481,11 @@ pub fn member_routes(
     let dialled = resolve_member_needs(&needs, &members).map_err(|e| e.to_string())?;
     let mut routes = BTreeMap::new();
     // Each registration member: reached at its own target on the member-target need, its metering
-    // rows naming the registration; its auth binding is the registration's own (ARCHITECT round 4
-    // Q-SURFACES (d)): `upstream_credentials: passthrough` (the entry's, else the section's reserved
+    // rows naming the registration; its auth binding is the registration's own
+    // `upstream_credentials: passthrough` (the entry's, else the section's reserved
     // default) lends the caller's verified credential to the member's one outbound auth call
     // (MODE_PASSTHROUGH; a caller who presented none presents nothing), a `token_exchange:` block
-    // binds the RFC 8693 exchange style (round 5 Q-L3B-EXCHANGE (B)), any other sends none of the
+    // binds the RFC 8693 exchange style, any other sends none of the
     // providers' credentials.
     let section_default = section
         .get(busbar_contract::section::UPSTREAM_CREDENTIALS_KEY)
@@ -3518,7 +3518,7 @@ pub fn member_routes(
                 per_request: None,
             })
         } else {
-            // A `token_exchange:` registration (ARCHITECT round 5 Q-L3B-EXCHANGE (B)): busbar's own
+            // A `token_exchange:` registration: busbar's own
             // subject token, exchanged per call for the caller's down-scope the plane states; else
             // an `upstream_credential:` registration: busbar's own credential, presented per request.
             match section.get(entry.as_str()) {

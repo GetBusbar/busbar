@@ -10,7 +10,7 @@ fn key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
 }
 
-/// ONE VERSION PER KIND (THE DESIGN §11.2, §11.8; A.9): each kind's window is exactly
+/// ONE VERSION PER KIND (A.9): each kind's window is exactly
 /// `abi::<kind>::ABI_VERSION` — no ranges, no JSON-lane versions, no 1.5.5 floors (ruling
 /// C21/ABI-o1) — at the shipped numbers.
 ///
@@ -35,7 +35,7 @@ fn supported_abi_is_one_version_per_kind() {
     assert!(supported_abi("nonsense").is_empty());
 }
 
-/// C21 (ABI-o1, THE DESIGN §11.8): a signed, otherwise-valid artifact stating its kind's 1.5.5
+/// C21 (ABI-o1): a signed, otherwise-valid artifact stating its kind's 1.5.5
 /// payload version — what every published 1.5.5 JSON-contract plugin ships (store 2, auth 2, hook 1,
 /// export 2) — is a HARD structural refusal at boot that names the file, the kind, the version and
 /// the rebuild against the 1.6.0 SDK. The signatures are valid on purpose: the refusal is the
@@ -441,7 +441,7 @@ fn open_secret_refuses_non_secret_kind_and_vice_versa() {
     let err = reg.secret_refusal("nope");
     assert!(err.contains("no plugin named or aliased"), "got {err}");
     // A secret plugin that states no door (a 1.5.5 JSON-contract plugin) is refused naming the
-    // rebuild: no JSON secret lane remains (THE DESIGN §11.8).
+    // rebuild: no JSON secret lane remains.
     let err = reg.secret_refusal("vault");
     assert!(
         err.contains(crate::registry::JSON_SECRET_REFUSED),

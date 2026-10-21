@@ -5,7 +5,7 @@
 # shellcheck disable=SC2034  # LEG_KIND/LEG_STATUS/LEG_SLICES are read by voice-conformance.sh on source
 #
 # LEG: metering-lease — a session's units, reported per declared class (BUSBAR-1.6.0.md THE DESIGN
-# §1 step "meter"; Part 3 §12: "only far-end-reported units bill").
+# step "meter": "only far-end-reported units bill").
 #
 # THE DOOR'S HALF (judged, linked AND dropped door): the tail declares the six counted classes plus the
 # per-session fee unit; `arrive` admits on no estimate; every session answer reports cumulative

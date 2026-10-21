@@ -5,7 +5,7 @@ use crate::test_support::{build_once, cfg_with_provider_api_key};
 /// The sources this crate took from the retired shared value crate (#83a SD-8), relative to this
 /// crate's manifest dir. The rules that crate held over its own tree — body JSON through the one
 /// seam, every operator-facing warn/error coded — are kept over the same code where it lives now.
-/// `src/sigv4.rs` left with D3 (ec0c05f4e3): it was a re-export of the identity unit's SigV4 items
+/// `src/sigv4.rs` left with it was a re-export of the identity unit's SigV4 items
 /// and carried no code of its own, so no code under these rules left with it.
 pub(crate) fn moved_sources() -> &'static [&'static str] {
     &[
@@ -2538,7 +2538,7 @@ fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
 }
 
 /// RESTART-TO-APPLY FOR A PLANE THE BOOT DID NOT OPEN (u67 BLOCK 2 item 2; BUSBAR-1.6.0.md Law 7
-/// l.547, and §6 item 8 l.980-982): a configuration that writes the section of a plane the root's
+/// l.547, and l.980-982): a configuration that writes the section of a plane the root's
 /// rules name as not opened at boot builds, but gives that plane NO slot (it claims, admits and
 /// lists nothing this generation) and carries its section in `App::planes_awaiting_restart` for
 /// the apply's answer; the same configuration under rules that opened it builds the slot as

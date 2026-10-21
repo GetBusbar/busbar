@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE PLANE SCRIPT'S HOST SERVES WHAT THE KERNEL SERVES (`conformance/plane_host.rs`; THE DESIGN
-//! §2: "Each kind has ONE conformance suite that runs the shipped compiled-in build and the
-//! dropped-in build through the same table"; §11.12, the host services). A plane that judges a
+//! "Each kind has ONE conformance suite that runs the shipped compiled-in build and the
+//! dropped-in build through the same table", the host services). A plane that judges a
 //! destination (`dest.judge`), draws random bytes (`random.fill`), reads and claims its own records
 //! (`records.get` / `records.list` / `records.claim`) or asks whether a counterparty serves with no
 //! item named (`trust.serves`) is answered here as the kernel answers it, with the kernel's

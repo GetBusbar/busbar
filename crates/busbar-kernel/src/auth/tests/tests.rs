@@ -2314,7 +2314,7 @@ impl busbar_contract::auth_calls::AuthCalls for ScriptedDoor {
 }
 
 /// THE KERNEL HOLDS NO VERDICT CACHE (Q1: the kernel's verdict cache is deleted; a door caches
-/// inside itself, THE DESIGN §11 R3). The same credential presented twice is verified twice, one
+/// inside itself). The same credential presented twice is verified twice, one
 /// door call per request, even though the door states `FACT_CACHEABLE` — and the second verdict is
 /// the door's second answer: a door that identified the credential and then revoked it denies the
 /// second request. Before Q1 the kernel's `CredentialCache` answered a COLD module's repeated
@@ -2369,8 +2369,8 @@ async fn every_request_is_verified_by_the_door_and_the_kernel_caches_no_verdict(
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // K3 #9 / #10 (ARCHITECT SECURITY rulings A and B): a verified identity's replay claim is claimed
-// by the kernel before admitting (THE DESIGN §6, Inbound verify: "already TAKEN is 401"), and the
-// lines an auth names are struck before any plane sees the request (§6.4), whatever its verdict.
+// by the kernel before admitting (Inbound verify: "already TAKEN is 401"), and the
+// lines an auth names are struck before any plane sees the request, whatever its verdict.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// A door that answers every `verify` with `answer` — its verdict, its identity's replay claim and
@@ -2447,7 +2447,7 @@ fn replay_gov() -> std::sync::Arc<crate::governance::GovState> {
 }
 
 /// RED (Q128 arch u27 LOW): the signed ingress claims the replay key its verified identity asks
-/// for, under its verifier, as the data chain and the admin door claim theirs (THE DESIGN §6
+/// for, under its verifier, as the data chain and the admin door claim theirs
 /// "Inbound verify", l.845-846): the first presentation wins the claim, the same key inside its TTL
 /// loses it, and an identity that asks for no claim is never refused for one. RED before: the
 /// signed arm never claimed, so a replayed signed request was admitted every time.
@@ -3410,7 +3410,7 @@ async fn test_admin_prefix_is_boundary_safe() {
     handle.abort();
 }
 
-/// THE SIGNED-REQUEST VERIFIER NAMES ITS LINES ON EVERY ARM (THE DESIGN §6.3, l.925: "Every auth
+/// THE SIGNED-REQUEST VERIFIER NAMES ITS LINES ON EVERY ARM (l.925: "Every auth
 /// called names its credential lines whatever its verdict, and the transport strips the union").
 /// The gate keeps the lines the verifier's answer named, whatever its verdict, and a faulted
 /// answer is a refusal even when its verdict reads as an identity. RED: the gate read only

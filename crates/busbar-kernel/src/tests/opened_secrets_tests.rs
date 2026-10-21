@@ -85,7 +85,7 @@ fn a_plugin_is_opened_once_under_its_key() {
     assert_eq!(opens.load(Ordering::SeqCst), 1);
 }
 
-/// A source that reads the disk, as the loader serves one (THE DESIGN §11.11 R4): refused without
+/// A source that reads the disk, as the loader serves one: refused without
 /// the config-time proof, answering with it.
 struct DiskSource;
 

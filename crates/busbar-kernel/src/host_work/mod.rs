@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE WORK BOOK behind `work.open` / `work.find` / `work.settle` / `work.resume`
-//! (`BUSBAR-1.6.0.md` THE DESIGN §11.12, the work family; §1 "Admission bounds live work; nothing
+//! (`BUSBAR-1.6.0.md` the work family; "Admission bounds live work; nothing
 //! evicts it"; ARCHITECT H3): the durable work handles a plugin opens, finds by reference, settles
 //! and resumes, kept by the kernel and written through the store's typed records, so a handle
 //! outlives the process that opened it.

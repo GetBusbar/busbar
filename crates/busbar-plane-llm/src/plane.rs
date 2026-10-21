@@ -576,7 +576,7 @@ impl Plane for LlmPlane {
                 // is dropped. Carrying it over would put one vendor's member names into another
                 // vendor's request, where at best they are ignored and at worst they are rejected —
                 // and a control that survives the crossing by accident is a control nobody chose.
-                // It goes through the ONE drop path both hosts share (design F3 "Drops", F7): each member
+                // It goes through the ONE drop path both hosts share (design F3 "Drops"): each member
                 // is named by its wire path with a warn, and nothing is substituted for it.
                 crate::codec::chat_handle::drop_untranslatable_request(
                     &mut request,
@@ -781,7 +781,7 @@ impl Plane for LlmPlane {
             let value: serde_json::Value =
                 sonic_rs::from_slice(data).map_err(|_| Encode::Unrepresentable)?;
             // A translate attempt's stream: its drops go through the one drop path both hosts share
-            // (design F3 "Drops", F7), once per path per stream.
+            // (design F3 "Drops"), once per path per stream.
             let seam = crate::codec::drops::Seam {
                 direction: crate::codec::drops::Direction::Response,
                 ingress: ingress.name,
@@ -812,7 +812,7 @@ impl Plane for LlmPlane {
         let value: serde_json::Value =
             sonic_rs::from_slice(bytes).map_err(|_| Encode::Unrepresentable)?;
         // ONE translate attempt on the answer: its drops go through the one drop path both hosts
-        // share (design F3 "Drops", F7).
+        // share (design F3 "Drops").
         let seam = crate::codec::drops::Seam {
             direction: crate::codec::drops::Direction::Response,
             ingress: ingress.name,

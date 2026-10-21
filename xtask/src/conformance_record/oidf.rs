@@ -454,7 +454,7 @@ pub fn oidf_subject_config(subject: &OidfSubject<'_>, clients: &[OidfClient]) ->
         // The `oidc` module is a DROPPED-IN plugin (no shipped busbar links it): the rig packs it
         // unsigned into `plugins` ([`Runner::oidc_plugin`]). Its JWKS comes from the rig's IdP stub
         // on a loopback port of its own ([`IdpStub`]), never the subject's: the destination guard
-        // keeps a node's own ports off-limits (DEST-GUARD #153). 127.0.0.1 is declared as an
+        // keeps a node's own ports off-limits. 127.0.0.1 is declared as an
         // allowed destination the way an operator declares one, so the fetch is admitted by the
         // connector's guard once the module dials through it (FAPI2.md finding).
         "plugins": { "enabled": true, "dir": plugins, "trust": { "allow_unsigned": true } },

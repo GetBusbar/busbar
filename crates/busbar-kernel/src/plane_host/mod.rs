@@ -6,8 +6,8 @@
 //!
 //! A plane reaches the kernel through the [`EngineHost`] supertraits; the kernel answers by calling
 //! its own functions directly over plain Rust types. No plugin is on the other side of this seam, so
-//! it carries no C-layout shape (BUSBAR-1.6.0.md THE DESIGN §11.5 l.1338-1349); the old HOT lane's
-//! `PlaneHostVtable` and its PODs are retired (§11.11 l.1444-1446).
+//! it carries no C-layout shape (l.1338-1349); the old HOT lane's
+//! `PlaneHostVtable` and its PODs are retired (l.1444-1446).
 //!
 //! ## The pieces
 //!
@@ -784,8 +784,7 @@ pub fn live_host_factory(
     })
 }
 
-/// THE LIVE RE-RESOLUTION a door unit's entitlement asks through (`entitlement.check`, ARCHITECT
-/// round 4 Q-L3B-SURFACES (a)): an admitted principal re-resolved against the CURRENT snapshot's
+/// THE LIVE RE-RESOLUTION a door unit's entitlement asks through (`entitlement.check`): an admitted principal re-resolved against the CURRENT snapshot's
 /// governance registry (a registry key, by id) and `role_bindings` (a role-bound key), through
 /// [`Standing::still_permitted`](busbar_kernel::trust::validate::Standing::still_permitted). `None`
 /// when it no longer stands; a deployment with governance off stands as admitted.

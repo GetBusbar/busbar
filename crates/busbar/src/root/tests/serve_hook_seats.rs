@@ -533,7 +533,7 @@ pub(crate) struct RigOpts<'a> {
     /// the kernel hands the door in its settings, which the plane enforces (row 155).
     pub request_body_max_bytes: Option<usize>,
     /// The node's book keeps its journal in a configured store that refuses, and the lane to it is
-    /// full ([`full_journal_book`]): the node fails closed on every new unit (H3).
+    /// full ([`full_journal_book`]): the node fails closed on every new unit.
     pub full_journal: bool,
     /// The deployment's `rate_card:` (`None`: no card, billing off): the governance book prices
     /// the key's counts against it.

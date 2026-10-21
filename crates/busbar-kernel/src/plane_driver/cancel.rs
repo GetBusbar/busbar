@@ -81,7 +81,7 @@ pub trait MoneySeam: Send + Sync {
     /// cross a plugin.
     fn abandoned(&self, ctx: &UnitCtx, ended: Ended);
 
-    /// A duplex session opens under its unit's one admission (THE DESIGN §7: the kernel's session
+    /// A duplex session opens under its unit's one admission (the kernel's session
     /// account, one sealed line at the end). REFUSES by default: session money is K6-4's, and until
     /// a money seam states it no session runs unbilled.
     fn session_opened(&self, ctx: &UnitCtx) -> Result<(), ReasonCode> {

@@ -3,7 +3,7 @@
 
 //! TEST STAND-INS ONLY: an in-process [`AuthModule`] as a chain position's [`AuthCalls`]. A test
 //! build composes an auth chain from in-process modules without a loaded plugin; every plugin a
-//! shipped build opens comes through the auth axis on the auth kind's memory ABI (THE DESIGN §11.6).
+//! shipped build opens comes through the auth axis on the auth kind's memory ABI.
 //! The module's `authenticate` is made on the caller's thread and answered on the spot.
 
 use std::future::Future;

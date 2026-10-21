@@ -6,7 +6,7 @@
 //! one dispatcher's crossing, every byte through the connection table.
 //!
 //! The JSON-lane secret fixture this file also drove (`examples/need_dialler.rs`, loaded through the
-//! secret kind's JSON lane) went with that lane (THE DESIGN §11.1, the P2 switch-over): a secret
+//! secret kind's JSON lane) went with that lane (the P2 switch-over): a secret
 //! plugin reaches the network through its door's needs, on the connector its host hands the
 //! instance at open.
 //!

@@ -7,7 +7,7 @@
 //!
 //! The policy is `.github/fleet/deps.toml` at the pin: the socket/TLS ban (BUSBAR-1.6.0.md line
 //! 3980) and the C-dependency allow-list. Cargo.lock parity with busbar's lock is RED
-//! (PLUGIN-TEMPLATE ruling 3b). `declares.json` states no contract-ABI range (THE DESIGN §2: a
+//! (PLUGIN-TEMPLATE b). `declares.json` states no contract-ABI range (a
 //! plugin declares its kind's ABI version); while the fleet strips it, a range still stated must be
 //! the top of the loader's `supported_abi(kind)` at the pin, min = max.
 //!
@@ -904,9 +904,9 @@ fn arm(reg: &str, key: &str) -> Option<String> {
 }
 
 /// The DECLARES finding for a declares.json that states a contract-ABI range at all.
-pub const STATED_RANGE: &str = "DECLARES states a contract_abi range; a plugin declares its kind's ABI version, never a range (THE DESIGN §2). Re-render it with busbar-release plugin sync.";
+pub const STATED_RANGE: &str = "DECLARES states a contract_abi range; a plugin declares its kind's ABI version, never a range. Re-render it with busbar-release plugin sync.";
 
-/// declares.json states no contract-ABI range (THE DESIGN §2 l.237-240, §9 l.1164-1165: a plugin
+/// declares.json states no contract-ABI range (l.237-240, l.1164-1165: a plugin
 /// declares its kind's ABI version, never a range). THE ORDERED STEP 2, agreed with the fleet: the
 /// fleet's re-render has stripped the field from every repo, so a file that still states it, in any
 /// shape and at any value, is refused ([`STATED_RANGE`]). `_root` and `_kind` are kept for the
@@ -1572,7 +1572,7 @@ fn cases() -> Vec<(&'static str, Res<Vec<String>>, bool)> {
             ),
             true,
         ),
-        // THE DRIVERS, AGAINST THE COMMITTED POLICY (THE DESIGN §5: a database or directory wire
+        // THE DRIVERS, AGAINST THE COMMITTED POLICY (a database or directory wire
         // protocol is a sans-IO codec over the host's stream, never a driver that dials): a store
         // that ships the `postgres` driver is RED; the same driver as a test's dependency is not.
         (

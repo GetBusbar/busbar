@@ -71,7 +71,7 @@ async fn a_reload_leaves_exactly_one_sweeper() {
     assert!(live.upgrade().is_some(), "exactly one sweeper: the new one");
 }
 
-/// THE SWEEP RUNS ON THE KERNEL'S CLOCK (THE DESIGN §1, "one clock, which also drives every plugin's
+/// THE SWEEP RUNS ON THE KERNEL'S CLOCK ("one clock, which also drives every plugin's
 /// tick"). RED: building a generation spawned its sweeper's interval task.
 #[tokio::test]
 async fn a_generation_starts_no_task_of_its_own() {
@@ -87,7 +87,7 @@ async fn a_generation_starts_no_task_of_its_own() {
         tasks(),
         before,
         "building a generation started a task of its own; its time-driven work belongs on the \
-         kernel's clock (THE DESIGN §1: one clock, which also drives every plugin's tick)"
+         kernel's clock (one clock, which also drives every plugin's tick)"
     );
     drop(g);
 }

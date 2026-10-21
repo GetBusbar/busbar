@@ -86,7 +86,7 @@ pub(crate) const DOOR_AXIS: &str = "transport-door";
 /// #50) while the wire the registry folds is unchanged.
 pub(crate) const CONNECTOR_DOOR_AXIS: &str = "connector-door";
 
-/// The plane door axis (#2, THE DESIGN §11.4): the row's entry exports its plane kind's memory-ABI
+/// The plane door axis: the row's entry exports its plane kind's memory-ABI
 /// `door`, and the root hands it to the loader beside every dropped-in plane door
 /// (`crate::root::boot::discover_planes`), so a compiled-in plane is bound through the same table
 /// as a dropped-in one. It needs no `plane` beside it: the door states the plane.
@@ -411,7 +411,7 @@ pub(crate) fn linked_source(
     out.push_str("],\n");
     // EACH LINKED SECRET DOOR'S DECLARED METADATA: `(door, declares)`, the JSON its
     // `[package.metadata.busbar.linked-declares]` row names (the crate's `declares.json`), read as a
-    // dropped-in copy's signed `declares` is (its disk need, THE DESIGN §11.11 R4). A secret door
+    // dropped-in copy's signed `declares` is (its disk need). A secret door
     // with no such row declares none.
     out.push_str("    secret_declares: &[");
     for ((entry, list), (feature, _)) in linked.iter().zip(&on) {

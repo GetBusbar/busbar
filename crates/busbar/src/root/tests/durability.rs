@@ -2643,8 +2643,7 @@ fn drained(durability: &Durability) {
     );
 }
 
-/// **A NODE WITH NO DATA DIRECTORY KEEPS ITS CHAIN IN ITS STORE ACROSS A RESTART** (ARCHITECT
-/// 2026-10-07 H3 ruling (a)-(b); THE DESIGN §7). Sealed audit records, an open hold killed with the
+/// **A NODE WITH NO DATA DIRECTORY KEEPS ITS CHAIN IN ITS STORE ACROSS A RESTART**. Sealed audit records, an open hold killed with the
 /// node (kill -9) and a settled posting go on the chain; a second book over the SAME store resumes
 /// that chain: the audit cache is rebuilt from it, the hold a predecessor left is recovered, the
 /// settled figure is on the book, and the numbering continues past every stored record.
@@ -2894,7 +2893,7 @@ fn a_restart_over_the_same_store_verifies_the_prior_boots_records() {
     assert_eq!(walk.findings, Vec::<String>::new());
 }
 
-/// **ON A CHAIN THE STORE KEEPS, EVERY RECORD NAMES THE NODE THE STORE ASSIGNED** (THE DESIGN §1:
+/// **ON A CHAIN THE STORE KEEPS, EVERY RECORD NAMES THE NODE THE STORE ASSIGNED**
 /// "when (wall + monotonic, node)"; H3 with #662): an audit record's `node` is the id its chain is
 /// keyed by and `/admin/verify` walks it under, the same before a restart and after it — not the
 /// per-process draw that is the node half of this process's op ids.
@@ -2955,7 +2954,7 @@ fn a_store_kept_chain_seals_every_record_as_the_store_assigned_node() {
 }
 
 /// **A RUNNING DRIVEN UNIT'S CHECKPOINT IS KEPT BY THE STORE, AND A KILL RECOVERS IT THERE** (THE
-/// DESIGN §7: "a checkpoint is a durability `unit.accrued` record"; H3 with K2-H1): on a node with
+/// "a checkpoint is a durability `unit.accrued` record"; H3 with K2-H1): on a node with
 /// no data directory, the checkpoint the root's flush tick journals for a running unit rides the
 /// lane to the store like every other record, and a boot over the same store recovers the unit's
 /// hold at those counts, priced, marked RECOVERED.
@@ -3292,7 +3291,7 @@ fn every_minted_node_id_is_held_by_its_claim() {
 }
 
 /// A RUNNING DRIVEN UNIT'S CHECKPOINT REACHES THE CHAIN, AND A KILL RECOVERS IT THERE (THE DESIGN
-/// §7: "a checkpoint is a durability `unit.accrued` record"; K2-H1, R1-M9).
+/// "a checkpoint is a durability `unit.accrued` record"; K2-H1, R1-M9).
 ///
 /// A unit is admitted onto a node whose book has a data directory (its hold opened, its facts on
 /// the posting site), its egress walk records that it dispatched, and its plane reports 300 input

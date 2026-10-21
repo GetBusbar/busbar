@@ -19,7 +19,7 @@
 //! guard still applying). An alternate IPv4 spelling (`127.1`, `2130706433`, `0x7f000001`,
 //! `16909060`, …) is the address it spells, judged as that address; plaintext reaches only a host
 //! WRITTEN as loopback (a loopback literal in any spelling, `localhost`, `*.localhost`), never a
-//! name for what it resolves to; and a scheme spelled in upper case is the scheme (A3).
+//! name for what it resolves to; and a scheme spelled in upper case is the scheme.
 
 use std::sync::mpsc;
 use std::time::Duration;

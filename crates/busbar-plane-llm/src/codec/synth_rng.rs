@@ -11,7 +11,7 @@
 //!
 //! NO STATE OF ITS OWN. This module used to amortise the host call through a 4 KiB per-thread
 //! buffer. A plugin holds no process-global state — what it keeps is per-instance, and the one
-//! owner-approved per-thread slot is the door's log-capture slot (BUSBAR-1.6.0.md THE DESIGN §2) —
+//! approved per-thread slot is the door's log-capture slot —
 //! so that buffer is gone: every draw is one host call, and nothing outlives it or is shared
 //! between instances on a thread (a dropped-in image carries no copy either).
 

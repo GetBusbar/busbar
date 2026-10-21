@@ -428,8 +428,8 @@ fn release(path: PathBuf) -> std::sync::mpsc::Receiver<String> {
     rx
 }
 
-/// **RED ARM: A STALLED LOG FILE NEVER STALLS THE PLUGIN CALL** (§11.2: no blocking on the hot path;
-/// §11.11 R4: the bounded disk lane is not plugin logging's). The instance's file is a FIFO nobody
+/// **RED ARM: A STALLED LOG FILE NEVER STALLS THE PLUGIN CALL** (no blocking on the hot path;
+/// the bounded disk lane is not plugin logging's). The instance's file is a FIFO nobody
 /// reads, so opening it waits; the plugin call that logs still answers, and its lines reach the
 /// file, in the one line format, once the file is read.
 #[cfg(unix)]
@@ -697,7 +697,7 @@ fn every_control_character_in_a_record_is_written_escaped() {
     );
 }
 
-/// **RED ARM: A CONFIG APPLY REACHES A LIVE SINK** (THE DESIGN §11.2). A sink opened under `warn`
+/// **RED ARM: A CONFIG APPLY REACHES A LIVE SINK**. A sink opened under `warn`
 /// in one directory drops an `info` line; reconfigured to `info` in another, it writes the next one
 /// there (the directory created as at bind) and nothing to the first.
 #[test]

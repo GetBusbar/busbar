@@ -8,10 +8,9 @@
 //!
 //! # What is measured, and against what
 //!
-//! A plugin calls back into the host through the host-services table ([`HostSlots`], THE DESIGN
-//! §11.12): a `#[repr(C)]` table of `Option<extern "C" fn>` slots on the one service call shape
+//! A plugin calls back into the host through the host-services table ([`HostSlots`]): a `#[repr(C)]` table of `Option<extern "C" fn>` slots on the one service call shape
 //! `svc(ctx, in, out)`, rather than through a monomorphised in-core call. The budget (THE DESIGN
-//! §11.9: "a crossing under 1 µs") is that the CROSSING — the Option-unwrap plus the indirect call
+//! "a crossing under 1 µs") is that the CROSSING — the Option-unwrap plus the indirect call
 //! through the slot — costs less than 1µs against the same function invoked directly, at BOTH the
 //! p50 and the p99 of the sample distribution. This file measures exactly that, over the
 //! `clock.now` slot ([`op::CLOCK_NOW`]):
@@ -202,7 +201,7 @@ fn assert_hot_path_delta_under_budget() {
     );
 }
 
-/// A carrier slot in the memory ABI's one call shape (`op(instance, in, out)`, THE DESIGN §11.2):
+/// A carrier slot in the memory ABI's one call shape (`op(instance, in, out)`):
 /// the transport kind's `read` slot, answering one outcome byte — `Ready` or `Pending`. The body is
 /// as trivial as the clock's, for the same reason — the crossing is what is measured.
 extern "C" fn carrier_read(

@@ -36,12 +36,12 @@
 //! re-call. (The ticket-less re-call TOKEN, and its refusal when spent on another op, is
 //! `Plugin::recall`'s: no hook call is ticket-less, so the dispatcher's own tests prove it.)
 //!
-//! THE CROSSINGS ARE THE KERNEL'S (THE DESIGN §11.4: one table, as production drives it): every
+//! THE CROSSINGS ARE THE KERNEL'S (one table, as production drives it): every
 //! `decide` and `transform` is SUBMITTED WATCHED on a ticket of its own, as the host's hook door
 //! submits it (`hook_door`: `submit_watched`, the watch budget the hook's `timeout_ms`, here
-//! [`BUDGET`]), its view and buffers lent to the op through the dispatcher's lending submit (§2).
+//! [`BUDGET`]), its view and buffers lent to the op through the dispatcher's lending submit.
 //! So a gate that waits on a may-pend host service answers PENDING and is RESUMED on its wake
-//! (a may-pend service on a ticket-less op is REFUSED, §11.12). A short answer is re-submitted
+//! (a may-pend service on a ticket-less op is REFUSED). A short answer is re-submitted
 //! ONCE on the same ticket with the buffers it named. The lifecycle is ticket-less, as the host
 //! makes it.
 //!
@@ -79,7 +79,7 @@ use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::{now_ns, Called, Dispatcher, Frame, Lent, Plugin};
 
 /// THE WATCH BUDGET every `decide`/`transform` is submitted under, and its deadline: the hook's
-/// `timeout_ms` as the host's hook door rides it on the op (THE DESIGN §11.7), generously.
+/// `timeout_ms` as the host's hook door rides it on the op, generously.
 const BUDGET: Duration = Duration::from_secs(10);
 
 /// The host's first reject-message buffer, in bytes.
@@ -298,7 +298,7 @@ impl Bufs {
 }
 
 /// THE MEMORY ONE `decide`/`transform` LENDS THE HOOK: the request's view and the host's buffers,
-/// built in place in the `Arc` lent to the op (THE DESIGN §2).
+/// built in place in the `Arc` lent to the op.
 struct Lend {
     request: Arc<Request>,
     bufs: Bufs,

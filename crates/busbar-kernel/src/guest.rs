@@ -13,9 +13,9 @@
 //!
 //! POINTS. A line's point set is the union of its auths' sets. A listener where some lines need
 //! `Peer` and others need a per-request point (`Head`, `HeadBody`) without it is refused
-//! ([`GuestRefusal::PeerMix`]; THE DESIGN §6 step 3, boot refusals). A line that needs no point
+//! ([`GuestRefusal::PeerMix`], boot refusals). A line that needs no point
 //! (auth `none`) is neutral to that rule: it sits on a `Peer` listener behind the connection's
-//! `Peer` verdict, which gates the whole connection ([`GuestList::connection_gated`]; §6 step 7).
+//! `Peer` verdict, which gates the whole connection ([`GuestList::connection_gated`]).
 //! A line whose auth needs a point its transport does not offer is refused
 //! ([`GuestRefusal::PointNotOffered`]).
 //!
@@ -279,7 +279,7 @@ impl GuestList {
 
     /// Whether the listener's connections are gated by a `Peer` verdict: some line needs `Peer`.
     /// The verdict is the connection's, so every line on the list sits behind it, a `none` line
-    /// included (THE DESIGN §6 step 7): no request on a connection the `Peer` verdict refused
+    /// included: no request on a connection the `Peer` verdict refused
     /// reaches any line.
     #[must_use]
     pub fn connection_gated(&self) -> bool {

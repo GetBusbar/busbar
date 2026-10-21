@@ -272,7 +272,7 @@ fn red_inputs_naming_a_step_twice_are_refused() {
     .contains("share a label"));
 }
 
-/// THE PLANE SCRIPT DRIVES A UNIT'S PIECES AS THE KERNEL DOES (THE DESIGN §11.4, §11.12): every
+/// THE PLANE SCRIPT DRIVES A UNIT'S PIECES AS THE KERNEL DOES: every
 /// piece SUBMITTED on the unit's ticket, so a piece that waits answers PENDING and is RESUMED.
 mod pieces_on_tickets {
     use std::sync::atomic::{AtomicPtr, Ordering};

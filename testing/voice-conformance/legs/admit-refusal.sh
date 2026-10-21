@@ -5,7 +5,7 @@
 # shellcheck disable=SC2034  # LEG_KIND/LEG_STATUS/LEG_SLICES are read by voice-conformance.sh on source
 #
 # LEG: admit-refusal — a refused unit opens nothing and dials nothing, and its refusal is rendered in
-# the dialect's error shape (BUSBAR-1.6.0.md THE DESIGN §1, step 4 ADMIT; Part 3 §12 "refused → refusal").
+# the dialect's error shape (step 4 ADMIT; "refused → refusal").
 #
 # THE DOOR'S HALF (judged, linked AND dropped door, `voice_conform composition admit-refusal`): the
 # kernel's refusal — budget 429, grant 403, credential 401 — is rendered by the door's `refusal` op in

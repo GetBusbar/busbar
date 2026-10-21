@@ -19,7 +19,7 @@
 //! connection carries one exchange at a time and is lent again only once idle.
 //!
 //! A pooled connection is keyed by everything its dial was judged and secured for: the instance and
-//! the need that dialled it (THE DESIGN §5, a connection belongs to the instance that opened it; §8,
+//! the need that dialled it (a connection belongs to the instance that opened it,
 //! the connector holds each need's trust), the entry, the authority, the security and the name
 //! offered, the egress class it was judged under, and the very seal of trust anchors it was held to
 //! (a destination sealed again is dialled afresh under its new seal). A dial

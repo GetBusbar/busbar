@@ -202,12 +202,11 @@ pub struct AdvancedCfg {
     /// `proxy::wire::maybe_attach_route_policy` — neither is rebuilt by a config apply.
     #[serde(default)]
     pub response_headers: ResponseHeadersCfg,
-    /// THE DESTINATION GUARD (OWNER ruling DESTINATION GUARD; THE DESIGN §5, ARCHITECT ruling
-    /// CRATES-14): refuse a provider dial, and an outbound connection whose target came from
+    /// THE DESTINATION GUARD: refuse a provider dial, and an outbound connection whose target came from
     /// request data or the network, when it is, or resolves to, a private, loopback, link-local,
     /// CGNAT or unique-local address, unless `allow_destinations` names it; judged after resolution
     /// and dialled at the judged address. Operator infrastructure (a database, secret service or
-    /// directory a plugin's config names) is allowed private and loopback (§5 egress-class table).
+    /// directory a plugin's config names) is allowed private and loopback (egress-class table).
     /// Default `true`. Cloud metadata is refused for every target, and stays refused when `false`,
     /// unless an IP/CIDR entry of `allow_destinations` names it. BOOT-TIME (the connector is built
     /// once).
@@ -260,7 +259,7 @@ impl super::RootCfg {
             .into_iter()
             .filter(|(_, p)| !p.allow_metadata_hosts.is_empty())
             .flat_map(|(_, p)| {
-                // Each URL as the served flow dials it: its userinfo stripped (row 74, F25), so the
+                // Each URL as the served flow dials it: its userinfo stripped, so the
                 // carve-out matches the host the dial names rather than reading nothing.
                 std::iter::once(&p.base_url)
                     .chain(&p.token_url)

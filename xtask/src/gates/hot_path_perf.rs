@@ -42,8 +42,8 @@
 //!
 //! THE SUBJECT. The HOT lane's `PlaneHostVtable` was deleted with `abi/hot` (status row 84). The
 //! crossing that replaced it is the host-services table, `HostSlots`
-//! (`crates/busbar-contract/src/abi/host/service.rs`, THE DESIGN §11.12), and the instrument measures
-//! its `clock.now` slot (§11.9: "a crossing under 1 µs"), ARMED against the table's own construction
+//! (`crates/busbar-contract/src/abi/host/service.rs`), and the instrument measures
+//! its `clock.now` slot ("a crossing under 1 µs"), ARMED against the table's own construction
 //! (the `#[repr(C)]` subject `crates/busbar-contract/tests/layout_golden.rs` pins): the measured slot
 //! is the same fn pointer a live dispatch calls.
 

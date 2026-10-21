@@ -1598,7 +1598,7 @@ impl busbar_kernel::rate_apply::RateEpoch for CardRepricer {
 /// READ half hands the history to the ledger reads that price against it — the budget book's and
 /// `GET /api/v1/admin/usage`'s alike, both through the kernel's
 /// `rate_apply::dated_history` — and rides the DATE half's install (`RateEpoch::history`), so
-/// the admin crate holds no seam of its own (R6). Any two without the third is a node that dates
+/// the admin crate holds no seam of its own. Any two without the third is a node that dates
 /// its prices and then reports them off the newest card anyway — exactly the defect this seam
 /// exists to rule out.
 pub fn install_card_repricer() {

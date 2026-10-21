@@ -350,7 +350,7 @@ pub const MODE_PASSTHROUGH: u32 = 2;
 
 /// `fields`' EXTENSIONS KEY ([`crate::abi::mechanism::extensions`], carried in
 /// `FieldsIn::head.extensions`): the per-call scope the binding's credential is asked for, its
-/// value the space-delimited scope text (ARCHITECT round 5 Q-L3B-EXCHANGE (B): the caller's
+/// value the space-delimited scope text (the caller's
 /// down-scope, which a token-exchange style requests as RFC 8693 `scope`). Absent = the call states
 /// none; a style that asks no per-call scope never reads it.
 pub const EXT_SCOPE: &str = "scope";

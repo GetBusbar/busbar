@@ -538,7 +538,7 @@ fn the_cap_sweep_evicts_oldest_terminal_first_and_never_an_active() {
 ///     which is worse than holding memory — and it is asserted rather than described because the
 ///     word "hard ceiling" reads like a guarantee the sweep does not make.
 /// (2) An ACTIVE handle is never transitioned by the sweep either, however long it idles: only the
-///     plane settles live work (`BUSBAR-1.6.0.md` THE DESIGN §1; ARCHITECT 2026-10-07 K2-H5 (ii)).
+///     plane settles live work (`BUSBAR-1.6.0.md` (ii)).
 /// (3) The TERMINAL handles that survive the cap are the NEWEST ones — eviction is oldest-first by
 ///     `updated_at`, and it is a total order on that key.
 /// (4) Every rule fires from a SUBMIT. Nothing sweeps on read, and nothing sweeps on a timer.
@@ -652,7 +652,7 @@ fn the_sweep_keeps_every_active_handle_and_evicts_terminal_ones_oldest_first() {
 }
 
 /// AN IDLE ACTIVE HANDLE IS NEVER EVICTED, AND NEVER SETTLED BY THE SWEEP (`BUSBAR-1.6.0.md` THE
-/// DESIGN §1, "Admission bounds live work; nothing evicts it"; ARCHITECT 2026-10-07 K2-H5 (ii)). A
+/// "Admission bounds live work; nothing evicts it"; (ii)). A
 /// second submit far past any idle age claims the sweep, and the handle the plane never settled is
 /// still ACTIVE after it: only the plane ends live work, and live work is bounded at admission.
 #[test]

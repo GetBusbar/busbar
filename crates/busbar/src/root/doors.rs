@@ -343,7 +343,7 @@ pub fn claims_of(door: DoorFn) -> Vec<&'static str> {
 }
 
 /// The auth points a linked row's door offers, read off its Statement's `extensions`
-/// (`abi::transport::EXT_OFFERED_POINTS`; THE DESIGN §6 step 3).
+/// (`abi::transport::EXT_OFFERED_POINTS`).
 ///
 /// # Panics
 ///

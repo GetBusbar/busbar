@@ -280,7 +280,7 @@ make_scratch() {
 remove_crate_dir() { rm -rf "$1/crates/busbar-$2"; }
 
 # pinned_in <tree> <P> → 0 when <tree>'s root manifest PINS `busbar-<P>` as a git row and no
-# `crates/busbar-<P>` directory is on disk: the plane lives in its own repo (P5) and this tree links it
+# `crates/busbar-<P>` directory is on disk: the plane lives in its own repo and this tree links it
 # at a rev. A plane on disk is never read as pinned, whatever the root also says.
 pinned_in() {
   [ ! -d "$1/crates/busbar-$2" ] \
@@ -1121,7 +1121,7 @@ run_check() {
 remove_and_assert() {
   local s="$1" p="$2"
   local pre_dir pre_root pre_bin pre_dep
-  # PINNED: the plane left for its own repo, and the root links it at a rev (P5). Its removal is
+  # PINNED: the plane left for its own repo, and the root links it at a rev. Its removal is
   # the pin row and the bin's rows, asserted below exactly as a directory's is.
   if [ -d "$s/crates/busbar-$p" ]; then pre_dir=PRESENT
   elif pinned_in "$s" "$p"; then pre_dir=PINNED

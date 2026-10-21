@@ -14,7 +14,7 @@
 //! fold of the same door is the plane crate's own conformance suite (`tests/conformance.rs`, one
 //! transcript through both loads); this harness builds no cdylib of it.
 //!
-//! The `mcp` module below is the `root-mcp` leg's loop cells (`qa/capability-equality.json`, U14):
+//! The `mcp` module below is the `root-mcp` leg's loop cells (`qa/capability-equality.json`):
 //! the MCP plane's door, composed here the same way, each core capability driven through the data
 //! router and asserted where it lands.
 //!
@@ -2059,7 +2059,7 @@ pub(super) mod session_door {
     }
 }
 
-/// THE ROOT-MCP LEG'S LOOP CELLS (U14): the MCP plane served through its memory-ABI door, composed by
+/// THE ROOT-MCP LEG'S LOOP CELLS: the MCP plane served through its memory-ABI door, composed by
 /// this file's composition (`compose_planes`, `door_routes`) on the kernel's plane driver, each core
 /// capability of the capability-equality matrix (`qa/capability-equality.json`, the `mcp-client` and
 /// `mcp-server` columns) driven through the data router the door's claims mount on and asserted
@@ -2703,14 +2703,14 @@ mod tools_door {
         let instance = "serve-door-tools-tap";
         let _published = Published(instance);
         let (port, mut heard) = tool_server().await;
-        let arguments = serde_json::json!({ "path": "/home/caller/secret.txt" });
+        let arguments = serde_json::json!({ "path": "/data/caller/secret.txt" });
 
         let control = hook_parity::rig(instance, port, Vec::new());
         let (status, _) = call(&control, &control.token, "fs_read_file", arguments.clone()).await;
         assert_eq!(status, StatusCode::OK);
         let sent = hook_parity::calls_heard(&mut heard);
         assert!(
-            sent.len() == 1 && sent[0].contains("/home/caller/secret.txt"),
+            sent.len() == 1 && sent[0].contains("/data/caller/secret.txt"),
             "the control carries the caller's arguments: {sent:?}"
         );
         drop(control);
@@ -2739,7 +2739,7 @@ mod tools_door {
         let sent = hook_parity::calls_heard(&mut heard);
         assert_eq!(sent.len(), 1, "one call went out");
         assert!(
-            sent[0].contains("/srv/redacted") && !sent[0].contains("/home/caller"),
+            sent[0].contains("/srv/redacted") && !sent[0].contains("/data/caller"),
             "the server received the hook's arguments and never the caller's: {}",
             sent[0]
         );
@@ -9916,7 +9916,7 @@ async fn a_decisions_unit_from_a_key_naming_another_pool_is_refused_before_its_d
 }
 
 #[cfg(feature = "plane-decisions")]
-/// THE DECISIONS DOOR LISTS ITS MODELS (THE DESIGN §2, DECISIONS D8): through the one loader, the
+/// THE DECISIONS DOOR LISTS ITS MODELS (DECISIONS D8): through the one loader, the
 /// door's facing carries every model its section configures, in name order, for the kernel to
 /// scope-filter and `/v1/models` to append; a section that configures none lists nothing. RED: a
 /// generation whose snapshot lists nothing faces the world with no names.

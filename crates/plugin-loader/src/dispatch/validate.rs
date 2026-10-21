@@ -63,10 +63,10 @@ pub(crate) fn out_head(head: &OutHead, host_out_size: u32) -> Result<(), Violati
 }
 
 /// The most bytes any slice a plugin reports the length of may span: THE DESIGN's hard maximum,
-/// "bytes ≤ `u32::MAX`" (§11, Hard maxima).
+/// "bytes ≤ `u32::MAX`" (Hard maxima).
 pub(crate) const MAX_LENT_BYTES: usize = busbar_contract::abi::mechanism::check::MAX_BYTES as usize;
 
-/// THE ONE WAY A SLICE IS FORMED FROM A PLUGIN-REPORTED LENGTH (THE DESIGN §11.13 M1, "Every slice
+/// THE ONE WAY A SLICE IS FORMED FROM A PLUGIN-REPORTED LENGTH ("Every slice
 /// built from a plugin-reported length is capped and validated before it is formed"): `len`
 /// entries at `ptr`, or `None` (the caller's FAULT) when the range is non-empty behind NULL, spans
 /// more than [`MAX_LENT_BYTES`], or is misaligned for `T`. Nothing is read or formed before the

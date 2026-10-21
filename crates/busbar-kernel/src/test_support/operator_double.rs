@@ -3,7 +3,7 @@
 
 //! THE OPERATOR-CREDENTIAL DOUBLE: the `kind: auth` door a test binary links onto the auth axis in
 //! place of whichever operator-credential plugin the composition root links (BUSBAR-1.6.0.md
-//! l.179-181: "Kernel tests use kind-neutral doubles ... The cleanliness crates (§8) obey the same
+//! l.179-181: "Kernel tests use kind-neutral doubles... The cleanliness crates obey the same
 //! rule").
 //!
 //! It states itself under the stand-in operator words (`busbar_kernel_identity::operator::STAND_IN`)

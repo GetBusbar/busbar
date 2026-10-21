@@ -1687,7 +1687,7 @@ fn a_sinks_deliveries_in_flight_reach_its_admission_bound_past_the_blocking_pool
 }
 
 /// **K9e-2 — A FIRST-PARTY EGRESS CLASS IS GRANTED TO A FIRST-PARTY PLUGIN ONLY** (`BUSBAR-1.6.0.md`
-/// §5; ARCHITECT ruling EGRESS-GRANT 2026-10-03). The OTLP trace sink's one need is in the
+/// EGRESS-GRANT 2026-10-03). The OTLP trace sink's one need is in the
 /// `loopback-allowed` class (a collector's loopback plaintext), a first-party grant: LINKED, and
 /// DROPPED IN signed by the release key, it is admitted and opens through either door. RED ARM: the
 /// same cdylib dropped in by a THIRD party (allowlisted, trusted, not first-party) is refused at the

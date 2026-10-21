@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ADMIN SURFACE IS NO PLUGIN (THE DESIGN §8: "Exactly three crates are compiled in and are
-//! never plugins"; R6: `busbar-core-admin` stays core, "not plugins"; §6 step 3: a claimant is "a
+//! THE ADMIN SURFACE IS NO PLUGIN ("Exactly three crates are compiled in and are
+//! never plugins": `busbar-core-admin` stays core, "not plugins": a claimant is "a
 //! plane, a plugin's inbound need, or a cleanliness crate's route (admin, oauth2)").
 //!
 //! Its one claim is a cleanliness crate's route on the guest list, declared as data. So the crate's
@@ -84,7 +84,7 @@ fn the_admin_surface_implements_no_plugin_face() {
     }
     assert!(
         offenders.is_empty(),
-        "the admin surface presents itself as a plugin (§8, R6): {offenders:#?}"
+        "the admin surface presents itself as a plugin: {offenders:#?}"
     );
 }
 

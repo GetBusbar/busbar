@@ -153,7 +153,7 @@ pub fn stateful_plane_ephemeral_store_warn(
 /// Map a provider's `Option<config::ProviderAuth>` to the NEUTRAL [`AuthStyleInput`] the carrier holds
 /// (`None` ⇒ the protocol's native auth). The fallback plane maps it to the style its lane's credential
 /// is bound under, on the auth plugin serving that style.
-/// THE TOKEN ENDPOINT AS A PLANE MAY SEE IT (row 74, F25): `token_url` with its userinfo stripped,
+/// THE TOKEN ENDPOINT AS A PLANE MAY SEE IT: `token_url` with its userinfo stripped,
 /// and the `Authorization: Basic` value that userinfo spelled, held opaque for the host to present
 /// on the mint as 1.5.5's reqwest POST did (v1.5.5's client-credentials mint, lines 119-126 of
 /// its egress-auth tree). A plane never receives a
@@ -952,7 +952,7 @@ pub fn build_app_from_config(
             .unwrap_or_default();
         // The base URL, trailing-slash-trimmed once here (the plane consumes it verbatim into the
         // egress-target build + SigV4 signed-host derivation), its userinfo stripped as 1.5.5 did
-        // (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`; row 74, F25): every lane table, dial, signed
+        // (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`): every lane table, dial, signed
         // host and rendering downstream reads the `host[:port]` it dials, never the `user:pass@`.
         let base_url = busbar_kernel_egress::trust::net::strip_userinfo(
             provider_cfg.base_url.trim_end_matches('/'),

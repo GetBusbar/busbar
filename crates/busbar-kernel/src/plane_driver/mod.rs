@@ -36,8 +36,8 @@
 //! `drive`. A session's unsolicited output (R-B) wakes the same ticket: [`PlaneDriver::drives`]
 //! wakes each session its `drive` names, and the session collects its output.
 //!
-//! DUPLEX SESSIONS (K6): [`PlaneUnits::session`], after `open_unit` admitted the unit, or as the
-//! route leg of a unit whose `arrive` stated `ROUTE_SESSION` (ARCHITECT round 5 Q-L3B-K6-HTTP (a)):
+//! DUPLEX SESSIONS: [`PlaneUnits::session`], after `open_unit` admitted the unit, or as the
+//! route leg of a unit whose `arrive` stated `ROUTE_SESSION`:
 //! the unit's own caller side is then the session's caller leg ([`SessionCaller`]).
 //!
 //! THE INSTANCE'S ADMISSION: built, the driver admits the instance to the kernel's host services
@@ -662,7 +662,7 @@ pub trait DriverSteps: Units {
     fn affinity(&self, _ctx: &UnitCtx, _hash: u64) {}
 
     /// The units the plane's `arrive` expects the unit to do (its admission estimate, THE DESIGN
-    /// §7 `admission: estimate`), told with [`Self::decoded`]. An estimate never bills.
+    /// `admission: estimate`), told with [`Self::decoded`]. An estimate never bills.
     fn expected(&self, _ctx: &UnitCtx, _units: &[UnitCount]) {}
 
     /// THE ONE ENTRY a `ROUTE_SCOPE_LOCAL` unit's scope resolved to (its Verify), lent to the
@@ -1245,7 +1245,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
         }
     }
 
-    /// THE SESSION OPEN'S HOOK STAGE (ARCHITECT Q-L5B-PROJECT 2026-10-03; K5): the request stage the
+    /// THE SESSION OPEN'S HOOK STAGE: the request stage the
     /// route leg runs, run once for a duplex session, after its admission and before its caller is
     /// answered: the plane's `project` of the session's open, the operator's gates and rewrites over
     /// it. `Err` when a hook stopped it; what the caller is answered is then the plane's rendering
@@ -1616,7 +1616,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
 }
 
 impl<S: DriverSteps + Sync, F: FarEnd, C: SessionCaller> PlaneUnits<'_, S, F, C> {
-    /// S3 for a unit its `arrive` stated `ROUTE_SESSION` (ARCHITECT round 5 Q-L3B-K6-HTTP (a)):
+    /// S3 for a unit its `arrive` stated `ROUTE_SESSION`:
     /// the route leg is the duplex session ([`PlaneUnits::session`]) under the unit's one
     /// admission, inside the destinations its approval sealed, its caller leg the unit's own caller
     /// side; a session its plane answers itself (`ROUTE_LOCAL`) bills nothing, as a local request
@@ -1642,7 +1642,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: SessionCaller> PlaneUnits<'_, S, F, C>
 
 impl<S: DriverSteps + Sync, F: FarEnd, C: SessionCaller> RouteAwait for PlaneUnits<'_, S, F, C> {
     /// The unit's route leg: one request's pump, or, for an arrival its `arrive` stated
-    /// `ROUTE_SESSION`, the duplex session (K6).
+    /// `ROUTE_SESSION`, the duplex session.
     fn route_leg<'a>(
         &'a self,
         token: &'a Pass<Route>,

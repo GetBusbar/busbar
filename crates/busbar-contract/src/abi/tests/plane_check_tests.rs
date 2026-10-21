@@ -3026,7 +3026,7 @@ fn a_plane_naming_a_kernel_money_verdict_is_malformed_not_the_verdict() {
     }
 }
 
-/// THE ROUTE FLAGS (ARCHITECT round 4 Q-L3B-SURFACES (h) `ROUTE_ONCE`; round 5 Q-L3B-K6-HTTP (a)
+/// THE ROUTE FLAGS (`ROUTE_ONCE`
 /// `ROUTE_SESSION`): a READY arrival may state either or both, whatever it routes over; a bit the
 /// contract does not define is FAULT, and an answer that admits nothing states none.
 #[test]

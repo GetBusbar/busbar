@@ -137,7 +137,7 @@ fn diffed(body: &str, new: serde_json::Value) -> Option<String> {
 }
 
 /// A rewrite that changed one block is written back as exactly that block: every other block, the
-/// key order and the spacing stay the caller's (F6). A re-serialize, the RED arm, sorts and
+/// key order and the spacing stay the caller's. A re-serialize, the RED arm, sorts and
 /// respaces everything.
 #[test]
 fn a_write_back_touches_only_the_blocks_that_changed() {

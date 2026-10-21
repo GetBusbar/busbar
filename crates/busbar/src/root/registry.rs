@@ -190,8 +190,8 @@ pub struct BootRegistry {
 impl BootRegistry {}
 
 /// The cleanliness crate's route every build carries: the admin surface's one claim, sealed after
-/// the linked planes' under the surface's own key. A claimant, never a plugin (THE DESIGN §6 step
-/// 3: "a plane, a plugin's inbound need, or a cleanliness crate's route (admin, oauth2)"; §8: the
+/// the linked planes' under the surface's own key. A claimant, never a plugin (step
+/// 3: "a plane, a plugin's inbound need, or a cleanliness crate's route (admin, oauth2)": the
 /// cleanliness crates "are never plugins"), so the plugin registry holds nothing for it.
 fn core_claims() -> impl Iterator<Item = PlaneClaim> {
     busbar_core_admin::admin_codec::claims::CLAIMS

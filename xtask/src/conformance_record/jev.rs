@@ -23,7 +23,7 @@
 //!   | `refusal.unauthenticated` | no credential: refused before any far-end hop, `401`, body exactly `{"error":{"code":"invalid_request","message":<text>}}` | driven.rs `refusal_body`; plane.rs `authenticate` (no anonymous surface) |
 //!   | `usage.billable-success-only` | the success posts one fee on the jev lane carrying the 42 units the far end reported, and the 422 posts nothing | meta.rs `CLASS_DECISION` + plane.rs `meter` (signed design C-3); ARCHITECT ruling 2026-10-02 (CONFORMANCE-RIGS Q4) |
 //!
-//!   THE GATING CHECKS (BUSBAR-1.6.0.md THE DESIGN §1, H2: "conformance rigs carry one cell per
+//!   THE GATING CHECKS ("conformance rigs carry one cell per
 //!   Teller step per plane"), each named as its cell is in `qa/teller-steps.json`
 //!   (`matrix.decision.<step>.cell` = `jev.rig|<check>`), each judging DELTAS it reads itself on the
 //!   same boot, after the checks above:
@@ -48,10 +48,10 @@
 //!   lane's row is the rig's caller's own bucket ([`judge_jev_ledger`]).
 //!   The subject's own card prices the `decision` class at 1 micro-unit per unit
 //!   (`decisions.rate_card.<model>.units.decision: 1`, in the rig's generated config only) and the
-//!   two token classes the plane also declares at 0 (THE DESIGN §7: "all three required, 0 =
+//!   two token classes the plane also declares at 0 ("all three required, 0 =
 //!   free"), so the lane's `priced_micros` IS the unit count: 42.
 //!
-//!   THE MODEL-RESOLUTION CHECKS (THE DESIGN §2, the decisions bullet; DECISIONS D8b) run on a second
+//!   THE MODEL-RESOLUTION CHECKS (the decisions bullet; DECISIONS D8b) run on a second
 //!   boot whose `decisions.models` holds two models, [`MODEL`] and [`UPSTREAM_MODEL`] (its
 //!   `upstream_model` set to [`UPSTREAM_NAME`]), on the same far end:
 //!
@@ -61,7 +61,7 @@
 //!   | `models.unknown-404` | a model no entry has: `404` in jev's shape, no far-end hop |
 //!   | `models.upstream-model` | the second model named: served, and the far end receives the caller's bytes with the top-level `model` value alone spliced to its `upstream_model` |
 //!
-//!   THE `nanojev` CHECKS (THE DESIGN §2: "NanoJev is the one, dialect `nanojev`: `/api/evaluate` is
+//!   THE `nanojev` CHECKS ("NanoJev is the one, dialect `nanojev`: `/api/evaluate` is
 //!   its second exact claim ... it meters the upstream's own billing unit, counted from the answer
 //!   already read (`execution.states`; an answer with no count refuses loudly ...), with no extra
 //!   egress") run on a third boot whose `decisions.models` holds [`MODEL`] on the jev provider and

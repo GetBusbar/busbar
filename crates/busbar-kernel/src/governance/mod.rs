@@ -324,7 +324,7 @@ impl BudgetCell {
     /// took its `cur` back to empty after the snapshot, so it looked dead) comes back holding the
     /// acknowledged counts as its baseline and nothing current, and the cell is marked dirty: the
     /// next flush writes the refund as a negative delta instead of leaving the store one fee unit
-    /// over (THE DESIGN §7: a refund returns the bucket actually charged; the write-behind loses no
+    /// over (a refund returns the bucket actually charged; the write-behind loses no
     /// delta).
     fn advance_model_baselines(&mut self, acked: &[ModelCell]) {
         for s in acked {

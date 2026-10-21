@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A unit's one audit record names where the unit went and the controls it ran under (audit
-//! root-R1#1; THE DESIGN §1: "what (unit key, op class, verified destination) ... controls
+//! root-R1"what (unit key, op class, verified destination)... controls
 //! (hold/settle seqs, slice, hooks applied)"). Driven through the node both ways a unit reaches it:
 //! handed by a plane's arrival ([`Node::answer`]) and borrowed by a plane driver
 //! ([`Node::drive_borrowed`]).
@@ -381,7 +381,7 @@ fn open_and_finish<U: Units>(node: &Arc<Node>, post: &NodeEndPost, units: &U) ->
     (key, admitted)
 }
 
-/// AN ADMITTED DUPLEX SESSION seals its one fixed record when it ends (audit R1#2; THE DESIGN §1
+/// AN ADMITTED DUPLEX SESSION seals its one fixed record when it ends (audit R1#2
 /// "The audit step writes one fixed record, for every plane"): the session's key, how its audit step
 /// said it went, and the destination its open sealed. RED before the fix: the session's audit pass
 /// was handed back at its open and dropped at `SessionSlot::finish`, so nothing reached the chain.
@@ -412,7 +412,7 @@ async fn an_admitted_session_seals_one_record_when_it_ends() {
     assert!(durability.retained_audit_findings().is_empty());
 }
 
-/// A SESSION REFUSED AT ITS OPEN gets a record too (THE DESIGN §7 U14: "a refused unit gets a record
+/// A SESSION REFUSED AT ITS OPEN gets a record too ("a refused unit gets a record
 /// too"): outcome refused, with the refusal's reason, and no amount. RED before audit R1#2.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_session_refused_at_its_open_seals_a_refused_record() {

@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use super::OpenOnce;
 
-/// RED (THE DESIGN §11.13 M1): an open that is wedged holds no other caller — another key opens,
+/// RED: an open that is wedged holds no other caller — another key opens,
 /// and a key already held answers — while it is still in the plugin.
 #[test]
 fn a_wedged_open_blocks_no_other_caller() {

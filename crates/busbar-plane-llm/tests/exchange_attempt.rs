@@ -171,7 +171,7 @@ fn a_same_dialect_caller_s_fields_all_go_out_but_the_governed_ones() {
     assert_eq!(
         field(&r, "user-agent"),
         [b"Anthropic/Python 0.39.0".as_slice()],
-        "a caller that sent no user-agent: the native client's (1.5.5's bytes, Q10)"
+        "a caller that sent no user-agent: the native client's (1.5.5's bytes)"
     );
     assert_eq!(field(&r, "accept"), [b"application/json".as_slice()]);
     assert_eq!(

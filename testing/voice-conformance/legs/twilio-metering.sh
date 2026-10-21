@@ -5,7 +5,7 @@
 # shellcheck disable=SC2034  # LEG_KIND/LEG_STATUS/LEG_SLICES are read by voice-conformance.sh on source
 #
 # LEG: twilio-metering — a Twilio session's units, reported per declared class once per turn
-# (mirrors metering-lease; BUSBAR-1.6.0.md THE DESIGN §1 step "meter", "only far-end-reported units
+# (mirrors metering-lease; step "meter", "only far-end-reported units
 # bill"; the TODO's STREAMING: THREE WAYS AUDIO IS SERVED AND NOT BILLED, first bullet).
 #
 # THE DOOR'S HALF (judged, linked AND dropped door): caller audio arrives as Twilio `media` frames

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **A SECRET SOURCE THAT READS THE DISK** (THE DESIGN §11.11 R4, as the OWNER amended it
+//! **A SECRET SOURCE THAT READS THE DISK** (as the amended it
 //! 2026-10-13): a source whose `declares` states a disk need resolves ONLY at config time, with the
 //! proof, on the host's disk lane — never on a request path. The kind's real plugin (the env
 //! source, as `secret_calls_tests` reaches it) stands in for the disk-reading one, declared so

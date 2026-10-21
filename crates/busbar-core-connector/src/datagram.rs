@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE DATAGRAM DRIVER: one association's datagram framer, driven host-side over the host's port
-//! and secure layer (`BUSBAR-1.6.0.md` THE DESIGN §5, "Datagram media", l.758-766).
+//! and secure layer (`BUSBAR-1.6.0.md` "Datagram media", l.758-766).
 //!
 //! The port is the host's ([`crate::udp`]) and so is the secure layer ([`crate::dtls`]); a framer
 //! whose tail states `FRAMING_DATAGRAM` holds what is left. This driver stands between them for ONE

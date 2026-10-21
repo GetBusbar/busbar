@@ -57,7 +57,7 @@
 //! - The sweep in [`sweep`](DurableHandleEngine::sweep) writes nothing durable: it touches only
 //!   TERMINAL handles, and only to drop them from the working set, so it runs its two eviction rules
 //!   under the outer lock with no store round-trip inside it. An ACTIVE handle is never transitioned
-//!   or evicted by it — only the plane ends live work (`BUSBAR-1.6.0.md` THE DESIGN §1).
+//!   or evicted by it — only the plane ends live work (`BUSBAR-1.6.0.md`).
 //!   NO PATH HOLDS THE OUTER LOCK ACROSS A STORE ROUND-TRIP. The boot
 //!   [`rehydrate`](DurableHandleEngine::rehydrate) still runs under the outer lock across `classify`'s
 //!   per-row I/O, which is harmless there (single-threaded boot, no concurrency).
@@ -126,7 +126,7 @@ impl ChainPosition {
 }
 
 /// The retention knobs the sweep enforces — a plane supplies its own values. Both bound only
-/// SETTLED (terminal) handles: retention never reaches live work (`BUSBAR-1.6.0.md` THE DESIGN §1,
+/// SETTLED (terminal) handles: retention never reaches live work (`BUSBAR-1.6.0.md` 
 /// "Admission bounds live work; nothing evicts it"). An ACTIVE handle stays, however long it idles,
 /// until the plane settles it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -579,7 +579,7 @@ impl DurableHandleEngine {
     /// still INSERTS, so the working set is never stale in the direction that matters.
     ///
     /// Nothing here sweeps on a TIMER or on a READ: a submit is the only trigger
-    /// (`BUSBAR-1.6.0.md` THE DESIGN §1, "the sweep runs from a submit, never from a read or a
+    /// (`BUSBAR-1.6.0.md` "the sweep runs from a submit, never from a read or a
     /// timer"). Retention bounds only settled handles, so a quiet node that stops submitting holds
     /// its settled handles a little longer and loses nothing it was promised.
     fn claim_sweep(&self, now: u64) -> bool {
@@ -615,7 +615,7 @@ impl DurableHandleEngine {
     /// first.
     ///
     /// EVERY SUBMIT IS ADMITTED. The engine holds no bound on live handles; a caller that must bound
-    /// concurrent live work refuses before it submits (`BUSBAR-1.6.0.md` THE DESIGN §1).
+    /// concurrent live work refuses before it submits (`BUSBAR-1.6.0.md`).
     pub fn submit<P, R>(
         &self,
         now: u64,
@@ -783,7 +783,7 @@ impl DurableHandleEngine {
     /// TERMINAL handles past `terminal_ttl_secs`; (2) if still over `max_retained`, evict oldest
     /// TERMINAL first. An ACTIVE handle is never evicted and never transitioned, however long it has
     /// idled: live work is bounded at admission and ended by the plane, never by retention
-    /// (`BUSBAR-1.6.0.md` THE DESIGN §1, "Admission bounds live work; nothing evicts it"; ARCHITECT
+    /// (`BUSBAR-1.6.0.md` "Admission bounds live work; nothing evicts it"
     /// 2026-10-07 K2-H5 (ii)). The sweep calls no plane code and writes nothing durable.
     ///
     /// NOT EVERY SUBMIT RUNS IT — [`claim_sweep`](Self::claim_sweep) hands it to the first submit of

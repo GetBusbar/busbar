@@ -6,7 +6,7 @@
 use super::tests::{open, seal, Scratch};
 use super::*;
 
-/// THE BOOK SEALS AS THE KERNEL'S NODE (THE DESIGN §1: "when (wall + monotonic, node)"): every
+/// THE BOOK SEALS AS THE KERNEL'S NODE ("when (wall + monotonic, node)"): every
 /// record names the node half of the op ids this process mints, it survives the journal, and a
 /// restarted book seals as the node it runs as.
 #[test]

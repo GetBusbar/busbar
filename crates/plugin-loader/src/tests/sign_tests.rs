@@ -1156,8 +1156,8 @@ fn signature_does_not_verify_under_a_weak_key() {
     );
 }
 
-/// THE SUPERSEDED CONTRACT-ABI RANGE (`contract_abi`) IS NOT A DECLARATION (THE DESIGN §2 l.237-240,
-/// §9 l.1164-1165: a plugin declares its kind's ABI version, the manifest's `abi_version`, and that
+/// THE SUPERSEDED CONTRACT-ABI RANGE (`contract_abi`) IS NOT A DECLARATION (l.237-240,
+/// l.1164-1165: a plugin declares its kind's ABI version, the manifest's `abi_version`, and that
 /// is the only version fact admission reads). A declares FILE that still states it, until the
 /// fleet's re-render strips it from every repo, is read and the range dropped, never carried into
 /// a manifest; a SIGNED manifest's `declares` that states it is refused as an unknown key. RED
@@ -1447,7 +1447,7 @@ fn a_malformed_or_repeated_former_name_fails_structure() {
     }
 }
 
-/// THE DISK NEED (`declares.disk`, THE DESIGN §11.11 R4 as the OWNER amended it 2026-10-13) is a
+/// THE DISK NEED (`declares.disk`.11 R4 as the amended it 2026-10-13) is a
 /// `kind: secret` fact alone: any other kind stating it is refused at phase 1, naming the kind; a
 /// secret source stating it validates; and a manifest that states none keeps its canonical bytes
 /// (the field is left off the wire when false).

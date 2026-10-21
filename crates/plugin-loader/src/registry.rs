@@ -34,7 +34,7 @@ use std::path::{Path, PathBuf};
 /// shipped numbers (store 3, secret 2, auth 3, hook 2, export 3, plane 1, transport 1;
 /// `BUSBAR-1.6.0.md` §11.2, A.9).
 ///
-/// NO LEGACY LOADING (THE DESIGN §11.8): no ranges, no floors. A published 1.5.5 JSON-contract
+/// NO LEGACY LOADING: no ranges, no floors. A published 1.5.5 JSON-contract
 /// plugin states its kind's 1.5.5 version and is refused at boot naming the rebuild against the
 /// 1.6.0 SDK; a plugin built for a newer version than the host is refused too.
 pub fn supported_abi(kind: &str) -> &'static [u32] {
@@ -636,7 +636,7 @@ impl PluginRegistry {
     /// row of `kind` resolves to it (in [`Self::resolve_kind`]'s words, the ones 1.5.5's loader
     /// gave, `purpose` saying what the row could not do), or the row resolves and its axis still
     /// does not answer it — a row that states no door of `kind`, a 1.5.5 JSON-contract plugin,
-    /// refused naming the rebuild (THE DESIGN §11.8).
+    /// refused naming the rebuild.
     #[must_use]
     pub fn kind_refusal(&self, kind: &str, purpose: &str, name_or_alias: &str) -> String {
         match self.resolve_kind(name_or_alias, kind, purpose) {
@@ -989,7 +989,7 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
                 entry: None,
                 keyed_by_alias: false,
             };
-            // Phase 2b: the egress-class grant (§5): a plugin that is not first-party declaring a
+            // Phase 2b: the egress-class grant: a plugin that is not first-party declaring a
             // need in a first-party class is never admitted.
             match plugin.first_party() {
                 true => FileOutcome::Loadable(plugin),

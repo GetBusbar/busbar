@@ -3,7 +3,7 @@
 
 //! THE JOURNAL ON THE CONFIGURED STORE: where a node with no data directory keeps its chain, and how
 //! it gets the chain back at boot (ARCHITECT 2026-10-07 H3 ruling (a)-(c); BUSBAR-1.6.0.md THE DESIGN
-//! §7: the journal carries the record body, "the in-memory ring of 1024 is only a cache, and an older
+//! the journal carries the record body, "the in-memory ring of 1024 is only a cache, and an older
 //! `/audit/range` decodes from the journal").
 //!
 //! ## The write
@@ -19,9 +19,9 @@
 //! ## The lane: write-behind, bounded, never dropping
 //!
 //! The journal appends under the book's one lock on the request path, so the store is never called
-//! there (THE DESIGN §11.2: no blocking on the hot path). The journal's shipper hands each committed
+//! there (no blocking on the hot path). The journal's shipper hands each committed
 //! batch to [`JournalLane`] — a bounded queue the HOST owns, drained by one worker thread of its own
-//! (§11.11 R4: one host-owned bounded lane), which puts the records in chain order and waits on each
+//! (one host-owned bounded lane), which puts the records in chain order and waits on each
 //! store answer off every runtime worker. A record leaves the queue only once the store took every
 //! part of it.
 //!

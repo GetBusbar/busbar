@@ -2,7 +2,7 @@
 //! with its deployment carries the keys the kernel owns typed and every other key of the entry as
 //! ONE opaque table, merged by the neutral rule (a string map merges member by member, the
 //! deployment's member winning; every other value the deployment sets replaces the catalog's).
-//! BUSBAR-1.6.0.md #49 (the kernel names no plane string), THE DESIGN §4 ("its dialect fields go to
+//! #49 (the kernel names no plane string), ("its dialect fields go to
 //! the planes that use the provider").
 
 use std::collections::HashMap;

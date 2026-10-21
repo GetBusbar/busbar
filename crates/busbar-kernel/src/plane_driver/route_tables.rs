@@ -7,7 +7,7 @@
 //!
 //! The tables are the kernel's own: `pools`, their members, `on_exhausted` and
 //! `upstream_credentials` are reserved core-owned keys (BUSBAR-1.6.0.md §4, l.552-554), and the
-//! route step is the kernel's walk over them (Part 3 §12, l.2577). [`ConfigTables`] is the view over
+//! route step is the kernel's walk over them (l.2577). [`ConfigTables`] is the view over
 //! one resolved generation; [`EMPTY_VIEW`] is the view a configuration with no tables reads (zero
 //! pools, zero lanes), so every reader answers empty rather than panicking.
 //!

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Q-STORE = (B) (owner ruling 2026-09-27, BUSBAR-1.6.0.md Appendix B; THE DESIGN §4): 1.6.0
+//! Q-STORE = (B) (Appendix B): 1.6.0
 //! REQUIRES an explicit `store:` block, even for memory. A config without one is refused at
 //! validation (boot and `--validate` alike), and `busbar --migrate-config` inserts
 //! `store: {module: memory}` — the store a 1.5.x config without one ran on.

@@ -810,7 +810,7 @@ pub struct AppHandle {
     attach: std::sync::OnceLock<fn(&Arc<dyn busbar_kernel::plane_host::EngineHost>)>,
     /// What every [`swap`](Self::swap) tells of the generation it installed: the composition root's
     /// served door planes, each refreshed onto a new generation of its section (ARCHITECT
-    /// Q-DEL-A2A-APPLY; THE DESIGN §11: plugin memory is "valid to its next refresh generation").
+    /// plugin memory is "valid to its next refresh generation").
     appliers: std::sync::Mutex<Vec<Applier>>,
     /// THE DOOR PLANES' RENDERING of a kernel-shaped refusal (ARCHITECT ruling 2026-10-16, 3b B),
     /// bound once by the composition root that built the doors; unbound, the kernel answers its own.

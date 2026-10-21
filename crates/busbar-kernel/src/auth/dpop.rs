@@ -86,8 +86,8 @@ pub(crate) async fn judge(
         };
     }
     // A bound bearer is refused only where this deployment runs the authorization server that
-    // binds tokens (THE DESIGN §2 PORT R7/R8, l.364: the default is 1.5.5's behaviour; Law 7,
-    // l.1917: nothing runs without its verb configured). PARITY: with no `oauth_as:` a token
+    // binds tokens (the default is 1.5.5's behaviour,
+    // nothing runs without its verb configured). PARITY: with no `oauth_as:` a token
     // carrying `cnf.jkt` is a bearer like any other, as 1.5.5 judged it (v1.5.5
     // `crates/busbar/src/auth/mod.rs`:1504-1515: every non-signed request went straight to the
     // chain, and 1.5.5 had no DPoP code at all).

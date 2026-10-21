@@ -122,7 +122,7 @@ async fn with_an_authorization_server_a_dpop_bound_bearer_is_refused() {
 }
 
 /// WITH NO AUTHORIZATION SERVER a token carrying `cnf.jkt` is a bearer like any other, exactly as
-/// 1.5.5 judged it (THE DESIGN §2 PORT R7/R8: the default is 1.5.5's behaviour). RED: the door
+/// 1.5.5 judged it (PORT the default is 1.5.5's behaviour). RED: the door
 /// refused every bound bearer whatever the config, so an operator IdP token 1.5.5 admitted was a
 /// 401 here.
 #[tokio::test]

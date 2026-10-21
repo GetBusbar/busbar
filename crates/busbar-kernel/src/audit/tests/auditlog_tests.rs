@@ -1092,7 +1092,7 @@ fn served(resource: &str) -> AuditEntry {
 /// THE LIVE WRITE PATH SERVES 1.5.5's HASH. A record whose `action`/`resource`/`outcome` carry no
 /// `|` is sealed over the 1.5.5 pipe join, so the `hash` `GET /audit` serves is exactly
 /// `sha256(prev_hash|seq|ts|action|resource|outcome|principal)` (v1.5.5
-/// `crates/busbar/src/admin/audit.rs:61-73`; THE DESIGN §7 "`GET /audit` is unchanged"), the record
+/// `crates/busbar/src/admin/audit.rs:61-73`; "`GET /audit` is unchanged"), the record
 /// declares scheme 1, and recomputing it under that declared scheme gives the served hash.
 ///
 /// RED before the fix: every live write was sealed over `prev_hash|seq` then the length-prefixed

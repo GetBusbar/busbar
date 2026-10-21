@@ -140,7 +140,7 @@ fn an_operator_infrastructure_need_reaches_a_unix_domain_far_end() {
 }
 
 /// RED (ARCHITECT ruling 2026-10-03, VALKEY-UNIX: "the connector serves unix-domain targets for
-/// operator-infrastructure needs"; THE DESIGN §5: loopback-allowed is "https, or loopback
+/// operator-infrastructure needs": loopback-allowed is "https, or loopback
 /// plaintext; the node's own ports refused"): a loopback-allowed need is refused a unix target
 /// before any dial. Admitted with no judgement at all, it could reach any local socket the process
 /// can open, the node's own control sockets included.

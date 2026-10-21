@@ -11,7 +11,7 @@
 //!
 //! This unit only re-exports it. It used to add a raw-to-quantity conversion beside the set (bytes
 //! over a divisor, frames times a factor) that nothing in production called; the plane reports the
-//! quantity it measured (THE DESIGN §7), so the conversion is gone rather than kept as a second
+//! quantity it measured, so the conversion is gone rather than kept as a second
 //! reading of a class declaration.
 
 pub use busbar_contract::caps::{LocatorPtr, QuantitySource};

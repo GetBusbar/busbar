@@ -8,7 +8,7 @@
 //! published 1.5.5 binary had no receiver (F26 correction), so nothing here has a 1.5.5 golden.
 //!
 //! WHO DECIDES WHAT, as the rulings place it:
-//! - ON OR OFF is the plugin's own setting, never a kernel or core switch (F26): the plane owns the
+//! - ON OR OFF is the plugin's own setting, never a kernel or core switch: the plane owns the
 //!   top-level `webhooks:` section ([`SECTION`]) and claims [`PATH`] only when it says
 //!   `openai_responses: true`. A config without the key answers on that path exactly what 1.5.5's
 //!   default build answered there.

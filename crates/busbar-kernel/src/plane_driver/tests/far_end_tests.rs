@@ -768,7 +768,7 @@ async fn a_529_fails_over_with_its_retry_after() {
     );
 }
 
-/// AT MOST ONCE (ARCHITECT round 4 Q-L3B-SURFACES (h), the walk does repeatable): a unit whose
+/// AT MOST ONCE (the walk does repeatable): a unit whose
 /// operation is performed at most once has a member's ANSWERED failure reach the plane as it came,
 /// never retried on another member; the breaker still records it. The same answer without the flag
 /// fails over (above).
@@ -1731,7 +1731,7 @@ async fn the_trailers_status_is_judged_plane_first_and_a_success_ends_as_it_ends
     );
 }
 
-/// THE PER-CALL SCOPE (ARCHITECT round 5 Q-L3B-EXCHANGE (B)): a plane's attempt that states its
+/// THE PER-CALL SCOPE: a plane's attempt that states its
 /// scope in the host's own request field has that field taken out of the request before anything
 /// is encoded (the far end never hears it) and its value lent to the member's ONE auth call in the
 /// call's extensions blob; an attempt that states none lends none.

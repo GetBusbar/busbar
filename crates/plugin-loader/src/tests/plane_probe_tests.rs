@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The plane kind's host side under THE DESIGN §11.13 M1: a generation snapshot whose strings or
+//! The plane kind's host side: a generation snapshot whose strings or
 //! blobs state a length over the hard byte maximum is refused before any slice is formed over them,
 //! and a door's facing binds, opens and refreshes its probe with the probes' lock let go.
 
@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use super::*;
 
-/// RED (THE DESIGN §11.13 M1, "Every slice built from a plugin-reported length is capped and
+/// RED ("Every slice built from a plugin-reported length is capped and
 /// validated before it is formed"; audit PL1 #1): a READY snapshot's `audience`, `openapi` or
 /// `resource_facts` stated over the hard byte maximum (`u32::MAX`) refuses the snapshot before any
 /// slice is formed or copied. Run in a child: a copy past the plugin's eight bytes kills the process.
@@ -111,7 +111,7 @@ impl Gate {
     }
 }
 
-/// RED (THE DESIGN §11.13 M1, "No plugin code (`dlclose` included) runs under a host lock"; audit
+/// RED ("No plugin code (`dlclose` included) runs under a host lock"; audit
 /// PL1 #3): a door's facing for one public URL binds its probe (the door's load) and opens it. The
 /// probe door double here parks in that bind: while it is parked, the facing for another URL is
 /// answered, because the probes' lock is not held across the probe's plugin code.

@@ -2049,7 +2049,7 @@ impl Connector {
         Ok(())
     }
 
-    /// THE SESSION'S CLEANUP (once, K6): its pairing leaves the book and closes, both legs with it,
+    /// THE SESSION'S CLEANUP (once): its pairing leaves the book and closes, both legs with it,
     /// so a unit key the slot is given again never finds a stale leg.
     pub fn unpair(&self, unit: u64) {
         let gone = self.pairs.lock().expect("pairs").remove(&unit);
@@ -2229,7 +2229,7 @@ impl Connector {
                 .expect("reach")
                 .get(&(caller, need, desc.member.to_owned()))
                 .is_some_and(|at| at.eq_ignore_ascii_case(planned.authority()));
-        // A TARGET THE NEED'S CONFIG NAMES IS THE OPERATOR'S OWN (THE DESIGN §5 egress-class
+        // A TARGET THE NEED'S CONFIG NAMES IS THE OPERATOR'S OWN (egress-class
         // table, owner-signed 2026-09-27) in the egress default class only: its address is judged
         // as operator infrastructure. An open-web need keeps its class (public https only, Q128
         // ruling 14), and a provider need is refused a private address unless allowlisted

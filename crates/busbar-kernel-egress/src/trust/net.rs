@@ -410,7 +410,7 @@ pub fn redact_userinfo(url: &str) -> String {
 /// becomes `scheme://host:port/path`, and a URL with none comes back borrowed, untouched.
 ///
 /// 1.5.5 accepted `user:pass@` in a provider's `base_url` and dialled, sent and signed the host
-/// after it (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`, `host_from_base`; row 74, F25). This is
+/// after it (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`, `host_from_base`). This is
 /// that rule, applied ONCE where the base URL enters the served flow, so the host dialled, the
 /// certificate name, the `Host`/`:authority` on the wire and a signed host are all the stripped
 /// `host[:port]`, and the userinfo reaches no connection, no message and no table. It is

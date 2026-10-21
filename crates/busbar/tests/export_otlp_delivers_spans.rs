@@ -213,7 +213,7 @@ fn the_shipped_binary_posts_its_spans_to_an_otlp_collector() {
         std::thread::sleep(Duration::from_millis(50));
     }
     let log = read_log();
-    // The sink's own lines are in its own log file (THE DESIGN §11.2), named by its instance.
+    // The sink's own lines are in its own log file, named by its instance.
     let sink_log = std::fs::read_to_string(dir.join("plugin-logs").join("export.trace.log"))
         .unwrap_or_default();
     let _ = std::fs::remove_dir_all(&dir);

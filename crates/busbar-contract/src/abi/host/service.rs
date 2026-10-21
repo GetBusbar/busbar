@@ -747,7 +747,7 @@ pub const ENTITLED: u64 = 1;
 /// [`op::ENTITLEMENT_CHECK`]'s target that asks whether the unit's PRINCIPAL STILL STANDS: the host
 /// re-resolves it live (gone, disabled, expired, or a role binding withdrawn is not entitled). Every
 /// other target is judged against the principal as re-resolved now, never the one admitted (a
-/// long-lived response re-asks per frame, ARCHITECT round 4 Q-L3B-SURFACES (a)).
+/// long-lived response re-asks per frame).
 pub const ENTITLEMENT_STANDING: &str = "standing:";
 
 // ── random ────────────────────────────────────────────────────────────────────────────────────

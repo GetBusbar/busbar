@@ -158,7 +158,7 @@ impl AuthChain {
 
     /// Run the chain: config order, the first module to identify admits, a reject stops the walk, a
     /// pass continues; then the built-in signed-key arm. No verdict is cached here: a module that
-    /// caches its verdicts does so inside itself (BUSBAR-1.6.0.md THE DESIGN §11.11 R3).
+    /// caches its verdicts does so inside itself.
     pub fn run_chain_with(
         &self,
         candidate: Option<&str>,

@@ -221,7 +221,7 @@ PROBE_REPO="$(jq -er '.plugin_probe.repo' "$CONTRACT")"
 PROBE_TAG="$(jq -er '.plugin_probe.tag' "$CONTRACT")"
 WANT_STATUS="$(jq -er '.plugin_probe.expect_status' "$CONTRACT")"
 # `ready` names a signature; `refused` names the refusal strings instead (a 1.5.x JSON-contract
-# plugin is refused at boot naming the rebuild, THE DESIGN §11.8). See release-targets.json.
+# plugin is refused at boot naming the rebuild). See release-targets.json.
 WANT_SIG="$(jq -r '.plugin_probe.expect_signature // empty' "$CONTRACT")"
 
 if [ -z "$BIN" ]; then
@@ -288,7 +288,7 @@ YAML
           record "plugin:${TARGET}" PASS "the 1.5.x first-party plugin is refused, naming the rebuild" ""
         else
           record "plugin:${TARGET}" FAIL "the shipped ${TARGET} binary did not give the named refusal of a 1.5.x plugin" \
-            "1.6.0 loads no legacy plugin (THE DESIGN §11.8). Missing: ${missing}. Observed: $(printf '%s' "${row:-<no row for ${PLUGIN_ASSET}>}" | sed 's/  */ /g')."
+            "1.6.0 loads no legacy plugin. Missing: ${missing}. Observed: $(printf '%s' "${row:-<no row for ${PLUGIN_ASSET}>}" | sed 's/  */ /g')."
         fi
         ;;
       *)

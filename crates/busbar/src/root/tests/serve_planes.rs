@@ -247,7 +247,7 @@ fn a_session_model_from_the_top_level_catalog_is_folded_into_the_route_table() {
     assert_eq!(super::catalog_routes(&own, &catalog), own);
 }
 
-/// A PLANE NEVER RECEIVES SECRET BYTES (THE DESIGN §6; SECURITY ruling 2026-10-07). `${VAR}` is
+/// A PLANE NEVER RECEIVES SECRET BYTES (SECURITY -10-07). `${VAR}` is
 /// spliced into the config text before it is parsed, so its plaintext used to reach a door plane's
 /// `open` settings, its owned sections and its `refresh` settings. The test plane records the bytes
 /// it is handed at the ABI. At every CREDENTIAL position (`token`, `api_key`, a program's `env`) the
@@ -382,7 +382,7 @@ test_plane_owned:
     );
 }
 
-/// RED, THE DIALECT FACTS AT OPEN (THE DESIGN §4: a plane receives, at open, the dialect fields of
+/// RED, THE DIALECT FACTS AT OPEN (a plane receives, at open, the dialect fields of
 /// the providers it references): the providers its section's `models.<m>.provider` entries name,
 /// once each in the order first referenced, cross `PlaneOpenIn::providers` with their resolved
 /// `protocol` and `error_map` (absent when none). An unreferenced provider is not handed, and a

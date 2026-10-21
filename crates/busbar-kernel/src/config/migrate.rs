@@ -1766,7 +1766,7 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
     }
 }
 
-/// 1.6.0-dev → 1.6.0 POOLS UNDER THEIR VERB (THE DESIGN §4 POOLS-VERBS): the unreleased
+/// 1.6.0-dev → 1.6.0 POOLS UNDER THEIR VERB (POOLS-VERBS): the unreleased
 /// `tool_pools:`/`agent_pools:` sections MOVE to their section's reserved `pools` sub-key, and a
 /// top-level `pools:` entry that names no `models:` entry is reported for the operator to move. The top-level
 /// `pools:` is the fallback plane's alone, as in 1.5.5. The grammar is unchanged (`members:` by bare

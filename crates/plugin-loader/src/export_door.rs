@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE EXPORT KIND ON THE ONE DISPATCHER (`BUSBAR-1.6.0.md` THE DESIGN §11; KERNEL<>PLUGINS steps
+//! THE EXPORT KIND ON THE ONE DISPATCHER (`BUSBAR-1.6.0.md` KERNEL<>PLUGINS steps
 //! 26/27): [`ExportInstance`], one opened export instance, called through its table
 //! (`abi::export`) and nothing else, whichever door it came in by. It implements the contract's
 //! [`ExportCalls`], so the kernel feeds and scrapes it without naming this crate.
@@ -10,8 +10,8 @@
 //!   ([`MAX_QUEUED_LINES`]; past it the line is shed, never queued) and the instance's flusher
 //!   coalesces queued lines of one stream into ONE `deliver` batch (JSON LINES, at most
 //!   [`MAX_BATCH_LINES`] lines and [`MAX_BATCH_BYTES`] bytes), each with its own host-minted
-//!   `op_id` (THE DESIGN §11.11 H4). The batch crosses on a ticket in the write-behind deadline
-//!   class, so a reload drain never waits on it (H5), and rides with the job as lent memory; a
+//!   `op_id`. The batch crosses on a ticket in the write-behind deadline
+//!   class, so a reload drain never waits on it, and rides with the job as lent memory; a
 //!   FAILED batch is retried with the SAME `op_id`, at most [`DELIVER_ATTEMPTS`] times. Up to the
 //!   instance's `max_inflight` deliveries run at once (ARCHITECT ruling MAX-INFLIGHT 2026-10-03:
 //!   1.5.5's `max_inflight_deliveries`, within the plugin's declared ceiling), each on a ticket of
@@ -693,7 +693,7 @@ impl ExportCalls for ExportInstance {
     /// The host SHED one line for this instance (past its bound): count it on each counter the
     /// instance was GRANTED as its shed counter at open (a first-party manifest declaration marked
     /// `shed`), folded under its name through the one observability path (ARCHITECT ruling
-    /// 2026-09-30, Q2).
+    /// 2026-09-30).
     fn shed(&self) {
         fold_shed(self.shared.dispatcher.observing(), self.plugin().name());
     }

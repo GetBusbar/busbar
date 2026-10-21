@@ -666,7 +666,7 @@
         "body",
         "headers"
       ],
-      "rationale": "choices[].logprobs and message.refusal are required by the published chat schema; null when the backend carried none. WIDENED 2026-10-02 (owner R1, ORACLE batch, escalate.q 04:20Z): four owner-review cells recorded from the published 1.5.5 join the scope -- money.reserved-tier|absent|anthropic-cache (X-235), usage.gemini|cached-content|subtractive (605b), usage.gemini|tool-use|total-billed and total-not-a-sum (576). On each the candidate's openai-chat answer adds exactly choices[0].logprobs:null and choices[0].message.refusal:null, the two members the published schema requires; usage and spend are unchanged on the first two (the 576 cells' usage and spend move under R5, not here). Scope count 10 -> 14. NARROWED 2026-10-02 (ARCHITECT ruling on the ORACLE-COMMIT findings): the two usage.gemini|tool-use cells (576) are NOT in S-5's scope: this entry is signed for the logprobs/refusal nulls and must never mask a money red; R5 alone covers the 576 cells. Scope count 14 -> 12.",
+      "rationale": "choices[].logprobs and message.refusal are required by the published chat schema; null when the backend carried none. WIDENED 2026-10-02 (owner, ORACLE batch): four owner-review cells recorded from the published 1.5.5 join the scope -- money.reserved-tier|absent|anthropic-cache, usage.gemini|cached-content|subtractive (605b), usage.gemini|tool-use|total-billed and total-not-a-sum (576). On each the candidate's openai-chat answer adds exactly choices[0].logprobs:null and choices[0].message.refusal:null, the two members the published schema requires; usage and spend are unchanged on the first two (the 576 cells' usage and spend move under R5, not here). Scope count 10 -> 14. NARROWED 2026-10-02 (ARCHITECT ruling on the ORACLE-COMMIT findings): the two usage.gemini|tool-use cells (576) are NOT in S-5's scope: this entry is signed for the logprobs/refusal nulls and must never mask a money red; R5 alone covers the 576 cells. Scope count 14 -> 12.",
       "premise": {
         "all": [
           {
@@ -693,7 +693,7 @@
         "widened": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-02",
-          "ruling": "2026-10-02T04:20Z RULING R1/R2 (OWNER): SIGNED; R1 widens S-5 (logprobs:null, refusal:null; X-235)"
+          "ruling": "2026-10-02T04:20Z RULING (OWNER): SIGNED; widens S-5 (logprobs:null, refusal:null)"
         }
       },
       "expires": {
@@ -2283,7 +2283,7 @@
       "classes": [
         "body"
       ],
-      "rationale": "The Bedrock codec writes usage.cacheDetails ([{inputTokens, ttl}], codec/bedrock/mod.rs write_cache_details) when an Anthropic upstream reports the 5m/1h cache-write split: Bedrock's published ConverseResponse usage member. Absent in every 1.5.5 response; additive for a Bedrock client behind an Anthropic upstream (the extra member), billed counts unchanged (to_token_usage ignores the split). Cites Q57 (a drop is a defect) and the owner's LLM DIALECT FIDELITY rule (a mapped field added to reach the dialect's published shape is pre-approved). Fixture: crates/busbar-plane-llm/src/codec/tests/proto/golden/resp_a2b_plain.json (5cfe127d9). No oracle cell sends the Anthropic cache split to a Bedrock door: the cell is OWED, `cells` names it and expected_cells is 0, the way AUTH-ROW's owed cells are written. The premise probes the existing Bedrock-door llm cell.",
+      "rationale": "The Bedrock codec writes usage.cacheDetails ([{inputTokens, ttl}], codec/bedrock/mod.rs write_cache_details) when an Anthropic upstream reports the 5m/1h cache-write split: Bedrock's published ConverseResponse usage member. Absent in every 1.5.5 response; additive for a Bedrock client behind an Anthropic upstream (the extra member), billed counts unchanged (to_token_usage ignores the split). Cites Q57 (a drop is a defect) and the owner's LLM DIALECT FIDELITY rule (a mapped field added to reach the dialect's published shape is pre-approved). Fixture: crates/busbar-plane-llm/src/codec/tests/proto/golden/resp_a2b_plain.json. No oracle cell sends the Anthropic cache split to a Bedrock door: the cell is OWED, `cells` names it and expected_cells is 0, the way AUTH-ROW's owed cells are written. The premise probes the existing Bedrock-door llm cell.",
       "premise": {
         "cell": "llm|bedrock|anthropic|request|ok",
         "status": 200
@@ -2308,7 +2308,7 @@
       "classes": [
         "body"
       ],
-      "rationale": "Buffered OpenAI-chat annotations move from the flat shape to the nested url_citation shape the published Chat Completions schema defines (182085b89); S-9 covers Responses backends only. A corrected shape that brings the dialect's output to its real published protocol: pre-approved by the owner's LLM DIALECT FIDELITY rule, no per-item sign-off. Fixtures: crates/busbar-plane-llm/src/codec/tests/proto/golden/resp_c2o_citations.json and resp_g2o_grounding.json. No oracle cell exercises a citation on these pairs: the cells are OWED, `cells` names them and expected_cells is 0, the way AUTH-ROW's owed cells are written. The premise probes the existing openai-door llm cell.",
+      "rationale": "Buffered OpenAI-chat annotations move from the flat shape to the nested url_citation shape the published Chat Completions schema defines; S-9 covers Responses backends only. A corrected shape that brings the dialect's output to its real published protocol: pre-approved by the owner's LLM DIALECT FIDELITY rule, no per-item sign-off. Fixtures: crates/busbar-plane-llm/src/codec/tests/proto/golden/resp_c2o_citations.json and resp_g2o_grounding.json. No oracle cell exercises a citation on these pairs: the cells are OWED, `cells` names them and expected_cells is 0, the way AUTH-ROW's owed cells are written. The premise probes the existing openai-door llm cell.",
       "premise": {
         "cell": "llm|openai|cohere|request|ok",
         "status": 200
@@ -2764,7 +2764,7 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-07",
-        "ruling": "2026-10-07 OWNER SIGNED in-session: Q133 quarantine-exit (docs/design/1.6.0-QUESTIONS.md Q133, R2); signed by owner 2026-10-07"
+        "ruling": "2026-10-07 OWNER SIGNED in-session: quarantine-exit; signed by owner 2026-10-07"
       },
       "expires": {
         "baseline": "1.5.5",
@@ -2791,7 +2791,7 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-07",
-        "ruling": "2026-10-07 OWNER SIGNED in-session: Q134 = 503 when the auth verify max_inflight is full, chosen over keeping 401 or waiting for a slot (docs/design/1.6.0-QUESTIONS.md Q134, R8); signed by owner 2026-10-07"
+        "ruling": "2026-10-07 OWNER SIGNED in-session: 503 when the auth verify max_inflight is full, chosen over keeping 401 or waiting for a slot; signed by owner 2026-10-07"
       },
       "expires": {
         "baseline": "1.5.5",

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE CARRIER A CONNECTION RIDES (TRANSPORT-STACK (2); `BUSBAR-1.6.0.md` THE DESIGN §5): one carrier
+//! THE CARRIER A CONNECTION RIDES (TRANSPORT-STACK): one carrier
 //! entry's slots (`listen`, `accept`, `dial`, `read`, `write`, `flush`, `shut`, `arrival`), driven
 //! host-side. The connector builds every connection as `carrier -> [TLS] -> framer`, and the
 //! carrier is the bottom of it: it dials, accepts, reads and writes over the host's I/O

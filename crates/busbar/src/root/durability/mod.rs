@@ -283,7 +283,7 @@ pub struct Durability {
     /// every posting that carried a unit's counts, kept as the counts and the instant they price
     /// at, so `GET /api/v1/admin/ledger/totals` prices them at READ TIME (BUSBAR-1.6.0.md §7) and a
     /// signed back-dated correction moves the next read without a restart. Appended as each one is
-    /// journalled and REBUILT FROM THE CHAIN at boot, so the read never replays the journal (M11)
+    /// journalled and REBUILT FROM THE CHAIN at boot, so the read never replays the journal
     /// and answers the same set either side of a restart.
     ///
     /// THE BOUND IS THE BOOK'S: a line is held for exactly as long as the book holds its window.
@@ -1091,7 +1091,7 @@ impl Durability {
         appended.map(|_| posting)
     }
 
-    /// KEEP WHAT A JOURNALLED POSTING LEAVES FOR THE READ-TIME TOTALS (H6): its counted line, or
+    /// KEEP WHAT A JOURNALLED POSTING LEAVES FOR THE READ-TIME TOTALS: its counted line, or
     /// the balance it moved by a figure with no counts behind it. The same rule a replay applies to
     /// the same record ([`booked_of`]), so the lines this process builds live are the lines the
     /// next boot rebuilds from the chain. Kept whether or not the append succeeded: the log retains
@@ -1470,8 +1470,7 @@ impl UnitCounts {
 
 /// ONE COUNTED LINE THE BOOK HOLDS FOR THE READ-TIME TOTALS (ARCHITECT 2026-10-07 H6 retention
 /// ruling): a journalled posting's counts and the instant they price at, on its balance and window.
-/// The amount is counts plus the card in force at `arrived_ms`, never a price (BUSBAR-1.6.0.md THE
-/// DESIGN §1, §7).
+/// The amount is counts plus the card in force at `arrived_ms`, never a price.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CountedLine {
     /// Which balance the posting is on.
@@ -1563,7 +1562,7 @@ impl Booked {
     }
 }
 
-/// THE ONE RULE, live and on replay alike (H6): a posting carrying counts that say something is a
+/// THE ONE RULE, live and on replay alike: a posting carrying counts that say something is a
 /// counted line; a settlement whose figure has no counts behind it marks its balance; anything else
 /// leaves nothing. `node_seq` is the posting's position on the chain.
 fn booked_of(posting: &Posting, node_seq: u64) -> Booked {
@@ -2746,7 +2745,7 @@ fn build_inner(
         // Not `Ledger::new()`. The reconciliation identity and rollback both require the dual
         // write, and both are release requirements rather than deployment choices.
         ledger: Ledger::dual_writing(legacy_rows),
-        // Every record this book seals names this node (THE DESIGN §1: "when (wall + monotonic,
+        // Every record this book seals names this node ("when (wall + monotonic,
         // node)"). On a chain the store keeps, that is the id the store assigned this host, the one
         // the chain is keyed by and walked under, which every boot of the host shares; otherwise it
         // is the node half of every op id the kernel mints in this process.
@@ -2868,7 +2867,7 @@ fn build_inner(
         .unwrap_or(0);
     durability.incarnation = replayed.incarnation.max(audited).saturating_add(1);
     durability.refused = replayed.refused;
-    // The counted lines the totals read prices, rebuilt from the same chain as the book (H6): the
+    // The counted lines the totals read prices, rebuilt from the same chain as the book: the
     // read prices these and never replays the journal itself.
     durability.counted = replayed.counted;
     durability.uncounted = replayed.uncounted;

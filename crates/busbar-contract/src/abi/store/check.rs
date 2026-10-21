@@ -38,7 +38,7 @@ pub const NEEDED_BYTES_HARD_MAX: u64 = u32::MAX as u64;
 
 // WHY AN ANSWER IS FAULT: the shared `Fault`, one `Rule` and one distinct `store.<op>.<arm>` field per arm
 // (the design: every answer validator gives a distinct message per arm). `ALL` lists every one so a test can hold them distinct.
-/// A reserve of more cells than `failed_cell` can index (S6).
+/// A reserve of more cells than `failed_cell` can index.
 pub const RESERVE_CELLS_OVER_MAX: Fault = fault(Rule::OverCap, "store.reserve.cells_over_max");
 /// A READY reserve that states a reason.
 pub const RESERVE_READY_REASON: Fault = fault(Rule::UnknownCode, "store.reserve.ready_reason");

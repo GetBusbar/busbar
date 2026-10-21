@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! ONE OPENED INSTANCE PER KEY, OPENED OUTSIDE THE LOCK (`BUSBAR-1.6.0.md` THE DESIGN §11.13 M1:
+//! ONE OPENED INSTANCE PER KEY, OPENED OUTSIDE THE LOCK (`BUSBAR-1.6.0.md` 
 //! no plugin code, `dlopen` and `open` included, runs under a host lock).
 //!
 //! A host that shares one opened plugin instance per key (a secret module's shared instance, an

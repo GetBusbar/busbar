@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE `plugins.fetch` DOWNLOAD (status row 130 E6; BUSBAR-1.6.0.md THE DESIGN §3 boot stage 3c,
-//! "fetch plugins through the connector", and §5: the kernel dials nothing). Every `plugins.fetch`
+//! THE `plugins.fetch` DOWNLOAD (boot stage 3c,
+//! "fetch plugins through the connector", and the kernel dials nothing). Every `plugins.fetch`
 //! artifact is one GET over a need the composition root declares on the process's one connector
 //! under its own identity ([`Table`]), so the one destination guard judges, pins and dials the
 //! address, the proxy environment applies ([`crate::proxy`]), and the transport serving the URL's

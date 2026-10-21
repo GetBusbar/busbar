@@ -403,7 +403,7 @@ fn red_3g_deals_each_seat_its_section_and_positions_a_refusal() {
     );
 }
 
-/// **RED ARM: `plugins.logs` FOLLOWS A CONFIG APPLY** (THE DESIGN §11.2). A sink opened under
+/// **RED ARM: `plugins.logs` FOLLOWS A CONFIG APPLY**. A sink opened under
 /// `warn` drops an `info` line; once an apply's `plugins.logs` says `info`, the same sink writes it,
 /// and a `warn` config applied again drops the next.
 #[test]

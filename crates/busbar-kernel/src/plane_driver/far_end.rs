@@ -102,7 +102,7 @@ pub struct MemberRoute {
     /// `lane.provider` (v1.5.5 `crates/busbar/src/proxy/usage.rs` `ledger_and_meter`).
     pub provider: String,
     /// Which of the far end's response head fields cross to the plane: its need's declared keep
-    /// rule (THE DESIGN §5, "The response head and trailers": the kernel copies only those).
+    /// rule ("The response head and trailers": the kernel copies only those).
     pub keep: ResponseKeep,
     /// EVERY need bound for the member beside [`Self::need`] (ARCHITECT Q-L5B-NEEDS 2026-10-03: one
     /// binding per (transport, auth)), each with its keep rule: a far request that names one of
@@ -346,7 +346,7 @@ impl Egress {
         }
     }
 
-    /// THE FAR END OF ONE HEALTH PROBE (K7) of `destination`, its walk bounded by `timeout`: pinned
+    /// THE FAR END OF ONE HEALTH PROBE of `destination`, its walk bounded by `timeout`: pinned
     /// to that ONE member, which it reaches past the breaker's admission (a probe exists to reach a
     /// suppressed member) and without a permit, a dispatch record or the request counters, as
     /// 1.5.5's prober did. Its answer is recorded on every cell of the member ([`Breaker::probed`]).
@@ -868,7 +868,7 @@ impl EgressFarEnd<'_> {
             }
         };
         if let Some(probed) = self.probe_of {
-            // A HEALTH PROBE'S ANSWER is classified as organic traffic is (Part 3 §12), and
+            // A HEALTH PROBE'S ANSWER is classified as organic traffic is, and
             // recorded on every cell of its member; the out-of-band prober counts no failure
             // telemetry (1.5.5).
             e.breaker.probed(probed, classified.outcome, now, token);
@@ -1150,8 +1150,8 @@ impl EgressFarEnd<'_> {
             } else {
                 None
             },
-            // The per-call scope the plane stated for this attempt (ARCHITECT round 5
-            // Q-L3B-EXCHANGE (B): the caller's down-scope), in the call's extensions blob.
+            // The per-call scope the plane stated for this attempt
+            // the caller's down-scope), in the call's extensions blob.
             extensions,
             ..FieldsRequest::default()
         };
@@ -1699,7 +1699,7 @@ impl EgressFarEnd<'_> {
         };
         live.answered = true;
         if let Some(destination) = self.probe_of {
-            // THE PROBE'S ANSWER, classified as organic traffic is (Part 3 §12), recorded on every
+            // THE PROBE'S ANSWER, classified as organic traffic is, recorded on every
             // cell of its member; the plane is handed the first piece as the whole answer and the
             // rest is never read. A success is recorded at once; any other answer waits for the
             // plane's reading of it, exactly as a relayed organic answer does: the plane's first

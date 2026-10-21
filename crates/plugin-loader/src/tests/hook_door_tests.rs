@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOOK AXIS, BOTH WAYS (THE DESIGN §11.4; the SWITCH-OVER card, hook root axis): the hook
+//! THE HOOK AXIS, BOTH WAYS (the SWITCH-OVER card, hook root axis): the hook
 //! kind's fixture (`hook_door_plugin`) reached through [`HookRows`] as a LINKED row (its door) and as
 //! a DROPPED-IN row (its example `cdylib`'s bytes, admitted against the rendering its door states),
 //! probed, opened and called through the contract's [`HookAxis`] / [`HookCalls`] on the one
@@ -638,7 +638,7 @@ fn a_linked_hook_and_a_different_dropped_in_hook_claiming_one_word_are_refused()
     );
 }
 
-/// RED (THE DESIGN §11.13 M1: no plugin code, `dlopen` and `open` included, runs under a host
+/// RED (no plugin code, `dlopen` and `open` included, runs under a host
 /// lock): a quarantine's trial binds and opens its fresh instance with the hook's state lock let
 /// go, so a trial wedged in its bind holds no other caller — the hook still answers whether it is
 /// quarantined — and the trial then serves.

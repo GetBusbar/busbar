@@ -74,7 +74,7 @@ pub struct AsPlaneSeam {
     /// sessions, an ephemeral key) carries across the generation swap. And the deployment's
     /// configured store (its typed records and its single-use claims; `None` without one): the
     /// server keeps what it holds there, under the kernel's own record kinds, so every node on one
-    /// store serves one authorization server (THE DESIGN §1, "Nodes share one store"). Also hands
+    /// store serves one authorization server ("Nodes share one store"). Also hands
     /// the plane's expired-record sweep to the kernel's one clock ([`crate::tick::on_clock`]),
     /// starting no task of its own — the seam owns the whole "how do I come alive" act, not just
     /// allocation.

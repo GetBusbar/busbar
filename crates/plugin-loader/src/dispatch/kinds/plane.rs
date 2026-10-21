@@ -119,7 +119,7 @@ pub struct ServedFacts {
     /// The key of the one section the Statement declares.
     pub section: &'static str,
     /// The keys of the sections the Statement reads beside it (`SECTION_CONSUMED`), in its order:
-    /// the plane opens with all of them, one `{section: value}` object (spec Part 1 §4).
+    /// the plane opens with all of them, one `{section: value}` object (spec).
     pub consumed: Vec<&'static str>,
     /// The keys of the other sections it owns (neither declaring nor consumed): what it opens
     /// with beside its settings (`PlaneOpenIn::owned`).
@@ -140,10 +140,10 @@ pub struct ServedFacts {
     /// The tail's `audit_kind`.
     pub audit_kind: &'static str,
     /// The tail's billable classes, in order: a unit count's `class` indexes them (the money
-    /// steps ledger each count under its class name, THE DESIGN §7).
+    /// steps ledger each count under its class name).
     pub billable_classes: Vec<&'static str>,
     /// The tail's fee units, each also one of [`Self::billable_classes`]: the plane's report of
-    /// whether a unit incurred its fee (THE DESIGN §7, "the plane reports ... whether a fee unit was
+    /// whether a unit incurred its fee ("the plane reports... whether a fee unit was
     /// incurred").
     pub fee_units: Vec<&'static str>,
     /// The tail's counter lane words (`PlaneTail::metric_lanes`): the words beside the operator's
@@ -172,7 +172,7 @@ pub struct ServedFacts {
     /// The tail's dialects, in order.
     pub dialects: Vec<&'static str>,
     /// The tail's `dialect_auth`: each dialect's default outbound style, by its dialect index
-    /// (THE DESIGN §6 step 2: a provider entry's `auth:`, else this), and the style's parameters
+    /// (a provider entry's `auth:`, else this), and the style's parameters
     /// for it, a JSON object's text (empty: none; ARCHITECT RULING 2026-10-03, Q-L6-AUTHPARAMS).
     pub dialect_auth: Vec<(u32, &'static str, &'static [u8])>,
     /// Each dialect's `DIALECT_*` flags off its `dialect_auth` line, parallel to
@@ -236,7 +236,7 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
 std::thread_local! {
     /// A tail read ([`kept`], [`kept_blob`], [`listed`]) met a length over its cap, or a list or
     /// string NULL with a count: nothing was formed over it, and [`tail_facts`] refuses the plane
-    /// (THE DESIGN §11.13 M1, "Every slice built from a plugin-reported length is capped and
+    /// ("Every slice built from a plugin-reported length is capped and
     /// validated before it is formed").
     static OVER_CAP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -717,7 +717,7 @@ pub fn registration(
                   owned: &[u8],
                   public_url: Option<&str>,
                   facts: &[busbar_contract::plane_calls::DialectFacts]| {
-                // NO PLUGIN CODE UNDER THE PROBES' LOCK (THE DESIGN §11.13 M1): the probe is taken
+                // NO PLUGIN CODE UNDER THE PROBES' LOCK: the probe is taken
                 // out of the list under it, bound, opened or refreshed with it let go, and put
                 // back under it. A caller that finds its probe out binds one of its own; the one
                 // put back second is let go, outside the lock.
@@ -1813,7 +1813,7 @@ impl crate::dispatch::Plugin<Plane> {
 
 /// A string of the plugin's generation data, owned; `Some(None)` when absent, `None` (the snapshot
 /// refused) for bad UTF-8 or a length over the hard byte maximum, which is refused before any slice
-/// is formed (THE DESIGN §11.13 M1). Called only on data a READY crossing's checks accepted (no
+/// is formed. Called only on data a READY crossing's checks accepted (no
 /// string counted over a NULL pointer).
 fn owned_str(s: busbar_contract::abi::mechanism::call::AbiStr) -> Option<Option<String>> {
     if s.ptr.is_null() {

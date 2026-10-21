@@ -81,7 +81,7 @@ fn the_admin_crate_holds_no_seam_of_its_own() {
     }
     assert!(
         offenders.is_empty(),
-        "the admin crate holds a seam beyond the kernel's admin seam (R6): {offenders:#?}"
+        "the admin crate holds a seam beyond the kernel's admin seam: {offenders:#?}"
     );
 }
 

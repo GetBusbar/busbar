@@ -687,7 +687,7 @@ impl LedgerView for NodeLedger {
         self.lock().pinned_history()
     }
 
-    /// SEAM `booked-lines`, FED FROM THE BOOK'S COUNTED LINES (audit root-R1 #6; ARCHITECT
+    /// SEAM `booked-lines`, FED FROM THE BOOK'S COUNTED LINES
     /// 2026-10-07 H6 retention ruling).
     ///
     /// Every posting the node journals with a unit's counts — the late arm's settlement, its counts

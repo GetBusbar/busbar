@@ -54,7 +54,7 @@ pub fn registry(
         note,
     )?;
     // The dropped-in secret plugins that state a door join the secret axis (the root's, over the
-    // one dispatcher); a 1.5.x one with no door stays on the cold lane (M6).
+    // one dispatcher); a 1.5.x one with no door stays on the cold lane.
     super::linked::secret_rows().admit_dropped(discovered(&registry, |kind| kind == "secret")?)?;
     Ok(registry)
 }
@@ -198,7 +198,7 @@ pub fn validate_dealt<'s>(
             continue;
         };
         // A plane's verb sections, keyed by their top-level names, carry a secret reference at every
-        // credential position `${VAR}` filled: a plane never receives secret bytes (THE DESIGN §6).
+        // credential position `${VAR}` filled: a plane never receives secret bytes.
         // An instance's own settings are a non-plane plugin's, which may hold the secrets they name.
         let settings = match seat {
             Seat::Verbs(_) => {
@@ -662,7 +662,7 @@ pub(crate) fn plugin_logs() -> &'static crate::root::loader::dispatch::PluginLog
     })
 }
 
-/// FOLLOW A CONFIG APPLY'S `plugins.logs` (THE DESIGN §11.2: a plugin's level and its file's
+/// FOLLOW A CONFIG APPLY'S `plugins.logs` (a plugin's level and its file's
 /// rotation change through an apply): `logs`, and every sink opened from it or a clone of it, take
 /// the applied words, live sinks at their next line. Words that do not resolve keep the ones in
 /// force (the apply's pre-flight refuses them first).

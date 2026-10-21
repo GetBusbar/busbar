@@ -467,7 +467,7 @@ async fn an_estimated_local_unit_is_still_charged() {
     assert_eq!(g.money.open_units(), 0, "its money facts closed at its end");
 }
 
-/// A NESTED UNIT (`unit.nest`, ARCHITECT round 4 (c)): the parent's plane runs a child on the claim
+/// A NESTED UNIT (`unit.nest`): the parent's plane runs a child on the claim
 /// it names, under the parent's key (the child is admitted and charged on the same key's chain: one
 /// admission chain), and hands the parent the child's whole reply; both units' money and node facts
 /// close at their ends.
@@ -512,7 +512,7 @@ async fn a_nested_unit_runs_under_its_parents_key_and_answers_it_whole() {
     assert_eq!(g.requests(), 3, "only the parent");
 }
 
-/// THE IN-SESSION SERVICES THROUGH THE ONE TABLE (U22): a dropped-in plane's unit calls
+/// THE IN-SESSION SERVICES THROUGH THE ONE TABLE: a dropped-in plane's unit calls
 /// `content.scan`, `hook.call` (a gate, then a rewrite) and `verify.lookup` on its own ticket. The
 /// unit's route leg stated its hook stage, so each is served (none refused as unbound): with no hook
 /// bound the content passes, the gate passes and the chain is unchanged; the verify cache, empty,

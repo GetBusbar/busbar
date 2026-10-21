@@ -2,10 +2,10 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE HEALTH PROBE UNIT (`BUSBAR-1.6.0.md` Part 3, "Nested units, work continuations and probes
-//! are units of their own"; §B item 14, K7): a kernel-originated unit pinned to one member. The
+//! are units of their own"; §B): a kernel-originated unit pinned to one member. The
 //! driver calls `arrive` with the probe claim, pushes the ATTEMPT piece alone, and sends the probe
 //! request the plane emits through the member's far end, whose status table classifies the answer
-//! as it classifies organic traffic. The unit is a tick: zero-billed, no lease (§1's exempt
+//! as it classifies organic traffic. The unit is a tick: zero-billed, no lease ('s exempt
 //! origins), and it passes no kernel step.
 //!
 //! [`PlaneProbes`] binds the probe service's schedule ([`crate::probe`]) to one plane instance's

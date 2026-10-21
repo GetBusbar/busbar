@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE INSTANCE'S RECORD WRITES BEHIND THE DRIVER (ruling H2 U10, `BUSBAR-1.6.0.md` Appendix B
-//! 2026-09-30; THE DESIGN §11.11 H4/H5): write-behind is bounded (a flush cadence of at most 1 s,
+//! 2026-09-30): write-behind is bounded (a flush cadence of at most 1 s,
 //! at most N writes a batch), a piece's record write is durable before the unit that carried it
 //! completes, and a store that hangs never holds a reload or the shutdown drain past its deadline.
 //! Run against the contract-level double of `plane_driver.rs`.
@@ -306,7 +306,7 @@ fn a_claim_is_spent_in_the_store_before_it_answers() {
 
 // ── (c) a hung store holds neither a reload nor the shutdown drain ─────────────────────────────
 
-/// RED (c), THE DESIGN §11.11 H5: with the store hung on a unit's record write, a reload ends the
+/// RED (c): with the store hung on a unit's record write, a reload ends the
 /// unit at once (it never waits on the store), the shutdown drain gives up at its own deadline,
 /// and the write itself runs on: once the store answers it is kept (write-behind is never
 /// cancelled by a reload) and a later drain completes.

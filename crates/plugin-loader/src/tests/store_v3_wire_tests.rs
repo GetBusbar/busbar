@@ -474,7 +474,7 @@ fn a_unix_target_is_a_unix_domain_stream() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ── AN ENDPOINT LIST: open; on reject close and try the next (THE DESIGN §5) ───────────────────
+// ── AN ENDPOINT LIST: open; on reject close and try the next ───────────────────
 
 /// One op over an endpoint list, in order: a host whose handshake the store rejects (`STANDBY`)
 /// is CLOSED ([`Wire::close`]) and the next is tried on the same op.

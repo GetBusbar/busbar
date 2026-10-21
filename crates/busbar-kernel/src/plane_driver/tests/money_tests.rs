@@ -1052,7 +1052,7 @@ fn a_session_on_a_unit_with_no_money_facts_is_refused() {
     assert_eq!(r.money.session_opened(&ctx(2)), Err(ReasonCode::Unpriced));
 }
 
-/// K6-4 (THE DESIGN §7, "A session is one unit with one line"): each turn's cumulative counts are a
+/// K6-4 ("A session is one unit with one line"): each turn's cumulative counts are a
 /// checkpoint, never a line; the session's end writes ONE line of its last cumulative counts, and
 /// the unit's own end then ledgers nothing twice.
 #[test]
@@ -1231,7 +1231,7 @@ fn input(n: u64) -> Accrued {
     }
 }
 
-/// A RUNNING REPORT IS A CHECKPOINT (THE DESIGN §7): the piece path only marks the unit, and the
+/// A RUNNING REPORT IS A CHECKPOINT: the piece path only marks the unit, and the
 /// root's flush tick hands its last counts over ONCE per flush epoch. Two reports in one epoch are
 /// one write, of the later counts; a second flush in the same epoch writes nothing, even for new
 /// counts, until the epoch is bumped.

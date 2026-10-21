@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HEALTH-PROBE SERVICE (`BUSBAR-1.6.0.md` Part 3, §C K7; F23): the breaker service that
+//! THE HEALTH-PROBE SERVICE (`BUSBAR-1.6.0.md` Part 3, §C K7): the breaker service that
 //! drives active health probing. The kernel owns WHEN a member is probed (the cadence below,
 //! 1.5.5's verbatim) and WHAT the answer means to the breaker (the same classification an organic
 //! attempt gets). The plane owns WHAT the probe is: a plane whose tail states `TAIL_PROBES`

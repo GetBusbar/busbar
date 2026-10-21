@@ -11,7 +11,7 @@
 //!
 //! * `hostio.rs` — `io.*` itself: streams, listeners, a program's pipes;
 //! * `io.rs`, `socket.rs` — its tools: readiness on the worker's reactor, and the OS sockets;
-//! * `udp.rs`, `dtls/` — the DATAGRAM carrier, which is the host's by ruling (THE DESIGN §5,
+//! * `udp.rs`, `dtls/` — the DATAGRAM carrier, which is the host's by ruling
 //!   Datagram media: "the udp carrier is the host's (in the connector, no carrier plugin)");
 //! * `tls/engine.rs` — the kernel's own outbound engine's TLS, over a stream the KERNEL dialled
 //!   and hands it (the kernel's legacy egress engine); the connector dials nothing there.

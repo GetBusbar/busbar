@@ -62,8 +62,8 @@ pub const FIRST_PARTY_PUBLISHER: &str = "busbar";
 
 /// The plugin kinds this binary understands. ONE plugin subsystem: `kind` only selects which kind's
 /// table the door answers and which engine subsystem consumes it; discovery/trust/validation are
-/// shared. Each kind's manifest `abi_version` is that kind's one version (`supported_abi`, THE DESIGN
-/// §11.2). Every kind, `plane` and `transport` included, loads only through its door.
+/// shared. Each kind's manifest `abi_version` is that kind's one version (`supported_abi`).
+/// Every kind, `plane` and `transport` included, loads only through its door.
 // One line, as it always was: the kind list is one statement, not seven.
 #[rustfmt::skip]
 pub const KNOWN_KINDS: &[&str] = &["store", "auth", "hook", "secret", "export", "plane", "transport"];
@@ -302,7 +302,7 @@ pub struct Declares {
     /// keeps its canonical bytes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub breaker: Option<BreakerDecl>,
-    /// THE DISK NEED (THE DESIGN §11.11 R4, as the OWNER amended it 2026-10-13): the plugin's
+    /// THE DISK NEED (as the amended it 2026-10-13): the plugin's
     /// source reads the local disk. Stated by a `kind: secret` plugin ONLY (no other kind may claim
     /// the exception; [`validate_identity`] refuses it elsewhere): the host runs its `resolve` on the
     /// bounded disk lane at config time and refuses it on a request path. Left off the wire when
@@ -385,7 +385,7 @@ impl Declares {
                 }
             }
         }
-        // The superseded contract-ABI range (THE DESIGN §2 l.237-240: a plugin declares its kind's
+        // The superseded contract-ABI range (l.237-240: a plugin declares its kind's
         // ABI version, never a range): a declares FILE may still state it until the fleet's
         // re-render strips it from every repo (the DECLARES gate accepts it until then), so it is
         // dropped here, never read and never carried into a manifest.
@@ -945,8 +945,7 @@ pub fn validate_identity(m: &Manifest, host_identity: &str) -> Result<(), String
     }
     if m.declares.disk && m.kind != "secret" {
         return Err(format!(
-            "manifest kind '{}' declares a disk need; only a `kind: secret` source may (THE DESIGN \
-             §11.11 R4: the store and the export sink reach the disk lane through their host \
+            "manifest kind '{}' declares a disk need; only a `kind: secret` source may (the store and the export sink reach the disk lane through their host \
              services, and no other kind claims the exception)",
             m.kind
         ));
@@ -992,7 +991,7 @@ pub fn validate_abi(
     supported_abi: &dyn Fn(&str) -> &'static [u32],
 ) -> Result<(), String> {
     // `supported_abi` returns a CONTIGUOUS `[floor, max]` inclusive range (its endpoints) of the
-    // ABI versions the binary speaks for this kind (the kind's ONE version, THE DESIGN §11.2; a
+    // ABI versions the binary speaks for this kind (the kind's ONE version; a
     // manifest states no contract-ABI range). Negotiate the manifest's declared
     // `abi_version` against it: in range → ok; below floor / above max → refuse LOUD naming both.
     // An empty slice means the kind is unsupported (already caught by KNOWN_KINDS, but fail-closed).

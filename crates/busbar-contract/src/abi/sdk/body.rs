@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A PLANE'S READS OF A BODY BY DECLARED POINTER, one copy for every plane (ARCHITECT round 4
-//! Q-L3B-GATES (4): identical logic is hoisted into the plane SDK). Every reader goes through the
+//! A PLANE'S READS OF A BODY BY DECLARED POINTER, one copy for every plane
+//! identical logic is hoisted into the plane SDK). Every reader goes through the
 //! contract's own span grammar ([`crate::spans`]), the kernel's: a plane that carried a scanner of
 //! its own would be a closed grammar with a second reading.
 

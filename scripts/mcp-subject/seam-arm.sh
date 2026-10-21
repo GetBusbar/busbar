@@ -69,7 +69,7 @@ arm() {
 # against the operator's approved digest) once its last observation is `verify_ttl` old, and inside
 # that window it reuses the last verdict, a FAILED verification included: the registration is
 # `error` and serves nothing, fail closed (docs/tool-and-agent-trust.md, "Fail-closed"; THE DESIGN
-# §11.12's trust lifecycle). That is busbar working as built. What it did to this leg is the defect
+# 's trust lifecycle). That is busbar working as built. What it did to this leg is the defect
 # this block removes: the CLI and SEAM scenarios run back to back against ONE shared peer,
 # `half-answer` breaks the verification it meets, and every later scenario's call landed inside that
 # window and was refused without a byte reaching the peer. Five CLI.HOSTILE scenarios scored

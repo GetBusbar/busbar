@@ -3,7 +3,7 @@
 
 //! The inbound listener moved to the composition root, `busbar::root::listener`; `read_pem` stays
 //! here for its one caller, the connector's `tls:` block resolution. The connector is the only holder
-//! of TLS keys, certificates, trust roots and mTLS identity (THE DESIGN §8, `BUSBAR-1.6.0.md`
+//! of TLS keys, certificates, trust roots and mTLS identity (`BUSBAR-1.6.0.md`
 //! l.1141), so no plane reads PEM material through this.
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====

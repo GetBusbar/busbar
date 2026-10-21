@@ -1167,7 +1167,7 @@ impl Runner {
                         "plane-streaming",
                         "--test",
                         // `voice_boot` folded into this one test over every linked plane that owns
-                        // a section (142d77646f, K3); the streams plane's `streams:` is one of them.
+                        // a section; the streams plane's `streams:` is one of them.
                         "plane_owned_sections_boot",
                     ][..],
                 ),

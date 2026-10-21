@@ -600,7 +600,7 @@
   {
    "id": "PB-11",
    "surface": "plugin trust and ABI windows",
-   "binding": "`plugins.trust` verbatim: publishers allow-list, embedded first-party key, `allow_unsigned` / `allow_third_party` (default false; unsigned or unknown-publisher plugin LOGGED and SKIPPED with the literal messages, never dlopened), `UntrustedFloored` never relaxed, catalog verdict strings; the operator-key digest set is an ADDITIVE 1.6.0 layer; every plugin at its kind's ONE current version (THE DESIGN §11.8 \"No legacy loading\", ruling C21/ABI-o1, superseding the 1.5.5 floors: store [4], auth [3], hook [2], export [3], secret [1]); `supported_abi(kind)` REPORTS that version — boot, `--validate` and `POST /plugins/inspect` print `v4..=v4` for a store; a published 1.5.5 JSON-contract plugin (store 2, auth 2, hook 1, export 2) and a newer-than-host one are refused at boot (accepted difference ABI-o1, `breaking`); `plugin-pack --abi-version` defaults to the current version; `TRANSPORT_VERSION = 1` is checked FIRST in `wire_up_raw` and stays 1 with the six kind-neutral symbols; `plugins.fetch` runs before preflight at boot (`fatal_on_miss`) and on reload (warn-and-keep), verify-before-write, never under `--validate`; a manifest at any other version is refused with `manifest abi_version {n} is not supported for kind '{kind}' by this binary (supported range v{floor}..=v{max}): rebuild the plugin against the 1.6.0 SDK` printing the CURRENT version, never `PluginAbiTooOld`",
+   "binding": "`plugins.trust` verbatim: publishers allow-list, embedded first-party key, `allow_unsigned` / `allow_third_party` (default false; unsigned or unknown-publisher plugin LOGGED and SKIPPED with the literal messages, never dlopened), `UntrustedFloored` never relaxed, catalog verdict strings; the operator-key digest set is an ADDITIVE 1.6.0 layer; every plugin at its kind's ONE current version (\"No legacy loading\", superseding the 1.5.5 floors: store [4], auth [3], hook [2], export [3], secret [1]); `supported_abi(kind)` REPORTS that version — boot, `--validate` and `POST /plugins/inspect` print `v4..=v4` for a store; a published 1.5.5 JSON-contract plugin (store 2, auth 2, hook 1, export 2) and a newer-than-host one are refused at boot (accepted difference ABI-o1, `breaking`); `plugin-pack --abi-version` defaults to the current version; `TRANSPORT_VERSION = 1` is checked FIRST in `wire_up_raw` and stays 1 with the six kind-neutral symbols; `plugins.fetch` runs before preflight at boot (`fatal_on_miss`) and on reload (warn-and-keep), verify-before-write, never under `--validate`; a manifest at any other version is refused with `manifest abi_version {n} is not supported for kind '{kind}' by this binary (supported range v{floor}..=v{max}): rebuild the plugin against the 1.6.0 SDK` printing the CURRENT version, never `PluginAbiTooOld`",
    "inventory": "config, plugins-stores :195, :224, :2000 (`plugin-sign/src/lib.rs:611-615`)",
    "note": "Resolved 2026-10-02 by THE DESIGN 11.8 (ruling C21/ABI-o1): the loader accepts one version per kind; registry_tests.rs supported_abi_is_one_version_per_kind pins the windows and a_1_5_5_json_contract_plugin_is_refused_at_boot_naming_the_rebuild the refusal; the oracle cell plugins.abi|json-contract|store-sqlite@1.5-line records 1.5.5 serving the published plugin (accepted difference ABI-o1).",
    "status": "mapped",
@@ -623,7 +623,7 @@
     {
      "kind": "test",
      "ref": "crates/plugin-loader/src/tests/registry_tests.rs::a_1_5_5_json_contract_plugin_is_refused_at_boot_naming_the_rebuild",
-     "proves": "a published 1.5.5 plugin is refused at boot naming the rebuild (C21)",
+     "proves": "a published 1.5.5 plugin is refused at boot naming the rebuild",
      "source": "curated",
      "status": "mapped"
     },
@@ -785,7 +785,7 @@
   {
    "id": "PB-16",
    "surface": "`/usage` and every legacy admin response",
-   "binding": "byte-identical; NO additive lines (except `rate_card_version` on /usage and audit responses, additive per Q93 (OWNER 2026-09-27)) — every alarm or delta named \"on the ledger endpoint (PB-16)\" in the governance inventory and Appendix A lives on the 1.6.0 ledger endpoints (`/api/v1/admin/ledger/*`); a legacy metering row (`requests`, `spend_micros`, tokens) is written ONLY by the delivered-response tap — an admitted-but-undelivered unit (pool-empty 503, deadline 503, rewrite 500) writes no row and its fee is refunded on the non-2xx status; a terminal-error stream (delivered on 2xx headers) writes no token line and no legacy metering row but KEEPS the flat fee",
+   "binding": "byte-identical; NO additive lines (except `rate_card_version` on /usage and audit responses, additive) — every alarm or delta named \"on the ledger endpoint (PB-16)\" in the governance inventory and Appendix A lives on the 1.6.0 ledger endpoints (`/api/v1/admin/ledger/*`); a legacy metering row (`requests`, `spend_micros`, tokens) is written ONLY by the delivered-response tap — an admitted-but-undelivered unit (pool-empty 503, deadline 503, rewrite 500) writes no row and its fee is refunded on the non-2xx status; a terminal-error stream (delivered on 2xx headers) writes no token line and no legacy metering row but KEEPS the flat fee",
    "inventory": "governance (`proxy/usage.rs:57-107`), routes-admin",
    "status": "mapped",
    "checks": [

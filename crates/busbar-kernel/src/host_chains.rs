@@ -2,9 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE PLANE RECORD CHAINS ON THE KERNEL'S RECORD PATH (`BUSBAR-1.6.0.md` THE DESIGN, the route
-//! pump: "A record kind the plane declares as chained keeps its declared framing (§5:
+//! pump: "A record kind the plane declares as chained keeps its declared framing
 //! length-prefixed or pipe-separated, with or without the scope in the digest); the host frames
-//! and verifies its chain"; Part 3 §5). The contract's words for a chained kind are on
+//! and verifies its chain"). The contract's words for a chained kind are on
 //! `abi::plane::RecordChain`; this is the host's half, naming no plane.
 //!
 //! * THE DECLARATION ([`ChainFraming::of`]) is the tail's `record_chains` entry for the kind: its

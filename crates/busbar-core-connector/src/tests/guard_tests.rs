@@ -135,7 +135,7 @@ fn a_name_entry_never_admits_a_metadata_answer() {
     );
 }
 
-/// RED (owner Q1, Q8): `block_private_addresses: false` admits private answers and names, never
+/// RED: `block_private_addresses: false` admits private answers and names, never
 /// cloud metadata.
 #[test]
 fn block_false_admits_private_but_not_metadata() {
@@ -357,9 +357,8 @@ fn a_bad_entry_is_refused_naming_the_key() {
 }
 
 /// THE DEFAULT POLICY is one table: the provider class and a destination from request data (the
-/// default class, open-web) are refused private (THE DESIGN §5 destination guard, ARCHITECT ruling
-/// CRATES-14); operator infrastructure is allowed private and loopback (§5 egress-class table,
-/// owner 2026-09-27); loopback-allowed is allowed loopback and refused every other private address
+/// default class, open-web) are refused private (destination guard);
+/// operator infrastructure is allowed private and loopback (egress-class table); loopback-allowed is allowed loopback and refused every other private address
 /// (ARCHITECT parity ruling A2: the destination guard still applying, as 1.5.5's collector guard
 /// refused them); while cloud metadata, a configured name rebinding to it included, stays refused
 /// in every class.
@@ -392,7 +391,7 @@ fn private_is_refused_for_providers_and_request_data_and_allowed_for_operator_in
     }
 }
 
-/// RED (THE DESIGN §5 destination guard, ARCHITECT ruling CRATES-14 on Q130/Q131: "the 'refused
+/// RED (destination guard: "the 'refused
 /// unless allowlisted' default applies to the provider and IdP egress classes only"): a provider
 /// dial with no allowlist entry for it is refused a private or loopback address, by name, by
 /// literal and by answer; the allowlist admits it; a HOST allowlist entry still never admits a
@@ -449,7 +448,7 @@ fn a_provider_dial_is_refused_a_private_address_unless_allowlisted() {
     );
 }
 
-/// THE DESIGN §5 egress-class table (owner-signed 2026-09-27), held beside the provider fix above:
+/// egress-class table, held beside the provider fix above:
 /// operator infrastructure is allowed private and loopback with no allowlist entry, and refuses cloud metadata even when the
 /// allowlist names the host and every 1.5.5 carve-out names the address.
 #[test]
@@ -489,7 +488,7 @@ fn operator_infrastructure_is_allowed_private_and_refused_metadata_whatever_is_c
     );
 }
 
-/// RED (THE DESIGN §5 "no blocking thread exists"; resource bounds): the dial guard's name
+/// RED ("no blocking thread exists"; resource bounds): the dial guard's name
 /// lookups are CAPPED as the kernel's are (`hostio::SystemNames`, `MAX_PENDING_LOOKUPS`): with
 /// the cap's lookups in flight one more is answered at once as a resolution failure and starts no
 /// thread. Uncapped, one thread was started per lookup, so a burst of dials while names were slow

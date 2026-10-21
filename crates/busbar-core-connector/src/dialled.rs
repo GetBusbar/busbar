@@ -374,7 +374,7 @@ impl Dialled {
             Phase::Over => return Err(ConnError::Closed),
         }
         let mut gather = lock(&self.gather);
-        // A message is bounded as a write is (THE DESIGN §5, writes are back-pressured): one
+        // A message is bounded as a write is (writes are back-pressured): one
         // gathered past the bound is refused, and what was gathered of it is let go.
         if gather.len().saturating_add(bytes.len()) > crate::compose::WRITE_BUFFER_BYTES {
             gather.clear();

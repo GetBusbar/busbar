@@ -101,14 +101,14 @@
 //! and a collection; a tick that `wakes` its driver is pinned at two, the tick and the `drive` the
 //! dispatcher calls on the woken ticket.
 //!
-//! THE CROSSINGS ARE THE KERNEL'S (THE DESIGN §11.4: one table, as production drives it). A unit's
+//! THE CROSSINGS ARE THE KERNEL'S (one table, as production drives it). A unit's
 //! pieces (`on_piece`) are SUBMITTED on the unit's own ticket, every piece of the unit on that one
 //! ticket, as the kernel's plane driver submits them (`dispatch::plane_calls`); `serve` is submitted
 //! on a request ticket; `tick` on the instance's DRIVER ticket, and `drive` is crossed by a WAKE
 //! of that ticket, as every production `drive` is. So a piece that waits
 //! (a may-pend host service, or the plane's own upstream) answers PENDING and is RESUMED on its
-//! wake (§11.2; a may-pend service on a ticket-less op is REFUSED, §11.12), and every buffer a
-//! submitted op names is LENT to it through the dispatcher's lending submit (§2). The pure ops
+//! wake (a may-pend service on a ticket-less op is REFUSED), and every buffer a
+//! submitted op names is LENT to it through the dispatcher's lending submit. The pure ops
 //! (`arrive`, `refusal`, `project`) and the lifecycle are ticket-less crossings (`Plugin::call`),
 //! as the kernel makes them. A resume is reported, never pinned (Q-P4-5).
 //!
@@ -366,7 +366,7 @@ fn claims<'a>(c: impl Iterator<Item = (&'a str, &'a str)>) -> String {
 
 /// THE MEMORY ONE PIECE LENDS THE PLANE: the host's buffers (reply, units, record writes, fields,
 /// arena) and the piece's own bytes, head fields and carried names. Built in place in the `Arc`
-/// that is lent to the op (THE DESIGN §2), so its pointers stay valid however the op ends.
+/// that is lent to the op, so its pointers stay valid however the op ends.
 struct Piece {
     reply: Vec<u8>,
     units: [UnitCount; CAP],
@@ -988,7 +988,7 @@ impl Session {
     }
 }
 
-/// `drive` AS THE KERNEL'S WAKES DRIVE IT (THE DESIGN §11.4): the instance's DRIVER ticket woken,
+/// `drive` AS THE KERNEL'S WAKES DRIVE IT: the instance's DRIVER ticket woken,
 /// as a host service's completion wakes it, so the dispatcher crosses `drive` on it in the kind's
 /// own frame (its head and its `driver` field name the driver, so a service that pends inside
 /// registers there, and a PENDING drive is RESUMED on its next wake). Its answer (the first that

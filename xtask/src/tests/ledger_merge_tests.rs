@@ -19,8 +19,8 @@ fn law0(krate: &str, axis: &str, count: &str, cite: &str) -> String {
 fn dep(count: &str, verdict: &str, why: &str, drain: &str) -> String {
     format!(
         "[[dep]]\nfrom    = \"busbar\"\nto      = \"busbar-a2a\"\nhalf    = \"shipped\"\n\
-         count   = \"{count}\"\nverdict = \"{verdict}\"\ncite    = \"BUSBAR-1.6.0.md THE DESIGN, \
-         §1\"\nwhy     = \"{why}\"\ndrain   = \"{drain}\"\n"
+         count   = \"{count}\"\nverdict = \"{verdict}\"\ncite    = \"the kernel \
+         naming rule\"\nwhy     = \"{why}\"\ndrain   = \"{drain}\"\n"
     )
 }
 
@@ -83,7 +83,7 @@ fn move_first_count(text: &str, table: &str, delta: i64) -> String {
 // ------------------------------------------------------------------------------------------------
 
 const KERNEL_BASE_CITE: &str = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the \
-drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 288 -> 286, predev \
+drain is: core names no instance; LOWERED 288 -> 286, predev \
 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets \
 down); LOWERED 286 -> 285 by GetBusbar/busbar#570: the kernel's auth proof no longer cites the \
 root's stdio-served proof";

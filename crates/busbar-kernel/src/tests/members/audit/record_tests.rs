@@ -119,7 +119,7 @@ fn frozen_v2_record() -> busbar_kernel_audit::record::AuditRecord {
 /// `busbar.audit.digest.v2` (#43, #71, #77(3): the record stores counts, never a price), a third
 /// when it became `busbar.audit.digest.v3` (#34: `currency` leaves the signed digest), and a fourth
 /// when it became `busbar.audit.digest.v4` (the boot's `incarnation` enters after `unit_key`). Moved
-/// a fifth time, IN PLACE, when the sealing `node` entered `v4` after `mono` (THE DESIGN §1: "when
+/// a fifth time, IN PLACE, when the sealing `node` entered `v4` after `mono` ("when
 /// (wall + monotonic, node)"): `v4` had not shipped, and until the 1.6.0 tag a first version is
 /// edited in place with its golden regenerated in the same commit (owner, 2026-09-28). The v2 value
 /// is still pinned by [`a_record_sealed_under_v2_still_verifies_by_the_v2_rules`] and the v1 value
@@ -186,7 +186,7 @@ fn a_new_record_is_sealed_under_v4_and_its_preimage_is_v2_less_currency_plus_inc
 }
 
 /// THE RECORD NAMES THE NODE THAT SEALED IT, and the node is in the digest, the signature and the
-/// range read (THE DESIGN §1: the fixed record's WHEN is "wall + monotonic, node").
+/// range read (the fixed record's WHEN is "wall + monotonic, node").
 ///
 /// Two nodes sealing the same unit's facts seal two different records; a record relabelled to
 /// another node stops hashing to its sealed digest, so its signature cannot be lifted onto the

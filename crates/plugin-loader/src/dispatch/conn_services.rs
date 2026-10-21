@@ -277,7 +277,7 @@ fn slot(
 }
 
 /// The caller's bytes (`len` of them at `ptr`), or `None` for a length behind NULL or over the hard
-/// byte maximum: capped before the slice is formed (THE DESIGN §11.13 M1).
+/// byte maximum: capped before the slice is formed.
 ///
 /// # Safety
 /// A non-NULL `ptr` names `len` live bytes for the call.
@@ -753,8 +753,7 @@ pub(crate) fn forget_worker(ids: &[InstanceId], worker: u32) {
 /// and their facts, its kept answers — and close on `table` every connection a held stream had open.
 /// Made when the instance can never cross again: the watchdog faulted it, or it is dropped (a
 /// close, a reload). The maps are let go before anything is closed or dropped: a held stream's
-/// pending auth call is the auth plugin's, and a close may cross into a transport door (THE DESIGN
-/// §11.13 M1).
+/// pending auth call is the auth plugin's, and a close may cross into a transport door.
 pub(crate) fn purge(id: InstanceId, table: &Arc<dyn DeclaredConns>) {
     held_facts().retain(|(i, _), _| *i != id);
     kept_answers().retain(|(i, _), _| *i != id);
@@ -811,7 +810,7 @@ enum Conn {
     /// answer (the open calls the member binding's fields).
     Authing(Box<Authing>),
     /// One call has taken the stream out to open it, or to make or poll its member's auth call,
-    /// OUTSIDE the connector's lock (THE DESIGN §11.13 M1: no plugin code runs under a host lock;
+    /// OUTSIDE the connector's lock (no plugin code runs under a host lock;
     /// the auth call is the auth plugin's, and an open may cross into a transport door). That call
     /// installs what it got ([`install`]); any other call on the stream meanwhile is refused.
     Opening,
@@ -851,7 +850,7 @@ type HeldConns = HashMap<(InstanceId, u64), Stream>;
 
 /// THE ONE LOCK over every instance's streams. Held only to read or swap a stream's state, never
 /// across a call that can run plugin code: an auth plugin's `fields`, or a table open that may
-/// cross into a transport door (THE DESIGN §11.13 M1). A wedged plugin would otherwise hold every
+/// cross into a transport door. A wedged plugin would otherwise hold every
 /// worker's connector I/O behind it, and a plugin that called back into the connector from inside
 /// that call would relock it on its own thread.
 fn held_conns_lock() -> &'static Mutex<HeldConns> {
@@ -1051,7 +1050,7 @@ extern "C" fn write_request(
                         return Answer::with(Outcome::Fault, "");
                     };
                     // The request is whole: taken out of the map, so the member's auth call and
-                    // the open run with the connector's lock let go (THE DESIGN §11.13 M1).
+                    // the open run with the connector's lock let go.
                     let need = *need;
                     let (target, within, member, body) = (
                         std::mem::take(target),
@@ -1351,7 +1350,7 @@ fn reply(
     // A REQUEST WAITING ON ITS AUTH CALL opens when the call answers (its fields lead the head),
     // fails its ack when the call refuses or fails, and reads as nothing ready (on the caller's
     // ticket, woken when the call answers) until then. The call is taken out of the map to be
-    // polled and opened with the connector's lock let go (THE DESIGN §11.13 M1).
+    // polled and opened with the connector's lock let go.
     let waker = ticket_waker(ctx, head.handle.ticket);
     let authing = {
         let mut all = held_conns();

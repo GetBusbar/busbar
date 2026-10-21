@@ -213,7 +213,7 @@ unsafe fn text<'a>(s: AbiStr) -> Option<&'a str> {
 }
 
 /// A caller's list, checked: `None` for NULL with a count, or a count over the hard byte maximum
-/// (refused before the slice is formed, THE DESIGN §11.13 M1).
+/// (refused before the slice is formed).
 ///
 /// # Safety
 /// `ptr` names `len` of the caller's `T`s, live for the call.

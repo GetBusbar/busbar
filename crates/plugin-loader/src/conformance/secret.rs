@@ -39,7 +39,7 @@ fn text(v: &serde_json::Value) -> Vec<u8> {
 /// answers PENDING and is RESUMED on its wake. Its line (outcome, error kind, whether the material
 /// is the expected one and flagged secret) and its lease, still held.
 fn resolve(p: &Plugin<Secret>, d: &Dispatcher, settings: &[u8], material: &[u8]) -> (String, u64) {
-    // The settings ride with the op (THE DESIGN §2): the lending submit owns them.
+    // The settings ride with the op: the lending submit owns them.
     let settings: std::sync::Arc<Vec<u8>> = std::sync::Arc::new(settings.to_vec());
     let mut f: Frame<ResolveIn, ResolveOut> = Frame::new(input(), output());
     f.input.settings = json(&settings);

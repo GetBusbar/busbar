@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A LANE'S CREDENTIAL, BOUND BY THE AUTH PLUGIN THAT SERVES ITS STYLE (BUSBAR-1.6.0.md THE DESIGN
-//! §6 steps 2-5, "Auth points and guest lists" step 5; P2 D1, the auth split).
+//! steps 2-5, "Auth points and guest lists" step 5, the auth split).
 //!
 //! The kernel holds no auth style. A lane's credential is opened as a binding on the auth plugin
 //! whose tail states the lane's style ([`busbar_contract::auth_calls::AuthAxis::serving`], then
@@ -214,8 +214,7 @@ impl CredentialProvider for BoundCredential {
     }
 }
 
-/// BIND `credential` under `binding` on the auth plugin `axis` reaches for the style (THE DESIGN
-/// §6 step 3).
+/// BIND `credential` under `binding` on the auth plugin `axis` reaches for the style.
 ///
 /// # Errors
 ///

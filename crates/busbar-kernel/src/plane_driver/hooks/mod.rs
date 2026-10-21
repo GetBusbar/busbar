@@ -61,7 +61,7 @@ use crate::snapshot::{ROUTE_POLICY_REJECTIONS_TOTAL, ROUTE_POLICY_SELECTIONS_TOT
 use busbar_contract::hook_wire::reply::{clamp_reject_status, sanitize_reject_message};
 use busbar_contract::hook_wire::HookStageProjection;
 
-/// THE HOST'S 1.5.5 REPLY NORMALIZING over one opened hook instance (THE DESIGN §11.7) — host logic,
+/// THE HOST'S 1.5.5 REPLY NORMALIZING over one opened hook instance — host logic,
 /// not a plugin's, so it lives in the host hook stage (P2 D4, ARCHITECT Q-D4-HOOKS 2026-10-04; it was
 /// the kernel's `hooks::plugin`).
 pub(crate) mod policy;
@@ -1808,7 +1808,7 @@ pub const GATE_UNAVAILABLE_STATUS: u16 = 403;
 pub const STAGE_GONE: &str = "the unit's hook stage is no longer running";
 
 /// THE HOOK STAGE ONE UNIT BINDS FOR ITS IN-SESSION SUB-OPERATIONS (`hook.call`, `content.scan`;
-/// THE DESIGN §11.12, ARCHITECT H2 ruling on op 17): stated by the driver when the unit's route leg
+/// ruling on op 17): stated by the driver when the unit's route leg
 /// starts, from what the KERNEL recorded of the unit (its plane instance, the pool the walk routes
 /// it over, its verified principal) and the binder of the generation the unit runs under. It binds
 /// the unit's hooks once, on first use, and every later call (a resumed chain included) runs over

@@ -103,7 +103,7 @@ struct Held {
 /// epoch of the op that issued them. A new op's handles count from 0 again, so a handle alone does
 /// not name its op: a [`Completer`] carries its op's epoch, and a completion whose epoch is not the
 /// ticket's current one is DROPPED, never stored under the next op's same-numbered handle and
-/// never a wake for it (THE DESIGN §11.11 H2, §11.12).
+/// never a wake for it.
 #[derive(Debug, Default)]
 pub struct ServiceStore {
     inner: Mutex<HashMap<Ticket, Held>>,
@@ -409,7 +409,7 @@ fn caller(ctx: HostCtx) -> Option<Caller> {
 }
 
 /// A checked range of the caller's, copied: `None` for NULL with a length, or a length over the
-/// hard byte maximum (refused before any slice is formed, THE DESIGN §11.13 M1).
+/// hard byte maximum (refused before any slice is formed).
 fn bytes_of(s: AbiStr, field: &'static str) -> Option<Vec<u8>> {
     check::text(s, field).ok()?;
     // SAFETY: a range of the caller's, live for the call, its length capped by `lent_str` before
@@ -418,7 +418,7 @@ fn bytes_of(s: AbiStr, field: &'static str) -> Option<Vec<u8>> {
 }
 
 /// A checked blob of the caller's, copied: `None` for NULL with a length, or a length over the hard
-/// byte maximum (refused before any slice is formed, THE DESIGN §11.13 M1).
+/// byte maximum (refused before any slice is formed).
 fn blob_of(b: Blob, field: &'static str) -> Option<Vec<u8>> {
     check::listed(b.ptr, b.len, field).ok()?;
     // SAFETY: as `bytes_of`.
@@ -709,7 +709,7 @@ fn destination(ctx: HostCtx, key: &str) -> Option<busbar_contract::services::Dis
     bound.iter().find(|d| d.key == key).cloned()
 }
 
-/// `disk.append` (THE DESIGN §11.11 R4, §11.12): the caller's destination KEY is mapped to the
+/// `disk.append`: the caller's destination KEY is mapped to the
 /// file the host bound for it (granted from its manifest, bound from its settings at open), and
 /// the bytes go to the kernel's bounded disk lane, which pends the call until the append is done.
 /// On READY and FAILED the result slot gets what the lane reported: the rotation before the append,

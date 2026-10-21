@@ -696,7 +696,7 @@ fn a_downgrade_never_routes_a_key_into_a_pool_it_may_not_use() {
     );
 }
 
-// ── the members' routes (THE DESIGN §6 steps 2-3) ──────────────────────────────────────────────
+// ── the members' routes (steps 2-3) ──────────────────────────────────────────────
 
 /// The decisions-shaped plane facts: one dialect `d` whose default style is `bearer`, one outbound
 /// need naming `bearer`.
@@ -909,7 +909,7 @@ fn a_member_is_bound_under_its_dialects_default_style_on_the_need_that_style_nam
     );
 }
 
-/// ROW 74 (F25): a provider whose `base_url` spells `user:pass@` is reached at the host after it,
+/// A provider whose `base_url` spells `user:pass@` is reached at the host after it,
 /// as 1.5.5 reached it (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`). The provider's route is
 /// the one entry every member's route, sealed reach, binding and dial reads its base from, so the
 /// userinfo is stripped HERE and nothing downstream (the connector refuses a dial target spelling
@@ -942,7 +942,7 @@ fn a_provider_base_url_with_userinfo_is_reached_at_its_stripped_authority() {
     );
 }
 
-/// ROW 74 (F25), THE DOOR PATH HOLDS NO USERINFO BYTES IN A KERNEL TYPE: a member whose provider's
+/// THE DOOR PATH HOLDS NO USERINFO BYTES IN A KERNEL TYPE: a member whose provider's
 /// base URL spells `user:pass@` is sealed with the stripped base on its route (the kernel's
 /// `MemberRoute` has no field for the userinfo), and the Basic value reaches its attempts only
 /// through the binding's handle, which the root wrapped ([`crate::root::userinfo::lead_with`]):
@@ -1409,8 +1409,8 @@ fn linked_mint_plugin(table: &std::sync::Arc<TokenEndpoint>) -> super::OutboundA
     )
 }
 
-/// THE MEMBER UNDER `auth: oauth-client-credentials`, BOUND BY THE COMPOSITION (THE DESIGN §6 steps
-/// 2-3, §5, §6.5): the auth plugin serving the style is opened over the provider's own settings,
+/// THE MEMBER UNDER `auth: oauth-client-credentials`, BOUND BY THE COMPOSITION (steps
+/// 2-3): the auth plugin serving the style is opened over the provider's own settings,
 /// so its `loopback-allowed` mint need is declared pinned to the provider's `token_url`; its tick schedule runs
 /// without anyone driving it; the member's binding presents nothing until the first mint lands,
 /// then the minted bearer, then the refreshed one ahead of the first token's expiry (the oracle
@@ -1430,7 +1430,7 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
             base64::engine::general_purpose::STANDARD.encode("svcuser:hunter2-P4ss")
         )
     };
-    // The endpoint as written, plain and spelling a userinfo (row 74, F25).
+    // The endpoint as written, plain and spelling a userinfo.
     for written in [
         TOKEN_URL.to_string(),
         TOKEN_URL.replacen("://", "://svcuser:hunter2-P4ss@", 1),
@@ -1548,7 +1548,7 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
              oracle%3Asecret%3Awith%3Acolons&scope=https%3A%2F%2Fcognitiveservices.azure.com%2F.default"
         );
         drop(opened);
-        // ROW 74 (F25): the endpoint as the plugin was handed it is the stripped one (its need is
+        // The endpoint as the plugin was handed it is the stripped one (its need is
         // pinned there and its mint dialled there, above), and a `user:pass@` the operator wrote rides
         // each mint FIRST as `authorization: Basic`, as 1.5.5's reqwest POST sent it (v1.5.5
         // `oauth_client_credentials.rs:119-126` in its egress-auth tree); a plain endpoint's mint
@@ -1673,7 +1673,7 @@ fn jwt_bearer_routes(
     routes
 }
 
-/// RED (ARCHITECT 2026-10-04 parity ruling, THE DESIGN §5 `loopback-allowed`: "auth mint endpoints
+/// RED (parity ruling, `loopback-allowed`: "auth mint endpoints
 /// (`token_url`, `token_uri`)"; the oracle cell `egress.auth|jwt-bearer|mint-refresh`): THE MEMBER
 /// UNDER `auth: jwt-bearer` MINTS AT ITS SERVICE ACCOUNT'S `token_uri`. The serving plugin's
 /// `settings.token_uri` need is declared pinned to the endpoint the service account names (the
@@ -1731,7 +1731,7 @@ async fn a_member_under_jwt_bearer_mints_at_its_service_accounts_token_uri() {
     );
 }
 
-/// ROW 74 (F25), `jwt-bearer`: 1.5.5 POSTed the signed assertion with reqwest to the service
+/// `jwt-bearer`: 1.5.5 POSTed the signed assertion with reqwest to the service
 /// account's `token_uri` as written (v1.5.5 `crates/busbar/src/egress_auth/jwt_bearer.rs:175-181`),
 /// whose builder took a `user:pass@` out of the URL and sent it FIRST as `authorization: Basic` (the
 /// form names no `authorization`). A service account whose `token_uri` spells one, served on the
@@ -1837,7 +1837,7 @@ async fn a_service_account_token_uri_userinfo_rides_the_mint_as_1_5_5_sent_it() 
     );
 }
 
-/// ROW 74 (F25), THE IN-PROCESS LANE'S SHAPE: the host stripped a `token_url`'s userinfo before a
+/// THE IN-PROCESS LANE'S SHAPE: the host stripped a `token_url`'s userinfo before a
 /// plane built its binding (`appbuild`), so the settings the axis is handed name the stripped
 /// endpoint and the Basic value arrives beside them ([`super::OutboundAuths::serving_with`]). The
 /// mint need is pinned to the stripped endpoint and every mint leads with the Basic value, as
@@ -3330,7 +3330,7 @@ pub(crate) mod tool_door {
             Some(1),
             "the one tool call the plane reported: {counts:?}"
         );
-        // THE BYTE CLASS, STATED (THE DESIGN §7, "The plane reports; the kernel writes"; Law 6): the
+        // THE BYTE CLASS, STATED ("The plane reports; the kernel writes"): the
         // length of the document the server answered with, the plane's second declared class.
         assert_eq!(
             counts.classes.get(surface("class_bytes")).copied(),
@@ -3434,7 +3434,7 @@ pub(crate) mod tool_door {
         assert!(rig.all_ended(), "the unit ended inside itself");
     }
 
-    /// UPSTREAM CREDENTIALS FROM THE REGISTRATION (ARCHITECT round 4 Q-L3B-SURFACES (d)): a
+    /// UPSTREAM CREDENTIALS FROM THE REGISTRATION: a
     /// `upstream_credentials: passthrough` registration's member is bound to the kernel's
     /// caller-credential lending, so the server hears the caller's own verified credential as its
     /// bearer; a registration that states none hears no credential at all.
@@ -3475,7 +3475,7 @@ pub(crate) mod tool_door {
             }
             let bearer = format!("authorization: bearer {}", rig.token.to_ascii_lowercase());
             // The relayed call, and the door's own verify-on-call fetch made inside the caller's
-            // unit (ARCHITECT round 5 Q-L3B-DOOR-EXCHANGE: it carries the member's binding, so a
+            // unit (it carries the member's binding, so a
             // passthrough member's is lent the unit's caller credential).
             for (what, heard) in [("call", call), ("verify-on-call list", list)] {
                 let heard = heard
@@ -3562,7 +3562,7 @@ pub(crate) mod tool_door {
         .expect("a section")
     }
 
-    /// THE TOKEN EXCHANGE (ARCHITECT round 5 Q-L3B-EXCHANGE (B), Q-L3B-DOOR-EXCHANGE): a
+    /// THE TOKEN EXCHANGE: a
     /// `token_exchange:` registration's member is bound to the RFC 8693 style, so the relayed call
     /// presents the token busbar's own subject token was exchanged for under the CALLER's down-scope
     /// — exactly its tool grants on the server, or for a wildcard grant exactly the tool called —
@@ -3660,7 +3660,7 @@ pub(crate) mod tool_door {
         }
     }
 
-    /// TOOL POOLS THROUGH THE ONE WALK (ARCHITECT round 4 Q-L3B-SURFACES (h)): a call to a pooled
+    /// TOOL POOLS THROUGH THE ONE WALK: a call to a pooled
     /// server routes over its pool, so a primary that answers with a failure is failed over to its
     /// verified twin by the kernel's walk when the pool names the tool `repeatable:`, and the caller
     /// hears the twin; a tool the pool does not name is performed at most once: the primary's
@@ -4005,7 +4005,7 @@ pub(crate) mod tool_door {
         assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
     }
 
-    /// THE ARGUMENT GUARD ASKS THE KERNEL'S `dest.judge` (THE DESIGN §11 host services B.3 item
+    /// THE ARGUMENT GUARD ASKS THE KERNEL'S `dest.judge` (host services B.3 item
     /// 11): a host the deployment's own egress rules refuse ([`BLOCKED_HOST`], a
     /// `security.blocked_metadata_hosts` entry no address rule would refuse) is refused when a
     /// call's arguments name it. A guard deciding in the plane admits it.
@@ -4242,7 +4242,7 @@ pub(crate) mod tool_door {
         );
     }
 
-    /// A GRANTED ROOTS ASK, through the door (Law 11, U16): the server answers the call with an
+    /// A GRANTED ROOTS ASK, through the door: the server answers the call with an
     /// input-required result asking for roots; busbar answers nothing itself and sends no retry —
     /// the caller is handed the ask, `inputRequests` verbatim, under busbar's sealed state. One unit.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4415,7 +4415,7 @@ pub(crate) mod door_boundary {
     /// production composes it ([`crate::root::serve::hook_seat_tests::rig`]), its key minted on the
     /// same signing secret as this module's rig. A sibling of that key bound to `audience` (the tool
     /// door's resource) is no credential on any guarded route of that router; its plain sibling is
-    /// admitted on each. Returns every guarded path walked, as requested.
+    /// admitted on each. Returns every guarded path walked.
     #[cfg(linked_driver_proofs)]
     async fn pools_door_walk(audience: &str) -> Vec<String> {
         use crate::root::serve::hook_seat_tests::{rig as pools_rig, RigOpts};
@@ -4961,8 +4961,7 @@ pub(crate) mod door_boundary {
         }
     }
 
-    /// THE OPERATOR'S `connect` CARRIES THE MEMBER'S BINDING (ARCHITECT round 5 Q-L3B-DOOR-EXCHANGE;
-    /// round 4 (d)): a `token_exchange:` registration's tool list is fetched with the token busbar's
+    /// THE OPERATOR'S `connect` CARRIES THE MEMBER'S BINDING: a `token_exchange:` registration's tool list is fetched with the token busbar's
     /// own subject token was exchanged for under the registration's approved set; a `passthrough`
     /// registration's credential belongs to a caller and `connect` has none, so it fetches nothing
     /// (the previous release's refusal, its words, `400`) and no byte reaches the server.
@@ -5324,7 +5323,7 @@ mod spent_ledger {
     }
 }
 
-/// LAW 11 (U16): AN UPSTREAM'S ASK IS RELAYED TO THE CALLER, never answered by busbar. A granted
+/// LAW 11: AN UPSTREAM'S ASK IS RELAYED TO THE CALLER, never answered by busbar. A granted
 /// sampling ask reaches the caller with `inputRequests` verbatim under busbar's sealed state; the
 /// caller's retry goes back to the member that asked, carrying the caller's answers and the
 /// upstream's own state verbatim; a forged state and an ungranted ask are refused.
@@ -5471,12 +5470,12 @@ mod upstream_ask_relay {
     }
 }
 
-/// `subscriptions/listen` ON THE HTTP CARRIER, A K6 SESSION (ARCHITECT round 5 Q-L3B-K6-HTTP (a)).
+/// `subscriptions/listen` ON THE HTTP CARRIER, A K6 SESSION.
 #[cfg(all(linked_axis_plane_door, linked_section_pools))]
 #[path = "door_listen.rs"]
 mod door_listen;
 
-/// THE TASKS EXTENSION THROUGH THE REAL DATA ROUTES (ARCHITECT round 5 Q-L3B-TASKS (b) → (A)): a
+/// THE TASKS EXTENSION THROUGH THE REAL DATA ROUTES: a
 /// task-supporting `tools/call` is answered with a task, its continuation runs as a nested unit of
 /// the plane's own claim WITHOUT any poll, after the creating unit has exited, and `tasks/get`,
 /// `tasks/cancel` and the `-32021` gate answer as the served engine's tasks did.
@@ -6592,7 +6591,7 @@ pub(crate) mod hook_parity {
     }
 }
 
-/// A REGISTRATION THAT IS A PROGRAM (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)), end to end through
+/// A REGISTRATION THAT IS A PROGRAM, end to end through
 /// the composed door and the real connector: the server is a program the operator names (`/bin/sh`
 /// and its script, inline here), one long-lived child per registration, greeted once, its every
 /// exchange — verify-on-call's tool list, the relayed call over the kernel's walk, the reply to its

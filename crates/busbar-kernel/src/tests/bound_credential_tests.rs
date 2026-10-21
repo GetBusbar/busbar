@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE TOKEN ENDPOINT'S USERINFO, FROM THE CONFIG TO THE AXIS (row 74, F25): the endpoint a plane
+//! THE TOKEN ENDPOINT'S USERINFO, FROM THE CONFIG TO THE AXIS: the endpoint a plane
 //! builds its binding from carries no `user:pass@`, and the Basic value that userinfo spelled
 //! reaches the auth axis from the host, beside the settings and never inside them.
 

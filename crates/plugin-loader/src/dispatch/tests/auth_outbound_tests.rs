@@ -417,7 +417,7 @@ fn the_body_is_lent_at_head_body_and_never_at_head() {
     );
 }
 
-/// THE PER-CALL SCOPE REACHES THE PLUGIN (ARCHITECT round 5 Q-L3B-EXCHANGE (B)): a request's
+/// THE PER-CALL SCOPE REACHES THE PLUGIN: a request's
 /// extensions blob is lent as `FieldsIn::head.extensions`, alike on the spot and on a ticket, and the
 /// style reads the scope under `EXT_SCOPE` byte for byte; a request that states none lends none.
 #[test]

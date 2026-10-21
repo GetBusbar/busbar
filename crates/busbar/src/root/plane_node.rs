@@ -206,7 +206,7 @@ pub struct Node {
     /// What the sweep posts has to land where the unit's own exit would have posted it: the window
     /// it arrived in, and the arrival reading that — with the balance and the journal's
     /// incarnation — names the unit on the chain and closes the hold its entry opened there. And
-    /// the unit's one audit record is sealed beside that line (THE DESIGN §7 U14), under the unit's
+    /// the unit's one audit record is sealed beside that line, under the unit's
     /// operation class and naming the hold its admission opened: [`Lost`].
     lost: Mutex<HashMap<UnitKey, Lost>>,
     /// THE NODE'S MONOTONIC CLOCK, for the second stamp on every audit record and every posting
@@ -323,7 +323,7 @@ impl Node {
     }
 
     /// The node's kernel and its one unit-key mint, shared with a unit the node does not drive but
-    /// whose key must be unique beside its own (a door plane's health probe, K7).
+    /// whose key must be unique beside its own (a door plane's health probe).
     #[must_use]
     pub fn kernel_and_keys(
         &self,
@@ -433,7 +433,7 @@ impl Node {
         seal: Option<impl Into<Sealing>>,
     ) {
         // THE UNIT'S RECORD, sealed with its one line. Its amount is the unit's counts plus the card
-        // version, never a price (`BUSBAR-1.6.0.md` THE DESIGN §1, #43, #77(3)). The exit's posting
+        // version, never a price The exit's posting
         // carries only the figure the settlement writer moved, money in nano-units, and no class or
         // count, so it gives the record no line. A unit whose counts are known has a late arm, and
         // that arm seals them ([`report_lines`]).
@@ -563,7 +563,7 @@ impl Node {
     }
 
     /// Record on the book this unit's ACCRUAL SO FAR: a durability `unit.accrued` checkpoint
-    /// (THE DESIGN §7), counts and the instant they price at, never a figure (#71).
+    /// of counts and the instant they price at, never a figure.
     ///
     /// On the balance, window and arrival reading its hold was opened under
     /// ([`Self::open_on_book`]), as [`Self::dispatch_on_book`] marks it, so a node killed before the
@@ -664,15 +664,15 @@ impl Node {
                     // could have marked.
                     let entered = lost.as_ref().map_or(now, |l| l.arrived);
                     // THE UNIT'S ONE AUDIT RECORD, sealed beside the line the sweep posted (THE
-                    // DESIGN §1, `BUSBAR-1.6.0.md` l.190-197: "The audit step writes one fixed
-                    // record, for every plane ... never optional"; §7 U14, l.1061-1065: one record
+                    // `BUSBAR-1.6.0.md` l.190-197: "The audit step writes one fixed
+                    // record, for every plane... never optional", l.1061-1065: one record
                     // per unit, its amount the unit's line). The pass is the one the sweep handed
                     // back from the loop's one audit mint; the outcome is the sweep's
                     // `Failed(at, TaskLost | Stalled)`, its finish `Error`, and its amount the line
                     // the posting settled, by its registered class (l.1066-1070: the one line
                     // resolves reported classes through the registration). A line under the
                     // kernel's own class is the settlement writer's figure in nano-units: no
-                    // registration declares it, a record may not hold it ("never a price", §1
+                    // registration declares it, a record may not hold it ("never a price"
                     // l.193-195, #43, #77(3)), and a record naming it would not read back at the
                     // next boot. The record names it exactly as the exit arm's record names the
                     // exit's posting: not at all ([`Node::settle_end`]).
@@ -752,7 +752,7 @@ impl Node {
     /// one pricing site), else the exit's posting as it stood, its audit record sealed with it.
     /// Answers whether the table took the unit. Dropping the future marks its slot for the sweep.
     ///
-    /// A NESTED unit (`unit.nest`, THE DESIGN §11.12 unit row) names its `parent`: it enters the
+    /// A NESTED unit (`unit.nest`.12 unit row) names its `parent`: it enters the
     /// table as `OriginKind::Nested`, its loop runs with the parent's hold cell as its `Run.parent`
     /// (so its door accrues against the parent's admission, and its posting goes into the parent's
     /// hold, or late on its own when the parent exited first), and its record names the parent.
@@ -949,8 +949,8 @@ impl Node {
         Some((opened, ctx, SessionSlot { occupied, key }))
     }
 
-    /// SEAL A DUPLEX SESSION'S ONE AUDIT RECORD at its end (THE DESIGN §1: "The audit step writes one
-    /// fixed record, for every plane"; §7 U14: "a refused unit gets a record too"). Its outcome is
+    /// SEAL A DUPLEX SESSION'S ONE AUDIT RECORD at its end ("The audit step writes one
+    /// fixed record, for every plane": "a refused unit gets a record too"). Its outcome is
     /// the one its audit door was told at the open ([`NodeEndPost::stopped`] when the open's hook
     /// stage stopped it after), its amount the session's report ([`NodeEndPost::reported`]; none
     /// for a refused session). The session holds nothing on the book, so no hold or settlement is
@@ -1857,7 +1857,7 @@ struct Occupied<'n> {
 
 /// WHAT THE DROP GUARD HANDS THE SWEEP for a unit whose end nobody reached ([`Occupied`]): where
 /// the sweep's posting lands, and what the unit's one audit record is sealed with beside it (THE
-/// DESIGN §7 U14, `BUSBAR-1.6.0.md` l.1061-1065).
+/// `BUSBAR-1.6.0.md` l.1061-1065).
 #[derive(Debug, Clone, Copy)]
 struct Lost {
     /// The unit's arrival: the window its line posts in, and the reading that closes its hold.
@@ -2459,7 +2459,7 @@ impl busbar_kernel_egress::ports::Journal for NodeEndPost {
     fn abandoned(&self, _record: &busbar_kernel_egress::ports::Dispatched) {}
 }
 
-/// THE RUNNING UNIT'S CHECKPOINT, ON THE NODE'S BOOK (THE DESIGN §7): the root's flush tick hands
+/// THE RUNNING UNIT'S CHECKPOINT, ON THE NODE'S BOOK: the root's flush tick hands
 /// each driven unit's accrual so far here ([`busbar_kernel::plane_driver::PlaneMoney::flush_checkpoints`]),
 /// and it is journaled as a `unit.accrued` record under the facts the unit was opened with at
 /// admission. A session's turns are the same call with its cumulative counts. A unit with no open
@@ -2666,7 +2666,7 @@ impl Sealing {
     ) {
         let Sealing { seal, ran } = self;
         let refused = matches!(outcome, Outcome::Refused(..));
-        // THE CONTROLS THE UNIT REALLY RAN UNDER (THE DESIGN §1: hold/settle seqs): the hold its
+        // THE CONTROLS THE UNIT REALLY RAN UNDER (hold/settle seqs): the hold its
         // admission opened on the chain and the settlement its one line closed it with, by seq —
         // refs, never an amount. The hook facts stay unset: the plane's hook taps run inside its
         // own leg and the audit step's facts carry none of them across to the node.

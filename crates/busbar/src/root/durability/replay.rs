@@ -60,7 +60,7 @@ pub(super) struct Replayed {
     /// Every posting read, with the figures the replay derived for it, in chain order — kept only
     /// when the caller asked to read the chain back.
     pub(super) read: Vec<Posting>,
-    /// The counted lines the read-time totals price, in chain order (H6): the same set the live
+    /// The counted lines the read-time totals price, in chain order: the same set the live
     /// book appended as each posting was journalled.
     pub(super) counted: Vec<CountedLine>,
     /// The balances a figure with no counts behind it moved: a record of the figures era.
@@ -146,7 +146,7 @@ pub(super) fn replay_into(
             }
         } else if let Some(mut posting) = Posting::from_record(record) {
             incarnation = incarnation.max(posting.incarnation);
-            // What the read-time totals keep of it, by the rule the live book applies (H6), read
+            // What the read-time totals keep of it, by the rule the live book applies, read
             // off the record as written — before any figure is derived onto it.
             booked_of(&posting, record.node_seq).keep(&mut counted, &mut uncounted);
             if posting.kind == PostingKind::Carry {

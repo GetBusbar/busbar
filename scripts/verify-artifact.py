@@ -337,7 +337,7 @@ def judge_probe_row(probe, line):
 
     `expect_status` is `ready` (the row must carry `expect_signature` and end in `ready`) or
     `refused` (the STATUS column must be an `INVALID:` row carrying every `expect_refusal` string —
-    a 1.5.x JSON-contract plugin is refused at boot naming the rebuild, THE DESIGN §11.8). Any other
+    a 1.5.x JSON-contract plugin is refused at boot naming the rebuild). Any other
     value, or a `refused` probe naming no refusal, is refused itself: a probe that expects nothing in
     particular passes on anything.
     """
@@ -366,7 +366,7 @@ def judge_probe_row(probe, line):
         if len(status) != 2:
             return (
                 "the shipped binary did NOT refuse %s %s, a 1.5.x JSON-contract plugin: 1.6.0 loads "
-                "no legacy plugin (THE DESIGN §11.8). Expected an `INVALID:` row naming the "
+                "no legacy plugin. Expected an `INVALID:` row naming the "
                 "rebuild; got:\n  %s" % (probe["repo"], probe["tag"], line))
         missing = [n for n in needles if n not in status[1]]
         if missing:

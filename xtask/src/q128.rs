@@ -45,7 +45,7 @@ use crate::audit_cmd::{self, CheckFindings};
 /// The auditor's record, relative to the workspace root.
 pub const RECORD_REL: &str = "qa/q128-audit.json";
 
-/// The severities a Q128 finding can carry, gravest first.
+/// The severities an audit finding can carry, gravest first.
 pub const SEVERITIES: [&str; 4] = ["BLOCK", "HIGH", "MEDIUM", "LOW"];
 
 /// The spec lines every record cites.
@@ -798,8 +798,8 @@ mod tests {
             red: true,
             rules: vec![("open-high-medium", 2), ("coverage-gaps", 0)],
             opens: vec![
-                "crates/a/src  round 1  HIGH=2, MEDIUM=1".to_string(),
-                "crates/b/src  round 1  MEDIUM=3".to_string(),
+                "crates/a/src  pass 1  HIGH=2, MEDIUM=1".to_string(),
+                "crates/b/src  pass 1  MEDIUM=3".to_string(),
             ],
             scopes: 2,
             production: 2,

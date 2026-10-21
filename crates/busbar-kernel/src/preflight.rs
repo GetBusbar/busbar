@@ -1207,7 +1207,7 @@ pub(crate) fn build_secret_resolver(
                     });
                 }
                 // No door answers it: no such secret plugin, or a 1.5.5 JSON-contract one, which this
-                // host does not load (THE DESIGN §11.8). Refused in the registry's own words.
+                // host does not load. Refused in the registry's own words.
                 Err(registry.secret_refusal(module))
             },
         ),
@@ -1244,7 +1244,7 @@ impl OpenedSecrets {
     }
 
     /// Resolve `settings` through the plugin opened under `key`, with no lock held while the plugin
-    /// answers — at config time when the caller holds the proof `scope` (THE DESIGN §11.11 R4: a
+    /// answers — at config time when the caller holds the proof `scope` (a
     /// source that reads the disk answers only so).
     pub(crate) fn resolve(
         &self,

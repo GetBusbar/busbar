@@ -1602,7 +1602,7 @@ fn gone(pid: &str) -> bool {
     stat.trim().is_empty() || stat.trim().starts_with('Z')
 }
 
-/// RED (ARCHITECT round 4 (e)): a need whose `target_from` resolved to a PROGRAM is carried in the
+/// RED: a need whose `target_from` resolved to a PROGRAM is carried in the
 /// operator-infrastructure class: every open spawns it (no shell, only its stated environment),
 /// its stdin and stdout are the connection, and the connector kills it on close.
 #[test]
@@ -2219,7 +2219,7 @@ mod transport_pin {
         c
     }
 
-    /// RED (THE DESIGN §8, the connector holds every destination's trust; the transport pin): a
+    /// RED (the connector holds every destination's trust; the transport pin): a
     /// line secured under one seal of a destination's anchors is never lent to an open held to
     /// another. Sealed again with a key the far end does not serve, the next open dials afresh and
     /// is refused at its handshake; keyed without the anchors, it rode the line verified under the
@@ -2530,7 +2530,7 @@ fn a_pinned_target_every_dial_would_admit_is_admitted_at_declare() {
     assert_eq!(DeclaredConns::declared(&c, OWNER, NeedId(2)), Some(Ok(())));
 }
 
-/// RED (THE DESIGN §5: `open-web` is "public https only"; v1.5.5 refused a private open-web target
+/// RED (`open-web` is "public https only"; v1.5.5 refused a private open-web target
 /// and disabled the instance, `crates/busbar/src/observability.rs:214-240`): an open-web need whose
 /// config pins it to a private literal the allowlist does not name is REFUSED at declare, over a
 /// secure connection too. Its configured target does not make it operator infrastructure (the
@@ -2683,7 +2683,7 @@ fn a_request_naming_no_member_gets_no_binding_even_from_the_one_member_at_its_or
     );
 }
 
-/// THE POOL IS KEYED BY WHO DIALLED AND WHAT THE DIAL TRUSTED (THE DESIGN §5, §8: the connector is
+/// THE POOL IS KEYED BY WHO DIALLED AND WHAT THE DIAL TRUSTED (the connector is
 /// the only holder of trust roots and mTLS identity; a `ConnId` belongs to the instance that opened
 /// it). A far end on loopback that answers every three bytes it reads with one one-byte message and
 /// the exchange's end (`xe`, the `messages` entry's script) and keeps each connection open: its
@@ -2800,7 +2800,7 @@ async fn pooled_exchange(
     (got, whole, failed)
 }
 
-/// RED (THE DESIGN §5 "a `ConnId` belongs to the plugin instance that opened it"; §8 the connector
+/// RED ("a `ConnId` belongs to the plugin instance that opened it"; the connector
 /// holds each need's trust): a line an exchange finished on is lent again only to an open of the
 /// SAME instance's SAME need. Another need of the instance, and another instance, each dial their
 /// own; the need's own next open rides the kept line. Keyed by the destination alone, the second

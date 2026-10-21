@@ -441,7 +441,7 @@ fn pended_on_the_bridge(store: &str, s: u32) {
     );
 }
 
-/// ONE OP'S REQUEST, LENT TO THE DISPATCHER (THE DESIGN §2: "The memory a call lends a plugin
+/// ONE OP'S REQUEST, LENT TO THE DISPATCHER ("The memory a call lends a plugin
 /// lives until that call completes, abandoned or not, for every kind (a submit that the watchdog
 /// can abandon uses the lending submit)"). Every pointer an op's `in` carries names memory its
 /// request owns ([`Owned`] and its own buffers); the runner hands a clone of this `Arc` to

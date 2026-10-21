@@ -54,13 +54,12 @@ use busbar_kernel::config::Destinations;
 /// THE DEFAULT POLICY, ONE TABLE: the egress classes whose dials the private address refusal holds
 /// for (where `block_private_addresses` holds; the allowlist is the escape hatch).
 ///
-/// - `provider` (THE DESIGN §5 destination guard, OWNER DESTINATION GUARD and Q130 (B), scoped by
-///   the ARCHITECT ruling CRATES-14: "the 'refused unless allowlisted' default applies to the
-///   provider and IdP egress classes only"): a provider dial, its configured `base_url` included, is
+/// - `provider` (the 'refused unless allowlisted' default applies to the
+///   provider and IdP egress classes only): a provider dial, its configured `base_url` included, is
 ///   refused a private or loopback address unless `advanced.allow_destinations` names it.
 /// - the default class and `open-web`: a destination from request data or the network.
 ///
-/// Not here: `operator-infrastructure` (THE DESIGN §5 egress-class table, owner 2026-09-27:
+/// Not here: `operator-infrastructure` (egress-class table:
 /// private, loopback and plaintext allowed; pinned) and `loopback-allowed`, which the guard's
 /// address arm holds to the same refusal LOOPBACK EXCEPTED (ARCHITECT parity ruling A2: https to
 /// any host, the destination guard still applying; 1.5.5 refused a private, CGNAT, unique-local or
@@ -123,7 +122,7 @@ const LIFTED_WHEN_CONFIGURED: &[u32] = &[connector::EGRESS_DEFAULT];
 
 /// The class a dial's address is judged under: a need's own, or (its target named by its config,
 /// `configured`, in the egress default class) the operator's own destination, judged as operator
-/// infrastructure (THE DESIGN §5 egress-class table, owner-signed 2026-09-27; Q128 ruling 14). An
+/// infrastructure (egress-class table). An
 /// open-web or provider need keeps its class.
 #[must_use]
 pub fn judged_class(class: u32, configured: bool) -> u32 {

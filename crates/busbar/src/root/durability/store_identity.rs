@@ -9,7 +9,7 @@
 //! A journal record is named `(node, node_seq)`, and the store keys every record by that pair. Two
 //! nodes numbering under one identity would overwrite each other's records in a shared store, so
 //! each node journals under an identity no other LIVE node holds (Q128 root part 12 HIGH 2;
-//! BUSBAR-1.6.0.md l.206 "Nodes share one store"; THE DESIGN §7, l.1056-1059: a money record never
+//! "Nodes share one store", l.1056-1059: a money record never
 //! vanishes silently). There is no `node_id` configuration key: adding one changes the frozen
 //! configuration schema.
 //!

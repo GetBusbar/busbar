@@ -912,7 +912,7 @@ mod red_arms {
     }
 }
 
-/// THE SUITE'S SUBMITTED OPS LEND THROUGH THE DISPATCHER (THE DESIGN §2: "The memory a call lends a
+/// THE SUITE'S SUBMITTED OPS LEND THROUGH THE DISPATCHER ("The memory a call lends a
 /// plugin lives until that call completes, abandoned or not (a submit that the watchdog can abandon
 /// uses the lending submit)"). Every op the suite submits on a ticket (`open` resumed, `resolve`,
 /// `deliver`, `verify` and `complete_login` submitted, a plane's `serve`) goes through
@@ -1012,7 +1012,7 @@ mod lent_ops {
     }
 }
 
-/// THE HOOK SCRIPT DRIVES `decide`/`transform` AS THE HOST DOES (THE DESIGN §11.4, §11.12): watched
+/// THE HOOK SCRIPT DRIVES `decide`/`transform` AS THE HOST DOES: watched
 /// on a ticket, so a gate that waits answers PENDING and is RESUMED, never FAULTed.
 mod hook_on_tickets {
     use std::sync::atomic::{AtomicPtr, Ordering};

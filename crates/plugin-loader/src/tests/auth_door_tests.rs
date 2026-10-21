@@ -732,7 +732,7 @@ fn a_networked_auth_door_opened_to_serve_declares_its_need_on_the_hosts_table() 
     );
 }
 
-/// RED (THE DESIGN §11.13 M1): one refresh at a time, never waited for. A refresh wedged in its
+/// RED: one refresh at a time, never waited for. A refresh wedged in its
 /// plugin holds no other caller behind the instance's lifecycle lock: a second refresh is
 /// answered at once, naming the one in flight.
 #[test]
@@ -903,7 +903,7 @@ fn log_config() -> crate::dispatch::PluginLogConfig {
     .expect("the named directory resolves")
 }
 
-/// AN AUTH INSTANCE WRITES ITS OWN PLUGIN LOG (`BUSBAR-1.6.0.md` THE DESIGN §11.2: "all plugins
+/// AN AUTH INSTANCE WRITES ITS OWN PLUGIN LOG (`BUSBAR-1.6.0.md` "all plugins
 /// should log to their plugin's log file. no logs for plugins is not an option ... The HOST writes
 /// it to that plugin instance's own log file").
 ///

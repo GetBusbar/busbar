@@ -96,7 +96,7 @@
         "STATUS: SKIPPED: manifest claims first-party publisher 'busbar' but this build embeds no",
         "busbar release key`). `refused`: an `INVALID:` row carrying every named refusal string --",
         "the probe in force is store-sqlite v1.0.4, a 1.5.x JSON-contract plugin (store abi_version",
-        "2), and 1.6.0 loads no legacy plugin (BUSBAR-1.6.0.md THE DESIGN §11.8), so a binary that",
+        "2), and 1.6.0 loads no legacy plugin, so a binary that",
         "reports it `ready` is RED.",
         "The check also asserts `plugins.enabled: true` and a non-empty inventory in the output,",
         "because --list-plugins falls back to the DEFAULT plugins block with a mere [warn] when the",

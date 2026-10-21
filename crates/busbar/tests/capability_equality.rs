@@ -832,7 +832,7 @@ fn verify_root(
     Ok(out)
 }
 
-/// AN OWED LEG (U14): a leg whose `owed` names the lane that will prove it may prove ZERO cells,
+/// AN OWED LEG: a leg whose `owed` names the lane that will prove it may prove ZERO cells,
 /// but only while EVERY cell of its columns is `missing` with root `none` — the whole column is the
 /// named queue. The moment one of its cells claims anything, the owed mark no longer excuses it.
 /// An `owed` shorter than an argument is no excuse at all.
@@ -868,7 +868,7 @@ fn owed_leg(doc: &serde_json::Value, leg: &str) -> Result<bool, String> {
     Ok(true)
 }
 
-/// A DIALECT IS NEVER A COLUMN (U14): no declared ledger plane, nor the plane a directional column
+/// A DIALECT IS NEVER A COLUMN: no declared ledger plane, nor the plane a directional column
 /// names (`<p>-client` / `<p>-server`), is one of `dialects`.
 fn refuse_dialect_columns(doc: &serde_json::Value, dialects: &[&str]) -> Result<(), String> {
     for col in doc["planes"]
@@ -1102,7 +1102,7 @@ fn the_root_leg_matrix_runs_once_per_leg() {
 /// able to quietly narrow what the real gate demands.
 #[test]
 fn the_gates_own_constants_are_the_doctrines() {
-    // The five planes (U14): two single-direction (llm, decisions: needs in one direction alone)
+    // The five planes: two single-direction (llm, decisions: needs in one direction alone)
     // and the three bidirectional ones counted in both directions (`<p>-client` / `<p>-server`):
     // eight columns, and nothing else. A dialect is never a column.
     let planes = planes();

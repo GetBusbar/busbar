@@ -459,7 +459,7 @@ plugins:
     gate: suite
     description: "First-party signed kind:plane plugin cdylib: the mcp plane, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "plane-mcp/declares.json"
-    # Moved out of busbar into its own repo (P5); busbar LINKS it at a pinned rev. Its tests read
+    # Moved out of busbar into its own repo; busbar LINKS it at a pinned rev. Its tests read
     # busbar's own files at the pin (the conformance battery, qa/method-inventory.json), so its CI
     # checks busbar out. Its first release is cut with the core version that pins it.
     busbar_checkout: true
@@ -506,7 +506,7 @@ plugins:
     gate: suite
     description: "First-party signed kind:plane plugin cdylib: the decisions plane, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "plane-decisions/declares.json"
-    # Moved out of busbar into its own repo (P5); busbar LINKS it at a pinned rev. Its first release
+    # Moved out of busbar into its own repo; busbar LINKS it at a pinned rev. Its first release
     # is cut with the core version that pins it.
     released: false
   - repo: busbar-transport-http
@@ -557,7 +557,7 @@ plugins:
     gate: suite
     description: "First-party signed kind:transport plugin cdylib: the stdio transport, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "transport-stdio/declares.json"
-    # Moved out of busbar into its own repo (P5); busbar LINKS it at a pinned rev. Its first release
+    # Moved out of busbar into its own repo; busbar LINKS it at a pinned rev. Its first release
     # is cut with the core version that pins it.
     released: false
   - repo: busbar-transport-grpc
@@ -584,7 +584,7 @@ plugins:
     gate: suite
     description: "First-party signed kind:transport plugin cdylib: the webrtc transport, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "transport-webrtc/declares.json"
-    # Moved out of busbar into its own repo (P5); busbar LINKS it at a pinned rev. Its first release
+    # Moved out of busbar into its own repo; busbar LINKS it at a pinned rev. Its first release
     # is cut with the core version that pins it.
     released: false
   - repo: busbar-hook-ranking
@@ -625,7 +625,7 @@ plugins:
     gate: suite
     description: "First-party signed kind:auth plugin cdylib: the webhook-signature auth module, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "auth-webhook-signature/declares.json"
-    # THE DESIGN §9's auth roster; the repo is created by `busbar-release plugin new auth
+    # 's auth roster; the repo is created by `busbar-release plugin new auth
     # webhook-signature` (PLUGIN-TEMPLATE, ARCHITECT 2026-10-02) with the template's skeleton crates;
     # its door lands in it. busbar links the logic crate on its `auths` axis at a pinned rev (feature
     # `auth-webhook-signature`, default-on). First release with the core version that pins it.
@@ -644,7 +644,7 @@ plugins:
     # OWNER QUESTIONS Q99 (2026-10-01): "KEEP THE SPLIT: busbar-auth-header, busbar-auth-sigv4,
     # busbar-auth-oauth, busbar-auth-webhook-signature" (BUSBAR-1.6.0.md §9: every plugin in its own
     # repo). Created by `busbar-release plugin new auth header`; busbar's in-tree crate moves in with its
-    # history (P5), and the repo runs busbar's published conformance suite (the outbound auth script).
+    # history, and the repo runs busbar's published conformance suite (the outbound auth script).
     # busbar links the logic crate on its `auths` axis at a pinned rev. First release with the core version that pins it.
     released: false
     pending_crate: true
@@ -661,7 +661,7 @@ plugins:
     # OWNER QUESTIONS Q99 (2026-10-01): "KEEP THE SPLIT: busbar-auth-header, busbar-auth-sigv4,
     # busbar-auth-oauth, busbar-auth-webhook-signature" (BUSBAR-1.6.0.md §9: every plugin in its own
     # repo). Created by `busbar-release plugin new auth sigv4`; busbar's in-tree crate moves in with its
-    # history (P5), and the repo runs busbar's published conformance suite (the outbound auth script).
+    # history, and the repo runs busbar's published conformance suite (the outbound auth script).
     # busbar links the logic crate on its `auths` axis at a pinned rev (P2 D1: the kernel's own SigV4, outbound and inbound, is deleted). First release with the core version that pins it.
     released: false
     pending_crate: true
@@ -678,7 +678,7 @@ plugins:
     # OWNER QUESTIONS Q99 (2026-10-01): "KEEP THE SPLIT: busbar-auth-header, busbar-auth-sigv4,
     # busbar-auth-oauth, busbar-auth-webhook-signature" (BUSBAR-1.6.0.md §9: every plugin in its own
     # repo). Created by `busbar-release plugin new auth oauth`; busbar's in-tree crate moves in with its
-    # history (P5), and the repo runs busbar's published conformance suite (the outbound auth script).
+    # history, and the repo runs busbar's published conformance suite (the outbound auth script).
     # busbar links the logic crate on its `auths` axis at a pinned rev (P2 D1: the kernel's own minting copies are deleted). First release with the core version that pins it.
     released: false
     pending_crate: true

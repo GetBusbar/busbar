@@ -480,7 +480,7 @@ fn strip_userinfo_into_basic_auth(uri: http::Uri, headers: &mut http::HeaderMap)
     http::Uri::from_parts(parts).expect("removing userinfo keeps the URI well-formed")
 }
 
-/// A PROVIDER BASE URL'S USERINFO, AS 1.5.5 PRESENTED IT (row 74, F25): the `Authorization: Basic`
+/// A PROVIDER BASE URL'S USERINFO, AS 1.5.5 PRESENTED IT: the `Authorization: Basic`
 /// value its `user[:pass]@` spells, held core-side and presented at the egress hop alone.
 ///
 /// TRANSITIONAL: deleted with the legacy lane plane (row 155 C). It serves the legacy in-process lane plane alone; the door path, the one that ships,
@@ -772,7 +772,7 @@ mod tunnel {
         posture: DialPosture,
     }
 
-    /// HOW A TARGET IS JUDGED BEFORE THE DIAL (THE DESIGN §5 DESTINATION GUARD: one check for every
+    /// HOW A TARGET IS JUDGED BEFORE THE DIAL (DESTINATION GUARD: one check for every
     /// outbound connection, a literal included). `HttpConnector` hands an IP-literal host straight
     /// to the socket without asking its resolver, so the resolver's judgement alone never sees a
     /// literal; this is the judgement that does, and it runs on both arms, direct and tunnelled.

@@ -19,7 +19,7 @@
 //! many. Every control character in a text is escaped, so a record is one line and nothing raw
 //! reaches a terminal: a line break is `\n`, a carriage return `\r`, any other `\u{..}`.
 //!
-//! OFF THE DISPATCH WORKER (§11.2: no blocking on the hot path; §11.11 R4: the bounded disk lane is
+//! OFF THE DISPATCH WORKER (no blocking on the hot path: the bounded disk lane is
 //! the SQLite store's and the file export sink's alone, so plugin logging may not claim it). The
 //! sink is fed inside the crossing, where the reply's records are still plugin memory, so there it
 //! only checks the level, copies the record and hands it to its file's writer thread with a send
@@ -34,7 +34,7 @@
 //! rotate it once and never write an archive. A rotation that fails is one line in the file, once,
 //! and is tried again only after another `rotate` bytes.
 //!
-//! A CONFIG APPLY reaches every live sink ([`PluginLogConfig::reconfigure`], THE DESIGN §11.2): the
+//! A CONFIG APPLY reaches every live sink ([`PluginLogConfig::reconfigure`]): the
 //! level at once, the directory and rotation at the next line.
 //!
 //! THE DIRECTORY is the host's too: a sink is OPENED when its plugin instance is bound, and opening

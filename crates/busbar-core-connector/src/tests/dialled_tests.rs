@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use super::take_ready;
 
-/// RED (THE DESIGN §5: a plugin's slow I/O answers not-ready, "no blocking thread exists"): a
+/// RED (a plugin's slow I/O answers not-ready, "no blocking thread exists"): a
 /// channel message longer than the reader's buffer is read in parts, its rest kept first in line.
 /// Put back while the queue's lock was still held (the lock taken for the pop lives through the
 /// whole `if let`), the read locked the queue a second time on the same thread and never answered,

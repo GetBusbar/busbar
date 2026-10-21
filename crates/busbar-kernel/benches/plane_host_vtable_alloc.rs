@@ -8,8 +8,8 @@
 //!
 //! # What is measured
 //!
-//! The memory ABI promises "no allocation on the hot path" (THE DESIGN §11.2, §11.9): a plugin
-//! crossing into the host through the host-services table ([`HostSlots`], §11.12) — the `in` by
+//! The memory ABI promises "no allocation on the hot path": a plugin
+//! crossing into the host through the host-services table ([`HostSlots`]) — the `in` by
 //! pointer, the answer written into the caller's `out` — must not touch the global allocator at all.
 //! This file proves it with a counting `#[global_allocator]` ([`CountingAlloc`]) that is ARMED only
 //! around the isolated host-call batch (`POD_HOST_CALL_BATCH`): a batch of `clock.now` crossings

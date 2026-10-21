@@ -10,8 +10,8 @@
 //!
 //! FAITHFUL TEXT (coordinator ruling on #565, 2026-10-07): every refusal the double produces is the
 //! shipped source's, byte for byte, and its error kind is the source's; each string cites the line
-//! of the pinned source it reproduces (`env src/lib.rs` is the env source's at rev 495318c,
-//! `file src/lib.rs` the file source's at rev 479c833 — the revs the workspace root pins; the
+//! of the pinned source it reproduces (`env src/lib.rs` is the env source's,
+//! `file src/lib.rs` the file source's — the revs the workspace root pins; the
 //! module names are the contract's constants, never spelled here). A rev bump that changes a
 //! refusal changes it here too; the root's suite
 //! (`crates/busbar/src/root/tests/linked_secret_sources.rs`, `root/tests/linked.rs`) pins the real

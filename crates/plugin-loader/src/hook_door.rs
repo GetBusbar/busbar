@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOOK KIND ON THE ONE DISPATCHER (`BUSBAR-1.6.0.md` THE DESIGN §11.4 and §11.7; the
+//! THE HOOK KIND ON THE ONE DISPATCHER (`BUSBAR-1.6.0.md` and the
 //! SWITCH-OVER card, hook root axis): [`HookRows`] holds every `kind: hook` plugin the composition
 //! root admitted — a compiled-in door and a dropped-in library whose signed manifest states its
 //! Statement — as the boot stages' [`Candidate`]s, and binds each through the one loader path
@@ -15,13 +15,13 @@
 //!   deadline on the dispatcher: cancelled at `timeout_ms`, as 1.5.5's per-hook timeout (Q-SO6).
 //!   A `decide`/`transform` answer that is SHORT is re-submitted once on the same ticket over the
 //!   frame's regrown buffers (the short-buffer rule).
-//! * THE WATCHDOG'S BUDGET IS THE HOOK'S `timeout_ms` (THE DESIGN §11.7; HOOKCAP-Q1): each op is
+//! * THE WATCHDOG'S BUDGET IS THE HOOK'S `timeout_ms` (HOOKCAP-Q1): each op is
 //!   submitted with the call's `budget` as its watch budget, so the one watchdog faults a hook
 //!   crossing only past the longer of that and the Call class budget. A hook slower than the class
 //!   budget but inside its `timeout_ms` is not quarantined, as in 1.5.5.
 //! * THE `max_inflight` CAP IS BACKPRESSURE, NOT A LATCH (1.5.5's `MAX_INFLIGHT_HOOK_CALLS`): a call
 //!   the full cap REFUSES waits for a unit within its own budget, then answers `TimedOut`.
-//! * QUARANTINE (THE DESIGN §11.11, R2): an instance the dispatcher's watchdog faulted (a crossing
+//! * QUARANTINE: an instance the dispatcher's watchdog faulted (a crossing
 //!   past its watch budget) is never called again. The next call — and one that was waiting for a
 //!   unit when the fault came — waits for the trial window — 1 s after the fault, doubling to 30 s
 //!   on each failed trial — within its own budget and never beyond it, then binds and opens a FRESH
@@ -197,7 +197,7 @@ enum State {
     /// `window` is the wait that set `trial_at`; a failed trial doubles it.
     Quarantined { trial_at: Instant, window: Duration },
     /// One caller is binding and opening the trial's fresh instance, with the state lock let go
-    /// (THE DESIGN §11.13 M1: no plugin code, `dlopen` and `open` included, runs under a host
+    /// (no plugin code, `dlopen` and `open` included, runs under a host
     /// lock). Every other caller waits for it within its own budget; a wedged trial blocks none.
     Trialing,
 }
@@ -329,7 +329,7 @@ impl Inner {
                 };
             }
         }
-        // Closed with the state lock let go (§11.13 M1).
+        // Closed with the state lock let go.
         close(plugin);
     }
 
@@ -373,7 +373,7 @@ impl Inner {
             loop {
                 // An instance the watchdog faulted while this call waited for a unit never got
                 // this op: the call is one made while quarantined, so it waits for the trial window
-                // within its own budget (R2) instead of answering FAULT for a crossing it never made.
+                // within its own budget instead of answering FAULT for a crossing it never made.
                 if plugin.is_faulted() {
                     guard.answered = true;
                     continue 'route;
@@ -414,7 +414,7 @@ impl Inner {
                 // REFUSED, AND THE INSTANCE FAULTED SINCE (the watchdog quarantined it between the
                 // refusal and this look): a refusal is never a crossing, so this call was never
                 // made; like one that met the fault before it was submitted (above), it waits for
-                // the trial window within its own budget (R2), never answering the refusal.
+                // the trial window within its own budget, never answering the refusal.
                 if done.outcome == Outcome::Refused && plugin.is_faulted() {
                     guard.answered = true;
                     continue 'route;

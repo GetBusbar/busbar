@@ -47,8 +47,8 @@
 /// unit key restarts at every boot of a node, so `unit_key` alone named two different units across
 /// two boots; the boot the unit ran in (`What::incarnation`) makes the pair unique. Nodes share one
 /// store, and a monotonic reading compares only within the node that took it, so the sealing node
-/// (`AuditRecord::node`) is digested beside `mono` (THE DESIGN §1: "when (wall + monotonic,
-/// node)"). `v3` never shipped (THE DESIGN §7: "The audit digest that ships is v4 (v3 never
+/// (`AuditRecord::node`) is digested beside `mono` ("when (wall + monotonic,
+/// node)"). `v3` never shipped ("The audit digest that ships is v4 (v3 never
 /// shipped)"), so no node holds a `v3` record and this build reads none; its page,
 /// `docs/audit-chain-digest-v3.md`, stays published as the history of the field list, as the `v1`
 /// page does.

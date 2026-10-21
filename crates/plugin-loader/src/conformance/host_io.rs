@@ -3,7 +3,7 @@
 
 //! THE SUITE'S HOST I/O: the `io.*` a carrier is served in the conformance suite, over the OS's own
 //! sockets and processes, so a carrier's both legs move REAL bytes (`BUSBAR-1.6.0.md` THE DESIGN
-//! §11.4: the same table, compiled in and dropped in). It is the host's side: it admits what the
+//! the same table, compiled in and dropped in). It is the host's side: it admits what the
 //! script admits for a dial, a bind or a spawn and nothing else, and wakes a pending op's ticket when
 //! its handle may make progress — a socket's readiness found by the script's own [`SuiteIo::pump`],
 //! a program's output by the thread that reads it. A test host: it never ships (the connector is

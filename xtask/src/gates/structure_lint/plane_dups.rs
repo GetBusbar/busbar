@@ -430,7 +430,7 @@ pub fn scan(cx: &Ctx, a: &Addresses, corpus: Option<&Corpus>, t: &Tables, f: &mu
 /// RE-BASELINE, not a blanket raise: 46 measured a smaller world. Net +51, name by name:
 ///
 /// * 3 DRAINED with the deleted engine (they paired its copies): `Admitted`, `Hop`, `Tap`;
-/// * 54 NEWLY VISIBLE, each a declaration busbar-plane-llm already held on dev (faa7d5bc8f)
+/// * 54 NEWLY VISIBLE, each a declaration busbar-plane-llm already held on dev
 ///   before #1161, now read beside the other planes (name, then the planes it pairs):
 ///   modules `plane.rs` (decisions+llm), `plane_door.rs` (decisions+llm), `relay.rs` (a2a+llm);
 ///   symbols `Answer` (llm+mcp+streaming), `answer` (llm+mcp), `answered` (a2a+llm),

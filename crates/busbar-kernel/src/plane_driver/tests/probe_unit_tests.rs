@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HEALTH PROBE, schedule target to wire (K7), over the far end's doubles and a plane double
+//! THE HEALTH PROBE, schedule target to wire, over the far end's doubles and a plane double
 //! that declares probes: the probe unit arrives on the probe claim, pushes its ATTEMPT piece alone,
 //! sends the request the plane emitted to the ONE member it is pinned to (past that member's
 //! breaker), and the far end's answer is recorded on every cell of it. Proven: a probe recovers a
@@ -670,7 +670,7 @@ async fn a_client_fault_answer_records_nothing() {
     assert!(p.probes.suppressing(0), "still tripped");
 }
 
-/// THE PLANE'S READING OF A PROBE ANSWER is recorded as an organic answer's is (Part 3 §12: the
+/// THE PLANE'S READING OF A PROBE ANSWER is recorded as an organic answer's is (the
 /// breaker service classifies the probe's answer as it classifies organic traffic): a 502 the plane
 /// reads HEALTHY is a success on every cell and recovers the member. RED before the plane's reading
 /// was read on a probe: the transport's 502 was recorded at once, a transient, and the member stayed

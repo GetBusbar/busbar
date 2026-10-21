@@ -340,7 +340,7 @@ host = "unit"
     }
 }
 
-/// THE PLANE DOOR AXIS (#2, THE DESIGN §11.4): a `plane-door` row fills `plane_doors` with its
+/// THE PLANE DOOR AXIS: a `plane-door` row fills `plane_doors` with its
 /// entry's `door`, the table the root hands the loader beside every dropped-in plane door; with its
 /// feature off the table is empty.
 #[test]

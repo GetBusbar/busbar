@@ -2750,7 +2750,7 @@ fn post_a_refused_counts_row_on(
     );
 }
 
-/// **A REFUSED COUNTS ROW REFUSES ITS OWN ROW, NEVER THE TOTALS READ** (#42; audit root-R1 #10).
+/// **A REFUSED COUNTS ROW REFUSES ITS OWN ROW, NEVER THE TOTALS READ**.
 ///
 /// `15d23bb90` made the Durability ("second") book carry a refused unit's raw counts (#42/#71) and
 /// gave it a refusing read, [`crate::root::durability::Durability::settled_read`] — but
@@ -2808,7 +2808,7 @@ fn a_refused_counts_row_withholds_its_row_and_totals_answers_every_other_row() {
     assert_eq!(refused[0]["refusal"], "ClassUnpriced(cache_read)");
 }
 
-/// **AND THE RECONCILIATION MEASURES EVERY OTHER ROW** (#42; audit root-R1 #10): the refused
+/// **AND THE RECONCILIATION MEASURES EVERY OTHER ROW**: the refused
 /// balance's row is withheld from both sides of the identity and named under `refused`, `holds` is
 /// false (the identity was not measured over that row), and a real discrepancy on another row —
 /// the dual write that lost `LOST` — is still reported, by the amount it is out by.
@@ -2840,7 +2840,7 @@ fn a_refused_counts_row_withholds_its_row_and_reconciliation_measures_every_othe
 }
 
 /// **`GET /admin/verify` NAMES A REFUSED BALANCE AND EVERY OTHER FINDING** (BUSBAR-1.6.0.md §7:
-/// the integrity verifiers are wired into the verify surface; #42; audit root-R1 #10). A refused
+/// the integrity verifiers are wired into the verify surface). A refused
 /// counts row is a finding — its balance, window, lane and refusal — and an independent finding
 /// beside it (here, what the boot reconciliation found) is still reported. It used to refuse the
 /// whole verb (`Store`), hiding every finding for the life of the journal.
@@ -6107,7 +6107,7 @@ fn commit_upgrade_answers_only_once_the_store_kept_its_record() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// H6 (audit root-R1 #6; ARCHITECT 2026-10-07 H6 retention ruling): THE NODE'S TOTALS READ PRICES
+// H6 (retention ruling): THE NODE'S TOTALS READ PRICES
 // THE BOOK'S COUNTED LINES AT READ TIME (BUSBAR-1.6.0.md §7)
 // ---------------------------------------------------------------------------------------------
 
@@ -6312,7 +6312,7 @@ fn h6_rows(
 }
 
 /// **A SIGNED BACK-DATED CORRECTION MOVES THE NODE'S OWN TOTALS ON THE NEXT READ, WITH NO
-/// RESTART** (BUSBAR-1.6.0.md §7; audit root-R1 #6).
+/// RESTART**.
 ///
 /// One unit settles 1,000,000 input units with its counts at 2 micro-units a unit. A correction
 /// appended afterwards prices the interval it arrived in at 4: the next read answers 4,000,000,000
@@ -6356,7 +6356,7 @@ fn h6_a_back_dated_correction_moves_the_node_totals_on_the_next_read_without_a_r
 ///
 /// The counted lines are appended as they are journalled and rebuilt from the chain at boot, so
 /// the read is one derivation either side of the restart. Here the chain is kept by the configured
-/// store (no data directory, H3), and the restart is a fresh book over the same store.
+/// store (no data directory), and the restart is a fresh book over the same store.
 ///
 /// RED before the fix: before the restart the read answered the settled balance (2,000,000,000),
 /// after it the balance a replay re-derived at the corrected card (4,000,000,000) — the same

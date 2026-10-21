@@ -91,7 +91,7 @@ pub struct LaneInput {
     pub protocol: String,
     /// The provider's upstream base URL, already trailing-slash-trimmed, its userinfo stripped.
     pub base_url: String,
-    /// The `Authorization: Basic` the operator's base URL spelled as `user:pass@` (row 74, F25),
+    /// The `Authorization: Basic` the operator's base URL spelled as `user:pass@`,
     /// opaque: the plane hands it back to the kernel's hop on each request it sends to this lane,
     /// and the hop presents it as 1.5.5 did. `None` when the base URL spelled no userinfo.
     /// TRANSITIONAL: deleted with the legacy lane plane (row 155 C).
@@ -120,7 +120,7 @@ pub struct LaneInput {
     /// OAuth scope (`auth: oauth-client-credentials` / an override for `jwt-bearer`).
     pub scope: Option<String>,
     /// OAuth token endpoint (`auth: oauth-client-credentials`), its userinfo stripped: a plane never
-    /// receives a URL carrying `user:pass@` (row 74, F25).
+    /// receives a URL carrying `user:pass@`.
     pub token_url: Option<String>,
     /// The `Authorization: Basic` the operator's `token_url` spelled as `user:pass@`, opaque: the
     /// plane hands it back to the kernel's bind, and the host presents it on the mint as 1.5.5 did.
@@ -353,7 +353,7 @@ pub struct PlaneBuildInput {
     /// plane's own fixed default.
     pub default_failover: Option<FailoverInput>,
     /// THE BUILD'S AUTH AXIS, whose outbound half binds each lane's credential on the auth plugin
-    /// serving its style (THE DESIGN §6 step 3). `None` (no axis installed): no style is served,
+    /// serving its style. `None` (no axis installed): no style is served,
     /// and every lane presents no credential (the upstream answers 401).
     pub auths: Option<AuthReach>,
 }

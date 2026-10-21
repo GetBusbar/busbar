@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DEAL (`BUSBAR-1.6.0.md` THE DESIGN §3, stage 3g "deal config sections; plugins validate";
-//! §4 Config): the operator's document split into one SECTION per plugin, the reserved core-owned
+//! THE DEAL (`BUSBAR-1.6.0.md` stage 3g "deal config sections; plugins validate";
+//! Config): the operator's document split into one SECTION per plugin, the reserved core-owned
 //! sub-keys read off a declared-verb section and stripped before it crosses, and the POSITION MAP
 //! the sections carry, so a plugin's refusal names the operator's file position.
 //!
@@ -18,7 +18,7 @@ use serde_json::{Map, Value};
 
 /// THE RESERVED CORE-OWNED SUB-KEYS a declared-verb section may carry beyond the two every section
 /// reserves (`busbar_contract::section::RESERVED_SECTION_KEYS`) and its card and fees
-/// (`crate::config::prepass`): §4 "Reserved core-owned sub-keys" and the OWNER-CONFIRMED (b) list
+/// (`crate::config::prepass`): "Reserved core-owned sub-keys" and the confirmed list
 /// (`breaker`, `on_exhausted`, the `gates` binding, `affinity`, `tier`, `repeatable`), POOLS-VERBS's
 /// `work` and `pools` (#47: tool and agent pools sit under their plane's verb as a reserved `pools`
 /// sub-key; Q-STEP9-a, ARCHITECT 2026-10-07), and an entry's `timeout`

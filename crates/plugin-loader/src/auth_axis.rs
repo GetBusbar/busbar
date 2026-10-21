@@ -55,7 +55,7 @@ pub struct AuthRows {
     /// A connection table held by the axis itself (a test's stand-in for the connector, with far
     /// ends of its own), used the same way when no `conns` is read.
     held: Option<Arc<dyn DeclaredConns>>,
-    /// Where each instance opened to serve writes its plugin log (THE DESIGN §11.2).
+    /// Where each instance opened to serve writes its plugin log.
     logs: Option<fn() -> crate::dispatch::PluginLogConfig>,
 }
 
@@ -129,7 +129,7 @@ impl AuthRows {
         let name = row.key();
         let refused = |e: String| format!("auth plugin '{name}': {e}");
         let sink = AuthSink::new(name);
-        // Opened to serve: its own plugin log file (THE DESIGN §11.2). A fact read binds no file.
+        // Opened to serve: its own plugin log file. A fact read binds no file.
         let envelope = match self.logs.filter(|_| serving) {
             Some(logs) => sink.to_file(&logs(), label).map_err(refused)?,
             None => sink.bind(),

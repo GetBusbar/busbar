@@ -14,7 +14,7 @@
 //! cardinality a plane surfaced as a declared content fact. There is no eighth source, and a value
 //! a peer supplied during a handshake is never on its own enough. See [`QuantitySource`].
 //!
-//! **The plane reports; the kernel writes** (`BUSBAR-1.6.0.md` THE DESIGN §7, its first bullet).
+//! **The plane reports; the kernel writes** (`BUSBAR-1.6.0.md` its first bullet).
 //! The report a unit settles against is the plane's own, built in the plane's Meter step through
 //! `Usage::report`. The kernel adds no floor, compares no companion and
 //! re-decides no figure. This unit once carried a kernel-side fold that did all three — post the

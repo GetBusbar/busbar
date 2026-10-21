@@ -25,7 +25,7 @@ pub use busbar_kernel_audit::{
 
 /// The audit step's pass for a journal record, minted where it is used from the kernel's seal
 /// (`crate::seal::acquire`: a kernel service that mints a kernel value takes the seal where it
-/// mints). No second `Kernel` kept in a process static: THE DESIGN §11.11 adds no kernel `OnceLock`
+/// mints). No second `Kernel` kept in a process static: adds no kernel `OnceLock`
 /// seam beyond the two R6 exempts (audit K4 #1).
 fn pass() -> Pass<Audit> {
     Pass::<Audit>::mint(&crate::seal::acquire())

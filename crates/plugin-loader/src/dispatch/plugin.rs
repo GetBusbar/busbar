@@ -475,7 +475,7 @@ pub(crate) struct Instance {
     /// Crossings actually made (the witness of "without a crossing"), RESUMES included.
     pub(crate) crossings: AtomicU64,
     /// Of [`Instance::crossings`], the RESUME re-invocations ([`FLAG_RESUME`]: the same op
-    /// re-entered on its ticket after it answered PENDING; THE DESIGN §11.2, A.3 "Resume"). An
+    /// re-entered on its ticket after it answered PENDING, A.3 "Resume"). An
     /// op's FIRST invocations are `crossings - resumes`: "one op = one crossing", however often
     /// the op pends.
     pub(crate) resumes: AtomicU64,
@@ -736,7 +736,7 @@ impl Instance {
                 continue;
             }
             let id = NeedId(u32::try_from(i).unwrap_or(u32::MAX));
-            // THE MEMBER-PROGRAM PATH (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)): each
+            // THE MEMBER-PROGRAM PATH: each
             // registration that names a program is a member, its `command`/`args`/`env` its
             // program (every other key its own), sealed per member: the table keeps one long-lived
             // program per member, and a re-declaration retires a member that changed or is gone.
@@ -746,7 +746,7 @@ impl Instance {
                 continue;
             }
             // A PROGRAM the settings spell at the path (`{command, args, env}`) is declared as one:
-            // the table spawns it (ARCHITECT round 4 (e)). One the settings misspell is declared
+            // the table spawns it. One the settings misspell is declared
             // with no target, which the table refuses.
             let at = doc.as_ref().and_then(|d| setting_at(d, &need.target_from));
             if let Some(value) = at.filter(|v| v.is_object()) {

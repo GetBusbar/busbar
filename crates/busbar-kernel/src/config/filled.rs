@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE CREDENTIAL POSITIONS `${VAR}` FILLED, and the settings a plane is handed over them (THE
-//! DESIGN §6: a plane never receives secret bytes; BUSBAR-1.6.0 §4: a plane's settings reach it
+//! a plane never receives secret bytes; BUSBAR-1.6.0 a plane's settings reach it
 //! "reserved keys and secrets stripped").
 //!
 //! `${VAR}` is spliced into the raw config text before it is parsed

@@ -131,7 +131,7 @@ use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 // handed an already-built, opaque `ConnectionSecurity` wrap (`serve`'s `security` parameter, below)
 // and calls nothing on it but `wrap`. `read_pem` stays behind in `busbar_kernel::tls`, called only
 // by the connector's `tls:` block resolution: the connector is the only holder of TLS keys and mTLS
-// identity (THE DESIGN §8, `BUSBAR-1.6.0.md` l.1141), and no plane reads PEM bytes through it.
+// identity (`BUSBAR-1.6.0.md` l.1141), and no plane reads PEM bytes through it.
 
 /// THE ONE ACCEPT-ERROR POLICY, shared by both listener loops below.
 ///

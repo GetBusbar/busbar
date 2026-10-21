@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE BASIC CREDENTIAL A URL'S USERINFO SPELLS, HELD BY THE ROOT (row 74, F25): read the way
+//! THE BASIC CREDENTIAL A URL'S USERINFO SPELLS, HELD BY THE ROOT: read the way
 //! reqwest 0.12.28 read it, and presented through the auth kind's outbound call as 1.5.5 sent it
 //! — first, unless the binding's own answer names `authorization`.
 
@@ -117,7 +117,7 @@ fn names_and_values(answer: Option<Fields>) -> Vec<(String, String)> {
     }
 }
 
-/// ROW 74 (F25), THE MEMBER'S REQUEST: a binding whose credential rides another field is led by the
+/// THE MEMBER'S REQUEST: a binding whose credential rides another field is led by the
 /// Basic value, on the spot and when submitted; one whose credential is `authorization` displaces
 /// it (1.5.5's `replace_headers`); a binding with no userinfo is handed over as it is.
 #[tokio::test]
@@ -152,7 +152,7 @@ async fn a_binding_is_led_by_the_basic_value_unless_it_names_authorization() {
     );
 }
 
-/// ROW 74 (F25), THE TOKEN POST'S HEAD: the minting plugin's open is led by the Basic value unless
+/// THE TOKEN POST'S HEAD: the minting plugin's open is led by the Basic value unless
 /// its own fields name `authorization`.
 #[test]
 fn a_token_posts_head_is_led_by_the_basic_value_unless_it_names_authorization() {

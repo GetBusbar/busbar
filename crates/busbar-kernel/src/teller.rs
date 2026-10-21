@@ -947,7 +947,7 @@ pub enum SessionOpen {
     /// The door passed. A session admits at [`Admission::ZeroHold`], so nothing was swapped into
     /// the cell and there is nothing to settle. The caller opens its live carrier next: every turn
     /// leg of the session is a route walk under this ONE admission, with this Route pass, inside
-    /// the destination set Verify sealed at the open (K6).
+    /// the destination set Verify sealed at the open.
     Admitted {
         /// The session's Route pass, for its turn legs.
         route: Pass<Route>,
@@ -968,7 +968,7 @@ pub enum SessionOpen {
 /// door is [`Admission::ZeroHold`] — an empty hold — so there is nothing for the exit to settle. The
 /// session's money is the kernel's session account, not a plane-side reserve: checkpoints while it
 /// runs and one sealed line at its end, written by the node from the counts the plane reports (THE
-/// DESIGN §7, `BUSBAR-1.6.0.md` l.1027-1035: "The kernel owns session money ... The plane reports
+/// `BUSBAR-1.6.0.md` l.1027-1035: "The kernel owns session money... The plane reports
 /// counts only and holds no reservation").
 /// The result says only whether the door passed; a refusing plane's own response is the plane's to
 /// carry (it shaped it at its refusing step), exactly as the substrate session opener carries it.
@@ -1321,7 +1321,7 @@ async fn under_hold<U: Units, R: RouteAwait>(
 
 /// THE AUDIT PASS, minted here and at no other site in the kernel.
 ///
-/// THE DESIGN §7 (U14 and the class-registration ruling, `BUSBAR-1.6.0.md` l.1061-1071): one audit
+/// (U14 and the class-registration ruling, `BUSBAR-1.6.0.md` l.1061-1071): one audit
 /// record per unit, sealed at its one line by the pass its audit step was lent — "nothing mints an
 /// audit pass freely". Every end that writes a line takes its pass from this one fn: the loop's two
 /// audit doors ([`run_unit_async`]'s refused door and [`terminal`]), the session opener's two

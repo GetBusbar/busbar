@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 pub mod overlay;
 
 /// The credential positions `${VAR}` filled, and the settings a plane is handed over them: a secret
-/// reference at each, never the bytes (THE DESIGN §6); every other position as interpolated.
+/// reference at each, never the bytes; every other position as interpolated.
 pub mod filled;
 
 /// The top-level `groups:` limit tree: GroupCfg + the generic limit shape.
@@ -2042,7 +2042,7 @@ pub fn resolve(
     for pool in pools.values_mut() {
         pool.gates = entity_only_hook_refs(&deploy.pools.all_pool_hooks, &pool.gates);
     }
-    // ── A PLANE'S POOLS SIT UNDER ITS OWN VERB (THE DESIGN §4 POOLS-VERBS, #43/#47). The top-level
+    // ── A PLANE'S POOLS SIT UNDER ITS OWN VERB (POOLS-VERBS). The top-level
     // `pools:` is the fallback plane's alone, as in 1.5.5: its members are `models:` entries, and a
     // member that is not one is refused there in 1.5.5's words. Any other plane's failover pools are
     // the reserved `pools` sub-key of that plane's own section (`<verb>.pools`), read here as the

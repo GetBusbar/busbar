@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOOK CHAIN'S CALLS ON THE ONE DISPATCHER (THE DESIGN §11.7: hooks on the memory ABI, 1.5.5
+//! THE HOOK CHAIN'S CALLS ON THE ONE DISPATCHER (hooks on the memory ABI, 1.5.5
 //! behaviour frozen): [`HookPolicy`], the routing seam's [`RoutingPolicy`] over one opened hook
 //! instance's contract [`HookCalls`] (whichever door the instance came in by — the composition
 //! root's `HookAxis` opened it). Each method builds the hook kind's fixed view

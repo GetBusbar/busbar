@@ -24,7 +24,7 @@
 //! * [`config`] — the `oauth_as:` block (`OauthAsCfg`/`AsIdentity`), its boot refusals and its
 //!   secret-reference walk. The kernel carries the block as an OPAQUE value (`DeployCfg::oauth_as`)
 //!   and hands it to this crate through the seam's `check` (parse, validate, list secret
-//!   references) and `build`; it never names these types (ARCHITECT ruling 2026-10-03, D4).
+//!   references) and `build`; it never names these types.
 //!
 //! ## The seam
 //!
@@ -39,7 +39,7 @@
 //! ## The connection table
 //!
 //! The one outbound fetch this crate makes (a Client ID Metadata Document, [`cimd`]) rides the
-//! deployment's ONE root Connector (THE DESIGN §5), whose destination guard is the only check on
+//! deployment's ONE root Connector, whose destination guard is the only check on
 //! where it goes. The composition root names that table through [`Connections`], a type it hands
 //! [`install`] as a parameter: the seam's `build` is instantiated over it, so the table reaches
 //! every built server without a process-wide slot of this crate's own.

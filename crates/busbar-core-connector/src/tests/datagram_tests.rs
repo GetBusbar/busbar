@@ -1348,7 +1348,7 @@ fn an_answer_whose_lines_do_not_mirror_refuses_the_open() {
     });
 }
 
-/// RED (THE DESIGN §5, datagram media: "ICE path migration rebinds only on a verified round-trip
+/// RED (datagram media: "ICE path migration rebinds only on a verified round-trip
 /// check (a spoof is a RED)"): a path one accepted association already holds on a shared port stays
 /// its own when ANOTHER association hears a check from it. A check proves only that its sender
 /// knows that other association's password, never that it owns the source address, so a caller
@@ -1434,7 +1434,7 @@ fn a_far_end_description_past_its_bound_fails_the_open() {
     });
 }
 
-/// RED (resource bounds; THE DESIGN §5 "Writes are back-pressured"): a message a plugin writes in
+/// RED (resource bounds; "Writes are back-pressured"): a message a plugin writes in
 /// parts on the upstream leg is bounded. Gathered until its end with no cap, a write that never
 /// ended grew host memory without limit.
 #[test]

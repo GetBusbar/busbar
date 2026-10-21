@@ -19,7 +19,7 @@
 //! verbs and their preconditions, the same retention sweep, the same v3 slots (dedupe, caps,
 //! slices, ledger chains, sessions), the same tail and `max_inflight`. Its Statement name and its
 //! canonical name are its OWN ([`NAME`]), never the plugin's: the kernel spells no plugin name, not
-//! even in a double (C1). That the copy holds is proven where the real door is linked: the root's
+//! even in a double. That the copy holds is proven where the real door is linked: the root's
 //! `the_kernel_store_double_states_what_the_linked_store_door_states` renders both Statements and
 //! drives one verb sequence through both. The plugin's own behaviour is proven in its own repo.
 //!
@@ -106,7 +106,7 @@ pub struct MemoryStore {
     /// have to sort on every scan, and "the order a scan answers in" is a promise a caller reads a
     /// chain by.
     ///
-    /// NEVER AGED OUT. An active work handle is never evicted (`BUSBAR-1.6.0.md` THE DESIGN §1,
+    /// NEVER AGED OUT. An active work handle is never evicted (`BUSBAR-1.6.0.md` 
     /// "Admission bounds live work; nothing evicts it"): a real bound on live work is a refusal at
     /// admission, and retention bounds only SETTLED handles. Settledness is a sidecar the store is
     /// handed, never a body it decodes — the published path's [`PlaneDisposition`], which
@@ -914,7 +914,7 @@ impl Store for MemoryStore {
     }
 }
 
-/// The double's own Statement name and canonical name: not the plugin's (C1).
+/// The double's own Statement name and canonical name: not the plugin's.
 pub const NAME: &str = "store-double";
 
 /// THE STAND-IN LINKED ENTRY: `(key, ephemeral, door, canonical)`, the shape of the root's linked

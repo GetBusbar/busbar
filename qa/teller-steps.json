@@ -2,7 +2,7 @@
   "_comment": [
     "H2 (docs/design/BUSBAR-1.6.0.md THE DESIGN, §1): 'conformance rigs carry one cell per Teller step per plane'.",
     "Steps are the kernel's own StepName::ALL (crates/busbar-contract/src/caps/step.rs; spec #72, BUSBAR-1.6.0.md:2266): arrival, decode,",
-    "authenticate, verify, approve, admit, route, meter, audit, encode (THE DESIGN §1, :154, spells the last one exit). This is the plane x step MATRIX: for every cell, either an id that names a",
+    "authenticate, verify, approve, admit, route, meter, audit, encode (the spec spells the last one exit). This is the plane x step MATRIX: for every cell, either an id that names a",
     "real, run scenario in one of the conformance rigs (or the shadow oracle, for the llm plane), or",
     "the literal string \"none\" naming a genuine gap. 'gating' marks the 7 steps whose contract H2",
     "spells out explicitly (a refusal/outcome that must never leak past its step); the other 3",
@@ -80,7 +80,7 @@
     },
     "encode": {
       "gating": true,
-      "note": "one terminal, no double-post: the loop's last step, StepName::Encode in the kernel's own roster (THE DESIGN §1, BUSBAR-1.6.0.md:154, spells it exit)"
+      "note": "one terminal, no double-post: the loop's last step, StepName::Encode in the kernel's own roster (the spec spells it exit)"
     }
   },
   "owed_gaps": {},

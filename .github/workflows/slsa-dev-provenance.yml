@@ -18,7 +18,7 @@
 #
 # THE GENERATOR IS REFERENCED BY TAG. slsa-verifier trusts the generic generator only under its
 # builder id `.../generator_generic_slsa3.yml@refs/tags/vX.Y.Z`; a workflow called by sha mints
-# provenance it refuses. v2.1.0 is commit f7dd8c54c2067bafc12ca7a55595d5ee9b75204a, stated as the
+# provenance it refuses. v2.1.0 is the commit named in the
 # call's trailing comment and held to that by workflow-rules R14's one tag-pinned entry.
 #
 # SECRET: `BUSBAR_DEV_BIN_TOKEN`, a token with contents:write on GetBusbar/busbar-release (the

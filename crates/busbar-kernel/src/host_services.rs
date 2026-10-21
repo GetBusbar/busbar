@@ -170,7 +170,7 @@ impl std::fmt::Display for DestRefusal {
 
 impl std::error::Error for DestRefusal {}
 
-/// THE ROOT'S NESTED-DISPATCH SEAM (THE DESIGN §11.12 unit row; ARCHITECT H3 "NestRoute root
+/// THE ROOT'S NESTED-DISPATCH SEAM (unit row; "NestRoute root
 /// seam"): `unit.nest` hands the composition root the child to run, and the root runs it on
 /// whatever serves the claim it names, as a child of `parent` under its principal, its scope and its
 /// admission chain. The kernel never learns what the child is.
@@ -615,7 +615,7 @@ pub struct KernelServices {
     /// over its live snapshot; unattached, the principal admitted is the one judged.
     standing: OnceLock<Standing>,
     nested: Arc<crate::pump::NestedPool>,
-    /// The bounded disk lane `disk.append` runs on (THE DESIGN §11.11 R4): the process's one lane
+    /// The bounded disk lane `disk.append` runs on: the process's one lane
     /// where the composition root hands it ([`Self::with_disk_lane`]).
     disk: Arc<crate::host_disk::DiskLane>,
     /// THE OPEN CARRIER SESSIONS (`session.emit`), by number: the instance each serves, its
@@ -795,7 +795,7 @@ impl KernelServices {
         self
     }
 
-    /// The same services appending on `lane`: the process's ONE disk lane (THE DESIGN §11.11 R4),
+    /// The same services appending on `lane`: the process's ONE disk lane,
     /// the lane a disk-declared secret source's config-time `resolve` runs on too.
     #[must_use]
     pub fn with_disk_lane(mut self, lane: Arc<crate::host_disk::DiskLane>) -> Self {
@@ -934,7 +934,7 @@ impl KernelServices {
         );
         // The operator's kept trust decisions replay at the instance's FIRST admit only: a re-admit
         // keeps them in its state, and one whose declared pin changed is the operator's re-approval.
-        // NO PLUGIN CODE RUNS UNDER A HOST LOCK (§11.13 M1; audit K4 #6): the read is a store-plugin
+        // NO PLUGIN CODE RUNS UNDER A HOST LOCK: the read is a store-plugin
         // crossing, so it runs with the instance map released. An instance once admitted is never
         // removed, so a label seen admitted here is still admitted under the lock below; one seen
         // absent is judged again there, and a racing first admit that won keeps its own replay.
@@ -1048,7 +1048,7 @@ impl KernelServices {
         };
         // KEPT BEFORE IT IS TAKEN: the decision is judged against the book, kept durably, and only
         // then takes effect, so a decision the store refused is not in force in this process
-        // either (THE DESIGN §11.12 l.1617-1619, the trust record is durable; Q128 p5#2).
+        // either (l.1617-1619, the trust record is durable; Q128 p5#2).
         let fact = self
             .trust
             .rule(instance, counterparty, item, ruling, expected)
@@ -1314,7 +1314,7 @@ impl KernelServices {
     /// pool refused, with no later write to start another, reaches the store within one interval.
     /// The composition root runs it once, beside the services it built; it never ends.
     ///
-    /// It is also THE KERNEL'S ONE CLOCK for the compiled-in crates (THE DESIGN §1): each interval
+    /// It is also THE KERNEL'S ONE CLOCK for the compiled-in crates: each interval
     /// beats every work handed to [`crate::tick::on_clock`] and runs the jobs the beat answers here,
     /// on this one task, beside the ticks, so no crate keeps a timer or a task of its own.
     pub async fn flushes(&self) {

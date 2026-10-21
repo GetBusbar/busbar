@@ -178,7 +178,7 @@ fn gated_dispatcher() -> Arc<Dispatcher> {
     dispatcher()
 }
 
-/// RED (THE DESIGN §11.13 M1): a linked module's shared instance is opened with the shared map's
+/// RED: a linked module's shared instance is opened with the shared map's
 /// lock let go, so an open wedged in its plugin holds no other caller: a second caller opens and
 /// answers while the first is still wedged, and the first then answers the instance installed.
 #[test]
@@ -235,7 +235,7 @@ fn log_config() -> crate::dispatch::PluginLogConfig {
     .expect("the plugins.logs words resolve")
 }
 
-/// THE DESIGN §11.2 (every plugin logs to its own `<dir>/<instance>.log`) and §11.12 H2 (`instance`
+/// (every plugin logs to its own `<dir>/<instance>.log`) and (`instance`
 /// is the configured instance LABEL): each opened secret instance is bound to a plugin-log sink
 /// under its own label, so two instances of one plugin (two words one plugin answers to) get two
 /// files, and the shared linked instance gets its own. A sink under a named directory opens its

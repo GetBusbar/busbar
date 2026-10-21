@@ -86,7 +86,7 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 # CANDIDATES CONSIDERED AND REJECTED, so the choice is defensible rather than incidental (grepped for
 # `NamedMapSection`/`DeployCfg`/a bare noun literal on a parse-steering line in each; all empty except
 # where noted):
-#   * `busbar-core-admin` — REJECTED ONCE, NOW SCANNED (below): P2 D4 (86d3c3faa3) moved the admin
+#   * `busbar-core-admin` — REJECTED ONCE, NOW SCANNED (below): P2 D4 moved the admin
 #     contract out of the kernel into it, `pub pools: Vec<PoolView>` with it, a line this meter
 #     counted from the kernel. The rejection read: it DOES use `NamedMapSection`, but
 #     only as a CONSUMER: it matches `IdentityProviders | Export | Plane(_)` — the same three arms
@@ -119,13 +119,13 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 # reached through the surviving root rather than through a path that stopped existing.
 #
 # THE ROOTS FOLLOW A COUNTED LINE THAT MOVES CRATE (ruling 2026-10-18, Law 9: a line leaving the
-# scan by a move is a silent narrowing, not a drain). P2 D4 (86d3c3faa3) moved the hook reply wire
+# scan by a move is a silent narrowing, not a drain). P2 D4 moved the hook reply wire
 # into `busbar-contract` (`hook_wire/reply.rs`, `hooks.rs`: the `tools` lines `hooks/wire.rs` held)
 # and the admin contract into `busbar-core-admin` (`pub pools: Vec<PoolView>`); both crates are
 # core, always compiled in, so both are scanned.
 CORE_ROOTS="crates/busbar-kernel/src crates/busbar-contract/src crates/busbar-core-admin/src"
 
-# SECTION NOUNS KEPT BY NAME (ARCHITECT 2026-10-05, Q7): `streams` is the 1.5.5 customer config key
+# SECTION NOUNS KEPT BY NAME: `streams` is the 1.5.5 customer config key
 # of the streaming plane, whose legacy crate (`busbar-voice`, the one that declared it in a PlaneDecl)
 # the P3 flip deleted. The plane is a door now (`busbar-plane-streaming`) and declares no PlaneDecl,
 # so the noun cannot be read off one; it is kept here by name rather than dropped from the scan. The
@@ -139,7 +139,7 @@ CORE_ROOTS="crates/busbar-kernel/src crates/busbar-contract/src crates/busbar-co
 # PLANE_KEYS must not let the word in."
 #
 # `tools` IS KEPT THE SAME WAY (ruling 2026-10-18): the MCP plane's 1.5.5 customer config key, out
-# of the scan since mcp left PLANE_KEYS (5e52651535), when the floor followed it down 17 -> 10.
+# of the scan since mcp left PLANE_KEYS, when the floor followed it down 17 -> 10.
 NAMED_NOUNS="streams agents tools"
 
 # Resolve the four section nouns from each plane crate's DECLARED PlaneDecl.config_section — never a

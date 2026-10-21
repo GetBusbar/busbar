@@ -531,7 +531,7 @@ pub struct DoorLive {
     /// The tail's facts as this generation states them (with the generation's provider dialects,
     /// for the translation counter).
     pub facts: DoorFacts,
-    /// The health-probe service's target for this generation (K7), when the plane answers probes
+    /// The health-probe service's target for this generation, when the plane answers probes
     /// and a member probes: held here, so a replaced generation's probers exit at their next tick.
     pub probes: Option<Arc<busbar_kernel::plane_driver::PlaneProbes>>,
     /// What the ranking hooks are shown of the model-serving pools' members beside the walk: their
@@ -552,7 +552,7 @@ pub struct ApplyReach {
     upgrades: Vec<&'static str>,
 }
 
-/// A CONFIG APPLY ON ONE SERVED DOOR PLANE (the ARCHITECT ruling on a door plane's apply; THE DESIGN §11, plugin
+/// A CONFIG APPLY ON ONE SERVED DOOR PLANE (the on a door plane's apply, plugin
 /// memory is "valid to its next refresh generation"): every apply refreshes the plane onto a new
 /// generation of the section the installed generation writes, so the plane re-reads it and its
 /// generation-scoped memory resets with it, as predev rebuilt the plane on every apply; its pools
@@ -564,7 +564,7 @@ pub struct DoorApply {
     facts: DoorFacts,
     reach: Option<ApplyReach>,
     live: std::sync::RwLock<Arc<DoorLive>>,
-    /// The plane's driver, which a generation's health probes run their units on (K7).
+    /// The plane's driver, which a generation's health probes run their units on.
     driver: Arc<PlaneDriver>,
     /// The health-probe schedule its generations share, phase-stable across a config apply.
     probe_schedule: Arc<busbar_kernel::probe::ProbeSchedule>,
@@ -607,7 +607,7 @@ impl DoorApply {
             .and_then(|p| p.downcast_ref::<crate::root::door_steps::DoorConfig>())
             .map(|c| owned_sections(&self.served_facts, &c.sections))
             .unwrap_or_default();
-        // A CONFIG APPLY IS CONFIG TIME (BUSBAR-1.6.0.md l.1468, R4): the proof is minted here,
+        // A CONFIG APPLY IS CONFIG TIME: the proof is minted here,
         // once, and handed down to every credential this refresh resolves.
         let scope = busbar_contract::config_time::ConfigScope::config_time();
         match self.refreshed(
@@ -760,7 +760,7 @@ impl DoorAppliers {
         sections: &BTreeMap<&'static str, serde_yaml::Value>,
         egress: &DoorEgress<'_>,
     ) {
-        // A CONFIG APPLY IS CONFIG TIME (BUSBAR-1.6.0.md l.1468, R4): the proof is minted here,
+        // A CONFIG APPLY IS CONFIG TIME: the proof is minted here,
         // once, and handed down to every credential the re-seal resolves.
         let scope = busbar_contract::config_time::ConfigScope::config_time();
         for p in &self.0 {
@@ -772,8 +772,7 @@ impl DoorAppliers {
                 continue;
             };
             let name = p.plugin.name();
-            // A secret reference at every credential position `${VAR}` filled, never the bytes
-            // (THE DESIGN §6): the keyed map sits at the configuration's root.
+            // A secret reference at every credential position `${VAR}` filled, never the bytes: the keyed map sits at the configuration's root.
             let settings = match busbar_kernel::config::filled::plane_bound_bytes(
                 settings_path(facts),
                 &settings_of(facts, section, sections),
@@ -930,8 +929,8 @@ impl Served {
 
 impl Served {
     /// Each plane's tick schedule and its ready-session fan-out (`drive`'s names, R-B), on its
-    /// driver ticket, spawned on the current runtime: a unit served as a duplex session (K6) is
-    /// woken through them for the output it owes on the tick (ARCHITECT round 5 Q-L3B-K6-HTTP (a)).
+    /// driver ticket, spawned on the current runtime: a unit served as a duplex session is
+    /// woken through them for the output it owes on the tick.
     pub fn spawn_ticks(&self) {
         for p in &self.planes {
             let driver = Arc::clone(&p.driver);
@@ -939,7 +938,7 @@ impl Served {
             let driver = Arc::clone(&p.driver);
             tokio::spawn(async move { driver.drives().await });
         }
-        // THE CHECKPOINT FLUSH TICK (THE DESIGN §7: "a checkpoint is a durability `unit.accrued`
+        // THE CHECKPOINT FLUSH TICK ("a checkpoint is a durability `unit.accrued`
         // record"), on the kernel's flush interval: the piece path only marks a running unit, and
         // this tick journals each marked unit's counts, once per epoch, off the runtime's workers.
         if let Some(post) = &self.post {
@@ -1191,8 +1190,7 @@ impl HookStage {
 
 /// THE DOOR PLANES' SECTIONS WITH THEIR POOLS: each section `pools` names (by its key) carries, at
 /// its reserved `pools` key, the unified pools its members resolved to (each with its `members` and
-/// its `repeatable` operations), so its DoorPools walks them and its plane names them (ARCHITECT
-/// round 4 Q-L3B-SURFACES (h)). A section with no pools, or one this document does not write, is
+/// its `repeatable` operations), so its DoorPools walks them and its plane names them. A section with no pools, or one this document does not write, is
 /// left as it is.
 #[must_use]
 pub fn with_pools(
@@ -1268,7 +1266,7 @@ fn section_with_pools(
 /// THE BYTES A DOOR PLANE IS HANDED for its section at `path` ([`settings_path`]):
 /// [`plane_settings`] as JSON, with the core-owned `work:` bounds struck (the kernel reads them; the
 /// plane never sees them) and a secret reference at every credential position `${VAR}` filled,
-/// never the bytes (THE DESIGN §6: a plane never receives secret bytes; SECURITY ruling 2026-10-07:
+/// never the bytes (a plane never receives secret bytes; SECURITY -10-07:
 /// credential fields only, a template for a part). The one rule `open` and a config apply's refresh
 /// both apply (audit root-R1 leftover C1).
 fn handed_settings(path: &[&str], section: &serde_yaml::Value) -> Result<Vec<u8>, String> {
@@ -1414,7 +1412,7 @@ pub fn compose_planes(
     egress: Option<&DoorEgress<'_>>,
     hooks: Option<&HookStage>,
 ) -> Result<Served, String> {
-    // BOOT IS CONFIG TIME (BUSBAR-1.6.0.md l.1468, R4): the proof is minted here, once, and handed
+    // BOOT IS CONFIG TIME: the proof is minted here, once, and handed
     // down to every member credential the planes' egress resolves.
     let scope = busbar_contract::config_time::ConfigScope::config_time();
     compose_planes_over(
@@ -1483,7 +1481,7 @@ pub(crate) fn compose_planes_over(
         // The plane's other owned sections this document writes, as written, by section name: it
         // reads them beside its settings (ARCHITECT Q-L3B-AUD). Names come from its Statement.
         let owned = owned_sections(&served_facts, sections);
-        // The dialect facts of the providers its walked section references (THE DESIGN §4): it
+        // The dialect facts of the providers its walked section references: it
         // resolves model to dialect itself. Read off the providers its egress is sealed over.
         let dialects = egress
             .map(|e| crate::root::door_steps::dialect_facts(&walked, e.reach.providers))
@@ -1540,14 +1538,14 @@ pub(crate) fn compose_planes_over(
         // run at the head of the route leg, in the hook order 1.5.5 used for that plane): a plane
         // whose tail states the gate-first order has its entries' gates and rewrites bound, filed
         // under its registry key; every other (the plane serving the `pools` map, the one 1.5.5 ran
-        // its request hooks on, among them) the routed order (ARCHITECT K5, U22).
+        // its request hooks on, among them) the routed order.
         let driver = match hooks {
             Some(stage)
                 if served_facts.tail_flags & busbar_contract::abi::plane::TAIL_HOOKS_GATED != 0 =>
             {
                 driver.with_hooks(stage.gated(plugin.name()))
             }
-            // Every other plane runs the routed order (U22): the deployment's global and per-pool
+            // Every other plane runs the routed order: the deployment's global and per-pool
             // hooks, bound per unit off the live generation, reach its request stage and its
             // in-session stage (`hook.call`, `content.scan`).
             Some(stage) => driver.with_hooks(stage.routed(&served_facts.dialects)),
@@ -1586,7 +1584,7 @@ pub(crate) fn compose_planes_over(
         )
         .map_err(|c| format!("{instance}: admin route {:?} overlaps {}", c.route, c.with))?;
         let declared = plugin.declared();
-        // EVERY REPORTED CLASS IS REGISTERED (THE DESIGN §7): the classes a plane may report are the
+        // EVERY REPORTED CLASS IS REGISTERED: the classes a plane may report are the
         // ones its tail declares, linked or dropped in, registered once at its composition, so its
         // units' lines resolve them.
         let mut registration = crate::root::kernel::new_registration();
@@ -1621,8 +1619,8 @@ pub(crate) fn compose_planes_over(
             bench,
             scope,
         )?;
-        // The door's own requests to its members carry the members' bindings (ARCHITECT round 5
-        // Q-L3B-DOOR-EXCHANGE), held on the connection table its need is declared on.
+        // The door's own requests to its members carry the members' bindings
+        // held on the connection table its need is declared on.
         if let (Some(egress), Some(conn_table)) = (egress, plugin.conn_table()) {
             // The route table: the section, with the catalog model its `session.model` names
             // folded in.
@@ -1744,7 +1742,7 @@ fn routes_of(
 /// `section`: the tail's facts (the flat card's empty plane key for the plane serving the `pools`
 /// map, which owns 1.5.5's `rate_card:`; each provider's dialect, for the translation counter), the
 /// section's pools and, with `egress`, each member's route resolved and its credential bound by the
-/// auth plugin serving its style over the connector its needs were declared on (THE DESIGN §6 steps
+/// auth plugin serving its style over the connector its needs were declared on (steps
 /// 2-3), the plane serving the `pools` map walking its pools with the previous release's semantics
 /// on the kernel's own breaker cells ([`crate::root::model_egress`]).
 ///
@@ -1944,7 +1942,7 @@ fn owned_bytes(owned: &serde_json::Map<String, serde_json::Value>) -> Result<Vec
     }
 }
 
-/// THE SETTINGS A DOOR PLANE OPENS WITH (spec Part 1 §4: one validated JSON object `{section:
+/// THE SETTINGS A DOOR PLANE OPENS WITH (spec one validated JSON object `{section:
 /// value}`): a plane that declares the kernel-owned `pools` map (the previous release's top-level
 /// model-serving layout) is handed it and each section it reads beside it (`SECTION_CONSUMED`)
 /// that this deployment writes, keyed; a plane that declares a section of its own is handed that
@@ -2120,8 +2118,7 @@ pub const NEST_PARENT_GONE: &str = "the nested unit's parent is not in flight";
 /// `unit.nest`'s FAILED answer of a child whose reply could not be read whole.
 pub const NEST_UNREAD: &str = "the nested unit's reply could not be read";
 
-/// THE ROOT'S NESTED-DISPATCH SEAM (THE DESIGN §11.12 unit row; ARCHITECT H3 "NestRoute root seam";
-/// ARCHITECT round 4 (c)): a nested unit's claim matched on the data listener's guest list, the
+/// THE ROOT'S NESTED-DISPATCH SEAM ("NestRoute root seam"): a nested unit's claim matched on the data listener's guest list, the
 /// child driven on the process's one node as a door unit of the plane that claims it, under the
 /// parent's principal and generation, its hold cell accruing against the parent's, its whole reply
 /// buffered and handed back. The kernel never learns what the child is.
@@ -2260,7 +2257,7 @@ pub struct DoorRequest {
     pub app: Arc<busbar_kernel::state::App>,
 }
 
-/// THE AUTH ON A DOOR CLAIM'S GUEST-LIST LINE (THE DESIGN §6, "Auth points and guest lists"): the
+/// THE AUTH ON A DOOR CLAIM'S GUEST-LIST LINE ("Auth points and guest lists"): the
 /// operator's data chain (`auth.chain`) is the auth of every data-listener line a credential is owed
 /// on. A `CLAIM_OPEN` line owes none, WHATEVER THE CHAIN (ARCHITECT, FLIP-A2A): a plane's discovery
 /// documents (its protected-resource metadata, its own card) are what a caller reads BEFORE it holds
@@ -2275,7 +2272,7 @@ fn line_auth(flags: u32, data_chain: &[ChainAuth]) -> busbar_kernel::guest::Line
 }
 
 /// ONE DATA-CHAIN AUTH as a guest-list line holds it: its provider name and the points its
-/// instance declares it is called at (THE DESIGN §6, "Auth points and guest lists").
+/// instance declares it is called at ("Auth points and guest lists").
 pub type ChainAuth = (String, busbar_contract::abi::auth::AuthPoints);
 
 /// The chain `data_chain` as a line's auth: its names in order, and the line's point set, the union
@@ -2337,7 +2334,7 @@ pub fn upgrade_carriers(
         .collect()
 }
 
-/// ONE TRANSPORT CLAIM AND THE AUTH POINTS ITS LINES' TRANSPORT OFFERS (THE DESIGN §6 step 3).
+/// ONE TRANSPORT CLAIM AND THE AUTH POINTS ITS LINES' TRANSPORT OFFERS.
 pub type TransportOffer = (&'static str, busbar_contract::abi::auth::AuthPoints);
 
 /// One transport row as the guest lists read it, linked or dropped in (compiled-in = dropped-in,
@@ -2620,8 +2617,7 @@ pub fn door_mounts(
             doors.push((line, method, (p, rung)));
         }
     }
-    // The kernel's own data routes, lines of the core's claimant (a cleanliness crate's route,
-    // THE DESIGN §6).
+    // The kernel's own data routes, lines of the core's claimant (a cleanliness crate's route).
     for (rung, (path, method, auth)) in (0u32..).zip(core) {
         lines.push(busbar_kernel::guest::Line {
             route: busbar_kernel::guest::Route {
@@ -4193,7 +4189,7 @@ fn deframed_arrival(
 /// piece, so a `write` resolves only once the body has taken the piece before it (the caller's side
 /// was writable). A body the server dropped (the caller went away) answers `false`.
 ///
-/// A unit served as a DUPLEX SESSION (its `arrive` stated `ROUTE_SESSION`, ARCHITECT round 5
+/// A unit served as a DUPLEX SESSION (its `arrive` stated `ROUTE_SESSION`
 /// Q-L3B-K6-HTTP (a)) has this caller side as its session's caller leg: its read yields the
 /// arrival's body once, then nothing until the response is dropped, and the long-lived response is
 /// what the session writes.

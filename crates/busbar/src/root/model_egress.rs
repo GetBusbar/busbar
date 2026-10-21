@@ -68,7 +68,7 @@ pub struct ModelPools {
     /// Each pool's ladder as the lane store's record calls take it (the previous release's
     /// `resolve_breaker_cfg`: the pool's own, else the default); `""` = the lane-default cell's.
     records: HashMap<String, busbar_kernel::store::BreakerCfg>,
-    /// Each model's active health probing (K7): its provider's `health:` over the process-wide
+    /// Each model's active health probing: its provider's `health:` over the process-wide
     /// defaults, as 1.5.5's prober resolved it per lane.
     probes: BTreeMap<String, busbar_kernel::probe::ProbeCfg>,
     /// What each pool's members show the ranking hooks, by pool then model: the member's tier and
@@ -218,7 +218,7 @@ impl ModelPools {
 }
 
 impl ModelServing {
-    /// THE MEMBERS THE HEALTH-PROBE SERVICE SCHEDULES (K7), in lane order: each model with a
+    /// THE MEMBERS THE HEALTH-PROBE SERVICE SCHEDULES, in lane order: each model with a
     /// probing mode, at its lane's index and destination, under its resolved settings.
     #[must_use]
     pub fn probe_members(

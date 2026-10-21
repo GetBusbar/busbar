@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The host I/O slots' reading of a caller's ranges (THE DESIGN §11.13 M1).
+//! The host I/O slots' reading of a caller's ranges.
 
 use super::*;
 
-/// RED (THE DESIGN §11.13 M1, "Every slice built from a plugin-reported length is capped and
+/// RED ("Every slice built from a plugin-reported length is capped and
 /// validated before it is formed"; audit PL1 #1): an I/O slot's list or buffer stated over the hard
 /// byte maximum (`u32::MAX`) is refused before any slice is formed over it, as NULL with a count is.
 #[test]

@@ -156,8 +156,8 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 
   A token retires when its task ends, and at no idle deadline: the retention sweep touches only
   settled tasks, so an idle ACTIVE task is never cancelled or evicted and keeps its token until it
-  ends. The 24h abandonment ceiling is gone (THE DESIGN §1, "an active work handle is never
-  evicted").
+  ends. The 24h abandonment ceiling is gone: an active work handle is never
+  evicted.
 
 - **An A2A hop refusal no longer names the backend to the caller.** Nine refusal arms rendered
   operator-facing detail into the JSON-RPC error body a client reads: the backend's URL, the address

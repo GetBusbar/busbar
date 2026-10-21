@@ -143,7 +143,7 @@ fn the_lane_runs_appends_in_order_and_answers_through_later() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// A JOB runs ON THE LANE THREAD, in order with the appends (THE DESIGN §11.11 R4 as the OWNER
+/// A JOB runs ON THE LANE THREAD, in order with the appends (as the 
 /// amended it: a disk-declared secret source's config-time resolve runs here), and a job that
 /// panics is its own failure: the appends behind it still land.
 #[test]

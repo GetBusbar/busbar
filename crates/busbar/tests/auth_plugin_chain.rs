@@ -469,7 +469,7 @@ fn admin_modules_rebuilt_on_reload() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// THE DESIGN §11.8 (C21): a v1 auth plugin (the pre-login 1.5.x wire) no longer reaches the
+/// a v1 auth plugin (the pre-login 1.5.x wire) no longer reaches the
 /// login-capability gate: the scan refuses it at boot, naming the rebuild. The current version of
 /// the SAME plugin with `browser_login` builds — through the one construction path boot and every
 /// config apply run (`build_app_from_config`, which builds the hosted-login methods), over a

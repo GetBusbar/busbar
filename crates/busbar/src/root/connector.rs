@@ -48,7 +48,7 @@ pub const ROOT_OWNER: busbar_contract::conn::InstanceId = busbar_contract::conn:
 /// THE AUTHORIZATION SERVER'S CONNECTION TABLE (`busbar_core_oauth2::Connections`): this process's
 /// one connector, read when a fetch needs it (after boot installed it), its needs under
 /// [`ROOT_OWNER`]. The Client ID Metadata Document fetch rides it, so the connector's one
-/// destination guard judges where it goes (THE DESIGN §5).
+/// destination guard judges where it goes.
 pub struct AuthServerConns;
 
 impl busbar_core_oauth2::Connections for AuthServerConns {

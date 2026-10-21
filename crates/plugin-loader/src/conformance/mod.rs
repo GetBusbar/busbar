@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE PUBLISHED CONFORMANCE SUITE** (TODO ABI-b4; BUSBAR-1.6.0.md THE DESIGN §11.4 "compiled in
-//! or dropped in, the same table", §11.11 M6/contract; Part 2 #2 and #11). OWNER 2026-10-03: *"NO
+//! **THE PUBLISHED CONFORMANCE SUITE** (TODO ABI-b4.4 "compiled in
+//! or dropped in, the same table"; Part 2 #2 and #11). *"NO
 //! TEST PLUGINS. We have real plugins for everything. PLUGINS test themselves against busbar.
 //! busbar doesn't test plugins."* So busbar PUBLISHES this suite and every real plugin repo RUNS it,
-//! in its own CI (`plugin-ci.yml`'s conformance step), at the busbar commit it pins (§9).
+//! in its own CI (`plugin-ci.yml`'s conformance step), at the busbar commit it pins.
 //!
 //! A plugin repo calls it from its own `tests/conformance.rs`, one line:
 //!
@@ -899,7 +899,7 @@ impl Counts<'_> {
 
 /// One step of a kind's script: what it is, what it answered (as the host reads it), the crossings
 /// it made and the crossings the script pins for it. THE PIN IS FIRST INVOCATIONS (Q-P4-5; THE
-/// DESIGN §11.2 Ready | Pending(wake), A.3 "Resume"): one op is one crossing however often it
+/// Ready | Pending(wake), A.3 "Resume"): one op is one crossing however often it
 /// pends; the RESUME re-invocations an op made on its ticket after it answered PENDING are counted
 /// apart and reported (`resumes`), never pinned: how often a real backend makes an op wait is the
 /// network's.
@@ -1010,7 +1010,7 @@ pub fn same(linked: &[Step], dropped: &[Step]) -> Result<(), String> {
 
 /// THE NETWORKED DOOR'S RESUMES (Q-P4-5): a door whose Statement declares a need the suite's table
 /// serves reaches a REAL endpoint through it, so the ops that dial answer PENDING and are
-/// RESUMED on their ticket (THE DESIGN §11.2 Ready | Pending(wake)): each step `dialing` names
+/// RESUMED on their ticket (Ready | Pending(wake)): each step `dialing` names
 /// (`conformance.json`'s `dialing_steps`) resumed at least once, or, when it names none, at least
 /// one step of the fold did. A door that declares no need is not held to it.
 ///
@@ -1288,13 +1288,13 @@ pub fn on_ticket_frame<K: Kind, I: InFrame, O: OutFrame>(
     (answered(&done), done.frame)
 }
 
-/// **THE ONE WAY THE SUITE SUBMITS AN OP** (THE DESIGN §2: "The memory a call lends a plugin lives
+/// **THE ONE WAY THE SUITE SUBMITS AN OP** ("The memory a call lends a plugin lives
 /// until that call completes, abandoned or not (a submit that the watchdog can abandon uses the
 /// lending submit)"): op `s` over `f` on `ticket`, in deadline class and deadline `when` (0 = none),
 /// THROUGH THE DISPATCHER'S LENDING SUBMIT, `lent` the OWNER of every buffer `f`'s pointers name.
 /// The dispatcher holds it with the frame until the op's last crossing returned, so a crossing the
 /// watchdog answered FAULT (this wait then returns) still reads live memory until it returns.
-/// `watch` is the op's own watch budget (a hook's `timeout_ms`, §11.7); `ZERO` keeps its class's.
+/// `watch` is the op's own watch budget (a hook's `timeout_ms`); `ZERO` keeps its class's.
 /// Awaited until the dispatcher settles it (an answer, a deadline's `cancel`, a fault).
 #[allow(clippy::too_many_arguments)] // the dispatcher's lending submit's own eight
 pub(crate) fn submit_on<K: Kind, I: InFrame, O: OutFrame>(

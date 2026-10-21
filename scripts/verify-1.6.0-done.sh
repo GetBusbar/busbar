@@ -1417,7 +1417,7 @@ step "plane-config-noun-gate --selftest" bash scripts/plane-config-noun-gate.sh 
 # number, not the comment that used to claim 19. Lower this number the moment a section is evicted;
 # a fall is reported as a fall and tells you what to lower it to.
 # RE-MEASURED 2026-10-13 on predev 163843dd2c: 10 (pools 5 · agents 2 · streams 3). streams fell 7 -> 3,
-# and `tools` is no longer a scanned noun since mcp left PLANE_KEYS (5e52651535): the gate reads its
+# and `tools` is no longer a scanned noun since mcp left PLANE_KEYS: the gate reads its
 # nouns off the PLANE_KEYS planes' PlaneDecls. The floor follows the measure down, never up.
 # RE-MEASURED 2026-10-18 on dev e757601362: the armed gate read 9, and that fall was NOT a drain.
 # FLIP-A2A struck `a2a` from PLANE_KEYS, so `agents` fell out of the noun set (-2) while core still

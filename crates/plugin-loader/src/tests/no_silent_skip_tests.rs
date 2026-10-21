@@ -18,7 +18,7 @@
 //! The patterns are matched across lines by hand (this crate takes no `regex` dev-dependency): a
 //! guard's call and body may span any number of lines.
 //!
-//! RED: on origin/predev (2a2dadc1e9) the scan fails, listing the sites of status row 114's
+//! RED: on origin/predev the scan fails, listing the sites of status row 114's
 //! plugin-loader sweep — every `skip:` print, every `var_os("CI")` probe, and every let-else and
 //! `is_none()` early return in the Evidence table.
 

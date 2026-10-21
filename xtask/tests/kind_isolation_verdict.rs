@@ -52,7 +52,7 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// The store crate's `lib.rs` as the gate reads it: the crate is pinned (P5), and the gate mounts
+/// The store crate's `lib.rs` as the gate reads it: the crate is pinned, and the gate mounts
 /// its checkout at `crates/<package>` beneath any plant, so the bytes are the checkout's.
 fn pinned_store_lib(cx: &Ctx) -> String {
     let meta = cx

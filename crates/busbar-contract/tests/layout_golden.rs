@@ -1862,9 +1862,9 @@ fn abi_layout_matches_golden() {
              {}\n\
              A reorder, resize, insert or removal changes what a peer built against the golden \
              reads. Until the 1.6.0 tag a v1 layout edit is re-seeded in the same commit with no \
-             version bump (owner 2026-09-28, BUSBAR-1.6.0.md R9): name it with \
+             version bump (until the 1.6.0 tag): name it with \
              `BUSBAR_UPDATE_GOLDEN={RESEED_BREAK}`. From the tag on, it needs that kind's ABI \
-             version bumped (R9).\n",
+             version bumped.\n",
             breaks.join("\n  ")
         );
         std::fs::write(path, &actual).expect("write golden");

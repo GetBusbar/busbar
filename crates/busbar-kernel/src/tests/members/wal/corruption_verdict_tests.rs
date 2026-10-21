@@ -201,7 +201,7 @@ fn a_flipped_byte_in_the_final_record_is_quarantined_not_cut() {
 ///
 /// PROVENANCE. A checked-in test vector, not produced by any encoder at test time. Generated once by
 /// reproducing the version-1 encoder (crates/busbar-kernel-wal/src/record.rs, the
-/// `#[cfg(test)] pub(crate) fn encode_legacy`, at commit 4aa05a13d71ce79bf8e2320c6689e39cb6e03033)
+/// `#[cfg(test)] pub(crate) fn encode_legacy`,)
 /// in a throwaway python3 script using `hashlib.sha256`. Per frame `i` (node 3, node_seq `i + 1`,
 /// body byte `b` = `(node_seq + b) % 251` for `b` in `0..200`): `[0,4)` "BWAL"; `[4,6)` version 1
 /// LE; `[6]` flags 0 (single part); `[7]` 0; `[8,16)` node LE; `[16,24)` node_seq LE; `[24,28)`

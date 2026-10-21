@@ -58,8 +58,8 @@ pub struct SecretResolver {
 /// dependency (the engine wires the registry in at `build_app`).
 pub(crate) type PluginResolveFn = Box<dyn Fn(&str, &str) -> Result<Vec<u8>, String> + Send + Sync>;
 
-/// [`PluginResolveFn`] handed the config-time proof when the caller holds one (THE DESIGN §11.11
-/// R4): a dropped-in source that reads the disk resolves only with it.
+/// [`PluginResolveFn`] handed the config-time proof when the caller holds one
+/// a dropped-in source that reads the disk resolves only with it.
 pub(crate) type ScopedPluginResolveFn = Box<
     dyn Fn(
             &str,
@@ -106,7 +106,7 @@ impl SecretResolver {
     }
 
     /// [`Self::resolve`] at CONFIG TIME, with its proof: the one way a reference to a secret source
-    /// that reads the disk resolves (THE DESIGN §11.11 R4, OWNER 2026-10-13).
+    /// that reads the disk resolves.
     pub(crate) fn resolve_at_config(
         &self,
         secret: &SecretRef,

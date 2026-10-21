@@ -221,7 +221,7 @@ fn authed(claimant: &str, path: &str, points: AuthPoints) -> Line {
     }
 }
 
-/// RED (THE DESIGN §6 step 3, boot refusals): a listener where some lines need `Peer` and others
+/// RED (boot refusals): a listener where some lines need `Peer` and others
 /// need a per-request point without it is refused, naming the lines on each side (a `none` line on
 /// neither); a listener whose lines all need `Peer`, and one where none does, seal.
 #[test]
@@ -265,7 +265,7 @@ fn a_listener_mixing_peer_and_non_peer_lines_is_refused() {
     );
 }
 
-/// RED (THE DESIGN §6 step 3, boot refusals): a line whose auth needs a point its transport does
+/// RED (boot refusals): a line whose auth needs a point its transport does
 /// not offer is refused, naming the line; one whose points its transport offers seals.
 #[test]
 fn an_auth_needing_a_point_its_transport_does_not_offer_is_refused() {
@@ -298,7 +298,7 @@ fn an_auth_needing_a_point_its_transport_does_not_offer_is_refused() {
     );
 }
 
-/// RED (THE DESIGN §6 step 3, l.926-927; step 7, l.969-970): a `none` line needs no point, so it is
+/// RED (l.926-927; step 7, l.969-970): a `none` line needs no point, so it is
 /// neutral to the `Peer` mix rule: a `Peer` chain and a `none` line on one listener seal, and the
 /// sealed list is connection-gated, so the `none` line sits behind the connection's `Peer` verdict.
 /// A `Peer` chain and a `Head` chain on one listener are still refused. A list with no `Peer` line
@@ -338,7 +338,7 @@ fn a_none_line_is_neutral_to_the_peer_mix_and_sits_behind_the_peer_verdict() {
     assert!(!open.connection_gated(), "no Peer line, no connection gate");
 }
 
-/// RED (ARCHITECT ruling (a) on #953; THE DESIGN §6 step 3, §11 extensions-blob defaults): the
+/// RED (on #953, extensions-blob defaults): the
 /// offered set is what the transport's Statement `extensions` record states. A transport stating
 /// `{Peer}` only refuses a line that needs `Head`; a transport stating no record offers `{Head,
 /// HeadBody}`, so a `Head` line seals on it and a `Peer` line is refused: a transport offering

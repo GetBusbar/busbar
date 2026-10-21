@@ -1479,7 +1479,7 @@ fn random_fill_writes_the_kernels_bytes_and_refuses_outside_its_cap_before_the_k
 }
 
 /// RED (loader-PL1 #5): a late completion from an op that is over never lands on the next op's
-/// handle on the same ticket (THE DESIGN §11.11 H2, §11.12). The first op's service pends and the
+/// handle on the same ticket. The first op's service pends and the
 /// op ends unredeemed (a deadline `cancel`, or it answered without redeeming); a new op starts on
 /// the ticket (the worker forgets the ticket's results at every new op's start) and its handle 0
 /// pends too. The first op's completer then answers: it wakes nothing and the new op does not read
@@ -1840,7 +1840,7 @@ fn blank_written() -> svc::DiskWritten {
     }
 }
 
-/// THE DESTINATION RULE (THE DESIGN §11.12 `disk.append`): an instance appends only to the
+/// THE DESTINATION RULE (`disk.append`): an instance appends only to the
 /// destinations its manifest declares (granted by the opener), at the path its settings bound; a key
 /// it was not granted, or one its settings leave unset, is never opened: FAILED at the
 /// `DISK_OPEN_FAILED` step in the host's words before the kernel sees anything, the step a sink
@@ -2243,7 +2243,7 @@ fn a_forged_context_is_refused_before_it_names_an_instance() {
     assert_eq!(*d.route.wakes.lock().unwrap(), vec![woken]);
 }
 
-/// RED (THE DESIGN §11.13 M1, "Every slice built from a plugin-reported length is capped and
+/// RED ("Every slice built from a plugin-reported length is capped and
 /// validated before it is formed"; audit PL1 #1): a service's `in` string or blob stated over the
 /// hard byte maximum (`u32::MAX`) is refused before any slice is formed or copied, as NULL with a
 /// length is. Run in a child: a copy past the caller's eight bytes kills the process.

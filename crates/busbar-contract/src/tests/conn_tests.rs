@@ -153,7 +153,7 @@ fn a_programs_environment_never_prints() {
     assert!(!printed.contains("s3cr3t-value"), "{printed}");
 }
 
-/// RED (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)): a member-program need's member is read off its
+/// RED: a member-program need's member is read off its
 /// REGISTRATION: `command`, `args` and `env`, every other key of the registration ignored (it is the
 /// registration's own, never the program's); a registration naming no `command` is no member; the
 /// three keys are judged as a program is.

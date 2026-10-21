@@ -1974,7 +1974,7 @@ async fn a_refused_arrival_is_rendered_in_the_planes_own_words() {
     );
 }
 
-// ── a unit served as a session (ARCHITECT round 5 Q-L3B-K6-HTTP (a)) ───────────────────────────
+// ── a unit served as a session ───────────────────────────
 
 /// A request's caller side, as the composition root's ingress caller is: its read yields the
 /// arrival's body once, then nothing until the caller goes away, when its side ends.
@@ -2022,7 +2022,7 @@ impl busbar_kernel::plane_driver::SessionCaller for OnceCaller {
     }
 }
 
-/// A `ROUTE_SESSION` ARRIVAL IS DRIVEN AS A SESSION (ARCHITECT round 5 Q-L3B-K6-HTTP (a)): the
+/// A `ROUTE_SESSION` ARRIVAL IS DRIVEN AS A SESSION: the
 /// loop's route leg is the duplex session, its caller leg the unit's own caller side, whose read
 /// yields the arrival's body ONCE (one caller piece, on the unit's stream); the instance's tick
 /// owes the session output, `drive` names it, and the session collects it on its caller-side ticket

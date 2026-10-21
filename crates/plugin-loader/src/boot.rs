@@ -209,8 +209,8 @@ pub struct Candidate {
     pub stated: Vec<u8>,
     /// Where it comes from.
     pub origin: Origin,
-    /// Whether its source reads the local disk (`declares.disk`, a `kind: secret` source only; THE
-    /// DESIGN §11.11 R4): its `resolve` runs on the host's disk lane at config time, never on a
+    /// Whether its source reads the local disk (`declares.disk`, a `kind: secret` source only):
+    /// its `resolve` runs on the host's disk lane at config time, never on a
     /// request path.
     pub disk: bool,
 }
@@ -806,7 +806,7 @@ pub struct Opening<'a> {
     /// resolved through it, in that order, into `OpenIn::secrets`, and stripped from the settings
     /// `open` is handed (ARCHITECT 2026-10-02).
     pub secrets: &'a dyn busbar_contract::secret::SecretResolve,
-    /// The config-time proof the boot that loads holds (THE DESIGN §11.11 R4): every declared
+    /// The config-time proof the boot that loads holds: every declared
     /// secret resolves through it, so a source that reads the disk answers on the host's lane.
     pub scope: &'a busbar_contract::config_time::ConfigScope,
 }

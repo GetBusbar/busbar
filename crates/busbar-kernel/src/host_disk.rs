@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOST'S BOUNDED DISK LANE (`BUSBAR-1.6.0.md` THE DESIGN §11.11 R4, Q-DISK; §11.12
+//! THE HOST'S BOUNDED DISK LANE (`BUSBAR-1.6.0.md` 
 //! `disk.append`): the ONE exception to "no blocking", scoped to the file export sink and the SQLite
 //! store. A plugin never blocks on a file and never opens a path: it names a destination key, the
 //! loader maps it to the file the operator configured, and the append runs HERE, on one lane
@@ -46,7 +46,7 @@ pub const LANE_FULL: &str = "the host's disk lane is full";
 pub const LANE_GONE: &str = "the host's disk lane is not running";
 
 /// One job the lane owes: an append, or a config-time read a disk-declared secret source runs here
-/// (THE DESIGN §11.11 R4 as the OWNER amended it, 2026-10-13).
+/// (as the amended it, 2026-10-13).
 enum Job {
     Append {
         dest: DiskDest,
@@ -80,7 +80,7 @@ impl DiskLane {
     }
 
     /// Run `job` on the lane thread, in order with the appends: a disk-declared secret source's
-    /// config-time `resolve` (THE DESIGN §11.11 R4, OWNER 2026-10-13). The lane's bound holds it as
+    /// config-time `resolve`. The lane's bound holds it as
     /// it holds an append; the caller waits for the job's own answer with its own deadline.
     ///
     /// # Errors

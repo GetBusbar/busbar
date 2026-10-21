@@ -738,7 +738,7 @@ macro_rules! c_abi {
 pub(crate) use c_abi;
 
 /// RED (loader-PL1 #6): an `open` that PENDS and then answers FAULT on its RESUME leaves no
-/// instance published (THE DESIGN §11.13; [`Plugin::is_open`]: "`open` answered READY"). The
+/// instance published ([`Plugin::is_open`]: "`open` answered READY"). The
 /// restated `open` mints its box and pends; while it is in flight the instance is not open and a
 /// non-lifecycle op is refused. Resumed, it frees the box (as the SDK frees a half-open box on any
 /// outcome but READY/PENDING) and answers FAULT: the instance is not open, and neither a `close`

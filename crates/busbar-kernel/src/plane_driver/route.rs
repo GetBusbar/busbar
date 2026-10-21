@@ -859,7 +859,7 @@ impl<'u> Pumping<'u> {
     }
 
     /// Whether the unit moves money: a tick unit (a health probe) is zero-billed and draws no
-    /// lease, §1's exempt origins.
+    /// lease, 's exempt origins.
     fn billed(&self) -> bool {
         takes_lease(self.ctx.origin, self.ctx.kernel_verb_only)
     }
@@ -1403,7 +1403,7 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             let bufs = &run.bufs;
             let emitted = &bufs.reply[..(out.emitted as usize).min(bufs.reply.len())];
             // A DECLINED MEMBER: the plane answered a piece bound for the far end with nothing at all
-            // and the retry verdict (a member this unit may not reach, ARCHITECT round 4
+            // and the retry verdict (a member this unit may not reach
             // Q-L3B-SURFACES (h)): nothing was sent, so the walk moves to its next member.
             if let Toward::FarEnd(_) = toward {
                 if out.verdict == VERDICT_RETRY
@@ -1564,7 +1564,7 @@ fn route_policy_fields(
     }
 }
 
-/// The duplex session's two sides, on this pump (K6): a child module, so it drives the pump's own
+/// The duplex session's two sides, on this pump: a child module, so it drives the pump's own
 /// pieces and push.
 #[path = "session.rs"]
 mod session;

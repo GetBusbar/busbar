@@ -693,7 +693,7 @@ fn a_holder_that_does_not_read_holds_the_far_end_back() {
     });
 }
 
-/// RED (THE DESIGN §5 "Writes are back-pressured (a full buffer answers not-ready)"; resource
+/// RED ("Writes are back-pressured (a full buffer answers not-ready)"; resource
 /// bounds): what the framer answers to what it read on its own (an h2 PING's ack, a ws pong) is
 /// bounded too. A far end that sends and never reads stops being read once those answers fill the
 /// write side; queued with no cap while the socket kept being read, they grew host memory at the
@@ -744,7 +744,7 @@ fn a_far_end_that_never_reads_is_not_read_past_the_answers_it_is_owed() {
     });
 }
 
-/// RED (THE DESIGN §5: TLS is the connector's, "today's code moved byte-identically"; a write is
+/// RED (TLS is the connector's, "today's code moved byte-identically"; a write is
 /// taken up to `WRITE_BUFFER_BYTES`): one write larger than the TLS library's default send buffer
 /// (64 KiB) crosses whole, encrypted, in order. Handed to the TLS writer in one piece past that
 /// buffer, the write failed the connection ("failed to write whole buffer").

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A PROGRAM'S ENVIRONMENT, RESOLVED AT CONFIG TIME AND HELD FOR ITS SPAWNS (row 166, ARCHITECT
-//! ruling 2026-10-13 on THE DESIGN §11.11 R4 as the OWNER amended it).
+//! -10-13 on as the amended it).
 //!
 //! A program's environment entries written as SECRET REFERENCES (`Program::env_refs`) resolve
 //! when the need that names the program is DECLARED — a plane's load, a config apply — with the

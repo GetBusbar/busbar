@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! WHAT THE AUTHORIZATION SERVER HOLDS, KEPT IN THE DEPLOYMENT'S STORE, so every node behind one
-//! store serves one server (THE DESIGN §1: "Multi-node is the design ... Nodes share one store").
+//! store serves one server ("Multi-node is the design... Nodes share one store").
 //!
 //! The server's records live as kernel-owned plane-record kinds under one fixed kernel label
 //! ([`LABEL`]), written through the store's existing plane-record verbs and its one atomic step,

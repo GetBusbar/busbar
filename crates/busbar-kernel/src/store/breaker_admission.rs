@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! BREAKER ADMISSION FOR A REGISTERED TARGET — the per-target cells a plane's dispatch is admitted
-//! through on the one breaker (THE DESIGN §1: the breaker is one of the kernel's valves), the RAII
-//! [`Admission`] token whose `Drop` releases a won recovery probe (Part 3 §4), and the recording
+//! through on the one breaker (the breaker is one of the kernel's valves), the RAII
+//! [`Admission`] token whose `Drop` releases a won recovery probe, and the recording
 //! half of the disposition pipeline.
 //!
 //! ## What this is and what it is not

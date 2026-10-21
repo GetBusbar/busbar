@@ -36226,7 +36226,7 @@
           ]
         ]
       },
-      "why": "TODO item X-235 (`reserved-tier-absent-is-zero`, Q92): a card that prices ONLY input and output (`cache_read_utok` / `cache_write_utok` absent) and an anthropic answer reporting 50 cache-read and 20 cache-write tokens. 1.5.5 prices an absent reserved tier at 0, the one scoped exception to #77(5): the cache token columns are counted and add nothing to spend_micros. The upstream answer is FIXED by the cell."
+      "why": "`reserved-tier-absent-is-zero`: a card that prices ONLY input and output (`cache_read_utok` / `cache_write_utok` absent) and an anthropic answer reporting 50 cache-read and 20 cache-write tokens. 1.5.5 prices an absent reserved tier at 0, the one scoped exception to #77(5): the cache token columns are counted and add nothing to spend_micros. The upstream answer is FIXED by the cell."
     },
     {
       "id": "money.reserved-tier|absent|openai-cached",
@@ -39764,7 +39764,7 @@
           ]
         ]
       },
-      "why": "TODO item 576 (`gemini-tool-use-billing`, Q91): a Gemini answer whose usageMetadata carries `toolUsePromptTokenCount` (32) BESIDE `promptTokenCount` (18) and `candidatesTokenCount` (7), with Google's `totalTokenCount` = 57 = their sum. The owner ruled (2026-09-07) that the turn bills Google's total; what 1.5.5 billed (the token columns and spend_micros of GET /admin/usage) and what the caller is told (the openai `usage` block) are recorded so the ruling's registered difference rests on bytes. The upstream answer is FIXED by the cell (the capture mock), so the recording varies only with the build under test."
+      "why": "`gemini-tool-use-billing`: a Gemini answer whose usageMetadata carries `toolUsePromptTokenCount` (32) BESIDE `promptTokenCount` (18) and `candidatesTokenCount` (7), with Google's `totalTokenCount` = 57 = their sum. The owner ruled (2026-09-07) that the turn bills Google's total; what 1.5.5 billed (the token columns and spend_micros of GET /admin/usage) and what the caller is told (the openai `usage` block) are recorded so the ruling's registered difference rests on bytes. The upstream answer is FIXED by the cell (the capture mock), so the recording varies only with the build under test."
     },
     {
       "id": "usage.gemini|tool-use|total-not-a-sum",

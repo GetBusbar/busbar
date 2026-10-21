@@ -348,7 +348,7 @@ PY
 
 check() {
   local dir="$1"
-  [ -d "$dir" ] || die "no fixture at $dir: every store backend owes one (#33, M5)"
+  [ -d "$dir" ] || die "no fixture at $dir: every store backend owes one"
   local m="$dir/MANIFEST.tsv"
   [ -f "$m" ] || die "$dir has no MANIFEST.tsv"
   local busbar plugin

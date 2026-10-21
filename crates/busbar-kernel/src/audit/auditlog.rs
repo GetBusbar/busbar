@@ -30,7 +30,7 @@
 //!
 //! `GET /audit` serves each record's `hash`, and 1.5.5 published it as `sha256(prev_hash | seq | ts |
 //! action | resource | outcome | principal)` (v1.5.5 `crates/busbar/src/admin/audit.rs:61-73`). THE
-//! DESIGN §7 keeps that byte ("with no change to a 1.5.5 byte; `GET /audit` is unchanged"), so a new
+//! keeps that byte ("with no change to a 1.5.5 byte; `GET /audit` is unchanged"), so a new
 //! write ([`emit_admin_hostless`], through [`admin_suffix`]) seals the legacy pipe suffix
 //! ([`audit_suffix`], scheme 1) whenever it splits back apart exactly.
 //!
@@ -174,7 +174,7 @@ pub(crate) fn audit_suffix_safe(
 /// The 1.5.5 pipe join ([`audit_suffix`], scheme 1) whenever `action`, `resource` and `outcome` carry
 /// no `|`: the minted `hash` is then exactly 1.5.5's served formula `sha256(prev_hash | seq | ts |
 /// action | resource | outcome | principal)` (v1.5.5 `crates/busbar/src/admin/audit.rs:61-73`; THE
-/// DESIGN §7 "`GET /audit` is unchanged"), and [`parse_audit_suffix`] splits it back exactly (a `|`
+/// "`GET /audit` is unchanged"), and [`parse_audit_suffix`] splits it back exactly (a `|`
 /// in `principal`, the last field, stays in it). Otherwise the length-prefixed suffix
 /// ([`audit_suffix_safe`], scheme 2), whose recipe [`AuditEntry`]'s scheme-2 digest reproduces, so a
 /// served record always recomputes under the scheme it declares (Q128 p12#1).
@@ -458,7 +458,7 @@ impl PlaneAuditLog {
     /// append reads the persisted tail back and continues it rather than opening a second seq-1
     /// record beside the chain the store already holds; a store still down at that append fails the
     /// write, which is queued, never forked (Q128 p12#2; `crate::audit` "a restart continues the same
-    /// chain rather than opening a second one under the same scope"; THE DESIGN §7 "the audit chain
+    /// chain rather than opening a second one under the same scope"; "the audit chain
     /// verified over retained records").
     pub(crate) fn restore_from_store(
         &self,
@@ -745,7 +745,7 @@ fn drain_pending_audit() {
 /// - a store whose `plane_records` hold a PREFIX of the legacy chain (a copy an earlier boot left
 ///   part-way: records are appended one at a time, so a store error stops it after some of them)
 ///   gets the REST, every legacy record above the highest seq already copied — the copy resumes,
-///   it never skips (Q128 p12#3; THE DESIGN §7 "the audit chain verified over retained records");
+///   it never skips (Q128 p12#3; "the audit chain verified over retained records");
 /// - a store whose `plane_records` disagree with the legacy chain at the seq they share (records
 ///   the seam wrote over a part-way copy) is NOT merged: two chains cannot be spliced without
 ///   re-sealing, so the migration copies nothing and returns an error naming the seq, which the boot

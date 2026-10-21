@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE LINE CARRIER (SEAM-S1; ARCHITECT Q1a, consistent with round 4's line-shape ruling (B)): the
+//! THE LINE CARRIER: the
 //! process's own stdin/stdout, held open as ONE carrier session for one caller. busbar is somebody's
 //! child process here, binds no listener, and serves the door claim a served plane makes over the
 //! line carrier's key ([`carrier`]): the one linked transport claim whose row opens its unit 0 on

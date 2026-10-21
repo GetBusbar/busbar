@@ -4,13 +4,13 @@
 //! THE PLUGIN LOADER: discovery, trust and the registry ([`registry`], [`sign`], [`tarball`]); the
 //! ONE loading path and the ONE dispatcher of the memory ABI ([`dispatch`]: `load_linked` /
 //! `load_dropped`), through which every store, secret, auth, hook and export plugin loads,
-//! compiled in or dropped in (`BUSBAR-1.6.0.md` THE DESIGN §11). Every plane and every transport
+//! compiled in or dropped in (`BUSBAR-1.6.0.md`). Every plane and every transport
 //! loads through its door too.
 //!
 //! No plugin of any kind loads through a JSON lane or the HOT `#[repr(C)]` decl lane: both are gone
 //! (row 84), with the handshake they shared (`busbar_abi`, `busbar_plugin_kind`).
 //!
-//! UNSAFE CODE (`BUSBAR-1.6.0.md` THE DESIGN §2: "transport, loader, store and export crates are
+//! UNSAFE CODE (`BUSBAR-1.6.0.md` "transport, loader, store and export crates are
 //! `#![deny(unsafe_code)]` with a reviewed allow-list"): denied for the whole crate. THE REVIEWED
 //! ALLOW-LIST is every `#[allow(unsafe_code)]` below and the two named functions: the modules that
 //! cross the memory ABI (the dispatcher, the doors and axes that lend it memory, the plugin thread,

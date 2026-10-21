@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE KERNEL OPENS NO SOCKET (status row 130; BUSBAR-1.6.0.md THE DESIGN §1 and §5). The kernel is a
+//! THE KERNEL OPENS NO SOCKET (and). The kernel is a
 //! byte pump that knows nothing about transport: the chain is kernel -> `busbar-core-connector` ->
 //! transport plugins, the connector binds every listener and dials every connection, and the
 //! composition root serves what the connector hands up. So no production source of this crate may
@@ -196,8 +196,8 @@ fn the_kernel_names_no_socket_beyond_the_pin() {
     let (new, drained) = verdict(&measure_sources(&root), &pinned_sources());
     assert!(
         new.is_empty(),
-        "busbar-kernel names a socket, resolver or HTTP stack the pin does not hold (THE DESIGN \
-         §5: every dial and listener is the connector's): {new:?}"
+        "busbar-kernel names a socket, resolver or HTTP stack the pin does not hold (every dial and listener is \
+         the connector's): {new:?}"
     );
     assert!(
         drained.is_empty(),

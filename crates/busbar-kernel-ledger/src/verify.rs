@@ -8,7 +8,7 @@
 //! ignored — so this one returns findings.
 //!
 //! Every window is measured by the identity alone. A window is never treated as closed: a line
-//! written late files under the window of its unit's arrival (THE DESIGN §7), so an earlier window
+//! written late files under the window of its unit's arrival, so an earlier window
 //! may legitimately move after the day it covers has ended. A closed-window arm used to sit here
 //! behind a window-state seam whose only production answer was "everything is open", so it never
 //! ran; it is deleted rather than kept as a check nothing performs.

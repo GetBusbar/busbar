@@ -192,7 +192,7 @@ impl busbar_contract::secret::SecretResolve for ConfigTimeOnly {
     }
 }
 
-/// THE CONFIG-TIME ROUTE (THE DESIGN §11.11 R4, OWNER 2026-10-13): a plugin's settings resolve at
+/// THE CONFIG-TIME ROUTE: a plugin's settings resolve at
 /// boot, apply or refresh, so `resolve_settings` asks through the config-time form with the proof
 /// it was handed. A resolution that fell back to the request-path form would meet the source's
 /// refusal here.

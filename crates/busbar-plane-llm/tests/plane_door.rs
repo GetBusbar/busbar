@@ -377,7 +377,7 @@ fn red_no_dialects_governed_response_field_leaks_through_a_need() {
         ] {
             assert!(
                 keeps_response_field(n.keep_mode, &[], &denied, relayed, none),
-                "`{relayed}` is the upstream's and crosses (F2)"
+                "`{relayed}` is the upstream's and crosses"
             );
         }
     }

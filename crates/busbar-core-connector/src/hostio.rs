@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOST'S I/O, `io.*` (`busbar_contract::abi::host::io`; `BUSBAR-1.6.0.md` THE DESIGN §5: "No
+//! THE HOST'S I/O, `io.*` (`busbar_contract::abi::host::io`; `BUSBAR-1.6.0.md` "No
 //! plugin opens a socket, dials, binds or does TLS"; TRANSPORT-STACK (2): a carrier writes "with
 //! readiness via core `io.*`"): the ONE place in this crate that holds an OS handle — a stream
 //! socket (IP or unix-domain), a listener, a spawned program's two pipes — and moves bytes over it.
@@ -11,7 +11,7 @@
 //! [`HostIo`] implements the contract's [`IoHost`]: the loader's `io` slots dispatch every carrier
 //! instance's `io.*` call into it, and a handle belongs to the instance whose call made it.
 //!
-//! * THE DESTINATION GUARD STAYS ONE CHECK (THE DESIGN §5, OWNER ruling 2026-10-02): the connector
+//! * THE DESTINATION GUARD STAYS ONE CHECK: the connector
 //!   judges and pins every address before it asks a carrier to dial, and ADMITS exactly what it
 //!   judged for the dial's ticket ([`HostIo::admit`]); `open` reaches only an admitted address,
 //!   `listen` binds only an admitted bind, `spawn` starts only the admitted program. Anything else is

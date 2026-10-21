@@ -53,7 +53,7 @@ const WAIT: Duration = Duration::from_secs(40);
 /// How many calls one secret instance holds in flight, at most.
 const MAX_INFLIGHT_CAP: u32 = 16;
 
-/// The host's hook onto its one bounded disk lane (THE DESIGN §11.11 R4): run a job on the lane
+/// The host's hook onto its one bounded disk lane: run a job on the lane
 /// thread, or say why it was not taken (the lane is full or not running).
 pub type DiskRun = fn(Box<dyn FnOnce() + Send>) -> Result<(), String>;
 
@@ -174,7 +174,7 @@ impl LoadedSecret {
         })
     }
 
-    /// This instance as a source that reads the disk (its `declares.disk`, THE DESIGN §11.11 R4):
+    /// This instance as a source that reads the disk (its `declares.disk`):
     /// its `resolve` runs on the host's disk lane `lane` at config time only, and is refused without
     /// the config-time proof. With no lane wired, every resolve is refused.
     #[must_use]
@@ -294,7 +294,7 @@ impl SecretCalls for LoadedSecret {
     fn resolve(&self, settings: &[u8]) -> Result<SecretValue<Vec<u8>>, SecretRefused> {
         let name = self.name();
         if !matches!(self.disk, Disk::No) {
-            // A source that reads the disk answers at config time only (THE DESIGN §11.11 R4).
+            // A source that reads the disk answers at config time only.
             return Err(refused(
                 ERROR_KIND_DENIED,
                 format!("secret module '{name}': {RESOLVE_OFF_CONFIG_TIME}"),
@@ -459,7 +459,7 @@ impl SecretRows {
     }
 
     /// A source that declares a disk need resolves on the host's one disk lane `run`, at config
-    /// time only (THE DESIGN §11.11 R4, as the OWNER amended it 2026-10-13).
+    /// time only (as the amended it 2026-10-13).
     #[must_use]
     pub fn with_disk_lane(mut self, run: DiskRun) -> Self {
         self.disk_run = Some(run);
@@ -495,7 +495,7 @@ impl SecretRows {
     }
 
     /// Every opened instance logs to its own file under the `plugins.logs` configuration `logs`
-    /// answers (THE DESIGN §11.2 Plugin logging: no logs for plugins is not an option).
+    /// answers (Plugin logging: no logs for plugins is not an option).
     #[must_use]
     pub fn with_logs(mut self, logs: fn() -> PluginLogConfig) -> Self {
         self.logs = Some(logs);
@@ -655,7 +655,7 @@ impl SecretAxis for SecretRows {
             .iter()
             .find(|c| answers(c, module))
             .ok_or_else(|| format!("no linked secret module answers to '{module}'"))?;
-        // Bound and opened with the map's lock let go (THE DESIGN §11.13 M1).
+        // Bound and opened with the map's lock let go.
         let label = Self::label(module);
         let (s, _) = self.shared.get_or_open(&c.name, || {
             LoadedSecret::open(self.load(c, &label)?, (self.dispatcher)(), &[], &[])

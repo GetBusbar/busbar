@@ -154,14 +154,14 @@ fn a_refusal_after_logging_is_up_reports_no_second_init() {
 /// line written after logging is up, and logs no second init on the way.
 #[test]
 fn a_clean_boot_reports_no_second_init() {
-    const W14: &str = "store: in-memory (ephemeral)";
+    const STORE_EPHEMERAL: &str = "store: in-memory (ephemeral)";
     let dir = fixture_dir("w14");
     write_configs(&dir, "{module: memory}");
-    let (out, code) = boot_until(&dir, |text| text.contains(W14));
+    let (out, code) = boot_until(&dir, |text| text.contains(STORE_EPHEMERAL));
     assert_eq!(code, None, "the boot stays up; output:\n{out}");
     assert!(
-        out.contains("busbar starting") && out.contains(W14),
-        "the subscriber is installed and the W14 warning is written; output:\n{out}"
+        out.contains("busbar starting") && out.contains(STORE_EPHEMERAL),
+        "the subscriber is installed and the ephemeral-store warning is written; output:\n{out}"
     );
     assert!(
         !out.contains(DOUBLE_INIT) && !out.contains(BRIDGE_TAKEN),

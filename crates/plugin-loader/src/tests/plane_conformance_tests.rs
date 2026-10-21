@@ -98,7 +98,7 @@ fn a_plane_with_no_door_is_refused() {
 }
 
 /// `supported_abi("plane")` gates a plane's manifest `abi_version` at the plane kind's one version
-/// (THE DESIGN §11.2, A.9: no range).
+/// (A.9: no range).
 #[test]
 fn plane_supported_abi_is_the_plane_kinds_one_version() {
     let range = crate::registry::supported_abi("plane");

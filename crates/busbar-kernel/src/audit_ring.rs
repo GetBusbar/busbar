@@ -126,7 +126,7 @@ pub const AUDIT_SCHEME_PIPE: u8 = 1;
 /// prelude (pipe-joined; neither field is caller text), then
 /// [`crate::audit::auditlog::audit_suffix_safe`] (a marker byte, then `ts`/`action`/`resource`/
 /// `outcome`/`principal` each length-prefixed). A served record that says scheme 2 recomputes under
-/// exactly the bytes its `hash` was minted over (Q128 p12#1; THE DESIGN §1 "integrity (prev hash)").
+/// exactly the bytes its `hash` was minted over (Q128 p12#1; "integrity (prev hash)").
 pub const AUDIT_SCHEME_LENGTH_PREFIXED: u8 = 2;
 
 /// The [`AuditEntry::scheme`] a store's silence means. A free function because `serde`'s `default`

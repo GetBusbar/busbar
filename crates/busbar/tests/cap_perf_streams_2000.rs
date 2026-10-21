@@ -10,7 +10,7 @@
 //! arrived, so the 2,000 are in flight through busbar together, never one after another; then it
 //! finishes them. Each caller must read a 200 and the far end's exact stream, byte for byte. There
 //! is deliberately no speed threshold: the PERF phase's A/B against published 1.5.5 is the speed
-//! proof (THE DESIGN §11.9); this cell proves nothing is dropped, cut, crossed or parked.
+//! proof; this cell proves nothing is dropped, cut, crossed or parked.
 //!
 //! 2,000 streams are 4,000 sockets on each side of busbar, above many hosts' default soft limit on
 //! open files. The cell therefore runs itself again under `ulimit -n` raised to the hard limit

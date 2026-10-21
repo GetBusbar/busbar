@@ -61,7 +61,7 @@ pub struct Linked {
     pub plane_door_slots: &'static [usize],
     /// Each linked secret door's DECLARED METADATA, `(door, declares)`: its `declares.json` (named by
     /// `[package.metadata.busbar.linked-declares]`), read as a dropped-in copy's signed `declares`
-    /// is — its disk need (THE DESIGN §11.11 R4). A door with no row declares none.
+    /// is — its disk need. A door with no row declares none.
     pub secret_declares: &'static [(busbar_contract::abi::mechanism::door::DoorFn, &'static str)],
     /// Each linked plane door's DECLARED METADATA, `(row, door, declares)`: its manifest `declares`
     /// section as JSON (the crate's `declares.json`, named by `[package.metadata.busbar.linked-declares]`),
@@ -179,7 +179,7 @@ pub struct LinkedTransport {
     /// carrier the process's own stdin/stdout serves (`crate::root::serve::lines::line_carrier`).
     pub lines: ClaimsOf,
     /// The auth points it offers, read off the door's Statement (`abi::transport::
-    /// EXT_OFFERED_POINTS`): a guest-list line's auth may need no other (THE DESIGN §6 step 3).
+    /// EXT_OFFERED_POINTS`): a guest-list line's auth may need no other.
     pub offered: OfferedOf,
 }
 
@@ -361,7 +361,7 @@ pub fn register_stores(linked: &Linked) {
         }
     }
     // A member program's `env` secret references resolve through the same linked secret plugins
-    // (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)), at CONFIG TIME — the need's declaration at a
+    // at CONFIG TIME — the need's declaration at a
     // plane's load or a config apply, and the connector's refresher — and are held for the spawns,
     // which resolve nothing (ARCHITECT ruling 2026-10-13, row 166: a spawn serves a request).
     busbar_core_connector::compose::install_spawn_secrets(
@@ -420,7 +420,7 @@ pub fn link_secrets(
     Ok(SECRETS.get_or_init(|| rows))
 }
 
-/// THE PROCESS'S ONE DISK LANE (THE DESIGN §11.11 R4): the kernel's host services append on it
+/// THE PROCESS'S ONE DISK LANE: the kernel's host services append on it
 /// ([`crate::root::serve::kernel_services`]) and a disk-declared secret source's config-time
 /// `resolve` runs on it ([`disk_run`]).
 static DISK: std::sync::OnceLock<std::sync::Arc<busbar_kernel::host_disk::DiskLane>> =

@@ -4,7 +4,7 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2034  # LEG_KIND/LEG_STATUS/LEG_SLICES are read by voice-conformance.sh on source
 #
-# LEG: exit-terminal — one session ends ONCE (BUSBAR-1.6.0.md THE DESIGN §1, the exit step).
+# LEG: exit-terminal — one session ends ONCE (the exit step).
 #
 # THE DOOR'S HALF (judged, linked AND dropped door): the caller's end settles the open turn's audio
 # seconds once and carries the session's end exactly once (cumulative units final); afterwards the

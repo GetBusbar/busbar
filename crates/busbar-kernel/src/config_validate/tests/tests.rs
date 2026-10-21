@@ -3333,7 +3333,7 @@ fn test_validate_accepts_uppercase_url_scheme() {
     assert!(!scheme_is("httpsx://h", "https"));
 }
 
-/// ROW 74 (F25): a provider `base_url` carrying `user:pass@` is ACCEPTED, as 1.5.5 accepted it
+/// A provider `base_url` carrying `user:pass@` is ACCEPTED, as 1.5.5 accepted it
 /// (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`), and a PLANTED SCAN over every base-URL refusal
 /// this validator writes — the scheme arm, the plaintext-to-a-public-host arm, the metadata arm and
 /// the two composed (`path`, `path_base`) arms — finds neither half of the planted spelling in any
@@ -3395,7 +3395,7 @@ fn a_base_url_userinfo_is_accepted_and_no_validation_error_repeats_it() {
             "each refusal still names the host it is about: {about:?}"
         );
     }
-    // The token endpoint (row 74, F25): accepted as 1.5.5 accepted it, and repeated redacted.
+    // The token endpoint: accepted as 1.5.5 accepted it, and repeated redacted.
     let with_token_url = |token_url: String| {
         let mut providers = HashMap::new();
         let mut p = make_provider(proto_b(), "https://api.example.com", "API_KEY");

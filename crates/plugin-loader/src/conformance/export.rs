@@ -268,7 +268,7 @@ fn snapshot(families: &serde_json::Value) -> Snapshot {
 /// (`export_door`): on a ticket of `d`'s, write-behind, so a delivery that waits on the network
 /// answers PENDING and is RESUMED on its wake.
 fn deliver(p: &Plugin<Export>, d: &Dispatcher, stream: u8, batch: &[u8], n: u8) -> String {
-    // The batch rides with the op (THE DESIGN §2): the lending submit owns it.
+    // The batch rides with the op: the lending submit owns it.
     let batch: std::sync::Arc<Vec<u8>> = std::sync::Arc::new(batch.to_vec());
     let mut f: Frame<DeliverIn, OutHead> = Frame::new(input(), output());
     f.input.op_id = [n; 16];
@@ -318,7 +318,7 @@ fn scrape(p: &Plugin<Export>, families: &[ScrapeFamily], cap: usize, exposition:
 /// Whether the dispatcher JUDGED `c`'s answer, so what its `out` names may be read: every outcome
 /// but FAULT is judged by the kind's check (a FAULT is the answer the check refused, or a crossing
 /// the host cut, and its `out` is the plugin's unjudged words), and PENDING never reaches a
-/// ticket-less caller (THE DESIGN §11.13 M1: a slice is formed only from a length the host judged).
+/// ticket-less caller (a slice is formed only from a length the host judged).
 fn judged(c: &Called) -> bool {
     matches!(
         c.outcome,

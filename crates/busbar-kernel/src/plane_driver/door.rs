@@ -454,7 +454,7 @@ fn dealt(section: &str, settings: Vec<u8>) -> Result<Vec<u8>, String> {
 
 /// The section `key` as it crosses to the door (its `validate`, its facing probe): JSON, in the order
 /// it was written, a secret reference at every credential position `${VAR}` filled (a plane never
-/// receives secret bytes, THE DESIGN §6; [`crate::config::filled::plane_bound`]); empty when absent.
+/// receives secret bytes; [`crate::config::filled::plane_bound`]); empty when absent.
 fn settings_of(key: &str, value: &serde_yaml::Value) -> Result<Vec<u8>, String> {
     crate::config::filled::plane_bound_bytes(&[key], value)
 }

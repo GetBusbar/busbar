@@ -28,7 +28,7 @@ pub const RESERVED_SECTION_KEYS: &[&str] = &["hooks", UPSTREAM_CREDENTIALS_KEY];
 /// `passthrough`), the section's default and a registration's override.
 pub const UPSTREAM_CREDENTIALS_KEY: &str = "upstream_credentials";
 
-/// A registration's RFC 8693 `token_exchange:` block (ARCHITECT round 5 Q-L3B-EXCHANGE (B)): busbar's
+/// A registration's RFC 8693 `token_exchange:` block: busbar's
 /// own subject token is exchanged, per call, for a token down-scoped to the caller's grant and
 /// audience-bound to the registration's [`AUDIENCE_KEY`]. Its keys are [`TOKEN_URL_KEY`],
 /// [`SUBJECT_TOKEN_KEY`] (a secret reference) and [`SUBJECT_TOKEN_TYPE_KEY`].
@@ -79,8 +79,8 @@ pub const AUDIENCE_KEY: &str = "aud";
 /// THE RESERVED `pools` SUB-KEY of a plane's section (#47, POOLS-VERBS): its named pools, each a list
 /// of the section's own entries under `members`, and the operations it may repeat under
 /// [`POOL_REPEATABLE_KEY`]. Core-owned: the kernel walks it; a plane reads it only to name the pool
-/// a unit routes over and whether its operation is performed at most once (ARCHITECT round 4
-/// Q-L3B-SURFACES (h)).
+/// a unit routes over and whether its operation is performed at most once
+/// .
 pub const RESERVED_POOLS_KEY: &str = "pools";
 
 /// The operations a pool may perform twice, inside its [`RESERVED_POOLS_KEY`] entry: an operation
@@ -173,7 +173,7 @@ pub fn member_target(target_from: &str) -> Option<&str> {
         .filter(|key| !key.is_empty() && !key.contains('.'))
 }
 
-/// THE MEMBER-PROGRAM PATH of a need's `target_from` (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)):
+/// THE MEMBER-PROGRAM PATH of a need's `target_from`:
 /// `settings.*`, where `*` stands for EACH registration of the section, names every member's own
 /// PROGRAM — the registration's `command`, `args` and `env` ([`crate::conn::Program::of_member`];
 /// its other keys are not the program's). A registration that names no `command` is not a member of

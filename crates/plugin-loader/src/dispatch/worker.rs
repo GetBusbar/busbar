@@ -108,7 +108,7 @@ pub struct DispatchConfig {
     /// survives before it is quarantined. Every breach replaces its worker and settles the hung
     /// op as FAULT; the Nth also quarantines the instance — every new call answers FAULT without a
     /// crossing (a hook's caller goes to its `on_error`, and the hook door's timed trial brings a
-    /// fresh instance back, R2), with a diagnostic and `bb_plugin_quarantined_total`. Clamped to
+    /// fresh instance back), with a diagnostic and `bb_plugin_quarantined_total`. Clamped to
     /// at least 1; the default [`DEFAULT_QUARANTINE_AFTER`] quarantines on the first breach.
     pub quarantine_after: u32,
 }
@@ -552,7 +552,7 @@ impl Drop for Meta {
 }
 
 std::thread_local! {
-    /// THE INSTANCES A WORKER LOOP LETS GO WITH NO LOCK HELD (THE DESIGN §11.13 M1, "No plugin code
+    /// THE INSTANCES A WORKER LOOP LETS GO WITH NO LOCK HELD ("No plugin code
     /// (`dlclose` included) runs under a host lock"): `Some` on a dispatcher worker's own thread
     /// while [`run`] runs. An op's [`Meta`] and a driver ticket's [`Driver`] are let go while the
     /// worker's state lock is held, and either may hold an instance's last reference, whose drop
@@ -620,7 +620,7 @@ pub(crate) struct Driven {
     told: tokio::sync::Notify,
     /// How many `drive` crossings answered, and the last one's outcome: what a synchronous host
     /// that woke the driver waits on ([`Driven::answered_after`]; the published conformance suite
-    /// drives `drive` this way, as a wake, THE DESIGN §11.4).
+    /// drives `drive` this way, as a wake).
     answers: Mutex<(u64, Option<Outcome>)>,
     answered: Condvar,
     /// A wake's `drive` ran: the host re-polls `tick` (R-PUSH).
@@ -1281,8 +1281,8 @@ impl Worker {
                 } else if e.short_slot != Some(meta.slot) {
                     // A NEW op starts on the ticket (not the one re-call a short answer earns):
                     // its handles count from 0 again (the replay rule, `abi::sdk::conn`), and a
-                    // stored result is redeemed only by the op that issued it, on its resume (THE
-                    // DESIGN §11.12) — so the last op's kept answers go. Kept, the next op's
+                    // stored result is redeemed only by the op that issued it, on its resume,
+                    // so the last op's kept answers go. Kept, the next op's
                     // `ESTABLISH` (handle 0) would answer the last op's stream without a dial.
                     // The forget ends the last op's epoch too: a service of its still running
                     // completes into nothing, never into this op's same-numbered handle.
@@ -1500,7 +1500,7 @@ pub(crate) fn run(w: Arc<Worker>, rx: Receiver<Msg>, env: Arc<Env>) {
     let mut entered: Option<tokio::runtime::EnterGuard<'static>> = None;
     let mut st = w.lock();
     loop {
-        // What the last turn let go under the lock is dropped with it released (§11.13 M1).
+        // What the last turn let go under the lock is dropped with it released.
         let late = let_go();
         if !late.is_empty() {
             drop(st);

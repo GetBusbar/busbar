@@ -110,7 +110,7 @@ busbar-hook-ranking = { workspace = true, optional = true }
 # workspace `[patch]` points the busbar crates it names at this tree. The kernel names no auth module.
 busbar-auth-admin-tokens-plugin = { workspace = true, optional = true }
 # THE OUTBOUND HEADER STYLES (bearer, api-key, x-goog-api-key): the auth plugin a plane's outbound need
-# is bound under when its member's style is one of them (THE DESIGN §6 step 3: the auth plugin that
+# is bound under when its member's style is one of them (the auth plugin that
 # serves the style opens the binding), linked through the `auths` axis under `auth-header`
 # (ARCHITECT Q-L1-AUTH (A), 2026-10-03). It lives in its own repo (GetBusbar/busbar-auth-header), pulled
 # at a pinned rev; its only busbar edge is `busbar-contract`.
@@ -470,7 +470,7 @@ plane-llm-door = "busbar_plane_llm::DECLARES"
 plane-mcp-door = "busbar_plane_mcp::DECLARES"
 plane-a2a-door = "busbar_plane_a2a::DECLARES"
 # The file source reads the disk (`"disk": true`): the host resolves it only at config time, on its
-# disk lane, never from a request path (BUSBAR-1.6.0.md l.1464-1469, R4).
+# disk lane, never from a request path.
 secret-file = "busbar_secret_file::DECLARES"
 
 # Each linked plane door's DECLARING section (the one its Statement flags `SECTION_DECLARING`): the

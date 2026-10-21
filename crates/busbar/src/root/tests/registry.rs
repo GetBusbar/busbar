@@ -64,8 +64,8 @@ fn every_linked_transport_and_plane_registers() {
         );
     }
     // Every linked plane and nothing else: a plane this build does not link registers nothing,
-    // and the admin surface is a cleanliness crate, never a plugin (THE DESIGN §8: "Exactly three
-    // crates are compiled in and are never plugins"; R6).
+    // and the admin surface is a cleanliness crate, never a plugin ("Exactly three
+    // crates are compiled in and are never plugins").
     assert_eq!(
         registry.count(PluginKind::Plane),
         crate::LINKED.claims.len(),
@@ -86,7 +86,7 @@ fn every_linked_transport_and_plane_registers() {
         if linked_keys.contains(key) {
             assert!(registered, "plane `{key}` is not registered");
         } else {
-            // A cleanliness crate's route (§6 step 3: "a claimant is a plane, a plugin's inbound
+            // A cleanliness crate's route ("a claimant is a plane, a plugin's inbound
             // need, or a cleanliness crate's route (admin, oauth2)") claims bytes and is no plugin.
             assert!(
                 !registered,
@@ -553,7 +553,7 @@ fn an_unregistered_layer_refuses_at_boot() {
 /// A guard against a claim slice that quietly names a plane the registry never took: the
 /// pairing in `plane_claims` is done by hand, so the one thing worth asserting about it is that
 /// every key it produces is a key the registry actually resolves — except the admin surface's
-/// route, a cleanliness crate's claimant that is no plugin (§6 step 3, §8).
+/// route, a cleanliness crate's claimant that is no plugin.
 #[test]
 fn every_claimed_plane_key_is_a_registered_plane() {
     let registry = linked_registry();

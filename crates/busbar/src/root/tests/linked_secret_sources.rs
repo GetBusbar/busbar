@@ -17,7 +17,7 @@
 //! as their JSON object, the config-time proof, the refusal's text verbatim) over the root's axis
 //! rather than the kernel's installed one: a test build of this crate links the kernel's test
 //! support, whose stand-in axis the kernel reads. Every resolve a shipped build makes of these
-//! sources is a config-time one (boot, a config apply, a refresh; BUSBAR-1.6.0.md l.1464-1469, R4);
+//! sources is a config-time one (boot, a config apply, a refresh);
 //! [`resolve_on_a_request_path`] is the form a request path would take, which a disk-reading source
 //! refuses.
 

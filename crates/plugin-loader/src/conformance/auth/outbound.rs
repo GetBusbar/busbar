@@ -5,7 +5,7 @@
 //! conformance). It drives the OUTBOUND family — `open_outbound`, `fields`, `outbound_ready` —
 //! the way the kernel drives a provider's auth binding: the instance opened over the binding's
 //! settings (so a need whose target comes from them is declared pinned to it), the style bound to
-//! its credential, and the per-request call (THE DESIGN §6.4, §11.6: one memory-ABI call per
+//! its credential, and the per-request call (one memory-ABI call per
 //! request, the plugin caches internally) made ticket-less on the caller's thread, as the kernel
 //! tries it first. A minting style's token exchange runs on the instance's driver ticket, on
 //! `tick`, over the plugin's own need; the suite serves that need with a scripted token endpoint
@@ -74,7 +74,7 @@
 //! no exchange yet; `tick` → EXACTLY ONE exchange, and both waiting calls READY with the same token
 //! (`expect_fields`; the tick is the one first invocation, the two calls resume — SINGLE-FLIGHT); ticket-less
 //! `fields`(S) ×2 still ONE exchange; `outbound_ready` 1; a `tick` before S's expiry makes NO
-//! exchange (nothing is refreshed ahead); `fields`(S2) on a ticket → PENDING, one `drive`, EXACTLY
+//! exchange (nothing is refreshed ahead); `fields` on a ticket → PENDING, one `drive`, EXACTLY
 //! ONE new exchange (its own cell), READY with `second_scope_fields` (2 first invocations: the call and the drive; the call resumes); `fields`(S) on a
 //! ticket at an instant past S's token's expiry → PENDING, one `drive`, EXACTLY ONE new exchange,
 //! READY with `expired_fields` (2 first invocations, as above). Then the FAILING endpoint: `fields`(S) on a ticket
@@ -124,7 +124,7 @@ use crate::dispatch::{
 };
 
 /// The suite's tick clock at the first `tick` (any instant; the plugin's schedule is read back).
-const T0: u64 = 1_000_000_000_000;
+const EPOCH_NS: u64 = 1_000_000_000_000;
 /// Nanoseconds in a second.
 const NS: u64 = 1_000_000_000;
 /// How long a submitted `tick` is awaited.
@@ -1061,7 +1061,7 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: DoorFn, st: &Stated) -> Fold {
                     },
                 );
                 r.line(&label("tick: the exchange"), 1, || {
-                    let (line, _) = tick_driver(&p, &d, driver, T0);
+                    let (line, _) = tick_driver(&p, &d, driver, EPOCH_NS);
                     let a = first.answered();
                     let b = second.answered();
                     format!("{line} exchanges={} | {a} | {b}", e.count())
@@ -1073,7 +1073,7 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: DoorFn, st: &Stated) -> Fold {
                 });
                 r.line(&label("outbound_ready"), 1, || ready_fact(&p, handle));
                 r.line(&label("tick before expiry"), 1, || {
-                    let at = T0.saturating_add(m.expires_in / 2 * NS);
+                    let at = EPOCH_NS.saturating_add(m.expires_in / 2 * NS);
                     let (line, _) = tick_driver(&p, &d, driver, at);
                     format!("{line} exchanges={}", e.count())
                 });
@@ -1101,7 +1101,7 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: DoorFn, st: &Stated) -> Fold {
                     .driver(&p, 0)
                     .expect("the instance's driver ticket is minted");
                 let next = r.step(&label("tick: the first mint"), 1, || {
-                    let (line, next) = tick_driver(&p, &d, driver, T0);
+                    let (line, next) = tick_driver(&p, &d, driver, EPOCH_NS);
                     (format!("{line} exchanges={}", e.count()), next)
                 });
                 r.line(&label("fields #1"), 1, signed);
@@ -1110,12 +1110,12 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: DoorFn, st: &Stated) -> Fold {
                     e.report(&m.exchanges)
                 });
                 r.line(&label("outbound_ready"), 1, || ready_fact(&p, handle));
-                let ahead = next > T0 && next <= T0.saturating_add(m.expires_in * NS);
+                let ahead = next > EPOCH_NS && next <= EPOCH_NS.saturating_add(m.expires_in * NS);
                 r.line(&label("refresh due ahead of expiry"), 0, || {
                     format!("refresh_ahead={ahead}")
                 });
                 r.line(&label("tick: the refresh"), 1, || {
-                    let (line, _) = tick_driver(&p, &d, driver, next.max(T0));
+                    let (line, _) = tick_driver(&p, &d, driver, next.max(EPOCH_NS));
                     format!("{line} exchanges={}", e.count())
                 });
                 r.line(&label("fields after the refresh"), 1, signed);
@@ -1171,7 +1171,7 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: DoorFn, st: &Stated) -> Fold {
                 .driver(&q, 0)
                 .expect("the instance's driver ticket is minted");
             rq.line(&label("failing endpoint: tick"), 1, || {
-                let (line, _) = tick_driver(&q, &d, driver, T0);
+                let (line, _) = tick_driver(&q, &d, driver, EPOCH_NS);
                 format!("{line} exchanges={}", failing.count())
             });
             rq.line(&label("failing endpoint: fields"), 2, || {
@@ -1207,7 +1207,7 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: DoorFn, st: &Stated) -> Fold {
                 .driver(&q, 0)
                 .expect("the instance's driver ticket is minted");
             rq.line(&label("failing endpoint: tick"), 1, || {
-                let (line, _) = tick_driver(&q, &d, driver, T0);
+                let (line, _) = tick_driver(&q, &d, driver, EPOCH_NS);
                 format!("{line} exchanges={}", failing.count())
             });
             rq.line(&label("failing endpoint: fields"), 1, || {

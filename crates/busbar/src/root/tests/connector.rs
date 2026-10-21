@@ -216,7 +216,7 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
     );
 }
 
-/// RED (THE DESIGN §5 destination guard, ARCHITECT ruling CRATES-14 on Q130/Q131): a deployment
+/// RED (destination guard): a deployment
 /// whose provider has no `advanced.allow_destinations` entry is refused the private address its
 /// name answers with on a provider dial (its own configured host included); once the allowlist
 /// names it, the same dial is admitted. Operator infrastructure reaches the private address with
@@ -296,7 +296,7 @@ fn every_linked_auth_plugins_outbound_needs_are_operator_infrastructure() {
     );
 }
 
-/// RED (ARCHITECT round 4 (e)): a plane's upstream need whose settings name a PROGRAM is dialled by
+/// RED: a plane's upstream need whose settings name a PROGRAM is dialled by
 /// the one connector over a linked transport door that frames a program's pipes LINE BY LINE (the
 /// line row's door, found by what it does, never by name): the connector spawns the program
 /// (operator-infrastructure class; no shell, only its stated environment), its first line is one

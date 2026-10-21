@@ -770,20 +770,20 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         .filter_map(|capture| capture(&cfg))
         .collect();
 
-    // The operator's data chain (`auth.chain`), the auth of every data-listener guest-list line
-    // (THE DESIGN §6), captured for the door planes' lines before `cfg` is consumed.
+    // The operator's data chain (`auth.chain`), the auth of every data-listener guest-list line,
+    // captured for the door planes' lines before `cfg` is consumed.
     let data_chain: Vec<String> = cfg
         .auth
         .as_ref()
         .map(|a| a.chain.iter().map(|e| e.name.clone()).collect())
         .unwrap_or_default();
-    // The resolved `providers:` (catalog-merged), as the door planes' members reach them (THE
-    // DESIGN §6 step 2), captured before `cfg` is consumed.
+    // The resolved `providers:` (catalog-merged), as the door planes' members reach them,
+    // captured before `cfg` is consumed.
     let door_providers = root::door_steps::provider_routes(
         &cfg.providers,
         &config_validate::MetadataPosture::global(&cfg),
     );
-    // The kernel-owned sections a door plane's Statement may name beside its own (spec Part 1 §4),
+    // The kernel-owned sections a door plane's Statement may name beside its own (spec),
     // as the configuration resolved them, captured before `cfg` is consumed.
     let door_kernel_sections = root::door_steps::kernel_sections(&cfg);
     // The model-serving pools the plane serving the `pools` map walks, with every bound the
@@ -1041,7 +1041,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // falls through to the listeners its supervisor did not ask for.
     let mut served = served;
     let line_served = line_flag_passed(std::env::args()).then(|| std::mem::take(&mut served));
-    // Each data-chain auth with the points its opened instance declares (THE DESIGN §6): a line's
+    // Each data-chain auth with the points its opened instance declares: a line's
     // point set is their union, and the guest list's seal judges it.
     let data_chain: Vec<root::serve::ChainAuth> = data_chain
         .into_iter()
@@ -1139,7 +1139,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             );
         }));
     }
-    // Every opened plugin instance's log sink follows the applied `plugins.logs` (THE DESIGN §11.2).
+    // Every opened plugin instance's log sink follows the applied `plugins.logs`.
     app_handle.on_apply(Box::new(|app| {
         root::boot::follow_plugin_logs(root::boot::plugin_logs(), &app.plugins_cfg);
     }));

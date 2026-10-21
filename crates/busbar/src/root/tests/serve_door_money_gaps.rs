@@ -536,7 +536,7 @@ async fn the_pools_door_charges_a_client_request_exactly_one_flat_fee() {
 
 /// A CALLER THAT HANGS UP MID-DISPATCH KEEPS ITS FLAT FEE CHARGED, ON THE DOOR. Door successor of
 /// `plane_node.rs::a_caller_that_hangs_up_mid_dispatch_keeps_its_flat_fee_charged` (MONEY-AUDIT
-/// C-F1, spec §7 F13). The far end answers its head and holds its body, so the unit is parked
+/// C-F1). The far end answers its head and holds its body, so the unit is parked
 /// reading it; the caller's request future is dropped there. 1.5.5's dropped request never reached
 /// the non-2xx refund, so, as the original pinned: the door drew the admission slot (requests 1)
 /// and the 1-cent fee stays charged.

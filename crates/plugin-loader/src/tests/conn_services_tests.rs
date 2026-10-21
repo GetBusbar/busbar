@@ -711,7 +711,7 @@ fn recycling_one_instances_ticket_never_replays_anothers_establish() {
     );
 }
 
-/// RED (ARCHITECT round 4 (e)): a need whose `target_from` names a PROGRAM in the settings
+/// RED: a need whose `target_from` names a PROGRAM in the settings
 /// (`{command, args, env}`) is declared as that program, at `open` and every `refresh`; a program
 /// the settings misspell (a bare command name) is declared with no target, which the table refuses.
 #[test]
@@ -1762,7 +1762,7 @@ const MEMBER_NEEDS: [Need; 1] = [Need {
     ..NEEDS[0]
 }];
 
-/// RED (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)): a need whose `target_from` is the
+/// RED: a need whose `target_from` is the
 /// member-program path is declared with ONE program per registration that names a `command` —
 /// its `command`, `args` and `env`, every other key ignored, an `env` secret reference kept as the
 /// reference (the host resolves it at the spawn, never at the declare) — at `open` and again at
@@ -1971,7 +1971,7 @@ fn whole_request(p: &Plugin<TestKind>, seq: u32) -> u64 {
     stream
 }
 
-/// RED (THE DESIGN §11.13 M1, "no plugin code runs under a host lock"): the member's auth call
+/// RED ("no plugin code runs under a host lock"): the member's auth call
 /// answered on the spot, and the open it leads, run with the connector's lock let go. The request
 /// still goes out once, its member's field first.
 #[test]
@@ -2011,7 +2011,7 @@ fn a_members_auth_call_and_its_open_run_outside_the_connectors_lock() {
     );
 }
 
-/// RED (§11.13 M1): an auth call that could not answer on the spot is polled by the reply's read,
+/// RED: an auth call that could not answer on the spot is polled by the reply's read,
 /// and that poll and the open it leads run with the connector's lock let go too.
 #[test]
 fn a_members_pending_auth_call_is_polled_and_opened_outside_the_connectors_lock() {
@@ -2118,7 +2118,7 @@ fn red_a_forged_ticket_through_a_connection_slot_quarantines_its_supplier() {
     d.recycle(t);
 }
 
-/// RED (§11.13 M1): a framed stream written raw opens as it was named, outside the lock.
+/// RED: a framed stream written raw opens as it was named, outside the lock.
 #[test]
 fn a_framed_stream_written_raw_opens_outside_the_connectors_lock() {
     let table = Arc::new(Scripted {
@@ -2163,7 +2163,7 @@ fn a_stream_closed_while_it_opens_leaves_nothing_open() {
     );
 }
 
-/// RED (THE DESIGN §11.12 "on resume the plugin re-issues the SAME handle and receives the stored
+/// RED ("on resume the plugin re-issues the SAME handle and receives the stored
 /// result"): `IDENTITY` writes the caller's memory and never pends, so a replayed handle is
 /// answered by writing the identity again into the memory this call hands, never by a kept READY
 /// over memory nothing touched.
@@ -2192,7 +2192,7 @@ fn a_replayed_identity_writes_the_callers_memory_again() {
     );
 }
 
-/// RED (THE DESIGN §11.12, "on resume the plugin re-issues the SAME handle and receives the stored
+/// RED ("on resume the plugin re-issues the SAME handle and receives the stored
 /// result"): a `READ_REPLY` wrote the caller's memory, its piece and its bytes, so a replayed handle
 /// writes both again into the memory the replay lends, never a kept READY over memory nothing
 /// touched. A short answer's re-call starts the op over with fresh buffers: without this its replayed
@@ -2565,7 +2565,7 @@ fn an_auth_instances_authority_is_held_before_its_needs_are_declared() {
     );
 }
 
-/// RED (THE DESIGN §11.13 M1, "Every slice built from a plugin-reported length is capped and
+/// RED ("Every slice built from a plugin-reported length is capped and
 /// validated before it is formed"; audit PL1 #1): a connector slot's buffer stated over the hard
 /// byte maximum (`u32::MAX`) is refused before any slice is formed over it, as NULL with a length
 /// is.
@@ -2584,7 +2584,7 @@ fn red_a_connector_buffer_over_the_byte_cap_is_refused_before_any_slice() {
     assert_eq!(within, Some(8), "a buffer within the cap is the caller's");
 }
 
-/// RED (THE DESIGN §11.13 M1, "No plugin code (`dlclose` included) runs under a host lock"; audit
+/// RED ("No plugin code (`dlclose` included) runs under a host lock"; audit
 /// PL1 #2): an instance whose last reference is its driver ticket is let go by the recycle that
 /// drops that ticket on its worker. Its drop closes the connection a held stream had open, and that
 /// close reaches a transport door. The door double here parks in its close: while it is parked,

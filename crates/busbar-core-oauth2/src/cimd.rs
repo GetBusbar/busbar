@@ -38,7 +38,7 @@
 //! root Connector, over a need this crate declares there (outbound, `https`, the `open-web` egress
 //! class: public HTTPS only), so the connector's single destination guard judges, pins and dials
 //! the address exactly as it does for every other outbound connection in the process (THE DESIGN
-//! §5, "Destination guard"). This crate checks no destination of its own. What stays here is this
+//! "Destination guard"). This crate checks no destination of its own. What stays here is this
 //! path's OWN bounds: a client metadata document is a few kilobytes and the fetch is on an
 //! interactive authorization request, so 5 KB and 10 s. No redirects: the document lives at the
 //! `client_id` or it is not that client's document.
@@ -231,7 +231,7 @@ impl Documents {
 pub(crate) const DOCUMENT_NEED: NeedId = NeedId(0);
 
 /// THE DOCUMENT FETCH'S NEED, as the connector holds it: outbound, over `https`, in the `open-web`
-/// egress class (THE DESIGN §5: a destination from request data, public HTTPS only). The target is
+/// egress class (a destination from request data, public HTTPS only). The target is
 /// the plugin's own per open (no `target_from`): a CIMD `client_id` is a stranger's URL by
 /// definition, so there is no operator setting for it to come from, and no auth rides it.
 pub(crate) fn document_need() -> ReadNeed {

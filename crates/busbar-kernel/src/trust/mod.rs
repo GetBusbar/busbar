@@ -6,7 +6,7 @@
 //! detached-signature judgement against a declared root ([`signed`]), and the identity-and-grant
 //! judgement with the standing-permission primitive ([`validate`]).
 //!
-//! The lifecycle is the kernel's (THE DESIGN §11.12): a plane reports sightings and states the facts
+//! The lifecycle is the kernel's: a plane reports sightings and states the facts
 //! a unit rests on, and the kernel decides. No plane, protocol or pin mechanism is named here.
 
 /// THE IDENTITY-AND-GRANT JUDGEMENT, the generation source and the standing-permission primitive.

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! P-ITEM: REFUSAL-REASON COLLAPSE, the source half (spec DONE item 2, "All P-item behaviours match
-//! 1.5.5"; the drive log's P1/P2, commit 470351a480; TODO L-ENG9).
+//! 1.5.5"; the drive log's P1/P2; TODO L-ENG9).
 //!
 //! Eight hand-copied reason-to-family matches had drifted apart, and one still answered every
 //! reason it did not name as an internal error. 1.5.5 answered each limit reason with its own

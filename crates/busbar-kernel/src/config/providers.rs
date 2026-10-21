@@ -9,8 +9,8 @@
 //! merges each catalog entry with its deployment (`resolve`); the lane-capability keys they carry
 //! are [`crate::ir::lane_caps`]'s.
 //!
-//! THE SPLIT (row 155 B1; BUSBAR-1.6.0.md #49, THE DESIGN §4 "its `api_key`, `auth`, `token_url`,
-//! `scope` and `subject` bind the auth object (§6); its dialect fields go to the planes that use the
+//! THE SPLIT ("its `api_key`, `auth`, `token_url`,
+//! `scope` and `subject` bind the auth object; its dialect fields go to the planes that use the
 //! provider"). A resolved provider carries the keys the KERNEL owns typed ([`CORE_PROVIDER_KEYS`]:
 //! the destination, the credential and its auth binding, the health probe and the metadata
 //! carve-outs) and every other key of the entry as an OPAQUE [`ProviderTable`] the kernel carries,
@@ -329,7 +329,7 @@ pub enum ProviderAuth {
 /// THE PLANE-SHAPED KEYS OF ONE PROVIDER ENTRY, as written (catalog-merged), carried unread: every
 /// key of the entry that is not one of [`CORE_PROVIDER_KEYS`]. The kernel holds it as data, merges it
 /// by [`merge_tables`] and hands it to the plane that speaks the provider, which parses it (THE
-/// DESIGN §4: "A plane receives, at open, the dialect fields of the providers it references and
+/// "A plane receives, at open, the dialect fields of the providers it references and
 /// resolves model -> dialect itself").
 pub type ProviderTable = serde_json::Map<String, Value>;
 
@@ -337,7 +337,7 @@ pub type ProviderTable = serde_json::Map<String, Value>;
 /// destination it dials and guards (`base_url`, and the `path` / `path_base` composed onto it,
 /// re-judged against the metadata denylist at boot as 1.5.5's `config_validate` did at :406/:430),
 /// the credential and its outbound-auth binding (`api_key`, `auth`, `token_url`, `scope`,
-/// `subject`; THE DESIGN §6), the health probe (`health`) and the metadata carve-outs
+/// `subject`), the health probe (`health`) and the metadata carve-outs
 /// (`allow_metadata_hosts`). Everything else is the plane's ([`ProviderTable`]).
 pub const CORE_PROVIDER_KEYS: &[&str] = &[
     "api_key",

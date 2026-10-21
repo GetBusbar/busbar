@@ -28,7 +28,7 @@
 //!   dropping the future): the stream leaves the instance's table and the money seam is told, in
 //!   the session's one guard; each side's ticket goes back through its own pump (finished, or
 //!   buried for the sweep).
-//! - Money per THE DESIGN §7 (`MoneySeam::session_opened`, `MoneySeam::session_ended`): one unit, one line.
+//! - Money (`MoneySeam::session_opened`, `MoneySeam::session_ended`): one unit, one line.
 
 use std::future::Future;
 use std::pin::pin;

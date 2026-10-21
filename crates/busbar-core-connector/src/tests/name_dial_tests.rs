@@ -548,7 +548,7 @@ fn the_same_name_dials_when_allowlisted() {
     });
 }
 
-/// THE DESIGN §5 egress-class table, owner-signed 2026-09-27: the same name, when the need's
+/// egress-class table: the same name, when the need's
 /// CONFIG names it (`target_from`, a store/secret/auth plugin's connection), is the operator's own
 /// destination and dials with no allowlist; the name a plugin names per open (above) stays refused.
 #[test]
@@ -572,7 +572,7 @@ fn a_config_named_target_on_loopback_is_trusted() {
     });
 }
 
-/// RED (THE DESIGN §5 destination guard, ARCHITECT ruling CRATES-14: "refused unless allowlisted"
+/// RED (destination guard: "refused unless allowlisted"
 /// holds for the provider class): a PROVIDER need whose config names a target on loopback is not
 /// lifted to operator infrastructure; it is refused before any socket until the allowlist names it.
 #[test]

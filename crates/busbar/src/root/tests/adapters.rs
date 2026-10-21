@@ -502,7 +502,7 @@ fn the_root_breaker_observes_into_the_kernels_own_cells() {
     );
 }
 
-/// A HEALTH PROBE through the adapter (K7): its answer reaches every cell of the member under the
+/// A HEALTH PROBE through the adapter: its answer reaches every cell of the member under the
 /// pools' policy. A client fault leaves a member parked in every pool parked; a 2xx recovers it.
 #[test]
 fn a_probe_answer_reaches_every_cell_of_the_member() {

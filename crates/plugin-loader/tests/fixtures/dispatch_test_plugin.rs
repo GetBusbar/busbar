@@ -714,7 +714,7 @@ unsafe fn pend(me: &Inst, tin: &TickIn, mode: &[u8], out: *mut c_void) -> RawOut
             }
             PEND_STALE => {
                 // Two tickets this plugin was handed before, each recycled since: late wakes for
-                // generations the host really minted (H2), never a generation it did not (#74: a
+                // generations the host really minted, never a generation it did not (a
                 // ticket generation is a keyed permutation of the slot's counter, so a guessed one
                 // is a forgery and quarantines the instance).
                 let stale: Vec<Ticket> = st

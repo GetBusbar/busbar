@@ -265,7 +265,7 @@ leaf_op! {
 
 /// The multipart boundary the transcription egress form is framed with: 1.5.5's literal (v1.5.5
 /// `crates/busbar/src/handlers/openai.rs:238`, `:281`), a constant, so the plugin keeps no
-/// process-global state for it (BUSBAR-1.6.0.md THE DESIGN §2: "A plugin holds no process-global
+/// process-global state for it ("A plugin holds no process-global
 /// state"; the per-process `OnceLock` draw it replaces was such state) and the upstream receives the
 /// bytes 1.5.5 sent.
 ///

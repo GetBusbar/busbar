@@ -1,7 +1,7 @@
 //! THE 1.5.5 REFUSALS OF A PROVIDER ENTRY'S DIALECT KEYS, BYTE FOR BYTE (row 155 B1).
 //!
 //! `protocol`, `error_map`, `path` and `path_base` are the four 1.5.5 provider keys B1 moves the
-//! reading of out of the kernel (BUSBAR-1.6.0.md THE DESIGN §4: "its dialect fields go to the planes
+//! reading of out of the kernel ("its dialect fields go to the planes
 //! that use the provider"; #49). The move must not change a refusal: its text, its order, the field
 //! path it names, or whether it is caught at boot. Each test below pins one 1.5.5 refusal that no
 //! other cell or test pins, at the stage 1.5.5 raised it. Already pinned elsewhere, and so not

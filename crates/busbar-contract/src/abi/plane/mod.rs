@@ -513,15 +513,15 @@ pub const ROUTE_SCOPE_SEPARATOR: &str = ", ";
 /// under the resolved entry.
 pub const ROUTE_SCOPE_LOCAL: u8 = 4;
 
-/// [`ArriveOut::route_flags`]: the unit's operation is performed AT MOST ONCE (ARCHITECT round 4
-/// Q-L3B-SURFACES (h): the walk does repeatable). A walk over a pool still moves to another member
+/// [`ArriveOut::route_flags`]: the unit's operation is performed AT MOST ONCE
+/// the walk does repeatable). A walk over a pool still moves to another member
 /// before anything was answered (a refused connection, an open breaker), but a member that ANSWERED
 /// with a failure is not retried on another: its answer is the unit's. Unset, an answered failure
 /// fails over as the walk's status table says.
 pub const ROUTE_ONCE: u8 = 1;
 
-/// [`ArriveOut::route_flags`]: the unit is served as a DUPLEX SESSION (K6; ARCHITECT round 5
-/// Q-L3B-K6-HTTP (a)): its route leg is the driver's session, whose caller leg is the unit's own
+/// [`ArriveOut::route_flags`]: the unit is served as a DUPLEX SESSION
+/// its route leg is the driver's session, whose caller leg is the unit's own
 /// caller side (its read yields the arrival's body once, then nothing until the caller goes). Its
 /// pieces name the unit's stream ([`OnPieceIn::stream`]), its unsolicited output is named on the
 /// instance's driver ticket (`drive`) and collected on the session's caller-side ticket, and it is

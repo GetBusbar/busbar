@@ -1023,7 +1023,7 @@ fn release(instance: *mut c_void, lease: u64) -> Outcome {
     call(ops().head.release, instance, &input, &mut out)
 }
 
-/// RELEASING AN UNKNOWN LEASE IS REFUSED (THE DESIGN §11, KIND-SHARE: "releasing an unknown lease
+/// RELEASING AN UNKNOWN LEASE IS REFUSED (KIND-SHARE: "releasing an unknown lease
 /// is REFUSED"). The store door answers the host's release of a lease it holds READY, and a
 /// release of one it never handed out, or one already released, REFUSED: a host double or wrong
 /// release is a host bug the door names rather than accepts.

@@ -201,7 +201,7 @@ impl Gate for DoorOnlyGate {
 
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         // THE PLUGIN THE PLANT NAMES IS ONE THE WORKSPACE HOLDS. The plant named
-        // `busbar_transport_tcp` until that transport left for its own repo (66853bf6e1); the scan
+        // `busbar_transport_tcp` until that transport left for its own repo; the scan
         // only knows the plugin crates that are members, so a path into a departed one is no
         // finding and the red arm proved nothing. The plugins leave this tree one by one, so the
         // plant takes whichever plugin member the census holds first.

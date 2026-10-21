@@ -2,9 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE PLANE SCRIPT'S HOST (`conformance.json`'s `plane.host`): the kernel services a plane asks
-//! on its crossings, served the way the kernel serves them (THE DESIGN §11.12), with the kernel's
+//! on its crossings, served the way the kernel serves them, with the kernel's
 //! answers and refusals, from what the plugin's inputs and its own Statement state. A door that runs
-//! in production on a service runs on it here, linked and dropped in alike (THE DESIGN §2).
+//! in production on a service runs on it here, linked and dropped in alike.
 //!
 //! * `entitlement.check` answers ENTITLED when the crossing serves a unit and a grant names the
 //!   target (`"<scope kind>:<name>"`), for every unit or for the units it lists; a crossing that

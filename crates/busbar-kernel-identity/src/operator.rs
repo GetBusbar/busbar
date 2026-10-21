@@ -193,11 +193,11 @@ pub fn migrated_token(op: &str) -> String {
 pub struct Judgement {
     /// The verdict.
     pub verdict: AuthVerdict,
-    /// The replay claim the identity asks for (THE DESIGN §6, Inbound verify): the caller admits
+    /// The replay claim the identity asks for (Inbound verify): the caller admits
     /// the identity only once it wins the claim. `None` = none (or no identity).
     pub replay: Option<Box<Replay>>,
     /// The credential lines and query keys the plugin named, whatever its verdict: the transport
-    /// strips them before any plane sees the request (THE DESIGN §6.4).
+    /// strips them before any plane sees the request.
     pub strips: Vec<Strip>,
 }
 

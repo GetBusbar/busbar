@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE KIND-NEUTRAL OUTBOUND AUTH DOUBLE a test build binds lane credentials on (BUSBAR-1.6.0.md
-//! THE DESIGN §1, "Kernel tests use kind-neutral doubles"): a test binary has no composition root,
+//! "Kernel tests use kind-neutral doubles"): a test binary has no composition root,
 //! so no auth plugin is linked, and a lane's credential binds here instead. It serves EVERY style,
 //! and presents a bound credential (or, for a passthrough request, the caller's) as
 //! `authorization: Bearer <credential>`; an empty credential presents nothing. It is not any style's

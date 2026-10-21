@@ -489,7 +489,7 @@ impl AuthSink {
         self.0.clone()
     }
 
-    /// The sink an instance OPENED TO SERVE binds with (THE DESIGN §11.2: "all plugins should log
+    /// The sink an instance OPENED TO SERVE binds with ("all plugins should log
     /// to their plugin's log file ... The HOST writes it to that plugin instance's own log file"):
     /// its log records and its declared diagnostics go to the instance `label`'s own file under
     /// `logs`; a declared diagnostic also keeps its host-log line, as an outbound auth instance's
@@ -855,7 +855,7 @@ impl AuthCalls for AuthInstance {
     fn refresh(&self) -> Result<u64, String> {
         // ONE REFRESH AT A TIME, never waited for: the refresh crossing is plugin code, so a caller
         // that finds one in flight is answered at once rather than parked behind a lock a wedged
-        // plugin may never let go (THE DESIGN §11.13 M1).
+        // plugin may never let go.
         let _one = match self.lifecycle.try_lock() {
             Ok(one) => one,
             Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),

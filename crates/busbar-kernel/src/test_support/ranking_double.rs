@@ -31,7 +31,7 @@ use busbar_contract::abi::sdk::hook::{
     statement_with_tail, tail, Decoded, DecodedCandidate, Hook, HookOpen, Verdict,
 };
 
-/// The double's own Statement name, and the prefix of its refusals: not the plugin's (C1).
+/// The double's own Statement name, and the prefix of its refusals: not the plugin's.
 pub const NAME: &str = "strategy-double";
 
 /// The strategy words, in order (`hook-ranking/src/lib.rs`, `WORDS`).

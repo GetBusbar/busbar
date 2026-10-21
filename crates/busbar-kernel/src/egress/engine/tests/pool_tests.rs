@@ -853,7 +853,7 @@ async fn h1_wire_request_line_and_host_match_legacy() {
     assert!(heads[2].starts_with("GET / HTTP/1.1\r\n"));
 }
 
-/// ROW 74 (F25), ON THE WIRE: a base URL's userinfo, handed to the owned client as its opaque
+/// ON THE WIRE: a base URL's userinfo, handed to the owned client as its opaque
 /// extension, reaches the far end as `authorization: Basic …`, the FIRST field, when the request's
 /// credential rides another field, and not at all when the credential is `authorization` — the two
 /// shapes 1.5.5's reqwest build sent. The far end's `host` is the bare authority either way.

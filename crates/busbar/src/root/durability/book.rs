@@ -161,7 +161,7 @@ pub trait MoneyBook: Send + Sync {
 ///
 /// What it does keep is WHERE the settlement landed ([`SharedBook::landed`]): the seq of the record
 /// the last settlement through it put on the chain, read under the same lock the settlement took,
-/// so the unit's audit record can name the settlement that closed its hold (THE DESIGN §1: the
+/// so the unit's audit record can name the settlement that closed its hold (the
 /// record's controls carry the hold and settle seqs).
 pub struct SharedBook {
     pub(super) durability: std::sync::Arc<std::sync::Mutex<Durability>>,

@@ -316,7 +316,7 @@ fn request_adds_no_accept_a_plane_hop_did_not_name() {
     assert!(req.headers().is_empty());
 }
 
-/// ROW 74 (F25): a provider base URL's `user[:pass]@` becomes the Basic value 1.5.5's reqwest built
+/// A provider base URL's `user[:pass]@` becomes the Basic value 1.5.5's reqwest built
 /// (`extract_authority` + `util::basic_auth`, reqwest 0.12.28): the LAST `@` of the authority ends
 /// the userinfo, the first `:` splits user from pass, both are percent-decoded, an empty pass is
 /// none, and a spelling with neither user nor pass (or a user that is not UTF-8) presents nothing. The
@@ -368,7 +368,7 @@ fn a_base_url_userinfo_becomes_the_basic_value_reqwest_built() {
     }
 }
 
-/// ROW 74 (F25), THE HOP: a request carrying a [`UrlUserinfo`] goes out with the Basic field FIRST
+/// THE HOP: a request carrying a [`UrlUserinfo`] goes out with the Basic field FIRST
 /// when its own fields name no `authorization` (a dialect whose credential rides another field),
 /// and without it when they do (the credential replaced it in 1.5.5's `replace_headers`). The
 /// extension never survives the hop; a request without one is untouched.

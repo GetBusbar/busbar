@@ -35,7 +35,7 @@ fn many_small_draws_stay_distinct() {
     assert_eq!(seen.len(), 500);
 }
 
-/// The plugin holds no per-thread entropy state (BUSBAR-1.6.0.md THE DESIGN §2: the one approved
+/// The plugin holds no per-thread entropy state (the one approved
 /// per-thread slot is the door's log-capture slot). RED while the module kept a `thread_local!`
 /// pool: its source names no thread-local.
 #[test]

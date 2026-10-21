@@ -2655,7 +2655,7 @@ mod dated_rate_card_history {
         );
     }
 
-    // ── PROOF 1a: the response NAMES the card that priced it (#44, Q93) ──────────────────────
+    // ── PROOF 1a: the response NAMES the card that priced it ──────────────────────
 
     /// RED (Q93, ANSWERED 2026-09-27: "serve the rate-card version on the usage and audit
     /// responses"; #44 "rate_card_version surfaced on usage+audit endpoints"): each window's

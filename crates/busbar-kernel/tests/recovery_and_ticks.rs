@@ -235,7 +235,7 @@ fn a_lost_task_is_settled_within_one_tick() {
 
 /// A SWEPT UNIT'S LINE, ITS CLASS AND ITS AUDIT PASS (Q128 p29#5, p29#6).
 ///
-/// THE DESIGN §7 U14 (`BUSBAR-1.6.0.md` l.1061-1065): one audit record per unit, sealed at its one
+/// (`BUSBAR-1.6.0.md` l.1061-1065): one audit record per unit, sealed at its one
 /// line; l.1066-1070: the one line resolves the classes the unit reported. The sweep settles a unit
 /// whose task disappeared, so it hands back the exact line it posted and the unit's audit pass, bound
 /// to the call the unit's hold was opened under, and it writes the line under the class the unit

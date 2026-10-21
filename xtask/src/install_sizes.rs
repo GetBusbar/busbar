@@ -120,7 +120,7 @@ fn pick_digest(idx: &serde_json::Value, arch: &str) -> Result<String, String> {
 
 /// `round(x, 2)`: Python rounds the correctly-rounded decimal expansion, half to even, which is what
 /// `{:.2}` prints; parsing that back gives the same float.
-fn round2(x: f64) -> f64 {
+fn round_to_2dp(x: f64) -> f64 {
     format!("{x:.2}").parse().unwrap_or(x)
 }
 
@@ -135,9 +135,9 @@ pub fn image_record(repo: &str, tag: &str, arch: &str, layers: &[u64]) -> Json {
     // Compressed blobs: what the pull transfers. Not the uncompressed on-disk rootfs.
     o.insert(
         "compressed_mib",
-        Json::Float(round2(total as f64 / 1048576.0)),
+        Json::Float(round_to_2dp(total as f64 / 1048576.0)),
     );
-    o.insert("compressed_mb", Json::Float(round2(total as f64 / 1e6)));
+    o.insert("compressed_mb", Json::Float(round_to_2dp(total as f64 / 1e6)));
     o.insert("layers", Json::Int(layers.len() as i64));
     Json::Object(o)
 }
@@ -362,13 +362,13 @@ mod tests {
     #[test]
     fn rounding_is_pythons() {
         // round(x, 2) values from Python 3.
-        assert_eq!(round2(378298760.0 / 1048576.0), 360.77);
-        assert_eq!(round2(378298760.0 / 1e6), 378.3);
-        assert_eq!(round2(0.125), 0.12);
-        assert_eq!(round2(2.675), 2.67);
-        assert_eq!(round2(1.005), 1.0);
-        assert_eq!(py_float_repr(round2(6000000.0 / 1e6)), "6.0");
-        assert_eq!(py_float_repr(round2(1048576.0 / 1048576.0)), "1.0");
+        assert_eq!(round_to_2dp(378298760.0 / 1048576.0), 360.77);
+        assert_eq!(round_to_2dp(378298760.0 / 1e6), 378.3);
+        assert_eq!(round_to_2dp(0.125), 0.12);
+        assert_eq!(round_to_2dp(2.675), 2.67);
+        assert_eq!(round_to_2dp(1.005), 1.0);
+        assert_eq!(py_float_repr(round_to_2dp(6000000.0 / 1e6)), "6.0");
+        assert_eq!(py_float_repr(round_to_2dp(1048576.0 / 1048576.0)), "1.0");
     }
 
     #[test]

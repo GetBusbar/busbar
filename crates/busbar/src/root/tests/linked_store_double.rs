@@ -209,7 +209,7 @@ fn transcript(s: &dyn RecordStore) -> Vec<String> {
 /// which boot on the double and build every `GovState` over it, judge the store the binary ships.
 /// Both Statements rendered: the same kind and ABI, `max_inflight`, flag marks, word marks, needs and
 /// tail, and the same ephemeral flag on the linked row; the name is the double's own (the kernel names
-/// no plugin, C1). Both opened through their doors on the store axis: the same answer to every verb
+/// no plugin). Both opened through their doors on the store axis: the same answer to every verb
 /// of one script, refusals byte for byte.
 ///
 /// RED by flipping any copied rule in the double (e.g. `redeem_plane_token` answering `true` twice,
@@ -220,7 +220,7 @@ async fn the_kernel_store_double_states_what_the_linked_store_door_states() {
     let (real, double) = (read(row.2), read(store_double::door));
     assert_ne!(
         double.name, real.name,
-        "the double states its own name: the kernel names no plugin (C1)"
+        "the double states its own name: the kernel names no plugin"
     );
     assert_eq!(double.name, store_double::NAME, "the Statement name");
     assert_eq!(

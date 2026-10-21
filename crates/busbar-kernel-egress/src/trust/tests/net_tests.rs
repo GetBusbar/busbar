@@ -694,7 +694,7 @@ fn a_refusal_never_repeats_the_credential_in_the_authority() {
     assert!(path_at.to_string().contains("mail@archive"));
 }
 
-/// ROW 74 (F25): a provider base URL's userinfo is STRIPPED, as 1.5.5's `host_from_base` stripped
+/// A provider base URL's userinfo is STRIPPED, as 1.5.5's `host_from_base` stripped
 /// it (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`): the host and port survive, the
 /// credential is gone, the LAST `@` of the authority is the boundary (a password may carry one),
 /// and an `@` past the authority is left alone. The result reads to [`split_url`] as the same host

@@ -118,13 +118,13 @@ pub struct AuthMiddleware {
     /// referenced, and what a successful `Identify` reports as [`ChainVerdict::Identified::module`]
     /// — and the `kind: auth` instance the auth axis opened for it ([`ChainEntry`]).
     chain: Vec<ChainEntry>,
-    /// THE HOST-HELD CREDENTIALS' VERIFIERS (THE DESIGN §6, "Auth points and guest lists": core's
+    /// THE HOST-HELD CREDENTIALS' VERIFIERS ("Auth points and guest lists": core's
     /// `keys` verifies the credential that style yields, through the same handle): the auth rows
     /// whose Statement states they read host-held credentials, opened when the chain names `keys`.
     /// Called on a request whose dialect declares a signed ingress and which carries one of the
     /// verifier's own carrier lines; the kernel names no credential line itself.
     readers: Vec<CredentialReader>,
-    /// THE HOST'S DEFAULT INBOUND STYLE's carriers (THE DESIGN §6, "Auth points and guest lists":
+    /// THE HOST'S DEFAULT INBOUND STYLE's carriers ("Auth points and guest lists":
     /// the line's style names where its credentials sit): the carrier marks of the one auth row
     /// stating `FACT_DEFAULT_INBOUND_STYLE`, in its Statement's order, read on every line the
     /// operator's config leaves without a style. Opaque words: the kernel names none of them.
@@ -169,8 +169,8 @@ struct ChainEntry {
 }
 
 /// A position's `verify` answer as the chain walks it: the verdict, together with the identity's
-/// replay claim (THE DESIGN §6, Inbound verify: the verify caller claims it before admitting) and
-/// the lines the auth named for the transport to strip, whatever its verdict (§6.4). FAIL-CLOSED:
+/// replay claim (Inbound verify: the verify caller claims it before admitting) and
+/// the lines the auth named for the transport to strip, whatever its verdict. FAIL-CLOSED:
 /// an answer with no verdict (FAILED, FAULT, REFUSED, a timeout, a second short answer) and an
 /// overloaded verifier are a `Reject`, as 1.5.5 rejected on a module failure and denied on a
 /// saturated offload (its 401). The data-plane walk reads an overloaded verifier apart first
@@ -191,7 +191,7 @@ fn refused_keeping_strips(answer: VerifyAnswer) -> Judgement {
 /// The record kind a replay claim is held under in governance's record store.
 const AUTH_REPLAY: &str = "auth-replay";
 
-/// THE REPLAY CLAIM (THE DESIGN §6, Inbound verify: "a verified identity may carry a replay_key and
+/// THE REPLAY CLAIM (Inbound verify: "a verified identity may carry a replay_key and
 /// replay_ttl_secs, and the verify caller claims the record ... already TAKEN is 401"): the identity
 /// `provider` verified is admitted only by the call that first claims `<provider>/<key>` in
 /// governance's record store, the claim standing `ttl_secs` from `now`. An empty key asks for no
@@ -217,7 +217,7 @@ fn replay_claimed(
         .unwrap_or(false)
 }
 
-/// THE SIGNED INGRESS'S REPLAY CLAIM (THE DESIGN §6 "Inbound verify", l.845-846: "a verified
+/// THE SIGNED INGRESS'S REPLAY CLAIM ("Inbound verify", l.845-846: "a verified
 /// identity may carry a replay_key and replay_ttl_secs, and the verify caller claims the record
 /// (auth-replay, plugin/key, ttl) ... already TAKEN is 401"): the claim `id` asks for, made under
 /// the verifier `reader` exactly as the data chain and the admin door make theirs. `true` when the
@@ -233,7 +233,7 @@ fn signed_replay_claimed(
         .is_none_or(|replay| replay_claimed(gov, reader, replay, now))
 }
 
-/// THE LINES THE CHAIN'S AUTHS NAMED, struck before any plane sees the request (THE DESIGN §6.4:
+/// THE LINES THE CHAIN'S AUTHS NAMED, struck before any plane sees the request
 /// "the transport strips both, so the plane never sees a credential"). Each field line joins what
 /// the gate consumed, beside the gate's own carriers (kept for 1.5.5 parity), so every handoff that
 /// strips those strips it too. Each query key leaves the request's target here, once, so every
@@ -452,7 +452,7 @@ fn data_verdict_of(answer: VerifyAnswer, faulted: bool) -> Result<Judgement, Ver
 }
 
 /// THE SIGNED-REQUEST VERIFIER'S ANSWER, as the data-plane gate reads it: the lines the verifier
-/// named join `strips` on every arm (THE DESIGN §6.3, l.925: "Every auth called names its
+/// named join `strips` on every arm (l.925: "Every auth called names its
 /// credential lines whatever its verdict, and the transport strips the union"), and a FAULT (the
 /// plugin broke its contract) is 4006 and a refusal, as on every other data-plane verify.
 ///
@@ -494,7 +494,7 @@ fn admin_verdict_of(answer: VerifyAnswer, faulted: bool) -> Judgement {
 /// A data-plane chain position whose `verify` answered `Overloaded`: its instance's `max_inflight`
 /// was full and the call was not queued. The chain stops there, and the data plane answers the
 /// request 503 with `Retry-After` rather than 1.5.5's 401 (owner ruling Q134, 2026-10-07; THE
-/// DESIGN §11.11 R8; accepted difference "Q134 503 when an auth verifier's max_inflight is full").
+/// accepted difference "Q134 503 when an auth verifier's max_inflight is full").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VerifierOverloaded;
 
@@ -767,7 +767,7 @@ impl AuthMiddleware {
     /// rather than a position. Any OTHER name is a `kind: auth` PLUGIN, opened on this build's AUTH
     /// AXIS ([`crate::preflight::auth_axis`]: the composition root's rows over the process's one
     /// dispatcher, AUTH-CHAIN-SWITCH) — a memory-ABI door, linked or dropped in (a 1.5.5 JSON auth
-    /// plugin does not load, THE DESIGN §11). FAIL-CLOSED: a configured auth module that cannot
+    /// plugin does not load). FAIL-CLOSED: a configured auth module that cannot
     /// be loaded (missing tarball, wrong kind, untrusted under the running policy, a load or ABI
     /// failure, an `open` that refused) is a HARD boot error — never a silently-dropped module that
     /// would leave the front door open. `--validate`/`plugins_preflight` catches most of these
@@ -960,7 +960,7 @@ impl AuthMiddleware {
         self.chain.iter().map(|e| e.name.clone()).collect()
     }
 
-    /// THE POINT SET OF THE DATA CHAIN'S POSITION `provider` (THE DESIGN §6, "Auth points and
+    /// THE POINT SET OF THE DATA CHAIN'S POSITION `provider` ("Auth points and
     /// guest lists"): the points its opened instance's `verify` is called at. A provider that is no
     /// boxed position (`keys`) is its host-held credentials' verifiers' union, `{Head}` with none.
     pub fn position_points(&self, provider: &str) -> busbar_contract::abi::auth::AuthPoints {
@@ -1046,7 +1046,7 @@ impl AuthMiddleware {
     /// `keys` engine arm runs after every position. A position whose verifier is overloaded stops
     /// the walk as [`VerifierOverloaded`]; each caller decides what that answers. `head` is what
     /// each position is lent beside the candidate; `reach` how each is called. Every position that
-    /// answered adds the lines it named to `strips`, whatever its verdict (THE DESIGN §6.4). An
+    /// answered adds the lines it named to `strips`, whatever its verdict. An
     /// identity that asks for a replay claim is admitted only once the walk wins it
     /// ([`replay_claimed`]); a claim it loses is `Denied`.
     #[allow(clippy::too_many_arguments)]
@@ -1156,7 +1156,7 @@ impl AuthMiddleware {
     }
 
     /// [`Self::judge_chain_on_request_path`], with the lines every position that answered named for
-    /// the transport to strip, whatever its verdict (THE DESIGN §6.4): the one call
+    /// the transport to strip, whatever its verdict: the one call
     /// `auth_middleware` makes, because it hands the request on.
     pub async fn judge_chain_on_request_path_naming(
         auth: &std::sync::Arc<AuthMiddleware>,
@@ -1204,7 +1204,7 @@ impl AuthMiddleware {
 
     /// The caller's credential, as the host's default inbound style yields it ([`carried_credential`] over
     /// this chain's carriers): the first of its carrier lines, in its Statement's order, that
-    /// presents one. The kernel names no credential line (THE DESIGN §6, "Auth points and guest
+    /// presents one. The kernel names no credential line ("Auth points and guest
     /// lists"); the returned token is validated identically whichever line carried it.
     pub fn extract_client_token(&self, headers: &HeaderMap) -> Option<String> {
         carried_credential(&self.carriers, headers)
@@ -1517,7 +1517,7 @@ impl AuthModule for TestIdpModule {
 type AdminChainAnswer = (ChainVerdict, Option<busbar_contract::authz::Scope>);
 
 /// What an admin chain walk carries beside its answer: the lines every module it called named for
-/// the transport to strip, whatever its verdict (THE DESIGN §6.4), and the identifying module's
+/// the transport to strip, whatever its verdict, and the identifying module's
 /// replay claim — the provider and the claim — which the admin door claims before admitting.
 #[derive(Debug, Default)]
 pub(crate) struct AdminCarried {
@@ -2094,8 +2094,7 @@ fn unauthorized_with_completion_taps(
     unauthorized_response(app, path, door)
 }
 
-/// THE DATA PLANE'S ANSWER TO AN OVERLOADED VERIFIER (owner ruling Q134, 2026-10-07; THE DESIGN
-/// §11.11 R8): an auth position whose `max_inflight` is full judged nothing, so the request is
+/// THE DATA PLANE'S ANSWER TO AN OVERLOADED VERIFIER: an auth position whose `max_inflight` is full judged nothing, so the request is
 /// answered as the gateway answers any arrival it has no capacity for, the at-capacity 503 with
 /// `Retry-After: 1` the inbound cap sheds with, byte for byte. No new customer string, and never a
 /// bad credential's 401. The admin plane keeps its own answer.
@@ -2439,7 +2438,7 @@ pub(crate) async fn auth_middleware(
 
     // INGRESS via a SIGNED REQUEST (a dialect whose clients sign each request with a credential
     // busbar minted and holds) is a real INGRESS-PROTOCOL PRE-STEP: it needs the BUFFERED BODY to
-    // bind the payload hash. The signature is the verifying AUTH PLUGIN's to judge (THE DESIGN §6,
+    // bind the payload hash. The signature is the verifying AUTH PLUGIN's to judge
     // "Inbound verify": the host-held credential read through `records.secret`, the dummy-secret
     // timing equivalence for an unknown identifier); the kernel makes ONE `verify` call at
     // `HeadBody` and resolves the identity it answers to the governance key. It runs ONLY when the
@@ -2570,7 +2569,7 @@ pub(crate) async fn auth_middleware(
         .await;
         match judged {
             Ok(verdict) => {
-                // The union (THE DESIGN §6.3): a signed-request verifier that PASSed named its
+                // The union: a signed-request verifier that PASSed named its
                 // lines too.
                 strips.extend(named);
                 verdict

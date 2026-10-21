@@ -4,8 +4,8 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2034  # LEG_KIND/LEG_STATUS/LEG_SLICES are read by voice-conformance.sh on source
 #
-# LEG: route-failover — the door's half of the route walk (BUSBAR-1.6.0.md THE DESIGN §1 step 5 ROUTE;
-# Part 3 §12 "The route pump": the walk — pool, member pick, breaker, failover, exhaustion — is the
+# LEG: route-failover — the door's half of the route walk (ROUTE;
+# "The route pump": the walk — pool, member pick, breaker, failover, exhaustion — is the
 # kernel's, and the driver builds no second one).
 #
 # THE DOOR'S HALF (judged, linked AND dropped door, the mint door): it names the session model's DIRECT

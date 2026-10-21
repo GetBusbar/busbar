@@ -67,8 +67,8 @@
 //! ([`debug_assert_permanent`]) at the point it enters plugin code. The door table's lifecycle
 //! slots are routed in `dispatch::plugin::Instance::cross_gated`, the one place every crossing of
 //! every kind passes, whether the caller is a dispatcher worker or a ticket-less caller thread, and
-//! whether the plugin is compiled in or dropped in (THE DESIGN §11.4). The request ops stay inline
-//! because THE DESIGN §11.9 holds a crossing under 1 µs.
+//! whether the plugin is compiled in or dropped in. The request ops stay inline
+//! because holds a crossing under 1 µs.
 //!
 //! # THE RESIDUAL, stated plainly
 //!

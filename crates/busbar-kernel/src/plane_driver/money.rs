@@ -20,12 +20,12 @@
 //!   (fail closed);
 //! * an abandoned unit's sealed end goes to the composition root's one posting site
 //!   ([`EndPost`]); this file seals nothing;
-//! * a duplex session is ONE unit with ONE line (THE DESIGN §7, "A session is one unit with one
+//! * a duplex session is ONE unit with ONE line ("A session is one unit with one
 //!   line"): its turns' cumulative counts are checkpoints, a cancel on either side bills nothing of
 //!   its own, and the session's one cleanup ([`MoneySeam::session_ended`]) ledgers the last
 //!   far-end-reported (or floor) cumulative counts once, however the session ended.
 //!
-//! * a running unit's cumulative counts are CHECKPOINTS (THE DESIGN §7: "a checkpoint is a
+//! * a running unit's cumulative counts are CHECKPOINTS ("a checkpoint is a
 //!   durability `unit.accrued` record"; "running reports are crash-safe checkpoints, never ledger
 //!   lines"): the piece path only marks the unit dirty, and the composition root's flush tick
 //!   ([`PlaneMoney::flush_checkpoints`], once per [`FlushEpoch`]) hands each dirty open unit's last
@@ -76,7 +76,7 @@ pub struct Accrued {
 }
 
 /// WHERE A RUNNING UNIT'S CHECKPOINT IS JOURNALED: the composition root's book, as a durability
-/// `unit.accrued` record on the hold the unit's admission opened (THE DESIGN §7). Called from the
+/// `unit.accrued` record on the hold the unit's admission opened. Called from the
 /// root's flush tick alone ([`PlaneMoney::flush_checkpoints`]), never on the piece path.
 pub trait Checkpointer: Send + Sync {
     /// Journal unit `key`'s accrual so far. A unit the root holds no facts for journals nothing.
