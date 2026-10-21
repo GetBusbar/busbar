@@ -1806,7 +1806,7 @@ async fn the_client_secret_is_lent_at_open_and_rides_nothing_the_host_makes() {
     );
     let methods = LoginMethods::build_on(
         &cfg,
-        &busbar_plugin_loader::PluginRegistry::empty(),
+        &crate::test_support::rows::Rows::new(),
         &crate::config::secret::SecretResolver::builtins_only(),
         || Some(axis.clone() as std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>),
     )
@@ -1904,7 +1904,7 @@ fn a_login_method_with_no_auth_axis_is_refused_in_1_5_5_words() {
     );
     let Err(refusal) = LoginMethods::build_on(
         &cfg,
-        &busbar_plugin_loader::PluginRegistry::empty(),
+        &crate::test_support::rows::Rows::new(),
         &crate::config::secret::SecretResolver::builtins_only(),
         || None,
     ) else {

@@ -588,7 +588,7 @@ async fn the_admin_catalog_row_for_a_harness_signed_plugin(
     let app = busbar_kernel::test_support::TestApp::new()
         .admin_chain(vec![])
         .plugins_dir(dir.clone())
-        .plugin_trust(trust_policy)
+        .plugin_admission(&crate::root::admission::ADMISSION)
         .build();
     let router = busbar_core_admin::build_router(app);
     let request = axum::http::Request::builder()

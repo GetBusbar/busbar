@@ -159,7 +159,7 @@ fn the_operator_credentials_row_is_linked_under_its_config_key() {
 #[test]
 fn the_linked_default_inbound_style_is_the_1_5_5_client_token_lines_in_order() {
     link();
-    let linked = Arc::new(busbar_kernel::preflight::linked().expect("the linked registry"));
+    let linked = busbar_kernel::preflight::linked().expect("the linked registry");
     let axis = crate::root::dispatch::auth_axis(linked);
     assert_eq!(
         axis.default_inbound_style(),
@@ -953,17 +953,15 @@ fn a_swapped_admin_chain_is_the_loops_next_door() {
 async fn a_door_on_the_data_plane_chain_judges_the_request_it_is_lent() {
     use busbar_kernel::auth::{AuthMiddleware, ChainHead, ChainVerdict};
     let op = op();
-    let registry = Arc::new(
-        busbar_kernel::preflight::plugins_preflight(
-            None,
-            None,
-            &config::IdentityProviders::new(),
-            &HashMap::new(),
-            &config::PluginsCfg::default(),
-            &config::ExportCfg::default(),
-        )
-        .expect("the linked rows"),
-    );
+    let registry = busbar_kernel::preflight::plugins_preflight(
+        None,
+        None,
+        &config::IdentityProviders::new(),
+        &HashMap::new(),
+        &config::PluginsCfg::default(),
+        &config::ExportCfg::default(),
+    )
+    .expect("the linked rows");
     let digest = busbar_contract::redacted::sha256_hex(TOKEN.as_bytes());
     let door = crate::root::dispatch::auth_axis(registry)
         .open(op, "data-door", &serde_json::Value::String(digest))

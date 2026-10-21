@@ -1735,7 +1735,7 @@ fn the_operator_credential_opens_from_the_axis() {
     use crate::auth::{open_operator, OperatorCredential};
     let digest = busbar_contract::redacted::sha256_hex(b"tok");
     // This crate's test binary links no auth row, so its linked registry has none to open.
-    let linked = std::sync::Arc::new(crate::preflight::linked().expect("the linked registry"));
+    let linked = crate::preflight::linked().expect("the linked registry");
     let none = Default::default();
     let open = |digest| open_operator(&linked, digest, &none).expect("opens");
     assert!(matches!(
@@ -3508,15 +3508,16 @@ mod other_style {
 
 /// `chain: [keys]` over a registry linking the fixture style.
 fn other_style_chain() -> AuthMiddleware {
-    let registry = busbar_plugin_loader::PluginRegistry::empty()
-        .link(vec![busbar_plugin_loader::LinkedPlugin::auth_door(
+    let registry = crate::test_support::rows::Rows::new()
+        .with_linked(crate::preflight::LinkedRow::Auth((
+            "other-style",
             "other-style",
             other_style::door,
-        )])
-        .expect("the fixture links");
+        )))
+        .into_rows();
     AuthMiddleware::new(
         &chain_cfg(&["keys"]),
-        &std::sync::Arc::new(registry),
+        &registry,
         &crate::config::secret::SecretResolver::builtins_only(),
     )
     .expect("the chain builds")
