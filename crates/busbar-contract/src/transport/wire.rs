@@ -161,9 +161,9 @@ impl WireStatus {
     /// The number, when this status is in the numbering asked for. `None` otherwise — never a
     /// coerced number, because no code in one numbering "is" a code in another.
     ///
-    /// The one accessor every namespace-specific question is asked through, the reserved
-    /// numberings included: a reader names the namespace it reads, so adding a family adds no arm
-    /// here and no arm anywhere else.
+    /// The one accessor every namespace-specific question is asked through, in the namespace the
+    /// reader's transport declares: adding a family adds no arm here and no arm anywhere else, and
+    /// no accessor here is named for a protocol.
     #[must_use]
     pub fn in_namespace(self, namespace: &str) -> Option<u32> {
         (self.namespace == namespace).then_some(self.code)
