@@ -1217,8 +1217,21 @@ impl Connector {
             .map(|d| Arc::clone(&d.door))
             .ok_or(ConnError::Refused)?;
         // The listener's offer is the entry's own for its ACCEPTING side, never its dial offer;
-        // an entry that states none (it refuses the question) makes no offer.
-        let alpn = framer::accept_offer(door.as_ref()).unwrap_or_default();
+        // an entry that states none (it refuses the question) makes no offer. That refusal is
+        // logged: a secured listener bound without its entry's offer agrees no protocol off it.
+        let alpn = match framer::accept_offer(door.as_ref()) {
+            Ok(offer) => offer,
+            Err(refused) => {
+                tracing::warn!(
+                    owner = owner.0,
+                    need = need.0,
+                    error = %refused,
+                    "inbound listener: the entry's locate refused the accepting-side protocol \
+                     offer; the listener binds with the fallback offer"
+                );
+                Vec::new()
+            }
+        };
         let mut listeners = self.listeners.lock().expect("listeners");
         if listeners.contains_key(&(owner, need)) {
             return Err(ConnError::Refused);
