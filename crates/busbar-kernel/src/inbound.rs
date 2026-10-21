@@ -853,6 +853,15 @@ impl Inbound {
         listener: Listener,
     ) -> Result<(), &'static str> {
         let lines = listener.guests.lines().len();
+        if listener.body_limit == 0
+            && listener
+                .guests
+                .lines()
+                .iter()
+                .any(|l| l.auth.points().has(AuthPoint::HeadBody))
+        {
+            return Err(BODY_LIMIT_ZERO);
+        }
         let lines_by_id: HashMap<u64, u32> = listener.ids.iter().copied().zip(0u32..).collect();
         if listener.ids.len() != lines
             || lines_by_id.len() != lines
