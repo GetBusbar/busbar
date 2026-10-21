@@ -15,8 +15,8 @@
 //!   step, as the SDK's door runs them; a refusal is the loader's `plugin '<name>' open failed:
 //!   <the store's text>` (`status 3` for a fault);
 //! * the typed calls ([`StoreCalls`]) and the 1.5.5 op set ([`RecordStore`], the synchronous
-//!   bridge) both run the SAME slots, so a store body that panics answers FAULT on either surface,
-//!   as the SDK door's mandatory `catch_unwind` makes it, never an unwind into the caller;
+//!   bridge) both run the SAME slots, so a call that answers PENDING on no ticket is FAULT on either
+//!   surface;
 //! * each answer is classed as the loader classes the door's: an `op_id` conflict
 //!   [`StoreFailure::Conflict`], a cap conflict [`StoreFailure::CapConflict`], a reserve refusal
 //!   [`StoreFailure::Reserve`], a store's text [`StoreFailure::Failed`]; the bridge carries a
@@ -31,7 +31,6 @@
 //! loader's to prove (`crates/plugin-loader/src/tests/store_v3_tests.rs`), and the double's parity
 //! with the shipped store the root's (`the_kernel_store_double_states_what_the_linked_store_door_states`).
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::door::DoorFn;
@@ -92,15 +91,6 @@ fn is_store_double(door: DoorFn) -> bool {
     std::ptr::fn_addr_eq(door, store_double::door as DoorFn)
 }
 
-/// The text of a panic's payload.
-fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
-    payload
-        .downcast_ref::<&str>()
-        .map(|s| (*s).to_string())
-        .or_else(|| payload.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "a panic".to_string())
-}
-
 /// ONE STORE INSTANCE, called in process through its [`StoreSlots`]: the store, the Statement name
 /// its refusals carry, and the kernel's `op_id` allocator for the bridge's additive writes.
 pub(crate) struct SlotStore<S: StoreSlots> {
@@ -121,35 +111,24 @@ impl<S: StoreSlots> SlotStore<S> {
         mint: OpIdMint,
     ) -> Result<Self, String> {
         let refused = |reason: &str| format!("plugin '{name}' open failed: {reason}");
-        let opened = catch_unwind(AssertUnwindSafe(|| -> Result<Option<S>, String> {
-            let store = S::open(settings, None)?;
-            match S::connect(&store, &mut Op::detached()) {
-                Step::Ready(Ok(())) => Ok(Some(store)),
-                Step::Ready(Err(e)) => Err(e),
-                // Pending on no ticket: FAULT.
-                Step::Pending { .. } => Ok(None),
-            }
-        }));
-        match opened {
-            Ok(Ok(Some(store))) => Ok(Self { store, name, mint }),
-            Ok(Err(e)) => Err(refused(&e)),
-            Ok(Ok(None)) | Err(_) => Err(refused("status 3")),
+        let store = S::open(settings, None).map_err(|e| refused(&e))?;
+        match S::connect(&store, &mut Op::detached()) {
+            Step::Ready(Ok(())) => Ok(Self { store, name, mint }),
+            Step::Ready(Err(e)) => Err(refused(&e)),
+            // Pending on no ticket: FAULT.
+            Step::Pending { .. } => Err(refused("status 3")),
         }
     }
 
-    /// Run one slot on no ticket: its answer, or FAULT for a panic or a PENDING.
+    /// Run one slot on no ticket: its answer, or FAULT for a PENDING. A store body that panics
+    /// panics the test that called it.
     fn call<T>(&self, slot: impl FnOnce(&S, &mut Op<'_>) -> Step<T>) -> Result<T, StoreFailure> {
         let mut cx = Op::detached();
-        match catch_unwind(AssertUnwindSafe(|| slot(&self.store, &mut cx))) {
-            Ok(Step::Ready(answer)) => Ok(answer),
-            Ok(Step::Pending { .. }) => Err(StoreFailure::Fault(format!(
+        match slot(&self.store, &mut cx) {
+            Step::Ready(answer) => Ok(answer),
+            Step::Pending { .. } => Err(StoreFailure::Fault(format!(
                 "store '{}' answered PENDING on a call on no ticket",
                 self.name
-            ))),
-            Err(payload) => Err(StoreFailure::Fault(format!(
-                "store '{}' panicked: {}",
-                self.name,
-                panic_text(payload.as_ref())
             ))),
         }
     }

@@ -75,7 +75,7 @@ pub(crate) enum GateVerdict {
         message: String,
         /// The transport/policy name, for the audit row and the log line: "it was refused" is not
         /// an operator-actionable fact unless it says by WHAT.
-        hook: &'static str,
+        hook: String,
     },
 }
 
@@ -333,7 +333,7 @@ pub(crate) async fn decide(
                     // policy implementation, shipped or future, can mint a 5xx or a success here.
                     status: status.clamp(400, 499),
                     message,
-                    hook: policy.name(),
+                    hook: policy.name().to_string(),
                 };
             }
             // The two candidate-set verbs. Nothing to act on, and saying so at `debug` is what
@@ -367,11 +367,11 @@ pub(crate) async fn decide(
 /// ([`crate::hooks::failed_call_refuses`]) and answers the one client-facing refusal every other
 /// seat answers ([`crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS`] and its message): a broken
 /// load-bearing gate is the same retryable condition on every plane (audit kernel-K4 #7).
-fn fail_closed(on_error: &crate::config::PolicyOnError, hook: &'static str) -> Option<GateVerdict> {
+fn fail_closed(on_error: &crate::config::PolicyOnError, hook: &str) -> Option<GateVerdict> {
     crate::hooks::failed_call_refuses(on_error).then(|| GateVerdict::Reject {
         status: crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
         message: crate::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE.to_string(),
-        hook,
+        hook: hook.to_string(),
     })
 }
 

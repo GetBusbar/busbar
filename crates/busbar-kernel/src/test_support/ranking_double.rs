@@ -207,7 +207,7 @@ pub const CALL_BUDGET: Duration = Duration::from_secs(1);
 /// Whether `module` names the double on the hook axis: its Statement name or one of its words, in a
 /// build that links the ranking hooks.
 fn answers(module: &str) -> bool {
-    cfg!(feature = "hooks-ranking") && (module == NAME || WORDS.contains(&module))
+    cfg!(feature = "linked-hook-double") && (module == NAME || WORDS.contains(&module))
 }
 
 /// The sort key [`key`] reads, off one candidate of the 1.5.5 projection.

@@ -926,7 +926,7 @@ pub fn admission_gates_decide<H: HookConfigHost + ?Sized>(
         })) => GateOutcome::Reject {
             status,
             message,
-            hook: hook.to_string(),
+            hook,
         },
         Ok(None) | Err(_) => GateOutcome::Reject {
             status: 403,

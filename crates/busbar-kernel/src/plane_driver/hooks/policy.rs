@@ -29,8 +29,9 @@ use std::time::Duration;
 /// ONE OPENED HOOK INSTANCE AS THE ROUTING SEAM CALLS IT.
 pub(crate) struct HookPolicy {
     calls: Arc<dyn HookCalls>,
-    /// The hook's registry name (metrics, `x-busbar-route`), interned once per distinct name.
-    name: &'static str,
+    /// The hook's registry name (metrics, `x-busbar-route`), owned by the policy for as long as it
+    /// lives: a decision that names it takes a clone of this handle, so nothing is leaked per open.
+    name: Arc<str>,
 }
 
 impl HookPolicy {
@@ -38,28 +39,9 @@ impl HookPolicy {
     pub(crate) fn policy(calls: Arc<dyn HookCalls>, name: &str) -> Arc<dyn RoutingPolicy> {
         Arc::new(Self {
             calls,
-            name: intern_name(name),
+            name: Arc::from(name),
         })
     }
-}
-
-/// INTERN a hook's registry name into a stable `&'static str`, one allocation per distinct name for
-/// the life of the process. A hook opens per config/plugin reload, per `push_configure`, per
-/// `fetch_status` (every `/metrics/hooks` scrape refresh) and per `fetch_schema`, so a name leaked
-/// per OPEN would grow without bound under routine scraping; interned, a repeated open of the same
-/// hook reuses its one leak.
-fn intern_name(name: &str) -> &'static str {
-    use std::collections::HashSet;
-    use std::sync::{Mutex, OnceLock};
-    static INTERNED: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
-    let set = INTERNED.get_or_init(|| Mutex::new(HashSet::new()));
-    let mut guard = set.lock().unwrap_or_else(|p| p.into_inner());
-    if let Some(existing) = guard.get(name) {
-        return existing;
-    }
-    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
-    guard.insert(leaked);
-    leaked
 }
 
 impl std::fmt::Debug for HookPolicy {
@@ -196,12 +178,16 @@ impl RoutingPolicy for HookPolicy {
             } => Ok(lower_decide(&out, &frame, candidates)),
             // FAILED (the hook said it could not answer), a deadline, a broken contract: the
             // caller's `on_error` decides, never a silent abstain.
-            other => Err(PolicyError::from(unanswered(self.name, budget, other))),
+            other => Err(PolicyError::from(unanswered(&self.name, budget, other))),
         }
     }
 
-    fn name(&self) -> &'static str {
-        self.name
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn name_arc(&self) -> Arc<str> {
+        Arc::clone(&self.name)
     }
 
     async fn transform(&self, req: &RoutingRequest<'_>, budget: Duration) -> TransformOutcome {
@@ -223,7 +209,7 @@ impl RoutingPolicy for HookPolicy {
                 message: error.unwrap_or_default(),
             },
             other => TransformOutcome::Failed {
-                message: unanswered(self.name, budget, other),
+                message: unanswered(&self.name, budget, other),
             },
         }
     }

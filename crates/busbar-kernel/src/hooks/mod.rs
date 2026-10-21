@@ -525,8 +525,12 @@ impl RoutingPolicy for RewriteOnError {
         self.inner.decide(req, candidates, ctx, budget).await
     }
 
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         self.inner.name()
+    }
+
+    fn name_arc(&self) -> std::sync::Arc<str> {
+        self.inner.name_arc()
     }
 
     async fn transform(

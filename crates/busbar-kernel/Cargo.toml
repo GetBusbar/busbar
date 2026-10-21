@@ -159,7 +159,10 @@ rcgen = { workspace = true, optional = true, features = ["pem"] }
 default = ["hooks-ranking", "plane-mcp", "plane-a2a"]
 # The build links the ranking hooks: the composition root registers their row (it owns the crate
 # edge); here it only decides whether a test build's stand-in rows carry that row.
-hooks-ranking = []
+hooks-ranking = ["linked-hook-double"]
+# The build links the hook row the kernel kit's hook double stands in for (on in every build that
+# links the ranking hooks); the kit reads this switch, so it names no hook instance.
+linked-hook-double = []
 # THE MCP PLANE, in-core today (`src/mcp`), behind the SAME switch the binary already uses for MCP
 # the protocol codec (`busbar-mcp`): one plane-kind name for MCP-the-protocol and MCP-the-plane,
 # never two. Default-on — the shipped engine speaks MCP. With it OFF, `src/mcp` is compiled out and
