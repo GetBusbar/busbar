@@ -558,7 +558,8 @@ fn two_observers_lent_two_catalogues_each_emit_only_their_own_roots_codes() {
                 std::slice::from_ref(&entry),
             );
         });
-        String::from_utf8(buf.0.lock().unwrap().clone()).unwrap()
+        let bytes = buf.0.lock().unwrap().clone();
+        String::from_utf8(bytes).unwrap()
     };
     let own = emitted(folded);
     assert!(
