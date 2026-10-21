@@ -3405,7 +3405,9 @@ const FIXTURE_GREEN_MAIN: &str =
     include_str!("../../fixtures/reachability-green/crates/busbar/src/main.rs");
 
 /// The green fixture's rider, runner and decision entry, verbatim (the planted variants edit a copy).
+// qa-names: crates/busbar/src/root/gauntlet_install.rs -- xtask/src/gates/reachability.rs -- a path inside the green FIXTURE tree (xtask/fixtures/reachability-green), whose planted variants edit the runner install it carries; the real tree has no such file since the gauntlet riders were deleted with the kernel's plane hosting (status row 82)
 const INSTALL_RS: &str = "crates/busbar/src/root/gauntlet_install.rs";
+// qa-names: crates/busbar/src/root/gauntlet_kernel.rs -- xtask/src/gates/reachability.rs -- a path inside the green FIXTURE tree (xtask/fixtures/reachability-green), whose planted variants edit the kernel-loop runner it carries; the real tree has no such file since the gauntlet riders were deleted with the kernel's plane hosting (status row 82)
 const KERNEL_RS: &str = "crates/busbar/src/root/gauntlet_kernel.rs";
 // qa-names: crates/busbar/src/root/plane_decisions.rs -- xtask/src/gates/reachability.rs -- a path inside the green FIXTURE tree (xtask/fixtures/reachability-green), whose planted variants edit the decision entry it carries; the real tree has no such file since FLIP-DECISIONS served the decisions plane through its door
 const DECISION_ENTRY_RS: &str = "crates/busbar/src/root/plane_decisions.rs";
