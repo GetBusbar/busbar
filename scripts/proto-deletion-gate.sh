@@ -177,7 +177,12 @@ for p in json.load(sys.stdin)["packages"]:
 #   * qa/construction.toml `[gate.plugin_kinds]` -- the `plane` and `transport` KIND globs, the one
 #     place the kind boundaries are drawn (manifest-allowlist, source-denylist and forbid-unsafe read
 #     the same table), so a plane or transport crate is a needle the moment it is in its kind;
-#   * the #34 naming-law families `busbar-plane-*` and `busbar-*-codec`, which were already here.
+#   * the #34 naming-law families `busbar-plane-*` and `busbar-*-codec`, which were already here;
+#   * the PINNED plugin crates: every `[workspace.dependencies]` key of the root Cargo.toml whose
+#     `crates/<key>` the same kind globs and families match. A plane or transport that left this
+#     repo for its own (pulled at a pinned rev) is still a crate core can name, so it stays a needle;
+#     reading only `crates/` on disk dropped every transport from the set as each one left, and the
+#     self-test's planted `busbar_transport_http` reference went unflagged.
 # NOT needles, and why: `busbar-contract`/`busbar-plugin` are the ABI core is built on; `busbar-core-oauth2`
 # and `busbar-core-*` are compiled-in cleanliness crates that plane-keys.sh's `neutral_src_roots`
 # lists as NEUTRAL (they depend on the kernel, not the reverse).
@@ -188,10 +193,15 @@ proto_crate_names() { # underscore crate names of every protocol / plane / trans
     || die "cannot read [gate.plugin_kinds].plane/.transport from $root/qa/construction.toml -- no needle set without it"
   [ -n "$globs" ] || die "[gate.plugin_kinds] in $root/qa/construction.toml names no plane/transport glob"
   [ -n "${PLANE_KEYS:-}" ] || die "PLANE_KEYS is empty -- scripts/plane-keys.sh was not sourced"
+  # A key whose root is not on disk is refused, never skipped: skipping it is a needle set that
+  # silently lost a plane (row 115). llm's root is its door crate (DEV-GREEN row 83).
+  ( cd "$root" && require_plane_key_roots ) || die "a PLANE_KEYS root is not on disk under $root -- no needle set without it"
   (
     cd "$root" || exit 1
     for k in $PLANE_KEYS; do
-      for d in "crates/busbar-$k" "crates/busbar-$k-codec"; do [ -d "$d" ] && printf '%s\n' "$d"; done
+      d="$(dirname "$(plane_key_src "$k")")"
+      [ -d "$d" ] && printf '%s\n' "$d"
+      [ -d "crates/busbar-$k-codec" ] && printf '%s\n' "crates/busbar-$k-codec"
     done
     # The kind table's globs, UNION the #34 naming-law families (`busbar-plane-<x>` is a plane by its
     # name, and a `-codec` crate is a plane's pure half by its name). The kind table enrols planes by
@@ -201,7 +211,25 @@ proto_crate_names() { # underscore crate names of every protocol / plane / trans
       # shellcheck disable=SC2086  # $g is a glob; expanding it is the point
       for d in $g; do [ -d "$d" ] && printf '%s\n' "$d"; done
     done
+    pinned_kind_crates "$root/Cargo.toml" $globs crates/busbar-plane-* crates/busbar-*-codec
   ) | while IFS= read -r d; do b="$(basename "$d")"; printf '%s\n' "${b//-/_}"; done | sort -u
+  # The listing's own status is not the verdict (a trailing `[ -d ]` that found nothing is not a
+  # failure); the refusals above `die`, and that exit is the only non-zero this function returns.
+  return 0
+}
+
+# pinned_kind_crates <Cargo.toml> <glob>... -> `crates/<key>` for every [workspace.dependencies] key a
+# glob matches (a pinned plugin crate, by the path it would have on disk). No Cargo.toml: none.
+pinned_kind_crates() {
+  [ -f "$1" ] || return 0
+  python3 -I - "$@" <<'TOMLPY'
+import fnmatch, sys, tomllib
+with open(sys.argv[1], "rb") as fh:
+    deps = tomllib.load(fh).get("workspace", {}).get("dependencies", {})
+for key in sorted(deps):
+    if any(fnmatch.fnmatchcase(f"crates/{key}", g) for g in sys.argv[2:]):
+        print(f"crates/{key}")
+TOMLPY
 }
 
 # plugin_kind_globs <construction.toml> <kind>... -> the directory globs of each kind, one per line.
@@ -217,20 +245,28 @@ for kind in sys.argv[2:]:
 TOMLPY
 }
 
-# THE LLM DIALECTS ARE DERIVED FROM THE PLUGIN'S OWN DECLS, NOT TYPED (item 517). Level 3a proves
-# every dialect the deleted plugin carried is refused; the list it iterated was a hand-typed string
-# nothing counted, under a closing line claiming "all six". A seventh `&x::DECL` in DECLS would have
-# been probed by nobody while the claim stood. This reads `DECLS` in the codec's `mod.rs` (owner
-# ruling R7, 2026-09-27, `BUSBAR-1.6.0.md` THE DESIGN, §9/#39: `busbar-llm-codec` folded into `busbar-plane-llm` as its
-# `codec` module, so its former crate-root `lib.rs` is now `codec/mod.rs`), then each listed module's
-# `DECL` `name:` -- the string an operator writes as `protocol:`.
+# THE LLM DIALECTS ARE DERIVED FROM THE PLUGIN'S OWN REGISTRATION LIST, NOT TYPED (item 517). Level
+# 3a proves every dialect the deleted plugin carried is refused; the list it iterated was a
+# hand-typed string nothing counted, under a closing line claiming "all six". A seventh dialect
+# registered would have been probed by nobody while the claim stood. This reads `DIALECTS` in the
+# codec's `mod.rs` (`busbar-llm-codec` folded into `busbar-plane-llm` as its `codec` module, so its
+# former crate-root `lib.rs` is now `codec/mod.rs`): one `&<module>::ENTRY` line per dialect, the
+# one place the plane names a dialect, and `DECLS` is read off it in the same order. Then each
+# listed module's `DECL` `name:` -- the string an operator writes as `protocol:`. (The list was
+# `DECLS` of `&<module>::DECL` until the codec read per-dialect registrations; reading only that
+# shape left this derivation, and its self-test, dying on the live tree.)
 # $1 = the codec module's src dir. Prints the names in DECLS order; dies if any entry has no name.
+# llm_registrations <codec mod.rs>: the `&<module>::ENTRY` lines of its `DIALECTS` list, in order.
+llm_registrations() {
+  awk '/(static|const) DIALECTS:/ {on=1} on {print} on && /\];/ {exit}' "$1" \
+    | grep -oE '&[A-Za-z0-9_]+::ENTRY' || true
+}
+
 llm_dialects() {
   local src="${1:-crates/busbar-plane-llm/src/codec}" mods m f n out=""
   [ -f "$src/mod.rs" ] || die "cannot derive the LLM dialects: $src/mod.rs is not on disk"
-  mods="$(awk '/static DECLS:/ {on=1} on {print} on && /\];/ {exit}' "$src/mod.rs" \
-          | grep -oE '&[A-Za-z0-9_]+::DECL' | sed -e 's/^&//' -e 's/::DECL$//')"
-  [ -n "$mods" ] || die "cannot derive the LLM dialects: no '&<module>::DECL' entry in $src/mod.rs DECLS"
+  mods="$(llm_registrations "$src/mod.rs" | sed -e 's/^&//' -e 's/::ENTRY$//')"
+  [ -n "$mods" ] || die "cannot derive the LLM dialects: no '&<module>::ENTRY' entry in $src/mod.rs DIALECTS"
   for m in $mods; do
     f="$src/$m/mod.rs"; [ -f "$f" ] || f="$src/$m.rs"
     [ -f "$f" ] || die "DECLS names module '$m' but neither $src/$m/mod.rs nor $src/$m.rs exists"
@@ -287,7 +323,7 @@ if [ "${1:-}" = "--selftest" ]; then
   st_tmp="$(mktemp -d)"; trap 'rm -rf "$st_tmp"' EXIT
   st_fail=0
   mkdir -p "$st_tmp/core/tests"
-  needles="$(proto_crate_names)"
+  needles="$(proto_crate_names)" || die "self-test: the needle set could not be derived: $needles"
   [ -n "$needles" ] || { die "self-test: no protocol/plane crate on disk, so there is no needle to prove"; }
 
   printf 'pub fn ok() {}\n' > "$st_tmp/core/clean.rs"
@@ -299,7 +335,9 @@ if [ "${1:-}" = "--selftest" ]; then
     note "self-test GREEN: a doc comment naming a protocol crate, and a tests/ file naming one, are not violations"
   fi
 
-  printf 'use busbar_mcp_codec::Frame;\npub fn leak(f: Frame) -> Frame { f }\n' > "$st_tmp/core/leak.rs"
+  # A LIVE protocol crate: `busbar_mcp_codec` was retired with the codec split, so planting it proved
+  # nothing once no needle could name it. The mcp plane is pinned, and a pinned plane is a needle.
+  printf 'use busbar_plane_mcp::Frame;\npub fn leak(f: Frame) -> Frame { f }\n' > "$st_tmp/core/leak.rs"
   if [ -n "$(level1_scan "$st_tmp/core" "$needles")" ]; then
     note "self-test RED: a production core file naming a protocol crate is flagged"
   else
@@ -349,7 +387,10 @@ if [ "${1:-}" = "--selftest" ]; then
       st_fail=1; note "SELF-TEST NEEDLE case FAILED: $st_n (ABI / neutral) is a needle -- level 1 would red on core's own foundations"
     fi
   done
+  # The fixture tree carries each PLANE_KEYS root (llm's is its door crate), which the needle set
+  # refuses to be without.
   mkdir -p "$st_tmp/tree/qa" "$st_tmp/tree/crates/busbar-transport-selftestzz" "$st_tmp/tree/crates/busbar-plane-selftestzz"
+  for st_k in $PLANE_KEYS; do mkdir -p "$st_tmp/tree/$(plane_key_src "$st_k")"; done
   cp qa/construction.toml "$st_tmp/tree/qa/"
   st_fix_needles="$(proto_crate_names "$st_tmp/tree")"
   if printf '%s\n' "$st_fix_needles" | grep -qx busbar_transport_selftestzz \
@@ -358,25 +399,33 @@ if [ "${1:-}" = "--selftest" ]; then
   else
     st_fail=1; note "SELF-TEST NEEDLE case FAILED: a newly added kind crate is not a needle (got: $(printf '%s' "$st_fix_needles" | tr '\n' ' '))"
   fi
+  # RED: a PLANE_KEYS root that is not on disk is refused, never skipped (row 115).
+  mkdir -p "$st_tmp/keyless/qa"
+  cp qa/construction.toml "$st_tmp/keyless/qa/"
+  if ( proto_crate_names "$st_tmp/keyless" ) >/dev/null 2>&1; then
+    st_fail=1; note "SELF-TEST NEEDLE case FAILED: a tree missing a PLANE_KEYS root still yielded a needle set"
+  else
+    note "self-test RED: a tree missing a PLANE_KEYS root is refused, not scanned without the plane"
+  fi
 
   # DIALECTS ARE DERIVED AND COUNTED (item 517): the live derivation matches the DECLS entry count and
   # carries the leg's own probe dialect; a fixture DECLS yields exactly its own entries.
-  st_decls_n="$(awk '/static DECLS:/ {on=1} on {print} on && /\];/ {exit}' crates/busbar-plane-llm/src/codec/mod.rs | grep -cE '&[A-Za-z0-9_]+::DECL' || true)"
+  st_decls_n="$(llm_registrations crates/busbar-plane-llm/src/codec/mod.rs | grep -c . || true)"
   st_dialects="$(llm_dialects crates/busbar-plane-llm/src/codec)"
   st_dialects_n="$(printf '%s\n' "$st_dialects" | wc -w | tr -d ' ')"
   if [ "${st_decls_n:-0}" -gt 0 ] && [ "$st_dialects_n" = "$st_decls_n" ] && printf ' %s ' "$st_dialects" | grep -q ' anthropic '; then
-    note "self-test DIALECTS: $st_dialects_n derived from DECLS ($st_dialects), one per entry"
+    note "self-test DIALECTS: $st_dialects_n derived from DIALECTS ($st_dialects), one per entry"
   else
-    st_fail=1; note "SELF-TEST DIALECTS case FAILED: DECLS has $st_decls_n entries, derived $st_dialects_n ($st_dialects)"
+    st_fail=1; note "SELF-TEST DIALECTS case FAILED: DIALECTS has $st_decls_n entries, derived $st_dialects_n ($st_dialects)"
   fi
   mkdir -p "$st_tmp/codec/alpha"
-  printf 'pub static DECLS: &[&X] = &[\n    &alpha::DECL,\n    &beta::DECL,\n];\n' > "$st_tmp/codec/mod.rs"
+  printf 'pub(crate) const DIALECTS: &[&X] = &[\n    &alpha::ENTRY,\n    &beta::ENTRY,\n];\npub static DECLS: &[&Y] = &decls::<{ DIALECTS.len() }>();\n' > "$st_tmp/codec/mod.rs"
   printf 'pub const DECL: ProtocolDecl = ProtocolDecl {\n    name: "alpha-dialect",\n};\n' > "$st_tmp/codec/alpha/mod.rs"
   printf 'fn other() { let name: "not-this" = 1; }\npub const DECL: ProtocolDecl = ProtocolDecl {\n    name: "beta-dialect",\n};\n' > "$st_tmp/codec/beta.rs"
   if [ "$(llm_dialects "$st_tmp/codec")" = "alpha-dialect beta-dialect" ]; then
-    note "self-test DIALECTS: a fixture DECLS of two yields exactly its two names, in order"
+    note "self-test DIALECTS: a fixture DIALECTS of two yields exactly its two names, in order"
   else
-    st_fail=1; note "SELF-TEST DIALECTS case FAILED: fixture DECLS derived '$(llm_dialects "$st_tmp/codec")'"
+    st_fail=1; note "SELF-TEST DIALECTS case FAILED: fixture DIALECTS derived '$(llm_dialects "$st_tmp/codec")'"
   fi
 
   # THE HTTP VERDICTS REJECT A DEAD PROCESS (item 518): curl's `000` is neither mounted nor absent.
@@ -405,7 +454,7 @@ fi
 for core_root in "${CORE_SRC_ROOTS[@]}"; do
   require_scan_dir "$core_root" "a neutral core source root (level 1 static)"
 done
-PROTO_NEEDLES="$(proto_crate_names)"
+PROTO_NEEDLES="$(proto_crate_names)" || die "the needle set could not be derived: $PROTO_NEEDLES"
 [ -n "$PROTO_NEEDLES" ] || die "no protocol or plane crate found under crates/; with no needle this level asserts nothing"
 CORE_NFILES=0
 for core_root in "${CORE_SRC_ROOTS[@]}"; do
@@ -737,7 +786,7 @@ case " $LLM_DIALECTS " in
   *) die "the LLM leg probes /v1/messages as anthropic, but DECLS no longer declares anthropic ($LLM_DIALECTS)" ;;
 esac
 LLM_ALSO_DELETED="$(printf '%s\n' "$LLM_DIALECTS" | tr ' ' '\n' | grep -vx anthropic | tr '\n' ' ')"
-note "level 3a dialects: $LLM_DIALECTS_N derived from busbar-plane-llm's codec DECLS ($LLM_DIALECTS)"
+note "level 3a dialects: $LLM_DIALECTS_N derived from busbar-plane-llm's codec DIALECTS ($LLM_DIALECTS)"
 run_gate "anthropic" "plane-llm" "plane-mcp" \
   "" "" "/v1/messages" \
   "$LLM_ALSO_DELETED"

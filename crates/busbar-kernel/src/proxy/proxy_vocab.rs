@@ -2,10 +2,10 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The NEUTRAL proxy vocabulary that STAYS in `busbar-core` once a plane's engine moves out to its own
-//! `busbar-llm` crate (1.6.0 money-path Phase 3-4 C). Everything here is dialect-blind: the capped
+//! the retired engine crate crate (1.6.0 money-path Phase 3-4 C). Everything here is dialect-blind: the capped
 //! upstream-body read, the tight upstream-buffer cap, the hook-content ceiling knob, the fire-and-
 //! forget STAGE usage-tap primitives, and the agnostic ingress-error shaper. Core's own staying call
-//! sites (`egress::seam`, `preflight`, `auth`, `config`, `appbuild`) name these at
+//! sites (`preflight`, `auth`, `config`, `appbuild`) name these at
 //! their historical `crate::proxy::*` paths (re-exported from `proxy/mod.rs`), and the relocated
 //! engine names them across the crate boundary as `busbar_kernel::proxy::*` — neither reaches for a
 //! dialect, so the plane can be dropped from the build without taking any of this with it.
@@ -45,7 +45,7 @@ pub fn max_upstream_buffered_bytes() -> usize {
 // unchanged.
 
 // THE AGNOSTIC INGRESS-ERROR SHAPER and its neutral fallback envelope RELOCATED DOWN to
-// `busbar_kernel::proxy` (the extracted `busbar-llm` native-ingress path shapes an ingress error
+// `busbar_kernel::proxy` (the extracted the retired engine crate native-ingress path shapes an ingress error
 // through the neutral ABI); re-exported here at their historical `crate::proxy::{ingress_error,
 // agnostic_error_envelope}` paths so every in-core caller is unchanged. They name no dialect —
 // `proto::decl_for` reads whatever registry the resident planes populated — and the fallback is

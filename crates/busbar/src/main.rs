@@ -254,7 +254,8 @@ fn validate_worker_threads_config(wt: Option<usize>) -> Result<Option<usize>, St
 // crate this replaced did.
 include!(concat!(env!("OUT_DIR"), "/linked.rs"));
 // `LINKED_HOOK_NAMES`: each linked hook row's name as the admin surface prints it (the manifest's
-// `linked-name` rows), handed to the admin crate below so it names no hook plugin.
+// `linked-name` rows), carried on the root's install record (`root::linked::register_stores`) so the
+// admin crate names no hook plugin.
 include!(concat!(env!("OUT_DIR"), "/linked_hook_names.rs"));
 
 /// REGISTER THE LINKED PROTOCOLS — the composition root's one write into the protocol axis, over
@@ -318,9 +319,6 @@ fn register_planes() {
     // above. Unconditional: the admin surface carries no feature flag at this layer; core mounts it
     // through the seam whenever this (mandatory) sibling is linked, which is every real build.
     busbar_core_admin::install();
-    // The hook rows this build links, by the names the admin surface prints (Law 1: the admin crate
-    // spells no hook plugin; which hooks a build carries is the manifest's data).
-    busbar_core_admin::v1::service::install_hook_plugins(LINKED_HOOK_NAMES);
 
     // THE ROOT UNITS' SEALS. Each reads what its unit composes against the axes installed above and
     // against nothing else — it binds no listener, opens no store, reads no configuration and writes
@@ -370,7 +368,7 @@ fn main() {
     // unknown-protocol refusal — the deletion test's runtime half (scripts/proto-deletion-gate.sh).
     register_protocols();
     // PLANE REGISTRATION, same slot and the same reason: `--validate` (just below) reads the plane
-    // list through `plane::config::config_sections()`, so the plane axis must be installed before
+    // list through `config::plane_sections::config_sections()`, so the plane axis must be installed before
     // any reader — including the CLI flags — can run.
     register_planes();
     // HOST-SELECTION SEAM INSTALL (loop unification, DECISIONS #28), after the planes are registered
@@ -772,14 +770,6 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         .filter_map(|capture| capture(&cfg))
         .collect();
 
-    // D38: the fleet's SEALED OPERATOR KEY reference (`auth.operator_pub`), captured from the
-    // resolved `auth:` block BEFORE `cfg` is consumed by `build_app_from_config`. It is resolved to
-    // its raw 32 ed25519 bytes below — once the secret resolver the build produces exists — and
-    // sealed into the admin plane's production posture view. Absent (the default) it stays `None`,
-    // which the posture view reads as `OperatorState::Unset`: the amend ceremony gate refuses exactly
-    // as the release without this field, byte for byte.
-    #[cfg(feature = "root-admin")]
-    let boot_operator_auth = cfg.auth.clone();
     // The operator's data chain (`auth.chain`), the auth of every data-listener guest-list line
     // (THE DESIGN §6), captured for the door planes' lines before `cfg` is consumed.
     let data_chain: Vec<String> = cfg
@@ -799,10 +789,9 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // The model-serving pools the plane serving the `pools` map walks, with every bound the
     // configuration states (`root::model_egress`).
     let door_model_pools = root::model_egress::ModelPools::of(&cfg);
-    // The unified `pools:` a named-definition carrier's members resolved to, by the carrier's
-    // section key: each door plane's section carries its own pools (DoorPools), captured before
-    // `cfg` is consumed.
-    let door_pools = root::serve::door_pools(&cfg.tool_pools, &cfg.agent_pools);
+    // Each door plane's pools, by its section key: each door plane's section carries its own pools
+    // (DoorPools), captured before `cfg` is consumed.
+    let door_pools = root::serve::door_pools(&cfg.plane_pools);
     // The root breaker's per-pool ladders, read off the same `pools:` the build resolves each pool's
     // own dispatch cfg from, before `cfg` is consumed.
     #[cfg(feature = "root-admin")]
@@ -971,6 +960,14 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     )
     .unwrap_or_else(|e| die(e));
     root_rules.hold_owned_anchors(&served.need_trust());
+    // THE DOOR PLANES THE BOOT LEFT UNOPENED (their section absent, Law 7): a door plane is opened
+    // once, here, so an apply that first writes one's section is stored and validated but
+    // RESTART-TO-APPLY, reported in the apply's answer and given no slot until the next boot (the
+    // 1.5.5 precedent for what is mounted once at boot, `plugin_routes::paths_awaiting_restart`).
+    // Without governance no door plane is opened at all, at boot or after a restart: none is held.
+    if app.governance.is_some() {
+        root_rules.hold_unopened(served.unopened(root::boot::door_planes()));
+    }
     served.spawn_ticks();
     // RELIABILITY STATE IS STATELESS (store-or-RAM rule): a plane's own in-memory health/backoff
     // bookkeeping lives in RAM only and is RE-LEARNED after a restart — none of it is this crate's
@@ -1015,16 +1012,6 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // Grab the secret resolver before `app` is moved into the router builder - the TLS listeners
     // resolve cert/key/CA references through it below.
     let tls_secret_resolver = app.secret_resolver.clone();
-    // D38: resolve the sealed operator public key to its raw 32 ed25519 bytes through the SAME secret
-    // seam every key is resolved through (built-in env/file + kind:secret plugins). FAIL-CLOSED on a
-    // configured-but-unresolvable / malformed key — a fleet that MEANT to seal one must not come up
-    // silently ungated. `None` (absent) ⇒ `OperatorState::Unset` in the posture view below.
-    #[cfg(feature = "root-admin")]
-    let operator_key = busbar_kernel::preflight::resolve_operator_public_key(
-        boot_operator_auth.as_ref(),
-        &tls_secret_resolver,
-    )
-    .unwrap_or_else(|e| die(e));
     // THE PROCESS'S ONE BOOK IS OPENED BEFORE THE ROUTERS ARE BUILT (ARCHITECT Q-SW7, 2026-10-02):
     // the door planes' data routes are the router's construction (Q-SW1) and their units settle onto
     // this same one book, so it is opened from the boot `app` and opened once; nothing below opens
@@ -1039,7 +1026,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // Every config apply refreshes each served door plane onto the generation it installed
     // (the ARCHITECT ruling on a served door plane's apply), bound on the handle once the routers are built.
     let door_appliers = served.appliers();
-    #[cfg(linked_axis_node)]
+    #[cfg(linked_section_pools)]
     let door_post = served.post.clone();
     // THE LINE CARRIER (SEAM-S1, `root::serve::lines`): with a plane's line-serve flag passed and a
     // served plane claiming the line carrier, the served planes are kept for the process's own
@@ -1063,7 +1050,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             (provider, points)
         })
         .collect();
-    let (doors, sessions, refusals) = root::serve::data_mounts(
+    let (doors, sessions, refusals, refuse_by_path) = root::serve::data_mounts(
         served,
         &data_chain,
         &busbar_kernel::base_data_core_lines(&app),
@@ -1080,6 +1067,11 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         max_inbound,
         response_headers_cfg.server_timing,
     );
+    // The kernel-shaped refusals render through the door that owns the path (ARCHITECT ruling
+    // 2026-10-16, 3b B).
+    if let Some(refuse) = refuse_by_path {
+        app_handle.bind_door_refuser(refuse);
+    }
     credential_handle.set(std::sync::Arc::clone(&app_handle));
     let _ = door_live_handle.set(std::sync::Arc::clone(&app_handle));
     app_handle.on_apply(Box::new({
@@ -1090,7 +1082,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // (`DoorAppliers::refresh_models`): the swapped-in App's projected configuration, its lane
     // table and its secret seam. A build with no node composes no door plane's money, so it has
     // none to refresh.
-    #[cfg(linked_axis_node)]
+    #[cfg(linked_section_pools)]
     if let Some(post) = door_post {
         let (auths, live) = (
             std::sync::Arc::clone(&door_auths),
@@ -1231,7 +1223,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             req_body_max,
             &app_handle,
             book,
-            operator_key,
+            None,
             &late_services,
             breaker_policy,
         ),

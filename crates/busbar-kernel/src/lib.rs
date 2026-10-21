@@ -14,12 +14,10 @@
 // signer, the durable-state statics, the trust sweeper — stay `pub(crate)` behind one boot entry
 // point each; see `boot.rs`.
 
-// busbar contains ZERO `unsafe` code OUTSIDE the audited `plane_host` FFI seam; enforce that as a
-// compile-time guarantee so any future PR that introduces an `unsafe` block elsewhere fails to build
-// rather than slipping in unreviewed. `deny` (not `forbid`) so the ONE module that MUST speak the
-// `#[repr(C)]` plane ABI — recovering `&HostState` from the opaque `HostCtx` a plane hands back across
-// the seam — can opt in with a narrow, documented `#[allow(unsafe_code)]`; every other module still
-// hard-fails on `unsafe`. See `plane_host`.
+// busbar contains ZERO `unsafe` code outside the narrow, documented `#[allow(unsafe_code)]` sites
+// below; enforce that as a compile-time guarantee so any future PR that introduces an `unsafe` block
+// elsewhere fails to build rather than slipping in unreviewed. `deny` (not `forbid`) so those sites
+// can opt in; every other module still hard-fails on `unsafe`.
 #![deny(unsafe_code)]
 
 // W4.a (#19/#37): this crate's source was absorbed INTO busbar-kernel; every internal
@@ -53,8 +51,8 @@ pub(crate) use alloc_gate_instrument::CountingJemalloc;
 static GLOBAL: CountingJemalloc = CountingJemalloc;
 
 // The counting `GlobalAlloc` impl is the ONLY test-only `unsafe` in core; every method delegates to
-// jemalloc verbatim (see the SAFETY note on the impl). Narrowly allowed here, exactly as the
-// `plane_host` FFI seam is, so the crate-wide `deny(unsafe_code)` still guards everything else.
+// jemalloc verbatim (see the SAFETY note on the impl). Narrowly allowed here, so the crate-wide
+// `deny(unsafe_code)` still guards everything else.
 #[cfg(all(test, not(target_env = "msvc")))]
 #[allow(unsafe_code)]
 mod alloc_gate_instrument {
@@ -214,18 +212,11 @@ pub mod diagnostics;
 // #33) so the loader's own writes and this crate's route through the SAME primitive. Re-exported here
 // so every existing `crate::durable::*` call site in this binary resolves unchanged.
 pub use busbar_plugin_loader::durable;
-// The host-owned outbound surface: the neutral SSRF-pinned client (re-exported wholesale from
-// busbar-substrate) plus the host-mediated `seam` adapter that drives egress through the
-// `plane_host` FFI vtable, gated behind the neutral `egress-seam` capability feature rather than
-// any one plane. Always compiled, because the host owns every outbound byte
-// whether or not a plane needing the seam is built. See the module header.
+// The host-owned outbound surface: the neutral SSRF-pinned client and the egress-trust seam. See the
+// module header.
 /// A lane's credential, bound by the auth plugin that serves its style (P2 D1, the auth split).
 pub mod bound_credential;
 pub mod egress;
-/// THE EGRESS GRANT GATE: may busbar spend its own outbound credential on a subject for this
-/// caller? Authorization, so it lives in `busbar-kernel-scope` (Part 2 #36); re-exported here for
-/// the planes that already reach the kernel.
-pub use busbar_kernel_scope::egress as egress_grant;
 pub mod endpoints;
 pub mod export;
 pub mod failover;
@@ -268,10 +259,6 @@ mod member_tests;
 #[path = "tests/operation_tests.rs"]
 mod operation_tests;
 pub mod plane;
-// The ONLY module permitted `unsafe`: it recovers `&HostState` from the opaque `HostCtx` the
-// `#[repr(C)]` plane ABI threads through every host call — a raw-pointer deref that cannot be
-// expressed safely. The `unsafe` is confined here and audited (see `plane_host::recover`).
-#[allow(unsafe_code)]
 pub mod plane_host;
 pub mod plugin_routes;
 /// THE PLUGIN-ADMISSION MACHINERY the operator surface drives (upload, verify, inventory, rescan):
@@ -339,9 +326,13 @@ pub mod timing;
 // where it now lives (`test_support::seam`, `test_support::engine_kit`).
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+/// The kernel's neutral test seam: a test-support consumer that links no plane installs it, and the
+/// kernel's own test binary reads its protocol set.
+#[cfg(any(test, feature = "test-support"))]
+pub mod testkit;
 pub mod tls;
 pub mod topology;
-/// The wire-selection axis (`Transport`, `UpstreamWireKind`), the contract's.
+/// The channel axis (`Transport`), the contract's.
 pub use busbar_contract::transport::transport;
 
 #[cfg(test)]

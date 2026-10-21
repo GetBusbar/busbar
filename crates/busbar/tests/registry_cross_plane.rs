@@ -28,8 +28,8 @@
 
 mod linked;
 
+use busbar_kernel::config::plane_sections::{config_sections_from, refuse_cross_plane_reference};
 use busbar_kernel::config::{deploy_from_yaml_str, resolve, RootCfg};
-use busbar_kernel::plane::config::{config_sections_from, refuse_cross_plane_reference};
 use busbar_kernel::plane::registry::{
     build_dispatch, install_planes, merged_boot_plane_decls, plane_decl_for, BuildCtx, PlaneDecl,
     PlaneDeclaration,
@@ -85,6 +85,7 @@ static WIDGET_PLANE: PlaneDecl = PlaneDecl {
         served_op_classes: &[],
     },
     wire_format_names: || &["widgetrpc"],
+    provider_dialects: || &[],
     claims: |_| Vec::new(),
     admission: |_| None,
     build: |_| None,
@@ -383,14 +384,14 @@ fn the_scope_kind_index_is_the_exact_inverse_of_scope_kind_at() {
 /// `tests/*.rs` file is its own process) would make this test's outcome depend on test execution
 /// order. `config_sections()` is called here specifically to force the read `install_planes` must
 /// then refuse to follow — it is exercised incidentally by many other tests in this file already
-/// (any test that touches `busbar_kernel::plane::config::config_sections()` /
+/// (any test that touches `busbar_kernel::config::plane_sections::config_sections()` /
 /// `busbar_kernel::plane::registry::plane_decls()`), so this call is not what makes the read happen;
 /// it is what makes the read happen NO LATER than this test needs it to, regardless of what ran
 /// before it.
 #[test]
 #[should_panic(expected = "install_planes called after the plane list was first read")]
 fn install_planes_after_first_read_panics() {
-    let _ = busbar_kernel::plane::config::config_sections();
+    let _ = busbar_kernel::config::plane_sections::config_sections();
     install_planes(&[]);
 }
 
@@ -581,12 +582,10 @@ fn built_slots(cfg: &RootCfg) -> BTreeMap<&'static str, Arc<dyn Any + Send + Syn
         .filter_map(|decl| {
             let ctx = BuildCtx {
                 endpoint_slot: cfg.endpoint_resources.get(decl.config_section).cloned(),
-                agent_defs: cfg.agent_defs.as_any(),
-                tool_defs: cfg.tool_defs.as_any(),
+                plane_defs: &cfg.plane_defs,
                 public_url: cfg.public_url.as_deref(),
                 prior: None,
                 providers: None,
-                hostless: busbar_kernel::plane::registry::EgressDriver::core(),
             };
             (decl.build)(&ctx).map(|obj| (decl.key, obj))
         })
@@ -699,6 +698,7 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
             served_op_classes: &[],
         },
         wire_format_names: || &["widgetrpc"],
+        provider_dialects: || &[],
         // Claims a path — but binds no audience. The shape build_dispatch must refuse.
         claims: |_| vec![("/widget".to_string(), "widgetrpc")],
         admission: |_| None,
@@ -768,6 +768,7 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
             served_op_classes: &[],
         },
         wire_format_names: || &["widgetrpc"],
+        provider_dialects: || &[],
         claims: |_| Vec::new(),
         admission: |_| None,
         build: |_| None,
@@ -833,6 +834,7 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
             served_op_classes: &[],
         },
         wire_format_names: || &["refrpc"],
+        provider_dialects: || &[],
         claims: |_| Vec::new(),
         admission: |_| None,
         build: |_| None,
@@ -890,6 +892,7 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
             served_op_classes: &[],
         },
         wire_format_names: || &["cleanrpc"],
+        provider_dialects: || &[],
         claims: |_| Vec::new(),
         admission: |_| None,
         build: |_| None,
@@ -945,6 +948,7 @@ fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
             served_op_classes: &[],
         },
         wire_format_names: || &["refrpc"],
+        provider_dialects: || &[],
         claims: |_| Vec::new(),
         admission: |_| None,
         build: |_| None,

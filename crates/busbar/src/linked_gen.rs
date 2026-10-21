@@ -45,7 +45,6 @@ pub(crate) const NODE_UNIT: &str = "node";
 /// joined); a plane's door is its own axis ([`PLANE_DOOR_AXIS`]).
 pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("protocols", "protocols", "PROTOCOLS"),
-    ("path-ingress", "path_ingress", "PATH_INGRESS"),
     ("body-ingress", "body_ingress", "BODY_INGRESS"),
     ("protocol-seams", "protocol_seams", "install_protocol_seams"),
     ("diagnostics", "diagnostics", "DIAGNOSTICS"),
@@ -112,10 +111,9 @@ const SECRET_AXIS: &str = "secret-doors";
 /// it has none).
 const AUTH_AXIS: &str = "auths";
 
-/// THE LINKED HOOK NAMES (`$OUT_DIR/linked_hook_names.rs`, included by `main.rs` and by the admin
-/// integration tests): each enabled `hooks`-axis row's `linked-name`, in manifest order — what the
-/// root installs as the admin surface's compiled-in hook plugins
-/// (`busbar_core_admin::v1::service::install_hook_plugins`), so that crate spells none.
+/// THE LINKED HOOK NAMES (`$OUT_DIR/linked_hook_names.rs`, included by `main.rs`): each enabled `hooks`-axis row's `linked-name`, in manifest order — what the
+/// root carries on its install record (`busbar_kernel::preflight::RootInstall::hook_names`) as the
+/// admin surface's compiled-in hook plugins, so that crate spells none.
 pub(crate) fn linked_hook_names_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> String {
     let plugins = metadata_map(manifest, "package.metadata.busbar.linked");
     let axes = metadata_map(manifest, "package.metadata.busbar.linked-axes");

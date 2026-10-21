@@ -1540,7 +1540,7 @@
    "method": "POST",
    "mutating": true,
    "not_found": null,
-   "notes": "Owner ruling Q9: a correction to a recorded unit's COUNTS (decimal text per class), never money; answers 200 {seq,hash,amends,lane,card_epoch_ms,now}. Irreducible: under the baseline recorder config the fleet's operator key is unset, so the operator gate refuses it 403 forbidden before any effect. Baseline: [403]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "notes": "Owner ruling Q9: a correction to a recorded unit's COUNTS (decimal text per class), never money; answers 200 {seq,hash,amends,lane,card_epoch_ms,now}. A plain scoped verb (#77(9)): the oracle's full-scope admin token is admitted with no operator key. This cell's body names no `pool`, so the effect answers 400 invalid_request \"`pool` is required: name the pool the corrected unit was dispatched through\". Baseline: [400]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
    "ok": {
     "body": {
      "amends": "0000000000000000000000000000000000000000000000000000000000000000",
@@ -1550,7 +1550,7 @@
      "reason": "oracle count correction"
     },
     "expect": [
-     403
+     400
     ],
     "headers": {
      "Content-Type": "application/json"
@@ -1643,11 +1643,11 @@
    "method": "POST",
    "mutating": true,
    "not_found": null,
-   "notes": "Disaster recovery; effect lands on the store (204 no body). Irreducible: under the baseline recorder config the fleet's operator key is unset, so the operator gate refuses it 403 forbidden before any effect. Body not read. Baseline: [403]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "notes": "Disaster recovery; effect lands on the store (204 no body). A plain scoped verb (#77(9)): the oracle's full-scope admin token is admitted with no operator key. The node's bound verb store applies it. Body not read. Baseline: [204]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
    "ok": {
     "body": null,
     "expect": [
-     403
+     204
     ],
     "headers": {}
    },
@@ -1662,11 +1662,11 @@
    "method": "POST",
    "mutating": true,
    "not_found": null,
-   "notes": "Irreducible: under the baseline recorder config the fleet's operator key is unset, so the operator gate refuses it 403 forbidden before any effect. Bound in 1.6.0 (owner answer Q71(2)): with a sealed operator key it seals the running release on the node journal (Idempotency-Key replay). Baseline: [403]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "notes": "A plain scoped verb (#77(9)): the oracle's full-scope admin token is admitted with no operator key. Bound in 1.6.0 (owner answer Q71(2)): seals the running release on the node journal (Idempotency-Key replay); this cell sends no body, so the effect refuses it 400 invalid_request. Baseline: [400]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
    "ok": {
     "body": null,
     "expect": [
-     403
+     400
     ],
     "headers": {}
    },
@@ -2397,7 +2397,7 @@
    "method": "POST",
    "mutating": true,
    "not_found": null,
-   "notes": "A signed, back-dated rate-card correction; answers 200 {history_seq,effective_from,effective_until,amended_at,operator_fingerprint,reason_sha256}. Irreducible: under the baseline recorder config the fleet's operator key is unset, so the operator gate refuses it 403 forbidden before any effect. Baseline: [403]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "notes": "A back-dated rate-card correction; answers 200 {history_seq,effective_from,effective_until,amended_at,reason_sha256}. A plain scoped verb (#77(9)): the oracle's full-scope admin token is admitted with no operator key. The body's `operator_fingerprint` and `signature` are not read; the per_request_fee correction applies over the opening rate-card entry. Baseline: [200]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
    "ok": {
     "body": {
      "effective_from": 0,
@@ -2407,7 +2407,7 @@
      "signature": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
     },
     "expect": [
-     403
+     200
     ],
     "headers": {
      "Content-Type": "application/json"
@@ -2616,11 +2616,11 @@
    "method": "POST",
    "mutating": true,
    "not_found": null,
-   "notes": "Disaster recovery; effect lands on the store (204 no body). Irreducible: under the baseline recorder config the fleet's operator key is unset, so the operator gate refuses it 403 forbidden before any effect. Body not read. Baseline: [403]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "notes": "Disaster recovery; effect lands on the store (204 no body). A plain scoped verb (#77(9)): the oracle's full-scope admin token is admitted with no operator key. The node's bound verb store applies it. Body not read. Baseline: [204]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
    "ok": {
     "body": null,
     "expect": [
-     403
+     204
     ],
     "headers": {}
    },
@@ -2714,13 +2714,13 @@
    "method": "POST",
    "mutating": true,
    "not_found": null,
-   "notes": "Disaster recovery; effect lands on the store (204 no body). A body naming no `backup_ref` string is 400 invalid_request BEFORE the ceremony (bad_body). Irreducible: under the baseline recorder config the fleet's operator key is unset, so the operator gate refuses it 403 forbidden before any effect. Baseline: ok [403], bad_body [400]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "notes": "Disaster recovery; effect lands on the store (204 no body). A body naming no `backup_ref` string is 400 invalid_request before the store is reached (bad_body). A plain scoped verb (#77(9)): the oracle's full-scope admin token is admitted with no operator key. The node's bound verb store applies it. Baseline: ok [204], bad_body [400]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
    "ok": {
     "body": {
      "backup_ref": "oracle-backup"
     },
     "expect": [
-     403
+     204
     ],
     "headers": {
      "Content-Type": "application/json"

@@ -5,84 +5,16 @@
 # add one. Regenerate with `cargo xtask gate door-only --write`.
 
 [[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/engine/attempt/respond.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/engine/engine_tests/inject_include_usage_tests.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/engine/exhaustion/mod.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/engine/hooks.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/engine/lazy_body.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/engine/pipeline.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/engine/usage.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/engine/wire.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/lib.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/native_ingress.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/testkit/shell.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/unit/arrival.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/unit/meter.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:static-seam"
-file = "crates/busbar-core-admin/src/v1/service.rs"
-item = "USAGE_RATE_HISTORY"
-
-[[finding]]
 rule = "door-only:static-seam"
 file = "crates/busbar-kernel-audit/src/amend.rs"
 item = "SINK"
+count = 1
 
 [[finding]]
 rule = "door-only:static-seam"
-file = "crates/busbar-kernel/src/plane/config.rs"
+file = "crates/busbar-kernel/src/config/plane_sections.rs"
 item = "PLANE_SECTIONS"
+count = 1
 
 # judge_answer: interim for the 8 pooled-client builders; struck when D1-D6 move onto conns (Phase B).
 # (ARCHITECT ruling (C), DEST-GUARD 2026-10-02: the engine's pooled resolver asks the connector's
@@ -91,18 +23,17 @@ item = "PLANE_SECTIONS"
 rule = "door-only:static-seam"
 file = "crates/busbar-kernel/src/egress/trust/mod.rs"
 item = "EGRESS_TRUST"
+count = 1
 
 [[finding]]
 rule = "door-only:static-seam"
 file = "crates/busbar-kernel/src/rate_apply.rs"
 item = "APPLY"
+count = 1
 
 [[finding]]
 rule = "door-only:static-seam"
 file = "crates/busbar-kernel/src/rate_apply.rs"
 item = "EPOCH"
+count = 1
 
-[[finding]]
-rule = "door-only:static-seam"
-file = "crates/busbar-llm/src/unit/node.rs"
-item = "NATIVE_SEATS"

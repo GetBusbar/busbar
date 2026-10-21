@@ -1419,7 +1419,25 @@ step "plane-config-noun-gate --selftest" bash scripts/plane-config-noun-gate.sh 
 # RE-MEASURED 2026-10-13 on predev 163843dd2c: 10 (pools 5 · agents 2 · streams 3). streams fell 7 -> 3,
 # and `tools` is no longer a scanned noun since mcp left PLANE_KEYS (5e52651535): the gate reads its
 # nouns off the PLANE_KEYS planes' PlaneDecls. The floor follows the measure down, never up.
-CONFIG_NOUN_FLOOR=10
+# RE-MEASURED 2026-10-18 on dev e757601362: the armed gate read 9, and that fall was NOT a drain.
+# FLIP-A2A struck `a2a` from PLANE_KEYS, so `agents` fell out of the noun set (-2) while core still
+# declares both targets, and the same drop hid a NEW `pools` target (+1, the self-serve mint's grant
+# list). plane-config-noun-gate.sh now keeps `agents` by name, as it keeps `streams`: 11. The grant
+# list is renamed off the noun (`granted_pools`, not a parse target): 10 (pools 5 · agents 2 ·
+# streams 3).
+# RE-ARMED 10 -> 16 (ruling 2026-10-18, Law 9: a noun or a line that leaves the scan while the
+# floor follows it down is a silent narrowing, and the 2026-10-13 move 17 -> 10 was one). Against
+# the 17 measured 2026-09-21 (pools 5 · tools 3 · agents 2 · streams 7):
+#   tools   LEFT THE NOUN SET when mcp left PLANE_KEYS: back, by name. Its hook-wire line moved
+#           with the hook reply wire into busbar-contract (P2 D4): scanned there.  3 -> 4
+#   pools   the admin contract's `pools` moved into busbar-core-admin (P2 D4): scanned there; a
+#           far-end table and the contract's record field are counted too.          5 -> 7
+#   agents  unchanged (kept by name since FLIP-A2A).                                2 -> 2
+#   streams DeployCfg's `streams` field, the pre-pass slot and the kernel's StreamsSection
+#           (plane/config.rs x2) are DELETED: the kernel carries plane sections in one map
+#           carrier and holds no plane-named field (S-SECTION, b7ea9f08c8). Real drains. 7 -> 3
+# Measured on dev e757601362 + this change: 16 (pools 7 · tools 4 · agents 2 · streams 3).
+CONFIG_NOUN_FLOOR=16
 config_noun_residual() {
   local out rc line count
   out="$(GREP_GATE_REPORT_ONLY=0 bash scripts/plane-config-noun-gate.sh --check 2>&1)"; rc=$?
@@ -1721,7 +1739,10 @@ begin_group "KERNEL — the Teller loop battery, the capability fixtures and att
 if [ -d crates/busbar-kernel ]; then
   step "busbar-kernel battery"           cargo test -p busbar-kernel --quiet
   step "caps fixtures (busbar-contract)" cargo test -p busbar-contract --quiet
-  step "attempt identity (busbar-llm)"   filtered_cargo_test 2 cargo test -p busbar-llm --quiet attempt_identity
+  # "attempt identity (busbar-llm)" STRUCK (DEV-GREEN row 83, coordinator ruling 2026-10-18): both
+  # tests were the retired engine crate's own scaffolding, the parity of its two attempt paths and
+  # its normalizer, and both paths left with the crate. The one attempt's bytes are pinned at
+  # crates/busbar-plane-llm/tests/exchange_attempt.rs and golden_parity.rs.
 else
   absent_step "kernel battery" "crates/busbar-kernel"
 fi
@@ -1896,7 +1917,7 @@ begin_group "P-ITEMS — every P-item behaviour matches 1.5.5, each pinned by na
 # signed." Each P-item is a set of tests named `p_item_<item>_*`, and each test's doc cites the 1.5.5
 # behaviour it holds. Every step declares its exact count, so a pin renamed, deleted or filtered
 # away is RED (VACUITY), never a green that ran nothing.
-step "refusal-reason collapse (one classification; 11 pins)" filtered_cargo_test 11 cargo test -p busbar-contract -p busbar-plane-a2a -p busbar-plane-mcp -p busbar-plane-streaming -p busbar-llm -p xtask --quiet p_item_refusal_reason_collapse
+step "refusal-reason collapse (one classification; 11 pins)" filtered_cargo_test 11 cargo test -p busbar-contract -p busbar-plane-a2a -p busbar-plane-mcp -p busbar-plane-streaming -p busbar-plane-llm -p xtask --quiet p_item_refusal_reason_collapse
 step "unary/empty terminality"                               filtered_cargo_test 1  cargo test -p busbar-plane-a2a --quiet p_item_unary_empty_terminality
 step "empty reply"                                           filtered_cargo_test 1  cargo test -p busbar-plane-mcp --quiet p_item_empty_reply
 step "wrong-provider attribution"                            filtered_cargo_test 1  cargo test -p busbar-plane-streaming --quiet p_item_wrong_provider_attribution

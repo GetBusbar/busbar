@@ -528,6 +528,40 @@ fn file_literals(rel: &str, text: &str) -> std::sync::Arc<Vec<(usize, String)>> 
             }
         }
     }
+    // A NAME SPLIT ACROSS LINES ([`super::joined_runs`]): `"ot\` + `lp"` (a string continuation)
+    // and `concat!(` / `"ot",` / `"lp"` / `)` are `"otlp"` to the compiler and on no one line. Each
+    // run is read whole, and a literal it holds that none of its own lines held is filed on the
+    // run's first line.
+    let lines: Vec<std::borrow::Cow<'_, str>> = text
+        .lines()
+        .map(|l| {
+            if rust {
+                without_abi_strings(l)
+            } else {
+                std::borrow::Cow::Borrowed(l)
+            }
+        })
+        .collect();
+    let plain: Vec<&str> = lines.iter().map(|l| l.as_ref()).collect();
+    for (first, last, run) in super::joined_runs(&plain) {
+        let seen: BTreeSet<String> = out
+            .iter()
+            .filter(|(line, _)| (first + 1..=last + 1).contains(line))
+            .map(|(_, l)| l.clone())
+            .collect();
+        let mut found: Vec<String> = decoded_literals(&run);
+        if let Some(d) = super::decoded_line(&run) {
+            found.extend(literals(&d));
+        }
+        let mut fresh: BTreeSet<String> = BTreeSet::new();
+        for t in found {
+            let t = t.trim().to_ascii_lowercase();
+            if !t.is_empty() && t.len() <= 64 && !seen.contains(&t) && fresh.insert(t.clone()) {
+                out.push((first + 1, t));
+            }
+        }
+    }
+    out.sort_by_key(|(line, _)| *line);
     let out = std::sync::Arc::new(out);
     memo.lock()
         .expect("never poisoned")
@@ -1671,6 +1705,25 @@ mod tests {
         // …and a name split across a concat! is still one name to the per-file reading.
         let lits = file_literals("crates/x/src/a.rs", "let n = concat!(\"ot\", \"lp\");\n");
         assert!(lits.iter().any(|(_, l)| l == "otlp"), "{lits:?}");
+    }
+
+    /// Q128 (xtask part 24 #2): a name split across lines is one name to the compiler, so it is
+    /// one literal here, filed on the line it opens on.
+    #[test]
+    fn a_literal_split_across_lines_is_read_whole() {
+        let continued = file_literals("crates/x/src/b.rs", "let n = \"ot\\\n    lp\";\n");
+        assert!(
+            continued.contains(&(1, "otlp".to_string())),
+            "{continued:?}"
+        );
+        let concat = file_literals(
+            "crates/x/src/c.rs",
+            "let n = concat!(\n    \"ot\",\n    \"lp\",\n);\n",
+        );
+        assert!(concat.contains(&(2, "otlp".to_string())), "{concat:?}");
+        // A list across lines still reads each name on its own line.
+        let list = file_literals("crates/x/src/d.rs", "&[\n    \"otlp\",\n    \"x\",\n]\n");
+        assert!(list.contains(&(2, "otlp".to_string())), "{list:?}");
     }
 
     #[test]

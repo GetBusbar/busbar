@@ -86,7 +86,9 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 # CANDIDATES CONSIDERED AND REJECTED, so the choice is defensible rather than incidental (grepped for
 # `NamedMapSection`/`DeployCfg`/a bare noun literal on a parse-steering line in each; all empty except
 # where noted):
-#   * `busbar-core-admin` — DOES use `NamedMapSection` (`v1/json/named_map.rs`), but
+#   * `busbar-core-admin` — REJECTED ONCE, NOW SCANNED (below): P2 D4 (86d3c3faa3) moved the admin
+#     contract out of the kernel into it, `pub pools: Vec<PoolView>` with it, a line this meter
+#     counted from the kernel. The rejection read: it DOES use `NamedMapSection`, but
 #     only as a CONSUMER: it matches `IdentityProviders | Export | Plane(_)` — the same three arms
 #     `named_map.rs` itself exhausts — and calls `section.parse_def(...)`/`validate_def(...)`, whose
 #     bodies live in busbar-kernel. It never spells `"tools"`/`"agents"`/`"pools"`/`"streams"` on a
@@ -115,14 +117,30 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 # parse.rs`. That file is
 # UNDER the root below, so the scan loses nothing by dropping the dead entry — it is the same bytes,
 # reached through the surviving root rather than through a path that stopped existing.
-CORE_ROOTS="crates/busbar-kernel/src"
+#
+# THE ROOTS FOLLOW A COUNTED LINE THAT MOVES CRATE (ruling 2026-10-18, Law 9: a line leaving the
+# scan by a move is a silent narrowing, not a drain). P2 D4 (86d3c3faa3) moved the hook reply wire
+# into `busbar-contract` (`hook_wire/reply.rs`, `hooks.rs`: the `tools` lines `hooks/wire.rs` held)
+# and the admin contract into `busbar-core-admin` (`pub pools: Vec<PoolView>`); both crates are
+# core, always compiled in, so both are scanned.
+CORE_ROOTS="crates/busbar-kernel/src crates/busbar-contract/src crates/busbar-core-admin/src"
 
 # SECTION NOUNS KEPT BY NAME (ARCHITECT 2026-10-05, Q7): `streams` is the 1.5.5 customer config key
 # of the streaming plane, whose legacy crate (`busbar-voice`, the one that declared it in a PlaneDecl)
 # the P3 flip deleted. The plane is a door now (`busbar-plane-streaming`) and declares no PlaneDecl,
 # so the noun cannot be read off one; it is kept here by name rather than dropped from the scan. The
 # floor below counts it.
-NAMED_NOUNS="streams"
+#
+# `agents` IS KEPT THE SAME WAY: it is the A2A plane's 1.5.5 customer config key, and FLIP-A2A struck
+# `a2a` from PLANE_KEYS (its legacy crate is deleted; the plane is the pinned `busbar-plane-a2a`), so
+# its PlaneDecl is no longer read and the noun fell out of the scan with no diagnostic: the armed
+# residual "fell" 10 -> 9 on dev while core still declared both `agents` parse targets, and the same
+# drop hid a NEW `pools` target (the self-serve mint's grant list). scripts/plane-keys.sh: "Leaving
+# PLANE_KEYS must not let the word in."
+#
+# `tools` IS KEPT THE SAME WAY (ruling 2026-10-18): the MCP plane's 1.5.5 customer config key, out
+# of the scan since mcp left PLANE_KEYS (5e52651535), when the floor followed it down 17 -> 10.
+NAMED_NOUNS="streams agents tools"
 
 # Resolve the four section nouns from each plane crate's DECLARED PlaneDecl.config_section — never a
 # restated literal. `<key> -> crates/busbar-<key>/src`; read the `config_section: "<noun>",` line.
@@ -138,11 +156,22 @@ NAMED_NOUNS="streams"
 section_nouns() {
   local k dir declfile noun ref refcrate out=""
   for k in $PLANE_KEYS; do
-    dir="crates/busbar-${k}/src"
+    dir="$(plane_key_src "$k")"
     # The noun is read from the file that DECLARES the plane's `pub const PLANE_DECL`, never a test
     # fixture that restates a section_section for a different plane.
     declfile="$(grep -rlE 'pub const PLANE_DECL' "$dir" 2>/dev/null | grep -vE '/tests/|(^|[/_])tests?\.rs$' | head -1)"
-    [ -n "$declfile" ] || continue
+    if [ -z "$declfile" ]; then
+      # A DOOR PLANE declares no PlaneDecl (llm since DEV-GREEN row 83): its config noun is the ONE
+      # section its door Statement marks SECTION_DECLARING, `section(<path>::<CONST>, SECTION_DECLARING)`,
+      # whose literal is read off the plane's own sources.
+      ref="$(grep -rhoE 'section\([A-Za-z_][A-Za-z0-9_:]*,[[:space:]]*SECTION_DECLARING\)' "$dir" 2>/dev/null \
+             | head -1 | sed -E 's/^section\(([A-Za-z0-9_:]+),.*/\1/')"
+      [ -n "$ref" ] || continue
+      noun="$(grep -rhoE "const[[:space:]]+${ref##*::}:[[:space:]]*&('static[[:space:]]+)?str[[:space:]]*=[[:space:]]*\"[a-z_]+\"" \
+                "$dir" 2>/dev/null | head -1 | sed -E 's/.*"([a-z_]+)".*/\1/')"
+      [ -n "$noun" ] && out="${out:+$out }$noun"
+      continue
+    fi
     noun="$(grep -hoE 'config_section:[[:space:]]*"[a-z_]+"' "$declfile" 2>/dev/null \
             | head -1 | sed -E 's/.*"([a-z_]+)".*/\1/')"
     if [ -z "$noun" ]; then
@@ -280,6 +309,7 @@ run_report() {
   note "scanned roots: $CORE_ROOTS  (non-test, comment-stripped, frozen migrator excluded)"
 
   require_root
+  require_plane_key_roots || { red "plane-config-noun gate: FAIL — a PLANE_KEYS root is not on disk"; exit 1; }
   require_files "$(core_files | grep -c . || true)"
   require_nouns "$nouns"
 
@@ -343,6 +373,12 @@ FIX
   # drives require_nouns ITSELF — the function the run path calls — rather than re-implementing its
   # arithmetic as a `-ge 4`, which is how the floor came to exist only in the self-test in the first
   # place: a check that lives in one branch and not the other proves nothing about the branch CI runs.
+  # RED: a PLANE_KEYS root that is not on disk is refused (row 115), never read as a plane with no noun.
+  if ( PLANE_KEYS="selftest-nonexistent-key" require_plane_key_roots ) >/dev/null 2>&1; then
+    fail=1; note "FAILED: a PLANE_KEYS root that is not on disk was accepted"
+  else
+    note "RED key-roots: a PLANE_KEYS root that is not on disk is refused"
+  fi
   local nouns; nouns="$(section_nouns)"
   local ncount; ncount="$(printf '%s' "$nouns" | wc -w | tr -d ' ')"
   if ( require_nouns "$nouns" ) >/dev/null 2>&1; then

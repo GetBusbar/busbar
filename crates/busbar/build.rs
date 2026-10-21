@@ -117,8 +117,8 @@ fn main() {
     let (source, cfgs) = linked_source(&manifest, &enabled);
     let out = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("linked.rs");
     std::fs::write(out, source).expect("write linked.rs");
-    // THE LINKED HOOK NAMES: what the root hands the admin surface as its compiled-in hook plugins
-    // (`main.rs` and the admin integration tests include it).
+    // THE LINKED HOOK NAMES: what the root carries on its install record as the admin surface's
+    // compiled-in hook plugins (`main.rs` includes it).
     let out = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"))
         .join("linked_hook_names.rs");
     std::fs::write(out, linked_hook_names_source(&manifest, &enabled))
@@ -194,6 +194,16 @@ fn main() {
         .all(|(feature, _)| enabled(feature));
     if every_plane {
         println!("cargo::rustc-cfg=linked_every_plane");
+    }
+    // `linked_every_plane_door`: EVERY linked row on the plane-door axis is enabled — the default
+    // distribution's doors, whose stated rows a byte pin of the whole distribution reads.
+    println!("cargo::rustc-check-cfg=cfg(linked_every_plane_door)");
+    let every_plane_door = metadata_map(&manifest, "package.metadata.busbar.linked-axes")
+        .iter()
+        .filter(|(_, axes)| axes.split_whitespace().any(|a| a == "plane-door"))
+        .all(|(feature, _)| enabled(feature));
+    if every_plane_door {
+        println!("cargo::rustc-cfg=linked_every_plane_door");
     }
     // `linked_every_auth`: EVERY linked row on the auth axis (`AUTH_AXIS`) is enabled — the shape a
     // suite binding every dialect's declared scheme on the plugin serving its style needs (each
@@ -361,6 +371,27 @@ fn test_linked_source(manifest: &str) -> String {
             .cloned()
             .unwrap_or_else(|| format!("{id}::plane_door"));
         out.push_str(&format!("    ({id:?}, {module}::door),\n"));
+    }
+    // Each door whose linked row also fills the protocol axis (`linked-axes` names `protocols`
+    // beside `plane-door`): its `PROTOCOLS`, registered by the installer as the root's
+    // `register_protocols` installs them in production, so a test binary's registry is the
+    // shipped binary's.
+    let axes = metadata_map(manifest, "package.metadata.busbar.linked-axes");
+    out.push_str(
+        "];\nstatic TEST_LINKED_PROTOCOLS: &[&[&::busbar_contract::protocol::ProtocolDecl]] = &[\n",
+    );
+    for id in &doors {
+        let row = entries
+            .iter()
+            .find(|(_, module)| module.starts_with(&format!("{id}::")));
+        if let Some((key, module)) = row {
+            let fills = axes
+                .iter()
+                .any(|(f, list)| f == key && list.split_whitespace().any(|a| a == "protocols"));
+            if fills {
+                out.push_str(&format!("    {module}::PROTOCOLS,\n"));
+            }
+        }
     }
     out.push_str("];\nstatic TEST_LINKED_ORDER: &[bool] = &[");
     for r in &rows {

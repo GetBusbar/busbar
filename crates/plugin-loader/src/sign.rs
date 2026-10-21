@@ -296,12 +296,6 @@ pub struct Declares {
     /// before the field existed keeps its canonical bytes.
     #[serde(skip_serializing_if = "EgressPolicy::is_default")]
     pub egress: EgressPolicy,
-    /// SUPERSEDED contract-ABI range (THE DESIGN §2 table, §11.2: a kind has one ABI version, the
-    /// manifest's `abi_version`, and that is the only version fact admission reads). Still PARSED
-    /// and carried, so a tarball signed while the range existed keeps its canonical bytes and its
-    /// signature; [`validate_abi`] no longer reads it, and nothing newly packed states it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub contract_abi: Option<ContractAbiRange>,
     /// The plane's BREAKER FACTS (ARCHITECT Q4): how its members' breaker cells treat a transient
     /// failure that does not trip them — see [`BreakerDecl`]. Absent, the host's default posture
     /// holds; left off the wire when absent, so every manifest packed before the field existed
@@ -326,15 +320,6 @@ pub struct BreakerDecl {
     /// cooldown. `false`: a cell refuses only on a TRIP (the host's trip thresholds), an upstream
     /// `Retry-After` still honoured.
     pub bench_below_trip_threshold: bool,
-}
-
-/// The superseded `declares.contract_abi` range, kept so an already-signed manifest carrying it
-/// still parses and its signed bytes are unchanged. Admission ignores it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ContractAbiRange {
-    pub min: u32,
-    pub max: u32,
 }
 
 /// The EGRESS POLICY the host applies to every request a sink asks it to admit or carry (K9e-2,
@@ -400,6 +385,13 @@ impl Declares {
                 }
             }
         }
+        // The superseded contract-ABI range (THE DESIGN §2 l.237-240: a plugin declares its kind's
+        // ABI version, never a range): a declares FILE may still state it until the fleet's
+        // re-render strips it from every repo (the DECLARES gate accepts it until then), so it is
+        // dropped here, never read and never carried into a manifest.
+        if let Some(m) = doc.as_object_mut() {
+            m.remove("contract_abi");
+        }
         serde_json::from_value(doc).map_err(|e| format!("not a `declares` section: {e}"))
     }
 
@@ -409,7 +401,6 @@ impl Declares {
             && self.diagnostics.is_empty()
             && self.destinations.is_empty()
             && self.egress.is_default()
-            && self.contract_abi.is_none()
             && self.breaker.is_none()
             && !self.disk
     }
@@ -1002,7 +993,7 @@ pub fn validate_abi(
 ) -> Result<(), String> {
     // `supported_abi` returns a CONTIGUOUS `[floor, max]` inclusive range (its endpoints) of the
     // ABI versions the binary speaks for this kind (the kind's ONE version, THE DESIGN §11.2; a
-    // legacy `declares.contract_abi` range is parsed but never consulted). Negotiate the manifest's declared
+    // manifest states no contract-ABI range). Negotiate the manifest's declared
     // `abi_version` against it: in range → ok; below floor / above max → refuse LOUD naming both.
     // An empty slice means the kind is unsupported (already caught by KNOWN_KINDS, but fail-closed).
     let supported = supported_abi(&m.kind);
@@ -1244,6 +1235,7 @@ pub fn evaluate(
 }
 
 #[cfg(test)]
+#[allow(unsafe_code)] // TEST ONLY
 #[path = "tests/sign_tests.rs"]
 mod tests;
 

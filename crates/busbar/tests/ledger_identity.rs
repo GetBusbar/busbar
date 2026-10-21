@@ -69,9 +69,9 @@ use ledger_identity::{
     accumulate, describe, holds, reconcile, LedgerSnapshot, LegacyRow, LegacySnapshot, RowKey,
 };
 
-// The linked plane rows (build.rs), so the card's open classes are read off the real declarations
-// without naming a plane crate.
-include!(concat!(env!("OUT_DIR"), "/linked_planes.rs"));
+// The linked plane rows, as the root folds each linked door (the test-linked roster), so the
+// card's open classes are read off the real declarations without naming a plane crate.
+mod linked;
 
 // ── the pinned figures ───────────────────────────────────────────────────────────────────────────
 //
@@ -136,8 +136,46 @@ const FAILED_TRANSFER: usize = 2;
 
 const ADMIN_TOKEN: &str = "ledger-identity-admin";
 
+/// The step the cell is in, and the directory holding the two processes' logs, for [`watchdog`].
+static PHASE: std::sync::Mutex<(&str, Option<PathBuf>)> = std::sync::Mutex::new(("starting", None));
+
+fn phase(step: &'static str) {
+    PHASE.lock().unwrap_or_else(|p| p.into_inner()).0 = step;
+}
+
+/// A HANG NAMES ITS STEP. Every exchange is bounded by a 120 s read timeout, so a request the
+/// product never answers holds the cell past the runner's 300 s kill, and the kill reports no step
+/// and no log (the cell's own answer is about one second). Past [`HANG_AFTER`] this prints the step
+/// the cell is in and both processes' logs to stderr, which the runner shows beside the timeout.
+const HANG_AFTER: Duration = Duration::from_secs(240);
+
+fn watchdog() -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = done.clone();
+    std::thread::spawn(move || {
+        let start = Instant::now();
+        while start.elapsed() < HANG_AFTER {
+            if seen.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        let (step, dir) = PHASE.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let logs = dir.map_or_else(String::new, |d| {
+            format!(
+                "busbar log:\n{}\nmock log:\n{}",
+                read_to_string(&d.join("out.log")),
+                read_to_string(&d.join("mock.log"))
+            )
+        });
+        eprintln!("ledger_identity: no answer after {HANG_AFTER:?}, in step `{step}`\n{logs}");
+    });
+    done
+}
+
 #[test]
 fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
+    let done = watchdog();
     let rig = Rig::boot();
 
     // ── the mix ─────────────────────────────────────────────────────────────────────────────────
@@ -147,6 +185,7 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
     // to come would turn a delivered response into a refusal and move the figures for a reason that
     // has nothing to do with the identity.
     let mut delivered = 0usize;
+    phase("admitted requests");
     for _ in 0..ADMITTED {
         let r = rig.chat(&rig.key_ok);
         assert_eq!(
@@ -159,6 +198,7 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
         delivered += 1;
     }
 
+    phase("over-budget requests");
     for _ in 0..REFUSED_OVER_BUDGET {
         let r = rig.chat(&rig.key_broke);
         assert!(
@@ -178,6 +218,7 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
          all {REFUSED_OVER_BUDGET} were served"
     );
 
+    phase("out-of-scope requests");
     for _ in 0..REFUSED_OUT_OF_SCOPE {
         let r = rig.chat(&rig.key_noscope);
         assert_eq!(
@@ -187,6 +228,7 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
         );
     }
 
+    phase("failed transfers");
     rig.upstream_down(true);
     for _ in 0..FAILED_TRANSFER {
         let r = rig.chat(&rig.key_ok);
@@ -203,6 +245,7 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
     rig.upstream_down(false);
 
     // ── the readout ─────────────────────────────────────────────────────────────────────────────
+    phase("the usage readout");
     let first = rig.settled_usage(delivered);
     let second = rig.usage_bytes();
     // Two no-traffic reads must RECONCILE — every usage FIGURE byte-for-byte identical. The one
@@ -525,6 +568,7 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
         0,
         "the identity is reported as holding and names discrepancies: {reconciliation}"
     );
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// One administrative read, as bytes.
@@ -612,6 +656,8 @@ impl Rig {
             }
         ));
         std::fs::create_dir_all(&dir).unwrap();
+        PHASE.lock().unwrap_or_else(|p| p.into_inner()).1 = Some(dir.clone());
+        phase("obtaining the oracle engine and starting the mock");
         let control = dir.join("mock.control");
 
         // The oracle's own multi-dialect mock: a byte-deterministic upstream with fixed usage, and
@@ -649,6 +695,7 @@ impl Rig {
             )
         });
 
+        phase("writing the configs");
         write_configs(&dir);
 
         let log_path = dir.join("out.log");
@@ -676,6 +723,7 @@ impl Rig {
         };
 
         // A boot may take a while on a loaded machine before it reads as a failure.
+        phase("busbar's data door");
         let booted = wait_until(Duration::from_secs(60), || {
             if let Some(status) = rig.child.try_wait().expect("try_wait") {
                 panic!(
@@ -695,6 +743,7 @@ impl Rig {
         // after the data workers. Minting before it answers fails as status 0 (connection refused)
         // under load. Ready means the admin listener ANSWERS (any HTTP status), so wait for that
         // rather than for a delay.
+        phase("busbar's admin door");
         let admin_up = wait_until(Duration::from_secs(60), || {
             if let Some(status) = rig.child.try_wait().expect("try_wait") {
                 panic!(
@@ -711,6 +760,7 @@ impl Rig {
             read_to_string(&rig.log_path)
         );
 
+        phase("minting keys");
         rig.key_ok = rig.mint(r#"{"name":"identity-ok","group":"oracle"}"#);
         rig.key_broke = rig.mint(r#"{"name":"identity-broke","group":"broke"}"#);
         rig.key_noscope = rig.mint(
@@ -903,14 +953,18 @@ fn oracle_shim() -> PathBuf {
 /// one, Q29/Q35), read off the plane's own declaration so the card follows it; the plane is found
 /// on the linked rows by its `fallback` flag, never by name.
 fn free_open_units() -> String {
-    LINKED_PLANES
+    let fallback = linked::planes()
         .iter()
         .find(|decl| decl.fallback)
-        .expect("the build links the fallback plane the oracle's lane falls through to")
+        .expect("the build links the fallback plane the oracle's lane falls through to");
+    // A door states its fee unit among its tail's classes; a fee unit is no class a card prices
+    // (it is priced at `per_request_fee:`), so it is not an open unit of the card.
+    fallback
         .billable_classes
         .iter()
         .map(|c| c.class)
         .filter(|c| !busbar_contract::records::RESERVED_UNITS.contains(c))
+        .filter(|c| !fallback.declaration.fee_units.contains(c))
         .map(|c| format!("{c}: 0"))
         .collect::<Vec<_>>()
         .join(", ")

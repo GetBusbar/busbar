@@ -2511,23 +2511,11 @@ mod dated_rate_card_history {
         )
     }
 
-    /// The test's dated-history source: one history, handed back whole.
-    struct Recorded {
-        history: Arc<History>,
-    }
-
-    impl UsageRateHistory for Recorded {
-        fn history(&self) -> Option<Arc<History>> {
-            Some(Arc::clone(&self.history))
-        }
-    }
-
-    /// A source the service can hold for `'static`. Leaked on purpose: the production holder is a
-    /// process-wide `OnceLock` and a test that raced it could only ever run once.
-    pub(super) fn source(history: History) -> &'static dyn UsageRateHistory {
-        Box::leak(Box::new(Recorded {
-            history: Arc::new(history),
-        }))
+    /// The test's dated history, held for `'static` so a test hands one source to several reads.
+    /// Leaked on purpose: the process's history is the kernel rate dater's, installed once, and a
+    /// test that raced that install could only ever run once.
+    pub(super) fn source(history: History) -> &'static Arc<History> {
+        Box::leak(Box::new(Arc::new(history)))
     }
 
     /// Governance holding one metering row per `(bucket, priced_from_ms)` — the store's own key,
@@ -2562,17 +2550,13 @@ mod dated_rate_card_history {
     }
 
     /// Read one bucket through the endpoint's own service method, resolving against `src`.
-    async fn read(
-        gov: Arc<GovState>,
-        src: &'static dyn UsageRateHistory,
-        bucket: u64,
-    ) -> UsageView {
+    async fn read(gov: Arc<GovState>, src: &'static Arc<History>, bucket: u64) -> UsageView {
         let app = crate::new_test_app()
             .governance(gov)
             .cost(newest_cost())
             .build();
         AdminService::new(app)
-            .with_rate_history(src)
+            .with_rate_history(Arc::clone(src))
             .get_usage(Some(bucket), None)
             .await
             .expect("usage read")
@@ -2582,7 +2566,7 @@ mod dated_rate_card_history {
     /// refusal is a value the caller asserts on rather than a panic.
     pub(super) async fn read_as_of(
         gov: Arc<GovState>,
-        src: &'static dyn UsageRateHistory,
+        src: &'static Arc<History>,
         bucket: u64,
         as_of: Option<u64>,
     ) -> Result<UsageView, AdminError> {
@@ -2591,7 +2575,7 @@ mod dated_rate_card_history {
             .cost(newest_cost())
             .build();
         AdminService::new(app)
-            .with_rate_history(src)
+            .with_rate_history(Arc::clone(src))
             .get_usage(Some(bucket), as_of)
             .await
     }
@@ -2826,7 +2810,6 @@ mod dated_rate_card_history {
             card: card(5.0),
             appended_at: busbar_kernel::store::now().saturating_mul(1_000),
             author: Author::Amend {
-                operator_fingerprint: "sha256:operator".to_string(),
                 reason_hash: [7u8; 32],
             },
         });
@@ -3251,7 +3234,6 @@ mod usage_as_of {
             card: card(5.0),
             appended_at: busbar_kernel::store::now().saturating_mul(1_000),
             author: Author::Amend {
-                operator_fingerprint: "sha256:operator".to_string(),
                 reason_hash: [7u8; 32],
             },
         });
@@ -3518,7 +3500,7 @@ mod one_recorded_usage_every_surface {
                 .cost(current_cost())
                 .build();
             AdminService::new(app)
-                .with_rate_history(super::dated_rate_card_history::source(history(edit_ms)))
+                .with_rate_history(Arc::new(history(edit_ms)))
                 .get_usage(Some(bucket), None)
                 .await
                 .expect("usage read")
@@ -3784,6 +3766,7 @@ mod plane_fees_on_admin_usage {
                     caller_credential_refusal: None,
                 },
                 wire_format_names: || &[],
+                provider_dialects: || &[],
                 claims: |_| Vec::new(),
                 admission: |_| None,
                 build: |_| None,
