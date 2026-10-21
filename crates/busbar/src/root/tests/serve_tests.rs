@@ -1149,7 +1149,7 @@ pub(super) mod session_door {
             host: {
                 let live_app = Arc::clone(&live_app);
                 Arc::new(move || {
-                    busbar_kernel::plane_host::engine_host(
+                    busbar_kernel::plane_driver::engine_host(
                         live_app
                             .get()
                             .expect("the cell's App is built before any unit"),
@@ -2541,6 +2541,7 @@ mod tools_door {
             busbar_kernel::config::pools::CandidatePoolCfg {
                 members: members.iter().map(|m| (*m).to_string()).collect(),
                 repeatable: repeatable.iter().map(|m| (*m).to_string()).collect(),
+                breaker: None,
             },
         )]
         .into();
@@ -2923,18 +2924,30 @@ mod tools_door {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-audit";
         let _published = Published(instance);
-        let (port, _heard) = tool_server().await;
+        let (port, mut heard) = tool_server().await;
         let rig = rig_tools(instance, port, registration("audited", port, ""), &|app| {
             app
         });
+        let upstream_calls =
+            |heard: &mut Heard| drain(heard).iter().filter(|w| **w == "call").count();
 
         for _ in 0..2 {
             let (status, answer) =
                 call(&rig, &rig.token, "audited_read_file", serde_json::json!({})).await;
             assert_eq!(status, StatusCode::OK, "{answer}");
+            assert_eq!(
+                upstream_calls(&mut heard),
+                1,
+                "one served call is exactly one upstream leg"
+            );
         }
         let (status, _) = call(&rig, &rig.token, "audited_unlisted", serde_json::json!({})).await;
         assert_ne!(status, StatusCode::OK, "an unknown tool is refused");
+        assert_eq!(
+            upstream_calls(&mut heard),
+            0,
+            "the refused call never made an upstream leg"
+        );
 
         // THE CALL LOG: three records, one chain, each linking the one before (the host's
         // verified read refuses a chain whose links do not hold).
@@ -2964,11 +2977,14 @@ mod tools_door {
         );
         assert!(mine.iter().all(|e| e.outcome == "applied"), "{mine:?}");
         let refused = log.list_filtered(0, 1000, Some(action), Some(&resource("audited_unlisted")));
-        assert!(
-            refused
-                .iter()
-                .any(|e| e.principal == rig.key.id && e.outcome == "rejected"),
-            "the refused call audited rejected: {refused:?}"
+        let rejected: Vec<_> = refused
+            .iter()
+            .filter(|e| e.principal == rig.key.id && e.outcome == "rejected")
+            .collect();
+        assert_eq!(
+            rejected.len(),
+            1,
+            "the refused call audited rejected exactly once: {refused:?}"
         );
         let all = log.list_filtered(0, 1000, None, None);
         for row in &mine {
@@ -2977,6 +2993,263 @@ mod tools_door {
                 assert_eq!(row.prev_hash, before.hash, "linked to the row before it");
             }
         }
+    }
+
+    /// DECODE: a body the door cannot read as a JSON-RPC envelope is refused at its decode and never
+    /// becomes a call on the wire — the caller hears a refusal (a client-error status, or the
+    /// envelope's own error answer) and the tool server hears nothing — while the well-formed
+    /// `tools/call` beside it on the same door is served and goes out exactly once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_body_that_is_not_an_envelope_is_refused_at_decode_and_never_sent() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-decode";
+        let _published = Published(instance);
+        let (port, mut heard) = tool_server().await;
+        let rig = rig_tools(instance, port, registration("decoded", port, ""), &|app| {
+            app
+        });
+        let calls = |heard: &mut Heard| drain(heard).iter().filter(|w| **w == "call").count();
+        drain(&mut heard);
+
+        let (status, body) = send_as(
+            &rig.router,
+            Some(&rig.token),
+            "{\"jsonrpc\": \"2.0\", \"id\": 41, \"method\": ",
+            "tools/call",
+            Some("decoded_read_file"),
+        )
+        .await;
+        let answer = serde_json::from_slice::<serde_json::Value>(&body)
+            .unwrap_or_else(|_| serde_json::json!({ "raw": String::from_utf8_lossy(&body) }));
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "an unreadable body is refused at its decode: {answer}"
+        );
+        assert_eq!(
+            answer["error"]["code"],
+            busbar_contract::jsonrpc::PARSE_ERROR,
+            "refused with -32700, the parse error: {answer}"
+        );
+        assert_eq!(
+            rig.admitted(),
+            0,
+            "it never became a unit: nothing admitted"
+        );
+        assert!(
+            drain(&mut heard).is_empty(),
+            "the tool server heard nothing of the unreadable body"
+        );
+        assert!(rig.all_ended(), "the loop opened no unit it left open");
+
+        let (status, answer) =
+            call(&rig, &rig.token, "decoded_read_file", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+        assert_eq!(calls(&mut heard), 1, "the well-formed call went out once");
+    }
+
+    /// AUTHENTICATE: behind the deployment's closed key chain, a call carrying no credential and a
+    /// call carrying a bearer this deployment never minted are both refused `401` before the door —
+    /// the tool server hears neither — and the key the deployment minted is carried through the
+    /// door to the server exactly once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn only_a_caller_the_chain_authenticates_reaches_the_tool_server() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-authenticate";
+        let _published = Published(instance);
+        std::env::set_var(SUBJECT, "busbar-own-subject");
+        let (port, mut heard) = tool_server().await;
+        let extra = format!(
+            "  allow_private: true\n  aud: \"http://127.0.0.1:{port}\"\n  \
+             token_exchange:\n    token_url: \"https://as.example/token\"\n    \
+             subject_token: {{ env: {SUBJECT} }}\n"
+        );
+        let rig = rig_tools(
+            instance,
+            port,
+            registration("authed", port, &extra),
+            &|app| app,
+        );
+        let calls = |heard: &mut Heard| drain(heard).iter().filter(|w| **w == "call").count();
+
+        for token in [None, Some("bb_a_bearer_this_deployment_never_minted")] {
+            let (status, body) = send_as(
+                &rig.router,
+                token,
+                &call_of("authed_read_file", serde_json::json!({})),
+                "tools/call",
+                Some("authed_read_file"),
+            )
+            .await;
+            assert_eq!(
+                status,
+                StatusCode::UNAUTHORIZED,
+                "{token:?} is refused before the door: {}",
+                String::from_utf8_lossy(&body)
+            );
+            assert_eq!(calls(&mut heard), 0, "{token:?} never reached the server");
+        }
+        assert_eq!(rig.admitted(), 0, "a refused caller opens no unit");
+        assert!(rig.all_ended(), "no unit left open");
+
+        let (status, answer) =
+            call(&rig, &rig.token, "authed_read_file", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+        let requests = wire(&mut heard);
+        let sent: Vec<_> = requests
+            .iter()
+            .filter(|r| r.contains("\"tools/call\""))
+            .map(|r| r.to_ascii_lowercase())
+            .collect();
+        assert_eq!(sent.len(), 1, "the minted key's call went out once");
+        // The token the tool server receives is audience-bound: the one busbar's own subject token
+        // was exchanged for, bound to that server's resource, never the caller's.
+        assert!(
+            sent[0].contains("authorization: bearer tok-authed_read_file"),
+            "the exchanged token reached the server: {}",
+            sent[0]
+        );
+        assert!(
+            !sent[0].contains(&rig.token.to_ascii_lowercase()),
+            "never the caller's own: {}",
+            sent[0]
+        );
+        let exchanges = crate::root::door_steps::tests::tool_door::exchanges(&rig);
+        assert!(!exchanges.is_empty(), "the token endpoint was asked");
+        for (_, form) in &exchanges {
+            assert!(
+                form.contains(&format!("resource=http%3A%2F%2F127.0.0.1%3A{port}")),
+                "bound to the tool server's audience: {form}"
+            );
+        }
+    }
+
+    /// VERIFY: a caller whose grant names ANOTHER server is refused inside the unit, and the refused
+    /// server is never dialled — neither its tool endpoint nor the token endpoint its
+    /// `token_exchange:` registration would have been asked for a credential sees a byte — while the
+    /// server its grant does name is served.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_grant_for_another_server_is_refused_before_its_server_or_token_endpoint_is_touched()
+    {
+        let _one = PUBLISHING.lock().await;
+        std::env::set_var(SUBJECT, "busbar-own-subject");
+        let instance = "serve-door-tools-verify";
+        let _published = Published(instance);
+        let (granted, mut granted_heard) = tool_server().await;
+        let (fenced, mut fenced_heard) = tool_server().await;
+        let mut tools = registration("granted", granted, "");
+        let other = registration(
+            "fenced",
+            fenced,
+            &format!(
+                "  allow_private: true\n  aud: \"http://127.0.0.1:{fenced}\"\n  \
+                 token_exchange:\n    token_url: \"https://as.example/token\"\n    \
+                 subject_token: {{ env: {SUBJECT} }}\n"
+            ),
+        );
+        tools
+            .as_mapping_mut()
+            .expect("a mapping")
+            .extend(other.as_mapping().expect("a mapping").clone());
+        let rig = rig_tools(instance, granted, tools, &|app| app);
+        let (_, token) = key_on(
+            &rig,
+            busbar_kernel::governance::NewKeySpec {
+                name: "granted-only".to_string(),
+                ..Default::default()
+            },
+            // Both grants pass for every capability (docs/mcp.md, "Both must pass"): the key holds
+            // the server grant for `granted` alone, and the tool grant for a tool on EACH server,
+            // so the one thing `fenced_read_file` lacks is its server's grant.
+            Some(&[
+                ("scope_server", "granted"),
+                ("scope_tool", "granted_read_file"),
+                ("scope_tool", "fenced_read_file"),
+            ]),
+        );
+
+        let (status, answer) = call(&rig, &token, "fenced_read_file", serde_json::json!({})).await;
+        assert_ne!(
+            status,
+            StatusCode::OK,
+            "another server's tool is refused: {answer}"
+        );
+        assert!(
+            drain(&mut fenced_heard).is_empty(),
+            "the refused server's tool endpoint never heard a byte"
+        );
+        assert!(
+            crate::root::door_steps::tests::tool_door::exchanges(&rig).is_empty(),
+            "the refused server's token endpoint was never asked"
+        );
+
+        let (status, answer) = call(&rig, &token, "granted_read_file", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK, "its own server is served: {answer}");
+        assert!(drain(&mut granted_heard).contains(&"call"));
+    }
+
+    /// ROUTE: a sole registration whose server answers a call with a bare `503` ends the unit with a
+    /// failure the caller reads, after exactly ONE attempt at the one registered target — no silent
+    /// success and no retry storm — and the unit ends.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_single_target_answering_503_fails_the_unit_after_exactly_one_attempt() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-single-503";
+        let _published = Published(instance);
+        let (port, mut heard) = answering_calls_with(503).await;
+        let rig = rig_tools(instance, port, registration("solo", port, ""), &|app| app);
+
+        let (status, answer) =
+            call(&rig, &rig.token, "solo_read_file", serde_json::json!({})).await;
+        assert_ne!(
+            status,
+            StatusCode::OK,
+            "the failure is the caller's to read: {answer}"
+        );
+        assert!(
+            answer.get("error").is_some() || answer["result"]["isError"] == true,
+            "a failure, not a silent success: {answer}"
+        );
+        let calls = drain(&mut heard).iter().filter(|w| **w == "call").count();
+        assert_eq!(calls, 1, "exactly one attempt at the one target");
+        assert_eq!(rig.admitted(), 1, "one unit");
+        assert!(rig.all_ended(), "the unit ended");
+    }
+
+    /// METER: one served `tools/call` writes exactly ONE metering row, under the presenting key,
+    /// attributed to the tool it called and to this plane, counting one request.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_served_call_writes_one_metering_row_naming_its_tool_and_plane() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-meter-row";
+        let _published = Published(instance);
+        let (port, _heard) = tool_server().await;
+        let rig = rig_tools(instance, port, registration("metered", port, ""), &|app| {
+            app
+        });
+        let charged_at = busbar_kernel::store::now();
+
+        let (status, answer) =
+            call(&rig, &rig.token, "metered_read_file", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+        rig.gov.flush_metering();
+        let rows = rig
+            .gov
+            .metering_for(busbar_kernel::governance::metering_bucket(charged_at))
+            .expect("metering read");
+        let mine: Vec<_> = rows.iter().filter(|row| row.key_id == rig.key.id).collect();
+        assert_eq!(mine.len(), 1, "one metering row for the key: {rows:?}");
+        assert_eq!(mine[0].requests, 1, "counting one request: {:?}", mine[0]);
+        assert!(
+            mine[0].model.contains("read_file"),
+            "attributed to the tool it called: {:?}",
+            mine[0]
+        );
+        assert_eq!(
+            mine[0].provider, rig.plane_key,
+            "attributed to this plane: {:?}",
+            mine[0]
+        );
     }
 
     /// A key minted on `rig`'s book under `spec`, its grants exactly `scopes` (`(grant kind row,
@@ -4172,6 +4445,8 @@ async fn serve_configured(
             journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
         }),
         None,
+        &(Arc::new(crate::root::egress_ports::NodeClock::new())
+            as Arc<dyn busbar_kernel_egress::ports::Clock>),
         &busbar_contract::config_time::ConfigScope::config_time(),
     )?;
     let live = Arc::clone(&served.planes[0].live);
@@ -5926,6 +6201,162 @@ mod pools_door_walk_and_breaker {
         assert!(wait >= 1, "at least one second: {wait}");
     }
 
+    /// A CLOCK THE TEST HOLDS: its whole seconds stay where the test put them, so every reading
+    /// the walk takes (an admission, a cooldown it records, the wait a shed advertises) is the same
+    /// instant; its sub-second readings and its sleeps are real, so a bounded wait still ends.
+    struct HeldClock {
+        secs: u64,
+        origin: std::time::Instant,
+    }
+
+    impl HeldClock {
+        /// The door egress's clock, held at `secs`.
+        fn at(secs: u64) -> Arc<dyn busbar_kernel_egress::ports::Clock> {
+            Arc::new(HeldClock {
+                secs,
+                origin: std::time::Instant::now(),
+            })
+        }
+    }
+
+    impl busbar_kernel_egress::ports::Clock for HeldClock {
+        fn now_secs(&self) -> u64 {
+            self.secs
+        }
+
+        fn now_millis(&self) -> u128 {
+            self.origin.elapsed().as_millis()
+        }
+
+        fn now_micros(&self) -> u128 {
+            self.origin.elapsed().as_micros()
+        }
+
+        fn sleep(&self, ms: u64) -> busbar_kernel_egress::ports::BoxFut<'_, ()> {
+            Box::pin(tokio::time::sleep(std::time::Duration::from_millis(ms)))
+        }
+    }
+
+    /// The instant the held clock reads: well before the wall clock, so a cooldown recorded on the
+    /// wall clock instead of the walk's reads as years long at it.
+    const HELD_AT: u64 = 1_700_000_000;
+
+    /// ONE FAILURE BELOW THE TRIP AGAINST THE SOLE MEMBER OF POOL `p`, the walk's clock held at
+    /// [`HELD_AT`]: the far end answers `reply` and then would serve. Asserts what 1.5.5 did: the
+    /// cell stays Closed (the default breaker trips on an error rate over at least five outcomes),
+    /// cooling for a cooldown in `band`; the next call is refused 503 without reaching the far end,
+    /// its `Retry-After` the cooldown exactly.
+    async fn benched_once(
+        instance: &'static str,
+        reply: MockResponse,
+        band: std::ops::RangeInclusive<u64>,
+    ) {
+        let _one = ONE_PUBLISHER.lock().await;
+        let _published = Withdrawn(instance);
+        let clock = HeldClock::at(HELD_AT);
+        let (state, server) = mock(vec![reply, MockResponse::default()]).await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(port_of(&server), 1)],
+                clock: Some(&clock),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+
+        let (status, _, _) = rig.chat().await;
+        assert_ne!(status, 200, "{instance}: the far end's one failure");
+        assert!(
+            matches!(
+                rig.app.store.breaker_state_in("p", 0),
+                busbar_kernel::store::BreakerState::Closed
+            ),
+            "{instance}: one failure is below the trip"
+        );
+        let cooling = rig.app.store.cooldown_remaining_in("p", 0, HELD_AT);
+        assert!(
+            band.contains(&cooling),
+            "{instance}: the member is benched for 1.5.5's cooldown {band:?}, on the walk's clock: \
+             {cooling}"
+        );
+
+        let (status, head, _) = rig.chat().await;
+        assert_eq!(status, 503, "{instance}: the benched sole member sheds");
+        let wait: u64 = head
+            .get("retry-after")
+            .expect("a Retry-After")
+            .to_str()
+            .expect("text")
+            .parse()
+            .expect("whole seconds");
+        assert_eq!(
+            wait, cooling,
+            "{instance}: the Retry-After is the cooldown, read on the same clock"
+        );
+        assert!(
+            state.next_response().is_some(),
+            "{instance}: the refused call never reached the far end"
+        );
+    }
+
+    /// A SINGLE-MEMBER POOL BENCHES ITS MEMBER ON ONE FAILURE BELOW THE TRIP, AS 1.5.5 DID: one 429
+    /// against the sole member of pool `p` leaves the cell Closed but cooling, and the next call is
+    /// refused 503 naming the cooldown as its `Retry-After` ([`benched_once`]).
+    ///
+    /// The wait, derived from v1.5.5:
+    /// - `crates/busbar/src/store/in_memory/breaker.rs:714-724`: every Closed failure that does not
+    ///   trip stores `now + compute_cooldown_with_retry_after(..)`; there is no single-member arm.
+    /// - `breaker.rs:281-388`: the streak is bumped to 1 first, so the backoff is `15 * 2^1 = 30`,
+    ///   jittered by `±(30 / 10) = ±3` and clamped to `[15, 120]`: 27..=33. A stated wait `W` is a
+    ///   floor over it: `max(27..=33, W)`, so a stated 60 is exactly 60.
+    /// - `crates/busbar/src/proxy/engine/walk.rs:49-64`: the shed advertises the soonest genuine
+    ///   cooldown remaining among the admissible members, at least 1: here the sole member's.
+    ///
+    /// A REGRESSION GUARD of that parity, without and with a stated wait (60 s), on the held clock.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_single_member_pool_benches_one_failure_below_the_trip_with_1_5_5s_wait() {
+        benched_once(
+            "rehome-walk-single-bench-unstated",
+            MockResponse::RateLimit {
+                status: StatusCode::TOO_MANY_REQUESTS,
+                provider_signal: None,
+                retry_after: None,
+            },
+            27..=33,
+        )
+        .await;
+        benched_once(
+            "rehome-walk-single-bench-stated",
+            MockResponse::RateLimit {
+                status: StatusCode::TOO_MANY_REQUESTS,
+                provider_signal: None,
+                retry_after: Some(60),
+            },
+            60..=60,
+        )
+        .await;
+    }
+
+    /// THE COOLDOWN A TRANSIENT FAILURE ARMS AND THE WAIT A SHED ADVERTISES READ ONE CLOCK, the
+    /// walk's: one 500 against the sole member of pool `p` is recorded at the walk's `now`, as
+    /// 1.5.5's store took the record's `now_time` (`availability.rs:500-513`), so at the walk's
+    /// clock the member cools for 1.5.5's 27..=33 and the shed names that same wait. RED: the
+    /// failure recorded on the store's own wall-clock read, which at the held clock reads as a
+    /// cooldown years long.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_transient_failure_is_benched_on_the_walks_clock() {
+        benched_once(
+            "rehome-walk-single-bench-walk-clock",
+            MockResponse::ServerError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                body: serde_json::json!({ "error": "server error" }),
+            },
+            27..=33,
+        )
+        .await;
+    }
+
     /// A SESSION PINNED TO A TRIPPED MEMBER YIELDS (F25 row 187; legacy
     /// `forward_pool_integration_tests::test_sticky_yields_when_tripped`): with member 0's cell
     /// open (cooldown 600 s) before the requests, every session is served 200 by the healthy member
@@ -7156,6 +7587,49 @@ mod pools_door_refusals {
         let text = String::from_utf8_lossy(&body);
         assert_eq!(status, 429, "{text}");
         assert!(text.contains("group 'ghost' is not configured"), "{text}");
+        assert_eq!(far.served(), 0);
+    }
+
+    /// PB-19, THE RENDERED REFUSAL IS THE DIRECT ADMISSION'S, BYTE FOR BYTE: a key naming a group
+    /// this node's config does not know is refused by the pools door with exactly the status, kind
+    /// and message the kernel's one limit-refusal spelling renders for the direct admission's own
+    /// `MissingGroup` block over the same book and card — nothing reworded on the door path — and
+    /// the far end is never dialled.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_doors_missing_group_refusal_is_the_direct_admissions_bytes() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-gate-ghost-group-bytes";
+        let _published = Withdrawn(instance);
+        let far = seat_far_end(200, SERVED_BY_TWIN).await;
+        let finance = [limit(LimitMetric::Budget, 0, LimitWindow::Total)];
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(far.port, 1)],
+                group: Some(("finance", &finance)),
+                key_group: Some("ghost"),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let key = rig.gov.lookup_by_sub(&rig.key_id).expect("the rig's key");
+        let Err(blocked) = rig
+            .gov
+            .try_admit(&rig.app.cost, &key, "p", busbar_kernel::store::now())
+        else {
+            panic!("the direct admission refuses a key naming an unconfigured group");
+        };
+        let (direct_status, direct_kind, direct_message, _) =
+            busbar_kernel::ingress::limit_refusal("", &blocked);
+
+        let (status, _, body) = rig.chat().await;
+        let text = String::from_utf8_lossy(&body);
+        assert_eq!(status, direct_status.as_u16(), "{text}");
+        assert!(
+            text.contains(&direct_message),
+            "{direct_message:?} in {text}"
+        );
+        assert!(text.contains(direct_kind), "{direct_kind:?} in {text}");
         assert_eq!(far.served(), 0);
     }
 }

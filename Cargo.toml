@@ -127,7 +127,7 @@ busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory"
 # THE MCP PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the mcp plane's
 # door row (`plane-mcp-door`, `busbar_plane_mcp::tool_door::door`) and installs in every build's tests.
 # Its dropped-in cdylib twin (`busbar-plane-mcp-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "28d655c22533eaee578c7432d29d317a33507585" }
+busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "f9fcaae60bca26c732d8390eb276fdbb160c5471" }
 # THE DECISIONS PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
 # decisions plane's door row (`plane-decisions`, `busbar_plane_decisions::plane_door::door`). Its
 # dropped-in cdylib twin (`busbar-plane-decisions-plugin`) and its gates live in that repo's plugin CI.
@@ -363,6 +363,10 @@ url = "2"
 # `url` -> `idna` otherwise links into the binary only for this. UTS #46 processing is unchanged.
 # Pinned exactly: the selection is the version number. Declared by the binary crate (`busbar`).
 idna_adapter = "=1.1.0"
+# UTS #46 domain-to-ASCII, named by `busbar-contract`'s one URL reader (`net::parse_url`) so a
+# non-ASCII host reads as the punycode name 1.5.5 dialled through `url`. The version and features
+# are `url` 2.5.8's own `idna` requirement, so both resolve the one `idna` node already in the lock.
+idna = { version = "1.1.0", default-features = false, features = ["alloc", "compiled_data"] }
 zeroize = "1"
 
 # ── BUSBAR'S OWN CRATES, AS A PLUGIN REPO NAMES THEM ─────────────────────────────────────────────
