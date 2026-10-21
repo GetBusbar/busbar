@@ -36,9 +36,11 @@
 //! the `*_red_*` tests below plant each of those and require the finding.
 //!
 //! 3. The TEST KIT (Locked Decision #33, "there is NO testkit"): `pub mod testkit;` in `lib.rs`,
+//!    and the plugin test support `pub mod test_support;` in `abi/sdk/mod.rs` (the all-zero ABI
+//!    structs and the Statement reader a plugin's tests drive its door with, no `unsafe`), each
 //!    behind exactly [`TESTKIT_CFG`] — this crate's own `cfg(test)`, or the same dev-only
 //!    `test-seal` feature a plugin's `[dev-dependencies]` edge already enables. No new feature, so
-//!    the surface a plugin compiles against in a release build has no kit in it at all.
+//!    the surface a plugin compiles against in a release build has neither in it at all.
 //!
 //! 4. The SHARED HOST-SERVICES DOUBLE (busbar #476 follow-up): `pub mod double;` in `services.rs`,
 //!    behind exactly [`SERVICES_DOUBLE_CFG`] — this crate's own `cfg(test)`, or the dev-only, EMPTY
@@ -68,8 +70,12 @@ const TEST_SEAL_CFG: &str = "#[cfg(feature = \"test-seal\")]";
 /// dev-only seal feature. Nothing else may be spelled this way.
 const TESTKIT_CFG: &str = "#[cfg(any(test, feature = \"test-seal\"))]";
 
-/// The one item [`TESTKIT_CFG`] may gate: `(file under src/, the item's first line)`.
-const TESTKIT_ITEM: (&str, &str) = ("lib.rs", "pub mod testkit;");
+/// The two items [`TESTKIT_CFG`] may gate: `(file under src/, the item's first line)`. The test kit,
+/// and the plugin test support (it holds `unsafe`, so it lives under `abi/`).
+const TESTKIT_ITEMS: [(&str, &str); 2] = [
+    ("lib.rs", "pub mod testkit;"),
+    ("abi/sdk/mod.rs", "pub mod test_support;"),
+];
 
 /// The dev-only shared host-services double's feature. Empty, and enabled by `[dev-dependencies]`
 /// edges only (`tests/test_seal_is_dev_only.rs`).
@@ -169,14 +175,18 @@ fn cfg_findings(files: &[(String, String)]) -> Vec<String> {
                     continue;
                 }
             }
-            // The test kit's declaration: this exact attribute, over that one item, in lib.rs.
+            // The test kit's and the test support's declarations: this exact attribute, over one of
+            // those two items, in its own file.
             if line.trim_end() == TESTKIT_CFG {
                 let item = lines[n + 1..]
                     .iter()
                     .map(|l| l.trim())
                     .find(|l| !l.starts_with("#["))
                     .unwrap_or_default();
-                if rel == TESTKIT_ITEM.0 && item == TESTKIT_ITEM.1 {
+                if TESTKIT_ITEMS
+                    .iter()
+                    .any(|(file, first)| rel == file && item == *first)
+                {
                     continue;
                 }
             }
@@ -264,29 +274,31 @@ fn every_test_seal_item_is_present_behind_its_attribute() {
     }
 }
 
-/// Locked Decision #33: the test kit is not in a release build. Its declaration carries exactly
-/// [`TESTKIT_CFG`]; an ungated `pub mod testkit;` (the kit shipping in every build) is RED here.
+/// Locked Decision #33: the test kit is not in a release build, nor is the plugin test support.
+/// Each declaration carries exactly [`TESTKIT_CFG`]; an ungated `pub mod testkit;` or
+/// `pub mod test_support;` (shipping in every build) is RED here.
 #[test]
 fn the_testkit_is_behind_its_test_only_attribute() {
     let files = src_files();
-    let (_, text) = files
-        .iter()
-        .find(|(rel, _)| rel == TESTKIT_ITEM.0)
-        .expect("src/lib.rs is present");
-    let lines: Vec<&str> = text.lines().map(str::trim).collect();
-    let at = lines
-        .iter()
-        .position(|l| *l == TESTKIT_ITEM.1)
-        .expect("src/lib.rs still declares the test kit");
-    assert!(
-        lines[..at]
+    for (file, first) in TESTKIT_ITEMS {
+        let (_, text) = files
             .iter()
-            .rev()
-            .take_while(|l| l.starts_with("#[") || l.starts_with("//"))
-            .any(|l| *l == TESTKIT_CFG),
-        "src/lib.rs: `{}` is not behind `{TESTKIT_CFG}`, so the kit ships in every build",
-        TESTKIT_ITEM.1
-    );
+            .find(|(rel, _)| rel == file)
+            .unwrap_or_else(|| panic!("src/{file} is present"));
+        let lines: Vec<&str> = text.lines().map(str::trim).collect();
+        let at = lines
+            .iter()
+            .position(|l| *l == first)
+            .unwrap_or_else(|| panic!("src/{file} still declares `{first}`"));
+        assert!(
+            lines[..at]
+                .iter()
+                .rev()
+                .take_while(|l| l.starts_with("#[") || l.starts_with("//"))
+                .any(|l| *l == TESTKIT_CFG),
+            "src/{file}: `{first}` is not behind `{TESTKIT_CFG}`, so it ships in every build"
+        );
+    }
 }
 
 /// The shared host-services double is not in a release build: its declaration carries exactly
@@ -349,6 +361,22 @@ fn the_testkit_attribute_over_another_item_is_red() {
     assert_eq!(cfg_findings(&[("plugin.rs".to_string(), moved)]).len(), 1);
     let right = format!("{TESTKIT_CFG}\npub mod testkit;\n");
     assert!(cfg_findings(&[("lib.rs".to_string(), right)]).is_empty());
+    // The plugin test support: its own file only, and the kit's file holds no second item.
+    let support = format!("{TESTKIT_CFG}\npub mod test_support;\n");
+    assert!(cfg_findings(&[("abi/sdk/mod.rs".to_string(), support.clone())]).is_empty());
+    assert_eq!(
+        cfg_findings(&[("lib.rs".to_string(), support.clone())]).len(),
+        1
+    );
+    assert_eq!(
+        cfg_findings(&[("abi/mod.rs".to_string(), support)]).len(),
+        1
+    );
+    let other = format!("{TESTKIT_CFG}\npub mod testkit;\n");
+    assert_eq!(
+        cfg_findings(&[("abi/sdk/mod.rs".to_string(), other)]).len(),
+        1
+    );
 }
 
 /// RED: a feature beyond the three exemptions is refused.

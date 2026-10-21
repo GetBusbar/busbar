@@ -54,7 +54,7 @@ use std::ptr;
 use crate::abi::host::conn::connector::Need;
 use crate::abi::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead, Outcome, RawOutcome};
 use crate::abi::mechanism::door::{
-    Door, KindTailHead, MarkWord, MetricFamily, Rewrite, Section, Statement,
+    Door, DoorFn, KindTailHead, MarkWord, MetricFamily, Rewrite, Section, Statement,
 };
 use crate::abi::mechanism::lifecycle::{
     self as lc, CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, ReadyIn, RefreshIn,
@@ -634,8 +634,276 @@ pub const fn door<T: KindOps>(
     }
 }
 
+/// A door the contract's own door macro built ([`plugin_door!`](crate::plugin_door), and every
+/// kind macro over it), as the `MACRO_DOOR` it expands beside `door` states it. Its one field is
+/// private and its one constructor is `unsafe`, called only in the macro's expansion, so safe code
+/// holds one only for a door the contract laid out, never for an arbitrary `fn() -> *const Door`.
+///
+/// WHAT THIS DOES NOT CLOSE: the Statement's CONTENT (its lists and their counts, every `AbiStr`,
+/// `Blob` and kind tail) is the macro caller's own `const` data, written with the ABI's public
+/// pointer/length fields; a count that disagrees with its storage is read as stated. That class is
+/// closed by the root unsafe-ABI change on branch `lane-row159-abi-unsafe-fn` (the ABI's ptr/len
+/// fields private behind `const` constructors from `'static` slices and strs).
+///
+/// THE SAFE SURFACE OF THE TEST SUPPORT, PROVED IN PAIRS. Each `compile_fail` below has a twin
+/// that differs from it in the one forbidden spelling and MUST compile, so the failure is the
+/// guard's and nothing else's (stable rustdoc checks no error code). They sit here, on an item
+/// every build compiles; the twins naming `test_support` compile only with the dev-only
+/// `test-seal` feature on, so they also prove the doctest build has it.
+///
+/// A literal is refused (its field is private); the macro's own value is not:
+///
+/// ```compile_fail
+/// # use busbar_contract::abi::sdk::life::{Life, Refreshed, Refusal};
+/// # struct P;
+/// # impl Life for P {
+/// #     const CANCEL: u32 = 0;
+/// #     fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+/// #         Ok(P)
+/// #     }
+/// #     fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+/// #         Ok(Refreshed::default())
+/// #     }
+/// # }
+/// # mod plugin {
+/// #     busbar_contract::plugin_door! {
+/// #         ops: busbar_contract::abi::secret::Ops,
+/// #         statement: busbar_contract::abi::sdk::door::statement("p", "0", 1),
+/// #         lifecycle: life(super::P),
+/// #     }
+/// # }
+/// # extern "C" fn forged() -> *const busbar_contract::abi::mechanism::door::Door {
+/// #     core::ptr::null()
+/// # }
+/// # use busbar_contract::abi::sdk::door::MacroDoor;
+/// fn main() {
+///     let _ = MacroDoor { door: forged };
+/// }
+/// ```
+///
+/// ```
+/// # use busbar_contract::abi::sdk::life::{Life, Refreshed, Refusal};
+/// # struct P;
+/// # impl Life for P {
+/// #     const CANCEL: u32 = 0;
+/// #     fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+/// #         Ok(P)
+/// #     }
+/// #     fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+/// #         Ok(Refreshed::default())
+/// #     }
+/// # }
+/// # mod plugin {
+/// #     busbar_contract::plugin_door! {
+/// #         ops: busbar_contract::abi::secret::Ops,
+/// #         statement: busbar_contract::abi::sdk::door::statement("p", "0", 1),
+/// #         lifecycle: life(super::P),
+/// #     }
+/// # }
+/// # extern "C" fn forged() -> *const busbar_contract::abi::mechanism::door::Door {
+/// #     core::ptr::null()
+/// # }
+/// # use busbar_contract::abi::sdk::door::MacroDoor;
+/// fn main() {
+///     let _: MacroDoor = plugin::MACRO_DOOR;
+/// }
+/// ```
+///
+/// The constructor is refused in safe code; inside `unsafe` it is not:
+///
+/// ```compile_fail
+/// # use busbar_contract::abi::sdk::life::{Life, Refreshed, Refusal};
+/// # struct P;
+/// # impl Life for P {
+/// #     const CANCEL: u32 = 0;
+/// #     fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+/// #         Ok(P)
+/// #     }
+/// #     fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+/// #         Ok(Refreshed::default())
+/// #     }
+/// # }
+/// # mod plugin {
+/// #     busbar_contract::plugin_door! {
+/// #         ops: busbar_contract::abi::secret::Ops,
+/// #         statement: busbar_contract::abi::sdk::door::statement("p", "0", 1),
+/// #         lifecycle: life(super::P),
+/// #     }
+/// # }
+/// # extern "C" fn forged() -> *const busbar_contract::abi::mechanism::door::Door {
+/// #     core::ptr::null()
+/// # }
+/// # use busbar_contract::abi::sdk::door::MacroDoor;
+/// fn main() {
+///     let _ = MacroDoor::__from_door_macro(forged);
+/// }
+/// ```
+///
+/// ```
+/// # use busbar_contract::abi::sdk::life::{Life, Refreshed, Refusal};
+/// # struct P;
+/// # impl Life for P {
+/// #     const CANCEL: u32 = 0;
+/// #     fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+/// #         Ok(P)
+/// #     }
+/// #     fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+/// #         Ok(Refreshed::default())
+/// #     }
+/// # }
+/// # mod plugin {
+/// #     busbar_contract::plugin_door! {
+/// #         ops: busbar_contract::abi::secret::Ops,
+/// #         statement: busbar_contract::abi::sdk::door::statement("p", "0", 1),
+/// #         lifecycle: life(super::P),
+/// #     }
+/// # }
+/// # extern "C" fn forged() -> *const busbar_contract::abi::mechanism::door::Door {
+/// #     core::ptr::null()
+/// # }
+/// # use busbar_contract::abi::sdk::door::MacroDoor;
+/// fn main() {
+///     let _ = unsafe { MacroDoor::__from_door_macro(forged) };
+/// }
+/// ```
+///
+/// `DoorView` reads no forged door function; the macro's door it reads:
+///
+/// ```compile_fail
+/// # use busbar_contract::abi::sdk::life::{Life, Refreshed, Refusal};
+/// # struct P;
+/// # impl Life for P {
+/// #     const CANCEL: u32 = 0;
+/// #     fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+/// #         Ok(P)
+/// #     }
+/// #     fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+/// #         Ok(Refreshed::default())
+/// #     }
+/// # }
+/// # mod plugin {
+/// #     busbar_contract::plugin_door! {
+/// #         ops: busbar_contract::abi::secret::Ops,
+/// #         statement: busbar_contract::abi::sdk::door::statement("p", "0", 1),
+/// #         lifecycle: life(super::P),
+/// #     }
+/// # }
+/// # extern "C" fn forged() -> *const busbar_contract::abi::mechanism::door::Door {
+/// #     core::ptr::null()
+/// # }
+/// # use busbar_contract::abi::sdk::door::MacroDoor;
+/// fn main() {
+///     let _ = busbar_contract::abi::sdk::test_support::DoorView::of(forged);
+/// }
+/// ```
+///
+/// ```
+/// # use busbar_contract::abi::sdk::life::{Life, Refreshed, Refusal};
+/// # struct P;
+/// # impl Life for P {
+/// #     const CANCEL: u32 = 0;
+/// #     fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+/// #         Ok(P)
+/// #     }
+/// #     fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+/// #         Ok(Refreshed::default())
+/// #     }
+/// # }
+/// # mod plugin {
+/// #     busbar_contract::plugin_door! {
+/// #         ops: busbar_contract::abi::secret::Ops,
+/// #         statement: busbar_contract::abi::sdk::door::statement("p", "0", 1),
+/// #         lifecycle: life(super::P),
+/// #     }
+/// # }
+/// # extern "C" fn forged() -> *const busbar_contract::abi::mechanism::door::Door {
+/// #     core::ptr::null()
+/// # }
+/// # use busbar_contract::abi::sdk::door::MacroDoor;
+/// fn main() {
+///     let _ = busbar_contract::abi::sdk::test_support::DoorView::of(plugin::MACRO_DOOR);
+/// }
+/// ```
+///
+/// A fake host hands safe code no table; it lends its tables to an `open` alone:
+///
+/// ```compile_fail
+/// # use busbar_contract::abi::mechanism::lifecycle::OpenIn;
+/// # use busbar_contract::abi::sdk::test_support::{fake::FakeHost, zeroed};
+/// fn main() {
+///     let host = FakeHost::new();
+///     let _ = host.services();
+/// }
+/// ```
+///
+/// ```
+/// # use busbar_contract::abi::mechanism::lifecycle::OpenIn;
+/// # use busbar_contract::abi::sdk::test_support::{fake::FakeHost, zeroed};
+/// fn main() {
+///     let host = FakeHost::new();
+///     let _ = host.lend_to(zeroed::<OpenIn>());
+/// }
+/// ```
+///
+/// What a fake host lent cannot outlive it; dropped first, it can:
+///
+/// ```compile_fail
+/// # use busbar_contract::abi::mechanism::lifecycle::OpenIn;
+/// # use busbar_contract::abi::sdk::test_support::{fake::FakeHost, zeroed};
+/// fn main() {
+///     let host = FakeHost::new();
+///     let lent = host.lend_to(zeroed::<OpenIn>());
+///     drop(host);
+///     drop(lent);
+/// }
+/// ```
+///
+/// ```
+/// # use busbar_contract::abi::mechanism::lifecycle::OpenIn;
+/// # use busbar_contract::abi::sdk::test_support::{fake::FakeHost, zeroed};
+/// fn main() {
+///     let host = FakeHost::new();
+///     let lent = host.lend_to(zeroed::<OpenIn>());
+///     drop(lent);
+///     drop(host);
+/// }
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct MacroDoor {
+    door: DoorFn,
+}
+
+impl MacroDoor {
+    /// The door macro's plumbing: the one constructor, named only in its expansion.
+    ///
+    /// # Safety
+    ///
+    /// `door` answers a pointer to a `'static`, fully initialised `Door` the SDK built (the `const`
+    /// items [`plugin_door!`](crate::plugin_door) lays out), whose Statement lists point at their
+    /// stated counts of live `'static` entries. That last part is the content of the Statement the
+    /// macro's caller wrote as its own `const` data; the ABI does not yet enforce it, and the root
+    /// unsafe-ABI change on branch `lane-row159-abi-unsafe-fn` closes it.
+    #[doc(hidden)]
+    #[must_use]
+    pub const unsafe fn __from_door_macro(door: DoorFn) -> Self {
+        Self { door }
+    }
+
+    /// The door function.
+    #[must_use]
+    pub fn door_fn(self) -> DoorFn {
+        self.door
+    }
+}
+
 /// THE DOOR MACRO. The door, Statement and table are `const` items: `'static`, but Rust does not
 /// promise one address per `const`, so a host compares a door's contents, never its address.
+///
+/// Beside `door` it expands `MACRO_DOOR`, the [`MacroDoor`] the contract's test support reads the
+/// door through. The `statement` it is given is the caller's own `const` data: its lists, strings,
+/// blobs and kind tail are stated through the ABI's public pointer/length fields, which the
+/// root unsafe-ABI change on branch `lane-row159-abi-unsafe-fn` puts behind `const` constructors
+/// from `'static` slices and strs.
 /// Invoked once, in a plugin's LOGIC crate; expands there to
 /// `pub unsafe extern "C" fn door() -> *const Door` over a `'static` door, Statement and ops table.
 /// The door is a [`DoorFn`](crate::abi::mechanism::door::DoorFn), so it is `unsafe` (status row
@@ -826,6 +1094,17 @@ macro_rules! plugin_door {
             );
             __DOOR
         }
+
+        /// This plugin's door as the door macro built it: the one value the contract's test
+        /// support (`abi::sdk::test_support::DoorView`) reads a door through.
+        #[allow(dead_code)]
+        pub const MACRO_DOOR: $crate::abi::sdk::door::MacroDoor =
+            // SAFETY: `door` is the function this macro expanded just above: it answers the
+            // `'static`, fully initialised `Door` the SDK laid out as `const` items. The Statement's
+            // content (its lists, strings, blobs and kind tail) is the caller's own `const` data;
+            // that its counts match its storage is closed by the root unsafe-ABI change on branch
+            // `lane-row159-abi-unsafe-fn`.
+            unsafe { $crate::abi::sdk::door::MacroDoor::__from_door_macro(door) };
     };
 }
 
