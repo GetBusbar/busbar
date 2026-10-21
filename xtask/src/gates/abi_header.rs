@@ -1101,6 +1101,15 @@ fn comment(doc: &Option<String>) -> String {
     }
 }
 
+/// [`render_sources`], every emitted struct held to the golden (RED: not yet held).
+///
+/// # Errors
+///
+/// As [`render_sources`].
+pub fn render_sources_pinned(srcs: &[Src<'_>], golden: &str) -> Result<String, String> {
+    render_sources(srcs, golden)
+}
+
 /// Render the header from source texts and the layout golden. The pure core of the gate.
 pub fn render_sources(srcs: &[Src<'_>], golden: &str) -> Result<String, String> {
     let mut col = Collected::default();
