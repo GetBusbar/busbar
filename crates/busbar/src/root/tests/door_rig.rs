@@ -26,7 +26,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use busbar_contract::abi::mechanism::door::DoorFn;
+use busbar_contract::abi::sdk::door::MacroDoor;
 use busbar_contract::conn::{ConnWake, DeclaredConns, PollConns};
 use busbar_contract::secret::SecretResolve;
 use busbar_contract::services::HostServices;
@@ -88,7 +88,7 @@ pub(crate) fn door_breaker(statement_name: &str) -> Result<Option<BreakerDecl>, 
 
 /// The section `door` declares, read by binding it once as a probe (nothing opened to the network)
 /// under `instance`; `None` when it will not bind.
-fn declared_section(door: DoorFn, instance: &str) -> Option<&'static str> {
+fn declared_section(door: MacroDoor, instance: &str) -> Option<&'static str> {
     let dispatcher = Dispatcher::new(DispatchConfig::default());
     let row = LinkedRow::of(door).ok()?;
     let plane = load_linked::<Plane>(
@@ -106,7 +106,7 @@ fn declared_section(door: DoorFn, instance: &str) -> Option<&'static str> {
 }
 
 /// Of the linked plane doors, the one that declares `section` ([`declared_section`]).
-pub(crate) fn door_declaring(section: &str) -> Option<DoorFn> {
+pub(crate) fn door_declaring(section: &str) -> Option<MacroDoor> {
     crate::LINKED
         .plane_doors
         .iter()
@@ -121,7 +121,7 @@ pub(crate) fn door_declaring(section: &str) -> Option<DoorFn> {
 ///
 /// The door does not state its Statement, or will not bind.
 pub(crate) fn bind_door(
-    door: DoorFn,
+    door: MacroDoor,
     instance: &str,
     dispatcher: &Dispatcher,
     conns: Arc<dyn DeclaredConns>,
@@ -148,7 +148,7 @@ pub(crate) fn bind_door(
 ///
 /// The door does not bind, or its registration does not fold.
 pub(crate) fn folded_door(
-    door: DoorFn,
+    door: MacroDoor,
     instance: &str,
 ) -> Result<&'static busbar_kernel::plane::registry::PlaneDecl, String> {
     use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
@@ -160,7 +160,7 @@ pub(crate) fn folded_door(
 /// # Errors
 ///
 /// As [`folded_door`].
-pub(crate) fn register_door(door: DoorFn, instance: &str) -> Result<(), String> {
+pub(crate) fn register_door(door: MacroDoor, instance: &str) -> Result<(), String> {
     busbar_kernel::plane::registry::register_test_plane(folded_door(door, instance)?);
     Ok(())
 }

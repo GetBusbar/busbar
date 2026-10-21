@@ -140,10 +140,8 @@ pub fn operator_principal(door: busbar_contract::abi::sdk::door::MacroDoor) -> O
 /// # Errors
 ///
 /// The door's Statement does not read as an auth Statement, or its tail is one a bind refuses.
-pub fn stated_facts(
-    door: busbar_contract::abi::mechanism::door::DoorFn,
-) -> Result<AuthFacts, String> {
-    let v = crate::dispatch::load::validate::<Auth>(door).map_err(|e| e.to_string())?;
+pub fn stated_facts(door: busbar_contract::abi::sdk::door::MacroDoor) -> Result<AuthFacts, String> {
+    let v = crate::dispatch::load::validate::<Auth>(door.into()).map_err(|e| e.to_string())?;
     facts(&v.statement)
 }
 
