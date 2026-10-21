@@ -1338,6 +1338,33 @@ fn red_a_book_with_no_signing_key_lends_every_principal_its_own_reference() {
     assert_ne!(node(Some([8u8; 32])).0, alice);
 }
 
+/// A NODE WITH NO SIGNING KEY AND A NON-SIGNING AUDIT CHAIN STILL LENDS EVERY VERIFIED PRINCIPAL ITS
+/// OWN REFERENCE (residual of a5d0098cc3, row 159 H2; ARCHITECT ruling: a verified principal is never
+/// lent the empty reference). Such a node binds no deployment keyset (`AuditChain::derived_secret`
+/// answers `None`), so the reference is keyed by a per-boot random key the node generates at start.
+/// RED: nothing bound means nothing lent, and the plane reads the empty reference as the one
+/// ungoverned owner, so two verified callers share one session owner.
+#[test]
+fn red_a_node_with_no_signing_key_and_no_signing_chain_lends_two_principals_two_references() {
+    let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).expect("gov"));
+    let money = PlaneMoney::new(Arc::clone(&gov), Arc::new(Posted::default()));
+    let slot = money.caller_refs().expect("the book lends a slot");
+    let lent = |p: &str| {
+        slot.read()
+            .unwrap()
+            .as_ref()
+            .map(|k| k.caller_ref(p))
+            .unwrap_or_default()
+    };
+    let (alice, bob) = (lent("oidc:alice"), lent("oidc:bob"));
+    assert!(
+        !alice.is_empty() && !bob.is_empty(),
+        "a verified principal was lent the empty reference"
+    );
+    assert_ne!(alice, bob, "two verified principals share one reference");
+    assert_eq!(lent("oidc:alice"), alice, "one principal, one reference");
+}
+
 /// The signing material, when the node has one, still keys the reference (it wins over the
 /// deployment keyset), and a reload that drops it falls back to the keyset, never to nothing.
 #[test]
