@@ -2029,10 +2029,13 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
         .header("content-length", payload.len().to_string())
         .body(axum::body::Body::from(payload))
         .unwrap();
-    std::future::poll_fn(|cx| tower::Service::poll_ready(&mut router, cx))
+    type Req = axum::http::Request<axum::body::Body>;
+    std::future::poll_fn(|cx| <axum::Router as tower::Service<Req>>::poll_ready(&mut router, cx))
         .await
         .unwrap();
-    let r = tower::Service::call(&mut router, req).await.unwrap();
+    let r = <axum::Router as tower::Service<Req>>::call(&mut router, req)
+        .await
+        .unwrap();
     assert_eq!(r.status().as_u16(), 413, "the body cap must reject");
     let ct = r
         .headers()
