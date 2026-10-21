@@ -2340,6 +2340,323 @@ mod transport_pin {
             );
         });
     }
+
+    // ── THE SECURE LAYER'S TWINS, each over a real loopback handshake: the rows the deleted
+    // `tls/engine_tests.rs` held, proven against the connector's own outbound security ─────────
+
+    /// What one connection told a [`naming_far_end`]: the server name its ClientHello offered, and
+    /// whether the handshake completed.
+    type Named = tokio::sync::mpsc::UnboundedReceiver<(Option<String>, bool)>;
+
+    /// How many connections a [`naming_far_end`] accepted.
+    type Accepted = Arc<std::sync::atomic::AtomicUsize>;
+
+    /// A TLS far end on loopback serving `leaf`, answering `answer` once it read five bytes. Per
+    /// connection it reports the name the ClientHello offered, read off the hello BEFORE the
+    /// handshake runs (so a handshake the dialler refuses reports its name too), and whether the
+    /// handshake completed; and it counts every connection it accepts. Its address, the reports,
+    /// the count.
+    async fn naming_far_end(leaf: &Leaf) -> (String, Named, Accepted) {
+        crate::tls::install_crypto_provider();
+        let chain = vec![rustls_pki_types::CertificateDer::from(leaf.der.clone())];
+        let key = rustls_pki_types::PrivateKeyDer::try_from(leaf.key.clone()).unwrap();
+        let config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(chain, key)
+            .unwrap();
+        let config = Arc::new(config);
+        let (l, far) = far_end().await;
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let accepted = Accepted::default();
+        let counted = Arc::clone(&accepted);
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            while let Ok((s, _)) = l.accept().await {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let (config, tx) = (Arc::clone(&config), tx.clone());
+                tokio::spawn(async move {
+                    let hello = rustls::server::Acceptor::default();
+                    let Ok(start) = tokio_rustls::LazyConfigAcceptor::new(hello, s).await else {
+                        let _ = tx.send((None, false));
+                        return;
+                    };
+                    let name = start.client_hello().server_name().map(str::to_owned);
+                    match start.into_stream(config).await {
+                        Err(_) => {
+                            let _ = tx.send((name, false));
+                        }
+                        Ok(mut tls) => {
+                            let _ = tx.send((name, true));
+                            let mut buf = [0_u8; 5];
+                            if tls.read_exact(&mut buf).await.is_ok() {
+                                let _ = tls.write_all(b"answer").await;
+                                let _ = tls.shutdown().await;
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        (far, rx, accepted)
+    }
+
+    /// The next report off a [`naming_far_end`], bounded so a far end that never reports fails the
+    /// test rather than hanging it.
+    async fn next_report(named: &mut Named) -> (Option<String>, bool) {
+        tokio::time::timeout(std::time::Duration::from_secs(10), named.recv())
+            .await
+            .expect("the far end reports the connection")
+            .expect("the far end is still listening")
+    }
+
+    /// A connector serving one door whose targets ask for connection security under `name`,
+    /// trusting `anchor` on top of the public roots and judging every dial through `judge`, with
+    /// need 0 declared over it. Its wake raises the returned [`tokio::sync::Notify`], so a reader
+    /// waits on the connector's own wake and never on a clock.
+    fn naming(
+        name: &'static str,
+        anchor: &[u8],
+        judge: Arc<dyn crate::DialJudge>,
+    ) -> (Connector, Arc<tokio::sync::Notify>) {
+        let view = Transports::new(vec![Entry {
+            door: Arc::new(TestDoor::new(
+                "sec",
+                &["sec"],
+                &[],
+                crate::support::Knobs {
+                    secure_name: Some(name),
+                    ..crate::support::Knobs::default()
+                },
+            )),
+            alpn: Vec::new(),
+        }])
+        .unwrap();
+        let tls = crate::tls::client::build_client_config(&EgressTrust {
+            extra_anchors: vec![anchor.to_vec()],
+            ..EgressTrust::default()
+        })
+        .unwrap();
+        let woken = Arc::new(tokio::sync::Notify::new());
+        let wake = Arc::clone(&woken);
+        let c = Connector::serving(
+            view,
+            judge,
+            Some(Arc::new(tls)),
+            Arc::new(move |_, _| wake.notify_one()),
+        );
+        c.declare_over(OWNER, NeedId(0), "sec").unwrap();
+        (c, woken)
+    }
+
+    /// Open need 0 at `target` within `judged` (empty: no set stated) with a five-byte opening
+    /// body, and read to its first answer, waiting on the connector's wake between reads: the
+    /// connection, and the read's answer.
+    async fn exchange_woken(
+        c: &Connector,
+        woken: &tokio::sync::Notify,
+        target: &str,
+        judged: &[std::net::IpAddr],
+    ) -> (ConnId, Result<Vec<u8>, ConnError>) {
+        let desc = OpenDesc {
+            target,
+            body: b"first",
+            within: judged,
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut buf = [0_u8; 64];
+        let read = async {
+            loop {
+                match c.read(OWNER, id, 7, &mut buf) {
+                    Err(ConnError::Pending) => woken.notified().await,
+                    Ok(p) => return Ok(buf[..p.len].to_vec()),
+                    Err(e) => return Err(e),
+                }
+            }
+        };
+        let got = tokio::time::timeout(std::time::Duration::from_secs(10), read)
+            .await
+            .expect("the connector wakes its reader with an answer");
+        (id, got)
+    }
+
+    /// THE REAL WRAP OFFERS THE CONFIGURED NAME AND HOLDS THE CERTIFICATE TO IT (the twin the
+    /// deleted `tls/engine_tests.rs::sni_stays_on_the_hostname_and_a_wrong_name_cert_is_refused`
+    /// held). The socket goes to the pinned loopback address while the name the target asks
+    /// security under is `pinned.test`: the far end serving a leaf for `pinned.test` reads that
+    /// name off the ClientHello, completes the handshake and answers, and the connection's facts
+    /// carry the name offered. RED TWIN: a far end at a pinned loopback address serving a leaf for
+    /// `other.test`, under a root the dialler trusts, still reads `pinned.test` off the hello and
+    /// is REFUSED at the handshake, the name check its cause: the certificate is held to the
+    /// configured name, never to the address the socket went to.
+    #[test]
+    fn the_real_wrap_offers_the_configured_name_and_refuses_a_certificate_for_another() {
+        use busbar_contract::abi::host::conn::connector::CAUSE_SECURITY;
+        worker().block_on(async {
+            let pki = Pki::new();
+            let (c, woken) = naming("pinned.test", &pki.ca_der, loopback_literals());
+
+            let (far, mut named, _) = naming_far_end(&pki.leaf("pinned.test")).await;
+            let (id, got) = exchange_woken(&c, &woken, &far, &[]).await;
+            assert_eq!(
+                got.as_deref(),
+                Ok(&b"answer"[..]),
+                "the rightly-named far end answers"
+            );
+            assert_eq!(
+                next_report(&mut named).await,
+                (Some("pinned.test".to_owned()), true),
+                "the hello carried the configured name and the handshake completed"
+            );
+            let facts = c.facts(OWNER, id).expect("facts");
+            assert_eq!(facts.sni.as_deref(), Some("pinned.test"));
+            assert_eq!(
+                c.cause(OWNER, id),
+                None,
+                "an answered connection has no cause"
+            );
+
+            let (far, mut named, _) = naming_far_end(&pki.leaf("other.test")).await;
+            let (id, got) = exchange_woken(&c, &woken, &far, &[]).await;
+            assert_eq!(
+                got,
+                Err(ConnError::Refused),
+                "a certificate for another name is refused"
+            );
+            assert_eq!(
+                next_report(&mut named).await,
+                (Some("pinned.test".to_owned()), false),
+                "the hello carried the configured name even though the handshake was refused"
+            );
+            let cause = c.cause(OWNER, id).expect("a cause");
+            assert_eq!(cause.stage, CAUSE_SECURITY);
+            assert!(
+                cause.text.contains("certificate not valid for name")
+                    && cause.text.contains("pinned.test"),
+                "the name check's own refusal: {}",
+                cause.text
+            );
+        });
+    }
+
+    /// A resolver answering `.0` with `.1`, at once, off the caller's thread.
+    struct Answers(&'static str, std::net::IpAddr);
+
+    impl crate::guard::Resolve for Answers {
+        fn resolve(&self, host: &str, done: crate::guard::Resolved) {
+            let answer = if host == self.0 {
+                Ok(vec![self.1])
+            } else {
+                Err("NXDOMAIN".to_owned())
+            };
+            std::thread::spawn(move || done(answer));
+        }
+    }
+
+    /// A JUDGED SECURE DIAL GOES ONLY WHERE THE GUARD JUDGED, AND KEEPS THE NAME (the twin the
+    /// deleted `tls/engine_tests.rs::a_judged_tls_dial_keeps_the_name_for_sni_and_host` held). A
+    /// need dials `judged.test` through the deployment's one guard, the name answering the loopback
+    /// far end's address. RED TWIN first: stated `within` an address set the guard judged that does
+    /// not hold that answer, the dial is REFUSED. Then the same dial within the set holding the
+    /// answer lands there: the ClientHello offers the name, the leaf minted for `judged.test` alone
+    /// verifies against it, and the far end answers. The far end's count, read once the landed
+    /// dial's handshake is reported, is one: the refused dial never reached it (accepts are taken
+    /// in arrival order, so a connection the refused dial made would have been counted first).
+    #[test]
+    fn a_judged_secure_dial_lands_only_where_the_guard_judged_and_keeps_the_name() {
+        worker().block_on(async {
+            let pki = Pki::new();
+            let (far, mut named, accepted) = naming_far_end(&pki.leaf("judged.test")).await;
+            let port = far.rsplit_once(':').expect("host:port").1;
+            let target = format!("judged.test:{port}");
+            let destinations = busbar_kernel::config::Destinations {
+                block_private_addresses: true,
+                allow: vec!["127.0.0.0/8".to_owned()],
+                ..busbar_kernel::config::Destinations::default()
+            };
+            let guard = crate::guard::Guard::from_config(&destinations).unwrap();
+            let resolver = Arc::new(Answers("judged.test", [127, 0, 0, 1].into()));
+            let dest = crate::process::GuardJudge::new(guard, resolver);
+            let judge = crate::process::judge(Arc::new(dest), &[]);
+            let (c, woken) = naming("judged.test", &pki.ca_der, judge);
+
+            let elsewhere: [std::net::IpAddr; 1] = [[127, 0, 0, 2].into()];
+            let (_, got) = exchange_woken(&c, &woken, &target, &elsewhere).await;
+            assert_eq!(
+                got,
+                Err(ConnError::Refused),
+                "the name answered an address the guard never judged"
+            );
+
+            let judged: [std::net::IpAddr; 1] = [[127, 0, 0, 1].into()];
+            let (id, got) = exchange_woken(&c, &woken, &target, &judged).await;
+            assert_eq!(
+                got.as_deref(),
+                Ok(&b"answer"[..]),
+                "the dial landed where the guard judged"
+            );
+            assert_eq!(
+                next_report(&mut named).await,
+                (Some("judged.test".to_owned()), true),
+                "the hello offered the name and the certificate verified against it"
+            );
+            assert_eq!(
+                accepted.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "the refused dial reached no far end"
+            );
+            let facts = c.facts(OWNER, id).expect("facts");
+            assert_eq!(facts.sni.as_deref(), Some("judged.test"));
+        });
+    }
+
+    /// A TRUST REFUSAL NAMES THE SECURITY STACK'S OWN CAUSE, AND THE TRUSTED TWIN IS REACHED (the
+    /// twin the deleted `tls/engine_tests.rs::a_tls_trust_refusal_renders_the_real_cause` held). A
+    /// far end whose leaf an unrelated root signed is REFUSED at connection security, and the
+    /// connection's cause is the stack's own words for an unknown issuer, never a vague closed
+    /// channel. GREEN TWIN: the same far end, dialled by a connector trusting the root that signed
+    /// its leaf, answers, and the answered connection has no cause.
+    #[test]
+    fn a_trust_refusal_names_its_cause_and_the_trusted_twin_is_reached() {
+        use busbar_contract::abi::host::conn::connector::CAUSE_SECURITY;
+        worker().block_on(async {
+            let served = Pki::new();
+            let unrelated = Pki::new();
+            let (far, _named, _) = naming_far_end(&served.leaf("refused.test")).await;
+
+            let (c, woken) = naming("refused.test", &unrelated.ca_der, loopback_literals());
+            let (id, got) = exchange_woken(&c, &woken, &far, &[]).await;
+            assert_eq!(got, Err(ConnError::Refused), "refused on trust");
+            let cause = c.cause(OWNER, id).expect("a cause");
+            let issuer = rustls::CertificateError::UnknownIssuer;
+            let unknown = rustls::Error::InvalidCertificate(issuer);
+            assert_eq!(cause.stage, CAUSE_SECURITY);
+            assert_eq!(cause.text, unknown.to_string(), "the stack's own refusal");
+            assert!(
+                cause.text.contains("invalid peer certificate"),
+                "the stack's own words: {}",
+                cause.text
+            );
+            assert!(
+                !cause.text.to_ascii_lowercase().contains("channel closed"),
+                "never a vague channel-closed: {}",
+                cause.text
+            );
+
+            let (c, woken) = naming("refused.test", &served.ca_der, loopback_literals());
+            let (id, got) = exchange_woken(&c, &woken, &far, &[]).await;
+            assert_eq!(
+                got.as_deref(),
+                Ok(&b"answer"[..]),
+                "the trusted twin is reached"
+            );
+            assert_eq!(
+                c.cause(OWNER, id),
+                None,
+                "an answered connection has no cause"
+            );
+        });
+    }
 }
 
 /// RED (SEAM-4f/4k, a registration's private reach, `abi::plane::TRUST_PRIVATE_REACH`, sealed per

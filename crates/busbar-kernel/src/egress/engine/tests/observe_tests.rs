@@ -143,7 +143,9 @@ async fn extras_propagate_through_pooled_reuse_both_responses_carry_the_peer_pin
 /// SNI preservation under the pin: the socket goes to the pinned loopback address, but the server
 /// name the engine hands the TLS wrap — the SNI, and therefore the name the certificate is checked
 /// against — stays on the hostname. (The refusing twin, a wrong-name certificate at the pinned
-/// address refused at the handshake, is a check the connector's TLS makes on that name.)
+/// address refused at the handshake, is a check the connector's TLS makes on that name: the
+/// connector's `tests/connector_tests.rs` drives it over the real wrap, in
+/// `the_real_wrap_offers_the_configured_name_and_refuses_a_certificate_for_another`.)
 #[tokio::test]
 async fn sni_stays_on_the_hostname_under_the_pin() {
     let right = ca_and_leaf(&["pinned.test"]);
