@@ -4494,7 +4494,7 @@ mod tests {
             .iter()
             .find(|f| f.rel_str() == CARD_BUILD_FILE)
             .expect("the card-build file is a production crate source");
-        let (fns, fields) = &*read_file_decls(&card.text);
+        let (fns, fields) = read_file_decls(&card.text);
         let wide = Decls::interned(FloatDecls {
             carriers: fns.iter().map(|(n, _)| n.clone()).collect(),
             fields: fields.iter().map(|(n, _)| n.clone()).collect(),
