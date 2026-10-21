@@ -241,6 +241,17 @@ pub fn plane_roster(cx: &Ctx) -> Result<Vec<String>, String> {
     Ok(keys)
 }
 
+/// The suite ids a registry text declares, in file order: the ids alone, for holding one registry
+/// to another (`:registry-base`). Validation is [`parse_registry`]'s.
+pub fn registry_ids(text: &str) -> Vec<String> {
+    toml_lite::parse_text(text)
+        .array_table("suite")
+        .iter()
+        .filter_map(|t| t.get_one("id").map(str::to_string))
+        .filter(|id| !id.is_empty())
+        .collect()
+}
+
 /// Parse and VALIDATE the registry. Every suite must name a standard, plan, label, a tier in the
 /// fixed enum and a verdict artifact, and carry no field outside [`REGISTRY_KEYS`]; no duplicate
 /// id; every shipped plane judged by a suite; every [`SUITE_FLOOR`] id registered and no id outside

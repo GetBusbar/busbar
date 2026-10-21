@@ -16,6 +16,7 @@
 //! | row | asserts |
 //! |---|---|
 //! | `conformance:registry` | `registry.toml` parses; every suite names a standard, plan, label, a tier in the fixed enum and a verdict artifact, and carries no status field; no duplicate id; every shipped plane is judged by a suite; the registered ids are exactly the armed floor (`render::SUITE_FLOOR`), so no suite leaves the MUST set. |
+//! | `conformance:registry-base` | every suite the registry registers at the base (the merge-base CI names) is still registered, so the change that deletes a suite's block cannot lower `SUITE_FLOOR` with it (Law 9). A base that cannot be established or read is red. |
 //! | `conformance:manifest-drift` | `conformance/manifest.json` byte-equals a fresh render from the registry + verdicts. `--write` rewrites; otherwise diff. (The config-schema `snapshot-drift` rule, `config_schema/mod.rs:11`.) |
 //! | `conformance:coverage` | every registered suite appears in the committed manifest and every manifest suite is registered — SET EQUALITY. |
 //! | `conformance:readme-drift` | the README badge block between the markers byte-equals a fresh render from the manifest. |
@@ -51,6 +52,7 @@ pub const ROW_REGISTRY_BASE: &str = "conformance:registry-base";
 
 pub const OWED: &[&str] = &[
     ROW_REGISTRY,
+    ROW_REGISTRY_BASE,
     ROW_MANIFEST_DRIFT,
     ROW_COVERAGE,
     ROW_README_DRIFT,
@@ -72,15 +74,22 @@ fn unproven(id: &str, why: &str) -> Row {
 
 /// Every owed row except `first`, as SKIP: a refusal at the top of the derivation makes every row
 /// under it DID NOT RUN, and reporting them as passes is the false green the harness refuses.
-fn refuse(first: &str, why: String) -> Verdict {
+///
+/// `kept` rows were measured without the refused input and stand as measured: `:registry-base`
+/// reads only the suite ids, so a registry `:registry` refuses is still held to its base.
+fn refuse(first: &str, why: String, kept: Vec<Row>) -> Verdict {
     let mut rows = vec![Row::fail(
         first,
         "the input the manifest is built from was refused",
         why,
     )];
     for id in OWED {
-        if *id != first {
-            rows.push(unproven(id, "the registry or the render refused above"));
+        if *id == first {
+            continue;
+        }
+        match kept.iter().find(|r| r.id == *id) {
+            Some(r) => rows.push(r.clone()),
+            None => rows.push(unproven(id, "the registry or the render refused above")),
         }
     }
     Verdict::of(rows)
@@ -98,10 +107,14 @@ impl Gate for ConformanceSyncGate {
     }
 
     fn run(&self, cx: &Ctx) -> Verdict {
+        // ── :registry-base — the armed floor held to the base, not to a constant of this tree. It
+        //    reads the suite ids alone, so it is measured even when `:registry` refuses below.
+        let base_row = row_registry_base(cx);
+
         // ── :registry — the one hand-authored input, parsed and validated first.
         let suites = match render::parse_registry(cx) {
             Ok(s) => s,
-            Err(why) => return refuse(ROW_REGISTRY, why),
+            Err(why) => return refuse(ROW_REGISTRY, why, vec![base_row]),
         };
         let mut rows = vec![Row::pass(
             ROW_REGISTRY,
@@ -111,6 +124,8 @@ impl Gate for ConformanceSyncGate {
                 suites.len()
             ),
         )];
+
+        rows.push(base_row);
 
         // ── :manifest-drift — the fresh render from the registry + verdicts. One derivation, two
         //    arms: write it, or diff it against the committed manifest.
@@ -193,6 +208,90 @@ impl Gate for ConformanceSyncGate {
 
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         selftest::run(self, cx)
+    }
+}
+
+/// EVERY SUITE THE BASE REGISTERS IS STILL REGISTERED (Law 9: a floor refuses every fall).
+///
+/// `SUITE_FLOOR` and the registry are both in the tree under judgement, so one change can delete a
+/// suite's block and its floor entry together, and `:registry` and `conformance check --musts` would
+/// read the smaller set as the whole. The registry at the base (the merge-base CI names,
+/// [`crate::gates::construction::ceilings::base_ref`]) is what this tree is held to. A suite the
+/// base registers and this tree does not is RED by name; a suite this tree adds is a rise. A base
+/// that cannot be established, or whose registry cannot be read, is RED, never an empty floor.
+fn row_registry_base(cx: &Ctx) -> Row {
+    let now = match cx.read(render::REGISTRY_PATH) {
+        Ok(t) => render::registry_ids(&t),
+        Err(e) => {
+            return Row::fail(
+                ROW_REGISTRY_BASE,
+                "the registry could not be read",
+                format!("{}: {e}", render::REGISTRY_PATH),
+            )
+        }
+    };
+    let base = match crate::gates::construction::ceilings::base_ref(cx) {
+        Ok(b) => b,
+        Err(why) => {
+            return Row::fail(
+                ROW_REGISTRY_BASE,
+                "the base the registry is held to could not be established",
+                why,
+            )
+        }
+    };
+    let short = base.sha.get(..10).unwrap_or(&base.sha).to_string();
+    let was = match cx.git_show(&base.sha, render::REGISTRY_PATH) {
+        Ok(t) => render::registry_ids(&t),
+        Err(why) => {
+            return Row::fail(
+                ROW_REGISTRY_BASE,
+                "the base's registry could not be read",
+                format!(
+                    "{} at base {short} ({}): {why}. A floor nobody can read is no floor",
+                    render::REGISTRY_PATH,
+                    base.how
+                ),
+            )
+        }
+    };
+    if was.is_empty() {
+        return Row::fail(
+            ROW_REGISTRY_BASE,
+            "the base's registry could not be read",
+            format!(
+                "{} at base {short} ({}) registers no [[suite]]. A floor nobody can read is no floor",
+                render::REGISTRY_PATH,
+                base.how
+            ),
+        );
+    }
+    let gone: Vec<&str> = was
+        .iter()
+        .map(String::as_str)
+        .filter(|id| !now.iter().any(|n| n == id))
+        .collect();
+    if gone.is_empty() {
+        Row::pass(
+            ROW_REGISTRY_BASE,
+            "every suite the base registers is still registered",
+            format!(
+                "{} suite(s) registered at base {short} ({}), all still registered",
+                was.len(),
+                base.how
+            ),
+        )
+    } else {
+        Row::fail(
+            ROW_REGISTRY_BASE,
+            "a suite left the registry since the base (Law 9: the MUST set only rises)",
+            format!(
+                "{} left the registry since the base {short} ({}). Deleting a suite's block, with \
+                 or without its SUITE_FLOOR entry, shrinks the MUST set; restore the block",
+                gone.join(", "),
+                base.how
+            ),
+        )
     }
 }
 

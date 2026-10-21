@@ -8,8 +8,9 @@ commit, and the one manifest every human-visible claim is rendered from.
 - `registry.toml` — the one hand-authored input: each suite's standard, plan, tier ceiling, badge
   label, verdict artifact name and, where it judges one, the shipped plane. It holds no status.
   Two floors hold it from below: every shipped plane owes a suite, and the registered ids are
-  exactly the armed set (`SUITE_FLOOR` in `xtask/src/gates/conformance_sync/render.rs`), so no
-  suite can leave the MUST set by deleting its block.
+  exactly the armed set (`SUITE_FLOOR` in `xtask/src/gates/conformance_sync/render.rs`), and
+  every suite the registry carries at the base is still carried (`conformance:registry-base`), so
+  no suite can leave the MUST set by deleting its block, with or without its floor entry.
 - `verdicts/<id>.json` — one suite's arm-or-red fact, written by
   `cargo xtask conformance record --suite <id>` (or `--all`) and stamped with the checkout's HEAD.
   Each is held to `verdicts/verdict.schema.json` and to the suite it is filed under before it is
@@ -20,7 +21,7 @@ commit, and the one manifest every human-visible claim is rendered from.
 
 ## The checks
 
-- `cargo xtask gate conformance-sync` — the `conformance:*` rows: `registry`, `manifest-drift`,
+- `cargo xtask gate conformance-sync` — the `conformance:*` rows: `registry`, `registry-base`, `manifest-drift`,
   `coverage`, `readme-drift`, `freshness` and `no-orphan-claim`.
 - `cargo xtask conformance check --musts` — the admission: every registered suite is a MUST, and
   each must be a pass recorded on the candidate sha. ModernCI's `conformance` check on the
