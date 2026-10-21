@@ -925,6 +925,9 @@ pub fn book(
     };
     let token = super::kernel::new_kernel().durability_token();
     let (durability, rows, migration) = compose_book(&adapter, lane, data_dir, &mig, now, &token)?;
+    // WHAT THE DISASTER-RECOVERY VERBS LEFT (row 187): the store's epoch floor, read back through
+    // `record_get`, fences a node below it out; the chain's operator breaks are read as deliberate.
+    super::durability::boot_recovery(&durability, calls.as_ref(), store, adapter.recovery_epoch())?;
     // THE CALLER REFERENCE OF EVERY VERIFIED PRINCIPAL (row 159 H2): a node that keeps no signing
     // material derives it from the deployment keyset just bound, so no verified principal is lent
     // an empty reference and two principals never share one.
@@ -963,12 +966,19 @@ pub fn book(
     let durability = Arc::new(std::sync::Mutex::new(durability));
     // Every amendment sealed from here on goes on the book it was rebuilt from.
     super::durability::bind_amendments(&durability);
+    // The disaster-recovery verbs reach this book's journal and the store it is shipped to: one
+    // store behind the node, not one per seam (row 113, ruling (B); row 187).
+    let verb_store = super::durability::node_verb_store(
+        Arc::clone(&durability),
+        super::kernel::new_kernel().durability_token(),
+        calls,
+        store,
+        &adapter,
+    );
     Ok(super::durability::NodeBook {
         durability,
         rows,
-        // The disaster-recovery verbs reach the store this book is shipped to, through the same
-        // adapter: one store behind the node, not one per seam (row 113, ruling (B)).
-        verb_store: Some(adapter.verb_store()),
+        verb_store,
     })
 }
 
