@@ -4083,18 +4083,15 @@ pub(crate) mod tool_door {
         ),
     ];
 
-    /// RED (HIGH, the SSRF guard bypass): the argument guard refuses a URL whose host is an odd
-    /// spelling exactly as it refuses the plain ASCII host a URL client dials it as (the same
-    /// status, JSON-RPC code, reason and sentence), on the `://` path and on the spellings without
-    /// `//` a WHATWG reader still reads a host from (`http:h`, `http:/\h`); and a host `url` dials
-    /// as `0.0.0.0` (`0x`) is refused. On the guard that compared hosts only ASCII-lowercased each
-    /// `://` spelling was admitted and sent, and the upstream fetched loopback or the metadata
-    /// address.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn an_odd_host_spelling_in_the_arguments_is_refused_as_its_ascii_host() {
-        let _one = PUBLISHING.lock().await;
-        let instance = "serve-door-tools-destjudge-odd-hosts";
-        let _published = Published(instance);
+    /// Each of [`ODD_HOSTS`] spelt into a URL by every one of `spellings`, carried in a call's
+    /// arguments, is refused exactly as its plain ASCII host spelt the same way is refused (the same
+    /// status, JSON-RPC code, reason and sentence); each of `zero` (a host `url` dials as
+    /// `0.0.0.0`) is refused; nothing refused reaches the wire; and a public IDN URL is served.
+    async fn odd_hosts_refused_as_their_ascii_hosts(
+        instance: &'static str,
+        spellings: &[fn(&str) -> String],
+        zero: &[&str],
+    ) {
         let (port, mut heard) = tool_server().await;
         let rig = Rig::new(instance, port, None);
         let refusal = |status: StatusCode, body: &[u8], url: &str| {
@@ -4111,11 +4108,6 @@ pub(crate) mod tool_door {
                 body["error"]["message"].clone(),
             )
         };
-        let spellings: [fn(&str) -> String; 3] = [
-            |h| format!("http://{h}/latest/meta-data/"),
-            |h| format!("http:{h}/latest/meta-data/"),
-            |h| format!("http:/\\{h}/latest/meta-data/"),
-        ];
         for (odd, plain) in ODD_HOSTS {
             for spell in spellings {
                 let (odd_url, plain_url) = (spell(odd), spell(plain));
@@ -4130,7 +4122,7 @@ pub(crate) mod tool_door {
                 );
             }
         }
-        for url in ["http://0x/latest/meta-data/", "http:0x/latest/meta-data/"] {
+        for url in zero {
             let (status, body) = send(&rig.router, Some(&rig.token), &fetching(url)).await;
             refusal(status, &body, url);
         }
@@ -4150,6 +4142,24 @@ pub(crate) mod tool_door {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    }
+
+    /// RED (HIGH, the SSRF guard bypass): the argument guard refuses an `http://` URL whose host is
+    /// an odd spelling exactly as it refuses the plain ASCII host a URL client dials it as, and
+    /// refuses `http://0x/` (`url` dials it as `0.0.0.0`). On the guard that compared hosts only
+    /// ASCII-lowercased each odd spelling was admitted and sent, and the upstream fetched loopback
+    /// or the metadata address.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_odd_host_spelling_in_the_arguments_is_refused_as_its_ascii_host() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-destjudge-odd-hosts";
+        let _published = Published(instance);
+        odd_hosts_refused_as_their_ascii_hosts(
+            instance,
+            &[|h| format!("http://{h}/latest/meta-data/")],
+            &["http://0x/latest/meta-data/"],
+        )
+        .await;
     }
 
     /// A UNIT THE PLANE ANSWERS ITSELF (ARCHITECT Q-L3B-LOCAL): a keyed `tools/list` names no entry,
