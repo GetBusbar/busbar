@@ -441,9 +441,17 @@ for p in json.load(sys.stdin)["packages"]:
   cargo locate-project --workspace --message-format plain --manifest-path "$manifest"
 }
 
-# `cargo test --workspace` in a pinned plane's checkout, with the rest of the argv (the name filter).
-pinned_plane_cargo_test() {  # $1 = the pinned package ; rest = cargo test args (e.g. --quiet <filter>)
-  local pkg="$1" ws; shift
+# `pinned_plane_cargo_test cargo test -p <pinned package> <args…>`: the cargo argv as it would read
+# in this workspace, run as `cargo test --workspace <args…>` in that package's pinned checkout. The
+# `-p` names the pinned git row (a package this tree's Cargo.lock resolves, so the package-selectors
+# gate still reads every pinned selector as live); the whole plane workspace runs, because a plane's
+# pins can sit in its cdylib twin (mcp's door witness is in busbar-plane-mcp-plugin).
+pinned_plane_cargo_test() {
+  if [ "${1:-}" != cargo ] || [ "${2:-}" != test ] || [ "${3:-}" != -p ] || [ -z "${4:-}" ]; then
+    printf 'pinned_plane_cargo_test: expected `cargo test -p <pinned package> …`, got: %s\n' "$*" >&2
+    return 2
+  fi
+  local pkg="$4" ws; shift 4
   ws="$(pinned_plane_workspace "$pkg")" || return 1
   cargo test --manifest-path "$ws" --workspace --locked --target-dir target/pinned-planes "$@"
 }
@@ -1968,13 +1976,13 @@ begin_group "P-ITEMS — every P-item behaviour matches 1.5.5, each pinned by na
 # xtask 3) plus one per pinned plane (mcp's door witness, a2a, streaming).
 step "refusal-reason collapse (one classification; 11 pins)" filtered_cargo_test 11 cargo_test_runs \
   cargo test -p busbar-contract -p busbar-plane-llm -p xtask --quiet p_item_refusal_reason_collapse :: \
-  pinned_plane_cargo_test busbar-plane-mcp       --quiet p_item_refusal_reason_collapse :: \
-  pinned_plane_cargo_test busbar-plane-a2a       --quiet p_item_refusal_reason_collapse :: \
-  pinned_plane_cargo_test busbar-plane-streaming --quiet p_item_refusal_reason_collapse
-step "unary/empty terminality"                               filtered_cargo_test 1  pinned_plane_cargo_test busbar-plane-a2a       --quiet p_item_unary_empty_terminality
-step "empty reply"                                           filtered_cargo_test 1  pinned_plane_cargo_test busbar-plane-mcp       --quiet p_item_empty_reply
-step "wrong-provider attribution"                            filtered_cargo_test 1  pinned_plane_cargo_test busbar-plane-streaming --quiet p_item_wrong_provider_attribution
-step "voice tool-args"                                       filtered_cargo_test 2  pinned_plane_cargo_test busbar-plane-streaming --quiet p_item_voice_tool_args
+  pinned_plane_cargo_test cargo test -p busbar-plane-mcp       --quiet p_item_refusal_reason_collapse :: \
+  pinned_plane_cargo_test cargo test -p busbar-plane-a2a       --quiet p_item_refusal_reason_collapse :: \
+  pinned_plane_cargo_test cargo test -p busbar-plane-streaming --quiet p_item_refusal_reason_collapse
+step "unary/empty terminality"                               filtered_cargo_test 1  pinned_plane_cargo_test cargo test -p busbar-plane-a2a       --quiet p_item_unary_empty_terminality
+step "empty reply"                                           filtered_cargo_test 1  pinned_plane_cargo_test cargo test -p busbar-plane-mcp       --quiet p_item_empty_reply
+step "wrong-provider attribution"                            filtered_cargo_test 1  pinned_plane_cargo_test cargo test -p busbar-plane-streaming --quiet p_item_wrong_provider_attribution
+step "voice tool-args"                                       filtered_cargo_test 2  pinned_plane_cargo_test cargo test -p busbar-plane-streaming --quiet p_item_voice_tool_args
 end_group
 
 # ── THE ONE VERDICT ─────────────────────────────────────────────────────────────────────────────
