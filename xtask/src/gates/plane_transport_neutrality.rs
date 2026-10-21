@@ -88,14 +88,13 @@ const TWIN_IDENTS: &[&str] = &["input_audio", "output_audio"];
 /// files (`cache.rs`, `ingress_sigv4.rs`, `egress_auth/{mod,declared,declared_tests,tests,
 /// token_response}.rs`, `egress_auth/sigv4/{mod,tests}.rs`, `tests/{cache,ingress_sigv4}_tests.rs`),
 /// against 6 arrivals there (net -18, 1213); then raised by 7 files predev landed by 39374ec00e.
-/// Lowered 1220 -> 1212 by the D2 plane-side breaker/arena and gauntlet-runner deletion (status
-/// row 82, #1374). Dev 893d659a8d's tree holds 1223 scanned files (three over its 1220 floor);
-/// this lane deletes 11 and adds none, so 1223 - 11 = 1212: 7 `busbar-kernel/src` files
-/// (`plane_host/{breaker,govern,scope}.rs`,
+/// Raised 1220 -> 1233, the count on the D2 plane-side breaker/arena and gauntlet-runner deletion's
+/// head (status row 82, #1374) over dev 5ec1793a4f, whose tree holds 1244 scanned files. This lane
+/// deletes 11 and adds none: 7 `busbar-kernel/src` files (`plane_host/{breaker,govern,scope}.rs`,
 /// `plane_host/tests/{breaker,govern,scope,gauntlet_session}_tests.rs`) and 4 `busbar/src/root`
 /// gauntlet files (`gauntlet_install.rs`, `gauntlet_kernel.rs`, `tests/gauntlet_kernel.rs`,
-/// `tests/percall_meter_shadow.rs`).
-pub const MIN_FILES: usize = 1212;
+/// `tests/percall_meter_shadow.rs`). 1244 - 11 = 1233.
+pub const MIN_FILES: usize = 1233;
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a clean tree";
