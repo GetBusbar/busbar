@@ -278,6 +278,10 @@ pub struct Write {
     /// empty value drops the chain), sealed by [`crate::host_chains::ChainBook`] and never laid on
     /// the overlay. `None` for a put.
     pub chain: Option<crate::host_chains::ChainFraming>,
+    /// The work handle the writing unit holds, whose row this is: the flush indexes the row under
+    /// it before writing it ([`crate::host_work::index_row`]), so the row retires with the handle.
+    /// `None` for a row written under no handle (never retired).
+    pub owner: Option<crate::host_work::Reference>,
 }
 
 #[derive(Debug, Default)]
@@ -349,6 +353,24 @@ impl WriteBehind {
                 batch
             };
             for w in batch {
+                // THE ROW INDEX first (record-leg retention): a row is never in the store
+                // unindexed under the handle it was written under. A drop or a tombstone makes no
+                // row to index.
+                if let Some(reference) = w.owner.filter(|_| !w.value.as_slice().is_empty()) {
+                    let tag = if w.chain.is_some() {
+                        crate::host_work::ROW_CHAIN
+                    } else {
+                        crate::host_work::ROW_PUT
+                    };
+                    crate::host_work::index_row(
+                        rows,
+                        &w.instance,
+                        &reference,
+                        tag,
+                        w.schema.as_str(),
+                        &w.key,
+                    );
+                }
                 if let Some(framing) = w.chain {
                     let scope = String::from_utf8_lossy(&w.key);
                     let took = if w.value.as_slice().is_empty() {

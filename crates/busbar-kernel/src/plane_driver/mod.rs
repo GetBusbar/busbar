@@ -500,11 +500,13 @@ impl PlaneDriver {
     /// `cancel`'s, SEAM-L(r)): each audit row folded as [`Self::audit_row`], each put handed to the
     /// record write path, its acknowledgement not awaited (the unit has nothing left to fail). A
     /// write the plane got wrong, or a put with no record path, is logged and dropped: the unit's
-    /// end stands.
+    /// end stands. A put is `unit`'s, so its row is the work handle's the unit holds (record-leg
+    /// retention); `None` for a unit that holds none.
     pub(crate) fn fold_writes(
         &self,
         writes: &[busbar_contract::plane_calls::CancelWrite],
         principal: Option<&PrincipalId>,
+        unit: Option<u64>,
     ) {
         use busbar_contract::abi::plane::{RECORD_AUDIT, RECORD_PUT};
         for w in writes {
@@ -515,7 +517,14 @@ impl PlaneDriver {
                     let value = busbar_contract::kinds::RecordBytes::new(w.value.clone())
                         .map_err(|_| ())?;
                     services
-                        .record_write(caller, kind.as_str(), &w.key, value, Box::new(|_| {}))
+                        .record_write_in(
+                            caller,
+                            unit,
+                            kind.as_str(),
+                            &w.key,
+                            value,
+                            Box::new(|_| {}),
+                        )
                         .map_err(|_| ())
                 }),
                 _ => Err(()),
@@ -1083,7 +1092,8 @@ impl PlaneDriver {
                 written,
                 &arena[..arena_written],
             );
-            self.fold_writes(&writes, principal);
+            // A refused unit holds no work handle: its rows are written under none.
+            self.fold_writes(&writes, principal, None);
         }
         let span = |s: Span| {
             let start = s.offset as usize;

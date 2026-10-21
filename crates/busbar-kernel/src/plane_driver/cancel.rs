@@ -207,7 +207,7 @@ impl PlaneDriver {
             };
             // THE CANCELLED UNIT'S ROW (SEAM-L(r)): what its `cancel` wrote.
             if let Some((_, writes)) = &cancelled {
-                self.fold_writes(writes, unit.principal.as_ref());
+                self.fold_writes(writes, unit.principal.as_ref(), Some(unit.ctx.key.get()));
             }
             let disposition = cancelled.map(|(d, _)| d);
             let bill = CancelBill::new(ReasonCode::ClientGone, disposition, &unit.facts);

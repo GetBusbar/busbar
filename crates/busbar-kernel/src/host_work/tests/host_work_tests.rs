@@ -327,6 +327,154 @@ fn a_sweep_removes_the_swept_rows_from_the_store() {
     assert_eq!(rows(), 2, "two swept rows removed, one row opened");
 }
 
+/// Write `value` under `key` of the `job` kind from a crossing that serves `unit`.
+fn put(r: &Rig, unit: u64, key: &[u8], value: &[u8]) {
+    r.s.record_write_in(
+        &caller("inst"),
+        Some(unit),
+        "job",
+        key,
+        RecordBytes::new(value.to_vec()).unwrap(),
+        Box::new(|_| {}),
+    )
+    .unwrap();
+}
+
+/// Whether the store holds the `job` row `key` of "inst".
+fn stored(r: &Rig, key: &[u8]) -> bool {
+    r.store
+        .record_get(KIND, &crate::host_records::record_key("inst", key))
+        .unwrap()
+        .is_some()
+}
+
+/// How many rows the store holds under `schema`.
+fn rows_under(r: &Rig, schema: RecordSchemaId) -> usize {
+    r.store.record_scan(schema, b"", u32::MAX).unwrap().len()
+}
+
+/// SUBMIT-ONLY TRAFFIC KEEPS THE RECORD LEG BOUNDED (ARCHITECT 2026-10-21, record-leg retention):
+/// the rows a unit writes are its work handle's, and once that handle is settled and its
+/// `work.retain_s` has passed, the next submit retires them by the empty put that removes a row,
+/// then the handle's own row and the index entries. Nothing but `work.open` runs the sweep, and
+/// the store never holds more than the newest handle's rows.
+#[test]
+fn submit_only_traffic_retires_the_settled_handles_rows_and_keeps_the_store_bounded() {
+    let r = rig_over(
+        Arc::new(MemoryStore::new()),
+        WorkBounds {
+            max_live: 16,
+            retain_ms: 1_000,
+        },
+    );
+    for round in 0..20u32 {
+        let (handle, _) = open(&r, 1, b"working");
+        for i in 0..3u32 {
+            put(&r, 1, format!("r{round}/{i}").as_bytes(), b"body");
+        }
+        let _ = settle(&r, "inst", Some(1), handle, b"done");
+        r.clock.fetch_add(1_000, Ordering::SeqCst);
+        assert_eq!(
+            rows_under(&r, KIND),
+            3,
+            "round {round}: only this round's rows"
+        );
+        assert_eq!(
+            rows_under(&r, WORK_SCHEMA),
+            1,
+            "round {round}: only this round's handle"
+        );
+        assert_eq!(
+            rows_under(&r, WORK_ROWS_SCHEMA),
+            6,
+            "round {round}: a forward and an owner entry per row, this round's only"
+        );
+    }
+    assert!(!stored(&r, b"r0/0"), "the first round's rows retired");
+    assert!(
+        stored(&r, b"r19/0"),
+        "the last round's rows are still retained"
+    );
+    // One more submit retires the last round's too.
+    let _ = open(&r, 1, b"last");
+    assert_eq!(rows_under(&r, KIND), 0);
+}
+
+/// AN ACTIVE HANDLE'S ROWS SURVIVE THE SWEEP, however old: only a settled handle past its
+/// `work.retain_s` retires its rows. A row a later handle rewrote is that handle's and stays when
+/// the first one retires.
+#[test]
+fn an_active_handles_rows_survive_the_sweep() {
+    let r = rig_over(
+        Arc::new(MemoryStore::new()),
+        WorkBounds {
+            max_live: 16,
+            retain_ms: 1_000,
+        },
+    );
+    let (_live, _) = open(&r, 1, b"live");
+    put(&r, 1, b"live/a", b"x");
+    let (done, _) = open(&r, 2, b"done");
+    put(&r, 2, b"done/a", b"y");
+    put(&r, 2, b"shared", b"first");
+    let _ = settle(&r, "inst", Some(2), done, b"ok");
+    // Written by unit 2 once its handle is settled (it holds none now), and `shared` written
+    // again by the live handle's unit: the live handle's now.
+    put(&r, 2, b"done/b", b"z");
+    put(&r, 1, b"shared", b"second");
+    r.clock.fetch_add(1_000_000, Ordering::SeqCst);
+    let _ = open(&r, 3, b"submit");
+    assert!(
+        stored(&r, b"live/a"),
+        "an active handle's row is never retired"
+    );
+    assert!(
+        stored(&r, b"shared"),
+        "a row the live handle rewrote is the live handle's"
+    );
+    assert!(!stored(&r, b"done/a"), "the settled handle's row retired");
+    assert!(
+        stored(&r, b"done/b"),
+        "a row written by a unit holding no live handle is never retired"
+    );
+}
+
+/// A READ NEVER SWEEPS: `work.find`, `records.get` and `records.list` past a handle's retention
+/// leave its rows in the store; only the next submit retires them.
+#[test]
+fn a_read_never_sweeps() {
+    let r = rig_over(
+        Arc::new(MemoryStore::new()),
+        WorkBounds {
+            max_live: 16,
+            retain_ms: 1_000,
+        },
+    );
+    let (handle, reference) = open(&r, 1, b"working");
+    put(&r, 1, b"k", b"v");
+    let _ = settle(&r, "inst", Some(1), handle, b"done");
+    r.clock.fetch_add(1_000, Ordering::SeqCst);
+    assert_eq!(find(&r, "inst", 1, &reference), Stored::ready(svc::ABSENT));
+    let me = caller("inst");
+    let _ = run(|l| r.s.records_get(&me, "job", b"k", l));
+    let all = busbar_contract::services::RecordsList {
+        kind: "job".to_string(),
+        prefix: Vec::new(),
+        after: None,
+        limit: 0,
+    };
+    let _ = run(|l| r.s.records_list(&me, all, l));
+    assert!(stored(&r, b"k"), "a read swept a row");
+    assert_eq!(
+        rows_under(&r, WORK_SCHEMA),
+        1,
+        "a read struck a handle's row"
+    );
+    assert_eq!(r.s.work().retiring("inst"), 0, "a read queued a retirement");
+    let _ = open(&r, 1, b"submit");
+    assert!(!stored(&r, b"k"), "the submit retired it");
+}
+
 #[test]
 fn a_handle_is_found_and_resumed_after_a_restart() {
     let store = Arc::new(MemoryStore::new());

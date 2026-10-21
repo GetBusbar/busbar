@@ -1154,7 +1154,28 @@ impl KernelServices {
         value: RecordBytes,
         acked: Acked,
     ) -> Result<(), &'static str> {
+        self.record_write_in(caller, None, kind, key, value, acked)
+    }
+
+    /// [`Self::record_write`] from a crossing that serves `unit`: the row is the work handle's the
+    /// unit holds ([`crate::host_work::WorkBook::held_by`]), indexed under it, and retires with it
+    /// once it is settled and its `work.retain_s` has passed (record-leg retention). A unit that
+    /// holds no live handle, or no unit, writes a row that is never retired.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::record_write`].
+    pub fn record_write_in(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        kind: &str,
+        key: &[u8],
+        value: RecordBytes,
+        acked: Acked,
+    ) -> Result<(), &'static str> {
         let (schema, records, pool) = self.scope(caller, kind).map_err(|s| s.error)?;
+        let owner = unit.and_then(|u| self.work.held_by(&caller.instance, u));
         let chain = self.chain_of(caller, kind);
         if chain.is_some() {
             if crate::host_chains::scope_of(key).is_none() {
@@ -1180,6 +1201,7 @@ impl KernelServices {
                 seq,
                 owed: WriteOwed::new(acked),
                 chain,
+                owner,
             }
         });
         match started {
@@ -2001,6 +2023,8 @@ impl HostServices for KernelServices {
         };
         let book = Arc::clone(&self.work);
         let rows = Arc::clone(&records.reads);
+        let chains = Arc::clone(&self.chains);
+        let kinds = facts.record_kinds.clone();
         let bounds = self.work_bounds_of(&caller.instance);
         let wall_ms = Arc::clone(&self.wall_ms);
         let instance = Arc::clone(&caller.instance);
@@ -2010,13 +2034,21 @@ impl HostServices for KernelServices {
                 return failed(STORE_FAILED);
             }
             let now_ms = wall_ms();
-            // THE SWEEP RUNS ON SUBMIT: settled handles past their retention leave the book, and
-            // their rows are struck (an empty row is absent).
-            for gone in book.sweep(&instance, now_ms, bounds.retain_ms) {
-                if let Ok(empty) = RecordBytes::new(Vec::new()) {
-                    let _struck = rows.record_put(WORK_SCHEMA, &work_key(&instance, &gone), &empty);
-                }
-            }
+            // THE SWEEP RUNS ON SUBMIT, inside the submit's own writes: settled handles past their
+            // `work.retain_s` leave the book, and one bounded slice retires their plane record
+            // rows, then their own rows, by the empty put that removes a row
+            // (`crate::host_work::WorkBook::retire`, at most `RETIRE_SLICE` entries a submit).
+            let _swept = book.sweep(&instance, now_ms, bounds.retain_ms);
+            let drop_chain = |schema: RecordSchemaId, scope: &str| {
+                chains.drop_chain(&*rows, &instance, schema, scope)
+            };
+            let _retired = book.retire(
+                &*rows,
+                &instance,
+                &kinds,
+                &drop_chain,
+                crate::host_work::RETIRE_SLICE,
+            );
             let mut reference = [0u8; 16];
             if getrandom::fill(&mut reference).is_err() {
                 return failed(NO_RANDOMNESS);

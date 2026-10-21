@@ -772,7 +772,8 @@ impl<'u> Pumping<'u> {
         // THE CANCELLED UNIT'S ROW (SEAM-L(r)): what its `cancel` wrote, under its principal.
         if let Some((_, writes)) = &cancelled {
             let principal = self.lock().principal.clone();
-            self.driver.fold_writes(writes, principal.as_ref());
+            self.driver
+                .fold_writes(writes, principal.as_ref(), Some(self.ctx.key.get()));
         }
         let disposition = cancelled.map(|(d, _)| d);
         let facts = self.lock().facts.clone();
@@ -815,8 +816,16 @@ impl<'u> Pumping<'u> {
             let acked: Acked = Box::new(move |r| {
                 let _ = tx.send(r);
             });
+            // The row is the work handle's this unit holds (record-leg retention).
             services
-                .record_write(caller, kind.as_str(), self.bufs.arena(w.key), value, acked)
+                .record_write_in(
+                    caller,
+                    Some(self.ctx.key.get()),
+                    kind.as_str(),
+                    self.bufs.arena(w.key),
+                    value,
+                    acked,
+                )
                 .map_err(|_| refused())?;
             acks.push(rx);
         }

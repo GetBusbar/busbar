@@ -30,8 +30,18 @@
 //!
 //! The row is at most [`busbar_contract::bounded::MAX_RECORD_BYTES`]: the handle's record is capped
 //! at [`MAX_WORK_RECORD`] (the body lives in the plugin's own records; the handle's record names it).
+//!
+//! * **The plane's rows retire with their handle** (ARCHITECT 2026-10-21, record-leg retention).
+//!   A plane record row's age and state are its WORK HANDLE's, never the row's: a row written in a
+//!   unit that holds a live handle (the one it opened or last resumed) is indexed under that
+//!   handle in a host-written schema ([`WORK_ROWS_SCHEMA`]; no value prelude, the stored format
+//!   unchanged), the newest writer's handle owning it. Once the handle is settled and its
+//!   `work.retain_s` has passed, the sweep RETIRES its rows by the empty `record_put` that removes
+//!   a row (store slot 40), then the handle's own row. It runs from a submit, at most
+//!   [`RETIRE_SLICE`] index entries a submit ([`WorkBook::retire`]), never from a read or a timer.
+//!   A row of a live handle is never retired, and a row written under no handle is never retired.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use busbar_contract::abi::host::service::{MAX_WORK_RECORD, WORK_LIVE, WORK_SETTLED};
@@ -43,6 +53,99 @@ use crate::host_records::{record_key, RecordRows};
 
 /// The record kind every work row is kept under.
 pub const WORK_SCHEMA: RecordSchemaId = RecordSchemaId::new("kernel-work");
+
+/// THE ROW INDEX: the host-written schema that keeps, for each work handle, the plane record rows
+/// written under it (a FORWARD entry per row) and, for each row, the handle that wrote it last
+/// (its OWNER entry). Kept beside [`WORK_SCHEMA`] under the instance's own label.
+pub const WORK_ROWS_SCHEMA: RecordSchemaId = RecordSchemaId::new("kernel-work-rows");
+
+/// THE RETIREMENT SLICE: at most this many index entries (and as many handles) one submit
+/// retires, so a submit never walks the whole record leg. One write-behind batch
+/// ([`crate::host_records::BATCH_CAP`]): the most record writes the kernel puts in one go.
+pub const RETIRE_SLICE: usize = crate::host_records::BATCH_CAP;
+
+/// An index entry's tag: a FORWARD entry (`handle -> row`).
+const FORWARD: u8 = b'f';
+/// An index entry's tag: an OWNER entry (`row -> handle`).
+const OWNER: u8 = b'o';
+/// An indexed row that is a put of a plain record kind.
+pub const ROW_PUT: u8 = 0;
+/// An indexed row that is a chain of a chained record kind (the key is its scope).
+pub const ROW_CHAIN: u8 = 1;
+
+/// A row as the index names it: its tag, schema and the plane's own key.
+fn row_ref(tag: u8, schema: &str, key: &[u8]) -> Option<Vec<u8>> {
+    let schema = schema.as_bytes();
+    let len = u8::try_from(schema.len()).ok()?;
+    let mut r = Vec::with_capacity(2 + schema.len() + key.len());
+    r.push(tag);
+    r.push(len);
+    r.extend_from_slice(schema);
+    r.extend_from_slice(key);
+    Some(r)
+}
+
+/// The row a [`row_ref`] names.
+fn parse_row_ref(r: &[u8]) -> Option<(u8, &str, &[u8])> {
+    let (&tag, rest) = r.split_first()?;
+    let (&len, rest) = rest.split_first()?;
+    let schema = std::str::from_utf8(rest.get(..usize::from(len))?).ok()?;
+    Some((tag, schema, rest.get(usize::from(len)..)?))
+}
+
+/// The prefix of every FORWARD entry of `reference` under `instance`.
+#[must_use]
+pub fn forward_prefix(instance: &str, reference: &Reference) -> Vec<u8> {
+    let mut k = Vec::with_capacity(17);
+    k.push(FORWARD);
+    k.extend_from_slice(reference);
+    record_key(instance, &k)
+}
+
+/// The two index entries a row written under `reference` is kept by: its FORWARD key and its
+/// OWNER key. `None` for a schema name too long to index (such a row is never retired).
+#[must_use]
+pub fn row_index(
+    instance: &str,
+    reference: &Reference,
+    tag: u8,
+    schema: &str,
+    key: &[u8],
+) -> Option<(Vec<u8>, Vec<u8>)> {
+    let r = row_ref(tag, schema, key)?;
+    let mut forward = Vec::with_capacity(17 + r.len());
+    forward.push(FORWARD);
+    forward.extend_from_slice(reference);
+    forward.extend_from_slice(&r);
+    let mut owner = Vec::with_capacity(1 + r.len());
+    owner.push(OWNER);
+    owner.extend_from_slice(&r);
+    Some((record_key(instance, &forward), record_key(instance, &owner)))
+}
+
+/// INDEX a row written under `reference`: its FORWARD entry, then its OWNER entry (the newest
+/// writer's handle owns a row). Best effort: a row the index missed is never retired, never lost.
+pub fn index_row(
+    rows: &dyn RecordRows,
+    instance: &str,
+    reference: &Reference,
+    tag: u8,
+    schema: &str,
+    key: &[u8],
+) {
+    let Some((forward, owner)) = row_index(instance, reference, tag, schema, key) else {
+        return;
+    };
+    let (Ok(mark), Ok(by)) = (
+        RecordBytes::new(vec![1]),
+        RecordBytes::new(reference.to_vec()),
+    ) else {
+        return;
+    };
+    if rows.record_put(WORK_ROWS_SCHEMA, &forward, &mark).is_ok() {
+        let _owned = rows.record_put(WORK_ROWS_SCHEMA, &owner, &by);
+    }
+}
 
 /// A reference's bytes: 128 bits.
 pub type Reference = [u8; 16];
@@ -267,6 +370,39 @@ impl Work {
 /// The version byte every row leads with.
 const ROW_VERSION: u8 = 1;
 
+/// Retire one indexed row of `reference`: `Some(true)` when it was the handle's and is gone,
+/// `Some(false)` when it is another handle's (or its kind is no longer declared) and stays,
+/// `None` when the store failed.
+fn retire_row(
+    rows: &dyn RecordRows,
+    instance: &str,
+    reference: &Reference,
+    (tag, schema, key): (u8, &str, &[u8]),
+    kinds: &[RecordSchemaId],
+    drop_chain: &dyn Fn(RecordSchemaId, &str) -> Result<(), &'static str>,
+    empty: &RecordBytes,
+) -> Option<bool> {
+    let Some(kind) = kinds.iter().find(|k| k.as_str() == schema).copied() else {
+        return Some(false);
+    };
+    let (_, owner) = row_index(instance, reference, tag, schema, key)?;
+    match rows.record_get(WORK_ROWS_SCHEMA, &owner) {
+        Err(_) => None,
+        Ok(Some(by)) if by.as_slice() == reference.as_slice() => {
+            let gone = if tag == ROW_CHAIN {
+                drop_chain(kind, &String::from_utf8_lossy(key))
+            } else {
+                rows.record_put(kind, &record_key(instance, key), empty)
+                    .map_err(|_| "")
+            };
+            gone.ok()?;
+            rows.record_put(WORK_ROWS_SCHEMA, &owner, empty).ok()?;
+            Some(true)
+        }
+        Ok(_) => Some(false),
+    }
+}
+
 /// The store key of `reference` under `instance`.
 #[must_use]
 pub fn work_key(instance: &str, reference: &Reference) -> Vec<u8> {
@@ -279,6 +415,10 @@ struct Book {
     handles: HashMap<u64, Work>,
     by_ref: HashMap<(Arc<str>, Reference), u64>,
     loaded: HashSet<Arc<str>>,
+    /// Per instance, the swept handles whose rows are still being retired, oldest first: a
+    /// handle's own row is struck only once its last row is ([`WorkBook::retire`]), so a restart
+    /// finds it settled and sweeps it again.
+    retiring: HashMap<Arc<str>, VecDeque<Reference>>,
 }
 
 impl Book {
@@ -362,8 +502,8 @@ impl WorkBook {
     }
 
     /// THE SWEEP, run from a submit: every settled handle of `instance` settled at or before
-    /// `now_ms - retain_ms` leaves the book; their references are answered, for the caller to strike
-    /// from the store.
+    /// `now_ms - retain_ms` leaves the book; their references are answered, and queued for
+    /// [`Self::retire`] to strike their rows and then their own row from the store.
     pub fn sweep(&self, instance: &str, now_ms: u64, retain_ms: u64) -> Vec<Reference> {
         let mut book = self.lock();
         let gone: Vec<u64> = book
@@ -376,9 +516,122 @@ impl WorkBook {
             })
             .map(|(h, _)| *h)
             .collect();
-        gone.into_iter()
+        let gone: Vec<Reference> = gone
+            .into_iter()
             .filter_map(|h| book.remove(h).map(|w| w.reference))
-            .collect()
+            .collect();
+        let queue = book.retiring.entry(Arc::from(instance)).or_default();
+        for r in &gone {
+            if !queue.contains(r) {
+                queue.push_back(*r);
+            }
+        }
+        gone
+    }
+
+    /// The live handle `unit` holds in `instance`: the one it opened or last resumed (the newest
+    /// when it holds several). A row the unit writes is that handle's ([`index_row`]).
+    #[must_use]
+    pub fn held_by(&self, instance: &str, unit: u64) -> Option<Reference> {
+        self.lock()
+            .handles
+            .iter()
+            .filter(|(_, w)| {
+                *w.instance == *instance
+                    && w.live
+                    && (w.opened_by == Some(unit) || w.bound == Some(unit))
+            })
+            .max_by_key(|(h, _)| **h)
+            .map(|(_, w)| w.reference)
+    }
+
+    /// How many swept handles of `instance` still have rows to retire.
+    #[must_use]
+    pub fn retiring(&self, instance: &str) -> usize {
+        self.lock().retiring.get(instance).map_or(0, VecDeque::len)
+    }
+
+    /// THE RETIREMENT SLICE, run from a submit right after [`Self::sweep`]: the rows of the swept
+    /// handles of `instance`, oldest handle first, at most `slice` index entries and `slice`
+    /// handles this call. Each row a handle still OWNS is removed by the empty `record_put` (store
+    /// slot 40), a chain by dropping it (`drop_chain`); a row another handle wrote since is that
+    /// handle's and stays. A handle's own row is struck once its last row is, cleanly; a store
+    /// that failed leaves it queued for the next submit. A row whose kind the instance no longer
+    /// declares (`kinds`) is left. Answers how many rows were retired.
+    pub fn retire(
+        &self,
+        rows: &dyn RecordRows,
+        instance: &Arc<str>,
+        kinds: &[RecordSchemaId],
+        drop_chain: &dyn Fn(RecordSchemaId, &str) -> Result<(), &'static str>,
+        slice: usize,
+    ) -> usize {
+        let Ok(empty) = RecordBytes::new(Vec::new()) else {
+            return 0;
+        };
+        let (mut budget, mut handles, mut retired) = (slice, slice, 0);
+        while budget > 0 && handles > 0 {
+            let front = self
+                .lock()
+                .retiring
+                .get(&**instance)
+                .and_then(|q| q.front().copied());
+            let Some(reference) = front else {
+                break;
+            };
+            handles -= 1;
+            let prefix = forward_prefix(instance, &reference);
+            let asked = budget;
+            let want = u32::try_from(asked).unwrap_or(u32::MAX);
+            let Ok(entries) = rows.record_scan(WORK_ROWS_SCHEMA, &prefix, want) else {
+                break;
+            };
+            let n = entries.len();
+            let mut clean = true;
+            for (forward, _) in entries {
+                let named = forward.get(prefix.len()..).and_then(parse_row_ref);
+                if let Some((tag, schema, key)) = named {
+                    match retire_row(
+                        rows,
+                        instance,
+                        &reference,
+                        (tag, schema, key),
+                        kinds,
+                        drop_chain,
+                        &empty,
+                    ) {
+                        Some(true) => retired += 1,
+                        Some(false) => {}
+                        None => {
+                            clean = false;
+                            continue;
+                        }
+                    }
+                }
+                if rows.record_put(WORK_ROWS_SCHEMA, &forward, &empty).is_err() {
+                    clean = false;
+                }
+            }
+            budget = budget.saturating_sub(n);
+            if n >= asked || !clean {
+                // More rows than this slice holds, or a store that failed: the next submit goes on.
+                break;
+            }
+            if rows
+                .record_put(WORK_SCHEMA, &work_key(instance, &reference), &empty)
+                .is_err()
+            {
+                break;
+            }
+            let mut book = self.lock();
+            if let Some(q) = book.retiring.get_mut(&**instance) {
+                q.pop_front();
+                if q.is_empty() {
+                    book.retiring.remove(&**instance);
+                }
+            }
+        }
+        retired
     }
 
     /// Reserve a live handle for `work` unless `instance` already holds `max_live`: the handle, or
