@@ -78,11 +78,13 @@ fn the_horizon_is_thirty_one_days_from_the_window_opening_and_the_all_time_windo
     assert!(!past_retention(window, window));
     assert!(!past_retention(window, window + WINDOW_RETENTION_SECS - 1));
     assert!(past_retention(window, window + WINDOW_RETENTION_SECS));
-    assert!(!past_retention(ALL_TIME_WINDOW, u64::MAX));
     assert!(
-        !past_retention(u64::MAX - 1, u64::MAX),
-        "a window near the top of the range does not wrap into the past"
+        !past_retention(ALL_TIME_WINDOW, u64::MAX),
+        "the all-time window never ages, however long the node runs"
     );
+    // Near the top of the range the sum saturates at `u64::MAX` and the window is evicted at the
+    // cap, exactly as 1.5.5's `window_start.saturating_add(MAX_RETENTION_SECS) > n` keep-test did.
+    assert!(past_retention(u64::MAX - 1, u64::MAX));
 }
 
 /// What may go is a window past the horizon that a checkpoint holds at the book's own figures, with

@@ -267,17 +267,18 @@ why       = "A read-only accessor whose doc used to promise a boot-time assertio
 unshipped = true
 switch    = "Retired when the composition root asserts at boot that its ledger is dual-writing (and refuses to serve otherwise), or when the root's tests assert the construction another way and the accessor is deleted."
 
-# LEDGER — `ledger-book-retirement` STRUCK as unshipped (row 159): the checkpoint sealer calls
-# `Ledger::retire_sealed` before every seal, retiring from the book and the dual-write rows every
-# window the last kept seal holds at the book's figures once 1.5.5's thirty-one-day horizon
-# (`totals::WINDOW_RETENTION_SECS`) has passed it, and the root drops the counted lines, refused rows
-# and uncounted balances of those windows with them. A retired window is served by the ledger reads
-# as 1.5.5's in-memory store served a swept one: not at all. The row STAYS as a constructed-capability
+# LEDGER — `ledger-book-retirement` STRUCK as unshipped (row 159): every checkpoint seal leaves out
+# the windows the last kept seal holds at the book's figures once 1.5.5's thirty-one-day horizon
+# (`totals::WINDOW_RETENTION_SECS`) has passed them (`Ledger::retirable`), and once that seal is
+# signed and journalled the sealer retires them from the book and the dual-write rows
+# (`Ledger::retire_windows`), dropping the counted lines, refused rows and uncounted balances of those
+# windows with them. A failed seal retires nothing. A retired window is served by the ledger reads as
+# 1.5.5's in-memory store served a swept one: not at all. The row STAYS as a constructed-capability
 # guard: unwiring the retirement reds it by name.
 [[capability]]
 id        = "ledger-book-retirement"
 built     = "crates/busbar-kernel-ledger/src/settle.rs"
-symbol    = "retire_sealed"
-construct = [".retire_sealed("]
+symbol    = "retire_windows"
+construct = [".retire_windows("]
 scope     = ["crates"]
 why       = "The book's and the dual-write rows' only bound. Without its production caller in the checkpoint sealer the book, the SummedRows sums and the root's counted lines grow by one row per principal, bucket and window for the life of the process, and every seal clones and digests every window the node ever settled into."

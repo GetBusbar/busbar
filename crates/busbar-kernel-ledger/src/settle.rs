@@ -187,31 +187,38 @@ impl Ledger {
         &self.book
     }
 
-    /// **RETIRE WHAT A CHECKPOINT SEALED AND THE HORIZON HAS PASSED**, from the book and the
-    /// previous release's rows in one step, and say which windows went.
+    /// **THE WINDOWS THE BOOK MAY LET GO** at `now` (wall seconds), measured against `sealed`, the
+    /// latest checkpoint the node kept — signed, journalled and anchored: [`Book::retirable`]'s
+    /// rule. Every one is past [`crate::totals::WINDOW_RETENTION_SECS`], held by `sealed` at the
+    /// figures the book still holds, and has no hold open, so a checkpoint holds everything
+    /// retiring it would drop. Asking moves nothing.
     ///
-    /// `sealed` is the latest checkpoint the node kept — signed, journalled and anchored — and `now`
-    /// is wall seconds. The windows retired are exactly [`Book::retirable`]'s: past
-    /// [`crate::totals::WINDOW_RETENTION_SECS`], held by `sealed` at the figures the book still
-    /// holds, and with no hold open. Nothing else can go, so no balance leaves the book that a
-    /// checkpoint does not hold, and the rows leave with the balances they mirror, so the
-    /// reconciliation between the two never meets one without the other.
-    ///
-    /// The caller seals its next checkpoint after this, so that checkpoint and every one after it hold
-    /// only what the book still keeps.
-    pub fn retire_sealed(
-        &mut self,
+    /// The caller seals its next checkpoint WITHOUT these windows and retires them
+    /// ([`Ledger::retire_windows`]) only once that seal is durable: a seal that fails retires
+    /// nothing, and the checkpoint the books are verified against always holds every window the
+    /// book does.
+    #[must_use]
+    pub fn retirable(
+        &self,
         sealed: &crate::checkpoint::Checkpoint,
         now: u64,
     ) -> std::collections::BTreeSet<WindowStart> {
-        let windows = self.book.retirable(&sealed.totals, now);
-        if !windows.is_empty() {
-            self.book.retire(&windows);
-            if let Some(rows) = self.legacy.as_mut() {
-                rows.retire(&windows);
-            }
+        self.book.retirable(&sealed.totals, now)
+    }
+
+    /// **RETIRE `windows` FROM THE BOOK AND THE PREVIOUS RELEASE'S ROWS** in one step, and say how
+    /// many balances went: the windows [`Ledger::retirable`] named, once the seal taken without
+    /// them is durable. The rows leave with the balances they mirror, so the reconciliation between
+    /// the two never meets one without the other.
+    pub fn retire_windows(&mut self, windows: &std::collections::BTreeSet<WindowStart>) -> usize {
+        if windows.is_empty() {
+            return 0;
         }
-        windows
+        let retired = self.book.retire(windows);
+        if let Some(rows) = self.legacy.as_mut() {
+            rows.retire(windows);
+        }
+        retired
     }
 
     /// Settle a hold against what the unit's usage priced at, and move the books.

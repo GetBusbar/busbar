@@ -66,7 +66,7 @@ pub enum Finding {
     /// A balance the checkpoint sealed is no longer in the book.
     ///
     /// Its own finding rather than an imbalance, because the two are different events and only one
-    /// of them is a defect. A window retired by `Ledger::retire_sealed` is gone on purpose — it was
+    /// of them is a defect. A window retired by `Ledger::retire_windows` is gone on purpose — it was
     /// sealed into a checkpoint, signed and shipped, and the book stopped being the record of it.
     /// Measuring what the checkpoint holds against the zeros the book now reads back answers a
     /// question nobody asked, and answers it two different wrong ways depending on the figures:

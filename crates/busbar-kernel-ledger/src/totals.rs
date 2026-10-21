@@ -339,8 +339,8 @@ impl Book {
     /// Retire every balance in `windows`, and say how many balances went.
     ///
     /// The owner decides which windows go ([`Book::retirable`] is the rule, and
-    /// [`crate::settle::Ledger::retire_sealed`] applies it to the book and the dual-write rows in
-    /// one step); retiring a window no checkpoint sealed loses balances nobody else holds.
+    /// [`crate::settle::Ledger::retire_windows`] applies it to the book and the dual-write rows
+    /// in one step); retiring a window no checkpoint sealed loses balances nobody else holds.
     ///
     /// A retired window reads back as zeros through [`Book::get`], exactly like one never touched,
     /// and the survivors keep the order [`Book::iter`] and [`Book::snapshot`] already gave them — the

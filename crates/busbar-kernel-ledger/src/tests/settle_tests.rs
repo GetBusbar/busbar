@@ -157,14 +157,16 @@ fn a_sealed_window_past_the_horizon_leaves_the_book_and_the_rows_and_nothing_ins
         .expect("an unsigned checkpoint seals");
 
     assert!(
-        ledger.retire_sealed(&sealed, now - 1).is_empty(),
+        ledger.retirable(&sealed, now - 1).is_empty(),
         "a second inside the horizon, nothing goes"
     );
     assert_eq!(ledger.book().len(), 3);
     assert_eq!(rows.len(), 6);
 
-    let retired = ledger.retire_sealed(&sealed, now);
-    assert_eq!(retired.into_iter().collect::<Vec<_>>(), vec![old]);
+    let retired = ledger.retirable(&sealed, now);
+    assert_eq!(retired.iter().copied().collect::<Vec<_>>(), vec![old]);
+    assert_eq!(ledger.book().len(), 3, "naming the windows moves nothing");
+    assert_eq!(ledger.retire_windows(&retired), 1);
     assert_eq!(ledger.book().get(&key("b"), old), Totals::zero());
     assert_eq!(
         rows.len(),
@@ -188,8 +190,12 @@ fn a_sealed_window_past_the_horizon_leaves_the_book_and_the_rows_and_nothing_ins
     );
 
     // Long after, the rolling window goes too; the all-time window never does.
-    let after_a_year = ledger.retire_sealed(&sealed, u64::MAX);
-    assert_eq!(after_a_year.into_iter().collect::<Vec<_>>(), vec![recent]);
+    let after_a_year = ledger.retirable(&sealed, u64::MAX);
+    assert_eq!(
+        after_a_year.iter().copied().collect::<Vec<_>>(),
+        vec![recent]
+    );
+    ledger.retire_windows(&after_a_year);
     assert_eq!(ledger.book().len(), 1);
     assert_eq!(rows.len(), 2);
     assert!(ledger

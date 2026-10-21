@@ -73,7 +73,7 @@ pub trait LegacyRows: Send {
     fn write(&mut self, posting: &LegacyPosting) -> Result<(), LegacyWriteError>;
 
     /// Drop every row in `windows`: the windows the ledger has just retired from its book
-    /// ([`crate::settle::Ledger::retire_sealed`]), so the rows and the book stay bounded together
+    /// ([`crate::settle::Ledger::retire_windows`]), so the rows and the book stay bounded together
     /// and the reconciliation never compares a row with a balance the book let go.
     ///
     /// Required rather than defaulted: a binding that kept its rows in memory and inherited a

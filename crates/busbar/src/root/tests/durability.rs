@@ -1289,6 +1289,165 @@ fn a_window_a_day_past_the_31_day_horizon_leaves_the_totals_and_stays_on_the_jou
         .any(|posting| posting.window == recent && posting.kind == PostingKind::Settlement));
 }
 
+/// A shipper the test can take down: while `down` is set every batch is refused, so the journal
+/// append it backs fails as a durability loss.
+struct DownShipper(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl busbar_kernel_wal::Shipper<busbar_kernel_wal::Record> for DownShipper {
+    fn ship(
+        &mut self,
+        _records: &[busbar_kernel_wal::Record],
+    ) -> Result<(), busbar_kernel_wal::ShipError> {
+        if self.0.load(std::sync::atomic::Ordering::Acquire) {
+            Err(busbar_kernel_wal::ShipError::Unavailable(
+                "store down".into(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// A memory-buffered node whose shipper `down` takes down.
+fn node_with_switch(down: &std::sync::Arc<std::sync::atomic::AtomicBool>) -> Durability {
+    build_priced(
+        &DurabilityConfig { data_dir: None },
+        0,
+        Box::new(DownShipper(std::sync::Arc::clone(down))),
+        rows(),
+        priced(),
+    )
+    .expect("memory-buffered")
+}
+
+/// The window 86,400 is past 1.5.5's horizon at this instant, by a day.
+fn a_day_past_the_horizon() -> u64 {
+    86_400 + busbar_kernel_ledger::totals::WINDOW_RETENTION_SECS + 86_400
+}
+
+/// **A SEAL THAT FAILS RETIRES NOTHING.** The windows a seal leaves out leave the book only once
+/// that seal is signed and on the journal. A seal the journal refused is not a checkpoint anybody
+/// holds, so the book keeps every window, and `/verify` — which measures the book against the last
+/// KEPT seal — finds nothing. Retiring before the seal had landed would leave the book short of a
+/// window the kept seal still holds, and verify would name it.
+#[test]
+fn a_seal_that_fails_retires_nothing_and_verify_stays_clean() {
+    let down = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut durability = node_with_switch(&down);
+    let key = totals_key("vk_failed_seal");
+    settle_one(&mut durability, &key, 1_000, 900, 1);
+    let now = a_day_past_the_horizon();
+    let token = token();
+    durability
+        .seal_checkpoint(&token, StepName::Meter, now)
+        .expect("the first seal goes down");
+
+    down.store(true, std::sync::atomic::Ordering::Release);
+    assert!(
+        durability
+            .seal_checkpoint(&token, StepName::Meter, now + 1)
+            .is_err(),
+        "the store refused the seal"
+    );
+    assert_eq!(
+        durability.ledger.book().get(&key, 86_400).settled,
+        900,
+        "a seal that failed retired the window anyway"
+    );
+    let kept = durability
+        .checkpoints
+        .last()
+        .expect("the first seal is kept");
+    assert!(
+        busbar_kernel_ledger::verify::verify(kept, &durability.ledger.book().snapshot(), None)
+            .is_empty(),
+        "verify against the kept seal is clean"
+    );
+
+    // The store comes back: the next seal lands, and only then does the window go.
+    down.store(false, std::sync::atomic::Ordering::Release);
+    durability
+        .seal_checkpoint(&token, StepName::Meter, now + 2)
+        .expect("the seal goes down");
+    assert_eq!(
+        durability.ledger.book().get(&key, 86_400),
+        Totals::zero(),
+        "retired once a seal without it is durable"
+    );
+}
+
+/// **A WINDOW IS NOT RETIRED WHILE A SETTLED FIGURE WAITS ON THE LOG.** A posting the journal lost
+/// is moved to `unreconciled` and moves back when the next append succeeds; retiring a window under
+/// it would land that move on a balance the book had let go. So while any figure is unconfirmed,
+/// no seal retires anything — and once the log confirms it, the next seal does.
+#[test]
+fn no_window_is_retired_while_a_settled_figure_is_unconfirmed() {
+    let down = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut durability = node_with_switch(&down);
+    let old_key = totals_key("vk_old_window");
+    let new_key = totals_key("vk_unconfirmed");
+    settle_one(&mut durability, &old_key, 1_000, 900, 1);
+    let now = a_day_past_the_horizon();
+    let recent = now / 86_400 * 86_400;
+    let token = token();
+    durability
+        .seal_checkpoint(&token, StepName::Meter, now)
+        .expect("the first seal goes down");
+
+    // A settlement in a recent window the store refuses: its figure is unconfirmed.
+    down.store(true, std::sync::atomic::Ordering::Release);
+    let mut at = settling(&new_key, &token);
+    at.window = recent;
+    let hold = busbar_contract::caps::Hold::open(
+        &busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::Admittance>(),
+        busbar_contract::caps::PrincipalId::new("vk_unconfirmed"),
+        0,
+    );
+    let usage = busbar_contract::caps::Usage::report(
+        &busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::Consumption>(),
+        Vec::new(),
+    )
+    .expect("empty");
+    let lost = durability.settle(
+        &at,
+        hold,
+        250,
+        &usage,
+        &busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::WriteMoney>(),
+    );
+    assert!(lost.is_err(), "the store refused the batch");
+    assert_eq!(
+        durability.ledger.book().get(&new_key, recent).unreconciled,
+        250
+    );
+
+    // The store is back and a seal lands, but the figure is still unconfirmed: nothing goes.
+    down.store(false, std::sync::atomic::Ordering::Release);
+    durability
+        .seal_checkpoint(&token, StepName::Meter, now + 1)
+        .expect("the seal goes down");
+    assert_eq!(
+        durability.ledger.book().get(&old_key, 86_400).settled,
+        900,
+        "a window was retired while a settled figure was unconfirmed"
+    );
+
+    // A serving append confirms it; the next seal retires the old window.
+    settle_in(&mut durability, &new_key, recent, 1_000, 700, 2);
+    assert_eq!(
+        durability.ledger.book().get(&new_key, recent).unreconciled,
+        0,
+        "the log confirmed the figure"
+    );
+    durability
+        .seal_checkpoint(&token, StepName::Meter, now + 2)
+        .expect("the seal goes down");
+    assert_eq!(
+        durability.ledger.book().get(&old_key, 86_400),
+        Totals::zero()
+    );
+}
+
 /// [`settle_one`] in a named window.
 fn settle_in(
     durability: &mut Durability,
@@ -1468,14 +1627,9 @@ fn the_restart_reconciliation_goes_red_on_a_book_that_lost_a_row() {
         None,
     )
     .expect("an unsigned checkpoint seals");
-    assert_eq!(
-        restarted
-            .ledger
-            .retire_sealed(&sealed, u64::MAX)
-            .into_iter()
-            .collect::<Vec<_>>(),
-        vec![86_400]
-    );
+    let retired = restarted.ledger.retirable(&sealed, u64::MAX);
+    assert_eq!(retired.iter().copied().collect::<Vec<_>>(), vec![86_400]);
+    restarted.ledger.retire_windows(&retired);
     let findings = restarted.reconcile_with_journal();
     assert_eq!(
         findings.len(),

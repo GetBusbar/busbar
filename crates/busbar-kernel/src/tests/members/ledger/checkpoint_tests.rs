@@ -175,13 +175,12 @@ fn a_balance_the_book_retired_is_named_as_retired_and_not_as_an_imbalance() {
     assert!(verify(&checkpoint, &ledger.book().snapshot(), None).is_empty());
 
     // The window is sealed and past the horizon, so the book lets it go.
+    let retired = ledger.retirable(&checkpoint, u64::MAX);
     assert_eq!(
-        ledger
-            .retire_sealed(&checkpoint, u64::MAX)
-            .into_iter()
-            .collect::<Vec<_>>(),
+        retired.iter().copied().collect::<Vec<_>>(),
         vec![1 as WindowStart]
     );
+    assert_eq!(ledger.retire_windows(&retired), 1);
     let findings = verify(&checkpoint, &ledger.book().snapshot(), None);
     match findings.as_slice() {
         [Finding::Retired { key: k, window }] => {
