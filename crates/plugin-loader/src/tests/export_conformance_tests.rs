@@ -103,19 +103,19 @@ use crate::sign::{Declares, Manifest};
 const FILE_DOOR: DoorFn = both_ways::export_fixture::door;
 /// The FILE sink's `-plugin` crate, whose `cdylib` exports the same door: the DROPPED-IN build.
 fn file_cdylib() -> &'static str {
-    both_ways::export_row("export").1
+    both_ways::fixture("export").1
 }
 /// The request-log WEBHOOK sink's door, LINKED: the both-ways table's `export-carried` row.
 const WEBHOOK_DOOR: DoorFn = both_ways::export_carried_fixture::door;
 /// The WEBHOOK sink's `-plugin` crate's `cdylib`: the DROPPED-IN build.
 fn webhook_cdylib() -> &'static str {
-    both_ways::export_row("export-carried").1
+    both_ways::fixture("export-carried").1
 }
 /// The span collector's door, LINKED: the both-ways table's `export-trace` row.
 const TRACE_DOOR: DoorFn = both_ways::export_trace_fixture::door::door;
 /// The span collector's `-plugin` crate's `cdylib`: the DROPPED-IN build.
 fn trace_cdylib() -> &'static str {
-    both_ways::export_row("export-trace").1
+    both_ways::fixture("export-trace").1
 }
 
 /// What the FILE sink carries: the request-log line.
@@ -749,7 +749,7 @@ fn run_dropped_in(path: &Path) -> Vec<String> {
 fn rotated_record(path: &Path) -> String {
     format!(
         "log 0 {target}: request-log file rotated by rename path={p} archive={p}.1",
-        target = both_ways::export_row("export").0,
+        target = both_ways::fixture("export").0,
         p = path.display()
     )
 }

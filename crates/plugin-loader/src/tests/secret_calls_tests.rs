@@ -22,7 +22,7 @@ use super::SecretRows;
 use crate::boot::{Candidate, Origin};
 use crate::dispatch::{rendering_of, DispatchConfig, Dispatcher};
 
-use crate::both_ways::{secret_fixture, HOT_FIXTURES};
+use crate::both_ways::{fixture_cdylib, secret_fixture};
 use crate::hook_door_conformance_tests::hook_door_plugin;
 use secret_fixture::door::door;
 use secret_fixture::NAME;
@@ -112,12 +112,7 @@ fn a_linked_secret_plugin_answers_and_resolves_through_the_axis() {
 #[test]
 fn a_dropped_in_secret_plugin_is_the_same_plugin_through_the_axis() {
     environment();
-    let (_, logic) = HOT_FIXTURES
-        .iter()
-        .find(|(k, _)| *k == "secret")
-        .expect("a `secret` row in Cargo.toml's [package.metadata.busbar.both-ways]");
-    // The row names the repo's logic crate; the fleet's twin shape names its cdylib `<logic>_plugin`.
-    let path = crate::both_ways::cdylib(&format!("{logic}_plugin"));
+    let path = fixture_cdylib("secret");
     let stated = rendering_of(door).expect("the door renders its Statement");
     let bytes = std::fs::read(&path).expect("the plugin's cdylib reads");
     let candidate = Candidate::from_rendering(
