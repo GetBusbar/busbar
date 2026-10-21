@@ -2346,19 +2346,16 @@ pub fn install_operator_auth_row(door: AuthDoor) {
 /// operator plugin the composition root links, and pins the root's bytes, hands in the root's words
 /// as the root does: `door` linked under the provider key of `words`. The first install stands.
 pub fn install_operator_auth_row_as(words: OperatorWords, door: AuthDoor) {
-    if crate::preflight::TEST_ROOT_AUTH.get().is_none() {
-        let row: &'static [crate::preflight::LinkedAuth] =
-            Box::leak(Box::new([(words.provider, words.provider, door)]));
-        install_root_auth(row, words);
-    }
+    let _ =
+        crate::preflight::TEST_ROOT_AUTH.set((vec![(words.provider, words.provider, door)], words));
 }
 
 /// THE ROOT'S AUTH ROWS in a test binary of the composition root: its linked table's `auths` and
 /// the operator words off its legacy table, which the install record
 /// ([`crate::preflight::root_rows`]) then reports as the root's install record does. The first
 /// hand-in stands.
-pub fn install_root_auth(rows: &'static [crate::preflight::LinkedAuth], words: OperatorWords) {
-    let _ = crate::preflight::TEST_ROOT_AUTH.set((rows, words));
+pub fn install_root_auth(rows: &[crate::preflight::LinkedAuth], words: OperatorWords) {
+    let _ = crate::preflight::TEST_ROOT_AUTH.set((rows.to_vec(), words));
 }
 
 pub use busbar_kernel_identity::operator::{AuthDoor, OperatorWords};

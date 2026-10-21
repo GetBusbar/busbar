@@ -223,9 +223,9 @@ pub fn root_rows() -> RootInstall {
         if let Some(hook_names) = TEST_ROOT_HOOK_NAMES.get().copied() {
             rows.hook_names = hook_names;
         }
-        if let Some((auths, operator)) = TEST_ROOT_AUTH.get().copied() {
-            rows.auths = auths;
-            rows.operator = operator;
+        if let Some((auths, operator)) = TEST_ROOT_AUTH.get() {
+            rows.auths = auths.as_slice();
+            rows.operator = *operator;
         }
         rows
     }
@@ -251,10 +251,12 @@ pub(crate) static TEST_ROOT_HOOK_NAMES: std::sync::OnceLock<&'static [&'static s
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) static TEST_ROOT_AUTH: std::sync::OnceLock<TestRootAuth> = std::sync::OnceLock::new();
 
-/// What a test binary hands in for [`TEST_ROOT_AUTH`]: its auth rows and its operator words.
+/// What a test binary hands in for [`TEST_ROOT_AUTH`]: its auth rows, owned by the holder (so the
+/// install record lends them for as long as the process runs, and nothing is leaked to get a
+/// `'static` borrow), and its operator words.
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) type TestRootAuth = (
-    &'static [LinkedAuth],
+    Vec<LinkedAuth>,
     busbar_kernel_identity::operator::OperatorWords,
 );
 
