@@ -35,32 +35,32 @@ fn walking_down_a_transport_stack_carries_the_seal_and_widens_nothing() {
     let sealed = VerifiedDestination::seal(
         &seal(),
         DestinationFacts::Upstream {
-            transport: "ws",
+            transport: "carrier-a",
             address: UpstreamAddress::socket("api.example:443"),
             lane: lane(),
         },
-        "ws",
+        "carrier-a",
         Some(17),
     );
 
     let under = sealed
-        .beneath("http", UpstreamAddress::socket("10.0.0.1:443"))
+        .beneath("carrier-b", UpstreamAddress::socket("10.0.0.1:443"))
         .expect("an upstream has a layer beneath it");
     assert_eq!(under.lane(), sealed.lane(), "the priced lane travels down");
     assert_eq!(under.budget_remaining(), sealed.budget_remaining());
-    assert_eq!(under.transport(), "http", "the lower layer dials it");
+    assert_eq!(under.transport(), "carrier-b", "the lower layer dials it");
     assert_eq!(
         under.facts(),
         DestinationFacts::Upstream {
-            transport: "http",
+            transport: "carrier-b",
             address: UpstreamAddress::socket("10.0.0.1:443"),
             lane: lane(),
         }
     );
 
-    // Twice down a stack — ws over http over tcp — still carries the original judgement.
+    // Twice down a stack — carrier-a over carrier-b over carrier-c — still carries the original judgement.
     let twice = under
-        .beneath("tcp", UpstreamAddress::socket("10.0.0.1:443"))
+        .beneath("carrier-c", UpstreamAddress::socket("10.0.0.1:443"))
         .expect("still an upstream");
     assert_eq!(twice.lane(), sealed.lane());
     assert_eq!(twice.budget_remaining(), sealed.budget_remaining());
@@ -90,12 +90,12 @@ fn walking_down_a_transport_stack_carries_the_seal_and_widens_nothing() {
             node: "b",
             selector: "caller",
         },
-        DestinationFacts::Upgrade { to: "ws" },
+        DestinationFacts::Upgrade { to: "carrier-a" },
     ] {
-        let sealed = VerifiedDestination::seal(&seal(), facts, "http", Some(17));
+        let sealed = VerifiedDestination::seal(&seal(), facts, "carrier-b", Some(17));
         assert!(
             sealed
-                .beneath("tcp", UpstreamAddress::socket("10.0.0.1:443"))
+                .beneath("carrier-c", UpstreamAddress::socket("10.0.0.1:443"))
                 .is_none(),
             "{facts:?} has no layer beneath it"
         );

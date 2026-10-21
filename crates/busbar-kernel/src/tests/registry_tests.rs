@@ -89,14 +89,14 @@ fn ports_still_compare_as_numbers() {
 fn claims_on_different_transports_never_collide() {
     use busbar_contract::grammar::{Claim, Selector};
     let a = Claim {
-        transport: "http",
+        transport: "carrier-a",
         selector: Selector::ExactPath("/v1/chat/completions"),
         scheme: Some("token"),
         scheme_alternatives: &[],
         idempotency: None,
     };
     let b = Claim {
-        transport: "stdio",
+        transport: "carrier-b",
         ..a
     };
     assert!(crate::registry::claims_overlap(&a, &a));

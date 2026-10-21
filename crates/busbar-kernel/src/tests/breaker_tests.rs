@@ -386,7 +386,7 @@ fn test_no_bare_tracing_warn_or_error_in_crate_sources() {
     );
 }
 
-/// THE SHARED CLASSIFICATION FIXTURE (#83a SD-3): the raw upstream errors the LLM dialects' error
+/// THE SHARED CLASSIFICATION FIXTURE (#83a SD-3): the raw upstream errors the model-API dialects' error
 /// readers produce in their own suites, and the class this classifier places each in with an EMPTY
 /// operator `error_map`. The dialects' suites read their classification from
 /// `testing/plane-copies/upstream-classes.json` instead of reaching the host; this test holds the

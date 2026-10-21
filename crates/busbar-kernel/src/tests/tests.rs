@@ -340,13 +340,13 @@ fn test_inert_durable_keys_banner_fires_only_for_durable_keyed_no_token() {
 }
 
 /// STATEFUL-PLANE EPHEMERAL-STORE WARN: the sharper, conditional boot warn fires EXACTLY when the
-/// RAM store is resolved AND a stateful plane (MCP tools / A2A agents, whether bare or pooled) is
+/// RAM store is resolved AND a stateful plane (tool or agent planes, whether bare or pooled) is
 /// configured — and names the CONSEQUENCE (in-flight task loss on restart), not just advice. An
-/// LLM-only deploy (no stateful plane) and any durable store both stay silent: the sharper warn
+/// model-API-only deploy (no stateful plane) and any durable store both stay silent: the sharper warn
 /// would be noise there. This is a WARN, never a boot-block.
 #[test]
 fn test_stateful_plane_ephemeral_store_warn_fires_only_for_ram_plus_stateful() {
-    // RAM store + an MCP plane configured (tool or tool-pool) → the specific warn fires.
+    // RAM store + a tool plane configured (tool or tool-pool) → the specific warn fires.
     let w = stateful_plane_ephemeral_store_warn(true, true)
         .expect("RAM + the first stateful plane → sharper warn fires");
     assert!(
@@ -356,13 +356,13 @@ fn test_stateful_plane_ephemeral_store_warn_fires_only_for_ram_plus_stateful() {
         "the warn must name the CONSEQUENCE and the durable-store fix; got: {w}"
     );
 
-    // RAM store + an A2A plane configured (agent or agent-pool) → fires (either stateful plane does).
+    // RAM store + an agent plane configured (agent or agent-pool) → fires (either stateful plane does).
     assert!(
         stateful_plane_ephemeral_store_warn(true, true).is_some(),
         "RAM + the second stateful plane → the sharper warn fires"
     );
 
-    // RAM store but LLM-only (no stateful plane) → stateless, a restart costs nothing → NO warn.
+    // RAM store but model-API-only (no stateful plane) → stateless, a restart costs nothing → NO warn.
     assert!(
         stateful_plane_ephemeral_store_warn(true, false).is_none(),
         "a stateless-only deploy must NOT get the sharper warn — noise trains people to \
@@ -1182,7 +1182,7 @@ fn linked_hook_name() -> &'static str {
 }
 
 /// K5b (3c) exit test, on the hook door: the built-in ranking strategies are the HOOK WORDS of ONE
-/// linked `hooks-ranking` door on the hook axis — each strategy word names that row, and opens (with
+/// linked ranking-hook door on the hook axis — each strategy word names that row, and opens (with
 /// `{"policy": "<word>"}`) as the strategy it spells. `weighted` stays the inline floor (no row).
 /// The words are the door's Statement marks, never registry aliases: no registry row spells them.
 /// RED by planting the door bypass: an axis with no linked ranking door leaves every strategy word
@@ -1261,7 +1261,7 @@ async fn each_strategy_word_ranks_as_1_5_5_did_through_the_door_and_never_reache
         budget: &[],
     };
     let prefer = |o: &[usize]| RoutingDecision::Prefer(o.to_vec());
-    // The 1.5.5 natives' cases (crates/hooks-ranking lib_tests before the door): word, candidates,
+    // The 1.5.5 natives' cases (the ranking plugin's lib_tests before the door): word, candidates,
     // the decision 1.5.5 answered.
     let cases: Vec<(&str, Vec<Row>, RoutingDecision)> = vec![
         (
@@ -1538,14 +1538,14 @@ fn secret_manifest(name: &str, alias: &str) -> busbar_plugin_loader::sign::Manif
     m
 }
 
-/// A registry loaded from an unsigned `kind: secret` tarball (name `acme-secret-vault`, alias
-/// `vault`), for exercising the `secrets:` block resolution.
+/// A registry loaded from an unsigned `kind: secret` tarball (name `acme-secret-alpha`, alias
+/// `alpha`), for exercising the `secrets:` block resolution.
 fn secret_registry(tag: &str) -> (std::path::PathBuf, busbar_plugin_loader::PluginRegistry) {
     let dir = tmp_plugin_dir(tag);
     let mut cfg = plugins_cfg(&dir, true);
     cfg.trust.allow_unsigned = true;
-    let tarball = unsigned_tarball(secret_manifest("acme-secret-vault", "vault"), b"lib");
-    std::fs::write(dir.join("vault.tar.gz"), tarball).unwrap();
+    let tarball = unsigned_tarball(secret_manifest("acme-secret-alpha", "alpha"), b"lib");
+    std::fs::write(dir.join("alpha.tar.gz"), tarball).unwrap();
     let reg = crate::plugins_preflight(
         None,
         None,
@@ -1578,9 +1578,9 @@ fn secrets_block_rejects_builtin_resolver_names() {
 #[test]
 fn secrets_block_rejects_unknown_module() {
     let reg = busbar_plugin_loader::PluginRegistry::empty();
-    let err = validate_secret_module(&reg, "typo-vault").unwrap_err();
+    let err = validate_secret_module(&reg, "typo-alpha").unwrap_err();
     assert!(
-        err.contains("no loadable") && err.contains("typo-vault"),
+        err.contains("no loadable") && err.contains("typo-alpha"),
         "unknown module named in the error: {err}"
     );
 }
@@ -1594,12 +1594,12 @@ fn secrets_block_canonicalizes_alias_and_name_to_the_same_key() {
     let (dir, reg) = secret_registry("secrets-canon");
     // Both the alias and the canonical name resolve to the SAME canonical name.
     assert_eq!(
-        validate_secret_module(&reg, "vault").unwrap(),
-        "acme-secret-vault"
+        validate_secret_module(&reg, "alpha").unwrap(),
+        "acme-secret-alpha"
     );
     assert_eq!(
-        validate_secret_module(&reg, "acme-secret-vault").unwrap(),
-        "acme-secret-vault"
+        validate_secret_module(&reg, "acme-secret-alpha").unwrap(),
+        "acme-secret-alpha"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1723,7 +1723,7 @@ fn model_cfg_for_provider(provider: &str) -> crate::config::ModelCfg {
 }
 
 /// The marquee 1.5.0 "secrets are plugins" feature — a provider
-/// `api_key: { module: acme-vault, … }` (TLS cert/key, `auth.signing_key`, and the admin token are
+/// `api_key: { module: acme-alpha, … }` (TLS cert/key, `auth.signing_key`, and the admin token are
 /// the same shape) — must PASS validation when the `kind: secret` plugin is loaded + trusted. The
 /// module-existence check is DEFERRED past `config_validate::validate` (which runs before the plugin
 /// registry exists) to `validate_secret_refs`, which consults the SAME registry the resolver uses.
@@ -1731,9 +1731,9 @@ fn model_cfg_for_provider(provider: &str) -> crate::config::ModelCfg {
 fn secret_ref_plugin_backed_module_passes_when_plugin_present() {
     // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    let (dir, reg) = secret_registry("secretref-vault-ok");
-    // The `vault` alias AND the canonical `acme-secret-vault` name both resolve → both pass.
-    for module in ["vault", "acme-secret-vault"] {
+    let (dir, reg) = secret_registry("secretref-alpha-ok");
+    // The `alpha` alias AND the canonical `acme-secret-alpha` name both resolve → both pass.
+    for module in ["alpha", "acme-secret-alpha"] {
         let cfg = cfg_with_provider_api_key(crate::config::SecretRef {
             module: module.to_string(),
             settings: serde_json::Map::new(),
@@ -1760,7 +1760,7 @@ fn secret_ref_typo_module_still_fails_at_preflight() {
     crate::test_support::register_neutral_test_plane();
     let (dir, reg) = secret_registry("secretref-typo");
     let cfg = cfg_with_provider_api_key(crate::config::SecretRef {
-        module: "vaultt".to_string(), // typo of the `vault` alias — no such plugin
+        module: "alphaa".to_string(), // typo of the `alpha` alias — no such plugin
         settings: serde_json::Map::new(),
     });
     // `validate` alone can't tell a typo from an installed plugin (no registry), so it must NOT be
@@ -1773,7 +1773,7 @@ fn secret_ref_typo_module_still_fails_at_preflight() {
         .expect_err("a typo'd secret module with no plugin must fail the pre-flight");
     assert!(
         err.contains("providers.acme.api_key")
-            && err.contains("vaultt")
+            && err.contains("alphaa")
             && err.contains("no loadable"),
         "the error must name the ref and the unknown module: {err}"
     );
@@ -1871,7 +1871,7 @@ fn secrets_block_rejects_alias_and_canonical_for_one_module() {
     let (dir, reg) = secret_registry("secrets-alias-collision");
     let reg = std::sync::Arc::new(reg);
     let mut secrets = std::collections::BTreeMap::new();
-    for spelling in ["vault", "acme-secret-vault"] {
+    for spelling in ["alpha", "acme-secret-alpha"] {
         secrets.insert(
             spelling.to_string(),
             crate::config::SecretModuleCfg {
@@ -1884,12 +1884,12 @@ fn secrets_block_rejects_alias_and_canonical_for_one_module() {
         Ok(_) => panic!("two spellings of one secret module must be a loud error"),
     };
     assert!(
-        err.contains("acme-secret-vault") && err.contains("vault") && err.contains("TWICE"),
+        err.contains("acme-secret-alpha") && err.contains("alpha") && err.contains("TWICE"),
         "the error names the module and both spellings: {err}"
     );
 
     // Either spelling ALONE is fine (the canonicalization itself is unchanged).
-    for spelling in ["vault", "acme-secret-vault"] {
+    for spelling in ["alpha", "acme-secret-alpha"] {
         let mut one = std::collections::BTreeMap::new();
         one.insert(
             spelling.to_string(),
@@ -2626,7 +2626,7 @@ fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart
 
 // ── STEP 2.3: THE TYPE-ERASED PLANE SLOT MAP (`App::plane_slot`) ─────────────────────────────
 //
-// Additive: `App::mcp` / `App::a2a` still exist and every existing reader is untouched. These
+// Additive: the typed plane fields on `App` still exist and every existing reader is untouched. These
 // tests pin the two things Step 2.3 actually promises — the slot mirrors the typed field's SAME
 // `Arc` when a plane is configured, and is absent exactly when the typed field is `None`.
 

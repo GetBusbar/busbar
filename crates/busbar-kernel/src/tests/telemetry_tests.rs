@@ -19,10 +19,10 @@ use crate::test_support::{metric_sum, LaneSpec, TestApp};
 /// currently registered fallback, never a hard-coded literal. Registers
 /// [`crate::test_support::register_neutral_test_plane`]'s all-stub fixture (idempotent) and reads
 /// its key back off the registry — this module asserts core's OWN bank/macro-fallback routing, not
-/// anything about the real LLM dialect, so it needs a plane to exist as fallback, never the real
+/// anything about the real model-API dialect, so it needs a plane to exist as fallback, never the real
 /// the retired engine crate plane (which this crate's own `#[cfg(test)]` binary cannot reach; see that fn's doc).
 /// Mounted planes emit the separate `busbar_plane_*` families and are exercised in
-/// `plane::metrics_tests` / `a2a::relay_tests`.
+/// `plane::metrics_tests` and the plane relay suites.
 fn model_plane_key() -> &'static str {
     crate::test_support::register_neutral_test_plane();
     crate::plane::fallback_key()

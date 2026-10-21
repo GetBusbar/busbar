@@ -24,7 +24,7 @@ fn inducing_a_child_keeps_the_root_and_sets_the_parent() {
     assert!(!child.is_root());
 }
 
-/// A cross-plane chain (LLM 1 → MCP tool-call 2 → sampling completion 3) shares ONE root and threads
+/// A cross-plane chain (a completion 1 → a tool call 2 → a sampling completion 3) shares ONE root and threads
 /// parents — the causal tree the ledger joins on, naming no plane.
 #[test]
 fn a_multi_hop_chain_shares_one_root_and_threads_parents() {

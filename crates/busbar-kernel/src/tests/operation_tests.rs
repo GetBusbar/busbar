@@ -13,7 +13,7 @@ use crate::operation::*;
 /// variants onto six shapes must not re-base a single metric series, and this table is where that
 /// is asserted rather than assumed.
 const ALL: [(OpVerb, OpShape, &str); 13] = [
-    // The LLM family: seven words, ONE shape. Name a model, hand it arguments, get content back.
+    // The model-API family: seven words, ONE shape. Name a model, hand it arguments, get content back.
     (OpVerb::CHAT, OpShape::Invoke, "chat"),
     (OpVerb::EMBEDDINGS, OpShape::Invoke, "embeddings"),
     (OpVerb::MODERATION, OpShape::Invoke, "moderation"),
@@ -51,7 +51,7 @@ fn every_name_is_pinned_to_its_literal() {
     }
 }
 
-/// EVERY VERB'S SHAPE, PINNED. The seven LLM words collapsing onto one shape is the finding this
+/// EVERY VERB'S SHAPE, PINNED. The seven model-API words collapsing onto one shape is the finding this
 /// change is built on; if one of them ever needs a shape of its own, that is a design decision and
 /// it should have to be written down here first.
 #[test]
@@ -62,7 +62,7 @@ fn every_verb_is_pinned_to_its_shape() {
 }
 
 /// `Operation::ALL` IS THE CORE-OWNED HALF OF THE VOCABULARY — the six shape verbs, exactly the
-/// table's protocol-surface rows, in the same order. The LLM rows are deliberately NOT in it any
+/// table's protocol-surface rows, in the same order. The model-API rows are deliberately NOT in it any
 /// more: they reach the vocabulary through `proto::registry::declared_verbs()` (the declarations),
 /// which `the_metric_label_surface_is_exactly_these_thirteen` below pins as the other half.
 #[test]
@@ -84,7 +84,7 @@ fn all_holds_every_core_owned_verb_and_nothing_else() {
 /// spelled once, sorted, so any change to it is a visible diff in this file rather than a silently
 /// re-based series.
 ///
-/// DERIVED FROM BOTH HALVES since the LLM rows left `Operation::ALL`: the core's six shape verbs
+/// DERIVED FROM BOTH HALVES since the model-API rows left `Operation::ALL`: the core's six shape verbs
 /// plus whatever the registered protocol declarations serve. With the built-in protocols present
 /// this is the SAME thirteen labels the 1.5 era published — asserting that here is what proves the
 /// derivation re-based nothing — and in a build whose protocols are deleted the declared half
@@ -120,8 +120,8 @@ fn the_metric_label_surface_is_exactly_these_thirteen() {
     );
 }
 
-/// `ToolCall` became `Invoke` in 1.6.0 because the operation now carries A2A `message/send` as well
-/// as MCP `tools/call`; the old MCP-flavoured label must not survive anywhere on this axis, or a
+/// `ToolCall` became `Invoke` in 1.6.0 because the operation now carries an agent-message send as well
+/// as a tool call; the old protocol-flavoured label must not survive anywhere on this axis, or a
 /// dashboard would keep reading a name that claims the engine knows which protocol it is serving.
 #[test]
 fn no_operation_is_still_called_tool_call() {
@@ -132,7 +132,7 @@ fn no_operation_is_still_called_tool_call() {
 }
 
 /// NO VERB NAMES A PROTOCOL. The whole point of the split is that a core type carries no protocol's
-/// identity, so the metric label surface may not contain one either — `mcp_tools_call` in this list
+/// identity, so the metric label surface may not contain one either — a protocol-prefixed label in this list
 /// would fail the deletion test on line one.
 #[test]
 fn no_verb_name_carries_a_protocol_identity() {
@@ -197,7 +197,7 @@ fn only_the_invoke_shape_may_stream() {
     }
 }
 
-/// THE SEVEN LLM VERBS SHARE A SHAPE, so the shape alone cannot tell them apart — which is exactly
+/// THE SEVEN MODEL-API VERBS SHARE A SHAPE, so the shape alone cannot tell them apart — which is exactly
 /// why the word rides beside it. If this ever fails, either a verb changed shape or two verbs
 /// collided on a name, and both are breaking changes.
 #[test]

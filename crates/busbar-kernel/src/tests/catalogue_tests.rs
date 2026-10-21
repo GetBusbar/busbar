@@ -36,12 +36,12 @@ use crate::trust::validate::{Generations, Grant, Refusal};
 // unlike BOTH real ones, so that "a third plane costs an item type" is demonstrated rather than
 // assumed from a copy of an existing one:
 //
-//   * MCP requires TWO grants, A2A requires ONE (two when delegating) — this requires THREE, and one
+//   * one existing plane requires TWO grants, another ONE (two when delegating) — this requires THREE, and one
 //     of them is on a value that is not the item's own name.
-//   * MCP's fitness test is vacuous, A2A's reads a cached document — this one reads a NUMBER, and
+//   * one existing plane's fitness test is vacuous, another's reads a cached document — this one reads a NUMBER, and
 //     answers with a value (the chosen edition) rather than a unit.
 //   * Its refusal enum shares no arm with either plane's.
-//   * Its wire form BORROWS from the item, which MCP's (an owned `serde_json::Value`) does not.
+//   * Its wire form BORROWS from the item, which an existing plane's (an owned `serde_json::Value`) does not.
 //
 // EVERYTHING BELOW IS THE WHOLE COST. There is no catalogue module, no `*_for` filter, no walk, no
 // ordering rule and no fail-closed floor written for it. If a future plane needs any of those, the
@@ -63,7 +63,7 @@ struct Leaflet {
     fitted: Cell<u32>,
 }
 
-/// The third plane's own refusal vocabulary. Shares no arm with `DispatchRefusal` or A2A's
+/// The third plane's own refusal vocabulary. Shares no arm with `DispatchRefusal` or another plane's
 /// `Excluded`, which is the point: a plane's refusal words are its own, and it renders the ordered
 /// gate's refusal into them rather than adopting them.
 #[derive(Debug, PartialEq, Eq)]
@@ -111,7 +111,7 @@ impl CatalogueItem for Leaflet {
         });
     }
 
-    /// THIS PLANE ASKS IDENTITY AND GRANT, like MCP's catalogue and unlike A2A's — a kiosk lists
+    /// THIS PLANE ASKS IDENTITY AND GRANT, like one existing plane's catalogue and unlike another's — a kiosk lists
     /// what it holds, and whether a leaflet is worth reading is not a question about the reader.
     /// It is one line, and it is the whole of what the plane says about entitlement.
     fn admit(&self, caller: &Caller<'_>, grants: &[Grant<'_>]) -> Result<(), Unavailable> {

@@ -41,7 +41,7 @@ fn rule_reasoning_none_and_thinking_always_on_resolve_per_model_and_default_off(
 }
 
 /// The `bedrock` entry's `model_capabilities` from the shipped providers.yaml (written in flow /
-/// JSON style so this crate can read it without a YAML parser). Moved here from the LLM plane's
+/// JSON style so this crate can read it without a YAML parser). Moved here from a model-API plane's
 /// suite (#83a SD-3): the catalog's resolution is the host's; the plane pins what its writer does
 /// with the capabilities.
 fn shipped_bedrock_rules() -> Vec<crate::ir::lane_caps::ModelCapabilities> {

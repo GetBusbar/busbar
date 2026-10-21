@@ -430,7 +430,7 @@ fn a_program_destination_has_no_address_to_judge() {
     let program = busbar_contract::VerifiedDestination::seal(
         &trust_token(),
         busbar_contract::DestinationFacts::Upstream {
-            transport: "stdio",
+            transport: "program-carrier",
             address: busbar_contract::transport::dest::UpstreamAddress::Program {
                 path: "/usr/local/bin/server",
                 args: &[],
@@ -439,7 +439,7 @@ fn a_program_destination_has_no_address_to_judge() {
             },
             lane: busbar_contract::LaneId::new("test"),
         },
-        "stdio",
+        "program-carrier",
         None,
     );
     assert_eq!(
@@ -474,7 +474,7 @@ fn a_destination_that_is_not_an_upstream_has_no_address_check() {
     let verb = busbar_contract::VerifiedDestination::seal(
         &trust_token(),
         busbar_contract::DestinationFacts::KernelVerb { verb: "status" },
-        "http",
+        "carrier-b",
         None,
     );
     assert_eq!(
@@ -510,7 +510,7 @@ fn the_sealed_door_and_the_facts_door_are_one_implementation() {
             lane: busbar_contract::LaneId::new("test"),
         },
         busbar_contract::DestinationFacts::Upstream {
-            transport: "stdio",
+            transport: "program-carrier",
             address: busbar_contract::transport::dest::UpstreamAddress::Program {
                 path: "/usr/local/bin/server",
                 args: &[],

@@ -18,7 +18,7 @@ fn names_are_stable_and_distinct() {
     assert_eq!(Transport::Http.name(), "http");
 }
 
-// `the_a2a_legs_are_named_by_the_planes_wire_formats` MOVED to
-// `crates/busbar/tests/plane_dispatch_cross_plane.rs`: it asserts `wire_format_names("a2a")` against the REAL a2a
+// the per-plane leg-naming test MOVED to
+// `crates/busbar/tests/plane_dispatch_cross_plane.rs`: it asserts `wire_format_names` for an agent plane against the REAL agent
 // plane's declared wire formats, which needs the real roster registered — an integration-test
 // target, never this `#[cfg(test)]` unit module (see that file's header).

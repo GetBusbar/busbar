@@ -43,7 +43,7 @@ fn accepts_realistic_depth_and_counts_correctly() {
 }
 
 /// THE SHARED DEPTH-FLOOR FIXTURE (#83a O6): this seam holds the floor and answers every case in
-/// `testing/plane-copies/json-depth.json` as recorded. The LLM plane's own copy of the seam is held
+/// `testing/plane-copies/json-depth.json` as recorded. A model-API plane's own copy of the seam is held
 /// to the same file, so the two copies of the security floor cannot disagree without one of the two
 /// suites failing.
 #[test]

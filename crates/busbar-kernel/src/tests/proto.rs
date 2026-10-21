@@ -30,7 +30,7 @@ mod registry_fold {
     /// no `messages`, no `model` and no `stream`; it point-reads a head key none of the six declare
     /// (`dest`); it authenticates with SigV4 rather than a bearer token; it declares no codec, no
     /// streaming content type and no tool-id prefix; and it serves ONE verb, `subscribe`, which NONE of
-    /// the six LLM protocols serve. Nothing about it was anticipated by the six, which is the point: a
+    /// the six model-API protocols serve. Nothing about it was anticipated by the six, which is the point: a
     /// registry that only carried protocols shaped like the ones already in the tree would be a lookup
     /// table for six things rather than a seam.
     ///
@@ -45,7 +45,7 @@ mod registry_fold {
 
     const TELEX_DECL: ProtocolDecl = ProtocolDecl {
         name: "telex",
-        // A protocol with no cross-dialect codec — like MCP, and for the same reason: its IR is its own.
+        // A protocol with no cross-dialect codec — like a tool-protocol plane, and for the same reason: its IR is its own.
         codec: None,
         handler: Some(&TelexHandler),
         verbs: &[OpVerb::SUBSCRIBE],

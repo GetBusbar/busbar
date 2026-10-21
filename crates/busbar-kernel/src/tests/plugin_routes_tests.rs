@@ -66,7 +66,7 @@ fn decl(
 
 /// Two plugins claiming the SAME {path, method} is a LOUD collision naming the OWNING (first) plugin,
 /// never last-writer-wins — with the exact message shape the design specifies. Deterministic scan
-/// order = declaration order, so `prometheus` (first) owns `GET /metrics` and `datadog` (second) is the
+/// order = declaration order, so `sink-a` (first) owns `GET /metrics` and `datadog` (second) is the
 /// one refused.
 ///
 /// This asserts the EXACT loud message; with `build_route_table` doing
@@ -76,7 +76,7 @@ fn decl(
 fn collision_is_a_loud_failure_naming_the_owner() {
     let decls = vec![
         decl(
-            "prometheus",
+            "sink-a",
             RouteKind::Export,
             "/metrics",
             RouteMethod::Get,
@@ -95,7 +95,7 @@ fn collision_is_a_loud_failure_naming_the_owner() {
     let err = expect_err(build_route_table(decls));
     assert_eq!(
         err,
-        "plugin \"datadog\" cannot register GET /metrics — already registered by \"prometheus\""
+        "plugin \"datadog\" cannot register GET /metrics — already registered by \"sink-a\""
     );
 
     // The boot/`--validate` preflight runs THIS function over the same declaration set
@@ -184,7 +184,7 @@ fn confinement_rejects_hook_out_of_namespace() {
 fn confinement_export_metrics_exception_and_reserved_routes() {
     // The well-known /metrics: accepted for an export sink.
     assert!(build_route_table(vec![decl(
-        "prometheus",
+        "sink-a",
         RouteKind::Export,
         "/metrics",
         RouteMethod::Get,
@@ -206,7 +206,7 @@ fn confinement_export_metrics_exception_and_reserved_routes() {
 
     // A reserved core route: refused even for an export sink.
     assert!(expect_err(build_route_table(vec![decl(
-        "prometheus",
+        "sink-a",
         RouteKind::Export,
         "/stats",
         RouteMethod::Get,
@@ -243,7 +243,7 @@ fn only_the_scrape_sink_claims_metrics_hooks() {
             "x",
         )
     };
-    assert!(build_route_table(vec![hooks("prometheus", RouteKind::Export, true)]).is_ok());
+    assert!(build_route_table(vec![hooks("sink-a", RouteKind::Export, true)]).is_ok());
     for refused in [
         hooks("datadog", RouteKind::Export, false),
         hooks("sr", RouteKind::Hook, false),
@@ -288,11 +288,11 @@ async fn get(router: Router, path: &str) -> (u16, String) {
 async fn route_dispatches_to_handle_http_and_resolves_live_after_swap() {
     // An export-namespace path (not the built-in `/metrics`, which the process-wide metrics recorder
     // may already own in a shared test binary) — the dispatch + live-resolution mechanism is the same.
-    const P: &str = "/exports/prometheus/scrape";
+    const P: &str = "/exports/sink-a/scrape";
     // Snapshot A: the route owned by "prom".
     let table_a = Arc::new(
         build_route_table(vec![decl(
-            "prometheus",
+            "sink-a",
             RouteKind::Export,
             P,
             RouteMethod::Get,
@@ -323,7 +323,7 @@ async fn route_dispatches_to_handle_http_and_resolves_live_after_swap() {
     // Hot-swap the live snapshot to snapshot B: the SAME path now owned by "next".
     let table_b = Arc::new(
         build_route_table(vec![decl(
-            "prometheus",
+            "sink-a",
             RouteKind::Export,
             P,
             RouteMethod::Get,
@@ -455,16 +455,16 @@ async fn admin_auth_route_is_absent_from_the_data_listener() {
 #[test]
 fn head_is_looked_up_as_the_declared_get_route() {
     let table = build_route_table(vec![decl(
-        "prometheus",
+        "sink-a",
         RouteKind::Export,
-        "/exports/prometheus/scrape",
+        "/exports/sink-a/scrape",
         RouteMethod::Get,
         RouteAuth::None,
         "prom",
     )])
     .unwrap();
     assert_eq!(
-        table.declared_auth("/exports/prometheus/scrape", &axum::http::Method::HEAD),
+        table.declared_auth("/exports/sink-a/scrape", &axum::http::Method::HEAD),
         Some(RouteAuth::None),
         "a HEAD to a declared GET plugin route must resolve to that route's declared auth"
     );
@@ -483,10 +483,10 @@ fn head_is_looked_up_as_the_declared_get_route() {
 /// unchanged.
 #[tokio::test]
 async fn head_dispatches_to_the_declared_get_route() {
-    const P: &str = "/exports/prometheus/scrape";
+    const P: &str = "/exports/sink-a/scrape";
     let table = Arc::new(
         build_route_table(vec![decl(
-            "prometheus",
+            "sink-a",
             RouteKind::Export,
             P,
             RouteMethod::Get,
@@ -640,7 +640,7 @@ fn paths_awaiting_restart_flags_only_newly_declared_unmounted_paths() {
                 .iter()
                 .map(|p| {
                     decl(
-                        "prometheus",
+                        "sink-a",
                         RouteKind::Export,
                         p,
                         RouteMethod::Get,

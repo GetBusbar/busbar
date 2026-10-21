@@ -188,7 +188,7 @@ fn registry(name: &str, hook: HookCfg) -> HashMap<String, HookCfg> {
 }
 
 /// Each native `policy:` strategy resolves to a constructed `Policy` whose name round-trips the
-/// native registry name. (No gate; empty hook registry.) Requires the removable `hooks-ranking`
+/// native registry name. (No gate; empty hook registry.) Requires the removable ranking-hook
 /// plugin — under `--no-default-features` a non-weighted native policy is a boot error, not a
 /// resolvable policy, so this behavior test only applies when the plugin is compiled in.
 #[cfg(feature = "hooks-ranking")]
@@ -1133,7 +1133,7 @@ fn from_ranked_empty_is_abstain() {
 }
 
 /// A native `policy:` FORCES the payload projections off at resolve (no native policy reads them).
-/// Requires the `hooks-ranking` plugin (a native non-weighted policy exists only when compiled in).
+/// Requires the ranking-hook plugin (a native non-weighted policy exists only when compiled in).
 #[cfg(feature = "hooks-ranking")]
 #[test]
 fn native_resolve_forces_opt_in_flags_off() {
@@ -2187,7 +2187,7 @@ fn settings_drift_never_compares_a_secret_ref_field() {
         // A built-in `env` reference (resolvable), and a `kind: secret` PLUGIN reference — the arm
         // that is a blocking FFI call, and the one no read path may ever touch.
         "api_token": { "env": var },
-        "licenseKey": { "module": "vault", "settings": { "path": "secret/busbar" } },
+        "licenseKey": { "module": "plugin-secret-a", "settings": { "path": "secret/busbar" } },
         "ratio": 0.4
     })
     .as_object()
@@ -2231,7 +2231,7 @@ fn settings_drift_never_compares_a_secret_ref_field() {
 /// synchronous `transport_call` into a `kind: secret` plugin in production (`DynSecret::resolve` →
 /// `RawPlugin::transport_call`), and behind it a Vault/AWS-SM round trip. Nothing here is async —
 /// the ENGINE is responsible for keeping it off the reactor.
-fn parking_secret_env(park: std::time::Duration) -> HookEnv {
+fn parking_secret_source(park: std::time::Duration) -> HookEnv {
     HookEnv::new(
         std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
         std::sync::Arc::new(crate::config::secret::SecretResolver::with_plugin(
@@ -2251,7 +2251,7 @@ fn hook_with_plugin_secret() -> HookCfg {
     let mut hook = base_gate();
     hook.settings.insert(
         "licenseKey".to_string(),
-        serde_json::json!({ "module": "vault", "settings": { "path": "kv/busbar" } }),
+        serde_json::json!({ "module": "plugin-secret-a", "settings": { "path": "kv/busbar" } }),
     );
     hook
 }
@@ -2287,7 +2287,7 @@ fn concurrent_push_configure_does_not_starve_the_runtime() {
         .enable_all()
         .build()
         .expect("test runtime");
-    let env = parking_secret_env(std::time::Duration::from_secs(3));
+    let env = parking_secret_source(std::time::Duration::from_secs(3));
     let hook = hook_with_plugin_secret();
     let tasks: Vec<_> = (0..4)
         .map(|_| {
