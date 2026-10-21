@@ -445,29 +445,33 @@ plane-a2a-door = "plane-door"
 
 # A linked crate whose entry module is not `<crate>::linked`.
 [package.metadata.busbar.linked-entry]
-# A secret plugin's door is its `door` module's.
-busbar-secret-env = "busbar_secret_env::door"
-busbar-secret-file = "busbar_secret_file::door"
-# An auth plugin's entry is the module that exports its memory-ABI `door`.
-busbar-auth-admin-tokens-plugin = "busbar_auth_admin_tokens_plugin::door"
-busbar-auth-header = "busbar_auth_header::compiled_in::door"
-busbar-auth-sigv4 = "busbar_auth_sigv4::compiled_in::door"
-busbar-auth-oauth = "busbar_auth_oauth::compiled_in::door"
-busbar-auth-webhook-signature = "busbar_auth_webhook_signature::compiled_in::door"
-# The memory store's door is at its crate root (`pub use v3::door`).
+# EVERY LINKED CRATE'S DOOR IS AT ITS CRATE ROOT (BUSBAR-1.6.0.md, the door-only gate: a linked row
+# names `<crate>::door` and nothing else of its crate). One row per crate whose entry is not
+# `<crate>::linked`: here, every one.
+busbar-secret-env = "busbar_secret_env"
+busbar-secret-file = "busbar_secret_file"
+busbar-auth-admin-tokens-plugin = "busbar_auth_admin_tokens_plugin"
+busbar-auth-header = "busbar_auth_header"
+busbar-auth-sigv4 = "busbar_auth_sigv4"
+busbar-auth-oauth = "busbar_auth_oauth"
+busbar-auth-webhook-signature = "busbar_auth_webhook_signature"
 busbar-store-memory = "busbar_store_memory"
-# A plane door row's entry is the module that exports its `door`.
-plane-decisions = "busbar_plane_decisions::plane_door"
+busbar-hook-ranking = "busbar_hook_ranking"
+busbar-transport-tcp = "busbar_transport_tcp"
+busbar-transport-http = "busbar_transport_http"
+busbar-transport-ws = "busbar_transport_ws"
+busbar-transport-grpc = "busbar_transport_grpc"
+busbar-transport-stdio = "busbar_transport_stdio"
+busbar-transport-webrtc = "busbar_transport_webrtc"
+plane-decisions = "busbar_plane_decisions"
 plane-llm-door = "busbar_plane_llm"
-plane-mcp-door = "busbar_plane_mcp::plane_door"
-plane-a2a-door = "busbar_plane_a2a::agent_door"
-# A memory-ABI export sink's door is its logic crate's `door` module's (`plugin_door!`).
-busbar-export-prometheus = "busbar_export_prometheus::door"
-busbar-export-otlp = "busbar_export_otlp::door"
-# The file and webhook sinks' doors are at their logic crates' roots (`pub use table::door`).
+plane-mcp-door = "busbar_plane_mcp"
+plane-a2a-door = "busbar_plane_a2a"
+plane-streaming = "busbar_plane_streaming"
+busbar-export-prometheus = "busbar_export_prometheus"
+busbar-export-otlp = "busbar_export_otlp"
 busbar-export-file = "busbar_export_file"
 busbar-export-webhook = "busbar_export_webhook"
-plane-streaming = "busbar_plane_streaming::door"
 
 # A linked door's declared metadata (its manifest `declares` section, as JSON) is read off its
 # Statement (`abi::mechanism::door::EXT_DECLARES`). A row here names the item that holds it for a
@@ -475,22 +479,13 @@ plane-streaming = "busbar_plane_streaming::door"
 # goes when its door states it (`root::linked`'s tests hold every row to a door that states none).
 # A door with neither declares nothing.
 [package.metadata.busbar.linked-declares]
-export-file = "busbar_export_file::DECLARES"
-export-webhook = "busbar_export_webhook::DECLARES"
-export-prometheus = "busbar_export_prometheus::DECLARES"
-export-otlp = "busbar_export_otlp::DECLARES"
-plane-mcp-door = "busbar_plane_mcp::DECLARES"
-plane-a2a-door = "busbar_plane_a2a::DECLARES"
-# The file source reads the disk (`"disk": true`): the host resolves it only at config time, on its
-# disk lane, never from a request path (BUSBAR-1.6.0.md l.1464-1469, R4).
-secret-file = "busbar_secret_file::DECLARES"
+# (every linked door states its `declares` on its Statement: no row)
 
 # An export door's module alias is read off its Statement (`REWRITE_ALIAS`). A row here names the
 # item that holds it for a door whose Statement does not state one yet; the root reads it only for
 # such a door, and the row goes when its door states it.
 [package.metadata.busbar.linked-alias]
-export-prometheus = "busbar_export_prometheus::ALIAS"
-export-otlp = "busbar_export_otlp::ALIAS"
+# (every linked export door states its alias on its Statement: no row)
 
 # Each linked plane door's DECLARING section (the one its Statement flags `SECTION_DECLARING`): the
 # build sets `linked_section_<section>` when the row's feature is on, so a test that needs "the plane
