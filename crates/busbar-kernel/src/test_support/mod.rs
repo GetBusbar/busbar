@@ -2099,13 +2099,13 @@ pub fn hook_needs(
 }
 
 /// Install a test build's linked auth rows and the operator credential's words, as boot does
-/// ([`crate::preflight::install_linked_auth`]); a cell calls this so it names neither the call's
-/// result nor the types behind it.
+/// ([`install_root_auth`], which hands them to the install record); a cell calls this so it names
+/// neither the call's result nor the types behind it.
 pub fn install_linked_auth(
     rows: &'static [busbar_kernel_identity::operator::LinkedAuth],
     words: busbar_kernel_identity::operator::OperatorWords,
 ) {
-    crate::preflight::install_linked_auth(rows, words);
+    install_root_auth(rows, words);
 }
 
 /// A [`crate::hooks::HookEnv`] whose registry holds one `kind: hook` row per alias (each stating the
