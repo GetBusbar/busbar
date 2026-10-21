@@ -609,13 +609,82 @@ impl UnitState {
     }
 }
 
+/// THE DOOR'S UNIT BOOK: each unit the door holds, by the kernel's key, from its `arrive` to its
+/// end, and the ticket its pieces last came on (the key a `cancel` names it by). Every way a unit
+/// ends leaves NOTHING of it here, its ticket binding included (THE DESIGN section 2: what a plugin
+/// keeps is bounded by its units), so neither map grows with the units the instance has served.
+#[derive(Debug)]
+pub struct UnitBook<S> {
+    units: HashMap<u64, S>,
+    tickets: HashMap<Ticket, u64>,
+    ticket_of: HashMap<u64, Ticket>,
+}
+
+impl<S> Default for UnitBook<S> {
+    fn default() -> Self {
+        UnitBook {
+            units: HashMap::new(),
+            tickets: HashMap::new(),
+            ticket_of: HashMap::new(),
+        }
+    }
+}
+
+impl<S> UnitBook<S> {
+    /// The unit is held under `unit` (its `arrive`, or its state put back after a call).
+    pub fn hold(&mut self, unit: u64, state: S) {
+        self.units.insert(unit, state);
+    }
+
+    /// The unit leaves the map for a call; its ticket binding stays until it [`UnitBook::ends`].
+    pub fn take(&mut self, unit: u64) -> Option<S> {
+        self.units.remove(&unit)
+    }
+
+    /// The held unit, in place.
+    pub fn get_mut(&mut self, unit: u64) -> Option<&mut S> {
+        self.units.get_mut(&unit)
+    }
+
+    /// The unit's pieces come on `ticket`: a `cancel` on it finds the unit. A ticket the unit came
+    /// on before is unbound.
+    pub fn bind(&mut self, ticket: Ticket, unit: u64) {
+        if let Some(old) = self.ticket_of.insert(unit, ticket) {
+            if old != ticket {
+                self.tickets.remove(&old);
+            }
+        }
+        self.tickets.insert(ticket, unit);
+    }
+
+    /// The unit ended (its reply complete, or refused): its ticket binding goes with it.
+    pub fn ends(&mut self, unit: u64) {
+        self.units.remove(&unit);
+        if let Some(ticket) = self.ticket_of.remove(&unit) {
+            self.tickets.remove(&ticket);
+        }
+    }
+
+    /// A `cancel` on `ticket`: the unit it names leaves the book, and its state is handed back.
+    pub fn cancel(&mut self, ticket: Ticket) -> Option<S> {
+        let unit = self.tickets.remove(&ticket)?;
+        self.ticket_of.remove(&unit);
+        self.units.remove(&unit)
+    }
+
+    /// What the book holds: `(units, ticket bindings)`.
+    #[must_use]
+    pub fn held(&self) -> (usize, usize) {
+        (self.units.len(), self.tickets.len())
+    }
+}
+
 /// One instance: every live generation's snapshot and tables, the units in flight, and the host's
 /// clock.
 pub struct LlmDoor {
     generations: Generations<PlaneSnapshot>,
     shapings: Mutex<BTreeMap<u64, Arc<Shaping>>>,
-    units: Mutex<HashMap<u64, UnitState>>,
-    tickets: Mutex<HashMap<Ticket, u64>>,
+    units: Mutex<UnitBook<UnitState>>,
     services: Option<Services>,
     /// The receivers the `webhooks:` section switched on at open.
     webhooks: Webhooks,
@@ -675,6 +744,12 @@ impl busbar_contract::codec::CodecHost for DoorHost {
         self.0
             .and_then(|s| s.clock_now(UNTICKETED).ok())
             .map(|reading| reading.wall_ns / 1_000_000_000)
+    }
+
+    fn monotonic_ns(&self) -> Option<u64> {
+        self.0
+            .and_then(|s| s.clock_now(UNTICKETED).ok())
+            .map(|reading| reading.mono_ns)
     }
 }
 
@@ -817,8 +892,13 @@ pub fn route_of<'a>(shaping: &Shaping, model: &'a str) -> (u8, &'a str) {
 }
 
 fn op_class_index(arrived: &Arrived) -> u32 {
+    op_class_of(arrived.operation)
+}
+
+/// The index of an operation's class in the tail's op-class list (`0` when it names none).
+fn op_class_of(operation: busbar_contract::operation::OpVerb) -> u32 {
     OPS.iter()
-        .position(|op| op.as_str() == arrived.operation.name())
+        .position(|op| op.as_str() == operation.name())
         .and_then(|i| u32::try_from(i).ok())
         .unwrap_or(0)
 }
@@ -1376,8 +1456,7 @@ slot!(
         let door = LlmDoor {
             generations: Generations::new(),
             shapings: Mutex::new(BTreeMap::from([(open.generation, Arc::new(shaping))])),
-            units: Mutex::new(HashMap::new()),
-            tickets: Mutex::new(HashMap::new()),
+            units: Mutex::new(UnitBook::default()),
             services: open.host().and_then(|h| Services::of(&h)),
             webhooks,
         };
@@ -1435,11 +1514,9 @@ slot!(
     Cancel, PlaneCancelIn, PlaneCancelOut, |instance, input, mut out| {
         let mut partial = false;
         if let Some(door) = instance.get() {
-            if let Some(unit) = guard(&door.tickets).remove(&input.cancel.ticket) {
-                partial = guard(&door.units)
-                    .remove(&unit)
-                    .is_some_and(|u| u.reply.as_ref().is_some_and(Reply::partial));
-            }
+            partial = guard(&door.units)
+                .cancel(input.cancel.ticket)
+                .is_some_and(|u| u.reply.as_ref().is_some_and(Reply::partial));
         }
         // A caller that left a usable part of the answer leaves a PARTIAL unit: the units the
         // answer stated so far bill (1.5.5's drop arm; a same-dialect whole body states none while
@@ -1488,7 +1565,7 @@ slot!(
         if given.claim == CLAIM_PROBE {
             unit.probe = true;
             out.set(|o| &o.principal_need, PRINCIPAL_NONE);
-            guard(&door.units).insert(given.unit, unit);
+            guard(&door.units).hold(given.unit, unit);
             return Outcome::Ready;
         }
         let method = String::from_utf8_lossy(input.field(|i| &i.method).bytes()).into_owned();
@@ -1506,7 +1583,7 @@ slot!(
                     out.local();
                     unit.local = true;
                     unit.ack = Some(webhook::ack(&event));
-                    guard(&door.units).insert(given.unit, unit);
+                    guard(&door.units).hold(given.unit, unit);
                     Outcome::Ready
                 }
                 Err(message) => {
@@ -1516,11 +1593,12 @@ slot!(
                         envelope: RESPONSES,
                         kind: busbar_contract::protocol::KIND_INVALID_REQUEST,
                         message: message.into(),
+                        entry: None,
                     };
                     out.set(|o| &o.refusal, declined.why.code());
                     out.set(|o| &o.refusal_status, u32::from(declined.status));
                     unit.declined = Some(declined);
-                    guard(&door.units).insert(given.unit, unit);
+                    guard(&door.units).hold(given.unit, unit);
                     out.fail(Refusal::bare())
                 }
             };
@@ -1550,7 +1628,7 @@ slot!(
                     }
                 }
                 unit.arrived = Some(arrived);
-                guard(&door.units).insert(given.unit, unit);
+                guard(&door.units).hold(given.unit, unit);
                 Outcome::Ready
             }
             Err(declined) => {
@@ -1561,8 +1639,18 @@ slot!(
                 if declined.why.unsupported_action() {
                     out.set(|o| &o.refusal_flags, REFUSED_UNSUPPORTED_ACTION);
                 }
+                // A REFUSAL ABOUT AN ENTRY (abi/plane "A refused arrival", rule 6): it names the
+                // entry, its op class and its dialect, so the kernel holds it behind the caller's
+                // identity and grant over that entry (1.5.5 judged the ad-hoc route's governance
+                // before it answered a misnamed provider).
+                if let Some(entry) = &declined.entry {
+                    out.set(|o| &o.op_class, op_class_of(busbar_contract::operation::OpVerb::CHAT));
+                    out.set(|o| &o.dialect, dialect_index(declined.envelope));
+                    out.set(|o| &o.principal_need, PRINCIPAL_REQUIRED);
+                    out.route(ROUTE_DIRECT, entry);
+                }
                 unit.declined = Some(declined);
-                guard(&door.units).insert(given.unit, unit);
+                guard(&door.units).hold(given.unit, unit);
                 out.fail(Refusal::bare())
             }
         }
@@ -1584,10 +1672,10 @@ slot!(
             return Outcome::Fault;
         }
         // The unit leaves the map for the call, so its answer is computed with no lock held.
-        let Some(mut unit) = guard(&door.units).remove(&key) else {
+        let Some(mut unit) = guard(&door.units).take(key) else {
             return Outcome::Fault;
         };
-        guard(&door.tickets).insert(given.head.ticket, key);
+        guard(&door.units).bind(given.head.ticket, key);
         if unit.pending.is_none() {
             if given.from == FROM_FAR_END && given.flags & PIECE_FINAL != 0 {
                 unit.final_answer = true;
@@ -1617,9 +1705,9 @@ slot!(
         }
         let (outcome, ended) = deliver(&mut unit, input, &mut out);
         if ended {
-            guard(&door.tickets).remove(&given.head.ticket);
+            guard(&door.units).ends(key);
         } else {
-            guard(&door.units).insert(key, unit);
+            guard(&door.units).hold(key, unit);
         }
         outcome
     }
@@ -1633,7 +1721,7 @@ slot!(
             return Outcome::Failed;
         };
         let given = input.get();
-        let held = guard(&door.units).remove(&given.unit);
+        let held = guard(&door.units).take(given.unit);
         let host = door.host();
         // The status the rendering states where it is not the kernel's (`0` = the kernel's).
         let mut restated = 0u32;
@@ -1716,10 +1804,12 @@ slot!(
         if short {
             // The driver re-calls once with the buffers this named: the unit stays for it.
             if let Some(unit) = held {
-                guard(&door.units).insert(given.unit, unit);
+                guard(&door.units).hold(given.unit, unit);
             }
             Outcome::Failed
         } else {
+            // The unit ends here: nothing of it stays, the ticket its attempt came on included.
+            guard(&door.units).ends(given.unit);
             Outcome::Ready
         }
     }
@@ -1754,7 +1844,7 @@ slot!(
         let given = input.get();
         let mut units = guard(&door.units);
         // A unit that never arrived (or arrived declined, or as a probe) has nothing to project.
-        let Some(arrived) = units.get_mut(&given.unit).and_then(|u| u.arrived.as_mut()) else {
+        let Some(arrived) = units.get_mut(given.unit).and_then(|u| u.arrived.as_mut()) else {
             return Outcome::Refused;
         };
         let rewrite = input.field(|i| &i.rewrite).bytes();
