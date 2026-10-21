@@ -9,7 +9,7 @@
 //! nothing about the field somebody adds next. Comparing the entire object means a new key cannot
 //! reach a hook without this file being edited, which is where the decision belongs.
 
-use crate::hooks::gate::{decide, GateSubject, GateVerdict};
+use crate::hooks::gate::{decide_over, GateSubject, GateVerdict};
 use crate::hooks::{
     Candidate, PolicyResult, ResolvedPolicy, RoutingContext, RoutingDecision, RoutingPolicy,
     RoutingRequest,
@@ -19,6 +19,12 @@ use std::sync::{Arc, Mutex};
 
 /// A firing site's access-amendment seat that records nowhere: the tests that read no journal.
 fn no_reads(_: &str, _: Option<&str>, _: &str, _: bool) {}
+
+/// The gate pass over a request whose content was read: the cells below drive the one pass the door
+/// path runs (`decide_door` reaches it the same way), shown readable content.
+async fn decide(gates: &[(u16, ResolvedPolicy)], subject: &GateSubject<'_>) -> GateVerdict {
+    decide_over(gates, subject, true).await
+}
 
 /// A gate that ANSWERS a fixed decision and RECORDS the exact wire document it was handed — built
 /// through the contract's own `hook_wire::build`, so what this test reads is what a plugin would receive
@@ -557,6 +563,11 @@ async fn no_attached_gate_builds_no_projection() {
 use crate::hooks::gate::IncrementalScan;
 use crate::session::{SessionKey, SessionStore};
 
+/// The screen-cache key of a session named by a string, as the door path keys its octets.
+fn derive_session_key(sid: &str, principal_id: &str, hook_generation: u64) -> SessionKey {
+    IncrementalScan::derive_session_key_octets(sid.as_bytes(), principal_id, hook_generation)
+}
+
 /// A long session re-screens only NEW content: a piece cleared on one turn is not sent to the hook
 /// again on the next turn of the same session, and the gate proceeds without a sidecar call.
 #[tokio::test]
@@ -720,18 +731,18 @@ async fn a_rejected_piece_is_not_cached_and_is_rescreened() {
 /// stable for identical inputs.
 #[test]
 fn derive_session_key_partitions_by_principal_and_generation() {
-    let base = IncrementalScan::derive_session_key("sid", "alice", 1);
+    let base = derive_session_key("sid", "alice", 1);
     // Identical inputs are stable.
-    assert_eq!(base, IncrementalScan::derive_session_key("sid", "alice", 1));
+    assert_eq!(base, derive_session_key("sid", "alice", 1));
     // A DIFFERENT principal on the same session id + generation: different key (confused-deputy fix).
-    assert_ne!(base, IncrementalScan::derive_session_key("sid", "bob", 1));
+    assert_ne!(base, derive_session_key("sid", "bob", 1));
     // A generation bump (policy tightened) on the same principal + session id: different key
     // (stale-clearance fix).
-    assert_ne!(base, IncrementalScan::derive_session_key("sid", "alice", 2));
+    assert_ne!(base, derive_session_key("sid", "alice", 2));
     // Domain separation: the principal/sid field boundary cannot alias into another split.
     assert_ne!(
-        IncrementalScan::derive_session_key("b", "a", 1),
-        IncrementalScan::derive_session_key("", "ab", 1),
+        derive_session_key("b", "a", 1),
+        derive_session_key("", "ab", 1),
     );
 }
 
@@ -780,9 +791,9 @@ async fn incremental_scan_reclears_across_principal_and_generation() {
         saw
     }
 
-    let alice_g1 = IncrementalScan::derive_session_key(sid, "alice", 1);
-    let bob_g1 = IncrementalScan::derive_session_key(sid, "bob", 1);
-    let alice_g2 = IncrementalScan::derive_session_key(sid, "alice", 2);
+    let alice_g1 = derive_session_key(sid, "alice", 1);
+    let bob_g1 = derive_session_key(sid, "bob", 1);
+    let alice_g2 = derive_session_key(sid, "alice", 2);
 
     // ALICE screens the piece clean at generation 1.
     assert!(
@@ -983,7 +994,7 @@ async fn the_door_paths_incremental_scan_keys_on_the_views_session() {
 fn an_octet_session_keys_as_its_string() {
     assert_eq!(
         IncrementalScan::derive_session_key_octets(b"ctx-1", "alice", 3),
-        IncrementalScan::derive_session_key("ctx-1", "alice", 3)
+        derive_session_key("ctx-1", "alice", 3)
     );
     assert_ne!(
         IncrementalScan::derive_session_key_octets(b"ctx-1", "alice", 3),

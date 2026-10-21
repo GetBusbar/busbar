@@ -19,15 +19,3 @@ file = "crates/busbar-kernel/src/egress/trust/mod.rs"
 item = "EGRESS_TRUST"
 count = 1
 
-[[finding]]
-rule = "door-only:static-seam"
-file = "crates/busbar-kernel/src/rate_apply.rs"
-item = "APPLY"
-count = 1
-
-[[finding]]
-rule = "door-only:static-seam"
-file = "crates/busbar-kernel/src/rate_apply.rs"
-item = "EPOCH"
-count = 1
-

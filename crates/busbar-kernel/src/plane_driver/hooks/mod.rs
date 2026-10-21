@@ -244,7 +244,7 @@ pub trait CallerFacts: Send + Sync {
     fn budget(&self, principal: &str) -> Vec<BudgetBucketState>;
     /// Leave the access amendment of a hook handed the prompt on the node's amendment journal,
     /// field names only — through the host's own seat on it
-    /// ([`crate::plane_host::HookConfigHost::hook_read`]).
+    /// ([`crate::plane_driver::EngineHost::hook_read`]).
     fn hook_read(&self, hook: &str, principal: Option<&str>, dialect: &str, identity: bool);
     /// Fire the `response` taps of a unit refused at authentication.
     fn denied_taps(&self, taps: &[TapEntry], request_id: u64, dialect: &str, status: u16) {
@@ -410,7 +410,7 @@ impl HookBinder for BoundHooks {
 /// principal.
 pub struct HostHooks {
     /// The generation's engine host.
-    pub host: Arc<dyn crate::plane_host::EngineHost>,
+    pub host: Arc<dyn crate::plane_driver::EngineHost>,
     /// What the hooks may know of a verified caller.
     pub caller: Arc<dyn CallerFacts>,
     /// The plane's dialects, in its tail's order.

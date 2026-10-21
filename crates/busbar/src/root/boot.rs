@@ -158,6 +158,13 @@ pub fn plugins_fetch(
         .collect())
 }
 
+/// The configuration file this process boots from (`--config`, or its default).
+fn config_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(crate::root::cli::resolve_config_path(
+        crate::root::cli::config_path_flag().as_deref(),
+    ))
+}
+
 /// STAGE 0, PLAN: what the configuration file at `path` uses, read off its raw document (secret
 /// references stay raw; environment references are interpolated leniently, as the boot's early
 /// reads do). An unreadable file uses nothing: the boot's own load reports why.
@@ -588,6 +595,59 @@ pub fn discover_planes(linked: &Linked, dropped: Option<&crate::root::loader::Pl
     let _ = DOOR_CANDIDATES.set(set.doors);
 }
 
+/// The declaring sections of the discovered door planes the boot never bound (Law 7: the boot
+/// configuration writes none of their sections). Like a bound plane left unopened, each is
+/// restart-to-apply (`door_steps::Rules::hold_unopened`); the fallback plane is never one.
+#[must_use]
+pub fn unbound_sections() -> Vec<&'static str> {
+    let bound = door_planes();
+    DOOR_CANDIDATES
+        .get()
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .filter(|c| !bound.iter().any(|(instance, _)| *instance == c.name))
+        .filter_map(|c| c.verbs.first())
+        .filter_map(|section| {
+            busbar_kernel::plane::registry::plane_decl_for_config_section(section)
+        })
+        .filter(|decl| !decl.fallback)
+        .map(|decl| decl.config_section)
+        .collect()
+}
+
+/// The `base_url` of every resolved provider (its catalog definition merged with the document's
+/// deployment), noted by `main` once the configuration resolves and before the seal opens the
+/// dropped-in transports ([`transport_uses`]).
+static PROVIDER_URLS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// Note the resolved providers' `base_url`s (`main`, once, before the seal).
+pub fn note_provider_urls(urls: impl IntoIterator<Item = String>) {
+    let _ = PROVIDER_URLS.set(urls.into_iter().collect());
+}
+
+/// WHAT SELECTS A DROPPED-IN TRANSPORT (Law 7; `BUSBAR-1.6.0.md` §4, "a transport loads iff a
+/// configured URL uses a scheme it claims"): the URL schemes the configuration file uses, and those
+/// of the resolved providers' `base_url`s, which a catalog definition carries when the document
+/// does not. And every scheme a linked transport claims: a dropped-in transport claiming one is a
+/// second owner of it, opened so the seal refuses the boot as it refuses a second linked row with
+/// that key (two transports claiming one scheme refuse boot).
+fn transport_uses() -> Uses {
+    let mut uses = plan(&config_path()).reaching(
+        PROVIDER_URLS
+            .get()
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .map(String::as_str),
+    );
+    uses.schemes.extend(
+        crate::LINKED_TRANSPORT_DOORS
+            .iter()
+            .filter_map(|(_, door)| Candidate::linked(*door).ok())
+            .flat_map(|c| c.schemes),
+    );
+    uses
+}
+
 /// The door planes [`discover_planes`] discovered, waiting for the dispatcher.
 pub(crate) static DOOR_CANDIDATES: std::sync::OnceLock<Vec<crate::root::loader::boot::Candidate>> =
     std::sync::OnceLock::new();
@@ -606,13 +666,23 @@ pub type DoorPlane = std::sync::Arc<
 /// dropped alike, bound through the loader's one load on that dispatcher, each to its own log sink
 /// under the configured `plugins.logs`, each declaring its needs on the process's one connection
 /// table (`root::connector::the()`). A plane that will not bind refuses the boot (exit 2).
-pub fn load_door_planes() {
+///
+/// LAW 7: only a plane the configuration uses is bound — one that owns a section among `sections`,
+/// the keys the boot composes its door planes over (the document's plane sections and the
+/// kernel-owned sections it hands them, `pools` whenever `models` is), so a plane is bound exactly
+/// when the composition can open it.
+pub fn load_door_planes<'s>(sections: impl IntoIterator<Item = &'s str>) {
     let doors = DOOR_CANDIDATES.get().map_or(&[][..], Vec::as_slice);
+    let uses = Uses {
+        roots: sections.into_iter().map(str::to_string).collect(),
+        ..Uses::default()
+    };
+    let used = crate::root::loader::boot::used_planes(&uses, doors);
     // The process's ONE connection table: a plane that declares a need is declared on it.
     let conns: std::sync::Arc<dyn busbar_contract::conn::DeclaredConns> =
         crate::root::connector::the().clone();
     let bound = crate::root::loader::boot::load_planes(
-        doors,
+        &used,
         plugin_logs(),
         std::sync::Arc::new(crate::root::loader::dispatch::NoSink),
         crate::root::dispatch::dispatcher().adopter(),
@@ -705,7 +775,7 @@ pub fn dropped_transports(
             return Vec::new();
         };
         let opened = registry
-            .open_transport_entries(&crate::root::doors::bind())
+            .open_transport_entries(&crate::root::doors::bind(), &transport_uses())
             .and_then(|entries| {
                 entries
                     .doors
@@ -720,11 +790,7 @@ pub fn dropped_transports(
                         let composes_over = facts.composes_over;
                         let offered = facts.offered;
                         let upgrades = facts.upgrades;
-                        let (door, wire) = crate::root::doors::served(
-                            plugin,
-                            settings,
-                            Some(crate::root::connector::address_carrier()),
-                        )?;
+                        let (door, wire) = crate::root::doors::served(plugin, settings)?;
                         Ok(crate::root::registry::DroppedDoor {
                             key,
                             claims,
@@ -911,8 +977,10 @@ pub fn book(
         None => super::durability::take_node(calls.as_ref(), &host),
     }
     .map_err(|why| format!("this node's identity in the store `{store}`: {why}"))?;
+    // The lease is held on the lane to the store it is held in, the lane this book keeps: its
+    // checkpoint flush tick refreshes it and the clean shutdown releases it.
     if let Some(lease) = taken.lease {
-        super::durability::hold_lease(std::sync::Arc::clone(&calls), lease);
+        lane.hold_lease(lease);
     }
     let node = taken.id;
     let mig = super::migration::MigrationConfig {

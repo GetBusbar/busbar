@@ -130,7 +130,7 @@ fn restart_phase() {
             )
             .expect("a pooled root correction lands");
             // The node's host records on the journal its `App` carries: the booted one.
-            busbar_kernel::plane_host::engine_host(&app).hook_read(
+            busbar_kernel::plane_driver::engine_host(&app).hook_read(
                 HOOK,
                 Some("pseudonym-1"),
                 "chat",
