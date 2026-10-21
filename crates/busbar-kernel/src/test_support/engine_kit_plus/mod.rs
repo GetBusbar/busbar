@@ -20,7 +20,7 @@
 
 use super::engine_kit::{CostKit, EngineApp, EngineTestKit, GovKit, HookEnvHandle, TestAppKit};
 use super::TestAppSeam;
-use crate::plane::PlaneAdmission;
+use crate::plane_driver::claims::PlaneAdmission;
 use busbar_contract::abi::mechanism::route::RouteAuth;
 use busbar_contract::secret::SecretResolve;
 use std::any::Any;

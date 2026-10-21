@@ -110,33 +110,6 @@ pub fn request_path(a: &Addresses) -> Vec<FnRow> {
             remedy: "keep the store off this path: admission reads in-memory cells only, and durability is flushed BEHIND the request (governance::state::flush / the ledger sink), never in front of it".into(),
             why: "the store is a durability sink, never on the request path — every latency figure busbar publishes is measured on an admission that does no I/O".into(),
         },
-        // THE PROTOCOL LOOKUP ALLOCATES NOTHING. `decl_for` is the one by-name protocol resolution
-        // in busbar and it is called several times per request. The `match` it replaced returned an
-        // OWNED `Protocol` and therefore allocated two vtable boxes on EVERY call — including the
-        // many calls that only wanted a `&'static` constant off the declaration. Everything
-        // reachable through a `ProtocolDecl` is `&'static`, so this function has no legitimate
-        // reason to allocate, own a string, or suspend.
-        FnRow {
-            id: "A8-protocol-decl-for".into(),
-            tag: "ALLOC-ON-PROTOCOL-LOOKUP".into(),
-            file: format!("{core}/proto/registry.rs"),
-            func: "decl_for".into(),
-            rules: vec![
-                FnBan::new("Box::new", "a box allocated while resolving a protocol name"),
-                FnBan::new("Vec::", "a vector allocated while resolving a protocol name"),
-                FnBan::new(
-                    "to_string",
-                    "an owned string allocated while resolving a protocol name",
-                ),
-                FnBan::new(
-                    "String::",
-                    "an owned string allocated while resolving a protocol name",
-                ),
-                FnBan::new(r"\.await", "an await inside the by-name protocol lookup"),
-            ],
-            remedy: "read the `&'static` declaration and hand it back: every fact on a `ProtocolDecl` is a constant the protocol declared, so nothing on this path needs to be built".into(),
-            why: "it is called several times per request, and the match it replaced allocated two vtable boxes on every call to answer a static question".into(),
-        },
     ]
 }
 

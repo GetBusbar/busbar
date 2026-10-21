@@ -1496,6 +1496,7 @@ pub(crate) async fn reset_overlay_section(
                 Some(&providers_path),
                 false,
                 busbar_kernel::config::EnvSubst::Strict,
+                snapshot.legacy,
             )
             .map_err(AdminError::Validation)?;
             // REFERENTIAL INTEGRITY, the bulk twin of the per-entry DELETE's dangling guard. A
@@ -1552,10 +1553,20 @@ pub(crate) async fn reset_overlay_section(
                 // Pre-resolve half: apply the (post-clear) root overrides onto the base DeployCfg,
                 // so the limits projection + admin-mTLS boot-guard re-derive over the merged shape.
                 if let Some(doc) = cleared_doc.as_ref() {
-                    busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
+                    busbar_kernel::config::overlay::apply_root_to_deploy(
+                        &mut loaded.deploy,
+                        doc,
+                        snapshot.legacy,
+                    );
                 }
-                let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
-                    .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
+                let mut cfg =
+                    busbar_kernel::config::resolve_in(
+                        snapshot.root,
+                        &loaded.deploy,
+                        &loaded.defs,
+                        snapshot.legacy,
+                    )
+                        .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
                 let base_hook_names: std::collections::HashSet<String> =
                     cfg.hooks.keys().cloned().collect();
                 let base_group_names: std::collections::HashSet<String> =
@@ -2071,26 +2082,19 @@ pub(crate) async fn put_auth(
                 )));
             }
         }
-        if req.admin_auth.is_empty() {
-            // FAIL-CLOSED: opening the admin API to the anonymous, full-authority dev posture is a
-            // config.yaml + restart decision (which fires the loud boot banner), NOT a thing the
-            // live admin API flips on. Applying `[]` here would swing the door open to the whole
-            // network on this one call — and the dry-run lock-out guard below can no longer catch it
-            // for us (an empty chain now truthfully earns THIS caller no full grant, so it would
-            // 409 with a misleading "would lock you out" message). Refuse it here with the honest
-            // reason and route the operator to the explicit, boot-warned opt-in.
+        let empty = req.admin_auth.is_empty();
+        if empty {
+            // PENDING OWNER (SECURITY), Q128 core-admin u19: 1.5.5 applied an empty chain live (the
+            // open, anonymous full-authority posture) with a warning, and so does this build until
+            // the owner signs the fail-closed refusal; signing it is `EMPTY_CHAIN_REFUSED_LIVE = true`.
+            if EMPTY_CHAIN_REFUSED_LIVE {
+                return Err(empty_chain_refusal(operator));
+            }
             diag_warn!(
                 ADMIN_AUTH_CHAIN_EMPTY,
-                "PUT /api/v1/admin/admin-auth REFUSED an EMPTY admin_auth chain: the open \
-                 (anonymous, full-authority) dev posture must be set in config.yaml and applied at \
-                 restart, not through the live admin API"
+                "PUT /api/v1/admin/admin-auth applied an EMPTY admin_auth chain — the admin API is \
+                 now the open (anonymous, full-authority) dev posture"
             );
-            return Err(AdminError::Validation(format!(
-                "an empty admin_auth chain is the open (anonymous, full-authority) dev posture and \
-                 cannot be applied through the live admin API — set `admin_auth: []` in config.yaml \
-                 and restart to opt in. Otherwise name at least one admin module (e.g. \
-                 `{operator}`)"
-            )));
         }
         // Candidate app with the new chain, built off the FRESH post-lock snapshot — so a config
         // mutation that landed while this request was parsing cannot be clobbered by a candidate
@@ -2099,8 +2103,11 @@ pub(crate) async fn put_auth(
         next.config_version = current.config_version.wrapping_add(1);
         next.admin_chain = req.admin_auth;
         // DRY-RUN GUARD: this very request's credential, evaluated under the CANDIDATE chain.
-        let survives = busbar_kernel::auth::dry_run_admin_scope(&next, &headers)
-            .contains(crate::v1::contract::Scope::Full);
+        // 1.5.5's guard read the open posture as full scope for the caller (an empty chain is
+        // `Open`), so an applied empty chain never answered "would lock you out".
+        let survives = empty
+            || busbar_kernel::auth::dry_run_admin_scope(&next, &headers)
+                .contains(crate::v1::contract::Scope::Full);
         if !survives {
             return Err(AdminError::Conflict(
                 "the new admin_auth chain would not grant THIS caller full scope — refusing to lock \
@@ -2231,16 +2238,26 @@ pub(crate) fn rebuild_app_from_disk(
         Some(&providers_path),
         false,
         busbar_kernel::config::EnvSubst::Strict,
+        current.legacy,
     )?;
     // 1.5.0 full-config coverage: apply the overlay's `root` section (single-value config) AND the
     // `plugin_versions` rollback pins onto the base `DeployCfg` BEFORE resolve, so the limits
     // projection + admin-mTLS boot-guard + the plugin trust FLOORS re-derive over the merged shape —
     // exactly as boot does. The hooks/groups sections merge POST-resolve below.
     if let Some(doc) = loaded.overlay_doc.as_ref() {
-        busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
+        busbar_kernel::config::overlay::apply_root_to_deploy(
+            &mut loaded.deploy,
+            doc,
+            current.legacy,
+        );
     }
-    let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
-        .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
+    let mut cfg = busbar_kernel::config::resolve_in(
+        current.root,
+        &loaded.deploy,
+        &loaded.defs,
+        current.legacy,
+    )
+    .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
     // Base hook + group names = the config-defined registry, pre-overlay (the admin API refuses
     // to PUT-replace / DELETE one); then merge the persisted overlay onto the resolved registry.
     let base_hook_names: std::collections::HashSet<String> = cfg.hooks.keys().cloned().collect();
@@ -2418,11 +2435,11 @@ pub(crate) async fn restart(
 ///
 /// `config` is carried as a raw [`serde_json::Value`] and parsed by the SAME pre-pass boot runs
 /// (`busbar_kernel::config::deploy_from_deserializer`), exactly as [`ValidateConfigReq`] is: the
-/// plane sections (`tools`/`agents`/`streams`/…) are lifted before the frozen `deny_unknown_fields`
-/// `DeployCfg` parses the remainder. A plain-derived `DeployCfg` here refused every plane section as
-/// an unknown field, so a config that boots could not be applied (ARCHITECT, FLIP-A2A: apply accepts
-/// exactly the boot config shape, plane sections included, and they flow to each plane's refresh
-/// with no restart).
+/// plane sections (each linked plane's declared section key) are lifted before the frozen
+/// `deny_unknown_fields` `DeployCfg` parses the remainder. A plain-derived `DeployCfg` here refused
+/// every plane section as an unknown field, so a config that boots could not be applied (ARCHITECT,
+/// agent-plane flip: apply accepts exactly the boot config shape, plane sections included, and they
+/// flow to each plane's refresh with no restart).
 #[derive(serde::Deserialize)]
 pub(crate) struct ApplyConfigReq {
     /// The deploy config (operator-owned `config.yaml` shape), pre-lift.
@@ -2499,38 +2516,47 @@ pub(crate) async fn apply_config(
                 .and_then(busbar_kernel::config::overlay::read);
             let (mut deploy, providers) = (req_deploy, req_providers);
             if let Some(doc) = overlay_doc.as_ref() {
-                busbar_kernel::config::overlay::apply_root_to_deploy(&mut deploy, doc);
+                busbar_kernel::config::overlay::apply_root_to_deploy(
+                    &mut deploy,
+                    doc,
+                    snapshot.legacy,
+                );
                 // Without this an apply re-validates against the BASE floors and silently reverts a
                 // live audited plugin rollback until the next restart re-applies the pin.
                 busbar_kernel::config::overlay::apply_plugin_versions_to_deploy(&mut deploy, doc);
             }
-            let next = busbar_kernel::config::resolve(&deploy, &providers)
-                .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))
-                .and_then(|mut cfg| {
-                    // Base names are the APPLIED config's own registry, taken pre-merge so an
-                    // overlay-only hook is not misread as base-defined (and so undeletable).
-                    let base_hook_names: std::collections::HashSet<String> =
-                        cfg.hooks.keys().cloned().collect();
-                    let base_group_names: std::collections::HashSet<String> =
-                        cfg.groups.keys().cloned().collect();
-                    if let Some(doc) = overlay_doc {
-                        busbar_kernel::config::overlay::merge_into(&mut cfg, doc);
-                    }
-                    busbar_kernel::build_app_from_config(
-                        cfg,
-                        deploy.plugins.clone(),
-                        snapshot.overlay_path.clone(),
-                        base_hook_names,
-                        base_group_names,
-                        (
-                            snapshot.config_path.clone(),
-                            snapshot.providers_path.clone(),
-                        ),
-                        Some(&snapshot),
-                        &snapshot.root_rules,
-                    )
-                })
-                .map_err(AdminError::Validation)?;
+            let next = busbar_kernel::config::resolve_in(
+                snapshot.root,
+                &deploy,
+                &providers,
+                snapshot.legacy,
+            )
+            .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))
+            .and_then(|mut cfg| {
+                // Base names are the APPLIED config's own registry, taken pre-merge so an
+                // overlay-only hook is not misread as base-defined (and so undeletable).
+                let base_hook_names: std::collections::HashSet<String> =
+                    cfg.hooks.keys().cloned().collect();
+                let base_group_names: std::collections::HashSet<String> =
+                    cfg.groups.keys().cloned().collect();
+                if let Some(doc) = overlay_doc {
+                    busbar_kernel::config::overlay::merge_into(&mut cfg, doc);
+                }
+                busbar_kernel::build_app_from_config(
+                    cfg,
+                    deploy.plugins.clone(),
+                    snapshot.overlay_path.clone(),
+                    base_hook_names,
+                    base_group_names,
+                    (
+                        snapshot.config_path.clone(),
+                        snapshot.providers_path.clone(),
+                    ),
+                    Some(&snapshot),
+                    &snapshot.root_rules,
+                )
+            })
+            .map_err(AdminError::Validation)?;
             let (next, gov_rotate, limits) = next;
             let installed = Arc::new(next);
             // LIVE-only (the response `note` says so): an applied config is not written to disk.
@@ -3035,6 +3061,7 @@ pub(crate) async fn put_config_settings(
                 Some(&providers_path),
                 false,
                 busbar_kernel::config::EnvSubst::Strict,
+                snapshot.legacy,
             )
             .and_then(|mut loaded| {
                 merged_for_build.apply_to_deploy(&mut loaded.deploy);
@@ -3047,10 +3074,16 @@ pub(crate) async fn put_config_settings(
                     busbar_kernel::config::overlay::apply_pre_resolve_sections(
                         &mut loaded.deploy,
                         doc,
+                        snapshot.legacy,
                     );
                 }
-                let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
-                    .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
+                let mut cfg = busbar_kernel::config::resolve_in(
+                    snapshot.root,
+                    &loaded.deploy,
+                    &loaded.defs,
+                    snapshot.legacy,
+                )
+                .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
                 let base_hook_names: std::collections::HashSet<String> =
                     cfg.hooks.keys().cloned().collect();
                 let base_group_names: std::collections::HashSet<String> =
@@ -3662,7 +3695,7 @@ const OPENAPI_ADMIN_TOKEN_HEADER: &str = "x-admin-token";
 // Invoked from the openapi tests + the CI artifact/drift jobs (all test targets); a non-test
 // feature-on bin build has no caller, so allow it dead there.
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn openapi_doc() -> serde_json::Value {
+pub(crate) fn openapi_doc(hook_names: &[&str]) -> serde_json::Value {
     let mut paths = serde_json::Map::new();
     for (path, summary) in V1_GET_PATHS {
         paths.insert(
@@ -3917,7 +3950,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // documents exactly the surface `JsonV1::router` mounts from the same `plane_decls()` list. The
     // typed success-body schemas for these paths are attached below by the shared `typed!`/`body!`
     // pass, which looks each path up by the key inserted here.
-    for decl in busbar_kernel::plane::registry::plane_decls() {
+    for decl in busbar_kernel::plane_driver::doors::plane_decls() {
         if let Some(openapi) = decl.openapi {
             if let Some(obj) = openapi().as_object() {
                 for (path, item) in obj {
@@ -4663,16 +4696,14 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     typed!("/hooks/{name}", "put", "200", HookView);
     typed!("/hooks/{name}/settings", "patch", "200", HookView);
     typed!("/hooks/{name}/health", "get", "200", HookHealthView);
-    // THE PLANES' TRUST-VERB SCHEMAS, contributed through the registry rather than named here. Each
-    // plane attaches its own typed success-body (and, for the planes that need one, request-body)
-    // schemas onto the paths its `openapi()` fragment inserted above, using the SAME shared
-    // `gen`/`req_gen` — so the plane types register into `#/components/schemas` exactly as the
-    // inline `typed!`/`body!` calls used to, and this document is byte-identical while this function
-    // names no plane-specific view type. Folded in `plane_decls()` order, matching the source order
-    // those calls had.
-    for decl in busbar_kernel::plane::registry::plane_decls() {
-        if let Some(schemas) = decl.openapi_schemas {
-            schemas(&mut gen, &mut req_gen, &mut paths);
+    // THE PLANES' COMPONENT SCHEMAS, contributed through the registry rather than named here. Each
+    // plane states the `components.schemas` its `openapi()` fragment's `$ref`s name, and they are
+    // inserted into the SAME shared `gen` as written — so the plane schemas register into
+    // `#/components/schemas` exactly as before, and this document is byte-identical while this
+    // function names no plane-specific view type. Folded in `plane_decls()` order.
+    for decl in busbar_kernel::plane_driver::doors::plane_decls() {
+        if let Some(schemas) = decl.openapi_schemas.and_then(|stated| stated()) {
+            gen.definitions_mut().extend(schemas);
         }
     }
     typed!("/hooks/{name}/schema", "get", "200", sview::HookSchemaView);
@@ -4989,6 +5020,21 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     for (name, schema) in req_gen.definitions() {
         schemas.insert(name.clone(), schema.clone());
     }
+    // The served description of `BuildInfo::hook_plugins`: 1.5.5's text byte for byte, its example
+    // the hook names the composition root lends the document (`hook_names`, the list the info read
+    // reports off its install record), so this contract spells no hook plugin.
+    if let Some(hook_plugins) = schemas
+        .get_mut("BuildInfo")
+        .and_then(|info| info.pointer_mut("/properties/hook_plugins"))
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        hook_plugins.insert(
+            "description".to_string(),
+            json!(format!(
+                "Hook plugins baked into this binary (e.g. `{hook_names:?}`)."
+            )),
+        );
+    }
     schemas.insert(
         "Error".to_string(),
         json!({
@@ -5017,7 +5063,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // document still describes every operation this BUILD can serve — one static document, served
     // identically whatever the deployment configured — and the mark is how a reader tells "present
     // on every node" from "present on a node that configured `<section>:`".
-    for decl in busbar_kernel::plane::registry::plane_decls() {
+    for decl in busbar_kernel::plane_driver::doors::plane_decls() {
         if decl.openapi.is_none() && decl.named_def_list.is_none() {
             continue;
         }
@@ -5210,7 +5256,7 @@ pub(crate) async fn openapi(
     const VARY: (axum::http::HeaderName, &str) = (axum::http::header::VARY, "accept-encoding");
     let app = handle.load();
     let configured = |section: &str| {
-        busbar_kernel::plane::registry::plane_decl_for_config_section(section)
+        busbar_kernel::plane_driver::doors::plane_decl_for_config_section(section)
             .is_some_and(|decl| app.plane_configured(decl))
     };
     if let Some(filtered) = openapi_for_configured_planes(&openapi_json(), configured) {
@@ -5388,6 +5434,28 @@ pub(crate) async fn validate_config(
             .validate_config(deploy, req.providers)
             .await,
     )
+}
+
+/// Whether a live `PUT /api/v1/admin/admin-auth` REFUSES an empty chain (PENDING OWNER, SECURITY,
+/// Q128 core-admin u19). `false` is 1.5.5: the chain is applied (the open dev posture) with a warning.
+/// `true` is the fail-closed refusal proposed for the owner's signature: the open posture becomes a
+/// config.yaml + restart opt-in only. Flipping it is the whole change.
+const EMPTY_CHAIN_REFUSED_LIVE: bool = false;
+
+/// The fail-closed refusal of a live empty admin chain ([`EMPTY_CHAIN_REFUSED_LIVE`]).
+fn empty_chain_refusal(operator: impl std::fmt::Display) -> AdminError {
+    diag_warn!(
+        ADMIN_AUTH_CHAIN_EMPTY,
+        "PUT /api/v1/admin/admin-auth REFUSED an EMPTY admin_auth chain: the open \
+         (anonymous, full-authority) dev posture must be set in config.yaml and applied at \
+         restart, not through the live admin API"
+    );
+    AdminError::Validation(format!(
+        "an empty admin_auth chain is the open (anonymous, full-authority) dev posture and \
+         cannot be applied through the live admin API — set `admin_auth: []` in config.yaml \
+         and restart to opt in. Otherwise name at least one admin module (e.g. \
+         `{operator}`)"
+    ))
 }
 
 #[cfg(test)]

@@ -9,12 +9,12 @@ path = "src/main.rs"
 # The plugin crates' directories — where the gate looks for a plane's own `linked` entry module.
 [dependencies]
 # llm's row links `busbar-plane-llm`, the crate the real roster's llm row names since the engine
-# crate's deletion (DEV-GREEN row 83). Like mcp, it stays a RIDER plane here: the rider and fold
-# plants are exercised on it.
+# crate's deletion (DEV-GREEN row 83). Like mcp and a2a, its unit path here is a `Units` impl its
+# plugin crate's `linked` entry exports.
 busbar-plane-llm = { path = "../busbar-plane-llm", optional = true }
 # mcp's row links `busbar-plane-mcp`, the crate the real roster's mcp row names since P3 DEL-MCP
-# (ARCHITECT 2026-10-05). It stays a RIDER plane here: this fixture exercises the rider, Units-export
-# and fold mechanics on a sample plane, and the door arm is exercised on the decisions plane.
+# (ARCHITECT 2026-10-05). This fixture exercises the Units-export mechanics on it, and the door arm
+# on the decisions plane.
 busbar-plane-mcp = { path = "../busbar-plane-mcp", optional = true }
 # a2a's row links `busbar-plane-a2a`, the crate the real roster's a2a row names since FLIP-A2A.
 busbar-plane-a2a = { path = "../busbar-plane-a2a", optional = true }

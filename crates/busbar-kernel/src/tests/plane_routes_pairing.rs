@@ -27,6 +27,7 @@ fn refusal(path: &str, method: RouteMethod) -> PlaneRefusalSpec {
         },
         refuse: Arc::new(|_: busbar_contract::caps::ReasonCode, _: &str| PlaneResponse::default()),
         signed_ingress: Arc::from(Vec::<String>::new()),
+        dialect: "",
     }
 }
 

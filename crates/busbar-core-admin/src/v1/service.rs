@@ -159,14 +159,14 @@ fn metered_row<'a>(
 
 /// **WHETHER A METERING ROW'S USAGE VIEW CARRIES `classes`.** Only a row a non-pools plane metered
 /// (its `provider` column is that plane's registry key, as [`row_lane`] reads it): the classes that
-/// plane declares are new 1.6.0 surface (the FLIP-A2A ruling). A pools-plane row keeps 1.5.5's
+/// plane declares are new 1.6.0 surface (the PLANE-FLIP ruling). A pools-plane row keeps 1.5.5's
 /// usage shape, the token split alone, though the budget book holds an open class for it (a
 /// rerank's `search_units`, a provider-stated total's `unitemized_tokens`, LEDGER-100): that count
 /// stays ledgered and priced into the row's `spend_micros`, and the read does not itemize it. The
 /// signed LEDGER-SIMPLE entry pins that read byte for byte, and 1.5.5's usage rows had no such field.
 pub(crate) fn row_carries_classes(provider: &str) -> bool {
     matches!(
-        busbar_kernel::plane::registry::plane_decl_for(provider),
+        busbar_kernel::plane_driver::doors::plane_decl_for(provider),
         Some(decl) if !decl.fallback
     )
 }
@@ -179,7 +179,7 @@ pub(crate) fn row_carries_classes(provider: &str) -> bool {
 /// upstream provider, never a plane key; or the fallback plane's key) keeps its model as its lane,
 /// and its requests carry the flat `per_request_fee:` — byte-identical to the previous release.
 pub fn row_lane<'a>(model: &'a str, provider: &str) -> std::borrow::Cow<'a, str> {
-    match busbar_kernel::plane::registry::plane_decl_for(provider) {
+    match busbar_kernel::plane_driver::doors::plane_decl_for(provider) {
         Some(decl) if !decl.fallback => std::borrow::Cow::Owned(format!(
             "{}{}{model}",
             decl.key,
@@ -230,12 +230,16 @@ pub(crate) fn usage_refusal(
 /// rate-card history, PINNED for the length of one read: a card appended while the read is in
 /// flight must not price half of one response's rows against one history and half against another.
 ///
-/// The history is the kernel's rate dater's ([`busbar_kernel::rate_apply::dated_history`]) — the
-/// one the composition root installs at boot and the budget ledger's reads price by — so this crate
-/// holds no seam of its own (R6). `None` for a build that installed no dater, or a node that has
-/// resolved no configuration yet: the read then derives exactly as the previous release did.
-fn dated_rate_history() -> Option<Arc<busbar_kernel::cost::History>> {
-    busbar_kernel::rate_apply::dated_history()
+/// The history is the rate dater's of the governance book `app` carries
+/// ([`busbar_kernel::rate_apply::dated_history`]) — the one the composition root lends on its
+/// install record and the budget ledger's reads price by — so this crate holds no seam of its own
+/// (R6). `None` for an app with no governance book, a book whose record lent no dater, or a node
+/// that has resolved no configuration yet: the read then derives exactly as the previous release
+/// did.
+fn dated_rate_history(app: &App) -> Option<Arc<busbar_kernel::cost::History>> {
+    app.governance
+        .as_deref()
+        .and_then(busbar_kernel::rate_apply::dated_history)
 }
 
 /// **THE INSTANT A METERING ROW RESOLVES AT**: its own FIRST instant — the later of the bucket's
@@ -686,13 +690,15 @@ pub fn auth_modules_compiled_in() -> Vec<&'static str> {
 }
 
 /// The removable hook plugins COMPILED INTO this binary: the hook rows this build LINKS, by the name
-/// every surface prints, read off the composition root's install record
-/// (`busbar_kernel::preflight::RootInstall::hook_names`) as the store catalog reads its `stores`.
-/// This crate names no hook plugin (Law 1) and holds no seam of its own (R6): the list is the
-/// root's data. Excludes the always-present, non-removable weighted SWRR floor, which is reported
-/// separately (as `weighted_floor` / the `weighted` compiled-in entry).
-pub(crate) fn hook_plugins_compiled_in() -> Vec<&'static str> {
-    busbar_kernel::preflight::root_rows().hook_names.to_vec()
+/// every surface prints, read off the install record the composition root lent the snapshot
+/// (`root`, `busbar_kernel::state::App::root`'s `hook_names`) as the store catalog reads its
+/// `stores`. This crate names no hook plugin (Law 1) and holds no seam of its own (R6): the list is
+/// the root's data. Excludes the always-present, non-removable weighted SWRR floor, which is
+/// reported separately (as `weighted_floor` / the `weighted` compiled-in entry).
+pub(crate) fn hook_plugins_compiled_in(
+    root: &busbar_kernel::preflight::RootInstall,
+) -> Vec<&'static str> {
+    root.hook_names.to_vec()
 }
 
 /// Longest a plugin filename may be — generous headroom over any real tarball name, guarding the
@@ -1322,7 +1328,7 @@ fn rebuild_hook_derived(next: &mut busbar_kernel::state::App) {
 // this fold names no plane registry type. A plane with no per-registration gates declares `None` and
 // is skipped, exactly as the old plane-gated blocks skipped a compiled-out plane.
 fn reresolve_plane_gates(next: &mut busbar_kernel::state::App) {
-    for decl in busbar_kernel::plane::registry::plane_decls() {
+    for decl in busbar_kernel::plane_driver::doors::plane_decls() {
         if let Some(reresolve) = decl.reresolve_gates {
             reresolve(next);
         }
@@ -1336,7 +1342,7 @@ fn plane_named_def_list(
     section: NamedMapSection,
     app: &busbar_kernel::state::App,
 ) -> Vec<NamedDefView> {
-    busbar_kernel::plane::registry::plane_decl_for_config_section(section.key())
+    busbar_kernel::plane_driver::doors::plane_decl_for_config_section(section.key())
         .and_then(|d| d.named_def_list)
         .map_or_else(Vec::new, |f| {
             f(app as &dyn busbar_kernel::plane_driver::slots::PlaneSlots)
@@ -1350,7 +1356,7 @@ fn plane_named_def_get(
     app: &busbar_kernel::state::App,
     name: &str,
 ) -> Option<NamedDefView> {
-    busbar_kernel::plane::registry::plane_decl_for_config_section(section.key())
+    busbar_kernel::plane_driver::doors::plane_decl_for_config_section(section.key())
         .and_then(|d| d.named_def_get)
         .and_then(|f| {
             f(

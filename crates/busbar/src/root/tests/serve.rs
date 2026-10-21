@@ -762,6 +762,7 @@ fn an_applied_door_section_carries_its_pools_and_hands_the_plane_no_work_key() {
     let applied = section_with_pools(key, &written, &pools);
     assert_eq!(
         crate::root::door_steps::DoorPools::of(&applied)
+            .expect("the pools")
             .pools()
             .get("files")
             .cloned(),
@@ -819,9 +820,9 @@ fn a_claim_that_is_not_open_owes_the_data_chain_configured_or_empty() {
 
 /// THE SERVE PATH NAMES NO STREAM MEDIA TYPE OF ITS OWN (audit R1#4; Law 1, BUSBAR-1.6.0.md l.1895
 /// "Dialects are internal to their plane"): whether an answer that states its length still goes out
-/// piece by piece is read off the declared rows — the event stream the contract names, and the
-/// stream `Content-Type` each declared protocol states on its `ProtocolDecl` row — never off a
-/// dialect's media type spelled here. Every one of them goes out piece by piece, byte for byte as
+/// piece by piece is read off what the planes declare — the event stream the contract names, and
+/// each `stream_media` a plane's `declares` section states (ARCHITECT ruling on the stream-media
+/// carrier, l.246) — never off a dialect's media type spelled here. Every one of them goes out piece by piece, byte for byte as
 /// written. RED before: the root spelled a vendor framing's media type beside the event stream.
 #[tokio::test]
 async fn every_declared_stream_type_goes_piece_by_piece_and_the_serve_path_spells_none() {
@@ -832,7 +833,7 @@ async fn every_declared_stream_type_goes_piece_by_piece_and_the_serve_path_spell
         "the serve path spells a dialect's stream media type: it must read the declared rows"
     );
     let declared = std::iter::once(busbar_contract::protocol::TEXT_EVENT_STREAM)
-        .chain(declared_stream_media().iter().copied());
+        .chain(declared_stream_media().iter().map(String::as_str));
     for media in declared {
         let fields: HeadFields = vec![
             (b"content-type".to_vec(), media.as_bytes().to_vec()),
@@ -859,4 +860,57 @@ async fn every_declared_stream_type_goes_piece_by_piece_and_the_serve_path_spell
             .expect("the body");
         assert_eq!(&body[..], b"hello world", "the bytes as written");
     }
+}
+
+/// THE CLAIM DOORS' BINDS (row 132): a served plane's INBOUND need whose `target_from` block in its
+/// section states a `listen` is bound there, under the need's transport and its own index, and the
+/// setting is named as the operator spells it. An outbound need, a need with no `target_from`, a
+/// block that states no `listen` and a plane whose section is absent bind nothing; an address that
+/// is not `ip:port` refuses the composition, naming the setting.
+#[test]
+fn a_planes_inbound_need_binds_at_the_listen_its_block_states() {
+    use crate::root::loader::boot::BindOwner;
+    use busbar_contract::abi::host::conn::connector::{DIRECTION_INBOUND, DIRECTION_OUTBOUND};
+    let facts = crate::root::loader::dispatch::kinds::plane::ServedFacts {
+        section: "a-section",
+        need_auths: vec![
+            (DIRECTION_OUTBOUND, "none"),
+            (DIRECTION_INBOUND, "none"),
+            (DIRECTION_INBOUND, "none"),
+            (DIRECTION_INBOUND, "none"),
+        ],
+        need_targets: vec!["far", "media", "", "quiet"],
+        need_transports: vec!["out-t", "in-t", "bare-t", "quiet-t"],
+        ..Default::default()
+    };
+    let doc = |yaml: &str| -> BTreeMap<&'static str, serde_yaml::Value> {
+        BTreeMap::from([("a-section", serde_yaml::from_str(yaml).expect("yaml"))])
+    };
+    let sections =
+        doc("far: {listen: \"127.0.0.1:7000\"}\nmedia: {listen: \"127.0.0.1:7001\"}\nquiet: {}\n");
+    let binds = super::need_binds("inst", &facts, &sections).expect("binds");
+    assert_eq!(
+        binds.len(),
+        1,
+        "only the inbound need whose block states a listen"
+    );
+    let b = &binds[0];
+    assert_eq!(b.transport, "in-t");
+    assert_eq!(b.at, "a-section.media");
+    assert_eq!(b.listen_setting(), "a-section.media.listen");
+    assert_eq!(b.listen, "127.0.0.1:7001".parse().unwrap());
+    assert!(matches!(
+        &b.owner,
+        BindOwner::Need { instance, need: 1, .. } if instance == "inst"
+    ));
+    assert!(
+        super::need_binds("inst", &facts, &BTreeMap::new())
+            .expect("no section")
+            .is_empty(),
+        "a plane whose section is absent binds nothing"
+    );
+    assert_eq!(
+        super::need_binds("inst", &facts, &doc("media: {listen: \"nowhere\"}\n")).unwrap_err(),
+        "a-section.media.listen: `nowhere` is not an ip:port address"
+    );
 }

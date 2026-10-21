@@ -14,7 +14,9 @@
 
 mod linked;
 
-use busbar_kernel::plane::registry::{PlaneDecl, PlaneDeclaration, TestRegistryIsolation};
+use busbar_kernel::plane_driver::doors::TestRegistryIsolation;
+use busbar_kernel::plane_driver::row::PlaneDecl;
+use busbar_kernel::plane_driver::row::PlaneDeclaration;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static HYDRATED: AtomicUsize = AtomicUsize::new(0);
@@ -177,7 +179,7 @@ fn resolve_reads_the_configured_plane_sections_off_the_config() {
             serde_yaml::from_str("protocol: anthropic\nbase_url: https://api.example.com\n")
                 .expect("provider def"),
         );
-        busbar_kernel::config::resolve(&deploy, &defs)
+        busbar_kernel::config::resolve(&deploy, &defs, busbar_kernel::config::Legacy::stand_in())
             .expect("resolve")
             .plane_sections
             .into_iter()

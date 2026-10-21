@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use busbar_plane_llm::exchange::arrive::envelope_for;
-use busbar_plane_llm::exchange::refuse::{kernel_refusal, Rendered};
+use busbar_plane_llm::exchange::refuse::{kernel_refusal, status_before_arrive, Rendered};
 use busbar_plane_llm::refusal::reason;
 use serde_json::Value;
 
@@ -1079,4 +1079,39 @@ fn the_kernels_refusals_are_the_previous_releases_writing_in_every_dialect() {
             assert_eq!(by_reason, as_written, "{d} {reason}");
         }
     }
+}
+
+/// A REFUSAL BEFORE `arrive` WEARS ITS TARGET'S BAD-CREDENTIAL STATUS: a refusal the kernel decides
+/// on a path no route takes at its verb carries no route's dialect, so the target's path rule names
+/// both the envelope and the status, each the recorded 1.5.5 unauthenticated cell's, whatever status
+/// the kernel handed. Any other reason, and a dialect the plane does not hold, keep the kernel's.
+/// RED: a residual bedrock (403) or gemini (400) bad credential answered 401.
+#[test]
+fn a_refusal_before_arrive_wears_its_targets_bad_credential_status() {
+    for dialect in [
+        "anthropic",
+        "bedrock",
+        "cohere",
+        "gemini",
+        "openai",
+        "responses",
+    ] {
+        let cell = recorded(&format!(
+            "llm__{dialect}__{dialect}__request__unauthenticated"
+        ));
+        assert_eq!(
+            Some(u64::from(status_before_arrive(
+                dialect,
+                reason::UNAUTHENTICATED,
+                401
+            ))),
+            cell["status"].as_u64(),
+            "{dialect}"
+        );
+    }
+    assert_eq!(status_before_arrive("bedrock", reason::NO_RATE, 400), 400);
+    assert_eq!(
+        status_before_arrive("some-future-proto", reason::UNAUTHENTICATED, 401),
+        401
+    );
 }

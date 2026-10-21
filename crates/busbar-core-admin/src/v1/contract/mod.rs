@@ -263,9 +263,8 @@ pub struct InfoView {
 pub struct BuildInfo {
     /// Auth modules baked into this binary (e.g. `["tokens"]`; empty under `--no-default-features`).
     pub auth_modules: Vec<&'static str>,
-    /// Hook plugins baked into this binary — the served description's example is read off the
-    /// compiled-in list itself ([`hook_plugins_description`]).
-    #[cfg_attr(feature = "openapi-schema", schemars(description = hook_plugins_description()))]
+    /// Hook plugins baked into this binary — the served description's example is the hook names
+    /// the composition root lends the document (`v1::json::openapi_doc`).
     pub hook_plugins: Vec<&'static str>,
     /// The inline SWRR floor: ALWAYS `true` (compiled in unconditionally, non-removable).
     pub weighted_floor: bool,
@@ -454,7 +453,7 @@ pub struct HookView {
 
 /// The shared named-DEFINITION read VIEW — relocated to the neutral substrate
 /// (`busbar_kernel::api`) as pure serde data (no `Scope`, no core reach) so a plane crate names
-/// it directly; re-exported here so every in-core (and a2a) caller is unchanged.
+/// it directly; re-exported here so every in-core (and agent-style plane) caller is unchanged.
 pub use busbar_kernel::api::NamedDefView;
 
 /// A group definition in the registry read (`GET /api/v1/admin/groups`,
@@ -1075,17 +1074,6 @@ pub struct AdminAuthView {
     /// operator credential's provider alone), reported in order. Empty when the admin plane is open.
     #[cfg_attr(feature = "openapi-schema", schemars(description = modules_description()))]
     pub modules: Vec<String>,
-}
-
-/// The served description of [`BuildInfo::hook_plugins`]: 1.5.5's text byte for byte, its example
-/// read off the list the info read reports (`v1::service::hook_plugins_compiled_in`), so this
-/// contract spells no hook plugin.
-#[cfg(feature = "openapi-schema")]
-fn hook_plugins_description() -> String {
-    format!(
-        "Hook plugins baked into this binary (e.g. `{:?}`).",
-        crate::v1::service::hook_plugins_compiled_in()
-    )
 }
 
 /// The served description of [`AdminAuthView::modules`]: 1.5.5's text byte for byte, its example

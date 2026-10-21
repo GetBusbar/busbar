@@ -797,13 +797,13 @@ pub type BuiltApp = crate::state::App;
 
 /// The default runtime of the plane that owns the tool-server section, for the current build
 /// surface: this crate's own `cfg(test)` binary seeds the registry's placeholder
-/// (`plane::registry::default_section_plane_test_runtime`, an empty value). An external
+/// (`plane_driver::doors::default_section_plane_test_runtime`, an empty value). An external
 /// `test-support` build seeds none; a test that registers that plane installs its own runtime. (A registration slot an
 /// external consumer could fill once stood here; nothing ever filled it, and a static fn-pointer
 /// seam is a `door-only` finding.)
 #[cfg(test)]
 fn seeded_section_plane_runtime() -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
-    Some(crate::plane::registry::default_section_plane_test_runtime())
+    Some(crate::plane_driver::doors::default_section_plane_test_runtime())
 }
 #[cfg(all(not(test), feature = "test-support"))]
 fn seeded_section_plane_runtime() -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
@@ -908,6 +908,7 @@ pub struct TestApp {
     plugins_dir: Option<std::path::PathBuf>,
     plugins_cfg: Option<crate::config::PluginsCfg>,
     plugin_trust: Option<crate::preflight::TrustPolicyBuild>,
+    root: Option<crate::preflight::RootInstall>,
     hook_env: Option<crate::hooks::HookEnv>,
     disk_paths: Option<(std::path::PathBuf, std::path::PathBuf)>,
     /// When `true`, build an App that booted with NO plugin routes at all — an EMPTY live table AND an
@@ -927,7 +928,7 @@ pub struct TestApp {
     /// THE NEUTRAL DISPATCH TABLE the built App mounts. A plane's test-kit describes its mounts and
     /// admissions through [`TestApp::mount_plane`] / [`TestApp::admit_plane`] (neutral `&str` paths,
     /// substrate `PlaneAdmission`), so `build()` names no plane type to assemble the router surface.
-    plane_dispatch: crate::plane::PlaneDispatch,
+    plane_dispatch: crate::plane_driver::claims::PlaneDispatch,
     /// NEUTRAL per-container hook SPECS, KEYED by the owning plane's decl key (the `tools:` plane's
     /// server hooks, the `agents:` plane's agent hooks) — each value is `(container_name, own_hook_names)`
     /// pairs plus the section-level hook list, handed here by that plane's test-kit as plain strings off
@@ -1017,11 +1018,12 @@ impl TestApp {
             plugins_dir: None,
             plugins_cfg: None,
             plugin_trust: None,
+            root: None,
             hook_env: None,
             disk_paths: None,
             no_plugin_routes: false,
             installed_plane_runtimes: std::collections::BTreeMap::new(),
-            plane_dispatch: crate::plane::PlaneDispatch::default(),
+            plane_dispatch: crate::plane_driver::claims::PlaneDispatch::default(),
             container_hooks: std::collections::BTreeMap::new(),
             plane_scratch: std::collections::HashMap::new(),
             plane_finalizers: Vec::new(),
@@ -1058,7 +1060,7 @@ impl TestApp {
     pub fn admit_plane(
         &mut self,
         key: &'static str,
-        admission: busbar_kernel::plane::PlaneAdmission,
+        admission: crate::plane_driver::claims::PlaneAdmission,
     ) -> &mut Self {
         let d = std::mem::take(&mut self.plane_dispatch);
         self.plane_dispatch = d.admit(key, admission);
@@ -1124,6 +1126,12 @@ impl TestApp {
     /// build's [`trust_policy_stand_in`].
     pub fn plugin_trust(mut self, build: crate::preflight::TrustPolicyBuild) -> Self {
         self.plugin_trust = Some(build);
+        self
+    }
+    /// Lend the snapshot `root` — a composition root's own install record — in place of the test
+    /// build's [`crate::preflight::RootInstall::STAND_IN`].
+    pub fn root(mut self, root: crate::preflight::RootInstall) -> Self {
+        self.root = Some(root);
         self
     }
 
@@ -1612,11 +1620,11 @@ impl TestApp {
         // `reresolve_gates`/`on_swap` seams (run on every admin mutation) fault. A fixture that
         // installed the plane's runtime keeps it; otherwise, in THIS crate's own `cfg(test)` binary,
         // the slot gets the registry's placeholder (`seeded_section_plane_runtime`: an empty value,
-        // `plane::registry::default_section_plane_test_runtime`), and an EXTERNAL `test-support`
+        // `plane_driver::doors::default_section_plane_test_runtime`), and an EXTERNAL `test-support`
         // build seeds none. With no plane registered for the section, nothing is seeded. The decl
         // key comes from the registry, never spelled as a literal.
         #[cfg(any(test, feature = "test-support"))]
-        if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
+        if let Some(decl) = crate::plane_driver::doors::plane_decl_for_config_section(
             busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
         ) {
             if let Some(rt) = seeded_section_plane_runtime() {
@@ -1651,7 +1659,7 @@ impl TestApp {
             &ts_pools,
             &ts_by_model,
             |idx| lane_inputs.get(idx).map(|lane| lane.model.as_str()),
-            crate::plane::fallback_key(),
+            crate::plane_driver::doors::fallback_key(),
         ));
         let store = std::sync::Arc::new(crate::store::HealthState::new(lane_data));
         // THE LLM DATA-PLANE RUNTIME slot (R3/R4 sub-phase B) — the successor to the flat `llm_runtime`
@@ -1662,13 +1670,13 @@ impl TestApp {
         // configures its lanes/pools and expects them readable through `engine_tables`, exactly as the
         // always-present flat field guaranteed, so `build()` seeds the slot for every `TestApp` whose
         // process actually has an LLM (fallback) plane. The key AND the `build_runtime` come from ONE
-        // resolved decl ([`crate::plane::fallback_decl`]), never from `fallback_key()`: that degrades to
+        // resolved decl ([`crate::plane_driver::doors::fallback_decl`]), never from `fallback_key()`: that degrades to
         // the FIRST registered plane's key when no plane flags itself fallback (the plane suites'
         // dependency-copy of core, which registers only MCP/A2A), and this test binary's registry GROWS
         // while sibling tests run (`register_test_plane`), so a key read before a fallback plane
         // registers and a decl read after it named two different planes — the LLM runtime then landed
         // under the sibling's `runtime_slot_key` and clobbered that sibling's own runtime slot.
-        let fallback = crate::plane::fallback_decl();
+        let fallback = crate::plane_driver::doors::fallback_decl();
         let fallback_runtime_key = crate::state::runtime_slot_key(fallback.map_or("", |d| d.key));
         // Built and inserted ONLY when a real fallback (LLM) plane owns the key — otherwise `lanes`/
         // `by_model`/the `self.*` tables simply drop unused, and `App::llm_runtime` reads the empty
@@ -1809,8 +1817,11 @@ impl TestApp {
         // control-plane surface, and the per-container gate resolution below.
         let hook_env = self.hook_env.clone().unwrap_or_else(|| {
             crate::hooks::HookEnv::new(
+                &self.root.unwrap_or_else(lent_stand_in),
                 std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
-                std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
+                std::sync::Arc::new(crate::config::secret::SecretResolver::linked_only(
+                    self.root.unwrap_or_else(lent_stand_in).secret_axis,
+                )),
             )
             .expect("an empty registry's hook axis")
         });
@@ -1829,7 +1840,9 @@ impl TestApp {
                 busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
                 busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3],
             ] {
-                if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(section) {
+                if let Some(decl) =
+                    crate::plane_driver::doors::plane_decl_for_config_section(section)
+                {
                     let (containers, section_hooks) = self
                         .container_hooks
                         .get(decl.key)
@@ -1856,7 +1869,9 @@ impl TestApp {
                 busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
                 busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3],
             ] {
-                if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(section) {
+                if let Some(decl) =
+                    crate::plane_driver::doors::plane_decl_for_config_section(section)
+                {
                     let (containers, section_hooks) = self
                         .container_hooks
                         .get(decl.key)
@@ -1893,6 +1908,7 @@ impl TestApp {
             // plane is registered), read when that plane contributes no runtime of its own.
             config_tables,
             root_rules: std::sync::Arc::new(crate::appbuild::AcceptAll),
+            legacy: crate::config::Legacy::stand_in(),
             config_projection: None,
             store: store.clone(),
             plane_breakers: std::sync::Arc::new(crate::store::PlaneBreakers::new()),
@@ -1905,7 +1921,7 @@ impl TestApp {
                 .plane_pools_by_section
                 .into_iter()
                 .filter_map(|(section, pools)| {
-                    crate::plane::registry::plane_decl_for_config_section(section)
+                    crate::plane_driver::doors::plane_decl_for_config_section(section)
                         .map(|decl| (decl.key, pools))
                 })
                 .collect(),
@@ -1948,10 +1964,14 @@ impl TestApp {
                     .admin_modules
                     .unwrap_or_else(crate::auth::AdminAuthChain::empty);
                 let digest = self.governance.as_ref().and_then(|g| g.admin_token_hash());
-                let reg =
-                    std::sync::Arc::new(crate::preflight::linked().expect("the linked registry"));
-                chain.operator = crate::auth::open_operator(&reg, digest, &self.identity_providers)
-                    .expect("the linked operator credential opens");
+                let legacy = crate::config::Legacy::stand_in();
+                let reg = std::sync::Arc::new(
+                    crate::preflight::linked(&self.root.unwrap_or_else(lent_stand_in), legacy)
+                        .expect("the linked registry"),
+                );
+                chain.operator =
+                    crate::auth::open_operator(&reg, digest, &self.identity_providers, legacy)
+                        .expect("the linked operator credential opens");
                 std::sync::Arc::new(chain)
             },
             login_methods: std::sync::Arc::new(
@@ -1996,7 +2016,9 @@ impl TestApp {
             max_auto_provisioned_groups: 0,
             governance: self.governance,
             secret_resolver: std::sync::Arc::new(
-                crate::config::secret::SecretResolver::builtins_only(),
+                crate::config::secret::SecretResolver::linked_only(
+                    self.root.unwrap_or_else(lent_stand_in).secret_axis,
+                ),
             ),
             cost: self
                 .cost
@@ -2006,6 +2028,7 @@ impl TestApp {
                 .unwrap_or_else(|| std::path::PathBuf::from("plugins")),
             plugins_cfg: self.plugins_cfg.unwrap_or_default(),
             plugin_trust: Some(self.plugin_trust.unwrap_or(trust_policy_stand_in)),
+            root: self.root.unwrap_or_else(lent_stand_in),
             self_key_ttl_secs: crate::governance::mint_policy::DEFAULT_KEY_TTL_SECS,
             mint_policy: std::sync::Arc::new(self.mint_policy.unwrap_or_default()),
             request_id_counter: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
@@ -2378,14 +2401,51 @@ pub fn install_root_auth(rows: &[crate::preflight::LinkedAuth], words: OperatorW
 
 pub use busbar_kernel_identity::operator::{AuthDoor, OperatorWords};
 
-/// THE ROOT'S HOOK NAMES in a test binary of the composition root: `names` is the root's own
-/// generated list (`$OUT_DIR/linked_hook_names.rs`, the manifest's `linked-name` rows for the hook
-/// rows that build links), and the install record ([`crate::preflight::root_rows`]) reports them as
-/// the root's install record does, so the admin surface that binary serves, its `openapi.json`
-/// included, lists the hooks the shipped binary lists. A test build with no root hands in nothing
-/// and lists none. The first hand-in stands.
-pub fn install_root_hook_names(names: &'static [&'static str]) {
-    let _ = crate::preflight::TEST_ROOT_HOOK_NAMES.set(names);
+// FINAL-REPIN: delete with `preflight::install_auth_axis` when the pinned door root cells lend
+// their TestApp a record of their own (`TestApp::root`).
+/// The auth-axis opener the pinned door root cells hand in (`preflight::install_auth_axis`): a
+/// [`TestApp`] lent no record of its own lends the stand-in with it in place of the stand-in's
+/// opener ([`lent_stand_in`]). Read by nothing else; a test that lends a record
+/// ([`TestApp::root`]) reads the opener that record lends. The first hand-in stands.
+static ROOT_AUTH_AXIS_HANDED_IN: std::sync::OnceLock<crate::preflight::AuthAxisOpener> =
+    std::sync::OnceLock::new();
+
+/// Hand the pinned door root cells' auth-axis opener in ([`ROOT_AUTH_AXIS_HANDED_IN`]).
+#[cfg(feature = "test-support")]
+pub(crate) fn hand_in_root_auth_axis(open: crate::preflight::AuthAxisOpener) {
+    let _ = ROOT_AUTH_AXIS_HANDED_IN.set(open);
+}
+
+/// A program environment's secret reference resolved at config time through the secret axis the
+/// stand-in record lends ([`crate::preflight::RootInstall::STAND_IN`]): the resolver a test build
+/// hands the connector it builds, in place of the root's.
+///
+/// # Errors
+///
+/// The reference does not resolve through the stand-in's secret axis.
+pub fn resolve_stand_in_secret_at_config(
+    secret: &crate::config::SecretRef,
+    scope: &busbar_contract::config_time::ConfigScope,
+) -> Result<String, String> {
+    crate::config::secret::resolve_linked_string_at_config(
+        crate::preflight::RootInstall::STAND_IN.secret_axis,
+        secret,
+        scope,
+    )
+}
+
+/// The record a [`TestApp`] lent none of its own lends: the stand-in
+/// ([`crate::preflight::RootInstall::STAND_IN`]), with the pinned door root cells' auth-axis opener
+/// in place of the stand-in's when they handed one in ([`ROOT_AUTH_AXIS_HANDED_IN`]).
+pub(crate) fn lent_stand_in() -> crate::preflight::RootInstall {
+    let stand_in = crate::preflight::RootInstall::STAND_IN;
+    crate::preflight::RootInstall {
+        auth_axis: ROOT_AUTH_AXIS_HANDED_IN
+            .get()
+            .copied()
+            .or(stand_in.auth_axis),
+        ..stand_in
+    }
 }
 
 /// THE CLOSED ADMIN VERB TABLE, as a kind-neutral double: three operations of the admin surface,

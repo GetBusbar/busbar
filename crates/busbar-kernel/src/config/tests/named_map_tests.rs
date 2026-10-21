@@ -60,6 +60,7 @@ fn insert_parses_the_typed_definition_and_rejects_an_unknown_field() {
             &mut deploy,
             "corp-ad",
             &serde_json::json!({"module": "ad", "max_admin_scope": "read-only"}),
+            crate::config::Legacy::stand_in(),
         )
         .expect("a well-formed identity-provider definition is accepted");
     assert_eq!(deploy.identity_providers["corp-ad"].module, "ad");
@@ -75,6 +76,7 @@ fn insert_parses_the_typed_definition_and_rejects_an_unknown_field() {
             &mut deploy,
             "metrics",
             &serde_json::json!({"module": "prometheus", "modle": {}}),
+            crate::config::Legacy::stand_in(),
         )
         .expect_err("a typo'd key must be rejected, never silently stored");
     assert!(
@@ -137,15 +139,24 @@ fn only_identity_providers_carry_a_trust_ceiling() {
 /// never in a bespoke "compiled without the plane" sentence that names a plane the build lacks.
 #[test]
 fn a_section_no_registered_plane_declares_is_an_unknown_field() {
-    let _isolation = crate::plane::registry::TestRegistryIsolation::empty();
+    let _isolation = crate::plane_driver::doors::TestRegistryIsolation::empty();
     let section = NamedMapSection::Plane("bays");
     let err = section
-        .parse_def("dock", &serde_json::json!({}))
+        .parse_def(
+            "dock",
+            &serde_json::json!({}),
+            crate::config::Legacy::stand_in(),
+        )
         .err()
         .expect("a section no plane declares is refused");
     assert_eq!(err, "unknown field `bays`");
     let err = section
-        .insert(&mut base_deploy(), "dock", &serde_json::json!({}))
+        .insert(
+            &mut base_deploy(),
+            "dock",
+            &serde_json::json!({}),
+            crate::config::Legacy::stand_in(),
+        )
         .expect_err("and refused on insert too");
     assert_eq!(err, "unknown field `bays`");
     assert!(!err.contains("compiled without"), "{err}");

@@ -10,7 +10,7 @@ use crate::diagnostics::{
     diag_warn, CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT,
     CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS, CONFIG_RATE_CARD_ALL_ZERO,
 };
-use crate::plane::registry::plane_decl_for;
+use crate::plane_driver::doors::plane_decl_for;
 use busbar_contract::abi::export::CheckPhase;
 use busbar_kernel_ledger::cost::{
     flat_card_present, split_plane_lane, PER_REQUEST, PER_SESSION, PLANE_LANE_SEP,
@@ -329,8 +329,8 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // fallback plane, or its declared section is in `plane_sections`): a linked plane with no
     // config section serves nothing, so its dialect is no legal `protocol:` — and a 1.5.5 config's
     // unknown-protocol refusal lists 1.5.5's protocols, not `jev` (oracle cell BOOT-020).
-    let mut known_protocols: Vec<&str> = crate::plane::provider_dialects();
-    for decl in crate::plane::registry::plane_decls()
+    let mut known_protocols: Vec<&str> = crate::plane_driver::doors::provider_dialects();
+    for decl in crate::plane_driver::doors::plane_decls()
         .iter()
         .filter(|d| d.fallback || cfg.plane_sections.contains(d.config_section))
     {
@@ -805,7 +805,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             // Compiled out (`--no-default-features`), naming one is a boot error, never a silent
             // degrade (the same compliance-by-compilation stance as the pool strategy rule).
             if crate::config::is_strategy_name(current) {
-                if !crate::preflight::builtin_ranking_known(current) {
+                if !crate::preflight::builtin_ranking_known(&cfg.root, current) {
                     errors.push(format!(
                         "hook '{hook_name}' on_error names the built-in ranking strategy \
                          '{current}' but this binary was built WITHOUT the `hooks-ranking` \
@@ -1047,7 +1047,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             }
             // `token:` is the operator credential; on any other module it is inert and almost
             // certainly a misplaced secret. Fail loud.
-            if entry.token.is_some() && !crate::config::names_operator(&entry.module) {
+            if entry.token.is_some() && !crate::config::names_operator(&entry.module, cfg.legacy) {
                 errors.push(operator::misplaced_token(
                     operator_provider(),
                     &entry.module,
@@ -1075,7 +1075,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // works — it's the engine's inline SWRR floor, not a plugin.)
     for (pool_name, pool_cfg) in &cfg.pools {
         let name = pool_cfg.policy.native_name();
-        if name.is_some_and(|n| !crate::preflight::builtin_ranking_known(n)) {
+        if name.is_some_and(|n| !crate::preflight::builtin_ranking_known(&cfg.root, n)) {
             errors.push(format!(
                 "pool '{pool_name}' names the {:?} ranking strategy but this binary was built \
                  WITHOUT the `hooks-ranking` feature — the built-in ranking strategies are absent. \
@@ -1125,7 +1125,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // `.subject_noun`) — the endpoint plane's own vocabulary — so this neutral rule carries no
         // plane token literal while the error still names the exact `<key>:` block and `auth.chain`
         // the operator must fix.
-        let decl = crate::plane::registry::plane_decl_for_config_section(endpoint_section);
+        let decl = crate::plane_driver::doors::plane_decl_for_config_section(endpoint_section);
         let key = decl.map(|d| d.key).unwrap_or("endpoint");
         let noun = decl.map(|d| d.subject_noun).unwrap_or("endpoint");
         errors.push(format!(
@@ -1198,7 +1198,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // see `AuthCfg::usable_mint_path`. An explicit OPEN admin (`admin_auth: []`) counts as a mint
         // path but is dev-only — WARN that anyone can mint. `oidc`/plugin chains never set
         // `keys_in_chain`, so they never trigger this (their identities are externally issued).
-        if verifies_signed_keys && !auth.usable_mint_path() {
+        if verifies_signed_keys && !auth.usable_mint_path(cfg.legacy) {
             errors.push(operator::no_mint_path(operator_provider()));
         }
         if verifies_signed_keys && auth.admin_auth.is_empty() {
@@ -1223,6 +1223,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         if any_passthrough {
             for (provider_name, provider_cfg) in &cfg.providers {
                 let resolved_key = crate::config::secret::resolve_linked_string_at_config(
+                    cfg.root.secret_axis,
                     &provider_cfg.api_key,
                     &busbar_contract::config_time::ConfigScope::config_time(),
                 )
@@ -1254,9 +1255,10 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // instances share (a webhook sink's in-flight bound) AMONG the limits' checks, each instance's
     // own (a webhook's delivery deadline) after them.
     use crate::export::plugin::check;
-    let sinks = &mut |e: &mut Vec<String>| check(&cfg.export, CheckPhase::Limits, e);
+    let exports = cfg.root.export_axis;
+    let sinks = &mut |e: &mut Vec<String>| check(exports, &cfg.export, CheckPhase::Limits, e);
     validate_limits_with(&cfg.limits, &mut errors, sinks);
-    check(&cfg.export, CheckPhase::Instances, &mut errors);
+    check(exports, &cfg.export, CheckPhase::Instances, &mut errors);
 
     // A model maps to ONE lane, so its `context_max` must be single-valued across every pool that
     // names it. `build_app_from_config` (boot) rejects a genuine conflict — mirror that here so a
@@ -1536,7 +1538,7 @@ fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut 
 /// The classes a plane's card prices: its declared billable classes less its fee units (a fee unit
 /// says whether the flat fee was incurred and is never ledgered as usage, so no card prices it).
 fn priced_classes(
-    d: &crate::plane::registry::PlaneDecl,
+    d: &crate::plane_driver::row::PlaneDecl,
 ) -> impl Iterator<Item = &'static str> + Clone + '_ {
     (d.billable_classes.iter())
         .map(|c| c.class)
@@ -1557,8 +1559,8 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         for (key, r) in card {
             // `lane` is the whole key on the flat card; empty on a plane card's presence key.
             let (plane, lane) = split_plane_lane(key);
-            let at =
-                crate::plane::registry::plane_decl_for(plane).map_or(plane, |d| d.config_section);
+            let at = crate::plane_driver::doors::plane_decl_for(plane)
+                .map_or(plane, |d| d.config_section);
             let path = format!(
                 "{at}{}rate_card['{lane}']",
                 if at.is_empty() { "" } else { "." }
@@ -1679,7 +1681,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         // units: exactly the classes the plane's lane was priced by before it was served through
         // its door, so a configuration that booted then boots now and an unpriced class still
         // refuses (#42).
-        for d in crate::plane::registry::plane_decls() {
+        for d in crate::plane_driver::doors::plane_decls() {
             let own = if d.fallback { "" } else { d.key };
             let on: Vec<_> = card
                 .iter()
@@ -1810,30 +1812,30 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     // answers to additionally requires the plugin subsystem (checked with the registry in
     // `plugins_preflight`, the shared boot path).
     match &cfg.store {
-        None => errors.push(crate::config::store_required()),
+        None => errors.push(crate::config::store_required(cfg.legacy)),
         Some(store) if store.module.trim().is_empty() => {
             errors.push(format!(
                 "store.module must be non-empty; use `memory` (the compiled-in RAM store) or a \
                  store plugin name/alias ({} | <third-party>)",
-                crate::config::migrate::legacy_store_text("module_examples")
+                crate::config::migrate::legacy_store_text(cfg.legacy, "module_examples")
             ));
         }
         Some(_) => {}
     }
 
-    // SECRET REFERENCES: every secret's MODULE must be resolvable BY NAME. The built-ins are
-    // `env` and `file`; ANY OTHER module name is a `kind: secret` PLUGIN reference (vault, aws-sm,
-    // …), which is the marquee 1.5.0 "secrets are plugins" feature. Whether such a plugin actually
-    // exists + is `kind: secret` + is trusted is resolved against the plugin REGISTRY — but this
-    // function runs at boot AND `--validate` BEFORE the plugin pre-flight builds that registry, and
-    // captures none, so it CANNOT tell an installed vault plugin from a typo. Therefore the
-    // module-EXISTENCE check for a non-built-in module is DEFERRED to the shared plugin pre-flight
-    // (`validate_secret_refs`, called from `plugins_preflight`'s two call-sites) — the SAME deferral
-    // the `store.module` plugin reference already uses (a non-`memory` store is only checked once the
-    // registry exists). Here we validate ONLY the STRUCTURE that is checkable without the registry:
-    // the built-in `env`/`file` modules' required settings. The VALUE is never resolved here (CI
-    // validates config structure without secrets present); resolution failures are boot-time
-    // fail-closed errors.
+    // SECRET REFERENCES: every secret's MODULE must be resolvable BY NAME, and every module is a
+    // `kind: secret` PLUGIN reference. Whether such a plugin actually exists + is `kind: secret` +
+    // is trusted is resolved against the plugin REGISTRY — but this function runs at boot AND
+    // `--validate` BEFORE the plugin pre-flight builds that registry, and captures none, so it
+    // CANNOT tell an installed plugin from a typo. Therefore the module-EXISTENCE check is DEFERRED
+    // to the shared plugin pre-flight (`validate_secret_refs`, called from `plugins_preflight`'s two
+    // call-sites) — the SAME deferral the `store.module` plugin reference already uses. Here we
+    // validate ONLY the STRUCTURE that is checkable without the registry: the settings key each
+    // loaded secret plugin's declared shorthand names (its Statement's `REWRITE_SUGAR`; audit
+    // contract-admin #10, Law 1: the kernel reads the shorthand off the plugins and names no
+    // source). The VALUE is never resolved here (CI validates config structure without secrets
+    // present); resolution failures are boot-time fail-closed errors.
+    let sugars = crate::config::secret::sugars(cfg.root.secret_axis);
     let mut check_secret = |what: String, r: &crate::config::SecretRef| {
         // `none` declares that there is NO credential here. That is meaningful for a provider
         // `api_key` (a keyless local upstream — ollama, vLLM) and meaningless everywhere else: a
@@ -1846,45 +1848,19 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                     "{what}: `none` declares that there is NO credential, which is only meaningful \
                      for a provider `api_key` (a keyless local upstream such as ollama or vLLM); \
                      {what} requires a real secret reference, e.g. \
-                     {what}: {{ env: MY_SECRET_VAR }}"
+                     {what}: {}",
+                    example_reference(&sugars, "MY_SECRET_VAR")
                 ));
             }
             // Nothing structural left to check: `none` names no module settings at all.
             return;
         }
-        // The built-in `env`/`file` modules need a NON-EMPTY key/path. The `{ env: "" }` /
-        // `{ file: "" }` sugar already rejects an empty value in the deserializer
-        // (contract secret_ref), but the CANONICAL `{ module: env, settings: { key: "" } }` form
-        // bypasses that arm — `env_var()`/`file_path()` return `Some("")`, not `None`. Left
-        // unchecked, such a config passes `--validate` as "ok" then fail-closes at boot
-        // (`std::env::var("")` → Err), so a clean validate would no longer imply a clean boot.
-        // Reject both the MISSING and the EMPTY cases here, mirroring the sugar check.
-        if r.module == crate::config::secret::SECRET_MODULE_ENV {
-            match r.env_var() {
-                None => errors.push(format!(
-                    "{what}: secret module 'env' requires settings.key (the environment variable \
-                     name)"
-                )),
-                Some(v) if v.trim().is_empty() => errors.push(format!(
-                    "{what}: secret module 'env' requires a NON-EMPTY settings.key (the \
-                     environment variable name)"
-                )),
-                Some(_) => {}
-            }
-        } else if r.module == crate::config::secret::SECRET_MODULE_FILE {
-            match r.file_path() {
-                None => errors.push(format!(
-                    "{what}: secret module 'file' requires settings.path (the file to read)"
-                )),
-                Some(v) if v.trim().is_empty() => errors.push(format!(
-                    "{what}: secret module 'file' requires a NON-EMPTY settings.path (the file to \
-                     read)"
-                )),
-                Some(_) => {}
-            }
+        if let Some(refusal) = declared_setting_refusal(&sugars, &what, r) {
+            errors.push(refusal);
         }
-        // A non-built-in module name (a `kind: secret` plugin reference) is NOT rejected here: its
-        // existence is proven against the registry in `validate_secret_refs` at plugin pre-flight.
+        // A module no loaded plugin declares a shorthand for is NOT rejected here: its existence is
+        // proven against the registry in `validate_secret_refs` at plugin pre-flight, which refuses
+        // an unknown module in 1.5.5's words.
     };
     // Enumerate EVERY secret reference in the config through ONE shared walk (`secret_refs`), so the
     // structural check here and the registry-backed module-existence check at plugin pre-flight
@@ -1893,16 +1869,22 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         check_secret(what, r);
     }
 
-    // secrets (module-level `open()` config for `kind: secret` plugins): the built-in `env` / `file`
-    // modules take NO module config, so naming them under `secrets:` is a mistake (their settings live
-    // per-reference). A non-built-in module additionally requires the plugin subsystem, which the
-    // shared `plugins_preflight` verifies against the registry at boot.
+    // secrets (module-level `open()` config for `kind: secret` plugins): a LINKED source takes NO
+    // module config, so naming it under `secrets:` is a mistake (its settings live per-reference,
+    // under the keys the loaded plugins' shorthand declares). Any other module additionally
+    // requires the plugin subsystem, which the shared `plugins_preflight` verifies against the
+    // registry at boot.
+    let per_reference = sugars
+        .iter()
+        .map(|s| format!("`{}`", s.setting))
+        .collect::<Vec<_>>()
+        .join(" / ");
     for module in cfg.secrets.keys() {
-        if crate::config::secret::is_linked_secret(module) {
+        if crate::config::secret::is_linked_secret(cfg.root.secret_axis, module) {
             errors.push(format!(
                 "secrets.{module}: the built-in '{module}' secret module takes no module-level \
-                 config; its settings (`key` / `path`) belong on each individual secret reference, \
-                 not in the top-level `secrets:` block"
+                 config; its settings ({per_reference}) belong on each individual secret \
+                 reference, not in the top-level `secrets:` block"
             ));
         }
     }
@@ -1911,11 +1893,49 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     // would silently disable the admin API (the chain all-Passes) - a silent lockout must be a loud
     // boot error instead. The row is the composition root's, linked under the operator
     // credential's provider name by the root's packaging feature of the same name.
-    let token = cfg.auth.as_ref().and_then(|a| a.admin_token_ref());
-    if token.is_some()
-        && !operator::answered(crate::preflight::linked_auth_rows(), operator_provider())
-    {
+    let token = cfg
+        .auth
+        .as_ref()
+        .and_then(|a| a.admin_token_ref(cfg.legacy));
+    if token.is_some() && !operator::answered(operator_provider()) {
         errors.push(operator::unanswered_token(operator_provider()));
+    }
+}
+
+/// An example secret reference to the value of the process variable `var`, for a refusal to show:
+/// the shorthand of the loaded plugin whose declared role is the config fill
+/// (`REWRITE_SUGAR_ROLE`), or the canonical form when none declares it. The kernel names no source.
+fn example_reference(sugars: &busbar_contract::secret_ref::Sugars, var: &str) -> String {
+    match sugars.with_role(busbar_contract::abi::mechanism::door::SUGAR_ROLE_FILL) {
+        Some(s) => format!("{{ {}: {var} }}", s.word),
+        None => "{ module: <secret-module>, settings: {…} }".to_string(),
+    }
+}
+
+/// THE STRUCTURAL REFUSAL of a secret reference to a module whose shorthand a loaded secret
+/// plugin declares (audit contract-admin #10, Law 1): the reference must set the settings key that
+/// shorthand's value lands under, NON-EMPTY, in what the plugin's Statement says the value names
+/// (`REWRITE_SUGAR`, `REWRITE_SUGAR_NAMES`). The shorthand spelling already rejects an empty value
+/// in the deserializer, but the CANONICAL `{ module: <word>, settings: { <key>: "" } }` form
+/// bypasses that arm. Left unchecked, such a config passes `--validate` as "ok" then fail-closes at
+/// boot, so a clean validate would no longer imply a clean boot. A module no loaded plugin declares
+/// a shorthand for answers `None`: its existence is the registry's to prove.
+fn declared_setting_refusal(
+    sugars: &busbar_contract::secret_ref::Sugars,
+    what: &str,
+    r: &crate::config::SecretRef,
+) -> Option<String> {
+    let sugar = sugars.get(&r.module)?;
+    match r.settings.get(&sugar.setting).and_then(|v| v.as_str()) {
+        None => Some(format!(
+            "{what}: secret module '{}' requires settings.{} ({})",
+            r.module, sugar.setting, sugar.names
+        )),
+        Some(v) if v.trim().is_empty() => Some(format!(
+            "{what}: secret module '{}' requires a NON-EMPTY settings.{} ({})",
+            r.module, sugar.setting, sugar.names
+        )),
+        Some(_) => None,
     }
 }
 
@@ -1938,8 +1958,7 @@ fn admin_root_segment() -> &'static str {
 /// as well. With no auth row linked under the operator credential's provider there is no operator
 /// principal to shadow, so nothing is reserved.
 fn reserved_operator_principal_id(role: &str) -> bool {
-    role == crate::config::operator_principal_id()
-        && operator::answered(crate::preflight::linked_auth_rows(), operator_provider())
+    role == crate::config::operator_principal_id() && operator::answered(operator_provider())
 }
 
 /// True when a pool / provider / model `name` would collide with the built-in native-API operator
@@ -2127,12 +2146,12 @@ fn validate_providers_with(
     // circuit breaker), exactly like the shipped built-in catalog entries that carry none. Only the
     // entries that ARE present must name a known StatusClass.
     for (provider_name, provider_cfg) in &cfg.providers {
-        // The provider's `protocol` selects a declared `Protocol` from the registry at lane
-        // construction. An unknown protocol used to escape this multi-error collection entirely and
-        // surface as a lone `die()` deep in `main.rs` (lane build) — so an operator with several
-        // config mistakes saw only the first one. Validate it HERE against the single source of
-        // truth (`proto::known_protocols()`, DERIVED from the protocol declarations rather than
-        // maintained beside them) so a bad protocol is collected alongside every other error.
+        // The provider's `protocol` names a dialect a plane declares. An unknown protocol used to
+        // escape this multi-error collection entirely and surface as a lone `die()` deep in
+        // `main.rs` (lane build) — so an operator with several config mistakes saw only the first
+        // one. Validate it HERE against the single source of truth (the provider dialects the
+        // registered planes declare, `plane::provider_dialects`) so a bad protocol is collected
+        // alongside every other error.
         // `main.rs`'s `die()` remains a defensive (now unreachable) backstop.
         //
         // THE EMPTY LIST IS ITS OWN ERROR, and this arm is why. The list used to be a compile-time
@@ -2400,6 +2419,7 @@ fn validate_providers_with(
             // credential otherwise passes validate and fails at boot/apply. Check it here when the env var
             // resolves (an unset var can't be validated — caught at boot).
             let cred = crate::config::secret::resolve_linked_string_at_config(
+                cfg.root.secret_axis,
                 &provider_cfg.api_key,
                 &busbar_contract::config_time::ConfigScope::config_time(),
             )
@@ -2413,7 +2433,13 @@ fn validate_providers_with(
                     "token_url": busbar_kernel_egress::trust::net::strip_userinfo(token_url),
                     "scope": provider_cfg.scope.clone().unwrap_or_default(),
                 });
-                for e in outbound_credential_refusals("oauth-client-credentials", &cred, &params) {
+                for e in outbound_credential_refusals(
+                    &cfg.root,
+                    "oauth-client-credentials",
+                    &cred,
+                    &params,
+                    cfg.legacy,
+                ) {
                     errors.push(format!(
                         "provider '{provider_name}' oauth-client-credentials credential (from {}) is invalid: {e}",
                         provider_cfg.api_key.describe()
@@ -2441,13 +2467,14 @@ fn validate_providers_with(
             }
             let config_time = busbar_contract::config_time::ConfigScope::config_time();
             let cred = crate::config::secret::resolve_linked_string_at_config(
+                cfg.root.secret_axis,
                 &provider_cfg.api_key,
                 &config_time,
             )
             .unwrap_or_default();
             // A credential naming its key file is read as the build reads it, in the same words.
             let cred = match service_account_json(cred.into_bytes(), |file| {
-                crate::config::secret::SecretResolver::builtins_only()
+                crate::config::secret::SecretResolver::linked_only(cfg.root.secret_axis)
                     .resolve_at_config(file, &config_time)
             }) {
                 Ok(json) => String::from_utf8(json).unwrap_or_default(),
@@ -2480,9 +2507,11 @@ fn validate_providers_with(
                             params.insert("scope".into(), serde_json::Value::String(scope.clone()));
                         }
                         outbound_credential_refusals(
+                            &cfg.root,
                             "jwt-bearer",
                             &cred,
                             &serde_json::Value::Object(params),
+                            cfg.legacy,
                         )
                     }
                 };
@@ -2542,13 +2571,15 @@ impl MetadataPosture {
 
 /// THE CREDENTIAL REFUSALS the auth plugin serving `style` names for `credential` under `params`,
 /// through the dry `open_outbound` the build binds with (the plugin's `credential:` lines, their
-/// text only). None when no plugin this build reaches serves the style.
+/// text only). None when no plugin `root` links serves the style.
 fn outbound_credential_refusals(
+    root: &crate::preflight::RootInstall,
     style: &str,
     credential: &str,
     params: &serde_json::Value,
+    legacy: crate::config::Legacy,
 ) -> Vec<String> {
-    let Some(axis) = crate::preflight::linked_auth_axis() else {
+    let Some(axis) = crate::preflight::linked_auth_axis(root, legacy) else {
         return Vec::new();
     };
     axis.check_outbound(style, credential.as_bytes(), params)
@@ -2690,3 +2721,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/store_required_tests.rs"]
 mod store_required_tests;
+
+#[cfg(test)]
+#[path = "tests/secret_shorthand_declared_tests.rs"]
+mod secret_shorthand_declared_tests;

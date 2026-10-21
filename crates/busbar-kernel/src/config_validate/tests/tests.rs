@@ -11,6 +11,7 @@ fn make_root_cfg(
         plane_defs: Default::default(),
         plane_pools: Default::default(),
         plane_sections: Default::default(),
+        legacy: config::Legacy::stand_in(),
         listen: crate::config::DEFAULT_LISTEN_ADDR.into(),
         // No endpoint plane configured.
         endpoint_resources: Default::default(),
@@ -45,6 +46,8 @@ fn make_root_cfg(
         export: Default::default(),
         identity_providers: Default::default(),
         export_defs: Default::default(),
+        // A test build has no root: the stand-in install record is lent in its place.
+        root: crate::preflight::RootInstall::STAND_IN,
     }
 }
 
@@ -87,19 +90,18 @@ fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::P
     }
 }
 
-/// The `nth` wire-codec protocol this test binary ships, read by POSITION off core's own test
-/// built-in table (the shipped install order) rather than spelled here. The validator's provider
-/// sweep asks only "is this a compiled-in codec protocol?", never which one, so a fixture needs a
-/// registered name, not a particular dialect — and the neutral kernel's tests name none.
+/// The `nth` provider dialect the neutral fallback plane declares
+/// ([`crate::test_support::NEUTRAL_DIALECTS`]), read by POSITION rather than spelled here. The
+/// validator's provider sweep asks only "does a registered plane declare this provider dialect?",
+/// never which one, so a fixture needs a declared name, not a particular dialect — and the neutral
+/// kernel's tests name none.
 fn shipped_protocol(nth: usize) -> &'static str {
-    crate::proto::registry::builtin_decls()
-        .iter()
-        .filter(|d| d.codec.is_some())
-        .nth(nth)
-        .map(|d| d.name)
+    crate::test_support::NEUTRAL_DIALECTS
+        .get(nth)
+        .copied()
         .unwrap_or_else(|| {
             panic!(
-                "the test binary ships fewer than {} codec protocols",
+                "the neutral plane declares fewer than {} provider dialects",
                 nth + 1
             )
         })
@@ -215,7 +217,7 @@ fn test_validate_rejects_bad_protocol() {
         .iter()
         .find(|e| e.contains("unknown protocol 'nope'"))
         .unwrap_or_else(|| panic!("expected unknown-protocol error; got: {errs:?}"));
-    for proto in crate::proto::known_protocols() {
+    for proto in crate::test_support::NEUTRAL_DIALECTS {
         assert!(
             msg.contains(proto),
             "allowed-set list must include '{proto}'; got: {msg}"
@@ -5318,7 +5320,7 @@ fn resolve_yaml(yaml: &str) -> Result<RootCfg, Vec<String>> {
     ))
     .unwrap();
     let defs = HashMap::from([("acme".to_string(), def)]);
-    config::resolve(&deploy, &defs)
+    config::resolve(&deploy, &defs, crate::config::Legacy::stand_in())
 }
 
 /// `--validate` and boot share ONE pipeline: DeployCfg yaml -> config::resolve -> RootCfg ->
@@ -5740,7 +5742,12 @@ fn parse_auth(yaml: &str) -> config::AuthCfg {
     }
     let doc: Doc = serde_yaml::from_str(yaml).expect("auth yaml parses");
     let mut errors = Vec::new();
-    let out = config::resolve_auth(&doc.auth, &doc.identity_providers, &mut errors);
+    let out = config::resolve_auth(
+        &doc.auth,
+        &doc.identity_providers,
+        &mut errors,
+        crate::config::Legacy::stand_in(),
+    );
     assert!(
         errors.is_empty(),
         "auth yaml must resolve cleanly: {errors:?}"
@@ -5995,27 +6002,23 @@ fn an_empty_protocol_set_refuses_every_provider_through_the_real_sweep() {
     );
 }
 
-/// **D5 — AND THE EMPTY SET IS ONE THE REGISTRY ITSELF PRODUCES.**
+/// **D5 — AND THE EMPTY SET IS ONE THE PLANE REGISTRY ITSELF PRODUCES.**
 ///
-/// The two tests above hand the validator a literal `&[]`. That is only evidence if the registry
-/// can ever hand it the same thing — otherwise the refusal is pinned against an input that cannot
-/// occur, which is the vacuity D5 is about. So this one takes no literal: it builds a registry
-/// through the registry's OWN boot path with every protocol edge removed (see
-/// `registry_tests::a_registry_with_no_declarations_reports_no_protocols_at_all`), reads its
-/// codec-protocol list, and feeds THAT to the production sweep.
-///
-/// HONEST LIMIT, stated so nobody reads more into this than it says: the process-wide
-/// `known_protocols()` is a `OnceLock` over a `BUILTIN_DECLS` that is not empty in this build, so
-/// this drives the registry's empty state, not the process's. The zero-protocol BOOT proof closes
-/// with the last dialect extraction; this is the strongest proof available before it.
+/// The two tests above hand the validator a literal `&[]`. That is only evidence if the source the
+/// validator reads can ever hand it the same thing — otherwise the refusal is pinned against an
+/// input that cannot occur, which is the vacuity D5 is about. So this one takes no literal: the
+/// validator's known set is the provider dialects the registered planes declare
+/// (`plane::provider_dialects`, ruling 2026-10-16 D; the kernel holds no protocol set), read here
+/// over an isolated registry with no plane in it, and fed to the production sweep.
 #[test]
 fn the_empty_set_the_validator_refuses_is_the_one_an_empty_registry_produces() {
-    let empty_registry =
-        crate::proto::registry::Registry::new(crate::proto::registry::merged_boot_decls(&[], &[]));
-    let known: &'static [&'static str] = empty_registry.codec_protocols();
+    let known: Vec<&'static str> = {
+        let _iso = crate::plane_driver::doors::TestRegistryIsolation::empty();
+        crate::plane_driver::doors::provider_dialects()
+    };
     assert!(
         known.is_empty(),
-        "the premise of this test: a registry with no declarations knows no protocols"
+        "the premise of this test: a registry with no plane declares no provider dialect"
     );
 
     let mut providers = HashMap::new();
@@ -6026,7 +6029,7 @@ fn the_empty_set_the_validator_refuses_is_the_one_an_empty_registry_produces() {
     let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
 
     let mut errors = Vec::new();
-    super::validate_providers_with(known, &cfg, &[], &mut errors);
+    super::validate_providers_with(&known, &cfg, &[], &mut errors);
     assert_eq!(
         errors.len(),
         1,
@@ -6404,8 +6407,8 @@ fn test_validate_refuses_per_lane_durations_past_the_runtime_horizon() {
 
 /// A neutral plane declaring billable classes. Every hook is a no-op: the only thing under test is
 /// the declaration the kernel reads. Registered under isolation, so no sibling test sees it.
-static CLASS_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
-    declaration: crate::plane::registry::PlaneDeclaration {
+static CLASS_PLANE: crate::plane_driver::row::PlaneDecl = crate::plane_driver::row::PlaneDecl {
+    declaration: crate::plane_driver::row::PlaneDeclaration {
         key: "class-plane",
         fallback: false,
         config_section: "tools",
@@ -6427,7 +6430,7 @@ static CLASS_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::
     },
     wire_format_names: || &[],
     // The test binary's codecs, declared as this plane's provider dialects (ruling 2026-10-16 D).
-    provider_dialects: || crate::proto::registry::registry().codec_protocols(),
+    provider_dialects: || crate::test_support::NEUTRAL_DIALECTS,
     claims: |_| Vec::new(),
     admission: |_| None,
     build: |_| None,
@@ -6454,14 +6457,14 @@ static CLASS_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::
 };
 
 /// One declared billable class in `family`.
-const fn bc(class: &'static str, family: &'static str) -> crate::plane::registry::BillableClass {
-    crate::plane::registry::BillableClass { class, family }
+const fn bc(class: &'static str, family: &'static str) -> crate::plane_driver::row::BillableClass {
+    crate::plane_driver::row::BillableClass { class, family }
 }
 
 /// The FALLBACK plane's shape: its card is the flat 1.5.5 `rate_card:` (#47), and it declares the
 /// four reserved tiers plus two open classes.
-static FLAT_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
-    declaration: crate::plane::registry::PlaneDeclaration {
+static FLAT_PLANE: crate::plane_driver::row::PlaneDecl = crate::plane_driver::row::PlaneDecl {
+    declaration: crate::plane_driver::row::PlaneDeclaration {
         key: "flat-plane",
         fallback: true,
         config_section: "pools",
@@ -6501,7 +6504,7 @@ fn plane_card(
 /// reserved tiers an entry omits are 0 by the 1.5.5 grammar, so they are configured.
 #[test]
 fn a_card_missing_a_declared_class_fails_validation_naming_every_missing_class() {
-    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&FLAT_PLANE]);
+    let _iso = crate::plane_driver::doors::TestRegistryIsolation::seeded(&[&FLAT_PLANE]);
     let mut cfg = cost_cfg(&["m"]);
     cfg.rate_card = Some(card_yaml("m: { input_utok: 3 }\n"));
     let errs = validate(&cfg).expect_err("a card silent about declared classes must refuse");
@@ -6523,7 +6526,7 @@ fn a_card_missing_a_declared_class_fails_validation_naming_every_missing_class()
 /// carry a class: configuration is a property of the card, a per-lane gap is the run-time #42 one.
 #[test]
 fn a_card_configuring_every_declared_class_passes_with_explicit_zero() {
-    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&FLAT_PLANE]);
+    let _iso = crate::plane_driver::doors::TestRegistryIsolation::seeded(&[&FLAT_PLANE]);
     let mut cfg = cost_cfg(&["m", "n"]);
     cfg.rate_card = Some(card_yaml(
         "m: { input_utok: 3, units: { search_units: 0 } }\nn: { units: { images: 0 } }\n",
@@ -6535,7 +6538,7 @@ fn a_card_configuring_every_declared_class_passes_with_explicit_zero() {
 /// naming that section; a complete card passes; no card at all is billing off (#42) and passes.
 #[test]
 fn a_non_fallback_planes_card_is_held_to_the_same_rule() {
-    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&CLASS_PLANE]);
+    let _iso = crate::plane_driver::doors::TestRegistryIsolation::seeded(&[&CLASS_PLANE]);
     let mut cfg = cost_cfg(&["m"]);
     cfg.rate_card = Some(plane_card(
         "class-plane",
@@ -6566,8 +6569,8 @@ fn a_non_fallback_planes_card_is_held_to_the_same_rule() {
 
 /// A plane served through its DOOR: its fee unit rides among its billable classes (the door's
 /// tail holds `fee_units ⊆ billable_classes`), exactly as `plane_driver::door::fold` builds the row.
-static DOOR_FEE_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
-    declaration: crate::plane::registry::PlaneDeclaration {
+static DOOR_FEE_PLANE: crate::plane_driver::row::PlaneDecl = crate::plane_driver::row::PlaneDecl {
+    declaration: crate::plane_driver::row::PlaneDeclaration {
         key: "door-fee-plane",
         billable_classes: &[
             bc("calls", "count"),
@@ -6587,7 +6590,7 @@ static DOOR_FEE_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registr
 /// card prices. RED: the fee unit was demanded of every card, so the predev card refused.
 #[test]
 fn a_door_planes_fee_unit_is_no_class_its_card_must_price() {
-    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&DOOR_FEE_PLANE]);
+    let _iso = crate::plane_driver::doors::TestRegistryIsolation::seeded(&[&DOOR_FEE_PLANE]);
     let mut cfg = cost_cfg(&["m"]);
     cfg.rate_card = Some(plane_card(
         "door-fee-plane",
@@ -6623,13 +6626,13 @@ fn a_door_planes_fee_unit_is_no_class_its_card_must_price() {
 #[test]
 fn a_dropped_in_planes_declared_classes_are_honoured() {
     let names = ["frames".to_string(), "widgets".to_string()];
-    let classes: Vec<crate::plane::registry::BillableClass> = names
+    let classes: Vec<crate::plane_driver::row::BillableClass> = names
         .into_iter()
         .map(|s| bc(Box::leak(s.into_boxed_str()), "count"))
         .collect();
-    let dropped: &'static crate::plane::registry::PlaneDecl =
-        Box::leak(Box::new(crate::plane::registry::PlaneDecl {
-            declaration: crate::plane::registry::PlaneDeclaration {
+    let dropped: &'static crate::plane_driver::row::PlaneDecl =
+        Box::leak(Box::new(crate::plane_driver::row::PlaneDecl {
+            declaration: crate::plane_driver::row::PlaneDeclaration {
                 key: "dropped-plane",
                 config_section: "agents",
                 billable_classes: Box::leak(classes.into_boxed_slice()),
@@ -6637,7 +6640,7 @@ fn a_dropped_in_planes_declared_classes_are_honoured() {
             },
             ..CLASS_PLANE
         }));
-    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[dropped]);
+    let _iso = crate::plane_driver::doors::TestRegistryIsolation::seeded(&[dropped]);
     let mut cfg = cost_cfg(&["m"]);
     cfg.rate_card = Some(plane_card("dropped-plane", "a", "units: { frames: 1 }"));
     let errs = validate(&cfg).expect_err("widgets is declared by the dropped-in plane");
@@ -6657,7 +6660,7 @@ fn a_dropped_in_planes_declared_classes_are_honoured() {
 #[test]
 fn a_card_configuring_an_undeclared_class_fails_naming_it_and_the_declared_list() {
     let _iso =
-        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&FLAT_PLANE, &CLASS_PLANE]);
+        crate::plane_driver::doors::TestRegistryIsolation::seeded(&[&FLAT_PLANE, &CLASS_PLANE]);
     let mut cfg = cost_cfg(&["m"]);
     cfg.rate_card = Some(card_yaml(
         "m: { input_utok: 3, units: { search_units: 0, images: 0, typo_class: 1 } }\n",
@@ -6690,9 +6693,9 @@ fn a_card_configuring_an_undeclared_class_fails_naming_it_and_the_declared_list(
 #[test]
 fn a_fee_the_plane_does_not_count_fails_naming_it_and_the_counted_list() {
     use busbar_kernel_ledger::cost::{PlaneFees, PER_SESSION};
-    let session: &'static crate::plane::registry::PlaneDecl =
-        Box::leak(Box::new(crate::plane::registry::PlaneDecl {
-            declaration: crate::plane::registry::PlaneDeclaration {
+    let session: &'static crate::plane_driver::row::PlaneDecl =
+        Box::leak(Box::new(crate::plane_driver::row::PlaneDecl {
+            declaration: crate::plane_driver::row::PlaneDeclaration {
                 key: "session-plane",
                 config_section: "streams",
                 fee_units: &[PER_SESSION],
@@ -6700,8 +6703,7 @@ fn a_fee_the_plane_does_not_count_fails_naming_it_and_the_counted_list() {
             },
             ..CLASS_PLANE
         }));
-    let _iso =
-        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[session, &CLASS_PLANE]);
+    let _iso = crate::plane_driver::doors::TestRegistryIsolation::seeded(&[session, &CLASS_PLANE]);
     let fees = |plane: &str, per_request, per_session| {
         let f = PlaneFees {
             per_request,
@@ -6732,11 +6734,11 @@ fn a_fee_the_plane_does_not_count_fails_naming_it_and_the_counted_list() {
 #[test]
 fn a_fee_unit_declared_as_a_class_is_neither_owed_nor_priced_by_the_card() {
     use busbar_kernel_ledger::cost::PER_SESSION;
-    const CLASSES: &[crate::plane::registry::BillableClass] =
+    const CLASSES: &[crate::plane_driver::row::BillableClass] =
         &[bc("calls", "count"), bc(PER_SESSION, "count")];
-    let session: &'static crate::plane::registry::PlaneDecl =
-        Box::leak(Box::new(crate::plane::registry::PlaneDecl {
-            declaration: crate::plane::registry::PlaneDeclaration {
+    let session: &'static crate::plane_driver::row::PlaneDecl =
+        Box::leak(Box::new(crate::plane_driver::row::PlaneDecl {
+            declaration: crate::plane_driver::row::PlaneDeclaration {
                 key: "session-plane",
                 config_section: "live",
                 billable_classes: CLASSES,
@@ -6745,7 +6747,7 @@ fn a_fee_unit_declared_as_a_class_is_neither_owed_nor_priced_by_the_card() {
             },
             ..CLASS_PLANE
         }));
-    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[session]);
+    let _iso = crate::plane_driver::doors::TestRegistryIsolation::seeded(&[session]);
     let mut cfg = cost_cfg(&["m"]);
     cfg.rate_card = Some(plane_card("session-plane", "a", "units: { calls: 1 }"));
     assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));

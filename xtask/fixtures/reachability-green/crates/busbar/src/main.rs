@@ -22,7 +22,6 @@ fn serve() -> u64 {
 
 fn main() {
     register_planes();
-    root::gauntlet_install::install();
     let _ = seal();
     let _ = serve();
 }

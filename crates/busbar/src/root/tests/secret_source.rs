@@ -82,6 +82,7 @@ pub(super) fn refused_naming_its_source(secret: &SecretRef) -> String {
     // Asked at CONFIG TIME, as boot and an apply ask it (R4, BUSBAR-1.6.0.md l.1464-1469): a request
     // path's form is refused by a disk-reading source before the source says anything of its own.
     let text = busbar_kernel::config::secret::resolve_linked_string_at_config(
+        busbar_kernel::preflight::RootInstall::STAND_IN.secret_axis,
         secret,
         &busbar_contract::config_time::ConfigScope::config_time(),
     )
@@ -126,15 +127,6 @@ pub(super) fn missing(case: &str) -> String {
         ))
         .display()
         .to_string()
-}
-
-/// A member program's `env` secret reference resolves through the linked secret plugins at
-/// CONFIG TIME (its need's declaration, the connector's refresher) and is held for its spawns, as
-/// the root's boot installs them (the first install holds; this is the same one).
-fn member_secrets_installed() {
-    let _ = busbar_core_connector::compose::install_spawn_secrets(
-        busbar_kernel::config::secret::resolve_linked_string_at_config,
-    );
 }
 
 /// The tool door's `tools:` section: one member, `fs`, that is the program
@@ -264,7 +256,6 @@ fn every_linked_door_plane_is_driven() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tool_door_a_program_members_unresolved_env_reaches_the_caller_without_its_source() {
     let _one = PUBLISHING.lock().await;
-    member_secrets_installed();
     let cases = [
         (
             "tools-program-env",
@@ -297,7 +288,6 @@ async fn tool_door_a_program_members_unresolved_env_reaches_the_caller_without_i
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tool_door_a_program_members_env_gone_by_an_apply_reaches_the_caller_without_its_source() {
     let _one = PUBLISHING.lock().await;
-    member_secrets_installed();
     let instance = "tools-program-apply";
     let _published = Published(instance);
     let var = unset("TOOLS_PROGRAM_APPLY");

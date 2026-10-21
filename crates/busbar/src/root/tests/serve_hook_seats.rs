@@ -37,7 +37,7 @@ use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::planes_tests::{composed_services, Published, PUBLISHING};
-use super::{compose_planes, door_routes, DoorEgress, HookStage};
+use super::{compose_planes, door_mounts, DoorEgress, HookStage};
 use crate::root::door_steps::{kernel_sections, provider_routes, DoorReach, OutboundAuths};
 use crate::root::loader::dispatch::kinds::plane::Plane;
 use crate::root::loader::dispatch::{
@@ -92,23 +92,19 @@ pub(super) fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
         .expect("the driver-proofs row links the door serving the `pools` map")
 }
 
-/// THE REGISTRY ROWS THE DEPLOYMENT WRITES INTO, as the composition root installs them: the linked
-/// protocol declarations (the door row's `protocols` axis) and the row the door serving the `pools`
-/// map folds to, which owns the `pools:`/`models:` sections. The door is the plane's one
+/// THE REGISTRY ROW THE DEPLOYMENT WRITES INTO, as the composition root installs it: the row the
+/// door serving the `pools` map folds to, which owns the `pools:`/`models:` sections. The door is the plane's one
 /// registration (DEV-GREEN row 83), so its Statement is the row. Idempotent.
 pub(super) fn install_door_seams() {
-    static ROW: std::sync::OnceLock<&'static busbar_kernel::plane::registry::PlaneDecl> =
+    static ROW: std::sync::OnceLock<&'static busbar_kernel::plane_driver::row::PlaneDecl> =
         std::sync::OnceLock::new();
-    for decls in crate::LINKED.protocols {
-        busbar_kernel::proto::register_test_protocols(decls);
-    }
     let row = ROW.get_or_init(|| {
         use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
         let reg = registration(linked_probe(pools_door(), "pools-door-row"))
             .expect("the door serving the `pools` map binds");
-        busbar_kernel::plane::door::fold(reg).expect("the door folds")
+        busbar_kernel::plane_driver::door::fold(reg).expect("the door folds")
     });
-    busbar_kernel::plane::registry::register_test_plane(row);
+    busbar_kernel::plane_driver::doors::register_test_plane(row);
 }
 
 /// The card history the served unit is pinned to at its door: one entry, no price.
@@ -836,7 +832,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         ..Default::default()
     })
     .expect("the guard");
-    let connector = busbar_core_connector::process::build(
+    let connector = busbar_core_connector::process::build_with_secrets(
         || {
             crate::root::connector::entries(
                 crate::LINKED_TRANSPORT_DOORS,
@@ -847,6 +843,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         &[],
         Arc::new(|_, _| {}),
         busbar_core_connector::pool::PoolPosture::NONE,
+        busbar_kernel::test_support::resolve_stand_in_secret_at_config,
     )
     .expect("the connector builds");
 
@@ -937,7 +934,8 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     }
     let defs: HashMap<String, busbar_kernel::config::ProviderDef> =
         serde_yaml::from_str(&defs_yaml).expect("the providers");
-    let cfg = busbar_kernel::config::resolve(&deploy, &defs).map_err(|e| e.join("; "))?;
+    let cfg = busbar_kernel::config::resolve(&deploy, &defs, crate::root::legacy::table())
+        .map_err(|e| e.join("; "))?;
     let providers = provider_routes(
         &cfg.providers,
         &busbar_kernel::config_validate::MetadataPosture::default(),
@@ -1235,14 +1233,42 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
             );
         })
     };
-    let doors = door_routes(served, pin, &[], &busbar_kernel::base_data_core_lines(&app))
-        .expect("its claims mount");
-    let door_table = doors
+    // The door's mounts as production builds the data router with them (`main`'s
+    // `build_split_routers_serving_doors` over `serve::data_mounts`): its routes, its sessions, each
+    // route's unit-less refusal, and the kernel-shaped refusals rendered by the plane that owns the
+    // path, bound to the handle.
+    let mounts = door_mounts(
+        served,
+        pin,
+        &[],
+        &busbar_kernel::base_data_core_lines(&app),
+        &[],
+        &[],
+    )
+    .expect("its claims mount");
+    busbar_kernel::plane_routes::pair_door_refusals(
+        &mounts.routes,
+        &mounts.sessions,
+        &mounts.refusals,
+    )
+    .expect("its routes and refusals pair");
+    let door_table = mounts
+        .routes
         .iter()
         .map(|d| (d.path.clone(), d.method.as_str().to_string(), d.auth))
         .collect();
-    let (router, _admin, _handle) =
-        busbar_kernel::build_split_routers_serving(Arc::clone(&app), doors, 1 << 20, 0, false);
+    let (router, _admin, handle) = busbar_kernel::build_split_routers_serving_doors(
+        Arc::clone(&app),
+        mounts.routes,
+        mounts.sessions,
+        mounts.refusals,
+        1 << 20,
+        0,
+        false,
+    );
+    if let Some(refuse) = mounts.refuse_by_path {
+        handle.bind_door_refuser(refuse);
+    }
     Ok(DoorRig {
         router,
         door_table,

@@ -169,7 +169,7 @@ async fn wrong_method(
 pub(super) fn plane_gate(handle: &AppHandle, section: NamedMapSection) -> Option<Response> {
     let decl = match section {
         NamedMapSection::Plane(key) => {
-            busbar_kernel::plane::registry::plane_decl_for_config_section(key)
+            busbar_kernel::plane_driver::doors::plane_decl_for_config_section(key)
         }
         _ => None,
     };
@@ -414,6 +414,7 @@ async fn apply(
                 Some(&providers_path),
                 false,
                 busbar_kernel::config::EnvSubst::Strict,
+                snapshot.legacy,
             )
             .map_err(AdminError::Validation)?;
             // BASE-CONFIG PROTECTION: an entry declared in `config.yaml` is operator file config and
@@ -495,7 +496,7 @@ async fn apply(
             // for config that never took effect. Runs BEFORE anything is persisted or swapped, and
             // covers PATCH …/settings too (its composed document is the thing that must parse).
             if let Some(def) = next_def.as_ref() {
-                if let Err(e) = txn_section.validate_def(&txn_name, def) {
+                if let Err(e) = txn_section.validate_def(&txn_name, def, snapshot.legacy) {
                     return Ok(Outcome::Value(Err((
                         AdminError::Validation(e),
                         Cond::InvalidConfig,
@@ -526,9 +527,18 @@ async fn apply(
             // the post-resolve hooks/groups overlay sections merge on — exactly the reload mechanism.
             loaded.overlay_doc = Some(doc.clone());
             let built = (|| {
-                busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, &doc);
-                let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
-                    .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
+                busbar_kernel::config::overlay::apply_root_to_deploy(
+                    &mut loaded.deploy,
+                    &doc,
+                    snapshot.legacy,
+                );
+                let mut cfg = busbar_kernel::config::resolve_in(
+                    snapshot.root,
+                    &loaded.deploy,
+                    &loaded.defs,
+                    snapshot.legacy,
+                )
+                        .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
                 let base_hook_names: std::collections::HashSet<String> =
                     cfg.hooks.keys().cloned().collect();
                 let base_group_names: std::collections::HashSet<String> =
@@ -729,7 +739,7 @@ fn section_contains(app: &App, section: NamedMapSection, name: &str) -> bool {
         // A plane section answers membership through the plane's `registry_contains` seam, so this
         // read names no plane registry type; a plane compiled out has no decl and answers `false`.
         NamedMapSection::Plane(_) => {
-            busbar_kernel::plane::registry::plane_decl_for_config_section(section.key())
+            busbar_kernel::plane_driver::doors::plane_decl_for_config_section(section.key())
                 .and_then(|d| d.registry_contains)
                 .is_some_and(|f| f(app, name))
         }

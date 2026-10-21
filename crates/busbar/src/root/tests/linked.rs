@@ -12,7 +12,7 @@ use super::*;
 use crate::root::loader::sign::{DiagnosticDecl, SigningKey};
 use crate::root::loader::PluginRegistry;
 use crate::root::test_plugins;
-use busbar_kernel::plane::registry::merged_boot_plane_decls;
+use busbar_kernel::plane_driver::doors::merged_boot_plane_decls;
 
 /// THE KERNEL SERVES NO EXPORT MODULE OF ITS OWN (K9e-2: its last built-in became a linked sink),
 /// so every module is a row of the axis. ARCHITECT Q-P4-12 (BUSBAR-1.6.0.md:106, "it refuses at boot
@@ -256,12 +256,12 @@ fn a_first_party_plugins_declared_codes_join_the_catalogue_and_nothing_else_does
 }
 
 /// K5d (DECISIONS #2 rule (1), #40) — THE LINKED STORE AND THE RANKING HOOKS ARE ROWS OF THE ROOT'S
-/// LINKED TABLES. The kernel names neither; `main` hands the `stores`/`hooks` tables to the kernel's
-/// cold-kind axis (`root::linked::register_stores` -> `preflight::install_linked_rows`), which
-/// registers them through `PluginRegistry::link` like any dropped-in row: the linked store is an
-/// ephemeral in-process store that opens (a config names it; no row is a default, Q-STORE = (B));
-/// the hook table is the linked ranking DOOR, whose Statement claims each built-in strategy word
-/// (the root's hook axis binds it).
+/// LINKED TABLES. The kernel names neither; `main` lends the `stores`/`hooks` tables to the
+/// kernel's cold-kind axis on its install record (`root::linked::register_stores` ->
+/// `preflight::RootInstall`), whose registry link registers them through `PluginRegistry::link`
+/// like any dropped-in row: the linked store is an ephemeral in-process store that opens (a config
+/// names it; no row is a default, Q-STORE = (B)); the hook table is the linked ranking DOOR, whose
+/// Statement claims each built-in strategy word (the root's hook axis binds it).
 ///
 /// RED by deleting the store and ranking rows of `[package.metadata.busbar.linked]`:
 /// the tables carry no store (and no ranking row) to hand the kernel.
@@ -366,8 +366,8 @@ fn native(key: &'static str) -> &'static [PlaneDecl] {
         served_op_classes: &[],
         caller_credential_refusal: None,
     };
-    let hooks = busbar_kernel::plane::registry::PlaneHooks {
-        wire_format_names: || &[busbar_kernel::plane::WIRE_HTTP_JSON],
+    let hooks = busbar_kernel::plane_driver::row::PlaneHooks {
+        wire_format_names: || &[busbar_kernel::plane_driver::claims::WIRE_HTTP_JSON],
         provider_dialects: || &[],
         claims: |_| Vec::new(),
         admission: |_| None,

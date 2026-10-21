@@ -199,7 +199,8 @@ fn migration_writes_the_14x_admin_token_as_1_5_5_did() {
     hand_in_the_root_words();
     let raw = "governance:\n  enabled: true\n  admin_token: \"${BUSBAR_ADMIN_TOKEN}\"\n\
                providers: {}\nmodels: {}\n";
-    let out = busbar_kernel::config::migrate::migrate_config(raw).expect("migrates");
+    let out = busbar_kernel::config::migrate::migrate_config(raw, crate::root::legacy::table())
+        .expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
     assert_eq!(
         dig(&doc, &["auth", "admin_auth"])
@@ -233,7 +234,8 @@ fn migration_lifts_the_inline_operator_entry_as_1_5_5_did() {
         "auth:\n  admin_auth:\n    - {op}: {{ token: {{ env: BUSBAR_ADMIN_TOKEN }} }}\n\
          providers: {{}}\nmodels: {{}}\n"
     );
-    let out = busbar_kernel::config::migrate::migrate_config(&raw).expect("migrates");
+    let out = busbar_kernel::config::migrate::migrate_config(&raw, crate::root::legacy::table())
+        .expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
     let chain: Vec<&str> = dig(&doc, &["auth", "admin_auth"])
         .and_then(|v| v.as_sequence())

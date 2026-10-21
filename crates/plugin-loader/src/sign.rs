@@ -290,6 +290,15 @@ pub struct Declares {
     /// the plugin's host ops name the key, never a path.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub destinations: Vec<String>,
+    /// How many archives the host's disk lane keeps when it rolls a declared destination over
+    /// (THE DESIGN: `disk.append` rotation is declared per destination, `{path_key,
+    /// rotate_size_key, keep}`), keyed by the destination's settings key; the host turns it into
+    /// its rotation ([`busbar_contract::services::DiskRotate::declared`]). `0`: no archive — a due
+    /// file is truncated in place, 1.5.5's request-log rollover. A destination not named here takes
+    /// [`busbar_contract::services::DISK_ROTATE_UNDECLARED`]. Left off the wire when empty, so every
+    /// manifest packed before the field existed keeps its canonical bytes.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub keep: BTreeMap<String, u32>,
     /// The EGRESS POLICY the host applies to every request the plugin asks it to admit or carry
     /// (K9e-2, export ABI minor 10) — see [`EgressPolicy`]. Granted to a first-party plugin only
     /// when it is not the default; the default is left off the wire, so every manifest packed
@@ -309,6 +318,14 @@ pub struct Declares {
     /// false, so every manifest packed before the field existed keeps its canonical bytes.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub disk: bool,
+    /// THE STREAM MEDIA a plane relays piece by piece (ARCHITECT ruling on the stream-media
+    /// carrier, BUSBAR-1.6.0.md l.246: a structured fact the plane states once): each
+    /// `Content-Type` its replies stream under beyond the contract's event stream
+    /// (`busbar_contract::protocol::TEXT_EVENT_STREAM`, the default every host holds). A reply head
+    /// naming one goes out piece by piece even when it states a length. Left off the wire when
+    /// empty, so every manifest packed before the field existed keeps its canonical bytes.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub stream_media: Vec<String>,
 }
 
 /// A plane's declared BREAKER FACTS (`declares.breaker`, ARCHITECT Q4): per-plane facts about the
@@ -392,7 +409,15 @@ impl Declares {
         if let Some(m) = doc.as_object_mut() {
             m.remove("contract_abi");
         }
-        serde_json::from_value(doc).map_err(|e| format!("not a `declares` section: {e}"))
+        let read: Self =
+            serde_json::from_value(doc).map_err(|e| format!("not a `declares` section: {e}"))?;
+        // A retention is stated for a declared destination only.
+        if let Some(key) = read.keep.keys().find(|k| !read.destinations.contains(k)) {
+            return Err(format!(
+                "not a `declares` section: `keep` names `{key}`, which is not a declared destination"
+            ));
+        }
+        Ok(read)
     }
 
     /// Nothing declared — the section is left off the wire (and out of the signed bytes).
@@ -400,9 +425,11 @@ impl Declares {
         self.metrics.is_empty()
             && self.diagnostics.is_empty()
             && self.destinations.is_empty()
+            && self.keep.is_empty()
             && self.egress.is_default()
             && self.breaker.is_none()
             && !self.disk
+            && self.stream_media.is_empty()
     }
 }
 
