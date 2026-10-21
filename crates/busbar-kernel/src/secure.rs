@@ -108,19 +108,14 @@ pub trait SecureLayer: Send + Sync {
     fn duplex_client(&self) -> Result<Arc<dyn ClientTls>, String>;
 }
 
-/// The wrap a client whose spec carries none falls back to: the egress-trust capability a test
-/// binary handed in, carrying one ([`install_test_tls`]); `None` in a shipped build. A test hands
-/// an engine client a TLS double of its own on `EngineSpec::tls`.
+/// The wrap a client whose spec carries none falls back to: that of the egress-trust capability a
+/// test binary handed in (`test_support::install_egress_trust`); `None` in a shipped build. A test
+/// hands an engine client a TLS double of its own on `EngineSpec::tls`.
 pub fn layer() -> Option<Arc<dyn SecureLayer>> {
     crate::egress::trust::egress_trust_host().and_then(|host| host.secure_layer())
 }
 
-/// TEST SEAM: carry `layer` in the egress-trust capability a test binary hands in
-/// (`egress::fixtures::install_test_tls`; the first hand-in stands).
-#[cfg(any(test, feature = "test-support"))]
-pub use crate::egress::fixtures::install_test_tls;
-
 /// What an https or `wss` dial fails with in a process whose egress-trust capability carries no
 /// TLS wrap.
 pub const NO_LAYER: &str =
-    "no TLS layer is installed (the composition root installs busbar-core-connector's)";
+    "no TLS layer is installed (an engine client is handed busbar-core-connector's on its spec)";
