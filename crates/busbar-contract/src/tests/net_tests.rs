@@ -749,3 +749,23 @@ fn the_dial_authority_and_host_are_the_bytes_1_5_5_sent() {
         );
     }
 }
+
+/// file: hosts are read opaque; no file: URL is dialled or judged. A non-ASCII local-file URL host
+/// reads as `url`'s opaque host, not as a punycode name, and an ASCII one is read as before.
+#[test]
+fn a_local_file_url_host_reads_opaque() {
+    for (input, host, path) in [
+        ("file://b\u{fc}cher.example/x", "b%C3%BCcher.example", "/x"),
+        ("file://B\u{dc}CHER.Example/", "B%C3%9CCHER.Example", "/"),
+        ("file://Host.Example/a", "Host.Example", "/a"),
+        ("file://host.example./x", "host.example", "/x"),
+    ] {
+        let got = parse_url(input).unwrap_or_else(|e| panic!("{input:?}: {e}"));
+        assert_eq!(got.family, UrlFamily::Generic, "{input:?}");
+        assert_eq!(
+            (got.host.as_str(), got.path.as_str()),
+            (host, path),
+            "{input:?}"
+        );
+    }
+}
