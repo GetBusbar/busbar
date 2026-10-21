@@ -133,12 +133,11 @@ const MIN_NEEDLE: usize = 4;
 /// measured 2026-10-07 (`ledger-dual-write`, `audit-chain-signing`; the third `[[capability]]` in
 /// the file is inside THE ROW SHAPE comment and declares nothing), raised to six by the
 /// kernel-ledger sweep of 2026-10-07 (Q128: `ledger-recording-rows`, `ledger-history-opening`,
-/// `ledger-is-dual-writing`, `ledger-book-retirement`), lowered to five when STOP2 (B) struck
-/// `ledger-book-retirement` (2026-10-18). Fewer reds
+/// `ledger-is-dual-writing`, `ledger-book-retirement`). Fewer reds
 /// [`ROW_SCAN_FLOOR`]: a struck row is a construction guard that stopped running, and a file
 /// with none used to read `0 capability declaration(s)` and pass. Lowered only in the reviewed
 /// diff that strikes a row.
-pub const DECLARATION_FLOOR: usize = 5;
+pub const DECLARATION_FLOOR: usize = 6;
 
 const GATE: &str = "unconstructed";
 const CLEAN: &str = "clean";
@@ -209,8 +208,7 @@ pub const KNOWN_UNSHIPPED: &[&str] = &[
     "ledger-recording-rows",
     "ledger-history-opening",
     "ledger-is-dual-writing",
-    // `ledger-book-retirement` STRUCK 2026-10-18 (ARCHITECT STOP2 (B): no window horizon, 1.5.5
-    // parity): `retain_from` is deleted, and the book keeps every window.
+    "ledger-book-retirement",
 ];
 
 /// The per-capability row id.

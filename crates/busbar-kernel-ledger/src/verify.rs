@@ -48,12 +48,16 @@ pub enum Finding {
     Imbalanced(Imbalance),
     /// A balance the checkpoint sealed is no longer in the book.
     ///
-    /// Its own finding rather than an imbalance. The book retires no window (STOP2 (B)), so a sealed
-    /// balance missing from it was removed. Measuring what the checkpoint holds against the zeros
-    /// the book now reads back would answer it two different wrong ways depending on the figures:
+    /// Its own finding rather than an imbalance, because the two are different events and only one
+    /// of them is a defect. A window retired by `Book::retain_from` is gone on purpose — it was
+    /// sealed into a checkpoint, signed and shipped, and the book stopped being the record of it.
+    /// Measuring what the checkpoint holds against the zeros the book now reads back answers a
+    /// question nobody asked, and answers it two different wrong ways depending on the figures:
     /// silence when the sealed balance happens to balance from zero, and an imbalance the size of
-    /// the whole balance when it does not. Neither of them says "this balance left the book", so it
-    /// is named.
+    /// the whole balance when it does not. Neither of them says "this balance left the book".
+    ///
+    /// So it is named. The other way a balance leaves a book is that somebody removed it, and a
+    /// disappearance nobody reported is indistinguishable from housekeeping.
     Retired {
         /// Which balance.
         key: TotalsKey,

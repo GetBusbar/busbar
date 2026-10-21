@@ -18,13 +18,7 @@
 //! the settled column and back again, and an overdraft is carried in and out; storing them as
 //! unsigned figures with a separate direction flag is how a sign error becomes invisible. Nothing
 //! here is floating point, for the reason nothing in a ledger ever is.
-//!
-//! ## The book keeps every window
-//!
-//! No window is ever retired from the book (ARCHITECT ruling STOP2 (B), restated 2026-10-18 on the
-//! Q128 kernel-ledger finding: CoW snapshot plus delta seal, no horizon). The book grows by one
-//! balance per principal per window for the life of the chain, which is 1.5.5's own behaviour; a
-//! retirement would change what the admin ledger reads answer, and no owner signature covers that.
+
 
 //! ## ONE GUARD POLICY FOR THIS FILE: EVERY BOOK OPERATOR SATURATES
 //!
@@ -281,6 +275,24 @@ impl Book {
     /// Whether the book holds nothing.
     pub fn is_empty(&self) -> bool {
         self.totals.is_empty()
+    }
+
+    /// Retire every window that opened before `window`, and say how many balances went.
+    ///
+    /// The book is otherwise append-only — every accrual on a new window adds a row that stays for
+    /// the life of the ledger — so without this an integrator's only way to bound it is to throw the
+    /// whole ledger away. The retirement boundary is the checkpoint: a window sealed into one has
+    /// been signed and shipped, and the book is no longer the record of it. Retiring a window that
+    /// has NOT been sealed loses balances nobody else holds, which is why this is the owner's call
+    /// and not something the book does for itself.
+    ///
+    /// A retired window reads back as zeros through [`Book::get`], exactly like one never touched,
+    /// and the survivors keep the order [`Book::iter`] and [`Book::snapshot`] already gave them — the
+    /// order a checkpoint body is hashed in.
+    pub fn retain_from(&mut self, window: WindowStart) -> usize {
+        let before = self.totals.len();
+        self.totals.retain(|(_, at), _| *at >= window);
+        before.saturating_sub(self.totals.len())
     }
 
     /// The book as a plain map, for a checkpoint to seal.

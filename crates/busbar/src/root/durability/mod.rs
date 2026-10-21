@@ -296,9 +296,9 @@ pub struct Durability {
     /// and answers the same set either side of a restart.
     ///
     /// THE BOUND IS THE BOOK'S: a line is held for exactly as long as the book holds its window.
-    /// The book retires no window (ARCHITECT ruling STOP2 (B): the book keeps every window, 1.5.5
-    /// parity), and the boot rebuilds every window the chain carries, so neither do these lines; they
-    /// grow with the counted units this node's chain holds, as the chain itself does.
+    /// The book retires no window today — `Book::retain_from` has no production caller, and the
+    /// boot rebuilds every window the chain carries — so neither does this; the lines grow with the
+    /// counted units this node's chain holds, as the chain itself does.
     counted: Vec<CountedLine>,
     /// THE BALANCES A FIGURE MOVED WITH NO COUNTS BEHIND IT: a settlement whose writer knew no
     /// counts and posted a figure anyway, or a record of the era that carried figures. Such a
