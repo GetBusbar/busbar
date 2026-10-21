@@ -271,7 +271,7 @@ fn register_protocols() {
 }
 
 /// REGISTER THE PLANES — the composition root's one write into the plane axis
-/// (`busbar_kernel::plane::registry::install_planes`), over the plane tables of [`LINKED`] (each
+/// (`busbar_kernel::plane_driver::doors::install_doors`), over the plane tables of [`LINKED`] (each
 /// entry's contract declaration joined kernel-side to its behaviour, `PlaneDecl::assemble`) and the
 /// plane doors, linked and dropped into the configured `plugins.dir`, discovered first
 /// (`root::boot::discover_planes`) and folded by one fold.
@@ -310,7 +310,7 @@ fn register_planes() {
 
     // THE AUTHORIZATION-SERVER PLANE'S SEAM, registered UNCONDITIONALLY (no feature flag — see the
     // manifest note on the `busbar-core-oauth2` dependency), before any config loads. Mirrors
-    // `install_planes` immediately above for the same reason: one composition root, one
+    // `install_doors` immediately above for the same reason: one composition root, one
     // registration, before the first `App` is built. Its document fetch rides the one connector,
     // read when a fetch needs it (`root::connector::AuthServerConns`).
     busbar_core_oauth2::install::<root::connector::AuthServerConns>();
@@ -867,7 +867,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     busbar_kernel::boot::hydrate_all(&app).unwrap_or_else(|e| die(e));
     // THE LATE ATTACH (`root::serve::attach`): the kernel's host services gain the pool, the
     // signer and the hydrated demotion record this first build made, once.
-    let planes: Vec<_> = busbar_kernel::plane::registry::plane_decls()
+    let planes: Vec<_> = busbar_kernel::plane_driver::doors::plane_decls()
         .iter()
         .map(|d| &d.declaration)
         .collect();

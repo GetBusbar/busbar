@@ -29,8 +29,8 @@
 use std::sync::Arc;
 
 use busbar_kernel::ingress::arrival::BodyIngressEntry;
-use busbar_kernel::plane::registry::PlaneDecl;
-use busbar_kernel::plane::registry::PlaneDeclaration;
+use busbar_kernel::plane_driver::row::PlaneDecl;
+use busbar_kernel::plane_driver::row::PlaneDeclaration;
 use busbar_kernel::plane_host::EngineHost;
 use busbar_kernel::preflight::{LinkedAuth, LinkedStore, RootInstall};
 
@@ -476,11 +476,18 @@ pub fn secret_rows() -> &'static crate::root::loader::secret_calls::SecretRows {
 }
 
 /// THE PLANE AXIS: every entry's registry row and every plane door's — linked or dropped in —
-/// installed once. A plane whose declaration the loader will not admit refuses the boot (exit 2)
-/// whichever door it came in by, before any listener binds.
+/// folded into the process's ONE door set and installed once (status row 82, D2: plane registration
+/// is the loader's and the root's; the kernel holds the set only through its [`DoorSet`] handle). A
+/// plane whose declaration the loader will not admit refuses the boot (exit 2) whichever door it
+/// came in by, before any listener binds.
+///
+/// [`DoorSet`]: busbar_kernel::plane_driver::doors::DoorSet
 pub fn register_planes(linked: &Linked) {
     match plane_rows(linked) {
-        Ok(rows) => busbar_kernel::plane::registry::install_planes(rows.leak()),
+        Ok(rows) => {
+            let set: &'static RootDoors = Box::leak(Box::new(RootDoors::fold(&rows)));
+            busbar_kernel::plane_driver::doors::install_doors(set);
+        }
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
             std::process::exit(2);
@@ -488,10 +495,39 @@ pub fn register_planes(linked: &Linked) {
     }
 }
 
+/// THE ROOT'S DOOR SET: the rows [`register_planes`] built, folded once by the kernel's boot fold
+/// (`merged_boot_plane_decls`: ordered, one per key, every owned-config claim checked) and handed to
+/// the kernel through its [`busbar_kernel::plane_driver::doors::DoorSet`] seam. The root owns it; the
+/// kernel reads its rows.
+pub struct RootDoors {
+    /// The folded rows, in layering order.
+    rows: Vec<&'static PlaneDecl>,
+}
+
+impl RootDoors {
+    /// The set `rows` folds to.
+    ///
+    /// # Panics
+    /// A row set two of whose rows claim one config section, or a row claiming a section the
+    /// kernel's config owns: a mis-wired composition, refused at boot (the boot fold's guard).
+    #[must_use]
+    pub fn fold(rows: &[&'static PlaneDecl]) -> Self {
+        Self {
+            rows: busbar_kernel::plane_driver::doors::merged_boot_plane_decls(rows, &[]),
+        }
+    }
+}
+
+impl busbar_kernel::plane_driver::doors::DoorSet for RootDoors {
+    fn rows(&self) -> &[&'static PlaneDecl] {
+        &self.rows
+    }
+}
+
 /// The rows [`register_planes`] installs, in install order: the linked Rust-hook planes with each
-/// linked door's folded row at its manifest place, then the dropped-in doors' rows. The kernel's boot
-/// fold (`merged_boot_plane_decls`) then orders, dedups and claim-checks them without knowing which
-/// door any came in by.
+/// linked door's folded row at its manifest place, then the dropped-in doors' rows. The boot fold
+/// ([`RootDoors::fold`]) then orders, dedups and claim-checks them without knowing which door any
+/// came in by.
 pub fn plane_rows(linked: &Linked) -> Result<Vec<&'static PlaneDecl>, String> {
     let mut rows: Vec<&'static PlaneDecl> = linked.planes.iter().collect();
     // A linked door's folded row goes at its manifest row's place among the linked plane rows (the

@@ -35,7 +35,7 @@
 
 mod common;
 
-use busbar_kernel::plane::registry::PlaneDecl;
+use busbar_kernel::plane_driver::row::PlaneDecl;
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(linked_axis_plane)]
 use std::path::{Path, PathBuf};

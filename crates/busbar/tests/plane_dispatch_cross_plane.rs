@@ -18,10 +18,19 @@
 //! wire_format_of, mounted_plane_of}`, `sole_wire_format`, `has_superset_ir`, `sole_of`,
 //! `superset_of`, `ingress::native::envelope_dialect`) were widened to `pub` for exactly this move.
 
-use busbar_kernel::plane::{
-    fallback_key, has_superset_ir, plane_decl, plane_keys, sole_of, sole_wire_format, superset_of,
-    wire_format_names, wire_formats, Ingress, PlaneDispatch, WIRE_GRPC, WIRE_JSONRPC,
-};
+use busbar_kernel::plane_driver::claims::Ingress;
+use busbar_kernel::plane_driver::claims::PlaneDispatch;
+use busbar_kernel::plane_driver::claims::WIRE_GRPC;
+use busbar_kernel::plane_driver::claims::WIRE_JSONRPC;
+use busbar_kernel::plane_driver::doors::fallback_key;
+use busbar_kernel::plane_driver::doors::has_superset_ir;
+use busbar_kernel::plane_driver::doors::plane_decl;
+use busbar_kernel::plane_driver::doors::plane_keys;
+use busbar_kernel::plane_driver::doors::sole_of;
+use busbar_kernel::plane_driver::doors::sole_wire_format;
+use busbar_kernel::plane_driver::doors::superset_of;
+use busbar_kernel::plane_driver::doors::wire_format_names;
+use busbar_kernel::plane_driver::doors::wire_formats;
 
 mod linked;
 
@@ -169,7 +178,7 @@ fn the_multi_binding_legs_are_named_by_the_planes_wire_formats() {
         wires,
         [
             WIRE_JSONRPC,
-            busbar_kernel::plane::WIRE_HTTP_JSON,
+            busbar_kernel::plane_driver::claims::WIRE_HTTP_JSON,
             WIRE_GRPC
         ]
         .as_slice(),

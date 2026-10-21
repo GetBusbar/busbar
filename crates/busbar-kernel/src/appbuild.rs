@@ -930,7 +930,7 @@ pub fn build_app_from_config(
         // literal and not a codec list: a build with the plane that declares them compiled out names
         // only what it actually serves, and a build with a new dialect names it. Empty roster is a
         // real answer.
-        let providers = crate::plane::provider_dialects();
+        let providers = crate::plane_driver::doors::provider_dialects();
         let Some(protocol) = providers
             .iter()
             .copied()
@@ -1549,7 +1549,7 @@ pub fn build_app_from_config(
     let mut plane_gates = std::collections::BTreeMap::new();
     let mut plane_rewrites = std::collections::BTreeMap::new();
     for (section, defs) in &cfg.plane_defs {
-        let Some(decl) = crate::plane::registry::plane_decl_for_config_section(section) else {
+        let Some(decl) = crate::plane_driver::doors::plane_decl_for_config_section(section) else {
             continue;
         };
         let g = defs.container_gates();
@@ -1636,12 +1636,12 @@ pub fn build_app_from_config(
         Arc<dyn std::any::Any + Send + Sync>,
     > = {
         // LAW 7: an unconfigured plane builds no slot, so it claims, admits and mounts nothing.
-        crate::plane::registry::plane_decls()
+        crate::plane_driver::doors::plane_decls()
             .iter()
             .filter(|decl| decl.fallback || cfg.plane_sections.contains(decl.config_section))
             .filter(|decl| decl.fallback || !planes_awaiting_restart.contains(&decl.config_section))
             .filter_map(|decl| {
-                let ctx = crate::plane::registry::BuildCtx {
+                let ctx = crate::plane_driver::row::BuildCtx {
                     // THIS plane's own section-keyed resource, ALREADY validated and TYPE-ERASED by
                     // config resolution: the `tools:` container plane's endpoint resource (the SAME
                     // `Arc` it clones into `plane_slots` and downcasts inside its own module, so
@@ -1694,7 +1694,7 @@ pub fn build_app_from_config(
         &ts_pools,
         &ts_by_model,
         |idx| lane_inputs.get(idx).map(|lane| lane.model.as_str()),
-        crate::plane::fallback_key(),
+        crate::plane_driver::doors::fallback_key(),
     ));
 
     // Populate the NEUTRAL carrier field-by-field from the already-resolved config (pre-resolved secret
@@ -1741,13 +1741,13 @@ pub fn build_app_from_config(
     // exactly as a container plane's runtime is composed above — passing the neutral carrier erased to
     // `&dyn Any` and the prior generation's snapshot through the neutral `PlaneSlots` seam (for the
     // warm-client / probe-schedule carry-over the plane now owns). The slot KEY and the `build_runtime`
-    // come from ONE resolved decl ([`crate::plane::fallback_decl`]): keying off `fallback_key()` would
+    // come from ONE resolved decl ([`crate::plane_driver::doors::fallback_decl`]): keying off `fallback_key()` would
     // degrade to the FIRST registered plane's key when no plane flags itself fallback, and the key and
     // the runtime read from two registry snapshots could name two different planes — the runtime then
     // lands under a sibling's key and clobbers that sibling's own runtime. With no fallback plane the
     // key names no plane (no slot is inserted under it) and `App::llm_runtime` reads the empty
     // default — byte-identical to the featureless zero-plane boot.
-    let fallback = crate::plane::fallback_decl();
+    let fallback = crate::plane_driver::doors::fallback_decl();
     let fallback_runtime_key = crate::state::runtime_slot_key(fallback.map_or("", |d| d.key));
     if let Some(f) = fallback.and_then(|d| d.build_runtime) {
         let slot = f(
@@ -1800,7 +1800,7 @@ pub fn build_app_from_config(
                 .endpoint_resources
                 .get(crate::config::plane_sections::EndpointSection::OWNER)
                 .and_then(|slot| {
-                    crate::plane::registry::plane_decl_for_config_section(
+                    crate::plane_driver::doors::plane_decl_for_config_section(
                         crate::config::plane_sections::EndpointSection::OWNER,
                     )
                     .and_then(|d| (d.admission)(slot.as_ref()))
@@ -1865,7 +1865,7 @@ pub fn build_app_from_config(
         // is inserted on every build with that container plane compiled in, so the gate reads the
         // DECL keys (config-conditional), never it.
         plane_breakers: {
-            let planes_configured = crate::plane::registry::plane_decls()
+            let planes_configured = crate::plane_driver::doors::plane_decls()
                 .iter()
                 .any(|d| plane_slots.contains_key(d.key))
                 || cfg.plane_defs.values().any(|d| !d.def_names().is_empty())
@@ -1903,7 +1903,7 @@ pub fn build_app_from_config(
             .plane_pools
             .iter()
             .filter_map(|(section, pools)| {
-                crate::plane::registry::plane_decl_for_config_section(section)
+                crate::plane_driver::doors::plane_decl_for_config_section(section)
                     .map(|decl| (decl.key, pools.clone()))
             })
             .collect(),
@@ -1985,8 +1985,8 @@ pub fn build_app_from_config(
                     .iter()
                     .map(|(k, v)| (*k, v.as_ref() as &dyn std::any::Any))
                     .collect();
-            crate::plane::registry::build_dispatch(
-                crate::plane::registry::plane_decls(),
+            crate::plane_driver::doors::build_dispatch(
+                crate::plane_driver::doors::plane_decls(),
                 &ref_slots,
                 auth_mw.keys_in_chain,
             )?
@@ -2076,7 +2076,7 @@ pub fn build_app_from_config(
     // contract: when the operator REMOVES a plane's block the live subject set is EMPTY, so retain
     // drops every carried flight/latch instead of leaking one per removed subject. The two hooks touch
     // disjoint gates (each plane's own runtime `verify`), so the registry iteration order is not observable.
-    for decl in crate::plane::registry::plane_decls() {
+    for decl in crate::plane_driver::doors::plane_decls() {
         if let Some(retain) = decl.retain_verify_gates {
             retain(&app);
         }

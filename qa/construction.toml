@@ -1284,8 +1284,10 @@ known_sites = [
   # reviewed escape, so the seven substrate-origin files the merge added stay uncovered.
   "crates/busbar-kernel/src/plane_host/breaker.rs",
   # `plane_host/vtable.rs` STRUCK (status row 84): the file is deleted with the HOT lane.
-  # was crates/busbar-core/src/plane/registry.rs (R099)
-  "crates/busbar-kernel/src/plane/registry.rs",
+  # was crates/busbar-core/src/plane/registry.rs (R099), then crates/busbar-kernel/src/plane/registry.rs;
+  # its one escape (the test-support set's leak-once memo, `Box::leak` per distinct folded set) moved
+  # with the opened door set to plane_driver/doors.rs (status row 82, D2). Named by function.
+  "crates/busbar-kernel/src/plane_driver/doors.rs::plane_decls",
   # was crates/busbar-core/src/router.rs (R099)
   "crates/busbar-kernel/src/router.rs",
   # was crates/busbar-substrate/src/plane/handle_engine.rs::sweep (R100), then

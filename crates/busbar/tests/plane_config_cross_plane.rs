@@ -16,8 +16,9 @@
 
 mod linked;
 
+use busbar_kernel::config::plane_refs::PlaneSections;
+use busbar_kernel::config::plane_refs::RefError;
 use busbar_kernel::config::plane_sections::{config_sections, refuse_cross_plane_reference};
-use busbar_kernel::plane::{PlaneSections, RefError};
 
 /// Register every test-linked plane in the process registry — idempotent (first-wins), so every
 /// test can call it unconditionally regardless of run order.

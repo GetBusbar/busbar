@@ -4310,7 +4310,8 @@ pub(crate) mod door_boundary {
 
     use busbar_contract::abi::mechanism::route::RouteAuth;
     use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
-    use busbar_kernel::plane::registry::{BuildCtx, PlaneDecl};
+    use busbar_kernel::plane_driver::row::BuildCtx;
+    use busbar_kernel::plane_driver::row::PlaneDecl;
     use busbar_kernel::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
 
     use super::tool_door::{
@@ -4335,7 +4336,7 @@ pub(crate) mod door_boundary {
     /// the linked rows (a registration, not an isolation: the served request reads the registry on
     /// another worker while the test awaits it).
     pub(crate) fn registry(row: &'static PlaneDecl) {
-        busbar_kernel::plane::registry::register_test_plane(row);
+        busbar_kernel::plane_driver::doors::register_test_plane(row);
     }
 
     /// The kernel's plane dispatch for the door, as `build_dispatch` configures it from the folded
@@ -8354,7 +8355,9 @@ fn an_unopened_door_plane_is_awaiting_restart_once_a_configuration_writes_its_se
 #[test]
 fn a_required_section_written_empty_hands_the_plane_its_sections() {
     use busbar_contract::section::{RESERVED_MODELS_KEY, RESERVED_POOLS_KEY};
-    use busbar_kernel::plane::registry::{PlaneDecl, PlaneDeclaration, TestRegistryIsolation};
+    use busbar_kernel::plane_driver::doors::TestRegistryIsolation;
+    use busbar_kernel::plane_driver::row::PlaneDecl;
+    use busbar_kernel::plane_driver::row::PlaneDeclaration;
     use busbar_kernel::test_support::NEUTRAL_FALLBACK;
     static REQUIRES: PlaneDecl = PlaneDecl {
         declaration: PlaneDeclaration {

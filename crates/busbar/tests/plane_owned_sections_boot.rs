@@ -14,9 +14,10 @@
 
 mod common;
 
-use busbar_kernel::plane::registry::{
-    check_owned_config_claims, register_test_plane, PlaneDecl, CORE_OWNED_CONCRETE_SECTIONS,
-};
+use busbar_kernel::plane_driver::doors::register_test_plane;
+use busbar_kernel::plane_driver::doors::CORE_OWNED_CONCRETE_SECTIONS;
+use busbar_kernel::plane_driver::row::check_owned_config_claims;
+use busbar_kernel::plane_driver::row::PlaneDecl;
 
 // `CORE_OWNED_CONCRETE_SECTIONS` is the kernel's REAL list — the one the boot guard judges against —
 // imported rather than mirrored (item 267: a mirror is a second list that can drift from the first).

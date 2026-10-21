@@ -71,7 +71,7 @@ count = 3
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/plane/registry.rs"
+file = "crates/busbar-kernel/src/plane_driver/row.rs"
 item = "openapi"
 count = 6
 

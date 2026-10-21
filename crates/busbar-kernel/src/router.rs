@@ -34,7 +34,7 @@ pub(crate) const NO_UPSTREAM_RTT: u64 = u64::MAX;
 /// version of this function that tried shipped one dialect's envelope onto a different plane's own
 /// mounted path.
 pub fn fallback_error_response(
-    planes: &crate::plane::PlaneDispatch,
+    planes: &crate::plane_driver::claims::PlaneDispatch,
     path: &str,
     status: axum::http::StatusCode,
     kind: &str,
@@ -75,7 +75,7 @@ pub fn fallback_error_response(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn kernel_refusal_response(
     handle: &state::AppHandle,
-    planes: &crate::plane::PlaneDispatch,
+    planes: &crate::plane_driver::claims::PlaneDispatch,
     reason: busbar_contract::caps::ReasonCode,
     path: &str,
     target: &str,
@@ -281,7 +281,7 @@ pub(crate) async fn server_timing(
 /// `application/json`, or any forward-relayed UPSTREAM 413 (different/non-marker body), is passed
 /// through verbatim (the body is buffered to inspect the sentinel, then re-attached unchanged).
 pub(crate) async fn reshape_oversized_413(
-    planes: &crate::plane::PlaneDispatch,
+    planes: &crate::plane_driver::claims::PlaneDispatch,
     path: &str,
     resp: axum::response::Response,
 ) -> axum::response::Response {
@@ -477,7 +477,7 @@ pub(crate) fn base_data_router(
     // `Store`/`GovCtx`/audit handle. Registration order (fixed by the plane registry) is preserved,
     // so the route order is stable.
     let mut router = router;
-    for decl in crate::plane::registry::plane_decls() {
+    for decl in crate::plane_driver::doors::plane_decls() {
         let Some(slot) = plane_slots.get(decl.key) else {
             continue;
         };
@@ -830,7 +830,7 @@ pub(crate) fn apply_common_layers(
     // COMPOSED IN ONLY WHEN A PLANE IS MOUNTED — the same composition rule as `server_timing`
     // below and for the same reason: a layer that is pure passthrough for every request this
     // deployment can ever receive is not free, it is a `handle.load()` + a mount-table walk per
-    // request. Plane mounts are fixed at boot (`plane::registry::install_planes` registers once,
+    // request. Plane mounts are fixed at boot (`plane_driver::doors::install_doors` registers once,
     // before the first request), so `has_mounts()` cannot change under a config apply and omitting
     // the layer is behaviour-identical to running its no-op arm. This is the plugins-cost-nothing
     // contract made structural: a deployment that configured no plane carries NONE of the

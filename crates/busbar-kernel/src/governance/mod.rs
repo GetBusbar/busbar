@@ -384,7 +384,8 @@ fn model_deltas<'r>(
 /// plane declares in the token family (a streaming plane's `audio_tokens_in` is as much a token as
 /// an LLM's `input`). The one predicate every token total in this module reads.
 pub fn is_token_class(class: &str) -> bool {
-    use crate::plane::registry::{plane_decls, TOKEN_FAMILY};
+    use crate::plane_driver::doors::plane_decls;
+    use crate::plane_driver::row::TOKEN_FAMILY;
     busbar_contract::records::RESERVED_UNITS.contains(&class)
         || plane_decls().iter().any(|d| {
             (d.billable_classes.iter()).any(|c| c.family == TOKEN_FAMILY && c.class == class)
@@ -401,7 +402,8 @@ pub fn token_series(
     lane: &str,
     counts: &std::collections::BTreeMap<String, u64>,
 ) -> Vec<(String, u64)> {
-    use crate::plane::registry::{plane_decls, TOKEN_FAMILY};
+    use crate::plane_driver::doors::plane_decls;
+    use crate::plane_driver::row::TOKEN_FAMILY;
     let (plane, _) = busbar_kernel_ledger::cost::split_plane_lane(lane);
     let owner = plane_decls().iter().find(|d| {
         if plane.is_empty() {

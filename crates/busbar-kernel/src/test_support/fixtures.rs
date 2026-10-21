@@ -29,7 +29,7 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
         // The first provider dialect a registered plane declares (the neutral fallback plane's,
         // [`register_neutral_test_plane`], or a linked plane's), so the boot accepts it; with no
         // plane registered, the neutral plane's first. The kernel names no dialect.
-        protocol: crate::plane::provider_dialects()
+        protocol: crate::plane_driver::doors::provider_dialects()
             .first()
             .copied()
             .unwrap_or(NEUTRAL_DIALECTS[0])
@@ -119,59 +119,60 @@ pub const NEUTRAL_DIALECTS: &[&str] = &[
 // production. Every hook is `None`/no-op: this stands for "a plane is installed", never for what a
 // plane does. Idempotent (`register_test_plane` dedupes by key) and NOT isolated — a test that also
 // asserts against the registered SET (or needs a plane-free registry) wraps its own body in
-// `crate::plane::registry::TestRegistryIsolation::empty()` around this call, the same as any other
+// `crate::plane_driver::doors::TestRegistryIsolation::empty()` around this call, the same as any other
 // `register_test_plane` caller.
-static NEUTRAL_FALLBACK_PLANE: crate::plane::registry::PlaneDecl = NEUTRAL_FALLBACK;
+static NEUTRAL_FALLBACK_PLANE: crate::plane_driver::row::PlaneDecl = NEUTRAL_FALLBACK;
 
 /// The neutral fallback plane's row, as a value a test's own neutral plane can extend.
-pub const NEUTRAL_FALLBACK: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
-    declaration: crate::plane::registry::PlaneDeclaration {
-        key: "neutral-test-fallback",
-        fallback: true,
-        config_section: "pools",
-        scope_kinds: &["pool"],
-        subject_noun: "pool",
-        admin_noun: "pool",
-        audit_kind: "pool_request",
-        card_signing_domain: None,
-        card_kid_prefix: None,
-        owned_config_sections: &[],
-        billable_classes: &[],
-        fee_units: &[],
-        metric_families: &[],
-        record_kinds: &[],
-        required_config_sections: &[],
-        trust_keys: &[],
-        served_op_classes: &[],
-        caller_credential_refusal: None,
-    },
-    wire_format_names: || &[],
-    // The synthetic provider dialects a test lane names, so the boot accepts one.
-    provider_dialects: || NEUTRAL_DIALECTS,
-    claims: |_| Vec::new(),
-    admission: |_| None,
-    build: |_| None,
-    routes: None,
-    admin_routes: None,
-    openapi: None,
-    hydrate: None,
-    start: None,
-    config_validate: None,
-    named_def_list: None,
-    named_def_get: None,
-    registry_contains: None,
-    reresolve_gates: None,
-    openapi_schemas: None,
-    on_swap: None,
-    parse_section: None,
-    parse_endpoint: None,
-    lower_endpoint: None,
-    build_runtime: None,
-    viewer: None,
-    retain_verify_gates: None,
-    default_section: None,
-    resolve_provider: None,
-};
+pub const NEUTRAL_FALLBACK: crate::plane_driver::row::PlaneDecl =
+    crate::plane_driver::row::PlaneDecl {
+        declaration: crate::plane_driver::row::PlaneDeclaration {
+            key: "neutral-test-fallback",
+            fallback: true,
+            config_section: "pools",
+            scope_kinds: &["pool"],
+            subject_noun: "pool",
+            admin_noun: "pool",
+            audit_kind: "pool_request",
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[],
+            fee_units: &[],
+            metric_families: &[],
+            record_kinds: &[],
+            required_config_sections: &[],
+            trust_keys: &[],
+            served_op_classes: &[],
+            caller_credential_refusal: None,
+        },
+        wire_format_names: || &[],
+        // The synthetic provider dialects a test lane names, so the boot accepts one.
+        provider_dialects: || NEUTRAL_DIALECTS,
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        build: |_| None,
+        routes: None,
+        admin_routes: None,
+        openapi: None,
+        hydrate: None,
+        start: None,
+        config_validate: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        openapi_schemas: None,
+        on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        viewer: None,
+        retain_verify_gates: None,
+        default_section: None,
+        resolve_provider: None,
+    };
 
 /// SAY, IN ONE LINE, THAT THIS TEST NEEDS A PLANE TO EXIST — not what it does, only that config
 /// resolution has somewhere to put a `pools:`/fallback section rather than refusing with "no plane is
@@ -180,12 +181,12 @@ pub const NEUTRAL_FALLBACK: crate::plane::registry::PlaneDecl = crate::plane::re
 /// behaviour; a test that DOES assert real plane behaviour belongs in `tests/*_cross_plane.rs`
 /// instead, where the real the retired engine crate/`busbar_mcp` and agent-engine crates are reachable.
 pub fn register_neutral_test_plane() {
-    crate::plane::registry::register_test_plane(&NEUTRAL_FALLBACK_PLANE);
+    crate::plane_driver::doors::register_test_plane(&NEUTRAL_FALLBACK_PLANE);
 }
 
 /// The neutral fallback plane [`register_neutral_test_plane`] registers, for a test that seeds an
 /// ISOLATED registry (`TestRegistryIsolation::seeded`) instead of adding to the shared one.
-pub fn neutral_fallback_plane() -> &'static crate::plane::registry::PlaneDecl {
+pub fn neutral_fallback_plane() -> &'static crate::plane_driver::row::PlaneDecl {
     &NEUTRAL_FALLBACK_PLANE
 }
 
@@ -323,7 +324,11 @@ impl busbar_kernel::test_support::TestAppSeam for TestApp {
         TestApp::mount_plane(self, key, path, wire);
     }
 
-    fn admit_plane(&mut self, key: &'static str, admission: busbar_kernel::plane::PlaneAdmission) {
+    fn admit_plane(
+        &mut self,
+        key: &'static str,
+        admission: crate::plane_driver::claims::PlaneAdmission,
+    ) {
         TestApp::admit_plane(self, key, admission);
     }
 

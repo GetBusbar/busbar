@@ -125,7 +125,7 @@ fn no_verb_name_carries_a_protocol_identity() {
     // keys of the real roster are checked against the same verbs in
     // `crates/busbar/tests/operation_names_cross_plane.rs`, where that roster is registered.
     crate::test_support::register_neutral_test_plane();
-    let identities: Vec<&str> = crate::plane::provider_dialects();
+    let identities: Vec<&str> = crate::plane_driver::doors::provider_dialects();
     assert!(
         !identities.is_empty(),
         "the neutral plane declares provider dialects; an empty list would pass vacuously"

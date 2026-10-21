@@ -1241,7 +1241,7 @@ pub fn door_pools(
 /// read off the generation under its own key and filed under its section.
 #[must_use]
 pub fn installed_door_pools(app: &busbar_kernel::state::App) -> DoorPoolsByKey {
-    busbar_kernel::plane::registry::plane_decls()
+    busbar_kernel::plane_driver::doors::plane_decls()
         .iter()
         .filter_map(|decl| {
             app.plane_pools(decl.key)

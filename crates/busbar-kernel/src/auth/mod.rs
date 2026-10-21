@@ -1329,12 +1329,12 @@ fn principal_from_vkey(key: &crate::governance::VirtualKey) -> Principal {
 /// the path and the deployment's mount table. Auth runs BEFORE routing, so those two are the only
 /// signals available for shaping a native 401 envelope.
 ///
-/// A THIN delegation to the CANONICAL `crate::plane::PlaneDispatch::ingress_of`, which is the ONE
+/// A THIN delegation to the CANONICAL `crate::plane_driver::claims::PlaneDispatch::ingress_of`, which is the ONE
 /// resolver: a private copy here (there was one, and before that a wire-identical duplicate of the
 /// path classifier) is the exact indistinguishability tell where one handler shapes `/model/foo/bar`
 /// in one dialect and another handler shapes it in a different dialect — or where auth answers a
 /// MOUNTED, audience-bound path in the residual plane's envelope because it could not see the mount.
-fn ingress_for_path(app: &crate::state::App, path: &str) -> crate::plane::Ingress {
+fn ingress_for_path(app: &crate::state::App, path: &str) -> crate::plane_driver::claims::Ingress {
     app.planes.ingress_of(path)
 }
 
@@ -1400,7 +1400,7 @@ fn unauthorized_response(
         );
     }
     let ingress = ingress_for_path(app, path);
-    if let crate::plane::Ingress::Mounted(_) = ingress {
+    if let crate::plane_driver::claims::Ingress::Mounted(_) = ingress {
         return crate::ingress::native::native_error(
             ingress,
             StatusCode::UNAUTHORIZED,

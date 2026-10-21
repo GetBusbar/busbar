@@ -1012,7 +1012,7 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         );
     }
 
-    let bootctx = format!("{}/plane/registry.rs", addresses.core);
+    let bootctx = format!("{}/plane_driver/row.rs", addresses.core);
     if let Ok(text) = cx.read(&bootctx) {
         let mut ov = Overlay::new();
         ov.set(

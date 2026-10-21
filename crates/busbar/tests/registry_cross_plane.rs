@@ -8,12 +8,12 @@
 //! Relocated here from `src/plane/tests/registry_tests.rs` (the A6/HostCtx dev-dependency-cycle
 //! cleanup): `builtin_plane_decls()` below is the local analogue of the old
 //! `TEST_BUILTIN_PLANE_DECLS` — the REAL linked planes' registry rows, which only type-check (as
-//! `&'static busbar_kernel::plane::registry::PlaneDecl`) with ONE `busbar_kernel` in the graph. The
+//! `&'static busbar_kernel::plane_driver::row::PlaneDecl`) with ONE `busbar_kernel` in the graph. The
 //! planes come from the test-linked table (`tests/linked/mod.rs`; K3, architect ruling N02): this
 //! file names no plane crate and spells no plane key — it addresses a plane by what it declares
 //! (the section it owns, the fallback flag), and each plane pins its own literal identity in its own
 //! crate. The runtime objects `build_dispatch` folds are built CONFIG-DRIVEN, through the kernel's
-//! own `deploy_from_yaml_str` → `resolve` → each plane's `build` hook, exactly as `appbuild` does. `busbar_kernel::plane::registry::builtin_plane_decls()` itself
+//! own `deploy_from_yaml_str` → `resolve` → each plane's `build` hook, exactly as `appbuild` does. the kernel's former built-in plane list itself
 //! is now UNCONDITIONALLY the empty production set (its old `#[cfg(test)]` branch, which returned
 //! this exact array, is gone) — see that fn's doc for the full rationale. A handful of `pub(crate)`
 //! fns this file drives directly (`config_sections_from`, `fallback_key`, `plane_keys`, `plane_decl`,
@@ -30,10 +30,13 @@ mod linked;
 
 use busbar_kernel::config::plane_sections::{config_sections_from, refuse_cross_plane_reference};
 use busbar_kernel::config::{deploy_from_yaml_str, resolve, RootCfg};
-use busbar_kernel::plane::registry::{
-    build_dispatch, install_planes, merged_boot_plane_decls, plane_decl_for, BuildCtx, PlaneDecl,
-    PlaneDeclaration,
-};
+use busbar_kernel::plane_driver::doors::build_dispatch;
+use busbar_kernel::plane_driver::doors::merged_boot_plane_decls;
+use busbar_kernel::plane_driver::doors::plane_decl_for;
+use busbar_kernel::plane_driver::doors::{install_doors, DoorSet};
+use busbar_kernel::plane_driver::row::BuildCtx;
+use busbar_kernel::plane_driver::row::PlaneDecl;
+use busbar_kernel::plane_driver::row::PlaneDeclaration;
 use std::any::Any;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -262,15 +265,18 @@ fn every_plane_key_answers_from_its_declaration() {
         assert_eq!(resolved.audit_kind, decl.audit_kind);
         assert_eq!(resolved.subject_noun, decl.subject_noun);
         assert_eq!(
-            busbar_kernel::plane::wire_format_names(decl.key),
+            busbar_kernel::plane_driver::doors::wire_format_names(decl.key),
             (decl.wire_format_names)()
         );
     }
     // The by-key surfaces answer exactly what each linked plane declares — the operator-visible
     // strings that metrics, audit records and grants are keyed by.
-    assert_eq!(busbar_kernel::plane::fallback_key(), linked::fallback().key);
+    assert_eq!(
+        busbar_kernel::plane_driver::doors::fallback_key(),
+        linked::fallback().key
+    );
     for decl in builtin_plane_decls() {
-        let by_key = busbar_kernel::plane::plane_decl(decl.key);
+        let by_key = busbar_kernel::plane_driver::doors::plane_decl(decl.key);
         assert_eq!(by_key.audit_kind, decl.audit_kind);
         assert_eq!(by_key.subject_noun, decl.subject_noun);
         assert_eq!(by_key.scope_kinds, decl.scope_kinds);
@@ -290,12 +296,16 @@ fn the_fallback_decl_states_its_own_dialects() {
         .map(|d| d.name)
         .collect();
     assert_eq!(
-        busbar_kernel::plane::wire_format_names(busbar_kernel::plane::fallback_key()),
+        busbar_kernel::plane_driver::doors::wire_format_names(
+            busbar_kernel::plane_driver::doors::fallback_key()
+        ),
         declared.as_slice(),
         "the fallback plane's dialects are its declarations' codec dialects, not a literal"
     );
     assert!(
-        busbar_kernel::plane::wire_formats(busbar_kernel::plane::fallback_key()) > 1,
+        busbar_kernel::plane_driver::doors::wire_formats(
+            busbar_kernel::plane_driver::doors::fallback_key()
+        ) > 1,
         "and the superset-IR threshold is computed from that list"
     );
 }
@@ -350,7 +360,8 @@ fn a_registered_plane_cannot_collide_with_a_builtin_vocabulary() {
 #[test]
 fn the_scope_kind_index_is_the_exact_inverse_of_scope_kind_at() {
     register_planes();
-    use busbar_kernel::plane::registry::{scope_kind_at, scope_kind_index};
+    use busbar_kernel::plane_driver::doors::scope_kind_at;
+    use busbar_kernel::plane_driver::doors::scope_kind_index;
     // The neutral base kind plus every kind any registered plane declares — the full vocabulary the
     // two functions share. Iterating this (rather than a literal list) means a plane adding a kind
     // is covered with no edit here.
@@ -380,25 +391,28 @@ fn the_scope_kind_index_is_the_exact_inverse_of_scope_kind_at() {
     );
 }
 
-/// INSTALL BEFORE FIRST READ, enforced. The module header states the invariant: a declaration
-/// installed after another layer resolved against the smaller (built-ins-only) set would mean two
-/// layers of one process disagree about which planes exist, so [`install_planes`] must refuse to
-/// run once the process plane list has been read even once.
+/// INSTALL BEFORE FIRST READ, enforced. A door set installed after another layer resolved against
+/// the smaller set would mean two layers of one process disagree about which doors exist, so
+/// [`install_doors`] must refuse to run once the process plane list has been read even once.
 ///
-/// This is the ONLY test in this file that calls [`install_planes`], deliberately: it is a write to
-/// process-global `OnceLock`s, and a second call anywhere else in this BINARY (this file — each
+/// This is the ONLY test in this file that calls [`install_doors`], deliberately: it is a write to a
+/// process-global `OnceLock`, and a second call anywhere else in this BINARY (this file — each
 /// `tests/*.rs` file is its own process) would make this test's outcome depend on test execution
-/// order. `config_sections()` is called here specifically to force the read `install_planes` must
-/// then refuse to follow — it is exercised incidentally by many other tests in this file already
-/// (any test that touches `busbar_kernel::config::plane_sections::config_sections()` /
-/// `busbar_kernel::plane::registry::plane_decls()`), so this call is not what makes the read happen;
-/// it is what makes the read happen NO LATER than this test needs it to, regardless of what ran
-/// before it.
+/// order. `config_sections()` is called here specifically to force the read `install_doors` must
+/// then refuse to follow, regardless of what ran before it.
 #[test]
-#[should_panic(expected = "install_planes called after the plane list was first read")]
-fn install_planes_after_first_read_panics() {
+#[should_panic(expected = "install_doors called after the plane list was first read")]
+fn install_doors_after_first_read_panics() {
+    /// The empty door set: no root binds a door here.
+    struct NoDoors;
+    impl DoorSet for NoDoors {
+        fn rows(&self) -> &[&'static PlaneDecl] {
+            &[]
+        }
+    }
+    static NONE: NoDoors = NoDoors;
     let _ = busbar_kernel::config::plane_sections::config_sections();
-    install_planes(&[]);
+    install_doors(&NONE);
 }
 
 // ── PLANE-OWNED-CONFIG DUP-CLAIM GUARD (1.6.0 config-seam, stage 1) ─────────────────────────────────
@@ -448,9 +462,9 @@ static GAMMA_CLAIMS_RATE_CARD: PlaneDecl = PlaneDecl {
 #[test]
 fn dup_claim_guard_fires_when_two_planes_claim_the_same_section() {
     let decls: Vec<&PlaneDeclaration> = vec![&ALPHA_CLAIMS_FOO, &BETA_CLAIMS_FOO];
-    let err = busbar_kernel::plane::registry::check_owned_config_claims(
+    let err = busbar_kernel::plane_driver::row::check_owned_config_claims(
         &decls,
-        busbar_kernel::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+        busbar_kernel::plane_driver::doors::CORE_OWNED_CONCRETE_SECTIONS,
     )
     .expect_err("two planes claiming section `foo` MUST be refused — one plane's grammar would answer for the other's");
     assert!(
@@ -462,9 +476,9 @@ fn dup_claim_guard_fires_when_two_planes_claim_the_same_section() {
 #[test]
 fn dup_claim_guard_fires_when_a_plane_claims_a_core_owned_section() {
     let decls: Vec<&PlaneDeclaration> = vec![&GAMMA_CLAIMS_RATE_CARD];
-    let err = busbar_kernel::plane::registry::check_owned_config_claims(
+    let err = busbar_kernel::plane_driver::row::check_owned_config_claims(
         &decls,
-        busbar_kernel::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+        busbar_kernel::plane_driver::doors::CORE_OWNED_CONCRETE_SECTIONS,
     )
     .expect_err("claiming `rate_card` while core still owns it concretely MUST be refused — the grammar would be declared twice");
     assert!(
@@ -502,15 +516,15 @@ static TWO_CLAIMS_STREAMS: PlaneDecl = PlaneDecl {
 #[test]
 fn dup_claim_guard_admits_streams_alone_and_refuses_a_streams_collision() {
     // `streams` is NOT in `CORE_OWNED_CONCRETE_SECTIONS`, so the lone claim is ADMITTED.
-    busbar_kernel::plane::registry::check_owned_config_claims(
+    busbar_kernel::plane_driver::row::check_owned_config_claims(
         &[&ONE_CLAIMS_STREAMS],
-        busbar_kernel::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+        busbar_kernel::plane_driver::doors::CORE_OWNED_CONCRETE_SECTIONS,
     )
     .expect("`streams` is not core-owned and has one claimant — the lone claim must be admitted");
     // A SECOND claimant of `streams` is refused by construction, naming both planes and the section.
-    let err = busbar_kernel::plane::registry::check_owned_config_claims(
+    let err = busbar_kernel::plane_driver::row::check_owned_config_claims(
         &[&ONE_CLAIMS_STREAMS, &TWO_CLAIMS_STREAMS],
-        busbar_kernel::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+        busbar_kernel::plane_driver::doors::CORE_OWNED_CONCRETE_SECTIONS,
     )
     .expect_err("two planes claiming `streams` MUST be refused — one plane's grammar would answer for the other's");
     assert!(
@@ -524,9 +538,9 @@ fn dup_claim_guard_passes_for_the_shipped_registry() {
     // The shipped roster's owned-config claims are disjoint and claim nothing core still owns, so the
     // guard admits the real set.
     let decls = merged_boot_plane_decls(&[], builtin_plane_decls());
-    busbar_kernel::plane::registry::check_owned_config_claims(
+    busbar_kernel::plane_driver::row::check_owned_config_claims(
         &decls.iter().map(|d| &d.declaration).collect::<Vec<_>>(),
-        busbar_kernel::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+        busbar_kernel::plane_driver::doors::CORE_OWNED_CONCRETE_SECTIONS,
     )
     .expect("the shipped roster's owned-config claims must pass the dup-claim guard");
     // And no plane claims ANOTHER plane's declaring section: a section a plane owns beside its own
@@ -608,7 +622,7 @@ fn slot_refs<'a>(
 /// **RATCHET R1 — every declared path is claimed, and every claimed path is audience-checked.**
 ///
 /// For each registered plane, every `(path, wire)` its decl declares against its real object is
-/// mounted, and [`busbar_kernel::plane::PlaneDispatch::admission_for`] resolves an audience on it —
+/// mounted, and [`busbar_kernel::plane_driver::claims::PlaneDispatch::admission_for`] resolves an audience on it —
 /// including a multi-binding door's framed SECOND claim (a service path a client derives from its
 /// service description and cannot be pointed off of). A path a plane answers on but does not claim
 /// here is a confused-deputy hole where no token's `aud` is checked, which is the whole reason the
@@ -865,7 +879,7 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         default_section: None,
         resolve_provider: None,
     };
-    let ctx = busbar_kernel::plane::registry::BootCtx::stub();
+    let ctx = busbar_kernel::plane_driver::row::BootCtx::stub();
 
     let err = busbar_kernel::boot::run_start_hooks(&[&REFUSES_START], &ctx)
         .expect_err("a plane whose start returns Err must refuse boot, not continue");
@@ -979,7 +993,7 @@ fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
         default_section: None,
         resolve_provider: None,
     };
-    let ctx = busbar_kernel::plane::registry::BootCtx::stub();
+    let ctx = busbar_kernel::plane_driver::row::BootCtx::stub();
 
     let err = busbar_kernel::boot::run_hydrate_hooks(&[&REFUSES_HYDRATE], &ctx)
         .expect_err("a plane whose hydrate returns Err must refuse boot");
@@ -1053,7 +1067,7 @@ fn build_dispatch_matches_the_hand_mounted_table() {
 
     // By hand, through the public `mount`/`admit` API, from each configured plane's OWN object: its
     // claimed doors and its admission.
-    let mut hand = busbar_kernel::plane::PlaneDispatch::default();
+    let mut hand = busbar_kernel::plane_driver::claims::PlaneDispatch::default();
     let mut mounted = 0;
     for decl in builtin_plane_decls() {
         let Some(slot) = slots.get(decl.key).copied() else {

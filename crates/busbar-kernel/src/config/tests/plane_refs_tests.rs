@@ -7,7 +7,7 @@
 //! The fixture below uses three purely synthetic plane keys (`"alpha"`/`"beta"`/`"gamma"`) rather
 //! than the real `"llm"`/`"mcp"`/`"a2a"`: this is a generic multi-tenant CONTAINER's own test, and it
 //! asserts nothing about what any real plane IS or DOES — see
-//! [`crate::plane::isolated_three_plane_test_registry`]'s doc. The one test here that DID need a real
+//! [`crate::plane_driver::doors::isolated_three_plane_test_registry`]'s doc. The one test here that DID need a real
 //! plane's own section-name prose (`the_refusal_message_is_actionable`) moved to
 //! `crates/busbar/tests/plane_config_cross_plane.rs`, where naming the real planes is licensed.
 
@@ -33,10 +33,10 @@ fn sections() -> PlaneSections<Entry> {
 #[test]
 fn every_plane_stores_and_reads_back_the_same_way() {
     let mut s: PlaneSections<OtherEntry> = PlaneSections::default();
-    for (i, plane) in crate::plane::plane_keys().enumerate() {
+    for (i, plane) in crate::plane_driver::doors::plane_keys().enumerate() {
         s.insert(plane, "shared-name", OtherEntry(i as u32));
     }
-    for (i, plane) in crate::plane::plane_keys().enumerate() {
+    for (i, plane) in crate::plane_driver::doors::plane_keys().enumerate() {
         assert_eq!(
             s.get(plane, "shared-name"),
             Some(&OtherEntry(i as u32)),
@@ -90,7 +90,7 @@ fn a_name_from_another_plane_never_resolves() {
 /// there.
 #[test]
 fn a_cross_plane_reference_names_the_plane_the_entry_lives_on() {
-    let _iso = super::isolated_three_plane_test_registry();
+    let _iso = crate::plane_driver::doors::isolated_three_plane_test_registry();
     let s = sections();
     assert_eq!(
         s.resolve("beta", "planner"),
@@ -135,7 +135,7 @@ fn a_section_read_is_scoped_to_its_own_plane() {
 /// never validated.
 #[test]
 fn iteration_covers_every_plane_and_attributes_each_entry() {
-    let _iso = super::isolated_three_plane_test_registry();
+    let _iso = crate::plane_driver::doors::isolated_three_plane_test_registry();
     let s = sections();
     let mut seen: Vec<(&'static str, &str)> = s.iter().map(|(p, n, _)| (p, n)).collect();
     seen.sort();
@@ -154,7 +154,7 @@ fn iteration_covers_every_plane_and_attributes_each_entry() {
     let planes: std::collections::BTreeSet<&'static str> = s.iter().map(|(p, _, _)| p).collect();
     assert_eq!(
         planes.len(),
-        crate::plane::plane_keys().count(),
+        crate::plane_driver::doors::plane_keys().count(),
         "every plane is represented"
     );
 }
@@ -164,7 +164,7 @@ fn iteration_covers_every_plane_and_attributes_each_entry() {
 #[test]
 fn an_empty_container_resolves_nothing() {
     let s: PlaneSections<Entry> = PlaneSections::default();
-    for plane in crate::plane::plane_keys() {
+    for plane in crate::plane_driver::doors::plane_keys() {
         assert!(matches!(
             s.resolve(plane, "anything"),
             Err(RefError::Unknown { .. })
@@ -179,7 +179,7 @@ fn an_empty_container_resolves_nothing() {
 /// makes a boot failure unreproducible.
 #[test]
 fn a_name_defined_on_several_other_planes_diagnoses_deterministically() {
-    let _iso = super::isolated_three_plane_test_registry();
+    let _iso = crate::plane_driver::doors::isolated_three_plane_test_registry();
     let mut s = PlaneSections::default();
     s.insert("alpha", "shared", Entry("alpha"));
     s.insert("gamma", "shared", Entry("gamma"));

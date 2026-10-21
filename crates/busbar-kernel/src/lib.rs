@@ -258,7 +258,6 @@ mod member_tests;
 #[cfg(test)]
 #[path = "tests/operation_tests.rs"]
 mod operation_tests;
-pub mod plane;
 pub mod plane_host;
 pub mod plugin_routes;
 /// THE PLUGIN-ADMISSION MACHINERY the operator surface drives (upload, verify, inventory, rescan):

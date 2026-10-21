@@ -628,7 +628,7 @@ pub(crate) fn scan_json_value_end(bytes: &[u8], start: usize) -> Option<usize> {
 // rather than back into `busbar_kernel::proto::registry`. `busbar-core`'s test-support `registry()` folds
 // this list ahead of its built-ins on every read, so a protocol registered by any test before it reads
 // the registry is visible regardless of test order. This is the exact analogue of the plane axis's
-// `busbar_kernel::plane::registry::register_test_plane`, and it is what let the `#[path]` witness
+// `busbar_kernel::plane_driver::doors::register_test_plane`, and it is what let the `#[path]` witness
 // re-includes of the dialect sources into `busbar-core` be deleted: the externally-linked crate's
 // `&DECL` is now the SAME `ProtocolDecl` type (this one), so core no longer needs a re-compiled copy.
 
