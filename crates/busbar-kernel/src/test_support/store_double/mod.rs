@@ -854,7 +854,7 @@ impl Store for MemoryStore {
             if k != kind || r.ts >= before {
                 return true;
             }
-            k == crate::plane::store::KIND_TASK && r.disposition != PlaneDisposition::Terminal
+            k == "task" && r.disposition != PlaneDisposition::Terminal
         });
         Ok((before_len - records.len()) as u64)
     }
