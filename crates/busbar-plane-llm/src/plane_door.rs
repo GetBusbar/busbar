@@ -684,7 +684,7 @@ impl<S> UnitBook<S> {
 pub struct LlmDoor {
     generations: Generations<PlaneSnapshot>,
     shapings: Mutex<BTreeMap<u64, Arc<Shaping>>>,
-    book: Mutex<UnitBook<UnitState>>,
+    units: Mutex<UnitBook<UnitState>>,
     services: Option<Services>,
     /// The receivers the `webhooks:` section switched on at open.
     webhooks: Webhooks,
@@ -1456,7 +1456,7 @@ slot!(
         let door = LlmDoor {
             generations: Generations::new(),
             shapings: Mutex::new(BTreeMap::from([(open.generation, Arc::new(shaping))])),
-            book: Mutex::new(UnitBook::default()),
+            units: Mutex::new(UnitBook::default()),
             services: open.host().and_then(|h| Services::of(&h)),
             webhooks,
         };
@@ -1514,7 +1514,7 @@ slot!(
     Cancel, PlaneCancelIn, PlaneCancelOut, |instance, input, mut out| {
         let mut partial = false;
         if let Some(door) = instance.get() {
-            partial = guard(&door.book)
+            partial = guard(&door.units)
                 .cancel(input.cancel.ticket)
                 .is_some_and(|u| u.reply.as_ref().is_some_and(Reply::partial));
         }
@@ -1565,7 +1565,7 @@ slot!(
         if given.claim == CLAIM_PROBE {
             unit.probe = true;
             out.set(|o| &o.principal_need, PRINCIPAL_NONE);
-            guard(&door.book).hold(given.unit, unit);
+            guard(&door.units).hold(given.unit, unit);
             return Outcome::Ready;
         }
         let method = String::from_utf8_lossy(input.field(|i| &i.method).bytes()).into_owned();
@@ -1583,7 +1583,7 @@ slot!(
                     out.local();
                     unit.local = true;
                     unit.ack = Some(webhook::ack(&event));
-                    guard(&door.book).hold(given.unit, unit);
+                    guard(&door.units).hold(given.unit, unit);
                     Outcome::Ready
                 }
                 Err(message) => {
@@ -1598,7 +1598,7 @@ slot!(
                     out.set(|o| &o.refusal, declined.why.code());
                     out.set(|o| &o.refusal_status, u32::from(declined.status));
                     unit.declined = Some(declined);
-                    guard(&door.book).hold(given.unit, unit);
+                    guard(&door.units).hold(given.unit, unit);
                     out.fail(Refusal::bare())
                 }
             };
@@ -1628,7 +1628,7 @@ slot!(
                     }
                 }
                 unit.arrived = Some(arrived);
-                guard(&door.book).hold(given.unit, unit);
+                guard(&door.units).hold(given.unit, unit);
                 Outcome::Ready
             }
             Err(declined) => {
@@ -1650,7 +1650,7 @@ slot!(
                     out.route(ROUTE_DIRECT, entry);
                 }
                 unit.declined = Some(declined);
-                guard(&door.book).hold(given.unit, unit);
+                guard(&door.units).hold(given.unit, unit);
                 out.fail(Refusal::bare())
             }
         }
@@ -1672,10 +1672,10 @@ slot!(
             return Outcome::Fault;
         }
         // The unit leaves the map for the call, so its answer is computed with no lock held.
-        let Some(mut unit) = guard(&door.book).take(key) else {
+        let Some(mut unit) = guard(&door.units).take(key) else {
             return Outcome::Fault;
         };
-        guard(&door.book).bind(given.head.ticket, key);
+        guard(&door.units).bind(given.head.ticket, key);
         if unit.pending.is_none() {
             if given.from == FROM_FAR_END && given.flags & PIECE_FINAL != 0 {
                 unit.final_answer = true;
@@ -1705,9 +1705,9 @@ slot!(
         }
         let (outcome, ended) = deliver(&mut unit, input, &mut out);
         if ended {
-            guard(&door.book).ends(key);
+            guard(&door.units).ends(key);
         } else {
-            guard(&door.book).hold(key, unit);
+            guard(&door.units).hold(key, unit);
         }
         outcome
     }
@@ -1721,7 +1721,7 @@ slot!(
             return Outcome::Failed;
         };
         let given = input.get();
-        let held = guard(&door.book).take(given.unit);
+        let held = guard(&door.units).take(given.unit);
         let host = door.host();
         let rendered = match &held {
             Some(UnitState {
@@ -1789,12 +1789,12 @@ slot!(
         if short {
             // The driver re-calls once with the buffers this named: the unit stays for it.
             if let Some(unit) = held {
-                guard(&door.book).hold(given.unit, unit);
+                guard(&door.units).hold(given.unit, unit);
             }
             Outcome::Failed
         } else {
             // The unit ends here: nothing of it stays, the ticket its attempt came on included.
-            guard(&door.book).ends(given.unit);
+            guard(&door.units).ends(given.unit);
             Outcome::Ready
         }
     }
@@ -1827,7 +1827,7 @@ slot!(
             return Outcome::Failed;
         };
         let given = input.get();
-        let mut units = guard(&door.book);
+        let mut units = guard(&door.units);
         // A unit that never arrived (or arrived declined, or as a probe) has nothing to project.
         let Some(arrived) = units.get_mut(given.unit).and_then(|u| u.arrived.as_mut()) else {
             return Outcome::Refused;
