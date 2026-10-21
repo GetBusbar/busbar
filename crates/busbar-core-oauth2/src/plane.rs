@@ -6,8 +6,9 @@
 //! Everything expensive on this plane is reachable from [`AsPlane`], and [`AsPlane`] is built in
 //! exactly one place — [`AsPlane::build`], once per config generation (the boot and every apply or
 //! reload), only when the operator wrote the config block. That is the whole of the
-//! zero-cost-when-off property: `App::oauth_as` is `Option<Arc<AsPlane>>`, and `None` allocates
-//! nothing, spawns nothing, and mounts nothing.
+//! zero-cost-when-off property: the kernel's `App::oauth_as` slot is a type-erased
+//! `Option<Arc<dyn Any + Send + Sync>>` holding this crate's [`AsPlane`] (read back through
+//! `App::oauth_as_any`), and `None` allocates nothing, spawns nothing, and mounts nothing.
 //!
 //! ## What a generation carries to the next
 //!
@@ -80,6 +81,23 @@ pub(crate) struct Carried {
     /// `signing_key` and signed with by every later one that runs without it: a reload does not
     /// void the tokens it signed.
     ephemeral_key: std::sync::OnceLock<Vec<u8>>,
+    /// The throttle every generation's server asks ([`Throttle`]): one budget across reloads.
+    limiter: Arc<oauth_as::FixedWindowRateLimiter>,
+}
+
+/// THE CARRIED THROTTLE, as one generation's server holds it. `oauth-as` takes its limiter boxed
+/// and owns it; this hands each generation the SAME counters, so a config reload never refills a
+/// caller's registration, authorization or client-authentication budget.
+struct Throttle(Arc<oauth_as::FixedWindowRateLimiter>);
+
+impl oauth_as::RateLimiter for Throttle {
+    fn check(&self, attempt: oauth_as::Attempt<'_>) -> oauth_as::RateLimitDecision {
+        oauth_as::RateLimiter::check(&*self.0, attempt)
+    }
+
+    fn record(&self, attempt: oauth_as::Attempt<'_>, outcome: oauth_as::AttemptOutcome) {
+        oauth_as::RateLimiter::record(&*self.0, attempt, outcome);
+    }
 }
 
 impl Carried {
@@ -269,7 +287,11 @@ impl AsPlane {
                 // PS256, FAPI 2.0 s5.4.1's other algorithm: an RSA-keyed provisioned client's
                 // assertions and DPoP proofs. The plain posture's document advertises neither list.
                 .with_jws_verifier(Arc::new(RingPs256Verifier))
-                .with_registration_policy(Box::new(super::policy::OpenRegistration)),
+                .with_registration_policy(Box::new(super::policy::OpenRegistration))
+                // THE THROTTLE: registration is open and takes no credential, so it is bounded
+                // here, with the authorization endpoint and client authentication (see
+                // `super::policy`, "Registration is bounded").
+                .with_rate_limiter(Box::new(Throttle(Arc::clone(&carried.limiter)))),
         );
 
         let sessions = Arc::clone(&carried.sessions);
@@ -630,10 +652,10 @@ pub(crate) fn seam_verify_dpop(
 }
 
 /// THE SEAM-TYPED BUILDER (`busbar_kernel::oauth_as::seam::AsPlaneSeam::build`): builds the plane AND
-/// hands its sweeper to the kernel's clock — the whole "how do I come alive" act `appbuild.rs` used
-/// to perform inline before the extraction — and hands back the type-erased object `App::oauth_as`
-/// stores. This is the function pointer `busbar_core_oauth2::install` actually registers; core cannot call
-/// [`AsPlane::build`] directly, since that would name this crate's type from busbar-core.
+/// hands its sweeper to the kernel's clock — the whole "how do I come alive" act — and hands back
+/// the type-erased object the kernel's `App::oauth_as` slot stores. This is the function pointer
+/// [`crate::install`] registers; the kernel cannot call [`AsPlane::build_carrying`] directly, since
+/// that would name this crate's type from `busbar-kernel`.
 ///
 /// `prior` is the generation before this one (`None` at boot): the new server is built over what it
 /// held ([`Carried`]), so a reload voids no token, client, session or replay-ledger entry.
@@ -658,12 +680,15 @@ pub(crate) fn seam_build<C: crate::Connections>(
         // Said once, when the key is generated: a later generation signs with the same one.
         None if carried.ephemeral_key.get().is_some() => None,
         // The deployment's store keeps the key: every node and every restart signs with the one
-        // minted there, so nothing is said at `warn`.
+        // minted there. Said at `warn`, because whoever reads that store reads the key, and the
+        // operator is the one who can keep it out (`super::shared`, module docs).
         None if carried.store().is_some() => {
-            diag_debug!(
+            diag_warn!(
                 OAUTH_AS_EPHEMERAL_SIGNING_KEY,
-                "oauth_as: no signing_key configured; signing with the key minted once into the \
-                 deployment's store"
+                "oauth_as: no signing_key configured; signing with the key minted once for the \
+                 deployment and kept in its store, where whoever reads the store can read it, as \
+                 they read the deployment keyset. Set `oauth_as.signing_key` (a secret reference) \
+                 to keep the signing key out of the store."
             );
             None
         }
