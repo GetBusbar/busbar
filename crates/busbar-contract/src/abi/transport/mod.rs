@@ -979,9 +979,21 @@ pub struct FramerYield {
     pub next_deadline_ns: u64,
     /// Head slots written to `heads`.
     pub heads_len: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
+    /// THE PROTOCOL AGREED on an accepted connection, as the framer states it: the 1-based
+    /// position, in the framer's own ACCEPTING offer (what `locate` answers with
+    /// [`LocateIn::accept`]), of the protocol the connection speaks; `0` = not stated. An opaque
+    /// position, never a protocol's name: the host resolves it against the offer the listener
+    /// made ([`check::check_agreed`]: past the offer is refused, and a dialled framing states
+    /// none). Carved from what was alignment padding (pre-tag, R9 as clarified 2026-09-28: the
+    /// layout golden regenerated, no version bump); the size, alignment and every offset are
+    /// unchanged.
+    pub agreed: u32,
 }
+
+// The carve keeps the layout: size, alignment and the field's offset are the padding's.
+const _: () = assert!(core::mem::size_of::<FramerYield>() == 40);
+const _: () = assert!(core::mem::align_of::<FramerYield>() == 8);
+const _: () = assert!(core::mem::offset_of!(FramerYield, agreed) == 36);
 
 // ── carrier ins and outs ─────────────────────────────────────────────────────────────────────────
 
