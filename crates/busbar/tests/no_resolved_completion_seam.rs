@@ -112,9 +112,9 @@ fn plane_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// LAW 11 (BUSBAR-1.6.0 lines 2127-2132; the relay-only ruling at 418-422): busbar runs no
-/// completion on the LLM plane to answer an upstream's sampling ask, and routes no call to another
+/// completion on a completion plane to answer an upstream's sampling ask, and routes no call to another
 /// plane on the content's say-so. The kernel's resolved-completion seam (the arrival, its fn-pointer
-/// type, the set-once install, the test hook and the resolver) and the LLM plane's synthesizer that
+/// type, the set-once install, the test hook and the resolver) and the completion plane's synthesizer that
 /// filled it were that route; 1.5.5 carried none of it. This pins that no crate's non-test source
 /// declares or names any of it again.
 #[test]
