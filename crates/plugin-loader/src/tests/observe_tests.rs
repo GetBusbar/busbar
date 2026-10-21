@@ -312,7 +312,7 @@ fn a_secret_envelope_reaches_the_host_observer() {
 #[test]
 fn a_transport_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::transport::Transport>(
-        crate::both_ways::transport_linked::door,
+        crate::both_ways::transport_fixture::linked::door,
         busbar_contract::abi::mechanism::kind::TRANSPORT,
     );
 }
