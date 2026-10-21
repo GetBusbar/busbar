@@ -11477,14 +11477,14 @@ mod model_door_root_cells {
     }
 
     /// 1.5.5'S OWN RECORDED ANSWER for one of its chat-dialect oracle cells
-    /// (`testing/shadow-oracle/golden/1.5.5/cells/llm__openai__openai__request__<cell>.json`, the
+    /// (`testing/shadow-oracle/golden/1.5.5/cells/<the door words' recorded_cell_prefix><cell>.json`, the
     /// shipped release driven as an operator drives it): its status, its body in the compact form
     /// the chat dialect's writer serializes (keys in order, no whitespace), and the byte count the
     /// recording's `content-length` held for that body.
     fn recorded_1_5_5(cell: &str) -> (u16, Vec<u8>, usize) {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../testing/shadow-oracle/golden/1.5.5/cells")
-            .join(format!("llm__openai__openai__request__{cell}.json"));
+            .join(format!("{}{cell}.json", door_word("recorded_cell_prefix")));
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("1.5.5's recording {}: {e}", path.display()));
         let golden: serde_json::Value = serde_json::from_str(&text).expect("a recorded cell");
@@ -11498,8 +11498,8 @@ mod model_door_root_cells {
         (status, body, length)
     }
 
-    /// A refusal in the chat dialect's error envelope, as 1.5.5's writer shaped it (its
-    /// `openai_family` writer: `type` the kind, `code` paired with it, `param` null).
+    /// A refusal in the chat dialect's error envelope, as 1.5.5's writer shaped it (that dialect's
+    /// family writer: `type` the kind, `code` paired with it, `param` null).
     fn chat_refusal(kind: &str, code: Option<&str>, message: &str) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({"error": {
             "code": code, "message": message, "param": null, "type": kind}}))

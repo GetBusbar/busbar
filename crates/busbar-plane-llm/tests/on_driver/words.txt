@@ -19,6 +19,8 @@ messages_answer = {"id":"msg_1","type":"message","role":"assistant","model":"m0"
 # Each caller dialect's own path onto pool `p`, and a request body in that dialect.
 chat_path = /v1/chat/completions
 chat_body = {"model":"p","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}
+# The chat dialect's cells among 1.5.5's recorded oracle answers (testing/shadow-oracle/golden/1.5.5/cells).
+recorded_cell_prefix = llm__openai__openai__request__
 messages_path = /v1/messages
 respond_path = /v1/responses
 respond_body = {"model":"p","input":"hi"}
