@@ -33,7 +33,10 @@
 //! an answer too big for the host's first buffer is FAILED naming what it needs, and the host makes
 //! THE ONE RE-CALL with bigger buffers, which answers READY; a re-call that answers short again is
 //! FAULT. At least one `decide` must expect an order longer than `order_cap`, so the set walks the
-//! re-call. (The ticket-less re-call TOKEN, and its refusal when spent on another op, is
+//! re-call, UNLESS the hook declared `{"hook": {"orders": false}}` in its `declares.json` (it never
+//! answers an order, ARCHITECT ruling, status row 194): it is judged on ABSTAIN-ONLY, no request
+//! expects an order, there is no re-call to walk, and it FAILS if it ever orders. A hook that
+//! states nothing may order, and still must produce the long one. (The ticket-less re-call TOKEN, and its refusal when spent on another op, is
 //! `Plugin::recall`'s: no hook call is ticket-less, so the dispatcher's own tests prove it.)
 //!
 //! THE CROSSINGS ARE THE KERNEL'S (THE DESIGN §11.4: one table, as production drives it): every
@@ -72,8 +75,8 @@ use busbar_contract::abi::sdk::door::abi_str;
 use serde_json::Value;
 
 use super::{
-    answered, called, close, crossings, dispatcher, input, load, open, output, ready_step, refresh,
-    submit_on, tick, validate, Fold, Leg, Recorder, Subject,
+    answered, bind_far, called, close, crossings, dispatcher, input, load, open, output,
+    ready_step, refresh, submit_on, tick, validate, Fold, Leg, Recorder, Subject,
 };
 use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::{now_ns, Called, Dispatcher, Frame, Lent, Plugin};
@@ -507,6 +510,13 @@ fn recall_again(p: &Plugin<Hook>, d: &Dispatcher, r: &Arc<Request>, order_cap: u
     line
 }
 
+/// THE BIND THE HOOK SCRIPT LOADS ITS DOOR WITH, on each leg: as every kind whose needs reach a
+/// far end is bound ([`super::bind_far`], the auth and plane scripts'), over a table serving the far
+/// ends its inputs name (`far_ends`), else the leg's own table ([`Subject::bind`]).
+pub(super) fn bind_for(d: &Dispatcher, s: &Subject) -> crate::dispatch::Bind {
+    bind_far(d, "hook", s)
+}
+
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let k = s.kind_inputs("hook");
     assert!(k.is_object(), "conformance.json has no `hook` inputs");
@@ -535,17 +545,20 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         !requests.is_empty(),
         "conformance.json: hook.requests is empty"
     );
-    let short = requests
-        .iter()
-        .find(|r| r.op == slot::DECIDE && r.short)
-        .expect(
-        "conformance.json: no `decide` expects an order longer than hook.order_cap (the re-call)",
-    );
+    let orders = s.hook_orders();
+    let short = recall_request(orders, &requests)
+        .unwrap_or_else(|e| panic!("conformance.json: {e}"))
+        .cloned();
     let refreshed = text(&k["refresh"]["settings"]);
     let after = Arc::new(Request::of(&k["refresh"]["request"], order_cap));
+    if !orders {
+        if let Err(e) = abstain_only(std::slice::from_ref(&after)) {
+            panic!("conformance.json: the refresh request: {e}");
+        }
+    }
 
     let d = dispatcher();
-    let p = load::<Hook>(s, leg, s.bind(&d, "hook")).expect("the hook door loads");
+    let p = load::<Hook>(s, leg, bind_for(&d, s)).expect("the hook door loads");
     let mut r = Recorder::new(crossings(&p));
     r.line("facts", 0, || {
         format!(
@@ -572,9 +585,11 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     }
     // The short answer re-submitted on its ticket over the same short buffers: one crossing
     // each, then FAULT.
-    r.line("re-call short again", 2, || {
-        recall_again(&p, &d, short, order_cap)
-    });
+    if let Some(short) = &short {
+        r.line("re-call short again", 2, || {
+            recall_again(&p, &d, short, order_cap)
+        });
+    }
     r.line("tick", 1, || {
         let (c, next) = tick(&p, 1);
         format!("{} next={next}", called(&c))
@@ -596,16 +611,58 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         .map(|q| (q.label.clone(), q.line()))
         .collect();
     expect.push((after_label, after.line()));
-    contract(&fold, &expect).unwrap_or_else(|e| panic!("{leg:?}: the hook contract: {e}"));
+    contract(&fold, &expect, orders).unwrap_or_else(|e| panic!("{leg:?}: the hook contract: {e}"));
     // THE RED ARM: a door that ranks the other way answers otherwise, and is refused.
     let reversed = reversed(&fold);
     if reversed != fold {
         assert!(
-            contract(&reversed, &expect).is_err(),
+            contract(&reversed, &expect, orders).is_err(),
             "{leg:?}: a fold with every order reversed passed the hook contract"
         );
     }
     fold
+}
+
+/// The request whose short answer the script re-calls, and the order proof it rests on. A hook that
+/// may order (`orders`) must have one `decide` expecting an order longer than the first buffer; a
+/// hook that declared `orders: false` has none ([`abstain_only`]).
+///
+/// # Errors
+/// The hook may order and no `decide` expects an order longer than `order_cap`; or it declared
+/// `orders: false` and a request expects an order.
+pub(super) fn recall_request(
+    orders: bool,
+    requests: &[Arc<Request>],
+) -> Result<Option<&Arc<Request>>, String> {
+    if !orders {
+        return abstain_only(requests).map(|()| None);
+    }
+    requests
+        .iter()
+        .find(|r| r.op == slot::DECIDE && r.short)
+        .map(Some)
+        .ok_or_else(|| {
+            "no `decide` expects an order longer than hook.order_cap (the re-call)".to_string()
+        })
+}
+
+/// A hook that declared `orders: false` is judged on abstain-only: no `decide` of the set expects
+/// an order.
+///
+/// # Errors
+/// The first request that expects an order.
+pub(super) fn abstain_only(requests: &[Arc<Request>]) -> Result<(), String> {
+    match requests
+        .iter()
+        .find(|r| r.op == slot::DECIDE && r.expect.starts_with("verb=prefer"))
+    {
+        None => Ok(()),
+        Some(r) => Err(format!(
+            "the plugin declared `hook.orders: false` in its declares.json, but request '{}' \
+             expects an order: a hook that never orders is judged on abstain-only",
+            r.label
+        )),
+    }
 }
 
 /// `fold` with every PREFER order reversed: what a door that ranks the other way answers.
@@ -629,7 +686,21 @@ fn reversed(fold: &Fold) -> Fold {
 /// answers READY where it must and FAILED with its reason where it must; every request answers
 /// exactly its expected line (verb, order, status, message, the re-call taken or not); a re-call
 /// that is short again is FAULT; an unopened or closed instance serves nothing.
-fn contract(fold: &Fold, expect: &[(String, String)]) -> Result<(), String> {
+///
+/// A hook that declared `orders: false` FAILS the contract if any step answered an order (RED ARM).
+pub(super) fn contract(
+    fold: &Fold,
+    expect: &[(String, String)],
+    orders: bool,
+) -> Result<(), String> {
+    if !orders {
+        if let Some(s) = fold.iter().find(|s| s.answer.contains("verb=prefer")) {
+            return Err(format!(
+                "{}: the plugin declared `hook.orders: false` and ordered: {}",
+                s.label, s.answer
+            ));
+        }
+    }
     let at = |label: &str| {
         fold.iter()
             .find(|s| s.label == label)
@@ -661,12 +732,14 @@ fn contract(fold: &Fold, expect: &[(String, String)]) -> Result<(), String> {
         let line = at(label)?;
         need(line.starts_with("Failed "), label, line)?;
     }
-    let again = at("re-call short again")?;
-    need(
-        again.starts_with("Failed ") && again.ends_with(" then Fault lease=false"),
-        "a re-call answering short again is FAULT",
-        again,
-    )?;
+    if orders {
+        let again = at("re-call short again")?;
+        need(
+            again.starts_with("Failed ") && again.ends_with(" then Fault lease=false"),
+            "a re-call answering short again is FAULT",
+            again,
+        )?;
+    }
     for label in ["decide unopened", "decide after close"] {
         let line = at(label)?;
         need(!line.starts_with("Ready"), label, line)?;

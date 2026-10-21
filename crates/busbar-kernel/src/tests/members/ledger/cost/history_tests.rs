@@ -2,13 +2,13 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The dated history and the lookup over it: appending never rewrites, the resolution rule takes
-//! the highest covering seq, a snapshot answers the same way forever, a hole is a refusal, and a
-//! cached figure never wins over a lookup.
+//! the highest covering seq, a snapshot answers the same way forever, a hole is a refusal, and the
+//! figure a reader uses is the lookup's.
 
 use super::fixtures::*;
 use busbar_kernel_ledger::cost::{
-    price, price_fail_closed, Author, CachedPrice, CardEntryDraft, History, HistorySeq, LaneClass,
-    Posting, RateCard, Unpriceable, STANDARD_TIER_BP,
+    price, price_fail_closed, Author, CardEntryDraft, History, HistorySeq, LaneClass, Posting,
+    RateCard, Unpriceable, STANDARD_TIER_BP,
 };
 
 /// A card pricing one class on one lane at a named rate.
@@ -123,7 +123,7 @@ fn a_snapshot_answers_the_same_way_forever() {
 
     let at_one = history.snapshot(HistorySeq(1));
     let at_two = history.snapshot(HistorySeq(2));
-    assert_eq!(at_one.seq(), HistorySeq(1));
+    assert_eq!(at_one.seq(), Some(HistorySeq(1)));
     assert_eq!(
         at_one.entries().len(),
         2,
@@ -170,39 +170,22 @@ fn an_instant_no_entry_covers_is_a_refusal() {
     );
 }
 
-/// **A CACHED PRICE NEVER WINS OVER A LOOKUP.** The cache is hand-corrupted to a hundredfold figure
-/// and the answer does not move, because the figure a reader must use is derived from the
-/// quantities and the history and the cache is not on that path at all. (The comparison that
-/// reported a divergence, `Posting::cache_diverges`, had no production caller and is deleted with
-/// the two assertions that pinned it.)
+/// **THE FIGURE IS THE LOOKUP'S, AND ONLY THE LOOKUP'S.** A posting carries quantities and an instant
+/// and no price, so asking it twice over the same view answers the same figure, and that figure is
+/// exactly the lookup's: there is no stored figure beside the quantities that could stand in for it.
 #[test]
-fn a_corrupted_cache_never_becomes_the_bill() {
+fn the_figure_a_reader_uses_is_the_lookups() {
     let history = History::opening(card_at(2.0), 0);
     let view = history.current();
-    let mut posting =
-        Posting::from_usage("m", &usage(&[(INPUT, 1_000)]), 0, STANDARD_TIER_BP, 0, 0);
+    let posting = Posting::from_usage("m", &usage(&[(INPUT, 1_000)]), 0, STANDARD_TIER_BP, 0, 0);
 
     let honest = price(&view, &posting).expect("covered");
     assert_eq!(honest.priced_nanos, 2_000_000);
-    posting.cached = Some(honest.as_cache(HistorySeq(0)));
     assert_eq!(posting.priced_nanos(&view), Ok(2_000_000));
-
-    // A hundredfold corruption of the stored figure.
-    posting.cached = Some(CachedPrice {
-        history_seq: HistorySeq(0),
-        card_seq: HistorySeq(0),
-        pre_tier_nanos: 200_000_000,
-        priced_nanos: 200_000_000,
-    });
-    let after = price(&view, &posting).expect("covered");
     assert_eq!(
-        after, honest,
-        "the lookup answers the quantities and the history, whatever the cache says"
-    );
-    assert_eq!(
-        posting.priced_nanos(&view),
-        Ok(2_000_000),
-        "the figure a reader must use did not move"
+        price(&view, &posting).expect("covered"),
+        honest,
+        "the lookup answers the quantities and the history, every time"
     );
 }
 

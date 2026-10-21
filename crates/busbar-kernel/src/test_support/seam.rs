@@ -20,7 +20,7 @@
 
 use crate::plane::PlaneAdmission;
 use crate::plane_driver::slots::PlaneSlots;
-use crate::plane_host::EngineHost;
+use crate::plane_driver::EngineHost;
 use std::any::Any;
 use std::sync::Arc;
 
@@ -28,7 +28,7 @@ use std::sync::Arc;
 /// while the test App is being BUILT; this trait is what it drives on the App that came OUT of
 /// `build()`, so a plane's money-path tests forward a request, mount the real HTTP router and mutate
 /// their own runtime slot in place WITHOUT naming `busbar_kernel::state::App`,
-/// `busbar_kernel::plane_host::engine_host` or `busbar_kernel::build_router`. Core implements it for its
+/// `busbar_kernel::plane_driver::engine_host` or `busbar_kernel::build_router`. Core implements it for its
 /// `App` (thin delegates to those very fns), and a plane's test helpers are generic over `A:
 /// BuiltAppSeam`, taking the `Arc<A>` the fixture's `build()` hands back. Every signature names only
 /// neutral ABI types (the `EngineHost` seam, axum's `Router`, an opaque `Arc<dyn Any>` slot).
@@ -63,7 +63,7 @@ pub trait BuiltAppSeam: PlaneSlots {
 }
 
 /// Free-fn sugar over [`BuiltAppSeam::engine_host_of`], so a test reads
-/// `test_support::engine_host(&app)` where it used to read `busbar_kernel::plane_host::engine_host(&app)`.
+/// `test_support::engine_host(&app)` where it used to read `busbar_kernel::plane_driver::engine_host(&app)`.
 pub fn engine_host<A: BuiltAppSeam + ?Sized>(app: &Arc<A>) -> Arc<dyn EngineHost> {
     A::engine_host_of(app)
 }
@@ -120,7 +120,7 @@ pub trait TestAppSeam {
     /// pairs + the section hook list); `build()` resolves them through the SAME resolver production uses
     /// and files the resulting gate map under `plane_key`. KEYED by the plane's decl `key` — the neutral
     /// twin of the generic `plane_gates`/`plane_pools` keying — so one method serves every plane's
-    /// container-gate section (`tools:` for MCP, `agents:` for A2A) naming no plane.
+    /// container-gate section (the section a plane declares its containers under) naming no plane.
     fn set_container_hooks(
         &mut self,
         plane_key: &'static str,
@@ -128,8 +128,8 @@ pub trait TestAppSeam {
         section: Vec<String>,
     );
 
-    /// Set plane `plane_key`'s type-erased named-definition config the built App carries (the `agents:`
-    /// defs the A2A plane erases); core names no plane config type. KEYED like [`Self::set_container_hooks`]
+    /// Set plane `plane_key`'s type-erased named-definition config the built App carries (the section
+    /// defs a plane erases); core names no plane config type. KEYED like [`Self::set_container_hooks`]
     /// so this one method serves any plane's section-defs handle.
     fn set_plane_defs_any(&mut self, plane_key: &'static str, defs: Arc<dyn Any + Send + Sync>);
 }
