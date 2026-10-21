@@ -1599,6 +1599,11 @@ async fn run_admin_chain(
             _ if operator => {
                 let operator = &app.admin_modules.operator;
                 let mut head = admin_head(method, target, headers, now);
+                if let busbar_kernel_identity::operator::OperatorCredential::Module(calls) =
+                    &**operator
+                {
+                    head.lines = admin_lines(head.lines, calls.as_ref(), operator.carriers());
+                }
                 // The candidate its own carriers yield, lent as the credential beside the lines the
                 // plugin reads its carriers from.
                 head.credential = candidate
@@ -1614,6 +1619,10 @@ async fn run_admin_chain(
                 // The external module is lent the request's head and the candidate 1.5.5 handed
                 // it (the Bearer, else the second admin line).
                 let mut request = admin_head(method, target, headers, now);
+                if let Some(module) = app.admin_modules.modules.get(other) {
+                    let style = app.admin_modules.operator.carriers();
+                    request.lines = admin_lines(request.lines, module.calls.as_ref(), style);
+                }
                 request.credential = candidate
                     .map(|c| busbar_contract::redacted::Secret::new(c.as_bytes().to_vec()));
                 external_admin_module(app, other, request, probe).await
@@ -1777,6 +1786,27 @@ pub enum AdminDoor {
 /// lines as presented (lower-cased names, in order), stamped `now` (wall-clock seconds). The style
 /// names its credential lines; the kernel hands the lines through and names none (THE DESIGN, "Auth
 /// points and guest lists").
+/// THE LINES AN ADMIN MODULE IS LENT (1.5.5 handed an admin module the Bearer, else the admin line,
+/// and no other): of the request's `lines`, those named both by the module's own carriers and by
+/// the operator credential's `style` (its row's carriers): both sets are the styles' own words, and
+/// the kernel names no line. A module whose tail states it reads every header line
+/// ([`busbar_contract::abi::auth::FACT_INBOUND_ALL_HEADERS`]) is lent every line, as before.
+fn admin_lines(
+    lines: Vec<(String, busbar_contract::redacted::Secret<Vec<u8>>)>,
+    module: &dyn AuthCalls,
+    style: &[String],
+) -> Vec<(String, busbar_contract::redacted::Secret<Vec<u8>>)> {
+    if module.facts() & busbar_contract::abi::auth::FACT_INBOUND_ALL_HEADERS != 0 {
+        return lines;
+    }
+    let own = module.carriers();
+    let named = |words: &[String], name: &str| words.iter().any(|w| w.eq_ignore_ascii_case(name));
+    lines
+        .into_iter()
+        .filter(|(name, _)| named(&own, name) && named(style, name))
+        .collect()
+}
+
 fn admin_head(
     method: &str,
     target: &str,
