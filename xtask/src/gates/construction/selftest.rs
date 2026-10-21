@@ -54,7 +54,7 @@ use crate::gates::construction::{
     ceilings, census, external, rules, rules2, ConstructionGate, CEILINGS, UNSAFE_HALVES,
 };
 use crate::gates::{
-    prove_green, prove_red, prove_rows_green, prove_rows_red, Case, Expect, Gate, Report,
+    prove_green, prove_red, prove_rows_green, prove_rows_red, Case, CasePlan, Expect, Gate, Report,
 };
 
 /// The three delegated answers as the real tree gives them, captured once. Every plant starts from
@@ -91,6 +91,26 @@ fn base_overlay(cx: &Ctx) -> Overlay {
 
 fn on(base: &Overlay) -> Overlay {
     base.clone()
+}
+
+/// One installed-store plant: `text` as the kernel module `file`, and a root caller handing its
+/// `install` a value.
+fn store_plant<'a>(
+    gate: &'a dyn Gate,
+    cx: &Ctx,
+    base: &Overlay,
+    name: &str,
+    file: &str,
+    text: &str,
+    naming: &[&str],
+) -> CasePlan<'a> {
+    let mut ov = on(base);
+    ov.set(format!("crates/busbar-kernel/src/{file}.rs"), text);
+    ov.set(
+        format!("crates/busbar/src/root/{file}_root.rs"),
+        format!("pub fn {file}_boot() {{\n    busbar_kernel::{file}::install(PLANTED);\n}}\n"),
+    );
+    prove_red(cx, gate, name, &[rules2::ROW_INSTALLED_STORE], ov, naming)
 }
 
 fn ids(prefix: &str, names: &[String]) -> Vec<String> {
@@ -624,6 +644,175 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         ],
     ));
 
+    // THE INSTALLED-STORE ROW'S REACH (a6's review of #1406: the row caught much less than its
+    // title). Each plant below is one evasion the row read green before this change; each names
+    // its static. One root caller hands every planted installer its value.
+    // A. The type read through an alias: no cell and no map is spelled on the static's own line.
+    r.push(store_plant(
+        gate,
+        cx,
+        base,
+        "a registry behind a type alias of a locked map",
+        "zz_planted_alias_store",
+        "use std::any::{Any, TypeId};\nuse std::collections::HashMap;\nuse std::sync::{Arc, \
+         OnceLock, RwLock};\n\ntype Erased = Arc<RwLock<HashMap<TypeId, Box<dyn Any + Send>>>>;\n\n\
+         static S: OnceLock<Erased> = OnceLock::new();\n\npub fn install(table: Erased) {\n    let _ \
+         = S.set(table);\n}\n",
+        &["static S at crates/busbar-kernel/src/zz_planted_alias_store.rs"],
+    ));
+    // A. The type read into a struct's fields: the map is a field of the held type.
+    r.push(store_plant(
+        gate,
+        cx,
+        base,
+        "a registry behind a struct whose field is the map",
+        "zz_planted_field_store",
+        "use std::collections::HashMap;\nuse std::sync::OnceLock;\n\npub struct Holder {\n    by_key: \
+         HashMap<String, String>,\n}\n\nstatic HOLDER: OnceLock<Holder> = OnceLock::new();\n\npub fn \
+         install(holder: Holder) {\n    let _ = HOLDER.set(holder);\n}\n",
+        &["static HOLDER at crates/busbar-kernel/src/zz_planted_field_store.rs"],
+    ));
+    // B. A lowercase name.
+    r.push(store_plant(
+        gate,
+        cx,
+        base,
+        "a registry behind a lowercase static",
+        "zz_planted_lowercase_store",
+        "use std::sync::OnceLock;\n\nstatic table: OnceLock<Vec<String>> = OnceLock::new();\n\npub \
+         fn install(rows: Vec<String>) {\n    let _ = table.set(rows);\n}\n",
+        &["static table at crates/busbar-kernel/src/zz_planted_lowercase_store.rs"],
+    ));
+    // B and C. A `thread_local!` RefCell.
+    r.push(store_plant(
+        gate,
+        cx,
+        base,
+        "a registry behind a thread-local RefCell",
+        "zz_planted_thread_local_store",
+        "use std::cell::RefCell;\n\nthread_local! {\n    static ROWS: RefCell<Vec<String>> = const \
+         { RefCell::new(Vec::new()) };\n}\n\npub fn install(rows: Vec<String>) {\n    \
+         ROWS.with(|r| *r.borrow_mut() = rows);\n}\n",
+        &["static ROWS at crates/busbar-kernel/src/zz_planted_thread_local_store.rs"],
+    ));
+    // B. A `lazy_static!` `static ref`.
+    r.push(store_plant(
+        gate,
+        cx,
+        base,
+        "a registry behind a lazy_static",
+        "zz_planted_lazy_static_store",
+        "use std::collections::HashMap;\nuse std::sync::Mutex;\n\nlazy_static! {\n    static ref \
+         BY_NAME: Mutex<HashMap<String, String>> = Mutex::new(HashMap::new());\n}\n\npub fn \
+         install(rows: HashMap<String, String>) {\n    *BY_NAME.lock().unwrap() = rows;\n}\n",
+        &["static BY_NAME at crates/busbar-kernel/src/zz_planted_lazy_static_store.rs"],
+    ));
+    // B. A `static mut`: the static is its own cell.
+    r.push(store_plant(
+        gate,
+        cx,
+        base,
+        "a registry behind a static mut",
+        "zz_planted_static_mut_store",
+        "static mut DECLS: Vec<String> = Vec::new();\n\npub fn install(rows: Vec<String>) {\n    \
+         drop((rows, std::ptr::addr_of_mut!(DECLS)));\n}\n",
+        &["static DECLS at crates/busbar-kernel/src/zz_planted_static_mut_store.rs"],
+    ));
+    // B. A `pub static` the root sets directly: no installer fn at all.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar-kernel/src/zz_planted_pub_static_store.rs",
+        "use std::sync::OnceLock;\n\npub static TABLE: OnceLock<Vec<String>> = OnceLock::new();\n",
+    );
+    ov.set(
+        "crates/busbar/src/root/zz_planted_pub_static_root.rs",
+        "pub fn zz_planted_pub_static_boot() {\n    let _ = \
+         busbar_kernel::zz_planted_pub_static_store::TABLE.set(PLANTED);\n}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a registry behind a pub static the root sets directly",
+        &[rules2::ROW_INSTALLED_STORE],
+        ov,
+        &[
+            "static TABLE at crates/busbar-kernel/src/zz_planted_pub_static_store.rs",
+            "pub static",
+        ],
+    ));
+    // B. An accessor that hands out the cell: the root sets it through the reference.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar-kernel/src/zz_planted_accessor_store.rs",
+        "use std::sync::OnceLock;\n\nstatic CELL: OnceLock<Vec<String>> = OnceLock::new();\n\npub \
+         fn cell() -> &'static OnceLock<Vec<String>> {\n    &CELL\n}\n",
+    );
+    ov.set(
+        "crates/busbar/src/root/zz_planted_accessor_root.rs",
+        "pub fn zz_planted_accessor_boot() {\n    let _ = \
+         busbar_kernel::zz_planted_accessor_store::cell().set(PLANTED);\n}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a registry behind an accessor that returns the cell",
+        &[rules2::ROW_INSTALLED_STORE],
+        ov,
+        &[
+            "static CELL at crates/busbar-kernel/src/zz_planted_accessor_store.rs",
+            "pub fn cell (returns the cell)",
+        ],
+    ));
+    // B. A setter one call away: the `pub fn` never names the static, a private fn it calls does.
+    r.push(store_plant(
+        gate,
+        cx,
+        base,
+        "a registry behind a private setter one call from a pub fn",
+        "zz_planted_one_hop_store",
+        "use std::sync::OnceLock;\n\nstatic HIDDEN: OnceLock<Vec<String>> = OnceLock::new();\n\nfn \
+         put(rows: Vec<String>) {\n    let _ = HIDDEN.set(rows);\n}\n\npub fn install(rows: \
+         Vec<String>) {\n    put(rows);\n}\n",
+        &[
+            "static HIDDEN at crates/busbar-kernel/src/zz_planted_one_hop_store.rs",
+            "pub fn install (through put)",
+        ],
+    ));
+    // C. The cells and maps the row did not know: ArcSwap, ArcSwapOption, AtomicPtr and DashMap,
+    // holding an FxHashMap and an AnyMap.
+    r.push(store_plant(
+        gate,
+        cx,
+        base,
+        "registries behind ArcSwap, ArcSwapOption, AtomicPtr and DashMap",
+        "zz_planted_new_cells_store",
+        "static SWAPPED: ArcSwap<Vec<String>> = ArcSwap::from_pointee(Vec::new());\n\nstatic \
+         SWAPPED_OPT: ArcSwapOption<FxHashMap<String, String>> = ArcSwapOption::const_empty();\n\n\
+         static POINTED: AtomicPtr<AnyMap> = AtomicPtr::new(std::ptr::null_mut());\n\nstatic \
+         DASHED: DashMap<String, String> = DashMap::new();\n\npub fn install(rows: Vec<String>) {\n    \
+         SWAPPED.store(rows.into());\n    SWAPPED_OPT.store(None);\n    \
+         POINTED.store(std::ptr::null_mut(), Ordering::Release);\n    DASHED.clear();\n}\n",
+        &[
+            "static SWAPPED at crates/busbar-kernel/src/zz_planted_new_cells_store.rs",
+            "static SWAPPED_OPT at crates/busbar-kernel/src/zz_planted_new_cells_store.rs",
+            "static POINTED at crates/busbar-kernel/src/zz_planted_new_cells_store.rs",
+            "static DASHED at crates/busbar-kernel/src/zz_planted_new_cells_store.rs",
+        ],
+    ));
+    // AND NOT EVERY STATIC: a fn-local memo nothing outside the kernel reaches is not installed.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar-kernel/src/zz_planted_private_memo.rs",
+        "use std::sync::OnceLock;\n\nfn zz_memo_len() -> usize {\n    static seen: \
+         OnceLock<Vec<String>> = OnceLock::new();\n    seen.get_or_init(Vec::new).len()\n}\n",
+    );
+    r.push(prove_green(
+        &cx.with_overlay(ov),
+        gate,
+        "a fn-local memo no code outside the kernel reaches is not an installed store",
+        &[rules2::ROW_INSTALLED_STORE],
+    ));
+
     // THE DEBT ONLY FALLS. Two plants on the counted list of plane- and protocol-keyed stores,
     // planted through the ceilings file so they hold whatever the list holds today: a store that is
     // gone left on the list under a ceiling raised to cover it (the count falls under the ceiling,
@@ -676,6 +865,54 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
             &[rules2::ROW_STORE_DEBT],
             ov,
             &["may not grow"],
+        ));
+    }
+    // THE CEILING ONLY FALLS: a `max_debt` left above the count is slack, and red.
+    if let Ok(text) = cx.read(CEILINGS) {
+        let mut ov = on(base);
+        let max = ConstructionGate::cfg(cx)
+            .ok()
+            .and_then(|c| {
+                c.rule("kernel-no-protocol-registry")
+                    .ok()
+                    .and_then(|t| t.int_of("max_debt"))
+            })
+            .unwrap_or(0);
+        if let Some(slack) = ceilings::set_int(
+            &text,
+            "rules.kernel-no-protocol-registry",
+            "max_debt",
+            max + 1,
+        ) {
+            ov.set(CEILINGS, slack);
+        }
+        r.push(prove_red(
+            cx,
+            gate,
+            "the debt ceiling left above the count",
+            &[rules2::ROW_STORE_DEBT],
+            ov,
+            &["under a ceiling of", "lower max_debt"],
+        ));
+    }
+    // A NAMED EXEMPTION WHOSE STORE IS GONE is stale, and red: the list only shrinks.
+    if let Ok(text) = cx.read(CEILINGS) {
+        let mut ov = on(base);
+        if let Some(stale) = ceilings::add_to_list(
+            &text,
+            "rules.kernel-no-protocol-registry",
+            "exempt_stores",
+            &["crates/busbar-kernel/src/zz_gone.rs::ZZ_GONE -- planted".to_string()],
+        ) {
+            ov.set(CEILINGS, stale);
+        }
+        r.push(prove_red(
+            cx,
+            gate,
+            "an exemption naming a store that is not there",
+            &[rules2::ROW_INSTALLED_STORE],
+            ov,
+            &["stale exemption crates/busbar-kernel/src/zz_gone.rs::ZZ_GONE"],
         ));
     }
 
