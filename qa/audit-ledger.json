@@ -2106,6 +2106,24 @@
    ]
   },
   {
+   "id": "crates/busbar-plane-llm-plugin/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-llm-plugin/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-plane-llm-plugin/src/tests"
+   ]
+  },
+  {
    "id": "crates/busbar-plane-mcp/src",
    "kind": "production",
    "paths": [
@@ -4815,30 +4833,19 @@
    "fixed_at": null
   },
   {
-   "id": "crates/busbar-plane-llm/examples",
+   "id": "crates/busbar-plane-llm-plugin/tests",
    "kind": "test",
    "paths": [
-    "crates/busbar-plane-llm/examples"
+    "crates/busbar-plane-llm-plugin/tests"
    ],
-   "tree_hash": "c3d84d811ae3cc8d86267763ed9d01eb281602a778b110897664e9c6ec05544e",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
-   "result": "zero",
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
    "counts": {},
-   "report": "The example is the plane's dropped-in door image over the same door function the linked row holds, built as a cdylib and loaded by the plane's conformance test beside the linked door; a missing artifact fails rather than skips. Read fully.",
-   "auditor": "opus-q128-architecture",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "zero",
-     "auditor": "opus-q128-architecture",
-     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-     "tree_hash": "c3d84d811ae3cc8d86267763ed9d01eb281602a778b110897664e9c6ec05544e",
-     "counts": {},
-     "report": "The example is the plane's dropped-in door image over the same door function the linked row holds, built as a cdylib and loaded by the plane's conformance test beside the linked door; a missing artifact fails rather than skips. Read fully."
-    }
-   ]
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-plane-mcp/src/tests",

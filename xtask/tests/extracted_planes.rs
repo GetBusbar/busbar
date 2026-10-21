@@ -39,47 +39,113 @@ struct Extraction {
     added: &'static [(&'static str, &'static str)],
 }
 
-const EXTRACTIONS: &[Extraction] = &[Extraction {
-    crate_dir: "crates/busbar-plane-streaming",
-    repo: "https://github.com/GetBusbar/busbar-plane-streaming",
-    repo_dir: "plane-streaming",
-    base: "faa7d5bc8f5d01ca9ebfb4bef3fa6debd4f44a78",
-    rev: "253b5b2791122f07e74647a9f21efe51aa00ab7d",
-    edited: &[
-        (
-            "Cargo.toml",
-            "the plugin workspace's manifest: dependencies `{ workspace = true }` and busbar-contract \
-             by git rev at .busbar-ref, not path dependencies into this tree",
-        ),
-        (
-            "src/door.rs",
-            "the module doc names the cdylib twin (`busbar-plane-streaming-plugin`) that now \
-             exports the door, not the deleted `examples/streaming_door.rs`; and DialectAuth's \
-             reserved word is its `flags` field (busbar #1161, repinned at 253b5b2791, busbar-plane-streaming#25)",
-        ),
-        (
-            "src/codec/ir/codec/tests.rs",
-            "the captured response.done fixture is read from busbar's checkout at .busbar-ref \
-             (BUSBAR_CHECKOUT, unset is a failure), not by a relative path into this tree",
-        ),
-    ],
-    moved: &[
-        (
-            "tests/conformance.rs",
-            "plane-streaming-plugin/tests/both_ways.rs",
-            "the door's op-by-op both-ways script runs in the cdylib twin, against its dropped image",
-        ),
-        (
-            "examples/streaming_door.rs",
-            "plane-streaming-plugin/src/lib.rs",
-            "the dropped-in door is the cdylib twin crate, not an example",
-        ),
-    ],
-    added: &[(
-        "declares.json",
-        "the plugin's declares section, which a dropped-in copy signs (a repository plugin's own)",
-    )],
-}];
+/// The llm plane's tests that read busbar's own files (the 1.5.5 golden cells, the
+/// accepted-differences register, the llm-conformance wire locks, testing/plane-copies,
+/// docs/diagnostics.json) read them in busbar's checkout at the repository's pin, not by a relative
+/// path into this tree.
+const LLM_BUSBAR_CHECKOUT: &str = "reads busbar's file from busbar's checkout at .busbar-ref \
+     (BUSBAR_CHECKOUT, unset is a failure), not by a relative path into this tree";
+
+const EXTRACTIONS: &[Extraction] = &[
+    Extraction {
+        crate_dir: "crates/busbar-plane-streaming",
+        repo: "https://github.com/GetBusbar/busbar-plane-streaming",
+        repo_dir: "plane-streaming",
+        base: "faa7d5bc8f5d01ca9ebfb4bef3fa6debd4f44a78",
+        rev: "253b5b2791122f07e74647a9f21efe51aa00ab7d",
+        edited: &[
+            (
+                "Cargo.toml",
+                "the plugin workspace's manifest: dependencies `{ workspace = true }` and busbar-contract \
+                 by git rev at .busbar-ref, not path dependencies into this tree",
+            ),
+            (
+                "src/door.rs",
+                "the module doc names the cdylib twin (`busbar-plane-streaming-plugin`) that now \
+                 exports the door, not the deleted `examples/streaming_door.rs`; and DialectAuth's \
+                 reserved word is its `flags` field (busbar #1161, repinned at 253b5b2791, busbar-plane-streaming#25)",
+            ),
+            (
+                "src/codec/ir/codec/tests.rs",
+                "the captured response.done fixture is read from busbar's checkout at .busbar-ref \
+                 (BUSBAR_CHECKOUT, unset is a failure), not by a relative path into this tree",
+            ),
+        ],
+        moved: &[
+            (
+                "tests/conformance.rs",
+                "plane-streaming-plugin/tests/both_ways.rs",
+                "the door's op-by-op both-ways script runs in the cdylib twin, against its dropped image",
+            ),
+            (
+                "examples/streaming_door.rs",
+                "plane-streaming-plugin/src/lib.rs",
+                "the dropped-in door is the cdylib twin crate, not an example",
+            ),
+        ],
+        added: &[(
+            "declares.json",
+            "the plugin's declares section, which a dropped-in copy signs (a repository plugin's own)",
+        )],
+    },
+    Extraction {
+        crate_dir: "crates/busbar-plane-llm",
+        repo: "https://github.com/GetBusbar/busbar-plane-llm",
+        repo_dir: "plane-llm",
+        base: "bc610c636a1208b96ad7e47e4a6dfe3a02dbf9bc",
+        rev: "06723c352161e7c89514a225f752380baa4fb9a9",
+        edited: &[
+            (
+                "Cargo.toml",
+                "the plugin workspace's manifest: dependencies `{ workspace = true }` and \
+                 busbar-contract by git rev at .busbar-ref, not path dependencies into this tree",
+            ),
+            (
+                "src/plane_door.rs",
+                "the module doc names the cdylib twin (`busbar-plane-llm-plugin`) that now exports \
+                 the door and its `tests/both_ways.rs`, not the deleted `examples/llm_door.rs` and \
+                 `tests/conformance.rs`",
+            ),
+            ("src/codec/bedrock/tests/usage_census_tests.rs", LLM_BUSBAR_CHECKOUT),
+            ("src/codec/gemini/tests/usage_identity_tests.rs", LLM_BUSBAR_CHECKOUT),
+            ("src/codec/openai_chat/tests/usage_census_tests.rs", LLM_BUSBAR_CHECKOUT),
+            ("src/codec/openai_responses/tests/usage_census_tests.rs", LLM_BUSBAR_CHECKOUT),
+            ("src/codec/tests/cache_tier_capture_tests.rs", LLM_BUSBAR_CHECKOUT),
+            ("src/codec/tests/carry_probe_tests.rs", LLM_BUSBAR_CHECKOUT),
+            ("src/codec/tests/diagnostics_drift_tests.rs", LLM_BUSBAR_CHECKOUT),
+            ("src/codec/tests/dialect_drift_tests.rs", LLM_BUSBAR_CHECKOUT),
+            ("src/codec/tests/dialect_strip_tests.rs", LLM_BUSBAR_CHECKOUT),
+            ("src/codec/tests/drop_census_tests.rs", LLM_BUSBAR_CHECKOUT),
+            ("src/codec/tests/eventstream_drift_tests.rs", LLM_BUSBAR_CHECKOUT),
+            ("src/codec/tests/eventstream_tests.rs", LLM_BUSBAR_CHECKOUT),
+            ("src/codec/tests/json_seam_tests.rs", LLM_BUSBAR_CHECKOUT),
+            ("src/codec/tests/proto/declared_scheme_tests.rs", LLM_BUSBAR_CHECKOUT),
+            ("src/codec/tests/test_host.rs", LLM_BUSBAR_CHECKOUT),
+            ("src/codec/tests/usage_census.rs", LLM_BUSBAR_CHECKOUT),
+            ("tests/exchange_refuse.rs", LLM_BUSBAR_CHECKOUT),
+            ("tests/on_driver/refusals.rs", LLM_BUSBAR_CHECKOUT),
+        ],
+        moved: &[
+            (
+                "tests/conformance.rs",
+                "plane-llm-plugin/tests/both_ways.rs",
+                "the door's op-by-op both-ways script runs in the cdylib twin, against its dropped \
+                 image; the twin's tests/conformance.rs runs the published suite",
+            ),
+            (
+                "tests/conformance.json",
+                "plane-llm-plugin/tests/conformance.json",
+                "the published suite's inputs, beside the twin's tests/conformance.rs that runs them",
+            ),
+            (
+                "examples/llm_door.rs",
+                "plane-llm-plugin/src/lib.rs",
+                "the dropped-in door is the cdylib twin crate, not an example",
+            ),
+        ],
+        added: &[],
+    },
+];
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

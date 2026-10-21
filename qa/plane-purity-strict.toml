@@ -52,7 +52,7 @@ BACKWARDS = 33
 # pinned, and `llm` left the legacy-engine roster (xtask::planes::PLANE_KEYS) for
 # PLANE_KEYS_KIND_ONLY, so its test-reach row goes with it, as mcp's did. MEASURED before the strike:
 # the row's needle, `busbar_core`, names 0 lines in the crate (`grep -rn 'busbar_core'
-# crates/busbar-plane-llm` at #1161's head da510a5788 and over GetBusbar/busbar-plane-llm#19), so 0
+# crates/busbar-plane-llm` at dev bc610c636a and over GetBusbar/busbar-plane-llm#22), so 0
 # against a ceiling of 24; and busbar names the plane only through its door rows
 # (`busbar_plane_llm::plane_door`, `busbar_plane_llm::DECLARES` in crates/busbar/Cargo.toml). The
 # plane is still read whole by the plane-kind regime (BACKWARDS above), from its pin.
