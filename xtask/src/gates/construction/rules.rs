@@ -857,8 +857,9 @@ fn untyped_let(lines: &[Line], ident: &str) -> bool {
 
 /// Is the call of `t.name` at byte `at` of line `idx` of `rel` a call of the TERMINAL? A bare
 /// terminal is matched by name. A `Type::fn` terminal whose name no other type defines is too; one
-/// whose name another type also defines is attributed by its receiver: a path names its type,
-/// `self` is the enclosing impl's type, a binding is the type its declaration in the calling file
+/// whose name another type also defines is attributed by its receiver: a path names its type (`Self`
+/// the enclosing impl's; a path naming no defining type, an alias, is counted), `self` is the
+/// enclosing impl's type, a binding is the type its declaration in the calling file
 /// names, and a field is the type its declaration names wherever it is.
 /// A receiver that resolves to no single type is counted (fail-safe: an unread call is a finding,
 /// never a pass).
@@ -880,7 +881,17 @@ fn calls_terminal(
         return true;
     };
     match receiver_of(lines, idx, at) {
-        Some(Receiver::Path(path_ty)) => &path_ty == ty,
+        // A path names its type, `Self` the enclosing impl's. A path naming no type that defines
+        // the name (an alias, `use PlaneMoney as Money;`) is unread, so counted; only a path naming
+        // another defining type is that type's call.
+        Some(Receiver::Path(path_ty)) => {
+            let named = if path_ty == "Self" {
+                impl_owner(tree, rel, lines[idx].no)
+            } else {
+                Some(path_ty)
+            };
+            named.is_none_or(|named| &named == ty || !owners.contains(&named))
+        }
         Some(Receiver::Binding(ident)) if ident == "self" => impl_owner(tree, rel, lines[idx].no)
             .is_none_or(|owner| &owner == ty || !owners.contains(&owner)),
         // A bare binding is declared in the calling file or nowhere the scan can read: an untyped

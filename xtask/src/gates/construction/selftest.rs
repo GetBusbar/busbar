@@ -538,6 +538,50 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         ],
     ));
 
+    // `Self::` IS THE ENCLOSING IMPL'S TYPE (the coordinator's review of #1408): inside `impl
+    // PlaneMoney`, `Self::settle_end(..)` calls the terminal, though the node defines a
+    // `settle_end` of its own. Read as a path naming a type called `Self`, it matched neither and
+    // went uncounted: a third caller let through.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar/src/root/zz_planted_self_path.rs",
+        "impl PlaneMoney {\n    fn zz_planted_self_path(&self) {\n        \
+         Self::settle_end(self, unit, 200);\n    }\n}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a terminal called as `Self::` inside its own type's impl is counted",
+        &["single-terminal"],
+        ov,
+        &[
+            "PlaneMoney::zz_planted_self_path",
+            "zz_planted_self_path.rs",
+        ],
+    ));
+
+    // AN ALIASED PATH IS COUNTED: `use … PlaneMoney as ZzMoney;` then `ZzMoney::settle_end(..)`
+    // names no type that defines the name, so the call is unread and counted, never read as
+    // another type's.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar/src/root/zz_planted_aliased_path.rs",
+        "use busbar_kernel::plane_driver::PlaneMoney as ZzMoney;\n\nimpl DataRoutes {\n    \
+         fn zz_planted_aliased_path(&self, money: &ZzMoney) {\n        \
+         ZzMoney::settle_end(money, unit, 200);\n    }\n}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a terminal called through an aliased path is counted",
+        &["single-terminal"],
+        ov,
+        &[
+            "DataRoutes::zz_planted_aliased_path",
+            "zz_planted_aliased_path.rs",
+        ],
+    ));
+
     // THE KERNEL'S PROTOCOL REGISTRY GROWN BACK (a6's proof on #1401): a kernel `proto/` module
     // holding a `ProtocolDecl` behind a static, an `install_protocols` seam the root fills and an
     // allocating by-name `decl_for`. The root's call keeps `no-uninstalled-seam` green, which is
