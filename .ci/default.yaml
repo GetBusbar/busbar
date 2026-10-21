@@ -269,8 +269,8 @@ checks:
       plugin busbar-secret-env busbar-secret-env-plugin optional
       plugin busbar-plane-decisions busbar-plane-decisions-plugin optional
       cargo build --workspace --locked
-      # The hop's nextest limits (busbar-release build_test.rs NEXTEST_TOOL_CONFIG): the two
-      # whole-battery selftests get twelve minutes and start first.
+      # The nextest limits: every test is cut at five minutes, except the two whole-battery
+      # selftests, which get twelve and start first.
       cfg=$(mktemp); printf '%s\n' '[profile.default]' 'slow-timeout = { period = "60s", terminate-after = 5 }' '' '[[profile.default.overrides]]' 'filter = "test(selftest_runs_every_registered_gates_red_proof) | test(list_and_a_named_gate_run_and_all_reaches_a_verdict_over_the_real_tree) | test(the_kind_isolation_gate_proves_red_in_its_selftest)"' 'slow-timeout = { period = "60s", terminate-after = 12 }' 'priority = 100' > "$cfg"
       # $MODERNCI_ONLY: ModernCI re-runs one suspect test alone (a flake check).
       cargo nextest run --workspace --locked --no-fail-fast --tool-config-file "modernci:$cfg" ${MODERNCI_ONLY:+-E "$MODERNCI_ONLY"}

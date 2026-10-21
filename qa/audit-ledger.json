@@ -420,7 +420,7 @@
    "paths": [
     "crates/busbar-auth-oauth/src"
    ],
-   "tree_hash": "186ec7f33e8700bb0aa99e9968d634a72e9041c493db5f0c7641624ea240f3a4",
+   "tree_hash": "345363dfdcf7c65ae0c722abf67e3ae8caa4969ba0ff36f665a6cfaacc8cf9e6",
    "audited_at": "faa7d5bc8f5d01ca9ebfb4bef3fa6debd4f44a78",
    "round": 3,
    "result": "findings",
@@ -432,7 +432,7 @@
    },
    "report": "The scope is the outbound auth plugin for the OAuth self-minting styles (JWT bearer, client credentials) and on-demand token exchange: it binds a style to the operator's credential, mints bearer tokens over its own pinned operator-infrastructure need through the host connector on its driver ticket, caches them per credential and settings, refreshes them ahead of expiry on tick, and answers the per-request auth-fields call with the cached bearer. Secret hygiene is careful throughout (redacting, zeroising holders; decoder and base64 texts withheld; sized-once buffers), and it reaches the network only through the host. Before the first mint has landed, the per-request call parks the request (not-ready) instead of answering ready with no fields, which the locked ABI design and the auth contract require so the upstream answers 401 as the previous release did. Retiring a generation drops every token-exchange cache cell, because no handle holds those cells, so a request waiting on an in-flight exchange is never woken and its connection is never closed. Two minor deviations remain: the plugin reads the operating-system clock instead of the host's one clock, and the JWT-bearer style reads a service-account key file from disk with a blocking read outside the host's disk lane and outside the secret kind. Read fully.",
    "auditor": "opus-q128-auth-oauth-src-a",
-   "fixed_at": null,
+   "fixed_at": "bc610c636a1208b96ad7e47e4a6dfe3a02dbf9bc",
    "exclude": [
     "crates/busbar-auth-oauth/src/tests"
    ],
@@ -719,67 +719,6 @@
    ]
   },
   {
-   "id": "crates/busbar-core-admin/build.rs",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-core-admin/build.rs"
-   ],
-   "tree_hash": "1a4108f5d7e90b1278140efc9fcb944f88700c8dda8b3d66b4b38bed67b0acea",
-   "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
-   "round": 3,
-   "result": "findings",
-   "counts": {
-    "HIGH": 1,
-    "MEDIUM": 0,
-    "LOW": 1,
-    "NIT": 1
-   },
-   "report": "The build script still turns manifest metadata into generated tables that link a plane crate and the operator-credential auth plugin into this cleanliness crate's unit tests, and the manifest still names that plane as a dev-dependency, as metadata and in a feature forward, beside the auth plugin. The source stays clean only because the names live in the manifest; the tests do not use kind-neutral doubles. The script's doc still claims the composition root emits its table with the same functions, which it does not. Read fully.",
-   "auditor": "opus-q128-l159",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-q128-architecture",
-     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-     "tree_hash": "1a4108f5d7e90b1278140efc9fcb944f88700c8dda8b3d66b4b38bed67b0acea",
-     "counts": {
-      "HIGH": 1
-     },
-     "report": "Generates a table that installs three plane crates and an auth plugin into a neutral cleanliness crate's unit tests, with the names held in manifest metadata so no source names them; neutral-crate tests are to use kind-neutral doubles. Read fully."
-    },
-    {
-     "round": 2,
-     "result": "findings",
-     "auditor": "opus-ledger-core-admin-build",
-     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
-     "tree_hash": "1a4108f5d7e90b1278140efc9fcb944f88700c8dda8b3d66b4b38bed67b0acea",
-     "counts": {
-      "HIGH": 1,
-      "MEDIUM": 0,
-      "LOW": 1,
-      "NIT": 1
-     },
-     "report": "The build script still turns manifest metadata into a generated table that links two plane crates and an operator-auth plugin into this cleanliness crate's unit tests, and the manifest still names those plugins (plus an export plugin) as dev-dependencies, as metadata, and through instance-named features. The source stays \"clean\" only because the names live in the manifest; the crate's tests do not use kind-neutral doubles. The generator is also copied, not shared, despite its doc claiming the composition root uses it. Read fully."
-    },
-    {
-     "round": 3,
-     "result": "findings",
-     "auditor": "opus-q128-l159",
-     "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
-     "tree_hash": "1a4108f5d7e90b1278140efc9fcb944f88700c8dda8b3d66b4b38bed67b0acea",
-     "counts": {
-      "HIGH": 1,
-      "MEDIUM": 0,
-      "LOW": 1,
-      "NIT": 1
-     },
-     "report": "The build script still turns manifest metadata into generated tables that link a plane crate and the operator-credential auth plugin into this cleanliness crate's unit tests, and the manifest still names that plane as a dev-dependency, as metadata and in a feature forward, beside the auth plugin. The source stays clean only because the names live in the manifest; the tests do not use kind-neutral doubles. The script's doc still claims the composition root emits its table with the same functions, which it does not. Read fully."
-    }
-   ]
-  },
-  {
    "id": "crates/busbar-core-connector/src",
    "kind": "production",
    "paths": [
@@ -931,7 +870,7 @@
    "paths": [
     "crates/busbar-export-file/src"
    ],
-   "tree_hash": "b151e25227b1a5605cee12ed2b5a68817d7ad884eace6b29aef9ba7d03904d47",
+   "tree_hash": "f10863ffb3e1f8be9db4fbb6e94aa89ea8320d4b4c7f0984029bb86013ae167f",
    "audited_at": "faa7d5bc8f5d01ca9ebfb4bef3fa6debd4f44a78",
    "round": 2,
    "result": "findings",
@@ -943,7 +882,7 @@
    },
    "report": "The request-log file sink is a push-only export plugin that never touches the filesystem itself: each delivered batch is handed unchanged to the host's bounded disk lane under the declared destination key, the call parks and resumes on the same completion handle, and the host's answer (rotation steps, then landed or dropped) is raised as warn lines under the five declared catalogue codes, with settings validated in the configuration grammar's own serde words. The ABI use, the never-open-a-path rule, the resume/replay handling and the 1.5.5 drop wording are sound. The sink's manifest declares two counter series for rotations and rotation failures that nothing ever increments: the sink observes every rotation and every failed rotation step but emits no metric (its Statement carries no metric families and the delivery discards its reply envelope), so the host renders both series at zero forever while the file rotates. Separately, any non-FAILED disk answer (no host tables, no ticket, a refused destination, a fault) is raised under the open-failed code whose operator action points at directory permissions and free disk, and the archive count in the retention warning is a hand-copied host constant rather than the contract's own. Read fully.",
    "auditor": "opus-q128-export-file-src-a",
-   "fixed_at": null,
+   "fixed_at": "bc610c636a1208b96ad7e47e4a6dfe3a02dbf9bc",
    "exclude": [
     "crates/busbar-export-file/src/tests"
    ],
@@ -1771,24 +1710,6 @@
    ]
   },
   {
-   "id": "crates/busbar-llm/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-llm/src"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-llm/src/tests"
-   ]
-  },
-  {
    "id": "crates/busbar-plane-a2a/src",
    "kind": "production",
    "paths": [
@@ -2328,7 +2249,7 @@
    "paths": [
     "crates/busbar-secret-env/src"
    ],
-   "tree_hash": "3206563a238314972ac30f0ea860bc6fee3e1a27573351528486413f14e1c7a2",
+   "tree_hash": "f82b3fd99092f260e6da85a038919ce4a2a61c63f8669f56528e54201bfaec92",
    "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
    "round": 2,
    "result": "findings",
@@ -2340,7 +2261,7 @@
    },
    "report": "The environment secret source is an ordinary secret plugin: it forbids unsafe code, depends on the contract alone, declares its module alias and its reference sugar as Statement rewrites, holds no state, never pends, hands the value back under a lease the SDK zeroes on release, and never puts the value in a refusal or a log. Its manifest's declared contract range names the secret kind's 1.5.5 version, so packing the dropped-in build is refused. It refuses a whitespace-only value that 1.5.5 resolved and words a mis-encoded variable differently, while its prose claims every refusal is 1.5.5's. Read fully.",
    "auditor": "opus-q128-l159",
-   "fixed_at": null,
+   "fixed_at": "bc610c636a1208b96ad7e47e4a6dfe3a02dbf9bc",
    "exclude": [
     "crates/busbar-secret-env/src/tests"
    ],
@@ -2381,7 +2302,7 @@
    "paths": [
     "crates/busbar-secret-file/src"
    ],
-   "tree_hash": "9d3b5716ef0fc632467af94f8074776dd64d3a356f678cea41a11fe31c5197b8",
+   "tree_hash": "a4509ea290f2904c7051c5eb53f0b05fae52d98e288b677871137f1d80dd846b",
    "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
    "round": 2,
    "result": "findings",
@@ -2393,7 +2314,7 @@
    },
    "report": "The file secret source forbids unsafe code, depends on the contract alone, follows symlinks so projected secrets resolve, refuses non-regular, empty and blank files fail-closed, and never puts file content in a refusal or a log. The design now admits its blocking read to the host's bounded disk lane at config time, but its declares document never states the disk need, so the host still runs the read wherever the resolve is called. It refuses files over 1 MiB, which 1.5.5 read whole, judges the file type on the path rather than the opened handle, and overstates its refusal parity. Read fully.",
    "auditor": "opus-q128-l159",
-   "fixed_at": null,
+   "fixed_at": "bc610c636a1208b96ad7e47e4a6dfe3a02dbf9bc",
    "exclude": [
     "crates/busbar-secret-file/src/tests"
    ],
@@ -4644,68 +4565,6 @@
       "LOW": 2
      },
      "report": "Kind-neutral doubles, SHA-256 checked against an independent implementation, good durable-publish fault matrix; but two module docs describe batteries living in another crate, and the edit-every-byte test cannot reach the frame-version downgrade or tell a torn verdict from a corrupt one. Read fully."
-    }
-   ]
-  },
-  {
-   "id": "crates/busbar-llm/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-llm/src/tests"
-   ],
-   "tree_hash": "e2812772368412392f6bdc4b8cd18c777e103096f4c51e78d678640e51b37fdc",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
-   "result": "findings",
-   "counts": {
-    "HIGH": 1,
-    "LOW": 1
-   },
-   "report": "Breaks Law 1 and Law 5: the legacy plane's tests pin its dialect list to the kernel's dialect registry and ask the kernel for a default dialect and a dialect-specific stream shim key. The webhook tests cover a receiver no build constructs and accept a years-old signed timestamp because the verifier has no replay window. Read fully.",
-   "auditor": "opus-q128-architecture",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-q128-architecture",
-     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-     "tree_hash": "e2812772368412392f6bdc4b8cd18c777e103096f4c51e78d678640e51b37fdc",
-     "counts": {
-      "HIGH": 1,
-      "LOW": 1
-     },
-     "report": "Breaks Law 1 and Law 5: the legacy plane's tests pin its dialect list to the kernel's dialect registry and ask the kernel for a default dialect and a dialect-specific stream shim key. The webhook tests cover a receiver no build constructs and accept a years-old signed timestamp because the verifier has no replay window. Read fully."
-    }
-   ]
-  },
-  {
-   "id": "crates/busbar-llm/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-llm/tests"
-   ],
-   "tree_hash": "3248acbb80847aee8182bf4fc1b7401d974ec0a33f19db962814dbb459dc666b",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
-   "result": "findings",
-   "counts": {
-    "LOW": 2
-   },
-   "report": "The refusal-status parity test claims every recorded refusal but its cells are hand-typed and omit the six recorded out-of-scope refusals; it lives in the legacy plane crate, imports the plane plugin crate sideways, and proves the driver path rather than the default shipped path. Read fully.",
-   "auditor": "opus-q128-architecture",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-q128-architecture",
-     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-     "tree_hash": "3248acbb80847aee8182bf4fc1b7401d974ec0a33f19db962814dbb459dc666b",
-     "counts": {
-      "LOW": 2
-     },
-     "report": "The refusal-status parity test claims every recorded refusal but its cells are hand-typed and omit the six recorded out-of-scope refusals; it lives in the legacy plane crate, imports the plane plugin crate sideways, and proves the driver path rather than the default shipped path. Read fully."
     }
    ]
   },
