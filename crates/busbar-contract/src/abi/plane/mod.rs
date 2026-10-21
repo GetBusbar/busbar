@@ -1945,8 +1945,8 @@ pub struct OnPieceIn {
     /// member may shape its request differently in each pool it serves); absent otherwise.
     pub pool: AbiStr,
     /// On every piece of a unit: the caller's opaque, stable, non-reversible per-principal
-    /// reference (lower-case hex), never the principal itself; absent when the node keeps no
-    /// signing material to derive it from.
+    /// reference (lower-case hex), never the principal itself; absent only when the host
+    /// lends no caller-reference key at all (the kernel's driver config `caller_refs: None`).
     pub caller_ref: AbiStr,
     /// On every piece of a unit: the snapshot claim the unit arrived on (`ArriveIn::claim`).
     pub claim: u32,
