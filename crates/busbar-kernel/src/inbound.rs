@@ -43,7 +43,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
-use busbar_contract::abi::auth::{AuthPoint, POINT_HEAD_BODY};
+use busbar_contract::abi::auth::{AuthPoint, POINT_HEAD, POINT_HEAD_BODY};
 use busbar_contract::abi::host::service::{
     UnitRef, FLOW_CONTINUE, FLOW_STOP, REFUSE_CHECK_FAILED, REFUSE_METHOD_MISS, REFUSE_NO_ROUTE,
     REFUSE_OVER_GATE, REFUSE_STOPPED,
@@ -390,7 +390,12 @@ impl Listener {
         (0u32..)
             .zip(self.guests.lines().iter().zip(&self.ids))
             .map(|(i, (l, id))| {
-                let points = l.auth.points().bits();
+                // The body point includes the head (THE DESIGN §6 item 1): a line whose chain
+                // needs both is lent the body point alone, a set the line table accepts.
+                let mut points = l.auth.points().bits();
+                if points & POINT_HEAD_BODY != 0 {
+                    points &= !POINT_HEAD;
+                }
                 LineSpec {
                     line: i,
                     auth: *id,
@@ -1227,7 +1232,12 @@ impl Inbound {
                     }
                     PositionKind::Plugin(Some(calls)) => Arc::clone(calls),
                 };
-                if !calls.inbound_points().has(point) {
+                // The body point includes the head: an auth that needs the head is answered there
+                // too, on a line lent the body point alone.
+                let needs = calls.inbound_points();
+                if !needs.has(point)
+                    && !(point == AuthPoint::HeadBody && needs.has(AuthPoint::Head))
+                {
                     continue;
                 }
                 let unit_id = match target {
