@@ -61,7 +61,7 @@ with tarfile.open(opts["--out"], "w:gz") as t:
 /// allow_unsigned: `loads` (the honest loader), `egress` (refused for another reason, as
 /// hook-webrequest is), `ignored` (refused for the missing signature regardless), `grant` (refused
 /// for the egress-class grant, in the loader's own words, naming the need `STUB_GRANT_NEED` gives as
-/// `<transport> <class>`: what the real loader does to an unsigned plugin whose Statement declares a
+/// `<transport> <class>`, under the code `STUB_GRANT_CODE` gives (default `BUSBAR-6009`): what the real loader does to an unsigned plugin whose Statement declares a
 /// need in a first-party egress class), `other` (refused for a reason that is neither signing nor
 /// the grant).
 const BUSBAR: &str = r#"#!/usr/bin/env python3
@@ -95,7 +95,8 @@ for tb in sorted(glob.glob(os.path.join(plugins, "*.tar.gz"))):
             refuse("manifest carries no signature")
         if mode == "grant":
             transport, klass = os.environ["STUB_GRANT_NEED"].split()
-            print(f"[error] BUSBAR-6009: plugin '{m['name']}' is present ({f}) but was not loaded: "
+            code = os.environ.get("STUB_GRANT_CODE", "BUSBAR-6009")
+            print(f"[error] {code}: plugin '{m['name']}' is present ({f}) but was not loaded: "
                   f"plugin '{m['name']}' declares a `{transport}` need in the `{klass}` egress "
                   "class, which the host grants to a first-party plugin only")
             sys.exit(1)
@@ -408,6 +409,44 @@ fn red_a_grant_refusal_for_a_plugin_declaring_no_first_party_need_fails() {
     assert!(
         !r.ok,
         "a plugin declaring no first-party need passed the planted arm on a grant refusal:\n{}",
+        r.log
+    );
+}
+
+/// RED: the same fixture, refused at the grant for its declared `tcp` need but in a class it does not
+/// declare that need in. The class in the loader's refusal must be the declared one.
+#[test]
+fn red_a_grant_refusal_naming_another_egress_class_fails() {
+    let r = gate_with(
+        "grant",
+        &[
+            ("STUB_STATEMENT", operator_infrastructure_fixture()),
+            ("STUB_GRANT_NEED", "tcp loopback-allowed".to_string()),
+        ],
+    );
+    assert!(
+        !r.ok,
+        "a grant refusal naming an egress class the plugin does not declare passed the planted \
+         arm:\n{}",
+        r.log
+    );
+}
+
+/// RED: the same fixture, refused at the grant in the loader's words but under a code that is not
+/// BUSBAR-6009 (`--validate`'s plugin pre-flight). The code is asserted with the class.
+#[test]
+fn red_a_grant_refusal_under_another_code_fails() {
+    let r = gate_with(
+        "grant",
+        &[
+            ("STUB_STATEMENT", operator_infrastructure_fixture()),
+            ("STUB_GRANT_NEED", "tcp operator-infrastructure".to_string()),
+            ("STUB_GRANT_CODE", "BUSBAR-6001".to_string()),
+        ],
+    );
+    assert!(
+        !r.ok,
+        "a grant refusal under a code that is not BUSBAR-6009 passed the planted arm:\n{}",
         r.log
     );
 }
