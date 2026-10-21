@@ -614,7 +614,7 @@ extern "C" fn answer<O: Reply>(
 }
 
 /// `answer::<O>` called over `template`.
-fn answered<O: Reply>(template: &mut O) -> super::reply::Called<O> {
+fn answered<O: Reply>(template: &mut O) -> super::reply::Called<'_, O> {
     // SAFETY: `answer::<O>` reads its instance as the `O` template it is handed here, live for
     // the call.
     unsafe {

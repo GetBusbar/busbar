@@ -122,7 +122,7 @@ fn fill_table(slot: Option<ServiceFn>) -> HostSlots {
     }
 }
 
-fn services(t: &HostSlots) -> Services {
+fn services(t: &HostSlots) -> Services<'_> {
     let tables = HostTables {
         size: size_of::<HostTables>() as u32,
         _reserved: 0,
