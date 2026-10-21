@@ -75,16 +75,20 @@ pub fn retry_after_secs(
 /// and drain only ever kept a member out of the weighted selection (v1.5.5 `proxy/select.rs:282`,
 /// `store/in_memory/mod.rs:870`). Q128 kernel-egress LOW 4, closed as 1.5.5 parity.
 ///
+/// It ranks `members`, the pool's admissible members AS THE UNIT'S HOOKS KEPT THEM, and no others:
+/// a required restriction holds through the last resort, as v1.5.5's ranked only its restricted
+/// candidates (v1.5.5 `proxy/engine/walk.rs:1126-1130`, `proxy/engine/mod.rs:1085`, `:1298-1300`).
+///
 /// It owns NO probe and the walk passes none on: handing it the cell's current epoch instead would
 /// be actively unsafe, since a half-open cell's epoch may be a PEER's, and an owner-checked release
 /// keyed on it would revert the peer's live probe.
 pub fn least_bad(
     ports: &WalkPorts<'_>,
     pool: &Pool,
+    members: &[Member],
     token: &Pass<Route>,
 ) -> Option<(Member, Permit)> {
     let now = ports.clock.now_secs();
-    let members = pool.admissible_members();
     let mut ranked: Vec<&Member> = members
         .iter()
         .filter(|m| ports.breaker.admissible(m.destination))
