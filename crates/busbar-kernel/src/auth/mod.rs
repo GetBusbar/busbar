@@ -2473,7 +2473,12 @@ pub(crate) async fn auth_middleware(
                     if key.is_some()
                         && !signed_replay_claimed(app.governance.as_deref(), &reader.name, &id, now)
                     {
-                        return Err(unauthorized_response(&app, &path, door.as_ref()));
+                        return Err(unauthorized_response(
+                            &app,
+                            core_routes,
+                            &path,
+                            door.as_ref(),
+                        ));
                     }
                     match key {
                         Some(key) => Some(ChainVerdict::Identified {
