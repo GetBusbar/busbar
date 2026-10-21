@@ -115,9 +115,10 @@ impl Connections for NoConnections {
 /// every server it builds fetching over `C`'s connection table.
 ///
 /// Called EXACTLY ONCE, by the composition root (`crates/busbar`'s `main`), unconditionally and
-/// before any config loads — mirroring `busbar_kernel::plane::registry::install_planes`'s discipline
-/// for the same reason. `oauth_as:` carries no feature flag (it is a normal dependency, like the
-/// underlying `oauth-as` crate always was), so every real build calls this.
+/// before any config loads — mirroring the discipline of
+/// `busbar_kernel::plane_driver::doors::install_doors` for the same reason. `oauth_as:` carries no
+/// feature flag (it is a normal dependency, like the underlying `oauth-as` crate always was), so
+/// every real build calls this.
 pub fn install<C: Connections>() {
     busbar_kernel::oauth_as::seam::install_as_plane_seam(
         busbar_kernel::oauth_as::seam::AsPlaneSeam {

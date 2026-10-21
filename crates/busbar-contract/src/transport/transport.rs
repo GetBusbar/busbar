@@ -21,7 +21,7 @@
 /// against them, spelled once so a declaration and a reader cannot spell one format two ways.
 ///
 /// They are words, not planes: a plane declares the formats it speaks, and these are three of the
-/// words it may use. `busbar_kernel::plane::WIRE_*` re-exports them at their historical path.
+/// words it may use. `busbar_kernel::plane_driver::claims::WIRE_*` re-exports them.
 pub mod plane {
     /// JSON-RPC 2.0: an envelope where a BODY MEMBER names the operation.
     pub const WIRE_JSONRPC: &str = "jsonrpc";

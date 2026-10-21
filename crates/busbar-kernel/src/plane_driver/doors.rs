@@ -172,10 +172,14 @@ fn canonical_key_order(
 }
 
 /// The opened door set the composition root installed, in its fold order: the rows every reader
-/// below reads. Empty until the root installs.
+/// below reads. Empty until the root installs. The first read marks the set read (the
+/// install-before-first-read check); every later read is one acquire load and no store, so the
+/// per-request readers (`is_fallback`) never write the shared flag's cache line.
 #[cfg(not(any(test, feature = "test-support")))]
 pub fn plane_decls() -> &'static [&'static PlaneDecl] {
-    READ.store(true, std::sync::atomic::Ordering::Release);
+    if !READ.load(std::sync::atomic::Ordering::Acquire) {
+        READ.store(true, std::sync::atomic::Ordering::Release);
+    }
     installed()
 }
 
