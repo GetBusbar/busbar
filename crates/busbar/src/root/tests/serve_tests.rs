@@ -2926,7 +2926,11 @@ mod tools_door {
             busbar_contract::jsonrpc::PARSE_ERROR,
             "refused with -32700, the parse error: {answer}"
         );
-        assert_eq!(rig.admitted(), 0, "it never became a unit: nothing admitted");
+        assert_eq!(
+            rig.admitted(),
+            0,
+            "it never became a unit: nothing admitted"
+        );
         assert!(
             drain(&mut heard).is_empty(),
             "the tool server heard nothing of the unreadable body"
@@ -2955,9 +2959,12 @@ mod tools_door {
              token_exchange:\n    token_url: \"https://as.example/token\"\n    \
              subject_token: {{ env: {SUBJECT} }}\n"
         );
-        let rig = rig_tools(instance, port, registration("authed", port, &extra), &|app| {
-            app
-        });
+        let rig = rig_tools(
+            instance,
+            port,
+            registration("authed", port, &extra),
+            &|app| app,
+        );
         let calls = |heard: &mut Heard| drain(heard).iter().filter(|w| **w == "call").count();
 
         for token in [None, Some("bb_a_bearer_this_deployment_never_minted")] {
