@@ -7,6 +7,8 @@ use crate::test_support::{build_once, cfg_with_provider_api_key};
 /// seam, every operator-facing warn/error coded — are kept over the same code where it lives now.
 /// `src/sigv4.rs` left with D3 (ec0c05f4e3): it was a re-export of the identity unit's SigV4 items
 /// and carried no code of its own, so no code under these rules left with it.
+/// `src/proto/installed.rs` left with row 82 D2 (#1376): the protocol registry it held is deleted,
+/// not moved, so no code under these rules left with it either.
 pub(crate) fn moved_sources() -> &'static [&'static str] {
     &[
         "src/breaker.rs",
@@ -15,7 +17,6 @@ pub(crate) fn moved_sources() -> &'static [&'static str] {
         "src/json.rs",
         "src/ir/lane_caps.rs",
         "src/config/providers.rs",
-        "src/proto/installed.rs",
     ]
 }
 // The monolith's root tests reached every crate-root item through `use super::*`. The split put

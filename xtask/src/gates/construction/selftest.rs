@@ -511,30 +511,38 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         ],
     ));
 
-    // AN UNTYPED BINDING IS NOT ATTRIBUTED BY A SAME-NAMED FIELD ELSEWHERE (a6's review of #1401):
-    // `let money = …;` declares no type, so the call on it is unread and counted. A field `money`
-    // of the node's type in another file says nothing about this local; reading it there would let
-    // a third door through as the node's own `settle_end`.
+    // A RECEIVER THE RULE CANNOT PIN TO ANOTHER TYPE IS COUNTED (ARCHITECT ruling: fail-safe).
+    // `settle_end` is defined on PlaneMoney and on Node, so its calls are attributed by receiver;
+    // each of these spells the terminal's own type in a way a literal name match does not read,
+    // and each is a caller the config does not name: a typed argument (the control), `Self::` inside
+    // `impl PlaneMoney`, a same-file alias of PlaneMoney, and an untyped binding whose name another
+    // file declares as a `Node` field (a tree-wide name collision is never a type).
     let mut ov = on(base);
     ov.set(
-        "crates/busbar/src/root/zz_planted_field_elsewhere.rs",
-        "pub struct ZzHolder {\n    pub money: Node,\n}\n",
+        "crates/busbar/src/root/zz_planted_receivers.rs",
+        "type ZzMoney = PlaneMoney;\n\npub fn zz_planted_control_caller(money: &PlaneMoney) {\n    \
+         money.settle_end(unit, 200);\n}\n\nimpl PlaneMoney {\n    fn \
+         zz_planted_self_path_caller(&self) {\n        Self::settle_end(self, unit, 200);\n    \
+         }\n}\n\npub fn zz_planted_alias_caller(money: &ZzMoney) {\n    \
+         ZzMoney::settle_end(money, unit, 200);\n}\n\npub fn zz_planted_untyped_caller() {\n    \
+         let zz_held = zz_make_money();\n    zz_held.settle_end(unit, 200);\n}\n",
     );
     ov.set(
-        "crates/busbar/src/root/zz_planted_untyped_binding.rs",
-        "impl DataRoutes {\n    fn zz_planted_untyped_binding(&self, served: &ServedPlane) {\n        \
-         let money = &served.money;\n        money.settle_end(unit, 200);\n    }\n}\n",
+        "crates/busbar/src/root/zz_planted_node_holder.rs",
+        "pub struct ZzNodeHolder {\n    zz_held: Node,\n}\n",
     );
     r.push(prove_red(
         cx,
         gate,
-        "a terminal called on an untyped binding is counted, whatever a same-named field elsewhere \
-         is declared as",
+        "a terminal call through a typed argument, `Self::`, a type alias or an untyped binding \
+         named like a `Node` field elsewhere",
         &["single-terminal"],
         ov,
         &[
-            "DataRoutes::zz_planted_untyped_binding",
-            "zz_planted_untyped_binding.rs",
+            "zz_planted_control_caller",
+            "PlaneMoney::zz_planted_self_path_caller",
+            "zz_planted_alias_caller",
+            "zz_planted_untyped_caller",
         ],
     ));
 

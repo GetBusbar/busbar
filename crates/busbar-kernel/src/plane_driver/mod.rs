@@ -1521,7 +1521,15 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
     }
 
     /// The kernel's verify, after which the unit's caller reference is derived under the node's
-    /// key (none when the node keeps no key); the principal itself never enters a plane input.
+    /// key; the principal itself never enters a plane input.
+    ///
+    /// THE GOVERNED CHAIN'S GUARANTEE: a plane reads an EMPTY caller reference as an ungoverned
+    /// unit, so a driver whose book lends references never lends an empty one to a governed
+    /// caller (any principal but the anonymous one). Such a caller is refused here, before the
+    /// plane is lent the unit, when it names no one or when the book holds no key to derive its
+    /// reference under; it is never lent the empty reference instead. The anonymous principal is
+    /// never refused here: with a key bound it is lent its reference like any principal (the one
+    /// reference every anonymous unit shares), and with none it is lent the empty one.
     fn verify(
         &self,
         token: &Pass<Verify>,
@@ -1529,14 +1537,16 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         ctx: &UnitCtx,
         principal: &PrincipalId,
     ) -> StepAnswer<Verify> {
-        let key = self
-            .driver
-            .config
-            .caller_refs
-            .as_ref()
-            .and_then(|slot| slot.read().unwrap_or_else(|e| e.into_inner()).clone());
-        if let Some(key) = key {
-            self.lock().caller_ref = key.caller_ref(principal.as_str()).into_bytes();
+        if let Some(slot) = &self.driver.config.caller_refs {
+            let key = slot.read().unwrap_or_else(|e| e.into_inner()).clone();
+            if *principal != PrincipalId::anonymous() {
+                let Some(key) = key.filter(|_| !principal.as_str().is_empty()) else {
+                    return StepAnswer::refuse(token, Refusal::new(ReasonCode::Unauthenticated));
+                };
+                self.lock().caller_ref = key.caller_ref(principal.as_str()).into_bytes();
+            } else if let Some(key) = key {
+                self.lock().caller_ref = key.caller_ref(principal.as_str()).into_bytes();
+            }
         }
         // The verified principal: the hooks the unit binds read it, and the unit's audit row is
         // written under it (never a plane input).

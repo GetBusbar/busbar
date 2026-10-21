@@ -18,6 +18,53 @@ use axum::response::Response;
 
 use crate::plane_driver::claims::Ingress;
 
+/// THE DIALECTS A PATH NAMES BY ITS SHAPE ALONE, as the linked declarations state them: the label
+/// an authentication refusal's `response` tap is told (`ingress_protocol`). v1.5.5 labelled that
+/// tap off the path alone (`crates/busbar/src/auth/mod.rs:1167` at v1.5.5, `proto_for_path(path)`),
+/// whatever the verb. The table is not the kernel's: each dialect states its own path claim
+/// (`busbar_contract::protocol::ProtocolDecl::residual_claims`) and which dialect answers a path no
+/// claim takes (`ProtocolDecl::residual_default`), and the composition root folds the linked
+/// declarations into this value and installs it ([`install_path_dialects`]). The kernel names none.
+#[derive(Clone)]
+pub struct PathDialects {
+    /// The dialect the declarations claim `path` for by its shape alone, the tightest claim kept
+    /// and a tie broken by the linked order; `None` when no declaration claims it.
+    pub claimed: std::sync::Arc<dyn Fn(&str) -> Option<&'static str> + Send + Sync>,
+    /// The dialect a path no declaration claims is labelled in, when one declares itself the
+    /// residual default.
+    pub residual: Option<&'static str>,
+}
+
+/// The installed path dialects ([`install_path_dialects`]).
+static PATH_DIALECTS: std::sync::OnceLock<PathDialects> = std::sync::OnceLock::new();
+
+/// Install the linked declarations' path dialects, once, from the composition root. A second
+/// install is ignored: there is one composition root.
+pub fn install_path_dialects(dialects: PathDialects) {
+    let _ = PATH_DIALECTS.set(dialects);
+}
+
+/// The installed path dialects, or `None` in a build whose root installed none.
+pub fn path_dialects() -> Option<&'static PathDialects> {
+    PATH_DIALECTS.get()
+}
+
+/// THE DIALECT A REFUSAL AT `path` IS LABELLED IN, read off the path alone and never off the verb or
+/// a door route: a path mounted by a plane is that plane's first wire format; any other path is
+/// the dialect the declarations claim it for; failing either, the residual default. `None` when
+/// none of them names one.
+pub fn labelled_dialect(
+    ingress: Ingress,
+    path: &str,
+    by_path: Option<&PathDialects>,
+) -> Option<&'static str> {
+    match ingress {
+        Ingress::Mounted(_) => ingress.shaping_wire_format(),
+        Ingress::Fallback => by_path.and_then(|d| (d.claimed)(path)),
+    }
+    .or_else(|| by_path.and_then(|d| d.residual))
+}
+
 /// THE KERNEL'S OWN REFUSAL: the answer when no plane renders one (no plane's line and no fallback
 /// plane takes the path, or the plane's render failed). The kernel speaks no dialect (spec §1, "It
 /// is a byte pump"), so it is the neutral envelope, `application/json`, at the kernel's status: the
