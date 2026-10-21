@@ -173,6 +173,8 @@ fn scan_floor(cx: &Ctx) -> usize {
 
 mod auth_words;
 mod external;
+mod frozen;
+mod homographs;
 mod instances;
 mod os_words;
 mod vendors;
@@ -218,6 +220,7 @@ pub(super) fn instance_axes() -> Vec<&'static str> {
 /// matrix row, so `busbar-kernel-scope`, drained to 0 by the Q128 kernel-scope lane, stood unarmed
 /// with nothing red. It is armed here.
 const LAW0_ENFORCED_NEUTRAL_CRATES: &[&str] = &[
+    "busbar-core-oauth2",
     "busbar-kernel-audit",
     "busbar-kernel-identity",
     "busbar-kernel-scope",
@@ -813,6 +816,9 @@ fn measure_with(cx: &Ctx, crates: &[CrateInfo], walk: Walk) -> Result<Measured, 
     // file reads (the same answer whoever fills it), shared under a lock.
     let wire_locks: std::sync::Mutex<BTreeMap<String, BTreeSet<String>>> =
         std::sync::Mutex::new(BTreeMap::new());
+    // FROZEN 1.5.5 BYTES (ARCHITECT rulings Q3 and Q2(i), [`frozen`]): a hit on a line a named
+    // artifact carried verbatim at `v1.5.5`, or on a named wire spelling, is that release's wire.
+    let frozen_lines = frozen::load(cx);
     let scanned = crate::par::par_map(&files, |(rel, text)| {
         // OWNER 2026-10-03: "Cargo.toml is ignored blanketly from this check" (see the module doc).
         if is_cargo_manifest(rel) {
@@ -885,6 +891,7 @@ fn measure_with(cx: &Ctx, crates: &[CrateInfo], walk: Walk) -> Result<Measured, 
                     contract: &contract,
                     roots,
                     auth,
+                    kernel_words: !plane,
                     dialect_module,
                     wire: wire.as_ref(),
                 }));
@@ -904,9 +911,11 @@ fn measure_with(cx: &Ctx, crates: &[CrateInfo], walk: Walk) -> Result<Measured, 
         // hit's line is looked up in the file's line list, read once, rather than by walking the
         // text from its start once per hit — and only when the witness grant can excuse a hit of
         // this crate at all.
-        let lines: Vec<&str> = if hits
-            .iter()
-            .any(|h| super::witness_may_apply(&granted, c, h.kind))
+        let frozen_here = frozen_lines.contains_key(rel.as_str());
+        let lines: Vec<&str> = if frozen_here
+            || hits
+                .iter()
+                .any(|h| super::witness_may_apply(&granted, c, h.kind))
         {
             text.lines().collect()
         } else {
@@ -915,6 +924,9 @@ fn measure_with(cx: &Ctx, crates: &[CrateInfo], walk: Walk) -> Result<Measured, 
         let kept: Vec<bool> = hits
             .iter()
             .map(|h| {
+                if frozen_here && frozen::is_frozen(&frozen_lines, rel, &lines, h.line) {
+                    return false;
+                }
                 if !super::witness_may_apply(&granted, c, h.kind) {
                     return true;
                 }
@@ -968,6 +980,9 @@ struct MaskInputs<'a> {
     contract: &'a BTreeSet<String>,
     roots: &'a BTreeSet<String>,
     auth: Option<bool>,
+    /// Whether the kernel's own homographs are read by sense ([`homographs`]): every crate but a
+    /// plane's, whose `decision` may be its sibling.
+    kernel_words: bool,
     dialect_module: bool,
     wire: Option<&'a BTreeSet<String>>,
 }
@@ -982,6 +997,7 @@ fn mask_chain(m: MaskInputs<'_>) -> String {
         contract,
         roots,
         auth,
+        kernel_words,
         dialect_module,
         wire,
     } = m;
@@ -1000,6 +1016,21 @@ fn mask_chain(m: MaskInputs<'_>) -> String {
     let masked = mask_english_prose(rel, &masked);
     // An export entry's frozen 1.5.x `streams: [` key is the export projection, not the plane.
     let masked = match mask_export_streams_key(&masked) {
+        Some(owned) => std::borrow::Cow::Owned(owned),
+        None => masked,
+    };
+    // The kernel's own words that are also a plane's id, read by sense off the reviewed list
+    // (ARCHITECT ruling Q1, 2026-10-20); instance positions still count. Context is the ORIGINAL
+    // text's.
+    let read = if kernel_words {
+        match homographs::mask_homographs_in(rel, text, &masked) {
+            std::borrow::Cow::Owned(owned) => Some(owned),
+            std::borrow::Cow::Borrowed(_) => None,
+        }
+    } else {
+        None
+    };
+    let masked = match read {
         Some(owned) => std::borrow::Cow::Owned(owned),
         None => masked,
     };
@@ -3649,7 +3680,14 @@ fn measured_row(
                     .stack_size(16 * 1024 * 1024)
                     .spawn_scoped(scope, || vendors::offenders(cx, crates, &files))
                     .expect("spawn the vendor-name scan thread");
-                let inst = instances::measure_reserved(crates, &files, &ivocab, &reg.shape_words);
+                let frozen_lines = frozen::load(cx);
+                let inst = instances::measure_reserved(
+                    crates,
+                    &files,
+                    &ivocab,
+                    &reg.shape_words,
+                    &frozen_lines,
+                );
                 (
                     inst,
                     vendor
@@ -4366,6 +4404,83 @@ pub fn selftest<'a>(
     // THE FIVE INSTANCE AXES (item 118) — every one planted in core, plus the listed/unlisted pair.
     instances::selftest(cx, gate, false, report);
 
+    // FROZEN 1.5.5 BYTES ARE EXCLUDED LINE BY LINE, NEVER FILE BY FILE ([`frozen`], ARCHITECT
+    // rulings Q3 and Q2(i)). Each named artifact, and the named wire spelling's file, gets one line
+    // 1.6.0 never shipped in 1.5.5 — a plane package name in the two JSON documents, an instance name
+    // of a different axis in each Rust artifact, the `http` id in the egress trust file — and every
+    // one of those cells GROWS over the merge-base: the exclusion reaches the release's bytes and
+    // nothing written beside them.
+    match instances::one_name_per_axis(cx) {
+        Ok(names) => {
+            let name = |k: &str| {
+                names
+                    .iter()
+                    .find(|(axis, _)| *axis == k)
+                    .map(|(_, n)| n.clone())
+                    .unwrap_or_default()
+            };
+            let grown: [(&str, String); 7] = [
+                (
+                    "crates/busbar-core-admin/src/v1/json/openapi.json",
+                    "\"x-planted\": \"busbar-plane-mcp\"\n".to_string(),
+                ),
+                (
+                    "crates/busbar-kernel/src/config/config-schema.snapshot.json",
+                    "\"x-planted\": \"busbar-plane-llm\"\n".to_string(),
+                ),
+                (
+                    "crates/busbar-kernel/src/config/migrate.rs",
+                    format!("pub const PLANTED_EXPORT: &str = \"{}\";\n", name("export")),
+                ),
+                (
+                    "crates/busbar-kernel/src/config/migrate_export.rs",
+                    format!("pub const PLANTED_STORE: &str = \"{}\";\n", name("store")),
+                ),
+                (
+                    "crates/busbar-kernel/src/config/tests/migrate_tests.rs",
+                    format!("pub const PLANTED_AUTH: &str = \"{}\";\n", name("auth")),
+                ),
+                (
+                    "crates/busbar-contract/src/secret_ref.rs",
+                    format!("pub const PLANTED_SECRET: &str = \"{}\";\n", name("secret")),
+                ),
+                (
+                    "crates/busbar-kernel-egress/src/trust/net.rs",
+                    "pub fn planted_scheme() -> &'static str {\n    \"http\"\n}\n".to_string(),
+                ),
+            ];
+            let mut ov = crate::ctx::Overlay::new();
+            for (rel, line) in &grown {
+                let was = cx.read(rel).unwrap_or_default();
+                ov.set(*rel, format!("{}\n{line}", was.trim_end()));
+            }
+            report.push(prove_rows_red(
+                cx,
+                gate,
+                "a line 1.6.0 wrote into a frozen 1.5.5 artifact, or beside a named wire spelling, \
+                 still grows its cell",
+                &[ROW_LAW0_BASE],
+                with_transport(ov, "http"),
+                &[
+                    "law0-grown",
+                    "busbar-core-admin \u{d7} plane",
+                    "busbar-kernel \u{d7} plane",
+                    "busbar-kernel \u{d7} instance:export",
+                    "busbar-kernel \u{d7} instance:store",
+                    "busbar-kernel \u{d7} instance:auth",
+                    "busbar-contract \u{d7} instance:secret",
+                    "busbar-kernel-egress \u{d7} transport",
+                ],
+            ));
+        }
+        Err(why) => report.push(crate::gates::CasePlan::from(super::unplantable(
+            "an instance name per axis to plant into the frozen artifacts",
+            &[ROW_LAW0_BASE],
+            &["law0-grown"],
+            why,
+        ))),
+    }
+
     // THE DIALECT WIRE-KEY SPAN (ARCHITECT ruling 2026-10-02, DF-MAP) is a COUNT property inside a
     // listed cell (`busbar-plane-llm × plane`), which presence cannot observe; it is proven on the
     // cell itself in `tests::a_dialect_wire_key_is_the_providers_word_and_the_same_word_elsewhere_counts`.
@@ -4878,6 +4993,60 @@ pub fn selftest<'a>(
         ),
         &["unlisted-cell", &fixture_subject("transport")],
     ));
+
+    // THE KERNEL'S OWN HOMOGRAPHS ARE READ BY SENSE ([`homographs`], ARCHITECT ruling Q1) — and the
+    // reviewed list is not a hole. The fixture holds only the kernel's senses of `decision`,
+    // `streams` and `streaming` (a verdict binding, `RoutingDecision`, a decision-gate pool, an export
+    // projection, an HTTP response mode and its content type, "streaming" in prose) and no row: its
+    // plane cell stays at zero (GREEN). Each word then written ONCE in an instance position — the
+    // plane id as a literal, a module path segment naming the plane, prose naming the plane — is a
+    // hit, and the cell becomes an edge nobody listed (RED).
+    let homograph_fixture = |extra: Option<(&'static str, &'static str)>| {
+        let mut files = vec![(
+            "verdicts.rs",
+            "pub fn route(decision: RoutingDecision, streams: &[u8]) -> bool {\n    \
+             // the reply is streaming, so it is never buffered.\n    \
+             let streaming = streaming_content_type(&decision);\n    \
+             pool_decision_gates(streams, streaming)\n\
+             }\n",
+        )];
+        files.extend(extra);
+        fixture_files(&files)
+    };
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "the kernel's own `decision`, `streams` and `streaming` (verdicts, export projections, HTTP \
+         response streaming) are not the planes",
+        &[ROW_MATRIX],
+        homograph_fixture(None),
+    ));
+    for (word, file, body) in [
+        (
+            "decision",
+            "key.rs",
+            "pub const KEY: &str = \"decision\";\n",
+        ),
+        (
+            "streams",
+            "mount.rs",
+            "pub fn mount() {\n    crate::plane::streams::serve()\n}\n",
+        ),
+        (
+            "streaming",
+            "doc.rs",
+            "// the streaming plane answers here.\n",
+        ),
+    ] {
+        report.push(prove_rows_red(
+            cx,
+            gate,
+            format!("`{word}` in an instance position still counts beside the kernel's own senses"),
+            &[ROW_MATRIX],
+            homograph_fixture(Some((file, body))),
+            &["unlisted-cell", &fixture_subject("plane")],
+        ));
+    }
 
     // ONE WRITTEN NAME, ONE HIT ([`one_needle_per_span`]) IS A CLAIM ABOUT A COUNT (1, not 3), and
     // a row that holds presence cannot observe a count. It is proven where a count can be read:

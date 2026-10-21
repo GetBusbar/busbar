@@ -662,6 +662,35 @@ fn without_abi_strings(line: &str) -> std::borrow::Cow<'_, str> {
 /// a name (Q81), and a literal spelled any other way (`" header"`, a `concat!`) is not masked.
 pub(super) const COLLIDING_LITERALS: &[&str] = &["header"];
 
+/// AN INSTANCE NAME IS COUNTED ONLY IN A PLUGIN-NAME POSITION, NEVER AS AN OBJECT KEY (ARCHITECT
+/// ruling Q4, 2026-10-20, Law 0 burndown §3(d): a matcher defect). The axis exists to see a name
+/// written as a VALUE — `module: "file"`, `module == "env"`, a `*_MODULE` constant, a list element,
+/// a match arm — because that is a closed dispatch on instance names. A literal followed by `:` (not
+/// `::`) is an object KEY: `json!({"file": path})` (the admin upload body), `{"command": …, "env":
+/// [...]}` (a stdio need's environment), a `.json` key. That is a field of somebody's shape, not a
+/// plugin named; on dev bc610c636a it was 68 of the axes' hits (`file` 48, `env` 20). The key rule
+/// [`COLLIDING_LITERALS`] already applied to `header` now applies to every instance name.
+///
+/// How many `"word"` literals on line `at` (0-based) of `lines` stand in KEY position.
+fn key_positions(lines: &[&str], at: usize, word: &str) -> usize {
+    let Some(line) = lines.get(at).copied() else {
+        return 0;
+    };
+    let low = line.to_ascii_lowercase();
+    let quoted = format!("\"{word}\"");
+    let mut n = 0;
+    let mut from = 0;
+    while let Some(off) = low[from..].find(&quoted) {
+        let j = from + off + quoted.len();
+        from = j;
+        let after = line[j..].trim_start();
+        if after.starts_with(':') && !after.starts_with("::") {
+            n += 1;
+        }
+    }
+    n
+}
+
 /// How many `"word"` literals on line `at` (0-based) of `lines`, a file at `rel`, are the WORD and
 /// not the instance (see [`COLLIDING_LITERALS`]).
 fn word_collisions(rel: &str, lines: &[&str], at: usize, word: &str) -> usize {
@@ -771,6 +800,7 @@ pub fn measure_reserved(
     files: &[(String, String)],
     vocab: &Vocab,
     shapes: &[super::super::ShapeWord],
+    frozen: &super::frozen::Frozen,
 ) -> (Instances, Vec<String>) {
     let mut spent: BTreeSet<usize> = BTreeSet::new();
     let by_dir: BTreeMap<&str, &CrateInfo> = crates
@@ -811,14 +841,15 @@ pub fn measure_reserved(
         } else {
             text.lines().collect()
         };
-        let collides = |l: &String| COLLIDING_LITERALS.contains(&l.as_str());
-        let lines: Vec<&str> = if lits.iter().any(|(_, l)| collides(l)) {
+        // Every literal that is a name needs its line read: for its key position, a collision, or a
+        // frozen 1.5.5 byte ([`super::frozen`]).
+        let lines: Vec<&str> = if lits.iter().any(|(_, l)| lookup.contains_key(l)) {
             text.lines().collect()
         } else {
             Vec::new()
         };
         // Per line and colliding word: how many of its literals are still the word, not the name.
-        let mut words_left: BTreeMap<(usize, &str), usize> = BTreeMap::new();
+        let mut words_left: BTreeMap<(usize, String), usize> = BTreeMap::new();
         for (line, lit) in lits.iter() {
             let Some(kinds) = lookup.get(lit) else {
                 continue;
@@ -833,14 +864,23 @@ pub fn measure_reserved(
                 spent.insert(i);
                 continue;
             }
-            if let Some(w) = COLLIDING_LITERALS.iter().find(|w| **w == lit.as_str()) {
-                let left = words_left
-                    .entry((*line, *w))
-                    .or_insert_with(|| word_collisions(rel, &lines, line - 1, w));
-                if *left > 0 {
-                    *left -= 1;
-                    continue;
+            // A FROZEN 1.5.5 BYTE (ARCHITECT ruling Q3): a line a named artifact carried verbatim at
+            // `v1.5.5` is that release's wire, not a name core chose.
+            if super::frozen::is_frozen(frozen, rel, &lines, *line) {
+                continue;
+            }
+            // A COLLIDING WORD in one of its masked contexts, or ANY name in key position (Q4): one
+            // budget per line and word, so a line holding the key and a value spends the key once.
+            let left = words_left.entry((*line, lit.clone())).or_insert_with(|| {
+                if COLLIDING_LITERALS.contains(&lit.as_str()) {
+                    word_collisions(rel, &lines, line - 1, lit)
+                } else {
+                    key_positions(&lines, line - 1, lit)
                 }
+            });
+            if *left > 0 {
+                *left -= 1;
+                continue;
             }
             for (k, owners) in kinds {
                 // A crate is never measured against its own name.
@@ -1053,7 +1093,9 @@ pub fn registry_aliases(text: &str) -> Vec<(String, String, String)> {
 /// ONE INSTANCE NAME PER AXIS, read off the tree's own vocabulary — never typed into a fixture.
 /// A module-name constant is preferred (it is the compiled-in name the breach is made of); an axis
 /// with none falls back to its first census id.
-fn one_name_per_axis(cx: &crate::ctx::Ctx) -> Result<Vec<(&'static str, String)>, String> {
+pub(super) fn one_name_per_axis(
+    cx: &crate::ctx::Ctx,
+) -> Result<Vec<(&'static str, String)>, String> {
     let mut crates = super::super::census(cx)?;
     let (planes, ports) = super::super::vocabularies(&crates);
     super::super::assign_instances(&mut crates, &planes, &ports);
@@ -1327,6 +1369,44 @@ pub fn selftest<'a>(
             "planted_header_pick.rs",
         ],
     ));
+
+    // AN INSTANCE NAME AS AN OBJECT KEY IS NO NAME ([`key_positions`], ARCHITECT ruling Q4). The
+    // fixture writes `file` and `env` only as JSON keys (an upload body, a stdio environment) and
+    // its × secret cell stays at zero (GREEN). The same file with ONE plugin-name position added —
+    // `module == "file"`, `module == "env"` — is an instance the ledger does not list (RED), one
+    // case per word.
+    let keys: &[(&str, &str)] = &[(
+        "planted_keys.rs",
+        "pub fn body(file: &str, var: &str) -> serde_json::Value {\n    \
+         serde_json::json!({\"file\": file, \"env\": [var]})\n}\n",
+    )];
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "`\"file\"` and `\"env\"` as object keys are no secret instance",
+        &[ROW_MATRIX],
+        super::fixture_files(keys),
+    ));
+    for word in ["file", "env"] {
+        let pick = format!("pub fn pick(module: &str) -> bool {{\n    module == \"{word}\"\n}}\n");
+        let files: Vec<(&str, &str)> = keys
+            .iter()
+            .copied()
+            .chain(std::iter::once(("planted_name_pick.rs", pick.as_str())))
+            .collect();
+        report.push(prove_rows_red(
+            cx,
+            gate,
+            format!("`\"{word}\"` in a plugin-name position still counts beside the masked keys"),
+            &[ROW_MATRIX],
+            super::fixture_files(&files),
+            &[
+                "unlisted-instance",
+                &super::fixture_subject("secret"),
+                "planted_name_pick.rs",
+            ],
+        ));
+    }
 
     // AN `extern "…"` ABI STRING IS SYNTAX, NOT VOCABULARY (ARCHITECT ruling on #787): the `c`
     // secret plugin's name (plugins.yaml `busbar-secret-c`) is the lower-cased string of every
