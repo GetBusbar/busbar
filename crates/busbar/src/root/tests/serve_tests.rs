@@ -313,7 +313,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     std::fs::write(&key_file, CREDENTIAL).expect("the credential file");
     let provider: busbar_kernel::config::ProviderCfg = serde_yaml::from_str(&format!(
         "{{protocol: {}, base_url: 'http://127.0.0.1:{port}', api_key: {{file: '{}'}}, error_map: {{}}}}",
-        busbar_plane_decisions::config::PROTOCOL,
+        plane.served().dialects[0],
         key_file.display()
     ))
     .expect("a provider entry");
@@ -3874,6 +3874,8 @@ pub(super) struct Serving {
     key: String,
     /// The app the data router serves (its cost model prices the key's usage).
     app: Arc<busbar_kernel::state::App>,
+    /// The operation classes the door's plane tail states, in its order.
+    op_classes: Vec<&'static str>,
 }
 
 #[cfg(feature = "plane-decisions")]
@@ -4057,6 +4059,10 @@ async fn serve_configured(
         .expect("the linked door binds"),
     );
     let section_key = plane.served().section;
+    // The plane's dialect word and its operation classes, as its door's plane tail states them
+    // (BUSBAR-1.6.0.md l.247): the door is the crate's one public item (l.3567).
+    let dialect = plane.served().dialects[0];
+    let op_classes = plane.served().op_classes;
 
     let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
     let gov = Arc::new(
@@ -4118,8 +4124,7 @@ async fn serve_configured(
     };
 
     let provider: busbar_kernel::config::ProviderCfg = serde_yaml::from_str(&format!(
-        "{{protocol: {}, base_url: 'http://127.0.0.1:{port}', api_key: {api_key}, error_map: {{}}}}",
-        busbar_plane_decisions::config::PROTOCOL,
+        "{{protocol: {dialect}, base_url: 'http://127.0.0.1:{port}', api_key: {api_key}, error_map: {{}}}}",
     ))
     .expect("a provider entry");
     let providers = provider_routes(
@@ -4199,6 +4204,7 @@ async fn serve_configured(
         gov,
         key: key.id.to_string(),
         app,
+        op_classes,
     })
 }
 
@@ -9733,7 +9739,7 @@ async fn every_decisions_unit_served_or_refused_seals_one_record_on_one_tamper_e
     for record in &records {
         assert_eq!(
             record.what.op_class.as_str(),
-            busbar_plane_decisions::driven::tail::OP_CLASSES[0].as_str(),
+            serving.op_classes[0],
             "sealed under the plane's operation class: {record:?}"
         );
     }
