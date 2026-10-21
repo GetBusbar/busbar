@@ -22,7 +22,6 @@ use std::sync::{Arc, Mutex};
 
 use busbar_contract::caps::{AdminVerb, DurableWrite, Grant, StepName};
 use busbar_contract::kinds::RecordBytes;
-use busbar_contract::slice::SliceStore as _;
 use busbar_contract::store_calls::StoreCalls;
 use busbar_contract::verb_store::StoreError as VerbStoreError;
 use busbar_kernel_wal::{BodyReader, BodyWriter, Entry, JournalRecord, RecordClass};
@@ -284,7 +283,7 @@ impl busbar_contract::verb_store::Store for NodeRecovery {
     /// back.
     fn reseal_epoch_floor(&self, _admin: &Grant<AdminVerb>) -> Result<(), VerbStoreError> {
         let floor = EpochFloor {
-            floor: self.adapter.epoch().0,
+            floor: self.adapter.recovery_epoch(),
             resealed_at: now_secs(),
         };
         let value = RecordBytes::new(encode_floor(floor))
