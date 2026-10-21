@@ -1006,7 +1006,14 @@ pub fn data_door_framer<'c>(
 ) -> Result<Arc<dyn busbar_core_connector::framer::FramerDoor>, String> {
     carriers
         .into_iter()
-        .find_map(|carrier| framer_for(carrier))
+        .find_map(|carrier| {
+            framer_for(carrier).filter(|door| {
+                let facts = door.facts();
+                facts.role == busbar_contract::abi::transport::ROLE_FRAMER
+                    && !facts.datagram
+                    && !facts.duplex.iter().any(|d| *d == carrier)
+            })
+        })
         .ok_or_else(|| DATA_LISTENER_UNFRAMED.to_string())
 }
 

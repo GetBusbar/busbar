@@ -630,7 +630,28 @@ async fn serve_conn(
     mut stop: tokio::sync::watch::Receiver<bool>,
     keep: Box<dyn Send>,
 ) {
-    drop((conn, door, stop, keep));
+    let (tx, ops) = mpsc::unbounded_channel();
+    let mut served = Conn {
+        conn: Some(conn),
+        door,
+        ops,
+        tx,
+        pending: std::collections::VecDeque::new(),
+        inflows: std::collections::HashMap::new(),
+        tasks: tokio::task::JoinSet::new(),
+        session: None,
+        read_done: false,
+        stopping: *stop.borrow(),
+    };
+    loop {
+        tokio::select! {
+            () = std::future::poll_fn(|cx| served.poll(cx)) => break,
+            changed = stop.changed(), if !served.stopping => {
+                served.stopping = changed.is_err() || *stop.borrow();
+            }
+        }
+    }
+    drop(keep);
 }
 
 /// One connection's serving state ([`serve_conn`]).
