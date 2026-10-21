@@ -1142,7 +1142,7 @@ extern "C" fn trust_decide(ctx: HostCtx, input: *const c_void, out: *mut Service
                 return Answered::fault();
             };
             let req = Fp::of(&[
-                &i.decision.to_le_bytes(),
+                &[u8::from(approve)],
                 counterparty.as_bytes(),
                 item.as_bytes(),
                 expected.as_bytes(),
