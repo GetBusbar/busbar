@@ -1110,11 +1110,7 @@ async fn an_idn_destination_resolves_as_its_punycode_name_and_is_served() {
     );
 
     // The connector's own dial: resolve, pin, dial, served.
-    let c = connector_judged(
-        &TransportSettings::default(),
-        &EgressTrust::default(),
-        dest,
-    );
+    let c = connector_judged(&TransportSettings::default(), &EgressTrust::default(), dest);
     let host = busbar_contract::net::url_host_to_ascii("b\u{fc}cher.example")
         .expect("an IDN name maps")
         .into_owned();

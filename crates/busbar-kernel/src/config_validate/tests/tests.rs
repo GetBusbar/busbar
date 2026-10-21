@@ -2671,10 +2671,8 @@ fn test_metadata_list_entries_are_mapped_and_an_unmappable_one_is_refused() {
         );
     }
     // The refusal names the key, the entry and why, and how to write it, so one edit fixes it.
-    let cfg = make_root_cfg_with_blocked(
-        one(),
-        vec!["db.1".to_string(), "%6c%6fcalhost".to_string()],
-    );
+    let cfg =
+        make_root_cfg_with_blocked(one(), vec!["db.1".to_string(), "%6c%6fcalhost".to_string()]);
     let errs = validate(&cfg).expect_err("unjudgeable entries refuse the config");
     for said in [
         "security.blocked_metadata_hosts entry 'db.1' maps to no host: its last label reads as a \
