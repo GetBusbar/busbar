@@ -925,7 +925,9 @@ pub fn book(
     // The node amendment journal — the one the boot generation carries — is rebuilt from the chain
     // before anything can seal onto it, so a corrected count and every recorded content access
     // survive the restart: off the disk, or off the chain the store kept.
-    durability.restore_amendments(&app.amendments, &token);
+    // A chain that will not read back refuses the boot here: taken for an empty one, every signed
+    // correction would revert.
+    durability.restore_amendments(&app.amendments, &token)?;
     // THE CALLER REFERENCE OF EVERY VERIFIED PRINCIPAL (row 159 H2): a node that keeps no signing
     // material derives it from the deployment keyset just bound, so no verified principal is lent
     // an empty reference and two principals never share one.

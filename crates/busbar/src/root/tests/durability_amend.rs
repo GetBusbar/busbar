@@ -64,7 +64,9 @@ fn boot(dir: &std::path::Path) -> (Arc<Mutex<Durability>>, Arc<NodeAmendments>) 
     .expect("the directory is writable");
     let journal = Arc::new(NodeAmendments::new());
     let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
-    durability.restore_amendments(&journal, &token);
+    durability
+        .restore_amendments(&journal, &token)
+        .expect("the chain reads back");
     let book = Arc::new(Mutex::new(durability));
     bind_amendments(&book, &journal);
     (book, journal)
@@ -241,7 +243,9 @@ fn store_boot(
     .expect("the store reads back");
     let journal = Arc::new(NodeAmendments::new());
     let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
-    durability.restore_amendments(&journal, &token);
+    durability
+        .restore_amendments(&journal, &token)
+        .expect("the chain reads back");
     let book = Arc::new(Mutex::new(durability));
     bind_amendments(&book, &journal);
     (book, journal)
@@ -444,7 +448,9 @@ fn without_a_data_dir_the_amendment_journal_is_neither_rebuilt_nor_bound() {
     .expect("a memory-buffered journal cannot fail to open");
     let journal = NodeAmendments::new();
     let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
-    durability.restore_amendments(&journal, &token);
+    durability
+        .restore_amendments(&journal, &token)
+        .expect("nothing is read back");
     assert_eq!(durability.amendments_through, None);
     assert!(durability.restart_findings.is_empty());
 }
