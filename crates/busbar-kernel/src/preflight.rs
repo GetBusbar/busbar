@@ -1438,3 +1438,7 @@ mod root_install_seams_tests;
 #[cfg(test)]
 #[path = "tests/store_row_tests.rs"]
 mod store_row_tests;
+
+#[cfg(test)]
+#[path = "tests/root_install_lent_tests.rs"]
+mod root_install_lent_tests;
