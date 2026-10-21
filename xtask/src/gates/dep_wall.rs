@@ -618,9 +618,64 @@ fn arrow_before(toks: &[TokenTree], i: usize) -> bool {
             if matches!(p.as_char(), '-' | '=') && p.spacing() == Spacing::Joint)
 }
 
+fn punct_is(t: Option<&TokenTree>, c: char) -> bool {
+    matches!(t, Some(TokenTree::Punct(p)) if p.as_char() == c)
+}
+
+fn ident_is(t: Option<&TokenTree>, words: &[&str]) -> bool {
+    matches!(t, Some(TokenTree::Ident(id)) if words.iter().any(|w| id == w))
+}
+
+/// Does the `<` at `i` open a GENERIC LIST?
+///
+/// Only three places open one: directly after an item's name (`fn f<`, `struct S<`, `enum`,
+/// `union`, `trait`, `type`, `impl X<`), directly after `impl`, and a turbofish `::<`. Anywhere
+/// else `<`, `<<`, `<=` and `>>` are operators and open nothing.
+fn opens_generic_list(toks: &[TokenTree], i: usize) -> bool {
+    punct_is(toks.get(i), '<')
+        && ((i >= 1 && ident_is(toks.get(i - 1), &["impl"]))
+            || (i >= 2
+                && matches!(&toks[i - 1], TokenTree::Ident(_))
+                && ident_is(
+                    toks.get(i - 2),
+                    &["fn", "struct", "enum", "union", "trait", "type", "impl"],
+                ))
+            || (i >= 2
+                && matches!(&toks[i - 2], TokenTree::Punct(p)
+                if p.as_char() == ':' && p.spacing() == Spacing::Joint)
+                && punct_is(toks.get(i - 1), ':')))
+}
+
+/// The `>` closing the generic list [`opens_generic_list`] found at `i`. Inside the list a `{}`,
+/// `()` or `[]` group is one opaque token, so a `<` or `>` within it never counts. A list with no
+/// closing `>` in this token stream, or one that meets a `;` or a `=>` first, is not certain:
+/// `None`.
+fn generic_list_close(toks: &[TokenTree], i: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (j, t) in toks.iter().enumerate().skip(i + 1) {
+        let TokenTree::Punct(p) = t else { continue };
+        match p.as_char() {
+            ';' => return None,
+            '<' => depth += 1,
+            '>' if arrow_before(toks, j) => {
+                if punct_is(toks.get(j - 1), '=') {
+                    return None;
+                }
+            }
+            '>' if depth == 0 => return Some(j),
+            '>' => depth -= 1,
+            _ => {}
+        }
+    }
+    None
+}
+
 /// The token stream with every test-marked item removed: the attribute, the attributes after it,
 /// and the item up to its first top-level `;` or `{ .. }` body. An inner `#![cfg(test)]` empties
-/// the scope it opens.
+/// the scope it opens. A test-marked GENERIC PARAMETER is removed to its own end only (the list's
+/// next top-level `,`, or the `>` that closes the list), never on into the item's body. FAIL
+/// CLOSED: once a generic list opens that [`generic_list_close`] cannot close, no test mark at this
+/// level is stripped, so nothing behind one is hidden.
 fn strip_tests(stream: TokenStream) -> TokenStream {
     let toks: Vec<TokenTree> = stream.into_iter().collect();
     let attr_at = |i: usize| -> Option<(usize, bool)> {
@@ -640,39 +695,68 @@ fn strip_tests(stream: TokenStream) -> TokenStream {
         (g.delimiter() == Delimiter::Bracket && is_test_attr(&g.stream()))
             .then_some((at + 1 - i, inner))
     };
+    let keep = |out: &mut Vec<TokenTree>, t: &TokenTree| match t {
+        TokenTree::Group(g) => {
+            let mut kept = Group::new(g.delimiter(), strip_tests(g.stream()));
+            kept.set_span(g.span());
+            out.push(TokenTree::Group(kept));
+        }
+        t => out.push(t.clone()),
+    };
     let mut out: Vec<TokenTree> = Vec::new();
     let mut i = 0;
-    // The `<..>` depth of the kept tokens: an attribute inside generics marks one parameter.
-    let mut angle = 0usize;
+    let mut uncertain = false;
     while i < toks.len() {
-        if let Some((len, inner)) = attr_at(i) {
+        if !uncertain && opens_generic_list(&toks, i) {
+            let Some(close) = generic_list_close(&toks, i) else {
+                uncertain = true;
+                continue;
+            };
+            // A generic list: a test mark at its top level removes one parameter, nothing more.
+            keep(&mut out, &toks[i]);
+            i += 1;
+            let mut depth = 0usize;
+            while i < close {
+                if depth == 0 {
+                    if let Some((len, _)) = attr_at(i) {
+                        i += len;
+                        let mut inner = 0usize;
+                        while i < close {
+                            match &toks[i] {
+                                TokenTree::Punct(p) if p.as_char() == '<' => inner += 1,
+                                TokenTree::Punct(p)
+                                    if p.as_char() == '>' && !arrow_before(&toks, i) =>
+                                {
+                                    inner = inner.saturating_sub(1)
+                                }
+                                TokenTree::Punct(p) if p.as_char() == ',' && inner == 0 => {
+                                    i += 1;
+                                    break;
+                                }
+                                _ => {}
+                            }
+                            i += 1;
+                        }
+                        continue;
+                    }
+                }
+                match &toks[i] {
+                    TokenTree::Punct(p) if p.as_char() == '<' => depth += 1,
+                    TokenTree::Punct(p) if p.as_char() == '>' && !arrow_before(&toks, i) => {
+                        depth = depth.saturating_sub(1)
+                    }
+                    _ => {}
+                }
+                keep(&mut out, &toks[i]);
+                i += 1;
+            }
+            continue;
+        }
+        if let Some((len, inner)) = attr_at(i).filter(|_| !uncertain) {
             if inner {
                 return TokenStream::new();
             }
             i += len;
-            if angle > 0 {
-                // A test-marked generic parameter: skip it to its own end (the next top-level `,`
-                // or the `>` closing the list, left in place), never on into the item's body.
-                let mut depth = 0usize;
-                while i < toks.len() {
-                    match &toks[i] {
-                        TokenTree::Punct(p) if p.as_char() == '<' => depth += 1,
-                        TokenTree::Punct(p) if p.as_char() == '>' && !arrow_before(&toks, i) => {
-                            if depth == 0 {
-                                break;
-                            }
-                            depth -= 1;
-                        }
-                        TokenTree::Punct(p) if p.as_char() == ',' && depth == 0 => {
-                            i += 1;
-                            break;
-                        }
-                        _ => {}
-                    }
-                    i += 1;
-                }
-                continue;
-            }
             // Skip the item: further attributes, then up to its body or its `;`.
             while i < toks.len() {
                 match &toks[i] {
@@ -689,25 +773,7 @@ fn strip_tests(stream: TokenStream) -> TokenStream {
             }
             continue;
         }
-        match &toks[i] {
-            TokenTree::Punct(p) if p.as_char() == '<' => angle += 1,
-            TokenTree::Punct(p) if p.as_char() == '>' && !arrow_before(&toks, i) => {
-                angle = angle.saturating_sub(1)
-            }
-            TokenTree::Punct(p) if p.as_char() == ';' => angle = 0,
-            _ => {}
-        }
-        match &toks[i] {
-            TokenTree::Group(g) => {
-                if g.delimiter() == Delimiter::Brace {
-                    angle = 0;
-                }
-                let mut kept = Group::new(g.delimiter(), strip_tests(g.stream()));
-                kept.set_span(g.span());
-                out.push(TokenTree::Group(kept));
-            }
-            t => out.push(t.clone()),
-        }
+        keep(&mut out, &toks[i]);
         i += 1;
     }
     out.into_iter().collect()
@@ -1068,6 +1134,56 @@ impl Gate for DepWallGate {
                     "last" => "a test mark on the last generic parameter does not hide the body",
                     _ => "a test mark on a middle generic parameter does not hide the body",
                 },
+                &[ROW_NEW],
+                ov,
+                &["new-offender", "busbar-plane-decisions", "std::net"],
+            ));
+        }
+        // A `<` THAT OPENS NO GENERIC LIST (a comparison, a shift, a guard) and a `{}` INSIDE one
+        // never let a test mark's generic skip run on past the arm or the parameter it marks.
+        const ARM: &str = "#[cfg(test)] 1 => { true } \
+             _ => { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); false } } }\n";
+        for (what, src) in [
+            (
+                "a test mark on the arm after a `<` comparison does not hide the arms after it",
+                format!("pub fn dial(x: u8, a: u8, b: u8) -> bool {{ match x {{ 0 => a < b, {ARM}"),
+            ),
+            (
+                "a test mark on the arm after an `if a < b` guard does not hide the arms after it",
+                format!(
+                    "pub fn dial(x: u8, a: u8, b: u8) -> bool {{ match x {{ 0 if a < b => true, {ARM}"
+                ),
+            ),
+            (
+                "a test mark on the arm after an `if a <= b` guard does not hide the arms after it",
+                format!(
+                    "pub fn dial(x: u8, a: u8, b: u8) -> bool {{ match x {{ 0 if a <= b => true, {ARM}"
+                ),
+            ),
+            (
+                "a test mark on the arm after a `<<` shift does not hide the arms after it",
+                format!(
+                    "pub fn dial(x: u8, a: u8, b: u8) -> bool {{ match x {{ 0 => a << b == 0, {ARM}"
+                ),
+            ),
+            (
+                "a `{}` inside a fn's generic list does not turn a test-marked parameter into an item",
+                "pub trait Tr<const N: usize> {}\n\
+                 pub fn dial<T: Tr<{ 1 }>, #[cfg(test)] U>() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n"
+                    .to_string(),
+            ),
+            (
+                "a `{}` inside a struct's generic list does not turn a test-marked parameter into an item",
+                "pub struct S<const B: bool = { 1 < 2 }, #[cfg(test)] T = u8> { pub s: std::net::TcpStream }\n"
+                    .to_string(),
+            ),
+        ] {
+            let mut ov = Overlay::new();
+            ov.set("crates/busbar-plane-decisions/src/planted_angle_socket.rs", src);
+            report.push(prove_red(
+                cx,
+                self,
+                what,
                 &[ROW_NEW],
                 ov,
                 &["new-offender", "busbar-plane-decisions", "std::net"],
