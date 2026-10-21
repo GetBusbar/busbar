@@ -36,8 +36,9 @@ fn a_blob_field_reads_as_its_bytes_and_an_absent_one_as_empty() {
     let lent = lend(&v);
     assert_eq!(lent.field(|i| &i.settings).bytes(), json);
     assert_eq!(
-        lent.settings.fmt, BLOB_JSON,
-        "plain fields read through Deref"
+        lent.settings().fmt(),
+        BLOB_JSON,
+        "plain fields read through their accessors"
     );
 
     let absent: ValidateIn = zeroed();
@@ -421,7 +422,7 @@ fn an_export_scrape_check_and_serve_lend_their_lists_and_buffer() {
     let lent = lend(&s);
     let family = lent.families().get(0).expect("one family");
     assert_eq!(family.field(|f| &f.name).bytes(), b"busbar_requests_total");
-    assert_eq!(family.kind, SCRAPE_KIND_COUNTER);
+    assert_eq!(family.kind(), SCRAPE_KIND_COUNTER);
     let sample = family.samples().get(0).expect("one sample");
     assert_eq!(sample.field(|s| &s.value).bytes(), b"3");
     let label = sample.labels().get(0).expect("one label");

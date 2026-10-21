@@ -70,7 +70,7 @@ use crate::abi::sdk::safe::{Instance, SafeSlot};
 
 /// A present blob's bytes; `None` when absent.
 fn present(b: Lent<'_, Blob>) -> Option<&[u8]> {
-    (b.fmt != BLOB_ABSENT && !b.ptr.is_null()).then(|| b.bytes())
+    (!b.is_absent()).then(|| b.bytes())
 }
 
 /// Whose credential a `fields` call presents ([`FieldsIn::mode`]).
@@ -93,14 +93,14 @@ impl<'a> FieldsView<'a> {
     /// The handle `open_outbound` answered.
     #[must_use]
     pub fn handle(&self) -> u64 {
-        self.input.handle
+        self.input.handle()
     }
 
     /// Whose credential to present. (A mode outside the vocabulary never reaches the plugin: the
     /// kit answers it FAULT.)
     #[must_use]
     pub fn mode(&self) -> Mode {
-        if self.input.mode == MODE_PASSTHROUGH {
+        if self.input.mode() == MODE_PASSTHROUGH {
             Mode::Passthrough
         } else {
             Mode::Own
@@ -110,19 +110,19 @@ impl<'a> FieldsView<'a> {
     /// The point this call is made at; `None` for a value outside the vocabulary.
     #[must_use]
     pub fn point(&self) -> Option<AuthPoint> {
-        AuthPoint::from_bit(self.input.point)
+        AuthPoint::from_bit(self.input.point())
     }
 
     /// The connection the binding sends on; `0` while none is dialed yet.
     #[must_use]
     pub fn conn(&self) -> u64 {
-        self.input.conn
+        self.input.conn()
     }
 
     /// The unit the request belongs to; `0` = none.
     #[must_use]
     pub fn unit(&self) -> u64 {
-        self.input.unit
+        self.input.unit()
     }
 
     /// The method.
@@ -147,13 +147,13 @@ impl<'a> FieldsView<'a> {
     #[must_use]
     pub fn query(&self) -> Option<&'a [u8]> {
         let q = self.input.field(|i| &i.request.query);
-        (!q.ptr.is_null()).then(|| q.bytes())
+        (!q.is_absent()).then(|| q.bytes())
     }
 
     /// Wall-clock seconds, read once by the host for this call.
     #[must_use]
     pub fn timestamp(&self) -> u64 {
-        self.input.request.timestamp
+        self.input.request().timestamp()
     }
 
     /// The exact head envelope the framer will send, in order: (name, value). Empty unless the
@@ -175,7 +175,7 @@ impl<'a> FieldsView<'a> {
     #[must_use]
     pub fn body(&self) -> Option<&'a [u8]> {
         let b = self.input.field(|i| &i.body);
-        (b.fmt != BLOB_ABSENT).then(|| b.bytes())
+        (b.fmt() != BLOB_ABSENT).then(|| b.bytes())
     }
 
     /// The per-call scope the request stated ([`EXT_SCOPE`] in the call's extensions); `None` =
@@ -727,7 +727,7 @@ impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for OutboundReadySlot<T, L
         let Some(h) = instance.get() else {
             return Outcome::Fault;
         };
-        let ready = h.life().outbound().outbound_ready(input.handle);
+        let ready = h.life().outbound().outbound_ready(input.handle());
         out.set(|o| &o.ready, u32::from(ready));
         Outcome::Ready
     }
@@ -749,7 +749,7 @@ impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for FieldsSlot<T, L> {
         let Some(h) = instance.get() else {
             return Outcome::Fault;
         };
-        if !matches!(input.mode, MODE_OWN | MODE_PASSTHROUGH) {
+        if !matches!(input.mode(), MODE_OWN | MODE_PASSTHROUGH) {
             // A host bug: the plugin never reads a mode outside the vocabulary.
             return Outcome::Fault;
         }
@@ -791,10 +791,10 @@ impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for OutboundTick<T, L> {
             return Outcome::Fault;
         };
         let mut diags = Diags::default();
-        let next = h
-            .life()
-            .outbound()
-            .tick(input.now_ns, h.host(), instance.ticket(), &mut diags);
+        let next =
+            h.life()
+                .outbound()
+                .tick(input.now_ns(), h.host(), instance.ticket(), &mut diags);
         diags.write(&mut out);
         out.set(|o| &o.next_tick_ns, next);
         Outcome::Ready
@@ -818,10 +818,10 @@ impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for OutboundDrive<T, L> {
             return Outcome::Fault;
         };
         // The driver ticket that woke (`DriveIn::driver`); the call's own when the host named none.
-        let driver = if input.driver.is_none() {
+        let driver = if input.driver().is_none() {
             instance.ticket()
         } else {
-            input.driver
+            input.driver()
         };
         let mut diags = Diags::default();
         let driven = h.life().outbound().drive(h.host(), driver, &mut diags);
@@ -856,7 +856,7 @@ impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for OutboundCancel<T, L> {
     ) -> Outcome {
         let disposition = instance
             .get()
-            .map_or(L::CANCEL, |h| h.life().outbound().cancel(input.ticket));
+            .map_or(L::CANCEL, |h| h.life().outbound().cancel(input.ticket()));
         out.set(|o| &o.disposition, disposition);
         Outcome::Ready
     }

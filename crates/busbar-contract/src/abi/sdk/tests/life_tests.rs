@@ -121,11 +121,11 @@ impl SafeSlot for Resolve {
             // parked state. In a RESUME: whether its op's `u64` came back (another type never
             // does: FAULT if it did). Fresh on a ticket, by `deadline_class`: park and pend (0),
             // park and FAIL (1), or pend having parked nothing (2).
-            if input.head.ticket.is_none() {
+            if input.head().ticket().is_none() {
                 out.set(|o| &o.error_kind, i.parked_count() as u32);
                 return Outcome::Ready;
             }
-            if input.head.flags & FLAG_RESUME != 0 {
+            if input.head().flags() & FLAG_RESUME != 0 {
                 if i.resume::<String>().is_some() {
                     return Outcome::Fault;
                 }
@@ -133,7 +133,7 @@ impl SafeSlot for Resolve {
                 out.set(|o| &o.error_kind, u32::try_from(found).unwrap_or(0));
                 return Outcome::Ready;
             }
-            return match input.head.deadline_class {
+            return match input.head().deadline_class() {
                 0 => {
                     i.park(7_u64);
                     Outcome::Pending

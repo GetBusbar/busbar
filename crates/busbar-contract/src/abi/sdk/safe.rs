@@ -355,7 +355,7 @@ pub trait SafeSlot {
 ///     type Out = OpenOut;
 ///     type State = State;
 ///     fn call(i: Instance<'_, State>, input: Lent<'_, OpenIn>, _: Out<'_, OpenOut>) -> Outcome {
-///         i.open(State(input.field(|x| &x.settings).bytes().len() as u64));
+///         i.open(State(input.settings().bytes().len() as u64));
 ///         Outcome::Ready
 ///     }
 /// }

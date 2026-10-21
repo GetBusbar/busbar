@@ -428,7 +428,7 @@ fn text_of(l: Lent<'_, AbiStr>) -> Result<&str, Text> {
 }
 
 fn opt_text(l: Lent<'_, AbiStr>) -> Result<Option<&str>, Text> {
-    if l.ptr.is_null() {
+    if l.is_absent() {
         return Ok(None);
     }
     text_of(l).map(Some)
@@ -612,9 +612,9 @@ fn plane_record(row: Lent<'_, PlaneRecordRow>) -> Result<PlaneRecordRef<'_>, Tex
         kind: text_of(row.field(|r| &r.kind))?,
         id: text_of(row.field(|r| &r.id))?,
         parent: opt_text(row.field(|r| &r.parent))?,
-        seq: row.seq,
-        ts: row.ts,
-        disposition: if row.disposition == DISPOSITION_TERMINAL {
+        seq: row.seq(),
+        ts: row.ts(),
+        disposition: if row.disposition() == DISPOSITION_TERMINAL {
             PlaneDisposition::Terminal
         } else {
             PlaneDisposition::Active
@@ -650,18 +650,18 @@ fn cell_key<'a>(
 }
 
 fn unit_cell(c: Lent<'_, UnitCell>) -> Result<Cell<'_>, Text> {
-    if c.amount == 0 {
+    if c.amount() == 0 {
         return Err(Text::Fixed("a reserve cell's amount is 0"));
     }
     Ok(Cell {
         key: cell_key(
             c.field(|c| &c.bucket),
             c.field(|c| &c.pool),
-            c.dimension,
+            c.dimension(),
             c.field(|c| &c.class_key),
-            c.window_start,
+            c.window_start(),
         )?,
-        amount: c.amount,
+        amount: c.amount(),
     })
 }
 
@@ -670,12 +670,12 @@ fn window_cap(c: Lent<'_, WindowCap>) -> Result<Cap<'_>, Text> {
         key: cell_key(
             c.field(|c| &c.bucket),
             c.field(|c| &c.pool),
-            c.dimension,
+            c.dimension(),
             c.field(|c| &c.class_key),
-            c.window_start,
+            c.window_start(),
         )?,
-        cap: c.cap,
-        config_gen: c.config_gen,
+        cap: c.cap(),
+        config_gen: c.config_gen(),
     })
 }
 
@@ -727,7 +727,7 @@ impl Extend<u64> for ReleasedInto<'_> {
             let b = self
                 .items
                 .get(self.buf.asked())
-                .map_or(b, |it| b.min(it.unspent));
+                .map_or(b, |it| b.min(it.unspent()));
             self.buf.push(b);
         }
     }
@@ -912,7 +912,7 @@ slot!(
             .leases
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .remove(&i.lease);
+            .remove(&i.lease());
         if held.is_some() {
             Outcome::Ready
         } else {
@@ -971,14 +971,14 @@ slot!(
 slot!(
     /// `list_keys_since` (slot 5).
     ListKeysSince(U64In, LeasedListOut) |s, i, o, cx| {
-        listed(s, o, step!(o, s.store.list_keys_since(cx, i.value)), false)
+        listed(s, o, step!(o, s.store.list_keys_since(cx, i.value())), false)
     }
 );
 slot!(
     /// `get_usage` (slot 6): an untouched cell is the empty ledger, FOUND.
     GetUsage(WindowIn, LeasedBlobOut) |s, i, o, cx| {
         let bucket = match text_of(i.field(|i| &i.bucket)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        match step!(o, s.store.get_usage(cx, bucket, i.window_start)) {
+        match step!(o, s.store.get_usage(cx, bucket, i.window_start())) {
             Ok(l) => lease_one(s, o, Some(to_json(&l)), false),
             Err(e) => failed(s, o, e.0),
         }
@@ -989,7 +989,7 @@ slot!(
     PutUsage(PutUsageIn, OutHead) |s, i, o, cx| {
         let bucket = match text_of(i.field(|i| &i.bucket)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match json::<UsageLedger>(i.field(|i| &i.ledger)) {
-            Ok(l) => done(s, o, step!(o, s.store.put_usage(cx, bucket, i.window_start, &l))),
+            Ok(l) => done(s, o, step!(o, s.store.put_usage(cx, bucket, i.window_start(), &l))),
             Err(e) => refused(s, o, e),
         }
     }
@@ -1000,7 +1000,7 @@ slot!(
         let cell = i.field(|i| &i.cell);
         let bucket = match text_of(cell.field(|c| &c.bucket)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match json::<UsageDelta>(cell.field(|c| &c.delta)) {
-            Ok(d) => op_answer(s, o, step!(o, s.store.add_usage_op(cx, i.op_id, bucket, cell.window_start, &d))),
+            Ok(d) => op_answer(s, o, step!(o, s.store.add_usage_op(cx, i.op_id(), bucket, cell.window_start(), &d))),
             Err(e) => refused(s, o, e),
         }
     }
@@ -1009,7 +1009,7 @@ slot!(
     /// `add_metering` (slot 9), deduped on its `op_id`.
     AddMetering(OpBlobIn, OutHead) |s, i, o, cx| {
         match json::<MeteringDelta>(i.field(|i| &i.record)) {
-            Ok(d) => op_answer(s, o, step!(o, s.store.add_metering_op(cx, i.op_id, &d))),
+            Ok(d) => op_answer(s, o, step!(o, s.store.add_metering_op(cx, i.op_id(), &d))),
             Err(e) => refused(s, o, e),
         }
     }
@@ -1017,13 +1017,13 @@ slot!(
 slot!(
     /// `list_metering` (slot 10).
     ListMetering(U64In, LeasedListOut) |s, i, o, cx| {
-        listed(s, o, step!(o, s.store.list_metering(cx, i.value)), false)
+        listed(s, o, step!(o, s.store.list_metering(cx, i.value())), false)
     }
 );
 slot!(
     /// `purge_windows_before` (slot 11).
     PurgeWindowsBefore(U64In, CountOut) |s, i, o, cx| {
-        match step!(o, s.store.purge_windows_before(cx, i.value)) {
+        match step!(o, s.store.purge_windows_before(cx, i.value())) {
             Ok(n) => { o.count = n; Outcome::Ready }
             Err(e) => failed(s, o, e.0),
         }
@@ -1089,14 +1089,14 @@ slot!(
 slot!(
     /// `list_credentials_since` (slot 18): secret blobs.
     ListCredentialsSince(U64In, LeasedListOut) |s, i, o, cx| {
-        listed(s, o, step!(o, s.store.list_credentials_since(cx, i.value)), true)
+        listed(s, o, step!(o, s.store.list_credentials_since(cx, i.value())), true)
     }
 );
 slot!(
     /// `append_audit` (slot 19), deduped on its `op_id`.
     AppendAudit(OpBlobIn, OutHead) |s, i, o, cx| {
         match json::<AuditRecord>(i.field(|i| &i.record)) {
-            Ok(a) => op_answer(s, o, step!(o, s.store.append_audit_op(cx, i.op_id, &a))),
+            Ok(a) => op_answer(s, o, step!(o, s.store.append_audit_op(cx, i.op_id(), &a))),
             Err(e) => refused(s, o, e),
         }
     }
@@ -1127,7 +1127,7 @@ slot!(
 slot!(
     /// `list_audit_tail` (slot 23).
     ListAuditTail(U64In, LeasedListOut) |s, i, o, cx| {
-        listed(s, o, step!(o, s.store.list_audit_tail(cx, i.value)), false)
+        listed(s, o, step!(o, s.store.list_audit_tail(cx, i.value())), false)
     }
 );
 
@@ -1157,7 +1157,7 @@ slot!(
     /// `append_plane_record` (slot 26), deduped on its `op_id`.
     AppendPlaneRecord(AppendPlaneRecordIn, OutHead) |s, i, o, cx| {
         match plane_record(i.field(|i| &i.record)) {
-            Ok(r) => op_answer(s, o, step!(o, s.store.append_plane_record_op(cx, i.op_id, r))),
+            Ok(r) => op_answer(s, o, step!(o, s.store.append_plane_record_op(cx, i.op_id(), r))),
             Err(e) => refused(s, o, e),
         }
     }
@@ -1166,7 +1166,7 @@ slot!(
     /// `list_plane_records` (slot 27): bodies into the host's blobs.
     ListPlaneRecords(ListPlaneRecordsIn, HostListOut) |s, i, o, cx| {
         let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        let selector = match i.selector {
+        let selector = match i.selector() {
             SELECT_ALL => PlaneSelector::All,
             SELECT_PARENT => match text_of(i.field(|i| &i.parent)) {
                 Ok(p) => PlaneSelector::Parent(p.into()),
@@ -1200,7 +1200,7 @@ slot!(
     /// `purge_plane_records_before` (slot 29).
     PurgePlaneRecordsBefore(KindBeforeIn, CountOut) |s, i, o, cx| {
         let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        match step!(o, s.store.purge_plane_records_before(cx, kind, i.before)) {
+        match step!(o, s.store.purge_plane_records_before(cx, kind, i.before())) {
             Ok(n) => { o.count = n; Outcome::Ready }
             Err(e) => failed(s, o, e.0),
         }
@@ -1221,7 +1221,7 @@ slot!(
     RedeemPlaneToken(TokenIn, VerdictOut) |s, i, o, cx| {
         let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         let token = match text_of(i.field(|i| &i.token)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        match step!(o, s.store.redeem_plane_token(cx, kind, token, i.expires_at, i.now)) {
+        match step!(o, s.store.redeem_plane_token(cx, kind, token, i.expires_at(), i.now())) {
             Ok(y) => { o.verdict = if y { VERDICT_YES } else { VERDICT_NO }; Outcome::Ready }
             Err(e) => failed(s, o, e.0),
         }
@@ -1232,7 +1232,7 @@ slot!(
     PlaneTokenLive(TokenIn, VerdictOut) |s, i, o, cx| {
         let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         let token = match text_of(i.field(|i| &i.token)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        match step!(o, s.store.plane_token_live(cx, kind, token, i.expires_at, i.now)) {
+        match step!(o, s.store.plane_token_live(cx, kind, token, i.expires_at(), i.now())) {
             Ok(y) => { o.verdict = if y { VERDICT_YES } else { VERDICT_NO }; Outcome::Ready }
             Err(e) => failed(s, o, e.0),
         }
@@ -1252,7 +1252,7 @@ slot!(
                 Err(e) => return refused(s, o, e),
             }
         }
-        match step!(o, s.store.append_batch(cx, i.op_id, stream, &records)) {
+        match step!(o, s.store.append_batch(cx, i.op_id(), stream, &records)) {
             Ok(h) => { o.seq = h.seq; o.epoch = h.epoch; Outcome::Ready }
             Err(OpRefused::Conflict) => conflict(o),
             Err(OpRefused::Failed(t)) => failed(s, o, t),
@@ -1279,7 +1279,7 @@ slot!(
         }
         let mut grants = GrantsInto(grants_buf);
         let cells = cells_in.iter().filter_map(|c| unit_cell(c).ok()); // every one decodes
-        match step!(o, s.store.reserve(cx, i.op_id, i.epoch, cells, &mut grants)) {
+        match step!(o, s.store.reserve(cx, i.op_id(), i.epoch(), cells, &mut grants)) {
             Ok(()) if grants.0.asked() == cells_in.len() => {
                 o.grants_len = grants.0.written();
                 o.reason = RESERVE_OK;
@@ -1312,8 +1312,8 @@ slot!(
         }
         // The items read in place, the amounts straight into the host's array: nothing allocated.
         let mut released = ReleasedInto { items: items_in, buf: released_buf };
-        let items = items_in.iter().map(|it| (it.slice_id, it.unspent));
-        match step!(o, s.store.slice_release(cx, i.op_id, i.epoch, items, &mut released)) {
+        let items = items_in.iter().map(|it| (it.slice_id(), it.unspent()));
+        match step!(o, s.store.slice_release(cx, i.op_id(), i.epoch(), items, &mut released)) {
             Ok(()) if released.buf.asked() == items_in.len() => {
                 o.released_len = released.buf.written();
                 Outcome::Ready
@@ -1364,7 +1364,7 @@ slot!(
     SessionPut(SessionPutIn, OutHead) |s, i, o, cx| {
         let node = match text_of(i.field(|i| &i.node)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         let principal = match text_of(i.field(|i| &i.principal)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        match step!(o, s.store.session_put(cx, i.session, node, principal)) {
+        match step!(o, s.store.session_put(cx, i.session(), node, principal)) {
             Ok(()) => Outcome::Ready,
             Err(e) => failed(s, o, e),
         }
@@ -1373,7 +1373,7 @@ slot!(
 slot!(
     /// `session_remove` (slot 38).
     SessionRemove(U64In, OutHead) |s, i, o, cx| {
-        match step!(o, s.store.session_remove(cx, i.value)) {
+        match step!(o, s.store.session_remove(cx, i.value())) {
             Ok(()) => Outcome::Ready,
             Err(e) => failed(s, o, e),
         }
@@ -1420,9 +1420,9 @@ slot!(
     /// `record_scan` (slot 42): entries into the host's records; `limit` 0 is nothing.
     RecordScan(RecordScanIn, HostListOut) |s, i, o, cx| {
         let schema = match text_of(i.field(|i| &i.schema)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        match step!(o, s.store.record_scan(cx, schema, i.field(|i| &i.prefix).bytes(), i.limit)) {
+        match step!(o, s.store.record_scan(cx, schema, i.field(|i| &i.prefix).bytes(), i.limit())) {
             Ok(rows) => {
-                let rows = &rows[..rows.len().min(i.limit as usize)];
+                let rows = &rows[..rows.len().min(i.limit() as usize)];
                 let runs = rows.iter().map(|(k, v)| [k.as_slice(), v.as_slice()]);
                 let host = i.field(|i| &i.out);
                 list_into(o, host.items(), host.field(|h| &h.bytes).ptr(), runs, |_, [k, v]| {
@@ -1443,11 +1443,11 @@ slot!(
         for c in i.cells().iter() {
             let bucket = match text_of(c.field(|c| &c.bucket)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
             match json::<UsageDelta>(c.field(|c| &c.delta)) {
-                Ok(d) => cells.push((bucket, c.window_start, d)),
+                Ok(d) => cells.push((bucket, c.window_start(), d)),
                 Err(e) => return refused(s, o, e),
             }
         }
-        op_answer(s, o, step!(o, s.store.add_usage_batch(cx, i.op_id, &cells)))
+        op_answer(s, o, step!(o, s.store.add_usage_batch(cx, i.op_id(), &cells)))
     }
 );
 slot!(
@@ -1460,7 +1460,7 @@ slot!(
                 Err(e) => return refused(s, o, e),
             }
         }
-        op_answer(s, o, step!(o, s.store.add_metering_batch(cx, i.op_id, &rows)))
+        op_answer(s, o, step!(o, s.store.add_metering_batch(cx, i.op_id(), &rows)))
     }
 );
 slot!(
@@ -1473,7 +1473,7 @@ slot!(
                 Err(e) => return refused(s, o, e),
             }
         }
-        op_answer(s, o, step!(o, s.store.append_audit_batch(cx, i.op_id, &rows)))
+        op_answer(s, o, step!(o, s.store.append_audit_batch(cx, i.op_id(), &rows)))
     }
 );
 slot!(
@@ -1486,7 +1486,7 @@ slot!(
                 Err(e) => return refused(s, o, e),
             }
         }
-        match step!(o, s.store.window_caps(cx, i.op_id, &caps)) {
+        match step!(o, s.store.window_caps(cx, i.op_id(), &caps)) {
             Ok(()) => Outcome::Ready,
             Err(CapsRefused::CapConflict { index }) => {
                 o.error = s.text(Text::render(format_args!("{index}: {DIAG_CAP_CONFLICT}")));

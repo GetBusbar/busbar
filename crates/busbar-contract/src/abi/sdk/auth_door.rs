@@ -53,39 +53,39 @@ impl<'a> VerifyView<'a> {
     #[must_use]
     pub fn credential(&self) -> Option<&'a [u8]> {
         let c = self.input.field(|i| &i.credential);
-        (c.fmt != BLOB_ABSENT && !c.ptr.is_null()).then(|| c.bytes())
+        (!c.is_absent()).then(|| c.bytes())
     }
 
     /// The point this call is made at; `None` for a value outside the vocabulary.
     #[must_use]
     pub fn point(&self) -> Option<AuthPoint> {
-        AuthPoint::from_bit(self.input.point)
+        AuthPoint::from_bit(self.input.point())
     }
 
     /// The connection the request arrived on.
     #[must_use]
     pub fn conn(&self) -> u64 {
-        self.input.conn
+        self.input.conn()
     }
 
     /// The unit the kernel minted for the request; `0` at [`AuthPoint::Peer`].
     #[must_use]
     pub fn unit(&self) -> u64 {
-        self.input.unit
+        self.input.unit()
     }
 
     /// The peer facts; `None` = the host lent none (every point but [`AuthPoint::Peer`]).
     #[must_use]
     pub fn peer(&self) -> Option<&'a [u8]> {
         let b = self.input.field(|i| &i.peer);
-        (b.fmt != BLOB_ABSENT).then(|| b.bytes())
+        (b.fmt() != BLOB_ABSENT).then(|| b.bytes())
     }
 
     /// The whole body; `None` = the host lent none (every point but [`AuthPoint::HeadBody`]).
     #[must_use]
     pub fn body(&self) -> Option<&'a [u8]> {
         let b = self.input.field(|i| &i.body);
-        (b.fmt != BLOB_ABSENT).then(|| b.bytes())
+        (b.fmt() != BLOB_ABSENT).then(|| b.bytes())
     }
 
     /// The field lines lent, in order: (name, value).
@@ -108,7 +108,7 @@ impl<'a> VerifyView<'a> {
                     .eq_ignore_ascii_case(name.as_bytes())
             })
             .map(|c| c.field(|c| &c.value))
-            .filter(|v| v.fmt != BLOB_ABSENT && !v.ptr.is_null())
+            .filter(|v| !v.is_absent())
             .map(Lent::<Blob>::bytes)
     }
 
@@ -134,13 +134,13 @@ impl<'a> VerifyView<'a> {
     #[must_use]
     pub fn query(&self) -> Option<&'a [u8]> {
         let q = self.input.field(|i| &i.request.query);
-        (!q.ptr.is_null()).then(|| q.bytes())
+        (!q.is_absent()).then(|| q.bytes())
     }
 
     /// Wall-clock seconds, read once by the host for this call.
     #[must_use]
     pub fn timestamp(&self) -> u64 {
-        self.input.request.timestamp
+        self.input.request().timestamp()
     }
 }
 

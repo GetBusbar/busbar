@@ -520,7 +520,7 @@ macro_rules! hyper_io {
             /// (`YIELD_STREAM_FULL`): the host holds that stream's emits until a
             /// [`Piece::writable`] or the stream's last piece. Set after [`fill`], on `emit` only.
             pub fn mark_stream_full(o: &mut Out<'_, FramerOut>) {
-                let mut y = o.get().yielded;
+                let mut y = o.get(|x| &x.yielded);
                 y.flags |= YIELD_STREAM_FULL;
                 o.set(|x| &x.yielded, y);
             }
@@ -555,7 +555,7 @@ macro_rules! hyper_io {
                 let mut wire_buf = sink.wire();
                 let wire = f.take_wire(wire_buf.cap());
                 wire_buf.extend(&wire);
-                let mut y = o.get().yielded;
+                let mut y = o.get(|x| &x.yielded);
                 y.wire_len = wire_buf.written() as u64;
                 let (mut frame, mut pieces): (HostBuf<'_, u8>, HostBuf<'_, FramePiece>) =
                     (sink.frame(), sink.pieces());

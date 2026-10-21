@@ -205,7 +205,10 @@ impl Leases {
 
     /// Hold `bytes` under a new lease named in `head.lease`; the blob of `fmt` naming them. Empty
     /// bytes lease nothing and answer an absent blob.
-    pub fn blob(&self, head: &mut OutHead, bytes: Vec<u8>, fmt: u32) -> Blob {
+    ///
+    /// The SDK's own (status row 194): a raw value naming leased memory is not handed to safe code,
+    /// which leases through [`Out::lease`](super::Out::lease) and its siblings.
+    pub(crate) fn blob(&self, head: &mut OutHead, bytes: Vec<u8>, fmt: u32) -> Blob {
         if bytes.is_empty() {
             return absent();
         }
@@ -222,7 +225,10 @@ impl Leases {
 
     /// As [`Leases::blob`], for secret material: the blob is flagged secret and the bytes are
     /// zeroized when the lease is released (or the instance closes).
-    pub fn secret_blob(&self, head: &mut OutHead, bytes: Vec<u8>, fmt: u32) -> Blob {
+    ///
+    /// The SDK's own (status row 194): a raw value naming leased memory is not handed to safe code,
+    /// which leases through [`Out::lease`](super::Out::lease) and its siblings.
+    pub(crate) fn secret_blob(&self, head: &mut OutHead, bytes: Vec<u8>, fmt: u32) -> Blob {
         if bytes.is_empty() {
             return absent();
         }
@@ -240,7 +246,10 @@ impl Leases {
 
     /// Hold `text` under a new lease named in `head.lease`; the string naming it. Empty text
     /// leases nothing and answers the empty string.
-    pub fn str(&self, head: &mut OutHead, text: String) -> AbiStr {
+    ///
+    /// The SDK's own (status row 194): a raw value naming leased memory is not handed to safe code,
+    /// which leases through [`Out::lease`](super::Out::lease) and its siblings.
+    pub(crate) fn str(&self, head: &mut OutHead, text: String) -> AbiStr {
         if text.is_empty() {
             return AbiStr {
                 ptr: std::ptr::null(),

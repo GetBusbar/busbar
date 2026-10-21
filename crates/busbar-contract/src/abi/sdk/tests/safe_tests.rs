@@ -97,7 +97,7 @@ mod plugin {
         }
     });
     safe_slot!(Open, Probe, OpenIn, OpenOut, |i, input, o| {
-        let s = input.field(|x| &x.settings);
+        let s = input.settings().get();
         // The test lends its counter's address as the settings pointer.
         // SAFETY: the test's leaked, `'static` counter.
         let drops = unsafe { &*s.ptr.cast::<AtomicUsize>() };
@@ -144,7 +144,7 @@ mod plugin {
         Outcome::Ready
     });
     safe_slot!(Drive, Probe, DriveIn, OutHead, |i, input, o| {
-        match input.head.flags {
+        match input.head().flags() {
             DRIVE_LOCAL_LEASE => {
                 let local = crate::abi::sdk::life::Leases::default();
                 o.lease_str(|o| &o.error, &local, "a reason".to_string());
@@ -165,7 +165,7 @@ mod plugin {
         Outcome::Ready
     });
     safe_slot!(Close, Probe, InHead, OutHead, |_i, input, _o| {
-        if input.flags == CLOSE_FAILS {
+        if input.flags() == CLOSE_FAILS {
             Outcome::Failed
         } else {
             Outcome::Ready

@@ -549,25 +549,50 @@ impl<'a, T: AbiOut> Out<'a, T> {
         self.out
     }
 
-    /// Read the `out`.
+    /// Read the pointer-free field `pick` names (a [`Scalar`]), as written so far. The `out` is
+    /// SEALED (status row 194): no `&T` reaches safe code, so a string or payload an SDK writer
+    /// named (a host buffer lent for the call, a leased one) is never copied out of it.
+    ///
+    /// # Panics
+    /// When `pick` answers a reference that is not a field of the `out` (the door answers FAULT).
     #[must_use]
-    pub fn get(&self) -> &T {
-        self.out
+    pub fn get<F: Scalar>(&self, pick: impl FnOnce(&T) -> &F) -> F {
+        let at = Self::offset(pick);
+        // SAFETY: `at` is the offset of a field of type `F` inside a `T` (checked by `offset`),
+        // and `self.out` is a live `T`; `read_unaligned` needs no alignment and `F` is `Copy`.
+        unsafe {
+            ptr::from_ref::<T>(self.out)
+                .cast::<u8>()
+                .add(at)
+                .cast::<F>()
+                .read_unaligned()
+        }
     }
 
-    /// The address of the field `pick` names, checked to lie inside the `out`.
-    fn at<F>(&mut self, pick: impl FnOnce(&T) -> &F) -> *mut F {
-        let base = ptr::from_ref::<T>(self.out) as usize;
-        let at = ptr::from_ref(pick(self.out)) as usize;
+    /// The byte offset of the field `pick` names, checked to lie inside a `T`. `pick` is handed a
+    /// ZEROED `T`, never the `out` itself (status row 194): it learns where a field is and reads
+    /// nothing the call wrote.
+    fn offset<F>(pick: impl FnOnce(&T) -> &F) -> usize {
+        // SAFETY: `T: AbiOut`, whose contract is that every initialized bit pattern, all-zero
+        // included, is a valid `T`.
+        let blank: T = unsafe { std::mem::zeroed() };
+        let base = ptr::from_ref::<T>(&blank) as usize;
+        let at = ptr::from_ref(pick(&blank)) as usize;
         assert!(
             at >= base && at.saturating_add(size_of::<F>()) <= base + size_of::<T>(),
             "Out: the picked reference is not a field of the out"
         );
+        at - base
+    }
+
+    /// The address of the field `pick` names, checked to lie inside the `out`.
+    fn at<F>(&mut self, pick: impl FnOnce(&T) -> &F) -> *mut F {
+        let at = Self::offset(pick);
         // The same allocation as `self.out`, derived from the `&mut` so writing through it is
         // allowed.
         ptr::from_mut::<T>(self.out)
             .cast::<u8>()
-            .wrapping_add(at - base)
+            .wrapping_add(at)
             .cast::<F>()
     }
 

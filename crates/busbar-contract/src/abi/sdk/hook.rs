@@ -46,7 +46,7 @@ use crate::abi::hook::{
     VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_REJECT, VERB_RESTRICT, VERB_REWRITE,
     VIEW_HAS_BUDGET_REMAINING, VIEW_HAS_PROMPT, VIEW_HAS_USER,
 };
-use crate::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON};
+use crate::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome, BLOB_JSON};
 use crate::abi::mechanism::door::{KindTailHead, Statement};
 use crate::abi::sdk::exchange::Op;
 use crate::abi::sdk::life::{Held, Life, Refreshed, Refusal};
@@ -66,7 +66,7 @@ use crate::signal::{Signal, SignalBag, SignalValue};
 /// A NULL string is absent; a present one is BORROWED from the host's view (lossily UTF-8: a copy
 /// only when the bytes are not valid UTF-8).
 fn text(s: Lent<'_, AbiStr>) -> Option<Cow<'_, str>> {
-    (!s.ptr.is_null()).then(|| String::from_utf8_lossy(s.bytes()))
+    (!s.is_absent()).then(|| String::from_utf8_lossy(s.bytes()))
 }
 
 fn text_or_empty(s: Lent<'_, AbiStr>) -> Cow<'_, str> {
@@ -79,7 +79,7 @@ fn signal_value(e: Lent<'_, SignalEntry>) -> Option<SignalValue> {
     // SAFETY: `tag` names the union's live field (the host writes the tag with the value, and
     // `check_*` rejects no tag here: an unknown tag is skipped, never read).
     Some(unsafe {
-        match e.tag {
+        match e.tag() {
             SIGNAL_TAG_U64 => SignalValue::U64(v.u64_),
             SIGNAL_TAG_I64 => SignalValue::I64(v.i64_),
             SIGNAL_TAG_F64 => SignalValue::F64(v.f64_),
@@ -97,7 +97,7 @@ fn signal_value(e: Lent<'_, SignalEntry>) -> Option<SignalValue> {
 fn bag(list: LentList<'_, SignalEntry>) -> SignalBag {
     let mut b = SignalBag::new();
     for e in list.iter() {
-        if let (Some(sig), Some(v)) = (Signal::ALL.get(e.id as usize).copied(), signal_value(e)) {
+        if let (Some(sig), Some(v)) = (Signal::ALL.get(e.id() as usize).copied(), signal_value(e)) {
             b.push(sig, v);
         }
     }
@@ -130,7 +130,7 @@ fn prompt(v: Lent<'_, PromptView>) -> Prompt<'_> {
                 )
             })
             .collect(),
-        body: (!body.ptr.is_null() && body.fmt != BLOB_ABSENT).then(|| body.bytes()),
+        body: (!body.is_absent()).then(|| body.bytes()),
     }
 }
 
@@ -242,50 +242,50 @@ impl<'a> Decoded<'a> {
             .iter()
             .zip(input.candidate_dynamics().iter())
             .map(|(s, d)| DecodedCandidate {
-                idx: s.idx as usize,
+                idx: s.idx() as usize,
                 model: text_or_empty(s.field(|s| &s.model)),
                 provider: text_or_empty(s.field(|s| &s.provider)),
-                weight: s.weight,
-                context_max: (s.present & CANDIDATE_HAS_CONTEXT_MAX != 0)
-                    .then_some(s.context_max as usize),
-                tier: if s.present & CANDIDATE_HAS_TIER != 0 {
+                weight: s.weight(),
+                context_max: (s.present() & CANDIDATE_HAS_CONTEXT_MAX != 0)
+                    .then_some(s.context_max() as usize),
+                tier: if s.present() & CANDIDATE_HAS_TIER != 0 {
                     text(s.field(|s| &s.tier))
                 } else {
                     None
                 },
-                cost_per_mtok: (s.present & CANDIDATE_HAS_COST_PER_MTOK != 0)
-                    .then_some(s.cost_per_mtok),
+                cost_per_mtok: (s.present() & CANDIDATE_HAS_COST_PER_MTOK != 0)
+                    .then_some(s.cost_per_mtok()),
                 tags: s.tags().iter().map(text_or_empty).collect(),
-                latency_ms: (d.present & CANDIDATE_HAS_LATENCY_MS != 0).then_some(d.latency_ms),
-                available_concurrency: d.available_concurrency as usize,
-                budget_remaining: (d.present & CANDIDATE_HAS_BUDGET_REMAINING != 0)
-                    .then_some(d.budget_remaining),
-                rate_headroom: (d.present & CANDIDATE_HAS_RATE_HEADROOM != 0)
-                    .then_some(d.rate_headroom),
+                latency_ms: (d.present() & CANDIDATE_HAS_LATENCY_MS != 0).then_some(d.latency_ms()),
+                available_concurrency: d.available_concurrency() as usize,
+                budget_remaining: (d.present() & CANDIDATE_HAS_BUDGET_REMAINING != 0)
+                    .then_some(d.budget_remaining()),
+                rate_headroom: (d.present() & CANDIDATE_HAS_RATE_HEADROOM != 0)
+                    .then_some(d.rate_headroom()),
                 signals: bag(d.signals()),
             })
             .collect();
         let user = input.field(|i| &i.user);
         Self {
-            request_id: r.request_id,
+            request_id: r.request_id(),
             pool: text_or_empty(r.field(|r| &r.pool)),
             ingress_dialect: text_or_empty(r.field(|r| &r.ingress_dialect)),
-            message_count: r.message_count,
-            total_chars: r.total_chars,
-            max_tokens: (r.flags & REQUEST_HAS_MAX_TOKENS != 0).then_some(r.max_tokens),
-            has_tools: r.flags & REQUEST_HAS_TOOLS != 0,
-            stream: r.flags & REQUEST_STREAM != 0,
+            message_count: r.message_count(),
+            total_chars: r.total_chars(),
+            max_tokens: (r.flags() & REQUEST_HAS_MAX_TOKENS != 0).then_some(r.max_tokens()),
+            has_tools: r.flags() & REQUEST_HAS_TOOLS != 0,
+            stream: r.flags() & REQUEST_STREAM != 0,
             signals: bag(r.signals()),
-            prompt: (input.present & VIEW_HAS_PROMPT != 0)
+            prompt: (input.present() & VIEW_HAS_PROMPT != 0)
                 .then(|| prompt(input.field(|i| &i.prompt))),
-            user: (input.present & VIEW_HAS_USER != 0).then(|| User {
+            user: (input.present() & VIEW_HAS_USER != 0).then(|| User {
                 key_id: text(user.field(|u| &u.key_id)),
                 key_name: text(user.field(|u| &u.key_name)),
                 user: text(user.field(|u| &u.user)),
             }),
             candidates,
-            budget_remaining: (input.present & VIEW_HAS_BUDGET_REMAINING != 0)
-                .then_some(input.budget_remaining),
+            budget_remaining: (input.present() & VIEW_HAS_BUDGET_REMAINING != 0)
+                .then_some(input.budget_remaining()),
             budget: input
                 .budget()
                 .iter()
@@ -293,14 +293,14 @@ impl<'a> Decoded<'a> {
                     bucket_id: text_or_empty(b.field(|b| &b.bucket_id)),
                     budget_group: text(b.field(|b| &b.budget_group)),
                     pool: text(b.field(|b| &b.pool)),
-                    spend_micros_at_current_rate: b.spend_micros_at_current_rate,
-                    remaining_micros: (b.present & BUDGET_HAS_REMAINING_MICROS != 0)
-                        .then_some(b.remaining_micros),
-                    window_start: b.window_start,
+                    spend_micros_at_current_rate: b.spend_micros_at_current_rate(),
+                    remaining_micros: (b.present() & BUDGET_HAS_REMAINING_MICROS != 0)
+                        .then_some(b.remaining_micros()),
+                    window_start: b.window_start(),
                     budget_period: text_or_empty(b.field(|b| &b.budget_period)),
                 })
                 .collect(),
-            session: (!r.session.ptr.is_null()).then(|| r.field(|r| &r.session).bytes()),
+            session: (!r.get().session.ptr.is_null()).then(|| r.session().bytes()),
         }
     }
 
@@ -429,34 +429,34 @@ impl<'a> DecodedTap<'a> {
     #[must_use]
     pub fn of(input: Lent<'a, NotifyIn>) -> Self {
         let s = input.field(|i| &i.stage);
-        let has = |bit: u32| s.stage_present & bit != 0;
+        let has = |bit: u32| s.stage_present() & bit != 0;
         let opt = |bit: u32, f: Lent<'a, AbiStr>| if has(bit) { text(f) } else { None };
         let stage = has(STAGE_HAS_PROJECTION).then(|| Stage {
-            at: match s.at {
+            at: match s.at() {
                 STAGE_AT_CANDIDATE => "candidate",
                 STAGE_AT_ROUTING => "routing",
                 _ => "response",
             },
             model: opt(STAGE_HAS_MODEL, s.field(|s| &s.model)),
-            attempt_number: has(STAGE_HAS_ATTEMPT_NUMBER).then_some(s.attempt_number),
+            attempt_number: has(STAGE_HAS_ATTEMPT_NUMBER).then_some(s.attempt_number()),
             remaining_candidates: has(STAGE_HAS_REMAINING_CANDIDATES)
-                .then_some(s.remaining_candidates as usize),
+                .then_some(s.remaining_candidates() as usize),
             previous_failure: opt(STAGE_HAS_PREVIOUS_FAILURE, s.field(|s| &s.previous_failure)),
             outcome: opt(STAGE_HAS_OUTCOME, s.field(|s| &s.outcome)),
-            status: has(STAGE_HAS_STATUS).then_some(s.status),
+            status: has(STAGE_HAS_STATUS).then_some(s.status()),
         });
         Self {
             request: Decoded {
-                request_id: s.request_id,
+                request_id: s.request_id(),
                 pool: text_or_empty(s.field(|s| &s.pool)),
                 ingress_dialect: text_or_empty(s.field(|s| &s.ingress_dialect)),
-                message_count: s.message_count,
-                total_chars: s.total_chars,
-                max_tokens: (s.flags & REQUEST_HAS_MAX_TOKENS != 0).then_some(s.max_tokens),
-                has_tools: s.flags & REQUEST_HAS_TOOLS != 0,
-                stream: s.flags & REQUEST_STREAM != 0,
+                message_count: s.message_count(),
+                total_chars: s.total_chars(),
+                max_tokens: (s.flags() & REQUEST_HAS_MAX_TOKENS != 0).then_some(s.max_tokens()),
+                has_tools: s.flags() & REQUEST_HAS_TOOLS != 0,
+                stream: s.flags() & REQUEST_STREAM != 0,
                 signals: bag(input.signals()),
-                prompt: (input.present & VIEW_HAS_PROMPT != 0)
+                prompt: (input.present() & VIEW_HAS_PROMPT != 0)
                     .then(|| prompt(input.field(|i| &i.prompt))),
                 user: None,
                 candidates: Vec::new(),
@@ -936,7 +936,7 @@ fn decide_in_breaks_a_rule(input: &DecideIn) -> bool {
 hook_op!(
     /// `decide`: PENDING while the hook waits on its exchange, re-entered on the wake.
     Decide, DecideIn, DecideOut, |held, i, input, out| {
-        if decide_in_breaks_a_rule(&input) {
+        if decide_in_breaks_a_rule(input.get()) {
             return Outcome::Fault;
         }
         let op = Op::new(&i, held.host());
@@ -953,7 +953,7 @@ hook_op!(
 hook_op!(
     /// `transform`: PENDING while the hook waits on its exchange, re-entered on the wake.
     Transform, DecideIn, TransformOut, |held, i, input, out| {
-        if decide_in_breaks_a_rule(&input) {
+        if decide_in_breaks_a_rule(input.get()) {
             return Outcome::Fault;
         }
         let op = Op::new(&i, held.host());
@@ -970,7 +970,7 @@ hook_op!(
 hook_op!(
     /// `notify`: PENDING while the hook waits on its exchange, re-entered on the wake.
     Notify, NotifyIn, OutHead, |held, i, input, _out| {
-        if check_notify_in(&input).is_err() {
+        if check_notify_in(input.get()).is_err() {
             return Outcome::Fault;
         }
         let op = Op::new(&i, held.host());
@@ -988,13 +988,13 @@ hook_op!(
         let Ok(serde_json::Value::Object(settings)) = serde_json::from_str::<serde_json::Value>(&text) else {
             return out.fail(Refusal::failed("settings: must be a JSON object"));
         };
-        if held.life().hook().configure(&settings, input.version) {
-            out.set(|o| &o.acked_version, input.version);
+        if held.life().hook().configure(&settings, input.version()) {
+            out.set(|o| &o.acked_version, input.version());
             Outcome::Ready
         } else {
             out.fail(Refusal::failed(format!(
                 "hook did not acknowledge settings_version {}",
-                input.version
+                input.version()
             )))
         }
     }
