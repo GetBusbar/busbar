@@ -2649,8 +2649,10 @@ pub const fn project_faults(outcome: super::mechanism::call::Outcome, faultable:
 /// zeroed it or as the plane wrote it for another outcome, never this mark.
 pub const PROJECT_FAULT_UNPARSEABLE: u32 = 1 << 31;
 
-/// WHETHER A `project` IS THE PLANE'S OWN FAULT OVER AN UNPARSEABLE BODY: [`Outcome::Fault`] with
-/// [`PROJECT_FAULT_UNPARSEABLE`] in `view.flags`. Where [`project_faults`] does not make it the
+/// WHETHER A `project` IS THE PLANE'S OWN FAULT OVER AN UNPARSEABLE BODY: [`Outcome::Fault`], the
+/// `out` head stating FAULT too (a door mirrors the outcome it answered; a READY answer the host's
+/// kind check refused states READY there), and [`PROJECT_FAULT_UNPARSEABLE`] in `view.flags`.
+/// Where [`project_faults`] does not make it the
 /// shared 500 (no rewrite configured or carried), the kernel's hooks judge the request as 1.5.5's
 /// judged a body it could not parse, a Null body. Every other FAULT fails closed.
 ///
@@ -2660,7 +2662,9 @@ pub const fn project_fault_unparseable(
     outcome: super::mechanism::call::Outcome,
     out: &ProjectOut,
 ) -> bool {
-    matches!(outcome, super::mechanism::call::Outcome::Fault)
+    use super::mechanism::call::{Outcome, RawOutcome};
+    matches!(outcome, Outcome::Fault)
+        && out.head.outcome.0 == RawOutcome::of(Outcome::Fault).0
         && out.view.flags == PROJECT_FAULT_UNPARSEABLE
 }
 

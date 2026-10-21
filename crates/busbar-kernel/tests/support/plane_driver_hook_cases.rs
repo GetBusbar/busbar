@@ -893,17 +893,18 @@ type Driven = (
 /// Drive one unit of `/unparseable` (the double answers FAULT to its every `project`) under
 /// `hooks`: the outcome, what was rendered, and how many attempts reached the far end.
 async fn unparseable_under(hooks: BoundHooks) -> Driven {
+    unparseable_over(hooks, Far::new(&["ok"], &[b"done"])).await
+}
+
+/// [`unparseable_under`], over `far`.
+async fn unparseable_over(hooks: BoundHooks, far: Far) -> Driven {
     let r = rig_with_hooks(
         Way::Double,
         BufferCaps::default(),
         Book::default(),
         Some(hooks),
     );
-    let (steps, far, caller) = (
-        TestUnits::passing(),
-        Far::new(&["ok"], &[b"done"]),
-        Caller::default(),
-    );
+    let (steps, caller) = (TestUnits::passing(), Caller::default());
     let units = r.driver.unit(
         &steps,
         &far,
@@ -985,7 +986,8 @@ async fn an_unparseable_body_with_only_a_policy_is_judged_as_a_null_body_and_ser
     let (seen, policy) = gate(None);
     let mut hooks = bound(Vec::new(), Vec::new());
     hooks.pool_policies.insert("pool-a".to_string(), policy);
-    let (outcome, rendered, sent, _) = unparseable_under(hooks).await;
+    let far = Far::new(&["ok"], &[b"done"]).naming_its_pool();
+    let (outcome, rendered, sent, _) = unparseable_over(hooks, far).await;
     assert!(matches!(outcome, Outcome::Completed), "{outcome:?}");
     assert_eq!(rendered, None, "nothing was refused");
     assert_eq!(sent, 1, "the body went through");
