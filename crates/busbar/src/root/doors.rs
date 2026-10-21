@@ -150,7 +150,7 @@ impl Live {
 /// is a plugin": every kind's `refresh` slot is called on an apply, as the planes' and the
 /// credentials' are): each live instance is refreshed with the applied `settings`
 /// ([`Dispatched::refresh`]). An instance that will not refresh keeps the settings it holds and
-/// keeps serving, and says why; the refusals are answered. A listener set change still applies on
+/// keeps serving; each refusal is answered, for the caller to log. A listener set change still applies on
 /// restart (THE DESIGN, the generations rule): a refresh binds nothing.
 pub fn refresh_live(settings: &busbar_contract::transport::TransportSettings) -> Vec<String> {
     refresh_named(settings, |_| true)
@@ -171,9 +171,6 @@ pub fn refresh_named(
     };
     live.iter()
         .filter_map(|l| l.refresh(settings).err())
-        .inspect(|why| {
-            tracing::warn!(error = %why, "a transport kept its settings across a config apply");
-        })
         .collect()
 }
 
