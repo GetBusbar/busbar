@@ -441,19 +441,15 @@ impl Durability {
     }
 
     /// What `/admin/verify` needs to walk every chain the store keeps, taken under the book's lock
-    /// so the walk itself runs without it: the store's calls, this node's id and the keys this
+    /// so the walk itself runs without it: the lane to the store, this node's id and the keys this
     /// node signs with. `None` on a book with no store behind it.
     #[must_use]
     pub fn stored_walk_inputs(
         &self,
-    ) -> Option<(
-        std::sync::Arc<dyn busbar_contract::store_calls::StoreCalls>,
-        u64,
-        busbar_kernel_audit::AuditKeySet,
-    )> {
+    ) -> Option<(JournalLane, u64, busbar_kernel_audit::AuditKeySet)> {
         let lane = self.lane.as_ref()?;
         Some((
-            lane.calls(),
+            lane.clone(),
             self.journal.node(),
             seal::keyset_of(&self.record),
         ))

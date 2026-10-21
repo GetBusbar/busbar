@@ -72,7 +72,7 @@ use busbar_contract::kinds::RecordBytes;
 use busbar_contract::store_calls::StoreCalls;
 use busbar_kernel_audit::{AuditChain, AuditKeySet, AuditRecord};
 
-use super::store_chain::{off_runtime, read_chain, wait_for};
+use super::store_chain::{off_runtime, read_chain, read_chain_beside, wait_for, JournalLane};
 
 /// The record schema of the node registry: host to node id.
 pub(super) const NODE_SCHEMA: &str = "busbar.node.v1";
@@ -797,9 +797,13 @@ pub struct StoredWalk {
 
 /// WALK EVERY CHAIN THE STORE KEEPS — every node the registry names, and `own` — verifying each
 /// journal chain and the audit records on it, signatures included, against `keys`. Off any runtime
-/// worker where one is waiting: this reads the whole of every chain.
+/// worker where one is waiting: this reads the whole of every chain. `own`'s chain is read beside
+/// `lane`, which may be putting to it ([`read_chain_beside`]): its record mid-put is not torn.
+/// Another node's chain has no lane here, so a record missing a part there is.
 #[must_use]
-pub fn walk_stored_chains(calls: &dyn StoreCalls, own: u64, keys: &AuditKeySet) -> StoredWalk {
+pub fn walk_stored_chains(lane: &JournalLane, own: u64, keys: &AuditKeySet) -> StoredWalk {
+    let calls = lane.calls();
+    let calls = calls.as_ref();
     off_runtime(|| {
         let mut walk = StoredWalk::default();
         let mut nodes = match registered(calls) {
@@ -814,7 +818,12 @@ pub fn walk_stored_chains(calls: &dyn StoreCalls, own: u64, keys: &AuditKeySet) 
         nodes.dedup();
         for node in nodes {
             walk.chains.push(node);
-            let records = match read_chain(calls, node) {
+            let read = if node == own {
+                read_chain_beside(lane, node)
+            } else {
+                read_chain(calls, node)
+            };
+            let records = match read {
                 Ok(records) => records,
                 Err(why) => {
                     walk.findings.push(format!("node {node}: {why}"));
