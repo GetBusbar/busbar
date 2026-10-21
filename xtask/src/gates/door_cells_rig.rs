@@ -73,6 +73,10 @@ pub const CELLS_STATEMENT: &str = "println!(\"cargo::metadata=cells={}\",PathBuf
                                    var(\"CARGO_MANIFEST_DIR\")?).join(\"tests/root/mod.rs\").\
                                    display());";
 
+/// The cells-path finding's item when the canonical statement holds and a `cargo:` key is built
+/// from a format argument (`cargo_key_unreadable`), so that rule is proven red on its own.
+const UNREADABLE_CARGO_KEY: &str = "build.rs sets a cargo: key built from a format argument";
+
 /// The cells-path finding's item.
 const ANOTHER_CELLS_PATH: &str =
     "build.rs states another cells path than the one canonical statement the gate reads";
@@ -465,8 +469,10 @@ pub fn stated_cells_problem(build: &str) -> Option<String> {
         .map(|(at, _)| at)
         .collect();
     let canonical = matches!(stated.as_slice(), [at] if runs_in_main(&code, *at));
-    (!canonical || code.matches("cells").count() != 1 || cargo_key_unreadable(&code))
-        .then(|| ANOTHER_CELLS_PATH.to_string())
+    if !canonical || code.matches("cells").count() != 1 {
+        return Some(ANOTHER_CELLS_PATH.to_string());
+    }
+    cargo_key_unreadable(&code).then(|| UNREADABLE_CARGO_KEY.to_string())
 }
 
 /// Does the statement at `at` run as a top-level statement of `fn main`: inside its body at depth
@@ -842,6 +848,17 @@ impl Gate for DoorCellsRigGate {
             "the canonical cells statement inside `if false {}` is RED: it never runs",
             rebuild(never_runs),
             vec![build, "another cells path"],
+        ));
+        // The canonical statement untouched and `cells` still named once: only the format-built key
+        // is wrong, so the red is `cargo_key_unreadable`'s alone (its own item).
+        plants.push((
+            ROW_CELLS_PATH,
+            "a cargo: key built from a format argument beside the canonical statement is RED",
+            rebuild(format!(
+                "{build_text}\nfn planted_key() {{\n    let key = concat!(\"ce\", \"lls\");\n    \
+                 println!(\"cargo::metadata={{}}=/elsewhere.rs\", key);\n}}\n"
+            )),
+            vec![build, UNREADABLE_CARGO_KEY],
         ));
         let mut report = one_abi::selftest(cx, self, &SPEC, plants);
         report.push(crate::gates::prove_rows_green(
