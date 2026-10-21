@@ -1679,10 +1679,6 @@ pub const SECTION_SCOPE: &str = busbar_contract::section::RESERVED_SECTION_KEYS[
 ///
 /// Called ONCE per config generation, from the App build. Resolution `dlopen`s the plugin; doing it
 /// per request would put a library load on a dispatch path.
-// Resolves the per-container gate chains for each installed protocol plane's registry; with none
-// installed no such registry is built, so it reads dead. Unconditional allow — the neutral seam
-// names no plane feature.
-#[allow(dead_code)]
 pub fn resolve_container_gates<'a>(
     containers: impl Iterator<Item = (&'a str, &'a [String])>,
     section: &[String],
@@ -1716,10 +1712,6 @@ pub fn resolve_container_gates<'a>(
 ///
 /// Called ONCE per config generation. Resolution `dlopen`s the plugin; doing it per request would put
 /// a library load on the dispatch path.
-// Resolves the per-container rewrite chains for each installed protocol plane's registry; with none
-// installed no such registry is built, so it reads dead. Unconditional allow — the neutral seam names
-// no plane feature.
-#[allow(dead_code)]
 #[allow(clippy::type_complexity)]
 pub fn resolve_container_rewrites<'a>(
     containers: impl Iterator<Item = (&'a str, &'a [String])>,

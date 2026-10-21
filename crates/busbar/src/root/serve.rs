@@ -1181,6 +1181,16 @@ impl busbar_kernel::plane_driver::HookBinder for LiveHooks {
 }
 
 impl HookStage {
+    /// A hook stage over `host` and `gov`, every other field in its idle state: what a test cell
+    /// builds without naming the stage's fields.
+    #[cfg(test)]
+    pub(crate) fn new(
+        host: busbar_kernel::plane_driver::GenerationHost,
+        gov: Arc<busbar_kernel::governance::GovState>,
+    ) -> Self {
+        Self { host, gov }
+    }
+
     /// The ROUTED-ORDER binder of the plane registered under `plane_key` whose dialects are
     /// `dialects`, in its tail's order: the deployment's global and per-pool hooks, and the
     /// plane's own section-level attach (`<section>.hooks:`, filed under its registry key), bound
