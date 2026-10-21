@@ -2418,11 +2418,11 @@ pub(crate) async fn restart(
 ///
 /// `config` is carried as a raw [`serde_json::Value`] and parsed by the SAME pre-pass boot runs
 /// (`busbar_kernel::config::deploy_from_deserializer`), exactly as [`ValidateConfigReq`] is: the
-/// plane sections (`tools`/`agents`/`streams`/…) are lifted before the frozen `deny_unknown_fields`
-/// `DeployCfg` parses the remainder. A plain-derived `DeployCfg` here refused every plane section as
-/// an unknown field, so a config that boots could not be applied (ARCHITECT, FLIP-A2A: apply accepts
-/// exactly the boot config shape, plane sections included, and they flow to each plane's refresh
-/// with no restart).
+/// plane sections (each linked plane's declared section key) are lifted before the frozen
+/// `deny_unknown_fields` `DeployCfg` parses the remainder. A plain-derived `DeployCfg` here refused
+/// every plane section as an unknown field, so a config that boots could not be applied (ARCHITECT,
+/// agent-plane flip: apply accepts exactly the boot config shape, plane sections included, and they
+/// flow to each plane's refresh with no restart).
 #[derive(serde::Deserialize)]
 pub(crate) struct ApplyConfigReq {
     /// The deploy config (operator-owned `config.yaml` shape), pre-lift.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! MEMBER PROGRAMS through the connection table (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)): one
+//! MEMBER PROGRAMS through the connection table (ARCHITECT round 5 Q-L3B-PROGRAM (A)): one
 //! long-lived program per (instance, need, member), every open on the member a lease on it.
 
 use std::sync::Arc;

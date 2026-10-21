@@ -64,8 +64,8 @@ fn a_dial_hands_its_opening_head_fields_to_begin() {
 fn a_text_piece_is_read_as_text() {
     for text in [true, false] {
         let door = Arc::new(TestDoor::new(
-            "ws",
-            &["ws"],
+            "msg",
+            &["msg"],
             &[],
             Knobs {
                 text,
