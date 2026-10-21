@@ -211,12 +211,12 @@ command -v cargo >/dev/null 2>&1 || { echo "plane-delete-test: cargo not found" 
 # `plane-mcp` (P3 DEL-MCP: the engine crate is deleted; the plane is its one plane-kind crate,
 # `crates/busbar-plane-mcp`, plane_ondisk_key) names its `dep:` in its DOOR row, `plane-mcp-door`;
 # `plane-mcp` forwards to that row, so the reaching closure takes both out of `default`.
-bin_feature() { case "$1" in llm) echo plane-llm ;; plane-llm) echo plane-llm-door ;; mcp) echo plane-mcp ;; plane-mcp) echo plane-mcp-door ;; a2a) echo plane-a2a ;; plane-streaming) echo plane-streaming ;; plane-decisions) echo plane-decisions ;; esac; }
+bin_feature() { case "$1" in llm) echo plane-llm ;; plane-llm) echo plane-llm-door ;; mcp) echo plane-mcp ;; plane-mcp) echo plane-mcp-door ;; a2a) echo plane-a2a ;; plane-a2a) echo plane-a2a-door ;; plane-streaming) echo plane-streaming ;; plane-decisions) echo plane-decisions ;; esac; }
 neutral_keep() {
   case "$1" in
     llm | plane-llm) echo "plane-mcp,plane-a2a" ;;
     mcp | plane-mcp) echo "plane-a2a" ;;
-    a2a) echo "plane-mcp" ;;
+    a2a | plane-a2a) echo "plane-mcp" ;;
     plane-streaming) echo "plane-mcp,plane-a2a" ;;
     plane-decisions) echo "plane-mcp,plane-a2a" ;;
   esac
@@ -403,11 +403,32 @@ neutralise_bin() {
 # coupling. Removing a now-dangling path dep is mechanical `git rm -r` cleanup, not a design change; the
 # crates that carried such an edge are RECORDED in EDGE_CRATES and reported as residual coupling (a bare
 # `git rm -r` would dangle them, so the removal severs the back-edge too (the plane-purity lint ledgers it).
+#
+# EVERY WORKSPACE MEMBER, NOT ONLY `crates/*`. The workspace also lists members outside `crates/`
+# (`testing/voice-conformance/harness` names the pinned `busbar-plane-streaming`; `xtask`), and cargo
+# loads each of them to resolve the workspace exactly as it loads `crates/*`. A pin row dropped while
+# such a member still says `busbar-<P> = { workspace = true }` makes every cargo invocation refuse the
+# workspace before compiling a line, so all of the plane's legs read "still coupled" on manifest
+# hygiene. `member_manifests` is the one list both strippers and the removal assertion walk.
+member_manifests() {   # <tree> → every member Cargo.toml (crates/* plus the root's `members`), one per line
+  local s="$1" m
+  {
+    for m in "$s"/crates/*/Cargo.toml; do [ -f "$m" ] && printf '%s\n' "$m"; done
+    awk '
+      /^members[[:space:]]*=[[:space:]]*\[/ { in_m = 1; next }
+      in_m && /^\]/ { in_m = 0 }
+      in_m { while (match($0, /"[^"]+"/)) { print substr($0, RSTART + 1, RLENGTH - 2); $0 = substr($0, RSTART + RLENGTH) } }
+    ' "$s/Cargo.toml" 2>/dev/null | while IFS= read -r m; do
+      [ -f "$s/$m/Cargo.toml" ] && printf '%s\n' "$s/$m/Cargo.toml"
+    done
+  } | awk '!seen[$0]++'
+}
+
 EDGE_CRATES=""
 strip_workspace_edges() {
   local s="$1" p="$2" f t base
   EDGE_CRATES=""
-  for f in "$s"/crates/*/Cargo.toml; do
+  for f in $(member_manifests "$s"); do
     [ "$f" = "$s/crates/busbar/Cargo.toml" ] && continue   # the bin is handled by neutralise_bin
     if grep -q "^busbar-$p[[:space:]]*=[[:space:]]*{" "$f" 2>/dev/null; then
       base="$(basename "$(dirname "$f")")"
@@ -436,7 +457,7 @@ FEATURE_EDGE_CRATES=""
 strip_feature_edges() {
   local s="$1" p="$2" f t hit
   FEATURE_EDGE_CRATES=""
-  for f in "$s/Cargo.toml" "$s"/crates/*/Cargo.toml; do
+  for f in "$s/Cargo.toml" $(member_manifests "$s"); do
     [ -f "$f" ] || continue
     hit="$(grep -c -E "\"busbar-$p\\??/[^\"]*\"|\"dep:busbar-$p\"" "$f" 2>/dev/null)"; hit="${hit:-0}"
     [ "$hit" -eq 0 ] && continue
@@ -642,14 +663,14 @@ plane_probe_path() {
   case "$1" in
     llm | plane-llm) echo "/v1/chat/completions" ;;
     mcp | plane-mcp) echo "/.well-known/oauth-protected-resource/mcp" ;;
-    a2a)   echo "/a2a" ;;
+    a2a | plane-a2a) echo "/a2a" ;;
     plane-streaming) echo "/v1/realtime/client_secrets" ;;
     plane-decisions) echo "/v1/systemone" ;;
   esac
 }
 plane_probe_body() {
   case "$1" in
-    a2a)   printf '{"jsonrpc":"2.0","method":"message/send","id":1}' ;;
+    a2a | plane-a2a) printf '{"jsonrpc":"2.0","method":"message/send","id":1}' ;;
     plane-streaming) printf '{"model":"gpt-realtime"}' ;;
     plane-decisions) printf '{"state":{},"context":{}}' ;;
     llm | plane-llm | mcp | plane-mcp) printf '' ;;
@@ -660,7 +681,7 @@ plane_probe_body() {
 # the SUBJECT boot must not carry. Space-separated; empty for a plane the fixture does not configure.
 # This is the same fail-closed pairing the product enforces at resolve: the section exists only while
 # the plane that owns it is compiled in.
-plane_config_sections() { case "$1" in mcp | plane-mcp) echo "mcp" ;; a2a) echo "agents" ;; plane-streaming) echo "streams" ;; plane-decisions) echo "decisions" ;; *) echo "" ;; esac; }
+plane_config_sections() { case "$1" in mcp | plane-mcp) echo "mcp" ;; a2a | plane-a2a) echo "agents" ;; plane-streaming) echo "streams" ;; plane-decisions) echo "decisions" ;; *) echo "" ;; esac; }
 # section_omitted <section> <omit-list> → 0 when <section> is in the space-separated <omit-list>.
 section_omitted() { case " ${2:-} " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
@@ -1156,6 +1177,15 @@ remove_and_assert() {
     red "  a manifest still names busbar-$p after removal (members-refs=$ev_mem pin-rows=$ev_pin bin-dep-lines=$ev_dep)"
     return 1
   fi
+  # …and no OTHER workspace member (crates/* or a member outside it, a conformance harness) still
+  # declares it: such a row dangles the moment the pin or directory is gone, and cargo then refuses
+  # the whole workspace before a line compiles.
+  local left
+  left="$(grep -l "^busbar-${p}[[:space:]]*=[[:space:]]*{" $(member_manifests "$s") 2>/dev/null | tr '\n' ' ')"
+  if [ -n "$left" ]; then
+    red "  a workspace member still declares busbar-$p after removal: $left"
+    return 1
+  fi
   if [ "$pre_dir" = "PINNED" ] && [ "$pre_dep" -eq 0 ]; then
     red "  busbar-$p is pinned but the bin names it in no row — the pin links nothing this harness can take away"
     return 1
@@ -1523,10 +1553,23 @@ run_selftest() {
   # what makes these fixtures the same shape the gate actually judges.
   local CAL='__absent-open=404\n__absent-mcp=401\n__absent-keyed=404\n'
 
+  # THE FIXTURES ARE KEYED BY LIVE PLANE KEYS. `judge_codes` walks `$PLANES` for its neighbour
+  #   control and skips a key the control file does not carry, so fixtures spelled in retired keys
+  #   (`llm`, `mcp`, `a2a`, `voice`) left every neighbour unmatched and the NEIGHBOUR CONTROL below
+  #   accepted an every-plane-absent boot. Every key the fixtures plant must be a key the gate runs.
+  local fk
+  for fk in plane-llm plane-mcp plane-a2a plane-streaming plane-decisions; do
+    if valid_plane "$fk"; then
+      note "PASS  boot-judge fixture key '$fk' is a plane this gate runs"
+    else
+      fail=1; note "FAIL  boot-judge fixture key '$fk' is not in \$PLANES ($PLANES) — the neighbour control would skip it"
+    fi
+  done
+
   # (5a) GREEN: the plane was mounted (200), is now gone (404 = absent here), neighbours untouched.
-  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\n" >"$ctl"
-  printf "${CAL}llm=404\nmcp=200\na2a=200\nvoice=200\n" >"$sub"
-  if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
+  printf "${CAL}plane-llm=200\nplane-mcp=200\nplane-a2a=200\nplane-streaming=200\n" >"$ctl"
+  printf "${CAL}plane-llm=404\nplane-mcp=200\nplane-a2a=200\nplane-streaming=200\n" >"$sub"
+  if judge_codes "$ctl" "$sub" plane-llm >/dev/null 2>&1; then
     note "PASS  boot-judge GREEN: mounted-then-absent with neighbours serving is a clean deletion"
   else
     fail=1; note "FAIL  boot-judge GREEN: refused a textbook clean deletion"
@@ -1534,9 +1577,9 @@ run_selftest() {
 
   # (5b) RED — THE VACUOUS PROBE. The control itself 404s, i.e. the request never reached a route
   #      even with the plane compiled in. The old leg had no such check, so this state read as PASS.
-  printf "${CAL}llm=404\nmcp=200\na2a=200\nvoice=200\n" >"$ctl"
-  printf "${CAL}llm=404\nmcp=200\na2a=200\nvoice=200\n" >"$sub"
-  if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
+  printf "${CAL}plane-llm=404\nplane-mcp=200\nplane-a2a=200\nplane-streaming=200\n" >"$ctl"
+  printf "${CAL}plane-llm=404\nplane-mcp=200\nplane-a2a=200\nplane-streaming=200\n" >"$sub"
+  if judge_codes "$ctl" "$sub" plane-llm >/dev/null 2>&1; then
     fail=1
     note "FAIL  boot-judge POSITIVE CONTROL: a probe that 404s on the UNMUTATED tree was accepted."
     note "      A 404 that is the answer whether or not the plane exists proves nothing; this is the"
@@ -1546,18 +1589,18 @@ run_selftest() {
   fi
 
   # (5c) RED — the control never ran for this plane at all (no line recorded).
-  printf "${CAL}mcp=200\na2a=200\nvoice=200\n" >"$ctl"
-  printf "${CAL}llm=404\nmcp=200\na2a=200\nvoice=200\n" >"$sub"
-  if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
+  printf "${CAL}plane-mcp=200\nplane-a2a=200\nplane-streaming=200\n" >"$ctl"
+  printf "${CAL}plane-llm=404\nplane-mcp=200\nplane-a2a=200\nplane-streaming=200\n" >"$sub"
+  if judge_codes "$ctl" "$sub" plane-llm >/dev/null 2>&1; then
     fail=1; note "FAIL  boot-judge: accepted a verdict with no control measurement for the plane"
   else
     note "PASS  boot-judge: a plane the control never probed is refused, not assumed"
   fi
 
   # (5d) RED — THE ROUTE SURVIVED: the deleted plane still answers, i.e. not the absence code.
-  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\n" >"$ctl"
-  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\n" >"$sub"
-  if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
+  printf "${CAL}plane-llm=200\nplane-mcp=200\nplane-a2a=200\nplane-streaming=200\n" >"$ctl"
+  printf "${CAL}plane-llm=200\nplane-mcp=200\nplane-a2a=200\nplane-streaming=200\n" >"$sub"
+  if judge_codes "$ctl" "$sub" plane-llm >/dev/null 2>&1; then
     fail=1; note "FAIL  boot-judge: a route that still serves after its crate was deleted was accepted"
   else
     note "PASS  boot-judge: a surviving route is refused"
@@ -1565,9 +1608,9 @@ run_selftest() {
 
   # (5e) RED — THE NEIGHBOUR CONTROL: a boot that mounted NOTHING 404s every plane at once, which
   #      under the old single-assertion shape is indistinguishable from a clean deletion.
-  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\n" >"$ctl"
-  printf "${CAL}llm=404\nmcp=401\na2a=404\nvoice=404\n" >"$sub"
-  if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
+  printf "${CAL}plane-llm=200\nplane-mcp=200\nplane-a2a=200\nplane-streaming=200\n" >"$ctl"
+  printf "${CAL}plane-llm=404\nplane-mcp=401\nplane-a2a=404\nplane-streaming=404\n" >"$sub"
+  if judge_codes "$ctl" "$sub" plane-llm >/dev/null 2>&1; then
     fail=1
     note "FAIL  boot-judge NEIGHBOUR CONTROL: a boot where EVERY plane read absent was a clean deletion."
     note "      That is a server that mounted nothing, not a plane whose route left with its crate."
@@ -1576,9 +1619,9 @@ run_selftest() {
   fi
 
   # (5f) a neighbour the CONTROL never mounted controls nothing, and must not manufacture a failure.
-  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=404\n" >"$ctl"
-  printf "${CAL}llm=404\nmcp=200\na2a=200\nvoice=404\n" >"$sub"
-  if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
+  printf "${CAL}plane-llm=200\nplane-mcp=200\nplane-a2a=200\nplane-streaming=404\n" >"$ctl"
+  printf "${CAL}plane-llm=404\nplane-mcp=200\nplane-a2a=200\nplane-streaming=404\n" >"$sub"
+  if judge_codes "$ctl" "$sub" plane-llm >/dev/null 2>&1; then
     note "PASS  boot-judge: a neighbour the control never mounted is excluded from the neighbour control"
   else
     fail=1; note "FAIL  boot-judge: an unmounted neighbour was treated as a lost plane"
@@ -1590,17 +1633,17 @@ run_selftest() {
   #      Judged against a hard-coded 404 that read as "the route survived deletion" — a gate red on
   #      the deletion having WORKED. Both directions are proven: 401 is the deletion on that boot,
   #      and a route still answering 200 there is still not.
-  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\n" >"$ctl"
-  printf "${CAL}llm=200\nmcp=401\na2a=200\nvoice=200\n" >"$sub"
-  if judge_codes "$ctl" "$sub" mcp >/dev/null 2>&1; then
+  printf "${CAL}plane-llm=200\nplane-mcp=200\nplane-a2a=200\nplane-streaming=200\n" >"$ctl"
+  printf "${CAL}plane-llm=200\nplane-mcp=401\nplane-a2a=200\nplane-streaming=200\n" >"$sub"
+  if judge_codes "$ctl" "$sub" plane-mcp >/dev/null 2>&1; then
     note "PASS  boot-judge ABSENCE CALIBRATION: 401 on the CLOSED boot is the deletion, not a survival"
   else
     fail=1
     note "FAIL  boot-judge ABSENCE CALIBRATION: a deleted route answering the closed boot's own"
     note "      absence code (401) was read as a route that survived — the gate reds on a clean deletion."
   fi
-  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\n" >"$sub"
-  if judge_codes "$ctl" "$sub" mcp >/dev/null 2>&1; then
+  printf "${CAL}plane-llm=200\nplane-mcp=200\nplane-a2a=200\nplane-streaming=200\n" >"$sub"
+  if judge_codes "$ctl" "$sub" plane-mcp >/dev/null 2>&1; then
     fail=1; note "FAIL  boot-judge ABSENCE CALIBRATION: an mcp route still answering 200 was accepted as deleted"
   else
     note "PASS  boot-judge ABSENCE CALIBRATION: a closed-boot route still answering 200 is a survival"
@@ -1609,9 +1652,9 @@ run_selftest() {
   # (5h) RED — NO CALIBRATION AT ALL. Without the measured absence code there is no answer to "what
   #      does a route that does not exist say here?", and every verdict would be taken against a
   #      guess. Refused, not defaulted to 404.
-  printf 'llm=200\nmcp=200\na2a=200\nvoice=200\n' >"$ctl"
-  printf 'llm=404\nmcp=200\na2a=200\nvoice=200\n' >"$sub"
-  if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
+  printf 'plane-llm=200\nplane-mcp=200\nplane-a2a=200\nplane-streaming=200\n' >"$ctl"
+  printf 'plane-llm=404\nplane-mcp=200\nplane-a2a=200\nplane-streaming=200\n' >"$sub"
+  if judge_codes "$ctl" "$sub" plane-llm >/dev/null 2>&1; then
     fail=1; note "FAIL  boot-judge: a verdict was taken with no absence calibration for the boot"
   else
     note "PASS  boot-judge: a control with no absence calibration is refused, not defaulted"
@@ -1621,21 +1664,21 @@ run_selftest() {
   #      its mark is stale, which must be RED so the route leg starts judging it.
   local unserved_was="$UNSERVED_PLANES"
   UNSERVED_PLANES="plane-decisions"   # the mechanism's own proof marks a plane; no plane is marked in a real run
-  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\nplane-decisions=404\n" >"$ctl"
-  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\nplane-decisions=404\n" >"$sub"
+  printf "${CAL}plane-llm=200\nplane-mcp=200\nplane-a2a=200\nplane-streaming=200\nplane-decisions=404\n" >"$ctl"
+  printf "${CAL}plane-llm=200\nplane-mcp=200\nplane-a2a=200\nplane-streaming=200\nplane-decisions=404\n" >"$sub"
   if judge_codes "$ctl" "$sub" plane-decisions >/dev/null 2>&1; then
     note "PASS  boot-judge UNSERVED: an unserved plane reading absent with and without its crate is judged by its refusal witness"
   else
     fail=1; note "FAIL  boot-judge UNSERVED: an unserved plane reading absent on both builds was refused"
   fi
-  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\nplane-decisions=200\n" >"$ctl"
+  printf "${CAL}plane-llm=200\nplane-mcp=200\nplane-a2a=200\nplane-streaming=200\nplane-decisions=200\n" >"$ctl"
   if judge_codes "$ctl" "$sub" plane-decisions >/dev/null 2>&1; then
     fail=1; note "FAIL  boot-judge UNSERVED: a plane marked unserved that SERVES its route was accepted — the mark went stale silently"
   else
     note "PASS  boot-judge UNSERVED: a plane marked unserved that serves its route is RED (strike the mark)"
   fi
-  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\nplane-decisions=404\n" >"$ctl"
-  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\nplane-decisions=200\n" >"$sub"
+  printf "${CAL}plane-llm=200\nplane-mcp=200\nplane-a2a=200\nplane-streaming=200\nplane-decisions=404\n" >"$ctl"
+  printf "${CAL}plane-llm=200\nplane-mcp=200\nplane-a2a=200\nplane-streaming=200\nplane-decisions=200\n" >"$sub"
   if judge_codes "$ctl" "$sub" plane-decisions >/dev/null 2>&1; then
     fail=1; note "FAIL  boot-judge UNSERVED: the plane-less build serving the unserved plane's route was accepted"
   else
@@ -1678,7 +1721,7 @@ run_selftest() {
   write_boot_config open "$cfgdir" 46000 46001 ""
   local open_full open_stripped
   open_full="$(grep -c . "$cfgdir/config.yaml")"
-  write_boot_config open "$cfgdir" 46000 46001 "$(plane_config_sections a2a)"
+  write_boot_config open "$cfgdir" 46000 46001 "$(plane_config_sections plane-a2a)"
   open_stripped="$(grep -c . "$cfgdir/config.yaml")"
   if [ "$open_stripped" -lt "$open_full" ] && grep -q "^listen:" "$cfgdir/config.yaml" \
      && grep -q "^public_url:" "$cfgdir/config.yaml" && grep -q "^store:" "$cfgdir/config.yaml"; then
@@ -1694,12 +1737,12 @@ run_selftest() {
   local rl
   rl="$jd/refusal.log"
   printf 'Error: config: unknown field `agents`, expected one of `listen`, `admin_listen` at line 6 column 1\n' >"$rl"
-  if judge_refusal "$rl" 1 a2a >/dev/null 2>&1; then
+  if judge_refusal "$rl" 1 plane-a2a >/dev/null 2>&1; then
     note "PASS  refusal-judge GREEN: a non-zero exit whose log refuses the plane's section as an unknown field is the refusal"
   else
     fail=1; note "FAIL  refusal-judge GREEN: refused a textbook fail-closed refusal"
   fi
-  if judge_refusal "$rl" 0 a2a >/dev/null 2>&1; then
+  if judge_refusal "$rl" 0 plane-a2a >/dev/null 2>&1; then
     fail=1
     note "FAIL  refusal-judge: a binary that ACCEPTED a config naming its own deleted plane was passed."
     note "      That is the plane still being compiled in, or the fail-closed refusal having been lost."
@@ -1707,7 +1750,7 @@ run_selftest() {
     note "PASS  refusal-judge: accepting the config (exit 0 / still serving) is refused"
   fi
   printf 'error: Address already in use (os error 48)\n' >"$rl"
-  if judge_refusal "$rl" 1 a2a >/dev/null 2>&1; then
+  if judge_refusal "$rl" 1 plane-a2a >/dev/null 2>&1; then
     fail=1
     note "FAIL  refusal-judge: a start failure for an UNRELATED reason counted as the plane's refusal."
     note "      A taken port, an unreadable config or a panic all exit non-zero and say nothing about"
@@ -1716,7 +1759,7 @@ run_selftest() {
     note "PASS  refusal-judge: a non-zero exit that is not the section's unknown-field refusal is not evidence"
   fi
   printf 'Error: config: unknown field `zz_other`, expected one of `listen`, `admin_listen`\n' >"$rl"
-  if judge_refusal "$rl" 1 a2a >/dev/null 2>&1; then
+  if judge_refusal "$rl" 1 plane-a2a >/dev/null 2>&1; then
     fail=1
     note "FAIL  refusal-judge: an unknown-field refusal naming ANOTHER key counted as the plane's refusal."
   else
@@ -1728,8 +1771,11 @@ run_selftest() {
   #     no path/method/body is a plane the boot leg silently never probes — the same class of
   #     no-op as the llm-only `if` this replaced, one layer down.
   for p in $PLANES; do
-    if [ -z "$(plane_probe_path "$p")" ] || [ -z "$(plane_probe_method "$p")" ] || [ -z "$(plane_probe_boot "$p")" ]; then
-      fail=1; note "FAIL  probe table: plane '$p' has no probe (path/method/boot) — the boot leg would skip it silently"
+    if [ -z "$(plane_probe_path "$p")" ] || [ -z "$(plane_probe_method "$p")" ] || [ -z "$(plane_probe_boot "$p")" ] \
+       || { [ "$(plane_probe_method "$p")" = POST ] && [ -z "$(plane_probe_body "$p")" ]; }; then
+      fail=1; note "FAIL  probe table: plane '$p' has no probe (path/method/boot/body) — the boot leg would skip it silently"
+    elif [ -z "$(bin_feature "$p")" ] || [ -z "$(neutral_keep "$p")" ]; then
+      fail=1; note "FAIL  plane table: plane '$p' has no bin feature or neutral feature set — its removal would leave the plane's feature in \`default\`"
     else
       note "PASS  probe table($p): $(plane_probe_method "$p") $(plane_probe_path "$p") on the $(plane_probe_boot "$p") boot"
     fi

@@ -5,9 +5,11 @@
 
 use std::collections::BTreeMap;
 
-use crate::checkpoint::{AnchorError, Checkpoint, CheckpointSecret, SignError, Signature};
+use crate::checkpoint::{
+    AnchorError, ChainHead, Checkpoint, CheckpointSecret, SignError, Signature,
+};
 use crate::totals::{Totals, WindowStart};
-use crate::verify::verify;
+use crate::verify::{sequences_are_monotonic, verify, Finding};
 
 use super::fixtures::key;
 
@@ -141,4 +143,61 @@ fn a_checkpoint_with_no_fee_count_keeps_its_bytes() {
     assert!(tail(&some.signed_body()), "a fee count is framed by name");
     assert!(none.signed_body().len() < some.signed_body().len());
     assert_ne!(none.body_hash, some.body_hash);
+}
+
+fn sealed_with_heads(checkpoint_seq: u64, heads: Vec<ChainHead>) -> Checkpoint {
+    Checkpoint::seal(checkpoint_seq, 1, 10, heads, BTreeMap::new(), 0, 0, None)
+        .expect("an unsigned checkpoint seals")
+}
+
+fn head(node: u64, node_seq: u64, hash_byte: u8) -> ChainHead {
+    ChainHead {
+        node,
+        node_seq,
+        hash: [hash_byte; 32],
+    }
+}
+
+/// A node whose chain head the earlier checkpoint held and the newer one does not is a chain that
+/// was REMOVED. Walking only the newer checkpoint's heads never met it, so a vanished chain passed.
+#[test]
+fn a_chain_head_that_vanished_between_two_checkpoints_is_found() {
+    let earlier = sealed_with_heads(1, vec![head(1, 10, 1), head(2, 7, 2)]);
+    let newer = sealed_with_heads(2, vec![head(1, 12, 3)]);
+    let findings = sequences_are_monotonic(&earlier, &newer);
+    assert_eq!(
+        findings,
+        vec![Finding::ChainHeadRemoved { node: 2, was: 7 }]
+    );
+    assert!(findings[0].to_string().contains("REMOVED"));
+}
+
+/// A head at the same sequence with a different hash is an entry REWRITTEN in place; the sequence
+/// alone cannot see it. An idle node — same sequence, same hash — and a chain that began between the
+/// two seals are both ordinary and find nothing.
+#[test]
+fn a_chain_head_rewritten_at_the_same_sequence_is_found() {
+    let earlier = sealed_with_heads(1, vec![head(1, 10, 1)]);
+    let rewritten = sealed_with_heads(2, vec![head(1, 10, 9)]);
+    assert_eq!(
+        sequences_are_monotonic(&earlier, &rewritten),
+        vec![Finding::ChainHeadRewritten {
+            node: 1,
+            node_seq: 10
+        }]
+    );
+
+    let idle = sealed_with_heads(2, vec![head(1, 10, 1)]);
+    assert!(sequences_are_monotonic(&earlier, &idle).is_empty());
+    let grown = sealed_with_heads(2, vec![head(1, 11, 4), head(3, 1, 5)]);
+    assert!(sequences_are_monotonic(&earlier, &grown).is_empty());
+    let backwards = sealed_with_heads(2, vec![head(1, 9, 1)]);
+    assert_eq!(
+        sequences_are_monotonic(&earlier, &backwards),
+        vec![Finding::SequenceNotMonotonic {
+            node: 1,
+            was: 10,
+            now: 9
+        }]
+    );
 }

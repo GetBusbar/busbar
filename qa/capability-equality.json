@@ -82,12 +82,12 @@
   },
   "root_legs": {
     "root-llm": {
-      "file": "crates/busbar/src/root/tests/plane_node.rs",
+      "file": "crates/busbar/src/root/tests/serve_tests.rs",
       "feature": "plane-llm",
       "columns": [
         "llm"
       ],
-      "note": "the LLM plane over the loop: LlmNode::answer driving the kernel's ten steps, compared against the shipped entry point on six fixtures"
+      "note": "the LLM plane over the loop on its door's served leg: the llm door bound through the loader's one load and mounted on the data router, each cell a unit served end to end by root/tests/serve_tests.rs (carried by serve.rs through #[path]); the node's own cells (root/tests/plane_node.rs) compile only under the node axis no linked row carries, so they prove nothing CI runs"
     },
     "root-mcp": {
       "file": "crates/busbar/src/root/serve.rs",
@@ -469,7 +469,7 @@
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/tests/plane_node.rs::a_driven_planes_abandoned_end_seals_one_audit_record"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_seals_an_error_end_as_one_error_record"
       }
     },
     {
@@ -538,7 +538,7 @@
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/tests/plane_node.rs::the_loop_leaves_the_money_where_the_shipped_plane_leaves_it"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_refuses_a_spent_budget_without_charging_anything"
       }
     },
     {
@@ -609,7 +609,7 @@
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/tests/plane_node.rs::every_fixture_reaches_the_end_it_names"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_classifies_by_the_mapped_code_not_the_status"
       }
     },
     {
@@ -944,7 +944,7 @@
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/tests/plane_node.rs::the_switched_table_names_every_dialect_the_plane_names"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_doors_catalogue_shows_a_restricted_key_only_what_it_reaches"
       }
     },
     {
