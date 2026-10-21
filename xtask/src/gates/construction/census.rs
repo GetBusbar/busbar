@@ -20,12 +20,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ctx::Ctx;
-use crate::gates::construction::ceilings::{base_ref, set_int, Base};
+use crate::gates::construction::ceilings::{base_ref, Base};
 use crate::gates::construction::model::{plain, py_list, CRow, Cfg};
 use crate::gates::construction::rules2;
 use crate::gates::construction::tree::Tree;
 use crate::gates::construction::{dirs_for_globs, CEILINGS};
-use crate::toml_doc::Document;
+use crate::toml_doc::{Document, Value};
 
 pub const ROW_CENSUS: &str = "ceiling-census";
 
@@ -194,7 +194,7 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
             });
             bad.extend(problems);
             let remeasure =
-                |table: &str, key: &str| base_remeasure(cx, &base.sha, &doc, table, key);
+                |table: &str, key: &str| base_remeasure(cx, &cfg.doc, &base.sha, &doc, table, key);
             let (measured, problems) = measured_ceilings(&cfg.doc, &doc, &remeasure);
             bad.extend(problems);
             bad.extend(raised_ceilings(
@@ -887,91 +887,82 @@ fn base_view(cx: &Ctx, sha: &str) -> Result<Ctx, String> {
 /// is the stores the base held that its own ledger did not name: debt already there.
 const BASE_LEDGERS: &[&str] = &["exempt_stores"];
 
-/// `text` with the list `table.key` replaced by `items`, the rest of the file byte for byte. The
-/// list is read from its `[` to the first `]` outside a quoted string, across lines. `None` when the
-/// table carries no such list.
-fn replace_list(text: &str, table: &str, key: &str, items: &[String]) -> Option<String> {
-    let header = format!("[{table}]\n");
-    let head = if text.starts_with(&header) {
-        0
-    } else {
-        text.find(&format!("\n{header}"))? + 1
-    };
-    let body = head + header.len();
-    let end = text[body..].find("\n[").map_or(text.len(), |i| body + i);
-    let line = format!("\n{key} = [");
-    let at = text[body - 1..end].find(&line)? + body;
-    let open = at + line.len() - 2;
-    let bytes = text.as_bytes();
-    let (mut quote, mut escaped, mut close) = (None::<u8>, false, None);
-    for (i, &c) in bytes.iter().enumerate().skip(open + 1) {
-        match quote {
-            Some(_) if escaped => escaped = false,
-            Some(b'"') if c == b'\\' => escaped = true,
-            Some(q) if c == q => quote = None,
-            Some(_) => {}
-            None if c == b'"' || c == b'\'' => quote = Some(c),
-            None if c == b']' => {
-                close = Some(i);
-                break;
-            }
-            None => {}
-        }
+/// THE RULE TABLE A RE-MEASURE RUNS WITH: this tree's PARSED ceilings file with `table.key` set to
+/// [`PROBE`] and each of [`BASE_LEDGERS`] set to the base's PARSED value (an empty list when the
+/// base has none). Edited as values, never as text: a comment in the file (`exempt_stores = [ # ]
+/// store_holds = ['.',`) is a comment to the parser, so no key can be smuggled into the re-measure.
+/// And it FAILS CLOSED unless every other key of that table equals this tree's parsed value, so the
+/// re-measure runs this tree's rule and nothing else.
+fn probed_doc(
+    now_doc: &Document,
+    base_doc: &Document,
+    table: &str,
+    key: &str,
+) -> Result<Document, String> {
+    let now_t = now_doc
+        .table(table)
+        .ok_or_else(|| format!("this tree has no [{table}] to re-measure"))?;
+    if now_t.int_of(key).is_none() {
+        return Err(format!("[{table}] has no integer `{key}` to probe"));
     }
-    let quoted: Vec<String> = items
+    let mut doc = now_doc.with_value(table, key, Value::Int(PROBE));
+    for ledger in BASE_LEDGERS {
+        let was = base_doc
+            .table(table)
+            .and_then(|t| t.get(ledger))
+            .cloned()
+            .unwrap_or(Value::Array(Vec::new()));
+        let strings = was
+            .as_array()
+            .is_some_and(|items| items.iter().all(|v| v.as_str().is_some()));
+        if !strings {
+            return Err(format!(
+                "the base's [{table}] {ledger} is not a list of strings, so the base is not \
+                 re-measured"
+            ));
+        }
+        doc = doc.with_value(table, ledger, was);
+    }
+    let probed_t = doc
+        .table(table)
+        .ok_or_else(|| format!("[{table}] left the probed file"))?;
+    let skipped = |k: &str| k == key || BASE_LEDGERS.contains(&k);
+    let moved: Vec<&String> = probed_t
+        .keys()
         .iter()
-        .map(|i| format!("\"{}\"", i.replace('\\', "\\\\").replace('"', "\\\"")))
+        .chain(now_t.keys().iter())
+        .filter(|k| !skipped(k.as_str()) && probed_t.get(k) != now_t.get(k))
         .collect();
-    Some(format!(
-        "{}{key} = [{}]{}",
-        &text[..at],
-        quoted.join(", "),
-        &text[close? + 1..]
-    ))
+    if !moved.is_empty() {
+        return Err(format!(
+            "the re-measure's [{table}] differs from this tree's at {}, so it would not run this \
+             tree's rule",
+            moved
+                .iter()
+                .map(|k| format!("`{k}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    Ok(doc)
 }
 
-/// THE BASE RE-MEASURED WITH THIS TREE'S RULE: `[table]`'s rule run over [`base_view`] with this
-/// tree's ceilings file, its [`BASE_LEDGERS`] read as the base had them, and the count of the rows
-/// `key` holds (the most any one of them counts). A stale exemption is never counted: the base is
-/// re-measured for the stores it HOLDS, not for names its ledger lost. Only the rules of
+/// THE BASE RE-MEASURED WITH THIS TREE'S RULE: `[table]`'s rule run over [`base_view`] with
+/// [`probed_doc`] (this tree's parsed ceilings, the base's own exemptions), and the count of the
+/// rows `key` holds (the most any one of them counts). A stale exemption is never counted: the base
+/// is re-measured for the stores it HOLDS, not for names its ledger lost. Only the rules of
 /// [`MEASURABLE`] are run; any other is an error, so nothing it would set is excused.
 fn base_remeasure(
     cx: &Ctx,
+    now_doc: &Document,
     sha: &str,
     base_doc: &Document,
     table: &str,
     key: &str,
 ) -> Result<i64, String> {
-    let text = cx.read(CEILINGS)?;
-    let mut probed = set_int(&text, table, key, PROBE)
-        .ok_or_else(|| format!("{CEILINGS} has no `{key}` under [{table}] to probe"))?;
-    for ledger in BASE_LEDGERS {
-        let was = base_doc
-            .table(table)
-            .map(|t| t.list_of(ledger))
-            .unwrap_or_default();
-        if let Some(t) = replace_list(&probed, table, ledger, &was) {
-            probed = t;
-        }
-    }
     let cfg = Cfg {
-        doc: crate::toml_doc::parse_str(&probed)?,
+        doc: probed_doc(now_doc, base_doc, table, key)?,
     };
-    // Fail closed: a ledger this tree's file could not be rewritten to the base's is not re-measured
-    // with this tree's list instead.
-    for ledger in BASE_LEDGERS {
-        let list = |d: &Document| {
-            d.table(table)
-                .map(|t| t.list_of(ledger))
-                .unwrap_or_default()
-        };
-        if list(&cfg.doc) != list(base_doc) {
-            return Err(format!(
-                "[{table}] {ledger} could not be read as the base had it, so the base is not \
-                 re-measured"
-            ));
-        }
-    }
     let roots = cfg.scan_roots()?;
     let tree = Tree::load(&base_view(cx, sha)?, &roots, &cfg.test_path_fragments()?)?;
     let rows = match table.strip_prefix("rules.").unwrap_or(table) {
@@ -1614,26 +1605,36 @@ mod tests {
         assert!(problems[0].contains("cannot re-measure"), "{problems:?}");
     }
 
-    /// The base's ledger replaces this tree's in a re-measure, the rest of the file byte for byte,
-    /// across a multi-line list whose items hold brackets and escaped quotes.
+    /// The base's ledger replaces this tree's in a re-measure ON THE PARSED DOCUMENT: a `]` in a
+    /// comment closes nothing (a6's third review: `exempt_stores = [ # ] store_holds = ['.',`), and
+    /// every other key of the table is this tree's.
     #[test]
-    fn a_ledger_is_replaced_by_the_base_s_and_nothing_else_moves() {
-        let text = "[rules.k]\nwhy = \"x\"\nexempt_stores = [\n  \"a [u8] \\\" ]\",\n  \
-                    'b]',\n]\nmax_stores = 1\n[rules.z]\nexempt_stores = [\"z\"]\n";
-        let out = replace_list(text, "rules.k", "exempt_stores", &["q\"r".to_string()])
-            .expect("the list is there");
-        assert_eq!(
-            out,
-            "[rules.k]\nwhy = \"x\"\nexempt_stores = [\"q\\\"r\"]\nmax_stores = 1\n[rules.z]\n\
-             exempt_stores = [\"z\"]\n"
+    fn a_ledger_is_replaced_on_the_parsed_document_and_nothing_else_moves() {
+        let now = doc(
+            "[rules.k]\nwhy = \"x\"\nstore_holds = ['Vec']\nexempt_stores = [ # ] store_holds = \
+             ['.',\n  \"new [u8] ]\",\n]\nmax_stores = 13\n",
         );
-        let parsed = doc(&out);
-        assert_eq!(
-            parsed.table("rules.k").expect("k").list_of("exempt_stores"),
-            vec!["q\"r"]
-        );
-        assert!(replace_list(text, "rules.y", "exempt_stores", &[]).is_none());
-        assert!(replace_list(text, "rules.k", "debt_stores", &[]).is_none());
+        let base = doc("[rules.k]\nstore_holds = ['Vec']\nexempt_stores = [\"was\"]\n");
+        let t = now.table("rules.k").expect("k");
+        assert_eq!(t.list_of("store_holds"), vec!["Vec"]);
+        assert_eq!(t.list_of("exempt_stores"), vec!["new [u8] ]"]);
+        let probed = probed_doc(&now, &base, "rules.k", "max_stores").expect("probed");
+        let p = probed.table("rules.k").expect("k");
+        assert_eq!(p.int_of("max_stores"), Some(PROBE));
+        assert_eq!(p.list_of("exempt_stores"), vec!["was"]);
+        assert_eq!(p.list_of("store_holds"), vec!["Vec"]);
+        assert_eq!(p.str_of("why"), Some("x"));
+        // A base with no ledger is an empty one; a base ledger that is not a list is refused.
+        let bare = probed_doc(&now, &doc("[rules.k]\n"), "rules.k", "max_stores").expect("bare");
+        assert!(bare
+            .table("rules.k")
+            .expect("k")
+            .list_of("exempt_stores")
+            .is_empty());
+        let odd = doc("[rules.k]\nexempt_stores = 3\n");
+        assert!(probed_doc(&now, &odd, "rules.k", "max_stores").is_err());
+        assert!(probed_doc(&now, &base, "rules.k", "max_debt").is_err());
+        assert!(probed_doc(&now, &base, "rules.y", "max_stores").is_err());
     }
 
     /// The drain field names a PR, a row or a file, and nothing else is one.

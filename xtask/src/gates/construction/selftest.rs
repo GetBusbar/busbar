@@ -2125,6 +2125,76 @@ fn census_base_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report
              rule that the base is re-measured with its own exemptions is unproven",
         ),
     }
+    // 5. a6's FOURTH REVIEW OF #1454: a key smuggled to the re-measure behind a comment. The
+    //    list's opening line is `exempt_stores = [ # ] store_holds = ['.',`, which a text editor
+    //    that closes the list at the first `]` reads as a `store_holds` matching every type; with
+    //    "Exclusive" in store_cells, `max_stores` 0 -> 13 and 13 new registries, the base then
+    //    counted 13. The re-measure edits the PARSED file, where that is a comment, so the base
+    //    counts 0 and the entry excuses nothing.
+    let smuggle_file = "crates/busbar-kernel/src/zz_planted_smuggled.rs";
+    let opener = "exempt_stores = [\n";
+    let registry_at = text.find(&format!("[{rule}]\n"));
+    let planted = registry_at
+        .and_then(|at| {
+            let rest = &text[at..];
+            let o = rest.find(opener)?;
+            Some(format!(
+                "{}{}exempt_stores = [ # ] store_holds = ['.',\n{}",
+                &text[..at],
+                &rest[..o],
+                &rest[o + opener.len()..]
+            ))
+        })
+        .and_then(|t| ceilings::set_int(&t, rule, "max_stores", 13))
+        .and_then(|t| ceilings::add_to_list(&t, rule, "store_cells", &["Exclusive".to_string()]))
+        .filter(|t| t.contains(&header))
+        .map(|t| {
+            t.replacen(
+                &header,
+                &format!(
+                    "{header}\"{rule}.max_stores\" = \"store_cells -- the cell the row did not \
+                     know; drain: row 82\"\n"
+                ),
+                1,
+            )
+        });
+    match planted {
+        Some(planted) => {
+            let mut ov = measured_plant(base, planted);
+            let mut kernel = String::from("use std::sync::OnceLock;\n\n");
+            let mut setter = String::from("pub fn install(rows: Vec<String>) {\n");
+            for i in 0..13 {
+                kernel.push_str(&format!(
+                    "static ZZ_SMUGGLED_{i}: OnceLock<Vec<String>> = OnceLock::new();\n"
+                ));
+                setter.push_str(&format!("    let _ = ZZ_SMUGGLED_{i}.set(rows.clone());\n"));
+            }
+            setter.push_str("}\n");
+            ov.set(smuggle_file, format!("{kernel}\n{setter}"));
+            ov.set(
+                "crates/busbar/src/root/zz_planted_smuggled_root.rs",
+                "pub fn zz_planted_smuggled_boot() {\n    \
+                 busbar_kernel::zz_planted_smuggled::install(PLANTED);\n}\n",
+            );
+            r.push(prove_rows_red(
+                cx,
+                gate,
+                "a store_holds smuggled to the re-measure behind a comment `]` is a comment: the \
+                 base counts 0 of 13 new registries",
+                &[census::ROW_CENSUS],
+                ov,
+                &[
+                    "[rules.kernel-no-protocol-registry] max_stores",
+                    "0 -> 13",
+                    "counts 0 under `max_stores`",
+                ],
+            ));
+        }
+        None => r.note_infra_failure(
+            "[rules.kernel-no-protocol-registry] could not take the comment-smuggle plant, so the \
+             rule that the re-measure reads the parsed file is unproven",
+        ),
+    }
     r
 }
 
