@@ -191,6 +191,8 @@ impl ConstructionGate {
             "unit-no-wall-clock",
             "unit-no-finding-ids",
             "kernel-no-protocol-registry",
+            rules2::ROW_INSTALLED_STORE,
+            rules2::ROW_STORE_DEBT,
             "plane-no-money",
             "one-pricing-site",
             "one-pricing-site:fee-fields",
