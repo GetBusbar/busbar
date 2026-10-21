@@ -20,16 +20,20 @@
 //! inside the allocator never re-enters it.
 //!
 //! THE FREED-KEY WITNESS rides the same allocator (a zeroise gate, "keys are zeroised",
-//! BUSBAR-1.6.0.md l.753): a test builds a marked key with [`marked_key`], which
-//! arms the witness, and [`freed_unzeroed`] reports how many freed blocks still held that key.
-//! Unarmed (every binary that never calls [`marked_key`]) it costs one atomic load per free.
+//! BUSBAR-1.6.0.md l.753): a test builds a marked key with [`marked_key`] and names every secret
+//! derived from it with [`watch`] (a split-out master key or salt, a derived session key, a key
+//! schedule's round keys), each against the test's own id; [`freed_unzeroed`] reports how many
+//! freed blocks still held ANY [`WINDOW`] consecutive bytes of one of that id's secrets (all of a
+//! shorter one). A whole copy, a split copy and a derived copy are all seen, wherever in the block
+//! they sit. Unarmed (every binary that never calls [`marked_key`] or [`watch`]) it costs one
+//! atomic load per free.
 //!
 //! The crate's `#![deny(unsafe_code)]` holds over this whole module except the one
 //! `unsafe impl GlobalAlloc` block, which carries the module's only `#[allow(unsafe_code)]`.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 thread_local! {
     /// Allocations (and reallocations) made by THIS thread since it started or last [`reset`].
@@ -56,58 +60,162 @@ impl Default for Counting {
     }
 }
 
-/// The eight bytes that open a marked key; the key's id fills the rest of it.
+/// The eight bytes that open a marked key; a byte stream drawn from the key's id fills the rest,
+/// so every window of it is distinct from every other id's and from ordinary heap contents.
 pub const MARK: [u8; 8] = *b"ZEROISE!";
 
 /// How many key ids the freed-key witness tells apart: `0..MARKED_IDS`.
 pub const MARKED_IDS: usize = 8;
 
-/// The armed key length: `0` until [`marked_key`] arms the witness. One length per test binary.
-static KEY_LEN: AtomicUsize = AtomicUsize::new(0);
+/// The window the witness matches: a freed block holding ANY `WINDOW` consecutive bytes of a
+/// watched secret (all of a secret shorter than that, such as a 12-byte salt) is counted.
+pub const WINDOW: usize = 16;
 
-/// Freed blocks seen still holding marked key `id`, per id.
+/// The most secrets one test binary watches.
+pub const MAX_WATCHED: usize = 256;
+
+/// The longest secret the witness watches.
+pub const MAX_WATCHED_LEN: usize = 64;
+
+/// One watched secret: its id, its length (`0` until it is published) and its bytes.
+struct Watched {
+    id: AtomicUsize,
+    len: AtomicUsize,
+    bytes: [AtomicU8; MAX_WATCHED_LEN],
+}
+
+impl Watched {
+    const fn new() -> Self {
+        Self {
+            id: AtomicUsize::new(0),
+            len: AtomicUsize::new(0),
+            bytes: [const { AtomicU8::new(0) }; MAX_WATCHED_LEN],
+        }
+    }
+}
+
+/// The watched secrets, `0..WATCHING` claimed. Fixed storage: the allocator reads it on every free
+/// and must never allocate, lock or re-enter itself to do so.
+static WATCHED: [Watched; MAX_WATCHED] = [const { Watched::new() }; MAX_WATCHED];
+
+/// How many slots of [`WATCHED`] were claimed: `0` is unarmed.
+static WATCHING: AtomicUsize = AtomicUsize::new(0);
+
+/// One bit per two-byte prefix of every window of every watched secret: a block position whose
+/// two bytes are no window's first two is skipped with one load.
+static PREFIXES: [AtomicU64; 1024] = [const { AtomicU64::new(0) }; 1024];
+
+/// Freed blocks seen still holding a secret watched under `id`, per id.
 static FREED_UNZEROED: [AtomicUsize; MARKED_IDS] = [const { AtomicUsize::new(0) }; MARKED_IDS];
 
-/// The marked key `id` of `N` bytes ([`MARK`], then `id` repeated), on the caller's stack (the
-/// stack is not the allocator's to watch). Arms the freed-key witness for `N`-byte keys.
+/// The marked key `id` of `N` bytes ([`MARK`], then a byte stream drawn from `id`), on the
+/// caller's stack (the stack is not the allocator's to watch). The whole key is watched under
+/// `id`, so any [`WINDOW`] of it in a freed block is counted.
 ///
 /// # Panics
 ///
-/// When `id` is not below [`MARKED_IDS`] or `N` leaves no room for the id after [`MARK`].
+/// When `id` is not below [`MARKED_IDS`], `N` leaves no room after the mark or exceeds
+/// [`MAX_WATCHED_LEN`], or [`MAX_WATCHED`] secrets are already watched.
 #[must_use]
 pub fn marked_key<const N: usize>(id: u8) -> [u8; N] {
-    assert!(usize::from(id) < MARKED_IDS, "key id {id} >= {MARKED_IDS}");
     assert!(N > MARK.len(), "a {N}-byte key has no room after the mark");
-    KEY_LEN.store(N, Ordering::SeqCst);
-    let mut k = [id; N];
+    let mut k = [0_u8; N];
     k[..MARK.len()].copy_from_slice(&MARK);
+    // xorshift64*, seeded from the id: deterministic per id, distinct between ids.
+    let mut x = 0x9E37_79B9_7F4A_7C15_u64 ^ (u64::from(id) + 1).wrapping_mul(0xD1B5_4A32_D192_ED03);
+    for b in &mut k[MARK.len()..] {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        *b = x.wrapping_mul(0x2545_F491_4F6C_DD1D).to_be_bytes()[0];
+    }
+    watch(id, &k);
     k
 }
 
-/// How many freed blocks were seen still holding marked key `id`.
+/// Watch `secret` under `id`: from now on a freed block holding any [`WINDOW`] consecutive bytes
+/// of it (all of it when it is shorter) counts against `id`. A test names here every secret it
+/// derives from its marked key (a split-out part, a derived session key, a round key), copied
+/// from the stack: a heap copy the test frees would be counted itself.
+///
+/// # Panics
+///
+/// When `id` is not below [`MARKED_IDS`], `secret` is shorter than 2 or longer than
+/// [`MAX_WATCHED_LEN`] bytes, or [`MAX_WATCHED`] secrets are already watched.
+pub fn watch(id: u8, secret: &[u8]) {
+    assert!(usize::from(id) < MARKED_IDS, "key id {id} >= {MARKED_IDS}");
+    assert!(
+        (2..=MAX_WATCHED_LEN).contains(&secret.len()),
+        "a watched secret is 2..={MAX_WATCHED_LEN} bytes, not {}",
+        secret.len()
+    );
+    let slot = WATCHING.fetch_add(1, Ordering::SeqCst);
+    assert!(
+        slot < MAX_WATCHED,
+        "more than {MAX_WATCHED} watched secrets"
+    );
+    let w = &WATCHED[slot];
+    for (to, b) in w.bytes.iter().zip(secret) {
+        to.store(*b, Ordering::Relaxed);
+    }
+    w.id.store(usize::from(id), Ordering::Relaxed);
+    let win = secret.len().min(WINDOW);
+    for pair in secret.windows(2).take(secret.len() - win + 1) {
+        let bit = prefix(pair[0], pair[1]);
+        PREFIXES[bit / 64].fetch_or(1_u64 << (bit % 64), Ordering::SeqCst);
+    }
+    // Published last: a reader that sees the length sees the bytes and the id.
+    w.len.store(secret.len(), Ordering::Release);
+}
+
+/// How many freed blocks were seen still holding a secret watched under `id`.
 #[must_use]
 pub fn freed_unzeroed(id: u8) -> usize {
     FREED_UNZEROED[usize::from(id)].load(Ordering::SeqCst)
 }
 
-/// The id of the marked key at the start of `w`, if one is there whole.
-fn marked(w: &[u8], key_len: usize) -> Option<usize> {
-    let (mark, rest) = w.split_at_checked(MARK.len())?;
-    let id = *rest.first()?;
-    (mark == MARK
-        && rest.len() >= key_len - MARK.len()
-        && rest[..key_len - MARK.len()].iter().all(|b| *b == id))
-    .then_some(usize::from(id))
-    .filter(|id| *id < MARKED_IDS)
+/// The prefix bit of two bytes.
+fn prefix(a: u8, b: u8) -> usize {
+    (usize::from(a) << 8) | usize::from(b)
 }
 
-/// Count every marked key a block being freed still holds.
-fn witness_freed(block: &[u8], key_len: usize) {
-    for at in 0..=block.len() - key_len {
-        if block[at] == MARK[0] {
-            if let Some(id) = marked(&block[at..], key_len) {
-                FREED_UNZEROED[id].fetch_add(1, Ordering::SeqCst);
+/// Whether the claimed slot `w` holds a secret one of whose windows starts at `block[at..]`, and
+/// under which id.
+fn window_at(w: &Watched, block: &[u8], at: usize) -> Option<usize> {
+    let len = w.len.load(Ordering::Acquire);
+    if len == 0 {
+        return None;
+    }
+    let win = len.min(WINDOW);
+    let rest = block.get(at..at + win)?;
+    (0..=len - win)
+        .any(|start| {
+            rest.iter()
+                .enumerate()
+                .all(|(i, b)| w.bytes[start + i].load(Ordering::Relaxed) == *b)
+        })
+        .then(|| w.id.load(Ordering::Relaxed))
+        .filter(|id| *id < MARKED_IDS)
+}
+
+/// Count, once per id, every watched secret a block being freed still holds a window of.
+fn witness_freed(block: &[u8]) {
+    let claimed = WATCHING.load(Ordering::SeqCst).min(MAX_WATCHED);
+    let mut seen = [false; MARKED_IDS];
+    for (at, pair) in block.windows(2).enumerate() {
+        let bit = prefix(pair[0], pair[1]);
+        if PREFIXES[bit / 64].load(Ordering::Relaxed) & (1_u64 << (bit % 64)) == 0 {
+            continue;
+        }
+        for w in &WATCHED[..claimed] {
+            if let Some(id) = window_at(w, block, at) {
+                seen[id] = true;
             }
+        }
+    }
+    for (id, hit) in seen.iter().enumerate() {
+        if *hit {
+            FREED_UNZEROED[id].fetch_add(1, Ordering::SeqCst);
         }
     }
 }
@@ -135,8 +243,7 @@ unsafe impl GlobalAlloc for Counting {
         unsafe { System.alloc_zeroed(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        let key_len = KEY_LEN.load(Ordering::SeqCst);
-        if key_len != 0 && layout.size() >= key_len {
+        if WATCHING.load(Ordering::SeqCst) != 0 && layout.size() >= 2 {
             // SAFETY (TEST ONLY, and NOT fully sound): `ptr` is a live block of `layout.size()`
             // bytes until `System` frees it below, and its owner has given it up, so nothing else
             // reads or writes it during `dealloc`. But the slice spans the WHOLE block, including
@@ -145,13 +252,13 @@ unsafe impl GlobalAlloc for Counting {
             // allocator is compiled only into test binaries (the dev-only `alloc-counter`
             // feature), reads the bytes only to compare them, and keeps nothing it read.
             let block = unsafe { std::slice::from_raw_parts(ptr, layout.size()) };
-            witness_freed(block, key_len);
+            witness_freed(block);
         }
         // SAFETY: forwarded verbatim; the caller's obligations on `ptr`/`layout` are unchanged.
         unsafe { System.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        if KEY_LEN.load(Ordering::SeqCst) != 0 {
+        if WATCHING.load(Ordering::SeqCst) != 0 {
             // Armed: the trait's default body, so the old block is freed through `dealloc` and
             // read. One allocation, counted by `alloc`.
             // SAFETY: the caller guarantees `new_size`, rounded up to `layout.align()`, does not
