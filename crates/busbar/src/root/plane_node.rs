@@ -2943,20 +2943,6 @@ fn bind_node_book(
 // THE SWITCH-OVER'S OWN PROOF
 // ---------------------------------------------------------------------------------------------
 
-/// THE SWITCH, DRIVEN BOTH WAYS on the same fixture and the same deployment shape.
-///
-/// The rehearsal beside the step files proves the nine steps COMPOSE. What it cannot prove is that
-/// the composition root drives them the way the loop drives them, because it has no loop: it is a
-/// driver written in a test file. This module drives the real one — `run_unit`, the kernel's ten
-/// steps, its two audit doors and its one exit — through [`Node::answer`], against the shell's
-/// entry point on its own deployment, and compares what a client and an operator can see.
-///
-/// Each fixture builds TWO deployments — own registry, own scripted upstream, own governance store —
-/// so the two legs' counters are compared rather than summed.
-#[cfg(all(test, linked_axis_node))]
-#[path = "tests/plane_node.rs"]
-mod tests;
-
 /// A unit's one audit record names where it went and the controls it ran under (audit root-R1#1),
 /// driven through the node with a unit of the test's own: no plane is needed to ask it.
 #[cfg(test)]
@@ -2965,7 +2951,8 @@ mod seal_tests;
 
 /// The node's money cells that name no plane (Law 10): the late arm, the one pricing site and its
 /// card pin, the sweep and its drop guard, the abandoned-end posting site, the dispatch record, the
-/// lane-name interner and the two books agreeing, ported out of `tests/plane_node.rs` so they are
+/// lane-name interner and the two books agreeing, ported out of the node-axis suite (deleted with the
+/// never-set `linked_axis_node` cfg it was gated on) so they are
 /// built in every test build, driven through [`Node::drive_borrowed`] (the door path) where they
 /// drive a unit.
 #[cfg(test)]

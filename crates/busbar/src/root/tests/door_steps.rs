@@ -3509,6 +3509,28 @@ pub(crate) mod tool_door {
         assert_eq!(calls(&mut heard), 0, "the refused call was never sent");
         assert_eq!(rig.admitted(), 1, "only the served call is charged");
         assert!(rig.all_ended(), "no unit left open");
+
+        // THE RED ARM: the same two calls against the planted fault, an admission that reads no
+        // group limit (the same rig with its key minted into no group), are both sent and served.
+        // So the refusal above is the group's limit, and an admission that ignored it fails here.
+        let red_instance = "serve-door-tools-over-limit-red";
+        let _red_published = Published(red_instance);
+        let (red_port, mut red_heard) = tool_server().await;
+        let red = Rig::new(red_instance, red_port, None);
+        for n in 1..=2 {
+            let (status, body) = send(&red.router, Some(&red.token), CALL).await;
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "call {n} with no limit is served: {}",
+                String::from_utf8_lossy(&body)
+            );
+        }
+        assert_eq!(
+            calls(&mut red_heard),
+            2,
+            "with no limit read, the second call is sent"
+        );
     }
 
     /// THE DECODE STEP: a body that is not JSON is refused by the plane's own decode, in its own

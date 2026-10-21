@@ -87,7 +87,7 @@
   "root_legs": {
     "root-llm": {
       "plane": "llm",
-      "file": "crates/busbar/src/root/tests/plane_node.rs",
+      "file": "crates/busbar/src/root/tests/serve_tests.rs",
       "feature": "plane-llm"
     },
     "root-mcp": {
@@ -120,8 +120,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/plane_node.rs::every_fixture_reaches_the_end_it_names",
-          "note": "the Malformed fixture is the arrival step's own parse refusal, taken before a model exists and before anything is accounted"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_counts_times_and_attributes_a_served_unit",
+          "note": "one chat arrives at the pools door's claim as one unit, is served 200 and is counted, timed and attributed under its pool and member on the scrape"
         }
       },
       "decode": {
@@ -131,8 +131,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/plane_node.rs::the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it",
-          "note": "each of the six body-model dialects driven through run_unit in four shapes and compared with the shipped entry point: a named model reaches the door, a body with no model is the ladder's own 400, a malformed body is step 0's parse refusal, and a verb the dialect declares nothing for is the endpoint's own 404"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_counts_a_malformed_body",
+          "note": "a chat whose body is not JSON is refused 400 by the plane's decode before routing, and the refusal is counted under the unresolved pool"
         }
       },
       "authenticate": {
@@ -142,8 +142,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/plane_node.rs::the_loop_attributes_the_identity_the_door_resolved_and_invents_none",
-          "note": "three credentials through the deployment's own door (auth::admit::admit_session -- the configured chain plus the one verdict resolution the HTTP middleware runs): the live bearer is admitted and the hold the loop opens names the key it resolved, while a bearer this deployment never minted and one whose exp has passed are both refused before the plane, and the shape the middleware leaves when it binds no key settles on the anonymous actor rather than on the key that was turned away"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_refuses_a_wrong_key_in_every_dialects_own_envelope",
+          "note": "a wrong key is refused on every dialect's path in that dialect's own envelope, before anything is routed"
         }
       },
       "verify": {
@@ -153,8 +153,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/plane_node.rs::every_fixture_reaches_the_end_it_names",
-          "note": "the PoolAcl fixture: a key that may not reach the pool it named, refused by the pre-admission guard before anything is priced"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_refuses_an_ad_hoc_route_naming_the_wrong_provider",
+          "note": "an ad-hoc route naming a provider that is not the model's is refused 400 in the caller's envelope, and neither far end is dialled"
         }
       },
       "approve": {
@@ -164,8 +164,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/plane_node.rs::a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_changes_nothing",
-          "note": "the 1.6.0-native Before(Approve) seat driven both ways through run_unit: the mount's own seat list is asserted empty (the migrated hooks fire after the door and a veto moved in front of a charge would change what is billed), a seat that does not veto is consulted and the unit still answers what the shipped entry point answers, and a seat that vetoes stops the unit at approve -- nothing charged, no metering row, the upstream never dialled, one link on the chain and the plane's own permission refusal in the caller's dialect"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_counts_a_pool_refusal_and_charges_no_fee",
+          "note": "a key allowed only another pool is refused 403 on the pool it named, the refusal is counted, and its ledger takes no fee"
         }
       },
       "admit": {
@@ -175,8 +175,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/plane_node.rs::the_loop_leaves_the_money_where_the_shipped_plane_leaves_it",
-          "note": "the OverBudget fixture: the door refuses, and the money the store holds afterwards is compared against the shipped plane's"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_refuses_a_spent_budget_without_charging_anything",
+          "note": "a group whose budget is spent refuses its key 429 at Admit (sealed OverBudget), no counter moves, and the far end is never dialled"
         }
       },
       "route": {
@@ -186,8 +186,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/plane_node.rs::the_loop_matches_the_shipped_entry_point_on_every_fixture",
-          "note": "the walk the route step drives, compared byte for byte with the shipped entry point on all six fixtures"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_tries_each_member_once_before_its_terminal",
+          "note": "the walk tries each member of the pool once before its terminal answer, through the one route seam"
         }
       },
       "meter": {
@@ -197,8 +197,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/plane_node.rs::the_loop_leaves_the_money_where_the_shipped_plane_leaves_it",
-          "note": "the delivered fixtures' usage and spend, compared field by field against the shipped plane's own"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_bills_a_whole_answer_its_own_usage_once",
+          "note": "a whole answer's own reported usage is billed exactly once on the presenting key"
         }
       },
       "audit": {
@@ -208,8 +208,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/plane_node.rs::a_driven_planes_abandoned_end_seals_one_audit_record",
-          "note": "a driven unit's end seals exactly one audit record from the facts and pass its audit door handed back, and an unanswered audit door seals none (the in-memory request chain this cell named is deleted by the P2 ruling)"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_seals_an_error_end_as_one_error_record",
+          "note": "an error end seals exactly ONE audit record under its operation class, its finish Error"
         }
       },
       "encode": {
@@ -219,8 +219,8 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/plane_node.rs::the_route_seam_is_driven_once_by_a_served_unit_and_never_by_a_refused_one",
-          "note": "a served unit is driven exactly once and a refused one never, so the exit posts once; the one-terminal-per-unit count is crates/busbar-kernel/src/ingress/tests/terminal_tests.rs"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_pools_door_seals_a_2xx_stream_with_the_end_its_tap_saw",
+          "note": "a 2xx stream is sealed with the end its tap saw (Partial or Error), never with the end its status line claims"
         }
       }
     },
