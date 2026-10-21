@@ -324,7 +324,10 @@ fn a_decide_reply_lowers_to_the_verdict_1_5_5s_host_read() {
         // W:687-689: abstain wins over order.
         (json!({"abstain": true, "order": [1]}), Verdict::Abstain),
         // W:687-694: `abstain: false` leaves the order.
-        (json!({"abstain": false, "order": [1]}), Verdict::Prefer(vec![1])),
+        (
+            json!({"abstain": false, "order": [1]}),
+            Verdict::Prefer(vec![1]),
+        ),
         // Not an object: `HookResponse` does not parse → P:54.
         (json!(null), Verdict::Abstain),
         // W:431: the array's first element is read as `order`, `1` is no `Vec` → P:54.
@@ -361,9 +364,15 @@ fn a_decide_reply_lowers_to_the_verdict_1_5_5s_host_read() {
         // W:516-522: a string status is no integer → the host's default.
         (json!({"reject": {"status": "451"}}), reject(None, "")),
         // W:671: `reject: false` is the explicit "not rejecting".
-        (json!({"reject": false, "order": [1]}), Verdict::Prefer(vec![1])),
+        (
+            json!({"reject": false, "order": [1]}),
+            Verdict::Prefer(vec![1]),
+        ),
         // W:442-443: `reject: null` is absent.
-        (json!({"reject": null, "order": [1]}), Verdict::Prefer(vec![1])),
+        (
+            json!({"reject": null, "order": [1]}),
+            Verdict::Prefer(vec![1]),
+        ),
         // W:679-686 with W:475-489: tags trimmed, empties dropped.
         (
             json!({"restrict": {"tags_any": [" a ", ""]}, "order": [0]}),
@@ -374,7 +383,10 @@ fn a_decide_reply_lowers_to_the_verdict_1_5_5s_host_read() {
         // W:681-683, W:477-478: not an object → nothing.
         (json!({"restrict": "a"}), Verdict::Restrict(Vec::new())),
         // W:680: `restrict: false` is the explicit "not restricting".
-        (json!({"restrict": false, "order": [0]}), Verdict::Prefer(vec![0])),
+        (
+            json!({"restrict": false, "order": [0]}),
+            Verdict::Prefer(vec![0]),
+        ),
         // W:666-695 never reads `rewrite` (a transform verb): no order → abstain.
         (
             json!({"rewrite": {"messages": [{"role": "user"}]}}),
@@ -424,13 +436,22 @@ fn a_transform_reply_lowers_to_the_verdict_1_5_5s_host_read() {
         // W:500 → W:541.
         (json!({"rewrite": {}}), RewriteVerdict::Abstain),
         // W:501-503: an empty `messages` → W:541.
-        (json!({"rewrite": {"messages": []}}), RewriteVerdict::Abstain),
+        (
+            json!({"rewrite": {"messages": []}}),
+            RewriteVerdict::Abstain,
+        ),
         // W:500: `messages` not an array → W:541.
-        (json!({"rewrite": {"messages": "hi"}}), RewriteVerdict::Abstain),
+        (
+            json!({"rewrite": {"messages": "hi"}}),
+            RewriteVerdict::Abstain,
+        ),
         // W:433 types `abstain` as `bool`: the parse fails → P:61 abstain.
         (json!({"abstain": 1}), RewriteVerdict::Abstain),
         // A valid rewrite beside a wrong-typed sibling (W:431): the WHOLE parse fails → P:61.
-        (json!({"rewrite": rw, "order": "x"}), RewriteVerdict::Abstain),
+        (
+            json!({"rewrite": rw, "order": "x"}),
+            RewriteVerdict::Abstain,
+        ),
         // A valid reject beside a wrong-typed sibling (W:433) → P:61; the reject is never read.
         (
             json!({"reject": {"status": 451}, "abstain": "yes"}),
