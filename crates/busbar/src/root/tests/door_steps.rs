@@ -11,7 +11,7 @@ use busbar_contract::abi::plane::{ROUTE_DIRECT, ROUTE_POOL};
 use super::DoorPools;
 
 fn pools(yaml: &str) -> DoorPools {
-    DoorPools::of(&serde_yaml::from_str(yaml).expect("yaml"))
+    DoorPools::of(&serde_yaml::from_str(yaml).expect("yaml")).expect("the pools")
 }
 
 fn routed(p: &DoorPools, class: u8, named: Option<&str>) -> Option<(String, Vec<String>)> {
@@ -259,21 +259,57 @@ fn a_member_granted_pool_route_is_judged_on_the_member_it_is_addressed_to() {
 }
 
 /// THE MEMBER'S TIER (the core-owned per-member `tier`, `BUSBAR-1.6.0.md` l.4196 (b), R2-G
-/// l.4285): read off a member written `{name, tier}`, `0` for a bare name, for one with no tier, and
-/// for a tier that is no unsigned integer; a pool's entries are its members' names either way.
+/// l.4285): read off a member written `{name, tier}`, and `0` for a member that writes no tier, a
+/// bare name or a `{name}` object alike (the reserved `tier` sub-key is optional, l.552-554); a
+/// pool's entries are its members' names either way.
 #[test]
 fn a_pool_members_tier_is_read_off_its_member() {
     let p = pools(
-        "a: {}\nb: {}\nc: {}\npools:\n  t:\n    members: [{name: b, tier: 2}, a, {name: c}]\n\
-         \x20 u:\n    members: [{name: a, tier: minus}]",
+        "a: {}\nb: {}\nc: {}\nd: {}\npools:\n  t:\n    \
+         members: [{name: b, tier: 2}, a, {name: c, tier: 1}, {name: d}]",
     );
     assert_eq!(
         routed(&p, ROUTE_POOL, Some("t")),
-        owned("t", &["b", "a", "c"])
+        owned("t", &["b", "a", "c", "d"])
     );
-    assert_eq!((p.tier("t", 0), p.tier("t", 1), p.tier("t", 2)), (2, 0, 0));
-    assert_eq!(p.tier("u", 0), 0);
+    assert_eq!(
+        (
+            p.tier("t", 0),
+            p.tier("t", 1),
+            p.tier("t", 2),
+            p.tier("t", 3)
+        ),
+        (2, 0, 1, 0)
+    );
     assert_eq!(p.tier("absent", 0), 0);
+}
+
+/// A BAD CORE-OWNED TIER IS REFUSED, NEVER READ AS `0` (no-float-money count-read finding on
+/// `members`, coordinator ruling): a member that writes a `tier` whose value is no integer,
+/// negative or wider than `u32` is refused by the section build at config time rather than routed
+/// at the top tier. A member that writes NO tier states none and builds at tier `0`
+/// (`a_pool_members_tier_is_read_off_its_member`): `{name: b}` is the member spelling the route
+/// tests' `SECTION` writes, and refusing it would refuse a section the build has always taken. RED
+/// before the refusal: each of these built, at tier `0`.
+#[test]
+fn a_member_with_a_bad_tier_is_refused_at_the_section_build() {
+    for (what, member) in [
+        ("a word", "{name: a, tier: minus}"),
+        ("a negative", "{name: a, tier: -1}"),
+        ("a float", "{name: a, tier: 1.5}"),
+        ("wider than u32", "{name: a, tier: 4294967296}"),
+    ] {
+        let section: serde_yaml::Value =
+            serde_yaml::from_str(&format!("a: {{}}\npools:\n  u:\n    members: [{member}]"))
+                .expect("yaml");
+        let refused = DoorPools::of(&section)
+            .err()
+            .unwrap_or_else(|| panic!("{what}: a member written {member} built"));
+        assert!(
+            refused.contains("pool 'u'") && refused.contains("member 'a'"),
+            "{what}: the refusal names the pool and member: {refused}"
+        );
+    }
 }
 
 /// A NAMED-DEFINITION SECTION'S POOLS, AS THE ROOT HANDS THEM: each member written `{name, tier}`,
@@ -288,12 +324,13 @@ fn named_definition_pools_are_tiered_in_declared_order_and_the_plane_sees_bare_n
             busbar_kernel::config::pools::CandidatePoolCfg {
                 members: vec!["b".to_string(), "a".to_string()],
                 repeatable: vec!["read".to_string()],
+                breaker: None,
             },
         )]
         .into();
     let mut section: serde_yaml::Value = serde_yaml::from_str("a: {}\nb: {}").expect("yaml");
     crate::root::serve::pools_into(&mut section, &stated);
-    let p = DoorPools::of(&section);
+    let p = DoorPools::of(&section).expect("the pools");
     assert_eq!(
         routed(&p, ROUTE_POOL, Some("twins")),
         owned("twins", &["b", "a"])
@@ -312,6 +349,53 @@ fn named_definition_pools_are_tiered_in_declared_order_and_the_plane_sees_bare_n
     );
     assert_eq!(pool["member_granted"], serde_yaml::Value::Bool(true));
     assert_eq!(handed["a"], section["a"], "every other key as written");
+}
+
+/// A PLANE'S POOL CARRIES ITS `breaker:` BLOCK TO ITS DOOR'S EGRESS, AND ONLY THERE (BUSBAR-1.6.0.md
+/// THE DESIGN §1: "Any plugin gets all functionality"; §5: the breaker is the host's valve). The
+/// root writes the pool's block beside its members, the door's egress reads it back as the same
+/// block, and the plane is handed its section without it — byte-identical to a pool that states
+/// none. A pool with no block reads `None`, the defaults every default config runs under.
+#[test]
+fn a_planes_pool_breaker_block_reaches_its_egress_and_never_the_plane() {
+    let block = busbar_kernel::config::BreakerCfg {
+        base_cooldown_secs: 30,
+        max_cooldown_secs: 300,
+        ..Default::default()
+    };
+    let stated: std::collections::BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg> = [
+        (
+            "tuned".to_string(),
+            busbar_kernel::failover::CandidatePoolCfg {
+                members: vec!["a".to_string(), "b".to_string()],
+                repeatable: Vec::new(),
+                breaker: Some(block.clone()),
+            },
+        ),
+        (
+            "plain".to_string(),
+            busbar_kernel::failover::CandidatePoolCfg {
+                members: vec!["a".to_string(), "b".to_string()],
+                repeatable: Vec::new(),
+                breaker: None,
+            },
+        ),
+    ]
+    .into();
+    let mut section: serde_yaml::Value = serde_yaml::from_str("a: {}\nb: {}").expect("yaml");
+    crate::root::serve::pools_into(&mut section, &stated);
+    let p = DoorPools::of(&section).expect("the pools");
+    assert_eq!(
+        p.breaker("tuned"),
+        Some(&block),
+        "the pool's own block, as stated"
+    );
+    assert_eq!(p.breaker("plain"), None, "no block: the defaults");
+    let handed = crate::root::serve::plane_settings(&section);
+    assert_eq!(
+        handed["pools"]["tuned"], handed["pools"]["plain"],
+        "the plane is handed the same pool whether or not the host tunes its breaker"
+    );
 }
 
 /// AN ANONYMOUS UNIT NEVER REACHES A BILLED PATH (ARCHITECT P3 (a)): with no key it is admitted only
@@ -782,7 +866,7 @@ fn resolve_upgrading(
     };
     super::member_routes(
         &section,
-        &DoorPools::of(&section),
+        &DoorPools::of(&section).expect("the pools"),
         served,
         &reach,
         &busbar_contract::config_time::ConfigScope::config_time(),
@@ -1482,7 +1566,7 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
         };
         let routes = super::member_routes(
             &section,
-            &DoorPools::of(&section),
+            &DoorPools::of(&section).expect("the pools"),
             &facts,
             &reach,
             &busbar_contract::config_time::ConfigScope::config_time(),
@@ -1666,7 +1750,7 @@ fn jwt_bearer_routes(
     };
     let routes = super::member_routes(
         &section,
-        &DoorPools::of(&section),
+        &DoorPools::of(&section).expect("the pools"),
         &facts,
         &reach,
         &busbar_contract::config_time::ConfigScope::config_time(),
@@ -2504,7 +2588,7 @@ pub(crate) mod tool_door {
             // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
             let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
             // Its connection reads through a ticket (the door's `exchange`) wake on the dispatcher.
-            let connector = busbar_core_connector::process::build(
+            let connector = busbar_core_connector::process::build_with_secrets(
                 || {
                     crate::root::connector::entries(
                         crate::LINKED_TRANSPORT_DOORS,
@@ -2515,6 +2599,7 @@ pub(crate) mod tool_door {
                 &[],
                 dispatcher.conn_waker(),
                 busbar_core_connector::pool::PoolPosture::NONE,
+                busbar_kernel::config::secret::resolve_linked_string_at_config,
             )
             .expect("the connector builds");
             let plane = bound(
@@ -2605,7 +2690,7 @@ pub(crate) mod tool_door {
                 host: {
                     let live_app = Arc::clone(&live_app);
                     Arc::new(move || {
-                        busbar_kernel::plane_host::engine_host(
+                        busbar_kernel::plane_driver::engine_host(
                             live_app
                                 .get()
                                 .expect("the rig's App is built before any unit"),
@@ -2646,7 +2731,7 @@ pub(crate) mod tool_door {
             // attaches it over its live snapshot.
             if let Some(kernel) = late.kernel() {
                 let _attached = kernel
-                    .attach_standing(busbar_kernel::plane_host::standing_over(Arc::clone(&app)));
+                    .attach_standing(busbar_kernel::plane_driver::standing_over(Arc::clone(&app)));
             }
             // Its tick schedule and ready-session fan-out, as the process spawns them.
             served.spawn_ticks();
@@ -8002,11 +8087,12 @@ fn a_registration_members_anchors_reach_and_binding_hold_on_every_need_it_rides(
     let post = std::sync::Arc::new(crate::root::plane_node::NodeEndPost::new(node));
     super::compose_egress(
         &facts,
-        &DoorPools::of(&section),
+        &DoorPools::of(&section).expect("the pools"),
         instance,
         std::sync::Arc::clone(&table) as std::sync::Arc<dyn busbar_contract::conn::PollConns>,
         &routes,
         post as std::sync::Arc<dyn busbar_kernel_egress::ports::Journal>,
+        std::sync::Arc::new(crate::root::egress_ports::NodeClock::new()),
         1,
     )
     .expect("the egress composes");
@@ -8545,5 +8631,110 @@ fn asking_whether_a_name_is_configured_allocates_nothing() {
         after - before,
         0,
         "a membership probe on the request path allocates nothing"
+    );
+}
+
+/// A plane's trust keys whose pin, under mechanism `peer`, pins the far end's key.
+const PEER_KEY_PIN: &[busbar_contract::plane::TrustKeyDecl] =
+    &[busbar_contract::plane::TrustKeyDecl {
+        key: "pin",
+        role: busbar_contract::plane::TrustRole::Pin,
+        fingerprint: false,
+        default: None,
+        mechanisms: &[busbar_contract::plane::PinMechanismDecl {
+            token: "peer",
+            root: true,
+            peer_key: true,
+        }],
+    }];
+
+/// The anchors the host reads off registration `fs` writing `pin: {mechanism: peer, key: <key>}`.
+fn peer_pinned(key: &str) -> Result<busbar_contract::transport::trust::Anchors, String> {
+    let served = crate::root::loader::dispatch::kinds::plane::ServedFacts {
+        section: "upstreams",
+        trust_keys: PEER_KEY_PIN.to_vec(),
+        ..Default::default()
+    };
+    let registration: serde_yaml::Value = serde_yaml::from_str(&format!(
+        "url: 'https://far.example/x'\npin: {{mechanism: peer, key: '{key}'}}"
+    ))
+    .expect("yaml");
+    super::registration_anchors(
+        "fs",
+        &registration,
+        busbar_contract::conn::NeedId(0),
+        &served,
+        &busbar_kernel::config::secret::SecretResolver::builtins_only(),
+    )
+}
+
+/// A REGISTRATION'S PEER-KEY PIN IS READ TO ITS CANONICAL SPELLING by the host: the documented
+/// `sha256/<base64>` and its plain base64 alias seal the same pin. RED: a pin that names no digest
+/// (a stand-in such as `sha256/BASE=`) refuses the load in these exact words, naming the
+/// registration and the field and stating the form; the value itself is not echoed. Before, it was
+/// sealed as written and every connection to the far end was refused.
+#[test]
+fn red_a_peer_key_pin_naming_no_digest_refuses_the_load_naming_the_field_and_its_form() {
+    let canonical = busbar_contract::transport::trust::key_pin(b"a subject public key info");
+    let plain = canonical
+        .strip_prefix("sha256/")
+        .expect("tagged")
+        .to_owned();
+    for written in [&canonical, &plain] {
+        let anchors = peer_pinned(written).expect("a pin of one digest reads");
+        assert_eq!(
+            anchors.key_pin.as_deref(),
+            Some(canonical.as_str()),
+            "{written}"
+        );
+    }
+    for bad in ["sha256/BASE=", "sha1/AAAA", "not a pin"] {
+        let refused = peer_pinned(bad).expect_err("refused");
+        assert_eq!(
+            refused,
+            "`upstreams.fs`: `pin.key:` is not a key pin. Write `sha256/<base64>`: the standard, \
+             padded base64 of the 32-byte SHA-256 digest of the far end's certificate \
+             SubjectPublicKeyInfo (the plain `<base64>` of the same digest is also accepted).",
+            "{bad}"
+        );
+        assert!(!refused.contains(bad), "the value is not echoed: {refused}");
+    }
+}
+
+/// LAW 7 (BUSBAR-1.6.0.md Part 1: a plugin loads iff config uses it; ARCHITECT ruling 2026-10-20
+/// on root#7 / loader#9): serving one configured outbound style binds the one linked auth row that
+/// states it, and no other. Which row states a style is read off each row's static Statement
+/// (reading, not loading), never by binding every row to ask.
+#[test]
+fn serving_a_style_binds_only_the_linked_row_that_states_it() {
+    let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
+        crate::root::loader::dispatch::DispatchConfig::default(),
+    ));
+    let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
+    let linked = crate::LINKED.auths;
+    assert!(
+        linked.len() > 1,
+        "the default build links more than one auth row: {}",
+        linked.len()
+    );
+    let auths = super::OutboundAuths::new(
+        dispatcher,
+        linked,
+        None,
+        crate::root::loader::dispatch::ConnTable::NoNeeds,
+    );
+    let served = auths
+        .serving("bearer", &serde_json::json!({}))
+        .expect("the serving row opens");
+    assert!(served.is_some(), "a linked row states `bearer`");
+    let bound = auths
+        .bound
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert_eq!(
+        bound.len(),
+        1,
+        "only the row serving the style is bound, once: {bound:?}"
     );
 }

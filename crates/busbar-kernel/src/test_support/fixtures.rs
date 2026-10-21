@@ -347,14 +347,14 @@ impl busbar_kernel::test_support::TestAppSeam for TestApp {
 impl busbar_kernel::test_support::BuiltAppSeam for crate::state::App {
     fn engine_host_of(
         app: &std::sync::Arc<Self>,
-    ) -> std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost> {
-        crate::plane_host::engine_host(app)
+    ) -> std::sync::Arc<dyn busbar_kernel::plane_driver::EngineHost> {
+        crate::plane_driver::engine_host(app)
     }
 
     fn engine_host_value_of(
         app: std::sync::Arc<Self>,
-    ) -> impl busbar_kernel::plane_host::EngineHost + 'static {
-        crate::plane_host::engine_host_value(&app)
+    ) -> impl busbar_kernel::plane_driver::EngineHost + 'static {
+        crate::plane_driver::engine_host_value(&app)
     }
 
     fn router_of(app: std::sync::Arc<Self>) -> axum::Router {

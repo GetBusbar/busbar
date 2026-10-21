@@ -349,14 +349,16 @@ fn meter_script(p: &Plugin<Plane>) -> MeterObs {
 
 fn meter_expected() -> Vec<String> {
     vec![
-        "caller audio Ready units=[]".to_string(),
-        "turn attempt Ready units=[]".to_string(),
+        // Every answer reports the open turn's running seconds (Q128 u64: a cancel or a cut
+        // reports nothing of its own, so the last answer before it is what bills).
+        "caller audio Ready units=[4:1=2]".to_string(),
+        "turn attempt Ready units=[4:1=2]".to_string(),
         format!("far usage Ready units=[{}]", usage_units(2)),
         format!("collect Ready units=[{}]", usage_units(2)),
         "short Failed units=[needed 6]".to_string(),
-        format!("short re-call Ready units=[{}]", usage_units(2)),
+        format!("short re-call Ready units=[{}]", usage_units(4)),
         format!("caller end Ready units=[{}]", usage_units(4)),
-        "unanswered audio Ready units=[]".to_string(),
+        "unanswered audio Ready units=[4:1=2]".to_string(),
         "unanswered end Ready units=[4:1=2]".to_string(),
     ]
 }
@@ -390,8 +392,10 @@ fn meter_check(o: &MeterObs) -> Result<String, String> {
     Ok(
         "the door counts in its six declared classes plus the per-session fee, admits on no \
          estimate, and reports every turn's far-end tokens and audio seconds as cumulative \
-         REPORTED units: once per turn (a short answer's re-call does not count its audio \
-         twice), the open turn settled once at the end, and no fee unless the far end answered. \
+         REPORTED units: the open turn's seconds running in every answer (so the last answer \
+         before a cancel or a cut bills what streamed), each turn counted once (a short answer's \
+         re-call does not count its audio twice), the open turn settled once at the end, and no \
+         fee unless the far end answered. \
          Reserving against the caller's budget chain, capping at its remaining bucket and \
          ledgering are the kernel's session account"
             .to_string(),

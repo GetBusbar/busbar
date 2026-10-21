@@ -225,6 +225,11 @@ pub trait SecretCalls: Send + Sync {
 /// root admitted, linked or dropped in, by the `module` a reference spells (its Statement name or an
 /// alias). Installed once, in the root's rows; the kernel names nothing behind it.
 pub trait SecretAxis: Send + Sync {
+    /// The SUGARS the admitted secret plugins' Statements declare (audit contract-admin #10, Law 1:
+    /// the shorthand a reference may use is each plugin's own declaration): what the host reads
+    /// its configuration's secret references against, naming no source itself.
+    fn sugars(&self) -> crate::secret_ref::Sugars;
+
     /// Whether a secret plugin answers `module`, linked or dropped in.
     fn answers(&self, module: &str) -> bool;
 

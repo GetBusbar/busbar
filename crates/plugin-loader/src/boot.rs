@@ -228,6 +228,10 @@ pub struct Candidate {
     /// DESIGN §11.11 R4): its `resolve` runs on the host's disk lane at config time, never on a
     /// request path.
     pub disk: bool,
+    /// Whether its `decide` may answer an order (`declares.hook.orders`, a `kind: hook` plugin;
+    /// `true` unless declared `false`): a hook that declared it never orders is refused when it
+    /// does ([`crate::hook_door::HookInstance::open_declaring`]).
+    pub orders: bool,
 }
 
 impl Candidate {
@@ -273,6 +277,7 @@ impl Candidate {
             stated,
             origin,
             disk: false,
+            orders: true,
         })
     }
 
@@ -291,6 +296,15 @@ impl Candidate {
         Self::from_rendering(stated, Some(&manifest.alias), origin)
             .map(|c| c.answering(&manifest.former_names))
             .map(|c| c.reading_disk(manifest.declares.disk))
+            .map(|c| c.ordering(manifest.declares.hook_orders()))
+    }
+
+    /// This candidate, a hook that may answer an order only when `orders` (its
+    /// `declares.hook.orders`).
+    #[must_use]
+    pub fn ordering(mut self, orders: bool) -> Self {
+        self.orders = orders;
+        self
     }
 
     /// This candidate, its source reading the local disk when `disk` (its `declares.disk`: a
@@ -355,6 +369,34 @@ impl Candidate {
                 })
             })
     }
+}
+
+/// THE SUGARS `candidates` DECLARE (audit contract-admin #10, Law 1: the secret shorthand is each
+/// plugin's own declaration; the host reads it and names none): each candidate's Statement
+/// rewrites, read off its rendering, declared in turn. A plugin met twice (linked and dropped in,
+/// one plugin by the one-version rule) declares once.
+///
+/// # Errors
+///
+/// A rendering that does not read back, or what [`busbar_contract::secret_ref::Sugars::declare`]
+/// refuses: two plugins claiming one sugar word or one role, a sugar that is core grammar or names
+/// no settings key.
+pub fn sugars_of(candidates: &[Candidate]) -> Result<busbar_contract::secret_ref::Sugars, String> {
+    let mut sugars = busbar_contract::secret_ref::Sugars::default();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for c in candidates {
+        if !seen.insert(c.name.as_str()) {
+            continue;
+        }
+        let r: Read = read(&c.stated).map_err(|e| {
+            format!(
+                "plugin '{}': its Statement rendering does not read back at byte {}",
+                c.name, e.at
+            )
+        })?;
+        sugars.declare(&c.name, &r.rewrites)?;
+    }
+    Ok(sugars)
 }
 
 /// THE ONE-OWNER RULE over an axis's candidates, linked and dropped in alike (Q-P4-12 (ARCHITECT, BUSBAR-1.6.0.md:106 "it refuses at boot when two plugins claim the same thing")): two DIFFERENT

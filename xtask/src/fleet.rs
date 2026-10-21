@@ -9,6 +9,7 @@
 
 pub mod plugin_gates;
 pub mod registry;
+pub mod zero_spread;
 
 #[cfg(test)]
 #[path = "fleet/registry_tests.rs"]
