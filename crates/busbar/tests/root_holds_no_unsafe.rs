@@ -118,3 +118,110 @@ fn the_unsafe_scan_sees_what_it_forbids() {
     assert!(findings("let s = \"no unsafe here\";").is_empty());
     assert!(findings("#![forbid(unsafe_code)]").is_empty());
 }
+
+/// Every `#[macro_export]` macro of `busbar-contract` whose definition writes `unsafe`, or invokes
+/// one that does: `(name, body)` read off the contract's sources, closed over invocation.
+fn unsafe_arm_macros() -> Vec<String> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../busbar-contract/src");
+    let mut files = Vec::new();
+    rust_files(&dir, &mut files);
+    let mut macros: Vec<(String, String)> = Vec::new();
+    for file in &files {
+        let src = std::fs::read_to_string(file).expect("read a contract source");
+        let parts: Vec<&str> = src.split("macro_rules!").collect();
+        for (n, part) in parts.iter().enumerate().skip(1) {
+            if !parts[n - 1].trim_end().ends_with("#[macro_export]")
+                && !parts[n - 1]
+                    .lines()
+                    .rev()
+                    .take(4)
+                    .any(|l| l.trim() == "#[macro_export]")
+            {
+                continue;
+            }
+            let name: String = part
+                .trim_start()
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            macros.push((name, code_lines(part).join("\n")));
+        }
+    }
+    let mut unsafe_arms: Vec<String> = macros
+        .iter()
+        .filter(|(_, body)| findings(body).iter().any(|f| f.contains("unsafe")))
+        .map(|(name, _)| name.clone())
+        .collect();
+    loop {
+        let more: Vec<String> = macros
+            .iter()
+            .filter(|(name, body)| {
+                !unsafe_arms.contains(name)
+                    && unsafe_arms.iter().any(|m| body.contains(&format!("{m}!")))
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        if more.is_empty() {
+            break;
+        }
+        unsafe_arms.extend(more);
+    }
+    unsafe_arms
+}
+
+/// Every invocation, in `src`'s code, of a macro in `names`, as `line: text`.
+fn invocations(src: &str, names: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for (n, code) in code_lines(src).iter().enumerate() {
+        for name in names {
+            let at = code.match_indices(&format!("{name}!")).any(|(i, _)| {
+                code[..i]
+                    .chars()
+                    .last()
+                    .is_none_or(|c| !(c.is_alphanumeric() || c == '_'))
+            });
+            if at {
+                out.push(format!("{}: {}", n + 1, code.trim()));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn the_composition_root_invokes_no_macro_that_writes_unsafe() {
+    let names = unsafe_arm_macros();
+    assert!(
+        names.iter().any(|n| n == "plugin_door"),
+        "the contract's door macro writes `unsafe` and is in the set: {names:?}"
+    );
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    rust_files(&dir.join("src"), &mut files);
+    let mut found = Vec::new();
+    for file in &files {
+        let src = std::fs::read_to_string(file).expect("read a root source");
+        for f in invocations(&src, &names) {
+            found.push(format!("{}:{f}", file.display()));
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "the root invokes a macro that writes `unsafe` (build the door in the loader's fixtures):\n{}",
+        found.join("\n")
+    );
+}
+
+/// RED: the macro scan sees an invocation, qualified or not, and passes a name that only contains
+/// a macro's name.
+#[test]
+fn the_macro_scan_sees_an_invocation() {
+    let names = vec!["plugin_door".to_string()];
+    assert_eq!(
+        invocations("busbar_contract::plugin_door! {", &names).len(),
+        1
+    );
+    assert_eq!(invocations("    plugin_door!(x)", &names).len(), 1);
+    assert!(invocations("my_plugin_door!(x)", &names).is_empty());
+    assert!(invocations("// plugin_door! in a comment", &names).is_empty());
+}

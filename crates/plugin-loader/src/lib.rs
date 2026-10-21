@@ -103,6 +103,15 @@ pub mod test_issuer;
 #[path = "tests/test_support.rs"]
 pub mod test_support;
 
+/// TEST ONLY: the composition root's door fixtures (status row 195): doors built by the contract's
+/// door macro, whose expansion writes `unsafe`, kept here so the `forbid(unsafe_code)` root holds no
+/// such expansion. Under `test-support`, which only the root's `[dev-dependencies]` turns on.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+#[allow(unsafe_code)] // TEST ONLY: plugin_door! fixtures the composition root's tests drive
+#[path = "../tests/fixtures/root_door_fixtures.rs"]
+pub mod root_door_fixtures;
+
 /// THE REGISTRY AS THE KERNEL READS IT (the contract's `PluginRows`).
 pub mod rows;
 

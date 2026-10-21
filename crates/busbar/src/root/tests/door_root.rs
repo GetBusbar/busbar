@@ -59,9 +59,9 @@ fn a_door_root_store_row_states_what_its_store_constant_states() {
 }
 
 /// GREEN: EVERY LINKED SECRET AND PLANE DOOR whose crate states a `declares` document by constant
-/// (`linked-declares`): where its door's Statement states one too, the two are the same JSON; a
-/// door-root row reads only the Statement's. Every door-root row on either axis states one wherever
-/// its axis reads it.
+/// (`linked-declares`): wherever its door's Statement states one too, the two are the same JSON (a
+/// door-root row reads only the Statement's). Every door-root row on either axis states one, and it
+/// is JSON.
 #[test]
 fn a_door_root_declares_is_the_document_its_crate_declares() {
     let pairs: Vec<(DoorFn, &str)> = crate::LINKED
@@ -96,9 +96,12 @@ fn a_door_root_declares_is_the_document_its_crate_declares() {
         .filter(|r| r.axis == "secret-doors" || r.axis == "plane-door")
     {
         let stated = root.stated().expect("a door-root door states itself");
-        if let Some(document) = &stated.declares {
-            json(document);
-        }
+        json(
+            stated
+                .declares
+                .as_deref()
+                .expect("a door-root secret or plane door states its declares"),
+        );
     }
 }
 
@@ -163,19 +166,40 @@ fn a_door_root_hook_row_boots_off_its_door() {
     assert_eq!(check_statements(&rows), Ok(()));
 }
 
-/// GREEN: A DOOR-ROOT PLANE DOOR ROW reads its door alone.
-#[cfg(linked_axis_plane_door)]
+/// RED, TABLE-DRIVEN: A DOOR-ROOT ROW OF A KIND THAT CARRIES A `declares` DOCUMENT (secret, plane,
+/// export) whose door's Statement states none (`EXT_DECLARES`) refuses the boot, naming the row and
+/// its axis: the document is never read as an empty one. The subjects are this build's linked doors
+/// that state none today (their crates are transitional and declare by constant); every such
+/// family the build links is held to it.
 #[test]
-fn a_door_root_plane_door_row_boots_off_its_door() {
-    let rows: Vec<DoorRoot> = crate::LINKED
-        .plane_doors
-        .iter()
-        .enumerate()
-        .map(|(n, door)| row(24 + n, "plane-door", *door, None))
-        .collect();
-    assert!(!rows.is_empty(), "the plane door axis is linked");
-    assert!(rows.len() <= 8, "the plane door rows fit their cells");
-    assert_eq!(check_statements(&rows), Ok(()));
+fn a_door_root_row_whose_kind_carries_declares_must_state_them() {
+    let mut families: Vec<(&'static str, Vec<DoorFn>)> = vec![
+        ("secret-doors", crate::LINKED.secrets.to_vec()),
+        ("plane-door", crate::LINKED.plane_doors.to_vec()),
+        (
+            "export-doors",
+            crate::LINKED.export_doors.iter().map(|e| e.door).collect(),
+        ),
+    ];
+    families.retain(|(_, doors)| !doors.is_empty());
+    let mut held = 0;
+    for (n, (axis, doors)) in families.into_iter().enumerate() {
+        let Some(door) = doors
+            .into_iter()
+            .find(|door| read(*door).expect("it states itself").declares.is_none())
+        else {
+            continue;
+        };
+        let refused = check_statements(&[row(40 + n, axis, door, None)])
+            .expect_err("a door-root row stating no declares is refused");
+        assert!(
+            refused.contains(&format!("the `{axis}` axis"))
+                && refused.contains("states none (`EXT_DECLARES`)"),
+            "{refused}"
+        );
+        held += 1;
+    }
+    assert!(held > 0, "a declares-carrying family is held to it");
 }
 
 /// GREEN: THIS BUILD'S OWN DOOR-ROOT ROWS boot: each crate's door admitted by the loader

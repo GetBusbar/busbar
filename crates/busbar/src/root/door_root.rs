@@ -21,7 +21,7 @@
 //!   any) and whether it is ephemeral (`MARK_EPHEMERAL`); its canonical name is its row's
 //!   (`linked-canonical`, else its crate's package name: the Statement has no home for it);
 //! * an export row: its name, its one alias (`REWRITE_ALIAS`) and its `declares` (`EXT_DECLARES`);
-//! * a secret or plane door row: its `declares` (`EXT_DECLARES`), where it states one.
+//! * a secret or plane door row: its `declares` (`EXT_DECLARES`), which it must state.
 //!
 //! What a door states is read ONCE into its row's own `static` cell (a `OnceLock<Stated>` the
 //! generated table declares beside the forwarder) and borrowed from there for the process.
@@ -158,6 +158,13 @@ impl DoorRoot {
     }
 }
 
+/// The kinds whose rows carry a `declares` document (a secret's disk need, a plane's and an
+/// export's metric families, diagnostics and answers): a door-root row of one states it on its
+/// Statement (`EXT_DECLARES`, #1399).
+fn declares_kind(kind: KindCode) -> bool {
+    matches!(kind, KindCode::Secret | KindCode::Plane | KindCode::Export)
+}
+
 /// The kind each door-root axis registers.
 fn kind_of(axis: &str) -> Option<KindCode> {
     Some(match axis {
@@ -234,15 +241,17 @@ pub fn check_statements(rows: &[DoorRoot]) -> Result<(), String> {
                         stated.aliases.len()
                     ));
                 }
-                if stated.declares.is_none() {
-                    return Err(format!(
-                        "plugin '{}': its door's Statement states no `declares` document \
-                         (`EXT_DECLARES`), which an export's registry row is built from",
-                        row.row
-                    ));
-                }
             }
             _ => {}
+        }
+        // A KIND THAT CARRIES A `declares` DOCUMENT states it on a door-root row's Statement, the
+        // one place it is read: never read as an empty one.
+        if declares_kind(want) && stated.declares.is_none() {
+            return Err(format!(
+                "plugin '{}': its row registers it on the `{}` axis, whose kind carries a \
+                 `declares` document, but its door's Statement states none (`EXT_DECLARES`)",
+                row.row, row.axis
+            ));
         }
     }
     Ok(())
