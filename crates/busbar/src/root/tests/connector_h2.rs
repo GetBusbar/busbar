@@ -282,7 +282,7 @@ fn connector(settings: &TransportSettings, trust: &EgressTrust) -> Connector {
     })
     .expect("the guard");
     let view = Transports::new(
-        crate::root::connector::entries(crate::LINKED_TRANSPORT_DOORS, settings)
+        crate::root::connector::entries(crate::linked_transport_doors(), settings)
             .expect("the linked doors open"),
     )
     .expect("the view");

@@ -220,7 +220,7 @@ fn connector(pki: &Pki, served: &ServedFacts, need: NeedId) -> Connector {
     .expect("the guard");
     let view = Transports::new(
         crate::root::connector::entries(
-            crate::LINKED_TRANSPORT_DOORS,
+            crate::linked_transport_doors(),
             &TransportSettings::default(),
         )
         .expect("the linked doors open"),

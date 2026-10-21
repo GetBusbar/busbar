@@ -2543,7 +2543,7 @@ pub(crate) mod tool_door {
             let connector = busbar_core_connector::process::build_with_secrets(
                 || {
                     crate::root::connector::entries(
-                        crate::LINKED_TRANSPORT_DOORS,
+                        crate::linked_transport_doors(),
                         &busbar_contract::transport::TransportSettings::default(),
                     )
                 },

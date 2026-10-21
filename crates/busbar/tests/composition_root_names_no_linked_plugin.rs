@@ -264,8 +264,10 @@ unit-b = "beta"
 
 /// THE TRANSPORT AND CLAIMS AXES, and the rows no feature can drop. A row whose crate is a required
 /// dependency is linked in every build and its key only names the row; two rows may share a crate,
-/// each naming its own entry; a `transport` row fills `transports` with the entry's `KEY`,
-/// `COMPOSES_OVER`, and the build, claims and upgrade claims its `door` answers; a `claims` row fills
+/// each naming its own entry; a `transport` row fills `transports` with the row its bare `door`
+/// makes (`linked_transport!`: key, layers, build, claims and upgrade claims, all read off the door's
+/// Statement), and never names a constant of its entry's, so a door-root entry whose only public
+/// item is `door` links as a `linked` module does (BUSBAR-1.6.0.md l.3560-3561); a `claims` row fills
 /// `claims` with its `PLANE` and `CLAIMS`. A row on an OPTIONAL crate still needs its feature,
 /// `claims` off the plane axis is refused, and so is a `transport` row off the door axis: a
 /// transport is linked only as its memory-ABI door (step 36).
@@ -301,22 +303,43 @@ host = "unit"
         1,
         "two rows on one crate link it once: {out}"
     );
-    // A door row is built from its door and reads its claims, upgrades, lines and offered points off
-    // the door's Statement (`crate::root::doors::{build, claims_of, upgrades_of, lines_of,
-    // offered_of}`).
-    assert!(out.contains("key: busbar_wire::linked::KEY, composes_over: busbar_wire::linked::COMPOSES_OVER, build: __door_build_0, claims: __door_claims_0, upgrades: __door_upgrades_0, lines: __door_lines_0, offered: __door_offered_0 }"), "{out}");
+    // A door row is its bare door: the one row macro reads its key, layers, claims, upgrades, lines
+    // and offered points off the door's Statement (`crate::root::linked::linked_transport!`).
     assert!(
         out.contains(
-            "fn __door_claims_0() -> Vec<&'static str> {\n    crate::root::doors::claims_of(busbar_wire::linked::door)\n}"
+            "    transports: &[crate::root::linked::linked_transport!(busbar_wire::linked::door), \
+             crate::root::linked::linked_transport!(busbar_wire::linked::high::door), ],"
         ),
         "{out}"
     );
-    assert!(out.contains("key: busbar_wire::linked::high::KEY"), "{out}");
+    // RED: no row reads a constant its entry exports beside `door` (a door-root crate has none).
+    for constant in ["::KEY", "::COMPOSES_OVER", "::SESSION"] {
+        assert!(!out.contains(constant), "a row names `{constant}`: {out}");
+    }
+    // The connector's view is the same doors, keyed by what each Statement states.
+    assert!(
+        out.contains("&[busbar_wire::linked::door, busbar_wire::linked::high::door, ];"),
+        "{out}"
+    );
+    assert!(
+        out.contains(".map(|door| (crate::root::doors::row_facts(*door).key, *door))"),
+        "{out}"
+    );
+    // A DOOR-ROOT ENTRY (its crate root, whose only public item is `door`) links the same way.
+    let door_root = manifest.replace(
+        "wire-high = \"busbar_wire::linked::high\"",
+        "wire-high = \"busbar_wire\"",
+    );
+    let (rooted, _) = linked_source(&door_root, &|f: &str| f == "host");
+    assert!(
+        rooted.contains("crate::root::linked::linked_transport!(busbar_wire::door), "),
+        "{rooted}"
+    );
     assert!(out.contains("::std::sync::Arc::new(busbar_plane_host::linked::PLANE), claims: busbar_plane_host::linked::CLAIMS"), "{out}");
 
     let (off, _) = linked_source(manifest, &|_: &str| false);
     assert!(
-        off.contains("busbar_wire::linked::KEY"),
+        off.contains("crate::root::linked::linked_transport!(busbar_wire::linked::door)"),
         "a required crate's row is always linked: {off}"
     );
     assert!(

@@ -640,7 +640,7 @@ fn transport_uses() -> Uses {
             .map(String::as_str),
     );
     uses.schemes.extend(
-        crate::LINKED_TRANSPORT_DOORS
+        crate::linked_transport_doors()
             .iter()
             .filter_map(|(_, door)| Candidate::linked(*door).ok())
             .flat_map(|c| c.schemes),

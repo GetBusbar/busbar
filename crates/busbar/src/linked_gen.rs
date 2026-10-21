@@ -70,8 +70,9 @@ pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// The transport axis (#3, #30): each row's entry exports its transport's `KEY`, the `COMPOSES_OVER`
-/// it declares and `build(lower, &TransportSettings)`; the root folds the rows bottom-up.
+/// The transport axis (#3, #30): each row's entry exports its memory-ABI `door`, and nothing else is
+/// read off it: the row's key, the layers it composes over and whether it carries a session are its
+/// door's Statement's (`crate::root::linked::linked_transport!`); the root folds the rows bottom-up.
 const TRANSPORT_AXIS: &str = "transport";
 
 /// Beside `transport`: the row's entry exports its memory-ABI `door` instead of a `build`, and the
@@ -459,11 +460,9 @@ pub(crate) fn linked_source(
     }
     out.push_str("],\n");
     out.push_str("    transports: &[");
-    let mut door_builds = String::new();
-    for (n, (e, axes)) in linked
+    for (e, axes) in linked
         .iter()
         .filter(|(_, a)| a.iter().any(|x| x == TRANSPORT_AXIS))
-        .enumerate()
     {
         // A TRANSPORT LOADS ONLY THROUGH ITS DOOR (step 36): there is no transport trait for a row
         // to build itself as, so a transport row without the door axis is a manifest this root
@@ -473,33 +472,10 @@ pub(crate) fn linked_source(
             "Cargo.toml: `{e}` is on the `{TRANSPORT_AXIS}` axis but not the `{DOOR_AXIS}` axis; a \
              transport is linked only as its memory-ABI door"
         );
-        door_builds.push_str(&format!(
-            "fn __door_build_{n}(\n    \
-             settings: &busbar_contract::transport::TransportSettings,\n\
-             ) -> std::sync::Arc<busbar_core_connector::wire::HostWire> {{\n    \
-             crate::root::doors::build({e}::KEY, {e}::door, settings)\n}}\n\
-             fn __door_claims_{n}() -> Vec<&'static str> {{\n    \
-             crate::root::doors::claims_of({e}::door)\n}}\n\
-             fn __door_upgrades_{n}() -> Vec<&'static str> {{\n    \
-             crate::root::doors::upgrades_of({e}::door)\n}}\n\
-             fn __door_lines_{n}() -> Vec<&'static str> {{\n    \
-             crate::root::doors::lines_of({e}::door)\n}}\n\
-             fn __door_offered_{n}() -> busbar_contract::abi::auth::AuthPoints {{\n    \
-             crate::root::doors::offered_of({e}::door)\n}}\n"
-        ));
-        let (build, claims, upgrades, lines, offered) = (
-            format!("__door_build_{n}"),
-            format!("__door_claims_{n}"),
-            format!("__door_upgrades_{n}"),
-            format!("__door_lines_{n}"),
-            format!("__door_offered_{n}"),
-        );
-        out.push_str(&format!(
-            "crate::root::linked::LinkedTransport {{ key: {e}::KEY, composes_over: \
-             {e}::COMPOSES_OVER, build: {build}, claims: {claims}, upgrades: {upgrades}, \
-             lines: {lines}, \
-             offered: {offered} }}, "
-        ));
+        // THE ROW IS ITS BARE `door` (BUSBAR-1.6.0.md l.3560-3561; coordinator ruling (b), row
+        // 159): its key, layers and session are read off the door's Statement, never off a constant
+        // of the entry's, so a door-root crate and a crate with a `linked` module link alike.
+        out.push_str(&format!("crate::root::linked::linked_transport!({e}::door), "));
     }
     out.push_str("],\n");
     out.push_str("    auths: &[");
@@ -552,13 +528,18 @@ pub(crate) fn linked_source(
         out.push_str("],\n");
     }
     out.push_str("};\n");
-    out.push_str(&door_builds);
-    // THE CONNECTOR'S VIEW of the same door rows: each memory-ABI transport door's key and its
-    // `door`, which the root's one Connector opens as a framer entry (`crate::root::connector`).
+    // THE CONNECTOR'S VIEW of the same door rows: each memory-ABI transport door's key, read off
+    // its Statement as its row's is (`crate::root::doors::row_facts`), and its `door`, which the
+    // root's one Connector opens as a framer entry (`crate::root::connector`).
     out.push_str(
-        "/// Every linked memory-ABI transport door, by key, for the root's one Connector.\n\
+        "/// Every linked memory-ABI transport door, by the key its Statement states, for the root's\n\
+         /// one Connector.\n\
          #[allow(dead_code)]\n\
-         pub(crate) static LINKED_TRANSPORT_DOORS: &[(&str, busbar_contract::abi::mechanism::door::DoorFn)] = &[",
+         pub(crate) fn linked_transport_doors() -> &'static [(&'static str, busbar_contract::abi::mechanism::door::DoorFn)] {\n    \
+         static DOORS: ::std::sync::OnceLock<::std::vec::Vec<(&'static str, busbar_contract::abi::mechanism::door::DoorFn)>> =\n        \
+         ::std::sync::OnceLock::new();\n    \
+         DOORS.get_or_init(|| {\n        \
+         let doors: &[busbar_contract::abi::mechanism::door::DoorFn] = &[",
     );
     for (e, axes) in linked
         .iter()
@@ -568,10 +549,18 @@ pub(crate) fn linked_source(
             .iter()
             .any(|x| x == DOOR_AXIS || x == CONNECTOR_DOOR_AXIS)
         {
-            out.push_str(&format!("({e}::KEY, {e}::door), "));
+            out.push_str(&format!("{e}::door, "));
         }
     }
-    out.push_str("];\n");
+    out.push_str(
+        "];\n        \
+         doors\n            \
+         .iter()\n            \
+         .map(|door| (crate::root::doors::row_facts(*door).key, *door))\n            \
+         .collect()\n    \
+         })\n\
+         }\n",
+    );
     // Test builds only: each gauntlet row's declaration key beside the key its plane's gauntlet asks
     // the host-selection seam for (`<crate>::PLANE_KEY`), so the flip is proven to land where the
     // plane looks.

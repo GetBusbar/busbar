@@ -121,6 +121,12 @@ pub(crate) static PUBLISHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const
 #[path = "tests/doors_refresh.rs"]
 mod doors_refresh;
 
+// A linked transport row is its bare `door`: its key, layers and session are its Statement's
+// (`linked::linked_transport!`, `doors::row_facts`).
+#[cfg(test)]
+#[path = "tests/linked_door_root.rs"]
+mod linked_door_root;
+
 // The crate's one plugin fixture (`tests/common/plugins.rs`), shared with the integration tests:
 // how a unit test packs a plugin, drops it in and reads what the boot's scan makes of it.
 #[cfg(test)]

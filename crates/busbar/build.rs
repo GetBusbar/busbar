@@ -262,7 +262,7 @@ fn main() {
     std::fs::write(out_dir.join("driver_words.rs"), words).expect("write driver_words.rs");
 
     // THE LINKED WIRES FOR THE INTEGRATION TESTS (tests only include it): each linked transport row's
-    // entry (`KEY`, `COMPOSES_OVER`, `SESSION`, `build`), the rows this build leaves unlinked, and the same
+    // key, layers and session read off its door's Statement, and its `build`, the rows this build leaves unlinked, and the same
     // bottom-up fold the boot seal runs — so a test addresses a wire by the key its row declares and
     // builds it over the layers the root would, without naming a transport crate.
     let (wires, wires_off) = linked_transports_source(&manifest, &enabled);
@@ -795,7 +795,7 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
         let door = axes
             .iter()
             .any(|(f, a)| *f == key && a.split_whitespace().any(|x| x == DOOR_AXIS));
-        let n = rows.matches("LinkedWire {").count();
+        let n = door_builds.matches("fn __door_build_").count();
         // A TRANSPORT LOADS ONLY THROUGH ITS DOOR (step 36): a transport row off the door axis is a
         // manifest the root refuses (`src/linked_gen.rs`), and so is this table.
         assert!(
@@ -803,19 +803,20 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
             "Cargo.toml: `{key}` is on the transport axis but not the `{DOOR_AXIS}` axis; a \
              transport is linked only as its memory-ABI door"
         );
-        // A door row's entry exports its memory-ABI `door`; the root's doors module (mounted here
-        // under its own name, the tests including this file have no root) builds it, and reads
-        // every scheme it claims off its Statement.
+        // A door row's entry exports its memory-ABI `door`, and nothing else is read off it: its
+        // key, layers and session are its door's Statement's, read by the root's own reader
+        // (`root::doors::row_facts`, mounted here under its own name: the tests including this file
+        // have no root), as the root's linked table reads them (BUSBAR-1.6.0.md l.3560-3561).
         door_builds.push_str(&format!(
             "fn __door_build_{n}(settings: &::busbar_contract::transport::TransportSettings) -> Wire {{\n    \
-             self::__busbar_doors::build(::{entry}::KEY, ::{entry}::door, settings)\n}}\n\
+             let key = self::__busbar_doors::row_facts(::{entry}::door).key;\n    \
+             self::__busbar_doors::build(key, ::{entry}::door, settings)\n}}\n\
              fn __door_claims_{n}() -> Vec<&'static str> {{\n    \
              self::__busbar_doors::claims_of(::{entry}::door)\n}}\n"
         ));
         let (build, claims) = (format!("__door_build_{n}"), format!("__door_claims_{n}"));
         rows.push_str(&format!(
-            "    LinkedWire {{ key: ::{entry}::KEY, composes_over: ::{entry}::COMPOSES_OVER, \
-             session: ::{entry}::SESSION, build: {build}, claims: {claims} }},\n"
+            "        LinkedWire::of(::{entry}::door, {build}, {claims}),\n"
         ));
     }
     let source = format!(
@@ -824,19 +825,38 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
          pub(crate) type Wire = ::std::sync::Arc<::busbar_core_connector::wire::HostWire>;\n\
          /// A wire's build: handed the settings, it answers the boot's admission of the row's door.\n\
          pub(crate) type BuildWire = fn(&::busbar_contract::transport::TransportSettings) -> Wire;\n\
-         /// One linked wire: its registry key, the layers it declares, whether it carries a session,\n\
-         /// its build, and every scheme its entry claims (its own first).\n\
+         /// One linked wire: its registry key, the layers it declares and whether it carries a\n\
+         /// session, each read off its door's Statement; its build; and every scheme its entry claims\n\
+         /// (its own first).\n\
          #[allow(dead_code)]\n\
          pub(crate) struct LinkedWire {{\n    \
              pub(crate) key: &'static str,\n    \
-             pub(crate) composes_over: &'static [&'static str],\n    \
+             pub(crate) composes_over: Vec<&'static str>,\n    \
              pub(crate) session: bool,\n    \
              pub(crate) build: BuildWire,\n    \
              pub(crate) claims: fn() -> Vec<&'static str>,\n\
          }}\n\
-         /// Every wire this build links, in manifest order.\n\
+         impl LinkedWire {{\n    \
+             /// The row of `door`, its key, layers and session read off its Statement.\n    \
+             fn of(\n        \
+                 door: ::busbar_contract::abi::mechanism::door::DoorFn,\n        \
+                 build: BuildWire,\n        \
+                 claims: fn() -> Vec<&'static str>,\n    \
+             ) -> Self {{\n        \
+                 let facts = self::__busbar_doors::row_facts(door);\n        \
+                 Self {{\n            \
+                     key: facts.key,\n            \
+                     composes_over: facts.composes_over,\n            \
+                     session: facts.session,\n            \
+                     build,\n            \
+                     claims,\n        \
+                 }}\n    \
+             }}\n\
+         }}\n\
+         /// Every wire this build links, in manifest order, read off the doors on first use.\n\
          #[allow(dead_code)]\n\
-         pub(crate) static LINKED_TRANSPORTS: &[LinkedWire] = &[\n{rows}];\n\
+         pub(crate) static LINKED_TRANSPORTS: ::std::sync::LazyLock<Vec<LinkedWire>> =\n    \
+             ::std::sync::LazyLock::new(|| vec![\n{rows}    ]);\n\
          /// The transport rows the manifest declares that this build does not link.\n\
          #[allow(dead_code)]\n\
          pub(crate) const LINKED_TRANSPORTS_OFF: usize = {off};\n\

@@ -104,8 +104,9 @@ pub struct Linked {
     /// flips onto the unified loop's ONE-SHOT runner, and of each it flips onto the SESSION runner.
     pub gauntlet_one_shot: &'static [&'static str],
     pub gauntlet_session: &'static [&'static str],
-    /// The transport axis (#3, #30): each linked wire's key, declared layers and build, in manifest
-    /// order — the boot seal folds them bottom-up (see `crate::root::registry`).
+    /// The transport axis (#3, #30): each linked wire's key, declared layers and build, each read off
+    /// its door's Statement (`linked_transport!`), in manifest order — the boot seal folds them
+    /// bottom-up (see `crate::root::registry`).
     pub transports: &'static [LinkedTransport],
     /// Each linked plane's pure plane, as the boot seal registers it, and the claims it declares.
     pub claims: &'static [LinkedClaims],
@@ -157,15 +158,17 @@ pub mod node {
     pub type Drive = fn(Handed) -> Pin<Box<dyn Future<Output = PlaneAnswer> + Send>>;
 }
 
-/// One linked wire, as its crate's entry states it: the registry key, the layers it declares it can
-/// be built over, and its build — handed the layer the root built beneath it, where one is, and the
-/// deployment's transport settings.
+/// One linked wire, as its door's Statement states it: the registry key, the layers it declares it
+/// can be built over, and its build, handed the deployment's transport settings. Every field is read
+/// off the row's bare `door` (`linked_transport!`): no row reads a constant of its crate's, so a
+/// door-root crate whose only public item is `door` (`BUSBAR-1.6.0.md` l.3560) links exactly as a
+/// crate with a `linked` module does (l.3561: a linked row holds the same `door` pointer).
 #[derive(Clone, Copy)]
 pub struct LinkedTransport {
-    /// The wire's registry key.
-    pub key: &'static str,
-    /// The layers it declares, in the order it would take one.
-    pub composes_over: &'static [&'static str],
+    /// The wire's registry key: its door's own claim, which is its Statement's name.
+    pub key: KeyOf,
+    /// The layers its door's tail declares, in the order it would take one.
+    pub composes_over: LayersOf,
     /// Open the row's door and serve it over the host's sockets (it is handed no layer: no transport
     /// names another).
     pub build: BuildTransport,
@@ -185,6 +188,63 @@ pub struct LinkedTransport {
 
 /// A row's claims, read when the seal runs.
 pub type ClaimsOf = fn() -> Vec<&'static str>;
+
+/// A row's registry key, read off its door's Statement when the seal first asks for it.
+pub type KeyOf = fn() -> &'static str;
+
+/// A row's declared layers, read off its door's transport tail when the seal first asks for them.
+pub type LayersOf = fn() -> &'static [&'static str];
+
+/// THE ONE LINKED TRANSPORT ROW, built from its bare `door` and nothing else (`BUSBAR-1.6.0.md`
+/// l.3560-3561; coordinator ruling (b) on row 159): the row's key, layers and session are read once
+/// off the door's Statement by the loader's one reader (`crate::root::doors::row_facts`: the
+/// Statement's name held equal to its own claim, the tail's `composes_over`, the claim rows'
+/// `session`), and its build, claims, upgrade lines, first-line claims and offered points are read
+/// off the same door. The generated linked table expands one per `transport` row, so every
+/// transport, whatever its crate exports beside `door`, is linked through this one path.
+macro_rules! linked_transport {
+    ($door:path) => {{
+        fn facts() -> &'static $crate::root::doors::RowFacts {
+            static FACTS: ::std::sync::OnceLock<$crate::root::doors::RowFacts> =
+                ::std::sync::OnceLock::new();
+            FACTS.get_or_init(|| $crate::root::doors::row_facts($door))
+        }
+        fn key() -> &'static str {
+            facts().key
+        }
+        fn composes_over() -> &'static [&'static str] {
+            facts().composes_over.as_slice()
+        }
+        fn build(
+            settings: &::busbar_contract::transport::TransportSettings,
+        ) -> ::std::sync::Arc<::busbar_core_connector::wire::HostWire> {
+            $crate::root::doors::build(key(), $door, settings)
+        }
+        fn claims() -> ::std::vec::Vec<&'static str> {
+            $crate::root::doors::claims_of($door)
+        }
+        fn upgrades() -> ::std::vec::Vec<&'static str> {
+            $crate::root::doors::upgrades_of($door)
+        }
+        fn lines() -> ::std::vec::Vec<&'static str> {
+            $crate::root::doors::lines_of($door)
+        }
+        fn offered() -> ::busbar_contract::abi::auth::AuthPoints {
+            $crate::root::doors::offered_of($door)
+        }
+        $crate::root::linked::LinkedTransport {
+            key,
+            composes_over,
+            build,
+            claims,
+            upgrades,
+            lines,
+            offered,
+        }
+    }};
+}
+#[allow(unused_imports)]
+pub(crate) use linked_transport;
 
 /// A row's offered auth points, read when the guest lists seal.
 pub type OfferedOf = fn() -> busbar_contract::abi::auth::AuthPoints;

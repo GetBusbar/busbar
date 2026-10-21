@@ -739,7 +739,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // from, every dial judged by the one destination guard. Inbound listening and outbound egress
     // both take it from `root::connector::the()`.
     let _connector = root::connector::boot(
-        LINKED_TRANSPORT_DOORS,
+        linked_transport_doors(),
         &root::policy::client_settings(&cfg.limits),
         dest,
         &[cfg.listen.as_str(), cfg.admin_listen.as_str()],

@@ -399,7 +399,9 @@ plane-a2a-door = "busbar-plane-a2a"
 # `gauntlet_install::install()` flips its `PLANE_DECLARATION.key` onto the one-shot or session runner.
 # `claims`: the pure plane the boot seal registers (`PLANE`) and the claims it declares (`CLAIMS`).
 # `node`: the entry's `install_node`, handed the node a root unit drives the entry's units through.
-# `transport`: a wire's `KEY`, `COMPOSES_OVER` and `build(lower, &TransportSettings)`.
+# `transport`: a wire's memory-ABI `door`, and nothing else: its key (its own claim, which is its
+# Statement's name), the layers it composes over and whether it carries a session are read off the
+# door's Statement (`root::linked::linked_transport!`; BUSBAR-1.6.0.md l.3560-3561).
 # `stores` / `hooks`: an in-process store's `STORE` and a ranking row's `HOOK` (`root::linked`).
 # `auths`: a `kind: auth` plugin's memory-ABI door (`<entry>::door::door`, the one its dropped-in
 # build exports), under its `linked-name` key.
@@ -461,6 +463,9 @@ busbar-export-otlp = "busbar_export_otlp::door"
 # The file and webhook sinks' doors are at their logic crates' roots (`pub use table::door`).
 busbar-export-file = "busbar_export_file"
 busbar-export-webhook = "busbar_export_webhook"
+# A door-root transport's entry is its crate root, whose only public item is `door`
+# (BUSBAR-1.6.0.md l.3560); the row reads everything else off that door's Statement.
+busbar-transport-grpc = "busbar_transport_grpc"
 plane-streaming = "busbar_plane_streaming::door"
 
 # Each linked plane door's declared metadata (its manifest `declares` section, as JSON): the item that
