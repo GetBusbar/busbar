@@ -122,3 +122,7 @@ pub fn rewrite_retired(
     }
     Some((old, alias))
 }
+
+#[cfg(test)]
+#[path = "tests/legacy_table_tests.rs"]
+mod legacy_table_tests;
