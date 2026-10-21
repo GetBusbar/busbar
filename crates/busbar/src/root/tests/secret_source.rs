@@ -450,6 +450,98 @@ async fn decisions_a_provider_key_gone_by_an_apply_reaches_the_caller_without_it
     assert_clean(instance, status, &headers, &body, &secret);
 }
 
+/// DECISIONS, A REFUSED APPLY ROUTES FROM THE GENERATION THE HOST KEEPS: a door served with one
+/// model, `a`, its provider's `api_key` file then gone and a configuration applied that renames the
+/// model to `b`. The plane refreshes onto the new generation, the host's seal of it is refused (the
+/// key no longer resolves), and the door keeps the generation it serves; a claimed request naming
+/// `a` is served by that generation, `200`.
+///
+/// RED: drop the `retire_door` call in `DoorApply::apply`'s refused arm (`root/serve.rs`) and the
+/// request gets `404`: the plane answers from the newest generation it holds, the one the host
+/// refused, which configures no model `a`.
+#[cfg(linked_section_decisions)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn decisions_a_refused_apply_routes_from_the_generation_the_host_keeps() {
+    use tower::ServiceExt as _;
+    let _one = PUBLISHING.lock().await;
+    let instance = "decisions-refused-apply";
+    let _published = Published(instance);
+    let path = missing(instance);
+    std::fs::write(&path, "sk-secret-source-test").expect("the credential file");
+    let (port, _heard) = super::door_tests::far_end().await;
+    let serving = super::door_tests::serve_keyed_model(
+        &crate::LINKED,
+        instance,
+        port,
+        &format!("{{file: '{path}'}}"),
+        "a",
+    )
+    .await
+    .expect("the door composes");
+    let named_a = || {
+        axum::http::Request::builder()
+            .method("POST")
+            .uri(super::door_tests::CLAIMED)
+            .header("authorization", format!("Bearer {}", serving.token))
+            .body(axum::body::Body::from(
+                r#"{"model":"a","state":{"amount":7}}"#,
+            ))
+            .expect("a request")
+    };
+    let served = serving
+        .router
+        .clone()
+        .oneshot(named_a())
+        .await
+        .expect("the router answers");
+    assert_eq!(
+        served.status(),
+        StatusCode::OK,
+        "served over `a` while its key resolves"
+    );
+
+    // The applied configuration: the model renamed `a` -> `b`, as the generation's slot for the
+    // plane writes it.
+    let live = &serving.live;
+    let mut app = busbar_kernel::state::App::clone(&serving.handle.load());
+    let plane: &'static str = Box::leak(live.facts.plane.clone().into_boxed_str());
+    app.plane_slots.insert(
+        plane,
+        Arc::new(busbar_kernel::plane_driver::door::DoorSlot {
+            section: busbar_kernel::plane_driver::door::DoorSection::new(
+                live.served_facts.section,
+                serde_yaml::from_str("models: {b: {provider: typesafe}}").expect("a section"),
+            ),
+            facing: busbar_contract::plane_calls::DoorFacing::default(),
+            opened: true,
+        }),
+    );
+    std::fs::remove_file(&path).expect("the credential file goes");
+    let before = live.current().generation;
+    live.apply(&app);
+    assert_eq!(
+        live.current().generation,
+        before,
+        "the host refused the new generation's seal and keeps the one it serves"
+    );
+    let response = serving
+        .router
+        .clone()
+        .oneshot(named_a())
+        .await
+        .expect("the router answers");
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .expect("the body reads");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the request naming `a` is served by the generation the host keeps: {}",
+        String::from_utf8_lossy(&body)
+    );
+}
+
 /// THE SESSION DOOR'S CELLS, compiled where the build links that door: a door not found is a
 /// failure, never a skip.
 #[cfg(linked_section_streams)]

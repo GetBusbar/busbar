@@ -3881,9 +3881,18 @@ async fn serve_governed(
     ));
     std::fs::write(&key_file, CREDENTIAL).expect("the credential file");
     let api_key = format!("{{file: '{}'}}", key_file.display());
-    let serving = serve_configured(linked, instance, port, limits, fee, allowed_pools, &api_key)
-        .await
-        .unwrap_or_else(|e| panic!("the door plane composes, its egress sealed: {e}"));
+    let serving = serve_configured(
+        linked,
+        instance,
+        port,
+        limits,
+        fee,
+        allowed_pools,
+        &api_key,
+        "m",
+    )
+    .await
+    .unwrap_or_else(|e| panic!("the door plane composes, its egress sealed: {e}"));
     let _ = std::fs::remove_file(&key_file);
     serving
 }
@@ -3897,11 +3906,25 @@ pub(super) async fn serve_keyed(
     port: u16,
     api_key: &str,
 ) -> Result<Serving, String> {
-    serve_configured(linked, instance, port, Vec::new(), 0, None, api_key).await
+    serve_configured(linked, instance, port, Vec::new(), 0, None, api_key, "m").await
 }
 
 #[cfg(linked_section_decisions)]
-/// [`serve_governed`] over the provider credential `api_key`, the composition's refusal answered.
+/// [`serve_keyed`], its one model named `model`.
+pub(super) async fn serve_keyed_model(
+    linked: &crate::root::linked::Linked,
+    instance: &str,
+    port: u16,
+    api_key: &str,
+    model: &str,
+) -> Result<Serving, String> {
+    serve_configured(linked, instance, port, Vec::new(), 0, None, api_key, model).await
+}
+
+#[cfg(linked_section_decisions)]
+/// [`serve_governed`] over the provider credential `api_key`, its one model named `model`, the
+/// composition's refusal answered.
+#[allow(clippy::too_many_arguments)]
 async fn serve_configured(
     linked: &crate::root::linked::Linked,
     instance: &str,
@@ -3910,6 +3933,7 @@ async fn serve_configured(
     fee: i64,
     allowed_pools: Option<Vec<String>>,
     api_key: &str,
+    model: &str,
 ) -> Result<Serving, String> {
     // The scrape sink's `/metrics` is mounted on a test app built with the recorder installed.
     busbar_kernel::snapshot::init();
@@ -4047,7 +4071,8 @@ async fn serve_configured(
     let mut sections = BTreeMap::new();
     sections.insert(
         section_key,
-        serde_yaml::from_str("models: {m: {provider: typesafe}}").expect("a section"),
+        serde_yaml::from_str(&format!("models: {{{model}: {{provider: typesafe}}}}"))
+            .expect("a section"),
     );
     let mut served = compose_planes_over(
         linked,
