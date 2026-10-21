@@ -3534,9 +3534,8 @@ fn rule_registry(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, ship: bool)
         Ok(missed) => offenders.extend(missed.into_iter().map(|m| {
             format!(
                 "missed-member\t{m}\t`{m}` is in [workspace.members] and the census did not read \
-                 it: no manifest with a [package] name at {m}/Cargo.toml. The member list is the \
-                 census's floor (it replaced the crate-count floor), and a census below its floor \
-                 is silent about every crate it never saw."
+                 it: no manifest with a [package] name at {m}/Cargo.toml. Every rule here is \
+                 silent about a crate the census never saw."
             )
         })),
     }
@@ -5982,6 +5981,10 @@ fn rule_testkit(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
 /// is added and nothing says so.
 const STEP_TABLE_FILE: &str = "crates/busbar-contract/src/caps/step.rs";
 const PLANE_TRAIT_FILE: &str = "crates/busbar-contract/src/plane.rs";
+
+/// The plane the strict-step self-test cases plant into: the canonical plane, laid from its pinned
+/// checkout.
+const STEP_SUBJECT_PLANE: &str = "crates/busbar-plane-a2a";
 
 /// A tree with fewer than this many plane-owned steps has not been read; the loop is ten steps long
 /// and the planes own seven of them.
@@ -10610,27 +10613,32 @@ impl Gate for KindIsolationGate {
 
         // ── THE STRICT STEP LIST, AND THE WIRE REGISTRY ──────────────────────────────────────────
 
-        // A PLANE THAT DOES NOT RUN A STEP. The plant removes one step's implementation from a data
-        // plane by replacing the file that holds it; the step list is read off the kernel's own
-        // table, so the finding names the step the loop expected. The subject is a plane with the
-        // legacy face only: a plane that also serves through its door (the flipped ones) is judged
-        // by its door's slots instead, so removing its legacy file leaves the door face standing.
-        // RE-TARGETED: the a2a plane flipped to its door (FLIP-A2A) and its pinned checkout has
-        // no `plane.rs`, so removing one removed nothing. The subject is now the decisions plane
-        // (its pinned checkout, mounted beneath the battery), which still carries BOTH faces:
-        // removing its legacy `plane.rs` AND its door leaves a plane with neither, and a plane with
-        // neither owes every step of the list and runs none. Removing `plane.rs` alone is the door
-        // plane's green case below.
-        let mut ov = Overlay::new();
-        ov.remove("crates/busbar-plane-decisions/src/plane.rs");
-        ov.remove("crates/busbar-plane-decisions/src/plane_door.rs");
+        // A PLANE THAT DOES NOT RUN A STEP. A plane with neither face (no `impl … Plane for` and no
+        // door over `abi::plane::Ops`) owes the strict step list itself; the step list is read off
+        // the kernel's own table, so the finding names the step the loop expected. The a2a plane
+        // is a door plane with no legacy face (FLIP-A2A deleted its `plane.rs`, and since the
+        // extraction its source is the pinned checkout's), so the plant takes its door away: every
+        // shipped file that builds the door over `abi::plane::Ops`, found in the tree rather than
+        // named, leaves a plane with no face that implements none of the steps.
+        let door_files = move || {
+            let mut ov = Overlay::new();
+            if let Ok(files) = cx.walk(&WalkSpec::new([STEP_SUBJECT_PLANE]).ext("rs")) {
+                for f in files {
+                    let rel = f.rel_str();
+                    if is_shipped_source(&rel) && f.text.contains("abi::plane::Ops") {
+                        ov.remove(rel);
+                    }
+                }
+            }
+            ov
+        };
         report.push(prove_rows_red(
             cx,
             subject,
             "a data plane that implements none of the strict step list",
             &[ROW_STEPS],
-            ov,
-            &["missing-step", "busbar-plane-decisions"],
+            door_files,
+            &["missing-step", "busbar-plane-a2a"],
         ));
 
         // A PLANE THAT RUNS THE KERNEL'S DECISION, both ways the ruling names: an `approve` of its
@@ -10696,15 +10704,23 @@ impl Gate for KindIsolationGate {
         ));
 
         // A STEP THAT IS DECLARED AND NOT RUN. The compiler is satisfied and the loop stops there,
-        // which is the case the presence check alone cannot see. Planted in a plane that still has
-        // a legacy face: the decisions plane's `impl Plane for DecisionPlane` (the mcp and a2a
-        // planes are door planes only, and a door plane's steps are the kernel driver's, so a
-        // short circuit planted in either is a step this rule never reads).
+        // which is the case the presence check alone cannot see. Only a plane with a legacy face is
+        // judged step by step, and no plane in the tree keeps one any more (every plane serves
+        // through its door), so the plant BRINGS the face: an `impl Plane for` in the a2a plane
+        // that implements every step of the strict list, read off the same table the rule reads,
+        // with the first one's body `todo!()`. Every other step runs, so the one finding is the
+        // short circuit.
+        let planted_steps = plane_owned_steps(cx).unwrap_or_default();
+        let mut plant = String::from("pub struct Planted;\nimpl Plane for Planted {\n");
+        for (i, step) in planted_steps.iter().enumerate() {
+            let body = if i == 0 { "todo!()" } else { "()" };
+            plant.push_str(&format!(
+                "    fn {step}(&self) {{\n        {body}\n    }}\n"
+            ));
+        }
+        plant.push_str("}\n");
         let mut ov = Overlay::new();
-        ov.set(
-            "crates/busbar-plane-decisions/src/planted_step.rs",
-            "impl Foo {\n    fn route(&self) -> RoutePlan {\n        todo!()\n    }\n}\n",
-        );
+        ov.set(format!("{STEP_SUBJECT_PLANE}/src/planted_step.rs"), plant);
         report.push(prove_rows_red(
             cx,
             subject,
@@ -11566,15 +11582,35 @@ impl Gate for KindIsolationGate {
 
         // THE EXEMPLAR ITSELF IS NOT IN THE TREE. `busbar-plane-a2a` is the canonical plane; without
         // it the `plane` skeleton is derived from an empty file list and every plane in the tree
-        // passes a comparison against nothing.
-        let mut ov = Overlay::new();
-        ov.remove("crates/busbar-plane-a2a/Cargo.toml");
+        // passes a comparison against nothing. Since the extraction the exemplar is not a crate of
+        // this repo at all: it is the pinned checkout `cargo metadata` resolves, which both the
+        // mount and the exemplar resolver read. So "not in the tree" is both: its manifest gone
+        // from the tree the census reads (the pinned base layer lays it whatever the resolver
+        // says), AND the resolver's answer with the exemplar (and its `-plugin` twin) gone from
+        // it. Either alone leaves the exemplar read back in, by the census or by the resolver.
+        let exemplar_gone = move || {
+            let mut ov = Overlay::new();
+            ov.remove("crates/busbar-plane-a2a/Cargo.toml");
+            let meta = cx
+                .cargo_metadata_all_features("Cargo.toml")
+                .ok()
+                .and_then(|m| serde_json::from_str::<serde_json::Value>(&m).ok());
+            let mut meta = meta.unwrap_or_else(|| serde_json::json!({ "packages": [] }));
+            if let Some(packages) = meta["packages"].as_array_mut() {
+                packages.retain(|p| {
+                    let name = p["name"].as_str().unwrap_or("");
+                    name != "busbar-plane-a2a" && name != "busbar-plane-a2a-plugin"
+                });
+            }
+            ov.set_command(pinned::METADATA_KEY, meta.to_string());
+            ov
+        };
         report.push(prove_rows_red(
             cx,
             subject,
             "a kind whose canonical exemplar is not in the tree derives its skeleton from nothing",
             &[ROW_SHAPE],
-            ov,
+            exemplar_gone,
             &["no-exemplar", "busbar-plane-a2a"],
         ));
 
@@ -11606,7 +11642,9 @@ impl Gate for KindIsolationGate {
         //
         // EVERY plane's battery file, read off the tree (item 89): the case named two, and two more
         // planes (`decision`, `streaming`) have run it since — so removing two left a battery the
-        // kind still had, and the row said `not-run` instead of `no-battery`.
+        // kind still had, and the row said `not-run` instead of `no-battery`. A pinned plane runs
+        // its battery in its `-plugin` twin (spec §9), which the mount lays under the twin root, not
+        // under `crates/`: those are every plane's battery too, so they go with the rest.
         let ov = move || {
             let mut ov = Overlay::new();
             if let Ok(rels) = cx.list(&WalkSpec::new(["crates"]).ext("rs")) {
@@ -11616,6 +11654,17 @@ impl Gate for KindIsolationGate {
                         && rel.ends_with("/tests/conformance.rs")
                     {
                         ov.remove(rel);
+                    }
+                }
+            }
+            for (dir, sub, _) in pinned::twin_files(cx) {
+                if let Some(name) = dir.strip_prefix("crates/") {
+                    if name.starts_with("busbar-plane-")
+                        && sub.starts_with("tests/")
+                        && sub.contains(CONFORMANCE_MARKER)
+                        && sub.ends_with(".rs")
+                    {
+                        ov.remove(format!("{}/{sub}", pinned::twin_dir(name)));
                     }
                 }
             }
@@ -13563,7 +13612,7 @@ mod spec_allowed_tests {
 // THE NEUTRAL CENSUS lives in its own file and is declared down here so that no line above moves:
 // the kind table and its rules are cited by line number across the ledgers.
 mod neutral;
-pub use neutral::{neutral_census, neutral_kind_src_roots, NeutralCensus};
+pub use neutral::{neutral_census, neutral_kind_src_roots, plane_wall_crates, NeutralCensus};
 
 // The census and face readings over the real tree, one plant each (row 159, audit XC1).
 #[cfg(test)]
