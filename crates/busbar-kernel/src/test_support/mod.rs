@@ -795,9 +795,10 @@ type PlaneContainerHooks =
 /// (`&dyn EngineHost`) or [`busbar_kernel::test_support::BuiltAppSeam`) instead.
 pub type BuiltApp = crate::state::App;
 
-/// The MCP default runtime for the current build surface, if available: this crate's own
-/// `cfg(test)` binary seeds it from the `tests/`-path helper. An external `test-support` build seeds
-/// none; a test that registers the MCP plane installs its own runtime. (A registration slot an
+/// The default runtime of the plane that owns the tool-server section, for the current build
+/// surface: this crate's own `cfg(test)` binary seeds the registry's placeholder
+/// (`plane::registry::default_section_plane_test_runtime`, an empty value). An external
+/// `test-support` build seeds none; a test that registers that plane installs its own runtime. (A registration slot an
 /// external consumer could fill once stood here; nothing ever filled it, and a static fn-pointer
 /// seam is a `door-only` finding.)
 #[cfg(test)]
@@ -831,11 +832,11 @@ pub struct TestApp {
     /// busbar's public base origin (`public_url:`) for the built App.
     public_url: Option<String>,
     /// The built authorization server (`oauth_as:`), type-erased. `None` (the default) = this
-    /// deployment is not one, which is what every pre-existing test expects and what the gating
-    /// proof in `busbar-core-oauth2`'s `tests::mount_tests` asserts costs nothing. Set through
-    /// [`Self::oauth_as_plane`] — busbar-core itself never builds the concrete `AsPlane` (that type
-    /// now lives one-way-dependent in `busbar-core-oauth2`); `busbar-core-oauth2`'s own `TestAppOauthExt`
-    /// extension trait builds one and hands it in here type-erased.
+    /// deployment is not one, which is what every pre-existing test expects and what the
+    /// authorization-server cleanliness crate's own gating proof asserts costs nothing. Set through
+    /// [`Self::oauth_as_plane`] — the kernel never builds the concrete authorization-server plane
+    /// (that type lives one-way-dependent in its cleanliness crate); that crate's own test
+    /// extension builds one and hands it in here type-erased.
     oauth_as: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     /// LAW 7: the configured plane sections. `None` (default) = every linked plane counts configured.
     plane_sections: Option<std::collections::BTreeSet<&'static str>>,
@@ -920,7 +921,7 @@ pub struct TestApp {
     /// per-generation runtime under [`crate::state::runtime_slot_key`]). Filled from OUTSIDE core by
     /// each plane's test-kit through [`TestApp::install_plane_runtime`], so `build()` names no plane
     /// runtime type — the whole point of the B2/B3 relocation: core's fixture is plane-AGNOSTIC and
-    /// the `busbar-mcp` and agent-engine test-kits own their own construction.
+    /// each plane's own tests own their runtime's construction.
     installed_plane_runtimes:
         std::collections::BTreeMap<&'static str, std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     /// THE NEUTRAL DISPATCH TABLE the built App mounts. A plane's test-kit describes its mounts and
@@ -1316,12 +1317,11 @@ impl TestApp {
 
     /// Install a pre-built authorization-server plane object, type-erased.
     ///
-    /// The convenience `.oauth_as(cfg)` builder that used to live here (running the real
-    /// `AsIdentity::from_cfg` + `AsPlane::build`, for the same reason [`TestApp::mcp`] takes a
-    /// config rather than a hand-assembled resource) moved to `busbar-core-oauth2`'s own
-    /// `testkit::TestAppOauthExt` extension trait, because `AsPlane` lives there now and
-    /// busbar-core cannot name it. This is the seam that extension builds against: it constructs
-    /// the real plane, then calls this to hand it in.
+    /// The convenience `.oauth_as(cfg)` builder that used to live here (running the real identity
+    /// and plane builds, so a test took a config rather than a hand-assembled resource) moved to
+    /// the authorization-server cleanliness crate's own test extension, because the plane type
+    /// lives there and the kernel cannot name it. This is the seam that extension builds against:
+    /// it constructs the real plane, then calls this to hand it in.
     pub fn oauth_as_plane(
         mut self,
         plane: std::sync::Arc<dyn std::any::Any + Send + Sync>,
@@ -1607,21 +1607,15 @@ impl TestApp {
         // runtime type or a slot key of its own.
         #[cfg_attr(not(test), allow(unused_mut))]
         let mut plane_slots = std::mem::take(&mut self.installed_plane_runtimes);
-        // THE MCP PLANE'S ALWAYS-PRESENT per-generation runtime slot. In THIS crate's own test binary
-        // (`#[cfg(test)]`) the MCP plane is a built-in of the process list (see `registry`), so — like
-        // production `appbuild` — every generation must carry its runtime under `runtime_slot_key(<mcp decl key>)`, or
-        // the plane's `reresolve_gates`/`on_swap` seams (run on every admin mutation) fault. A fixture
-        // that opted the plane in through its test-kit already installed one; this fills the DEFAULT for
-        // every other `TestApp`, sourced from the plane's own test-kit so `build()` names no MCP type.
-        // Absent under an external `test-support` build (no `cfg(test)`), where the process list has no
-        // MCP plane unless a test registers it — and such a test installs its own runtime.
-        // The plane that owns the `tools:` section is the MCP plane; its stable decl key comes from the
-        // registry (a built-in under `cfg(test)`), never spelled as a literal, and its default runtime
-        // factory is reached through the `tests/`-file helper (which alone names `busbar_mcp`), so this
-        // neutral source names no MCP token nor a plane symbol.
-        // Seed the MCP plane's always-present default runtime for every `TestApp`. In THIS crate's
-        // own `cfg(test)` binary the factory comes from the `tests/`-path helper; an EXTERNAL
-        // `test-support` build seeds none (`seeded_section_plane_runtime`).
+        // THE TOOL-SERVER SECTION'S PLANE: its per-generation runtime slot. Like production
+        // `appbuild`, a generation whose process list holds the plane that owns that section carries
+        // a runtime under `runtime_slot_key(<its decl key>)`, or the plane's
+        // `reresolve_gates`/`on_swap` seams (run on every admin mutation) fault. A fixture that
+        // installed the plane's runtime keeps it; otherwise, in THIS crate's own `cfg(test)` binary,
+        // the slot gets the registry's placeholder (`seeded_section_plane_runtime`: an empty value,
+        // `plane::registry::default_section_plane_test_runtime`), and an EXTERNAL `test-support`
+        // build seeds none. With no plane registered for the section, nothing is seeded. The decl
+        // key comes from the registry, never spelled as a literal.
         #[cfg(any(test, feature = "test-support"))]
         if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
             busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
@@ -2047,9 +2041,9 @@ impl TestApp {
     }
 }
 
-// NOTE: `prefresh_mcp_sightings` (seed every registered MCP server's verification clock as just
-// checked) named `mcp::runtime`/`mcp::client` types and so RELOCATED to `busbar_mcp::testkit`
-// alongside the plane it serves — core's `test_support` stays plane-neutral.
+// NOTE: the helper that seeded every registered tool server's verification clock as just checked
+// named one plane's runtime types and so moved to that plane's own tests — core's `test_support`
+// stays plane-neutral.
 
 /// THE STAND-IN HOOK AXIS: `preflight::RootInstall`'s `hook_axis` in a test build (a test build has
 /// no root). The loader's hook rows over `registry` — the rows the root's axis answers with — on a
@@ -2082,6 +2076,11 @@ pub fn hook_axis_stand_in(
 /// THE HOOK DOUBLE (OWNER 2026-10-03, no test plugins): the kernel's hook port answered in
 /// process. See [`hook_double`].
 pub mod hook_double;
+
+/// The operator-credential double: the `kind: auth` door a test binary links as the operator
+/// credential's row in place of the composition root's plugin (kind-neutral, under the stand-in
+/// operator words). See [`operator_double`].
+pub mod operator_double;
 
 /// The ranking hook double (R-FIX3): the door that stands in for the root's linked ranking row in a
 /// test build. Linked only.
