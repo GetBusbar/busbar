@@ -1549,10 +1549,14 @@ max_debt = 4
 # Every other installed store the kernel holds today, `path::STATIC -- why`: none is a table a root
 # fills keyed by plane, dialect, protocol or plugin identity. It only shrinks; the entries this
 # re-measure added are stores the narrower row did not see, not new ones.
+# STRUCK with their statics (status row 82, D2): appbuild.rs::CONFIG_PROJECTION and
+# preflight.rs::AUTH_AXIS ride the root's install record (`RootInstall::config_projection`, read off
+# the record the build is lent; `RootInstall::auth_axis`, set on each registry built from the record
+# and read off it), and rate_apply.rs::APPLY and ::EPOCH ride it too, carried by the governance book
+# each build makes (`GovState::with_rates`).
 exempt_stores = [
   "crates/busbar-kernel/src/admin/seam.rs::SEAM -- the admin crate's mount seam: two fn pointers (a port) its `install` binds once; holds no table and no identity key (admin is a crate, not a plugin)",
   "crates/busbar-kernel/src/admin/seam.rs::VERB_TABLE -- two fn pointers into the admin crate's closed verb table (a port); keyed by admin operation name, never by plugin identity",
-  "crates/busbar-kernel/src/appbuild.rs::CONFIG_PROJECTION -- one fn pointer the root binds (the config projection); holds no table",
   "crates/busbar-kernel/src/audit/auditlog.rs::AUDIT_LOG -- the process-wide admin audit read model: records appended per action, no installer, no lookup by identity",
   "crates/busbar-kernel/src/audit_ring.rs::AUDIT -- the const-built admin audit ring: records, no lookup by identity",
   "crates/busbar-kernel/src/config/filled.rs::LEDGER -- the env-fill ledger, keyed by config document path, filled by the config walk; no plugin identity",
@@ -1573,7 +1577,6 @@ exempt_stores = [
   "crates/busbar-kernel/src/plane_driver/doors.rs::TEST_REGISTERED -- compiled only under test / test-support: the test plane registrations",
   "crates/busbar-kernel/src/plane_driver/route_tables.rs::QUEUED -- live queue depth per pool, written by the walk; a gauge, not a registry",
   "crates/busbar-kernel/src/plane_host/mod.rs::INTERNED -- an interner of runtime-slot key strings; returns the interned key, holds no plane object",
-  "crates/busbar-kernel/src/preflight.rs::AUTH_AXIS -- one opener fn pointer the root binds (the auth axis over a registry); holds no table",
   "crates/busbar-kernel/src/residual_log.rs::RESIDUALS -- the process-wide residual log: records appended per settlement, no lookup by identity",
   "crates/busbar-kernel/src/snapshot/mod.rs::HANDLE -- the one metrics observation source's install outcome; no table, no identity",
   "crates/busbar-kernel/src/snapshot/mod.rs::SOURCE -- the one metrics observation source, built once by `init_with`; no table keyed by identity",
