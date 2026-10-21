@@ -337,8 +337,14 @@ pub fn install() {
 
 /// LINK `exports` on the installed export axis as the composition root links its sinks (each a
 /// first-party row over its door), ahead of the kit's stand-in. The first link stands.
+///
+/// The kit's stand-in is installed with them: its neutral rows answer every other FIRST-PARTY
+/// sink's frozen 1.5.5 module word (`request-log-file` among them), as a linked build resolves
+/// each, so a configuration naming one resolves here as it did when the kit linked these sinks
+/// itself (`install_export_axis`).
 pub fn link_exports(exports: &'static [ExportDoor]) {
     install();
+    busbar_kernel::test_support::export_axis::install_export_axis();
     let _ = EXPORT_REGISTRY.get_or_init(|| {
         let linked = exports
             .iter()
