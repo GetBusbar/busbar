@@ -7267,11 +7267,12 @@ mod pools_door_refusals {
         )
         .await;
         let key = rig.gov.lookup_by_sub(&rig.key_id).expect("the rig's key");
-        let blocked = rig
+        let Err(blocked) = rig
             .gov
             .try_admit(&rig.app.cost, &key, "p", busbar_kernel::store::now())
-            .err()
-            .expect("the direct admission refuses a key naming an unconfigured group");
+        else {
+            panic!("the direct admission refuses a key naming an unconfigured group");
+        };
         let (direct_status, direct_kind, direct_message, _) =
             busbar_kernel::ingress::limit_refusal("", &blocked);
 
