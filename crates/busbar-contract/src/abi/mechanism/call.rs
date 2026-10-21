@@ -179,6 +179,16 @@ pub struct AbiStr {
 }
 
 impl AbiStr {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `AbiStr { …, ..AbiStr::ZERO }` so a field appended later reads as not
+    /// declared.
+    pub const ZERO: Self = Self {
+        ptr: std::ptr::null(),
+        len: 0,
+    };
+}
+
+impl AbiStr {
     /// `bytes`, borrowed for the call they cross in.
     #[must_use]
     pub fn over(bytes: &[u8]) -> AbiStr {
@@ -199,6 +209,13 @@ pub struct Span {
     pub offset: u32,
     /// Byte length.
     pub len: u32,
+}
+
+impl Span {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `Span { …, ..Span::ZERO }` so a field appended later reads as not
+    /// declared.
+    pub const ZERO: Self = Self { offset: 0, len: 0 };
 }
 
 /// One named field borrowed for the call: a name and its value (any bytes). THE one field of
@@ -235,6 +252,18 @@ pub struct Blob {
     pub fmt: u32,
     /// [`BLOB_SECRET`].
     pub flags: u32,
+}
+
+impl Blob {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `Blob { …, ..Blob::ZERO }` so a field appended later reads as not
+    /// declared.
+    pub const ZERO: Self = Self {
+        ptr: std::ptr::null(),
+        len: 0,
+        fmt: 0,
+        flags: 0,
+    };
 }
 
 impl Blob {
@@ -323,6 +352,18 @@ pub struct Diag {
     pub text: AbiStr,
 }
 
+impl Diag {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `Diag { …, ..Diag::ZERO }` so a field appended later reads as not
+    /// declared.
+    pub const ZERO: Self = Self {
+        id_idx: 0,
+        severity: 0,
+        _reserved: [0; 3],
+        text: AbiStr::ZERO,
+    };
+}
+
 /// [`Diag::id_idx`]: a log record the plugin emitted during the call. Its text is
 /// `target: message`, followed by any other fields as ` key=value`.
 pub const DIAG_LOG: u32 = u32::MAX;
@@ -356,6 +397,18 @@ pub struct Envelope {
     pub diags: *const Diag,
     /// How many.
     pub diags_len: usize,
+}
+
+impl Envelope {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `Envelope { …, ..Envelope::ZERO }` so a field appended later reads as
+    /// not declared.
+    pub const ZERO: Self = Self {
+        metrics: std::ptr::null(),
+        metrics_len: 0,
+        diags: std::ptr::null(),
+        diags_len: 0,
+    };
 }
 
 /// The head of every `out` of every kind. Host-owned. THE HOST ZEROES THE WHOLE `out` BEFORE EVERY

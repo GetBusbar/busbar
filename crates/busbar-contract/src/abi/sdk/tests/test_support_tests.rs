@@ -571,11 +571,15 @@ fn a_fake_refuses_an_in_of_another_op_a_short_in_and_a_stray_selector_with_fault
     let call = |host: &FakeHost, input: &RecordsGetIn| {
         let mut out: ServiceOut = zeroed();
         let f = host.slots_for_tests().0.records_get.expect("served");
-        f(
-            HostCtx::NONE,
-            ptr::from_ref(input).cast(),
-            ptr::from_mut(&mut out).cast(),
-        )
+        // SAFETY: the fake host's own trampoline, which checks the head before it reads; `input`
+        // names this test's own live buffers and `out` is a local `ServiceOut`.
+        unsafe {
+            f(
+                HostCtx::NONE,
+                ptr::from_ref(input).cast(),
+                ptr::from_mut(&mut out).cast(),
+            )
+        }
         .outcome()
     };
     // An `in` whose head names another op: the double never runs.
@@ -1020,9 +1024,16 @@ fn io_in(op: u32, buf: &mut [u8]) -> IoIn {
     }
 }
 
-fn served_by(f: crate::abi::host::service::ServiceFn, input: *const c_void) -> Outcome {
+/// `f` over `input`.
+///
+/// # Safety
+///
+/// `f` is a fake host's own trampoline and `input` NULL or a live `in` of at least the size its
+/// head states.
+unsafe fn served_by(f: crate::abi::host::service::ServiceFn, input: *const c_void) -> Outcome {
     let mut out: ServiceOut = zeroed();
-    f(HostCtx::NONE, input, ptr::from_mut(&mut out).cast()).outcome()
+    // SAFETY: the caller's contract; `out` is a local `ServiceOut`.
+    unsafe { f(HostCtx::NONE, input, ptr::from_mut(&mut out).cast()) }.outcome()
 }
 
 #[test]
@@ -1035,7 +1046,8 @@ fn a_double_writes_only_the_regions_its_op_lends_for_writing() {
     let input = io_in(conn_abi::service::READ, &mut buf);
     let read = host.slots_for_tests().2.read.expect("served");
     assert_eq!(
-        served_by(read, ptr::from_ref(&input).cast()),
+        // SAFETY: the fake host's own trampoline over this test's own live `in`.
+        unsafe { served_by(read, ptr::from_ref(&input).cast()) },
         Outcome::Ready
     );
     assert_eq!(&buf[..4], b"pong");
@@ -1044,7 +1056,8 @@ fn a_double_writes_only_the_regions_its_op_lends_for_writing() {
     let input = io_in(conn_abi::service::WRITE, &mut sent);
     let write = host.slots_for_tests().2.write.expect("served");
     assert_eq!(
-        served_by(write, ptr::from_ref(&input).cast()),
+        // SAFETY: the fake host's own trampoline over this test's own live `in`.
+        unsafe { served_by(write, ptr::from_ref(&input).cast()) },
         Outcome::Fault
     );
     assert_eq!(sent, [7; 8]);
@@ -1064,7 +1077,8 @@ fn a_double_reading_a_write_region_or_writing_through_no_region_answers_fault() 
     };
     let read = host.slots_for_tests().1.read.expect("served");
     assert_eq!(
-        served_by(read, ptr::from_ref(&input).cast()),
+        // SAFETY: the fake host's own trampoline over this test's own live `in`.
+        unsafe { served_by(read, ptr::from_ref(&input).cast()) },
         Outcome::Fault
     );
 
@@ -1082,7 +1096,11 @@ fn a_double_reading_a_write_region_or_writing_through_no_region_answers_fault() 
         },
     };
     let get = host.slots_for_tests().0.records_get.expect("served");
-    assert_eq!(served_by(get, ptr::from_ref(&input).cast()), Outcome::Fault);
+    // SAFETY: the fake host's own trampoline over this test's own live `in`.
+    assert_eq!(
+        unsafe { served_by(get, ptr::from_ref(&input).cast()) },
+        Outcome::Fault
+    );
     assert_eq!(bytes, [9; 4], "nothing was written");
 }
 

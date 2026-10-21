@@ -26,9 +26,9 @@ use std::time::Duration;
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    reason_code, FieldList, OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount, CLAIM_PROBE,
-    EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END,
-    FROM_KERNEL, PIECE_CUT, PIECE_FIELDS, PIECE_FINAL, PIECE_HAS_STATUS, PIECE_LAST,
+    reason_code, FieldList, OnPieceIn, OnPieceOut, OutField, RecordWrite, RefusalCode, UnitCount,
+    CLAIM_PROBE, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER,
+    FROM_FAR_END, FROM_KERNEL, PIECE_CUT, PIECE_FIELDS, PIECE_FINAL, PIECE_HAS_STATUS, PIECE_LAST,
     PIECE_OUT_TEXT, PIECE_REFUSED, RECORD_AUDIT, VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
@@ -271,6 +271,16 @@ pub trait FarEnd: Sync {
     /// `member` is no member of that pool, or the far end keeps no walk (the default).
     fn member_wait(&self, token: &Pass<Route>, member: &str) -> Option<u32> {
         let _ = (token, member);
+        None
+    }
+
+    /// WHY NOTHING LEFT, when no attempt of the walk sent its request: the `Unsent*` code
+    /// ([`RefusalCode::unsent`]) of the last attempt's failure before any byte (no route, an
+    /// unbound need, a refused target or field name, an unrecordable dispatch, a failed auth call,
+    /// a refused open). The walk's exhausted refused piece names it in place of `BreakerOpen`.
+    /// `None` once any attempt was sent, or when the far end does not say (the default).
+    fn unsent(&self, token: &Pass<Route>) -> Option<RefusalCode> {
+        let _ = token;
         None
     }
 
@@ -1074,9 +1084,15 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     detail,
                 }) => {
                     // The walk's exhaustion terminal is refused as `BreakerOpen` (the route
-                    // step's `End::Exhausted`): the refused piece names that reason, whether or
-                    // not a request went out (R-REJECTED).
-                    if let Err(end) = self.refused_piece(run, ReasonCode::BreakerOpen).await {
+                    // step's `End::Exhausted`): the refused piece names that reason when a request
+                    // went out (R-REJECTED), and when none did, why the last attempt left nothing
+                    // on the wire (an `Unsent*` code), so the plane charges no hop that never
+                    // left. The unit's end, and the caller's answer, are the same either way.
+                    let reason = self
+                        .far
+                        .unsent(run.token)
+                        .map_or(reason_code(ReasonCode::BreakerOpen), RefusalCode::code);
+                    if let Err(end) = self.refused_piece_coded(run, reason).await {
                         return end;
                     }
                     return match self.stated_wait(run) {
@@ -1262,6 +1278,12 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
     /// for every other plane; a plane without the bit is sent nothing. `Err` = the unit ended on
     /// the crossing.
     async fn refused_piece(&self, run: &mut Pumping<'_>, reason: ReasonCode) -> Result<(), End> {
+        self.refused_piece_coded(run, reason_code(reason)).await
+    }
+
+    /// [`Self::refused_piece`] for the wire code `reason` (`OnPieceIn::reason`): a reason's own,
+    /// or an `Unsent*` code the walk's exhaustion names when nothing left.
+    async fn refused_piece_coded(&self, run: &mut Pumping<'_>, reason: u32) -> Result<(), End> {
         run.wait_member = None;
         if self.driver.refused_piece {
             let piece = Piece {
@@ -1271,7 +1293,7 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 attempt_no: 0,
                 src: Src::None,
                 head: false,
-                reason: reason_code(reason),
+                reason,
             };
             if let Step::End(end) = self.push(run, piece, &mut Toward::Nowhere).await {
                 return Err(end);
@@ -1347,7 +1369,8 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             if !wait.is_empty() {
                 let exhausted = piece.from == FROM_KERNEL
                     && piece.flags & PIECE_REFUSED != 0
-                    && piece.reason == reason_code(ReasonCode::BreakerOpen);
+                    && (piece.reason == reason_code(ReasonCode::BreakerOpen)
+                        || RefusalCode::of(piece.reason).is_some_and(RefusalCode::unsent));
                 match std::str::from_utf8(wait) {
                     Ok(member) if exhausted => run.wait_member = Some(member.to_string()),
                     _ => return Step::End(End::Failed(ReasonCode::PlanePanic)),

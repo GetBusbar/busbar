@@ -294,21 +294,16 @@ service_in!(
 
 const fn blank_head() -> ServiceHead {
     ServiceHead {
-        size: 0,
-        op: 0,
         handle: CompletionHandle {
             ticket: Ticket::NONE,
-            seq: 0,
-            _reserved: 0,
+            ..CompletionHandle::ZERO
         },
+        ..ServiceHead::ZERO
     }
 }
 
 const fn absent() -> AbiStr {
-    AbiStr {
-        ptr: std::ptr::null(),
-        len: 0,
-    }
+    AbiStr::ZERO
 }
 
 /// The host's error text, copied (it is the host's until the next service on the ticket).
@@ -388,7 +383,7 @@ impl Connector<'_> {
         let handle = CompletionHandle {
             ticket: self.ticket,
             seq,
-            _reserved: 0,
+            ..CompletionHandle::ZERO
         };
         self.cross(op, f, input, handle)
     }
@@ -438,13 +433,8 @@ impl Connector<'_> {
         let mut out = ServiceOut {
             size: std::mem::size_of::<ServiceOut>() as u32,
             outcome: RawOutcome::of(Outcome::Fault),
-            _reserved: [0; 3],
-            value: 0,
-            len: 0,
-            items: 0,
-            needed_bytes: 0,
-            needed_items: 0,
             error: absent(),
+            ..ServiceOut::ZERO
         };
         // SAFETY: `ServiceFn`'s contract: `f` and `ctx` came together from host-lent tables
         // (`Host::of`, or `Host::from_raw`'s caller vouched for them); `input` is a local `in` of
@@ -677,13 +667,7 @@ impl Connector<'_> {
     /// READY with what the host wrote: the whole of `bytes` landed, and whether the file was rotated
     /// first. A FAILED answer names its step and still reports the rotation that ran before it.
     pub fn disk_append(&mut self, dest_key: &str, bytes: &[u8]) -> DiskAnswer {
-        let blank = DiskWritten {
-            size: 0,
-            rotated: 0,
-            faults: 0,
-            _reserved: [0; 2],
-            written: 0,
-        };
+        let blank = DiskWritten::ZERO;
         let fail = |step, rotation, why| {
             Poll::Ready(Err(DiskFailure {
                 step,
@@ -701,7 +685,7 @@ impl Connector<'_> {
         let handle = CompletionHandle {
             ticket: self.ticket,
             seq: self.issued,
-            _reserved: 0,
+            ..CompletionHandle::ZERO
         };
         self.issued += 1;
         let mut result = blank;
@@ -715,7 +699,7 @@ impl Connector<'_> {
                 ptr: bytes.as_ptr(),
                 len: bytes.len(),
                 fmt: BLOB_OCTETS,
-                flags: 0,
+                ..Blob::ZERO
             },
             result: std::ptr::from_mut(&mut result),
         };
@@ -753,8 +737,7 @@ impl Connector<'_> {
         };
         let none = CompletionHandle {
             ticket: Ticket::NONE,
-            seq: 0,
-            _reserved: 0,
+            ..CompletionHandle::ZERO
         };
         self.cross(op, f, input, none)
     }

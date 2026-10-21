@@ -293,7 +293,7 @@ impl<'r> ExportRows<'r> {
         )?;
         // The destinations its manifest declares: `open` binds each to the path the operator's
         // settings give it, and `disk.append` serves the instance those only.
-        p.grant_destinations(&row.manifest.declares.destinations);
+        p.grant_destinations(&row.manifest.declares);
         let opened = ExportInstance::open(p, self.dispatcher.clone(), text.as_bytes())?;
         // DISCOVERY AT BOOT (`abi::mechanism::lifecycle` READY, the one optional lifecycle op): an
         // export door that states `ready` is awaited once its instance is open over the host's

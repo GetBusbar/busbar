@@ -26,7 +26,7 @@ use busbar_contract::abi::secret::{slot, ResolveIn, ResolveOut, ERROR_KIND_NOT_F
 use super::door_both_ways::{
     self as both, close, input, line, open, output, release, same, Loaded,
 };
-use crate::both_ways::{secret_fixture, HOT_FIXTURES};
+use crate::both_ways::{fixture_cdylib, secret_fixture};
 use crate::dispatch::kinds::export::Export;
 use crate::dispatch::kinds::secret::Secret;
 use crate::dispatch::{load_linked, Frame, LinkedRow, Plugin};
@@ -132,13 +132,7 @@ fn linked() -> Loaded<Secret> {
 /// The real secret plugin, DROPPED IN: its built `cdylib`. A missing artifact is a failure, never
 /// a skip: this suite is the kind's finish line.
 fn dropped() -> Loaded<Secret> {
-    let (_, logic) = HOT_FIXTURES
-        .iter()
-        .find(|(k, _)| *k == "secret")
-        .expect("a `secret` row in Cargo.toml's [package.metadata.busbar.both-ways]");
-    // The row names the repo's logic crate; the fleet's twin shape names its cdylib `<logic>_plugin`.
-    let krate = format!("{logic}_plugin");
-    let path = crate::both_ways::cdylib(&krate);
+    let path = fixture_cdylib("secret");
     both::dropped_from::<Secret>(secret_fixture::door::MACRO_DOOR, &path)
 }
 

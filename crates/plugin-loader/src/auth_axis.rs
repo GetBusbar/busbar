@@ -3,9 +3,9 @@
 
 //! THE AUTH ROWS (WIRE-AUTH): [`AuthRows`] answers and opens the plugin registry's `kind: auth` rows
 //! on the process's one dispatcher. The composition root implements the contract's `AuthAxis` over
-//! it and installs that axis on the kernel (`install_auth_axis`, ARCHITECT ruling 2026-09-29: the
-//! opener seam, impl in the root), so the kernel's identity chain opens auth instances naming
-//! neither this crate nor the root.
+//! it and hands that axis to the kernel on its install record (`RootInstall::auth_axis`, ARCHITECT
+//! ruling 2026-09-29: the opener seam, impl in the root), so the kernel's identity chain opens auth
+//! instances naming neither this crate nor the root.
 //!
 //! A row opens on the auth kind's MEMORY ABI (`abi::auth`, through [`AuthInstance`]) when it is a
 //! linked door ([`crate::registry::LinkedEntry::Door`]) or a dropped-in library exporting
@@ -225,6 +225,31 @@ impl AuthRows {
                 (facts.facts & FACT_READS_CREDENTIALS != 0).then(|| alias.clone())
             })
             .collect()
+    }
+
+    /// THE CREDENTIAL THE HOST ISSUES beside a signed-token key: the first credential reader, in
+    /// [`Self::credential_readers`]' order, whose Statement states an issued shape (its
+    /// `MARK_WORD_ISSUED_*` marks, checked at load), as its first credential kind and that shape.
+    /// Read from the Statements, opening no instance: the build's fact, whatever the chain names.
+    #[must_use]
+    pub fn issued_credential(&self) -> Option<(String, busbar_contract::auth_calls::IssuedShape)> {
+        let rows = self
+            .registry
+            .linked()
+            .iter()
+            .chain(self.registry.loadable());
+        rows.filter(|p| p.manifest.kind == AUTH).find_map(|row| {
+            let alias = &row.manifest.alias;
+            let Ok(Door::Memory(plugin, _)) = self.load(row, alias, false) else {
+                return None;
+            };
+            let facts = plugin.context::<AuthFacts>()?;
+            if facts.facts & FACT_READS_CREDENTIALS == 0 {
+                return None;
+            }
+            let kind = facts.credential_kinds.first()?.clone();
+            facts.issued.clone().map(|shape| (kind, shape))
+        })
     }
 
     /// The carriers the auth row answering `module` states (its Statement's carrier word marks, in
@@ -460,6 +485,10 @@ impl busbar_contract::auth_calls::AuthAxis for AuthRows {
 
     fn credential_readers(&self) -> Vec<String> {
         AuthRows::credential_readers(self)
+    }
+
+    fn issued_credential(&self) -> Option<(String, busbar_contract::auth_calls::IssuedShape)> {
+        AuthRows::issued_credential(self)
     }
 
     fn carriers(&self, module: &str) -> Vec<String> {

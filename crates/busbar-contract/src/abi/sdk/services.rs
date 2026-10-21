@@ -11,7 +11,9 @@
 //! A service that MAY PEND answers a [`Pend`]: [`Poll::Pending`] means the host holds the call on
 //! the handle's ticket and wakes it; the op answers PENDING and, re-entered, re-issues the SAME
 //! handle to read the stored answer. Nothing here allocates but [`Judged::within`] (the address
-//! set an ESTABLISH takes): every result is a scalar or a view into the caller's own buffers.
+//! set an ESTABLISH takes) and [`Services::records_secret`] (a credential's secret, copied into the
+//! zeroizing [`CredentialSecret`] the plugin owns): every other result is a scalar or a view into
+//! the caller's own buffers.
 
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -23,18 +25,18 @@ use crate::abi::host::service::{
     check_clock_now, check_content_scan, check_dest_judge, check_entitlement_check,
     check_hook_call, check_hook_call_in, check_random_fill, check_random_fill_in,
     check_records_claim, check_records_claim_in, check_records_get, check_records_list,
-    check_session_emit, check_session_emit_in, check_sign, check_snapshot_read, check_trust_decide,
-    check_trust_due, check_trust_serves, check_trust_sight, check_trust_sight_item,
-    check_trust_state, check_trust_verify, check_unit_nest, check_verify_lookup,
-    check_verify_store, check_work_find, check_work_open, check_work_resume, check_work_settle, op,
-    ClockNowIn, ClockReading, ContentScanIn, DestJudgeIn, EntitlementCheckIn, HookCallIn,
-    HostSlots, ItemSpan, RandomFillIn, RecordsClaimIn, RecordsGetIn, RecordsListIn, ServiceBufs,
-    ServiceFn, ServiceHead, ServiceOut, SessionEmitIn, SignIn, SnapshotReadIn, TrustDecideIn,
-    TrustDueIn, TrustServesIn, TrustSightIn, TrustSightItemIn, TrustStateIn, TrustVerifyIn,
-    UnitNestIn, VerifyLookupIn, VerifyStoreIn, WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn,
-    ABSENT, CLAIM_WON, CONTENT_BLOCK, DEST_ALLOWED, DEST_RESOLVE, ENTITLED, FOUND, HOOK_STOP_MIN,
-    TRUST_DECIDE_APPROVE, TRUST_DECIDE_REVOKE, TRUST_REACHED, TRUST_UNREACHABLE, VERIFY_FOLLOW,
-    VERIFY_HIT, VERIFY_LEAD,
+    check_records_secret, check_session_emit, check_session_emit_in, check_sign,
+    check_snapshot_read, check_trust_decide, check_trust_due, check_trust_serves,
+    check_trust_sight, check_trust_sight_item, check_trust_state, check_trust_verify,
+    check_unit_nest, check_verify_lookup, check_verify_store, check_work_find, check_work_open,
+    check_work_resume, check_work_settle, op, ClockNowIn, ClockReading, ContentScanIn, DestJudgeIn,
+    EntitlementCheckIn, HookCallIn, HostSlots, ItemSpan, RandomFillIn, RecordsClaimIn,
+    RecordsGetIn, RecordsListIn, RecordsSecretIn, ServiceBufs, ServiceFn, ServiceHead, ServiceOut,
+    SessionEmitIn, SignIn, SnapshotReadIn, TrustDecideIn, TrustDueIn, TrustServesIn, TrustSightIn,
+    TrustSightItemIn, TrustStateIn, TrustVerifyIn, UnitNestIn, VerifyLookupIn, VerifyStoreIn,
+    WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, ABSENT, CLAIM_WON, CONTENT_BLOCK,
+    DEST_ALLOWED, DEST_RESOLVE, ENTITLED, FOUND, HOOK_STOP_MIN, SECRET_LIVE, TRUST_DECIDE_APPROVE,
+    TRUST_DECIDE_REVOKE, TRUST_REACHED, TRUST_UNREACHABLE, VERIFY_FOLLOW, VERIFY_HIT, VERIFY_LEAD,
 };
 use crate::abi::mechanism::call::{
     AbiStr, Blob, Outcome, RawOutcome, Span, BLOB_JSON, BLOB_OCTETS,
@@ -42,6 +44,7 @@ use crate::abi::mechanism::call::{
 use crate::abi::mechanism::check::{Fault, Filled, SPAN_ABSENT};
 use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx, HostTables, Ticket, WakeFn};
 use crate::abi::sdk::lent::Lent;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 /// Why a service call has no value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -404,8 +407,7 @@ impl Services {
             into: ServiceBufs {
                 buf: buf.as_mut_ptr(),
                 cap: buf.len(),
-                spans: std::ptr::null_mut(),
-                spans_cap: 0,
+                ..ServiceBufs::ZERO
             },
         };
         if check_random_fill_in(&input).is_err() {
@@ -802,10 +804,7 @@ impl Services {
         key: &[u8],
         buf: &'b mut [u8],
     ) -> Pend<Option<&'b [u8]>> {
-        let mut span = [ItemSpan {
-            key: Span { offset: 0, len: 0 },
-            value: Span { offset: 0, len: 0 },
-        }];
+        let mut span = [ItemSpan::ZERO];
         let input = RecordsGetIn {
             head: head::<RecordsGetIn>(op::RECORDS_GET, handle),
             kind: text(kind),
@@ -911,6 +910,91 @@ impl Services {
             check_records_claim,
         ))
         .map(|r| r.map(|v| v == CLAIM_WON))
+    }
+
+    /// `records.secret`: the secret of the host-held credential `id` of `kind` (a kind the plugin's
+    /// Statement declares it reads,
+    /// [`with_credential_kinds`](crate::abi::sdk::auth_door::with_credential_kinds); the host
+    /// declines any other REFUSED), and whether it is live. THE SECRET IS THE PLUGIN'S OWN: copied
+    /// into a [`CredentialSecret`], a zeroizing holder the plugin owns (no lifetime tied to the
+    /// host), and the crossing's own buffer is wiped before this returns.
+    ///
+    /// AN UNKNOWN ID IS NOT AN ERROR. The host answers a fixed dummy secret, not live, in the same
+    /// time as a known id, so a reply never says whether the id exists: the answer is READY with
+    /// [`CredentialSecret::live`] `false`, and the plugin runs its whole check over the dummy and
+    /// rejects on `live` last, so its own timing says nothing either.
+    ///
+    /// May pend (a store-backed credential), so callable only on a ticket: on [`Poll::Pending`] the
+    /// host holds the call on `handle`'s ticket and wakes it; the op answers PENDING and, re-entered,
+    /// re-issues the SAME handle to read the stored answer. A secret longer than the first buffer
+    /// is the short answer: this re-calls ONCE, on the same handle, with the sizes the host named,
+    /// inside this call.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError`]: the host serves no `records.secret`, declined it (an undeclared kind or a
+    /// ticket-less call is REFUSED), or broke its rules (a READY with no secret in span `0` is
+    /// broken).
+    pub fn records_secret(
+        &self,
+        handle: CompletionHandle,
+        kind: &str,
+        id: &str,
+    ) -> Pend<CredentialSecret> {
+        let mut sizes = (SECRET_FIRST_BYTES, 1_usize);
+        for _ in 0..2 {
+            let mut buf = Zeroizing::new(vec![0_u8; sizes.0]);
+            let mut spans = vec![
+                ItemSpan {
+                    key: Span { offset: 0, len: 0 },
+                    value: Span { offset: 0, len: 0 },
+                };
+                sizes.1
+            ];
+            let input = RecordsSecretIn {
+                head: head::<RecordsSecretIn>(op::RECORDS_SECRET, handle),
+                kind: text(kind),
+                id: text(id),
+                into: bufs(buf.as_mut_slice(), spans.as_mut_slice()),
+            };
+            let crossed = self.cross(
+                op::RECORDS_SECRET,
+                |t| t.records_secret,
+                &input,
+                check_records_secret,
+            );
+            if let Ok((Outcome::Pending, ..)) = crossed {
+                return Poll::Pending;
+            }
+            let out = match crossed.and_then(ready) {
+                Ok(out) => out,
+                Err(ServiceError::Short { bytes, items }) => {
+                    // The check held both within the service caps.
+                    let (Ok(bytes), Ok(items)) = (usize::try_from(bytes), usize::try_from(items))
+                    else {
+                        return Poll::Ready(Err(ServiceError::Broken));
+                    };
+                    sizes = (bytes.max(sizes.0), items.max(sizes.1));
+                    continue;
+                }
+                Err(e) => return Poll::Ready(Err(e)),
+            };
+            // The service's check held `len` and `items` within the caps and every span inside
+            // `len`; READY writes the secret into span `0`, and one without it broke the rule.
+            let secret = spans
+                .get(..out.items as usize)
+                .and_then(<[ItemSpan]>::first)
+                .and_then(|s| present(&buf[..out.len as usize], s.value))
+                .map(|b| Zeroizing::new(b.to_vec()));
+            return Poll::Ready(secret.ok_or(ServiceError::Broken).map(|secret| {
+                CredentialSecret {
+                    secret,
+                    live: out.value == SECRET_LIVE,
+                }
+            }));
+        }
+        // A second short answer: the host FAULTs it; this never reads one.
+        Poll::Ready(Err(ServiceError::Broken))
     }
 
     /// `work.open`: open a durable work handle of `kind` (one of the plugin's record kinds) for the
@@ -1080,10 +1164,7 @@ impl Services {
         key: &[u8],
         buf: &'b mut [u8],
     ) -> Pend<Verified<'b>> {
-        let mut span = [ItemSpan {
-            key: Span { offset: 0, len: 0 },
-            value: Span { offset: 0, len: 0 },
-        }];
+        let mut span = [ItemSpan::ZERO];
         let input = VerifyLookupIn {
             head: head::<VerifyLookupIn>(op::VERIFY_LOOKUP, handle),
             key: raw(key),
@@ -1260,8 +1341,7 @@ impl Services {
             into: ServiceBufs {
                 buf: at,
                 cap: bytes,
-                spans: std::ptr::null_mut(),
-                spans_cap: 0,
+                ..ServiceBufs::ZERO
             },
         };
         let crossed = self.cross(
@@ -1373,7 +1453,7 @@ const fn blob(b: &[u8], fmt: u32) -> Blob {
         ptr: b.as_ptr(),
         len: b.len(),
         fmt,
-        flags: 0,
+        ..Blob::ZERO
     }
 }
 
@@ -1516,6 +1596,52 @@ pub struct Signature<'b> {
     pub signature: &'b [u8],
 }
 
+/// What `records.secret` answered: a credential's secret, in a holder the plugin owns that wipes
+/// it when dropped (or on [`Zeroize::zeroize`]), and whether the credential is live. Its `Debug`
+/// never shows the bytes.
+pub struct CredentialSecret {
+    secret: Zeroizing<Vec<u8>>,
+    live: bool,
+}
+
+impl CredentialSecret {
+    /// The secret's bytes: the credential's, or the host's fixed dummy for an id it does not hold.
+    #[must_use]
+    pub fn secret(&self) -> &[u8] {
+        &self.secret
+    }
+
+    /// Whether the credential is live (`SECRET_LIVE`: its key enabled and not revoked); `false` for
+    /// anything else, an unknown id included (its secret is then the host's dummy).
+    #[must_use]
+    pub const fn live(&self) -> bool {
+        self.live
+    }
+}
+
+impl std::fmt::Debug for CredentialSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CredentialSecret")
+            .field("secret", &"[redacted]")
+            .field("live", &self.live)
+            .finish()
+    }
+}
+
+impl Zeroize for CredentialSecret {
+    fn zeroize(&mut self) {
+        self.secret.zeroize();
+        self.live = false;
+    }
+}
+
+// Its one secret field is a `Zeroizing`, which wipes it on drop.
+impl ZeroizeOnDrop for CredentialSecret {}
+
+/// The bytes the first `records.secret` crossing lends: above any secret a credential kind holds
+/// today; a longer one is the short answer's one re-call.
+const SECRET_FIRST_BYTES: usize = 256;
+
 /// The head of an `I` for `service`, under `handle`.
 const fn head<I>(service: u32, handle: CompletionHandle) -> ServiceHead {
     ServiceHead {
@@ -1539,10 +1665,7 @@ const fn raw(b: &[u8]) -> AbiStr {
 }
 
 /// An absent text: NULL, no length.
-const NO_TEXT: AbiStr = AbiStr {
-    ptr: std::ptr::null(),
-    len: 0,
-};
+const NO_TEXT: AbiStr = AbiStr::ZERO;
 
 /// A verdict service's answer: Ready its `value`, PENDING held on the ticket, else declined.
 fn verdict(crossed: Result<(Outcome, ServiceOut, Filled), ServiceError>) -> Pend<u64> {
@@ -1559,16 +1682,7 @@ fn blank_out() -> ServiceOut {
     ServiceOut {
         size: size_of::<ServiceOut>() as u32,
         outcome: RawOutcome::of(Outcome::Fault),
-        _reserved: [0; 3],
-        value: 0,
-        len: 0,
-        items: 0,
-        needed_bytes: 0,
-        needed_items: 0,
-        error: AbiStr {
-            ptr: std::ptr::null(),
-            len: 0,
-        },
+        ..ServiceOut::ZERO
     }
 }
 
