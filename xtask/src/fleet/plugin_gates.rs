@@ -2203,17 +2203,14 @@ mod tests {
             .any(|f| f.starts_with("GITSRC x:")));
     }
 
-    /// The committed rows are the webrtc framer's forks (the H2 zeroize forks and the OS-random
-    /// sctp-proto), each admitted for busbar-transport-webrtc only.
+    /// The committed rows are the webrtc framer's H2 zeroize forks, each admitted for
+    /// busbar-transport-webrtc only.
     #[test]
     fn the_committed_git_sources_are_the_h2_forks_for_webrtc_only() {
         let committed = parse_toml(COMMITTED_POLICY).unwrap();
         assert_eq!(gitsources(&committed).unwrap(), Vec::<String>::new());
         let rows = committed.get("git-sources").as_object().unwrap();
-        assert_eq!(
-            rows.keys().collect::<Vec<_>>(),
-            ["str0m", "dimpl", "ring", "sctp-proto"]
-        );
+        assert_eq!(rows.keys().collect::<Vec<_>>(), ["str0m", "dimpl", "ring"]);
         for (_, row) in rows.iter() {
             assert_eq!(str_list(row.get("repos")), ["busbar-transport-webrtc"]);
         }
