@@ -980,3 +980,31 @@ fn one_plugin_by_both_doors_is_one_version_or_refused() {
     ];
     one_owner(&dropped).expect("not the one-version rule's pair");
 }
+
+/// LAW 7 FOR PLANES (`BUSBAR-1.6.0.md` l.1908-1910: "Core loads a plugin **iff** its configuration
+/// section is present. No verb configured → that plugin is never loaded."; l.547: "A plane loads
+/// iff its verb is present.").
+///
+/// RED before the boot bound only the planes the configuration uses: every discovered plane door,
+/// linked or dropped in, was bound on the dispatcher whatever the document wrote.
+#[test]
+fn a_plane_the_configuration_does_not_use_is_never_bound() {
+    let set = crate::PluginRegistry::empty()
+        .open_planes(&[plug::door])
+        .unwrap();
+    let plane = set.doors[0].clone();
+    assert!(
+        used_planes(&Uses::default(), &set.doors).is_empty(),
+        "a document that writes none of the plane's sections binds no plane"
+    );
+    let uses = Uses {
+        roots: plane.verbs.iter().cloned().collect(),
+        ..Uses::default()
+    };
+    let used = used_planes(&uses, &set.doors);
+    assert_eq!(
+        used.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        [plane.name.as_str()],
+        "its verb selects it"
+    );
+}
