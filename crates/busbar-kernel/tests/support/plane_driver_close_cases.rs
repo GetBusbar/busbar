@@ -135,6 +135,52 @@ fn screened(stuck: u32, panics: bool) -> (Arc<Double>, PlaneDriver) {
     (r.plane, r.driver.with_hooks(Arc::new(binder)))
 }
 
+/// A caller the routed hooks know nothing of.
+struct Nobody;
+
+impl busbar_kernel::plane_driver::CallerFacts for Nobody {
+    fn key(&self, _: &str) -> Option<busbar_kernel::plane_driver::CallerKey> {
+        None
+    }
+    fn in_groups(&self, _: Option<&str>, groups: &[String]) -> bool {
+        groups.is_empty()
+    }
+    fn rate_headroom(&self, _: &str, _: &str) -> Option<f64> {
+        None
+    }
+    fn budget(&self, _: &str) -> Vec<busbar_contract::hooks::BudgetBucketState> {
+        Vec::new()
+    }
+}
+
+/// A driver whose ROUTED request stage (the head of the route leg, before the unit's pump and its
+/// ticket exist) runs a rewrite hook that sticks on its first unit.
+fn routed() -> (Arc<Double>, PlaneDriver) {
+    let stuck: Arc<dyn busbar_contract::hooks::RoutingPolicy> = Arc::new(Stuck {
+        stuck: AtomicU32::new(1),
+        panics: false,
+    });
+    let hooks = busbar_kernel::plane_driver::BoundHooks {
+        rewrites: vec![(Duration::from_secs(5), stuck)],
+        gates: Vec::new(),
+        pool_rewrites: Default::default(),
+        pool_gates: Default::default(),
+        pool_policies: Default::default(),
+        taps: busbar_kernel::plane_driver::StageTaps::default(),
+        requested: busbar_kernel::hooks::RequestedSignals::default(),
+        next_request_id: Arc::new(|| 1),
+        caller: Arc::new(Nobody),
+        dialects: vec!["test-dialect".to_string()],
+    };
+    let r = rig_with_hooks(
+        Way::Double,
+        BufferCaps::default(),
+        cases::Book::default(),
+        Some(hooks),
+    );
+    (r.plane, r.driver)
+}
+
 /// RED, THE FIRST REPORTED EXIT: the caller goes away while a gate-first plane's screen is still
 /// running its hook, after `arrive` and before the door. The unit is owed its close and nothing
 /// crosses inside the drop; the next arrival's decode pays it with the host's `cancel` naming the
@@ -264,6 +310,8 @@ enum Exit {
     GoneAtTheScreen,
     /// A hook panicked during the gate-first screen, unwinding the unit.
     PanickedAtTheScreen,
+    /// Its caller went away during the routed request stage, admitted, before its pump existed.
+    GoneAtTheRoutedHookStage,
     /// The plane faulted before any byte of its answer.
     FailedBeforeTheAnswer,
     /// A record write failed after its answer began (the store out).
@@ -289,7 +337,7 @@ enum Exit {
     SessionEnded,
 }
 
-const EXITS: [Exit; 19] = [
+const EXITS: [Exit; 20] = [
     Exit::Completed,
     Exit::AnsweredLocally,
     Exit::RefusedAtArrive,
@@ -298,6 +346,7 @@ const EXITS: [Exit; 19] = [
     Exit::VetoedAtTheScreen,
     Exit::GoneAtTheScreen,
     Exit::PanickedAtTheScreen,
+    Exit::GoneAtTheRoutedHookStage,
     Exit::FailedBeforeTheAnswer,
     Exit::FailedAfterTheAnswerBegan,
     Exit::FailedOverThenFailedAfterTheAnswerBegan,
@@ -319,15 +368,21 @@ async fn closed_by(exit: Exit) -> u32 {
     let passing = common::TestUnits::passing;
     let unit_on = |far: &'static str| (cases::Far::new(&[far], cases::CHUNKS), "/call");
     match exit {
-        Exit::GoneAtTheScreen | Exit::PanickedAtTheScreen => {
+        Exit::GoneAtTheScreen | Exit::PanickedAtTheScreen | Exit::GoneAtTheRoutedHookStage => {
             let panics = matches!(exit, Exit::PanickedAtTheScreen);
-            let (plane, driver) = screened(1, panics);
+            let (plane, driver) = if matches!(exit, Exit::GoneAtTheRoutedHookStage) {
+                routed()
+            } else {
+                screened(1, panics)
+            };
             let (steps, far, caller) = (
                 passing(),
                 cases::Far::new(&["ok"], &[]),
                 cases::Caller::default(),
             );
-            let units = driver.unit(&steps, &far, &caller, cases::arrival("/v1", b"hi"), 0);
+            // A body of one `user` turn, so the routed rewrite has a prompt to see.
+            let arrival = cases::arrival("/call", b"user:hello");
+            let units = driver.unit(&steps, &far, &caller, arrival, 0);
             {
                 let mut unit = Box::pin(drive_as(&units, KEY));
                 let polled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -335,7 +390,7 @@ async fn closed_by(exit: Exit) -> u32 {
                     unit.as_mut().poll(&mut cx).is_pending()
                 }));
                 match polled {
-                    Ok(pending) => assert!(pending && !panics, "{exit:?}: waits at its screen"),
+                    Ok(pending) => assert!(pending && !panics, "{exit:?}: waits at its hook"),
                     Err(_) => assert!(panics, "{exit:?}: only the panicking hook unwinds"),
                 }
             }
@@ -536,12 +591,12 @@ fn expected(exit: Exit) -> u32 {
 
 /// EVERY EXIT CLOSES AN ARRIVED UNIT, AND THE GUARD NEVER ADDS A CALL: whichever way a unit that
 /// crossed `arrive` leaves (completed, answered locally, refused at its arrival, its identity, the
-/// door or the screen, its caller gone at the screen or mid-answer, a panic unwinding it, failed
-/// before or after its answer began, past its deadline, drained by a reload, the walk out of
-/// members after a failover or a dial that brought nothing back, a refusal handed as a piece first,
-/// a session ended), the plane has exactly one closing call for it once the sweep has run, but for
-/// the two [`expected`] names. RED before the fix: the screen's two exits and the failure after the
-/// answer began had none.
+/// door or the screen, its caller gone at the screen, the routed hook stage or mid-answer, a panic
+/// unwinding it, failed before or after its answer began, past its deadline, drained by a reload,
+/// the walk out of members after a failover or a dial that brought nothing back, a refusal handed
+/// as a piece first, a session ended), the plane has exactly one closing call for it once the
+/// sweep has run, but for the two [`expected`] names. RED before the fix: the gated screen's two
+/// exits, the routed hook stage's, and the failures after the answer began had none.
 #[tokio::test]
 async fn every_exit_closes_an_arrived_unit_exactly_once() {
     let mut wrong = Vec::new();

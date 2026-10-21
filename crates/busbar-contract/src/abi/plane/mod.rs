@@ -2586,10 +2586,10 @@ pub struct PlaneCancelIn {
     pub arena_buf: *mut u8,
     /// Its capacity.
     pub arena_cap: usize,
-    /// THE CANCELLED UNIT, as the kernel minted it (the key its [`ArriveIn::unit`] carried), on the
-    /// host's own cancel of a unit, so a plane that keys its units from `arrive` finds one whose
-    /// ticket no piece ever carried (audit P-M7). `0` for the instance's driver ticket and for
-    /// a cancel of an op in flight, whose own `in` names its unit.
+    /// THE CANCELLED UNIT, as the kernel minted it (the key its [`ArriveIn::unit`] carried), so a
+    /// plane that keys its units from `arrive` frees it by that key: on the host's own cancel of a
+    /// unit, one whose ticket no piece ever carried included (audit P-M7), and on the cancel of an
+    /// op in flight, the unit that op's own `in` names. `0` for the instance's driver ticket.
     pub unit: u64,
 }
 
