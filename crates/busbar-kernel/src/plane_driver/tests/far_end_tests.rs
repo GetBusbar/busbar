@@ -2841,6 +2841,105 @@ async fn an_answer_cut_after_its_head_ends_on_a_cut_piece_and_a_complete_one_doe
     );
 }
 
+/// The upstream-failure dispositions the far end counted, in order.
+#[derive(Default)]
+struct Failures {
+    failed: Mutex<Vec<&'static str>>,
+}
+impl Telemetry for Failures {
+    fn upstream_attempt(&self, _: &str, _: DestinationId) {}
+    fn upstream_failure(&self, _: &str, _: DestinationId, disposition: &'static str) {
+        self.failed.lock().unwrap().push(disposition);
+    }
+    fn failover(&self, _: &str, _: &'static str) {}
+    fn breaker_trip(&self, _: &str, _: DestinationId) {}
+    fn queued(&self, _: &str, _: i64) {}
+}
+
+/// Drive one answer from `script` to its last piece, the plane reading the last piece `fault`
+/// (an `once` unit, so a non-success head is relayed for the plane to read): the breaker's records
+/// and the upstream failures counted.
+async fn read_last_as(
+    script: Script,
+    fault: u8,
+) -> (Vec<(DestinationId, Outcome)>, Vec<&'static str>) {
+    let mut r = rig(&[("a.test", script)], OnExhausted::Status503, None);
+    let failures = Arc::new(Failures::default());
+    r.egress.telemetry = Arc::clone(&failures) as Arc<dyn Telemetry>;
+    let t = token();
+    let far = r.egress.unit(UnitRoute {
+        once: true,
+        ..route()
+    });
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    assert!(far.send(&t, request()).await);
+    loop {
+        let p = far.next(&t).await.expect("a piece through the last");
+        far.judged(&t, if p.last { fault } else { FAULT_NONE });
+        if p.last {
+            break;
+        }
+    }
+    drop(far);
+    let observed = r.book.observed.lock().unwrap().clone();
+    let failed = failures.failed.lock().unwrap().clone();
+    (observed, failed)
+}
+
+/// ORACLE ROW 86 (1.5.5 /metrics), status rows 49/68 (the breaker's fact; the plane's fault
+/// reading at the far end): A FAULT THE PLANE READS INSIDE A SUCCESS — an in-band error frame after
+/// a 200 head, read on the answer's last piece — records the breaker's compensating transient (the
+/// head's success, then the transient) and counts NO upstream failure, as 1.5.5 recorded a
+/// stream's terminal error on the breaker alone (v1.5.5 `proxy/response_body.rs:451-479`; the 1.5.5
+/// golden's in-band stream-error cells, `stream_upstream_error@fixture`, carry no
+/// `busbar_upstream_failures_total`). RED before the fix: one `transient` failure counted.
+#[tokio::test]
+async fn a_fault_read_inside_a_success_records_the_breaker_and_counts_no_upstream_failure() {
+    let (observed, failed) = read_last_as(
+        Script::Answer(
+            200,
+            None,
+            vec![b"data: {\"a\":1}\n\n", b"data: {\"error\":{}}\n\n"],
+        ),
+        FAULT_TRANSIENT,
+    )
+    .await;
+    assert_eq!(
+        observed,
+        vec![
+            (DestinationId::new(1), Outcome::Success),
+            (
+                DestinationId::new(1),
+                Outcome::Transient { retry_after: None }
+            ),
+        ],
+        "the head's success, then the compensating transient the plane's reading states"
+    );
+    assert!(
+        failed.is_empty(),
+        "a fault inside a success counts no upstream failure (1.5.5): {failed:?}"
+    );
+}
+
+/// The control: a relayed FAILURE the plane reads as a transient fault is an upstream failure and
+/// is counted, as 1.5.5's attempt classifier counted it.
+#[tokio::test]
+async fn a_relayed_failure_the_plane_reads_transient_counts_its_upstream_failure() {
+    let (observed, failed) = read_last_as(
+        Script::Answer(502, None, vec![b"{\"error\":\"upstream\"}"]),
+        FAULT_TRANSIENT,
+    )
+    .await;
+    assert_eq!(
+        observed,
+        vec![(
+            DestinationId::new(1),
+            Outcome::Transient { retry_after: None }
+        )]
+    );
+    assert_eq!(failed, vec!["transient"]);
+}
+
 /// THE FRAMER'S OWN HEAD LINES GO OUT IN THE HEAD THE AUTH SIGNS (THE DESIGN section 6, step 5:
 /// nothing is added after the auth runs), in 1.5.5's order: the auth's fields, the plane's, then the
 /// client's defaults (v1.5.5 walk.rs:564-590 sets the auth's headers before the request's own,
