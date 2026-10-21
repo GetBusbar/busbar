@@ -790,11 +790,7 @@ pub fn dropped_transports(
                         let composes_over = facts.composes_over;
                         let offered = facts.offered;
                         let upgrades = facts.upgrades;
-                        let (door, wire) = crate::root::doors::served(
-                            plugin,
-                            settings,
-                            Some(crate::root::connector::address_carrier()),
-                        )?;
+                        let (door, wire) = crate::root::doors::served(plugin, settings)?;
                         Ok(crate::root::registry::DroppedDoor {
                             key,
                             claims,

@@ -236,6 +236,10 @@ pub struct Connection {
     /// handshake's ProtocolNameList encoding: what the agreed protocol is judged against
     /// (`check_agreed`) before the framer is handed it. Empty = none offered.
     alpn_offer: Vec<u8>,
+    /// A STREAM'S OWN BACKPRESSURE (`busbar_contract::abi::transport`): the streams whose last
+    /// emit the framer answered `YIELD_STREAM_FULL`. Nothing more is emitted on one until the
+    /// framer hands a writable piece for it, or its end or failure piece.
+    full: std::collections::HashSet<u64>,
 }
 
 /// A CONNECT exchange in flight: the request (until it is queued), the proxy's answer so far, and
@@ -370,16 +374,20 @@ fn agreed_was_offered(offer: &[u8], agreed: Option<&[u8]>) -> Result<(), Failure
 }
 
 impl Connection {
-    /// Dial `dial.target` through `door`: the endpoint check, the entry's `locate`, a second
-    /// endpoint check on the authority it named, then a non-blocking connect registered on the
-    /// calling worker's reactor. The connection comes back at once, its open in flight.
+    /// Dial `dial.target` through `door`, an IP literal dialled as written and judged by no
+    /// destination judge: the whole endpoint check ([`endpoint::check`]: no cloud metadata or
+    /// link-local host), the entry's `locate`, the whole endpoint check on the authority it named,
+    /// then a non-blocking connect registered on the calling worker's reactor. The connection comes
+    /// back at once, its open in flight.
     ///
     /// # Errors
     ///
     /// [`Failure::Refused`] before any socket exists; [`Failure::Failed`] off a worker or when the
     /// socket cannot be made.
     pub fn dial(door: Arc<dyn FramerDoor>, via: &Via, dial: Dial) -> Result<Self, Failure> {
+        endpoint::check(&dial.target).map_err(|e| Failure::Refused(e.to_string()))?;
         let planned = Planned::locate(door, via.clone(), dial)?;
+        endpoint::check(planned.authority()).map_err(|e| Failure::Refused(e.to_string()))?;
         let addr = crate::socket::address_of(planned.authority()).ok_or_else(|| {
             Failure::Refused(format!(
                 "`{}` is not an address the connector dials without resolving a name",
@@ -414,8 +422,9 @@ pub fn carried_at(claim: &str, target: &str) -> Result<framer::Located, Failure>
     })
 }
 
-/// A dial located but not yet dialled: the target and the authority the entry named passed the
-/// endpoint check, and the address to dial is still to be judged.
+/// A dial located but not yet dialled: the target and the authority the entry named each name a
+/// host ([`endpoint::named`]), and the address to dial is still to be judged: cloud metadata and
+/// link-local are the destination guard's to refuse, or its carve-outs and allowlist to admit.
 pub struct Planned {
     /// The framer; `None` = the carrier carried as itself.
     door: Option<Arc<dyn FramerDoor>>,
@@ -434,17 +443,17 @@ impl std::fmt::Debug for Planned {
 }
 
 impl Planned {
-    /// The endpoint check, the entry's `locate`, and a second endpoint check on the authority it
-    /// named.
+    /// The target names a host, the entry's `locate`, and the authority it named names one too.
     ///
     /// # Errors
     ///
-    /// [`Failure::Refused`]: the target or the authority is refused, or the entry locates nothing.
+    /// [`Failure::Refused`]: the target or the authority names no host, or the entry locates
+    /// nothing.
     pub fn locate(door: Arc<dyn FramerDoor>, via: Via, dial: Dial) -> Result<Self, Failure> {
-        endpoint::check(&dial.target).map_err(|e| Failure::Refused(e.to_string()))?;
+        endpoint::named(&dial.target).map_err(|e| Failure::Refused(e.to_string()))?;
         let located = framer::locate(door.as_ref(), &dial.target)
             .map_err(|e| Failure::Refused(e.to_string()))?;
-        endpoint::check(&located.authority).map_err(|e| Failure::Refused(e.to_string()))?;
+        endpoint::named(&located.authority).map_err(|e| Failure::Refused(e.to_string()))?;
         Ok(Self {
             door: Some(door),
             via,
@@ -455,16 +464,18 @@ impl Planned {
 
     /// A dial over a carrier CARRIED AS ITSELF (a need over the carrier's own claim, `claim`): its
     /// target is an authority, `host:port`, or `<claim>://host:port`; nothing is offered, and no
-    /// connection security is asked for at the dial. The endpoint check, then the authority's.
+    /// connection security is asked for at the dial. The target names a host, then the authority
+    /// does.
     ///
     /// # Errors
     ///
-    /// [`Failure::Refused`]: the target or the authority is refused, or the target is no authority.
+    /// [`Failure::Refused`]: the target or the authority names no host, or the target is no
+    /// authority.
     pub fn carried(via: Via, dial: Dial) -> Result<Self, Failure> {
-        endpoint::check(&dial.target).map_err(|e| Failure::Refused(e.to_string()))?;
+        endpoint::named(&dial.target).map_err(|e| Failure::Refused(e.to_string()))?;
         let claim = via.door.facts().claims.first().copied().unwrap_or_default();
         let located = carried_at(claim, &dial.target)?;
-        endpoint::check(&located.authority).map_err(|e| Failure::Refused(e.to_string()))?;
+        endpoint::named(&located.authority).map_err(|e| Failure::Refused(e.to_string()))?;
         Ok(Self {
             door: None,
             via,
@@ -730,6 +741,7 @@ impl Connection {
             cause: None,
             tunnel: None,
             alpn_offer: Vec::new(),
+            full: std::collections::HashSet::new(),
         })
     }
 }
@@ -784,6 +796,7 @@ impl Connection {
             cause: None,
             tunnel: None,
             alpn_offer: Vec::new(),
+            full: std::collections::HashSet::new(),
             security_error: None,
             key_pin: None,
             presented: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -940,6 +953,7 @@ impl Connection {
             cause: None,
             tunnel: None,
             alpn_offer,
+            full: std::collections::HashSet::new(),
         };
         if conn.tls.is_none() {
             conn.begin()?;
@@ -1081,6 +1095,9 @@ impl Connection {
     fn put(&mut self, stream: u64, bytes: &[u8], end: bool, text: bool) -> Result<(), Failure> {
         if let Some(framing) = self.framing.as_mut() {
             let y = framing.emit(stream, bytes, end, text).map_err(failed)?;
+            if y.full {
+                self.full.insert(stream);
+            }
             return self.absorb(y);
         }
         if self.door.is_some() {
@@ -1367,6 +1384,12 @@ impl Connection {
         if let Err(f) = self.drive(cx) {
             self.fail(f.clone());
             return Err(f);
+        }
+        // A FULL STREAM takes nothing (not-ready: the drive above parked `cx` on the socket, whose
+        // bytes bring the framer's writable piece). An empty write adds nothing to the stream's
+        // queue, and its end of message is never held back.
+        if self.full.contains(&stream) && !bytes.is_empty() {
+            return Ok(0);
         }
         let take = bytes
             .len()
@@ -1794,6 +1817,14 @@ impl Connection {
                 }
                 None => self.queue(&y.wire, false),
             }
+        }
+        // A stream the framer says is writable again, or whose last piece arrived, is held no
+        // more.
+        for stream in &y.writable {
+            self.full.remove(stream);
+        }
+        for g in y.pieces.iter().filter(|g| g.ends_stream() || g.failed) {
+            self.full.remove(&g.stream);
         }
         self.inbox.extend(y.pieces);
         self.framer_deadline = y.deadline_ns.map(framer::instant_of);

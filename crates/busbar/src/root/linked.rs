@@ -189,8 +189,8 @@ pub type ClaimsOf = fn() -> Vec<&'static str>;
 /// A row's offered auth points, read when the guest lists seal.
 pub type OfferedOf = fn() -> busbar_contract::abi::auth::AuthPoints;
 
-/// A wire's build: handed the deployment's settings, it answers the wire the host serves the row's
-/// door over.
+/// A wire's build: handed the deployment's settings, it opens the row's door and answers the boot's
+/// admission of it (`HostWire::new`: a claim, no layer).
 pub type BuildTransport = fn(
     &busbar_contract::transport::TransportSettings,
 ) -> Arc<busbar_core_connector::wire::HostWire>;

@@ -5,9 +5,10 @@
 // on the memory ABI — compiled in (its row's `door`) or dropped in (a `kind: transport` image with
 // the one door symbol) — is admitted through the ONE dispatcher's door validation, opened, and
 // presented to the connector as the entry's framer table ([`Dispatched`]); the connector serves it
-// over the host's sockets ([`HostWire`]). Compiled in and dropped in are the same table, the same
-// crossing and the same wire. A transport reaches the connector only as this framer door: there is
-// no transport trait for the root to present it at (step 36).
+// over the host's sockets, the boot fold having admitted it ([`HostWire`]: a claim, no layer).
+// Compiled in and dropped in are the same table, the same crossing and the same admission. A
+// transport reaches the connector only as this framer door: there is no transport trait for the
+// root to present it at (step 36).
 //
 // Written to be `include!`d: the root mounts it as `root::doors`, and the build's generated table of
 // linked transports (`$OUT_DIR/linked_transports.rs`, which the integration tests include) mounts it
@@ -272,25 +273,12 @@ impl FramerDoor for Dispatched {
     }
 }
 
-/// Where a served wire's framed connections find their carrier: the root hands the process's
-/// connector's address carrier (`crate::root::connector::address_carrier`); a mount with no root
-/// hands none, and a framed dial on it is refused.
-pub type Riding = Option<busbar_core_connector::carrier::AddressCarrier>;
-
-/// `wire`, riding `riding` when one is handed.
-fn ride(wire: HostWire, riding: Riding) -> HostWire {
-    match riding {
-        Some(carrier) => wire.riding(carrier),
-        None => wire,
-    }
-}
-
-/// An opened door and the wire the host serves it over.
+/// An opened door and the boot fold's admission of it ([`HostWire`]).
 pub type Served = (Arc<dyn FramerDoor>, Arc<HostWire>);
 
-/// A door, opened with the deployment's `settings` and served over the host's sockets, its framed
-/// connections riding `riding`; and the opened door itself, the one instance the connector serves
-/// as an entry (a dropped-in door is opened once).
+/// A door, opened with the deployment's `settings` and admitted to be served over the host's
+/// sockets; and the opened door itself, the one instance the connector serves as an entry (a
+/// dropped-in door is opened once).
 ///
 /// # Errors
 ///
@@ -298,17 +286,16 @@ pub type Served = (Arc<dyn FramerDoor>, Arc<HostWire>);
 pub fn served(
     plugin: Plugin<TransportKind>,
     settings: &busbar_contract::transport::TransportSettings,
-    riding: Riding,
 ) -> Result<Served, String> {
     let door: Arc<dyn FramerDoor> = Arc::new(Dispatched::open(plugin, settings)?);
-    let wire = Arc::new(ride(HostWire::new(Arc::clone(&door))?, riding));
+    let wire = Arc::new(HostWire::new(door.as_ref())?);
     Ok((door, wire))
 }
 
 /// A linked row's build: its door admitted through the one validation, bound under the row's name
-/// `row` ([`row_bind`]), opened with the deployment's `settings`, served over the host's sockets. No
-/// entry composes over another (ARCHITECT Q128 U7), so a build is handed no layer: the carrier is
-/// the connector's choice from the target's scheme (`riding`, [`Riding`]).
+/// `row` ([`row_bind`]), opened with the deployment's `settings`, admitted to be served over the
+/// host's sockets. No entry composes over another (ARCHITECT Q128 U7), so a build is handed no
+/// layer: the carrier is the connector's choice from the target's scheme.
 ///
 /// # Panics
 ///
@@ -318,14 +305,13 @@ pub fn build(
     row: &str,
     door: DoorFn,
     settings: &busbar_contract::transport::TransportSettings,
-    riding: Riding,
 ) -> Arc<HostWire> {
     LinkedRow::of(door)
         .and_then(|linked| load_linked::<TransportKind>(&linked, row_bind(row)))
         .map_err(|e| e.to_string())
         .and_then(|plugin| Dispatched::open(plugin, settings))
-        .and_then(|door| HostWire::new(Arc::new(door)))
-        .map(|wire| Arc::new(ride(wire, riding)))
+        .and_then(|door| HostWire::new(&door))
+        .map(Arc::new)
         .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
 }
 
