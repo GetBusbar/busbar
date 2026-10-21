@@ -1453,8 +1453,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "hooks"
-count = "12"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 22 -> 12 by Q128 kernel hooks (#1236): the gate's measure on lane-q128k-hooks, law0-slack (Law 9: the ceiling only falls); LOWERED 22 -> 21: the kernel-to-loader drain (#1375): the kernel kit's hook double reads its build switch through a neutral feature alias and names no hook instance (law0-slack, the gate's own measure)"
+count = "11"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 22 -> 12 by Q128 kernel hooks (#1236): the gate's measure on lane-q128k-hooks, law0-slack (Law 9: the ceiling only falls); LOWERED 22 -> 21: the kernel-to-loader drain (#1375): the kernel kit's hook double reads its build switch through a neutral feature alias and names no hook instance (law0-slack, the gate's own measure); LOWERED 12 -> 11 by the #1375 merge of dev: the stand-in hook doors' doc (preflight `STAND_IN_HOOK_DOORS`) left with its const, and the kit names the kind, not the instance"
 
 [[law0]]
 crate = "busbar-kernel"

@@ -241,7 +241,7 @@ use busbar_contract::hook_calls::{Answered, HookAxis, HookCalls, HookFacts, Pend
 pub const CALL_BUDGET: Duration = Duration::from_secs(1);
 
 /// Whether `module` names the double on the hook axis: its Statement name or one of its words, in
-/// every test build (THE DESIGN l.1443: the kernel has no `hooks-ranking` feature to switch it on).
+/// every test build (THE DESIGN l.1443: the kernel has no hook feature to switch it on).
 fn answers(module: &str) -> bool {
     module == NAME || WORDS.contains(&module)
 }
