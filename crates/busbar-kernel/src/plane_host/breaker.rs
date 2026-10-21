@@ -94,7 +94,7 @@ enum Unavailability {
 /// table, refuses), the win-and-register, and a refusal handed back as the store's own
 /// [`Unavailable`](busbar_kernel::store::Unavailable)
 /// folded to its `Unavailability` kind + a second-rounded recovery floor ([`classify_unavailable`])
-/// and rebuilt from them ([`reconstruct_unavailable`]), so [`crate::failover::walk_with`]'s `admit`
+/// and rebuilt from them ([`reconstruct_unavailable`]), so `failover::walk_with`'s `admit`
 /// closure sees exactly the refusal it saw before. A bad key, a caught panic or an arena that hands
 /// back no id refuse as the unspecified reason did (a `ProbeInFlight`). The sync sites render
 /// `Retry-After` from [`retry_after_secs`], never from this reconstructed value.
@@ -161,7 +161,7 @@ pub fn retry_after_secs<H: super::BreakerHost + ?Sized>(host: &H, pool: &str, la
 /// from its [`Unavailability`] kind + the second-rounded recovery floor an [`admit`] refusal
 /// was folded to. Coarse by construction — the fold keeps no exact internal epoch, so
 /// the `BreakerOpen`/`AtCapacity` payloads are reconstituted from the floor. This feeds
-/// [`crate::failover::walk_with`]'s `passed_over` reasons (an operator-facing LOG on the sync sites),
+/// `failover::walk_with`'s `passed_over` reasons (an operator-facing LOG on the sync sites),
 /// never a caller-facing `Retry-After` (that is the store's own `retry_after_secs`).
 fn reconstruct_unavailable(
     reason: Unavailability,
