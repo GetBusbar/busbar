@@ -942,7 +942,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-stdio"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-stdio?rev=23b8fa8031ed969f66c08289bfe2415f25a16236#23b8fa8031ed969f66c08289bfe2415f25a16236"
+source = "git+https://github.com/GetBusbar/busbar-transport-stdio?rev=42307002797b50841db163ece9edfaec80ec113c#42307002797b50841db163ece9edfaec80ec113c"
 dependencies = [
  "busbar-contract",
 ]
