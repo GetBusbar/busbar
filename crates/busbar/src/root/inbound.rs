@@ -253,9 +253,9 @@ pub fn install_listeners(
     door_refusals: &[busbar_kernel::plane_routes::PlaneRefusalSpec],
     app: &Arc<busbar_kernel::state::App>,
 ) -> Result<(), &'static str> {
-    // RED: the table is installed under the root's own identity, whatever transport serves it.
-    let _ = owners;
-    let owners: &[u64] = &[0];
+    if owners.contains(&0) {
+        return Err(ROOT_IS_NO_TRANSPORT);
+    }
     let body_limit = busbar_kernel::config::limits::installed().map_or(
         busbar_kernel::config::limits::DEFAULT_REQUEST_BODY_MAX_BYTES,
         |l| l.request_body_max_bytes,
@@ -354,8 +354,6 @@ pub fn lending_from(
     owner: u64,
     generation: u64,
 ) -> Option<busbar_core_connector::framer::GuestLines> {
-    // RED: every handle is minted for the root's own identity.
-    let minted_for = 0;
     let lines = inbound
         .lent(owner, generation)?
         .into_iter()
@@ -363,7 +361,7 @@ pub fn lending_from(
             Some(busbar_core_connector::framer::GuestLine {
                 line: spec.line,
                 points: spec.points,
-                auth: auth_handle::mint_auth_ref(minted_for, generation, spec.auth)?,
+                auth: auth_handle::mint_auth_ref(owner, generation, spec.auth)?,
                 body_limit: spec.body_limit,
                 methods: route.methods,
                 path_form: route.path_form,

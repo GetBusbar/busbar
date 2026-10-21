@@ -872,9 +872,14 @@ impl Inbound {
         owner: u64,
         generation: u64,
     ) -> Option<Vec<(LineSpec, crate::guest::Route)>> {
-        // RED: no list is lent.
-        let _ = (owner, generation);
-        None
+        let table = self.table(owner, generation)?;
+        let routes = table
+            .listener
+            .guests
+            .lines()
+            .iter()
+            .map(|l| l.route.clone());
+        Some(table.listener.specs().into_iter().zip(routes).collect())
     }
 
     fn table(&self, owner: u64, generation: u64) -> Option<Arc<Table>> {

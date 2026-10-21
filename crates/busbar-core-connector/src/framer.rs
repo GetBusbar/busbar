@@ -1302,9 +1302,30 @@ impl Framing {
         established: &Established,
         guests: Option<Arc<GuestLines>>,
     ) -> Result<(Self, Yielded), Refused> {
-        // RED: the list is neither judged nor lent.
-        let _ = guests;
-        Self::begin_bound(door, side, target, established, &[], &AuthBinding::NONE)
+        if side == SIDE_DIAL && guests.is_some() {
+            return Err(Refused {
+                outcome: Outcome::Fault,
+                error: LINES_ON_DIAL.into(),
+            });
+        }
+        let binding = AuthBinding {
+            line_points: guests.as_deref().map_or(0, GuestLines::points),
+            ..AuthBinding::NONE
+        };
+        let ticket = door.framing_side();
+        if ticket.is_none() {
+            binding.ticket_less()?;
+        }
+        Self::begin_on(
+            door,
+            ticket,
+            side,
+            target,
+            established,
+            &[],
+            binding,
+            guests,
+        )
     }
 
     /// The guest list the framing was lent at `begin`, held for its life; `None` = none.

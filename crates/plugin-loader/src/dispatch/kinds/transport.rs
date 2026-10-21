@@ -28,9 +28,9 @@ use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::transport::check::{
     check_accept, check_arrival, check_begin_scheme, check_binding, check_cancel,
     check_claim_facts, check_claims, check_composes_over, check_emit_body_len, check_fault_cover,
-    check_fault_rows, check_framer, check_framer_fields, check_head_slots, check_io, check_listen,
-    check_locate, check_offered_points, check_settings, check_status_rows, check_tail,
-    check_upgrades_to,
+    check_fault_rows, check_framer, check_framer_fields, check_head_slots, check_io, check_lines,
+    check_listen, check_locate, check_offered_points, check_settings, check_status_rows,
+    check_tail, check_upgrades_to,
 };
 use busbar_contract::abi::transport::{
     self, slot, AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn,
@@ -369,16 +369,30 @@ impl Kind for Transport {
         if check_begin_scheme(&i).is_err() || check_binding(&i).is_err() {
             return Some(Outcome::Refused);
         }
+        let generation = crate::dispatch::auth_handle::generation();
+        let mine = |r: &busbar_contract::abi::host::service::AuthRef| {
+            crate::dispatch::auth_handle::verify_auth_ref(owner, generation, r).is_ok()
+        };
+        // THE LISTENER'S GUEST LIST (`BeginIn::lines`, row 192 B): a well-formed table, every
+        // line's handle minted for THIS transport at the published generation, so the refs it
+        // presents on `auth.call` are its own; a line of another owner, generation or mac is
+        // REFUSED before the crossing.
+        // SAFETY: the host's own `in`: a non-NULL `lines` is the connector's table of `lines_len`
+        // live entries, lent for this crossing.
+        if unsafe { check_lines(&i) }.is_err() {
+            return Some(Outcome::Refused);
+        }
+        if i.lines_len != 0 {
+            // SAFETY: as above; `check_lines` held the pointer non-NULL and the count bounded.
+            let lines = unsafe { std::slice::from_raw_parts(i.lines, i.lines_len) };
+            if !lines.iter().all(|l| mine(&l.auth)) {
+                return Some(Outcome::Refused);
+            }
+        }
         if i.auth.is_none() {
             return None;
         }
-        crate::dispatch::auth_handle::verify_auth_ref(
-            owner,
-            crate::dispatch::auth_handle::generation(),
-            &i.auth,
-        )
-        .is_err()
-        .then_some(Outcome::Refused)
+        (!mine(&i.auth)).then_some(Outcome::Refused)
     }
 
     fn check(a: &Answer) -> Result<(), Fault> {
