@@ -188,9 +188,13 @@ mod suite_conns {
     }
 
     /// One of this module's restated doors, as a door the loader may enter.
-    fn loaded(door: busbar_contract::abi::mechanism::door::DoorFn) -> LoadedDoor {
-        // SAFETY: every caller here hands one of this module's restated doors, each answering the
-        // `'static` door it laid out over the test plugin's real one.
+    ///
+    /// # Safety
+    ///
+    /// `door` answers NULL or a `'static`, fully initialised door (this module's restated doors
+    /// answer the one each laid out over the test plugin's real door).
+    unsafe fn loaded(door: busbar_contract::abi::mechanism::door::DoorFn) -> LoadedDoor {
+        // SAFETY: the caller's contract.
         unsafe { LoadedDoor::from_raw(door) }
     }
 
@@ -210,7 +214,8 @@ mod suite_conns {
     #[test]
     fn a_need_the_table_does_not_serve_keeps_the_bind_with_no_table() {
         let d = dispatcher();
-        for door in [loaded(http_door), loaded(mixed_door)] {
+        // SAFETY: this module's restated doors each answer the `'static` door they laid out.
+        for door in [unsafe { loaded(http_door) }, unsafe { loaded(mixed_door) }] {
             let s = subject(door);
             assert!(!s.needs().is_empty());
             assert!(s.conns(&d).is_none(), "{:?}", s.needs());
@@ -237,14 +242,17 @@ mod suite_conns {
     #[test]
     fn a_host_connector_handed_in_serves_every_need_and_takes_the_anchors() {
         let d = dispatcher();
-        let s = subject(loaded(http_door))
+        // SAFETY: this module's restated doors each answer the `'static` door they laid out.
+        let s = subject(unsafe { loaded(http_door) })
             .with_host(a_host)
             .with_anchors("PEM");
         assert!(matches!(s.bind(&d, "hosted").conns, ConnTable::Host(_)));
         assert_eq!(HOSTED.with(std::cell::Cell::take).as_deref(), Some("PEM"));
-        let plain = subject(loaded(http_door));
+        // SAFETY: this module's restated doors each answer the `'static` door they laid out.
+        let plain = subject(unsafe { loaded(http_door) });
         assert!(matches!(plain.bind(&d, "plain").conns, ConnTable::Probe));
-        let unhosted = subject(loaded(tcp_door)).with_anchors("PEM");
+        // SAFETY: this module's restated doors each answer the `'static` door they laid out.
+        let unhosted = subject(unsafe { loaded(tcp_door) }).with_anchors("PEM");
         let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             unhosted.conns(&d).is_some()
         }))
@@ -262,12 +270,14 @@ mod suite_conns {
     #[test]
     fn a_tcp_need_is_bound_to_a_table_that_dials_a_real_endpoint() {
         let d = dispatcher();
-        let s = subject(loaded(tcp_door));
+        // SAFETY: this module's restated doors each answer the `'static` door they laid out.
+        let s = subject(unsafe { loaded(tcp_door) });
         assert_eq!(s.needs().len(), 1);
         assert!(matches!(s.bind(&d, "a").conns, ConnTable::Host(_)));
         let table = s.conns(&d).expect("a tcp need is handed a table");
         let p = load_linked::<TestKind>(
-            &LinkedRow::of_loaded(loaded(tcp_door))
+            // SAFETY: this module's restated doors each answer the `'static` door they laid out.
+            &LinkedRow::of_loaded(unsafe { loaded(tcp_door) })
                 .expect("the restated door states its Statement"),
             Bind {
                 conns: crate::dispatch::ConnTable::Host(Arc::clone(&table)),
@@ -1205,13 +1215,54 @@ mod dropped_image {
 
     use busbar_contract::abi::mechanism::door::{Door, DoorFn};
 
-    use super::super::{cdylib_of, choose_cdylib_by, distinct, test_loaded, TestDoor, CDYLIB_ENV};
+    use super::super::{
+        cdylib_of, choose_cdylib_by, distinct, exports_door, test_loaded, TestDoor, CDYLIB_ENV,
+    };
 
     /// The fake images below export the door unless their bytes say they were built without it.
     fn choose_cdylib(profile: &Path, krate: &str) -> Result<PathBuf, String> {
         choose_cdylib_by(profile, krate, &|p: &Path| {
             !std::fs::read(p).unwrap_or_default().starts_with(b"no door")
         })
+    }
+
+    /// What `door_addresses_of_library` answers for a fake image, by its bytes: `null door` loads and
+    /// resolves a door that answers NULL, `no door` resolves none, `not a library` does not load.
+    fn answered(p: &Path) -> Result<Option<(usize, usize)>, crate::dispatch::LoadError> {
+        match std::fs::read(p).unwrap_or_default().as_slice() {
+            b"null door" => Err(crate::dispatch::LoadError::NullDoor),
+            b"no door" => Ok(None),
+            b"not a library" => Err(crate::dispatch::LoadError::Open("not a library".into())),
+            _ => Ok(Some((1, 2))),
+        }
+    }
+
+    /// RED (status row 159): an image that loads and resolves `busbar_plugin_door` EXPORTS the door
+    /// even when that door then fails its head checks: the top-ranked image is chosen, and its
+    /// refusal is the one reported, never skipped for a lower-ranked (possibly stale) build. RED
+    /// before: `Ok(Some(_))` alone counted, so the uplifted image with a NULL door was passed over
+    /// for the hashed one.
+    #[test]
+    fn red_a_ranked_image_whose_door_fails_its_head_is_chosen_not_skipped() {
+        assert!(exports_door(&Err(crate::dispatch::LoadError::NullDoor)));
+        assert!(exports_door(&Err(crate::dispatch::LoadError::Magic(0))));
+        assert!(exports_door(&Ok(Some((1, 2)))));
+        assert!(!exports_door(&Ok(None)), "no symbol is no door");
+        assert!(
+            !exports_door(&Err(crate::dispatch::LoadError::Open("x".into()))),
+            "an image that does not load exports nothing"
+        );
+        let p = Profile::new("null-head");
+        let uplifted = p.put("deps", "plug", None, b"null door");
+        p.put("deps", "plug", Some("aaaa"), b"an older build");
+        let chosen = choose_cdylib_by(p.path(), "plug", &|p: &Path| exports_door(&answered(p)))
+            .expect("the uplifted image is chosen");
+        assert_eq!(chosen, uplifted);
+        assert_eq!(
+            answered(&chosen).err(),
+            Some(crate::dispatch::LoadError::NullDoor),
+            "its refusal is what the suite reports"
+        );
     }
 
     /// A fresh `target/<profile>` of this test's own, with `deps/` and `examples/`.

@@ -267,7 +267,9 @@ pub fn rendering_of_library(path: &Path) -> Result<Option<Vec<u8>>, LoadError> {
 /// against (`conformance::both_ways`).
 ///
 /// # Errors
-/// `dlopen` failed.
+/// [`LoadError::Open`]: `dlopen` failed. The door's head-check refusals ([`read_door`]):
+/// [`LoadError::NullDoor`], [`LoadError::Magic`], [`LoadError::Mechanism`], [`LoadError::DoorSize`],
+/// [`LoadError::UnknownKind`] and [`LoadError::KindAbi`].
 #[cfg(any(test, feature = "conformance"))]
 pub(crate) fn door_addresses_of_library(path: &Path) -> Result<Option<(usize, usize)>, LoadError> {
     let lib = crate::dlopen_on_worker(path.as_os_str()).map_err(LoadError::Open)?;

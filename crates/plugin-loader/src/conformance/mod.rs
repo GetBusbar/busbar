@@ -296,14 +296,14 @@ impl Subject {
     /// The kind the linked door states.
     ///
     /// # Panics
-    /// When the door is NULL or names no kind.
+    /// When the door fails its head checks (NULL, its magic, its mechanism or kind ABI version,
+    /// a kind no kind has).
     #[must_use]
     pub fn kind(&self) -> KindCode {
-        let p = crate::dispatch::load::enter_door(self.door);
-        assert!(!p.is_null(), "the door function answered NULL");
-        // SAFETY: a door function answers a `'static` door; only its `kind` word is read.
-        let raw = unsafe { std::ptr::addr_of!((*p).kind).read_unaligned() };
-        KindCode::from_raw(raw).unwrap_or_else(|| panic!("the door names kind {raw}"))
+        let (_, kind) =
+            crate::dispatch::load::read_door(crate::dispatch::load::enter_door(self.door), None)
+                .unwrap_or_else(|e| panic!("the linked door is refused: {e}"));
+        kind
     }
 
     /// The dropped-in library: this crate's cdylib in the test binary's target directory, the one
@@ -567,11 +567,22 @@ pub fn cdylib_of(crate_snake: &str) -> PathBuf {
 /// None is built, none built exports the door, or several different images rank first.
 pub(crate) fn choose_cdylib(profile: &Path, crate_snake: &str) -> Result<PathBuf, String> {
     choose_cdylib_by(profile, crate_snake, &|p: &Path| {
-        matches!(
-            crate::dispatch::load::door_addresses_of_library(p),
-            Ok(Some(_))
-        )
+        exports_door(&crate::dispatch::load::door_addresses_of_library(p))
     })
+}
+
+/// Whether an image EXPORTS the door, by what [`door_addresses_of_library`] answered for it: it
+/// loads and `busbar_plugin_door` resolves. A door that then fails its head checks (NULL, a wrong
+/// magic, an unknown kind) is still the image's door: [`choose_cdylib`] picks it by its rank, and
+/// [`distinct`] reports its refusal, never skipping it for a lower-ranked (possibly stale) image.
+///
+/// [`door_addresses_of_library`]: crate::dispatch::load::door_addresses_of_library
+pub(crate) fn exports_door(answer: &Result<Option<(usize, usize)>, LoadError>) -> bool {
+    match answer {
+        Ok(Some(_)) => true,
+        Ok(None) | Err(LoadError::Open(_)) => false,
+        Err(_) => true,
+    }
 }
 
 /// [`choose_cdylib`] with `exports_door` deciding which images export the dropped-in door.
@@ -664,15 +675,18 @@ pub fn distinct_images(s: &Subject) {
 /// # Errors
 /// The library does not load, exports no door, or answers the linked door or its ops table.
 pub(crate) fn distinct(door: LoadedDoor, path: &Path) -> Result<(), String> {
-    let (dropped, ops) = crate::dispatch::load::door_addresses_of_library(path)
-        .map_err(|e| format!("the dropped image {path:?} does not load: {e}"))?
-        .ok_or_else(|| format!("the dropped image {path:?} exports no door"))?;
+    let (dropped, ops) = match crate::dispatch::load::door_addresses_of_library(path) {
+        Ok(Some(at)) => at,
+        Ok(None) => return Err(format!("the dropped image {path:?} exports no door")),
+        Err(e @ LoadError::Open(_)) => {
+            return Err(format!("the dropped image {path:?} does not load: {e}"))
+        }
+        Err(e) => return Err(format!("the dropped image {path:?}'s door is refused: {e}")),
+    };
     let linked = crate::dispatch::load::enter_door(door);
-    if linked.is_null() {
-        return Err("the door function answered NULL".into());
-    }
-    // SAFETY: a door function answers a `'static` door; only its `ops` word is read.
-    let linked_ops = unsafe { std::ptr::addr_of!((*linked).ops).read_unaligned() } as usize;
+    let (linked_door, _) = crate::dispatch::load::read_door(linked, None)
+        .map_err(|e| format!("the linked door is refused: {e}"))?;
+    let linked_ops = linked_door.ops as usize;
     if dropped == linked as usize || ops == linked_ops {
         return Err(format!(
             "the dropped image {path:?} answers the LINKED door (door {dropped:#x}, ops {ops:#x}): \
@@ -1602,26 +1616,14 @@ extern "C" fn ready_fails(
 
 /// The subject's door, read.
 fn real_door(s: &Subject) -> Door {
-    let p = crate::dispatch::load::enter_door(s.door);
-    assert!(!p.is_null(), "the door function answered NULL");
-    // SAFETY: a door function answers a `'static` door at least its stated size; the whole
-    // struct is read only when its size covers it (a door ending before `ready` reads `None`).
-    unsafe {
-        let size = std::ptr::addr_of!((*p).size).read_unaligned() as usize;
-        if size >= std::mem::size_of::<Door>() {
-            p.read_unaligned()
-        } else {
-            Door {
-                magic: std::ptr::addr_of!((*p).magic).read_unaligned(),
-                mechanism_version: std::ptr::addr_of!((*p).mechanism_version).read_unaligned(),
-                size: std::mem::size_of::<Door>() as u32,
-                kind: std::ptr::addr_of!((*p).kind).read_unaligned(),
-                kind_abi: std::ptr::addr_of!((*p).kind_abi).read_unaligned(),
-                statement: std::ptr::addr_of!((*p).statement).read_unaligned(),
-                ops: std::ptr::addr_of!((*p).ops).read_unaligned(),
-                ready: None,
-            }
-        }
+    let (door, _) =
+        crate::dispatch::load::read_door(crate::dispatch::load::enter_door(s.door), None)
+            .unwrap_or_else(|e| panic!("the linked door is refused: {e}"));
+    // A door ending before `ready` reads `ready: None`; restated, it states the whole door, so a RED
+    // arm's own `ready` is read.
+    Door {
+        size: std::mem::size_of::<Door>() as u32,
+        ..door
     }
 }
 

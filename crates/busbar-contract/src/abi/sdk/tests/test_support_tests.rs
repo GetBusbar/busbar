@@ -1101,8 +1101,9 @@ fn a_double_reading_a_write_region_or_writing_through_no_region_answers_fault() 
 
 /// Every `pub fn` of `src` (outside a `#[cfg(test)]` item) whose signature names a host table or a
 /// raw service function: each one is a way for safe code to reach a `ServiceFn`. It scans `pub fn`
-/// only: a `pub unsafe fn` (`lend_to`, the `from_raw`s) is no way for SAFE code to reach a table,
-/// since its caller must write `unsafe` and vouch for its contract (status row 159).
+/// only (the lines that start with it): a `pub unsafe fn` naming a table, were one added, is no way
+/// for SAFE code to reach it, since its caller must write `unsafe` and vouch for its contract
+/// (status row 159).
 fn table_leaks(src: &str) -> Vec<String> {
     const TABLE_TYPES: [&str; 5] = [
         "ServiceFn",
