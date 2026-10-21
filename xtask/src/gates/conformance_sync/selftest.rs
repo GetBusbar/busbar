@@ -18,7 +18,24 @@ use super::render::{
 };
 use super::{
     ROW_COVERAGE, ROW_FRESHNESS, ROW_MANIFEST_DRIFT, ROW_NO_ORPHAN, ROW_README_DRIFT, ROW_REGISTRY,
+    ROW_REGISTRY_BASE,
 };
+
+/// The synthetic base ref the `:registry-base` cases are measured against, answered entirely from
+/// the overlay: the battery's checkout may be detached with no base to derive, and the proof must
+/// not depend on how that checkout was made. The live base is what the `gates` check reads.
+const BASE: &str = "conformance-sync-selftest-base";
+
+/// `ov` with the base pinned at [`BASE`] and the base's registry being `base_registry`.
+fn with_base(mut ov: Overlay, base_registry: &str) -> Overlay {
+    ov.set_command(crate::gates::construction::ceilings::BASE_PIN_KEY, BASE);
+    ov.set_command(format!("git-ref:{BASE}"), BASE);
+    ov.set_command(
+        format!("git-show:{BASE}:{}", super::render::REGISTRY_PATH),
+        base_registry.to_string(),
+    );
+    ov
+}
 
 /// The suite whose verdict is mutated to plant the failure cases. It is green in the seed, so a
 /// mutation of it is a delta of exactly the size the case describes.
@@ -303,6 +320,52 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         )),
         &["the registered suite(s) smoke-signal are not armed in SUITE_FLOOR"],
     ));
+    // ══ :registry-base ═══════════════════════════════════════════════════════════════════════════
+    // THE FLOOR HELD TO THE BASE (Law 9). `SUITE_FLOOR` is a constant of the tree under judgement,
+    // so the change that deletes a suite's block can delete its floor entry with it. Each case pins
+    // the base and its registry; the tree's registry is the real one or the real one less a block.
+    // The red cases' baseline is the tree with the base pinned at the real registry, so a live
+    // base this checkout cannot derive does not make the question impossible to ask.
+    let pinned = cx.with_overlay(with_base(Overlay::new(), &real_registry));
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "registry-base: control: every suite the base registers is still registered",
+        &[ROW_REGISTRY_BASE],
+        with_base(Overlay::new(), &real_registry),
+    ));
+    report.push(prove_rows_red(
+        &pinned,
+        gate,
+        "registry-base: a suite the base registers and this tree dropped (ws) is REFUSED",
+        &[ROW_REGISTRY_BASE],
+        with_base(
+            overlay_registry(registry_without(&real_registry, "ws")),
+            &real_registry,
+        ),
+        &["ws", "left the registry since the base"],
+    ));
+    report.push(prove_rows_red(
+        &pinned,
+        gate,
+        "registry-base: a base whose registry cannot be read is REFUSED, never read as empty",
+        &[ROW_REGISTRY_BASE],
+        {
+            let mut ov = Overlay::new();
+            ov.set_command(crate::gates::construction::ceilings::BASE_PIN_KEY, BASE);
+            ov.set_command(format!("git-ref:{BASE}"), BASE);
+            ov
+        },
+        &["the base's registry could not be read"],
+    ));
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "registry-base: a suite this tree adds that the base lacks is a rise, and green",
+        &[ROW_REGISTRY_BASE],
+        with_base(Overlay::new(), &registry_without(&real_registry, "ws")),
+    ));
+
     report.push(prove_rows_red(
         cx,
         gate,

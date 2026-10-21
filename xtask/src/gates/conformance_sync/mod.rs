@@ -47,6 +47,7 @@ pub const ROW_COVERAGE: &str = "conformance:coverage";
 pub const ROW_README_DRIFT: &str = "conformance:readme-drift";
 pub const ROW_FRESHNESS: &str = "conformance:freshness";
 pub const ROW_NO_ORPHAN: &str = "conformance:no-orphan-claim";
+pub const ROW_REGISTRY_BASE: &str = "conformance:registry-base";
 
 pub const OWED: &[&str] = &[
     ROW_REGISTRY,
