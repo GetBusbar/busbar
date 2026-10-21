@@ -27,6 +27,7 @@ fn only_a_ticket_route_names_a_ticket_prefix() {
             busbar_kernel::plane_routes::PlaneResponse::default()
         }),
         ticket_prefix: prefix.map(str::to_string),
+        signed_ingress: Arc::from(Vec::<String>::new()),
     };
     let table = super::CoreRouteTable::default().with_door_refusals(vec![
         spec("/v1/calls", Some("tk_")),
@@ -41,4 +42,43 @@ fn only_a_ticket_route_names_a_ticket_prefix() {
         None
     );
     assert_eq!(table.door_ticket("/v1/other", &post), None);
+}
+
+/// THE SIGNED PATHS A DOOR PLANE STATES, LOOKED UP BY PATH (ARCHITECT rulings 2026-10-16, 3b A, and
+/// 2026-10-17): a raw path that starts with one of the plane's signed raw affixes' prefix and ends
+/// with its suffix is signed whatever the request's verb and whatever route its refusal was
+/// recorded at, the odd paths as the previous release signed them (no identifier, an empty
+/// segment). RED arms: a trailing `/`, a leading `//`, a sibling suffix, an unsigned surface of the
+/// same prefix, a path with no plane signing it.
+#[test]
+fn a_signed_path_is_looked_up_by_path_whatever_the_verb() {
+    use busbar_contract::abi::mechanism::route::RouteMethod;
+    use busbar_kernel::plane_routes::{DoorRouteId, PlaneRefusalSpec, PlaneResponse};
+    use std::sync::Arc;
+    let signed: Arc<[String]> = vec![
+        "/door/*/sign".to_string(),
+        "/door/*/sign-stream".to_string(),
+    ]
+    .into();
+    let table = super::CoreRouteTable::default().with_door_refusals(vec![PlaneRefusalSpec {
+        route: DoorRouteId {
+            path: "/door/{*rest}".to_string(),
+            method: RouteMethod::Post,
+        },
+        refuse: Arc::new(|_: busbar_contract::caps::ReasonCode, _: &str| PlaneResponse::default()),
+        signed_ingress: signed,
+        ticket_prefix: None,
+    }]);
+    assert!(table.signed_ingress("/door/x/sign"));
+    assert!(table.signed_ingress("/door/arn:a:b/c:0/sign"));
+    assert!(table.signed_ingress("/door/arn%3Aa%2Fc/sign"));
+    assert!(table.signed_ingress("/door/sign"));
+    assert!(table.signed_ingress("/door/sign-stream"));
+    assert!(table.signed_ingress("/door//sign"));
+    assert!(!table.signed_ingress("/door/x/sign/"));
+    assert!(!table.signed_ingress("//door/x/sign"));
+    assert!(!table.signed_ingress("/door/x/sign-more"));
+    assert!(!table.signed_ingress("/door/x/other"));
+    assert!(!table.signed_ingress("/elsewhere/x/sign"));
+    assert!(!super::CoreRouteTable::default().signed_ingress("/door/x/sign"));
 }

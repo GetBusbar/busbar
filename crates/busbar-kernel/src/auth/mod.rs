@@ -911,10 +911,21 @@ impl AuthMiddleware {
                 .unwrap_or_default(),
         };
 
-        let issued = readers.iter().find_map(|r| {
-            let kind = r.kinds.first()?.clone();
-            r.issued.clone().map(|shape| (kind, shape))
-        });
+        // THE CREDENTIAL THE HOST ISSUES beside a signed-token key: the build's fact, read from the
+        // linked rows' Statements whatever the chain names (status row 186: 1.5.5 minted the
+        // `issue_aws_credential` pair on the flag alone, `auth.chain` or not). An opened verifier
+        // states the same shape its Statement does, so with `keys` in the chain it answers first.
+        let issued = readers
+            .iter()
+            .find_map(|r| {
+                let kind = r.kinds.first()?.clone();
+                r.issued.clone().map(|shape| (kind, shape))
+            })
+            .or_else(|| match &axis {
+                Some(axis) => axis.issued_credential(),
+                None => crate::preflight::auth_axis(registry.clone())
+                    .and_then(|axis| axis.issued_credential()),
+            });
         Ok(Self {
             keys_in_chain,
             chain,
@@ -1206,8 +1217,9 @@ impl AuthMiddleware {
 
     /// THE CREDENTIAL THE HOST ISSUES beside a signed-token key (the admin `POST /keys` second
     /// credential, 1.5.5's `issue_aws_credential`): the first host-held credentials' verifier whose
-    /// Statement states an issued shape, as its first credential kind and that shape. `None` when no
-    /// verifier states one: the host then issues none. Kind and shape are the verifier's words.
+    /// Statement states an issued shape, as its first credential kind and that shape, whether or not
+    /// `auth.chain` names `keys` (a linked row's fact, not the chain's). `None` when no linked row
+    /// states one: the host then issues none. Kind and shape are the verifier's words.
     pub fn issued_credential(&self) -> Option<(String, busbar_contract::auth_calls::IssuedShape)> {
         self.issued.clone()
     }
@@ -2064,7 +2076,7 @@ fn unauthorized_with_completion_taps(
         // `spawn_bounded_tap` are retired with this move so the cap is never split into two gates. The
         // host is minted over `app` (an alloc-free `engine_host_value`); the group-scope walk folds
         // `&app.groups_registry` in host-side, byte-identical to the former raw-tree walk.
-        let host = crate::plane_host::engine_host_value(app);
+        let host = crate::plane_driver::engine_host_value(app);
         busbar_kernel::proxy::proxy_vocab::fire_stage_taps(
             &app.tap_hooks_response,
             &shape,
@@ -2440,12 +2452,11 @@ pub(crate) async fn auth_middleware(
     // running chain names `keys` AND the ingress dialect declares a signed ingress AND the request
     // carries one of the verifier's own carrier lines (the kernel names no credential line). Gating
     // on `keys_in_chain` keeps an OPEN `chain:[]` open. A credential that is not the verifier's
-    // (it PASSes) takes the unchanged token path below. The "which dialect signs" decision is a
-    // DECLARED protocol fact (`ProtocolDecl::ingress_auth`), never a name-branch.
-    let ingress_signed = crate::proto::decl_for(crate::ingress::native::envelope_dialect(
-        ingress_for_path(&app, &path),
-    ))
-    .is_some_and(|d| d.uses_sigv4_ingress_auth());
+    // (it PASSes) takes the unchanged token path below. Which paths are signed is a DECLARED plane
+    // fact, never a name-branch and never a path-shape guess: a door plane states its signed paths
+    // on raw-affix claims (`CLAIM_SIGNED_INGRESS` on `CLAIM_RAW_AFFIX`, ARCHITECT rulings 2026-10-16,
+    // 3b A and B, and 2026-10-17), looked up by the raw path whatever the verb.
+    let ingress_signed = core_routes.signed_ingress(&path);
     // The lines the chain's positions named for the transport, struck once the request is admitted.
     let mut strips = Vec::new();
     // The pre-step is CONFINED TO THE RESIDUAL PLANE (`admission.is_none()`). An audience-bound
@@ -2684,15 +2695,11 @@ pub use busbar_contract::auth::IdentityRefusal;
 ///   a group-carrying principal is re-keyed through `role_bindings` via
 ///   [`crate::governance::synthesize_principal_key`]. A DISABLED vkey never reaches here as
 ///   `Identified` (the keys arm denies it), so it can never be re-admitted through synth.
-/// - FAIL-CLOSED for ANY identified principal that earned NO enforcement key — whatever roles it
-///   carries and whether or not its module has a `role_bindings` table. `key: None` downstream means
-///   no pool ACL, no budget, and spend booked to the `anonymous` actor rather than to the principal
-///   that spent it, so an identified caller admitted without a key is both an authorization
-///   fail-open and a mis-attributed book. The guard is the one condition — no key, refuse — and
-///   nothing narrows it: 1.5.5 (and this function until 1.6.0 item 144) also required the principal
-///   to carry roles AND its module to have a bindings table, which admitted a ROLELESS principal, or
-///   any principal under an unbound module, ungoverned. `Open` (the explicit `chain: []` posture)
-///   is the only anonymous admission. Pinned by `auth::tests::a_principal_without_a_governance_key_is_refused`.
+/// - An identified principal that earned NO enforcement key is judged by [`admits_ungoverned`]:
+///   as 1.5.5 judged it, a principal carrying roles under a module that HAS a `role_bindings`
+///   table is refused `NoGrant` (its roles were to define its access and defined none), and a
+///   ROLELESS principal, or any principal of a module with no table, is admitted ungoverned
+///   (`key: None`). Pinned by `auth::tests::an_ungoverned_principal_is_judged_as_1_5_5_judged_it`.
 pub fn resolve_data_plane_identity(
     app: &crate::state::App,
     verdict: ChainVerdict,
@@ -2711,6 +2718,12 @@ pub fn resolve_data_plane_identity(
                 crate::governance::synthesize_bound_key(&module, &principal, &app.role_bindings)
             });
             let Some(key) = gov_key else {
+                if admits_ungoverned(&module, &principal, &app.role_bindings) {
+                    return Ok((
+                        AuthPrincipal(Some(principal)),
+                        crate::governance::GovCtx { key: None },
+                    ));
+                }
                 return Err(IdentityRefusal::NoGrant);
             };
             Ok((
@@ -2719,6 +2732,43 @@ pub fn resolve_data_plane_identity(
             ))
         }
     }
+}
+
+/// Whether an identified principal that earned NO governance key is refused whatever its roles and
+/// whatever its module's bindings (Q20, 1.6.0 item 144). Admitted with `key: None` such a principal
+/// meets no pool ACL and no budget, and its spend is booked to the `anonymous` actor. `false` is
+/// 1.5.5's behaviour, which this build keeps until the owner signs the change (Q128 u27): the
+/// three-part guard of v1.5.5 crates/busbar/src/auth/mod.rs:1543. The owner's signature flips this
+/// one line.
+pub const REFUSE_EVERY_UNGOVERNED_PRINCIPAL: bool = false;
+
+/// Whether `principal`, identified by `module` and earning no governance key, is admitted ungoverned
+/// under [`REFUSE_EVERY_UNGOVERNED_PRINCIPAL`].
+fn admits_ungoverned(
+    module: &str,
+    principal: &busbar_contract::auth::Principal,
+    role_bindings: &crate::config::RoleBindings,
+) -> bool {
+    admits_ungoverned_under(
+        REFUSE_EVERY_UNGOVERNED_PRINCIPAL,
+        module,
+        principal,
+        role_bindings,
+    )
+}
+
+/// [`admits_ungoverned`] under a stated `refuse_every`. Without it, 1.5.5's guard (v1.5.5
+/// crates/busbar/src/auth/mod.rs:1543, `gov_key.is_none() && !principal.roles.is_empty() &&
+/// bindings.is_some()` refuses): a ROLELESS principal, or any principal of a module with no
+/// `role_bindings` table, is admitted; a principal with roles under a module that has a table is
+/// refused. With it, no keyless principal is admitted.
+fn admits_ungoverned_under(
+    refuse_every: bool,
+    module: &str,
+    principal: &busbar_contract::auth::Principal,
+    role_bindings: &crate::config::RoleBindings,
+) -> bool {
+    !refuse_every && (principal.roles.is_empty() || !role_bindings.contains_key(module))
 }
 
 /// The one `verify` request for a signed ingress, at `HeadBody`: every field line as presented, the

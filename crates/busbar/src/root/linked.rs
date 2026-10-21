@@ -28,10 +28,10 @@
 
 use std::sync::Arc;
 
-use busbar_kernel::ingress::arrival::{BodyIngressEntry, PathIngressEntry};
+use busbar_kernel::ingress::arrival::BodyIngressEntry;
 use busbar_kernel::plane::registry::PlaneDecl;
 use busbar_kernel::plane::registry::PlaneDeclaration;
-use busbar_kernel::plane_host::EngineHost;
+use busbar_kernel::plane_driver::EngineHost;
 use busbar_kernel::preflight::{LinkedAuth, LinkedStore, RootInstall};
 
 /// A provider composition step, captured off the resolved configuration before the app is built and
@@ -74,8 +74,6 @@ pub struct Linked {
     )],
     /// Protocol declarations, appended to the installed protocol set in this order.
     pub protocols: &'static [&'static [&'static busbar_kernel::proto::ProtocolDecl]],
-    /// URL-model arrivals, by protocol name.
-    pub path_ingress: &'static [&'static [PathIngressEntry]],
     /// Body-model arrivals, by protocol name.
     pub body_ingress: &'static [&'static [BodyIngressEntry]],
     /// Installers of the protocol-axis seams an entry provides beside its declarations (a completion
@@ -102,10 +100,6 @@ pub struct Linked {
     /// The operator credential's provider word: the key the manifest's operator row states
     /// (`[package.metadata.busbar.operator-auth]`), linked in this build or not.
     pub operator_auth: &'static str,
-    /// The kernel-loop axes (#28): the declaration key of each plane `gauntlet_install::install()`
-    /// flips onto the unified loop's ONE-SHOT runner, and of each it flips onto the SESSION runner.
-    pub gauntlet_one_shot: &'static [&'static str],
-    pub gauntlet_session: &'static [&'static str],
     /// The transport axis (#3, #30): each linked wire's key, declared layers and build, in manifest
     /// order — the boot seal folds them bottom-up (see `crate::root::registry`).
     pub transports: &'static [LinkedTransport],
@@ -129,7 +123,7 @@ pub mod node {
     use std::sync::Arc;
 
     use busbar_contract::caps::{OpClassId, PrincipalId};
-    use busbar_kernel::plane_host::PlaneAnswer;
+    use busbar_kernel::plane_driver::PlaneAnswer;
     use busbar_kernel::teller::{RouteAwait, Units};
 
     /// A configured lane name to the interned lane the priced axis is written in, or `None` where
@@ -191,8 +185,8 @@ pub type ClaimsOf = fn() -> Vec<&'static str>;
 /// A row's offered auth points, read when the guest lists seal.
 pub type OfferedOf = fn() -> busbar_contract::abi::auth::AuthPoints;
 
-/// A wire's build: handed the deployment's settings, it answers the wire the host serves the row's
-/// door over.
+/// A wire's build: handed the deployment's settings, it opens the row's door and answers the boot's
+/// admission of it (`HostWire::new`: a claim, no layer).
 pub type BuildTransport = fn(
     &busbar_contract::transport::TransportSettings,
 ) -> Arc<busbar_core_connector::wire::HostWire>;
@@ -311,21 +305,18 @@ pub struct BookCtx<'a> {
     pub app: &'a busbar_kernel::state::App,
 }
 
-/// THE PROTOCOL AXIS: every entry's declarations and its path- and body-model arrivals, then each
-/// entry's protocol-axis seams — and the node axis, which those arrivals hand their units to: every
-/// entry on it is handed the node a root unit drives it through.
+/// THE PROTOCOL AXIS: every entry's declarations and its body-model arrivals, then each entry's
+/// protocol-axis seams. A dialect whose model rides the URL has no arrival here: its plane's door
+/// claims and serves those paths (ARCHITECT 2026-10-16 ruling 3 item 1). Then the node axis, which
+/// those arrivals hand their units to: every entry on it is handed the node a root unit drives it
+/// through.
 pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
     let installed: Vec<&'static busbar_kernel::proto::ProtocolDecl> = linked
         .protocols
         .iter()
         .flat_map(|decls| decls.iter().copied())
         .collect();
-    let path_ingress: Vec<PathIngressEntry> = linked
-        .path_ingress
-        .iter()
-        .flat_map(|arrivals| arrivals.iter().copied())
-        .collect();
-    busbar_kernel::proto::install_protocols_with_path_ingress(installed, path_ingress);
+    busbar_kernel::proto::install_protocols(installed);
     let body_ingress: Vec<BodyIngressEntry> = linked
         .body_ingress
         .iter()
@@ -343,9 +334,12 @@ pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
 }
 
 /// THE STORE, HOOK AND SECRET AXES: the linked store and hook rows onto the kernel's cold-kind axis,
-/// and the secret axis ([`secret_rows`]). No row is a default store: the store is the one config
-/// names (Q-STORE = (B)). A linked secret door that does not state itself refuses the boot (exit 2)
-/// before anything resolves a store or a secret.
+/// and the secret axis ([`secret_rows`]), on the root's one install record with the auth-axis
+/// opener (`crate::root::dispatch::auth_axis`) and the projection the door planes are sealed over,
+/// taken of every configuration as it is built (`crate::root::door_steps::door_config`), so a
+/// config apply refreshes them onto the new generation. No row is a default store: the store is
+/// the one config names (Q-STORE = (B)). A linked secret door that does not state itself refuses
+/// the boot (exit 2) before anything resolves a store or a secret.
 pub fn register_stores(linked: &Linked) {
     match link_secrets(linked.secrets, linked.secret_declares) {
         Ok(secrets) => busbar_kernel::preflight::install_linked_rows(RootInstall {
@@ -356,22 +350,21 @@ pub fn register_stores(linked: &Linked) {
             hook_names: crate::LINKED_HOOK_NAMES,
             store_axis: Some(store_axis),
             secret_axis: Some(secrets),
+            // The root's card repricer is the kernel's rate holder and dater (the node unit, in
+            // every build's root-unit table, arms its journal before the boot resolution:
+            // `crate::root::kernel::install_card_repricer`).
+            rate_apply: Some(&crate::root::kernel::CardRepricer),
+            rate_epoch: Some(&crate::root::kernel::CardRepricer),
             export_axis: Some(&crate::root::exports::EXPORTS),
             trust_policy: Some(crate::root::boot::trust_policy),
-            host_counters: Some(crate::root::dispatch::host_counters),
+            auth_axis: Some(crate::root::dispatch::auth_axis),
+            config_projection: Some(crate::root::door_steps::door_config),
         }),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
             std::process::exit(2);
         }
     }
-    // A member program's `env` secret references resolve through the same linked secret plugins
-    // (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)), at CONFIG TIME — the need's declaration at a
-    // plane's load or a config apply, and the connector's refresher — and are held for the spawns,
-    // which resolve nothing (ARCHITECT ruling 2026-10-13, row 166: a spawn serves a request).
-    busbar_core_connector::compose::install_spawn_secrets(
-        busbar_kernel::config::secret::resolve_linked_string_at_config,
-    );
 }
 
 /// THE STORE AXIS the kernel opens its governance store through (WIRE-STORE Q8/Q9): the loader's
@@ -503,7 +496,7 @@ pub fn plane_rows(linked: &Linked) -> Result<Vec<&'static PlaneDecl>, String> {
 /// #7: the route tables, the view, the health loop and `on_swap` are the KERNEL's). The door's own
 /// tail states whether it is the fallback plane (`TAIL_FALLBACK`), the core's readers (the
 /// `/metrics` lane gauges, `/v1/models`, the keys and service-operations views) walk the kernel's
-/// own [`busbar_kernel::plane_host::ConfigTables`], built from the same resolved lanes and pools,
+/// own [`busbar_kernel::plane_driver::route_tables::ConfigTables`], built from the same resolved lanes and pools,
 /// the provider merge is the kernel's `merge_provider_fallback`, and the health probes are the
 /// kernel's probe units on the door's sealed egress (`root::serve::arm_probes`). So a legacy row of
 /// the door's key yields the plane axis whole, its `build_runtime`, `viewer`, `resolve_provider`,

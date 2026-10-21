@@ -69,9 +69,9 @@ use ledger_identity::{
     accumulate, describe, holds, reconcile, LedgerSnapshot, LegacyRow, LegacySnapshot, RowKey,
 };
 
-// The linked plane rows (build.rs), so the card's open classes are read off the real declarations
-// without naming a plane crate.
-include!(concat!(env!("OUT_DIR"), "/linked_planes.rs"));
+// The linked plane rows, as the root folds each linked door (the test-linked roster), so the
+// card's open classes are read off the real declarations without naming a plane crate.
+mod linked;
 
 // ── the pinned figures ───────────────────────────────────────────────────────────────────────────
 //
@@ -953,14 +953,18 @@ fn oracle_shim() -> PathBuf {
 /// one, Q29/Q35), read off the plane's own declaration so the card follows it; the plane is found
 /// on the linked rows by its `fallback` flag, never by name.
 fn free_open_units() -> String {
-    LINKED_PLANES
+    let fallback = linked::planes()
         .iter()
         .find(|decl| decl.fallback)
-        .expect("the build links the fallback plane the oracle's lane falls through to")
+        .expect("the build links the fallback plane the oracle's lane falls through to");
+    // A door states its fee unit among its tail's classes; a fee unit is no class a card prices
+    // (it is priced at `per_request_fee:`), so it is not an open unit of the card.
+    fallback
         .billable_classes
         .iter()
         .map(|c| c.class)
         .filter(|c| !busbar_contract::records::RESERVED_UNITS.contains(c))
+        .filter(|c| !fallback.declaration.fee_units.contains(c))
         .map(|c| format!("{c}: 0"))
         .collect::<Vec<_>>()
         .join(", ")

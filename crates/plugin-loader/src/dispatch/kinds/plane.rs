@@ -85,6 +85,7 @@ unsafe impl InFrame for OnPieceIn {}
 unsafe impl InFrame for RefusalIn {}
 unsafe impl InFrame for ServeIn {}
 unsafe impl InFrame for ProjectIn {}
+unsafe impl InFrame for plane::CatalogIn {}
 unsafe impl OutFrame for PlaneOpenOut {}
 unsafe impl OutFrame for PlaneRefreshOut {}
 unsafe impl OutFrame for PlaneDriveOut {}
@@ -94,6 +95,7 @@ unsafe impl OutFrame for OnPieceOut {}
 unsafe impl OutFrame for RefusalOut {}
 unsafe impl OutFrame for ServeOut {}
 unsafe impl OutFrame for ProjectOut {}
+unsafe impl OutFrame for plane::CatalogOut {}
 
 /// What the instance's tail states that the host keeps: the list bounds every answer's indices are
 /// judged against, and the refusal statuses the kernel chooses from. Read once at bind.
@@ -173,6 +175,10 @@ pub struct ServedFacts {
     /// (THE DESIGN §6 step 2: a provider entry's `auth:`, else this), and the style's parameters
     /// for it, a JSON object's text (empty: none; ARCHITECT RULING 2026-10-03, Q-L6-AUTHPARAMS).
     pub dialect_auth: Vec<(u32, &'static str, &'static [u8])>,
+    /// Each dialect's `DIALECT_*` flags off its `dialect_auth` line, parallel to
+    /// [`Self::dialects`] (`0` for a dialect with no line): whether a provider may name it
+    /// (ARCHITECT ruling 2026-10-16, item 3).
+    pub dialect_flags: Vec<u32>,
     /// The tail's `label`, `subject_noun` and `admin_noun` (what the kernel's registry entry names
     /// the plane and one registration by).
     pub nouns: (&'static str, &'static str, &'static str),
@@ -405,6 +411,7 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
                 .into_iter()
                 .map(|d| (d.dialect, kept(d.style), kept_blob(d.params)))
                 .collect(),
+            dialect_flags: dialect_flags(&tail),
             nouns: (
                 kept(tail.label),
                 kept(tail.subject_noun),
@@ -440,6 +447,19 @@ fn stated_provider_keys(
         .ok_or("the Statement's extensions are longer than any blob may be")?;
     busbar_contract::provider_keys::stated(bytes)
         .map_err(|e| format!("the plane's provider keys are refused: {e}"))
+}
+
+/// Each of the tail's dialects' `DIALECT_*` flags, by dialect index: the union of its
+/// `dialect_auth` lines' flags (`check_dialect_auth` judged every line's index and bits), `0` for a
+/// dialect with none.
+fn dialect_flags(tail: &busbar_contract::abi::plane::PlaneTail) -> Vec<u32> {
+    let mut flags = vec![0; tail.dialects_len];
+    for d in listed(tail.dialect_auth, tail.dialect_auth_len) {
+        if let Some(f) = flags.get_mut(d.dialect as usize) {
+            *f |= d.flags;
+        }
+    }
+    flags
 }
 
 /// A tail string, kept for the process (`""` when absent).
@@ -676,12 +696,12 @@ pub fn linked_declaring_section(
         .map(|s| kept(s.name)))
 }
 
-/// THE REGISTRY FACTS A DOOR STATES (ARCHITECT RULING 2026-10-03, Q-DEL-A2A-DECL): its Statement
-/// name, its declaring section and its tail's words, read off the facts kept at its bind, and its
-/// own `validate` (ticket-less; it never pends) over a whole section. `bind` binds a probe instance
-/// of the door through the one load (a linked and a dropped door alike); one is bound here for the
-/// facts and the section judge, and one more per public base URL its facing is asked for (a plane
-/// states its audience and claims against the URL it was opened with).
+/// THE REGISTRY FACTS A DOOR STATES (ARCHITECT RULING 2026-10-03, the declaration-fold ruling): its
+/// Statement name, its declaring section and its tail's words, read off the facts kept at its bind,
+/// and its own `validate` (ticket-less; it never pends) over a whole section. `bind` binds a probe
+/// instance of the door through the one load (a linked and a dropped door alike); one is bound here
+/// for the facts and the section judge, and one more per public base URL its facing is asked for (a
+/// plane states its audience and claims against the URL it was opened with).
 ///
 /// # Errors
 ///
@@ -713,6 +733,7 @@ pub fn registration(
         audit_kind: served.audit_kind,
         signing: declared.signing,
         dialects: served.dialects.clone(),
+        dialect_flags: served.dialect_flags.clone(),
         scope_kinds: declared.scope_kinds.clone(),
         billable_classes: served
             .billable_classes
@@ -1236,6 +1257,10 @@ impl Kind for Plane {
     type Ops = plane::Ops;
     const TIMEOUT: Outcome = Outcome::Failed;
 
+    fn optional_slot(s: u32) -> bool {
+        s == slot::CATALOG
+    }
+
     fn op_name(s: u32) -> &'static str {
         match s {
             slot::ARRIVE => "arrive",
@@ -1245,6 +1270,7 @@ impl Kind for Plane {
             slot::HYDRATE => "hydrate",
             slot::START => "start",
             slot::PROJECT => "project",
+            slot::CATALOG => "catalog",
             _ => lifecycle_name(s),
         }
     }
@@ -1327,6 +1353,26 @@ impl Kind for Plane {
                 check_serve_records(a.outcome, o, records, i.records_cap as u64, &b)
             }
             slot::PROJECT => project(a),
+            slot::CATALOG => {
+                let i = a.input::<plane::CatalogIn>()?;
+                let o = a.out::<plane::CatalogOut>()?;
+                // SAFETY: as `refusal`: the host's `fields_buf` of `fields_cap` elements.
+                let fields = unsafe {
+                    reported(
+                        i.fields_buf.cast_const(),
+                        u64::from(o.fields_written),
+                        i.fields_cap as u64,
+                        "catalog.fields",
+                    )
+                }?;
+                let caps = Caps {
+                    reply: i.reply_cap as u64,
+                    fields: i.fields_cap as u64,
+                    arena: i.arena_cap as u64,
+                    ..Caps::default()
+                };
+                plane::check::check_catalog(a.outcome, o, fields, &caps)
+            }
             life::OPEN if a.outcome == Outcome::Ready => {
                 let generation = a.input::<OpenIn>()?.generation;
                 snapshot(
@@ -1438,6 +1484,9 @@ impl Kind for Plane {
             slot::PROJECT => a.out::<ProjectOut>().is_ok_and(|o| {
                 o.signals_needed != 0 || o.messages_needed != 0 || o.arena_needed != 0
             }),
+            slot::CATALOG => a
+                .out::<plane::CatalogOut>()
+                .is_ok_and(|o| o.reply_needed != 0 || o.fields_needed != 0 || o.arena_needed != 0),
             life::DRIVE => a
                 .out::<PlaneDriveOut>()
                 .is_ok_and(|o| o.sessions_needed != 0),
@@ -1825,10 +1874,11 @@ fn owned_blob(b: Blob) -> Option<Option<Vec<u8>>> {
 /// Copy the snapshot a READY `open`/`refresh` published: the loader's own `check_snapshot` has
 /// passed (its size, generation, lists and strings), and the claims, admin routes and listed names
 /// are judged here by the contract's element checks before any element string is read: a claim's
-/// refusal dialect against the `dialects` its tail declares.
+/// refusal dialect against the `dialects` its tail declares. Each claim's target text is judged by
+/// the claim grammar once read (`check_claim_target`).
 pub(crate) fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<OwnedSnapshot> {
     use busbar_contract::abi::plane::check::{
-        check_admin_routes, check_arrival_spans, check_claims, check_listed,
+        check_admin_routes, check_arrival_spans, check_claim_target, check_claims, check_listed,
     };
     if p.is_null() {
         return None;
@@ -1874,9 +1924,13 @@ pub(crate) fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<Ow
             .iter()
             .enumerate()
             .map(|(i, c)| {
+                // The target's TEXT, judged by the claim grammar once read (`check_claim_target`):
+                // a claim no request can match refuses the snapshot, never loads as a dead route.
+                let target = text(c.target)?;
+                check_claim_target(&target, c.flags).ok()?;
                 Some(OwnedClaim {
                     verb: text(c.verb)?,
-                    target: text(c.target)?,
+                    target,
                     carrier: text(c.carrier)?,
                     flags: c.flags,
                     refusal_dialect: c.refusal_dialect,

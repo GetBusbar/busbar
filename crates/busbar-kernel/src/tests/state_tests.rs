@@ -7,7 +7,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use busbar_kernel::plane_host::EngineHost;
+use busbar_kernel::plane_driver::EngineHost;
 
 /// How many times the bound spawner ran, and whether the host it was handed was a live generation's.
 static ATTACHED: AtomicUsize = AtomicUsize::new(0);
@@ -87,7 +87,7 @@ fn the_hook_registry_and_the_hook_env_each_carry_their_own_doc() {
 }
 
 /// Item 562: `App` carries no client-settings snapshot. The warm-pool reuse decision it was the
-/// input to moved IN-PLANE with the client build (busbar-llm `build_runtime` compares its own
+/// input to moved IN-PLANE with the client build (the retired engine crate `build_runtime` compares its own
 /// `ClientSettingsInput`), so a core copy is a value written on every build and read by nothing —
 /// and a rule wired through it ("rebuild so a changed timeout takes effect") would be wired through
 /// a value nothing consults.

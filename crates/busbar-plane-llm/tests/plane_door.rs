@@ -19,6 +19,65 @@ fn the_statement_names_the_crate_version() {
     assert_eq!(VERSION, env!("CARGO_PKG_VERSION"));
 }
 
+/// THE DOOR STATES THE PLANE'S `busbar --help` ROWS: its tail's `cli_help`, read in the contract's
+/// grammar, is the tagline row then the `ENDPOINTS` row, each byte for byte the plane's own text.
+/// A tail that stated no help (or a flag block in their place) prints a help with no tagline and no
+/// llm endpoints, and fails here.
+#[test]
+fn the_tail_states_the_planes_help_rows() {
+    // SAFETY: a non-NULL tail string is `len` bytes of `'static` plugin data.
+    let help = unsafe { std::slice::from_raw_parts(TAIL.cli_help.ptr, TAIL.cli_help.len) };
+    let help = std::str::from_utf8(help).expect("the help is text");
+    let rows: Vec<(&str, &str)> = busbar_contract::abi::plane::cli_help::rows(help).collect();
+    assert_eq!(rows, busbar_plane_llm::meta::CLI_HELP);
+    assert_eq!(
+        rows,
+        [
+            ("tagline", busbar_plane_llm::meta::HELP_TAGLINE),
+            ("endpoint", busbar_plane_llm::meta::HELP_ENDPOINTS),
+        ]
+    );
+}
+
+/// THE TAIL STATES EACH DIALECT'S PROVIDER FLAG (ARCHITECT ruling 2026-10-16, item 3), read off its
+/// `dialect_auth` lines as the kernel reads them: every one of the six is a dialect a provider's
+/// `protocol` may name (1.5.5's `must be one of:` list, in its order). RED arm: a line that dropped
+/// the flag empties the boot's provider list.
+#[test]
+fn the_tail_flags_every_dialect_a_provider_dialect() {
+    use busbar_contract::abi::plane::{check::check_dialect_auth, DIALECT_PROVIDER};
+    // SAFETY: the tail's lists are `'static` plugin data of their stated lengths.
+    let (lines, names) = unsafe {
+        (
+            std::slice::from_raw_parts(TAIL.dialect_auth, TAIL.dialect_auth_len),
+            std::slice::from_raw_parts(TAIL.dialects, TAIL.dialects_len),
+        )
+    };
+    assert_eq!(check_dialect_auth(lines, names.len() as u64), Ok(()));
+    let name = |i: u32| {
+        let s = names[i as usize];
+        // SAFETY: a tail string is `len` bytes of `'static` plugin data.
+        std::str::from_utf8(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }).expect("text")
+    };
+    let provider: Vec<&str> = lines
+        .iter()
+        .filter(|l| l.flags & DIALECT_PROVIDER != 0)
+        .map(|l| name(l.dialect))
+        .collect();
+    assert_eq!(
+        provider,
+        [
+            "anthropic",
+            "openai",
+            "gemini",
+            "bedrock",
+            "responses",
+            "cohere"
+        ],
+        "the provider dialects, in 1.5.5's order"
+    );
+}
+
 #[test]
 fn the_tail_is_one_the_contract_accepts() {
     assert_eq!(check_tail(TAIL), Ok(()));
@@ -565,4 +624,120 @@ fn the_plane_declares_its_published_key_and_is_the_fallback() {
     let kinds = unsafe { std::slice::from_raw_parts(TAIL.scope_kinds, TAIL.scope_kinds_len) };
     let kinds: Vec<&[u8]> = kinds.iter().map(|k| abi_text(*k)).collect();
     assert_eq!(kinds, vec![b"pool".as_slice()]);
+}
+
+/// Q128 arch u59: EVERY WAY A UNIT ENDS LEAVES NOTHING OF IT IN THE DOOR'S BOOK. The `refusal` of a
+/// unit refused after an attempt (an exhausted walk, a veto, a failed attempt the kernel renders)
+/// used to take the unit but keep the ticket its attempt came on, forever (a ticket is never
+/// reused); the `cancel` of a unit and the end of its reply leave nothing either, and a unit whose
+/// pieces move to a new ticket keeps only that one.
+#[test]
+fn every_way_a_unit_ends_leaves_nothing_in_the_doors_book() {
+    use busbar_contract::abi::mechanism::ticket::Ticket;
+    use busbar_plane_llm::plane_door::UnitBook;
+    let t = |slot| Ticket {
+        slot,
+        generation: 1,
+    };
+    let mut book = UnitBook::<&str>::default();
+
+    // Refused after an attempt: `arrive`, a piece on its ticket, then the kernel's `refusal`.
+    book.hold(7, "refused");
+    let unit = book.take(7).expect("arrived");
+    book.bind(t(1), 7);
+    book.hold(7, unit);
+    assert_eq!(book.held(), (1, 1));
+    let _rendered = book.take(7);
+    book.ends(7);
+    assert_eq!(book.held(), (0, 0), "a refused unit keeps no ticket");
+
+    // A reply that completes.
+    book.hold(8, "served");
+    let _unit = book.take(8);
+    book.bind(t(2), 8);
+    book.ends(8);
+    assert_eq!(book.held(), (0, 0), "a served unit keeps nothing");
+
+    // A cancel on the unit's ticket hands its state back and keeps nothing.
+    book.hold(9, "cancelled");
+    let unit = book.take(9).expect("arrived");
+    book.bind(t(3), 9);
+    book.hold(9, unit);
+    assert_eq!(book.cancel(t(3)), Some("cancelled"));
+    assert_eq!(book.held(), (0, 0), "a cancelled unit keeps nothing");
+
+    // A unit whose pieces move to another ticket is bound by that one alone.
+    book.hold(10, "moved");
+    book.bind(t(4), 10);
+    book.bind(t(5), 10);
+    assert_eq!(book.held(), (1, 1), "the old ticket is unbound");
+    assert_eq!(book.cancel(t(4)), None);
+    book.ends(10);
+    assert_eq!(book.held(), (0, 0));
+}
+
+/// THE SIGNED PATHS ARE THE PREVIOUS RELEASE'S (ARCHITECT rulings 2026-10-16, 3b A, and
+/// 2026-10-17): the raw-affix claims the door flags `CLAIM_SIGNED_INGRESS`, matched against the raw
+/// path, name exactly the paths 1.5.5 put through the signed-request pre-step (the signing dialect's
+/// residual rule, its own codec declaration) — an unencoded inference-profile ARN, which carries a
+/// raw `/`, and an encoded one alike, and the odd paths as 1.5.5 judged them (no identifier, an
+/// empty segment: signed; a trailing `/`, a leading `//`: not) — and no other: the dialect's invoke
+/// surfaces and every other dialect's paths sign nothing. RED arms: the trailing `/` and the
+/// leading `//`, which a segment grammar signs; invoke, which a `/model` subtree flag signs.
+#[test]
+fn the_signed_claims_name_the_paths_the_previous_release_signed() {
+    use busbar_contract::abi::plane::check::raw_affix_matches;
+    use busbar_contract::abi::plane::{CLAIM_RAW_AFFIX, CLAIM_SIGNED_INGRESS};
+    let signed: Vec<_> = claims()
+        .into_iter()
+        .filter(|c| c.flags & CLAIM_SIGNED_INGRESS != 0)
+        .collect();
+    assert!(
+        signed.iter().all(|c| c.flags & CLAIM_RAW_AFFIX != 0),
+        "every signed claim is a raw affix"
+    );
+    assert!(!signed.is_empty(), "the door flags its signed paths");
+    let rule = busbar_plane_llm::codec::DECLS
+        .iter()
+        .find(|d| d.uses_sigv4_ingress_auth())
+        .and_then(|d| d.residual_claims)
+        .expect("the signing dialect states its path rule");
+    let arn = "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.m-v1:0";
+    let encoded =
+        "arn%3Aaws%3Abedrock%3Aus-east-1%3A123456789012%3Ainference-profile%2Fus.m-v1%3A0";
+    for path in [
+        "/model/m/converse".to_string(),
+        "/model/m/converse-stream".to_string(),
+        format!("/model/{arn}/converse"),
+        format!("/model/{arn}/converse-stream"),
+        format!("/model/{encoded}/converse"),
+        format!("/model/{encoded}/converse-stream"),
+        "/model/m/invoke".to_string(),
+        "/model/m/invoke-with-response-stream".to_string(),
+        format!("/model/{arn}/invoke"),
+        "/v1/messages".to_string(),
+        "/v1/chat/completions".to_string(),
+        "/v1beta/models/m:generateContent".to_string(),
+        "/x/model/m/converse".to_string(),
+        // The odd paths, each as 1.5.5 judged it.
+        "/model/converse".to_string(),
+        "/model/converse-stream".to_string(),
+        "/model//converse".to_string(),
+        "/model/m/converse/".to_string(),
+        "//model/m/converse".to_string(),
+    ] {
+        let by_claims = signed.iter().any(|c| raw_affix_matches(&c.target, &path));
+        assert_eq!(by_claims, rule(&path).is_some(), "{path}");
+    }
+    // The odd paths, written down as 1.5.5 answered them rather than read off the rule.
+    for (path, was_signed) in [
+        ("/model/converse", true),
+        ("/model/converse-stream", true),
+        ("/model//converse", true),
+        ("/model/m/converse/", false),
+        ("//model/m/converse", false),
+    ] {
+        let by_claims = signed.iter().any(|c| raw_affix_matches(&c.target, path));
+        assert_eq!(by_claims, was_signed, "{path}");
+    }
 }

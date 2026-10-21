@@ -475,7 +475,7 @@ fn saturated(node: &Node, lane: DestinationId) -> Permit {
     node.capacity.saturate(lane)
 }
 
-/// F25 row 522: rehomed from crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs::least_bad_still_serves_the_only_member_after_it_was_tried.
+/// F25 row 522: rehomed from the retired engine crate's src/engine/tests/on_exhausted_tests.rs::least_bad_still_serves_the_only_member_after_it_was_tried.
 /// A single-member pool under least_bad whose member's breaker is Open: the ordered walk passes it
 /// over (so the request's exclusion record holds every member), and the last resort still
 /// overrides the breaker for that member, which serves 200.
@@ -497,7 +497,7 @@ fn least_bad_still_serves_the_only_member_after_it_was_tried() {
     );
 }
 
-/// F25 row 181: rehomed from crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_forward_once_records_success_and_spends_budget.
+/// F25 row 181: rehomed from the retired engine crate's src/engine/tests/forward_pool_integration_tests.rs::test_forward_once_records_success_and_spends_budget.
 /// A lane with two units of lifetime budget, five failures and a 600 s cooldown behind it, served
 /// through least_bad: the 2xx is recorded as one success against the lane (its window gains one
 /// success, its error count stays 5) and spends exactly one unit (2 to 1).
@@ -548,7 +548,7 @@ fn test_forward_once_records_success_and_spends_budget() {
     );
 }
 
-/// F25 row 34: rehomed from crates/busbar-llm/src/engine/engine_tests/send_envelope_tests.rs::a_black_holed_stream_send_on_the_degraded_walk_times_out_at_the_ceiling.
+/// F25 row 34: rehomed from the retired engine crate's src/engine/engine_tests/send_envelope_tests.rs::a_black_holed_stream_send_on_the_degraded_walk_times_out_at_the_ceiling.
 /// The black hole on the DEGRADED walk: the only member's breaker is Open and least_bad licensed,
 /// so the dispatch is the last resort's. Its streamed send, whose head never comes, resolves at the
 /// stream ceiling (300 s, never the walk's 120 s budget, as 1.5.5 ran a streamed request), never
@@ -609,7 +609,7 @@ fn spill_world(lanes: &[&'static str], primary: usize) -> Node {
     node
 }
 
-/// F25 row 526: rehomed from crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs::at_capacity_fallback_spills_to_fast_member.
+/// F25 row 526: rehomed from the retired engine crate's src/engine/tests/on_exhausted_tests.rs::at_capacity_fallback_spills_to_fast_member.
 /// A breaker-healthy primary at capacity under fallback_pool SPILLS at once to the overflow pool's
 /// free member, which serves 200; the saturated primary is never dispatched to (it serves zero).
 #[test]
@@ -643,7 +643,7 @@ fn at_capacity_fallback_spills_to_fast_member() {
     assert_eq!(node.conns.dialled(), vec!["b".to_string()]);
 }
 
-/// F25 row 528: rehomed from crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs::at_capacity_bounded_burst_all_spill_not_serialized.
+/// F25 row 528: rehomed from the retired engine crate's src/engine/tests/on_exhausted_tests.rs::at_capacity_bounded_burst_all_spill_not_serialized.
 /// A burst of 4 concurrent requests on a pool whose single slot is held: every one spills to the
 /// roomy overflow member and is served 200 there, side by side (each answer takes 200 ms and the
 /// whole burst takes 200 ms), and the saturated slot serves none of them.
@@ -692,7 +692,7 @@ fn at_capacity_bounded_burst_all_spill_not_serialized() {
     assert_eq!(node.conns.dialled(), vec!["b".to_string(); N]);
 }
 
-/// F25 row 529: rehomed from crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs::at_capacity_all_members_busy_two_member_pool_spills.
+/// F25 row 529: rehomed from the retired engine crate's src/engine/tests/on_exhausted_tests.rs::at_capacity_all_members_busy_two_member_pool_spills.
 /// A two-member primary with BOTH members at capacity is exhausted and spills: the overflow member
 /// serves 200, neither primary member is dispatched to.
 #[test]
@@ -723,7 +723,7 @@ fn at_capacity_all_members_busy_two_member_pool_spills() {
     assert_eq!(node.conns.dialled(), vec!["c".to_string()]);
 }
 
-/// F25 row 531: rehomed from crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs::at_capacity_fallback_chain_spills_through_to_third_pool.
+/// F25 row 531: rehomed from the retired engine crate's src/engine/tests/on_exhausted_tests.rs::at_capacity_fallback_chain_spills_through_to_third_pool.
 /// A fallback chain A to B to C, A and B each at capacity: the at-capacity exhaustion cascades
 /// through the whole chain and C's member serves 200; A's and B's members serve nothing.
 #[test]
@@ -762,7 +762,7 @@ fn at_capacity_fallback_chain_spills_through_to_third_pool() {
     assert_eq!(node.conns.dialled(), vec!["c".to_string()]);
 }
 
-/// F25 row 532: rehomed from crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs::at_capacity_self_referential_fallback_stays_503.
+/// F25 row 532: rehomed from the retired engine crate's src/engine/tests/on_exhausted_tests.rs::at_capacity_self_referential_fallback_stays_503.
 /// A SATURATED pool whose on_exhausted names ITSELF as its fallback stops at the visited-pool loop
 /// guard: a 503 shed with the at-capacity floor, at once, without parking and without dispatching.
 #[test]
@@ -795,7 +795,7 @@ fn at_capacity_self_referential_fallback_stays_503() {
     assert!(node.conns.dialled().is_empty(), "never dispatched");
 }
 
-/// F25 row 533: rehomed from crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs::at_capacity_fallback_to_also_exhausted_pool_cascades_to_503.
+/// F25 row 533: rehomed from the retired engine crate's src/engine/tests/on_exhausted_tests.rs::at_capacity_fallback_to_also_exhausted_pool_cascades_to_503.
 /// A saturated primary spilling into a pool that is itself at capacity (no further on_exhausted)
 /// cascades to the 503 shed with its Retry-After, at once, dispatching nothing.
 #[test]
@@ -819,7 +819,7 @@ fn at_capacity_fallback_to_also_exhausted_pool_cascades_to_503() {
     assert!(node.conns.dialled().is_empty());
 }
 
-/// F25 row 483: rehomed from crates/busbar-llm/src/engine/tests/lane_availability_proptest_tests.rs::bug1_witness_fallback_spills_served_by_fallback_not_primary.
+/// F25 row 483: rehomed from the retired engine crate's src/engine/tests/lane_availability_proptest_tests.rs::bug1_witness_fallback_spills_served_by_fallback_not_primary.
 /// The park-then-serve witness: a breaker-HEALTHY primary at capacity under fallback_pool MUST
 /// spill, served 200 by the fallback with the primary serving zero. The primary's slot here frees
 /// the moment anything waits for it, so a walk that parked instead of spilling would be served by
@@ -851,7 +851,7 @@ fn bug1_witness_fallback_spills_served_by_fallback_not_primary() {
     assert_eq!(*node.telemetry.queue_parks.lock().unwrap(), 0);
 }
 
-/// F25 row 484: rehomed from crates/busbar-llm/src/engine/tests/lane_availability_proptest_tests.rs::budget_contract_holds_under_full_saturation_for_every_policy.
+/// F25 row 484: rehomed from the retired engine crate's src/engine/tests/lane_availability_proptest_tests.rs::budget_contract_holds_under_full_saturation_for_every_policy.
 /// Under FULL saturation (the primary's and the fallback's single slots both held) every
 /// on_exhausted policy sheds 503 with the at-capacity floor inside the 2 s failover budget: at once
 /// for reject, least_bad and fallback_pool, at the queue's own 50 ms bound for queue.
@@ -1167,7 +1167,7 @@ fn run_world(world: &World) -> &'static str {
     branch
 }
 
-/// F25 row 480: rehomed from crates/busbar-llm/src/engine/tests/lane_availability_proptest_tests.rs::strengthened_lane_availability_invariant.
+/// F25 row 480: rehomed from the retired engine crate's src/engine/tests/lane_availability_proptest_tests.rs::strengthened_lane_availability_invariant.
 /// The strengthened lane-availability invariant over 512 seeded worlds: a primary pool of 1 to 5
 /// and a fallback pool of 1 to 4 members, each dead or not, out of budget or not, its cell Closed,
 /// Open (active), Open (expired) or HalfOpen, unbounded, bounded with a free slot or saturated, under
@@ -1307,7 +1307,7 @@ fn the_wait_sheds_when_no_slot_frees_and_the_gauge_balances() {
     drop(held);
 }
 
-/// F25 row 546: rehomed from crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs::queue_won_permit_but_breaker_now_open_never_dispatches.
+/// F25 row 546: rehomed from the retired engine crate's src/engine/tests/on_exhausted_tests.rs::queue_won_permit_but_breaker_now_open_never_dispatches.
 /// A request parked in the queue wins the member's freed slot, but the member's breaker tripped
 /// Open while it waited: the breaker re-check on the won member refuses it, the request is never
 /// dispatched, and it ends in the 503 shed at once (the wait does not run on to its bound).
@@ -1331,6 +1331,7 @@ fn queue_won_permit_but_breaker_now_open_never_dispatches() {
         pools,
         token,
         walk,
+        shape: _,
     } = &mut walker;
     let ports = super::ports(n, pools);
     let Step::Wait(wait) = walk.next(&ports, n.affinity, token) else {
@@ -1458,4 +1459,110 @@ fn a_stated_member_reads_its_own_wait_and_a_stranger_reads_none() {
     assert_eq!(far.member_wait(&token, "b"), Some(110));
     assert_eq!(far.member_wait(&token, "a"), Some(30));
     assert_eq!(far.member_wait(&token, "stranger"), None);
+}
+
+// ── the hooks' restriction holds through the terminals (arch-audit u42 BLOCK) ───────────────────
+
+/// A required restriction the unit's hooks put on every pick: only these destinations are kept,
+/// and a pick that keeps none is the restriction no member satisfies.
+struct Restrict(Vec<DestinationId>);
+
+impl busbar_kernel_egress::walk::Shape for Restrict {
+    fn shape(
+        &self,
+        members: Vec<busbar_kernel_egress::pool::Member>,
+        _primary: bool,
+    ) -> Option<(Vec<busbar_kernel_egress::pool::Member>, Vec<DestinationId>)> {
+        let kept: Vec<_> = members
+            .into_iter()
+            .filter(|m| self.0.contains(&m.destination))
+            .collect();
+        (!kept.is_empty()).then_some((kept, Vec::new()))
+    }
+}
+
+/// Every member of `node`'s pool benched with its cooldown, by destination.
+fn bench(node: &Node, cooldowns: &[u64]) {
+    for (d, cooldown) in cooldowns.iter().enumerate() {
+        node.breaker.set(
+            DestinationId::new(d as u64),
+            Health {
+                cooldown: *cooldown,
+                ..Health::default()
+            },
+        );
+    }
+}
+
+/// v1.5.5 shrank the walk's candidates to the restriction's survivors so the restriction
+/// "PERSISTS across every failover hop" (`crates/busbar/src/proxy/engine/mod.rs:1085`,
+/// `:1298-1300`), and its last resort ranked only those candidates
+/// (`crates/busbar/src/proxy/engine/walk.rs:1126-1130`).
+/// The soonest-cooldown member is one the restriction excludes: the last resort must pass it over.
+#[test]
+fn the_last_resort_never_reaches_a_member_the_restriction_excludes() {
+    let node = least_bad_node();
+    bench(&node, &[10, 300, 120]);
+
+    let taken = node
+        .walker("primary")
+        .shaped(Restrict(vec![DestinationId::new(1), DestinationId::new(2)]))
+        .take();
+    assert_eq!(
+        taken.member.destination,
+        DestinationId::new(2),
+        "the last resort ranks the members the hooks kept, never the whole pool: {taken:?}"
+    );
+    assert!(taken.degraded);
+}
+
+/// The kept members are all busy, an excluded one is free: the last resort sheds (v1.5.5
+/// `crates/busbar/src/proxy/engine/walk.rs:1142-1146`, over the restricted `cands`) rather than
+/// dispatch to the excluded one, and the shed's wait is the kept member's own.
+#[test]
+fn the_last_resort_sheds_rather_than_reach_an_excluded_member() {
+    let node = least_bad_node();
+    bench(&node, &[10, 300, 120]);
+    let held = saturated(&node, DestinationId::new(1));
+
+    let shed = node
+        .walker("primary")
+        .shaped(Restrict(vec![DestinationId::new(1)]))
+        .shed();
+    assert_eq!(shed.detail, DETAIL_OVERLOADED);
+    assert!(!shed.gate_rejected);
+    assert_eq!(
+        shed.retry_after_secs,
+        Some(300),
+        "the wait is read off the members the restriction kept (v1.5.5 handle_status_503 over the \
+         restricted cands)"
+    );
+    drop(held);
+}
+
+/// The shed's Retry-After reads only the kept members (v1.5.5
+/// `crates/busbar/src/proxy/engine/walk.rs:100` and `:49-61`, over the restricted `cands`): an
+/// excluded member's sooner cooldown is not the client's to wait for.
+#[test]
+fn the_shed_advertises_only_the_kept_members_cooldown() {
+    let node = exhausted_pool(3, &[10, 300, 120]);
+    let shed = node
+        .walker("primary")
+        .shaped(Restrict(vec![DestinationId::new(1), DestinationId::new(2)]))
+        .shed();
+    assert_eq!(shed.detail, DETAIL_OVERLOADED);
+    assert_eq!(shed.retry_after_secs, Some(120));
+}
+
+/// The queue terminal's shed reads the same kept members (v1.5.5
+/// `crates/busbar/src/proxy/engine/walk.rs:202`, over the restricted `cands`).
+#[test]
+fn the_wait_terminals_shed_advertises_only_the_kept_members_cooldown() {
+    let node = queue_node(250);
+    bench(&node, &[10, 300]);
+    let shed = node
+        .walker("primary")
+        .shaped(Restrict(vec![DestinationId::new(1)]))
+        .shed();
+    assert_eq!(shed.retry_after_secs, Some(300));
 }

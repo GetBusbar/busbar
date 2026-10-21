@@ -167,6 +167,7 @@ fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: Instant) {
         }
     }
     pool.env.services.forget_worker(old.index);
+    pool.env.services.held.untrack_worker(old.index);
     let conns: Vec<_> = gone.iter().flat_map(|e| e.conns.iter().copied()).collect();
     super::conn_services::forget_worker(&conns, old.index);
     let (w, rx) = Worker::new(old.index, gens, pool.env.ticket_key);

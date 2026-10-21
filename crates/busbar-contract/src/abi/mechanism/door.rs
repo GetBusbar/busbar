@@ -267,21 +267,32 @@ impl MarkWord {
 /// [`Rewrite::class`]: `from` is another name config may give the plugin (a module alias). The
 /// registry holds it exclusive, beside the plugin's own name. `to` is absent.
 pub const REWRITE_ALIAS: u32 = 1;
-/// [`Rewrite::class`]: `from` is a reference key naming the plugin (the `k` in `{k: X}`). `to`, if
-/// stated, is the settings key the value lands under; this contract does not read it yet.
+/// [`Rewrite::class`]: `from` is a reference key naming the plugin (the `k` in `{k: X}`, a secret
+/// reference's SUGAR); `to` is the settings key the value lands under, so `{k: X}` is
+/// `{ module: k, settings: { <to>: X } }`. The host reads it ([`crate::secret_ref::Sugars`]) and
+/// refuses a secret plugin whose sugar states no key, or a word another plugin declares.
 pub const REWRITE_SUGAR: u32 = 2;
 /// [`Rewrite::class`]: the setting key `from` is rewritten to the path `to` before the plugin's
 /// section reaches it (a flat key to a nested path).
 pub const REWRITE_KEY: u32 = 3;
 /// [`Rewrite::class`]: `from` is a sugar word the same Statement declares; `to` is the placeholder
-/// a refusal text shows for its value. Accepted and not yet read: a later contract reads it.
+/// a refusal text shows for its value (absent = the sugar's settings key).
 pub const REWRITE_SUGAR_SHOWN: u32 = 4;
 /// [`Rewrite::class`]: `from` is a sugar word the same Statement declares; `to` is what its value
-/// names in a missing-setting refusal. Accepted and not yet read: a later contract reads it.
+/// names in a missing-setting refusal (`requires settings.<key> (<to>)`; absent = `the <key>`).
+/// The host reads it ([`crate::secret_ref::Sugars`]).
 pub const REWRITE_SUGAR_NAMES: u32 = 5;
 /// [`Rewrite::class`]: `from` is a sugar word the same Statement declares; `to` is the core role
-/// word its value plays. Accepted and not yet read: a later contract reads it.
+/// word its value plays ([`SUGAR_ROLE_FILL`], [`SUGAR_ROLE_PATH`]). Exclusive: two plugins claiming
+/// one role refuse the load.
 pub const REWRITE_SUGAR_ROLE: u32 = 6;
+
+/// [`REWRITE_SUGAR_ROLE`]: a config `${VAR}` at a credential position names the value of this
+/// sugar.
+pub const SUGAR_ROLE_FILL: &str = "fill";
+/// [`REWRITE_SUGAR_ROLE`]: the value of this sugar is a file path a credential may name in place of
+/// its material (a service account's key file).
+pub const SUGAR_ROLE_PATH: &str = "path";
 
 /// One live rewrite.
 #[repr(C)]
@@ -316,6 +327,12 @@ pub const SECTION_DECLARING: u32 = 1;
 pub const SECTION_REQUIRED: u32 = 1 << 1;
 /// [`Section::flags`]: the plugin reads the section but does not own its grammar.
 pub const SECTION_CONSUMED: u32 = 1 << 2;
+/// [`Section::flags`]: this section's presence uses the plane (it selects it at boot, Law 7).
+///
+/// Nothing else reads it: the section's grammar stays whoever owns it, and a plane may be selected
+/// by a section it only consumes. A plane's declaring section selects it already, so the two
+/// together are refused, as is the bit on any other kind.
+pub const SECTION_SELECTS: u32 = 1 << 4;
 
 /// One top-level config section the plugin owns or reads.
 #[repr(C)]

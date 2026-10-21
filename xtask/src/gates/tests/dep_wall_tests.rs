@@ -23,6 +23,7 @@ fn asking_tokio_for_net_or_redis_for_aio_is_an_offence() {
             ("tokio".into(), vec!["net".into()], false, false),
         ],
         features: BTreeMap::new(),
+        packages: BTreeMap::new(),
     };
     assert_eq!(asks(&p), ["tokio (net)", "redis (aio)"]);
 }
@@ -96,6 +97,32 @@ fn a_comment_a_literal_a_neighbour_or_test_code_names_no_banned_path() {
 }
 
 #[test]
+fn an_address_value_names_no_banned_path_and_a_socket_beside_it_still_does() {
+    // What the pinned tcp and http transports write: an address literal parsed, opening nothing.
+    for text in [
+        "use std::net::SocketAddr; fn f(a: &str) -> bool { a.parse::<SocketAddr>().is_ok() }",
+        "fn f(b: &str) { let _ = b.parse::<std::net::Ipv4Addr>(); }",
+        "use std::net::{IpAddr, Ipv6Addr, SocketAddrV4, SocketAddrV6, AddrParseError};",
+        "use std as s; fn f() { let _ = s::net::Ipv4Addr::LOCALHOST; }",
+    ] {
+        assert!(paths(text).is_empty(), "{text}");
+    }
+    // A socket, a resolver, the bare module or a glob beside a value is still a banned path.
+    for text in [
+        "use std::net::{Ipv4Addr, TcpStream};",
+        "use std::net::{SocketAddr, ToSocketAddrs};",
+        "fn f() { let _ = std::net::UdpSocket::bind(\"a:1\"); }",
+        "use std::net; fn f() -> net::Ipv4Addr { net::Ipv4Addr::LOCALHOST }",
+        "use std::net::{self, SocketAddr};",
+        "use std::net as n;",
+        "use std::net::*;",
+    ] {
+        assert_eq!(paths(text), ["std::net"], "{text}");
+    }
+    assert_eq!(paths("use tokio::net::TcpStream;"), ["tokio::net"]);
+}
+
+#[test]
 fn a_file_that_does_not_lex_is_read_line_by_line_rather_than_skipped() {
     assert_eq!(
         paths("fn f() { std::net::TcpStream::connect(\"a\"); "),
@@ -122,5 +149,38 @@ fn a_grouped_import_in_an_in_tree_plugin_is_a_new_offender() {
     assert!(
         verdict.red && new.contains("busbar-plane-llm") && new.contains("std::net"),
         "a grouped import of std::net in busbar-plane-llm went unreported: {new}"
+    );
+}
+
+/// A test mark inside a group (a struct's fields, an enum's variants, a match's arms, a fn's
+/// parameters) covers ONE element, which ends at its `,`: the element after it is production and
+/// is read (#1128).
+#[test]
+fn a_test_mark_inside_a_group_covers_one_element_not_the_rest_of_the_group() {
+    for text in [
+        "struct S { #[cfg(test)] a: u8, b: std::net::TcpStream }",
+        "enum E { #[cfg(test)] A(u8), B(std::net::TcpStream) }",
+        "fn f(x: u8) { match x { #[cfg(test)] 0 => (), _ => { let _ = std::net::TcpStream::connect(\"a:1\"); } } }",
+        "fn f(#[cfg(test)] a: u8, b: std::net::TcpStream) {}",
+    ] {
+        assert_eq!(paths(text), ["std::net"], "{text}");
+    }
+}
+
+/// Only `test`, `tokio::test`, `cfg(test)` and `cfg(all(test, ..))` mark test code: an attribute
+/// whose LAST segment is `test` is some other crate's macro, and the item under it is production.
+#[test]
+fn only_the_named_test_marks_are_test_code() {
+    for text in [
+        "#[foo::test] fn f() { std::net::TcpStream::connect(\"a:1\"); }",
+        "#[foo::bar::test] fn f() { std::net::TcpStream::connect(\"a:1\"); }",
+        "#[::test] fn f() { std::net::TcpStream::connect(\"a:1\"); }",
+        "#[tokio::test::x] fn f() { std::net::TcpStream::connect(\"a:1\"); }",
+    ] {
+        assert_eq!(paths(text), ["std::net"], "{text}");
+    }
+    assert!(paths("#[test] fn f() { std::net::TcpStream::connect(\"a:1\"); }").is_empty());
+    assert!(
+        paths("#[tokio::test] async fn f() { std::net::TcpStream::connect(\"a\"); }").is_empty()
     );
 }

@@ -217,11 +217,12 @@ pub struct StatedAdminRoute {
     pub audit_verb: &'static str,
 }
 
-/// THE REGISTRY FACTS A PLANE DOOR STATES (ARCHITECT RULING 2026-10-03, Q-DEL-A2A-DECL; spec #49
-/// and R2-C: a plane's config section, scope kinds and the rest are DERIVED from its Statement,
-/// never declared in the root). The loader reads them off a door's Statement (`sections`) and its
-/// plane tail, linked or dropped alike, and the kernel folds them into its plane registry before the
-/// config prepass (`busbar_kernel::plane_driver::door::fold`). Every word is kept for the process.
+/// THE REGISTRY FACTS A PLANE DOOR STATES (ARCHITECT RULING 2026-10-03 on a deleted plane's
+/// declaration; spec #49 and R2-C: a plane's config section, scope kinds and the rest are DERIVED
+/// from its Statement, never declared in the root). The loader reads them off a door's Statement
+/// (`sections`) and its plane tail, linked or dropped alike, and the kernel folds them into its
+/// plane registry before the config prepass (`busbar_kernel::plane_driver::door::fold`). Every word
+/// is kept for the process.
 #[derive(Clone)]
 pub struct PlaneRegistration {
     /// The plane's registry key: the door's Statement name.
@@ -262,6 +263,10 @@ pub struct PlaneRegistration {
     pub signing: Option<(&'static str, &'static str)>,
     /// The tail's dialects, in order (the plane's wire formats).
     pub dialects: Vec<&'static str>,
+    /// Each dialect's `DIALECT_*` flags (its `dialect_auth` line's), parallel to
+    /// [`Self::dialects`]: whether a provider's `protocol` may name it (ARCHITECT ruling
+    /// 2026-10-16, item 3).
+    pub dialect_flags: Vec<u32>,
     /// The tail's scope kinds.
     pub scope_kinds: Vec<&'static str>,
     /// The tail's billable classes, each with its unit family.
@@ -390,6 +395,19 @@ pub trait PlaneCalls: Send + Sync {
         out: &mut RefusalOut,
         grow: Grow<'_, RefusalIn, RefusalOut>,
     ) -> Outcome;
+
+    /// `catalog`, ticketless, with the same one re-call as [`PlaneCalls::arrive`]: a catalog
+    /// route's listing of the names the kernel hands it, rendered by the plane with no unit
+    /// (ARCHITECT ruling 2026-10-16, 3b C). An instance that serves none answers REFUSED.
+    fn catalog(
+        &self,
+        input: &mut crate::abi::plane::CatalogIn,
+        out: &mut crate::abi::plane::CatalogOut,
+        grow: Grow<'_, crate::abi::plane::CatalogIn, crate::abi::plane::CatalogOut>,
+    ) -> Outcome {
+        let _ = (input, out, grow);
+        Outcome::Refused
+    }
 
     /// `project`, ticketless, with the same one re-call as [`PlaneCalls::arrive`]: the hook kind's
     /// view of the unit's request (once per unit, when a hook is bound), and again with a

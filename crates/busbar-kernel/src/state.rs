@@ -35,7 +35,7 @@ pub use busbar_kernel::topology::{worker_stripe, worker_stripes};
 /// key would change the bare key's presence semantics, and with it the dispatch table
 /// `build_dispatch` derives from it). Composed into `plane_slots` by `appbuild` and read back by the
 /// owning plane, each passing its decl key — so this crate names no plane runtime type or token.
-pub use busbar_kernel::plane_host::runtime_slot_key;
+pub use busbar_kernel::plane_driver::slots::runtime_slot_key;
 
 /// One plane's per-container resolved submission-gate map: container name → resolved
 /// `(hook_id, ResolvedPolicy)` gate list. The value half of [`App::plane_gates`].
@@ -92,7 +92,7 @@ pub struct App {
     /// The kernel's own tables over the `pools:`/`models:` sections this generation resolved: the
     /// read seam's answer when no plane contributed a runtime of its own (a door-served plane walks
     /// these sections through its door).
-    pub config_tables: Arc<busbar_kernel::plane_host::ConfigTables>,
+    pub config_tables: Arc<busbar_kernel::plane_driver::route_tables::ConfigTables>,
     pub store: Arc<dyn LaneRuntime>,
     /// THE CONTAINER PLANES' BREAKER CELLS — the degenerate single-member cell per registered
     /// container-plane member (the breaker-all-planes audit's closing design). Live state, shared by
@@ -101,6 +101,13 @@ pub struct App {
     /// dead upstream. See [`crate::store::PlaneBreakers`] for why it is not the fallback plane's own
     /// store.
     pub plane_breakers: Arc<crate::store::PlaneBreakers>,
+    /// THE OPERATIONAL LIMITS THIS GENERATION GOES LIVE WITH (`limits:` resolved). Published
+    /// process-wide by [`AppHandle::swap`] at the moment the generation is installed — never while it
+    /// is being built or judged, so a refused apply's limits are never in force (BUSBAR-1.6.0.md THE
+    /// DESIGN §6 item 8) — and carried onto [`Self::plane_breakers`], the process-lifetime store every
+    /// plane's cells share (THE DESIGN §1: any plugin gets all functionality). `None` for a hand-built
+    /// test generation, which publishes nothing.
+    pub limits: Option<crate::config::LimitsResolved>,
     /// THE NEUTRAL PER-SESSION SUBSTRATE ([`crate::session::SessionStore`]) — PROCESS-LIFETIME, reused
     /// across `build_app_from_config` applies exactly like `plane_breakers`, because a session's state
     /// (today the gate's cleared-scan set; tomorrow any tenant) must survive a config swap or every
@@ -112,8 +119,7 @@ pub struct App {
     /// firing sites pass `incremental: None`. Env-driven, not config, so activating it does not touch
     /// the frozen `config-schema.snapshot.json` / config-stability gate.
     pub incremental_scan: bool,
-    /// THE PER-PLANE FAILOVER POOL MAPS reached through the GENERIC pool-member seam
-    /// ([`busbar_kernel::plane_host::LanePoolHost::plane_pool_members`]), keyed by the plane's stable
+    /// THE PER-PLANE FAILOVER POOL MAPS, keyed by the plane's stable
     /// decl key (the opaque registry key) — a registry-keyed map in place of the former plane-named
     /// pool field, so core carries no plane vocabulary in its own field names. Each plane's
     /// entry is its own resolved pool-member set (member selection derives lanes from member position).
@@ -185,7 +191,7 @@ pub struct App {
     /// field names. Each plane's entry maps container → resolved `(hook_id, ResolvedPolicy)` gate list
     /// (`<section>.hooks:` ∪ `<section>.<container>.hooks:`), same combine rule and zero-cost absence
     /// as before. Composed at config apply by `appbuild` (and re-resolved on swap through
-    /// [`busbar_kernel::plane_host::ContainerGateSink`]); read on the dispatch path by
+    /// [`busbar_kernel::plane_driver::slots::ContainerGateSink`]); read on the dispatch path by
     /// [`App::plane_gates`]. Empty for a plane that attaches nothing — the lookup costs one probe.
     // Read on the plane dispatch/admission gate paths; with BOTH planes compiled out nothing fires a
     // gate, so the map goes unread in that config alone.
@@ -195,7 +201,7 @@ pub struct App {
     /// the TAP/observe-transform twin of [`Self::plane_gates`]. Each plane's entry maps container →
     /// resolved `(deadline, transport)` rewrite list (`<section>.hooks:` ∪ `<section>.<container>.hooks:`,
     /// the `prompt: rw` members only). Composed at config apply by `appbuild` and re-resolved on swap
-    /// through the same [`busbar_kernel::plane_host::ContainerGateSink`] callback the gates use. Empty
+    /// through the same [`busbar_kernel::plane_driver::slots::ContainerGateSink`] callback the gates use. Empty
     /// for a plane that attaches no rewrite hook — the tap firing site's lookup costs one probe and the
     /// path stays byte-identical.
     // Read on the plane transform/tap paths only; with BOTH planes compiled out nothing fires a tap, so
@@ -519,16 +525,18 @@ impl App {
     }
 
     /// Borrow this snapshot's data-plane routing tables through the NEUTRAL [`EngineTablesView`]
-    /// (`busbar_kernel::plane_host`) read seam — the projection the core-resident scrape/discovery
+    /// (`busbar_kernel::plane_driver::route_tables`) read seam — the projection the core-resident scrape/discovery
     /// readers (`/metrics`, `/v1/models`, telemetry label bank) name so they need not know which plane
     /// crate the routing tables actually live in. The view is sourced by projecting the fallback
     /// plane's opaque runtime slot through that plane decl's `viewer` fn-pointer (the plane downcasts
     /// its OWN runtime type inside, so core never names it); an ABSENT slot — the featureless
     /// zero-plane boot, or a decl with no viewer — yields the substrate-resident
-    /// [`EMPTY_VIEW`](busbar_kernel::plane_host::EMPTY_VIEW) (an empty projection), so a scrape or
+    /// [`EMPTY_VIEW`](busbar_kernel::plane_driver::route_tables::EMPTY_VIEW) (an empty projection), so a scrape or
     /// discovery probe on a plane-less binary reads empty tables rather than panicking. Cold path: one
     /// `plane_slots` lookup + one downcast, then the neutral (allocating) projections.
-    pub fn engine_tables_view(&self) -> &dyn busbar_kernel::plane_host::EngineTablesView {
+    pub fn engine_tables_view(
+        &self,
+    ) -> &dyn busbar_kernel::plane_driver::route_tables::EngineTablesView {
         // THE PIVOT (1.6.0 money-path Phase 3-4 C): the runtime type now lives in the fallback plane's
         // own crate, so core no longer names it. Project the plane's opaque runtime slot into the
         // neutral view through the fallback plane decl's `viewer` fn-pointer (the plane downcasts its
@@ -668,6 +676,20 @@ impl App {
             .unwrap_or(&[])
     }
 
+    /// Put this generation's operational limits in force: the process-wide slot every deep reader
+    /// consults, and the hard-down cooldown / honoured-wait ceiling of the plane breaker store (whose
+    /// cells are process-lifetime, so a new generation's limits reach them here rather than by a
+    /// rebuild). A no-op for a generation that carries none. Called by [`AppHandle::swap`].
+    pub(crate) fn publish_limits(&self) {
+        if let Some(limits) = &self.limits {
+            busbar_kernel::config::limits::publish(limits);
+            self.plane_breakers.set_limits(
+                limits.hard_down_cooldown_secs,
+                limits.max_honored_retry_after_secs,
+            );
+        }
+    }
+
     /// The failover pool map for the plane identified by the opaque registry `plane_key`, or `None`
     /// when the plane declared no pools this generation — a pure [`App::plane_pools`](Self::plane_pools)
     /// map read, reached through the key instead of a plane-named field.
@@ -720,10 +742,10 @@ impl App {
 }
 
 /// THE NEUTRAL SLOT-READ SEAM the plane `PlaneDecl` callbacks name instead of `&App`. A thin delegate
-/// to the inherent [`App::plane_slot`]; [`as_any`](busbar_kernel::plane_host::PlaneSlots::as_any)
+/// to the inherent [`App::plane_slot`]; [`as_any`](busbar_kernel::plane_driver::slots::PlaneSlots::as_any)
 /// hands the concrete snapshot back to the owning plane's own reader for the field (`agent_defs`)
 /// that is not a `plane_slots` entry.
-impl busbar_kernel::plane_host::PlaneSlots for App {
+impl busbar_kernel::plane_driver::slots::PlaneSlots for App {
     fn plane_slot(&self, key: &str) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
         App::plane_slot(self, key)
     }
@@ -737,7 +759,7 @@ impl busbar_kernel::plane_host::PlaneSlots for App {
 /// [`App::resolve_container_gates`]) and stores them in the generic [`App::plane_gates`] map under the
 /// opaque registry `plane_key` — byte-identical to the old inline
 /// `next.plane_gates.insert(plane_key, next.resolve_container_gates(...))`.
-impl busbar_kernel::plane_host::ContainerGateSink for App {
+impl busbar_kernel::plane_driver::slots::ContainerGateSink for App {
     fn reresolve_container_gates(
         &mut self,
         plane_key: &str,
@@ -801,15 +823,18 @@ pub struct AppHandle {
     /// featureless (no-plane) or non-probing deployment simply never sets it. The `Arc<dyn EngineHost>`
     /// holds an `Arc<App>` clone of its generation — dropping it on swap releases that reference so the
     /// old `App` frees once its in-flight requests drain, exactly as the old `Weak<App>` prober did.
-    snapshot_host: std::sync::Mutex<Option<Arc<dyn busbar_kernel::plane_host::EngineHost>>>,
+    snapshot_host: std::sync::Mutex<Option<Arc<dyn busbar_kernel::plane_driver::EngineHost>>>,
     /// What re-attaches the per-generation workers (the active health probers) to a NEW generation's
     /// host. Bound once by the composition root ([`attach_on_swap`](Self::attach_on_swap)), which is
     /// the one place allowed to name the plane that owns them; unbound, a swap re-attaches nothing.
-    attach: std::sync::OnceLock<fn(&Arc<dyn busbar_kernel::plane_host::EngineHost>)>,
+    attach: std::sync::OnceLock<fn(&Arc<dyn busbar_kernel::plane_driver::EngineHost>)>,
     /// What every [`swap`](Self::swap) tells of the generation it installed: the composition root's
     /// served door planes, each refreshed onto a new generation of its section (ARCHITECT
     /// Q-DEL-A2A-APPLY; THE DESIGN §11: plugin memory is "valid to its next refresh generation").
     appliers: std::sync::Mutex<Vec<Applier>>,
+    /// THE DOOR PLANES' RENDERING of a kernel-shaped refusal (ARCHITECT ruling 2026-10-16, 3b B),
+    /// bound once by the composition root that built the doors; unbound, the kernel answers its own.
+    door_refuser: std::sync::OnceLock<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
 }
 
 /// One thing told of every generation a [`AppHandle::swap`] installs.
@@ -824,7 +849,23 @@ impl AppHandle {
             snapshot_host: std::sync::Mutex::new(None),
             attach: std::sync::OnceLock::new(),
             appliers: std::sync::Mutex::new(Vec::new()),
+            door_refuser: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Bind the door planes' rendering of a kernel-shaped refusal (ARCHITECT ruling 2026-10-16,
+    /// 3b B). First binding wins: one set of doors serves one handle.
+    pub fn bind_door_refuser(&self, refuser: busbar_kernel::plane_routes::PlaneRefuseByPathFn) {
+        let _first = self.door_refuser.set(refuser);
+    }
+
+    /// The door plane's rendering of `refusal`, or `None` when no door owns its path or the render
+    /// failed.
+    pub fn door_refusal(
+        &self,
+        refusal: &busbar_kernel::plane_routes::KernelRefusal<'_>,
+    ) -> Option<axum::response::Response> {
+        self.door_refuser.get().and_then(|refuse| refuse(refusal))
     }
 
     /// Tell `applier` of every generation a later [`swap`](Self::swap) installs (a config apply,
@@ -840,7 +881,7 @@ impl AppHandle {
     /// outgoing one is dropped — the composition root passes the plane's prober spawner, so the
     /// probers the swap retires are replaced by probers on the snapshot that replaced them. First
     /// binding wins: there is one set of per-generation workers per process.
-    pub fn attach_on_swap(&self, attach: fn(&Arc<dyn busbar_kernel::plane_host::EngineHost>)) {
+    pub fn attach_on_swap(&self, attach: fn(&Arc<dyn busbar_kernel::plane_driver::EngineHost>)) {
         let _ = self.attach.set(attach);
     }
 
@@ -849,7 +890,7 @@ impl AppHandle {
     /// spawned against this same host, so the handle owns the only strong reference the probers depend
     /// on: a later [`swap`](Self::swap) drops it, and every stale prober exits (its `Weak` fails to
     /// upgrade). Replacing an existing binding drops the prior host, retiring that generation's probers.
-    pub fn set_snapshot_host(&self, host: Arc<dyn busbar_kernel::plane_host::EngineHost>) {
+    pub fn set_snapshot_host(&self, host: Arc<dyn busbar_kernel::plane_driver::EngineHost>) {
         *self.snapshot_host.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
     }
 
@@ -913,11 +954,15 @@ impl AppHandle {
         // The snapshot being replaced, so a plane that must DIFF the two generations can; that plane's
         // hook reconciles only `next` (its pool is Arc-carried onto `next` already).
         let prior = self.load();
+        // THE GENERATION'S LIMITS GO LIVE WITH IT: published before `next` is stored, so its first
+        // reader (and every applier below) already reads them, and onto the process-lifetime plane
+        // breaker store, whose cells outlive the generation that set their limits.
+        next.publish_limits();
         for decl in crate::plane::registry::plane_decls() {
             if let Some(on_swap) = decl.on_swap {
                 on_swap(
-                    &*prior as &dyn busbar_kernel::plane_host::PlaneSlots,
-                    &*next as &dyn busbar_kernel::plane_host::PlaneSlots,
+                    &*prior as &dyn busbar_kernel::plane_driver::slots::PlaneSlots,
+                    &*next as &dyn busbar_kernel::plane_driver::slots::PlaneSlots,
                 );
             }
         }
@@ -931,7 +976,7 @@ impl AppHandle {
         // (item 552: no plane's `on_swap` did, so the first admin mutation stopped health probing for
         // the life of the process). The spawner is the composition root's binding, so core still
         // names no plane's `spawn_probers`.
-        let host = crate::plane_host::engine_host(&next);
+        let host = crate::plane_driver::engine_host(&next);
         if let Some(attach) = self.attach.get() {
             attach(&host);
         }
