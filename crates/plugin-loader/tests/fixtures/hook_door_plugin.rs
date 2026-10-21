@@ -72,8 +72,8 @@ impl Life for Gate {
         Self::parse(settings)
     }
 
-    fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
-        Ok(Refreshed::default())
+    fn refresh(&self, settings: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+        Self::parse(settings).map(|_| Refreshed::default())
     }
 }
 
