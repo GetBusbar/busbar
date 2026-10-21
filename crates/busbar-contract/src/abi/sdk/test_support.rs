@@ -6,13 +6,17 @@
 //! `unsafe` only in its reviewed `mod door`, and a plane, hook, auth or secret crate forbids it).
 //! The one `unsafe` read of each kind lives here, once, reviewed, instead of once per plugin test.
 //!
-//! Two halves:
+//! Four parts:
 //!
 //! * [`zeroed`] and `Default`: the all-zero value of a REVIEWED ABI struct (every slot `in`/`out`
 //!   the contract states, and the row structs a test lays out beside them). [`AllZero`] is sealed,
 //!   so the constructor cannot be called on any type this module has not reviewed.
 //! * [`DoorView`]: a door's Statement, its claims, declared answers, kind tail, claim rows and their
-//!   facts, and its ops table, as Rust values.
+//!   facts, a plane tail's texts and counted lists, and its ops table, as Rust values.
+//! * [`written`] / [`written_text`]: what a plugin wrote into a buffer the test lent it, bounded by
+//!   the length its `out` states and the capacity the test lent.
+//! * [`fake`]: a fake host whose services a test writes as safe Rust, the `in` read and the
+//!   `ServiceOut` written for it.
 //!
 //! DEV-ONLY: the module is compiled for this crate's own tests and behind the dev-only `test-seal`
 //! feature a plugin's `[dev-dependencies]` edge enables (`tests/test_seal_is_dev_only.rs` refuses
@@ -31,7 +35,14 @@ mod sealed {
     pub trait Sealed {}
     /// Only this module implements it: the reviewed kind tails.
     pub trait SealedTail {}
+    /// Only this module implements it: the plane tail's counted row lists.
+    pub trait PlaneRow: Sized + 'static {
+        /// The list in `tail`: its pointer, its count and its field name.
+        fn of(tail: &crate::abi::plane::PlaneTail) -> (*const Self, usize, &'static str);
+    }
 }
+
+pub mod fake;
 
 // ── THE ALL-ZERO VALUE ──────────────────────────────────────────────────────────────────────────
 
@@ -245,6 +256,11 @@ all_zero!(row:
     crate::abi::transport::FramerSink,
     crate::abi::transport::ConnFacts,
     crate::abi::transport::Destination,
+    crate::abi::host::service::ServiceOut,
+    crate::abi::host::service::ItemSpan,
+    crate::abi::host::service::ClockReading,
+    crate::abi::host::io::IoSlots,
+    crate::abi::host::conn::connector::ConnectorSlots,
 );
 
 // ── THE STATEMENT, READ ─────────────────────────────────────────────────────────────────────────
@@ -486,6 +502,217 @@ impl DoorView {
             })
             .collect()
     }
+}
+
+// ── A PLANE'S TAIL, READ ────────────────────────────────────────────────────────────────────────
+
+/// One text the plane tail states, for [`DoorView::plane_text`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaneText {
+    /// `scope`.
+    Scope,
+    /// `label`.
+    Label,
+    /// `subject_noun`.
+    SubjectNoun,
+    /// `admin_noun`.
+    AdminNoun,
+    /// `audit_kind`.
+    AuditKind,
+    /// `signing_domain`.
+    SigningDomain,
+    /// `signing_kid_prefix`.
+    SigningKidPrefix,
+    /// `cli_help`.
+    CliHelp,
+    /// `caller_credential_refusal`.
+    CallerCredentialRefusal,
+}
+
+/// One counted list of words the plane tail states, for [`DoorView::plane_words`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaneWords {
+    /// `dialects`.
+    Dialects,
+    /// `scope_kinds`.
+    ScopeKinds,
+    /// `fee_units`.
+    FeeUnits,
+    /// `record_kinds`.
+    RecordKinds,
+    /// `egress_targets`.
+    EgressTargets,
+    /// `metric_lanes`.
+    MetricLanes,
+}
+
+/// A row type of one of the plane tail's counted lists, for [`DoorView::plane_rows`]. Sealed: the
+/// eight row lists `PlaneTail` states.
+pub trait PlaneRow: sealed::PlaneRow + Copy {}
+
+/// `plane_row!(Row => list, list_len; ...)`.
+macro_rules! plane_row {
+    ($($t:ident => $field:ident, $len:ident);+ $(;)?) => {$(
+        impl sealed::PlaneRow for crate::abi::plane::$t {
+            fn of(tail: &crate::abi::plane::PlaneTail) -> (*const Self, usize, &'static str) {
+                (tail.$field, tail.$len, concat!("plane.", stringify!($field)))
+            }
+        }
+        impl PlaneRow for crate::abi::plane::$t {}
+    )+};
+}
+
+// Each is the `#[repr(C)]` row type of the `PlaneTail` list it names, counted by the field after it.
+plane_row!(
+    DialectAuth => dialect_auth, dialect_auth_len;
+    OpClass => op_classes, op_classes_len;
+    BillableClass => billable_classes, billable_classes_len;
+    RouteCost => route_cost, route_cost_len;
+    RecordChain => record_chains, record_chains_len;
+    TrustKey => trust_keys, trust_keys_len;
+    RefusalStatus => refusal_statuses, refusal_statuses_len;
+    AdminRoute => admin_routes, admin_routes_len;
+);
+
+/// One billable class the plane tail states, read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BillableClassRow {
+    /// The class.
+    pub class: &'static str,
+    /// Its family.
+    pub family: &'static str,
+}
+
+impl DoorView {
+    /// One text the plane tail states (empty = absent).
+    ///
+    /// # Panics
+    ///
+    /// As [`DoorView::kind_tail`] for a plane tail, or the text breaks the door contract.
+    #[must_use]
+    pub fn plane_text(&self, which: PlaneText) -> &'static str {
+        let t = self.kind_tail::<crate::abi::plane::PlaneTail>();
+        let (s, field) = match which {
+            PlaneText::Scope => (t.scope, "plane.scope"),
+            PlaneText::Label => (t.label, "plane.label"),
+            PlaneText::SubjectNoun => (t.subject_noun, "plane.subject_noun"),
+            PlaneText::AdminNoun => (t.admin_noun, "plane.admin_noun"),
+            PlaneText::AuditKind => (t.audit_kind, "plane.audit_kind"),
+            PlaneText::SigningDomain => (t.signing_domain, "plane.signing_domain"),
+            PlaneText::SigningKidPrefix => (t.signing_kid_prefix, "plane.signing_kid_prefix"),
+            PlaneText::CliHelp => (t.cli_help, "plane.cli_help"),
+            PlaneText::CallerCredentialRefusal => (
+                t.caller_credential_refusal,
+                "plane.caller_credential_refusal",
+            ),
+        };
+        text(s, field)
+    }
+
+    /// One counted list of words the plane tail states, as the raw list (for the kind's own
+    /// checks, which take it).
+    ///
+    /// # Panics
+    ///
+    /// As [`DoorView::kind_tail`] for a plane tail, or the list breaks the door contract.
+    #[must_use]
+    pub fn plane_word_list(&self, which: PlaneWords) -> &'static [AbiStr] {
+        let t = self.kind_tail::<crate::abi::plane::PlaneTail>();
+        let (ptr, len, field) = match which {
+            PlaneWords::Dialects => (t.dialects, t.dialects_len, "plane.dialects"),
+            PlaneWords::ScopeKinds => (t.scope_kinds, t.scope_kinds_len, "plane.scope_kinds"),
+            PlaneWords::FeeUnits => (t.fee_units, t.fee_units_len, "plane.fee_units"),
+            PlaneWords::RecordKinds => (t.record_kinds, t.record_kinds_len, "plane.record_kinds"),
+            PlaneWords::EgressTargets => (
+                t.egress_targets,
+                t.egress_targets_len,
+                "plane.egress_targets",
+            ),
+            PlaneWords::MetricLanes => (t.metric_lanes, t.metric_lanes_len, "plane.metric_lanes"),
+        };
+        list(ptr, len, field)
+    }
+
+    /// One counted list of words the plane tail states, in stated order.
+    ///
+    /// # Panics
+    ///
+    /// As [`DoorView::plane_word_list`], or a word is not UTF-8.
+    #[must_use]
+    pub fn plane_words(&self, which: PlaneWords) -> Vec<&'static str> {
+        self.plane_word_list(which)
+            .iter()
+            .map(|s| text(*s, "plane.word"))
+            .collect()
+    }
+
+    /// One counted row list the plane tail states (its scalar fields; a billable class's texts
+    /// through [`DoorView::billable_classes`]).
+    ///
+    /// # Panics
+    ///
+    /// As [`DoorView::kind_tail`] for a plane tail, or the list breaks the door contract.
+    #[must_use]
+    pub fn plane_rows<T: PlaneRow>(&self) -> &'static [T] {
+        let (ptr, len, field) = T::of(self.kind_tail::<crate::abi::plane::PlaneTail>());
+        list(ptr, len, field)
+    }
+
+    /// The billable classes the plane tail states, in stated order.
+    ///
+    /// # Panics
+    ///
+    /// As [`DoorView::plane_rows`], or a class or family is not UTF-8.
+    #[must_use]
+    pub fn billable_classes(&self) -> Vec<BillableClassRow> {
+        self.plane_rows::<crate::abi::plane::BillableClass>()
+            .iter()
+            .map(|c| BillableClassRow {
+                class: text(c.class, "plane.billable_class.class"),
+                family: text(c.family, "plane.billable_class.family"),
+            })
+            .collect()
+    }
+}
+
+// ── WHAT A PLUGIN WROTE INTO A LENT BUFFER ──────────────────────────────────────────────────────
+
+/// The bytes a plugin wrote into `lent`, the buffer the test lent it (an `err_buf`, an `into`),
+/// where its `out` states it wrote `len` (`field` names that length).
+///
+/// # Panics
+///
+/// `len` is more than the capacity the test lent.
+#[must_use]
+pub fn written<'b>(
+    lent: &'b [u8],
+    len: impl TryInto<usize> + Copy + core::fmt::Debug,
+    field: &str,
+) -> &'b [u8] {
+    let n = len
+        .try_into()
+        .unwrap_or_else(|_| panic!("{field}: {len:?} is no length on this target"));
+    assert!(
+        n <= lent.len(),
+        "{field}: the plugin states it wrote {n} bytes into a buffer of {}",
+        lent.len()
+    );
+    &lent[..n]
+}
+
+/// [`written`], as text.
+///
+/// # Panics
+///
+/// As [`written`], or the bytes are not UTF-8.
+#[must_use]
+pub fn written_text<'b>(
+    lent: &'b [u8],
+    len: impl TryInto<usize> + Copy + core::fmt::Debug,
+    field: &str,
+) -> &'b str {
+    let b = written(lent, len, field);
+    core::str::from_utf8(b).unwrap_or_else(|_| panic!("{field}: not UTF-8: {b:?}"))
 }
 
 /// A Statement list as a slice. Called ONLY with a list read out of a [`DoorView`]'s Statement or
