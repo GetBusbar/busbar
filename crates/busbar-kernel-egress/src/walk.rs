@@ -8,7 +8,7 @@
 //! what a refusal for size does to the candidate set, which terminal runs when the pool is spent,
 //! and when the walk is over. The sending is the caller's: it asks [`Walk::next`] for a member,
 //! runs the attempt, and asks again. The ordering is the order's, the admission is the breaker's,
-//! and the shed's wait and the last resort are in [`crate::exhaustion`].
+//! and the terminals' own bodies are in [`crate::exhaustion`].
 //!
 //! Three properties of it are load-bearing and each is one line below.
 //!
@@ -81,8 +81,9 @@ pub fn budget_secs(pools: &HashMap<String, Pool>, pool: &str) -> u64 {
 enum Phase {
     /// The ordered walk over the unit's pool.
     Primary(String),
-    /// The pool's members are spent: its terminal runs next.
-    Terminal(String),
+    /// The pool's members are spent: its terminal runs next. `true` = the walk's own pool,
+    /// `false` = a pool it spilled into; the terminal shapes the members as that pool's picks did.
+    Terminal(String, bool),
     /// A spill into this pool (degraded).
     Spill(String),
     /// Every path is spent: every step from here answers this shed.
@@ -116,6 +117,9 @@ pub struct Taken {
 pub struct Wait {
     pool: String,
     max_ms: u64,
+    /// The pool's members as the unit's hooks kept them: the shed this wait may end on reads its
+    /// wait off these and no others.
+    members: Vec<Member>,
 }
 
 /// What one step of the walk answers.
@@ -135,7 +139,7 @@ pub struct Parked<'p> {
     /// The pool's name, as the walk keys it.
     name: String,
     pool: &'p Pool,
-    /// The members the last pick ran over, as the unit's hooks kept them.
+    /// The members the hooks kept ([`Wait`]'s), handed on to the shed.
     members: Vec<Member>,
     waiting: Vec<DestinationId>,
     bound_ms: u64,
@@ -147,6 +151,7 @@ pub struct Parked<'p> {
 pub struct Waited<'p> {
     name: String,
     pool: &'p Pool,
+    members: Vec<Member>,
     won: Option<(Member, Permit, Option<u64>)>,
 }
 
@@ -159,13 +164,6 @@ pub struct Walk {
     hops: usize,
     /// Members taken so far, every path counted.
     taken: u32,
-    /// The members the last pick ran over, as the unit's hooks kept them: the pool's terminal ranks,
-    /// waits on and quotes its shed's wait from these and never from the pool's whole membership,
-    /// so a member the routing policy dropped or a required restriction excludes is not reached by
-    /// the last resort and does not set the advertised wait, as 1.5.5 ran its terminals over the
-    /// restricted candidates (v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:2345`,
-    /// `proxy/engine/walk.rs:1043-1046`).
-    kept: Vec<Member>,
 }
 
 impl Walk {
@@ -181,7 +179,6 @@ impl Walk {
             phase: Phase::Primary(pool.to_string()),
             hops: 0,
             taken: 0,
-            kept: Vec::new(),
         }
     }
 
@@ -200,7 +197,6 @@ impl Walk {
             phase: Phase::Shed(Shed::empty_pool()),
             hops: 0,
             taken: 0,
-            kept: Vec::new(),
         }
     }
 
@@ -216,7 +212,7 @@ impl Walk {
     pub fn walking(&self) -> Option<(&str, bool)> {
         match &self.phase {
             Phase::Primary(name) => Some((name, true)),
-            Phase::Spill(name) | Phase::Terminal(name) => Some((name, false)),
+            Phase::Spill(name) | Phase::Terminal(name, _) => Some((name, false)),
             Phase::Shed(_) => None,
         }
     }
@@ -275,7 +271,7 @@ impl Walk {
                             Err(shed) => return Step::Shed(shed),
                         }
                     }
-                    self.phase = Phase::Terminal(name);
+                    self.phase = Phase::Terminal(name, true);
                 }
                 Phase::Spill(name) => {
                     let Some(pool) = ports.pools.get(&name) else {
@@ -286,16 +282,29 @@ impl Walk {
                         Ok(None) => {}
                         Err(shed) => return Step::Shed(shed),
                     }
-                    self.phase = Phase::Terminal(name);
+                    self.phase = Phase::Terminal(name, false);
                 }
-                Phase::Terminal(name) => {
+                Phase::Terminal(name, primary) => {
                     self.ctx.mark_pool_visited(&name);
                     let Some(pool) = ports.pools.get(&name) else {
                         return Step::Shed(pool_shed(ports, &name, &[], token));
                     };
+                    // The terminals that read the pool's own members (the shed's wait, the last
+                    // resort, the queue's shed) read the ones the unit's hooks kept, as the pool's
+                    // picks did: a required restriction holds through the terminal, as v1.5.5's
+                    // restricted `cands` did (`crates/busbar/src/proxy/engine/mod.rs:1085`,
+                    // `:1298-1300`; `engine/walk.rs:100`, `:202`, `:1126-1130`, `:1142-1146`), and
+                    // as hook behaviour must (docs/design/BUSBAR-1.6.0.md, decision 63).
+                    let kept = |walk: &mut Self| {
+                        walk.shaped(pool, shape, primary)
+                            .map(|(members, _)| members)
+                    };
                     match &pool.on_exhausted {
                         OnExhausted::Status503 => {
-                            return Step::Shed(pool_shed(ports, &name, &self.kept, token))
+                            return Step::Shed(match kept(self) {
+                                Ok(members) => pool_shed(ports, &name, &members, token),
+                                Err(shed) => shed,
+                            });
                         }
                         OnExhausted::FallbackPool(target) => {
                             if self.ctx.is_pool_visited(target) || !ports.pools.contains_key(target)
@@ -315,10 +324,14 @@ impl Walk {
                             self.phase = Phase::Spill(target.clone());
                         }
                         OnExhausted::LeastBad => {
+                            let members = match kept(self) {
+                                Ok(members) => members,
+                                Err(shed) => return Step::Shed(shed),
+                            };
                             // A least-bad dispatch that brings no answer is the shed.
-                            let shed = pool_shed(ports, &name, &self.kept, token);
+                            let shed = pool_shed(ports, &name, &members, token);
                             self.phase = Phase::Shed(shed.clone());
-                            return match least_bad(ports, &pool.name, &self.kept, token) {
+                            return match least_bad(ports, pool, &members, token) {
                                 Some((member, permit)) => {
                                     Step::Take(self.take(&pool.name, member, permit, None, true))
                                 }
@@ -326,10 +339,14 @@ impl Walk {
                             };
                         }
                         OnExhausted::Queue { max_ms } => {
-                            return Step::Wait(Wait {
-                                pool: name,
-                                max_ms: *max_ms,
-                            })
+                            return match kept(self) {
+                                Ok(members) => Step::Wait(Wait {
+                                    pool: name,
+                                    max_ms: *max_ms,
+                                    members,
+                                }),
+                                Err(shed) => Step::Shed(shed),
+                            };
                         }
                     }
                 }
@@ -353,20 +370,9 @@ impl Walk {
         token: &Pass<Route>,
         primary: bool,
     ) -> Result<Option<Taken>, Shed> {
-        let admissible = pool.admissible_members().into_owned();
-        let (members, order) = match shape {
-            Some(shape) => match shape.shape(admissible, primary) {
-                Some(shaped) => shaped,
-                None => {
-                    let shed = Shed::restrict_no_lane();
-                    self.phase = Phase::Shed(shed.clone());
-                    return Err(shed);
-                }
-            },
-            None => (admissible, Vec::new()),
-        };
+        let (members, order) = self.shaped(pool, shape, primary)?;
         let now = ports.clock.now_secs();
-        let chosen = pick_among(
+        let Some(mut picked) = pick_among(
             &PickInput {
                 breaker: ports.breaker,
                 capacity: ports.capacity,
@@ -379,18 +385,49 @@ impl Walk {
                 token,
             },
             &mut self.ctx,
-        )
-        .and_then(|mut picked| {
-            let member = members
-                .iter()
-                .find(|m| m.destination == picked.destination)
-                .cloned()?;
-            let probe = picked.take_probe_epoch();
-            Some((member, picked.permit, probe))
-        });
-        self.kept = members;
-        Ok(chosen
-            .map(|(member, permit, probe)| self.take(&pool.name, member, permit, probe, !primary)))
+        ) else {
+            return Ok(None);
+        };
+        let Some(member) = members
+            .iter()
+            .find(|m| m.destination == picked.destination)
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let probe = picked.take_probe_epoch();
+        Ok(Some(self.take(
+            &pool.name,
+            member,
+            picked.permit,
+            probe,
+            !primary,
+        )))
+    }
+
+    /// `pool`'s admissible members as the unit's hooks `shape` them for a pick of the walk's own
+    /// pool (`primary`) or a pool it spilled into, and the order they prefer.
+    ///
+    /// # Errors
+    ///
+    /// The hooks hold the pool to a restriction no member satisfies: [`Shed::restrict_no_lane`],
+    /// which every step from here answers, as v1.5.5 failed closed on it
+    /// (`crates/busbar/src/proxy/engine/mod.rs:1076-1082`, `engine/walk.rs:981-995`).
+    fn shaped(
+        &mut self,
+        pool: &Pool,
+        shape: Option<&dyn Shape>,
+        primary: bool,
+    ) -> Result<(Vec<Member>, Vec<DestinationId>), Shed> {
+        let admissible = pool.admissible_members().into_owned();
+        let Some(shape) = shape else {
+            return Ok((admissible, Vec::new()));
+        };
+        shape.shape(admissible, primary).ok_or_else(|| {
+            let shed = Shed::restrict_no_lane();
+            self.phase = Phase::Shed(shed.clone());
+            shed
+        })
     }
 
     /// Take `member` of `pool` for the next attempt: excluded from every pick of the unit after it.
@@ -441,7 +478,7 @@ impl Walk {
             }
         }
         if waiting.is_empty() {
-            let shed = pool_shed(ports, &wait.pool, &self.kept, token);
+            let shed = pool_shed(ports, &wait.pool, &wait.members, token);
             self.phase = Phase::Shed(shed.clone());
             return Err(shed);
         }
@@ -449,7 +486,7 @@ impl Walk {
         Ok(Parked {
             name: wait.pool.clone(),
             pool,
-            members: self.kept.clone(),
+            members: wait.members.clone(),
             waiting,
             bound_ms: wait.max_ms.min(self.ctx.remaining_ms(started)),
             started,
@@ -470,7 +507,7 @@ impl Walk {
         let taken = waited.won.map(|(member, permit, probe)| {
             self.take(&waited.pool.name, member, permit, probe, true)
         });
-        let shed = pool_shed(ports, &waited.name, &self.kept, token);
+        let shed = pool_shed(ports, &waited.name, &waited.members, token);
         self.phase = Phase::Shed(shed.clone());
         taken.ok_or(shed)
     }
@@ -484,7 +521,7 @@ impl<'p> Parked<'p> {
     /// `crates/busbar/src/proxy/engine/walk.rs:212-214`).
     pub async fn wait(mut self, ports: &WalkPorts<'_>) -> Waited<'p> {
         let pool = self.pool;
-        let members = std::mem::take(&mut self.members);
+        let members = pool.admissible_members();
         let _parked = QueuedGuard::park(ports.telemetry, &pool.name);
         let won = loop {
             if self.waiting.is_empty() {
@@ -521,6 +558,7 @@ impl<'p> Parked<'p> {
         Waited {
             name: self.name,
             pool,
+            members: self.members,
             won,
         }
     }
@@ -548,8 +586,8 @@ impl Drop for QueuedGuard<'_> {
     }
 }
 
-/// The shed for `pool`: refuse, with the wait `members` (the members its last pick ran over, as
-/// the unit's hooks kept them; none for a pool the walk does not have) justify.
+/// The shed for `pool`: refuse, with the wait its `members` justify (the ones the unit's hooks
+/// kept; none for a pool the walk does not have).
 fn pool_shed(ports: &WalkPorts<'_>, pool: &str, members: &[Member], token: &Pass<Route>) -> Shed {
     Shed::overloaded(retry_after_secs(
         ports.breaker,

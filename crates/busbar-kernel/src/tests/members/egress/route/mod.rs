@@ -177,6 +177,7 @@ impl Node {
             pools,
             token: route_token(),
             walk,
+            shape: None,
         }
     }
 
@@ -428,9 +429,18 @@ pub(crate) struct Walker<'n> {
     pools: HashMap<String, Pool>,
     token: Pass<Route>,
     pub walk: Walk,
+    /// The unit's hooks' shape on every pick, as the far end passes it; `None` = no hooks.
+    shape: Option<Box<dyn Shape>>,
 }
 
 impl Walker<'_> {
+    /// Every step from here shaped by `shape`, as a unit's hooks shape the far end's picks.
+    #[must_use]
+    pub fn shaped(mut self, shape: impl Shape + 'static) -> Self {
+        self.shape = Some(Box::new(shape));
+        self
+    }
+
     /// The walk's next step, its wait (if it is the queue's) already run.
     pub fn step(&mut self) -> Step {
         let Walker {
@@ -438,9 +448,10 @@ impl Walker<'_> {
             pools,
             token,
             walk,
+            shape,
         } = self;
         let ports = ports(node, pools);
-        match walk.next(&ports, node.affinity, token) {
+        match walk.next_shaped(&ports, node.affinity, shape.as_deref(), token) {
             Step::Wait(wait) => {
                 let parked = match walk.park(&ports, &wait, token) {
                     Ok(parked) => parked,
@@ -456,19 +467,6 @@ impl Walker<'_> {
         }
     }
 
-    /// The walk's next step with every pick's members as `shape` leaves them, the way the far end
-    /// hands the unit's hooks to [`Walk::next_shaped`].
-    pub fn step_shaped(&mut self, shape: &dyn Shape) -> Step {
-        let Walker {
-            node,
-            pools,
-            token,
-            walk,
-        } = self;
-        let ports = ports(node, pools);
-        walk.next_shaped(&ports, node.affinity, Some(shape), token)
-    }
-
     /// Step to the queue terminal, park its wait, poll it once and drop it there — the way a
     /// caller that goes away while its request is parked leaves the wait.
     pub fn abandon_wait(&mut self) {
@@ -477,9 +475,11 @@ impl Walker<'_> {
             pools,
             token,
             walk,
+            shape,
         } = self;
         let ports = ports(node, pools);
-        let Step::Wait(wait) = walk.next(&ports, node.affinity, token) else {
+        let Step::Wait(wait) = walk.next_shaped(&ports, node.affinity, shape.as_deref(), token)
+        else {
             panic!("expected the queue terminal's wait");
         };
         let parked = walk
