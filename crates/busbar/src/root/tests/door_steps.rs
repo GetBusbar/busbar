@@ -4868,7 +4868,7 @@ pub(crate) mod door_boundary {
             crate::LINKED.auths,
             crate::root::auth_bindings::operator_words(),
         );
-        busbar_kernel::preflight::install_auth_axis(crate::root::dispatch::auth_axis);
+        busbar_kernel::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
         let chain = vec![busbar_kernel::config::operator_provider().to_string()];
         let rig = rig_tools(instance, port, tools, &|app| {
             dispatched(app.admin_chain(chain.clone()), row, &slot)
@@ -4998,7 +4998,7 @@ pub(crate) mod door_boundary {
             crate::LINKED.auths,
             crate::root::auth_bindings::operator_words(),
         );
-        busbar_kernel::preflight::install_auth_axis(crate::root::dispatch::auth_axis);
+        busbar_kernel::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
         let chain = vec![busbar_kernel::config::operator_provider().to_string()];
         let row = row();
         registry(row);

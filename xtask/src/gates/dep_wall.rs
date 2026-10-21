@@ -592,7 +592,10 @@ fn is_test_attr(body: &TokenStream) -> bool {
         _ => false,
     });
     if idents_only {
-        return matches!(toks.last(), Some(TokenTree::Ident(i)) if i == "test");
+        // Exactly `test` or `tokio::test`: an attribute whose LAST segment is `test` (`foo::test`)
+        // is some other crate's macro, and the item under it is production (#1128).
+        let spelled: Vec<String> = toks.iter().map(ToString::to_string).collect();
+        return spelled == ["test"] || spelled == ["tokio", ":", ":", "test"];
     }
     let [TokenTree::Ident(cfg), TokenTree::Group(g)] = toks.as_slice() else {
         return false;
@@ -671,11 +674,13 @@ fn generic_list_close(toks: &[TokenTree], i: usize) -> Option<usize> {
 }
 
 /// The token stream with every test-marked item removed: the attribute, the attributes after it,
-/// and the item up to its first top-level `;` or `{ .. }` body. An inner `#![cfg(test)]` empties
-/// the scope it opens. A test-marked GENERIC PARAMETER is removed to its own end only (the list's
-/// next top-level `,`, or the `>` that closes the list), never on into the item's body. FAIL
-/// CLOSED: once a generic list opens that [`generic_list_close`] cannot close, no test mark at this
-/// level is stripped, so nothing behind one is hidden.
+/// and the item up to its first top-level `;`, `,` or `{ .. }` body. The `,` ends a marked element
+/// of a group (a struct field, an enum variant, a match arm, a fn parameter), so the element after
+/// it is read (#1128). An inner `#![cfg(test)]` empties the scope it opens. A test-marked GENERIC
+/// PARAMETER is removed to its own end only (the list's next top-level `,`, or the `>` that closes
+/// the list), never on into the item's body; the generic list is handled before the item skip.
+/// FAIL CLOSED: once a generic list opens that [`generic_list_close`] cannot close, no test mark at
+/// this level is stripped, so nothing behind one is hidden.
 fn strip_tests(stream: TokenStream) -> TokenStream {
     let toks: Vec<TokenTree> = stream.into_iter().collect();
     let attr_at = |i: usize| -> Option<(usize, bool)> {
@@ -757,10 +762,11 @@ fn strip_tests(stream: TokenStream) -> TokenStream {
                 return TokenStream::new();
             }
             i += len;
-            // Skip the item: further attributes, then up to its body or its `;`.
+            // Skip the item: further attributes, then up to its body, its `;`, or the `,` that
+            // ends it as one element of a group.
             while i < toks.len() {
                 match &toks[i] {
-                    TokenTree::Punct(p) if p.as_char() == ';' => {
+                    TokenTree::Punct(p) if p.as_char() == ';' || p.as_char() == ',' => {
                         i += 1;
                         break;
                     }
@@ -1191,6 +1197,48 @@ impl Gate for DepWallGate {
                 cx,
                 self,
                 what,
+                &[ROW_NEW],
+                ov,
+                &["new-offender", "busbar-plane-decisions", "std::net"],
+            ));
+        }
+        // A TEST MARK INSIDE A GROUP covers one element, up to its `,`: the socket in the element
+        // after it is production source (#1128).
+        for (what, file, text) in [
+            (
+                "a struct field after a test-marked field",
+                "planted_field_socket.rs",
+                "pub struct S { #[cfg(test)] a: u8, pub b: std::net::TcpStream }\n",
+            ),
+            (
+                "an enum variant after a test-marked variant",
+                "planted_variant_socket.rs",
+                "pub enum E { #[cfg(test)] A(u8), B(std::net::TcpStream) }\n",
+            ),
+            (
+                "a match arm after a test-marked arm",
+                "planted_arm_socket.rs",
+                "pub fn dial(x: u8) { match x { #[cfg(test)] 0 => (), \
+                 _ => { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); } } }\n",
+            ),
+            (
+                "a fn parameter after a test-marked parameter",
+                "planted_param_socket.rs",
+                "pub fn hold(#[cfg(test)] a: u8, b: std::net::TcpStream) { drop(b); }\n",
+            ),
+            // ONLY THE NAMED TEST MARKS are test code: `foo::test` is some crate's macro.
+            (
+                "a fn under a foreign `test` attribute",
+                "planted_foreign_test_socket.rs",
+                "#[foo::test] pub fn dial() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
+            ),
+        ] {
+            let mut ov = Overlay::new();
+            ov.set(format!("crates/busbar-plane-decisions/src/{file}"), text);
+            report.push(prove_red(
+                cx,
+                self,
+                format!("a socket path in {what} is production source and a new offender"),
                 &[ROW_NEW],
                 ov,
                 &["new-offender", "busbar-plane-decisions", "std::net"],
