@@ -290,17 +290,9 @@ impl ConnBalancer {
     /// dropped by balancing.
     fn try_hand_off(&self, admitted: Admitted) -> Option<Admitted> {
         use std::sync::atomic::Ordering;
-        let mine = self.counts[self.me].0.load(Ordering::Relaxed);
-        let (min_idx, min_val) = self
-            .counts
-            .iter()
-            .enumerate()
-            .map(|(i, c)| (i, c.0.load(Ordering::Relaxed)))
-            .min_by_key(|&(_, v)| v)
-            .expect("at least one worker");
-        if min_idx == self.me || mine < min_val.saturating_add(REBALANCE_MARGIN) {
+        let Some(min_idx) = self.least_loaded() else {
             return Some(admitted);
-        }
+        };
         // The admitted socket is on no worker's reactor yet, so it crosses the hand-off channel as
         // it is (each worker runs its own runtime).
         self.counts[min_idx].0.fetch_add(1, Ordering::Relaxed);
@@ -317,6 +309,77 @@ impl ConnBalancer {
                 }
             }
         }
+    }
+
+    /// The least-loaded worker a locally-accepted connection moves to, by the margin rule; `None`
+    /// = serve it here.
+    fn least_loaded(&self) -> Option<usize> {
+        use std::sync::atomic::Ordering;
+        let mine = self.counts[self.me].0.load(Ordering::Relaxed);
+        let (min_idx, min_val) = self
+            .counts
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (i, c.0.load(Ordering::Relaxed)))
+            .min_by_key(|&(_, v)| v)
+            .expect("at least one worker");
+        if min_idx == self.me || mine < min_val.saturating_add(REBALANCE_MARGIN) {
+            return None;
+        }
+        Some(min_idx)
+    }
+
+    /// PLACE ONE FRAMED CONNECTION (row 192 C, the accepted data door): admitted BARE, before any
+    /// handshake ([`busbar_core_connector::listen::Listening::poll_admit`]), it is served here, or
+    /// its socket is handed up off this worker's table and sent to the least-loaded worker, which
+    /// adopts it ([`busbar_core_connector::carrier::Carried::adopted`]) and composes it there. The
+    /// same rule, the same counts and the same channel as the hand-up's placement.
+    pub(crate) fn place_arrived(&self, arrived: busbar_core_connector::listen::Arrived) -> Placed {
+        use std::sync::atomic::Ordering;
+        let Some(idx) = self.least_loaded() else {
+            return Placed::Here(arrived, self.place_local());
+        };
+        let busbar_core_connector::listen::Arrived {
+            carried,
+            peer,
+            slot,
+        } = arrived;
+        let Some(stream) = carried.hand_up().filter(|s| s.set_nonblocking(true).is_ok()) else {
+            return Placed::Moved;
+        };
+        let admitted = Admitted {
+            stream,
+            peer,
+            hold: Some(Box::new(slot)),
+        };
+        self.counts[idx].0.fetch_add(1, Ordering::Relaxed);
+        match self.txs[idx].try_send(admitted) {
+            Ok(()) => Placed::Moved,
+            Err(e) => {
+                self.counts[idx].0.fetch_sub(1, Ordering::Relaxed);
+                match e {
+                    tokio::sync::mpsc::error::TrySendError::Full(a)
+                    | tokio::sync::mpsc::error::TrySendError::Closed(a) => {
+                        Placed::Back(a, self.place_local())
+                    }
+                }
+            }
+        }
+    }
+
+    /// The next connection another worker placed here, its count already this worker's.
+    pub(crate) async fn handed(&mut self) -> Option<(Admitted, ConnCountGuard)> {
+        let a = self.rx.recv().await?;
+        Some((a, self.adopt()))
+    }
+
+    /// The connections placed here and not yet taken, at shutdown.
+    pub(crate) fn drain_handed(&mut self) -> Vec<(Admitted, ConnCountGuard)> {
+        let mut out = Vec::new();
+        while let Ok(a) = self.rx.try_recv() {
+            out.push((a, self.adopt()));
+        }
+        out
     }
 
     /// Count this worker's newly-placed local connection; the returned guard decrements on drop
@@ -340,8 +403,18 @@ impl ConnBalancer {
     }
 }
 
+/// WHERE ONE FRAMED CONNECTION WENT ([`ConnBalancer::place_arrived`]).
+pub(crate) enum Placed {
+    /// Served here, as admitted, its count held.
+    Here(busbar_core_connector::listen::Arrived, ConnCountGuard),
+    /// Handed to another worker (or lost with its socket when it could not be handed up).
+    Moved,
+    /// The hand-off failed after the socket was handed up: served here, adopted bare.
+    Back(Admitted, ConnCountGuard),
+}
+
 /// RAII live-connection count: decrements its worker's slot when the served connection ends.
-struct ConnCountGuard {
+pub(crate) struct ConnCountGuard {
     counts: Arc<[PaddedCount]>,
     idx: usize,
 }

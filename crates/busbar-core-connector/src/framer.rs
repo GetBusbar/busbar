@@ -95,6 +95,12 @@ pub struct DoorFacts {
 pub trait FramerDoor: Send + Sync {
     /// What the entry states.
     fn facts(&self) -> &DoorFacts;
+    /// THE ENTRY'S INSTANCE IDENTITY, as the host names it: the identity the loader verifies every
+    /// ref its framings present for, the one a listener's guest list is installed under (THE
+    /// DESIGN §6 step 2). `None` = an entry the host names no instance for.
+    fn instance(&self) -> Option<u64> {
+        None
+    }
     /// One crossing: the op, answered into its `out`.
     fn cross(&self, call: Call<'_>) -> Crossed;
     /// A new side of a carried connection: a ticket the entry's carrier ops are driven on inline

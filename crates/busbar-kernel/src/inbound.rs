@@ -1700,6 +1700,15 @@ impl Inbound {
         })
     }
 
+    /// THE REQUEST `unit` WAS HANDED IN WITH ([`HandIn::head`]): its method, target, authority,
+    /// query and field lines, after its transport stripped what the line's auths named. The root
+    /// serves the request it takes up ([`Inbound::take_handed`]) from it: the transport hands the
+    /// field block up, and the head slots stay the kernel's. `None` = no live unit holds a head.
+    #[must_use]
+    pub fn head_of(&self, unit: u64) -> Option<Head> {
+        self.units().get(&unit).and_then(|u| u.head.clone())
+    }
+
     /// THE DOOR'S VIEW OF `unit`'s CALLER: the principal, the governance context and the
     /// credential, by the data-plane gate's own resolution (`auth::resolve_data_plane_identity`)
     /// of the unit's first-hand verdict, over `app` (the generation's). A `none` line's unit is the

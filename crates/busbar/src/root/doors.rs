@@ -179,6 +179,15 @@ impl Dispatched {
     }
 }
 
+/// THE INSTANCE IDENTITY OF THE OPENED DOOR `door` ([`FramerDoor::instance`]): the identity the
+/// loader verifies every ref its framings present for, the one a listener's guest list is installed
+/// under (THE DESIGN §6 step 2, `crate::root::inbound::serve_under`). `None` = no door the host
+/// opened.
+#[must_use]
+pub fn owner_of(door: &dyn FramerDoor) -> Option<u64> {
+    door.instance().filter(|owner| *owner != 0)
+}
+
 /// One crossing through the dispatcher: the host's `in`/`out` copied in, the answer copied back.
 fn go<I: InFrame, O: OutFrame>(p: &Plugin<TransportKind>, s: u32, i: &mut I, o: &mut O) -> Crossed {
     let mut f = Frame::new(*i, *o);
@@ -228,6 +237,10 @@ fn go_inline<I: InFrame, O: OutFrame>(
 impl FramerDoor for Dispatched {
     fn facts(&self) -> &DoorFacts {
         &self.facts
+    }
+
+    fn instance(&self) -> Option<u64> {
+        Some(self.plugin.instance().0)
     }
 
     fn side(&self) -> Option<Box<dyn Side>> {

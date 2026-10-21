@@ -314,6 +314,7 @@ dependencies = [
  "busbar-store-memory",
  "busbar-transport-grpc",
  "busbar-transport-http",
+ "busbar-transport-http-plugin",
  "busbar-transport-stdio",
  "busbar-transport-tcp",
  "busbar-transport-tcp-plugin",
@@ -929,6 +930,15 @@ dependencies = [
  "hyper",
  "memchr",
  "serde_json",
+]
+
+[[package]]
+name = "busbar-transport-http-plugin"
+version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=12b078389496d4c1fd81b730f5d9d0887537c3b0#12b078389496d4c1fd81b730f5d9d0887537c3b0"
+dependencies = [
+ "busbar-contract",
+ "busbar-transport-http",
 ]
 
 [[package]]
