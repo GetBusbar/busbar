@@ -46,7 +46,8 @@ fn build_with_hook_makes_a_plane_attach_live() {
     // this in-crate unit test names no plane, no plane crate and no plane config type (the full
     // end-to-end builder path is covered by the plane crate's own integration tests).
     let mut builder = crate::new_test_app().hook_env(env);
-    let tools = busbar_kernel::plane::registry::plane_decl_for_config_section("tools")
+    let tools = crate::linked::table()
+        .plane_decl_for_config_section("tools")
         .expect("a plane is registered to own the `tools:` section");
     builder.set_container_hooks(
         tools.key,
@@ -66,7 +67,7 @@ fn build_with_hook_makes_a_plane_attach_live() {
         let parse = tools
             .parse_section
             .expect("the plane parses its own section");
-        let cfg = parse(&section).expect("the `tools:` section parses");
+        let cfg = parse(tools, &section).expect("the `tools:` section parses");
         match tools.build_runtime {
             Some(build) => {
                 builder.install_plane_runtime(
@@ -79,14 +80,14 @@ fn build_with_hook_makes_a_plane_attach_live() {
             None => {
                 let defs =
                     std::collections::BTreeMap::from([(tools.config_section, cfg.clone_box())]);
-                let ctx = busbar_kernel::plane::registry::BuildCtx {
+                let ctx = busbar_kernel::plane_driver::row::BuildCtx {
                     endpoint_slot: None,
                     plane_defs: &defs,
                     public_url: None,
                     prior: None,
                     providers: None,
                 };
-                let slot = (tools.build)(&ctx).expect("the plane builds from its section");
+                let slot = (tools.build)(tools, &ctx).expect("the plane builds from its section");
                 builder.install_plane_runtime(tools.key, slot);
             }
         }

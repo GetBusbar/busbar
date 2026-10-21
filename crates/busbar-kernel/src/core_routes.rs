@@ -75,6 +75,20 @@ pub(crate) struct CoreRouteTable {
     /// THE DOOR ROUTES' UNIT-LESS REFUSALS (spec Part 3 section 12): each door route's plane
     /// rendering, at the route's own path and method. Empty on every router that serves no door.
     door_refusals: Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
+    /// THE HANDLE WHOSE DOOR PLANES RENDER A KERNEL-SHAPED REFUSAL (ARCHITECT ruling 2026-10-16,
+    /// 3b B): what words a `401` on a path no door route takes at its verb. `None` on every router
+    /// that serves no door.
+    kernel_refuser: Option<KernelRefuser>,
+}
+
+/// The data router's handle, as the auth middleware asks its door planes for a refusal's words.
+#[derive(Clone)]
+struct KernelRefuser(std::sync::Arc<crate::state::AppHandle>);
+
+impl std::fmt::Debug for KernelRefuser {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("KernelRefuser")
+    }
 }
 
 impl CoreRouteTable {
@@ -103,6 +117,27 @@ impl CoreRouteTable {
         self
     }
 
+    /// This table with `handle` recorded as the one whose door planes render a kernel-shaped
+    /// refusal on a path no door route takes ([`Self::kernel_refusal`]).
+    #[must_use]
+    pub(crate) fn with_kernel_refuser(
+        mut self,
+        handle: std::sync::Arc<crate::state::AppHandle>,
+    ) -> Self {
+        self.kernel_refuser = Some(KernelRefuser(handle));
+        self
+    }
+
+    /// The door planes' rendering of `refusal` (the plane whose line takes its path, else the
+    /// fallback plane), or `None` when this router serves no door, none renders it, or the render
+    /// failed: the kernel answers its own.
+    pub(crate) fn kernel_refusal(
+        &self,
+        refusal: &busbar_kernel::plane_routes::KernelRefusal<'_>,
+    ) -> Option<axum::response::Response> {
+        self.kernel_refuser.as_ref()?.0.door_refusal(refusal)
+    }
+
     /// The unit-less refusal of the door route `(path, method)` matches, or `None` when the request
     /// matches no door route (every residual data-plane path). A route's path is matched as the
     /// router matched it: literal segments exactly, a `{name}` segment as any one segment, a
@@ -111,7 +146,7 @@ impl CoreRouteTable {
         &self,
         path: &str,
         method: &Method,
-    ) -> Option<&busbar_kernel::plane_routes::PlaneRefuseFn> {
+    ) -> Option<&busbar_kernel::plane_routes::PlaneRefusalSpec> {
         if self.door_refusals.is_empty() {
             return None;
         }
@@ -119,7 +154,26 @@ impl CoreRouteTable {
         self.door_refusals
             .iter()
             .find(|r| r.route.method == rm && route_matches(&r.route.path, path))
-            .map(|r| &r.refuse)
+    }
+
+    /// THE DIALECT AN AUTHENTICATION REFUSAL AT `(path, method)` IS TAPPED UNDER: the refusal
+    /// dialect the door plane states for the most specific door route `path` matches at `method`,
+    /// else — a verb no route at the path takes (OPTIONS, HEAD, any unclaimed method) — for the most
+    /// specific door route `path` matches whatever its method. v1.5.5 read the label off the path
+    /// alone (`crates/busbar/src/auth/mod.rs:1166-1167` at v1.5.5), so the verb never changed it;
+    /// the plane's statement per claim now carries the same dialect, and the kernel names none.
+    /// `None` when no door route matches the path.
+    pub(crate) fn refusal_dialect(&self, path: &str, method: &Method) -> Option<&'static str> {
+        let rm = route_method_of(method);
+        let most_specific = |at_method: bool| {
+            self.door_refusals
+                .iter()
+                .filter(|r| route_matches(&r.route.path, path))
+                .filter(|r| !at_method || Some(r.route.method) == rm)
+                .min_by_key(|r| route_generality(&r.route.path))
+                .map(|r| r.dialect)
+        };
+        most_specific(true).or_else(|| most_specific(false))
     }
 
     /// Whether a door plane flags `path` a SIGNED path (`abi::plane::CLAIM_SIGNED_INGRESS`; ARCHITECT
@@ -221,6 +275,25 @@ impl CoreRouter {
 
 /// Whether the request `path` is one the route pattern `route` matches: literal segments exactly, a
 /// `{name}` segment as any one non-empty segment, a `{*name}` tail as whatever remains.
+/// How general a route pattern is, least first: an exact pattern, then one with `{name}` segments
+/// (fewer first), then a `{*name}` tail (the longer its literal head, the less general). The order
+/// the router itself resolves an overlapping path in.
+fn route_generality(route: &str) -> (bool, usize, std::cmp::Reverse<usize>) {
+    let segments: Vec<&str> = route.split('/').collect();
+    let tail = segments
+        .last()
+        .is_some_and(|s| s.starts_with("{*") && s.ends_with('}'));
+    let params = segments
+        .iter()
+        .filter(|s| s.starts_with('{') && !s.starts_with("{*"))
+        .count();
+    let literals = segments
+        .iter()
+        .filter(|s| !s.is_empty() && !s.starts_with('{'))
+        .count();
+    (tail, params, std::cmp::Reverse(literals))
+}
+
 fn route_matches(route: &str, path: &str) -> bool {
     let mut want = route.split('/');
     let mut got = path.split('/');

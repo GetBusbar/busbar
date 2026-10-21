@@ -166,15 +166,11 @@ pub fn table(a: &Addresses) -> Vec<CensusRow> {
         //    mechanism.
         r("one-parse-time-plane-boundary", "PLANE-BOUNDARY-RULE-RESPELT", r"fn[[:space:]]+refuse_cross_plane_reference[[:space:]]*\(", 1, tree_and_substrate,
           "there is exactly ONE parse-time answer to \"does this hook reference reach onto another plane\"; a second is two answers that drift the first time either is fixed, and zero means the rule left the tree and every dotted reference is now silently accepted"),
-        r("one-section-attach-validator", "PLANE-BOUNDARY-RULE-RESPELT", r"fn[[:space:]]+validate_section_hooks[[:space:]]*\(", 1, tree.clone(),
+        r("one-section-attach-validator", "PLANE-BOUNDARY-RULE-RESPELT", r"fn[[:space:]]+validate_section_hooks[[:space:]]*\(", 1, tree,
           "the SECTION-level attach list must be judged by the same rule one entry is; a second copy is the place a looser rule grows, and it is the list an operator uses to attach a control to everything"),
-
-        // ── THE ONE BY-NAME PROTOCOL RESOLUTION. Before the registry there were THREE, each a list
-        //    of protocol names core had been edited to know. The failure mode of a second is a
-        //    protocol that resolves for routing and not for dispatch, discovered as a 404 on a path
-        //    that is mounted.
-        r("protocol-name-resolution", "PROTOCOL-LOOKUP-RESPELT", r"fn[[:space:]]+decl_for[[:space:]]*\(", 1, tree,
-          "there is exactly ONE by-name protocol resolution in busbar, and a second one is a second answer to which protocols exist"),
+        // THE ONE BY-NAME PROTOCOL RESOLUTION left the tree with the kernel's protocol registry
+        // (status row 82, D2): a plane resolves its own dialects (spec Part 1, Law 5), so the kernel
+        // holds no by-name lookup for a census row to count.
     ]
 }
 

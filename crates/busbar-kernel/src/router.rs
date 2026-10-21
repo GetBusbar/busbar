@@ -10,8 +10,8 @@ use axum::Router;
 use crate::{
     admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
     durable, endpoints, export, governance, handlers, hooks, ingress, ir, json, limits, oauth_as,
-    observability, operation, plane, plugin_routes, profile, proto, proxy, state, store, telemetry,
-    tls, transport, trust,
+    observability, operation, plugin_routes, profile, proxy, state, store, telemetry, tls,
+    transport, trust,
 };
 
 /// Response header name for the W3C Server-Timing field.
@@ -34,7 +34,7 @@ pub(crate) const NO_UPSTREAM_RTT: u64 = u64::MAX;
 /// version of this function that tried shipped one dialect's envelope onto a different plane's own
 /// mounted path.
 pub fn fallback_error_response(
-    planes: &crate::plane::PlaneDispatch,
+    planes: &crate::plane_driver::claims::PlaneDispatch,
     path: &str,
     status: axum::http::StatusCode,
     kind: &str,
@@ -69,12 +69,13 @@ pub fn fallback_error_response(
 /// A KERNEL-SHAPED REFUSAL'S ANSWER (ARCHITECT ruling 2026-10-16, 3b B): the kernel decides
 /// `reason` and `status` and words `message`; the door plane that owns `path` (the guest list's own
 /// reading, whatever the verb) renders the body through its refusal hook, in its dialect for
-/// `target`. The native-API root keeps the kernel's frozen envelope (it is the kernel's own
-/// surface), and a path no door owns, or a render that failed, gets the kernel's own answer.
+/// `target`; a path no door's line takes is the fallback plane's to render by its own path rule.
+/// The native-API root keeps the kernel's frozen envelope (it is the kernel's own surface), and a
+/// refusal no plane renders gets the kernel's own neutral answer: the kernel words no dialect.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn kernel_refusal_response(
     handle: &state::AppHandle,
-    planes: &crate::plane::PlaneDispatch,
+    planes: &crate::plane_driver::claims::PlaneDispatch,
     reason: busbar_contract::caps::ReasonCode,
     path: &str,
     target: &str,
@@ -85,16 +86,26 @@ pub(crate) fn kernel_refusal_response(
     use crate::admin::gate::API_ROOT;
     let native_api = path == API_ROOT || path.starts_with(&format!("{API_ROOT}/"));
     if !native_api {
+        let ingress = planes.ingress_of(path);
+        let mounted = matches!(ingress, crate::plane_driver::claims::Ingress::Mounted(_));
         let refusal = busbar_kernel::plane_routes::KernelRefusal {
             reason,
             status: status.as_u16(),
             text: message,
             path,
             target,
+            mounted,
         };
-        if let Some(rendered) = handle.door_refusal(&refusal) {
-            return rendered;
-        }
+        return handle.door_refusal(&refusal).unwrap_or_else(|| {
+            // A MOUNTED plane speaks its own wire format, and its client decodes nothing else: the
+            // refusal no line of it rendered is answered in that format, never in the kernel's
+            // neutral envelope (`native_error`'s mounted arm, as the auth chain's 401 answers it).
+            if mounted {
+                crate::ingress::native::native_error(ingress, status, kind, message)
+            } else {
+                crate::ingress::native::kernel_refusal(status, kind, message)
+            }
+        });
     }
     fallback_error_response(planes, path, status, kind, message)
 }
@@ -280,7 +291,7 @@ pub(crate) async fn server_timing(
 /// `application/json`, or any forward-relayed UPSTREAM 413 (different/non-marker body), is passed
 /// through verbatim (the body is buffered to inspect the sentinel, then re-attached unchanged).
 pub(crate) async fn reshape_oversized_413(
-    planes: &crate::plane::PlaneDispatch,
+    planes: &crate::plane_driver::claims::PlaneDispatch,
     path: &str,
     resp: axum::response::Response,
 ) -> axum::response::Response {
@@ -379,6 +390,7 @@ pub fn build_router_with_limits(
     // set is not something a later hot-swap can rewrite. Each plane's `mount` reads its own slot.
     let plane_slots = app.plane_slots.clone();
     let oauth_as = app.oauth_as.clone();
+    let table = app.doors;
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     // TEST-ONLY combined router: mount the Admin API v1 onto the DATA route table so one router
     // exercises the whole surface. Production never does this — `build_split_routers_with_limits`
@@ -388,10 +400,11 @@ pub fn build_router_with_limits(
         &plugin_routes,
         &plane_slots,
         oauth_as.as_ref(),
+        table,
         Vec::new(),
         Vec::new(),
     );
-    let router = crate::admin::seam::mount_admin(router);
+    let router = crate::admin::seam::mount_admin(router, table);
     let router = crate::plugin_routes::mount_plugin_routes(router, &plugin_routes, true);
     let router = apply_common_layers(
         router,
@@ -417,6 +430,7 @@ pub(crate) fn base_data_router(
         std::sync::Arc<dyn std::any::Any + Send + Sync>,
     >,
     oauth_as: Option<&std::sync::Arc<dyn std::any::Any + Send + Sync>>,
+    table: crate::plane_driver::doors::Doors,
     doors: Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
     sessions: Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
 ) -> (
@@ -424,9 +438,6 @@ pub(crate) fn base_data_router(
     crate::core_routes::CoreRouteTable,
 ) {
     use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
-    // A door plane whose claim is the whole tree (`/` and every path under it) claims the
-    // convenience surfaces' paths too, so the kernel mounts none of its own there.
-    let door_claims_root = doors.iter().any(|d| d.path.starts_with("/{*"));
     // EVERY core route is mounted through `CoreRouter::route`, which takes the handler and the
     // admission bar in ONE act (`core_routes`): a route the auth middleware knows nothing about is
     // not a thing this function can produce.
@@ -468,26 +479,6 @@ pub(crate) fn base_data_router(
     // The list-models discovery surface (`GET /v1/models`, `GET /v1beta/models`) is no kernel
     // route: the plane that claims it as a CATALOG route renders it, unit-less, over the names
     // `endpoints::catalog_names` computes (ARCHITECT ruling 2026-10-16, 3b C).
-    // THE CONVENIENCE SURFACES hand their unit to a body-model arrival, so they are mounted only
-    // where a plane registered one and no door plane claims the whole tree (a plane served through
-    // its door parses these paths itself).
-    let router = if crate::ingress::arrival::any_body_ingress() && !door_claims_root {
-        router
-            .route(
-                "/{name}/v1/messages",
-                RouteMethod::Post,
-                RouteAuth::Key,
-                ingress::named,
-            )
-            .route(
-                "/{provider}/{model}/v1/messages",
-                RouteMethod::Post,
-                RouteAuth::Key,
-                ingress::adhoc,
-            )
-    } else {
-        router
-    };
     // THE PLANES' DATA ROUTES, contributed through the registry rather than named here. For every
     // registered plane with a `mount` fn AND a runtime object this generation (its slot), the plane's
     // own `mount` mounts its routes from that slot, each door opening only when that plane's own
@@ -499,7 +490,7 @@ pub(crate) fn base_data_router(
     // `Store`/`GovCtx`/audit handle. Registration order (fixed by the plane registry) is preserved,
     // so the route order is stable.
     let mut router = router;
-    for decl in crate::plane::registry::plane_decls() {
+    for decl in table.decls() {
         let Some(slot) = plane_slots.get(decl.key) else {
             continue;
         };
@@ -575,13 +566,10 @@ pub(crate) fn base_data_router(
     router
         .map_router(|r| {
             r
-                // EVERY protocol endpoint — chat and the 1.2 operations, all six dialects — flows
-                // through the catch-all: Router (dumb protocol ID from path+headers) → that
-                // protocol's RequestHandler (reads path+body, decides the operation) → its
-                // OperationHandler cell. Adding a protocol or an operation never touches this file.
-                // Unknown paths / wrong methods keep the pre-collapse native-envelope 404/405
-                // shaping (no bare-proxy tells). A fallback claims no path, so it declares no route:
-                // it takes the normal data-plane bar like any unclaimed path always has.
+                // A path no claimed row owns: the kernel's own 404 (`ingress::protocol_dispatch`).
+                // A plane matches its own claimed routes; the kernel identifies no protocol here.
+                // A fallback claims no path, so it declares no route: it takes the normal
+                // data-plane bar like any unclaimed path always has.
                 .fallback(ingress::protocol_dispatch)
                 // Wrong-method hits on a VALID path (axum's built-in 405) get the same
                 // native-envelope treatment as the 404 fallback above.
@@ -855,8 +843,8 @@ pub(crate) fn apply_common_layers(
     // COMPOSED IN ONLY WHEN A PLANE IS MOUNTED — the same composition rule as `server_timing`
     // below and for the same reason: a layer that is pure passthrough for every request this
     // deployment can ever receive is not free, it is a `handle.load()` + a mount-table walk per
-    // request. Plane mounts are fixed at boot (`plane::registry::install_planes` registers once,
-    // before the first request), so `has_mounts()` cannot change under a config apply and omitting
+    // request. Plane mounts are fixed at boot (the generation's door table, lent by the composition
+    // root before the first request), so `has_mounts()` cannot change under a config apply and omitting
     // the layer is behaviour-identical to running its no-op arm. This is the plugins-cost-nothing
     // contract made structural: a deployment that configured no plane carries NONE of the
     // plane machinery on its request path.
@@ -1238,6 +1226,7 @@ pub fn build_split_routers_serving_doors(
     let plugin_routes = app.plugin_routes.clone();
     let plane_slots = app.plane_slots.clone();
     let oauth_as = app.oauth_as.clone();
+    let table = app.doors;
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     // DATA plane: protocols + health/metrics/stats + the `none`/`key`-auth plugin routes, NO admin
     // mount and NO admin-auth plugin routes (those are physically absent from the data listener).
@@ -1245,12 +1234,15 @@ pub fn build_split_routers_serving_doors(
         &plugin_routes,
         &plane_slots,
         oauth_as.as_ref(),
+        table,
         doors,
         sessions,
     );
     let data = apply_common_layers(
         data,
-        data_core_routes.with_door_refusals(refusals),
+        data_core_routes
+            .with_door_refusals(refusals)
+            .with_kernel_refuser(std::sync::Arc::clone(&handle)),
         &handle,
         request_body_max_bytes,
         server_timing_enabled,
@@ -1268,7 +1260,7 @@ pub fn build_split_routers_serving_doors(
             endpoints::healthz,
         )
         .into_parts();
-    let admin = crate::admin::seam::mount_admin(admin);
+    let admin = crate::admin::seam::mount_admin(admin, table);
     let admin = crate::plugin_routes::mount_plugin_routes(admin, &plugin_routes, true);
     let admin = apply_common_layers(
         admin,

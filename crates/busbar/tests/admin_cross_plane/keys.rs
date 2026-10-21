@@ -6,7 +6,7 @@
 //! drivers they share.
 
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
-use busbar_kernel::proto::PROTO_ANTHROPIC;
+use busbar_kernel::plane_driver::serve::ServeTables;
 use std::sync::Arc;
 
 // ── KEYS ERROR SURFACE — BYTE-PARITY LOCK ────────────────────────────────────────────────────────
@@ -151,17 +151,6 @@ const COND_WITNESS_DEBT: &[(
         (Put, "/hooks/{name}", Validation, MalformedBody),
     ]
 };
-
-/// A TEST-LINKED DOOR PLANE'S INSTANCE, opened over `settings` and published on the kernel's serve
-/// table as the composition root publishes it (K-SERVE): the instance serving its stated admin
-/// routes for as long as the guard lives. The door is the one whose folded row owns `section`.
-struct PublishedDoor(String);
-
-impl Drop for PublishedDoor {
-    fn drop(&mut self) {
-        busbar_kernel::plane_driver::serve::withdraw(&self.0);
-    }
-}
 
 /// Build a `GovState` that CAN mint 1.5.0 signed-token keys: it carries a deterministic
 /// `TokenSigner` (fixed key bytes + the default kid) so `POST /keys` issues a `bbk_` token instead
@@ -338,9 +327,10 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
         .governance(gov)
         .overlay_path(overlay.clone())
         .build();
-    // The plane the registry says owns the `tools:` section, so the test names no plane crate.
+    // The plane the lent table says owns the `tools:` section, so the test names no plane crate.
     let section = "tools";
-    let plane = busbar_kernel::plane::registry::plane_decl_for_config_section(section)
+    let plane = crate::linked::table()
+        .plane_decl_for_config_section(section)
         .expect("a plane is registered to own the `tools:` section");
     let fee_lane = busbar_kernel_ledger::cost::plane_fee_lane(plane.key);
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
@@ -2543,7 +2533,7 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
     // sibling 409 on the same operation kept the check green.
     let mut over_claimed = Vec::new();
     for (rel, method) in documented_operations() {
-        let declared = declared_errors(method, &rel);
+        let declared = declared_errors(crate::linked::table(), method, &rel);
         for de in declared {
             let ambiguous = declared.iter().filter(|o| o.kind == de.kind).count() > 1;
             let proven = if ambiguous {
@@ -2603,7 +2593,7 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
     let stale: Vec<_> = COND_WITNESS_DEBT
         .iter()
         .filter(|(m, rel, k, c)| {
-            let declared = declared_errors(*m, rel);
+            let declared = declared_errors(crate::linked::table(), *m, rel);
             let ambiguous = declared.iter().filter(|o| o.kind == *k).count() > 1;
             !ambiguous || !declared.iter().any(|d| d.kind == *k && d.cond == *c)
         })
@@ -2733,7 +2723,7 @@ fn rate_limit_doc_table_matches_classifier() {
                 method,
                 MethodTag::Post | MethodTag::Put | MethodTag::Patch | MethodTag::Delete
             ) && !answered_by_loop(rel, *method)
-                && busbar_kernel::ratelimit::classify_mutation(rel)
+                && busbar_kernel::ratelimit::classify_mutation(crate::linked::table(), rel)
                     == busbar_kernel::ratelimit::MutationClass::Config
         })
         .collect();
@@ -2754,15 +2744,15 @@ fn rate_limit_doc_table_matches_classifier() {
 /// functional gap did not exist. Prose that describes a gap as a closed set is worse than prose that
 /// says nothing, because it stops the reader from looking.
 ///
-/// So the row is parsed out of the committed file and required to equal `OverlaySection::all()`
+/// So the row is parsed out of the committed file and required to equal `OverlaySection::all` over the binary's door table
 /// EXACTLY, in both directions: a section live in the code but missing from the doc fails, and a
 /// section the doc claims but the parser rejects fails too.
 #[test]
 fn overlay_reset_doc_row_matches_the_section_set() {
     use busbar_kernel::config::overlay::OverlaySection;
-    // Register the plane config sections (`tools`/`agents`) so `OverlaySection::all()`/`parse` see
-    // them — busbar-core's own `cfg(test)` binary has them as builtins; here the plane testkits must
-    // be installed first (this test builds no `App`, so nothing else triggers the install).
+    // Read against this binary's door table (`linked::table`), which holds the plane config
+    // sections (`tools`/`agents`), so `OverlaySection::all`/`parse` see them; the seams are installed
+    // first, as every other test here installs them.
     crate::ensure_seam();
 
     let doc = include_str!("../../../../docs/admin-api.md");
@@ -2791,19 +2781,19 @@ fn overlay_reset_doc_row_matches_the_section_set() {
         doc_sections.len()
     );
 
-    let all = OverlaySection::all();
+    let all = OverlaySection::all(crate::linked::table());
     let code_sections: std::collections::BTreeSet<&str> = all.iter().map(|s| s.as_str()).collect();
     assert_eq!(
         code_sections.len(),
         all.len(),
-        "OverlaySection::all() yields a duplicate wire name"
+        "OverlaySection::all(doors) yields a duplicate wire name"
     );
     let missing_from_doc: Vec<_> = code_sections.difference(&doc_sections).collect();
     let missing_from_code: Vec<_> = doc_sections.difference(&code_sections).collect();
     assert!(
         missing_from_doc.is_empty() && missing_from_code.is_empty(),
         "docs/admin-api.md's `DELETE /overlay/{{section}}` row has drifted from \
-         OverlaySection::all().\nLive in the code but absent from the doc (an operator is told the \
+         OverlaySection::all(doors).\nLive in the code but absent from the doc (an operator is told the \
          section does not exist): {missing_from_doc:?}\nClaimed by the doc but rejected by \
          `OverlaySection::parse` (an operator is told to call something that 400s): \
          {missing_from_code:?}"
@@ -2812,7 +2802,7 @@ fn overlay_reset_doc_row_matches_the_section_set() {
     // Every name the doc lists really is accepted by the parser, not merely present in the enum.
     for name in &doc_sections {
         assert!(
-            OverlaySection::parse(name).is_some(),
+            OverlaySection::parse(crate::linked::table(), name).is_some(),
             "the doc lists section `{name}` but `OverlaySection::parse` rejects it"
         );
     }
@@ -2858,11 +2848,14 @@ fn write_named_map_fixture(
     std::fs::create_dir_all(&dir).unwrap();
     let providers_path = dir.join("providers.yaml");
     let config_path = dir.join("config.yaml");
+    // The dialect the linked plane's declarations claim its messages path for (named by no literal).
+    let dialect = crate::linked::dialect_for_path("/v1/messages")
+        .expect("a linked plane claims its messages path for a dialect");
     std::fs::write(
         &providers_path,
         format!(
             "test-provider:
-  protocol: {PROTO_ANTHROPIC}
+  protocol: {dialect}
   base_url: http://127.0.0.1:1/
   api_key_env: BUSBAR_TEST_NAMEDMAP_NO_SUCH_KEY
 "
@@ -2942,7 +2935,21 @@ async fn named_map_app(
     std::net::SocketAddr,
     tokio::task::JoinHandle<()>,
 ) {
-    named_map_app_opts(tag, reference_corp_ad, true).await
+    named_map_app_opts(tag, reference_corp_ad, true, ServeTables::default()).await
+}
+
+/// [`named_map_app`] whose generation is lent `tables`, the admin table a door was published into
+/// ([`publish_door`]), as the composition root lends the boot generation its own.
+async fn named_map_app_serving(
+    tag: &str,
+    tables: ServeTables,
+) -> (
+    std::path::PathBuf,
+    std::path::PathBuf,
+    std::net::SocketAddr,
+    tokio::task::JoinHandle<()>,
+) {
+    named_map_app_opts(tag, false, true, tables).await
 }
 
 /// [`named_map_app`] with the base `export:` entry made OPTIONAL. `base_export == false` is the
@@ -2953,6 +2960,7 @@ async fn named_map_app_opts(
     tag: &str,
     reference_corp_ad: bool,
     base_export: bool,
+    tables: ServeTables,
 ) -> (
     std::path::PathBuf,
     std::path::PathBuf,
@@ -2976,6 +2984,7 @@ async fn named_map_app_opts(
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut builder = crate::new_test_app()
         .governance(gov)
+        .serve_tables(tables)
         .overlay_path(overlay.clone())
         .disk_paths(config_path, providers_path)
         .identity_provider(
@@ -2993,11 +3002,12 @@ async fn named_map_app_opts(
     // The plane sections' base entries, seeded FROM config.yaml itself (a `TestApp` does not parse
     // config.yaml, so without this the read surface and disk truth would disagree and the
     // base-protection guard would be measuring the disagreement rather than the guard). Each section
-    // reaches its plane through the NEUTRAL registry — the decl that owns the config section parses
+    // reaches its plane through the binary's lent door table — the decl that owns the config section parses
     // it and builds the runtime, exactly as `appbuild` does at boot — so this helper names no plane,
     // no plane crate and no plane type.
     let owner = |section: &str| {
-        busbar_kernel::plane::registry::plane_decl_for_config_section(section)
+        crate::linked::table()
+            .plane_decl_for_config_section(section)
             .unwrap_or_else(|| panic!("no plane is registered to own the `{section}:` section"))
     };
     let parse = |section: &str| {
@@ -3005,7 +3015,8 @@ async fn named_map_app_opts(
         let parse = decl
             .parse_section
             .unwrap_or_else(|| panic!("the `{section}:` plane parses its own section"));
-        let cfg = parse(&disk[section]).unwrap_or_else(|e| panic!("`{section}:` parses: {e}"));
+        let cfg =
+            parse(decl, &disk[section]).unwrap_or_else(|e| panic!("`{section}:` parses: {e}"));
         (
             decl,
             std::sync::Arc::<dyn busbar_kernel::config::plane_sections::PlaneCfg>::from(cfg),
@@ -3027,14 +3038,14 @@ async fn named_map_app_opts(
             None => {
                 let defs =
                     std::collections::BTreeMap::from([(decl.config_section, cfg.clone_box())]);
-                let ctx = busbar_kernel::plane::registry::BuildCtx {
+                let ctx = busbar_kernel::plane_driver::row::BuildCtx {
                     endpoint_slot: None,
                     plane_defs: &defs,
                     public_url: Some("https://busbar.example"),
                     prior: None,
                     providers: None,
                 };
-                if let Some(slot) = (decl.build)(&ctx) {
+                if let Some(slot) = (decl.build)(decl, &ctx) {
                     builder.install_plane_runtime(decl.key, slot);
                 }
             }
@@ -3047,14 +3058,14 @@ async fn named_map_app_opts(
     {
         let (decl, cfg) = parse("agents");
         let defs = std::collections::BTreeMap::from([(decl.config_section, cfg.clone_box())]);
-        let ctx = busbar_kernel::plane::registry::BuildCtx {
+        let ctx = busbar_kernel::plane_driver::row::BuildCtx {
             endpoint_slot: None,
             plane_defs: &defs,
             public_url: Some("https://busbar.example"),
             prior: None,
             providers: None,
         };
-        if let Some(plane) = (decl.build)(&ctx) {
+        if let Some(plane) = (decl.build)(decl, &ctx) {
             builder.install_plane_runtime(decl.key, plane);
         }
     }
@@ -3423,7 +3434,8 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
 async fn test_admin_v1_export_put_that_adds_a_route_reports_restart_required() {
     linked_export_axis();
     // `base_export: false` ⇒ booted with NO exporter, so `/metrics` was never mounted.
-    let (dir, _overlay, addr, handle) = named_map_app_opts("bootfrozen", false, false).await;
+    let (dir, _overlay, addr, handle) =
+        named_map_app_opts("bootfrozen", false, false, ServeTables::default()).await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| {
         r.header("x-admin-token", "admintok")
@@ -3779,13 +3791,18 @@ async fn test_admin_v1_identity_provider_delete_rejects_a_dangling_reference() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-fn publish_door(section: &str, settings: &str) -> PublishedDoor {
+/// A TEST-LINKED DOOR PLANE'S INSTANCE, opened over `settings` and published on an admin table of
+/// its own as the composition root publishes it (K-SERVE): the table, to lend the generation whose
+/// admin router serves the instance's stated admin routes. The door is the one whose folded row
+/// owns `section`.
+fn publish_door(section: &str, settings: &str) -> ServeTables {
     use busbar_plugin_loader::dispatch::kinds::plane::{open_door, Plane};
     use busbar_plugin_loader::dispatch::{
         load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink,
     };
     crate::ensure_seam();
-    let owner = busbar_kernel::plane::registry::plane_decl_for_config_section(section)
+    let owner = crate::linked::table()
+        .plane_decl_for_config_section(section)
         .unwrap_or_else(|| panic!("a test-linked plane owns `{section}:`"));
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let (instance, plane) = crate::test_seams::linked_doors()
@@ -3822,19 +3839,21 @@ fn publish_door(section: &str, settings: &str) -> PublishedDoor {
     let calls = Arc::new(
         busbar_plugin_loader::dispatch::plane_calls::PlaneInstance::new(plane, dispatcher, 0),
     );
-    busbar_kernel::plane_driver::serve::publish(
-        busbar_kernel::plane_driver::serve::ServeTable {
-            instance: instance.clone(),
-            audit_kind,
-            calls,
-            caps: busbar_kernel::plane_driver::BufferCaps::default(),
-            routes,
-            records: None,
-        },
-        &[],
-    )
-    .expect("its admin routes publish");
-    PublishedDoor(instance)
+    let tables = ServeTables::default();
+    tables
+        .publish(
+            busbar_kernel::plane_driver::serve::ServeTable {
+                instance: instance.clone(),
+                audit_kind,
+                calls,
+                caps: busbar_kernel::plane_driver::BufferCaps::default(),
+                routes,
+                records: None,
+            },
+            &[],
+        )
+        .expect("its admin routes publish");
+    tables
 }
 
 /// THE DOOR PLANE'S TRUST VERBS' DECLARED ERRORS, produced through the admin router by the door's
@@ -3843,11 +3862,11 @@ fn publish_door(section: &str, settings: &str) -> PublishedDoor {
 /// `passthrough` registration is `400 invalid_request` (its credential belongs to a caller, and an
 /// operator's refresh has none).
 async fn drive_door_verb_errors() {
-    let _published = publish_door(
+    let tables = publish_door(
         "tools",
         r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "pinned_pubkey", "key": "sha256/K="}, "upstream_credentials": "passthrough", "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
     );
-    let (_dir, _overlay, addr, handle) = named_map_app("door-verbs", false).await;
+    let (_dir, _overlay, addr, handle) = named_map_app_serving("door-verbs", tables).await;
     let client = reqwest::Client::new();
     let send = |method: reqwest::Method, path: &str| {
         client
@@ -3907,8 +3926,8 @@ async fn drive_agent_door_verb_errors() {
             "pin": {"mechanism": "jws_issuer_key", "key": issuer_key_info(&issuer)}
         }
     });
-    let _published = publish_door("agents", &section.to_string());
-    let (_dir, _overlay, addr, handle) = named_map_app("agent-door-verbs", false).await;
+    let tables = publish_door("agents", &section.to_string());
+    let (_dir, _overlay, addr, handle) = named_map_app_serving("agent-door-verbs", tables).await;
     let client = reqwest::Client::new();
     let send = |path: &str, body: &str| {
         client

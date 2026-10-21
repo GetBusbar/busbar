@@ -32,6 +32,7 @@
 //! interner, transports, planes, the two boot checks, *then* the CLI flags — because `--validate`
 //! reads the plane and protocol lists and every axis must be installed before any reader.
 
+use busbar_kernel::plane_driver::doors::Doors;
 use busbar_kernel::{config, config_validate, diagnostics};
 use busbar_kernel::{
     load_config_from_disk, preflight_plugins_and_secrets, validate_builtin_secrets_resolve,
@@ -165,7 +166,8 @@ pub(crate) fn is_plane_flag(planes: &[&[super::linked::CliHelpRow]], arg: &str) 
 /// deployment. Returns `Some(exit_code)` when the process should exit (after printing), `None` to
 /// proceed to normal startup. busbar takes no positional arguments and is configured via
 /// environment + YAML; an unrecognized flag is a usage error rather than a silent server start.
-pub(crate) fn handle_cli_flags() -> Option<i32> {
+/// `doors` is the root's folded door table, lent to every config read a flag makes.
+pub(crate) fn handle_cli_flags(doors: Doors) -> Option<i32> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         None => None, // no args → run the gateway
@@ -194,7 +196,7 @@ pub(crate) fn handle_cli_flags() -> Option<i32> {
             if let Ok(raw) = std::fs::read_to_string(&config_path) {
                 match config::interpolate_env(&raw) {
                     Ok(interpolated) => {
-                        match config::deploy_from_yaml_str(&interpolated) {
+                        match config::deploy_from_yaml_str(&interpolated, doors) {
                             Ok(deploy) => {
                                 if let Some(sec) = deploy.security {
                                     entries.extend(sec.blocked_metadata_hosts);
@@ -239,9 +241,9 @@ pub(crate) fn handle_cli_flags() -> Option<i32> {
         // swaps the two listeners for the process's own stdin/stdout. Recognised here so it is not
         // refused as an unknown argument.
         Some(arg) if is_plane_flag(&help_rows(), arg) => None,
-        Some("--validate") => Some(validate_config_command()),
+        Some("--validate") => Some(validate_config_command(doors)),
         Some("--generate-signing-key") => Some(generate_signing_key_command()),
-        Some("--list-plugins") => Some(list_plugins_command()),
+        Some("--list-plugins") => Some(list_plugins_command(doors)),
         Some("--migrate-config") => Some(migrate_config_command(args.next())),
         Some("--help" | "-h") => {
             print!("{}", render_help(env!("CARGO_PKG_VERSION"), &help_rows()));
@@ -275,7 +277,7 @@ pub(crate) fn handle_cli_flags() -> Option<i32> {
 /// Honors `-c`/`--config`, `--providers`, `BUSBAR_CONFIG`, and `--safe-mode` exactly as boot does.
 /// Prints an OK summary + exits 0 when valid;
 /// prints every error (same text boot prints) + exits 1 when not.
-fn validate_config_command() -> i32 {
+fn validate_config_command(doors: Doors) -> i32 {
     let providers_override = providers_override();
     let config_path = std::path::PathBuf::from(resolve_config_path(config_path_flag().as_deref()));
     let safe_mode = safe_mode_requested(std::env::args());
@@ -285,6 +287,7 @@ fn validate_config_command() -> i32 {
         providers_override.as_deref(),
         safe_mode,
         config::EnvSubst::Lenient,
+        doors,
     ) {
         Ok(l) => l,
         Err(e) => {
@@ -433,7 +436,7 @@ const LIST_PLUGINS_HEADER: &str = "FILE                               NAME      
 /// alias, kind, version, signature verdict, and load status (including the exact skip/invalid
 /// reason and which one `store.module` selects). NEVER `dlopen`s anything, so an untrusted
 /// plugin's code cannot run from listing it. Exit 0 (informational; `--validate` is the gate).
-fn list_plugins_command() -> i32 {
+fn list_plugins_command(doors: Doors) -> i32 {
     let providers_override = providers_override();
     let config_path = std::path::PathBuf::from(resolve_config_path(config_path_flag().as_deref()));
     // Best-effort config read (lenient env): a missing/broken config falls back to the default
@@ -444,6 +447,7 @@ fn list_plugins_command() -> i32 {
         providers_override.as_deref(),
         false,
         config::EnvSubst::Lenient,
+        doors,
     ) {
         Ok(l) => {
             let store = l.deploy.store.as_ref().map(|g| g.module.clone());

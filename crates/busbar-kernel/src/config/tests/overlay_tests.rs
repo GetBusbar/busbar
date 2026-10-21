@@ -427,17 +427,23 @@ fn persist_groups_prunes_tombstone_for_a_name_absent_from_base_config() {
 #[test]
 fn overlay_section_parse_round_trips_and_rejects() {
     assert_eq!(
-        OverlaySection::parse("groups"),
+        OverlaySection::parse(crate::test_support::neutral_test_doors(), "groups"),
         Some(OverlaySection::Groups)
     );
-    assert_eq!(OverlaySection::parse("hooks"), Some(OverlaySection::Hooks));
-    assert_eq!(OverlaySection::parse("root"), Some(OverlaySection::Root));
+    assert_eq!(
+        OverlaySection::parse(crate::test_support::neutral_test_doors(), "hooks"),
+        Some(OverlaySection::Hooks)
+    );
+    assert_eq!(
+        OverlaySection::parse(crate::test_support::neutral_test_doors(), "root"),
+        Some(OverlaySection::Root)
+    );
     assert_eq!(OverlaySection::Groups.as_str(), "groups");
     assert_eq!(OverlaySection::Hooks.as_str(), "hooks");
     assert_eq!(OverlaySection::Root.as_str(), "root");
     for bad in ["", "Groups", "hook", "auth", "plugins", "groups/", "Root"] {
         assert!(
-            OverlaySection::parse(bad).is_none(),
+            OverlaySection::parse(crate::test_support::neutral_test_doors(), bad).is_none(),
             "`{bad}` is not a section"
         );
     }
@@ -830,7 +836,7 @@ fn clear_plugin_versions_section_only() {
 #[test]
 fn plugin_versions_section_parses() {
     assert_eq!(
-        OverlaySection::parse("plugin_versions"),
+        OverlaySection::parse(crate::test_support::neutral_test_doors(), "plugin_versions"),
         Some(OverlaySection::PluginVersions)
     );
     assert_eq!(OverlaySection::PluginVersions.as_str(), "plugin_versions");

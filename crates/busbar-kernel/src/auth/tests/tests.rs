@@ -757,7 +757,12 @@ fn test_unauthorized_body_carries_no_busbar_vocabulary() {
         "/totally/unknown/path",            // unknown → fallback
     ];
     for path in paths {
-        let body = decode_body(unauthorized_response(&residual_app(), path, None));
+        let body = decode_body(unauthorized_response(
+            &residual_app(),
+            &crate::core_routes::CoreRouteTable::default(),
+            path,
+            None,
+        ));
         let mut strings = Vec::new();
         collect_strings(&body, &mut strings);
         for s in &strings {
@@ -2892,7 +2897,7 @@ fn door_app() -> crate::test_support::TestApp {
         .lane(
             crate::test_support::LaneSpec::new(
                 "test-model",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::test_support::NEUTRAL_DIALECTS[0],
                 "http://127.0.0.1:1",
             )
             .api_key("busbar-upstream-key"),
@@ -3414,7 +3419,7 @@ async fn test_admin_prefix_is_boundary_safe() {
         .lane(
             crate::test_support::LaneSpec::new(
                 "test-model",
-                crate::proto::PROTO_ANTHROPIC,
+                crate::test_support::NEUTRAL_DIALECTS[0],
                 "http://127.0.0.1:1",
             )
             .api_key("busbar-upstream-key"),

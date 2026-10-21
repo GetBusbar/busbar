@@ -74,13 +74,12 @@ fn a_successful_probe_counts_once_on_the_lanes_ok_whatever_its_pools() {
 
 /// The pools `upstream_credentials` resolves to, for `section` (the `pools:` body).
 fn pools_of(section: &str) -> ModelPools {
-    // The deployment names `models:`/`pools:`, which config resolution hands a plane: register the
-    // kernel's neutral test plane first, as the timeout cells do (nextest runs each test in its
-    // own process, so no other test has registered one).
-    busbar_kernel::test_support::register_neutral_test_plane();
-    let deploy = busbar_kernel::config::deploy_from_yaml_str(&format!(
-        "providers: {{}}\nmodels: {{}}\npools:\n{section}"
-    ))
+    // The deployment names `models:`/`pools:`, which config resolution hands a plane: the parse is
+    // lent the kernel's neutral test table, whose one plane owns them, as the timeout cells' is.
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        &format!("providers: {{}}\nmodels: {{}}\npools:\n{section}"),
+        busbar_kernel::test_support::neutral_test_doors(),
+    )
     .expect("the deployment parses");
     let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
     ModelPools::of(&cfg)

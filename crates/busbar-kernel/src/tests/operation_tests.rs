@@ -63,8 +63,8 @@ fn every_verb_is_pinned_to_its_shape() {
 
 /// `Operation::ALL` IS THE CORE-OWNED HALF OF THE VOCABULARY — the six shape verbs, exactly the
 /// table's protocol-surface rows, in the same order. The LLM rows are deliberately NOT in it any
-/// more: they reach the vocabulary through `proto::registry::declared_verbs()` (the declarations),
-/// which `the_metric_label_surface_is_exactly_these_thirteen` below pins as the other half.
+/// more: a plane's dialects declare them (spec Part 1, Law 5), and the kernel holds no protocol
+/// set; `crates/busbar/tests/operation_names_cross_plane.rs` pins the linked roster's half.
 #[test]
 fn all_holds_every_core_owned_verb_and_nothing_else() {
     let listed: Vec<OpVerb> = ALL
@@ -79,44 +79,28 @@ fn all_holds_every_core_owned_verb_and_nothing_else() {
     );
 }
 
-/// THE METRIC LABEL SURFACE, AS A SET. `Operation::name` is a Prometheus/tracing label; the set of
-/// values it can take is the set of series an operator's dashboard can select. This is that set,
-/// spelled once, sorted, so any change to it is a visible diff in this file rather than a silently
-/// re-based series.
-///
-/// DERIVED FROM BOTH HALVES since the LLM rows left `Operation::ALL`: the core's six shape verbs
-/// plus whatever the registered protocol declarations serve. With the built-in protocols present
-/// this is the SAME thirteen labels the 1.5 era published — asserting that here is what proves the
-/// derivation re-based nothing — and in a build whose protocols are deleted the declared half
-/// genuinely shrinks, which is the vocabulary-level teeth the deletion test lacked while the seven
-/// words were a core table.
+/// THE KERNEL'S HALF OF THE METRIC LABEL SURFACE, AS A SET. `Operation::name` is a
+/// Prometheus/tracing label; the set of values it can take is the set of series an operator's
+/// dashboard can select. The kernel owns the six shape verbs; a plane's dialects declare the rest
+/// (spec Part 1, Law 5), and `crates/busbar/tests/operation_names_cross_plane.rs` pins the whole
+/// thirteen over the linked roster. This is the kernel's six, spelled once, sorted, so any change to
+/// it is a visible diff in this file rather than a silently re-based series.
 #[test]
-fn the_metric_label_surface_is_exactly_these_thirteen() {
-    let mut labels: Vec<&str> = OpVerb::ALL
-        .iter()
-        .chain(crate::proto::registry::declared_verbs())
-        .map(|o| o.name())
-        .collect();
+fn the_kernel_owned_label_surface_is_exactly_these_six() {
+    let mut labels: Vec<&str> = OpVerb::ALL.iter().map(|o| o.name()).collect();
     labels.sort_unstable();
     labels.dedup();
     assert_eq!(
         labels,
         [
             "catalogue",
-            "chat",
             "control",
-            "embeddings",
             "fetch",
-            "image",
             "invoke",
-            "moderation",
-            "rerank",
-            "speech",
             "subscribe",
-            "task",
-            "transcription",
+            "task"
         ],
-        "the operation metric label surface changed; a dashboard depends on this set"
+        "the kernel's operation metric label surface changed; a dashboard depends on this set"
     );
 }
 
@@ -136,19 +120,14 @@ fn no_operation_is_still_called_tool_call() {
 /// would fail the deletion test on line one.
 #[test]
 fn no_verb_name_carries_a_protocol_identity() {
-    // The identities are READ OFF THE REGISTRY, not listed here: every protocol this test binary
-    // registers, so a protocol added to the registry is checked the day it lands. The plane keys of
-    // the real roster are checked against the same verbs in
-    // `crates/busbar/tests/operation_names_cross_plane.rs`, where that roster is registered.
-    let identities: Vec<&str> = crate::proto::registry::registry()
-        .decls()
-        .iter()
-        .map(|d| d.name)
-        .collect();
-    assert_eq!(
-        identities.len(),
-        7,
-        "core's test binary registers seven protocols; an empty list would pass vacuously"
+    // The identities are READ OFF THE LENT TABLE'S PLANES, not listed here: every provider dialect
+    // a plane of the neutral test table declares, so a dialect a plane adds is checked the day it
+    // lands. The plane keys of the real roster are checked against the same verbs in
+    // `crates/busbar/tests/operation_names_cross_plane.rs`, where that roster is linked.
+    let identities: Vec<&str> = crate::test_support::neutral_test_doors().provider_dialects();
+    assert!(
+        !identities.is_empty(),
+        "the neutral plane declares provider dialects; an empty list would pass vacuously"
     );
     for (_, _, name) in ALL {
         for forbidden in &identities {

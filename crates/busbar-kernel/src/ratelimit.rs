@@ -116,7 +116,7 @@ const CONFIG_CLASS_RULES: &[PathRule] = &[
 /// is a read-only dry-run that must not contend with the CONFIG budget despite living under
 /// `/config/`, and `/plugins/inspect` is a read-only archive preview that must not contend with
 /// EITHER the CONFIG or the shared CRUD budget — it gets its own [`MutationClass::PluginInspect`].
-pub fn classify_mutation(rel: &str) -> MutationClass {
+pub fn classify_mutation(doors: crate::plane_driver::doors::Doors, rel: &str) -> MutationClass {
     if rel == crate::admin::gate::PATH_CONFIG_VALIDATE {
         return MutationClass::Crud;
     }
@@ -131,7 +131,7 @@ pub fn classify_mutation(rel: &str) -> MutationClass {
     // `rate_limit_doc_table_matches_classifier` are the paired ledger).
     // On a path-SEGMENT boundary: `/export` and `/export/{name}` are the section, `/export-keyset`
     // is not.
-    if crate::config::named_map::NamedMapSection::sections()
+    if crate::config::named_map::NamedMapSection::sections(doors)
         .iter()
         .any(|s| {
             rel.strip_prefix(s.path_root().as_ref())

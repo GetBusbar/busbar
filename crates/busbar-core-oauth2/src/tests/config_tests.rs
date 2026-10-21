@@ -321,11 +321,14 @@ fn a_malformed_rsa_static_client_is_refused_at_boot() {
 
 fn resolve_block(block: serde_json::Value) -> Result<busbar_kernel::config::RootCfg, Vec<String>> {
     crate::testkit::install_test_seam();
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {},
-        "models": {},
-        "oauth_as": block,
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {},
+            "models": {},
+            "oauth_as": block,
+        }),
+        busbar_kernel::plane_driver::doors::Doors::NONE,
+    )
     .expect("the document parses: the block is opaque to the kernel's own parse");
     busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
 }

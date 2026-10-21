@@ -190,6 +190,9 @@ impl ConstructionGate {
             "no-escaped-newline-doc-comment",
             "unit-no-wall-clock",
             "unit-no-finding-ids",
+            "kernel-no-protocol-registry",
+            rules2::ROW_INSTALLED_STORE,
+            rules2::ROW_STORE_DEBT,
             "plane-no-money",
             "one-pricing-site",
             "one-pricing-site:fee-fields",
@@ -398,6 +401,9 @@ impl ConstructionGate {
             }),
             ("unit-no-finding-ids", &|| {
                 rules2::unit_no_finding_ids(cx, &tree, &cfg)
+            }),
+            ("kernel-no-protocol-registry", &|| {
+                rules2::kernel_no_protocol_registry(&tree, &cfg)
             }),
             ("plane-no-money", &|| {
                 rules2::plane_no_money(cx, &tree, &cfg)
@@ -752,17 +758,17 @@ mod tests {
         );
     }
 
-    /// ITEM 190: A TERMINAL RENAMED AWAY IS NOT A CLEAN TERMINAL. Renaming `finish_inner` in its
+    /// ITEM 190: A TERMINAL RENAMED AWAY IS NOT A CLEAN TERMINAL. Renaming `settle_end_as` in its
     /// one home leaves zero call sites of the configured name; the rule used to count that as zero
     /// extra sites and PASS while printing `allowed callers seen: []`.
     #[test]
     fn single_terminal_refuses_a_terminal_that_no_longer_resolves() {
         let cx = Ctx::workspace().expect("workspace");
         let cfg = ConstructionGate::cfg(&cx).expect("ceilings");
-        let home = "crates/busbar-kernel/src/ingress/mod.rs";
+        let home = "crates/busbar-kernel/src/plane_driver/money.rs";
         let text = cx.read(home).expect("the terminal's home");
         assert!(
-            text.contains("fn finish_inner("),
+            text.contains("fn settle_end_as("),
             "the control needs the terminal on disk"
         );
         let load = |cx: &Ctx| {
@@ -779,7 +785,7 @@ mod tests {
         let mut ov = crate::ctx::Overlay::new();
         ov.set(
             home,
-            text.replace("finish_inner", "finish_inner_renamed_away"),
+            text.replace("settle_end_as", "settle_end_as_renamed_away"),
         );
         let pcx = cx.with_overlay(ov);
         let rows = rules::single_terminal(&load(&pcx), &cfg).expect("the rule runs");

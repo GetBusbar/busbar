@@ -47,7 +47,7 @@ use crate::root::loader::dispatch::{
 };
 use crate::root::loader::sign::BreakerDecl;
 
-pub(crate) use super::planes_tests::{Published, PUBLISHING};
+pub(crate) use super::planes_tests::PUBLISHING;
 pub(crate) use super::with_pools;
 pub(crate) use crate::root::door_steps::Rules;
 pub(crate) use crate::root::durability::{Durability, UnitCounts};
@@ -150,19 +150,26 @@ pub(crate) fn bind_door(
 pub(crate) fn folded_door(
     door: DoorFn,
     instance: &str,
-) -> Result<&'static busbar_kernel::plane::registry::PlaneDecl, String> {
+) -> Result<&'static busbar_kernel::plane_driver::row::PlaneDecl, String> {
     use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
     busbar_kernel::plane_driver::door::fold(registration(linked_probe(door, instance))?)
 }
 
-/// [`folded_door`], registered on the kernel's test registry as the composition root installs it.
+/// The table a cell lends its `App`: each `(door, instance)` folded by [`folded_door`] and the rows
+/// folded as the composition root folds its own ([`busbar_kernel::plane_driver::doors::Doors::for_test`]).
+/// There is no registry to install into: the cell hands the table it builds to what it drives.
 ///
 /// # Errors
 ///
 /// As [`folded_door`].
-pub(crate) fn register_door(door: DoorFn, instance: &str) -> Result<(), String> {
-    busbar_kernel::plane::registry::register_test_plane(folded_door(door, instance)?);
-    Ok(())
+pub(crate) fn door_table(
+    doors: &[(DoorFn, &str)],
+) -> Result<busbar_kernel::plane_driver::doors::Doors, String> {
+    let rows = doors
+        .iter()
+        .map(|(door, instance)| folded_door(*door, instance))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(busbar_kernel::plane_driver::doors::Doors::for_test(&rows))
 }
 
 // ── THE PROCESS ──────────────────────────────────────────────────────────────────────────────────
@@ -396,6 +403,7 @@ impl EgressRig {
                 crate::LINKED.auths,
                 None,
                 ConnTable::Host(table),
+                busbar_kernel::diagnostics::Catalogue::NEUTRAL,
             )),
             conns,
             stream_ceiling_secs: 600,
@@ -529,6 +537,7 @@ impl<'a> DoorCompose<'a> {
             self.money,
             egress,
             self.hooks.as_ref(),
+            &busbar_kernel::plane_driver::serve::ServeTables::default(),
         )
     }
 }

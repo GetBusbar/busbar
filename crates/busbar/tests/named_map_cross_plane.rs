@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! CROSS-PLANE `NamedMapSection::sections()` BYTE-IDENTITY TEST, relocated here from
+//! CROSS-PLANE `NamedMapSection::sections(doors)` BYTE-IDENTITY TEST, relocated here from
 //! `src/config/tests/named_map_tests.rs` (the "fix the 38" pass after the A6/HostCtx
-//! dev-dependency-cycle cleanup): `sections()` is folded from the REAL registered plane roster (see
+//! dev-dependency-cycle cleanup): `sections(doors)` is folded from the REAL plane roster of the lent door table (see
 //! its doc — under the default/test/openapi feature set the fold is `[identity-providers, export,
 //! tools, agents]`, where `"tools"` is a linked plane's own declared config section and
 //! `"agents"` the section the roster's DOOR row states — a `door:` row of the test-linked list,
@@ -12,7 +12,7 @@
 //! that frozen order is a claim about the roster's fold, which
 //! `cargo xtask gate construction`'s `neutral-no-dialect` rule (ceiling 0) forbids `busbar-kernel`
 //! itself from asserting via a synthetic `#[cfg(test)]` decl. Every other test in
-//! `named_map_tests.rs` is parameterized over WHATEVER `NamedMapSection::sections()` returns and
+//! `named_map_tests.rs` is parameterized over WHATEVER `NamedMapSection::sections(doors)` returns and
 //! stays there.
 
 mod linked;
@@ -23,7 +23,7 @@ fn register_planes() {
     linked::install();
 }
 
-/// F2 — BYTE-IDENTITY PIN. `sections()` is folded from the plane registry, so its ORDER is what the
+/// F2 — BYTE-IDENTITY PIN. `sections(doors)` is folded from the lent door table, so its ORDER is what the
 /// router mounts and the OpenAPI generator emits in. Under the default/test/openapi-generating
 /// build's set of registered planes it MUST equal the frozen 1.5.3 order
 /// `[identity-providers, export, tools, agents]` — anything else drifts `openapi.json`. The session
@@ -31,7 +31,7 @@ fn register_planes() {
 #[test]
 fn sections_holds_the_frozen_named_map_order_under_the_default_feature_set() {
     register_planes();
-    let keys: Vec<&'static str> = NamedMapSection::sections()
+    let keys: Vec<&'static str> = NamedMapSection::sections(linked::table())
         .iter()
         .map(|s| s.key())
         .collect();

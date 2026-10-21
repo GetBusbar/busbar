@@ -1398,6 +1398,8 @@ pub(crate) async fn reset_overlay_section(
 ) -> Response {
     use busbar_kernel::config::overlay::OverlaySection;
     let actor = principal.actor_id().to_string();
+    // The serving generation's door table: the overlay sections are named over it.
+    let doors = handle.load().doors;
     // Validate the section name BEFORE the If-Match parse so an unknown section is always a plain
     // 400 (never masked by a header error). Unknown → invalid_request (the taxonomy's 400).
     // LAW 7: a plane's named-map section is a section only while its plane is configured, so the
@@ -1406,13 +1408,13 @@ pub(crate) async fn reset_overlay_section(
         OverlaySection::NamedMap(m) => super::named_map::plane_gate(&handle, *m).is_none(),
         _ => true,
     };
-    let Some(section) = OverlaySection::parse(&section).filter(served) else {
+    let Some(section) = OverlaySection::parse(doors, &section).filter(served) else {
         // The valid set is DERIVED from `OverlaySection::all`, never restated here. The
         // hand-written version of this sentence outlived the addition of the `named_maps` section
         // and told operators `export` was not a section for a whole release.
         // The SENTENCE SHAPE is 1.5.5's, byte for byte — "expected `a`, `b`, or `c`" (serial
         // comma, `or` before the last name) — only the list is longer (owner ruling Q54).
-        let names: Vec<String> = OverlaySection::all()
+        let names: Vec<String> = OverlaySection::all(doors)
             .iter()
             .filter(|s| served(s))
             .map(|s| format!("`{}`", s.as_str()))
@@ -1496,6 +1498,7 @@ pub(crate) async fn reset_overlay_section(
                 Some(&providers_path),
                 false,
                 busbar_kernel::config::EnvSubst::Strict,
+                snapshot.doors,
             )
             .map_err(AdminError::Validation)?;
             // REFERENTIAL INTEGRITY, the bulk twin of the per-entry DELETE's dangling guard. A
@@ -1534,7 +1537,7 @@ pub(crate) async fn reset_overlay_section(
                          naming {} that the reset removes — {}. Remove the reference(s) from \
                          config.yaml first, or delete the definitions individually.",
                         nm.key(),
-                        nm.singular(),
+                        nm.singular(snapshot.doors),
                         dangling.join("; ")
                     )));
                 }
@@ -2227,6 +2230,7 @@ pub(crate) fn rebuild_app_from_disk(
         Some(&providers_path),
         false,
         busbar_kernel::config::EnvSubst::Strict,
+        current.doors,
     )?;
     // 1.5.0 full-config coverage: apply the overlay's `root` section (single-value config) AND the
     // `plugin_versions` rollback pins onto the base `DeployCfg` BEFORE resolve, so the limits
@@ -2454,9 +2458,10 @@ pub(crate) async fn apply_config(
             )))
         }
     };
-    // The boot pre-pass, as `validate_config` runs it: plane sections lifted, the rest frozen.
+    // The boot pre-pass, as `validate_config` runs it: plane sections lifted, the rest frozen, over
+    // the serving generation's door table.
     let req_deploy: busbar_kernel::config::DeployCfg =
-        match busbar_kernel::config::deploy_from_deserializer(req.config) {
+        match busbar_kernel::config::deploy_from_deserializer(req.config, handle.load().doors) {
             Ok(d) => d,
             Err(e) => {
                 return err_json(&AdminError::Validation(format!(
@@ -3031,6 +3036,7 @@ pub(crate) async fn put_config_settings(
                 Some(&providers_path),
                 false,
                 busbar_kernel::config::EnvSubst::Strict,
+                snapshot.doors,
             )
             .and_then(|mut loaded| {
                 merged_for_build.apply_to_deploy(&mut loaded.deploy);
@@ -3658,7 +3664,7 @@ const OPENAPI_ADMIN_TOKEN_HEADER: &str = "x-admin-token";
 // Invoked from the openapi tests + the CI artifact/drift jobs (all test targets); a non-test
 // feature-on bin build has no caller, so allow it dead there.
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn openapi_doc() -> serde_json::Value {
+pub(crate) fn openapi_doc(doors: busbar_kernel::plane_driver::doors::Doors) -> serde_json::Value {
     let mut paths = serde_json::Map::new();
     for (path, summary) in V1_GET_PATHS {
         paths.insert(
@@ -3677,7 +3683,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // The 1.5.3 named-DEFINITION maps: emitted from the SAME `NamedMapSection::ALL` loop the router
     // mounts from, so the document cannot document a section the router does not serve (or miss one
     // it does). A new section adds its five operations here with no edit to this function.
-    for (path, item) in super::named_map::openapi_paths() {
+    for (path, item) in super::named_map::openapi_paths(doors) {
         paths.insert(path, item);
     }
     // Runtime hook registration: POST on the /hooks collection (merged onto its GET entry above).
@@ -3910,12 +3916,12 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // ── THE PLANES' TRUST VERBS, contributed through the registry rather than named here. Each
     // plane's `openapi` fragment carries the ABSOLUTE admin paths its own trust verbs answer on
     // (each plane names its own section's verb paths), merged in DECLARATION ORDER so this document
-    // documents exactly the surface `JsonV1::router` mounts from the same `plane_decls()` list. The
+    // documents exactly the surface `JsonV1::router` mounts from the same lent door table. The
     // typed success-body schemas for these paths are attached below by the shared `typed!`/`body!`
     // pass, which looks each path up by the key inserted here.
-    for decl in busbar_kernel::plane::registry::plane_decls() {
+    for decl in doors.decls() {
         if let Some(openapi) = decl.openapi {
-            if let Some(obj) = openapi().as_object() {
+            if let Some(obj) = openapi(decl).as_object() {
                 for (path, item) in obj {
                     paths.insert(path.clone(), item.clone());
                 }
@@ -4106,11 +4112,11 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             }
         }),
     );
-    // The section enum + the summary are DERIVED from `OverlaySection::all()`. Hand-written, they
+    // The section enum + the summary are DERIVED from `OverlaySection::all`. Hand-written, they
     // stated a four-value set as COMPLETE for the whole life of the `named_maps` section, so the
     // reference documentation asserted a shipped functional gap was not one.
     let overlay_section_names: Vec<&'static str> =
-        busbar_kernel::config::overlay::OverlaySection::all()
+        busbar_kernel::config::overlay::OverlaySection::all(doors)
             .iter()
             .map(|s| s.as_str())
             .collect();
@@ -4281,7 +4287,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             let Some(resps) = op.get_mut(RESPONSES_KEY).and_then(|r| r.as_object_mut()) else {
                 continue;
             };
-            for (status, description) in taxonomy::declared_responses(tag, &rel) {
+            for (status, description) in taxonomy::declared_responses(doors, tag, &rel) {
                 resps.insert(status, json!({ "description": description }));
             }
         }
@@ -4498,7 +4504,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         .iter()
         .map(|(p, m)| ((*p).to_string(), *m))
         .collect();
-    for section in busbar_kernel::config::named_map::NamedMapSection::sections() {
+    for section in busbar_kernel::config::named_map::NamedMapSection::sections(doors) {
         let root = section.path_root();
         if_match_guarded.push((format!("{root}/{{name}}"), "put"));
         if_match_guarded.push((format!("{root}/{{name}}"), "delete"));
@@ -4659,16 +4665,14 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     typed!("/hooks/{name}", "put", "200", HookView);
     typed!("/hooks/{name}/settings", "patch", "200", HookView);
     typed!("/hooks/{name}/health", "get", "200", HookHealthView);
-    // THE PLANES' TRUST-VERB SCHEMAS, contributed through the registry rather than named here. Each
-    // plane attaches its own typed success-body (and, for the planes that need one, request-body)
-    // schemas onto the paths its `openapi()` fragment inserted above, using the SAME shared
-    // `gen`/`req_gen` — so the plane types register into `#/components/schemas` exactly as the
-    // inline `typed!`/`body!` calls used to, and this document is byte-identical while this function
-    // names no plane-specific view type. Folded in `plane_decls()` order, matching the source order
-    // those calls had.
-    for decl in busbar_kernel::plane::registry::plane_decls() {
-        if let Some(schemas) = decl.openapi_schemas {
-            schemas(&mut gen, &mut req_gen, &mut paths);
+    // THE PLANES' COMPONENT SCHEMAS, contributed through the registry rather than named here. Each
+    // plane states the `components.schemas` its `openapi()` fragment's `$ref`s name, and they are
+    // inserted into the SAME shared `gen` as written — so the plane schemas register into
+    // `#/components/schemas` exactly as before, and this document is byte-identical while this
+    // function names no plane-specific view type. Folded in the lent door table's order.
+    for decl in doors.decls() {
+        if let Some(schemas) = decl.openapi_schemas.and_then(|stated| stated(decl)) {
+            gen.definitions_mut().extend(schemas);
         }
     }
     typed!("/hooks/{name}/schema", "get", "200", sview::HookSchemaView);
@@ -4952,7 +4956,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // The GENERIC named-DEFINITION maps: response views, request bodies and the `name` path
     // parameter, all emitted from the SAME `NamedMapSection::ALL` loop the router and the path items
     // come from. A new section is documented in full without touching this block.
-    for section in busbar_kernel::config::named_map::NamedMapSection::sections() {
+    for section in busbar_kernel::config::named_map::NamedMapSection::sections(doors) {
         let root = section.path_root();
         let item = format!("{root}/{{name}}");
         let settings = format!("{root}/{{name}}/settings");
@@ -5013,7 +5017,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // document still describes every operation this BUILD can serve — one static document, served
     // identically whatever the deployment configured — and the mark is how a reader tells "present
     // on every node" from "present on a node that configured `<section>:`".
-    for decl in busbar_kernel::plane::registry::plane_decls() {
+    for decl in doors.decls() {
         if decl.openapi.is_none() && decl.named_def_list.is_none() {
             continue;
         }
@@ -5206,7 +5210,8 @@ pub(crate) async fn openapi(
     const VARY: (axum::http::HeaderName, &str) = (axum::http::header::VARY, "accept-encoding");
     let app = handle.load();
     let configured = |section: &str| {
-        busbar_kernel::plane::registry::plane_decl_for_config_section(section)
+        app.doors
+            .plane_decl_for_config_section(section)
             .is_some_and(|decl| app.plane_configured(decl))
     };
     if let Some(filtered) = openapi_for_configured_planes(&openapi_json(), configured) {
@@ -5368,9 +5373,10 @@ pub(crate) async fn validate_config(
     // Same lift the disk loader (boot/reload) runs before parsing `DeployCfg` — see the struct doc
     // above. `deploy_from_deserializer` is format-agnostic by design (its own doc: "the JSON-shaped
     // paths ... get it too"), so feeding it the already-parsed JSON `Value` reproduces the exact
-    // disk-load parse behavior for this JSON-bodied endpoint.
+    // disk-load parse behavior for this JSON-bodied endpoint. The document is parsed against the
+    // serving generation's door table, as the disk loader parses against the root's.
     let deploy: busbar_kernel::config::DeployCfg =
-        match busbar_kernel::config::deploy_from_deserializer(req.config) {
+        match busbar_kernel::config::deploy_from_deserializer(req.config, handle.load().doors) {
             Ok(d) => d,
             Err(e) => {
                 return err_json(&AdminError::Validation(format!(

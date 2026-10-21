@@ -801,6 +801,7 @@ fn resolve_upgrading(
         crate::LINKED.auths,
         None,
         crate::root::loader::dispatch::ConnTable::NoNeeds,
+        busbar_kernel::diagnostics::Catalogue::NEUTRAL,
     );
     let secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve> =
         std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
@@ -1444,6 +1445,7 @@ fn linked_mint_plugin(table: &std::sync::Arc<TokenEndpoint>) -> super::OutboundA
         None,
         crate::root::loader::dispatch::ConnTable::Host(std::sync::Arc::clone(table)
             as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>),
+        busbar_kernel::diagnostics::Catalogue::NEUTRAL,
     )
 }
 
@@ -2078,7 +2080,7 @@ pub(crate) mod tool_door {
         load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink,
     };
     use crate::root::plane_node::{Node, NodeEndPost};
-    use crate::root::serve::planes_tests::{composed_services, money, Published, PUBLISHING};
+    use crate::root::serve::planes_tests::{composed_services, money, PUBLISHING};
     use crate::root::serve::{compose_planes, door_routes};
 
     /// The deployment's dated card history the served unit is pinned to at its door: one entry, no
@@ -2493,6 +2495,26 @@ pub(crate) mod tool_door {
                 )
                 .expect("governance"),
             );
+            // The group the key is minted into, when the footing names limits: its cost model is
+            // the governance book's and the App's, so admission judges the key against them.
+            let group = format!("agents-{instance}");
+            let groups: BTreeMap<String, busbar_kernel::config::GroupCfg> =
+                if footing.limits.is_empty() {
+                    BTreeMap::new()
+                } else {
+                    BTreeMap::from([(
+                        group.clone(),
+                        busbar_kernel::config::GroupCfg {
+                            limits: footing.limits.clone(),
+                            ..Default::default()
+                        },
+                    )])
+                };
+            let cost = if groups.is_empty() {
+                CostModel::flat(1)
+            } else {
+                CostModel::resolve_parts(None, 1, &groups)
+            };
             // A fleet node reads the first node's book: one key registry, one signing key.
             let (gov, key, token) = match footing.book {
                 Some(first) => (
@@ -2506,14 +2528,14 @@ pub(crate) mod tool_door {
                             NewKeySpec {
                                 name: "agent".to_string(),
                                 allowed_pools,
+                                group: (!groups.is_empty()).then(|| group.clone()),
                                 ..Default::default()
                             },
                             4_000_000_000,
                             1_700_000_000,
                         )
                         .expect("mint");
-                    gov.hydrate_budgets(&CostModel::flat(1), 0)
-                        .expect("hydrate");
+                    gov.hydrate_budgets(&cost, 0).expect("hydrate");
                     (
                         gov,
                         Arc::new(key),
@@ -2619,6 +2641,7 @@ pub(crate) mod tool_door {
                 crate::root::loader::dispatch::ConnTable::Host(
                     Arc::clone(&tokens) as Arc<dyn DeclaredConns>
                 ),
+                busbar_kernel::diagnostics::Catalogue::NEUTRAL,
             );
             let reach = crate::root::door_steps::DoorReach {
                 providers: &providers,
@@ -2651,6 +2674,9 @@ pub(crate) mod tool_door {
                 },
                 gov: Arc::clone(&gov),
             };
+            // THE ADMIN TABLE the door is published into, lent to the App built below as the root
+            // lends the boot generation its own: the admin router answers the door's routes off it.
+            let tables = busbar_kernel::plane_driver::serve::ServeTables::default();
             let mut served = compose_planes(
                 &doors,
                 &dispatcher,
@@ -2660,6 +2686,7 @@ pub(crate) mod tool_door {
                 &plane_money,
                 Some(&egress),
                 Some(&stage),
+                &tables,
             )?;
             let _ = caller;
             let composed = &mut served.planes[0];
@@ -2671,12 +2698,17 @@ pub(crate) mod tool_door {
             let live = Arc::clone(&composed.live);
             let plane_key = composed.facts.plane.clone();
             served.post = Some(Arc::clone(&post));
-            let app = configure(
-                busbar_kernel::test_support::TestApp::new()
+            let app = configure({
+                let app = busbar_kernel::test_support::TestApp::new()
                     .keys_chain()
                     .governance(Arc::clone(&gov))
-                    .cost(CostModel::flat(1)),
-            )
+                    .serve_tables(tables.clone());
+                if groups.is_empty() {
+                    app.cost(cost)
+                } else {
+                    app.groups_tree(groups).cost(cost)
+                }
+            })
             .build();
             let _ = live_app.set(Arc::clone(&app));
             // The kernel re-resolves each unit's principal over this generation, as the root
@@ -3122,6 +3154,9 @@ pub(crate) mod tool_door {
         /// `destinations.block_private_addresses`); `false` admits loopback, where the test servers
         /// listen.
         pub(crate) guarded: bool,
+        /// The limits of the group the rig's key is minted into; none (the default) mints the key
+        /// into no group.
+        pub(crate) limits: Vec<busbar_kernel::config::groups::LimitCfg>,
     }
 
     impl Footing<'_> {
@@ -3131,6 +3166,7 @@ pub(crate) mod tool_door {
                 ledger: Ledger::Memory,
                 book: None,
                 guarded: false,
+                limits: Vec::new(),
             }
         }
     }
@@ -3299,7 +3335,6 @@ pub(crate) mod tool_door {
     async fn a_tools_call_is_served_through_the_tool_door_and_its_money_posted() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-served";
-        let _published = Published(instance);
         let (port, mut heard) = tool_server().await;
         let rig = Rig::new(instance, port, None);
 
@@ -3396,7 +3431,6 @@ pub(crate) mod tool_door {
     async fn an_unkeyed_tools_call_is_refused_before_anything_is_charged_or_dialled() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-unkeyed";
-        let _published = Published(instance);
         let (port, mut heard) = tool_server().await;
         let rig = Rig::new(instance, port, None);
 
@@ -3413,13 +3447,155 @@ pub(crate) mod tool_door {
         assert!(rig.all_ended(), "no unit left open");
     }
 
+    /// THE AUTHENTICATE STEP, A FORGED CREDENTIAL: a bearer the book never minted (the caller's
+    /// own token with its signature altered) is refused exactly as no credential is, before
+    /// anything is charged or dialled; the real token beside it is served.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_forged_bearer_is_refused_before_anything_is_charged_or_dialled() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-forged";
+        let (port, mut heard) = tool_server().await;
+        let rig = Rig::new(instance, port, None);
+
+        // The unkeyed refusal is the reference: a forged credential is refused in the same words.
+        let (_, unkeyed_body) = send(&rig.router, None, CALL).await;
+        // Alter a MIDDLE character of the signature segment (a full six-bit position, so the
+        // token still base64-decodes and only the signature check can refuse it), to a different
+        // valid base64url character, never the same one.
+        let forged = {
+            let dot = rig
+                .token
+                .rfind('.')
+                .expect("a token has a signature segment");
+            let at = dot + 1 + (rig.token.len() - dot - 1) / 2;
+            let mut bytes = rig.token.clone().into_bytes();
+            bytes[at] = if bytes[at] == b'A' { b'B' } else { b'A' };
+            let t = String::from_utf8(bytes).expect("ASCII");
+            assert_ne!(t, rig.token, "the forged token differs from the real one");
+            t
+        };
+        let (status, body) = send(&rig.router, Some(&forged), CALL).await;
+        let refused = u16::try_from(refusal_status(ReasonCode::Unauthenticated)).expect("a status");
+        assert_eq!(
+            status.as_u16(),
+            refused,
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&body),
+            String::from_utf8_lossy(&unkeyed_body),
+            "a forged bearer is refused in the same words as no credential"
+        );
+        assert_eq!(rig.admitted(), 0, "nothing charged");
+        assert!(heard.try_recv().is_err(), "nothing dialled");
+        assert!(rig.all_ended(), "no unit left open");
+
+        let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the real token is served: {}",
+            String::from_utf8_lossy(&body)
+        );
+        assert_eq!(
+            rig.admitted(),
+            1,
+            "the authenticated call is the one charged"
+        );
+    }
+
+    /// THE ADMIT STEP: a key whose group allows one request an hour is served once, and its second
+    /// call is refused by the group's limit before it is sent — the server hears the first
+    /// `tools/call` and never the second — with only the served call charged and every unit ended.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tools_call_past_the_callers_request_limit_is_refused_before_it_dials() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-over-limit";
+        let (port, mut heard) = tool_server().await;
+        let one_an_hour = busbar_kernel::config::groups::LimitCfg {
+            metric: busbar_kernel::config::groups::LimitMetric::Requests,
+            amount: 1,
+            per: Some(busbar_kernel::config::groups::LimitWindow::Hour),
+            scope: None,
+            on_exhaust: None,
+            downgrade_to: None,
+            admission: None,
+            on_exhaustion: None,
+        };
+        let rig = Rig::with(
+            instance,
+            port,
+            None,
+            None,
+            None,
+            Footing {
+                limits: vec![one_an_hour],
+                ..Footing::own()
+            },
+            &|app| app,
+        );
+        let calls = |heard: &mut tokio::sync::mpsc::UnboundedReceiver<String>| {
+            let mut n = 0usize;
+            while let Ok(r) = heard.try_recv() {
+                if r.contains("\"tools/call\"") {
+                    n += 1;
+                }
+            }
+            n
+        };
+
+        let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "within its limit the call is served: {}",
+            String::from_utf8_lossy(&body)
+        );
+        assert_eq!(calls(&mut heard), 1, "the served call reached the server");
+        assert_eq!(rig.admitted(), 1, "one admitted request");
+
+        let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
+        let refused = u16::try_from(refusal_status(ReasonCode::RateLimited)).expect("a status");
+        assert_eq!(
+            status.as_u16(),
+            refused,
+            "past its limit the call is refused: {}",
+            String::from_utf8_lossy(&body)
+        );
+        assert_eq!(calls(&mut heard), 0, "the refused call was never sent");
+        assert_eq!(rig.admitted(), 1, "only the served call is charged");
+        assert!(rig.all_ended(), "no unit left open");
+
+        // THE RED ARM: the same two calls against the planted fault, an admission that reads no
+        // group limit (the same rig with its key minted into no group), are both sent and served.
+        // So the refusal above is the group's limit, and an admission that ignored it fails here.
+        // The second door is published into its own rig's admin table, beside the first's.
+        let red_instance = "serve-door-tools-over-limit-red";
+        let (red_port, mut red_heard) = tool_server().await;
+        let red = Rig::new(red_instance, red_port, None);
+        for n in 1..=2 {
+            let (status, body) = send(&red.router, Some(&red.token), CALL).await;
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "call {n} with no limit is served: {}",
+                String::from_utf8_lossy(&body)
+            );
+        }
+        assert_eq!(
+            calls(&mut red_heard),
+            2,
+            "with no limit read, the second call is sent"
+        );
+    }
+
     /// THE DECODE STEP: a body that is not JSON is refused by the plane's own decode, in its own
     /// words, before the unit is admitted: nothing charged, nothing dialled.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_body_that_does_not_decode_is_refused_before_it_is_admitted() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-undecodable";
-        let _published = Published(instance);
         let (port, mut heard) = tool_server().await;
         let rig = Rig::new(instance, port, None);
 
@@ -3449,7 +3625,6 @@ pub(crate) mod tool_door {
     async fn a_tools_call_outside_the_callers_grant_is_refused_before_it_dials() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-ungranted";
-        let _published = Published(instance);
         let (port, mut heard) = tool_server().await;
         let rig = Rig::new(instance, port, Some(Vec::new()));
 
@@ -3471,7 +3646,6 @@ pub(crate) mod tool_door {
     async fn a_tools_call_to_a_server_that_is_down_ends_inside_its_unit() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-down";
-        let _published = Published(instance);
         let port = down_port().await;
         let rig = Rig::new(instance, port, None);
 
@@ -3502,7 +3676,6 @@ pub(crate) mod tool_door {
             .expect("a section")
         };
         let instance = "door-passthrough";
-        let _published = Published(instance);
         for (mode, lends) in [("  upstream_credentials: passthrough\n", true), ("", false)] {
             let (port, mut heard) = tool_server().await;
             let rig = Rig::with(
@@ -3640,7 +3813,6 @@ pub(crate) mod tool_door {
             ),
             ("door-exchange-wildcard", None, "fs_read_file"),
         ] {
-            let _published = Published(instance);
             let (port, mut heard) =
                 tool_server_listing(Arc::new(std::sync::Mutex::new(three_tools()))).await;
             let rig = rig_tools(instance, port, exchange_section(port), &|app| app);
@@ -3745,7 +3917,6 @@ pub(crate) mod tool_door {
             .expect("a section")
         };
         let instance = "door-tool-pool";
-        let _published = Published(instance);
         for (repeatable, twin_answers) in [("read_file", true), ("", false)] {
             let (bad, mut bad_heard) = tool_server_replying(Arc::new(move |r: &str| {
                 if r.contains("\"tools/list\"") {
@@ -3816,7 +3987,6 @@ pub(crate) mod tool_door {
         // ── A FRESH LOOK IS REUSED within `verify_ttl` ───────────────────────────────────────────
         // One instance name for the three compositions: each publishes over the one before.
         let instance = "door-verify-on-call";
-        let _published = Published(instance);
         let (port, mut heard) = tool_server().await;
         let rig = Rig::with(
             instance,
@@ -3902,7 +4072,6 @@ pub(crate) mod tool_door {
     async fn the_tool_list_re_check_gives_up_at_the_registrations_timeout() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-verify-timeout";
-        let _published = Published(instance);
         // A server that takes every connection and answers nothing on it.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -3954,7 +4123,6 @@ pub(crate) mod tool_door {
     async fn a_metadata_url_in_the_arguments_is_refused_before_the_call_is_sent() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-argguard";
-        let _published = Published(instance);
         let (port, mut heard) = tool_server().await;
         let rig = Rig::new(instance, port, None);
         let call = |url: &str| {
@@ -4064,7 +4232,6 @@ pub(crate) mod tool_door {
     async fn a_host_the_deployment_refuses_is_refused_in_the_arguments() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-destjudge-blocked";
-        let _published = Published(instance);
         let (plain, secure) = (
             format!("http://{BLOCKED_HOST}/x"),
             format!("https://{BLOCKED_HOST}:8443/y"),
@@ -4080,7 +4247,6 @@ pub(crate) mod tool_door {
     async fn every_internal_address_the_guard_refuses_is_refused_in_the_arguments() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-destjudge-internal";
-        let _published = Published(instance);
         refused_in_the_arguments(
             instance,
             &[
@@ -4105,7 +4271,6 @@ pub(crate) mod tool_door {
     async fn a_listing_is_answered_by_the_plane_with_no_walk_and_no_charge() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-local";
-        let _published = Published(instance);
         let (port, mut heard) = tool_server().await;
         let rig = Rig::new(instance, port, None);
 
@@ -4136,7 +4301,6 @@ pub(crate) mod tool_door {
         use tower::ServiceExt as _;
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-metadata";
-        let _published = Published(instance);
         let (port, mut heard) = tool_server().await;
         let block: serde_yaml::Value = serde_yaml::from_str(&format!(
             "canonical_uri: \"http://127.0.0.1{}\"\n\
@@ -4215,13 +4379,13 @@ pub(crate) mod tool_door {
                 &money,
                 None,
                 None,
+                &busbar_kernel::plane_driver::serve::ServeTables::default(),
             )
             .expect("the door plane composes")
         };
         {
             // One instance's admin routes on the admin table at a time: this one is withdrawn first.
             let bare = "serve-door-tools-claims-bare";
-            let _bare = Published(bare);
             let served = compose(bare, None);
             assert!(
                 served.planes[0].snapshot.claims.is_empty(),
@@ -4232,7 +4396,6 @@ pub(crate) mod tool_door {
             // ITS OWN ENDPOINT BLOCK, no public base URL (ARCHITECT Q-L3B-AUD, predev's rule): the door
             // reads its `mcp:` block beside its settings and states its claims under the canonical URI.
             let block = "serve-door-tools-claims-block";
-            let _block = Published(block);
             let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
             crate::root::connector::install_io(&dispatcher);
             // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
@@ -4265,6 +4428,7 @@ pub(crate) mod tool_door {
                 &money,
                 None,
                 None,
+                &busbar_kernel::plane_driver::serve::ServeTables::default(),
             )
             .expect("the door plane composes");
             let snapshot = &served.planes[0].snapshot;
@@ -4281,7 +4445,6 @@ pub(crate) mod tool_door {
             );
         }
         let public = "serve-door-tools-claims-public";
-        let _public = Published(public);
         let served = compose(public, Some(PUBLIC_URL));
         assert!(
             served.planes[0]
@@ -4300,7 +4463,6 @@ pub(crate) mod tool_door {
     async fn a_granted_roots_ask_is_relayed_to_the_caller_and_no_retry_is_sent() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-mrtr-roots";
-        let _published = Published(instance);
         let (port, mut heard) = tool_server_answering(Arc::new(|request: &str| {
             if request.contains("\"tools/list\"") {
                 serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": tool_listing()}})
@@ -4361,13 +4523,14 @@ pub(crate) mod door_boundary {
 
     use busbar_contract::abi::mechanism::route::RouteAuth;
     use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
-    use busbar_kernel::plane::registry::{BuildCtx, PlaneDecl};
+    use busbar_kernel::plane_driver::row::BuildCtx;
+    use busbar_kernel::plane_driver::row::PlaneDecl;
     use busbar_kernel::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
 
     use super::tool_door::{
         rig_tools, rig_with, section, tool_server, tool_server_listing, ADMIN_TOKEN, PUBLIC_URL,
     };
-    use crate::root::serve::planes_tests::{Published, PUBLISHING};
+    use crate::root::serve::planes_tests::PUBLISHING;
 
     /// The mcp door's registry row, folded from its Statement as the composition root folds it.
     pub(crate) fn row() -> &'static PlaneDecl {
@@ -4382,21 +4545,22 @@ pub(crate) mod door_boundary {
         .expect("the door folds")
     }
 
-    /// The door's row in the process's plane registry, as the composition root installs it beside
-    /// the linked rows (a registration, not an isolation: the served request reads the registry on
-    /// another worker while the test awaits it).
-    pub(crate) fn registry(row: &'static PlaneDecl) {
-        busbar_kernel::plane::registry::register_test_plane(row);
+    /// The door table holding the door's row, as the composition root folds and lends its own: the
+    /// table the generation the door is served from is lent (the served request reads it off that
+    /// generation, on another worker while the test awaits it).
+    pub(crate) fn table(row: &'static PlaneDecl) -> busbar_kernel::plane_driver::doors::Doors {
+        busbar_kernel::plane_driver::doors::Doors::for_test(&[row])
     }
 
     /// The kernel's plane dispatch for the door, as `build_dispatch` configures it from the folded
-    /// row: its slot built over `section` and the public base URL, every path it claims mounted,
-    /// the admission it declares bound.
+    /// row: the generation lent the door's table ([`table`]), its slot built over `section` and the
+    /// public base URL, every path it claims mounted, the admission it declares bound.
     pub(crate) fn dispatched(
-        mut app: TestApp,
+        app: TestApp,
         row: &'static PlaneDecl,
         slot: &Arc<dyn std::any::Any + Send + Sync>,
     ) -> TestApp {
+        let mut app = app.doors(table(row));
         for (path, wire) in (row.claims)(&**slot) {
             app.mount_plane(row.key, &path, wire);
         }
@@ -4417,15 +4581,22 @@ pub(crate) mod door_boundary {
         row: &'static PlaneDecl,
         value: serde_yaml::Value,
     ) -> Arc<dyn std::any::Any + Send + Sync> {
-        let tools = busbar_kernel::plane_driver::door::DoorSection::new(row.config_section, value);
+        let tools = busbar_kernel::plane_driver::door::DoorSection::new(
+            row.door,
+            row.config_section,
+            value,
+        );
         let defs = tools.as_defs();
-        (row.build)(&BuildCtx {
-            endpoint_slot: None,
-            plane_defs: &defs,
-            public_url: Some(PUBLIC_URL),
-            prior: None,
-            providers: None,
-        })
+        (row.build)(
+            row,
+            &BuildCtx {
+                endpoint_slot: None,
+                plane_defs: &defs,
+                public_url: Some(PUBLIC_URL),
+                prior: None,
+                providers: None,
+            },
+        )
         .expect("the door builds from its section")
     }
 
@@ -4435,10 +4606,8 @@ pub(crate) mod door_boundary {
     async fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-boundary-slot";
-        let _published = Published(instance);
         let (port, _heard) = tool_server().await;
         let row = row();
-        registry(row);
         let slot = slot(row, port);
         let rig = rig_with(instance, port, None, &|app| dispatched(app, row, &slot));
         let held = rig
@@ -4471,7 +4640,6 @@ pub(crate) mod door_boundary {
     async fn pools_door_walk(audience: &str) -> Vec<String> {
         use crate::root::serve::hook_seat_tests::{rig as pools_rig, RigOpts};
         let instance = "door-boundary-pools";
-        let _published = Published(instance);
         let rig = pools_rig(
             instance,
             RigOpts {
@@ -4605,25 +4773,22 @@ pub(crate) mod door_boundary {
     async fn an_audience_bound_token_is_confined_to_its_door_plane_through_the_composition() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-boundary-confined";
-        let _published = Published(instance);
         let (port, _heard) = tool_server().await;
         let upstream = MockServer::new(Arc::new(MockServerState::new())).await;
         let row = row();
-        registry(row);
         let slot = slot(row, port);
         let (audience, metadata) = (row.admission)(&*slot)
             .map(|a| (a.audience, a.resource_metadata))
             .expect("the door binds an audience under the public base URL");
         let base_url = upstream.base_url();
+        // The dialect the linked plane's declarations claim its messages path for (named by no
+        // literal).
+        let dialect = crate::root::linked::dialect_for_path(&crate::LINKED, "/v1/messages")
+            .expect("a linked plane claims its messages path for a dialect");
         let rig = rig_with(instance, port, None, &|app| {
             dispatched(
                 app.lane(
-                    LaneSpec::new(
-                        "test-model",
-                        busbar_kernel::proto::PROTO_ANTHROPIC,
-                        &base_url,
-                    )
-                    .api_key("busbar-upstream-key"),
+                    LaneSpec::new("test-model", dialect, &base_url).api_key("busbar-upstream-key"),
                 )
                 .pool("pa", &[(0, 1)]),
                 row,
@@ -4882,7 +5047,6 @@ pub(crate) mod door_boundary {
     async fn the_trust_verbs_report_the_drift_an_operator_has_to_work() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-trust-verbs";
-        let _published = Published(instance);
         let schema =
             serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}});
         let description = "reads a file from disk";
@@ -4897,7 +5061,6 @@ pub(crate) mod door_boundary {
         ))
         .expect("a section");
         let row = row();
-        registry(row);
         let slot = slot_over(row, tools.clone());
         // The operator credential's row on the auth axis, as boot links it: the admin chain the
         // admin router authenticates `x-admin-token` with.
@@ -5038,12 +5201,10 @@ pub(crate) mod door_boundary {
         busbar_kernel::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
         let chain = vec![busbar_kernel::config::operator_provider().to_string()];
         let row = row();
-        registry(row);
 
         // ── TOKEN EXCHANGE ────────────────────────────────────────────────────────────────────────
         {
             let instance = "door-connect-exchange";
-            let _published = Published(instance);
             let (port, mut heard) = super::tool_door::tool_server_listing(listed()).await;
             let token_url = super::tool_door::TOKEN_URL;
             let tools: serde_yaml::Value = serde_yaml::from_str(&format!(
@@ -5080,7 +5241,6 @@ pub(crate) mod door_boundary {
 
         // ── PASSTHROUGH ───────────────────────────────────────────────────────────────────────────
         let instance = "door-connect-passthrough";
-        let _published = Published(instance);
         let (port, mut heard) = super::tool_door::tool_server_listing(listed()).await;
         let tools: serde_yaml::Value = serde_yaml::from_str(&format!(
             "fs:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  pin: {{ mechanism: pinned_pubkey, key: \"sha256/K=\" }}\n  \
@@ -5120,7 +5280,7 @@ mod spent_ledger {
     use busbar_kernel::test_support::durable_store::{durable_cfg, open_durable};
 
     use super::tool_door::{protocol_version, rig_on, send_as, tool_server, Footing, Ledger, Rig};
-    use crate::root::serve::planes_tests::{Published, PUBLISHING};
+    use crate::root::serve::planes_tests::PUBLISHING;
 
     /// The composed instance: one name across the fleet, so the claims are one ledger's.
     const INSTANCE: &str = "door-spent-ledger";
@@ -5159,6 +5319,7 @@ mod spent_ledger {
                 ledger,
                 book,
                 guarded: false,
+                limits: Vec::new(),
             },
         )
     }
@@ -5242,7 +5403,6 @@ mod spent_ledger {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_second_fleet_node_cannot_redeem_an_approval_the_first_already_spent() {
         let _one = PUBLISHING.lock().await;
-        let _published = Published(INSTANCE);
         let (port, _heard) = tool_server().await;
         let (file, cfg) = durable_cfg("door-askstate-fleet");
         let node_a = node(port, Ledger::Store(open_durable(&cfg)), None);
@@ -5268,7 +5428,6 @@ mod spent_ledger {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_restarted_node_cannot_redeem_an_approval_the_previous_process_spent() {
         let _one = PUBLISHING.lock().await;
-        let _published = Published(INSTANCE);
         let (port, _heard) = tool_server().await;
         let (_file, cfg) = durable_cfg("door-askstate-restart");
         let before = node(port, Ledger::Store(open_durable(&cfg)), None);
@@ -5291,7 +5450,6 @@ mod spent_ledger {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_fresh_approval_is_not_refused_by_a_ledger_holding_another() {
         let _one = PUBLISHING.lock().await;
-        let _published = Published(INSTANCE);
         let (port, _heard) = tool_server().await;
         let (_file, cfg) = durable_cfg("door-askstate-distinct");
         let node_a = node(port, Ledger::Store(open_durable(&cfg)), None);
@@ -5315,7 +5473,6 @@ mod spent_ledger {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_node_refuses_its_own_replay_with_no_durable_store_configured() {
         let _one = PUBLISHING.lock().await;
-        let _published = Published(INSTANCE);
         let (port, _heard) = tool_server().await;
         let solo = node(port, Ledger::Unbound, None);
         let state = ask(&solo).await;
@@ -5336,7 +5493,6 @@ mod spent_ledger {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn two_nodes_sharing_no_store_each_redeem_once_which_is_the_documented_ram_posture() {
         let _one = PUBLISHING.lock().await;
-        let _published = Published(INSTANCE);
         let (port, _heard) = tool_server().await;
         let node_a = node(port, Ledger::Unbound, None);
         let node_b = node(port, Ledger::Unbound, Some(&node_a));
@@ -5357,7 +5513,6 @@ mod spent_ledger {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_memory_store_shares_no_ledger_which_is_the_documented_contract() {
         let _one = PUBLISHING.lock().await;
-        let _published = Published(INSTANCE);
         let (port, _heard) = tool_server().await;
         let node_a = node(port, Ledger::Memory, None);
         let node_b = node(port, Ledger::Memory, Some(&node_a));
@@ -5386,7 +5541,7 @@ mod upstream_ask_relay {
     use super::tool_door::{
         rig_on, send, tool_digest, tool_listing, tool_server_answering, Footing, Rig, CALL,
     };
-    use crate::root::serve::planes_tests::{Published, PUBLISHING};
+    use crate::root::serve::planes_tests::PUBLISHING;
 
     /// The composed instance.
     const INSTANCE: &str = "door-ask-relay";
@@ -5442,7 +5597,6 @@ mod upstream_ask_relay {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_granted_ask_reaches_the_caller_verbatim_and_its_retry_goes_back_to_the_member() {
         let _one = PUBLISHING.lock().await;
-        let _published = Published(INSTANCE);
         let (port, mut heard) = asking_server().await;
         let rig = rig_on(INSTANCE, port, tools(port, true), Footing::own());
         let (status, body) = call(&rig, CALL).await;
@@ -5512,7 +5666,6 @@ mod upstream_ask_relay {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_ungranted_ask_is_refused_and_never_relayed() {
         let _one = PUBLISHING.lock().await;
-        let _published = Published(INSTANCE);
         let (port, _heard) = asking_server().await;
         let rig = rig_on(INSTANCE, port, tools(port, false), Footing::own());
         let (status, body) = call(&rig, CALL).await;
@@ -5540,7 +5693,7 @@ mod task_continuation {
         protocol_version, rig_on, rig_tools, send_as, tool_digest, tool_listing, Footing, Ledger,
         Rig, Rows, CALL,
     };
-    use crate::root::serve::planes_tests::{Published, PUBLISHING};
+    use crate::root::serve::planes_tests::PUBLISHING;
 
     /// The extension a caller declares (SEP-2663's identifier, as a request states it).
     const TASKS: &str = "io.modelcontextprotocol/tasks";
@@ -5716,7 +5869,6 @@ mod task_continuation {
     async fn a_task_call_answers_a_task_and_its_upstream_call_runs_without_a_poll() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-task-runs";
-        let _published = Published(instance);
         let (release, gate) = tokio::sync::watch::channel(false);
         let (port, mut heard) = gated_server(gate).await;
         let rig = rig_tools(instance, port, tools(port, "optional"), &|app| app);
@@ -5805,7 +5957,6 @@ mod task_continuation {
     async fn a_cancelled_task_stays_cancelled_and_carries_no_result() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-task-cancel";
-        let _published = Published(instance);
         let (release, gate) = tokio::sync::watch::channel(false);
         let (port, mut heard) = gated_server(gate).await;
         let rig = rig_tools(instance, port, tools(port, "optional"), &|app| app);
@@ -5846,7 +5997,6 @@ mod task_continuation {
     async fn a_required_task_tool_refuses_a_caller_that_declared_no_tasks() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-task-required";
-        let _published = Published(instance);
         let (_release, gate) = tokio::sync::watch::channel(false);
         let (port, _heard) = gated_server(gate).await;
         let rig = rig_tools(instance, port, tools(port, "required"), &|app| app);
@@ -5888,7 +6038,6 @@ mod task_continuation {
     async fn another_callers_task_answers_exactly_as_an_unknown_one() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-task-foreign";
-        let _published = Published(instance);
         let (release, gate) = tokio::sync::watch::channel(true);
         let (port, _heard) = gated_server(gate).await;
         let rig = rig_tools(instance, port, tools(port, "optional"), &|app| app);
@@ -5936,7 +6085,6 @@ mod task_continuation {
     async fn a_task_parks_on_its_own_ask_until_tasks_update_delivers_the_answer() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-task-ask";
-        let _published = Published(instance);
         let (_release, gate) = tokio::sync::watch::channel(true);
         let (port, mut heard) = gated_server(gate).await;
         let section: serde_yaml::Value = serde_yaml::from_str(&format!(
@@ -6041,7 +6189,6 @@ mod task_continuation {
     async fn a_members_ask_inside_a_task_reaches_the_caller_and_its_answer_reaches_the_member() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-task-relay";
-        let _published = Published(instance);
         let (port, mut heard) = asking_member().await;
         let rig = rig_tools(instance, port, asking_tools(port, true), &|app| app);
         let (_, task_id) = create(&rig).await;
@@ -6097,7 +6244,6 @@ mod task_continuation {
     async fn an_ungranted_ask_inside_a_task_is_refused() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-task-relay-ungranted";
-        let _published = Published(instance);
         let (port, _heard) = asking_member().await;
         let rig = rig_tools(instance, port, asking_tools(port, false), &|app| app);
         let (_, task_id) = create(&rig).await;
@@ -6132,6 +6278,7 @@ mod task_continuation {
                 ledger: Ledger::Rows(std::sync::Arc::clone(rows), max_live),
                 book,
                 guarded: false,
+                limits: Vec::new(),
             },
         )
     }
@@ -6155,7 +6302,6 @@ mod task_continuation {
     async fn a_live_task_created_on_one_node_is_answered_by_another() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-task-fleet";
-        let _published = Published(instance);
         let (_release, gate) = tokio::sync::watch::channel(false);
         let (port, mut heard) = gated_server(gate).await;
         let rows = std::sync::Arc::new(Rows::default());
@@ -6188,7 +6334,6 @@ mod task_continuation {
     async fn the_live_handles_a_gone_process_left_are_settled_and_a_new_task_is_admitted() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-task-restart";
-        let _published = Published(instance);
         let (_release, gate) = tokio::sync::watch::channel(false);
         let (port, _heard) = gated_server(gate).await;
         let rows = std::sync::Arc::new(Rows::default());
@@ -6242,7 +6387,6 @@ mod task_continuation {
     async fn a_settle_the_store_refuses_is_made_again_until_it_lands() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-task-settle-retry";
-        let _published = Published(instance);
         let (_release, gate) = tokio::sync::watch::channel(true);
         let (port, _heard) = gated_server(gate).await;
         let rows = std::sync::Arc::new(Rows::default());
@@ -6293,7 +6437,7 @@ mod task_continuation {
 #[cfg(all(linked_axis_plane_door, linked_section_pools))]
 pub(crate) mod hook_parity {
     use super::tool_door::{send_as, surface, tool_server, Footing, Rig};
-    use crate::root::serve::planes_tests::{Published, PUBLISHING};
+    use crate::root::serve::planes_tests::PUBLISHING;
 
     /// A `kind: gate` on the hermetic test cdylib, `prompt` the grant it holds (the served
     /// battery's `gate()` / `rewrite()` documents, as an operator writes them).
@@ -6339,9 +6483,9 @@ pub(crate) mod hook_parity {
         hooks: Vec<(&'static str, busbar_kernel::config::HookCfg)>,
     ) -> Rig {
         let env = hook_env();
-        // The door's folded row in the process's plane registry, as the composition root installs
-        // it: the deployment's per-entry hooks are resolved under the plane it names.
-        super::door_boundary::registry(super::door_boundary::row());
+        // The door's folded row in the table the generation is lent, as the composition root lends
+        // its own: the deployment's per-entry hooks are resolved under the plane it names.
+        let doors = super::door_boundary::table(super::door_boundary::row());
         Rig::with(
             instance,
             port,
@@ -6349,7 +6493,8 @@ pub(crate) mod hook_parity {
             None,
             None,
             Footing::own(),
-            &move |mut app| {
+            &move |app| {
+                let mut app = app.doors(doors);
                 if hooks.is_empty() {
                     return app;
                 }
@@ -6399,7 +6544,6 @@ pub(crate) mod hook_parity {
     async fn tools_hooks_reject_all_rejects_a_tools_call() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-hook-reject-all";
-        let _published = Published(instance);
         let body = call(serde_json::json!({ "path": "/etc/hosts" }));
 
         let (port, mut heard) = tool_server().await;
@@ -6459,7 +6603,6 @@ pub(crate) mod hook_parity {
     async fn the_calls_content_reaches_the_gate() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-hook-content";
-        let _published = Published(instance);
         let (port, mut heard) = tool_server().await;
         let rig = rig(
             instance,
@@ -6508,7 +6651,6 @@ pub(crate) mod hook_parity {
     async fn a_rewrite_hook_edits_the_tool_call_arguments_before_they_go_upstream() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-hook-rewrite";
-        let _published = Published(instance);
         let (port, mut heard) = tool_server().await;
         let rig = rig(
             instance,
@@ -6549,7 +6691,6 @@ pub(crate) mod hook_parity {
     async fn a_rewrite_gate_can_reject_on_the_arguments_it_screens() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-hook-rw-screen";
-        let _published = Published(instance);
         let (port, mut heard) = tool_server().await;
         let rig = rig(
             instance,
@@ -6594,7 +6735,6 @@ pub(crate) mod hook_parity {
     async fn a_hook_that_panics_is_the_seams_own_failed_verdict() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-hook-panic";
-        let _published = Published(instance);
         let body = call(serde_json::json!({ "path": "/etc/hosts" }));
         let (port, mut heard) = tool_server().await;
         let weighted = rig(
@@ -6653,7 +6793,7 @@ pub(crate) mod program_member {
     use axum::http::StatusCode;
 
     use super::tool_door::{rig_tools, send, tool_digest, tool_listing, CALL};
-    use crate::root::serve::planes_tests::{Published, PUBLISHING};
+    use crate::root::serve::planes_tests::PUBLISHING;
 
     /// The server, as a shell script: it answers the handshake, its tool list (after a log line of
     /// its own) and each call (after a request of its own, `ping`, which it counts the answers to),
@@ -6731,7 +6871,6 @@ pub(crate) mod program_member {
     async fn a_program_registration_serves_the_call_and_a_second_call_reuses_its_child() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-program-member";
-        let _published = Published(instance);
         let rig = rig_tools(instance, 0, section(), &|app| app);
 
         let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
@@ -6780,7 +6919,7 @@ mod program_member_ask {
     use axum::http::StatusCode;
 
     use super::tool_door::{rig_tools, send, tool_digest, tool_listing, CALL};
-    use crate::root::serve::planes_tests::{Published, PUBLISHING};
+    use crate::root::serve::planes_tests::PUBLISHING;
 
     /// The server, as a shell script: each call is held while it asks busbar's caller for a
     /// completion (`srv-ask-<n>`), and answered with what came back on its input (the text of the
@@ -6863,7 +7002,6 @@ done
     async fn a_childs_ask_reaches_the_caller_verbatim_and_its_answer_reaches_the_child() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-program-ask";
-        let _published = Published(instance);
         let rig = rig_tools(instance, 0, section(true), &|app| app);
 
         // THE ASK reaches the caller verbatim, under busbar's sealed state.
@@ -6942,7 +7080,6 @@ done
     async fn an_ungranted_childs_ask_is_refused_on_its_input_and_never_relayed() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-program-ask-ungranted";
-        let _published = Published(instance);
         let rig = rig_tools(instance, 0, section(false), &|app| app);
         let (status, body) = call(&rig.router, &rig.token, CALL).await;
         assert_eq!(status, StatusCode::OK, "{body}");
@@ -6961,7 +7098,12 @@ done
 #[test]
 fn the_limits_a_door_plane_is_handed_carry_the_operators_translate_cap() {
     let handed = |yaml: &str| {
-        let deploy = busbar_kernel::config::deploy_from_yaml_str(yaml).expect("a deployment");
+        // No plane: the deployment is lent the table of a build that opened none.
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(
+            yaml,
+            busbar_kernel::plane_driver::doors::Doors::NONE,
+        )
+        .expect("a deployment");
         let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
         super::kernel_sections(&cfg)["limits"]["request_body_max_bytes"].as_u64()
     };
@@ -6997,6 +7139,7 @@ fn own_reach() -> super::DoorReach<'static> {
             crate::LINKED.auths,
             None,
             crate::root::loader::dispatch::ConnTable::NoNeeds,
+            busbar_kernel::diagnostics::Catalogue::NEUTRAL,
         )),
         conns: std::sync::Arc::new(busbar_core_connector::Connector::new()),
         stream_ceiling_secs: 1,
@@ -8283,6 +8426,7 @@ fn a_models_protocol_override_is_handed_to_the_plane() {
     let deploy = busbar_kernel::config::deploy_from_yaml_str(
         "store: {module: memory}\nproviders:\n  p:\n    api_key: { env: BUSBAR_TEST_KEY }\n\
          models:\n  over:\n    provider: p\n    protocol: dialect-b\n  plain:\n    provider: p\n",
+        busbar_kernel::plane_driver::doors::Doors::NONE,
     )
     .expect("parses");
     let cfg = busbar_kernel::config::resolve(&deploy, &defs).expect("resolves");
@@ -8363,6 +8507,7 @@ fn an_unopened_door_plane_is_awaiting_restart_once_a_configuration_writes_its_se
     use busbar_kernel::appbuild::RootRules as _;
     let deploy = busbar_kernel::config::deploy_from_yaml_str(
         "store: {module: memory}\nmodels: {}\nproviders: {}\n",
+        busbar_kernel::plane_driver::doors::Doors::NONE,
     )
     .expect("parses");
     let mut cfg = busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
@@ -8406,7 +8551,9 @@ fn an_unopened_door_plane_is_awaiting_restart_once_a_configuration_writes_its_se
 #[test]
 fn a_required_section_written_empty_hands_the_plane_its_sections() {
     use busbar_contract::section::{RESERVED_MODELS_KEY, RESERVED_POOLS_KEY};
-    use busbar_kernel::plane::registry::{PlaneDecl, PlaneDeclaration, TestRegistryIsolation};
+    use busbar_kernel::plane_driver::doors::Doors;
+    use busbar_kernel::plane_driver::row::PlaneDecl;
+    use busbar_kernel::plane_driver::row::PlaneDeclaration;
     use busbar_kernel::test_support::NEUTRAL_FALLBACK;
     static REQUIRES: PlaneDecl = PlaneDecl {
         declaration: PlaneDeclaration {
@@ -8416,9 +8563,12 @@ fn a_required_section_written_empty_hands_the_plane_its_sections() {
         },
         ..NEUTRAL_FALLBACK
     };
-    let _registry = TestRegistryIsolation::seeded(&[&REQUIRES]);
-    let deploy = busbar_kernel::config::deploy_from_yaml_str("providers: {}\nmodels: {}\n")
-        .expect("a deployment");
+    // The table the deployment is lent: the requiring plane alone.
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        "providers: {}\nmodels: {}\n",
+        Doors::for_test(&[&REQUIRES]),
+    )
+    .expect("a deployment");
     let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
     let sections = super::kernel_sections(&cfg);
     assert_eq!(

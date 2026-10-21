@@ -43,7 +43,10 @@ fn test_open_door_regardless_of_upstream_creds() {
         assert!(mw.validate_token(None));
         assert!(mw.validate_token(Some("anything")));
         // The mode lives on the App (all-pools default + per-pool override), not on the chain.
-        let app = TestApp::new().upstream_creds(uc).build();
+        let app = TestApp::new()
+            .doors(linked::table())
+            .upstream_creds(uc)
+            .build();
         assert_eq!(app.upstream_creds(), uc);
     }
 }

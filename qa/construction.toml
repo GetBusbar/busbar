@@ -314,8 +314,9 @@ untranslated while every test was green."""
 # BOTH HALVES of the substrate are in the kernel today. The value families split into
 # `busbar-substrate-values` so a plane's closure resolves no hyper/reqwest/tokio edge, taking
 # `install_protocols`, `install_stream_translator_factory` and `install_diagnostics` with them; that
-# crate is deleted (#83a SD-8) and the three seams are the kernel's again (`proto/installed.rs`,
-# `diagnostics/mod.rs`), so the one kernel root reads every seam the fault it exists for lived in.
+# crate is deleted (#83a SD-8) and its seams are the kernel's again (`diagnostics/mod.rs`; the
+# protocol registry left the kernel with row 82), so the one kernel root reads every seam the fault
+# it exists for lived in.
 #
 # THE ENGINE HALF IS `crates/busbar-kernel/src`, NOT `crates/busbar-substrate/src`. This row named
 # the deleted path and therefore scanned a population of ZERO on that side — a ban over nothing,
@@ -364,10 +365,21 @@ max_hits = 0
 [rules.single-terminal]
 why = """The request terminal is where a unit's end is sealed and posted once. Every extra caller \
 is a second place the money can be counted, or not counted. The named wrappers are the only \
-doors; anything else calling the terminal is a finding."""
-terminal = "finish_inner"
-allowed_callers = ["finish", "finish_admitted", "finish_rejected"]
+doors; anything else calling the terminal is a finding. Since the old ingress terminal \
+(finish_inner) was deleted with the kernel's body-ingress (row 82 D2), the door path's money \
+terminal is the one judged (ARCHITECT ruling 2026-10-20): PlaneMoney::settle_end_as, reached \
+from PlaneMoney::settle_end and the request drive, and PlaneMoney::settle_end, reached from the \
+session end. Each terminal is spelled Type::fn and matched by its impl type, so a same-named \
+method on another type (the node's own Node::settle_end) is neither counted nor allowed."""
 max_extra_sites = 0
+
+[rules.single-terminal.settle_end_as]
+terminal = "PlaneMoney::settle_end_as"
+allowed_callers = ["PlaneMoney::settle_end", "DataRoutes::drive"]
+
+[rules.single-terminal.settle_end]
+terminal = "PlaneMoney::settle_end"
+allowed_callers = ["DataRoutes::session"]
 
 # ── 7. duplicate-dispatch (informational) ────────────────────────────────────────────────────────
 [rules.duplicate-dispatch]
@@ -967,14 +979,11 @@ known_sites = [
   "crates/busbar-kernel/src/config_validate/mod.rs :: model '{}' has conflicting context_max across pools ({} vs {}); a model maps to one lane and must declare a single context_max",
   "crates/busbar-kernel/src/config_validate/mod.rs :: provider '{provider_name}' base_url must use https for a public host (got '{base_url}'); plaintext http is permitted only for a private/loopback local-model upstream",
   "crates/busbar-kernel/src/endpoints.rs :: model",
-  "crates/busbar-kernel/src/ingress/mod.rs :: governance: no configured rate for model; rejecting (rate_card is authoritative and complete)",
   "crates/busbar-kernel/src/door.rs :: no configured rate for model '{name}'",
   "crates/busbar-kernel/src/ingress/mod.rs :: The model '{model}' does not exist or you do not have access to it.",
-  "crates/busbar-kernel/src/ingress/mod.rs :: /{provider}/{model}/v1/messages",
   "crates/busbar-kernel/src/snapshot/mod.rs :: Per-(bucket, model, tier) tokens in the bucket's current budget window (key and budget-group buckets; derived from the token ledger at scrape time)",
   "crates/busbar-kernel/src/snapshot/money.rs :: model",
   "crates/busbar-kernel/src/plane_host/build_input.rs :: model",
-  "crates/busbar-kernel/src/router.rs :: /{provider}/{model}/v1/messages",
   "crates/busbar-kernel/src/store/vocab.rs :: agent:{agent}",
   "crates/busbar-kernel/src/test_support/mod.rs :: /v1/chat/completions",
 ]
@@ -1278,8 +1287,12 @@ known_sites = [
   # reviewed escape, so the seven substrate-origin files the merge added stay uncovered.
   "crates/busbar-kernel/src/plane_host/breaker.rs",
   # `plane_host/vtable.rs` STRUCK (status row 84): the file is deleted with the HOT lane.
-  # was crates/busbar-core/src/plane/registry.rs (R099)
-  "crates/busbar-kernel/src/plane/registry.rs",
+  # was crates/busbar-core/src/plane/registry.rs (R099), then crates/busbar-kernel/src/plane/registry.rs,
+  # then plane_driver/doors.rs::plane_decls; its one escape (a test table, folded and leaked to live as
+  # long as the test binary, compiled only under test / test-support) moved to `Doors::for_test` when
+  # the process-wide set and its memo were deleted (status row 82, D2: the table is lent, not held).
+  # Named by function.
+  "crates/busbar-kernel/src/plane_driver/doors.rs::for_test",
   # was crates/busbar-core/src/router.rs (R099)
   "crates/busbar-kernel/src/router.rs",
   # was crates/busbar-substrate/src/plane/handle_engine.rs::sweep (R100), then
@@ -1292,9 +1305,6 @@ known_sites = [
   # was crates/busbar-substrate/src/plane_host/scope.rs::reclaim_all — merged the same way (+596).
   # Still named BY FUNCTION, so the rest of the merged file is still held to the rule.
   "crates/busbar-kernel/src/plane_host/scope.rs::reclaim_all",
-  # was crates/busbar-substrate-values/src/proto.rs — the protocol registry moved to the kernel
-  # verbatim (#83a SD-8).
-  "crates/busbar-kernel/src/proto/installed.rs",
   "crates/plugin-loader/src/",
   "crates/busbar-contract/src/abi/sdk/boundary.rs",
   # REVIEWED 2026-09-25 (item 141): a first-party plugin's diagnostic written as the host's own
@@ -1324,13 +1334,12 @@ known_sites = [
   # load or distinct pattern, never per request, and none of them can carry a hold. Sites already
   # inside a reviewed entry above were read too: `plugin-loader/src/` (a plane's Statement words
   # and tail tables copied once per load: `kinds/plane.rs` `tail_facts`, `kept`, `declared`,
-  # `registration`), `proto/installed.rs` (the protocol registry's process-singleton tables) and
-  # `diagnostics/emit.rs::site` (the interned field set).
+  # `registration`) and `diagnostics/emit.rs::site` (the interned field set).
   #   The plane axis's installed row list: one slice of row references, made once at boot.
   "crates/busbar/src/root/linked.rs::register_planes",
-  #   The declared-diagnostics catalogue, installed once at boot.
+  #   The declared-diagnostics catalogue, folded once at boot and lent.
   "crates/busbar/src/root/linked.rs::register_diagnostics",
-  #   A door plane's registration words, folded once per key (bounded by MAX_DOOR_PLANES).
+  #   A door plane's registration words, folded once per door by the composition root, which owns the rows.
   "crates/busbar-kernel/src/plane_driver/door.rs::fold",
   "crates/busbar-kernel/src/plane_driver/door.rs::declaration_of",
   #   A path pattern's segments, interned once per distinct pattern (the interner answers a pattern
@@ -1454,6 +1463,134 @@ patterns = ["PB-[0-9]", "CG-[0-9]", "ARCHITECTURE\\.md §"]
 # the goal, and nothing may be added to it without the same argument.
 exempt_crates = ["busbar-kernel-ledger"]
 max_hits = 0
+
+# ── 26b. kernel-no-protocol-registry ─────────────────────────────────────────────────────────────
+[rules.kernel-no-protocol-registry]
+why = """The kernel holds no protocol registry (status row 82, D2; spec Part 1, Law 5: dialects are \
+internal to their plane, and core does not change when a dialect is added). The kernel's proto/ \
+registry left the tree, and the structure-lint census row that held `fn decl_for(` to one site \
+left with its subject, so nothing named the registry any more. A registry grown back in the \
+kernel (a `ProtocolDecl` table behind a static, an `install_protocols` seam the root fills, a \
+by-name `decl_for`) would pass `no-uninstalled-seam`, because the root installs it. Two rows. \
+NAMES: those spellings, and every alias of them declared anywhere in the workspace (`type X = \
+…ProtocolDecl…`, `use …::ProtocolDecl as X`, a `const`/`static` bound to the fn), are refused in \
+the kernel's production code; comments are not read. INSTALLED-STORE: the same registry with no \
+name to find, behind a type-erased store, is refused by its shape: a kernel static of any name \
+(plain, `mut`, `thread_local!`, `lazy_static!`, declared by a `macro_rules!`) whose type, read to \
+its top-level end (a `;` inside `[u8; 0]` or an `=` inside `Iterator<Item = T>` is the type's \
+own), through every alias and into every field, is a cell holding a collection, a slice, an array \
+or a trait object (`dyn`, `Any`, `AnyMap`), or a pointer-sized atomic integer a fn of its file \
+launders a pointer through (`as_ptr`, `into_raw`, `leak`, `from_raw_parts`, an `as *const` cast), \
+and that code outside the kernel reaches: a `pub static`, a `pub fn` or a trait method \
+that takes a value, an accessor returning the cell, or a setter one call away (by path or by the \
+name a `use` imports it under). The stores a root fills keyed by \
+plane, protocol or plugin identity that the kernel still holds are counted DEBT (`debt_stores`, \
+`max_debt`), each with its drain; every other store it holds today is named with why it is not \
+one. A new store is a finding (ceiling `max_stores`), and a named one that no longer matches is \
+stale. Each row holds its own ceiling: NAMES `max_hits`, INSTALLED-STORE `max_stores`, DEBT \
+`max_debt`."""
+scope_globs = ["crates/busbar-kernel/src/*"]
+# Banned as a word, with every alias the workspace declares.
+names = ["ProtocolDecl", "install_protocols"]
+# Banned as a definition (`fn decl_for`); an alias of it is banned as a word.
+fn_names = ["decl_for"]
+# The NAMES row's ceiling: protocol-registry spellings in the kernel's production code.
+max_hits = 0
+# The INSTALLED-STORE row's ceiling, its own (a6 on #1454: under one shared figure a store let in
+# would let a `ProtocolDecl` back in beside it): stores outside the named ones, and stale names.
+max_stores = 0
+# The installed-store shape. A store is a static of any name (plain, `mut`, in a `thread_local!` or a
+# `lazy_static!`) whose type, read through every alias and into every field, names one of
+# `store_cells` (a `static mut` and a `static ref` are their own cell; an `UnsafeCell` wrapper is a
+# cell) and matches one of `store_holds`; or whose type is a pointer-sized atomic integer
+# (`AtomicUsize`, `AtomicIsize`, `AtomicU64`, `AtomicI64`) that a fn of its file naming it launders a
+# pointer through (a ptr/len pair holds a slice). The type ends at its first top-level `;` or `=`. A static a
+# `macro_rules!` declares under a metavariable is each static its invocations name. It is installed
+# when code outside the kernel reaches it: the static is `pub`, a `pub fn` or a trait method (a trait
+# body's or a trait impl's) with a parameter names it, one names it and returns a cell, or one with a
+# parameter calls a setter of its file that names it (one call away: bare in that file, through its
+# module path, or bare under the name a `use` imports it as). NOT A STORE: a `const`, and a static
+# with no cell. A `const` is a fresh value at every use, so a cell in one holds nothing anyone set;
+# a non-`mut` static with no interior mutability cannot be written (E0594), so no code outside the
+# kernel puts a row in it, and its rows are what the kernel itself names at compile time, which the
+# NAMES half and the plane-purity rows judge (the kernel's [dependencies] name no plane or plugin crate).
+# `Cell` is a cell: `Cell<&'static [T]>` is set whole through `Cell::set`. The kernel's own
+# `Cell<bool>`, `Cell<u32>`, `Cell<u64>` and `Cell<usize>` thread-locals hold no collection, so they
+# match no `store_holds` and are not stores. `OnceBox` and `AtomicCell` are named so they fail closed.
+store_cells = ["OnceLock", "LazyLock", "OnceCell", "Lazy", "Mutex", "RwLock", "RefCell", "Cell", "UnsafeCell", "SyncUnsafeCell", "ArcSwap", "ArcSwapOption", "AtomicPtr", "AtomicCell", "OnceBox", "DashMap"]
+store_holds = ['\b(Vec|VecDeque|BTreeMap|HashMap|BTreeSet|HashSet|IndexMap|DashMap|FxHashMap|AnyMap)\b', '\[', '\bdyn\b', '\bAny(Map)?\b']
+# The kernel's test kit: compiled only under `test` / `test-support`, never production.
+store_exempt_path_fragments = ["/test_support/", "/testkit.rs", "/testkit/"]
+# THE DEBT: installed stores keyed by plane or protocol identity, which the kernel still holds (status
+# row 82, D2: core names zero plane types). Counted, not exempt: `max_debt` is the count, the list may
+# not grow, and a drained entry is struck and `max_debt` lowered in the same commit (Law 9).
+# DRAINED 3 -> 0 (status row 82, D2): the body-arrival table and the two kernel-loop runner tables
+# are deleted with their seams; no linked row ever filled them.
+# MEASURED 0 -> 6 (status row 82, D2; ARCHITECT rulings on a6's reviews of #1406 and #1454, the
+# #1418 MINTED precedent): the row reads through aliases, fields, every static spelling and every
+# installer shape now, and the stores it sees that a composition root fills with rows keyed by
+# plane, protocol or plugin identity are DEBT, not end state. The ceiling is SET here, from 0, in
+# the change whose detector first makes them visible, to exactly the measured count, and only
+# because `[gate.census.measured]` ledgers it; every rise after it is refused (Law 9). Each site names its
+# drain lane. The drain is the same seam for all: the compose owns the table and lends it to what
+# reads it, so the kernel holds no root-installed static.
+# DRAINED 6 -> 5 (status row 82, D2, lane-d2-drain-installed-doors): plane_driver/doors.rs::INSTALLED
+# is deleted. The composition root owns the folded door table and lends it by value (`Doors`) to
+# the config parse and to every `App` generation (`App::doors`); the kernel's test registry
+# (TEST_MEMO, TEST_REGISTERED) went with it, and so did the two stores that read the process table:
+# telemetry.rs::SLOTS (its slots are the generation's now) and config/plane_sections.rs::PLANE_SECTIONS
+# (a provider seam nothing read).
+# DRAINED 5 -> 4 (status row 82, D2, lane-d2-drain-doors-registrations): plane_driver/door.rs::DOORS
+# is deleted, and its per-index hook table (HOOK_TABLE) with it. A folded door's row carries the
+# door it was folded from (`PlaneDecl::door`, a `DoorRow`); the composition root owns the rows it
+# folds and lends them in its door table, and a hook that reads its plane's own row is handed it.
+# DRAINED 4 -> 3 (status row 82, D2, lane-d2-drain-diagnostics): diagnostics/mod.rs::INSTALLED is
+# deleted, with `install_diagnostics` and `installed_diagnostics`. The composition root folds each
+# linked plane's owned diagnostics and each first-party plugin's declared ones once
+# (`root::linked::register_diagnostics`) into a `Catalogue` it lends by value: to the plugin
+# observer (`KernelPluginObserver::lent`), to the main log's declared-diagnostic line
+# (`OutboundAuths`, `MainLogSink`) and to the rendered page's reader.
+# DRAINED 3 -> 2 (status row 82, D2, lane-d2-drain-serve-tables): plane_driver/serve.rs::TABLES is
+# deleted, and the free `publish`, `withdraw`, `answer`, `answer_public` and `served_at` with it.
+# The published instances' admin table is a value (`ServeTables`): the boot generation is built
+# with one and every generation after it carries it (`App::serve_tables`); the composition root
+# publishes its door planes into the boot generation's (`compose_served`), the admin router's
+# fallback and a stated admin route read it off the live generation, and the data listener's
+# public mount holds the one it published into (`Served::tables`).
+debt_stores = [
+  "crates/busbar-kernel/src/config/legacy.rs::ROWS -- the root legacy table, looked up by plugin identity (`former.<alias>`, `retired.<kind>.<word>`); drain: a064's drain fixers (row 159 drain lanes), the compose owns the rows and lends them to the config parse, migrate and registry-link paths",
+  "crates/busbar-kernel/src/preflight.rs::ROOT_ROWS -- the root's linked store rows (by store key and canonical name) and hook names; drain: a064's drain fixers (row 159 drain lanes), the compose owns its RootInstall and lends it to the build and the registry link",
+]
+max_debt = 2
+# Every other installed store the kernel holds today, `path::STATIC -- why`: none is a table a root
+# fills keyed by plane, dialect, protocol or plugin identity. It only shrinks; the entries this
+# re-measure added are stores the narrower row did not see, not new ones.
+exempt_stores = [
+  "crates/busbar-kernel/src/admin/seam.rs::SEAM -- the admin crate's mount seam: two fn pointers (a port) its `install` binds once; holds no table and no identity key (admin is a crate, not a plugin)",
+  "crates/busbar-kernel/src/admin/seam.rs::VERB_TABLE -- two fn pointers into the admin crate's closed verb table (a port); keyed by admin operation name, never by plugin identity",
+  "crates/busbar-kernel/src/audit/auditlog.rs::AUDIT_LOG -- the process-wide admin audit read model: records appended per action, no installer, no lookup by identity",
+  "crates/busbar-kernel/src/audit_ring.rs::AUDIT -- the const-built admin audit ring: records, no lookup by identity",
+  "crates/busbar-kernel/src/config/filled.rs::LEDGER -- the env-fill ledger, keyed by config document path, filled by the config walk; no plugin identity",
+  "crates/busbar-kernel/src/config/limits.rs::INSTALLED -- the resolved limit values, re-installed per config apply; values, not a table keyed by any identity",
+  "crates/busbar-kernel/src/diagnostics/emit.rs::SITES -- tracing callsites made once per (diagnostic code, level, names); diagnostic codes, not plane, dialect, protocol or plugin identity",
+  "crates/busbar-kernel/src/egress/fixtures.rs::SCOPED_DIAL -- compiled only under test / test-support (`egress::fixtures`): a test thread's scoped dial posture",
+  "crates/busbar-kernel/src/egress/engine/mod.rs::INSTALLED -- the one boot proxy choice the connector hands over; one value, no table",
+  "crates/busbar-kernel/src/egress/trust/mod.rs::EGRESS_TRUST -- one egress-trust capability object (a port); holds no table",
+  "crates/busbar-kernel/src/export/plugin.rs::SINKS -- the export sinks opened once from config by `open`; keyed by export instance, not by plane, dialect or protocol",
+  "crates/busbar-kernel/src/export/scrape.rs::LENT -- the snapshot lend of one crossing: the scrape grant's trait methods (`handle_http`, `handle_http_with_app`) lend the App to this thread for the call and restore what was lent before (export/scrape.rs:49-84); one value per crossing, no table, no identity key",
+  "crates/busbar-kernel/src/handlers/mod.rs::SEEN -- a warn-once set of (name, reason) faults, filled per fault by its own fn; no installer, no lookup",
+  "crates/busbar-kernel/src/host_disk.rs::WORDS -- an interner of OS error words, filled by its own fn per error; words, no identity",
+  "crates/busbar-kernel/src/oauth_as/seam.rs::CLOCK_WORK -- weak handles to the authorization server's sweep work on the one clock; no key, no lookup",
+  "crates/busbar-kernel/src/oauth_as/seam.rs::SEAM -- the authorization-server crate's seam: fn pointers (a port) the root binds once; holds no table (oauth2 is a crate, not a plugin)",
+  "crates/busbar-kernel/src/plane_driver/route_tables.rs::QUEUED -- live queue depth per pool, written by the walk; a gauge, not a registry",
+  "crates/busbar-kernel/src/plane_host/mod.rs::INTERNED -- an interner of runtime-slot key strings; returns the interned key, holds no plane object",
+  "crates/busbar-kernel/src/residual_log.rs::RESIDUALS -- the process-wide residual log: records appended per settlement, no lookup by identity",
+  "crates/busbar-kernel/src/snapshot/mod.rs::HANDLE -- the one metrics observation source's install outcome; no table, no identity",
+  "crates/busbar-kernel/src/snapshot/mod.rs::SOURCE -- the one metrics observation source, built once by `init_with`; no table keyed by identity",
+  "crates/busbar-kernel/src/telemetry.rs::BANK -- a thread-local counter bank, created on first emission; counters, no lookup by identity",
+  "crates/busbar-kernel/src/timing/mod.rs::LOCAL -- a thread-local timing accumulator; samples, no identity",
+  "crates/busbar-kernel/src/vocabulary.rs::VOCABULARY -- the open-vocabulary interner (bounded, freezes at boot); words, not declarations",
+]
 
 # ── 27. seal-sites ───────────────────────────────────────────────────────────────────────────────
 [rules.seal-sites]
@@ -2236,6 +2373,17 @@ abi = 1
 # was deleted, the status row and the measured value, AND every subject path it named at the base
 # (`root`, `crate`, `allowed_file`) lies under a [gate.census.deleted] directory that is gone from
 # the tree. `ceiling-census` checks each condition; the ledger is add-only.
+# CEILINGS SET BY THE CHANGE THAT FIRST MEASURES THEIR DEBT (ARCHITECT rulings on a6's reviews of
+# #1454, the #1418 MINTED precedent): `"rules.<table>.<key>" = "<detector key>, … -- <why>; drain:
+# <PR, row or file>"`. An entry excuses one rise, from 0, only in the change that writes it, and only
+# when (a) every named detector is a detector key of that rule (never prose, a ledger or a ceiling)
+# that the base carried and this change altered, (b) the figure equals the base re-measured with this
+# tree's rule and the base's own exemptions, never counting a stale one, so it covers only debt the
+# base already held, and (c) its `drain:` field names a PR, a row or a file (checked as syntax only:
+# the re-measure is the guard). At any base after it, it excuses nothing. Add-only.
+[gate.census.measured]
+"rules.kernel-no-protocol-registry.max_debt" = "store_cells, store_holds -- status row 82, D2 (#1454): the installed-store row now reads every static spelling, through aliases and fields, every installer shape, and the cells it did not know; the six root-filled stores keyed by plane, protocol or plugin identity it first sees were all at the base (#1408) and are ledgered by name in debt_stores, each with its drain; measured 6 at the base and at this tree; drain: status row 82 (lane-d2-drain-installed-doors: INSTALLED, TABLES, the diagnostics catalogue, then DOORS) and row 159 (a064's drain fixers: ROOT_ROWS and legacy ROWS)"
+
 [gate.census.deleted_rules]
 "rules.no-response-escapes-audit" = "DEV-GREEN row 83 (coordinator ruling 2026-10-18): its subject, the retired engine crate's step directory crates/busbar-llm/src/unit (allowed file audit.rs), was deleted with crates/busbar-llm; measured 0 (max_escapes = 0 at the base): no file under that root exists"
 "rules.terminal-doors-in-audit-step" = "DEV-GREEN row 83 (coordinator ruling 2026-10-18): its subject, the finish_admitted/finish_rejected call sites inside crate busbar-llm outside crates/busbar-llm/src/unit/audit.rs, was deleted with crates/busbar-llm; measured 0 (max_extra_sites = 0 at the base): the crate has no file"

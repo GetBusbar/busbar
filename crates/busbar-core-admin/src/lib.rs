@@ -111,11 +111,14 @@ fn seam_record_boot(app: &busbar_kernel::state::App) {
     app.record_version_at(0, "system", "boot");
 }
 
-/// The mount the seam calls: nest the JSON v1 admin surface onto `router` at `/api/v1/admin`.
+/// The mount the seam calls: nest the JSON v1 admin surface onto `router` at `/api/v1/admin`, over
+/// `doors`, the door table the generation the router serves was lent; every route builder below
+/// takes it as a parameter.
 fn seam_mount(
     router: axum::Router<std::sync::Arc<busbar_kernel::state::AppHandle>>,
+    doors: busbar_kernel::plane_driver::doors::Doors,
 ) -> axum::Router<std::sync::Arc<busbar_kernel::state::AppHandle>> {
-    crate::transport::mount(router, &crate::v1::json::JsonV1)
+    crate::transport::mount(router, &crate::v1::json::JsonV1, doors)
 }
 
 /// TEST/TEST-SUPPORT router builder: register this crate's admin mount seam (idempotently, once per
@@ -126,7 +129,7 @@ fn seam_mount(
 /// Install the process-wide test environment exactly once, from the kernel's KIND-NEUTRAL doubles
 /// (THE DESIGN, the kernel: "Kernel tests use kind-neutral doubles ... The cleanliness crates obey the
 /// same rule"): the operator credential's double on the auth axis, the neutral fallback plane (a
-/// plane owns `pools:`), the neutral synthetic protocols, then the admin mount seam. This crate's
+/// plane owns `pools:`, and declares the synthetic provider dialects), then the admin mount seam. This crate's
 /// tests link no plugin; a cell that asserts a real plane's behaviour is the composition root's.
 /// All installs are idempotent (first-wins), so calling this from every router builder is safe.
 ///
@@ -139,7 +142,7 @@ mod test_seams {
         SEAM_ONCE.call_once(|| {
             // The operator credential's double, before anything resolves the auth axis.
             busbar_kernel::test_support::operator_double::install();
-            // The kernel's neutral seam: its synthetic protocols and the neutral fallback plane.
+            // The kernel's neutral seam: the neutral fallback plane.
             (busbar_kernel::testkit::TEST_SEAM.install)();
             super::install();
         });
@@ -157,16 +160,13 @@ pub(crate) fn new_test_app() -> busbar_kernel::test_support::TestApp {
     busbar_kernel::test_support::TestApp::new()
 }
 
-/// The first codec protocol this test binary registers, read off the protocol registry (the
-/// kernel's neutral synthetic rows) rather than spelled here: an admin test needs a provider
-/// protocol the validator accepts, never a particular dialect.
+/// The first provider dialect the kernel's neutral fallback plane declares (its synthetic names)
+/// rather than one spelled here: an admin test needs a provider protocol the validator accepts,
+/// never a particular dialect.
 #[cfg(test)]
 pub(crate) fn linked_protocol() -> &'static str {
     ensure_seam();
-    busbar_kernel::proto::known_protocols()
-        .first()
-        .copied()
-        .expect("this test binary registers a codec protocol")
+    busbar_kernel::test_support::NEUTRAL_DIALECTS[0]
 }
 #[cfg(all(not(test), feature = "test-support"))]
 fn ensure_seam() {

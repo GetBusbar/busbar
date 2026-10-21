@@ -104,6 +104,13 @@ fn gov_with_key(key: VirtualKey) -> Arc<GovState> {
     Arc::new(GovState::new(store, None).unwrap())
 }
 
+/// [`gov_with_key`], lent `doors`: the table whose declared token classes the state reads.
+fn gov_with_key_lent(key: VirtualKey, doors: crate::plane_driver::doors::Doors) -> Arc<GovState> {
+    let store = Arc::new(MemoryStore::new());
+    store.put_key(&key).unwrap();
+    Arc::new(GovState::new(store, None).unwrap().with_doors(doors))
+}
+
 fn sample_vkey(id: &str) -> VirtualKey {
     VirtualKey {
         id: id.to_string(),
@@ -875,8 +882,8 @@ fn a_scrape_reprices_only_the_buckets_whose_facts_moved() {
 /// classes the spend gauges read, and nothing else a plane states.
 macro_rules! gauge_plane {
     ($name:ident, $key:literal, $fallback:literal, $classes:expr) => {
-        static $name: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
-            declaration: crate::plane::registry::PlaneDeclaration {
+        static $name: crate::plane_driver::row::PlaneDecl = crate::plane_driver::row::PlaneDecl {
+            declaration: crate::plane_driver::row::PlaneDeclaration {
                 key: $key,
                 fallback: $fallback,
                 config_section: $key,
@@ -896,11 +903,11 @@ macro_rules! gauge_plane {
                 served_op_classes: &[],
                 caller_credential_refusal: None,
             },
-            wire_format_names: || &[],
-            provider_dialects: || &[],
+            wire_format_names: |_| &[],
+            provider_dialects: |_| &[],
             claims: |_| Vec::new(),
             admission: |_| None,
-            build: |_| None,
+            build: |_, _| None,
             routes: None,
             admin_routes: None,
             openapi: None,
@@ -921,6 +928,7 @@ macro_rules! gauge_plane {
             retain_verify_gates: None,
             default_section: None,
             resolve_provider: None,
+            door: None,
         };
     };
 }
@@ -929,8 +937,8 @@ macro_rules! gauge_plane {
 const fn gauge_class(
     class: &'static str,
     family: &'static str,
-) -> crate::plane::registry::BillableClass {
-    crate::plane::registry::BillableClass { class, family }
+) -> crate::plane_driver::row::BillableClass {
+    crate::plane_driver::row::BillableClass { class, family }
 }
 
 // The fallback plane's shape: the four 1.5.5 token tiers, then a class in another family.
@@ -939,10 +947,10 @@ gauge_plane!(
     "gauge-fallback",
     true,
     &[
-        gauge_class("input", crate::plane::registry::TOKEN_FAMILY),
-        gauge_class("output", crate::plane::registry::TOKEN_FAMILY),
-        gauge_class("cache_read", crate::plane::registry::TOKEN_FAMILY),
-        gauge_class("cache_write", crate::plane::registry::TOKEN_FAMILY),
+        gauge_class("input", crate::plane_driver::row::TOKEN_FAMILY),
+        gauge_class("output", crate::plane_driver::row::TOKEN_FAMILY),
+        gauge_class("cache_read", crate::plane_driver::row::TOKEN_FAMILY),
+        gauge_class("cache_write", crate::plane_driver::row::TOKEN_FAMILY),
         gauge_class("search_units", "units"),
     ]
 );
@@ -953,8 +961,8 @@ gauge_plane!(
     "gauge-audio",
     false,
     &[
-        gauge_class("audio_tokens_in", crate::plane::registry::TOKEN_FAMILY),
-        gauge_class("audio_tokens_out", crate::plane::registry::TOKEN_FAMILY),
+        gauge_class("audio_tokens_in", crate::plane_driver::row::TOKEN_FAMILY),
+        gauge_class("audio_tokens_out", crate::plane_driver::row::TOKEN_FAMILY),
         gauge_class("audio_seconds_in", "duration"),
     ]
 );
@@ -977,12 +985,10 @@ fn lines_of(out: &str, family: &str, needle: &str) -> Vec<String> {
 #[test]
 fn bucket_token_and_spend_gauges_are_the_1_5_5_lines() {
     init();
-    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
-        &GAUGE_FALLBACK_PLANE,
-        &GAUGE_AUDIO_PLANE,
-    ]);
+    let doors =
+        crate::plane_driver::doors::Doors::for_test(&[&GAUGE_FALLBACK_PLANE, &GAUGE_AUDIO_PLANE]);
     let key = sample_vkey("vk_gauge_bytes");
-    let gov = gov_with_key(key.clone());
+    let gov = gov_with_key_lent(key.clone(), doors);
     let card = std::collections::BTreeMap::from([(
         "m".to_string(),
         crate::config::RateEntryCfg {
@@ -1008,6 +1014,7 @@ fn bucket_token_and_spend_gauges_are_the_1_5_5_lines() {
         1_700_000_000,
     );
     let app = TestApp::new()
+        .doors(doors)
         .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://m"))
         .pool("pool-gauge-bytes", &[(0, 1)])
         .cost(cost)
@@ -1045,12 +1052,10 @@ fn bucket_token_and_spend_gauges_are_the_1_5_5_lines() {
 #[test]
 fn bucket_token_gauges_follow_the_lane_planes_declared_token_classes() {
     init();
-    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
-        &GAUGE_FALLBACK_PLANE,
-        &GAUGE_AUDIO_PLANE,
-    ]);
+    let doors =
+        crate::plane_driver::doors::Doors::for_test(&[&GAUGE_FALLBACK_PLANE, &GAUGE_AUDIO_PLANE]);
     let key = sample_vkey("vk_gauge_audio");
-    let gov = gov_with_key(key.clone());
+    let gov = gov_with_key_lent(key.clone(), doors);
     let cost = crate::cost::CostModel::resolve_parts(None, 0, &Default::default());
     gov.record_usage(
         &cost,
@@ -1064,6 +1069,7 @@ fn bucket_token_gauges_follow_the_lane_planes_declared_token_classes() {
         1_700_000_000,
     );
     let app = TestApp::new()
+        .doors(doors)
         .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://m"))
         .pool("pool-gauge-audio", &[(0, 1)])
         .cost(cost)

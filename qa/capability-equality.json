@@ -453,7 +453,7 @@
       "capability": "audit-chain",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar/src/root/tests/plane_node.rs::every_unit_the_node_answers_served_or_refused_seals_one_record_on_one_tamper_evident_chain",
+      "test": "crates/busbar/src/root/tests/plane_node_money.rs::every_unit_the_node_answers_served_or_refused_seals_one_record_on_one_tamper_evident_chain",
       "note": "the llm plane is served through the root's node (Node::answer, plane-llm on the node axis): every unit it answers, served (a dispatched completion) or refused (a body the arrival step cannot read), seals ONE record on the node's audit chain (busbar-kernel-audit, journalled as audit.v4 on the node's book), the second the first's successor; the chain walks clean, and a record altered after its seal breaks the walk. This is the node's per-unit chain, not the per-principal request chain proxy/reqlog.rs kept (deleted by the P2 ruling, escalate.q DEL-REQLOG Q1). Watched red: a node whose Driven::audited drops the audit door's pass (root/plane_node.rs) seals nothing.",
       "root": {
         "state": "proven",

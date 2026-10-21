@@ -160,6 +160,20 @@ fn is_authentication(reason: &str) -> bool {
     class_of_word(reason) == Some(RefusalClass::Unauthenticated)
 }
 
+/// THE STATUS A REFUSAL BEFORE `arrive` WEARS, by the target's path rule: a bad credential answers
+/// the status the target's dialect answers one with (bedrock 403, gemini 400; 1.5.5's
+/// `auth_failure_status_and_kind` for the dialect its residual inferred from the path); every other
+/// refusal keeps `status`, the one the kernel chose. A refusal the kernel decides on a path no
+/// route takes at its verb carries no route's dialect, so the path rule is the only reading of it.
+#[must_use]
+pub fn status_before_arrive(envelope: &str, reason: u32, status: u16) -> u16 {
+    let spelling = reason_of(reason).map_or("", |r| r.as_str());
+    match decl(envelope) {
+        Some(d) if is_authentication(spelling) => d.auth_failure_status_and_kind.0,
+        _ => status,
+    }
+}
+
 /// RENDER A KERNEL REFUSAL in `envelope`'s dialect: `reason` is the reason's code on the plane ABI,
 /// `status` the status the kernel chose, `text` its message.
 #[must_use]

@@ -57,7 +57,8 @@ crate plane-decisions decisions
 # still answered by the `root-mcp` leg. `installed a2a` STRUCK, FLIP-A2A, for the same reason.)
 #
 # owned-section <plane key> <declaring section> <owned section>...: the linked planes that own the
-# grammar of a top-level section, and those sections (plane_owned_sections_boot.rs).
+# grammar of a top-level section, and those sections. None is pinned; the owned-sections boot suite
+# that read these rows was gated on a `plane` axis no linked row carries, and is deleted.
 # (`owned-section mcp tools mcp` STRUCK, P3 DEL-MCP, ARCHITECT 2026-10-05: these rows pin the LINKED
 # PlaneDecl planes' owned sections, and the mcp plane installs no PlaneDecl any more. Its `tools` /
 # `mcp` sections are declared by its door's Statement, which the config-schema gate reads as a

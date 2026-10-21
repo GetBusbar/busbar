@@ -12,7 +12,7 @@ use super::*;
 use crate::root::loader::sign::{DiagnosticDecl, SigningKey};
 use crate::root::loader::PluginRegistry;
 use crate::root::test_plugins;
-use busbar_kernel::plane::registry::merged_boot_plane_decls;
+use busbar_kernel::plane_driver::doors::merged_boot_plane_decls;
 
 /// THE KERNEL SERVES NO EXPORT MODULE OF ITS OWN (K9e-2: its last built-in became a linked sink),
 /// so every module is a row of the axis. ARCHITECT Q-P4-12 (BUSBAR-1.6.0.md:106, "it refuses at boot
@@ -219,9 +219,12 @@ fn decl(code: u16, severity: &str) -> DiagnosticDecl {
 #[test]
 fn a_first_party_plugins_declared_codes_join_the_catalogue_and_nothing_else_does() {
     use busbar_contract::diagnostic::{Class, Severity};
-    use busbar_kernel::diagnostics::{by_code, REGISTRY};
+    use busbar_kernel::diagnostics::{Catalogue, REGISTRY};
     let release = test_plugins::key(7);
-    assert!(by_code(6990).is_none(), "the witness code must be free");
+    assert!(
+        Catalogue::NEUTRAL.by_code(6990).is_none(),
+        "the witness code must be free"
+    );
     let registry = declaring_registry("ok", "busbar", &release, vec![decl(6990, "actionable")]);
     let declared = declared_diagnostics(&registry, &[]).expect("a first-party declaration joins");
     assert_eq!(declared.len(), 1);
@@ -366,12 +369,12 @@ fn native(key: &'static str) -> &'static [PlaneDecl] {
         served_op_classes: &[],
         caller_credential_refusal: None,
     };
-    let hooks = busbar_kernel::plane::registry::PlaneHooks {
-        wire_format_names: || &[busbar_kernel::plane::WIRE_HTTP_JSON],
-        provider_dialects: || &[],
+    let hooks = busbar_kernel::plane_driver::row::PlaneHooks {
+        wire_format_names: |_| &[busbar_kernel::plane_driver::claims::WIRE_HTTP_JSON],
+        provider_dialects: |_| &[],
         claims: |_| Vec::new(),
         admission: |_| None,
-        build: |_| None,
+        build: |_, _| None,
         routes: None,
         admin_routes: None,
         openapi: None,

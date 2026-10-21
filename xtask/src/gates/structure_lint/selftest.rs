@@ -430,7 +430,9 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
     // ── invariants 1 and 2 ───────────────────────────────────────────────────────────────────────
     let mut ov = Overlay::new();
     ov.set(
-        format!("{}/plane.rs", roots::CORE),
+        // `plane_driver/` is a live kernel folder, so this file makes it a hybrid. (The plant once
+        // named `plane.rs`, beside a `plane/` folder D2 deleted: half a hybrid, so it proved nothing.)
+        format!("{}/plane_driver.rs", roots::CORE),
         "// a module that is a file AND a folder\npub fn half_of_it() {}\n",
     );
     report.push(tree_case(
@@ -439,7 +441,7 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         "a module that is both a file and a folder is a hybrid",
         &[hybrid::ROW_HYBRID],
         ov,
-        &["HYBRID", "plane.rs"],
+        &["HYBRID", "plane_driver.rs"],
     ));
 
     // ── invariant 3 ──────────────────────────────────────────────────────────────────────────────
@@ -1012,7 +1014,7 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         );
     }
 
-    let bootctx = format!("{}/plane/registry.rs", addresses.core);
+    let bootctx = format!("{}/plane_driver/row.rs", addresses.core);
     if let Ok(text) = cx.read(&bootctx) {
         let mut ov = Overlay::new();
         ov.set(

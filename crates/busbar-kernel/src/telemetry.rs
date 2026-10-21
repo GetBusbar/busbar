@@ -113,6 +113,15 @@ pub(crate) struct AppSlots {
     /// plane's v1.5.4-identical series); the mounted planes emit their own `busbar_plane_*`
     /// families from `request_finished` instead.
     banked_plane: &'static str,
+    /// The banked plane's declared dialects ([`declared_dialects`]) over the door table this
+    /// generation was built from: the index of each request family below.
+    banked_dialects: &'static [&'static str],
+    /// The fallback plane's declared dialects over that table: the `from`/`to` label space of
+    /// [`translation`]'s slots, which register on the generation's first hop ([`Self::translations`]).
+    translation_dialects: &'static [&'static str],
+    /// The `busbar_translations_total` slots over `translation_dialects × translation_dialects`
+    /// (from ≠ to), registered on the first hop, as the process-wide table they replace was.
+    translations: OnceLock<Vec<(&'static str, &'static str, CounterSlot)>>,
     /// pool label (ingress convention: pools ∪ models ∪ "unresolved") → per-dialect request
     /// families, indexed by position in the banked plane's declared dialects
     /// ([`declared_dialects`]).
@@ -138,7 +147,9 @@ impl AppSlots {
         by_model: &[(&'a str, usize)],
         lane_model: impl Fn(usize) -> Option<&'a str>,
         plane: &'static str,
+        doors: crate::plane_driver::doors::Doors,
     ) -> AppSlots {
+        let banked_dialects = declared_dialects(doors, plane);
         use crate::snapshot::{
             BREAKER_TRIPS_TOTAL, FAILOVERS_TOTAL, REQUESTS_TOTAL, REQUEST_DURATION_SECONDS,
             UPSTREAM_ATTEMPTS_TOTAL, UPSTREAM_FAILURES_TOTAL,
@@ -157,7 +168,7 @@ impl AppSlots {
 
         let mut request = HashMap::with_capacity(ingress_labels.len());
         for pool in &ingress_labels {
-            let families: Box<[RequestFamily]> = declared_dialects(plane)
+            let families: Box<[RequestFamily]> = banked_dialects
                 .iter()
                 .map(|proto| RequestFamily {
                     requests: std::array::from_fn(|oi| {
@@ -232,6 +243,9 @@ impl AppSlots {
 
         AppSlots {
             banked_plane: plane,
+            banked_dialects,
+            translation_dialects: declared_dialects(doors, doors.fallback_key()),
+            translations: OnceLock::new(),
             request,
             lane: lane_map,
             failover,
@@ -247,7 +261,8 @@ impl AppSlots {
         if plane != self.banked_plane {
             return None;
         }
-        let proto_idx = declared_dialects(self.banked_plane)
+        let proto_idx = self
+            .banked_dialects
             .iter()
             .position(|p| *p == ingress_protocol)?;
         self.request.get(pool).map(|fams| &fams[proto_idx])
@@ -265,7 +280,7 @@ impl AppSlots {
 /// `ingress::finish_inner` and every mounted plane calls it from `ingress::observe`.
 ///
 /// TWO SERIES, split so the model plane stays v1.5.4-identical. The MODEL plane
-/// (`crate::plane::is_fallback(plane)`) emits `busbar_requests_total` / `busbar_request_duration_seconds`
+/// (`app.doors.is_fallback(plane)`) emits `busbar_requests_total` / `busbar_request_duration_seconds`
 /// with exactly the v1.5.4 label set `{ingress_protocol, pool, outcome}` — NO `plane` label — so a
 /// pure-model-plane `/metrics` scrape is byte-identical to v1.5.4. Every OTHER mounted plane emits the
 /// parallel `busbar_plane_requests_total` / `busbar_plane_request_duration_seconds` families, which
@@ -286,7 +301,7 @@ pub(crate) fn request_finished(
     // model-plane families label-identical to v1.5.4. The bank holds only the model plane's label
     // space, so a mounted-plane request would miss it anyway; routing here is explicit rather than
     // relying on that miss, and it targets the correct (plane-labelled) family.
-    if !crate::plane::is_fallback(plane) {
+    if !app.doors.is_fallback(plane) {
         crate::snapshot::incr_plane_requests_total(plane, ingress_protocol, pool, outcome);
         crate::snapshot::record_plane_request_duration(plane, ingress_protocol, pool, seconds);
         return;
@@ -319,7 +334,7 @@ pub fn model_request_finished(
     let outcome = outcome_of(status);
     request_finished(
         app,
-        crate::plane::fallback_key(),
+        app.doors.fallback_key(),
         ingress_protocol,
         pool,
         outcome,
@@ -437,14 +452,15 @@ pub fn pool_queued_on(pool_label: &str, depth: i64) {
 }
 
 /// `busbar_translations_total` for one cross-protocol hop. Both names come from the fallback plane's
-/// declared dialects ([`declared_dialects`]), so the slots are config-independent: one
-/// process-lifetime table over `dialects × dialects` (from ≠ to), resolved by a short linear scan
-/// (≤30 static-str compares — no hash, no allocation). Any other name falls back to the macro.
-pub fn translation(from: &str, to: &str) {
-    static SLOTS: OnceLock<Vec<(&'static str, &'static str, CounterSlot)>> = OnceLock::new();
-    let table = SLOTS.get_or_init(|| {
+/// declared dialects ([`declared_dialects`]) in the door table `app` was built from, so the slots are
+/// config-independent: one table per generation over `dialects × dialects` (from ≠ to), registered on
+/// its first hop and resolved by a short linear scan (≤30 static-str compares — no hash, no
+/// allocation). The slots are the process-lifetime ones the registry interns, so a generation that
+/// re-registers them counts on the same series. Any other name falls back to the macro.
+pub fn translation(app: &App, from: &str, to: &str) {
+    let dialects = app.tslots.translation_dialects;
+    let table = app.tslots.translations.get_or_init(|| {
         let mut v = Vec::new();
-        let dialects = declared_dialects(crate::plane::fallback_key());
         for f in dialects {
             for t in dialects {
                 if f != t {
@@ -480,8 +496,13 @@ pub fn translation(from: &str, to: &str) {
 /// vocabulary the bank registers its families over. Read as declared data, never off a codec list
 /// (ARCHITECT ruling 2026-10-16 item 4; BUSBAR-1.6.0.md #49: the kernel knows no plane strings). A key
 /// no plane registers declares none.
-fn declared_dialects(plane: &str) -> &'static [&'static str] {
-    crate::plane::registry::plane_decl_for(plane).map_or(&[], |d| (d.wire_format_names)())
+fn declared_dialects(
+    doors: crate::plane_driver::doors::Doors,
+    plane: &str,
+) -> &'static [&'static str] {
+    doors
+        .plane_decl_for(plane)
+        .map_or(&[], |d| (d.wire_format_names)(d))
 }
 
 #[cfg(test)]

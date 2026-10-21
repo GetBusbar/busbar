@@ -311,7 +311,7 @@ impl Gate for AdminConfigParityGate {
             (
                 "apply parsing a plain-derived DeployCfg instead of the boot parser is RED",
                 HANDLERS,
-                "busbar_kernel::config::deploy_from_deserializer(req.config)",
+                "busbar_kernel::config::deploy_from_deserializer(req.config, handle.load().doors)",
                 "serde_json::from_value::<busbar_kernel::config::DeployCfg>(req.config)",
                 ROW_ONE_PARSER,
                 "apply_config",
@@ -319,7 +319,7 @@ impl Gate for AdminConfigParityGate {
             (
                 "the boot loader leaving the shared parser is RED",
                 PREPASS,
-                "deploy_from_deserializer(serde_yaml::Deserializer::from_str(text))",
+                "deploy_from_deserializer(serde_yaml::Deserializer::from_str(text), doors)",
                 "serde_yaml::from_str::<DeployCfg>(text)",
                 ROW_ONE_PARSER,
                 BOOT_ENTRY,

@@ -339,8 +339,8 @@ impl BudgetCell {
     /// Total current TOKENS across models — every token-family class (the scalar view for admin
     /// reads and the `tokens:` cap). A class in another family (a rerank's `search_units`, audio
     /// seconds) rides the same map to be PRICED, but it is not a token and never counts as one.
-    fn total_tokens(&self) -> u64 {
-        token_total(self.models.iter().map(|m| &m.cur))
+    fn total_tokens(&self, doors: crate::plane_driver::doors::Doors) -> u64 {
+        token_total(doors, self.models.iter().map(|m| &m.cur))
     }
 
     /// Current summed count of one reserved tier across models — a per-tier cap's counter.
@@ -374,10 +374,10 @@ fn model_deltas<'r>(
 /// Whether `class` counts toward a `tokens:` cap: a reserved token tier, or a class an installed
 /// plane declares in the token family (a streaming plane's `audio_tokens_in` is as much a token as
 /// an LLM's `input`). The one predicate every token total in this module reads.
-pub fn is_token_class(class: &str) -> bool {
-    use crate::plane::registry::{plane_decls, TOKEN_FAMILY};
+pub fn is_token_class(doors: crate::plane_driver::doors::Doors, class: &str) -> bool {
+    use crate::plane_driver::row::TOKEN_FAMILY;
     busbar_contract::records::RESERVED_UNITS.contains(&class)
-        || plane_decls().iter().any(|d| {
+        || doors.decls().iter().any(|d| {
             (d.billable_classes.iter()).any(|c| c.family == TOKEN_FAMILY && c.class == class)
         })
 }
@@ -389,12 +389,13 @@ pub fn is_token_class(class: &str) -> bool {
 /// token, in name order. Fee units are no token series. The kernel reads the class names from the
 /// declarations and names none itself.
 pub fn token_series(
+    doors: crate::plane_driver::doors::Doors,
     lane: &str,
     counts: &std::collections::BTreeMap<String, u64>,
 ) -> Vec<(String, u64)> {
-    use crate::plane::registry::{plane_decls, TOKEN_FAMILY};
+    use crate::plane_driver::row::TOKEN_FAMILY;
     let (plane, _) = busbar_kernel_ledger::cost::split_plane_lane(lane);
-    let owner = plane_decls().iter().find(|d| {
+    let owner = doors.decls().iter().find(|d| {
         if plane.is_empty() {
             d.fallback
         } else {
@@ -411,7 +412,7 @@ pub fn token_series(
         .map(|class| (class.to_string(), counts.get(class).copied().unwrap_or(0)))
         .collect();
     for (class, n) in counts {
-        if is_token_class(class) && !series.iter().any(|(named, _)| named == class) {
+        if is_token_class(doors, class) && !series.iter().any(|(named, _)| named == class) {
             series.push((class.clone(), *n));
         }
     }
@@ -419,9 +420,12 @@ pub fn token_series(
 }
 
 /// Saturating sum of the token-family counts across name-keyed unit maps.
-fn token_total<'a>(maps: impl Iterator<Item = &'a std::collections::BTreeMap<String, u64>>) -> u64 {
+fn token_total<'a>(
+    doors: crate::plane_driver::doors::Doors,
+    maps: impl Iterator<Item = &'a std::collections::BTreeMap<String, u64>>,
+) -> u64 {
     maps.flat_map(|m| m.iter())
-        .filter(|(k, _)| is_token_class(k))
+        .filter(|(k, _)| is_token_class(doors, k))
         .fold(0u64, |acc, (_, v)| acc.saturating_add(*v))
 }
 
@@ -700,6 +704,9 @@ pub type CredentialIndex = HashMap<(String, String), (Arc<VirtualKey>, Credentia
 /// (always `Some` in a running engine — governance is always constructed; `None` only in tests that
 /// omit it) — NOT a process-global, so tests stay isolated.
 pub struct GovState {
+    /// The door table the planes' token classes are read off ([`is_token_class`]): the one the
+    /// generation that built this state was lent ([`GovState::with_doors`]).
+    doors: crate::plane_driver::doors::Doors,
     store: Arc<dyn RecordStore>,
     /// Both auth-path caches under ONE lock so `refresh` swaps them atomically — a reader can never
     /// observe a new `by_hash` against a stale `by_access_key_id`. See `GovCaches`.

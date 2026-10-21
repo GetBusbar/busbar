@@ -274,6 +274,7 @@ impl AdminService {
         // discoverable to an operator inspecting state rather than boot logs. A name that is live
         // wins — the registry only ever holds names the applier actually dropped.
         for (name, entry) in busbar_kernel::config::overlay::unparseable_named_map_entries(
+            self.app.doors,
             self.app.overlay_path.as_deref(),
             section,
         ) {
@@ -312,13 +313,16 @@ impl AdminService {
             // 404 for a name that is sitting in the operator's own overlay is precisely the silent
             // drop this surfaces.
             busbar_kernel::config::overlay::unparseable_named_map_entries(
+                self.app.doors,
                 self.app.overlay_path.as_deref(),
                 section,
             )
             .get(name)
             .map(|entry| unparseable_def_view(name, entry))
         })
-        .ok_or_else(|| AdminError::not_found(format!("{} `{name}`", section.singular())))
+        .ok_or_else(|| {
+            AdminError::not_found(format!("{} `{name}`", section.singular(self.app.doors)))
+        })
     }
 
     /// `GET /api/v1/admin/groups` — the `groups:` limit tree read. Read scope. Each entry is the
@@ -1526,7 +1530,10 @@ impl AdminService {
         if !corrections.is_empty() {
             for r in &rows {
                 eras_of
-                    .entry((r.key_id.as_str(), row_lane(&r.model, &r.provider)))
+                    .entry((
+                        r.key_id.as_str(),
+                        row_lane(self.app.doors, &r.model, &r.provider),
+                    ))
                     .or_default()
                     .push(r.priced_from_ms);
             }
@@ -1534,7 +1541,7 @@ impl AdminService {
         for r in &rows {
             // THE ROW'S LANE: a non-pools plane's row is priced as that plane's (`row_lane`) — its
             // requests at the plane's own fee, as the budget book charges them (#47).
-            let lane = row_lane(&r.model, &r.provider);
+            let lane = row_lane(self.app.doors, &r.model, &r.provider);
             // Spend derives PER ROW (the model is known here - the per-model rate applies), then
             // aggregates ADDITIVELY into total/by_model/by_key, so every rollup is exact under a
             // heterogeneous rate card.
@@ -1631,7 +1638,7 @@ impl AdminService {
             // view keeps 1.5.5's shape (`row_carries_classes`).
             let none = UsageBreakdown::default();
             let unitemized = std::collections::BTreeMap::new();
-            let itemized = if row_carries_classes(&r.provider) {
+            let itemized = if row_carries_classes(self.app.doors, &r.provider) {
                 classes
             } else {
                 &unitemized

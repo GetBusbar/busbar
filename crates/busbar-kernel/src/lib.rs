@@ -264,7 +264,6 @@ mod member_tests;
 #[cfg(test)]
 #[path = "tests/operation_tests.rs"]
 mod operation_tests;
-pub mod plane;
 pub mod plane_host;
 pub mod plugin_routes;
 /// THE PLUGIN-ADMISSION MACHINERY the operator surface drives (upload, verify, inventory, rescan):
@@ -285,7 +284,6 @@ pub mod plugin_admission {
 // Relocated byte-identically out of `busbar-substrate-values`, whose module is DELETED rather than
 // kept as a re-export: one type, one home.
 pub mod profile;
-pub mod proto;
 pub mod proxy;
 /// Per-principal admin MUTATION rate limits (`MutationLimiter`), relocated out of `admin::` (1.6.0
 /// de-vocab): it is core's own auth-middleware infrastructure — gating every request in
@@ -332,8 +330,7 @@ pub mod timing;
 // where it now lives (`test_support::seam`, `test_support::engine_kit`).
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
-/// The kernel's neutral test seam: a test-support consumer that links no plane installs it, and the
-/// kernel's own test binary reads its protocol set.
+/// The kernel's neutral test seam: a test-support consumer that links no plane installs it.
 #[cfg(any(test, feature = "test-support"))]
 pub mod testkit;
 pub mod tls;
@@ -414,6 +411,7 @@ pub fn base_data_route_table_view(app: &state::App) -> Vec<(String, RouteAuth)> 
         &app.plugin_routes,
         &app.plane_slots,
         app.oauth_as.as_ref(),
+        app.doors,
         Vec::new(),
         Vec::new(),
     )
@@ -440,6 +438,7 @@ pub fn base_data_core_lines(
         &app.plugin_routes,
         &app.plane_slots,
         app.oauth_as.as_ref(),
+        app.doors,
         Vec::new(),
         Vec::new(),
     )
@@ -460,6 +459,7 @@ pub fn base_data_route_method_view(app: &state::App) -> Vec<(String, String, Rou
         &app.plugin_routes,
         &app.plane_slots,
         app.oauth_as.as_ref(),
+        app.doors,
         Vec::new(),
         Vec::new(),
     )

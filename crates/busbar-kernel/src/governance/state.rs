@@ -77,6 +77,14 @@ fn signed_binding(spec: NewKeySpec, now: u64) -> RecordStoreResult<(VirtualKey, 
 }
 
 impl GovState {
+    /// This state, reading the planes' token classes off `doors`, the table the generation that
+    /// builds it was lent.
+    #[must_use]
+    pub fn with_doors(mut self, doors: crate::plane_driver::doors::Doors) -> Self {
+        self.doors = doors;
+        self
+    }
+
     /// Production never constructs a `GovState` this way -- `appbuild` always resolves a signer and
     /// calls [`GovState::new_with_signer`]. The compiler already agreed (`allow(dead_code)` outside
     /// `test`); the gate below says the same thing in the surface instead of in an attribute, so a
@@ -116,6 +124,7 @@ impl GovState {
             busbar_kernel::store::now(),
         );
         Ok(Self {
+            doors: crate::plane_driver::doors::Doors::NONE,
             store,
             caches: RwLock::new(GovCaches {
                 by_id,
@@ -483,12 +492,15 @@ impl GovState {
     /// second place the signing key lives that a rotation has to remember to invalidate, and
     /// `set_signing_key` swapping the material underneath a stale card signer is exactly the
     /// mint-under-one-key-verify-under-another failure the material is held together to prevent.
-    pub fn card_issuer(&self) -> Option<crate::plane::registry::CardIssuer> {
-        let decl = crate::plane::registry::plane_decl_for_config_section("agents")?;
+    pub fn card_issuer(
+        &self,
+        doors: crate::plane_driver::doors::Doors,
+    ) -> Option<crate::plane_driver::row::CardIssuer> {
+        let decl = doors.plane_decl_for_config_section("agents")?;
         let domain = decl.card_signing_domain?;
         let prefix = decl.card_kid_prefix?;
         let m = self.signing_material()?;
-        Some(crate::plane::registry::CardIssuer {
+        Some(crate::plane_driver::row::CardIssuer {
             kid: format!("{prefix}{}", m.signer.kid()),
             issuer_spki_base64: m.signer.card_subkey_key_info_base64(domain),
         })
@@ -504,9 +516,14 @@ impl GovState {
     // domain wires; with no such plane installed this has no caller. Unconditional allow — the neutral
     // host names no plane feature; the card-signing domain is resolved from the registry.
     #[allow(dead_code)]
-    pub fn card_sign(&self, signing_input: &[u8]) -> Option<[u8; 64]> {
-        let domain =
-            crate::plane::registry::plane_decl_for_config_section("agents")?.card_signing_domain?;
+    pub fn card_sign(
+        &self,
+        doors: crate::plane_driver::doors::Doors,
+        signing_input: &[u8],
+    ) -> Option<[u8; 64]> {
+        let domain = doors
+            .plane_decl_for_config_section("agents")?
+            .card_signing_domain?;
         let m = self.signing_material()?;
         Some(m.signer.sign_with_card_subkey(domain, signing_input))
     }
@@ -945,7 +962,9 @@ impl GovState {
             // Counters for THIS window only; a stale (older-window) cell contributes zero usage.
             let (requests, tokens) = match self.budget.read(bucket.bucket_id).get(bucket.bucket_id)
             {
-                Some(cell) if cell.window_start == window => (cell.requests, cell.total_tokens()),
+                Some(cell) if cell.window_start == window => {
+                    (cell.requests, cell.total_tokens(self.doors))
+                }
                 _ => (0, 0),
             };
             let frac = |used: u64, cap: u64| -> f64 {
@@ -1616,7 +1635,7 @@ impl GovState {
             .and_then(Money::minor_i64)
             .map(|spend_cents| DerivedUsage {
                 spend_cents,
-                tokens: cell.total_tokens(),
+                tokens: cell.total_tokens(self.doors),
                 requests: cell.requests,
             }))
     }
@@ -2047,7 +2066,9 @@ impl GovState {
             let (requests, tokens, live, derived) = match map.get(bucket.bucket_id) {
                 Some(cell) if cell.window_start >= window => (
                     cell.requests,
-                    bucket.tokens_cap.map_or(0, |_| cell.total_tokens()),
+                    bucket
+                        .tokens_cap
+                        .map_or(0, |_| cell.total_tokens(self.doors)),
                     Some(cell),
                     bucket.budget_cap.map_or(Ok(0), |_| {
                         (cell.spend(cost, true)).and_then(Money::minor_i64)

@@ -201,7 +201,7 @@ pub fn catalog_names(app: &App, gov: &GovCtx) -> Vec<String> {
     // Each plane generation's listed names, appended after the routing tables' own, scope-filtered
     // as the plane admits them; a name already listed is not listed twice. None listed: the list,
     // and so the bytes, are unchanged.
-    for name in crate::plane_driver::door::listed(&app.plane_slots, gov.key.as_deref()) {
+    for name in crate::plane_driver::door::listed(app.doors, &app.plane_slots, gov.key.as_deref()) {
         if !names.contains(&name) {
             names.push(name);
         }
@@ -256,7 +256,8 @@ fn plugin_dispatch_halted(latched: bool) -> Option<Response> {
 /// Whether any configured non-model plane's generation opened: its runtime slot was built for this
 /// generation and, for a door plane, its open answered ([`crate::plane_driver::door::opened`]).
 fn a_plane_opened(app: &crate::state::App) -> bool {
-    crate::plane::registry::plane_decls()
+    app.doors
+        .decls()
         .iter()
         .filter(|d| !d.fallback && app.plane_configured(d))
         .filter_map(|d| app.plane_slot(d.key))

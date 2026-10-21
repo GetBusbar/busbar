@@ -334,19 +334,16 @@ fn openapi_hook_escalation_endpoints_document_403() {
 const COMMITTED_OPENAPI_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/src/v1/json/openapi.json");
 
-/// SEAM PRECONDITION for every openapi test: `openapi_doc()` reads the process-global plane registry,
-/// which is populated by `crate::ensure_seam()` (the linked plane decls that contribute the
-/// `tools:`/`agents:` admin trust-verb operations). Only `openapi_json_matches_committed_file` used to
-/// install it, so any OTHER openapi test that read the document before that test's `ensure_seam()`
-/// happened to run first saw a PLANE-LESS document (5 operations short) — deterministic single-threaded
-/// (definition order), but a race under `--test-threads > 1`. `ensure_seam()` is `Once`-guarded and
-/// idempotent, so routing every read through this helper makes the document plane-complete regardless
-/// of harness thread count or test order. (Test-harness setup, not a production ordering bug — the
-/// composition root installs the planes before the binary ever serves the document.)
+/// SEAM PRECONDITION for every openapi test: `openapi_doc(doors)` reads the door table it is lent —
+/// here the kernel's neutral test table, the one every `crate::new_test_app()` generation is lent —
+/// after `crate::ensure_seam()` installs the admin mount seam. `ensure_seam()` is `Once`-guarded and
+/// idempotent, so routing every read through this helper renders the document over one table
+/// regardless of harness thread count or test order. (Test-harness setup, not a production ordering
+/// bug — the composition root lends its table before the binary ever serves the document.)
 #[cfg(feature = "openapi-schema")]
 fn openapi_doc_seamed() -> serde_json::Value {
     crate::ensure_seam();
-    openapi_doc()
+    openapi_doc(busbar_kernel::test_support::neutral_test_doors())
 }
 
 /// The string the live handler serves (the inflate of the embedded gz) must be BYTE-IDENTICAL to
@@ -520,7 +517,11 @@ fn declared_errors_is_total_and_well_formed() {
             let Some(method) = MethodTag::from_op_key(key) else {
                 continue;
             };
-            let declared = declared_errors(method, rel);
+            let declared = declared_errors(
+                busbar_kernel::test_support::neutral_test_doors(),
+                method,
+                rel,
+            );
             let mut seen = std::collections::BTreeSet::new();
             for de in declared {
                 assert!(
@@ -531,7 +532,9 @@ fn declared_errors_is_total_and_well_formed() {
                     de.kind.status()
                 );
                 assert!(
-                    !de.cond.phrase().is_empty(),
+                    !de.cond
+                        .phrase(busbar_kernel::test_support::neutral_test_doors())
+                        .is_empty(),
                     "{key} {rel}: {:?} has no phrase",
                     de.cond
                 );
@@ -547,7 +550,11 @@ fn declared_errors_is_total_and_well_formed() {
             let by_status = op[OAS_OPERATION_STATUSES]
                 .as_object()
                 .expect("documented statuses");
-            for (status, description) in declared_responses(method, rel) {
+            for (status, description) in declared_responses(
+                busbar_kernel::test_support::neutral_test_doors(),
+                method,
+                rel,
+            ) {
                 assert_eq!(
                     by_status[&status]["description"].as_str(),
                     Some(description.as_str()),

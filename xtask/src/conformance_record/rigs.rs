@@ -1166,9 +1166,11 @@ impl Runner {
                         "--features",
                         "plane-streaming",
                         "--test",
-                        // `voice_boot` folded into this one test over every linked plane that owns
-                        // a section (142d77646f, K3); the streams plane's `streams:` is one of them.
-                        "plane_owned_sections_boot",
+                        // The owned-section claims judged by the boot guard, a `streams:` claimant
+                        // among them. (`plane_owned_sections_boot` was gated on a `plane` axis no
+                        // linked row carries, so it compiled to nothing and is deleted; status row
+                        // 82, D2.)
+                        "registry_cross_plane",
                     ][..],
                 ),
             ] {

@@ -26,8 +26,8 @@ use crate::store::{HealthState, LaneData};
 use crate::{
     admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
     durable, endpoints, export, governance, handlers, hooks, ingress, ir, json, limits, oauth_as,
-    observability, operation, plane, plugin_routes, profile, proto, proxy, ratelimit, snapshot,
-    state, store, telemetry, tls, transport, trust,
+    observability, operation, plugin_routes, profile, proxy, ratelimit, snapshot, state, store,
+    telemetry, tls, transport, trust,
 };
 use busbar_kernel::plane_host::{
     AffinityInput, AuthStyleInput, ClientSettingsInput, FailoverInput, HealthInput,
@@ -314,6 +314,7 @@ pub fn load_config_from_disk(
     providers_override: Option<&std::path::Path>,
     safe_mode: bool,
     env_mode: config::EnvSubst,
+    doors: crate::plane_driver::doors::Doors,
 ) -> Result<LoadedConfig, String> {
     let mut unset_env_vars: Vec<String> = Vec::new();
     // 1.5.3: read + parse config.yaml FIRST — it may name the providers catalog (`providers_file:`).
@@ -342,8 +343,8 @@ pub fn load_config_from_disk(
     // The 1.6.0-additive keys come off the document FIRST (see `config::prepass`), so what the
     // frozen 1.5.5-shaped structs parse — and what they name in an unknown-key refusal — is the
     // 1.5.5 document and nothing else.
-    let deploy: config::DeployCfg =
-        config::deploy_from_yaml_str(&interpolated_config).map_err(|e| {
+    let deploy: config::DeployCfg = config::deploy_from_yaml_str(&interpolated_config, doors)
+        .map_err(|e| {
             format!(
                 "config.yaml: invalid YAML: {}",
                 config::augment_config_error(e)
@@ -613,6 +614,9 @@ pub fn build_app_from_config(
     prior: Option<&state::App>,
     rules: &std::sync::Arc<dyn RootRules>,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
+    // The door table this configuration was parsed against, lent by the composition root: every
+    // plane read below is a read of it, and the generation carries it ([`state::App::doors`]).
+    let doors = cfg.doors;
     // The root's rules of this configuration, before any part of it is built or installed: a
     // refusal leaves the running generation as it is.
     rules.check(&cfg)?;
@@ -922,11 +926,11 @@ pub fn build_app_from_config(
         // against the lane's wire model by `ir::lane_caps` (architect ruling LANECAPS-MOVE).
         let lane_caps = legacy.lane_caps(facts.upstream_model.as_deref().unwrap_or(&ld.member));
         // The "supported:" roster is the planes' DECLARED provider dialects
-        // (`plane::provider_dialects`, ARCHITECT ruling 2026-10-16 item 3), not a hand-maintained
+        // (`Doors::provider_dialects` over the lent table, ARCHITECT ruling 2026-10-16 item 3), not a hand-maintained
         // literal and not a codec list: a build with the plane that declares them compiled out names
         // only what it actually serves, and a build with a new dialect names it. Empty roster is a
         // real answer.
-        let providers = crate::plane::provider_dialects();
+        let providers = doors.provider_dialects();
         let Some(protocol) = providers
             .iter()
             .copied()
@@ -1391,7 +1395,7 @@ pub fn build_app_from_config(
             signer,
         ) {
             Ok(gs) => {
-                let gs = Arc::new(gs);
+                let gs = Arc::new(gs.with_doors(doors));
                 // The store's typed records, kept for the kernel's host services (plane records
                 // persist in the configured store: ARCHITECT Q-L3B-RECORDS).
                 if let Some(calls) = store_calls {
@@ -1545,7 +1549,7 @@ pub fn build_app_from_config(
     let mut plane_gates = std::collections::BTreeMap::new();
     let mut plane_rewrites = std::collections::BTreeMap::new();
     for (section, defs) in &cfg.plane_defs {
-        let Some(decl) = crate::plane::registry::plane_decl_for_config_section(section) else {
+        let Some(decl) = doors.plane_decl_for_config_section(section) else {
             continue;
         };
         let g = defs.container_gates();
@@ -1632,12 +1636,13 @@ pub fn build_app_from_config(
         Arc<dyn std::any::Any + Send + Sync>,
     > = {
         // LAW 7: an unconfigured plane builds no slot, so it claims, admits and mounts nothing.
-        crate::plane::registry::plane_decls()
+        doors
+            .decls()
             .iter()
             .filter(|decl| decl.fallback || cfg.plane_sections.contains(decl.config_section))
             .filter(|decl| decl.fallback || !planes_awaiting_restart.contains(&decl.config_section))
             .filter_map(|decl| {
-                let ctx = crate::plane::registry::BuildCtx {
+                let ctx = crate::plane_driver::row::BuildCtx {
                     // THIS plane's own section-keyed resource, ALREADY validated and TYPE-ERASED by
                     // config resolution: the `tools:` container plane's endpoint resource (the SAME
                     // `Arc` it clones into `plane_slots` and downcasts inside its own module, so
@@ -1656,7 +1661,7 @@ pub fn build_app_from_config(
                     // The resolved providers: a door plane's probe is handed its referenced ones.
                     providers: Some(&cfg.providers),
                 };
-                (decl.build)(&ctx).map(|obj| (decl.key, obj))
+                (decl.build)(decl, &ctx).map(|obj| (decl.key, obj))
             })
             .collect()
     };
@@ -1690,7 +1695,8 @@ pub fn build_app_from_config(
         &ts_pools,
         &ts_by_model,
         |idx| lane_inputs.get(idx).map(|lane| lane.model.as_str()),
-        crate::plane::fallback_key(),
+        doors.fallback_key(),
+        doors,
     ));
 
     // Populate the NEUTRAL carrier field-by-field from the already-resolved config (pre-resolved secret
@@ -1737,13 +1743,13 @@ pub fn build_app_from_config(
     // exactly as a container plane's runtime is composed above — passing the neutral carrier erased to
     // `&dyn Any` and the prior generation's snapshot through the neutral `PlaneSlots` seam (for the
     // warm-client / probe-schedule carry-over the plane now owns). The slot KEY and the `build_runtime`
-    // come from ONE resolved decl ([`crate::plane::fallback_decl`]): keying off `fallback_key()` would
+    // come from ONE resolved decl ([`crate::plane_driver::doors::Doors::fallback_decl`]): keying off `fallback_key()` would
     // degrade to the FIRST registered plane's key when no plane flags itself fallback, and the key and
     // the runtime read from two registry snapshots could name two different planes — the runtime then
     // lands under a sibling's key and clobbers that sibling's own runtime. With no fallback plane the
     // key names no plane (no slot is inserted under it) and `App::llm_runtime` reads the empty
     // default — byte-identical to the featureless zero-plane boot.
-    let fallback = crate::plane::fallback_decl();
+    let fallback = doors.fallback_decl();
     let fallback_runtime_key = crate::state::runtime_slot_key(fallback.map_or("", |d| d.key));
     if let Some(f) = fallback.and_then(|d| d.build_runtime) {
         let slot = f(
@@ -1796,10 +1802,11 @@ pub fn build_app_from_config(
                 .endpoint_resources
                 .get(crate::config::plane_sections::EndpointSection::OWNER)
                 .and_then(|slot| {
-                    crate::plane::registry::plane_decl_for_config_section(
-                        crate::config::plane_sections::EndpointSection::OWNER,
-                    )
-                    .and_then(|d| (d.admission)(slot.as_ref()))
+                    doors
+                        .plane_decl_for_config_section(
+                            crate::config::plane_sections::EndpointSection::OWNER,
+                        )
+                        .and_then(|d| (d.admission)(slot.as_ref()))
                 })
                 .map(|adm| adm.audience)
                 .into_iter()
@@ -1831,6 +1838,12 @@ pub fn build_app_from_config(
     // read on the hook seam with a single relaxed load.
 
     let app = App {
+        doors,
+        // The boot generation's admin table is a new one; every generation after it carries its
+        // prior's, so the instances the root published stay served across an apply.
+        serve_tables: prior.map_or_else(crate::plane_driver::serve::ServeTables::default, |p| {
+            p.serve_tables.clone()
+        }),
         root_rules: std::sync::Arc::clone(rules),
         config_projection,
         plane_sections: Some(cfg.plane_sections.clone()),
@@ -1861,7 +1874,8 @@ pub fn build_app_from_config(
         // is inserted on every build with that container plane compiled in, so the gate reads the
         // DECL keys (config-conditional), never it.
         plane_breakers: {
-            let planes_configured = crate::plane::registry::plane_decls()
+            let planes_configured = doors
+                .decls()
                 .iter()
                 .any(|d| plane_slots.contains_key(d.key))
                 || cfg.plane_defs.values().any(|d| !d.def_names().is_empty())
@@ -1899,8 +1913,7 @@ pub fn build_app_from_config(
             .plane_pools
             .iter()
             .filter_map(|(section, pools)| {
-                crate::plane::registry::plane_decl_for_config_section(section)
-                    .map(|decl| (decl.key, pools.clone()))
+                (doors.plane_decl_for_config_section(section)).map(|decl| (decl.key, pools.clone()))
             })
             .collect(),
         auth: auth_mw.clone(),
@@ -1981,8 +1994,8 @@ pub fn build_app_from_config(
                     .iter()
                     .map(|(k, v)| (*k, v.as_ref() as &dyn std::any::Any))
                     .collect();
-            crate::plane::registry::build_dispatch(
-                crate::plane::registry::plane_decls(),
+            crate::plane_driver::doors::build_dispatch(
+                doors.decls(),
                 &ref_slots,
                 auth_mw.keys_in_chain,
             )?
@@ -2072,7 +2085,7 @@ pub fn build_app_from_config(
     // contract: when the operator REMOVES a plane's block the live subject set is EMPTY, so retain
     // drops every carried flight/latch instead of leaking one per removed subject. The two hooks touch
     // disjoint gates (each plane's own runtime `verify`), so the registry iteration order is not observable.
-    for decl in crate::plane::registry::plane_decls() {
+    for decl in doors.decls() {
         if let Some(retain) = decl.retain_verify_gates {
             retain(&app);
         }

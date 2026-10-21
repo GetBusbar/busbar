@@ -21,7 +21,8 @@
 mod linked;
 
 use busbar_kernel::config::RootCfg;
-use busbar_kernel::plane::registry::{BuildCtx, PlaneDecl};
+use busbar_kernel::plane_driver::row::BuildCtx;
+use busbar_kernel::plane_driver::row::PlaneDecl;
 use busbar_kernel::test_support::*;
 use std::sync::Arc;
 
@@ -62,13 +63,14 @@ fn resolved(sections: &str) -> RootCfg {
          providers:\n  acme: {{ api_key: none }}\n\
          models:\n  m: {{ provider: acme }}\n{sections}"
     );
-    let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("the document parses");
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml, linked::table())
+        .expect("the document parses");
     let mut defs = std::collections::HashMap::new();
     defs.insert(
         "acme".to_string(),
         serde_yaml::from_str(&format!(
             "protocol: {}\nbase_url: https://api.example.com\n",
-            busbar_kernel::proto::residual_default_dialect().expect("a residual-default dialect")
+            linked::residual_default_dialect()
         ))
         .expect("provider def"),
     );
@@ -100,7 +102,7 @@ fn built_planes(cfg: &RootCfg) -> Vec<(&'static PlaneDecl, Arc<dyn std::any::Any
                 prior: None,
                 providers: None,
             };
-            (decl.build)(&ctx).map(|obj| (decl, obj))
+            (decl.build)(decl, &ctx).map(|obj| (decl, obj))
         })
         .collect()
 }
@@ -141,7 +143,7 @@ fn jsonrpc_mount(decl: &'static PlaneDecl, sections: &str) -> String {
         .map(|u| u.path().trim_end_matches('/').to_string());
     let jsonrpc: Vec<String> = (decl.claims)(&*obj)
         .into_iter()
-        .filter(|(_, wire)| *wire == busbar_kernel::plane::WIRE_JSONRPC)
+        .filter(|(_, wire)| *wire == busbar_kernel::plane_driver::claims::WIRE_JSONRPC)
         .map(|(path, _)| path)
         .collect();
     jsonrpc
@@ -183,7 +185,7 @@ async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dia
     busbar_kernel::snapshot::init();
     let sections = door_section_yaml("gateway.example.com");
     let mount = jsonrpc_mount(door_plane(), &sections);
-    let app = configured(TestApp::new(), &sections, None).build();
+    let app = configured(TestApp::new().doors(linked::table()), &sections, None).build();
 
     let v = oversized_413_body(app, &mount).await;
 
@@ -211,7 +213,7 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
     busbar_kernel::snapshot::init();
     let sections = door_section_yaml("gateway.example.com");
     let mount = jsonrpc_mount(door_plane(), &sections);
-    let app = configured(TestApp::new(), &sections, None).build();
+    let app = configured(TestApp::new().doors(linked::table()), &sections, None).build();
 
     // UNDER the mount, at a segment boundary: claimed.
     let under = oversized_413_body(app.clone(), &format!("{mount}/anything")).await;
@@ -282,7 +284,7 @@ fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
         );
         let claims: Vec<String> = (decl.claims)(&*slot)
             .into_iter()
-            .filter(|(_, wire)| *wire == busbar_kernel::plane::WIRE_JSONRPC)
+            .filter(|(_, wire)| *wire == busbar_kernel::plane_driver::claims::WIRE_JSONRPC)
             .map(|(path, _)| path)
             .collect();
         assert!(
@@ -415,7 +417,9 @@ mod metrics_scrape {
         let door_mount = jsonrpc_mount(door_plane(), &sections);
         let agents_mount = jsonrpc_mount(agents_plane(), &sections);
         let app = configured(
-            TestApp::new().public_url("https://busbar.example"),
+            TestApp::new()
+                .doors(linked::table())
+                .public_url("https://busbar.example"),
             &sections,
             Some("https://busbar.example"),
         )
@@ -633,10 +637,11 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
 
     let app = configured(
         TestApp::new()
+            .doors(linked::table())
             .lane(
                 LaneSpec::new(
                     "test-model",
-                    busbar_kernel::proto::PROTO_ANTHROPIC,
+                    linked::residual_default_dialect(),
                     &server.base_url(),
                 )
                 .api_key("busbar-upstream-key"),
@@ -697,18 +702,13 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     }
     // THE BODY-INGRESS CONVENIENCE ROUTES (1.5.5 surface, `/{name}/v1/messages`,
     // `/{provider}/{model}/v1/messages`): OBSERVATION POINT MOVED (DEV-GREEN row 83, ARCHITECT
-    // option (a) on #1161). No plane installs a kernel body-model arrival any more, so the kernel's
-    // router mounts neither path: the door that serves the `pools` map serves both through its `/`
+    // option (a) on #1161). The kernel keeps no body-model arrival table at all (status row 82, D2),
+    // so its router mounts neither path: the door that serves the `pools` map serves both through its `/`
     // claim, mounted by the composition root. The confinement this walk held on them (an
     // audience-bound token buys nothing there, its plain sibling is admitted) is walked where that
     // door is mounted: `root::door_steps::tests::door_boundary::
     // an_audience_bound_token_is_confined_to_its_door_plane_through_the_composition`, over every
     // guarded route of the door's data router. Here, the kernel's half: it mounts neither.
-    assert!(
-        !busbar_kernel::ingress::arrival::any_body_ingress(),
-        "a kernel body-model arrival is installed again: the convenience routes would be the \
-         kernel's, and this walk would owe them the confinement assertions"
-    );
     for pattern in BODY_INGRESS_ROUTES {
         assert!(
             !core_routes.iter().any(|(path, _, _)| path == pattern),

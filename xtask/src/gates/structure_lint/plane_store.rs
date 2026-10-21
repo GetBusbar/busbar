@@ -34,15 +34,16 @@ const BOOTCTX_DECL: &str = "pub struct BootCtx";
 /// The two handles that carry the chain by name.
 const WIDE_HANDLES: [&str; 2] = ["audit::Chain", "GovCtx"];
 
-/// WHERE THE PLANE TRUST-STATE TYPES LIVE, each sink attach this rule judges: the plane module the
-/// rule began over, the trust module the demotion record moved to (row 82 D2 item 13), and the host
-/// work module the handle engine moved to (row 82 D2, #1069). A move out of these homes empties the
-/// scan and the scan-set row refuses it; a home that holds no source is refused the same way. The
+/// WHERE THE PLANE TRUST-STATE TYPES LIVE, each sink attach this rule judges: the plane driver,
+/// where the kernel's plane module the rule began over went (row 82 D2: the driver's door rows and
+/// the opened door set), the trust module the demotion record moved to (row 82 D2 item 13), and the
+/// host work module the handle engine moved to (row 82 D2, #1069). A move out of these homes empties
+/// the scan and the scan-set row refuses it; a home that holds no source is refused the same way. The
 /// AUDIT sink (`audit/`) is deliberately not a home: the audit ring IS the chain.
 #[must_use]
 pub fn sink_scopes(a: &Addresses) -> [String; 3] {
     [
-        format!("{}/plane", a.core),
+        format!("{}/plane_driver", a.core),
         format!("{}/trust", a.core),
         format!("{}/host_work", a.core),
     ]
@@ -143,7 +144,7 @@ fn scan_sinks(cx: &Ctx, a: &Addresses, f: &mut Findings) {
 }
 
 fn scan_bootctx(cx: &Ctx, a: &Addresses, f: &mut Findings) {
-    let file = format!("{}/plane/registry.rs", a.core);
+    let file = format!("{}/plane_driver/row.rs", a.core);
     let Ok(text) = cx.read(&file) else {
         f.bootctx_subject.push(finding_bootctx_missing(&file));
         return;

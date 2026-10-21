@@ -318,6 +318,14 @@ pub struct Declares {
     /// false, so every manifest packed before the field existed keeps its canonical bytes.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub disk: bool,
+    /// THE STREAM MEDIA a plane relays piece by piece (ARCHITECT ruling on the stream-media
+    /// carrier, BUSBAR-1.6.0.md l.246: a structured fact the plane states once): each
+    /// `Content-Type` its replies stream under beyond the contract's event stream
+    /// (`busbar_contract::protocol::TEXT_EVENT_STREAM`, the default every host holds). A reply head
+    /// naming one goes out piece by piece even when it states a length. Left off the wire when
+    /// empty, so every manifest packed before the field existed keeps its canonical bytes.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub stream_media: Vec<String>,
 }
 
 /// A plane's declared BREAKER FACTS (`declares.breaker`, ARCHITECT Q4): per-plane facts about the
@@ -421,6 +429,7 @@ impl Declares {
             && self.egress.is_default()
             && self.breaker.is_none()
             && !self.disk
+            && self.stream_media.is_empty()
     }
 }
 

@@ -796,14 +796,14 @@ type PlaneContainerHooks =
 pub type BuiltApp = crate::state::App;
 
 /// The default runtime of the plane that owns the tool-server section, for the current build
-/// surface: this crate's own `cfg(test)` binary seeds the registry's placeholder
-/// (`plane::registry::default_section_plane_test_runtime`, an empty value). An external
-/// `test-support` build seeds none; a test that registers that plane installs its own runtime. (A registration slot an
-/// external consumer could fill once stood here; nothing ever filled it, and a static fn-pointer
-/// seam is a `door-only` finding.)
+/// surface: this crate's own `cfg(test)` binary seeds the placeholder
+/// (`plane_driver::doors::default_section_plane_test_runtime`, an empty value) when the table a
+/// `TestApp` was lent holds that plane. An external `test-support` build seeds none; a test that
+/// lends that plane installs its own runtime. (A registration slot an external consumer could fill
+/// once stood here; nothing ever filled it, and a static fn-pointer seam is a `door-only` finding.)
 #[cfg(test)]
 fn seeded_section_plane_runtime() -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
-    Some(crate::plane::registry::default_section_plane_test_runtime())
+    Some(crate::plane_driver::doors::default_section_plane_test_runtime())
 }
 #[cfg(all(not(test), feature = "test-support"))]
 fn seeded_section_plane_runtime() -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
@@ -927,7 +927,7 @@ pub struct TestApp {
     /// THE NEUTRAL DISPATCH TABLE the built App mounts. A plane's test-kit describes its mounts and
     /// admissions through [`TestApp::mount_plane`] / [`TestApp::admit_plane`] (neutral `&str` paths,
     /// substrate `PlaneAdmission`), so `build()` names no plane type to assemble the router surface.
-    plane_dispatch: crate::plane::PlaneDispatch,
+    plane_dispatch: crate::plane_driver::claims::PlaneDispatch,
     /// NEUTRAL per-container hook SPECS, KEYED by the owning plane's decl key (the `tools:` plane's
     /// server hooks, the `agents:` plane's agent hooks) — each value is `(container_name, own_hook_names)`
     /// pairs plus the section-level hook list, handed here by that plane's test-kit as plain strings off
@@ -949,6 +949,14 @@ pub struct TestApp {
     /// construction that NAMES plane types lives entirely in the plane crate's test-kit.
     #[allow(clippy::type_complexity)]
     plane_finalizers: Vec<Box<dyn FnOnce(&mut dyn busbar_kernel::test_support::TestAppSeam)>>,
+    /// THE DOOR TABLE this generation is lent ([`TestApp::doors`]), as the composition root lends
+    /// its own to `appbuild`: every plane read the built `App` answers reads it. The neutral test
+    /// table ([`neutral_test_doors`]) when a test lends none.
+    doors: crate::plane_driver::doors::Doors,
+    /// THE ADMIN TABLE this generation is lent ([`TestApp::serve_tables`]), as the composition root
+    /// lends the boot generation the table it publishes its door planes into. An empty one when a
+    /// test lends none.
+    serve_tables: crate::plane_driver::serve::ServeTables,
 }
 
 impl Default for TestApp {
@@ -957,17 +965,23 @@ impl Default for TestApp {
     }
 }
 
-/// THE ROOT'S `register_seams`, IN A TEST BINARY: the parse-time section list (the test fold,
-/// [`crate::config::plane_sections::default_plane_sections`]), first-wins. A plane's test-kit calls this where
-/// the composition root would have bound it, so a plane test that drives a wire leg without building
-/// a [`TestApp`] runs on the same binding a shipped binary does.
-pub fn install_root_seams() {
-    crate::config::plane_sections::install_plane_sections(
-        crate::config::plane_sections::default_plane_sections,
-    );
-}
-
 impl TestApp {
+    /// LEND this generation `doors`, the door table its `App` reads every plane off — a test's own
+    /// ([`crate::plane_driver::doors::Doors::for_test`]) in place of the neutral one.
+    #[must_use]
+    pub fn doors(mut self, doors: crate::plane_driver::doors::Doors) -> Self {
+        self.doors = doors;
+        self
+    }
+
+    /// LEND this generation `tables`, the admin table its stated admin routes and the admin
+    /// router's fallback answer off — the one a test's composed door planes were published into.
+    #[must_use]
+    pub fn serve_tables(mut self, tables: crate::plane_driver::serve::ServeTables) -> Self {
+        self.serve_tables = tables;
+        self
+    }
+
     /// LAW 7: build the App with exactly these plane sections configured (`[]` = a 1.5.5 config).
     pub fn plane_sections(mut self, sections: &[&'static str]) -> Self {
         self.plane_sections = Some(sections.iter().copied().collect());
@@ -1021,10 +1035,12 @@ impl TestApp {
             disk_paths: None,
             no_plugin_routes: false,
             installed_plane_runtimes: std::collections::BTreeMap::new(),
-            plane_dispatch: crate::plane::PlaneDispatch::default(),
+            plane_dispatch: crate::plane_driver::claims::PlaneDispatch::default(),
             container_hooks: std::collections::BTreeMap::new(),
             plane_scratch: std::collections::HashMap::new(),
             plane_finalizers: Vec::new(),
+            doors: neutral_test_doors(),
+            serve_tables: crate::plane_driver::serve::ServeTables::default(),
         }
     }
 
@@ -1048,7 +1064,7 @@ impl TestApp {
     /// `PlaneDispatch::mount`.
     pub fn mount_plane(&mut self, key: &'static str, path: &str, wire: &'static str) -> &mut Self {
         let d = std::mem::take(&mut self.plane_dispatch);
-        self.plane_dispatch = d.mount(key, path, wire);
+        self.plane_dispatch = d.mount(self.doors, key, path, wire);
         self
     }
 
@@ -1058,10 +1074,10 @@ impl TestApp {
     pub fn admit_plane(
         &mut self,
         key: &'static str,
-        admission: busbar_kernel::plane::PlaneAdmission,
+        admission: crate::plane_driver::claims::PlaneAdmission,
     ) -> &mut Self {
         let d = std::mem::take(&mut self.plane_dispatch);
-        self.plane_dispatch = d.admit(key, admission);
+        self.plane_dispatch = d.admit(self.doors, key, admission);
         self
     }
 
@@ -1584,6 +1600,10 @@ impl TestApp {
         for f in finalizers {
             f(&mut self);
         }
+        // The door table this generation is lent, as production's `appbuild` reads it off the
+        // configuration it was lent: every plane read below is a read of it.
+        let doors = self.doors;
+        let serve_tables = self.serve_tables.clone();
         // Captured before the `App` literal moves `self` apart. Attaching it AFTER the app exists is
         // not a convenience either: the boot replay reads the operator's live registrations off the
         // built catalogue, exactly as `run()` does, so there is nothing to replay into until then.
@@ -1612,11 +1632,11 @@ impl TestApp {
         // `reresolve_gates`/`on_swap` seams (run on every admin mutation) fault. A fixture that
         // installed the plane's runtime keeps it; otherwise, in THIS crate's own `cfg(test)` binary,
         // the slot gets the registry's placeholder (`seeded_section_plane_runtime`: an empty value,
-        // `plane::registry::default_section_plane_test_runtime`), and an EXTERNAL `test-support`
+        // `plane_driver::doors::default_section_plane_test_runtime`), and an EXTERNAL `test-support`
         // build seeds none. With no plane registered for the section, nothing is seeded. The decl
         // key comes from the registry, never spelled as a literal.
         #[cfg(any(test, feature = "test-support"))]
-        if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
+        if let Some(decl) = doors.plane_decl_for_config_section(
             busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
         ) {
             if let Some(rt) = seeded_section_plane_runtime() {
@@ -1651,7 +1671,8 @@ impl TestApp {
             &ts_pools,
             &ts_by_model,
             |idx| lane_inputs.get(idx).map(|lane| lane.model.as_str()),
-            crate::plane::fallback_key(),
+            doors.fallback_key(),
+            doors,
         ));
         let store = std::sync::Arc::new(crate::store::HealthState::new(lane_data));
         // THE LLM DATA-PLANE RUNTIME slot (R3/R4 sub-phase B) — the successor to the flat `llm_runtime`
@@ -1662,13 +1683,13 @@ impl TestApp {
         // configures its lanes/pools and expects them readable through `engine_tables`, exactly as the
         // always-present flat field guaranteed, so `build()` seeds the slot for every `TestApp` whose
         // process actually has an LLM (fallback) plane. The key AND the `build_runtime` come from ONE
-        // resolved decl ([`crate::plane::fallback_decl`]), never from `fallback_key()`: that degrades to
-        // the FIRST registered plane's key when no plane flags itself fallback (the plane suites'
-        // dependency-copy of core, which registers only MCP/A2A), and this test binary's registry GROWS
-        // while sibling tests run (`register_test_plane`), so a key read before a fallback plane
-        // registers and a decl read after it named two different planes — the LLM runtime then landed
-        // under the sibling's `runtime_slot_key` and clobbered that sibling's own runtime slot.
-        let fallback = crate::plane::fallback_decl();
+        // resolved decl ([`crate::plane_driver::doors::Doors::fallback_decl`]) of the table this
+        // generation was lent, never from `fallback_key()`: that degrades to the FIRST plane's key
+        // when no plane flags itself fallback (a table holding only non-fallback planes), so a key
+        // read off one answer and a decl read off another would name two different planes — the
+        // LLM runtime would land under the sibling's `runtime_slot_key` and clobber that sibling's
+        // own runtime slot (`tests/fallback_runtime_slot.rs` pins it).
+        let fallback = doors.fallback_decl();
         let fallback_runtime_key = crate::state::runtime_slot_key(fallback.map_or("", |d| d.key));
         // Built and inserted ONLY when a real fallback (LLM) plane owns the key — otherwise `lanes`/
         // `by_model`/the `self.*` tables simply drop unused, and `App::llm_runtime` reads the empty
@@ -1829,7 +1850,7 @@ impl TestApp {
                 busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
                 busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3],
             ] {
-                if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(section) {
+                if let Some(decl) = doors.plane_decl_for_config_section(section) {
                     let (containers, section_hooks) = self
                         .container_hooks
                         .get(decl.key)
@@ -1856,7 +1877,7 @@ impl TestApp {
                 busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
                 busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3],
             ] {
-                if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(section) {
+                if let Some(decl) = doors.plane_decl_for_config_section(section) {
                     let (containers, section_hooks) = self
                         .container_hooks
                         .get(decl.key)
@@ -1880,6 +1901,8 @@ impl TestApp {
             Vec::new()
         };
         let app = std::sync::Arc::new(crate::state::App {
+            doors,
+            serve_tables,
             // No authorization server unless a test asked for one with `TestApp::oauth_as`, which is
             // the production default and is what keeps every existing test's route table unchanged
             // by this plane's arrival.
@@ -1905,7 +1928,8 @@ impl TestApp {
                 .plane_pools_by_section
                 .into_iter()
                 .filter_map(|(section, pools)| {
-                    crate::plane::registry::plane_decl_for_config_section(section)
+                    doors
+                        .plane_decl_for_config_section(section)
                         .map(|decl| (decl.key, pools))
                 })
                 .collect(),

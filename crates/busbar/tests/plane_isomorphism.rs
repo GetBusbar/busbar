@@ -22,24 +22,21 @@
 //!
 //! ## What is reflected, and what is not
 //!
-//! The installed planes are the ones the composition root links and pushes through `install_planes`
-//! (a plane served through its door alone installs no PlaneDecl and is not in this set): each a
-//! `&'static PlaneDecl` referenced directly here — the same consts `crates/busbar/src/main.rs`
-//! installs; this is also the test-support plane registry's content. A plane not linked into the
-//! binary or this test target (see `docs/design/BUSBAR-1.6.0.md` #15) has its skeleton asymmetries
-//! governed by the no-deferral gate + the ledger's pin, NOT by this reflection; adding its decl to
-//! [`installed_decls`] when it is wired into the binary arms this reflection over it too.
+//! The installed planes are the ones the composition root links on the `plane` axis and pushes
+//! through `install_planes`; a plane served through its door alone installs no PlaneDecl. That axis
+//! is EMPTY today (the doctrine cell below holds it so): every plane is a door plane. The cells that
+//! reflected the live decls were gated on `linked_axis_plane`, a cfg no linked row sets, so they never
+//! ran; they are deleted with the allowlist only they read (status row 82, D2; Law 10). The fixture
+//! self-tests keep `verify` proven, so a row returning to the plane axis is a doctrine change made with
+//! its cells, not an empty gate.
 //!
 //! Modelled on `crates/busbar/tests/capability_equality.rs` -- the house oracle pattern: one `verify`
 //! fn drives both the real gate and the fixture self-tests, so a self-test proves the REAL gate fires.
 
 mod common;
 
-use busbar_kernel::plane::registry::PlaneDecl;
+use busbar_kernel::plane_driver::row::PlaneDecl;
 use std::collections::{BTreeMap, BTreeSet};
-#[cfg(linked_axis_plane)]
-use std::path::{Path, PathBuf};
-
 /// THE PINNED HOOK-FIELD SET — every `Option<…>` capability hook on the registry `PlaneDecl`, each
 /// paired with the extractor that reads its Some/None off a live decl. This is the "small pinned map"
 /// the design requires; its length is floor-checked ([`MIN_HOOK_FIELDS`]) so it cannot silently shrink
@@ -72,23 +69,6 @@ const HOOK_FIELDS: &[(&str, fn(&PlaneDecl) -> bool)] = &[
 /// well above zero so a set that quietly lost its rows cannot report isomorphism of nothing).
 const MIN_HOOK_FIELDS: usize = 15;
 
-/// Floor on the allowlist: an empty allowlist against a decl set that HAS asymmetries could only be a
-/// file that was gutted. Re-armed at today's measured count (Law 9) by FLIP-A2A (#787), which
-/// deleted the retired agent engine and with it its plane's installed PlaneDecl (that plane is
-/// door-only now and installs none). That decl was the one installed decl stating `admin_routes`,
-/// `openapi`, `config_validate`, `registry_contains`, `reresolve_gates`, `retain_verify_gates`,
-/// `card_signing_domain` and `card_kid_prefix` (eight hooks, a row each against the two other
-/// installed planes) and the one without `build_runtime` (a row against itself): those 17 rows left
-/// with the decl they described, 21 measured at #778's head, 4 after. The four left are the hooks
-/// one installed plane states and the other does not (`routes`, `hydrate`, `start`,
-/// `default_section`), each still judged. Re-armed again at the measured count by FLIP-STREAMING
-/// merged with FLIP-A2A: the streaming plane is door-only too, so llm is the one installed decl and
-/// a single plane has no sibling to be asymmetric against; those four rows left with the streaming
-/// decl, and the measured count is 0.
-/// Read only by the gate cell below, which runs where the build carries the plane axis.
-#[cfg(linked_axis_plane)]
-const MIN_ASYMMETRIES: usize = 0;
-
 /// The doctrine map: each INSTALLED plane crate key → the directional ledger column(s) it answers to
 /// in `qa/capability-equality.json`. The bidirectional protocols count in both directions. Pinned
 /// (not derived) for the same reason `capability_equality.rs` pins its axes: it is the owner's ruling.
@@ -102,44 +82,8 @@ fn plane_ledger_columns() -> Vec<(&'static str, &'static [&'static str])> {
         .collect()
 }
 
-#[cfg(linked_axis_plane)]
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .expect("the repository root must exist")
-}
-
-/// The installed planes' actual `&'static PlaneDecl`s — the same consts the composition root pushes
-/// through `install_planes` (and the content of the test-support plane registry). Referenced directly
-/// so the Some/None this test reasons over is the REAL decl, never a restated copy.
-// Each plane crate is only linked when its feature is on. Under `--no-default-features` no plane
-// is installed, so this yields an empty set and the gate tests below are not compiled
-// (`linked_axis_plane`), nor is this or anything only they read.
-#[cfg(linked_axis_plane)]
-fn installed_decls() -> Vec<(&'static str, &'static PlaneDecl)> {
-    LINKED_PLANES.iter().map(|d| (d.key, d)).collect()
-}
-
-// The linked plane rows (build.rs: every enabled `[package.metadata.busbar.linked]` row carrying the
-// `plane` axis, assembled from its crate's own `linked` entry exactly as the root assembles it).
-#[cfg(linked_axis_plane)]
-include!(concat!(env!("OUT_DIR"), "/linked_planes.rs"));
-
 /// The Some/None matrix: `field -> (plane -> is_some)`. Computed from the live decls.
 type Matrix = BTreeMap<String, BTreeMap<String, bool>>;
-
-#[cfg(linked_axis_plane)]
-fn reflect(installed: &[(&'static str, &'static PlaneDecl)]) -> Matrix {
-    let mut m: Matrix = BTreeMap::new();
-    for (field, extract) in HOOK_FIELDS {
-        let row = m.entry((*field).to_string()).or_default();
-        for (key, decl) in installed {
-            row.insert((*key).to_string(), extract(decl));
-        }
-    }
-    m
-}
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Summary {
@@ -340,163 +284,9 @@ fn verify_scoped(
     })
 }
 
-#[cfg(linked_axis_plane)]
-fn read_json(path: &Path) -> serde_json::Value {
-    serde_json::from_str(
-        &std::fs::read_to_string(path)
-            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display())),
-    )
-    .unwrap_or_else(|e| panic!("{} does not parse as JSON: {e}", path.display()))
-}
-
-#[cfg(linked_axis_plane)]
-fn columns_map() -> BTreeMap<&'static str, &'static [&'static str]> {
-    plane_ledger_columns().into_iter().collect()
-}
-
 // ---------------------------------------------------------------------------
 // 1. THE GATE: the live decls' asymmetries are all declared, ledger-anchored, and exact.
 // ---------------------------------------------------------------------------
-
-// No plane linked (e.g. --no-default-features): cross-plane isomorphism is vacuous, so the test is
-// the plane axis's (any linked row carrying it, the rows `LINKED_PLANES` holds); a partial roster
-// still runs it, scoped below.
-#[cfg(linked_axis_plane)]
-#[test]
-fn installed_plane_decls_are_behaviourally_isomorphic_or_declared() {
-    let decls = installed_decls();
-    assert!(
-        !decls.is_empty(),
-        "a build on the plane axis installs no plane decl"
-    );
-    let root = repo_root();
-    let matrix = reflect(&decls);
-    let ledger = read_json(&root.join("qa/capability-equality.json"));
-    let allow = read_json(&root.join("qa/plane-hook-isomorphism.allow"));
-
-    let summary = verify_scoped(
-        &matrix,
-        &ledger,
-        &allow,
-        &columns_map(),
-        MIN_HOOK_FIELDS,
-        MIN_ASYMMETRIES,
-        cfg!(linked_every_plane),
-    )
-    .unwrap_or_else(|e| panic!("plane isomorphism: {e}"));
-
-    println!(
-        "ISOMORPHISM: {} hook fields × {} installed planes; {} asymmetric None(s), all declared \
-         with a ledger-anchored argument.",
-        matrix.len(),
-        installed_decls().len(),
-        summary.asymmetric_nones.len(),
-    );
-    if cfg!(linked_every_plane) {
-        assert_eq!(
-            summary.declared,
-            summary.asymmetric_nones.len(),
-            "declared count must equal the reflected asymmetric-None count exactly"
-        );
-    }
-}
-
-/// The `root-*` legs THIS BUILD CARRIES, reflected one feature at a time. See the twin in
-/// `capability_equality.rs`: the legs carry no config key, no environment variable and no boot line,
-/// so the only way to ask a build which legs it has is to compile the question in — but the question
-/// must be asked per leg, not as a five-way conjunction, because the planes are switched onto the
-/// root one at a time and every partially-switched build is an ordinary build.
-#[cfg(linked_axis_plane)]
-fn compiled_legs() -> BTreeSet<&'static str> {
-    common::compiled_root_legs()
-}
-
-/// THE ROOT LEG, JOINED TO THE SAME LEDGER — on EVERY build.
-///
-/// Isomorphism has always been about the SHIPPED decls. This adds the other path: every plane the
-/// binary installs must also be answered by a root leg in `qa/capability-equality.json`, on every one
-/// of its directional ledger columns. A plane installed into the binary and driven through the loop
-/// by no leg would be a plane whose loop nobody is judging — the same silent hole one axis over.
-///
-/// This used to be cfg-gated on all five `root-*` features at once, which meant it ran in exactly one
-/// build configuration and in no other — not the default build, and not a single-leg build
-/// either. The join it performs is over DATA (the installed decls and
-/// the ledger), so it is answerable on every build and is asked on every build. What the features
-/// decide is which legs are COMPILED, and that is asserted separately below: a plane installed into
-/// this build whose answering leg this build also carries must be driven through the loop by a leg
-/// that proves at least one cell.
-#[cfg(linked_axis_plane)]
-#[test]
-fn every_installed_plane_is_answered_by_a_root_leg() {
-    let decls = installed_decls();
-    assert!(
-        !decls.is_empty(),
-        "a build on the plane axis installs no plane decl"
-    );
-    let ledger = read_json(&repo_root().join("qa/capability-equality.json"));
-    let legs = ledger["root_legs"]
-        .as_object()
-        .expect("qa/capability-equality.json declares `root_legs`");
-    // column -> leg, read off the ledger rather than restated here.
-    let mut answered: BTreeMap<String, String> = BTreeMap::new();
-    for (leg, meta) in legs {
-        for col in meta["columns"].as_array().expect("`columns` is an array") {
-            let col = col.as_str().expect("a column is a string");
-            assert!(
-                answered.insert(col.to_string(), leg.clone()).is_none(),
-                "column `{col}` is claimed by two legs; a plane runs through one leg"
-            );
-        }
-    }
-    // How many cells each leg proves over the loop ON EACH COLUMN, read off the same ledger. Keyed
-    // by (leg, column) and not by leg: a leg answers for two directional columns on the
-    // bidirectional planes (one leg is its plane's client AND server column), and a per-leg tally stays
-    // positive while one of its two columns has lost every root-loop proof — the assertion below
-    // names the column, so the count it reads must be the column's (item 264).
-    let leg_proven = proven_per_leg_column(&ledger);
-
-    let compiled = compiled_legs();
-    let columns = columns_map();
-    for (key, _) in &decls {
-        let cols = columns
-            .get(key)
-            .unwrap_or_else(|| panic!("installed plane `{key}` has no ledger columns"));
-        for &col in *cols {
-            let leg = answered.get(col).unwrap_or_else(|| {
-                panic!(
-                    "installed plane `{key}` answers to ledger column `{col}`, which NO root leg \
-                     covers. A plane the binary installs and no leg drives is a loop nobody is \
-                     judging."
-                )
-            });
-            // THE FEATURE-DEPENDENT HALF. If this build INSTALLS the plane and also CARRIES the leg
-            // that answers it, then the loop for that plane is live in this binary and must be
-            // witnessed: a leg that is compiled in and proves nothing on the column it owns is a
-            // plane running through a loop nobody is judging, which is the same hole this test
-            // refuses one level up.
-            if compiled.contains(leg.as_str()) {
-                let proven = leg_proven
-                    .get(&(leg.clone(), col.to_string()))
-                    .copied()
-                    .unwrap_or(0);
-                assert!(
-                    proven > 0,
-                    "installed plane `{key}` answers to column `{col}` through leg `{leg}`, which \
-                     THIS BUILD COMPILES, and that leg proves ZERO `{col}` cells over the loop. A \
-                     plane installed and switched onto a leg nobody drove is a loop nobody is judging."
-                );
-                println!("  {key:<6} {col:<13} -> {leg} [compiled, {proven} cell(s) proven]");
-            } else {
-                println!("  {key:<6} {col:<13} -> {leg} [leg off in this build]");
-            }
-        }
-    }
-    println!(
-        "ROOT-LEG ANSWERS: {} installed plane(s); legs compiled here: {:?}",
-        decls.len(),
-        compiled
-    );
-}
 
 /// Root-proven cells per `(leg, column)` — the unit the root-leg assertion above names.
 fn proven_per_leg_column(ledger: &serde_json::Value) -> BTreeMap<(String, String), usize> {
@@ -554,18 +344,6 @@ fn the_reflected_hook_set_and_constants_are_the_doctrine() {
         keys.is_empty(),
         "the installed-plane axis is the owner's ruling; changing it is a doctrine change: {keys:?}"
     );
-    // With every plane compiled in, the pinned axis is exactly the planes the root installs from
-    // their own linked entries — two artifacts (the doctrine, the linked table) that must agree. A
-    // linked row that registers on the plane axis again compiles this and finds the axis it pinned.
-    #[cfg(all(linked_every_plane, linked_axis_plane))]
-    {
-        let pinned: BTreeSet<&str> = keys.iter().copied().collect();
-        let installed: BTreeSet<&str> = installed_decls().iter().map(|(k, _)| *k).collect();
-        assert_eq!(
-            pinned, installed,
-            "the installed-plane axis is the linked planes"
-        );
-    }
 }
 
 // ---------------------------------------------------------------------------

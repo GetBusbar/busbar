@@ -123,7 +123,6 @@ fn auth_mode_marker_detected() {
 fn migrate_14x_round_trips_into_deploy_cfg() {
     // This test needs a plane registered so the migrated `pools:` section resolves (not real
     // llm/mcp/a2a behaviour — it only asserts the migrated document's SHAPE).
-    crate::test_support::register_neutral_test_plane();
     let out = migrate_config(LEGACY_14X).expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
     let root = doc.as_mapping().unwrap();
@@ -313,7 +312,7 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
     // trips NO legacy marker.
     assert!(detect_legacy_markers(&doc).is_empty());
     let deploy: Result<crate::config::DeployCfg, _> =
-        crate::config::deploy_from_yaml_str(&out.yaml);
+        crate::config::deploy_from_yaml_str(&out.yaml, crate::test_support::neutral_test_doors());
     assert!(
         deploy.is_ok(),
         "migrated config must boot-parse: {:?}",
@@ -344,7 +343,6 @@ fn dig<'a>(doc: &'a serde_yaml::Value, path: &[&str]) -> Option<&'a serde_yaml::
 /// reported changes but emitted an unbootable config. The migrated document must BOOT-PARSE.
 #[test]
 fn migrate_on_exhausted_all_arms_round_trip() {
-    crate::test_support::register_neutral_test_plane();
     let raw = r#"
 providers: {}
 models: {}
@@ -417,9 +415,11 @@ pools:
     );
     // THE round-trip: the migrated config boot-parses (the user's failure is gone).
     assert!(
-        crate::config::deploy_from_yaml_str(&out.yaml).is_ok(),
+        crate::config::deploy_from_yaml_str(&out.yaml, crate::test_support::neutral_test_doors())
+            .is_ok(),
         "on_exhausted-bearing config must boot-parse: {:?}",
-        crate::config::deploy_from_yaml_str(&out.yaml).err()
+        crate::config::deploy_from_yaml_str(&out.yaml, crate::test_support::neutral_test_doors())
+            .err()
     );
 }
 
@@ -431,7 +431,6 @@ pools:
 /// boot-parse.
 #[test]
 fn migrate_real_14x_top_level_auth_surfaces() {
-    crate::test_support::register_neutral_test_plane();
     let raw = r#"
 auth:
   chain: [tokens, test-idp-double]
@@ -511,9 +510,11 @@ pools: {}
     );
     // boot-parses.
     assert!(
-        crate::config::deploy_from_yaml_str(&out.yaml).is_ok(),
+        crate::config::deploy_from_yaml_str(&out.yaml, crate::test_support::neutral_test_doors())
+            .is_ok(),
         "real top-level 1.4.x auth surfaces must migrate to a bootable config: {:?}",
-        crate::config::deploy_from_yaml_str(&out.yaml).err()
+        crate::config::deploy_from_yaml_str(&out.yaml, crate::test_support::neutral_test_doors())
+            .err()
     );
 }
 
@@ -523,7 +524,6 @@ pools: {}
 /// flagged `global: true` must appear exactly ONCE in the all-pools list (no duplicate).
 #[test]
 fn migrate_global_hooks_names_resolve_and_dedup() {
-    crate::test_support::register_neutral_test_plane();
     let raw = r#"
 providers: {}
 models: {}
@@ -555,9 +555,11 @@ global_hooks: [audit-tap]
         "the registry name became a named hook definition"
     );
     assert!(
-        crate::config::deploy_from_yaml_str(&out.yaml).is_ok(),
+        crate::config::deploy_from_yaml_str(&out.yaml, crate::test_support::neutral_test_doors())
+            .is_ok(),
         "global_hooks must migrate to a bootable config: {:?}",
-        crate::config::deploy_from_yaml_str(&out.yaml).err()
+        crate::config::deploy_from_yaml_str(&out.yaml, crate::test_support::neutral_test_doors())
+            .err()
     );
 }
 
@@ -639,7 +641,6 @@ pools: {}
 /// NO top-level `hooks:` registry block (the block-processing pass returns early in that case).
 #[test]
 fn migrate_pool_policy_without_hooks_block() {
-    crate::test_support::register_neutral_test_plane();
     let raw = r#"
 providers: {}
 models: {}
@@ -662,7 +663,8 @@ pools:
     assert_eq!(hooks[0].as_str(), Some("cheapest"));
     // The migrated document boot-parses (no leftover `policy:` unknown-field).
     assert!(
-        crate::config::deploy_from_yaml_str(&out.yaml).is_ok(),
+        crate::config::deploy_from_yaml_str(&out.yaml, crate::test_support::neutral_test_doors())
+            .is_ok(),
         "policy-only pool must migrate to a bootable config"
     );
 }
@@ -995,7 +997,7 @@ observability:
 
     // The migrated document must boot-parse cleanly (deny_unknown_fields would catch a stray key).
     let deploy: Result<crate::config::DeployCfg, _> =
-        crate::config::deploy_from_yaml_str(&out.yaml);
+        crate::config::deploy_from_yaml_str(&out.yaml, crate::test_support::neutral_test_doors());
     assert!(
         deploy.is_ok(),
         "migrated config must boot-parse: {:?}",
@@ -1009,7 +1011,6 @@ observability:
 /// (the old `at:` strings would otherwise fail as unknown `HookStage` variants).
 #[test]
 fn migrate_hook_stage_at_values_are_renamed() {
-    crate::test_support::register_neutral_test_plane();
     let raw = r#"
 providers: {}
 models: {}
@@ -1077,7 +1078,7 @@ global_hooks:
 
     // Boot-parse proves the rename closed the loud-fail (old `at:` strings would 400 as variants).
     let deploy: Result<crate::config::DeployCfg, _> =
-        crate::config::deploy_from_yaml_str(&out.yaml);
+        crate::config::deploy_from_yaml_str(&out.yaml, crate::test_support::neutral_test_doors());
     assert!(
         deploy.is_ok(),
         "migrated config must boot-parse: {:?}",
@@ -1150,7 +1151,6 @@ pools: {}
 #[test]
 fn migrate_observability_export_rewrites_old_to_new() {
     crate::export::scrape::tests::installed_axis();
-    crate::test_support::register_neutral_test_plane();
     let raw = r#"
 observability:
   otlp_url: "https://otel.example.com/v1/traces"
@@ -1236,8 +1236,11 @@ pools: {}
     // The migrated document BOOT-PARSES as a 1.5.3 config, and resolves to the typed export block —
     // a golden that would catch a rewrite that produces a shape the parser rejects.
     let migrated_yaml = serde_yaml::to_string(&doc).unwrap();
-    let deploy: crate::config::DeployCfg = crate::config::deploy_from_yaml_str(&migrated_yaml)
-        .expect("the migrated config must boot-parse");
+    let deploy: crate::config::DeployCfg = crate::config::deploy_from_yaml_str(
+        &migrated_yaml,
+        crate::test_support::neutral_test_doors(),
+    )
+    .expect("the migrated config must boot-parse");
     let mut errs = Vec::new();
     let export = crate::config::resolve_export(&built_ins(&deploy.export), &mut errs);
     assert!(errs.is_empty(), "{errs:?}");
@@ -1265,7 +1268,6 @@ pools: {}
 /// migrator over the output is a NO-OP on the config tree (idempotent / golden-stable).
 #[test]
 fn migrate_1_5_x_inline_hooks_converge_and_are_idempotent() {
-    crate::test_support::register_neutral_test_plane();
     let raw = r#"
 providers: {}
 models: {}
@@ -1286,7 +1288,8 @@ global_hooks:
         "no residual 1.x marker"
     );
     let deploy: crate::config::DeployCfg =
-        crate::config::deploy_from_yaml_str(&out1.yaml).expect("migrated config boot-parses");
+        crate::config::deploy_from_yaml_str(&out1.yaml, crate::test_support::neutral_test_doors())
+            .expect("migrated config boot-parses");
 
     // The named-definition map holds both lifted hooks; the pool keeps its strategy + a BARE ref; the
     // global instance became the reserved all-pools attach.
@@ -1362,8 +1365,9 @@ fn assert_loud_fail_with_breadcrumb(raw: &str, needle: &str) {
 fn migrate_golden(raw: &str) -> (crate::config::migrate::MigrateOutput, serde_yaml::Value) {
     let (out, doc) = migrate_to_value(raw);
     let yaml = serde_yaml::to_string(&doc).expect("serializable");
-    let _: crate::config::DeployCfg = crate::config::deploy_from_yaml_str(&yaml)
-        .expect("the migrated config must boot-parse as 1.5.3");
+    let _: crate::config::DeployCfg =
+        crate::config::deploy_from_yaml_str(&yaml, crate::test_support::neutral_test_doors())
+            .expect("the migrated config must boot-parse as 1.5.3");
     let (_out2, doc2) = migrate_to_value(&yaml);
     assert_eq!(
         doc, doc2,
@@ -1379,7 +1383,6 @@ fn migrate_golden(raw: &str) -> (crate::config::migrate::MigrateOutput, serde_ya
 /// live field that parsed clean — so neither the loud-fail nor the rewrite existed.
 #[test]
 fn golden_migrate_admin_insecure_inverts_to_admin_require_mtls() {
-    crate::test_support::register_neutral_test_plane();
     let raw = "admin_insecure: true\nproviders: {}\nmodels: {}\npools: {}\n";
     assert_loud_fail_with_breadcrumb(raw, "admin_insecure");
 
@@ -1415,7 +1418,6 @@ fn golden_migrate_admin_insecure_inverts_to_admin_require_mtls() {
 /// `auth.upstream_credentials` was a live field, so there was nothing to detect and nowhere to move.
 #[test]
 fn golden_migrate_auth_upstream_credentials_moves_to_pools() {
-    crate::test_support::register_neutral_test_plane();
     let raw = "auth:\n  chain: [keys]\n  upstream_credentials: passthrough\n\
                providers: {}\nmodels: {}\npools: {}\n";
     assert_loud_fail_with_breadcrumb(raw, "auth.upstream_credentials");
@@ -1446,7 +1448,6 @@ fn golden_migrate_auth_upstream_credentials_moves_to_pools() {
 /// to go and the block could not be deleted without losing the trace sink.
 #[test]
 fn golden_migrate_observability_block_folds_into_an_otlp_export_instance() {
-    crate::test_support::register_neutral_test_plane();
     let raw = "observability:\n  otlp_url: \"http://otel:4318/v1/traces\"\n\
                providers: {}\nmodels: {}\npools: {}\n";
     assert_loud_fail_with_breadcrumb(raw, "observability");
@@ -1490,7 +1491,6 @@ fn golden_migrate_observability_block_folds_into_an_otlp_export_instance() {
 #[test]
 fn golden_migrate_type_keyed_export_becomes_a_named_map() {
     crate::export::scrape::tests::installed_axis();
-    crate::test_support::register_neutral_test_plane();
     let raw = "export:\n\
                \x20 prometheus: { settings: { buffer_seconds: 60 } }\n\
                \x20 request-log-webhook: { settings: { url: \"https://logs.example.com/a\" } }\n\
@@ -1524,9 +1524,11 @@ fn golden_migrate_type_keyed_export_becomes_a_named_map() {
     );
 
     // And the migrated document really resolves to two independent webhook sinks.
-    let deploy: crate::config::DeployCfg =
-        crate::config::deploy_from_yaml_str(&serde_yaml::to_string(&doc).unwrap())
-            .expect("boot-parses");
+    let deploy: crate::config::DeployCfg = crate::config::deploy_from_yaml_str(
+        &serde_yaml::to_string(&doc).unwrap(),
+        crate::test_support::neutral_test_doors(),
+    )
+    .expect("boot-parses");
     let mut errs = Vec::new();
     let export = crate::config::resolve_export(&built_ins(&deploy.export), &mut errs);
     assert!(errs.is_empty(), "{errs:?}");
@@ -1546,7 +1548,6 @@ fn golden_migrate_type_keyed_export_becomes_a_named_map() {
 /// converge onto and the inline form was the live grammar.
 #[test]
 fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
-    crate::test_support::register_neutral_test_plane();
     // The operator credential's provider is the word the root hands in (this build's double; the
     // root pins 1.5.5's bytes: `root::tests::legacy_table`).
     let op = crate::config::operator_provider();
@@ -1671,9 +1672,11 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
 
     // And the migrated config RESOLVES: both chains point at the SAME definition, so their entries
     // are identical by construction — the drift the retired grammar allowed is now impossible.
-    let deploy: crate::config::DeployCfg =
-        crate::config::deploy_from_yaml_str(&serde_yaml::to_string(&doc).unwrap())
-            .expect("boot-parses");
+    let deploy: crate::config::DeployCfg = crate::config::deploy_from_yaml_str(
+        &serde_yaml::to_string(&doc).unwrap(),
+        crate::test_support::neutral_test_doors(),
+    )
+    .expect("boot-parses");
     let mut errs = Vec::new();
     let auth = crate::config::resolve_auth(
         deploy.auth.as_ref().expect("auth"),
@@ -1696,7 +1699,6 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
 /// migrated with no `phase:` at all and silently widened to four stages.
 #[test]
 fn golden_migrate_bare_tap_pins_the_legacy_request_only_phase() {
-    crate::test_support::register_neutral_test_plane();
     let raw = "global_hooks:\n  - { module: busbar-audit-hook, kind: tap }\n\
                providers: {}\nmodels: {}\npools: {}\n";
     let (_, doc) = migrate_golden(raw);
@@ -2640,7 +2642,6 @@ fn migrate_leaves_rich_pool_members_untouched() {
 /// catches a config `migrate_hooks_block` passes through untouched because it is already new-shaped.
 #[test]
 fn migrate_rewrites_a_lingering_at_key_on_a_named_hook_def() {
-    crate::test_support::register_neutral_test_plane();
     let raw = "providers: {}\nmodels: {}\npools: {}\n\
                hooks:\n  audit:\n    kind: tap\n    module: audit-hook\n    at: response\n";
     let (out, doc) = migrate_to_value(raw);
@@ -2654,7 +2655,8 @@ fn migrate_rewrites_a_lingering_at_key_on_a_named_hook_def() {
         "the retired `at:` key is gone"
     );
     assert!(
-        crate::config::deploy_from_yaml_str(&out.yaml).is_ok(),
+        crate::config::deploy_from_yaml_str(&out.yaml, crate::test_support::neutral_test_doors())
+            .is_ok(),
         "the rewritten config boot-parses on 1.6.0"
     );
 }

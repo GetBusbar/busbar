@@ -14,20 +14,22 @@ mod linked;
 use busbar_kernel::config::{deploy_from_yaml_str, resolve, DeployCfg};
 use std::collections::HashMap;
 
-/// Register every test-linked plane in the process registry, idempotent (first-wins) — needed
-/// because the kernel lifts a `tools:`/`agents:` section only when a registered plane declares it.
+/// Install every test-linked plane's seams, idempotent (first-wins). Each parse below is lent the
+/// binary's door table (`linked::table`), because the kernel lifts a `tools:`/`agents:` section
+/// only when a plane in the table it was lent declares it.
 fn register_planes() {
     linked::install();
 }
 
 /// A DeployCfg parsed from `sections` through the kernel's own config entry point
-/// (`deploy_from_yaml_str`, the boot path's lift), after the linked planes are installed — so a
-/// section is lifted exactly when a registered plane declares it, as in a shipped binary. Empty
+/// (`deploy_from_yaml_str`, the boot path's lift), lent the binary's door table — so a section is
+/// lifted exactly when a plane in that table declares it, as in a shipped binary. Empty
 /// `providers:`/`models:` stand in for the required keys this file's refusals do not concern.
 fn deploy_yaml(sections: &str) -> DeployCfg {
     register_planes();
     let text = format!("providers: {{}}\nmodels: {{}}\n{sections}");
-    deploy_from_yaml_str(&text).unwrap_or_else(|e| panic!("the test config parses: {e}\n{text}"))
+    deploy_from_yaml_str(&text, linked::table())
+        .unwrap_or_else(|e| panic!("the test config parses: {e}\n{text}"))
 }
 
 // (`resolve_provider_hook_and_core_fallback_agree` is RETIRED with its subject: no plane implements
@@ -54,10 +56,13 @@ tools:
     pin: { mechanism: unpinned }
     tools_allow: { anything: { publish_as: foo_bar } }
 "#;
-    let refused = deploy_from_yaml_str(&format!("providers: {{}}\nmodels: {{}}\n{colliding}"))
-        .map(|deploy| resolve(&deploy, &HashMap::new()).map(|_| ()))
-        .map_or_else(|e| Some(e.to_string()), |r| r.err().map(|e| e.join("\n")))
-        .expect("a config whose published names are not unique is refused");
+    let refused = deploy_from_yaml_str(
+        &format!("providers: {{}}\nmodels: {{}}\n{colliding}"),
+        linked::table(),
+    )
+    .map(|deploy| resolve(&deploy, &HashMap::new()).map(|_| ()))
+    .map_or_else(|e| Some(e.to_string()), |r| r.err().map(|e| e.join("\n")))
+    .expect("a config whose published names are not unique is refused");
     assert!(refused.contains("published as `foo_bar`"), "{refused}");
 
     // GREEN, same shape, one name changed: the refusal is about the collision and nothing else.
@@ -101,13 +106,15 @@ other:
         ))
         .expect("yaml")
     };
+    // The section is judged by the door that declares it: the binary's `tools:` door.
+    let door = linked::owning("tools").door;
     let section =
-        busbar_kernel::plane_driver::door::DoorSection::new("tools", effective("foo_bar"));
+        busbar_kernel::plane_driver::door::DoorSection::new(door, "tools", effective("foo_bar"));
     let refused = section
         .validate_registry()
         .expect_err("an effective registry whose published names collide is refused");
     assert!(refused.contains("published as `foo_bar`"), "{refused}");
-    busbar_kernel::plane_driver::door::DoorSection::new("tools", effective("other_name"))
+    busbar_kernel::plane_driver::door::DoorSection::new(door, "tools", effective("other_name"))
         .validate_registry()
         .expect("distinct published names pass");
 }

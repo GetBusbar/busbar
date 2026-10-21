@@ -80,10 +80,11 @@ use busbar_kernel::state::{App, AppHandle};
 
 /// Mount the five routes of EVERY named-map section. Driven by `NamedMapSection::ALL`, so a new
 /// section's routes appear here the moment its variant exists — there is no per-section handler,
-/// no per-section route literal, and nothing to forget.
-pub(crate) fn routes() -> Router<Arc<AppHandle>> {
+/// no per-section route literal, and nothing to forget. The sections are named over `doors`, the door
+/// table the admin surface is mounted with.
+pub(crate) fn routes(doors: busbar_kernel::plane_driver::doors::Doors) -> Router<Arc<AppHandle>> {
     let mut router = Router::new();
-    for section in NamedMapSection::sections() {
+    for section in NamedMapSection::sections(doors) {
         // The section rides each request as an extension, so the handlers are the routed functions
         // themselves rather than a closure per verb that curries the section in.
         router = router.merge(
@@ -168,9 +169,7 @@ async fn wrong_method(
 /// `404` its unmounted path gives. The two core sections are always served.
 pub(super) fn plane_gate(handle: &AppHandle, section: NamedMapSection) -> Option<Response> {
     let decl = match section {
-        NamedMapSection::Plane(key) => {
-            busbar_kernel::plane::registry::plane_decl_for_config_section(key)
-        }
+        NamedMapSection::Plane(key) => handle.load().doors.plane_decl_for_config_section(key),
         _ => None,
     };
     super::unconfigured_plane(handle, decl)
@@ -224,7 +223,7 @@ async fn put(
             return err_json_cond(
                 &AdminError::Validation(format!(
                     "malformed {} definition body: {e}",
-                    section.singular()
+                    section.singular(handle.load().doors)
                 )),
                 Cond::MalformedBody,
             )
@@ -334,8 +333,10 @@ async fn apply(
     mutation: Mutation,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    let action = format!("{}.{}", section.singular(), mutation.verb());
-    let resource = format!("{}:{name}", section.singular());
+    // The serving generation's door table: the section's nouns are read off it.
+    let doors = handle.load().doors;
+    let action = format!("{}.{}", section.singular(doors), mutation.verb());
+    let resource = format!("{}:{name}", section.singular(doors));
     let reject = |e: &AdminError, cond: Cond, actor: &str| -> Response {
         audit::AUDIT.record_by(&action, &resource, audit::OUTCOME_REJECTED, actor);
         err_json_cond(e, cond)
@@ -377,13 +378,13 @@ async fn apply(
     // establishes, so a stale guard on a nonexistent entry answers 404, never 409.
     if mutation.requires_existing() && !section_contains(&current, section, &name) {
         return reject(
-            &AdminError::not_found(format!("{} `{name}`", section.singular())),
+            &AdminError::not_found(format!("{} `{name}`", section.singular(doors))),
             Cond::UnknownResource,
             &actor,
         );
     }
     if let Mutation::Replace(def) = &mutation {
-        if let Err(e) = validate_definition(section, &name, def) {
+        if let Err(e) = validate_definition(doors, section, &name, def) {
             return reject(&e, Cond::InvalidConfig, &actor);
         }
     }
@@ -414,6 +415,7 @@ async fn apply(
                 Some(&providers_path),
                 false,
                 busbar_kernel::config::EnvSubst::Strict,
+                snapshot.doors,
             )
             .map_err(AdminError::Validation)?;
             // BASE-CONFIG PROTECTION: an entry declared in `config.yaml` is operator file config and
@@ -425,7 +427,7 @@ async fn apply(
                     AdminError::Conflict(format!(
                         "{} `{txn_name}` is defined in the base config file; edit config.yaml (the \
                          API cannot silently shadow operator file config)",
-                        txn_section.singular()
+                        txn_section.singular(snapshot.doors)
                     )),
                     Cond::BaseDefined,
                 ))));
@@ -442,7 +444,7 @@ async fn apply(
                         return Ok(Outcome::Value(Err((
                             AdminError::not_found(format!(
                                 "{} `{txn_name}`",
-                                txn_section.singular()
+                                txn_section.singular(snapshot.doors)
                             )),
                             Cond::UnknownResource,
                         ))));
@@ -477,7 +479,7 @@ async fn apply(
                             AdminError::Conflict(format!(
                                 "cannot delete {} `{txn_name}`: still referenced by {} — remove the \
                                  reference first",
-                                txn_section.singular(),
+                                txn_section.singular(snapshot.doors),
                                 referents.join(", ")
                             )),
                             Cond::StillReferenced,
@@ -495,7 +497,7 @@ async fn apply(
             // for config that never took effect. Runs BEFORE anything is persisted or swapped, and
             // covers PATCH …/settings too (its composed document is the thing that must parse).
             if let Some(def) = next_def.as_ref() {
-                if let Err(e) = txn_section.validate_def(&txn_name, def) {
+                if let Err(e) = txn_section.validate_def(snapshot.doors, &txn_name, def) {
                     return Ok(Outcome::Value(Err((
                         AdminError::Validation(e),
                         Cond::InvalidConfig,
@@ -728,11 +730,11 @@ fn section_contains(app: &App, section: NamedMapSection, name: &str) -> bool {
         NamedMapSection::Export => app.export_defs.contains_key(name),
         // A plane section answers membership through the plane's `registry_contains` seam, so this
         // read names no plane registry type; a plane compiled out has no decl and answers `false`.
-        NamedMapSection::Plane(_) => {
-            busbar_kernel::plane::registry::plane_decl_for_config_section(section.key())
-                .and_then(|d| d.registry_contains)
-                .is_some_and(|f| f(app, name))
-        }
+        NamedMapSection::Plane(_) => app
+            .doors
+            .plane_decl_for_config_section(section.key())
+            .and_then(|d| d.registry_contains.map(|f| (d, f)))
+            .is_some_and(|(d, f)| f(d, app, name)),
     }
 }
 
@@ -741,8 +743,9 @@ fn section_contains(app: &App, section: NamedMapSection, name: &str) -> bool {
 /// both are bounded here exactly as the hooks write path bounds its own. The typed
 /// `deny_unknown_fields` parse (the real schema check) runs inside [`apply`]'s transaction against
 /// the section's own config struct, before anything is persisted — see the `validate_def` call
-/// there.
+/// there. The section's nouns are read off `doors`, the serving generation's door table.
 fn validate_definition(
+    doors: busbar_kernel::plane_driver::doors::Doors,
     section: NamedMapSection,
     name: &str,
     def: &serde_json::Value,
@@ -750,13 +753,13 @@ fn validate_definition(
     if name.trim().is_empty() {
         return Err(AdminError::Validation(format!(
             "{} name must not be empty",
-            section.singular()
+            section.singular(doors)
         )));
     }
     if name.len() > crate::v1::service::MAX_HOOK_NAME_LEN {
         return Err(AdminError::Validation(format!(
             "{} name is {} chars; must be <= {}",
-            section.singular(),
+            section.singular(doors),
             name.len(),
             crate::v1::service::MAX_HOOK_NAME_LEN
         )));
@@ -767,10 +770,10 @@ fn validate_definition(
         return Err(AdminError::Validation(if section.requires_module() {
             format!(
                 "a {} definition must be an object (`{{\"module\": …}}`)",
-                section.singular()
+                section.singular(doors)
             )
         } else {
-            format!("a {} definition must be an object", section.singular())
+            format!("a {} definition must be an object", section.singular(doors))
         }));
     };
     // `module:` is required only of a PLUGIN-INSTANCE section. A `tools:` or an `agents:` entry is
@@ -783,7 +786,7 @@ fn validate_definition(
     if section.requires_module() && module.trim().is_empty() {
         return Err(AdminError::Validation(format!(
             "a {} must name its backing plugin via a non-empty `module:`",
-            section.singular()
+            section.singular(doors)
         )));
     }
     if !section.requires_module() && !module.trim().is_empty() {
@@ -861,7 +864,9 @@ fn check_trust_ceiling(
 /// scope annotation, the `If-Match` parameter, the algorithmic responses and the taxonomy-projected
 /// 4xx set onto them exactly as it does for every hand-written entry.
 #[cfg(feature = "openapi-schema")]
-pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
+pub(crate) fn openapi_paths(
+    doors: busbar_kernel::plane_driver::doors::Doors,
+) -> Vec<(String, serde_json::Value)> {
     use super::RESPONSES_KEY;
     use serde_json::{json, Value};
     /// One operation: its summary, the `name` path parameter when the path carries one, and its
@@ -888,9 +893,9 @@ pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
     /// The status every read and write answers with.
     const OK: &str = "200";
     let mut out = Vec::new();
-    for section in NamedMapSection::sections() {
+    for section in NamedMapSection::sections(doors) {
         let key = section.key();
-        let singular = section.singular();
+        let singular = section.singular(doors);
         out.push((
             super::ap(section.path_root().as_ref()),
             json!({

@@ -102,7 +102,7 @@ fn render_committed_openapi() -> String {
 #[cfg(feature = "openapi-schema")]
 pub(crate) fn openapi_doc_seamed() -> serde_json::Value {
     crate::ensure_seam();
-    openapi_doc()
+    openapi_doc(crate::linked::table())
 }
 
 /// GOLDEN + DRIFT GUARD: the committed `openapi.json` (served live via `include_str!`) MUST equal the
@@ -158,7 +158,9 @@ fn openapi_plane_component_schemas_are_the_committed_ones() {
         .as_object()
         .expect("committed component schemas");
     let mut seen = 0usize;
-    for (plane, name, schema) in busbar_core_admin::test_support::plane_component_schemas() {
+    for (plane, name, schema) in
+        busbar_core_admin::test_support::plane_component_schemas(crate::linked::table())
+    {
         assert_eq!(
             committed.get(&name),
             Some(&schema),

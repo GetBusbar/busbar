@@ -11,8 +11,12 @@
 //! served through its memory-ABI door only, whose row is folded from its Statement as the
 //! composition root folds it) — and included here.
 //!
-//! A test then ADDRESSES a plane by what the plane declares about itself, read back from the
-//! registry: the config section it owns ([`owning`]), the fallback flag ([`fallback`]), or any
+//! The binary's DOOR TABLE ([`table`]) is the one the composition root would fold over those rows
+//! and lend: a test reads every plane fact off it, and lends it to the `App` it builds
+//! (`TestApp::doors`) and to every config parse it runs, as the root lends its own.
+//!
+//! A test then ADDRESSES a plane by what the plane declares about itself, read back from that
+//! table: the config section it owns ([`owning`]), the fallback flag ([`fallback`]), or any
 //! other declared fact ([`declaring`]). It spells no plane key, no crate identifier and no literal
 //! that is one; the key, section and mount path it uses are the declaration's own values.
 //!
@@ -22,44 +26,156 @@
 
 #![allow(dead_code)]
 
-use busbar_kernel::plane::registry::{plane_decls, PlaneDecl};
+use busbar_kernel::plane_driver::doors::Doors;
+use busbar_kernel::plane_driver::row::PlaneDecl;
 use busbar_kernel::test_support::seam::{
     register_test_plane_seam, test_plane_seams, TestPlaneSeam,
 };
 
 include!(concat!(env!("OUT_DIR"), "/test_linked.rs"));
 
-/// Install every test-linked plane exactly as the composition root installs it in production
-/// (protocol declarations, plane row, ingress seams), and every test-linked DOOR plane's registry
-/// row folded from its Statement, as the root folds a door — in the list's order, which is the
-/// planes' layering order. Idempotent: each entry's own install is first-wins, each door is folded
-/// once per test binary, and the registration loop runs once per test binary.
+/// The test-linked fallback plane's door registration: the one `door:` row whose Statement tail
+/// flags it the fallback (`TAIL_FALLBACK`), bound through the loader's one load as the composition
+/// root binds it. The kernel holds no protocol set (a plane resolves its own dialects, spec Part 1,
+/// Law 5); a test that needs a dialect reads it here, off the plane's door (BUSBAR-1.6.0.md
+/// l.4965: kernel and root users go via the plane ABI).
+/// Bound once per test binary.
+pub fn fallback_registration() -> &'static busbar_contract::plane_calls::PlaneRegistration {
+    use busbar_plugin_loader::dispatch::kinds::plane::{linked_probe, registration};
+    static REG: std::sync::OnceLock<busbar_contract::plane_calls::PlaneRegistration> =
+        std::sync::OnceLock::new();
+    REG.get_or_init(|| {
+        let mut fallbacks: Vec<_> = TEST_LINKED_DOORS
+            .iter()
+            .map(|&(label, door)| {
+                registration(linked_probe(door, label))
+                    .unwrap_or_else(|e| panic!("the test-linked door `{label}` binds: {e}"))
+            })
+            .filter(|reg| reg.fallback)
+            .collect();
+        assert_eq!(
+            fallbacks.len(),
+            1,
+            "one test-linked door is the fallback plane (`[package.metadata.busbar.test-linked] \
+             planes`)"
+        );
+        fallbacks.remove(0)
+    })
+}
+
+/// The fallback door's dialects, in its Statement tail's order.
+pub fn fallback_dialects() -> Vec<&'static str> {
+    fallback_registration().dialects.clone()
+}
+
+/// The fallback door's operation classes, in its Statement tail's order: the verbs its units are
+/// priced and labelled by.
+pub fn fallback_op_classes() -> Vec<&'static str> {
+    use busbar_plugin_loader::dispatch::kinds::plane::linked_probe;
+    TEST_LINKED_DOORS
+        .iter()
+        .map(|&(label, door)| {
+            linked_probe(door, label)()
+                .unwrap_or_else(|e| panic!("the test-linked door `{label}` binds: {e}"))
+                .served()
+        })
+        .find(|served| served.fallback)
+        .map(|served| served.op_classes)
+        .expect("one test-linked door is the fallback plane")
+}
+
+/// The dialect the fallback door's catch-all claim wears (its claim on `/`, the previous release's
+/// fallback; BUSBAR-1.6.0.md l.909: each plane declares its claims per dialect): the name a fixture
+/// lane or provider uses where any provider dialect will do.
+pub fn residual_default_dialect() -> &'static str {
+    static DIALECT: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    DIALECT.get_or_init(|| {
+        let facing = (fallback_registration().facing)(b"{}", b"", None, &[])
+            .unwrap_or_else(|e| panic!("the fallback door faces the world: {e}"));
+        facing
+            .claims
+            .into_iter()
+            .find(|(target, _)| target == "/")
+            .map(|(_, dialect)| dialect)
+            .expect("the fallback door claims `/` for a dialect")
+    })
+}
+
+/// The dialect the fallback door's claim on exactly `path` wears, read off its facing claims
+/// (BUSBAR-1.6.0.md l.909: each plane declares its claims per dialect): a test's way to name a
+/// dialect a linked plane states without spelling one, as `root::linked::dialect_for_path` is the
+/// root's own tests'.
+pub fn dialect_for_path(path: &str) -> Option<&'static str> {
+    let facing = (fallback_registration().facing)(b"{}", b"", None, &[])
+        .unwrap_or_else(|e| panic!("the fallback door faces the world: {e}"));
+    facing
+        .claims
+        .into_iter()
+        .find(|(target, _)| target == path)
+        .map(|(_, dialect)| dialect)
+}
+
+/// Install every test-linked plane's seams exactly as the composition root installs them in
+/// production (ingress seams), in the list's order, which is the planes' layering order. A door
+/// plane installs nothing: its row is folded into the binary's door table ([`table`]), which a test
+/// is lent rather than finding installed. Idempotent: each entry's own install is first-wins, and the
+/// seam registration loop runs once per test binary.
 pub fn install() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         for entry in TEST_LINKED {
             register_test_plane_seam(entry);
         }
-        // The linked doors' own dialect declarations, as the root's `register_protocols` installs
-        // them in production (the door row's `protocols` axis).
-        for decls in TEST_LINKED_PROTOCOLS {
-            busbar_kernel::proto::register_test_protocols(decls);
-        }
     });
-    let doors = door_rows();
-    let (mut seam, mut door) = (0, 0);
-    for &is_door in TEST_LINKED_ORDER {
-        if is_door {
-            busbar_kernel::plane::registry::register_test_plane(doors[door]);
-            door += 1;
-        } else {
-            (TEST_LINKED[seam].install)();
-            seam += 1;
-        }
+    for entry in TEST_LINKED {
+        (entry.install)();
     }
     for seam in test_plane_seams() {
         (seam.install)();
     }
+}
+
+/// THIS TEST BINARY'S DOOR TABLE: every test-linked door plane's row, in the list's order (the
+/// planes' layering order), folded as the composition root folds its own (`Doors::for_test`: one
+/// row per key, layering order, every owned-config claim checked). Folded once per test binary; a
+/// test reads every plane fact off it and lends it to what it drives. Installs the seams first
+/// ([`install`]), so a test that reads the table drives the planes the root would have installed.
+pub fn table() -> Doors {
+    static TABLE: std::sync::OnceLock<Doors> = std::sync::OnceLock::new();
+    install();
+    *TABLE.get_or_init(|| {
+        let doors = door_rows();
+        let mut rows: Vec<&'static PlaneDecl> = Vec::new();
+        let mut door = 0;
+        for &is_door in TEST_LINKED_ORDER {
+            if is_door {
+                rows.push(doors[door]);
+                door += 1;
+            }
+        }
+        Doors::for_test(&rows)
+    })
+}
+
+/// The kernel's one-provider fixture configuration (`test_support::cfg_with_provider_api_key`) LENT
+/// `doors`, as the composition root lends its table to the configuration it parses: its provider
+/// names the first dialect `doors` declares, so the boot accepts it (the neutral plane's dialect
+/// when `doors` declares none). The kernel names no dialect; the table states it.
+pub fn cfg_lent(
+    doors: Doors,
+    api_key: busbar_kernel::config::SecretRef,
+) -> busbar_kernel::config::RootCfg {
+    let mut cfg = busbar_kernel::test_support::cfg_with_provider_api_key(api_key);
+    cfg.doors = doors;
+    if let Some(dialect) = doors.provider_dialects().first().copied() {
+        for provider in cfg.providers.values_mut() {
+            provider.table.insert(
+                busbar_contract::section::MODEL_PROTOCOL_KEYS[0].to_string(),
+                serde_json::Value::from(dialect),
+            );
+        }
+    }
+    cfg
 }
 
 /// Every test-linked door plane's registry row, folded once per test binary.
@@ -94,10 +210,9 @@ pub fn linked_count() -> usize {
     TEST_LINKED.len() + TEST_LINKED_DOORS.len()
 }
 
-/// The registered plane list after [`install`], in registration order.
+/// The rows of this binary's door table ([`table`]), in its fold order.
 pub fn planes() -> &'static [&'static PlaneDecl] {
-    install();
-    plane_decls()
+    table().decls()
 }
 
 /// The ONE linked plane whose declaration satisfies `pred`. Refuses — naming `what` and the
@@ -109,7 +224,7 @@ pub fn declaring(what: &str, pred: impl Fn(&PlaneDecl) -> bool) -> &'static Plan
         [] => panic!(
             "no test-linked plane declares {what}: the planes this test binary links are the \
              crates listed in `[package.metadata.busbar.test-linked] planes` (crates/busbar/\
-             Cargo.toml); registered keys: {:?}",
+             Cargo.toml); the table's keys: {:?}",
             planes().iter().map(|d| d.key).collect::<Vec<_>>()
         ),
         many => panic!(

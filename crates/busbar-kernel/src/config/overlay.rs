@@ -643,7 +643,7 @@ impl OverlaySection {
     /// EVERY section, in wire order. The route's error message, the OpenAPI enum and the docs audit
     /// all read THIS, so the valid set is stated ONCE: a new section cannot be live in the parser and
     /// missing from what the API tells an operator, or from what the reference documents.
-    pub fn all() -> Vec<OverlaySection> {
+    pub fn all(doors: crate::plane_driver::doors::Doors) -> Vec<OverlaySection> {
         let mut out = vec![
             OverlaySection::Groups,
             OverlaySection::Hooks,
@@ -651,7 +651,7 @@ impl OverlaySection {
             OverlaySection::PluginVersions,
         ];
         out.extend(
-            crate::config::named_map::NamedMapSection::sections()
+            crate::config::named_map::NamedMapSection::sections(doors)
                 .into_iter()
                 .map(OverlaySection::NamedMap),
         );
@@ -660,8 +660,10 @@ impl OverlaySection {
 
     /// Parse a URL path segment into a section, or `None` for an unknown name (the caller 400s). The
     /// ONE place the valid section names live, so the route + the doc + the tests share one source.
-    pub fn parse(s: &str) -> Option<Self> {
-        OverlaySection::all().into_iter().find(|v| v.as_str() == s)
+    pub fn parse(doors: crate::plane_driver::doors::Doors, s: &str) -> Option<Self> {
+        OverlaySection::all(doors)
+            .into_iter()
+            .find(|v| v.as_str() == s)
     }
 
     /// The section's wire/label name (the path segment). For a named map this is the section KEY,
@@ -680,8 +682,8 @@ impl OverlaySection {
     /// The valid section names as a comma-separated, backticked list for an error message. Derived
     /// from [`OverlaySection::all`] rather than written out, because the hand-written version of this
     /// string is exactly what told operators `export` was not a section while it was becoming one.
-    pub fn valid_names() -> String {
-        OverlaySection::all()
+    pub fn valid_names(doors: crate::plane_driver::doors::Doors) -> String {
+        OverlaySection::all(doors)
             .iter()
             .map(|s| format!("`{}`", s.as_str()))
             .collect::<Vec<_>>()
@@ -1087,7 +1089,7 @@ pub fn apply_plugin_versions_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc)
 /// LOUDLY anyway at `resolve` (the dangling-reference error), which is the actionable diagnostic.
 pub fn apply_named_maps_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
     use crate::config::named_map::NamedMapSection;
-    for section in NamedMapSection::sections() {
+    for section in NamedMapSection::sections(deploy.doors) {
         let Some(entries) = doc.named_maps.get(section.key()) else {
             continue;
         };
@@ -1149,6 +1151,7 @@ pub struct UnparseableNamedDef {
 /// partial patch can produce is a less precise ERROR STRING for a name that genuinely failed for
 /// some other reason. The flag itself is correct either way.
 pub fn unparseable_named_map_entries(
+    doors: crate::plane_driver::doors::Doors,
     path: Option<&Path>,
     section: crate::config::named_map::NamedMapSection,
 ) -> BTreeMap<String, UnparseableNamedDef> {
@@ -1160,7 +1163,7 @@ pub fn unparseable_named_map_entries(
         return out;
     };
     for (name, def) in entries {
-        if let Err(error) = section.validate_def(name, def) {
+        if let Err(error) = section.validate_def(doors, name, def) {
             out.insert(
                 name.clone(),
                 UnparseableNamedDef {

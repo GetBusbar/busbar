@@ -11,11 +11,11 @@
 //! `&'static dyn EngineTestKitPlus` and reaches both kits through it.
 
 use super::{AppBuilder, EngineAppPlus, EngineTestKitPlus, NamedMapSectionFacts, TestAppKitPlus};
+use crate::plane_driver::claims::PlaneAdmission;
 use crate::test_support::engine_kit::CoreEngineKit;
 use crate::test_support::TestApp;
 use busbar_contract::abi::mechanism::route::RouteAuth;
 use busbar_contract::secret::SecretResolve;
-use busbar_kernel::plane::PlaneAdmission;
 use std::sync::Arc;
 
 impl EngineTestKitPlus for CoreEngineKit {
@@ -53,10 +53,14 @@ impl EngineTestKitPlus for CoreEngineKit {
         crate::snapshot::PLANE_REQUESTS_TOTAL
     }
 
-    fn named_map_section_facts(&self, section: &'static str) -> Option<NamedMapSectionFacts> {
+    fn named_map_section_facts(
+        &self,
+        doors: crate::plane_driver::doors::Doors,
+        section: &'static str,
+    ) -> Option<NamedMapSectionFacts> {
         use crate::config::named_map::NamedMapSection;
         let this = NamedMapSection::Plane(section);
-        NamedMapSection::sections()
+        NamedMapSection::sections(doors)
             .contains(&this)
             .then(|| NamedMapSectionFacts {
                 key: this.key(),

@@ -10,7 +10,7 @@
 rule = "door-cells-rig:root-path"
 file = "crates/busbar-plane-a2a/tests/root/mod.rs"
 item = "crate::LINKED"
-count = 6
+count = 5
 
 [[finding]]
 rule = "door-cells-rig:root-path"

@@ -8,27 +8,73 @@
 //! cleanup): the tests assert against the planes' REAL declared wire formats — properties of the
 //! actual dialect/plane registries, not a shape a neutral fake could stand in for. The planes come
 //! from the test-linked table (`tests/linked/mod.rs`; K3, architect ruling N02) and are ADDRESSED by
-//! what they declare, read back from the registry: the fallback plane, the plane that owns the
+//! what they declare, read back from the binary's lent door table: the fallback plane, the plane that owns the
 //! `tools:` section (one wire format over several transports) and the plane that owns `agents:`
 //! (several bindings of one registration). The `agents:` owner is a DOOR row — a `door:` row
 //! of the test-linked list, the plane's own door folded from its Statement by the kernel's door
 //! fold as the composition root folds it in a shipped build (the linked engine crate that used to
 //! own it is deleted). This file spells no plane key; each plane pins its own literal identity in
-//! its own crate. Every test installs the roster first (idempotent, first-wins). A handful of `pub(crate)` items (`Ingress`, `PlaneDispatch::{ingress_of,
+//! its own crate. Every test reads the binary's door table, folded once. A handful of `pub(crate)` items (`Ingress`, `PlaneDispatch::{ingress_of,
 //! wire_format_of, mounted_plane_of}`, `sole_wire_format`, `has_superset_ir`, `sole_of`,
 //! `superset_of`, `ingress::native::envelope_dialect`) were widened to `pub` for exactly this move.
 
-use busbar_kernel::plane::{
-    fallback_key, has_superset_ir, plane_decl, plane_keys, sole_of, sole_wire_format, superset_of,
-    wire_format_names, wire_formats, Ingress, PlaneDispatch, WIRE_GRPC, WIRE_JSONRPC,
-};
+use busbar_kernel::plane_driver::claims::Ingress;
+use busbar_kernel::plane_driver::claims::PlaneDispatch;
+use busbar_kernel::plane_driver::claims::WIRE_GRPC;
+use busbar_kernel::plane_driver::claims::WIRE_JSONRPC;
+use busbar_kernel::plane_driver::doors::sole_of;
+use busbar_kernel::plane_driver::doors::superset_of;
+use busbar_kernel::plane_driver::doors::Doors;
+use busbar_kernel::plane_driver::row::PlaneDecl;
 
 mod linked;
 
-/// Install the linked roster in the process registry — idempotent (first-wins), so every test can
-/// call it unconditionally regardless of run order.
+/// Install the linked roster's seams — idempotent (first-wins), so every test can call it
+/// unconditionally regardless of run order. The planes' rows are not installed anywhere: every read
+/// below is a read of this binary's door table ([`doors`]).
 fn register_planes() {
     linked::install();
+}
+
+/// THIS BINARY'S DOOR TABLE, as the composition root would lend it: every plane fact and every
+/// mount below reads it.
+fn doors() -> Doors {
+    linked::table()
+}
+
+/// The fallback plane's key, as the lent table answers it.
+fn fallback_key() -> &'static str {
+    doors().fallback_key()
+}
+
+/// Every plane key of the lent table, in layering order.
+fn plane_keys() -> impl Iterator<Item = &'static str> {
+    doors().plane_keys()
+}
+
+/// The lent table's row for `key`.
+fn plane_decl(key: &str) -> &'static PlaneDecl {
+    doors().plane_decl(key)
+}
+
+/// Whether plane `key` of the lent table has earned a superset IR.
+fn has_superset_ir(key: &str) -> bool {
+    doors().has_superset_ir(key)
+}
+
+/// Plane `key`'s one wire format in the lent table, when it has exactly one.
+fn sole_wire_format(key: &str) -> Option<&'static str> {
+    doors().sole_wire_format(key)
+}
+
+/// Plane `key`'s wire formats in the lent table, named.
+fn wire_format_names(key: &str) -> &'static [&'static str] {
+    doors().wire_format_names(key)
+}
+
+/// How many wire formats plane `key` of the lent table translates between.
+fn wire_formats(key: &str) -> usize {
+    doors().wire_formats(key)
 }
 
 /// The fallback plane's key, read off the plane that declares the flag.
@@ -51,11 +97,10 @@ fn door(key: &str) -> String {
     format!("/{key}")
 }
 
-/// WARM THE SHARED PROTOCOL REGISTRY. Reading `known_protocols()` once, up front, before any plane
-/// helper reaches it, keeps the dialect list populated order-independently of whatever order the
-/// harness runs tests in.
-fn warm_shared_protocol_registry() {
-    let _ = busbar_kernel::proto::known_protocols();
+/// The dialects the fallback plane's door states in its Statement tail, in their order (read
+/// through the plane ABI, BUSBAR-1.6.0.md l.4965; the kernel holds no protocol set).
+fn declared_codec_dialects() -> Vec<&'static str> {
+    linked::fallback_dialects()
 }
 
 /// Every plane is reachable from `plane_keys()`, and it has no duplicates. The router, the config
@@ -142,7 +187,6 @@ fn a_plane_earns_a_superset_ir_at_two_wire_formats_and_not_before() {
 #[test]
 fn the_fallback_and_multi_binding_planes_have_earned_an_ir_today() {
     register_planes();
-    warm_shared_protocol_registry();
     assert!(has_superset_ir(fallback()));
     assert!(!has_superset_ir(single()));
     assert!(
@@ -167,7 +211,7 @@ fn the_multi_binding_legs_are_named_by_the_planes_wire_formats() {
         wires,
         [
             WIRE_JSONRPC,
-            busbar_kernel::plane::WIRE_HTTP_JSON,
+            busbar_kernel::plane_driver::claims::WIRE_HTTP_JSON,
             WIRE_GRPC
         ]
         .as_slice(),
@@ -175,20 +219,15 @@ fn the_multi_binding_legs_are_named_by_the_planes_wire_formats() {
     );
 }
 
-/// The fallback plane's wire-format count is DERIVED from the real protocol registry, never a
-/// literal. An additional registered protocol must not require anyone to remember to bump a number
-/// here.
+/// The fallback plane's wire-format count is DERIVED from its own declarations, never a literal. An
+/// additional declared dialect must not require anyone to remember to bump a number here.
 #[test]
-fn the_fallback_wire_format_count_comes_from_the_protocol_registry() {
+fn the_fallback_wire_format_count_comes_from_its_declarations() {
     register_planes();
-    warm_shared_protocol_registry();
-    assert_eq!(
-        wire_formats(fallback()),
-        busbar_kernel::proto::known_protocols().len()
-    );
+    assert_eq!(wire_formats(fallback()), declared_codec_dialects().len());
     assert!(
         wire_formats(fallback()) >= 2,
-        "the registry itself is what earns the fallback plane its IR"
+        "its own declarations are what earn the fallback plane its IR"
     );
 }
 
@@ -209,7 +248,7 @@ fn transports_do_not_count_as_wire_formats() {
 fn plane_of(d: &PlaneDispatch, path: &str) -> &'static str {
     match d.ingress_of(path) {
         Ingress::Mounted(key) => key,
-        Ingress::Fallback(_) => fallback_key(),
+        Ingress::Fallback => fallback_key(),
     }
 }
 
@@ -236,7 +275,7 @@ fn with_nothing_mounted_every_path_is_the_fallback_plane() {
 fn a_mounted_plane_claims_its_mount_and_everything_below_it() {
     register_planes();
     let (k, m) = (single(), door(single()));
-    let d = PlaneDispatch::default().mount(k, &m, WIRE_JSONRPC);
+    let d = PlaneDispatch::default().mount(doors(), k, &m, WIRE_JSONRPC);
     assert_eq!(plane_of(&d, &m), k);
     assert_eq!(plane_of(&d, &format!("{m}/")), k);
     assert_eq!(plane_of(&d, &format!("{m}/tools/list")), k);
@@ -247,7 +286,7 @@ fn a_mounted_plane_claims_its_mount_and_everything_below_it() {
 fn a_prefix_sibling_is_not_the_plane() {
     register_planes();
     let (k, m) = (single(), door(single()));
-    let d = PlaneDispatch::default().mount(k, &m, WIRE_JSONRPC);
+    let d = PlaneDispatch::default().mount(doors(), k, &m, WIRE_JSONRPC);
     let short = &m[..m.len() - 1];
     for path in [
         format!("{m}x"),
@@ -266,8 +305,8 @@ fn two_mounted_planes_do_not_claim_each_other() {
     register_planes();
     let (s, a) = (single(), multi());
     let d = PlaneDispatch::default()
-        .mount(s, &door(s), WIRE_JSONRPC)
-        .mount(a, &door(a), WIRE_JSONRPC);
+        .mount(doors(), s, &door(s), WIRE_JSONRPC)
+        .mount(doors(), a, &door(a), WIRE_JSONRPC);
     assert_eq!(plane_of(&d, &format!("{}/tools/list", door(s))), s);
     assert_eq!(plane_of(&d, &format!("{}/tasks/send", door(a))), a);
     assert_eq!(plane_of(&d, "/v1/messages"), fallback());
@@ -279,7 +318,7 @@ fn two_mounted_planes_do_not_claim_each_other() {
 fn an_unmounted_plane_claims_nothing() {
     register_planes();
     let (s, a) = (single(), multi());
-    let d = PlaneDispatch::default().mount(a, &door(a), WIRE_JSONRPC);
+    let d = PlaneDispatch::default().mount(doors(), a, &door(a), WIRE_JSONRPC);
     assert_eq!(plane_of(&d, &door(s)), fallback());
     assert_eq!(plane_of(&d, &format!("{}/tools/list", door(s))), fallback());
 }
@@ -292,7 +331,7 @@ fn a_mount_is_normalised_before_it_is_matched() {
     let k = single();
     let m = door(k);
     for spelling in [m.clone(), format!("{m}/"), k.to_string(), format!("{k}/")] {
-        let d = PlaneDispatch::default().mount(k, &spelling, WIRE_JSONRPC);
+        let d = PlaneDispatch::default().mount(doors(), k, &spelling, WIRE_JSONRPC);
         assert_eq!(plane_of(&d, &m), k, "spelling {spelling}");
         assert_eq!(
             plane_of(&d, &format!("{m}/tools/list")),
@@ -316,7 +355,8 @@ fn the_fallback_plane_cannot_be_mounted() {
         fallback(),
         "the fallback key is the declaring plane's"
     );
-    let d = PlaneDispatch::default().mount(fallback_key(), &door(fallback()), WIRE_JSONRPC);
+    let d =
+        PlaneDispatch::default().mount(doors(), fallback_key(), &door(fallback()), WIRE_JSONRPC);
     assert_eq!(
         plane_of(&d, &door(fallback())),
         fallback(),
@@ -330,7 +370,7 @@ fn the_fallback_plane_cannot_be_mounted() {
 fn a_mount_is_readable_back() {
     register_planes();
     let (s, a) = (single(), multi());
-    let d = PlaneDispatch::default().mount(s, &door(s), WIRE_JSONRPC);
+    let d = PlaneDispatch::default().mount(doors(), s, &door(s), WIRE_JSONRPC);
     assert_eq!(d.mount_of(s), Some(door(s).as_str()));
     assert_eq!(d.mount_of(a), None);
 }
@@ -339,7 +379,6 @@ fn a_mount_is_readable_back() {
 #[test]
 fn sole_wire_format_answers_exactly_when_a_plane_speaks_one() {
     register_planes();
-    warm_shared_protocol_registry();
     for p in plane_keys() {
         assert_eq!(
             sole_wire_format(p).is_some(),
@@ -370,8 +409,8 @@ fn a_multi_binding_plane_is_still_labelled_at_the_door_that_was_knocked_on() {
     let a = multi();
     let (m, svc) = (door(a), "/lf.svc.v1.Service");
     let d = PlaneDispatch::default()
-        .mount(a, &m, WIRE_JSONRPC)
-        .mount(a, svc, WIRE_GRPC);
+        .mount(doors(), a, &m, WIRE_JSONRPC)
+        .mount(doors(), a, svc, WIRE_GRPC);
     let under = format!("{m}/agents/x");
     assert_eq!(d.mounted_plane_of(&under), Some(a));
     assert_eq!(d.wire_format_of(&under), Some(WIRE_JSONRPC));
@@ -412,7 +451,7 @@ fn every_mounted_planes_door_dialect_is_jsonrpc() {
     register_planes();
     for p in plane_keys().filter(|p| *p != fallback_key()) {
         assert_eq!(
-            Ingress::Mounted(p).shaping_wire_format(),
+            Ingress::Mounted(p).shaping_wire_format(doors()),
             Some(WIRE_JSONRPC),
             "{p:?} is mountable but its door does not speak JSON-RPC — `ingress::native`'s mounted \
              arm would mis-shape its refusals"
@@ -422,35 +461,28 @@ fn every_mounted_planes_door_dialect_is_jsonrpc() {
             Some(&WIRE_JSONRPC),
             "{p:?} is mountable and its canonical binding is not JSON-RPC"
         );
-        assert_eq!(
-            busbar_kernel::ingress::native::envelope_dialect(Ingress::Mounted(p)),
-            WIRE_JSONRPC,
-            "{p:?}'s door refusals must not fall through to a vendor envelope"
-        );
     }
 }
 
 // ── THE MERGED RESOLVER ──────────────────────────────────────────────────────────────────────────
 
-/// THE ORDER OF RESOLUTION, which is the whole of the merge: the MOUNT TABLE first, the path shape
-/// only for what is left over.
+/// THE ORDER OF RESOLUTION, which is the whole of the merge: the MOUNT TABLE, and the fallback for
+/// what is left over. The kernel reads no dialect off a path's shape (a plane matches its own
+/// claimed routes).
 #[test]
 fn the_mount_table_is_read_before_the_path_shape() {
     register_planes();
     let (s, a) = (single(), multi());
     let m = door(s);
-    let d = PlaneDispatch::default().mount(s, &m, WIRE_JSONRPC);
+    let d = PlaneDispatch::default().mount(doors(), s, &m, WIRE_JSONRPC);
     assert_eq!(d.ingress_of(&m), Ingress::Mounted(s));
     assert_eq!(
         d.ingress_of(&format!("{m}/tools/list")),
         Ingress::Mounted(s)
     );
-    assert_eq!(
-        d.ingress_of("/v1/chat/completions"),
-        Ingress::Fallback(Some("openai"))
-    );
-    assert_eq!(d.ingress_of(&format!("{m}x")), Ingress::Fallback(None));
-    assert_eq!(d.ingress_of(&door(a)), Ingress::Fallback(None));
+    assert_eq!(d.ingress_of("/v1/chat/completions"), Ingress::Fallback);
+    assert_eq!(d.ingress_of(&format!("{m}x")), Ingress::Fallback);
+    assert_eq!(d.ingress_of(&door(a)), Ingress::Fallback);
 }
 
 /// A MOUNT CANNOT BE INFERRED FROM A URL.
@@ -467,7 +499,7 @@ fn an_unmounted_plane_is_never_resolved_from_the_path() {
     for path in &paths {
         assert_eq!(
             d.ingress_of(path),
-            Ingress::Fallback(None),
+            Ingress::Fallback,
             "{path} on a deployment with no plane mounted"
         );
     }
@@ -478,16 +510,17 @@ fn an_unmounted_plane_is_never_resolved_from_the_path() {
 fn a_resolved_ingress_names_its_own_wire_format() {
     register_planes();
     let s = single();
-    let d = PlaneDispatch::default().mount(s, &door(s), WIRE_JSONRPC);
-    assert_eq!(d.ingress_of(&door(s)).wire_format(), Some(WIRE_JSONRPC));
+    let d = PlaneDispatch::default().mount(doors(), s, &door(s), WIRE_JSONRPC);
     assert_eq!(
-        d.ingress_of("/v1/messages").wire_format(),
-        Some("anthropic")
+        d.ingress_of(&door(s)).wire_format(doors()),
+        Some(WIRE_JSONRPC)
     );
-    assert_eq!(d.ingress_of("/stats").wire_format(), None);
-    let over = PlaneDispatch::default().mount(s, "/v1/messages", WIRE_JSONRPC);
+    // A path no plane is mounted on names no wire format: the kernel reads none off a path.
+    assert_eq!(d.ingress_of("/v1/messages").wire_format(doors()), None);
+    assert_eq!(d.ingress_of("/stats").wire_format(doors()), None);
+    let over = PlaneDispatch::default().mount(doors(), s, "/v1/messages", WIRE_JSONRPC);
     assert_eq!(
-        over.ingress_of("/v1/messages").wire_format(),
+        over.ingress_of("/v1/messages").wire_format(doors()),
         Some(WIRE_JSONRPC)
     );
 }
@@ -500,8 +533,8 @@ fn only_a_mounted_plane_claims_a_path_and_the_two_readings_agree() {
     let (s, a) = (single(), multi());
     let (ms, ma) = (door(s), door(a));
     let d = PlaneDispatch::default()
-        .mount(s, &ms, WIRE_JSONRPC)
-        .mount(a, &ma, WIRE_JSONRPC);
+        .mount(doors(), s, &ms, WIRE_JSONRPC)
+        .mount(doors(), a, &ma, WIRE_JSONRPC);
     for path in [
         ms.clone(),
         format!("{ms}/x"),
@@ -543,23 +576,18 @@ fn a_plane_with_zero_wire_formats_is_labelless_and_irless_by_design() {
     assert!(superset_of(2));
 }
 
-/// **The fallback plane's dialect list IS the registry's, so the empty case is the registry's empty
-/// case.**
+/// **The fallback plane's dialect list IS its declarations', so the empty case is the empty
+/// declaration list's.**
 #[test]
-fn the_fallback_planes_dialects_are_the_registrys_so_an_empty_registry_empties_the_plane() {
+fn the_fallback_planes_dialects_are_its_declarations_so_none_empties_the_plane() {
     register_planes();
-    warm_shared_protocol_registry();
     assert_eq!(
         wire_format_names(fallback()),
-        busbar_kernel::proto::known_protocols(),
-        "the fallback plane's wire formats must track the registry"
+        declared_codec_dialects().as_slice(),
+        "the fallback plane's wire formats must track its declarations"
     );
 
-    let empty = busbar_kernel::proto::registry::Registry::new(
-        busbar_kernel::proto::registry::merged_boot_decls(&[], &[]),
-    );
-    let names: &'static [&'static str] = empty.codec_protocols();
-    assert!(names.is_empty(), "premise: no declarations, no dialects");
+    let names: &'static [&'static str] = &[];
     assert_eq!(
         sole_of(names),
         None,

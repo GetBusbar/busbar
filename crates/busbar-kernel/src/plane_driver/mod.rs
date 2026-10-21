@@ -54,7 +54,9 @@
 //! cancelled; the write itself runs on).
 
 mod cancel;
+pub mod claims;
 pub mod door;
+pub mod doors;
 mod epoch;
 mod far_end;
 pub(crate) mod hooks;
@@ -63,6 +65,7 @@ mod needs;
 mod probe;
 mod route;
 pub mod route_tables;
+pub mod row;
 pub mod serve;
 pub mod slots;
 

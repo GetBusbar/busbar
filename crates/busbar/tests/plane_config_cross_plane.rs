@@ -7,8 +7,8 @@
 //! the test-linked table (`tests/linked/mod.rs`) and are addressed by the config section each
 //! declares, so this file names no plane crate, key or type. Each plane's REAL validator is reached
 //! CONFIG-DRIVEN — the section is parsed and resolved through the kernel's own config entry points,
-//! exactly as boot does — against core's own `config_sections()`/`refuse_cross_plane_reference`
-//! grammar. The rendered prose pinned below names config sections (`tools`, `agents`), which is
+//! exactly as boot does — against core's own `config_sections_from`/`refuse_cross_plane_reference`
+//! grammar, over the door table this binary lends (`linked::table`). The rendered prose pinned below names config sections (`tools`, `agents`), which is
 //! what an operator reads at boot. The `agents:` owner is a DOOR row (a `door:` row of the
 //! test-linked list, folded from its door's Statement by the kernel's door fold): a door's registrations reach
 //! the kernel's boot judgement (`validate_plane_section`) exactly as a linked plane's do, which is
@@ -16,13 +16,20 @@
 
 mod linked;
 
-use busbar_kernel::config::plane_sections::{config_sections, refuse_cross_plane_reference};
-use busbar_kernel::plane::{PlaneSections, RefError};
+use busbar_kernel::config::plane_refs::PlaneSections;
+use busbar_kernel::config::plane_refs::RefError;
+use busbar_kernel::config::plane_sections::{config_sections_from, refuse_cross_plane_reference};
+use busbar_kernel::plane_driver::doors::Doors;
 
-/// Register every test-linked plane in the process registry — idempotent (first-wins), so every
-/// test can call it unconditionally regardless of run order.
-fn register_planes() {
-    linked::install();
+/// This binary's door table, folded once over every test-linked plane: the table every parse and
+/// every section container below is lent.
+fn register_planes() -> Doors {
+    linked::table()
+}
+
+/// Every section the config grammar declares over the lent table.
+fn lent_config_sections() -> Vec<&'static str> {
+    config_sections_from(register_planes().decls())
 }
 
 /// The refusal a named-definition section's own validator gives for entry `x` carrying one hook
@@ -33,12 +40,15 @@ fn refusal_for(section: &str, hook: &str) -> String {
     let yaml = format!(
         "providers: {{}}\nmodels: {{}}\n{section}:\n  x:\n    url: \"https://vendor.example/x\"\n    pin: {{ mechanism: unpinned }}\n    hooks: [\"{hook}\"]\n"
     );
-    let errors: Vec<String> = match busbar_kernel::config::deploy_from_yaml_str(&yaml) {
-        Err(e) => vec![e.to_string()],
-        Ok(deploy) => busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
-            .err()
-            .unwrap_or_default(),
-    };
+    let errors: Vec<String> =
+        match busbar_kernel::config::deploy_from_yaml_str(&yaml, register_planes()) {
+            Err(e) => vec![e.to_string()],
+            Ok(deploy) => {
+                busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
+                    .err()
+                    .unwrap_or_default()
+            }
+        };
     errors
         .into_iter()
         .find(|e| e.contains(hook))
@@ -53,15 +63,14 @@ fn refusal_for(section: &str, hook: &str) -> String {
 /// test and none to either protocol's config module.
 #[test]
 fn every_section_the_grammar_declares_is_refused_on_both_planes() {
-    // Both planes' validators judge a hook reference against the PROCESS section registry, read through
-    // the neutral `plane_sections` provider seam — so every plane must be registered for them to
-    // recognise every OTHER plane's declared section as a cross-plane reach. Idempotent by key, so
-    // this is a no-op past the first run.
-    register_planes();
+    // Both planes' validators judge a hook reference against the section list of the door table
+    // the parse is lent — so the table must hold every plane for them to recognise every OTHER
+    // plane's declared section as a cross-plane reach.
+    let _doors = register_planes();
 
     let agents = linked::owning("agents").config_section;
     let tools = linked::owning("tools").config_section;
-    for section in config_sections() {
+    for section in lent_config_sections() {
         let hook = format!("{section}.some-hook");
 
         let on_agents = refusal_for(agents, &hook);
@@ -95,14 +104,14 @@ fn every_section_the_grammar_declares_is_refused_on_both_planes() {
 /// PROSE, which names the `agents:` owner's config section (`"agents"`) — see this file's header.
 #[test]
 fn the_resolve_time_refusal_fires_on_a_bare_name_that_binds_across_the_boundary() {
-    register_planes();
+    let doors = register_planes();
     let agents = linked::owning("agents").key;
     let tools = linked::owning("tools").key;
-    let mut sections: PlaneSections<u8> = PlaneSections::default();
+    let mut sections: PlaneSections<u8> = PlaneSections::new(doors);
     sections.insert(agents, "planner", 1);
 
     // The parse-time rule has NO objection to this name.
-    refuse_cross_plane_reference("`tools.search`", "planner", &config_sections())
+    refuse_cross_plane_reference("`tools.search`", "planner", &lent_config_sections())
         .expect("a bare name is legal in shape; the boundary it crosses is a binding, not a shape");
 
     let err = sections
@@ -117,8 +126,9 @@ fn the_resolve_time_refusal_fires_on_a_bare_name_that_binds_across_the_boundary(
         }
     );
     assert!(
-        err.to_string().contains("which is defined in `agents`"),
-        "the refusal DIAGNOSES rather than merely denying, got: {err}"
+        err.message(doors).contains("which is defined in `agents`"),
+        "the refusal DIAGNOSES rather than merely denying, got: {}",
+        err.message(doors)
     );
 }
 
@@ -129,16 +139,16 @@ fn the_resolve_time_refusal_fires_on_a_bare_name_that_binds_across_the_boundary(
 /// (`"tools"`, `"agents"`) as the test above — see this file's header.
 #[test]
 fn the_refusal_message_is_actionable() {
-    register_planes();
+    let doors = register_planes();
     let models = linked::fallback().key;
     let tools = linked::owning("tools").key;
     let agents = linked::owning("agents").key;
-    let mut s: PlaneSections<&'static str> = PlaneSections::default();
+    let mut s: PlaneSections<&'static str> = PlaneSections::new(doors);
     s.insert(models, "fast", "a pool");
     s.insert(tools, "filesystem", "a tool server");
     s.insert(agents, "planner", "an agent");
 
-    let msg = s.resolve(tools, "planner").unwrap_err().to_string();
+    let msg = s.resolve(tools, "planner").unwrap_err().message(doors);
     assert!(msg.contains("planner"), "names the entry: {msg}");
     assert!(
         msg.contains("tools"),
@@ -146,7 +156,7 @@ fn the_refusal_message_is_actionable() {
     );
     assert!(msg.contains("agents"), "names the defining section: {msg}");
 
-    let unknown = s.resolve(tools, "nowhere").unwrap_err().to_string();
+    let unknown = s.resolve(tools, "nowhere").unwrap_err().message(doors);
     assert!(unknown.contains("nowhere"));
     assert!(unknown.contains("tools"));
     assert!(

@@ -1045,13 +1045,14 @@ impl Node {
         // The sweep, before this unit takes a slot of its own: any slot a lost task left MARKED is
         // settled and given back now. One atomic read when nothing is marked.
         self.sweep(arrived);
-        // Whose unit, what class, and the dialect a refusal this node renders is written in — the
-        // plane's statements about what arrived, read off it before any step runs.
-        let (principal, op_class, proto, build) = handed;
+        // Whose unit and what class — the plane's statements about what arrived, read off it before
+        // any step runs. The dialect it states stays the plane's: a refusal this node answers itself
+        // is the kernel's own envelope (the kernel holds no protocol set).
+        let (principal, op_class, _dialect, build) = handed;
         // FAIL CLOSED while the book's journal cannot reach its store: nothing is built, held or
         // journalled for a unit that is refused here, and the reason is the answer.
         if let Some(why) = self.journal_refusal() {
-            return journal_unavailable(proto, &why);
+            return journal_unavailable(&why);
         }
         let key = self.next_key.mint();
         // ONE METER, on both sides of the loop: the unit accrues onto it at the Meter step and the
@@ -1101,7 +1102,7 @@ impl Node {
         match entered {
             // The table is uncapped on this listener, so this arm is the table declining for a
             // reason that is not capacity. It is still an answer rather than a panic.
-            Err(_refused) => unavailable(proto),
+            Err(_refused) => unavailable(),
             Ok(slot) => {
                 // THE SLOT, from here to whichever way this unit leaves. The table is what bounds
                 // how many units this node has in flight, so the one thing that must not depend on
@@ -1173,8 +1174,7 @@ impl Node {
                 // THE AUDITED EXIT (#28): the plane's answer becomes the served response here, and
                 // nowhere on the plane's side of the seam.
                 let (answer, late) = finish();
-                let response =
-                    answer.map_or_else(|| unavailable(proto), PlaneAnswer::into_response);
+                let response = answer.map_or_else(unavailable, PlaneAnswer::into_response);
                 let seal = driven.take_seal(key);
                 let response = self.tail(
                     ended,
@@ -1930,21 +1930,20 @@ impl Drop for Occupied<'_> {
     }
 }
 
-/// What a node whose journal cannot reach its store answers a new unit with, in the caller's own
-/// dialect: 503 and the reason. A state the previous release never reached (it kept no journal).
-fn journal_unavailable(proto: &str, why: &str) -> Response {
+/// What a node whose journal cannot reach its store answers a new unit with, in the kernel's own
+/// envelope (the kernel speaks no dialect): 503 and the reason. A state the previous release never
+/// reached (it kept no journal).
+fn journal_unavailable(why: &str) -> Response {
     busbar_kernel::proxy::ingress_error(
-        proto,
         StatusCode::SERVICE_UNAVAILABLE,
         busbar_contract::protocol::KIND_OVERLOADED,
         why,
     )
 }
 
-/// What a node that cannot take the unit at all answers with, in the caller's own dialect.
-fn unavailable(proto: &str) -> Response {
+/// What a node that cannot take the unit at all answers with, in the kernel's own envelope.
+fn unavailable() -> Response {
     busbar_kernel::proxy::ingress_error(
-        proto,
         StatusCode::SERVICE_UNAVAILABLE,
         busbar_contract::protocol::KIND_OVERLOADED,
         "The service is temporarily overloaded. Please retry shortly.",
@@ -2960,20 +2959,6 @@ fn bind_node_book(
 // THE SWITCH-OVER'S OWN PROOF
 // ---------------------------------------------------------------------------------------------
 
-/// THE SWITCH, DRIVEN BOTH WAYS on the same fixture and the same deployment shape.
-///
-/// The rehearsal beside the step files proves the nine steps COMPOSE. What it cannot prove is that
-/// the composition root drives them the way the loop drives them, because it has no loop: it is a
-/// driver written in a test file. This module drives the real one — `run_unit`, the kernel's ten
-/// steps, its two audit doors and its one exit — through [`Node::answer`], against the shell's
-/// entry point on its own deployment, and compares what a client and an operator can see.
-///
-/// Each fixture builds TWO deployments — own registry, own scripted upstream, own governance store —
-/// so the two legs' counters are compared rather than summed.
-#[cfg(all(test, linked_axis_node))]
-#[path = "tests/plane_node.rs"]
-mod tests;
-
 /// A unit's one audit record names where it went and the controls it ran under (audit root-R1#1),
 /// driven through the node with a unit of the test's own: no plane is needed to ask it.
 #[cfg(test)]
@@ -2982,7 +2967,8 @@ mod seal_tests;
 
 /// The node's money cells that name no plane (Law 10): the late arm, the one pricing site and its
 /// card pin, the sweep and its drop guard, the abandoned-end posting site, the dispatch record, the
-/// lane-name interner and the two books agreeing, ported out of `tests/plane_node.rs` so they are
+/// lane-name interner and the two books agreeing, ported out of the node-axis suite (deleted with the
+/// never-set `linked_axis_node` cfg it was gated on) so they are
 /// built in every test build, driven through [`Node::drive_borrowed`] (the door path) where they
 /// drive a unit.
 #[cfg(test)]

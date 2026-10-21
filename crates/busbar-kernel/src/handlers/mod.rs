@@ -12,7 +12,8 @@
 //! - [`OperationHandler`](busbar_contract::codec::OperationHandler) — ONE per (protocol × operation). A pure codec: wire ↔ IR, both
 //!   directions, plus the operation-capability surface the engine reads. It never routes, fails
 //!   over, checks auth, bills, or knows another protocol exists.
-//! - [`request_handler`] is the registry the catch-all dispatch resolves through.
+//! - The kernel resolves neither: a plane matches its own claimed routes and its dialects resolve
+//!   their own handlers inside it (spec Part 1, Law 5).
 //!
 //! Adding a protocol: a Router ID line, a `RequestHandler` impl here, its OperationHandlers, and a
 //! `CELLS` table naming the verbs it speaks. Adding an OPERATION: an OperationHandler plus a row in
@@ -27,18 +28,15 @@
 //! the `IngressReject` / `CodecError` reject enums, named there by every caller. The cross-dialect
 //! translate pipeline is the LLM plane's own, and a plane renders its own refusals and reads its
 //! own far end's errors through its door (spec Part 3 section 12): the kernel frames no codec
-//! cell, reads no codec's usage and resolves no error vocabulary. What lives HERE is
-//! [`request_handler`] and the host's usage-tap fault reporting the install arms.
+//! cell, reads no codec's usage and resolves no error vocabulary. What lives HERE is the host's
+//! usage-tap fault reporting the install arms.
 
 // EVERY LLM DIALECT'S HANDLER LIVES IN THE the retired engine crate PLUGIN CRATE — anthropic, openai-chat,
 // gemini, bedrock, cohere and openai-responses — each in its own dialect module's `handler.rs`.
-// They are reachable in the builds that compile the dialects back in as
-// `crate::proto::<dialect>::handler`, and in production only through the registry's
-// `ProtocolDecl::handler`, which is the point. `ChatOperation` RELOCATED to the plugin too at the
-// G6 A4b dissolve (`the retired engine crate/src/chat_handle.rs`, netted as `crate::proto::chat_handle`): once
+// The kernel holds no protocol registry: a plane resolves its own dialects' handlers.
+// `ChatOperation` RELOCATED to the plugin too at the G6 A4b dissolve (`the retired engine crate/src/chat_handle.rs`): once
 // `IrReq`/`IrResp` dissolved onto `Box<dyn IrHandle>`, the chat codec names the concrete chat IR
-// that now lives in the plugin, so it cannot stay in core. Core names no chat codec in production;
-// chat resolves through the registry like every other operation (see `chat` below).
+// that now lives in the plugin, so it cannot stay in core. Core names no chat codec.
 // THE EXTRACTED MCP PROTOCOL CODEC lives wholly in the `busbar-mcp` plugin crate
 // (`crates/busbar-mcp/src/codec`). Its `#[path]` witness re-include into core (which let the
 // pre-extraction fixture surface reach the real MCP codec from inside core's own test binary, back
@@ -91,20 +89,6 @@ pub fn usage_tap_fault(protocol: &str, reason: &'static str) {
              billing 0 tokens for this request"
         );
     }
-}
-
-/// The protocol's `RequestHandler`, by name (matches `router` / `proto::Protocol::name()`). A
-/// registered handler may still return `None` from `operation_handler` for an op it lacks — that IS
-/// the no-handler 404.
-///
-/// THIS WAS THE SECOND MATCH ON A PROTOCOL NAME IN CORE, and it was the one on the DISPATCH path:
-/// `match protocol { "openai" => …, "mcp" => … }`, seven arms, each naming a protocol core had to
-/// have been edited to know about. It is now a read of `ProtocolDecl::handler` — the cell a protocol
-/// DECLARES, beside the codec, the verbs and the head keys it declares in the same struct.
-pub fn request_handler(
-    protocol: &str,
-) -> Option<&'static dyn busbar_contract::codec::RequestHandler> {
-    crate::proto::decl_for(protocol).and_then(|d| d.handler)
 }
 
 // The handler test modules (`use super::*`) name the verb vocabulary; production code here spells

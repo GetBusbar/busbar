@@ -980,25 +980,34 @@ pub(crate) fn card_from_raw(
 // An applied card, as the journal keeps it
 // ---------------------------------------------------------------------------------------------
 
-/// REGISTER EVERY CLASS A UNIT MAY REPORT, at the moment a configuration is applied — boot or a later
-/// apply, both of which are registration time (config is finite). The reserved four, every installed
-/// plane's declared billable classes, and every open class a lane's `units:` names go into the
-/// process vocabulary, so a unit's one line can resolve the classes
-/// it reports by lookup ([`busbar_kernel::Registration::resolve`]) and never intern one per unit.
-pub(crate) fn register_classes(rates: &busbar_kernel::rate_apply::RawRates<'_>) {
+/// REGISTER EVERY OPENED PLANE'S DECLARED CLASSES, once, over the door table the root folded: each
+/// plane's billable classes and fee units (`PlaneDeclaration`) — the classes a plane may report are
+/// the ones it declares, linked or dropped in. The door table is fixed for the process, so this runs
+/// at the fold, before the first configuration is applied, and every apply after finds them in the
+/// process vocabulary ([`register_classes`]).
+pub(crate) fn register_plane_classes(doors: busbar_kernel::plane_driver::doors::Doors) {
     let mut registration = new_registration();
-    for class in busbar_contract::records::RESERVED_UNITS {
-        let _ = registration.key(class);
-    }
-    // Every installed plane's DECLARED billable classes and fee units (`PlaneDeclaration`): the
-    // classes a plane may report are the ones it declares, linked or dropped in.
-    for decl in busbar_kernel::plane::registry::plane_decls() {
+    for decl in doors.decls() {
         for class in decl.billable_classes {
             let _ = registration.key(class.class);
         }
         for unit in decl.fee_units {
             let _ = registration.key(unit);
         }
+    }
+}
+
+/// REGISTER EVERY CLASS A UNIT MAY REPORT, at the moment a configuration is applied — boot or any
+/// apply, both of which are registration time (config is finite). The reserved four and every open
+/// class a lane's `units:` names go into the process vocabulary, so a unit's one line can resolve the
+/// classes it reports by lookup ([`busbar_kernel::Registration::resolve`]) and never intern one per
+/// unit. The planes' declared classes went in once, when the root folded its door table
+/// ([`register_plane_classes`]); the vocabulary is the process's and idempotent, so an apply finds
+/// them there.
+pub(crate) fn register_classes(rates: &busbar_kernel::rate_apply::RawRates<'_>) {
+    let mut registration = new_registration();
+    for class in busbar_contract::records::RESERVED_UNITS {
+        let _ = registration.key(class);
     }
     for (_lane, class, _nanos) in rates.units {
         let _ = registration.key(class);

@@ -36,8 +36,8 @@ use busbar_kernel::hooks::ResolvedPolicy;
 use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use super::planes_tests::{composed_services, Published, PUBLISHING};
-use super::{compose_planes, door_routes, DoorEgress, HookStage};
+use super::planes_tests::{composed_services, PUBLISHING};
+use super::{compose_planes, door_mounts, DoorEgress, HookStage};
 use crate::root::door_steps::{kernel_sections, provider_routes, DoorReach, OutboundAuths};
 use crate::root::loader::dispatch::kinds::plane::Plane;
 use crate::root::loader::dispatch::{
@@ -92,23 +92,19 @@ pub(super) fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
         .expect("the driver-proofs row links the door serving the `pools` map")
 }
 
-/// THE REGISTRY ROWS THE DEPLOYMENT WRITES INTO, as the composition root installs them: the linked
-/// protocol declarations (the door row's `protocols` axis) and the row the door serving the `pools`
-/// map folds to, which owns the `pools:`/`models:` sections. The door is the plane's one
-/// registration (DEV-GREEN row 83), so its Statement is the row. Idempotent.
-pub(super) fn install_door_seams() {
-    static ROW: std::sync::OnceLock<&'static busbar_kernel::plane::registry::PlaneDecl> =
+/// THE DOOR TABLE THE DEPLOYMENT IS LENT, as the composition root folds and lends its own: the one
+/// row the door serving the `pools` map folds to, which owns the `pools:`/`models:` sections. The
+/// door is the plane's one registration (DEV-GREEN row 83), so its Statement is the row. Folded once.
+pub(super) fn door_table() -> busbar_kernel::plane_driver::doors::Doors {
+    static TABLE: std::sync::OnceLock<busbar_kernel::plane_driver::doors::Doors> =
         std::sync::OnceLock::new();
-    for decls in crate::LINKED.protocols {
-        busbar_kernel::proto::register_test_protocols(decls);
-    }
-    let row = ROW.get_or_init(|| {
+    *TABLE.get_or_init(|| {
         use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
         let reg = registration(linked_probe(pools_door(), "pools-door-row"))
             .expect("the door serving the `pools` map binds");
-        busbar_kernel::plane::door::fold(reg).expect("the door folds")
-    });
-    busbar_kernel::plane::registry::register_test_plane(row);
+        let row = busbar_kernel::plane_driver::door::fold(reg).expect("the door folds");
+        busbar_kernel::plane_driver::doors::Doors::for_test(&[row])
+    })
 }
 
 /// The card history the served unit is pinned to at its door: one entry, no price.
@@ -828,8 +824,9 @@ pub(crate) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
 /// [`rig`], the composition's refusal answered rather than panicked on: what the root's boot dies
 /// on.
 pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result<DoorRig, String> {
-    // The registry rows that own the `pools:`/`models:` sections the deployment writes.
-    install_door_seams();
+    // The table whose row owns the `pools:`/`models:` sections the deployment writes: the parse
+    // and the generation below are both lent it.
+    let doors = door_table();
     busbar_kernel::snapshot::init();
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
         block_private_addresses: opts.refuse_private,
@@ -928,7 +925,8 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     if let Some(cap) = opts.request_body_max_bytes {
         yaml.push_str(&format!("limits:\n  request_body_max_bytes: {cap}\n"));
     }
-    let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).map_err(|e| e.to_string())?;
+    let deploy =
+        busbar_kernel::config::deploy_from_yaml_str(&yaml, doors).map_err(|e| e.to_string())?;
     let mut defs_yaml = String::new();
     for (i, (port, _)) in opts.members.iter().enumerate() {
         defs_yaml.push_str(&format!(
@@ -1048,7 +1046,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     };
 
     // THE GENERATION: the lanes, the pool, the fee, and the four seats.
-    let mut builder = busbar_kernel::test_support::TestApp::new();
+    let mut builder = busbar_kernel::test_support::TestApp::new().doors(doors);
     if !opts.open_door {
         builder = builder.keys_chain();
     }
@@ -1152,6 +1150,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         crate::LINKED.auths,
         None,
         crate::root::loader::dispatch::ConnTable::NoNeeds,
+        busbar_kernel::diagnostics::Catalogue::NEUTRAL,
     ));
     let models = crate::root::model_egress::ModelServing {
         pools: model_pools.clone(),
@@ -1193,6 +1192,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
             journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
         }),
         Some(&stage),
+        &app.serve_tables,
     );
     let _ = std::fs::remove_file(&key_file);
     let mut served = served?;
@@ -1236,14 +1236,42 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
             );
         })
     };
-    let doors = door_routes(served, pin, &[], &busbar_kernel::base_data_core_lines(&app))
-        .expect("its claims mount");
-    let door_table = doors
+    // The door's mounts as production builds the data router with them (`main`'s
+    // `build_split_routers_serving_doors` over `serve::data_mounts`): its routes, its sessions, each
+    // route's unit-less refusal, and the kernel-shaped refusals rendered by the plane that owns the
+    // path, bound to the handle.
+    let mounts = door_mounts(
+        served,
+        pin,
+        &[],
+        &busbar_kernel::base_data_core_lines(&app),
+        &[],
+        &[],
+    )
+    .expect("its claims mount");
+    busbar_kernel::plane_routes::pair_door_refusals(
+        &mounts.routes,
+        &mounts.sessions,
+        &mounts.refusals,
+    )
+    .expect("its routes and refusals pair");
+    let door_table = mounts
+        .routes
         .iter()
         .map(|d| (d.path.clone(), d.method.as_str().to_string(), d.auth))
         .collect();
-    let (router, _admin, _handle) =
-        busbar_kernel::build_split_routers_serving(Arc::clone(&app), doors, 1 << 20, 0, false);
+    let (router, _admin, handle) = busbar_kernel::build_split_routers_serving_doors(
+        Arc::clone(&app),
+        mounts.routes,
+        mounts.sessions,
+        mounts.refusals,
+        1 << 20,
+        0,
+        false,
+    );
+    if let Some(refuse) = mounts.refuse_by_path {
+        handle.bind_door_refuser(refuse);
+    }
     Ok(DoorRig {
         router,
         door_table,
@@ -1305,7 +1333,6 @@ impl DoorRig {
 async fn migrated_request_hook_seats_after_admit_before_candidate() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-hook-seats-reject";
-    let _published = Published(instance);
     let ran = run(instance, true).await;
     assert_eq!(
         ran.status, 451,
@@ -1363,7 +1390,6 @@ async fn migrated_request_hook_seats_after_admit_before_candidate() {
 async fn candidate_tap_fires_after_an_abstaining_gate_and_a_served_request_bills_once() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-hook-seats-serve";
-    let _published = Published(instance);
     let ran = run(instance, false).await;
     assert_eq!(ran.status, 200, "the live lane serves the request");
     assert!(
@@ -1520,7 +1546,6 @@ async fn the_walks_tap_and_the_meter_step_make_one_posting_between_them() {
         ("serve-hook-seats-one-posting-buffered", false),
         ("serve-hook-seats-one-posting-streamed", true),
     ] {
-        let _published = Published(instance);
         let far = if streamed {
             far_end_with_the_split_streamed().await
         } else {
@@ -1582,7 +1607,6 @@ async fn the_walks_tap_and_the_meter_step_make_one_posting_between_them() {
 async fn a_served_units_usage_is_accrued_exactly_once() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-hook-seats-accrued-once";
-    let _published = Published(instance);
     let far = far_end_answering(200, SPLIT_ANSWER).await;
     let rig = rig(
         instance,

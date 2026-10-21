@@ -42,15 +42,17 @@ pub use busbar_kernel::admin_verbs::{registered, PlaneTrust, PlaneVerbError};
 ///
 /// The action word and the resource are DERIVED from the plane and the verb rather than spelled out
 /// per plane, so a new verb cannot invent a spelling and a new plane cannot invent a naming scheme.
-/// The shape is the established one: `<kind>.<verb>` acting on `<kind>:<name>`.
+/// The shape is the established one: `<kind>.<verb>` acting on `<kind>:<name>`. The plane's row is
+/// read off `doors`, the table the serving generation was built from.
 pub fn audit(
+    doors: busbar_kernel::plane_driver::doors::Doors,
     plane: &'static str,
     verb: &str,
     name: &str,
     outcome: &'static str,
     principal: &busbar_kernel::auth::AuthPrincipal,
 ) {
-    let audit_kind = busbar_kernel::plane::plane_decl(plane).audit_kind;
+    let audit_kind = doors.plane_decl(plane).audit_kind;
     crate::v1::json::audit::AUDIT.record_by(
         &format!("{audit_kind}.{verb}"),
         &format!("{audit_kind}:{name}"),
@@ -63,13 +65,18 @@ pub fn audit(
 /// frozen [`AdminError`] the JSON envelope speaks. `NotFound` has no wording of its own — the frozen
 /// `"<subject_noun> `<name>`"` phrasing is reconstructed HERE from the plane decl, so it stays in one
 /// place and reads identically on every plane. `Validation` carries its human message verbatim;
-/// `Internal`'s diagnostic string is dropped (the wire message is core's generic one).
-pub fn to_admin_error(plane: &'static str, name: &str, err: PlaneVerbError) -> AdminError {
+/// `Internal`'s diagnostic string is dropped (the wire message is core's generic one). The plane's
+/// row is read off `doors`, the table the serving generation was built from.
+pub fn to_admin_error(
+    doors: busbar_kernel::plane_driver::doors::Doors,
+    plane: &'static str,
+    name: &str,
+    err: PlaneVerbError,
+) -> AdminError {
     match err {
-        PlaneVerbError::NotFound => AdminError::not_found(format!(
-            "{} `{name}`",
-            busbar_kernel::plane::plane_decl(plane).subject_noun
-        )),
+        PlaneVerbError::NotFound => {
+            AdminError::not_found(format!("{} `{name}`", doors.plane_decl(plane).subject_noun))
+        }
         PlaneVerbError::Validation(msg) | PlaneVerbError::ValidationOf(msg, _) => {
             AdminError::Validation(msg)
         }
@@ -80,6 +87,7 @@ pub fn to_admin_error(plane: &'static str, name: &str, err: PlaneVerbError) -> A
 /// THE WIRE ANSWER of a plane's refusal: [`to_admin_error`]'s envelope, condition-tagged when the
 /// plane named the condition ([`PlaneVerbError::ValidationOf`]).
 pub fn refusal_response(
+    doors: busbar_kernel::plane_driver::doors::Doors,
     plane: &'static str,
     name: &str,
     err: PlaneVerbError,
@@ -88,7 +96,7 @@ pub fn refusal_response(
         PlaneVerbError::ValidationOf(_, cond) => Some(*cond),
         _ => None,
     };
-    let e = to_admin_error(plane, name, err);
+    let e = to_admin_error(doors, plane, name, err);
     match cond {
         Some(cond) => crate::v1::json::err_json_cond(&e, cond_of(cond)),
         None => crate::v1::json::err_json(&e),

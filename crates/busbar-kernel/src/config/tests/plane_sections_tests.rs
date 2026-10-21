@@ -12,15 +12,22 @@
 //!      PARAMETER, so the answer is a section name and nothing else — no config module, no
 //!      validator, no refusal type.
 //!   3. Are the two cross-plane refusals still TWO? [`crate::config::plane_sections`] refuses a SHAPE at
-//!      parse time; [`crate::plane::PlaneSections::resolve`] refuses a BINDING at resolve time.
+//!      parse time; [`crate::config::plane_refs::PlaneSections::resolve`] refuses a BINDING at resolve time.
 //!      Merging them would delete a check rather than deduplicate one, so both are exercised on
 //!      inputs the other cannot see.
 
+use crate::config::plane_refs::PlaneSections;
+use crate::config::plane_refs::RefError;
 use crate::config::plane_sections::{
-    config_sections, judge_hook_ref, refuse_cross_plane_reference, validate_section_hooks,
+    config_sections_from, judge_hook_ref, refuse_cross_plane_reference, validate_section_hooks,
     HookRefError,
 };
-use crate::plane::{PlaneSections, RefError};
+
+/// The section list of the neutral test table ([`crate::test_support::neutral_test_doors`]): its
+/// one fallback plane's `pools`, then the named-map sections.
+fn neutral_sections() -> Vec<&'static str> {
+    config_sections_from(crate::test_support::neutral_test_doors().decls())
+}
 
 // ══ 1. THE SECTION LIST EXISTS ONCE, AND IS DERIVED ══════════════════════════════════════════════
 
@@ -30,14 +37,15 @@ use crate::plane::{PlaneSections, RefError};
 /// deleted, and it would go green while the derivation rotted.
 #[test]
 fn the_section_list_is_derived_from_the_config_grammar_rather_than_written() {
-    // Needs a plane registered so `plane_keys()` contributes at least `pools` — the equality below
-    // is self-consistent regardless of WHICH plane (both sides derive from the same registry read),
+    // Needs a plane in the table so `plane_keys()` contributes at least `pools` — the equality
+    // below is self-consistent regardless of WHICH plane (both sides derive from the same table),
     // but the floor assertion needs `pools` (and the fixed `NAMED_MAP_SECTIONS` literal's
     // `tools`/`agents`/`export`/`identity-providers`) actually present.
-    crate::test_support::register_neutral_test_plane();
+    let doors = crate::test_support::neutral_test_doors();
     let mut expected: Vec<&'static str> = Vec::new();
-    for s in crate::plane::plane_keys()
-        .map(|k| crate::plane::plane_decl(k).config_section)
+    for s in doors
+        .plane_keys()
+        .map(|k| doors.plane_decl(k).config_section)
         .chain(busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS)
     {
         if !expected.contains(&s) {
@@ -45,7 +53,7 @@ fn the_section_list_is_derived_from_the_config_grammar_rather_than_written() {
         }
     }
     assert_eq!(
-        config_sections(),
+        config_sections_from(doors.decls()),
         expected,
         "the section list must be the union of the two tables that DECLARE the config grammar"
     );
@@ -54,12 +62,12 @@ fn the_section_list_is_derived_from_the_config_grammar_rather_than_written() {
     // five are the literal this unit deleted; they must still all be there.
     for was_hardcoded in ["pools", "tools", "agents", "export", "identity-providers"] {
         assert!(
-            config_sections().contains(&was_hardcoded),
+            neutral_sections().contains(&was_hardcoded),
             "`{was_hardcoded}:` was in the deleted literal and must still be derived"
         );
     }
     assert!(
-        config_sections().len() >= 5,
+        neutral_sections().len() >= 5,
         "a truncated list would make every refusal test below pass vacuously"
     );
 }
@@ -80,7 +88,7 @@ fn the_section_list_is_derived_from_the_config_grammar_rather_than_written() {
 /// get for free by joining `Plane::ALL`.
 #[test]
 fn a_third_plane_costs_a_section_name_and_nothing_else() {
-    let mut sections = config_sections();
+    let mut sections = neutral_sections();
     assert!(
         !sections.contains(&"bays"),
         "`bays` must be a plane busbar genuinely does not have, or this proves nothing"
@@ -112,7 +120,7 @@ fn a_third_plane_costs_a_section_name_and_nothing_else() {
     // is merely NOT BARE — a different refusal with a different sentence. That is what makes the
     // list a real input rather than decoration.
     assert_eq!(
-        judge_hook_ref("bays.sanitizer", &config_sections()),
+        judge_hook_ref("bays.sanitizer", &neutral_sections()),
         Err(HookRefError::NotBare {
             hook: "bays.sanitizer".to_string()
         })
@@ -127,7 +135,7 @@ fn a_third_plane_costs_a_section_name_and_nothing_else() {
 /// [`PlaneSections::resolve`] could not refuse this and would never see it. Only a SHAPE rule can.
 #[test]
 fn the_parse_time_refusal_fires_on_a_name_nothing_defines() {
-    let sections = config_sections();
+    let sections = neutral_sections();
     let err = refuse_cross_plane_reference("`tools.search`", "agents.planner", &sections)
         .expect_err("a dotted name that reaches onto a plane is refused at parse time");
     assert!(
@@ -138,7 +146,7 @@ fn the_parse_time_refusal_fires_on_a_name_nothing_defines() {
     // The proof that this check is not the resolve-time one: an EMPTY container — nothing defined
     // anywhere — cannot produce a `CrossPlane` for the same name. The resolve-time rule answers
     // `Unknown`, because there is nothing there to have crossed a boundary.
-    let empty: PlaneSections<u8> = PlaneSections::default();
+    let empty: PlaneSections<u8> = PlaneSections::new(crate::test_support::neutral_test_doors());
     assert_eq!(
         empty.resolve("tools", "agents.planner"),
         Err(RefError::Unknown {
@@ -162,7 +170,7 @@ fn the_parse_time_refusal_fires_on_a_name_nothing_defines() {
 /// sentences. The `From` is total so that stays true when a fourth arm is added.
 #[test]
 fn every_refusal_arm_has_a_sentence_of_its_own() {
-    let sections = config_sections();
+    let sections = neutral_sections();
     assert_eq!(
         refuse_cross_plane_reference("`tools.search`", "  ", &sections).unwrap_err(),
         "`tools.search`: `hooks:` contains an empty name"

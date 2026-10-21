@@ -230,12 +230,10 @@ pub fn write_error_envelope(
     )
 }
 
-/// THE REGISTRY KEY THE LLM PLANE IS KNOWN BY — the string the composition root flips onto the
-/// unified kernel loop ([`busbar_kernel::plane_host::register_gauntlet_runner`]) and the same
-/// string the LLM native plane reports from its `GauntletPlane::capability_key`.
+/// THE REGISTRY KEY THE LLM PLANE IS KNOWN BY.
 ///
-/// Named ONCE, here, on the pure side of the split, because the plane's `capability_key` and the
-/// composition-root FLIP must reference the SAME literal or a swap could drift onto two. It agrees
+/// Named ONCE, here, on the pure side of the split, so every reader of the plane's key references
+/// the SAME literal and a swap cannot drift onto two. It agrees
 /// with `busbar-llm`'s `PLANE_DECL.key` (`"llm"`, the fallback plane's identity). `busbar-llm`
 /// re-exports it as `busbar_llm::PLANE_KEY`, the one stable path the `busbar` binary names.
 pub const PLANE_KEY: &str = "llm";

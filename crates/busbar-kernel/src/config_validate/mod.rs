@@ -10,7 +10,6 @@ use crate::diagnostics::{
     diag_warn, CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT,
     CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS, CONFIG_RATE_CARD_ALL_ZERO,
 };
-use crate::plane::registry::plane_decl_for;
 use busbar_contract::abi::export::CheckPhase;
 use busbar_kernel_ledger::cost::{
     flat_card_present, split_plane_lane, PER_REQUEST, PER_SESSION, PLANE_LANE_SEP,
@@ -314,7 +313,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // set. See `validate_providers_with` for why the empty set is the load-bearing case.
     //
     // The known set is the registered planes' DECLARED provider dialects
-    // (`plane::provider_dialects`, ARCHITECT ruling 2026-10-16 item 3): each plane states which
+    // (`Doors::provider_dialects` over the lent table, ARCHITECT ruling 2026-10-16 item 3): each plane states which
     // of its dialects a provider's `protocol` may name, as data, and the kernel names none.
     //
     // UNIONED with every CONFIGURED plane's OWN declared dialects (`PlaneCfg::known_dialects`,
@@ -329,13 +328,15 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // fallback plane, or its declared section is in `plane_sections`): a linked plane with no
     // config section serves nothing, so its dialect is no legal `protocol:` — and a 1.5.5 config's
     // unknown-protocol refusal lists 1.5.5's protocols, not `jev` (oracle cell BOOT-020).
-    let mut known_protocols: Vec<&str> = crate::plane::provider_dialects();
-    for decl in crate::plane::registry::plane_decls()
+    let mut known_protocols: Vec<&str> = cfg.doors.provider_dialects();
+    for decl in cfg
+        .doors
+        .decls()
         .iter()
         .filter(|d| d.fallback || cfg.plane_sections.contains(d.config_section))
     {
         if let Some(default_section) = decl.default_section {
-            if let Some(dialects) = default_section().known_dialects() {
+            if let Some(dialects) = default_section(decl).known_dialects() {
                 // A dialect already a wire codec's (the fallback plane's door declares its codecs'
                 // dialects too, #824) is listed once: the refusal names each legal protocol once.
                 for d in dialects.iter().copied() {
@@ -1125,7 +1126,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // `.subject_noun`) — the endpoint plane's own vocabulary — so this neutral rule carries no
         // plane token literal while the error still names the exact `<key>:` block and `auth.chain`
         // the operator must fix.
-        let decl = crate::plane::registry::plane_decl_for_config_section(endpoint_section);
+        let decl = cfg.doors.plane_decl_for_config_section(endpoint_section);
         let key = decl.map(|d| d.key).unwrap_or("endpoint");
         let noun = decl.map(|d| d.subject_noun).unwrap_or("endpoint");
         errors.push(format!(
@@ -1536,7 +1537,7 @@ fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut 
 /// The classes a plane's card prices: its declared billable classes less its fee units (a fee unit
 /// says whether the flat fee was incurred and is never ledgered as usage, so no card prices it).
 fn priced_classes(
-    d: &crate::plane::registry::PlaneDecl,
+    d: &crate::plane_driver::row::PlaneDecl,
 ) -> impl Iterator<Item = &'static str> + Clone + '_ {
     (d.billable_classes.iter())
         .map(|c| c.class)
@@ -1557,8 +1558,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         for (key, r) in card {
             // `lane` is the whole key on the flat card; empty on a plane card's presence key.
             let (plane, lane) = split_plane_lane(key);
-            let at =
-                crate::plane::registry::plane_decl_for(plane).map_or(plane, |d| d.config_section);
+            let at = (cfg.doors.plane_decl_for(plane)).map_or(plane, |d| d.config_section);
             let path = format!(
                 "{at}{}rate_card['{lane}']",
                 if at.is_empty() { "" } else { "." }
@@ -1679,7 +1679,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         // units: exactly the classes the plane's lane was priced by before it was served through
         // its door, so a configuration that booted then boots now and an unpriced class still
         // refuses (#42).
-        for d in crate::plane::registry::plane_decls() {
+        for d in cfg.doors.decls() {
             let own = if d.fallback { "" } else { d.key };
             let on: Vec<_> = card
                 .iter()
@@ -1734,7 +1734,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     // [`PlaneCfg::ledger_lanes`]: crate::config::plane_sections::PlaneCfg::ledger_lanes
     if let Some(card) = &cfg.rate_card {
         for defs in cfg.plane_defs.values() {
-            let lanes = defs.ledger_lanes();
+            let lanes = defs.ledger_lanes(cfg.doors);
             let missing: Vec<&str> = (lanes.iter().map(String::as_str))
                 .filter(|l| {
                     let plane = split_plane_lane(l).0;
@@ -1743,7 +1743,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                 .collect();
             let Some(d) = missing
                 .first()
-                .and_then(|l| plane_decl_for(split_plane_lane(l).0))
+                .and_then(|l| cfg.doors.plane_decl_for(split_plane_lane(l).0))
             else {
                 continue;
             };
@@ -1774,7 +1774,8 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     }
     // EVERY CONFIGURED FEE IS COUNTED: a nonzero `<section>.fees` key naming a unit the plane never
     // counts would charge nothing, so it refuses naming the key and the plane's counted list.
-    let fee_decls = (cfg.plane_fees.iter()).filter_map(|(p, f)| Some((plane_decl_for(p)?, f)));
+    let fee_decls =
+        (cfg.plane_fees.iter()).filter_map(|(p, f)| Some((cfg.doors.plane_decl_for(p)?, f)));
     for (d, f) in fee_decls {
         let counted = Some(d.fee_units.join(", ")).filter(|l| !l.is_empty());
         for (unit, fee) in [(PER_REQUEST, f.per_request), (PER_SESSION, f.per_session)] {
@@ -2141,12 +2142,12 @@ fn validate_providers_with(
     // circuit breaker), exactly like the shipped built-in catalog entries that carry none. Only the
     // entries that ARE present must name a known StatusClass.
     for (provider_name, provider_cfg) in &cfg.providers {
-        // The provider's `protocol` selects a declared `Protocol` from the registry at lane
-        // construction. An unknown protocol used to escape this multi-error collection entirely and
-        // surface as a lone `die()` deep in `main.rs` (lane build) — so an operator with several
-        // config mistakes saw only the first one. Validate it HERE against the single source of
-        // truth (`proto::known_protocols()`, DERIVED from the protocol declarations rather than
-        // maintained beside them) so a bad protocol is collected alongside every other error.
+        // The provider's `protocol` names a dialect a plane declares. An unknown protocol used to
+        // escape this multi-error collection entirely and surface as a lone `die()` deep in
+        // `main.rs` (lane build) — so an operator with several config mistakes saw only the first
+        // one. Validate it HERE against the single source of truth (the provider dialects the
+        // lent table's planes declare, `Doors::provider_dialects`) so a bad protocol is collected
+        // alongside every other error.
         // `main.rs`'s `die()` remains a defensive (now unreachable) backstop.
         //
         // THE EMPTY LIST IS ITS OWN ERROR, and this arm is why. The list used to be a compile-time

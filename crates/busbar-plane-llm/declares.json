@@ -2,6 +2,9 @@
   "needs": [
     "http"
   ],
+  "stream_media": [
+    "application/vnd.amazon.eventstream"
+  ],
   "diagnostics": [
     {
       "code": 5027,

@@ -239,6 +239,7 @@ const PINNED_PROBLEMS: &[&str] = &[
     "no-escaped-newline-doc-comment: qa/construction.toml has no [rules.no-escaped-newline-doc-comment] table",
     "unit-no-wall-clock: qa/construction.toml has no [rules.unit-no-wall-clock] table",
     "unit-no-finding-ids: qa/construction.toml has no [rules.unit-no-finding-ids] table",
+    "kernel-no-protocol-registry: qa/construction.toml has no [rules.kernel-no-protocol-registry] table",
     "legacy-reach: qa/construction.toml has no [rules.legacy-reach] table",
     "no-test-doubles-in-production: qa/construction.toml has no [rules.no-test-doubles-in-production] table",
 ];

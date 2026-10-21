@@ -177,6 +177,14 @@ impl Document {
             .collect()
     }
 
+    /// This document with `table.key` set to `value`, the table made when absent: an edit of the
+    /// PARSED document, never of its text, so a comment in the file cannot move what is edited.
+    pub fn with_value(&self, table: &str, key: &str, value: Value) -> Document {
+        let mut out = self.clone();
+        out.table_mut(table).insert(key.to_string(), value);
+        out
+    }
+
     fn table_mut(&mut self, path: &str) -> &mut Table {
         if !self.tables.contains_key(path) {
             self.order.push(path.to_string());

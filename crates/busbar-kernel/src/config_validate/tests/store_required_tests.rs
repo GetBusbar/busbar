@@ -18,8 +18,8 @@ const NO_STORE: &str = "listen: \"127.0.0.1:8080\"\nproviders:\n  acme:\n    api
 /// Without the refusal arm in `validate` the config validates and the first assertion fails.
 #[test]
 fn a_config_without_a_store_block_is_refused() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
-    crate::test_support::register_neutral_test_plane();
+    // The provider dialects a lane may name are DECLARED by a plane of the table the config is lent
+    // (`cfg_with_provider_api_key` lends `test_support::neutral_test_doors`; ruling 2026-10-16 D).
     let mut cfg =
         crate::test_support::cfg_with_provider_api_key(config::SecretRef::env("ACME_KEY"));
     assert!(
@@ -79,7 +79,11 @@ fn migrate_inserts_the_memory_store_into_a_config_without_one() {
         again.changes
     );
 
-    let deploy: config::DeployCfg = serde_yaml::from_str(&out.yaml).expect("the output parses");
+    let deploy: config::DeployCfg = crate::config::prepass::frozen_from_yaml_str(
+        &out.yaml,
+        crate::test_support::neutral_test_doors(),
+    )
+    .expect("the output parses");
     assert_eq!(
         deploy.store.map(|s| s.module),
         Some(config::MIGRATED_STORE_MODULE.to_string())

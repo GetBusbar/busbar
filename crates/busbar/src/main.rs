@@ -258,27 +258,24 @@ include!(concat!(env!("OUT_DIR"), "/linked.rs"));
 // admin crate names no hook plugin.
 include!(concat!(env!("OUT_DIR"), "/linked_hook_names.rs"));
 
-/// REGISTER THE LINKED PROTOCOLS — the composition root's one write into the protocol axis, over
-/// every entry in [`LINKED`] (see [`root::linked::register_protocols`]).
-///
-/// THE ORDER IS OPERATOR-VISIBLE. `merged_boot_decls` folds this set AHEAD of whatever built-in
-/// declarations core still carries, and the resulting sequence is both the "must be one of:" tail on
-/// a bad `protocol:` and the list `telemetry` indexes its per-protocol metric families by POSITION
-/// in. The set is the table's order, which is the manifest's: appending a row keeps every existing
-/// index; inserting one renumbers them.
+/// REGISTER THE LINKED ARRIVALS — the composition root's one write into the protocol seam and node
+/// axes, over every entry in [`LINKED`] (see [`root::linked::register_protocols`]).
+/// No dialect declaration installs anywhere: a plane resolves its own dialects (spec Part 1, Law 5)
+/// and the root reads a plane's facts off its door (BUSBAR-1.6.0.md l.4965).
 fn register_protocols() {
     root::linked::register_protocols(&LINKED, ROOT_UNITS);
 }
 
-/// REGISTER THE PLANES — the composition root's one write into the plane axis
-/// (`busbar_kernel::plane::registry::install_planes`), over the plane tables of [`LINKED`] (each
+/// REGISTER THE PLANES — the composition root's one fold of the plane axis into the door table it
+/// owns (`root::linked::register_planes`), over the plane tables of [`LINKED`] (each
 /// entry's contract declaration joined kernel-side to its behaviour, `PlaneDecl::assemble`) and the
 /// plane doors, linked and dropped into the configured `plugins.dir`, discovered first
 /// (`root::boot::discover_planes`) and folded by one fold.
 /// `merged_boot_plane_decls` normalises the installed set to canonical layering order, so each row
 /// lands in its own slot regardless of the table's order. Then the two unconditional seams, then
-/// every root unit's seal.
-fn register_planes() {
+/// every root unit's seal. Returns the folded door table: the root holds it and lends it to every
+/// reader (the CLI flags, the config loads, the generations `run` builds).
+fn register_planes() -> busbar_kernel::plane_driver::doors::Doors {
     // The root legacy table, before the first configuration read (the dropped-plugin scan below
     // reads it): the kernel's 1.x detector and `--migrate-config` rewrite through it.
     root::legacy::install();
@@ -293,7 +290,10 @@ fn register_planes() {
     // modules the export axis just below — the same entries a linked plugin registers through.
     let dropped = root::boot::dropped_from_config(&LINKED);
     root::boot::discover_planes(&LINKED, dropped);
-    root::linked::register_planes(&LINKED);
+    let doors = root::linked::register_planes(&LINKED);
+    // Every opened plane's declared billable classes and fee units into the process vocabulary,
+    // once, over the table just folded: a rate apply finds them there.
+    root::kernel::register_plane_classes(doors);
     root::linked::register_exports(dropped);
     // A plugin that declares an inbound need is refused until an accepted connection has a
     // consumer, after the axes it selects against are registered.
@@ -308,8 +308,8 @@ fn register_planes() {
     }
 
     // THE AUTHORIZATION-SERVER PLANE'S SEAM, registered UNCONDITIONALLY (no feature flag — see the
-    // manifest note on the `busbar-core-oauth2` dependency), before any config loads. Mirrors
-    // `install_planes` immediately above for the same reason: one composition root, one
+    // manifest note on the `busbar-core-oauth2` dependency), before any config loads. Mirrors the
+    // door table folded immediately above for the same reason: one composition root, one
     // registration, before the first `App` is built. Its document fetch rides the one connector,
     // read when a fetch needs it (`root::connector::AuthServerConns`).
     busbar_core_oauth2::install::<root::connector::AuthServerConns>();
@@ -325,14 +325,16 @@ fn register_planes() {
     // composition that disagrees with itself must not bind a listener, and finding that out on the
     // first request would be finding it out from a customer.
     root::linked::seal(ROOT_UNITS);
+    doors
 }
 
-/// REGISTER THE LINKED PLANES' DIAGNOSTICS — the composition root's one write into the diagnostics
-/// axis (`busbar_kernel::diagnostics::install_diagnostics`). The neutral
-/// `REGISTRY ∪ installed` fold makes these codes resolve through `by_code` and land in a rendered
-/// catalog. Installed BEFORE any reader; a build with a plane compiled out contributes nothing.
-fn register_diagnostics() {
-    root::linked::register_diagnostics(&LINKED);
+/// FOLD THE LINKED PLANES' DIAGNOSTICS — the composition root's one fold of the diagnostics axis
+/// (`root::linked::register_diagnostics`), lent by value (`busbar_kernel::diagnostics::Catalogue`).
+/// The neutral `REGISTRY ∪ folded` catalogue makes these codes resolve through `by_code` and land in
+/// a rendered catalog. Folded BEFORE any reader is lent it; a build with a plane compiled out
+/// contributes nothing.
+fn register_diagnostics() -> busbar_kernel::diagnostics::Catalogue {
+    root::linked::register_diagnostics(&LINKED)
 }
 
 /// The data-plane worker count and its warnings, resolved once at the top of `main()`.
@@ -367,35 +369,24 @@ fn main() {
     // unknown-protocol refusal — the deletion test's runtime half (scripts/proto-deletion-gate.sh).
     register_protocols();
     // PLANE REGISTRATION, same slot and the same reason: `--validate` (just below) reads the plane
-    // list through `config::plane_sections::config_sections()`, so the plane axis must be installed before
-    // any reader — including the CLI flags — can run.
-    register_planes();
-    // HOST-SELECTION SEAM INSTALL (loop unification, DECISIONS #28), after the planes are registered
-    // and mirroring `busbar_admin::install()`: inject the kernel-loop runners into the neutral
-    // per-capability-keyed seam. LIVE — it flips every plane in the build onto the unified kernel
-    // loop, whose runner opens a zero hold and reports no evidence, so
-    // each plane's own metering inside `drive` stays what settles (item 125, measured money-neutral).
-    root::gauntlet_install::install();
+    // list off the door table folded here (`config::plane_sections::config_sections_from` over the
+    // table's rows), so the table must be folded before any reader — including the CLI flags — is
+    // lent it.
+    let doors = register_planes();
     // DIAGNOSTICS REGISTRATION, same slot and the same reason: a rendered catalog or a `by_code`
-    // lookup must see every linked plane's owned codes, so the diagnostics axis is installed before
-    // any reader. Each linked entry contributes its owned diagnostics; a no-planes build installs
-    // nothing and the catalog is the neutral built-ins alone.
-    register_diagnostics();
+    // lookup must see every linked plane's owned codes, so the catalogue is folded before any
+    // reader is lent it. Each linked entry contributes its owned diagnostics; a no-planes build
+    // folds nothing and the catalog is the neutral built-ins alone.
+    let catalogue = register_diagnostics();
     // THE COMPOSITION ROOT'S OWN SEAL is NOT here, and it is the one boot step that is not: it
     // composes the transports a switched-over plane would serve through, and the http one carries
     // the operator's `limits.request_body_max_bytes`, so it cannot run before the configuration it
     // is built from has been read. It runs in `run()`, off the resolved limits, still before any
     // listener is bound. Every axis above is installed by then, which is the ordering the seal
     // needed from this slot in the first place.
-    // THE ROOT-BOUND SEAMS the linked entries drive, each bound once here beside the plane axis and
-    // only when some entry drives it: the parse-time section list a cross-plane hook refusal reads
-    // (after the plane axis, before the CLI flags read `--validate`), and the envelope a
-    // self-enveloping admin verb builds its own reply through. A build whose entries drive none of
-    // them binds none.
-    root::linked::register_seams();
     // CLI flags next — BEFORE building any runtime. They must work without a configured deployment,
     // and `--version` / `--validate` should never spin up a thread pool.
-    if let Some(code) = root::cli::handle_cli_flags() {
+    if let Some(code) = root::cli::handle_cli_flags(doors) {
         std::process::exit(code);
     }
     // Enable jemalloc's background purge thread: freed dirty/muzzy pages are returned to the OS after
@@ -510,7 +501,7 @@ fn main() {
             .enable_all()
             .build()
             .expect("failed to build the tokio control runtime")
-            .block_on(run(worker_threads, late_services));
+            .block_on(run(worker_threads, late_services, doors, catalogue));
     }
     #[cfg(not(unix))]
     {
@@ -519,13 +510,19 @@ fn main() {
             .enable_all()
             .build()
             .expect("failed to build the tokio runtime")
-            .block_on(run(worker_threads, late_services));
+            .block_on(run(worker_threads, late_services, doors, catalogue));
     }
 }
 
-async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::LateServices>) {
-    // THE PLUGIN OBSERVABILITY ENVELOPE, before any plugin loads (`root::observe`).
-    root::observe::install();
+async fn run(
+    data_workers: usize,
+    late_services: std::sync::Arc<root::serve::LateServices>,
+    plane_doors: busbar_kernel::plane_driver::doors::Doors,
+    catalogue: busbar_kernel::diagnostics::Catalogue,
+) {
+    // THE PLUGIN OBSERVABILITY ENVELOPE, before any plugin loads (`root::observe`), resolving a
+    // plugin's reported codes against the catalogue folded above.
+    root::observe::install(catalogue);
     // Metrics are configured AFTER the config loads (below, via `metrics::configure`) because they
     // are 100% OPT-IN: `observability.metrics` absent ⇒ no recorder, no `/metrics`, nothing recorded
     // and nothing retained. Nothing may install a recorder before that decision is read.
@@ -552,6 +549,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         providers_override.as_deref(),
         safe_mode,
         config::EnvSubst::Strict,
+        plane_doors,
     )
     .unwrap_or_else(|e| die(e));
     let LoadedConfig {
@@ -872,10 +870,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     busbar_kernel::boot::hydrate_all(&app).unwrap_or_else(|e| die(e));
     // THE LATE ATTACH (`root::serve::attach`): the kernel's host services gain the pool, the
     // signer and the hydrated demotion record this first build made, once.
-    let planes: Vec<_> = busbar_kernel::plane::registry::plane_decls()
-        .iter()
-        .map(|d| &d.declaration)
-        .collect();
+    let planes: Vec<_> = app.doors.decls().iter().map(|d| &d.declaration).collect();
     let signer = app
         .governance
         .clone()
@@ -962,6 +957,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
                 )
             })
         }),
+        &app.serve_tables,
     )
     .unwrap_or_else(|e| die(e));
     root_rules.hold_owned_anchors(&served.need_trust());
@@ -975,7 +971,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             served
                 .unopened(root::boot::door_planes())
                 .into_iter()
-                .chain(root::boot::unbound_sections()),
+                .chain(root::boot::unbound_sections(app.doors)),
         );
     }
     served.spawn_ticks();

@@ -425,6 +425,9 @@ fn mapping_key_repr(key: &serde_yaml::Value) -> String {
 /// fire.
 #[derive(Debug)]
 pub struct RootCfg {
+    /// The door table this configuration was parsed and resolved against
+    /// ([`DeployCfg::doors`]): what the generation built from it lends every reader.
+    pub doors: crate::plane_driver::doors::Doors,
     pub listen: String,
     /// busbar's PUBLIC base URL (top-level `public_url:`). The externally-reachable origin used to
     /// build `/auth/token` links AND shown to devs as the `base_url` they point BYOK clients at (no
@@ -1017,8 +1020,14 @@ pub struct PoolsCfg {
     pub pools: HashMap<String, PoolCfg>,
 }
 
-impl<'de> Deserialize<'de> for PoolsCfg {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+impl PoolsCfg {
+    /// Parse the `pools:` section against `doors`, the lent door table: the pre-pass calls this
+    /// where the frozen struct meets the key ([`crate::config::prepass`]), so the section is read
+    /// at its own position in the document and its refusals carry the bytes they always did.
+    pub fn parse<'de, D>(
+        doors: crate::plane_driver::doors::Doors,
+        deserializer: D,
+    ) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
@@ -1030,8 +1039,9 @@ impl<'de> Deserialize<'de> for PoolsCfg {
         // The pool plane declares NO value rules here: `PoolCfg`'s are run later, over the whole
         // config, where they can see the cross-section references a single entry cannot.
         let section = crate::config::plane_sections::split_section_for_plane::<D, PoolCfg>(
+            doors,
             deserializer,
-            crate::plane::fallback_key(),
+            doors.fallback_key(),
             |_, _| Ok(()),
         )?;
         Ok(PoolsCfg {
@@ -1041,6 +1051,29 @@ impl<'de> Deserialize<'de> for PoolsCfg {
             // where the loss of order is visible rather than assumed.
             pools: section.entries.into_iter().collect::<HashMap<_, _>>(),
         })
+    }
+}
+
+/// THE FROZEN FIELD'S READ: the pre-pass parses the `pools:` value itself, against the lent door
+/// table ([`PoolsCfg::parse`]), and hands the frozen struct's field the unit sentinel, which reads
+/// as the empty section the pre-pass then replaces. Any other input never came through the pre-pass,
+/// which is the one parse that knows the door table: refused, naming it.
+impl<'de> Deserialize<'de> for PoolsCfg {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct Sentinel;
+        impl serde::de::Visitor<'_> for Sentinel {
+            type Value = PoolsCfg;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("the `pools:` section, parsed by the config pre-pass")
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> Result<PoolsCfg, E> {
+                Ok(PoolsCfg::default())
+            }
+        }
+        deserializer.deserialize_unit(Sentinel)
     }
 }
 
@@ -1145,6 +1178,11 @@ pub struct PlaneFeesCfg {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeployCfg {
+    /// The door table this document was parsed against, lent by the composition root
+    /// ([`crate::plane_driver::doors::Doors`]): every plane section in it was read through these
+    /// doors, and everything resolved from it reads the same ones. Not grammar: set by the pre-pass.
+    #[serde(skip)]
+    pub doors: crate::plane_driver::doors::Doors,
     #[serde(default = "default_listen")]
     pub listen: String,
     /// busbar's PUBLIC base URL (top-level `public_url:`) — see [`RootCfg::public_url`]. Absent by
@@ -1368,7 +1406,7 @@ impl DeployCfg {
         &mut self,
         section: &str,
     ) -> Option<&mut dyn busbar_kernel::config::plane_sections::PlaneCfg> {
-        self.declared.get_or_default(section)
+        self.declared.get_or_default(self.doors, section)
     }
 }
 
@@ -1974,7 +2012,7 @@ fn hook_cfg_from_def(def: &HookDefCfg) -> Result<HookCfg, String> {
 /// `pools:` are `CORE_OWNED_CONCRETE_SECTIONS` and are parsed and merged UNCONDITIONALLY (never gated
 /// on plane presence, unlike `tools:`/`agents:`/`mcp:`), so an llm-plane-absent build keeps merging
 /// providers exactly as every prior release has rather than silently dropping configured providers
-/// out of `RootCfg::providers`. See `crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS`'s doc for
+/// out of `RootCfg::providers`. See `crate::plane_driver::doors::CORE_OWNED_CONCRETE_SECTIONS`'s doc for
 /// why this section never evicts.
 pub fn merge_provider_fallback(def: &ProviderDef, deploy_cfg: &ProviderDeploy) -> ResolvedProvider {
     ResolvedProvider::merge(def, deploy_cfg)
@@ -2005,8 +2043,7 @@ pub fn resolve(
     // release has — `merge_provider_fallback` is core's own byte-identical copy of the same merge,
     // kept for exactly that build.
     let resolve_provider_hook =
-        crate::plane::registry::plane_decl_for(crate::plane::fallback_key())
-            .and_then(|d| d.resolve_provider);
+        (deploy.doors.plane_decl_for(deploy.doors.fallback_key())).and_then(|d| d.resolve_provider);
 
     for (deploy_name, deploy_cfg) in &deploy.providers {
         // Look up the provider definition by name
@@ -2186,11 +2223,14 @@ pub fn resolve(
         .iter()
         .filter(|(_, v)| !v.is_null())
         .filter_map(|(&section, value)| {
-            let parse = crate::plane::registry::plane_decls()
+            let parse = deploy
+                .doors
+                .decls()
                 .iter()
                 .find(|d| d.config_section == section)
-                .and_then(|d| d.parse_section)?;
-            parse(value)
+                .and_then(|d| d.parse_section.map(|parse| (d, parse)))?;
+            let (d, parse) = parse;
+            parse(d, value)
                 .map_err(|e| errors.push(format!("`{section}:` is not valid: {e}")))
                 .ok()
                 .map(|cfg| (section, cfg))
@@ -2208,7 +2248,7 @@ pub fn resolve(
         if let Err(e) = crate::config::plane_sections::validate_section_hooks(
             &format!("`{section}.hooks`"),
             &g.section_hooks,
-            &crate::config::plane_sections::config_sections(),
+            &crate::config::plane_sections::config_sections_from(deploy.doors.decls()),
         ) {
             errors.push(e);
         }
@@ -2362,15 +2402,15 @@ pub fn resolve(
     // The endpoint's owning plane is looked up by its CONFIG SECTION (the `tools:` plane owns the
     // `mcp:` door), so no plane key is named here.
     let endpoint_section = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
-    let lower = crate::plane::registry::plane_decl_for_config_section(endpoint_section)
-        .and_then(|d| d.lower_endpoint);
+    let lower = (deploy.doors.plane_decl_for_config_section(endpoint_section))
+        .and_then(|d| d.lower_endpoint.map(|lower| (d, lower)));
     // The endpoint door belongs to the plane that owns `endpoint_section`: a present block configures it.
     if endpoint_block.is_some_and(|ep| ep.is_present()) {
         plane_sections.insert(endpoint_section);
     }
     let lowered_endpoint = endpoint_block
         .zip(lower)
-        .and_then(|(ep, lower)| lower(&**ep).map_err(|e| errors.push(e)).ok());
+        .and_then(|(ep, (d, lower))| lower(d, &**ep).map_err(|e| errors.push(e)).ok());
 
     // The lowered endpoint resource, if any, keyed by its owning plane's config SECTION — the
     // neutral, section-keyed shape `RootCfg` carries in place of a per-plane field (mirroring
@@ -2419,6 +2459,7 @@ pub fn resolve(
         // An absent `security:` block is the all-default one: no extra hosts, no allow-all.
         let security = deploy.security.clone().unwrap_or_default();
         Ok(RootCfg {
+            doors: deploy.doors,
             listen: deploy.listen.clone(),
             public_url: deploy.public_url.clone(),
             endpoint_resources,
@@ -2518,6 +2559,7 @@ mod resolved_provider_tests;
 pub mod auth;
 pub mod hooks;
 pub mod limits;
+pub mod plane_refs;
 pub mod plane_sections;
 pub mod pools;
 pub mod providers;

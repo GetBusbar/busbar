@@ -1179,7 +1179,7 @@ fn the_limit_refusal_names_no_meter_class() {
             downgrade_to: None,
             retry_after: Some(7),
         };
-        let (status, kind, message, retry_after) = crate::ingress::limit_refusal("", &blocked);
+        let (status, kind, message, retry_after) = crate::ingress::limit_refusal(&blocked);
         assert_eq!(
             status,
             axum::http::StatusCode::TOO_MANY_REQUESTS,

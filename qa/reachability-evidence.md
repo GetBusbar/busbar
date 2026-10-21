@@ -43,41 +43,16 @@ code.
 
 ---
 
-## 1. `crates/busbar/src/root/gauntlet_kernel.rs` — THE LIVE UNIT PATH of llm, mcp, a2a, streaming
+## 1. The #28 kernel-loop rider — deleted (status row 82, D2)
 
-**The unit:** `GauntletKernelUnit` (`impl Units for GauntletKernelUnit<'_>`, :92). Built at two
-sites, neither of them a constructor's own body:
-
-| Site | In | Returns |
-|---|---|---|
-| `root/gauntlet_kernel.rs:313` | `run_gauntlet_via_kernel` (:298) | `Response` |
-| `root/gauntlet_kernel.rs:415` | `open_gauntlet_via_kernel` (:399) | `Result<Admitted, Response>` |
-
-**The registration** — `crates/busbar/src/root/gauntlet_install.rs`:
-
-| Line | Call | Runner |
-|---|---|---|
-| :48 | `register_gauntlet_runner(capability_key, kernel_one_shot)` in `flip_one_shot_to_kernel` | `kernel_one_shot` (:37) → `run_gauntlet_via_kernel` (imported from `gauntlet_kernel`) |
-| :55 | `register_session_runner(capability_key, open_gauntlet_via_kernel)` in `flip_session_to_kernel` | `open_gauntlet_via_kernel` |
-
-**The flips** — `install()` (:73), called from `main.rs:268` (`root::gauntlet_install::install()`):
-
-| Plane | Line | Flip | Unit built at |
-|---|---|---|---|
-| mcp | :75 | `flip_one_shot_to_kernel(busbar_mcp::PLANE_KEY)` | :313 |
-| a2a | :77 | `flip_one_shot_to_kernel(busbar_a2a::PLANE_KEY)` | :313 |
-| llm | :83 | `flip_one_shot_to_kernel(busbar_llm::PLANE_DECLARATION.key)` | :313 |
-| streaming | :85 | `flip_session_to_kernel(busbar_voice::PLANE_KEY)` | :415 |
-
-Each flip sits behind its plane's shipping feature (`plane-mcp`, `plane-a2a`, `plane-llm`,
-`plane-voice`), all in `default`. The rider opens a zero hold and settles nothing: each plane's money
-is metered inside its own `drive` / the kernel session account (#28 ruling (1), OWNER Q21b). So
-`unit-path:{llm,mcp,a2a,streaming}` and `root-reach:{…}` PASS.
-
-**When K2d replaces the four flips with a fold over the linked table,** the gate credits a flip in a
-function that folds `LINKED` for every plane whose `linked-axes` row carries `gauntlet-one-shot`
-(`register_gauntlet_runner`) or `gauntlet-session` (`register_session_runner`); the self-test proves
-the fold both ways.
+The rider (`root/gauntlet_install.rs` flipping capability keys onto the runners in
+`root/gauntlet_kernel.rs`, through the kernel's per-capability-keyed runner table) is deleted with
+that table: the kernel holds no plane- or protocol-keyed registry. No `linked-axes` row ever put a
+plane on the `gauntlet-one-shot` or `gauntlet-session` axis, so the table was always empty and every
+plane was served elsewhere. Every roster plane is a DOOR plane: llm, mcp, a2a and streaming, like
+decision (§2), are served through their doors by the root's one composition (`compose_planes` in
+`root/serve.rs`), each on its `plane-door` row. The gate credits that path (and a `Units` impl a
+linked entry exports); it no longer reads a runner registration.
 
 ## 2. `crates/busbar/src/root/serve.rs` — decision: THE SERVED DOOR (FLIP-DECISIONS)
 
@@ -104,8 +79,8 @@ here.
 
 ## 4. Superseded pre-unification unit modules — not the unit path
 
-`root/units_voice.rs` predates the unification. The rider in §1 serves its plane; the module is no
-longer what the unit-path rows ask about, and a green row names it beside the live path while it is
+`root/units_voice.rs` predates the unification. Its plane is served through its door; the module is
+no longer what the unit-path rows ask about, and a green row names it beside the live path while it is
 on disk:
 
 - `crates/busbar/src/root/units_voice.rs` — `VoiceUnit` is built at its own constructor (:1172) and in
@@ -125,10 +100,9 @@ served path):
   `seal` checked a table nothing read.
 
 Their coverage was re-pointed, not retired: the mcp and a2a root legs of
-`qa/capability-equality.json` and `qa/teller-steps.json` are the served rider, proven by
-`root/tests/gauntlet_kernel.rs`'s `served_rider_*` tests, which run each plane's own served-leg
-witnesses (`testkit::SERVED`) through the kernel-loop runner `gauntlet_install::install()` registers
-and require the plane's `drive` to have run inside the loop. (The source-scanning money witness over
+`qa/capability-equality.json` and `qa/teller-steps.json` are the planes' doors: the mcp leg is proven
+by the tool-door tests in `root/tests/door_steps.rs` (`mod tool_door`), which drive the mcp door
+through the root's serve path, and the a2a leg by the a2a door's own root cells. (The source-scanning money witness over
 linked planes' billing legs is retired with the last linked plane, DEV-GREEN row 83: every plane
 is a door plane, billed through the kernel plane driver's one money seam.)
 
@@ -136,8 +110,8 @@ is a door plane, billed through the kernel plane driver's one money seam.)
 
 ## What would make a red row go away honestly
 
-Two outcomes, and only two. Either the plane is **given a live unit path** (a runner flipped for its
-key, or a `Units` impl its linked entry exports), at which point the rows go green on their own
+Two outcomes, and only two. Either the plane is **given a live unit path** (its served door, or a
+`Units` impl its linked entry exports), at which point the rows go green on their own
 merits; or it is **declared** in `qa/reachability.toml` with a `[[dormant]]` row naming the reason and
 the switch that retires it, at which point the row passes and prints that declaration on every run.
 What must not happen is the row quietly ceasing to be red because somebody weakened the rule.

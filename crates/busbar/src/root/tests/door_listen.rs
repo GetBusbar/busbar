@@ -27,7 +27,7 @@ use http_body_util::BodyExt as _;
 
 use super::tool_door::{protocol_version, rig_with, surface, tool_digest, tool_server, Rig};
 use crate::root::loader::dispatch::{in_head, out_head, Frame};
-use crate::root::serve::planes_tests::{Published, PUBLISHING};
+use crate::root::serve::planes_tests::PUBLISHING;
 
 /// The keepalive comment an idle stream writes (predev's `: keepalive`).
 const KEEPALIVE: &str = ": keepalive\n\n";
@@ -184,7 +184,6 @@ fn step_clock(rig: &Rig, by: Duration) {
 async fn a_subscription_over_http_is_held_as_a_session_until_its_bound() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-listen-held";
-    let _published = Published(instance);
     let (port, _heard) = tool_server().await;
     let rig = rig_with(instance, port, None, &|app| app);
     let response = listen(&rig, &serde_json::json!({ "toolsListChanged": true })).await;
@@ -276,7 +275,6 @@ async fn a_subscription_over_http_is_held_as_a_session_until_its_bound() {
 async fn a_subscription_over_http_ends_when_its_principal_stops_standing() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-listen-lapsed";
-    let _published = Published(instance);
     let (port, _heard) = tool_server().await;
     let rig = rig_with(instance, port, None, &|app| app);
     let response = listen(&rig, &serde_json::json!({ "toolsListChanged": true })).await;
@@ -321,7 +319,6 @@ async fn a_subscription_over_http_ends_when_its_principal_stops_standing() {
 async fn a_subscription_over_http_that_could_deliver_nothing_is_refused() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-listen-refused";
-    let _published = Published(instance);
     let (port, _heard) = tool_server().await;
     let rig = rig_with(instance, port, None, &|app| app);
     let response = listen(&rig, &serde_json::json!({})).await;

@@ -18,8 +18,8 @@ mod linked;
 use busbar_kernel::config::migrate::migrate_config;
 use busbar_kernel::config::{deploy_from_yaml_str, resolve, DeployCfg, ProviderDef};
 
-/// Register the roster (the linked planes and the door row) in the process registry, idempotent
-/// (first-wins).
+/// Install the roster's seams, idempotent (first-wins). The roster's rows (the linked planes and the
+/// door row) are the binary's door table (`linked::table`), which every parse below is lent.
 fn register_planes() {
     linked::install();
 }
@@ -102,7 +102,7 @@ agent_pools:
 
     // (a) It parses into the 1.6.0 DeployCfg (deny_unknown_fields is the real gate: a surviving
     // `plugin:`/`at:`/tool_pools would fail HERE; the rich pool members are valid 1.6.0 grammar).
-    let deploy: DeployCfg = deploy_from_yaml_str(&out.yaml).unwrap_or_else(|e| {
+    let deploy: DeployCfg = deploy_from_yaml_str(&out.yaml, linked::table()).unwrap_or_else(|e| {
         panic!(
             "migrated config must boot-parse on 1.6.0: {e}\n{}",
             out.yaml
@@ -180,8 +180,8 @@ agents:
         doc[section]["pools"] = serde_yaml::from_str("{}").unwrap();
         doc[section]["pools"]["p"] = pool;
         let raw = serde_yaml::to_string(&doc).expect("the config renders");
-        let deploy: DeployCfg =
-            deploy_from_yaml_str(&raw).unwrap_or_else(|e| panic!("the config parses: {e}\n{raw}"));
+        let deploy: DeployCfg = deploy_from_yaml_str(&raw, linked::table())
+            .unwrap_or_else(|e| panic!("the config parses: {e}\n{raw}"));
         resolve(&deploy, &defs)
             .map(|_| ())
             .map_err(|e| format!("{e:?}"))

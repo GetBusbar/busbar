@@ -92,7 +92,7 @@
     },
     "root-mcp": {
       "plane": "mcp",
-      "file": "crates/busbar/src/root/tests/gauntlet_kernel.rs",
+      "file": "crates/busbar/src/root/tests/door_steps.rs",
       "feature": "plane-mcp"
     },
     "root-a2a": {
@@ -232,8 +232,8 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_carries_one_unit_per_call",
-          "note": "one served tools/call arrives as ONE unit the kernel-loop rider carries into the plane's drive, and reaches the registered upstream exactly once -- the rider's own drive count is the evidence, never a status code"
+          "test": "crates/busbar/src/root/tests/door_steps.rs::a_tools_call_is_served_through_the_tool_door_and_its_money_posted",
+          "note": "one keyed tools/call arrives at the tool door's claim as ONE unit, is served 200 through the door and reaches the registered server exactly once (its verify fetch, then the relayed call), and that unit's facts close at its end"
         }
       },
       "decode": {
@@ -243,8 +243,8 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_a_body_that_does_not_decode",
-          "note": "a body that is not JSON is refused by the transport's own parse with -32700 and never becomes a unit, while the well-formed tools/call beside it does -- so the served leg's decode refusal is proven to happen before the loop opens anything"
+          "test": "crates/busbar/src/root/tests/door_steps.rs::a_body_that_does_not_decode_is_refused_before_it_is_admitted",
+          "note": "a body that is not JSON is refused by the plane's own decode with -32700 (PARSE_ERROR), 400, before the unit is admitted: nothing charged, nothing dialled"
         }
       },
       "authenticate": {
@@ -254,8 +254,8 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_is_reached_only_by_an_authenticated_caller",
-          "note": "behind a closed chain, no credential and a forged one are both 401 before dispatch and open no unit; the caller holding a real audience-bound token is carried through the rider to the upstream once"
+          "test": "crates/busbar/src/root/tests/door_steps.rs::a_forged_bearer_is_refused_before_anything_is_charged_or_dialled",
+          "note": "a bearer the book never minted (the caller's token with its signature altered) is refused as no credential is, before anything is charged or dialled, and the real token beside it is served and is the one charged; its sibling an_unkeyed_tools_call_is_refused_before_anything_is_charged_or_dialled holds the no-credential arm"
         }
       },
       "verify": {
@@ -265,19 +265,19 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_a_destination_before_it_dials",
-          "note": "a caller whose grant names another server is refused inside the unit and the refused server is never dialled -- neither its tool endpoint nor its token endpoint sees a byte"
+          "test": "crates/busbar/src/root/tests/door_steps.rs::a_host_the_deployment_refuses_is_refused_in_the_arguments",
+          "note": "a destination the deployment's own egress rules refuse, named in a call's arguments, is refused 403 (tool_argument_refused) by the kernel's dest.judge before the call is sent -- no tools/call reaches the wire -- while an external destination in the same field is served"
         }
       },
       "approve": {
         "cell": "none",
         "status": "none",
-        "note": "no CONFORMANCE-RIG scenario exercises allowed_scopes narrowing for a tools/call. The root column beside this one now does: its served-rider witness drives a grant on the server without its tool through the kernel-loop rider and is refused. The rig half stays open.",
+        "note": "no CONFORMANCE-RIG scenario exercises allowed_scopes narrowing for a tools/call. The root column beside this one now does: its tool-door test drives a caller whose grant holds no scope of the plane's through the root's serve path and is refused before it dials. The rig half stays open.",
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_a_grant_short_of_the_operation",
-          "note": "a grant on the server without its tool is the operation's scope, missing: the tools/call is refused inside the unit and the upstream is never contacted"
+          "test": "crates/busbar/src/root/tests/door_steps.rs::a_tools_call_outside_the_callers_grant_is_refused_before_it_dials",
+          "note": "a caller whose grant holds no scope of the plane's is refused 404 not_granted under its own id before it is charged or dialled, and no unit is left open"
         }
       },
       "admit": {
@@ -287,8 +287,8 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_an_over_budget_caller_before_it_dials",
-          "note": "a key in a one-request group is served once and refused the second time naming the budget, with the refused call never reaching the upstream -- both calls ride the rider"
+          "test": "crates/busbar/src/root/tests/door_steps.rs::a_tools_call_past_the_callers_request_limit_is_refused_before_it_dials",
+          "note": "a key whose group allows one request an hour is served once and refused the second time by the group's limit before the call is sent: the server hears the first tools/call and never the second, only the served call is charged, every unit ends"
         }
       },
       "route": {
@@ -298,8 +298,8 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_answers_a_failed_upstream_inside_the_unit",
-          "note": "an upstream answering a bare 503 ends the unit with a failure the caller reads, after exactly one attempt at the one registered target -- no silent success and no retry storm"
+          "test": "crates/busbar/src/root/tests/door_steps.rs::a_tools_call_to_a_server_that_is_down_ends_inside_its_unit",
+          "note": "a call whose server is down ends inside its own unit, answered as the upstream failure the caller reads (isError), never served, every unit ended once"
         }
       },
       "meter": {
@@ -309,8 +309,8 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_meters_exactly_one_request_per_call",
-          "note": "one served tools/call writes exactly ONE metering row, under the presenting key, attributed to the namespaced tool and to this plane, counting one request"
+          "test": "crates/busbar/src/root/tests/door_steps.rs::a_tools_call_is_served_through_the_tool_door_and_its_money_posted",
+          "note": "one served tools/call admits exactly ONE request on the presenting key's governance ledger and writes the unit's one line on the node's book under the tool it called, counting the one tool call and the answer's bytes the plane reported"
         }
       },
       "audit": {
@@ -320,8 +320,8 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_audits_each_call_once",
-          "note": "one served tools/call lands exactly ONE mcp_tool.call row in the admin audit ring, naming the tool and the calling principal"
+          "test": "crates/busbar/src/root/tests/door_steps.rs::a_tools_call_is_served_through_the_tool_door_and_its_money_posted",
+          "note": "one served tools/call appends exactly ONE record to the plane's call chain in the kernel's record store, sealed by the host"
         }
       },
       "encode": {
@@ -331,8 +331,8 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_ends_each_call_once",
-          "note": "one served tools/call is one terminal: one upstream leg, one audit row and one chained per-call record -- never a double post"
+          "test": "crates/busbar/src/root/tests/door_steps.rs::a_tools_call_is_served_through_the_tool_door_and_its_money_posted",
+          "note": "one served tools/call is one terminal: one relayed call, one chained per-call record, one line on the node's book, and every unit's facts closed once"
         }
       }
     },
@@ -351,7 +351,7 @@
       "decode": {
         "cell": "none",
         "status": "none",
-        "note": "no a2a-tck/a2a-battery/a2a-supplement row is named for a malformed-envelope refusal specifically. The root column beside this one names what the loop does prove: its served-rider witness drives a body that is not JSON through the kernel-loop rider and reads the parse error's own code back.",
+        "note": "no a2a-tck/a2a-battery/a2a-supplement row is named for a malformed-envelope refusal specifically. The root column beside this one names what the loop does prove: its door cell names the decode refusal the agent door renders.",
         "root": {
           "state": "proven",
           "leg": "root-a2a",

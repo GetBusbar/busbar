@@ -67,19 +67,20 @@ fn topology_app() -> Arc<App> {
 fn topology() -> TestApp {
     register_planes();
     TestApp::new()
+        .doors(linked::table())
         .lane(LaneSpec::new(
             "model-a0",
-            busbar_kernel::proto::PROTO_OPENAI,
+            linked::residual_default_dialect(),
             "http://a0",
         ))
         .lane(LaneSpec::new(
             "model-a1",
-            busbar_kernel::proto::PROTO_OPENAI,
+            linked::residual_default_dialect(),
             "http://a1",
         ))
         .lane(LaneSpec::new(
             "model-b",
-            busbar_kernel::proto::PROTO_OPENAI,
+            linked::residual_default_dialect(),
             "http://b",
         ))
         .pool("pool-a", &[(0, 1), (1, 1)])
@@ -164,13 +165,14 @@ async fn test_stats_reports_at_capacity_when_lane_saturated() {
     register_planes();
     let sem = Arc::new(tokio::sync::Semaphore::new(1));
     let app = TestApp::new()
+        .doors(linked::table())
         .lane(
-            LaneSpec::new("bounded", busbar_kernel::proto::PROTO_OPENAI, "http://b")
+            LaneSpec::new("bounded", linked::residual_default_dialect(), "http://b")
                 .max(1)
                 .sem(sem.clone()),
         )
         .lane(
-            LaneSpec::new("unbounded", busbar_kernel::proto::PROTO_OPENAI, "http://u")
+            LaneSpec::new("unbounded", linked::residual_default_dialect(), "http://u")
                 .max(tokio::sync::Semaphore::MAX_PERMITS),
         )
         .pool("p", &[(0, 1), (1, 1)])
@@ -245,9 +247,10 @@ async fn test_stats_reports_at_capacity_when_lane_saturated() {
 async fn test_stats_limit_is_numeric_alias_of_max_concurrent() {
     register_planes();
     let app = TestApp::new()
-        .lane(LaneSpec::new("bounded", busbar_kernel::proto::PROTO_OPENAI, "http://b").max(3))
+        .doors(linked::table())
+        .lane(LaneSpec::new("bounded", linked::residual_default_dialect(), "http://b").max(3))
         .lane(
-            LaneSpec::new("unbounded", busbar_kernel::proto::PROTO_OPENAI, "http://u")
+            LaneSpec::new("unbounded", linked::residual_default_dialect(), "http://u")
                 .max(tokio::sync::Semaphore::MAX_PERMITS),
         )
         .pool("p", &[(0, 1), (1, 1)])
@@ -289,8 +292,9 @@ async fn test_stats_surfaces_open_and_at_capacity_independently() {
     register_planes();
     let sem = Arc::new(tokio::sync::Semaphore::new(1));
     let app = TestApp::new()
+        .doors(linked::table())
         .lane(
-            LaneSpec::new("wedged", busbar_kernel::proto::PROTO_OPENAI, "http://w")
+            LaneSpec::new("wedged", linked::residual_default_dialect(), "http://w")
                 .max(1)
                 .sem(sem.clone()),
         )
@@ -429,11 +433,16 @@ fn with_listing_door(
     };
     let facing = (reg.facing)(b"", b"", None, &[]).expect("faces");
     let decl = fold(reg).expect("the listing door folds");
-    let mut t = topology();
+    // The table this generation is lent: the binary's own, and the listing door folded here.
+    let rows: Vec<&'static busbar_kernel::plane_driver::row::PlaneDecl> =
+        (linked::table().decls().iter().copied())
+            .chain([decl])
+            .collect();
+    let mut t = topology().doors(busbar_kernel::plane_driver::doors::Doors::for_test(&rows));
     t.install_plane_runtime(
         decl.key,
         Arc::new(DoorSlot {
-            section: DoorSection::new(section, serde_yaml::Value::Null),
+            section: DoorSection::new(decl.door, section, serde_yaml::Value::Null),
             facing,
             opened: true,
         }),
@@ -507,7 +516,7 @@ async fn test_v1_models_bytes_unchanged_when_no_plane_lists_a_name() {
 // ── /healthz WITH MODEL LANES (ARCHITECT 2026-10-07 K5-H1 ruling; PB-43, pending OWNER signature) ──
 
 /// A door plane whose open answers for every generation, folded as the composition root folds one.
-fn opening_door() -> &'static busbar_kernel::plane::registry::PlaneDecl {
+fn opening_door() -> &'static busbar_kernel::plane_driver::row::PlaneDecl {
     busbar_kernel::plane_driver::door::fold(busbar_contract::plane_calls::PlaneRegistration {
         key: "healthz-lanes-door",
         section: "healthz_lanes_door",
@@ -553,29 +562,34 @@ async fn healthz_with_model_lanes_every_cell_open_stays_unready_beside_an_opened
     register_planes();
     let fallback = linked::fallback();
     let door = opening_door();
-    let _isolated =
-        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[fallback, door]);
+    // The table this generation is lent: the linked fallback plane and the opening door, alone.
+    let doors = busbar_kernel::plane_driver::doors::Doors::for_test(&[fallback, door]);
     let section = busbar_kernel::plane_driver::door::DoorSection::new(
+        door.door,
         door.config_section,
         serde_yaml::from_str("member: {url: 'https://m'}").unwrap(),
     );
     let section_defs = section.as_defs();
-    let slot = (door.build)(&busbar_kernel::plane::registry::BuildCtx {
-        endpoint_slot: None,
-        plane_defs: &section_defs,
-        public_url: None,
-        prior: None,
-        providers: None,
-    })
+    let slot = (door.build)(
+        door,
+        &busbar_kernel::plane_driver::row::BuildCtx {
+            endpoint_slot: None,
+            plane_defs: &section_defs,
+            public_url: None,
+            prior: None,
+            providers: None,
+        },
+    )
     .expect("the configured door builds its generation's slot");
     assert!(
         busbar_kernel::plane_driver::door::opened(slot.as_ref()),
         "the door opened"
     );
     let mut fixture = TestApp::new()
+        .doors(doors)
         .lane(LaneSpec::new(
             "model-h",
-            busbar_kernel::proto::PROTO_OPENAI,
+            linked::residual_default_dialect(),
             "http://h",
         ))
         .pool("p", &[(0, 1)])

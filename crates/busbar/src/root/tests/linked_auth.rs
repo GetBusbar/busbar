@@ -20,19 +20,17 @@ use busbar_kernel::governance::{GovState, MemoryStore};
 const TOKEN: &str = "admintok";
 
 /// Link this build's auth rows onto the kernel's auth axis, as `register_planes` does at boot (the
-/// first install stands, and every install in this binary is this one table). The linked protocol declarations go in too: a config fixture's provider names the registry's
-/// residual-default dialect, and which test installed it first must not decide a verdict.
+/// first install stands, and every install in this binary is this one table).
 fn link() {
     busbar_kernel::preflight::install_linked_auth(
         crate::LINKED.auths,
         crate::root::auth_bindings::operator_words(),
     );
     busbar_kernel::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
-    for decls in crate::LINKED.protocols {
-        busbar_kernel::proto::register_test_protocols(decls);
-    }
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
-    busbar_kernel::test_support::register_neutral_test_plane();
+    // The provider dialects a lane may name are DECLARED by a plane of the table a build is lent
+    // (ruling 2026-10-16 D): every build here is lent the neutral test table
+    // (`test_support::neutral_test_doors`, the `TestApp` and fixture-config default), whose plane
+    // declares them.
 }
 
 /// The operator credential's provider key, read AFTER the root's words are handed in. Before the

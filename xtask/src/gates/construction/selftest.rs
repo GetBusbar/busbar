@@ -53,7 +53,9 @@ use crate::gates::construction::tree::{crate_name_of_dir, dirs_for_globs};
 use crate::gates::construction::{
     ceilings, census, external, rules, rules2, ConstructionGate, CEILINGS, UNSAFE_HALVES,
 };
-use crate::gates::{prove_red, prove_rows_green, prove_rows_red, Case, Expect, Gate, Report};
+use crate::gates::{
+    prove_green, prove_red, prove_rows_green, prove_rows_red, Case, CasePlan, Expect, Gate, Report,
+};
 
 /// The three delegated answers as the real tree gives them, captured once. Every plant starts from
 /// a clone of this, so a case that is not about a delegated input never pays for one.
@@ -89,6 +91,26 @@ fn base_overlay(cx: &Ctx) -> Overlay {
 
 fn on(base: &Overlay) -> Overlay {
     base.clone()
+}
+
+/// One installed-store plant: `text` as the kernel module `file`, and a root caller handing its
+/// `install` a value.
+fn store_plant<'a>(
+    gate: &'a dyn Gate,
+    cx: &Ctx,
+    base: &Overlay,
+    name: &str,
+    file: &str,
+    text: &str,
+    naming: &[&str],
+) -> CasePlan<'a> {
+    let mut ov = on(base);
+    ov.set(format!("crates/busbar-kernel/src/{file}.rs"), text);
+    ov.set(
+        format!("crates/busbar/src/root/{file}_root.rs"),
+        format!("pub fn {file}_boot() {{\n    busbar_kernel::{file}::install(PLANTED);\n}}\n"),
+    );
+    prove_red(cx, gate, name, &[rules2::ROW_INSTALLED_STORE], ov, naming)
 }
 
 fn ids(prefix: &str, names: &[String]) -> Vec<String> {
@@ -402,8 +424,8 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         "crates/busbar-plane-llm/src/zz_planted_shape.rs",
         "pub fn planted_second_attempt_site() {\n    let _ = \
          ctx.client().get().request(method, url);\n}\n\npub fn planted_extra_door() {\n    \
-         unit.finish_inner(end);\n}\n\npub fn planted_door_caller() {\n    \
-         finish_admitted(end);\n    finish_rejected(end);\n}\n\npub fn planted_pick_a() {\n    \
+         served.money.settle_end(unit, 200);\n}\n\npub fn planted_door_caller() {\n    \
+         served.money.settle_end_as(unit, end);\n}\n\npub fn planted_pick_a() {\n    \
          pick_among(lanes);\n}\n\npub fn planted_pick_b() {\n    pick_among(lanes);\n}\n",
     );
     // A second unit attempt goes where the rule scans (a crate that drives a unit's walk).
@@ -469,11 +491,11 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
     // ITEM 190: THE TERMINAL RENAMED AWAY. Every call of the configured name vanishes with it, so
     // "zero extra sites" used to pass; the floor refuses a terminal that no longer resolves.
     let mut ov = on(base);
-    let home = "crates/busbar-kernel/src/ingress/mod.rs";
+    let home = "crates/busbar-kernel/src/plane_driver/money.rs";
     if let Ok(basetext) = cx.read(home) {
         ov.set(
             home,
-            basetext.replace("finish_inner", "finish_inner_renamed_away"),
+            basetext.replace("settle_end_as", "settle_end_as_renamed_away"),
         );
     }
     r.push(prove_red(
@@ -484,6 +506,626 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         &["single-terminal"],
         ov,
         &["does not resolve"],
+    ));
+
+    // THE DOOR PATH'S TWO MONEY TERMINALS, EACH PINNED TO ITS DOORS BY IMPL TYPE (ARCHITECT ruling
+    // 2026-10-20, row 82 D2): a third caller of `PlaneMoney::settle_end` and of
+    // `PlaneMoney::settle_end_as`, from a method of the request routes the config does not name,
+    // is red, and names the planted caller.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar/src/root/zz_planted_third_caller.rs",
+        "impl DataRoutes {\n    fn zz_planted_third_caller(&self, served: &ServedPlane) {\n        \
+         served.money.settle_end(unit, 200);\n        \
+         served.money.settle_end_as(unit, end);\n    }\n}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a third caller of each door money terminal",
+        &["single-terminal"],
+        ov,
+        &[
+            "DataRoutes::zz_planted_third_caller",
+            "zz_planted_third_caller.rs",
+        ],
+    ));
+
+    // AN UNTYPED BINDING IS NOT ATTRIBUTED BY A SAME-NAMED FIELD ELSEWHERE (a6's review of #1401):
+    // `let money = …;` declares no type, so the call on it is unread and counted. A field `money`
+    // of the node's type in another file says nothing about this local; reading it there would let
+    // a third door through as the node's own `settle_end`.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar/src/root/zz_planted_field_elsewhere.rs",
+        "pub struct ZzHolder {\n    pub money: Node,\n}\n",
+    );
+    ov.set(
+        "crates/busbar/src/root/zz_planted_untyped_binding.rs",
+        "impl DataRoutes {\n    fn zz_planted_untyped_binding(&self, served: &ServedPlane) {\n        \
+         let money = &served.money;\n        money.settle_end(unit, 200);\n    }\n}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a terminal called on an untyped binding is counted, whatever a same-named field elsewhere \
+         is declared as",
+        &["single-terminal"],
+        ov,
+        &[
+            "DataRoutes::zz_planted_untyped_binding",
+            "zz_planted_untyped_binding.rs",
+        ],
+    ));
+
+    // THE KERNEL'S PROTOCOL REGISTRY GROWN BACK (a6's proof on #1401): a kernel `proto/` module
+    // holding a `ProtocolDecl` behind a static, an `install_protocols` seam the root fills and an
+    // allocating by-name `decl_for`. The root's call keeps `no-uninstalled-seam` green, which is
+    // why this rule exists; each of the three spellings is on its own line and each is named.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar-kernel/src/proto/mod.rs",
+        "use std::sync::OnceLock;\n\nstatic PROTOCOLS: OnceLock<ProtocolDecl> = \
+         OnceLock::new();\n\npub fn install_protocols(decls: Planted) {\n    let _ = \
+         PROTOCOLS.set(decls.into());\n}\n\npub fn decl_for(name: &str) -> Option<String> {\n    \
+         PROTOCOLS.get().map(|_| name.to_string())\n}\n",
+    );
+    ov.set(
+        "crates/busbar/src/root/zz_planted_protocols.rs",
+        "pub fn zz_planted_register_protocols() {\n    \
+         busbar_kernel::proto::install_protocols(PLANTED);\n}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a protocol registry grown back in the kernel, installed by the root",
+        &["kernel-no-protocol-registry"],
+        ov,
+        &[
+            "crates/busbar-kernel/src/proto/mod.rs:3",
+            "crates/busbar-kernel/src/proto/mod.rs:5",
+            "crates/busbar-kernel/src/proto/mod.rs:9",
+        ],
+    ));
+
+    // THE REGISTRY BEHIND AN ALIAS (a6's first evasion of #1401's rule): the contract declares
+    // `Dialect` as `ProtocolDecl`, and re-exports `decl_for` under another name, so the kernel spells
+    // neither banned word. The aliases are read across the workspace and banned in the kernel too.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar-contract/src/zz_planted_alias.rs",
+        "pub type Dialect = crate::protocol::ProtocolDecl;\npub use crate::protocol::decl_for as \
+         find_dialect;\n",
+    );
+    ov.set(
+        "crates/busbar-kernel/src/zz_planted_alias_use.rs",
+        "use busbar_contract::zz_planted_alias::Dialect;\n\npub fn zz_planted_lookup(name: &str) -> \
+         Option<&'static str> {\n    busbar_contract::zz_planted_alias::find_dialect(name)\n}\n\n\
+         pub fn zz_planted_kind(_: &Dialect) {}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a protocol registry the kernel reaches through workspace aliases of its banned names",
+        &["kernel-no-protocol-registry"],
+        ov,
+        &[
+            "Dialect",
+            "find_dialect",
+            "crates/busbar-kernel/src/zz_planted_alias_use.rs:1",
+            "crates/busbar-kernel/src/zz_planted_alias_use.rs:4",
+            "crates/busbar-kernel/src/zz_planted_alias_use.rs:7",
+        ],
+    ));
+
+    // THE REGISTRY BEHIND A TYPE-ERASED STORE (a6's second evasion): no banned name at all, a
+    // `Box<dyn Any>` behind a `OnceLock` that a `pub fn` taking the value fills, and the root
+    // calling it. Refused by its shape.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar-kernel/src/zz_planted_erased.rs",
+        "use std::any::Any;\nuse std::sync::OnceLock;\n\nstatic ZZ_TABLE: OnceLock<Box<dyn Any + \
+         Send + Sync>> = OnceLock::new();\n\npub fn zz_planted_wire(table: Box<dyn Any + Send + \
+         Sync>) {\n    let _ = ZZ_TABLE.set(table);\n}\n",
+    );
+    ov.set(
+        "crates/busbar/src/root/zz_planted_wire.rs",
+        "pub fn zz_planted_boot() {\n    busbar_kernel::zz_planted_erased::zz_planted_wire(PLANTED);\n}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a registry behind a type-erased kernel static that the root fills",
+        &[rules2::ROW_INSTALLED_STORE],
+        ov,
+        &[
+            "static ZZ_TABLE at crates/busbar-kernel/src/zz_planted_erased.rs:4",
+            "zz_planted_wire",
+        ],
+    ));
+
+    // THE INSTALLED-STORE ROW'S REACH (a6's review of #1406: the row caught much less than its
+    // title). Each plant below is one evasion the row read green before this change; each names
+    // its static. One root caller hands every planted installer its value.
+    // A. The type read through an alias: no cell and no map is spelled on the static's own line.
+    r.push(store_plant(
+        gate,
+        cx,
+        base,
+        "a registry behind a type alias of a locked map",
+        "zz_planted_alias_store",
+        "use std::any::{Any, TypeId};\nuse std::collections::HashMap;\nuse std::sync::{Arc, \
+         OnceLock, RwLock};\n\ntype Erased = Arc<RwLock<HashMap<TypeId, Box<dyn Any + Send>>>>;\n\n\
+         static S: OnceLock<Erased> = OnceLock::new();\n\npub fn install(table: Erased) {\n    let _ \
+         = S.set(table);\n}\n",
+        &["static S at crates/busbar-kernel/src/zz_planted_alias_store.rs"],
+    ));
+    // A. The type read into a struct's fields: the map is a field of the held type.
+    r.push(store_plant(
+        gate,
+        cx,
+        base,
+        "a registry behind a struct whose field is the map",
+        "zz_planted_field_store",
+        "use std::collections::HashMap;\nuse std::sync::OnceLock;\n\npub struct Holder {\n    by_key: \
+         HashMap<String, String>,\n}\n\nstatic HOLDER: OnceLock<Holder> = OnceLock::new();\n\npub fn \
+         install(holder: Holder) {\n    let _ = HOLDER.set(holder);\n}\n",
+        &["static HOLDER at crates/busbar-kernel/src/zz_planted_field_store.rs"],
+    ));
+    // B. A lowercase name.
+    r.push(store_plant(
+        gate,
+        cx,
+        base,
+        "a registry behind a lowercase static",
+        "zz_planted_lowercase_store",
+        "use std::sync::OnceLock;\n\nstatic table: OnceLock<Vec<String>> = OnceLock::new();\n\npub \
+         fn install(rows: Vec<String>) {\n    let _ = table.set(rows);\n}\n",
+        &["static table at crates/busbar-kernel/src/zz_planted_lowercase_store.rs"],
+    ));
+    // B and C. A `thread_local!` RefCell.
+    r.push(store_plant(
+        gate,
+        cx,
+        base,
+        "a registry behind a thread-local RefCell",
+        "zz_planted_thread_local_store",
+        "use std::cell::RefCell;\n\nthread_local! {\n    static ROWS: RefCell<Vec<String>> = const \
+         { RefCell::new(Vec::new()) };\n}\n\npub fn install(rows: Vec<String>) {\n    \
+         ROWS.with(|r| *r.borrow_mut() = rows);\n}\n",
+        &["static ROWS at crates/busbar-kernel/src/zz_planted_thread_local_store.rs"],
+    ));
+    // B. A `lazy_static!` `static ref`.
+    r.push(store_plant(
+        gate,
+        cx,
+        base,
+        "a registry behind a lazy_static",
+        "zz_planted_lazy_static_store",
+        "use std::collections::HashMap;\nuse std::sync::Mutex;\n\nlazy_static! {\n    static ref \
+         BY_NAME: Mutex<HashMap<String, String>> = Mutex::new(HashMap::new());\n}\n\npub fn \
+         install(rows: HashMap<String, String>) {\n    *BY_NAME.lock().unwrap() = rows;\n}\n",
+        &["static BY_NAME at crates/busbar-kernel/src/zz_planted_lazy_static_store.rs"],
+    ));
+    // B. A `static mut`: the static is its own cell.
+    r.push(store_plant(
+        gate,
+        cx,
+        base,
+        "a registry behind a static mut",
+        "zz_planted_static_mut_store",
+        "static mut DECLS: Vec<String> = Vec::new();\n\npub fn install(rows: Vec<String>) {\n    \
+         drop((rows, std::ptr::addr_of_mut!(DECLS)));\n}\n",
+        &["static DECLS at crates/busbar-kernel/src/zz_planted_static_mut_store.rs"],
+    ));
+    // B. A `pub static` the root sets directly: no installer fn at all.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar-kernel/src/zz_planted_pub_static_store.rs",
+        "use std::sync::OnceLock;\n\npub static TABLE: OnceLock<Vec<String>> = OnceLock::new();\n",
+    );
+    ov.set(
+        "crates/busbar/src/root/zz_planted_pub_static_root.rs",
+        "pub fn zz_planted_pub_static_boot() {\n    let _ = \
+         busbar_kernel::zz_planted_pub_static_store::TABLE.set(PLANTED);\n}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a registry behind a pub static the root sets directly",
+        &[rules2::ROW_INSTALLED_STORE],
+        ov,
+        &[
+            "static TABLE at crates/busbar-kernel/src/zz_planted_pub_static_store.rs",
+            "pub static",
+        ],
+    ));
+    // B. An accessor that hands out the cell: the root sets it through the reference.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar-kernel/src/zz_planted_accessor_store.rs",
+        "use std::sync::OnceLock;\n\nstatic CELL: OnceLock<Vec<String>> = OnceLock::new();\n\npub \
+         fn cell() -> &'static OnceLock<Vec<String>> {\n    &CELL\n}\n",
+    );
+    ov.set(
+        "crates/busbar/src/root/zz_planted_accessor_root.rs",
+        "pub fn zz_planted_accessor_boot() {\n    let _ = \
+         busbar_kernel::zz_planted_accessor_store::cell().set(PLANTED);\n}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a registry behind an accessor that returns the cell",
+        &[rules2::ROW_INSTALLED_STORE],
+        ov,
+        &[
+            "static CELL at crates/busbar-kernel/src/zz_planted_accessor_store.rs",
+            "pub fn cell (returns the cell)",
+        ],
+    ));
+    // B. A setter one call away: the `pub fn` never names the static, a private fn it calls does.
+    r.push(store_plant(
+        gate,
+        cx,
+        base,
+        "a registry behind a private setter one call from a pub fn",
+        "zz_planted_one_hop_store",
+        "use std::sync::OnceLock;\n\nstatic HIDDEN: OnceLock<Vec<String>> = OnceLock::new();\n\nfn \
+         put(rows: Vec<String>) {\n    let _ = HIDDEN.set(rows);\n}\n\npub fn install(rows: \
+         Vec<String>) {\n    put(rows);\n}\n",
+        &[
+            "static HIDDEN at crates/busbar-kernel/src/zz_planted_one_hop_store.rs",
+            "pub fn install (through put)",
+        ],
+    ));
+    // C. The cells and maps the row did not know: ArcSwap, ArcSwapOption, AtomicPtr and DashMap,
+    // holding an FxHashMap and an AnyMap.
+    r.push(store_plant(
+        gate,
+        cx,
+        base,
+        "registries behind ArcSwap, ArcSwapOption, AtomicPtr and DashMap",
+        "zz_planted_new_cells_store",
+        "static SWAPPED: ArcSwap<Vec<String>> = ArcSwap::from_pointee(Vec::new());\n\nstatic \
+         SWAPPED_OPT: ArcSwapOption<FxHashMap<String, String>> = ArcSwapOption::const_empty();\n\n\
+         static POINTED: AtomicPtr<AnyMap> = AtomicPtr::new(std::ptr::null_mut());\n\nstatic \
+         DASHED: DashMap<String, String> = DashMap::new();\n\npub fn install(rows: Vec<String>) {\n    \
+         SWAPPED.store(rows.into());\n    SWAPPED_OPT.store(None);\n    \
+         POINTED.store(std::ptr::null_mut(), Ordering::Release);\n    DASHED.clear();\n}\n",
+        &[
+            "static SWAPPED at crates/busbar-kernel/src/zz_planted_new_cells_store.rs",
+            "static SWAPPED_OPT at crates/busbar-kernel/src/zz_planted_new_cells_store.rs",
+            "static POINTED at crates/busbar-kernel/src/zz_planted_new_cells_store.rs",
+            "static DASHED at crates/busbar-kernel/src/zz_planted_new_cells_store.rs",
+        ],
+    ));
+    // a6's review of #1454: five evasions the row read green. Each names its static.
+    // The type read to its top-level end: a `;` inside `[u8; 0]` and an `=` inside
+    // `Iterator<Item = u8>` are the type's own, not its end. (#1408's row read the type to its first
+    // `=`, `([u8; 0], Option<fn(&dyn Iterator<Item `, which names no cell, so this is red-first
+    // against #1408 as well as against the `;`-ended read this PR first wrote.)
+    r.push(store_plant(
+        gate,
+        cx,
+        base,
+        "a registry behind a tuple whose earlier fields hold a `;` and an `=`",
+        "zz_planted_tupled_store",
+        "use std::sync::OnceLock;\n\nstatic TUPLED: ([u8; 0], Option<fn(&dyn Iterator<Item = \
+         u8>)>, OnceLock<Vec<String>>) = ([], None, OnceLock::new());\n\npub fn install(rows: \
+         Vec<String>) {\n    let _ = TUPLED.2.set(rows);\n}\n",
+        &["static TUPLED at crates/busbar-kernel/src/zz_planted_tupled_store.rs"],
+    ));
+    // A setter imported with `use` (and under an alias) and called bare from another file.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar-kernel/src/zz_planted_use_store.rs",
+        "use std::sync::OnceLock;\n\nstatic IMPORTED: OnceLock<Vec<String>> = OnceLock::new();\n\n\
+         pub(crate) fn put(rows: Vec<String>) {\n    let _ = IMPORTED.set(rows);\n}\n",
+    );
+    ov.set(
+        "crates/busbar-kernel/src/zz_planted_use_caller.rs",
+        "use crate::zz_planted_use_store::put;\n\npub fn zz_install(rows: Vec<String>) {\n    \
+         put(rows);\n}\n",
+    );
+    ov.set(
+        "crates/busbar-kernel/src/zz_planted_use_alias.rs",
+        "use crate::zz_planted_use_store::{put as stash};\n\npub fn zz_install_aliased(rows: \
+         Vec<String>) {\n    stash(rows);\n}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a registry behind a setter another file imports with `use` and calls bare",
+        &[rules2::ROW_INSTALLED_STORE],
+        ov,
+        &[
+            "static IMPORTED at crates/busbar-kernel/src/zz_planted_use_store.rs",
+            "pub fn zz_install (through put)",
+            "pub fn zz_install_aliased (through put)",
+        ],
+    ));
+    // A static a `macro_rules!` declares under a metavariable name, its type handed in.
+    r.push(store_plant(
+        gate,
+        cx,
+        base,
+        "a registry behind a macro-generated static",
+        "zz_planted_macro_store",
+        "use std::sync::OnceLock;\n\nmacro_rules! zz_store {\n    ($name:ident, $ty:ty) => {\n        \
+         static $name: OnceLock<$ty> = OnceLock::new();\n    };\n}\n\nzz_store!(GENERATED, \
+         Vec<String>);\n\npub fn install(rows: Vec<String>) {\n    let _ = GENERATED.set(rows);\n}\n",
+        &["static GENERATED at crates/busbar-kernel/src/zz_planted_macro_store.rs"],
+    ));
+    // A trait method (no `pub` on it) that takes the value and sets the store.
+    r.push(store_plant(
+        gate,
+        cx,
+        base,
+        "a registry behind a trait-method installer",
+        "zz_planted_trait_store",
+        "use std::sync::OnceLock;\n\nstatic BY_TRAIT: OnceLock<Vec<String>> = OnceLock::new();\n\npub \
+         trait ZzInstall {\n    fn install_rows(&self, rows: Vec<String>);\n}\n\npub struct \
+         ZzHandle;\n\nimpl ZzInstall for ZzHandle {\n    fn install_rows(&self, rows: Vec<String>) \
+         {\n        let _ = BY_TRAIT.set(rows);\n    }\n}\n",
+        &[
+            "static BY_TRAIT at crates/busbar-kernel/src/zz_planted_trait_store.rs",
+            "pub fn install_rows",
+        ],
+    ));
+    // An `UnsafeCell` wrapper: the struct's field is the cell.
+    r.push(store_plant(
+        gate,
+        cx,
+        base,
+        "a registry behind an UnsafeCell wrapper",
+        "zz_planted_unsafe_cell_store",
+        "use std::cell::UnsafeCell;\n\npub struct ZzSlot(UnsafeCell<Vec<String>>);\n\nstatic SLOT: \
+         ZzSlot = ZzSlot(UnsafeCell::new(Vec::new()));\n\npub fn install(rows: Vec<String>) {\n    \
+         drop((rows, SLOT.0.get()));\n}\n",
+        &["static SLOT at crates/busbar-kernel/src/zz_planted_unsafe_cell_store.rs"],
+    ));
+    // a6's second review of #1454. A `Cell` is a cell: a thread-local `Cell<&'static [String]>` the
+    // root sets whole through a `pub fn` is a store.
+    r.push(store_plant(
+        gate,
+        cx,
+        base,
+        "a registry behind a thread-local Cell of a static slice",
+        "zz_planted_cell_store",
+        "use std::cell::Cell;\n\nthread_local! {\n    static C: Cell<&'static [String]> = const \
+         { Cell::new(&[]) };\n}\n\npub fn install(rows: &'static [String]) {\n    C.with(|c| \
+         c.set(rows));\n}\n",
+        &["static C at crates/busbar-kernel/src/zz_planted_cell_store.rs"],
+    ));
+    // `OnceBox` and `AtomicCell` are named, so the row fails closed on them too.
+    r.push(store_plant(
+        gate,
+        cx,
+        base,
+        "registries behind OnceBox and AtomicCell",
+        "zz_planted_once_box_store",
+        "static BOXED: OnceBox<Vec<String>> = OnceBox::new();\n\nstatic SWAPPED_SLICE: \
+         AtomicCell<Option<&'static [String]>> = AtomicCell::new(None);\n\npub fn install(rows: \
+         Vec<String>) {\n    let _ = BOXED.set(Box::new(rows));\n    SWAPPED_SLICE.store(None);\n}\n",
+        &[
+            "static BOXED at crates/busbar-kernel/src/zz_planted_once_box_store.rs",
+            "static SWAPPED_SLICE at crates/busbar-kernel/src/zz_planted_once_box_store.rs",
+        ],
+    ));
+    // A ptr/len pair of `AtomicUsize`s: the slice is laundered through two integers, so no cell
+    // and no collection is spelled in either type. A fn of the file that names each and turns a
+    // pointer into an integer (`as_ptr`) makes each a store.
+    r.push(store_plant(
+        gate,
+        cx,
+        base,
+        "a registry behind an AtomicUsize ptr/len pair",
+        "zz_planted_ptr_len_store",
+        "use std::sync::atomic::{AtomicUsize, Ordering};\n\nstatic PTR: AtomicUsize = \
+         AtomicUsize::new(0);\nstatic LEN: AtomicUsize = AtomicUsize::new(0);\n\npub fn \
+         install(rows: &'static [String]) {\n    PTR.store(rows.as_ptr() as usize, \
+         Ordering::Release);\n    LEN.store(rows.len(), Ordering::Release);\n}\n",
+        &[
+            "static PTR at crates/busbar-kernel/src/zz_planted_ptr_len_store.rs",
+            "static LEN at crates/busbar-kernel/src/zz_planted_ptr_len_store.rs",
+        ],
+    ));
+    // AND NOT EVERY ATOMIC: a counter a `pub fn` adds to launders no pointer, and is no store.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar-kernel/src/zz_planted_counter.rs",
+        "use std::sync::atomic::{AtomicUsize, Ordering};\n\nstatic SEEN: AtomicUsize = \
+         AtomicUsize::new(0);\n\npub fn zz_count(n: usize) {\n    SEEN.fetch_add(n, \
+         Ordering::Relaxed);\n}\n",
+    );
+    r.push(prove_green(
+        &cx.with_overlay(ov),
+        gate,
+        "an atomic counter a pub fn adds to is not an installed store",
+        &[rules2::ROW_INSTALLED_STORE],
+    ));
+    // EACH ROW HOLDS ITS OWN CEILING (a6's second review of #1454). Under #1408's one shared
+    // `max_hits`, raising it to 1 let a new store in beside the names it bans; the store row is
+    // held to `max_stores` now, so the store stays red under a raised `max_hits`.
+    if let Ok(text) = cx.read(CEILINGS) {
+        let mut ov = on(base);
+        if let Some(raised) =
+            ceilings::set_int(&text, "rules.kernel-no-protocol-registry", "max_hits", 1)
+        {
+            ov.set(CEILINGS, raised);
+        }
+        ov.set(
+            "crates/busbar-kernel/src/zz_planted_shared_ceiling.rs",
+            "use std::sync::OnceLock;\n\nstatic UNDER_HITS: OnceLock<Vec<String>> = \
+             OnceLock::new();\n\npub fn install(rows: Vec<String>) {\n    let _ = \
+             UNDER_HITS.set(rows);\n}\n",
+        );
+        r.push(prove_red(
+            cx,
+            gate,
+            "a store let in under the names row's raised ceiling stays red on its own",
+            &[rules2::ROW_INSTALLED_STORE],
+            ov,
+            &[
+                "static UNDER_HITS at crates/busbar-kernel/src/zz_planted_shared_ceiling.rs",
+                "(ceiling 0)",
+            ],
+        ));
+    }
+    // And the other way: a `ProtocolDecl` under the store row's raised ceiling stays red on the
+    // names row's. (A guard: #1408 had no `max_stores` to raise.)
+    if let Ok(text) = cx.read(CEILINGS) {
+        let mut ov = on(base);
+        if let Some(raised) =
+            ceilings::set_int(&text, "rules.kernel-no-protocol-registry", "max_stores", 1)
+        {
+            ov.set(CEILINGS, raised);
+        }
+        ov.set(
+            "crates/busbar-kernel/src/zz_planted_decl_under_stores.rs",
+            "pub fn zz_kind(_: &ProtocolDecl) {}\n",
+        );
+        r.push(prove_red(
+            cx,
+            gate,
+            "a ProtocolDecl under the store row's raised ceiling stays red on the names row",
+            &["kernel-no-protocol-registry"],
+            ov,
+            &["crates/busbar-kernel/src/zz_planted_decl_under_stores.rs:1"],
+        ));
+    }
+
+    // AND NOT EVERY STATIC: a fn-local memo nothing outside the kernel reaches is not installed.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar-kernel/src/zz_planted_private_memo.rs",
+        "use std::sync::OnceLock;\n\nfn zz_memo_len() -> usize {\n    static seen: \
+         OnceLock<Vec<String>> = OnceLock::new();\n    seen.get_or_init(Vec::new).len()\n}\n",
+    );
+    r.push(prove_green(
+        &cx.with_overlay(ov),
+        gate,
+        "a fn-local memo no code outside the kernel reaches is not an installed store",
+        &[rules2::ROW_INSTALLED_STORE],
+    ));
+
+    // THE DEBT ONLY FALLS. Two plants on the counted list of plane- and protocol-keyed stores,
+    // planted through the ceilings file so they hold whatever the list holds today: a store that is
+    // gone left on the list under a ceiling raised to cover it (the count falls under the ceiling,
+    // and the row is stale), and the list grown past its ceiling.
+    if let Ok(text) = cx.read(CEILINGS) {
+        let mut ov = on(base);
+        let drained = ceilings::add_to_list(
+            &text,
+            "rules.kernel-no-protocol-registry",
+            "debt_stores",
+            &["crates/busbar-kernel/src/zz_drained.rs::ZZ_DRAINED -- planted".to_string()],
+        )
+        .and_then(|t| {
+            let max = ConstructionGate::cfg(cx)
+                .ok()
+                .and_then(|c| {
+                    c.rule("kernel-no-protocol-registry")
+                        .ok()
+                        .and_then(|t| t.int_of("max_debt"))
+                })
+                .unwrap_or(0);
+            ceilings::set_int(&t, "rules.kernel-no-protocol-registry", "max_debt", max + 1)
+        });
+        if let Some(drained) = drained {
+            ov.set(CEILINGS, drained);
+        }
+        r.push(prove_red(
+            cx,
+            gate,
+            "a debt store drained without its row struck and its ceiling lowered",
+            &[rules2::ROW_STORE_DEBT],
+            ov,
+            &["drained debt", "ZZ_DRAINED"],
+        ));
+    }
+    if let Ok(text) = cx.read(CEILINGS) {
+        let mut ov = on(base);
+        if let Some(grown) = ceilings::add_to_list(
+            &text,
+            "rules.kernel-no-protocol-registry",
+            "debt_stores",
+            &["crates/busbar-kernel/src/zz_planted.rs::ZZ_GROWN -- planted".to_string()],
+        ) {
+            ov.set(CEILINGS, grown);
+        }
+        r.push(prove_red(
+            cx,
+            gate,
+            "the debt list grown past its ceiling",
+            &[rules2::ROW_STORE_DEBT],
+            ov,
+            &["may not grow"],
+        ));
+    }
+    // THE CEILING ONLY FALLS: a `max_debt` left above the count is slack, and red.
+    if let Ok(text) = cx.read(CEILINGS) {
+        let mut ov = on(base);
+        let max = ConstructionGate::cfg(cx)
+            .ok()
+            .and_then(|c| {
+                c.rule("kernel-no-protocol-registry")
+                    .ok()
+                    .and_then(|t| t.int_of("max_debt"))
+            })
+            .unwrap_or(0);
+        if let Some(slack) = ceilings::set_int(
+            &text,
+            "rules.kernel-no-protocol-registry",
+            "max_debt",
+            max + 1,
+        ) {
+            ov.set(CEILINGS, slack);
+        }
+        r.push(prove_red(
+            cx,
+            gate,
+            "the debt ceiling left above the count",
+            &[rules2::ROW_STORE_DEBT],
+            ov,
+            &["under a ceiling of", "lower max_debt"],
+        ));
+    }
+    // A NAMED EXEMPTION WHOSE STORE IS GONE is stale, and red: the list only shrinks.
+    if let Ok(text) = cx.read(CEILINGS) {
+        let mut ov = on(base);
+        if let Some(stale) = ceilings::add_to_list(
+            &text,
+            "rules.kernel-no-protocol-registry",
+            "exempt_stores",
+            &["crates/busbar-kernel/src/zz_gone.rs::ZZ_GONE -- planted".to_string()],
+        ) {
+            ov.set(CEILINGS, stale);
+        }
+        r.push(prove_red(
+            cx,
+            gate,
+            "an exemption naming a store that is not there",
+            &[rules2::ROW_INSTALLED_STORE],
+            ov,
+            &["stale exemption crates/busbar-kernel/src/zz_gone.rs::ZZ_GONE"],
+        ));
+    }
+
+    // AN UNRELATED `fn settle_end` ON ANOTHER TYPE IS NEITHER COUNTED NOR ALLOWED: the terminal is
+    // `PlaneMoney::settle_end`, and a method of the same name on a type of its own, called through
+    // `self`, is that type's business.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar/src/root/zz_planted_unrelated_settle_end.rs",
+        "pub struct ZzUnrelated;\n\nimpl ZzUnrelated {\n    fn settle_end(&self) {}\n\n    \
+         fn zz_caller(&self) {\n        self.settle_end();\n    }\n}\n",
+    );
+    r.push(prove_green(
+        &cx.with_overlay(ov),
+        gate,
+        "a same-named method on another type is not the terminal",
+        &["single-terminal"],
     ));
 
     // THE PLANES THE RULE READS: the legacy list (empty since DEV-GREEN row 83) and the door crates
@@ -1223,7 +1865,358 @@ fn census_base_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report
              raised, so the rule that refuses a raised ceiling is unproven",
         ),
     }
+
+    // A CEILING SET BY ITS MEASURING CHANGE IS SET ONCE (ARCHITECT ruling on #1454, the #1418
+    // MINTED precedent). The base here carries `[gate.census.measured]`, so the debt ceiling it
+    // set is held like any other: raised again it is refused. And a fresh
+    // `[gate.census.measured]` entry whose detector did not change in the same diff excuses no
+    // rise from 0.
+    let debt_max = ConstructionGate::cfg(cx).ok().and_then(|c| {
+        c.rule("kernel-no-protocol-registry")
+            .ok()
+            .and_then(|t| t.int_of("max_debt"))
+    });
+    let rule = "rules.kernel-no-protocol-registry";
+    let raised_debt = debt_max
+        .and_then(|max| ceilings::set_int(&text, rule, "max_debt", max + 1).map(|t| (max, t)));
+    match raised_debt {
+        Some((max, raised)) => {
+            let mut ov = on(base);
+            ov.set(CEILINGS, raised);
+            let rose = format!("{max} -> {}", max + 1);
+            r.push(prove_rows_red(
+                cx,
+                gate,
+                "a measured debt ceiling raised again in a change after it is refused",
+                &[census::ROW_CENSUS],
+                ov,
+                &[
+                    "[rules.kernel-no-protocol-registry] max_debt",
+                    rose.as_str(),
+                ],
+            ));
+        }
+        None => r.note_infra_failure(
+            "[rules.kernel-no-protocol-registry] max_debt could not be raised, so the rule that \
+             holds a measured ceiling once set is unproven",
+        ),
+    }
+    let header = format!("[{}]\n", census::MEASURED);
+    let entry = "\"rules.lean-core.max_hits\" = \"words -- planted; drain: none\"\n";
+    let unmeasured = ceilings::set_int(&text, "rules.lean-core", "max_hits", 3)
+        .filter(|t| t.contains(&header))
+        .map(|t| t.replacen(&header, &format!("{header}{entry}"), 1));
+    match unmeasured {
+        Some(planted) => {
+            let mut ov = on(base);
+            ov.set(CEILINGS, planted);
+            r.push(prove_rows_red(
+                cx,
+                gate,
+                "a measured entry for a rule the census cannot re-measure excuses no rise from 0",
+                &[census::ROW_CENSUS],
+                ov,
+                &[
+                    "[rules.lean-core] max_hits",
+                    "0 -> 3",
+                    "cannot re-measure [rules.lean-core]",
+                    "`words` is not a detector key",
+                ],
+            ));
+        }
+        None => r.note_infra_failure(
+            "the measured ledger or [rules.lean-core] max_hits could not be planted, so the rule \
+             that a measured entry needs a rule the census re-measures is unproven",
+        ),
+    }
+
+    // a6's SECOND REVIEW OF #1454: three ways the measured exception excused a real regression.
+    // Each is RED on the census row now, naming every condition it fails (ARCHITECT rulings (a)
+    // detector, (b) base re-measure, (c) drain field).
+    // 1. A clock read added to a unit crate, a word added to the rule's `why`, `max_hits` 0 -> 1,
+    //    and a reason that only says nobody will drain it.
+    let wall = "crates/busbar-kernel-breaker/src/lib.rs";
+    let unit_head = "[rules.unit-no-wall-clock]\n";
+    let why_head = format!("{unit_head}why = \"\"\"");
+    let raised_unit = ceilings::set_int(&text, "rules.unit-no-wall-clock", "max_hits", 1)
+        .filter(|t| t.contains(&why_head) && t.contains(&header));
+    let entry =
+        |value: &str| format!("{header}\"rules.unit-no-wall-clock.max_hits\" = \"{value}\"\n");
+    match (raised_unit, cx.read(wall)) {
+        (Some(raised), Ok(lib)) => {
+            let planted = raised
+                .replacen(&why_head, &format!("{why_head}zz "), 1)
+                .replacen(&header, &entry("why -- nobody will drain this"), 1);
+            let mut ov = measured_plant(base, planted);
+            ov.set(
+                wall,
+                format!(
+                    "{lib}\npub fn zz_planted_wall() -> std::time::SystemTime {{\n    \
+                     std::time::SystemTime::now()\n}}\n"
+                ),
+            );
+            r.push(prove_rows_red(
+                cx,
+                gate,
+                "a measured entry naming the rule's `why` and no drain excuses no clock read",
+                &[census::ROW_CENSUS],
+                ov,
+                &[
+                    "[rules.unit-no-wall-clock] max_hits",
+                    "0 -> 1",
+                    "`why` is not a detector key",
+                    "no `drain:` field",
+                    "counts 0 under `max_hits`",
+                ],
+            ));
+            // 2. The same with a key new against the base named as the detector.
+            let planted = raised
+                .replacen(unit_head, &format!("{unit_head}zz_unused = \"x\"\n"), 1)
+                .replacen(&header, &entry("zz_unused -- drain"), 1);
+            let mut ov = measured_plant(base, planted);
+            ov.set(
+                wall,
+                format!(
+                    "{lib}\npub fn zz_planted_wall() -> std::time::SystemTime {{\n    \
+                     std::time::SystemTime::now()\n}}\n"
+                ),
+            );
+            r.push(prove_rows_red(
+                cx,
+                gate,
+                "a measured entry naming a key new against the base excuses no clock read",
+                &[census::ROW_CENSUS],
+                ov,
+                &[
+                    "[rules.unit-no-wall-clock] max_hits",
+                    "0 -> 1",
+                    "`zz_unused` is not a detector key",
+                    "no `drain:` field",
+                    "counts 0 under `max_hits`",
+                ],
+            ));
+        }
+        _ => r.note_infra_failure(
+            "[rules.unit-no-wall-clock] or the breaker's lib.rs could not be planted, so the rule \
+             that a measured entry needs a real detector and a drain field is unproven",
+        ),
+    }
+    // 3. `Cell` added to `store_cells` (a real detector, changed), a ceiling raised 0 -> 1 and a
+    //    new installed store in neither debt nor exempt: the base re-measured with the new
+    //    detector counts 0, so the 1 covers a site this change added, and its drain names no PR,
+    //    row or file. Once on the names row's `max_hits` (a6's plant, from when the two rows shared
+    //    it), once on the store row's own `max_stores`.
+    let rule = "rules.kernel-no-protocol-registry";
+    let cell_store = "crates/busbar-kernel/src/zz_planted_cell_debt.rs";
+    let without_cell = text.replacen("\"Cell\", ", "", 1);
+    for (key, row) in [
+        ("max_hits", rules2::ROW_INSTALLED_STORE),
+        ("max_stores", census::ROW_CENSUS),
+    ] {
+        let planted = ceilings::set_int(&text, rule, key, 1)
+            .filter(|t| t.contains(&header) && without_cell != text)
+            .map(|t| {
+                t.replacen(
+                    &header,
+                    &format!(
+                        "{header}\"{rule}.{key}\" = \"store_cells -- the cell the row did not \
+                         know; drain: later\"\n"
+                    ),
+                    1,
+                )
+            });
+        let Some(planted) = planted else {
+            r.note_infra_failure(format!(
+                "[{rule}] {key} or its store_cells `Cell` could not be planted, so the rule that a \
+                 measured ceiling equals the base's re-measure is unproven"
+            ));
+            continue;
+        };
+        let mut ov = measured_plant(base, planted);
+        if let Some(based) = base.command(ceilings::BASE_PIN_KEY) {
+            ov.set_command(format!("git-show:{based}:{CEILINGS}"), without_cell.clone());
+        }
+        ov.set(
+            cell_store,
+            "use std::cell::Cell;\n\nthread_local! {\n    static ZZ_CELL_TABLE: Cell<&'static \
+             [String]> = const { Cell::new(&[]) };\n}\n\npub fn install(rows: &'static [String]) \
+             {\n    ZZ_CELL_TABLE.with(|c| c.set(rows));\n}\n",
+        );
+        let rose = format!("[{rule}] {key}");
+        let counted = format!("counts 0 under `{key}`");
+        let mut covers = vec![census::ROW_CENSUS];
+        if row != census::ROW_CENSUS {
+            covers.push(row);
+        }
+        r.push(prove_rows_red(
+            cx,
+            gate,
+            format!("a new Cell store under a measured `{key}` the base re-measure does not hold"),
+            &covers,
+            ov,
+            &[
+                rose.as_str(),
+                "0 -> 1",
+                counted.as_str(),
+                "names no PR (`#<n>`), status row (`row <n>`) or file",
+            ],
+        ));
+    }
+    // 4. a6's THIRD REVIEW OF #1454: two new stores A and B, each with a root caller; A exempted
+    //    here; a word added to `store_cells`; `max_stores` 0 -> 1 under a measured entry with a
+    //    drain. Re-measured with THIS tree's exemptions, A is a stale name at the base and counts 1,
+    //    and B would sit under the 1 as new debt. The base is re-measured with the BASE's exemptions
+    //    and never counts a stale one, so it counts 0 and the entry excuses nothing.
+    let a_store = "crates/busbar-kernel/src/zz_planted_exempted_a.rs";
+    let b_store = "crates/busbar-kernel/src/zz_planted_unlisted_b.rs";
+    let exempted = format!("{a_store}::ZZ_A -- planted: exempted in the same change");
+    let planted = ceilings::set_int(&text, rule, "max_stores", 1)
+        .and_then(|t| ceilings::add_to_list(&t, rule, "store_cells", &["Exclusive".to_string()]))
+        .and_then(|t| ceilings::add_to_list(&t, rule, "exempt_stores", &[exempted]))
+        .filter(|t| t.contains(&header))
+        .map(|t| {
+            t.replacen(
+                &header,
+                &format!(
+                    "{header}\"{rule}.max_stores\" = \"store_cells -- the cell the row did not \
+                     know; drain: row 82\"\n"
+                ),
+                1,
+            )
+        });
+    match planted {
+        Some(planted) => {
+            let mut ov = measured_plant(base, planted);
+            for (file, name, module) in [
+                (a_store, "ZZ_A", "zz_planted_exempted_a"),
+                (b_store, "ZZ_B", "zz_planted_unlisted_b"),
+            ] {
+                ov.set(
+                    file,
+                    format!(
+                        "use std::sync::OnceLock;\n\nstatic {name}: OnceLock<Vec<String>> = \
+                         OnceLock::new();\n\npub fn install(rows: Vec<String>) {{\n    let _ = \
+                         {name}.set(rows);\n}}\n"
+                    ),
+                );
+                ov.set(
+                    format!("crates/busbar/src/root/{module}_root.rs"),
+                    format!(
+                        "pub fn {module}_boot() {{\n    busbar_kernel::{module}::install(PLANTED);\n}}\n"
+                    ),
+                );
+            }
+            r.push(prove_rows_red(
+                cx,
+                gate,
+                "a new store exempted in the same change is no base debt: the base is re-measured \
+                 with its own exemptions",
+                &[census::ROW_CENSUS],
+                ov,
+                &[
+                    "[rules.kernel-no-protocol-registry] max_stores",
+                    "0 -> 1",
+                    "counts 0 under `max_stores`",
+                ],
+            ));
+        }
+        None => r.note_infra_failure(
+            "[rules.kernel-no-protocol-registry] could not take the exempted-store plant, so the \
+             rule that the base is re-measured with its own exemptions is unproven",
+        ),
+    }
+    // 5. a6's FOURTH REVIEW OF #1454: a key smuggled to the re-measure behind a comment. The
+    //    list's opening line is `exempt_stores = [ # ] store_holds = ['.',`, which a text editor
+    //    that closes the list at the first `]` reads as a `store_holds` matching every type; with
+    //    "Exclusive" in store_cells, `max_stores` 0 -> 13 and 13 new registries, the base then
+    //    counted 13. The re-measure edits the PARSED file, where that is a comment, so the base
+    //    counts 0 and the entry excuses nothing.
+    let smuggle_file = "crates/busbar-kernel/src/zz_planted_smuggled.rs";
+    let opener = "exempt_stores = [\n";
+    let registry_at = text.find(&format!("[{rule}]\n"));
+    let planted = registry_at
+        .and_then(|at| {
+            let rest = &text[at..];
+            let o = rest.find(opener)?;
+            Some(format!(
+                "{}{}exempt_stores = [ # ] store_holds = ['.',\n{}",
+                &text[..at],
+                &rest[..o],
+                &rest[o + opener.len()..]
+            ))
+        })
+        .and_then(|t| ceilings::set_int(&t, rule, "max_stores", 13))
+        .and_then(|t| ceilings::add_to_list(&t, rule, "store_cells", &["Exclusive".to_string()]))
+        .filter(|t| t.contains(&header))
+        .map(|t| {
+            t.replacen(
+                &header,
+                &format!(
+                    "{header}\"{rule}.max_stores\" = \"store_cells -- the cell the row did not \
+                     know; drain: row 82\"\n"
+                ),
+                1,
+            )
+        });
+    match planted {
+        Some(planted) => {
+            let mut ov = measured_plant(base, planted);
+            let mut kernel = String::from("use std::sync::OnceLock;\n\n");
+            let mut setter = String::from("pub fn install(rows: Vec<String>) {\n");
+            for i in 0..13 {
+                kernel.push_str(&format!(
+                    "static ZZ_SMUGGLED_{i}: OnceLock<Vec<String>> = OnceLock::new();\n"
+                ));
+                setter.push_str(&format!("    let _ = ZZ_SMUGGLED_{i}.set(rows.clone());\n"));
+            }
+            setter.push_str("}\n");
+            ov.set(smuggle_file, format!("{kernel}\n{setter}"));
+            ov.set(
+                "crates/busbar/src/root/zz_planted_smuggled_root.rs",
+                "pub fn zz_planted_smuggled_boot() {\n    \
+                 busbar_kernel::zz_planted_smuggled::install(PLANTED);\n}\n",
+            );
+            r.push(prove_rows_red(
+                cx,
+                gate,
+                "a store_holds smuggled to the re-measure behind a comment `]` is a comment: the \
+                 base counts 0 of 13 new registries",
+                &[census::ROW_CENSUS],
+                ov,
+                &[
+                    "[rules.kernel-no-protocol-registry] max_stores",
+                    "0 -> 13",
+                    "counts 0 under `max_stores`",
+                ],
+            ));
+        }
+        None => r.note_infra_failure(
+            "[rules.kernel-no-protocol-registry] could not take the comment-smuggle plant, so the \
+             rule that the re-measure reads the parsed file is unproven",
+        ),
+    }
     r
+}
+
+/// A MEASURED-CEILING PLANT: `ceilings_now` as this tree's ceilings file, over a base the census
+/// re-measures as the fixture itself. Every `.rs` path the fixture claims reads back at the base as
+/// the fixture has it, and no path differs from the base but those the plant claims, so the base's
+/// re-measure is the fixture's count, whatever the checkout's own history.
+fn measured_plant(base: &Overlay, ceilings_now: String) -> Overlay {
+    let mut ov = on(base);
+    if let Some(based) = base.command(ceilings::BASE_PIN_KEY).cloned() {
+        ov.set_command(format!("{}:{based}", census::DIFF_NAMES_KEY), "");
+        for (path, change) in base.changes() {
+            let rel = path.to_string_lossy().replace('\\', "/");
+            if let crate::ctx::Change::Content(was) = change {
+                if rel.ends_with(".rs") {
+                    ov.set_command(format!("git-show:{based}:{rel}"), was.clone());
+                }
+            }
+        }
+    }
+    ov.set(CEILINGS, ceilings_now);
+    ov
 }
 
 /// The plugin kinds: the manifest allow-list, the source denylist and the unsafe attributes.

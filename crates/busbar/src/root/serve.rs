@@ -31,13 +31,12 @@ use busbar_contract::services::{
 };
 use busbar_kernel::host_records::QUEUE_CAP;
 use busbar_kernel::host_services::{BlockingPool, DestJudge, KernelServices, SignKey};
-use busbar_kernel::plane_driver::serve::{publish, ServeRoute, ServeTable};
+use busbar_kernel::plane_driver::serve::{ServeRoute, ServeTable, ServeTables};
 use busbar_kernel::plane_driver::{
     refusal_status, BufferCaps, CallerEnd, DriverConfig, Egress, HeadFields, MoneySeam,
     PlaneDriver, PlaneMoney, Rendered, SessionCaller,
 };
 /// The stream `Content-Type` every declared protocol states, folded at boot.
-use busbar_kernel::proto::streaming_content_types as declared_stream_media;
 use busbar_kernel::store::plane_view::KIND_DEMOTION;
 use busbar_kernel::trust::DemotionRecord;
 use tokio::sync::{mpsc, oneshot};
@@ -879,6 +878,10 @@ pub struct Served {
     /// THE CLAIM DOORS, by the claim their datagram framer answers: the datagram port each one's
     /// inbound need binds ([`serve_datagram::ClaimDoor`]). Empty = no datagram claim is served.
     pub claim_doors: serve_datagram::ClaimDoors,
+    /// THE PUBLISHED INSTANCES' ADMIN TABLE these planes were published into: the generation's
+    /// (`App::serve_tables`) the composition was lent, held here for the data listener's public
+    /// mount ([`public_routes`]).
+    pub tables: ServeTables,
 }
 
 /// The framer that answers a claim, by its name (`Connector::framer_for`).
@@ -1013,6 +1016,7 @@ pub fn compose_served(
     public_url: Option<&str>,
     reach: &crate::root::door_steps::DoorReach<'_>,
     host: Option<busbar_kernel::plane_driver::GenerationHost>,
+    tables: &ServeTables,
 ) -> Result<Served, String> {
     let Some(gov) = gov else {
         if !doors.is_empty() {
@@ -1054,6 +1058,7 @@ pub fn compose_served(
         &money,
         Some(&egress),
         stage.as_ref(),
+        tables,
     )?;
     served.post = Some(post);
     served.epoch = epoch;
@@ -1335,10 +1340,12 @@ pub fn door_pools(
 }
 
 /// [`door_pools`] read off an installed generation: the pools a config apply resolved, each plane's
-/// read off the generation under its own key and filed under its section.
+/// read off the generation under its own key and filed under its section, over the door table the
+/// generation was built from.
 #[must_use]
 pub fn installed_door_pools(app: &busbar_kernel::state::App) -> DoorPoolsByKey {
-    busbar_kernel::plane::registry::plane_decls()
+    app.doors
+        .decls()
         .iter()
         .filter_map(|decl| {
             app.plane_pools(decl.key)
@@ -1493,13 +1500,13 @@ pub struct DoorEgress<'a> {
 /// a [`PlaneInstance`] on `dispatcher` (unit tickets on worker 0, where its driver ticket is
 /// minted), a [`PlaneDriver`] admitted to the kernel's composed services with the plane's tail
 /// facts and the money steps `money` builds for it, the pools its section states, and its admin
-/// routes published on the admin router's table (`plane_driver::serve`, K-SERVE). A plane whose
-/// section is absent stays bound and unopened, as before. With `egress`, each plane's egress is
-/// sealed over it ([`crate::root::door_steps::member_routes`]); without, none is (every walk is
-/// exhausted at once). With `hooks`, each driver binds a unit's hooks over the deployment's hook
-/// configuration ([`HookStage`]: a gate-first plane its entries' gates, every other its routed
-/// hooks); without, no hook binds. The data routes are the data router's
-/// construction ([`data_routes`]).
+/// routes published on `tables`, the generation's admin table (`plane_driver::serve`, K-SERVE). A
+/// plane whose section is absent stays bound and unopened, as before. With `egress`, each plane's
+/// egress is sealed over it ([`crate::root::door_steps::member_routes`]); without, none is (every
+/// walk is exhausted at once). With `hooks`, each driver binds a unit's hooks over the deployment's
+/// hook configuration ([`HookStage`]: a gate-first plane its entries' gates, every other its routed
+/// hooks); without, no hook binds. The data routes are the data router's construction
+/// ([`data_routes`]).
 ///
 /// # Errors
 ///
@@ -1515,6 +1522,7 @@ pub fn compose_planes(
     money: &dyn Fn() -> Arc<PlaneMoney>,
     egress: Option<&DoorEgress<'_>>,
     hooks: Option<&HookStage>,
+    tables: &ServeTables,
 ) -> Result<Served, String> {
     // BOOT IS CONFIG TIME (BUSBAR-1.6.0.md l.1468, R4): the proof is minted here, once, and handed
     // down to every member credential the planes' egress resolves.
@@ -1530,6 +1538,7 @@ pub fn compose_planes(
         egress,
         hooks,
         &scope,
+        tables,
     )
 }
 
@@ -1551,8 +1560,12 @@ pub(crate) fn compose_planes_over(
     egress: Option<&DoorEgress<'_>>,
     hooks: Option<&HookStage>,
     scope: &busbar_contract::config_time::ConfigScope,
+    tables: &ServeTables,
 ) -> Result<Served, String> {
-    let mut served = Served::default();
+    let mut served = Served {
+        tables: tables.clone(),
+        ..Served::default()
+    };
     if doors.is_empty() {
         return Ok(served);
     }
@@ -1675,18 +1688,20 @@ pub(crate) fn compose_planes_over(
             .collect();
         // The admin router's fallback is this table, so a kernel admin route always matches first
         // and is never shadowed; no route is reserved beyond that.
-        publish(
-            ServeTable {
-                instance: instance.clone(),
-                audit_kind: served_facts.audit_kind.to_string(),
-                calls,
-                caps: BufferCaps::default(),
-                routes,
-                records: Some((Arc::clone(&kernel), caller)),
-            },
-            &[],
-        )
-        .map_err(|c| format!("{instance}: admin route {:?} overlaps {}", c.route, c.with))?;
+        served
+            .tables
+            .publish(
+                ServeTable {
+                    instance: instance.clone(),
+                    audit_kind: served_facts.audit_kind.to_string(),
+                    calls,
+                    caps: BufferCaps::default(),
+                    routes,
+                    records: Some((Arc::clone(&kernel), caller)),
+                },
+                &[],
+            )
+            .map_err(|c| format!("{instance}: admin route {:?} overlaps {}", c.route, c.with))?;
         let declared = plugin.declared();
         // EVERY REPORTED CLASS IS REGISTERED (THE DESIGN §7): the classes a plane may report are the
         // ones its tail declares, linked or dropped in, registered once at its composition, so its
@@ -2894,11 +2909,22 @@ pub fn door_mounts(
         .filter(|(_, _, auth, _)| matches!(auth, RouteAuth::Key))
         .map(|(path, method, _, (plane, claim))| {
             let (routes, plane, claim) = (Arc::clone(&routes), *plane, *claim);
+            // The claim's refusal dialect, by the name the plane's tail states for it: the label a
+            // hook tap of the `401` is told.
+            let served = &routes.served.planes[plane];
+            let dialect = served
+                .snapshot
+                .claims
+                .get(claim as usize)
+                .and_then(|c| served.dialects.get(usize::from(c.refusal_dialect)))
+                .copied()
+                .unwrap_or("");
             PlaneRefusalSpec {
                 route: busbar_kernel::plane_routes::DoorRouteId {
                     path: path.clone(),
                     method: *method,
                 },
+                dialect,
                 signed_ingress: Arc::clone(&signed[plane]),
                 refuse: Arc::new(move |reason: ReasonCode, target: &str| {
                     let served = &routes.served.planes[plane];
@@ -2923,23 +2949,40 @@ pub fn door_mounts(
     // takes, a body over the cap, a request handler that panicked. The kernel decides the reason,
     // the status and the words; the plane whose line the guest list matches for the path, whatever
     // the verb (its own reading, the one the router mounts by), renders the body through its
-    // `refusal`, in the line's refusal dialect, for the target. A failed render is `None`: the
-    // kernel answers its own.
+    // `refusal`, in the line's refusal dialect, for the target. A path no plane's line takes (a
+    // kernel route's, or none) is the FALLBACK plane's (`abi::plane::TAIL_FALLBACK`, the catch-all
+    // every unclaimed path is): it renders the refusal by its own path rule for the target, as the
+    // previous release's residual answered it (spec Part 3 section 12, "Refusals"). A failed render,
+    // or no fallback plane served, is `None`: the kernel answers its own.
     let refuse_by_path: busbar_kernel::plane_routes::PlaneRefuseByPathFn = {
         let routes = Arc::clone(&routes);
+        let fallback = routes
+            .served
+            .planes
+            .iter()
+            .position(|p| p.live.served_facts.fallback);
         Arc::new(move |r: &busbar_kernel::plane_routes::KernelRefusal<'_>| {
-            let Matched::MethodMiss(line) = routes.guests.matched("", r.path, &[]) else {
-                return None;
+            let owner = match routes.guests.matched("", r.path, &[]) {
+                Matched::MethodMiss(line) => match &line.claimant {
+                    Claimant::Plane(instance) => routes
+                        .of_line
+                        .get(&(instance.clone(), line.route.rung))
+                        .map(|&(plane, _)| (plane, line.dialect)),
+                    _ => None,
+                },
+                _ => None,
             };
-            let Claimant::Plane(instance) = &line.claimant else {
-                return None;
-            };
-            let (plane, _) = *routes.of_line.get(&(instance.clone(), line.route.rung))?;
+            // The fallback plane's dialect index is unread for a unit-less refusal: the plane
+            // renders the target by its own path rule. A path under a mounted plane's claim is
+            // never the fallback's: with no line of that plane taking it, the kernel answers in the
+            // mounted plane's own wire format.
+            let fallback = fallback.filter(|_| !r.mounted);
+            let (plane, dialect) = owner.or_else(|| fallback.map(|plane| (plane, 0)))?;
             let rendered = routes.served.planes[plane].driver.refuse_kernel(
                 r.reason,
                 u32::from(r.status),
                 r.text,
-                line.dialect,
+                dialect,
                 r.target.as_bytes(),
             )?;
             Some(stated(
@@ -3086,6 +3129,7 @@ pub(crate) fn line_routes(
 /// listener's arrival gates still apply), answered by the plane's `serve` op through the kernel's
 /// public serve path. A verb the router does not mount is left out.
 fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
+    let tables = &served.tables;
     served
         .planes
         .iter()
@@ -3099,21 +3143,26 @@ fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
                 path: r.target.clone(),
                 method,
                 auth: RouteAuth::None,
-                handler: Arc::new(move |ctx: PlaneReqCtx| -> PlaneRouteFuture {
-                    Box::pin(async move {
-                        let target = ctx
-                            .uri
-                            .path_and_query()
-                            .map_or_else(|| ctx.path.clone(), |pq| pq.as_str().to_string());
-                        busbar_kernel::plane_driver::serve::answer_public(
-                            ctx.method.as_str(),
-                            &ctx.path,
-                            &target,
-                            &ctx.headers,
-                            ctx.body,
-                        )
-                        .await
-                    })
+                handler: Arc::new({
+                    let tables = tables.clone();
+                    move |ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                        let tables = tables.clone();
+                        Box::pin(async move {
+                            let target = ctx
+                                .uri
+                                .path_and_query()
+                                .map_or_else(|| ctx.path.clone(), |pq| pq.as_str().to_string());
+                            tables
+                                .answer_public(
+                                    ctx.method.as_str(),
+                                    &ctx.path,
+                                    &target,
+                                    &ctx.headers,
+                                    ctx.body,
+                                )
+                                .await
+                        })
+                    }
                 }),
             })
         })
@@ -4564,18 +4613,27 @@ fn whole_answer(fields: &HeadFields) -> bool {
         && !named(b"content-type").is_some_and(|v| streamed_media(&v))
 }
 
-/// Whether `content_type` is a stream's, read off the DECLARED ROWS and never spelled here (Law 1;
-/// BUSBAR-1.6.0.md: "Dialects are internal to their plane"): the event stream the contract names,
-/// or the stream `Content-Type` a declared protocol states on its `ProtocolDecl` row, folded at
-/// boot ([`declared_stream_media`]).
+/// Whether `content_type` is a stream's, read off what the planes DECLARE and never spelled here
+/// (Law 1; BUSBAR-1.6.0.md: "Dialects are internal to their plane"): the event stream the contract
+/// names, or a stream `Content-Type` a loaded plane states under its `declares` section's
+/// `stream_media` ([`declared_stream_media`]).
 fn streamed_media(content_type: &str) -> bool {
-    std::iter::once(busbar_contract::protocol::TEXT_EVENT_STREAM)
-        .chain(declared_stream_media().iter().copied())
-        .any(|media| {
-            content_type
-                .get(..media.len())
-                .is_some_and(|head| head.eq_ignore_ascii_case(media))
-        })
+    declared_stream_media().iter().any(|media| {
+        content_type
+            .get(..media.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(media))
+    })
+}
+
+/// The stream media the loaded planes declare beside the contract's event stream
+/// ([`crate::root::linked::stream_media`]), folded once. Every `declares` section it reads was read
+/// at boot, which refuses one that does not read (`root::linked::register_diagnostics`).
+fn declared_stream_media() -> &'static [String] {
+    static MEDIA: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    MEDIA.get_or_init(|| {
+        crate::root::linked::stream_media(&crate::LINKED, crate::root::linked::dropped())
+            .expect("the boot read every plane's `declares` section")
+    })
 }
 
 /// A whole answer's head without its stated length: the response states the length of what was

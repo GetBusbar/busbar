@@ -164,9 +164,13 @@ fn metered_row<'a>(
 /// rerank's `search_units`, a provider-stated total's `unitemized_tokens`, LEDGER-100): that count
 /// stays ledgered and priced into the row's `spend_micros`, and the read does not itemize it. The
 /// signed LEDGER-SIMPLE entry pins that read byte for byte, and 1.5.5's usage rows had no such field.
-pub(crate) fn row_carries_classes(provider: &str) -> bool {
+/// The plane is looked up in `doors`, the table the generation was built from.
+pub(crate) fn row_carries_classes(
+    doors: busbar_kernel::plane_driver::doors::Doors,
+    provider: &str,
+) -> bool {
     matches!(
-        busbar_kernel::plane::registry::plane_decl_for(provider),
+        doors.plane_decl_for(provider),
         Some(decl) if !decl.fallback
     )
 }
@@ -178,8 +182,13 @@ pub(crate) fn row_carries_classes(provider: &str) -> bool {
 /// plane's card and fees (#42 "scoped per plane", #47). A pools-plane row (its provider is an
 /// upstream provider, never a plane key; or the fallback plane's key) keeps its model as its lane,
 /// and its requests carry the flat `per_request_fee:` — byte-identical to the previous release.
-pub fn row_lane<'a>(model: &'a str, provider: &str) -> std::borrow::Cow<'a, str> {
-    match busbar_kernel::plane::registry::plane_decl_for(provider) {
+/// The plane is looked up in `doors`, the table the generation was built from.
+pub fn row_lane<'a>(
+    doors: busbar_kernel::plane_driver::doors::Doors,
+    model: &'a str,
+    provider: &str,
+) -> std::borrow::Cow<'a, str> {
+    match doors.plane_decl_for(provider) {
         Some(decl) if !decl.fallback => std::borrow::Cow::Owned(format!(
             "{}{}{model}",
             decl.key,
@@ -1322,9 +1331,9 @@ fn rebuild_hook_derived(next: &mut busbar_kernel::state::App) {
 // this fold names no plane registry type. A plane with no per-registration gates declares `None` and
 // is skipped, exactly as the old plane-gated blocks skipped a compiled-out plane.
 fn reresolve_plane_gates(next: &mut busbar_kernel::state::App) {
-    for decl in busbar_kernel::plane::registry::plane_decls() {
+    for decl in next.doors.decls() {
         if let Some(reresolve) = decl.reresolve_gates {
-            reresolve(next);
+            reresolve(decl, next);
         }
     }
 }
@@ -1336,10 +1345,14 @@ fn plane_named_def_list(
     section: NamedMapSection,
     app: &busbar_kernel::state::App,
 ) -> Vec<NamedDefView> {
-    busbar_kernel::plane::registry::plane_decl_for_config_section(section.key())
-        .and_then(|d| d.named_def_list)
-        .map_or_else(Vec::new, |f| {
-            f(app as &dyn busbar_kernel::plane_driver::slots::PlaneSlots)
+    app.doors
+        .plane_decl_for_config_section(section.key())
+        .and_then(|d| d.named_def_list.map(|f| (d, f)))
+        .map_or_else(Vec::new, |(d, f)| {
+            f(
+                d,
+                app as &dyn busbar_kernel::plane_driver::slots::PlaneSlots,
+            )
         })
 }
 
@@ -1350,10 +1363,12 @@ fn plane_named_def_get(
     app: &busbar_kernel::state::App,
     name: &str,
 ) -> Option<NamedDefView> {
-    busbar_kernel::plane::registry::plane_decl_for_config_section(section.key())
-        .and_then(|d| d.named_def_get)
-        .and_then(|f| {
+    app.doors
+        .plane_decl_for_config_section(section.key())
+        .and_then(|d| d.named_def_get.map(|f| (d, f)))
+        .and_then(|(d, f)| {
             f(
+                d,
                 app as &dyn busbar_kernel::plane_driver::slots::PlaneSlots,
                 name,
             )

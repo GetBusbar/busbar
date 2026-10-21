@@ -54,7 +54,8 @@ use super::DeployCfg;
 // Every carrier is lifted through the config seam's plane-NEUTRAL spellings, so this generic lift
 // machinery names no concrete plane (DECISIONS #1).
 use crate::config::plane_sections::{DeclaredSections, EndpointSection};
-use crate::plane::registry::{PlaneDeclaration, CORE_OWNED_CONCRETE_SECTIONS};
+use crate::plane_driver::doors::{Doors, CORE_OWNED_CONCRETE_SECTIONS};
+use crate::plane_driver::row::PlaneDeclaration;
 
 /// HOW `cargo xtask gate config-schema` ties a carrier to its key. The gate reads this from source:
 /// a carrier is matched by its field's own name unless it says otherwise.
@@ -139,7 +140,7 @@ impl Dest {
     /// The carrier `key` lands in when `decl` declares it. A section owned BESIDE the declaring one
     /// is its owner's endpoint door, else RAW; a declaring section lands in the map
     /// carrier ([`DeclaredSections::holds`]) or RAW ([`DeployCfg::plane_raw`]), whichever door.
-    fn for_declared(decl: &PlaneDeclaration, key: &'static str) -> Option<Dest> {
+    fn for_declared(doors: Doors, decl: &PlaneDeclaration, key: &'static str) -> Option<Dest> {
         if key != decl.config_section {
             // The door's carrier takes it for the door's owner; any other owned section rides RAW.
             let door = (EndpointSection::KEY == Declared::Door).then_some(Dest::Endpoint);
@@ -147,7 +148,7 @@ impl Dest {
                 .filter(|_| decl.config_section == EndpointSection::OWNER)
                 .or(Some(Dest::Raw));
         }
-        DeclaredSections::holds(decl)
+        DeclaredSections::holds(doors, decl)
             .then_some(Dest::Declared)
             .or(Some(Dest::Raw))
     }
@@ -156,15 +157,15 @@ impl Dest {
 /// THE TOP-LEVEL LIFT TABLE for one document: the kernel's own keys, then every section a
 /// REGISTERED plane declares (its declaring section and the sections it owns beside it), minus the
 /// sections core still owns concretely (a frozen field, never lifted). First declaration wins.
-fn lift_table() -> Vec<(&'static str, Dest)> {
+fn lift_table(doors: Doors) -> Vec<(&'static str, Dest)> {
     let mut table: Vec<(&'static str, Dest)> = vec![(LIFTED_TOP_LEVEL_KEYS[0], Dest::OauthAs)];
-    for decl in crate::plane::registry::plane_decls() {
+    for decl in doors.decls() {
         let decl: &PlaneDeclaration = &decl.declaration;
         for &key in std::iter::once(&decl.config_section).chain(decl.owned_config_sections) {
             let fresh = !CORE_OWNED_CONCRETE_SECTIONS.contains(&key)
                 && !table.iter().any(|(k, _)| *k == key);
             table.extend(
-                Dest::for_declared(decl, key)
+                Dest::for_declared(doors, decl, key)
                     .filter(|_| fresh)
                     .map(|d| (key, d)),
             );
@@ -187,6 +188,9 @@ pub(crate) struct Lifted {
     plane_fees: super::PlaneFeesMap,
     plane_raw: std::collections::BTreeMap<&'static str, serde_yaml::Value>,
     declared_raw: std::collections::BTreeMap<&'static str, serde_yaml::Value>,
+    /// The `pools:` section, parsed against the lent door table where the frozen struct met it
+    /// ([`PoolsSeed`]).
+    pools: Option<super::PoolsCfg>,
     /// The top-level keys the key reader watches for: the nested key, then every section a
     /// registered plane requires. A key is struck as the document is seen to carry it, so what is
     /// left once the document is read is what it omitted.
@@ -202,6 +206,9 @@ impl Lifted {
         deploy.plane_raw = self.plane_raw;
         deploy.declared_raw = self.declared_raw;
         deploy.declared = self.declared;
+        if let Some(v) = self.pools {
+            deploy.pools = v;
+        }
         if let Some(v) = self.endpoint {
             deploy.endpoint = v;
         }
@@ -227,6 +234,7 @@ impl Lifted {
 struct LiftedSeed<'a> {
     key: &'static str,
     dest: Dest,
+    doors: Doors,
     lifted: &'a mut Lifted,
 }
 
@@ -234,7 +242,7 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
     type Value = ();
 
     fn deserialize<D: Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
-        let (key, lifted) = (self.key, self.lifted);
+        let (key, doors, lifted) = (self.key, self.doors, self.lifted);
         match self.dest {
             Dest::Endpoint => {
                 // An endpoint block is a section its plane owns, so it is kept as written too
@@ -243,20 +251,20 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
                 if !section.is_null() {
                     lifted.declared_raw.insert(key, section.clone());
                 }
-                EndpointSection::deserialize(section)
+                EndpointSection::parse(doors, section)
                     .map_err(D::Error::custom)?
                     .bank(lifted);
             }
             Dest::OauthAs => Option::<serde_yaml::Value>::deserialize(de)?.bank(lifted),
             Dest::Declared => {
-                let section = plane_remainder::<D>(key, de, lifted)?;
+                let section = plane_remainder::<D>(doors, key, de, lifted)?;
                 lifted.declared_raw.insert(key, section.clone());
-                DeclaredSections::parse(key, section)
+                DeclaredSections::parse(doors, key, section)
                     .map_err(D::Error::custom)?
                     .bank(lifted);
             }
             Dest::Raw => {
-                let section = plane_remainder::<D>(key, de, lifted)?;
+                let section = plane_remainder::<D>(doors, key, de, lifted)?;
                 lifted.plane_raw.insert(key, section);
             }
             Dest::AuthPolicy => crate::config::AuthPolicyCfg::deserialize(de)?.bank(lifted),
@@ -278,12 +286,13 @@ pub(crate) const PLANE_CARD_KEYS: [&str; 2] = ["rate_card", "fees"];
 /// A plane section with its core-owned sub-keys (see [`PLANE_CARD_KEYS`]) lifted off it and banked
 /// under the plane's registry key: the REMAINDER, which is the plane's own.
 fn plane_remainder<'de, D: Deserializer<'de>>(
+    doors: Doors,
     section_key: &'static str,
     de: D,
     lifted: &mut Lifted,
 ) -> Result<serde_yaml::Value, D::Error> {
     let [card_key, fees_key] = PLANE_CARD_KEYS;
-    let decl = crate::plane::registry::plane_decl_for_config_section(section_key);
+    let decl = doors.plane_decl_for_config_section(section_key);
     // An entry named after a reserved key is refused here, at its own position, before anything is
     // lifted (spec :567; Q-STEP9-a).
     let noun = decl.map_or("entry", |d| d.subject_noun);
@@ -327,6 +336,9 @@ struct KeySeed<'a, S> {
     /// Set to the matched entry of `watch` when a FORWARDED key is one whose value needs a
     /// nested pass of its own.
     watched: &'a mut Option<&'static str>,
+    /// Set when a FORWARDED key is `pools:` in a map whose `pools:` value is parsed against the
+    /// lent door table ([`PoolsSeed`]).
+    pools: Option<&'a mut bool>,
 }
 
 impl<'de, S: DeserializeSeed<'de>> DeserializeSeed<'de> for KeySeed<'_, S> {
@@ -352,6 +364,9 @@ impl<'de, S: DeserializeSeed<'de>> Visitor<'de> for KeySeed<'_, S> {
             return Ok(KeyOutcome::Lift(self.inner));
         }
         *self.watched = self.watch.iter().find(|k| **k == v).copied();
+        if let Some(pools) = self.pools {
+            *pools = v == POOLS_KEY;
+        }
         self.inner
             .deserialize(v.into_deserializer())
             .map(KeyOutcome::Forward)
@@ -374,6 +389,12 @@ struct LiftingMap<'a, M> {
     nested: Option<(&'static str, &'a [(&'static str, Dest)])>,
     /// Set when the key just forwarded is the `nested` one, so the value read can be wrapped.
     pending_nested: bool,
+    /// The lent door table every value this map lifts is parsed against, and whether this map is
+    /// the document's top level (whose `pools:` value is parsed against it too).
+    doors: Doors,
+    top_level: bool,
+    /// Set when the key just forwarded is the top level's `pools:`.
+    pending_pools: bool,
     lifted: &'a mut Lifted,
 }
 
@@ -388,17 +409,20 @@ impl<'de, M: MapAccess<'de>> MapAccess<'de> for LiftingMap<'_, M> {
         loop {
             let mut lifted = None;
             let mut watched = None;
+            let mut pools = false;
             let outcome = self.inner.next_key_seed(KeySeed {
                 inner: seed,
                 lift: self.lift,
                 watch: &self.lifted.watch,
                 lifted: &mut lifted,
                 watched: &mut watched,
+                pools: self.top_level.then_some(&mut pools),
             })?;
             match outcome {
                 None => return Ok(None),
                 Some(KeyOutcome::Forward(v)) => {
                     self.pending_nested = watched == Some(NESTED_TOP_LEVEL_KEY);
+                    self.pending_pools = pools;
                     self.lifted.watch.retain(|k| Some(*k) != watched);
                     return Ok(Some(v));
                 }
@@ -407,6 +431,7 @@ impl<'de, M: MapAccess<'de>> MapAccess<'de> for LiftingMap<'_, M> {
                     self.inner.next_value_seed(LiftedSeed {
                         key,
                         dest,
+                        doors: self.doors,
                         lifted: &mut *self.lifted,
                     })?;
                     seed = returned;
@@ -419,10 +444,23 @@ impl<'de, M: MapAccess<'de>> MapAccess<'de> for LiftingMap<'_, M> {
         &mut self,
         seed: V,
     ) -> Result<V::Value, Self::Error> {
+        if std::mem::take(&mut self.pending_pools) {
+            // THE `pools:` VALUE, parsed where the frozen struct meets it — the same position in
+            // the same event stream, so its refusals carry the bytes they always did — against the
+            // lent door table, and banked; the frozen struct's own field reads the empty sentinel
+            // ([`super::PoolsCfg`]'s `Deserialize`), so its key matcher (its `expected one of` list,
+            // its duplicate-field refusal) is untouched.
+            let pools = self
+                .inner
+                .next_value_seed(PoolsSeed { doors: self.doors })?;
+            self.lifted.pools = Some(pools);
+            return seed.deserialize(serde::de::value::UnitDeserializer::new());
+        }
         match (self.pending_nested, self.nested) {
             (true, Some((_, keys))) => self.inner.next_value_seed(NestedSeed {
                 inner: seed,
                 lift: keys,
+                doors: self.doors,
                 lifted: self.lifted,
             }),
             _ => self.inner.next_value_seed(seed),
@@ -439,6 +477,7 @@ impl<'de, M: MapAccess<'de>> MapAccess<'de> for LiftingMap<'_, M> {
 struct NestedSeed<'a, S> {
     inner: S,
     lift: &'a [(&'static str, Dest)],
+    doors: Doors,
     lifted: &'a mut Lifted,
 }
 
@@ -463,6 +502,9 @@ impl<'de, S: DeserializeSeed<'de>> Visitor<'de> for NestedSeed<'_, S> {
             lift: self.lift,
             nested: None,
             pending_nested: false,
+            doors: self.doors,
+            top_level: false,
+            pending_pools: false,
             lifted: self.lifted,
         }))
     }
@@ -513,19 +555,155 @@ impl<'de, M: MapAccess<'de>> Deserializer<'de> for OptionalMap<M> {
     }
 }
 
-/// The whole document: the frozen struct plus whatever the pre-pass lifted off it.
-struct SplitDocument(DeployCfg);
+/// THE FROZEN STRUCT ALONE, with no 1.6.0 lift: what a bare `serde_yaml::from_str::<DeployCfg>`
+/// read, now that its `pools:` field is parsed against a lent door table. The struct's own
+/// deserialize runs exactly as it did (its `expected one of` list, its unknown- and duplicate-field
+/// refusals, its wording for a document that is not a map); only the `pools:` value goes through
+/// [`PoolsSeed`]. Test-only: production reads a document through [`deploy_from_yaml_str`].
+#[cfg(test)]
+pub(crate) fn frozen_from_yaml_str(
+    text: &str,
+    doors: Doors,
+) -> Result<DeployCfg, serde_yaml::Error> {
+    let mut lifted = Lifted::default();
+    let mut deploy = DeployCfg::deserialize(FrozenDe {
+        inner: serde_yaml::Deserializer::from_str(text),
+        doors,
+        lifted: &mut lifted,
+    })?;
+    if let Some(pools) = lifted.pools {
+        deploy.pools = pools;
+    }
+    deploy.doors = doors;
+    Ok(deploy)
+}
 
-impl<'de> Deserialize<'de> for SplitDocument {
-    fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
-        de.deserialize_map(DocumentVisitor)
+/// The deserializer [`frozen_from_yaml_str`] hands the frozen struct: everything forwarded, the
+/// struct's map wrapped so its `pools:` value is read against the lent table.
+#[cfg(test)]
+struct FrozenDe<'a, D> {
+    inner: D,
+    doors: Doors,
+    lifted: &'a mut Lifted,
+}
+
+#[cfg(test)]
+impl<'de, D: Deserializer<'de>> Deserializer<'de> for FrozenDe<'_, D> {
+    type Error = D::Error;
+
+    fn deserialize_struct<V: Visitor<'de>>(
+        self,
+        name: &'static str,
+        fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        self.inner.deserialize_struct(
+            name,
+            fields,
+            FrozenVisitor {
+                inner: visitor,
+                doors: self.doors,
+                lifted: self.lifted,
+            },
+        )
+    }
+
+    fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+        self.inner.deserialize_any(visitor)
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+        bytes byte_buf option unit unit_struct newtype_struct seq tuple tuple_struct
+        map enum identifier ignored_any
     }
 }
 
-struct DocumentVisitor;
+/// The frozen struct's own visitor, its map wrapped (no key lifted, `pools:` read against the
+/// table); every other input reaches it untouched, so it words its own refusals.
+#[cfg(test)]
+struct FrozenVisitor<'a, V> {
+    inner: V,
+    doors: Doors,
+    lifted: &'a mut Lifted,
+}
+
+#[cfg(test)]
+impl<'de, V: Visitor<'de>> Visitor<'de> for FrozenVisitor<'_, V> {
+    type Value = V::Value;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.inner.expecting(f)
+    }
+
+    fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+        self.inner.visit_map(LiftingMap {
+            inner: map,
+            lift: &[],
+            nested: None,
+            pending_nested: false,
+            doors: self.doors,
+            top_level: true,
+            pending_pools: false,
+            lifted: self.lifted,
+        })
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
+        self.inner.visit_seq(seq)
+    }
+}
+
+/// The top-level key whose value the pre-pass parses against the lent door table in place of the
+/// frozen struct's own field read: the fallback plane's pool section.
+const POOLS_KEY: &str = "pools";
+
+/// Parses the `pools:` section exactly as [`super::PoolsCfg`]'s field once did, against the fallback
+/// plane of the lent door table.
+struct PoolsSeed {
+    doors: Doors,
+}
+
+impl<'de> DeserializeSeed<'de> for PoolsSeed {
+    type Value = super::PoolsCfg;
+
+    fn deserialize<D: Deserializer<'de>>(self, de: D) -> Result<super::PoolsCfg, D::Error> {
+        super::PoolsCfg::parse(self.doors, de)
+    }
+}
+
+/// The whole document: the frozen struct plus whatever the pre-pass lifted off it, parsed against
+/// the door table its caller lends.
+struct SplitDocument {
+    doors: Doors,
+}
+
+impl<'de> DeserializeSeed<'de> for SplitDocument {
+    type Value = DeployCfg;
+
+    fn deserialize<D: Deserializer<'de>>(self, de: D) -> Result<DeployCfg, D::Error> {
+        de.deserialize_map(DocumentVisitor { doors: self.doors })
+    }
+}
+
+/// A bare `Deserialize` of the document has no door table to read its plane sections against, so it
+/// is refused: the document is read through [`deploy_from_yaml_str`] (or its two twins), which the
+/// caller lends the table.
+impl<'de> Deserialize<'de> for SplitDocument {
+    fn deserialize<D: Deserializer<'de>>(_: D) -> Result<Self, D::Error> {
+        Err(D::Error::custom(
+            "a configuration document is read against the door table its caller lends \
+             (`deploy_from_yaml_str`), never by a bare deserialize",
+        ))
+    }
+}
+
+struct DocumentVisitor {
+    doors: Doors,
+}
 
 impl<'de> Visitor<'de> for DocumentVisitor {
-    type Value = SplitDocument;
+    type Value = DeployCfg;
 
     fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.write_str("a busbar configuration document")
@@ -534,15 +712,18 @@ impl<'de> Visitor<'de> for DocumentVisitor {
     fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
         let mut lifted = Lifted::default();
         lifted.watch.push(NESTED_TOP_LEVEL_KEY);
-        for d in crate::plane::registry::plane_decls() {
+        for d in self.doors.decls() {
             lifted.watch.extend(d.required_config_sections);
         }
-        let table = lift_table();
+        let table = lift_table(self.doors);
         let mut deploy = DeployCfg::deserialize(MapAccessDeserializer::new(LiftingMap {
             inner: map,
             lift: &table,
             nested: Some((NESTED_TOP_LEVEL_KEY, AUTH_LIFTS)),
             pending_nested: false,
+            doors: self.doors,
+            top_level: true,
+            pending_pools: false,
             lifted: &mut lifted,
         }))?;
         // A section a registered plane requires and the document omits: serde's own refusal for it,
@@ -552,30 +733,38 @@ impl<'de> Visitor<'de> for DocumentVisitor {
             return Err(M::Error::missing_field(s));
         }
         lifted.install(&mut deploy);
-        Ok(SplitDocument(deploy))
+        deploy.doors = self.doors;
+        Ok(deploy)
     }
 }
 
 /// Parse a configuration document: the 1.6.0-additive keys are lifted off it first, and the
-/// remainder is parsed by the frozen 1.5.5-shaped structs.
+/// remainder is parsed by the frozen 1.5.5-shaped structs. Every plane section is read against
+/// `doors`, the table the caller was lent by the composition root.
 ///
 /// THE entry point for turning config text into a [`DeployCfg`]. A bare
 /// `serde_yaml::from_str::<DeployCfg>` skips the lift and leaves every plane section at its
 /// default, so it is only ever right for a document that has none.
-pub fn deploy_from_yaml_str(text: &str) -> Result<DeployCfg, serde_yaml::Error> {
-    deploy_from_deserializer(serde_yaml::Deserializer::from_str(text))
+pub fn deploy_from_yaml_str(text: &str, doors: Doors) -> Result<DeployCfg, serde_yaml::Error> {
+    deploy_from_deserializer(serde_yaml::Deserializer::from_str(text), doors)
 }
 
 /// The format-agnostic form of [`deploy_from_yaml_str`] — the lift is a property of the DOCUMENT,
 /// not of YAML, so the JSON-shaped paths (a config document built by the management surface) get
 /// it too.
-pub fn deploy_from_deserializer<'de, D: Deserializer<'de>>(de: D) -> Result<DeployCfg, D::Error> {
-    SplitDocument::deserialize(de).map(|d| d.0)
+pub fn deploy_from_deserializer<'de, D: Deserializer<'de>>(
+    de: D,
+    doors: Doors,
+) -> Result<DeployCfg, D::Error> {
+    SplitDocument { doors }.deserialize(de)
 }
 
 /// The [`serde_yaml::Value`] twin of [`deploy_from_yaml_str`], for the paths that have already
 /// built a document in memory (the management-surface overlay merge). Source positions are gone by then, so no
 /// error can carry one — the text entry point above is the one boot uses.
-pub fn deploy_from_yaml_value(value: serde_yaml::Value) -> Result<DeployCfg, serde_yaml::Error> {
-    deploy_from_deserializer(value)
+pub fn deploy_from_yaml_value(
+    value: serde_yaml::Value,
+    doors: Doors,
+) -> Result<DeployCfg, serde_yaml::Error> {
+    deploy_from_deserializer(value, doors)
 }

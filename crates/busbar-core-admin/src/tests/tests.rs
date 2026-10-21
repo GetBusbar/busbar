@@ -4583,7 +4583,8 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
     crate::ensure_seam();
     // Every plane configured: the served document is then unfiltered (Law 7 filters only
     // unconfigured planes) and every plane admin route answers instead of its 404 gate.
-    let every_plane: Vec<&'static str> = busbar_kernel::plane::registry::plane_decls()
+    let every_plane: Vec<&'static str> = busbar_kernel::test_support::neutral_test_doors()
+        .decls()
         .iter()
         .map(|d| d.config_section)
         .collect();
@@ -10092,6 +10093,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
             Some(&providers_path),
             false,
             busbar_kernel::config::EnvSubst::Strict,
+            busbar_kernel::test_support::neutral_test_doors(),
         )
         .expect("disk reload");
         // Simulate the env-derived overlay read (boot reads it via BUSBAR_CONFIG_OVERLAY).
@@ -10180,6 +10182,7 @@ async fn test_admin_v1_config_settings_survives_a_real_boot_reload_at_default_ov
         Some(&providers_path),
         false,
         busbar_kernel::config::EnvSubst::Strict,
+        busbar_kernel::test_support::neutral_test_doors(),
     )
     .expect("fresh boot disk-load");
     assert_eq!(
@@ -11970,7 +11973,8 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
 /// linked test planes by its `fallback` flag, never by name.
 fn free_open_units() -> serde_json::Value {
     crate::ensure_seam();
-    busbar_kernel::plane::registry::plane_decls()
+    busbar_kernel::test_support::neutral_test_doors()
+        .decls()
         .iter()
         .find(|decl| decl.fallback)
         .expect("the linked test planes carry the fallback plane")

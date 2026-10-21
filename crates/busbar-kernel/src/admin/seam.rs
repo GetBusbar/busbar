@@ -6,7 +6,7 @@
 //! depends on `busbar-core`, never the other way).
 //!
 //! Registered once by the composition root (`crates/busbar`'s `main`), unconditionally — exactly the
-//! discipline `oauth_as::seam`/`plane::registry::install_planes` document. `busbar-admin` is a
+//! discipline `oauth_as::seam` documents. `busbar-admin` is a
 //! MANDATORY, always-linked (non-optional) dependency of the shipped binary, so every real build
 //! registers this. Only busbar-core's OWN test binary (`cargo test -p busbar-core`) never links
 //! `busbar-admin` (linking it would be the forbidden reverse edge) and so never registers the seam;
@@ -22,9 +22,14 @@ use crate::state::{App, AppHandle};
 /// computed `/api/v1/admin` prefix. Every type here is core-owned (`axum::Router`, `AppHandle`), so
 /// the seam itself names no `busbar_admin` item.
 pub struct AdminMountSeam {
-    /// Mount the admin service's routes onto the router. `busbar-admin` supplies this; only it names
-    /// its own `JsonV1` transport, so only it can build the nested router.
-    pub mount: fn(axum::Router<Arc<AppHandle>>) -> axum::Router<Arc<AppHandle>>,
+    /// Mount the admin service's routes onto the router, over `doors`, the door table the
+    /// generation the router serves was lent (the plane admin routes are the doors'). `busbar-admin`
+    /// supplies this; only it names its own `JsonV1` transport, so only it can build the nested
+    /// router.
+    pub mount: fn(
+        axum::Router<Arc<AppHandle>>,
+        crate::plane_driver::doors::Doors,
+    ) -> axum::Router<Arc<AppHandle>>,
     /// Record the boot snapshot of `app` as the admin state's rollback floor (version 0).
     pub record_boot: fn(&App),
 }
@@ -75,9 +80,12 @@ pub fn install_admin_mount_seam(seam: AdminMountSeam) {
 /// binary never linked `busbar-admin` (only busbar-core's own test binary). The zero-cost-when-absent
 /// property at the routing layer, exactly as the pre-extraction direct `admin::transport::mount` call
 /// produced when the surface was in-core.
-pub(crate) fn mount_admin(router: axum::Router<Arc<AppHandle>>) -> axum::Router<Arc<AppHandle>> {
+pub(crate) fn mount_admin(
+    router: axum::Router<Arc<AppHandle>>,
+    doors: crate::plane_driver::doors::Doors,
+) -> axum::Router<Arc<AppHandle>> {
     match SEAM.get() {
-        Some(seam) => (seam.mount)(router),
+        Some(seam) => (seam.mount)(router, doors),
         None => router,
     }
 }

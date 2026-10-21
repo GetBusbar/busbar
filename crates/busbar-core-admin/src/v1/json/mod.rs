@@ -63,7 +63,7 @@ impl AdminTransport for JsonV1 {
         "admin"
     }
 
-    fn router(&self) -> Router<Arc<AppHandle>> {
+    fn router(&self, doors: busbar_kernel::plane_driver::doors::Doors) -> Router<Arc<AppHandle>> {
         // Routes are RELATIVE — `admin::transport::mount` nests this router under the computed
         // `/api/<version>/<area>` prefix (the algorithmic mount grammar), so no path here can drift
         // from `contract::ADMIN_PREFIX`. Each handler pulls the `Arc<AppHandle>` state, loads the
@@ -87,7 +87,7 @@ impl AdminTransport for JsonV1 {
             .route("/hooks/{name}/status", get(hook_status))
             // The 1.5.3 named-DEFINITION maps, mounted in ONE loop over `NamedMapSection::ALL` so
             // the admin surface mirrors the config grammar and a future section is additive.
-            .merge(named_map::routes());
+            .merge(named_map::routes(doors));
         // EACH PLANE'S TRUST VERBS, contributed through the registry rather than named here: whatever
         // operator verbs a plane adds ON TOP of its generic named-definition CRUD (e.g. a verb that
         // moves a registration's upstream between a declared and a standing state). Each plane's
@@ -97,7 +97,7 @@ impl AdminTransport for JsonV1 {
         // is stable. Without these a named-definition section is CRUD only and no sequence of
         // operator actions can make a registered upstream actually serve. The `admin_routes` fns are
         // granted only the router — never a `Store`/`GovCtx`/audit handle.
-        let router = mount_plane_admin_routes(router);
+        let router = mount_plane_admin_routes(router, doors);
         let router = router
             // Groups — the `groups:` limit-tree CRUD: runtime-mutable groups
             // → per-user budgets. Reads are read-only scope; mutations are full scope.
@@ -176,7 +176,11 @@ impl AdminTransport for JsonV1 {
         // busbar-core as its dependency), the plane trust verbs' emissions are recorded into the
         // process-wide substrate witness ledger the cross-plane drift audit reads.
         #[cfg(any(test, feature = "test-support"))]
-        let router = router.layer(axum::middleware::from_fn(record_declared_error));
+        let router = router.layer(axum::middleware::from_fn(
+            move |req: axum::extract::Request, next: axum::middleware::Next| {
+                record_declared_error(doors, req, next)
+            },
+        ));
         // THE KEY MUTATIONS' REPLAY CACHE rides in as a request extension (the composition root
         // inserts the node's one, built for the life of the process). A mount that inserts none
         // gets this router's own, so a replayable mutation is never left without one.
@@ -219,6 +223,7 @@ async fn supply_replay_cache(
 /// openapi.json prose described the rebind target instead). Both now fail the build at emission.
 #[cfg(any(test, feature = "test-support"))]
 async fn record_declared_error(
+    doors: busbar_kernel::plane_driver::doors::Doors,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
@@ -247,7 +252,7 @@ async fn record_declared_error(
         // declared sibling of the same kind, which is exactly the hole this guard is for. An
         // untagged emission (`err_json`) can only be matched on `kind`; that residual weakness is
         // what `COND_WITNESS_DEBT` ledgers and shrinks from the over-claim side.
-        let declared = taxonomy::declared_errors(method, rel);
+        let declared = taxonomy::declared_errors(doors, method, rel);
         let matched_decl = match tag.cond {
             Some(cond) => declared
                 .iter()
@@ -310,11 +315,15 @@ pub(crate) mod named_map;
 /// The `&dyn Any` a plane's `admin_routes` fn takes is the seam's shared shape (it mirrors
 /// `PlaneDecl::routes`); the admin verbs' paths are static and their handlers read the request's own
 /// snapshot through the host the shim mints per request, so no build-time slot value is needed — a
-/// unit placeholder satisfies the signature.
-fn mount_plane_admin_routes(mut router: Router<Arc<AppHandle>>) -> Router<Arc<AppHandle>> {
-    for decl in busbar_kernel::plane::registry::plane_decls() {
+/// unit placeholder satisfies the signature. The plane decls are `doors`', the table the admin surface
+/// is mounted with.
+fn mount_plane_admin_routes(
+    mut router: Router<Arc<AppHandle>>,
+    doors: busbar_kernel::plane_driver::doors::Doors,
+) -> Router<Arc<AppHandle>> {
+    for decl in doors.decls() {
         if let Some(admin_routes) = decl.admin_routes {
-            for spec in admin_routes(&() as &dyn std::any::Any) {
+            for spec in admin_routes(decl, &() as &dyn std::any::Any) {
                 router = mount_one_admin_spec(router, decl, spec);
             }
         }
@@ -325,8 +334,14 @@ fn mount_plane_admin_routes(mut router: Router<Arc<AppHandle>>) -> Router<Arc<Ap
 /// THE ADMIN SURFACE'S FALLBACK: a path no route above matched is a published plane instance's
 /// admin route, served by its `serve` op (`busbar_kernel::plane_driver::serve`, ARCHITECT C2c S5
 /// Q1), or the unmatched `404`. The auth middleware has already judged it like every admin path.
-async fn plane_serve_or_not_found(req: axum::extract::Request) -> Response {
-    busbar_kernel::plane_driver::serve::answer(req)
+/// The table is the live generation's (`App::serve_tables`).
+async fn plane_serve_or_not_found(
+    State(handle): State<Arc<AppHandle>>,
+    req: axum::extract::Request,
+) -> Response {
+    let tables = handle.load().serve_tables.clone();
+    tables
+        .answer(req)
         .await
         .unwrap_or_else(|| err_json(&AdminError::not_found("resource")))
 }
@@ -336,7 +351,7 @@ async fn plane_serve_or_not_found(req: axum::extract::Request) -> Response {
 /// (the router fallback's `404`), so a 1.5.5 config sees 1.5.5's surface. `None` = serve it.
 pub(crate) fn unconfigured_plane(
     handle: &AppHandle,
-    decl: Option<&busbar_kernel::plane::registry::PlaneDecl>,
+    decl: Option<&busbar_kernel::plane_driver::row::PlaneDecl>,
 ) -> Option<Response> {
     if decl.is_none_or(|d| handle.load().plane_configured(d)) {
         return None;
@@ -360,7 +375,7 @@ pub(crate) fn unconfigured_plane(
 /// `connect` did (applied on a view, rejected on a look refusal, NOTHING on the resolve-time `404`).
 fn mount_one_admin_spec(
     router: Router<Arc<AppHandle>>,
-    decl: &'static busbar_kernel::plane::registry::PlaneDecl,
+    decl: &'static busbar_kernel::plane_driver::row::PlaneDecl,
     spec: busbar_kernel::admin_verbs::AdminRouteSpec,
 ) -> Router<Arc<AppHandle>> {
     let plane = decl.key;
@@ -401,8 +416,10 @@ fn mount_one_admin_spec(
                     // the request on to a plane strikes the one and keeps the other.
                     consumed: consumed.map(|axum::Extension(c)| c),
                     query,
+                    serve: handle.load().serve_tables.clone(),
                 };
-                finish_admin_reply(plane, &name, kind, principal, handler(ctx).await)
+                let doors = handle.load().doors;
+                finish_admin_reply(doors, plane, &name, kind, principal, handler(ctx).await)
             }
         };
     // Wrong method: the router's `405`, or — plane unconfigured (Law 7) — the unmounted path's `404`.
@@ -419,7 +436,9 @@ fn mount_one_admin_spec(
 /// Frame a plane handler's [`busbar_kernel::admin_verbs::AdminReply`] onto the wire, and record the
 /// audit row for an `Audited` verb. The variants encode the pre-seam behaviour exactly: `Refused` is
 /// the un-audited resolve-time refusal, and `Applied`/`Rejected` are the audited look-time outcomes.
+/// `doors` is the serving generation's door table, which the plane's row is read off.
 fn finish_admin_reply(
+    doors: busbar_kernel::plane_driver::doors::Doors,
     plane: &'static str,
     name: &str,
     kind: busbar_kernel::admin_verbs::AdminVerbKind,
@@ -431,11 +450,11 @@ fn finish_admin_reply(
         if let AdminVerbKind::Audited { verb } = kind {
             let anon = busbar_kernel::auth::AuthPrincipal(None);
             let p = principal.as_ref().unwrap_or(&anon);
-            crate::planeverbs::audit(plane, verb, name, outcome, p);
+            crate::planeverbs::audit(doors, plane, verb, name, outcome, p);
         }
     };
     match reply {
-        AdminReply::Refused(e) => crate::planeverbs::refusal_response(plane, name, e),
+        AdminReply::Refused(e) => crate::planeverbs::refusal_response(doors, plane, name, e),
         AdminReply::Applied(body) => {
             record_audit(audit::OUTCOME_APPLIED);
             // Byte-identical to `ok_json(StatusCode::OK, &view)`: same status, same content type, and the
@@ -449,7 +468,7 @@ fn finish_admin_reply(
         }
         AdminReply::Rejected(e) => {
             record_audit(audit::OUTCOME_REJECTED);
-            crate::planeverbs::refusal_response(plane, name, e)
+            crate::planeverbs::refusal_response(doors, plane, name, e)
         }
     }
 }

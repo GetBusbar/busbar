@@ -22,12 +22,15 @@ use crate::testkit::oauth_as_plane;
 /// kernel: this crate names no store instance.
 fn cfg() -> busbar_kernel::config::RootCfg {
     crate::testkit::install_test_seam();
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {},
-        "models": {},
-        "store": { "module": busbar_kernel::config::MIGRATED_STORE_MODULE },
-        "oauth_as": { "issuer": "https://as.example.com" },
-    }))
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {},
+            "models": {},
+            "store": { "module": busbar_kernel::config::MIGRATED_STORE_MODULE },
+            "oauth_as": { "issuer": "https://as.example.com" },
+        }),
+        busbar_kernel::plane_driver::doors::Doors::NONE,
+    )
     .expect("a deploy config carrying `oauth_as:` parses");
     busbar_kernel::config::resolve(&deploy, &HashMap::new()).expect("the config resolves")
 }

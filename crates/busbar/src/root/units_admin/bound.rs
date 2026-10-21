@@ -495,7 +495,9 @@ pub(crate) fn trust_decide_effect(
 pub fn live_planes(app: Arc<busbar_kernel::state::AppHandle>) -> PlaneLookup {
     Arc::new(move |key: &str| {
         let snapshot = app.load();
-        busbar_kernel::plane::registry::plane_decls()
+        snapshot
+            .doors
+            .decls()
             .iter()
             .map(|decl| decl.declaration)
             .find(|decl| decl.key == key && snapshot.plane_configured(decl))

@@ -404,8 +404,8 @@ fn test_memory_store_cannot_reach_inert_with_keys() {
 
 /// A deployment with NO plane mounted: every path resolves through the resolver's residual arm,
 /// which is the arm these vendor-envelope assertions are about.
-fn residual_planes() -> crate::plane::PlaneDispatch {
-    crate::plane::PlaneDispatch::default()
+fn residual_planes() -> crate::plane_driver::claims::PlaneDispatch {
+    crate::plane_driver::claims::PlaneDispatch::default()
 }
 
 // THE RESIDUAL-DIALECT TABLE (`test_residual_dialect_inference`: which shipped dialect each residual
@@ -1674,8 +1674,8 @@ fn secrets_block_rejects_non_secret_kind() {
 /// read.
 #[test]
 fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
-    crate::test_support::register_neutral_test_plane();
+    // The provider dialects a lane may name are DECLARED by a plane of the table the config is lent
+    // (`cfg_with_provider_api_key` lends `test_support::neutral_test_doors`; ruling 2026-10-16 D).
     crate::snapshot::init();
     const SENTINEL: &str = "sk-sentinel-must-never-be-printed";
     let set_var = format!("BUSBAR_TEST_PROVIDER_KEY_SET_{}", std::process::id());
@@ -1728,8 +1728,8 @@ fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
 /// re-derived here through a lane accessor that exists only for the test.
 #[test]
 fn boot_starts_a_keyless_lane_declared_none() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
-    crate::test_support::register_neutral_test_plane();
+    // The provider dialects a lane may name are DECLARED by a plane of the table the config is lent
+    // (`cfg_with_provider_api_key` lends `test_support::neutral_test_doors`; ruling 2026-10-16 D).
     crate::snapshot::init();
     let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::none());
     cfg.models
@@ -1761,8 +1761,8 @@ fn model_cfg_for_provider(provider: &str) -> crate::config::ModelCfg {
 /// registry exists) to `validate_secret_refs`, which consults the SAME registry the resolver uses.
 #[test]
 fn secret_ref_plugin_backed_module_passes_when_plugin_present() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
-    crate::test_support::register_neutral_test_plane();
+    // The provider dialects a lane may name are DECLARED by a plane of the table the config is lent
+    // (`cfg_with_provider_api_key` lends `test_support::neutral_test_doors`; ruling 2026-10-16 D).
     let (dir, reg) = secret_registry("secretref-vault-ok");
     // The `vault` alias AND the canonical `acme-secret-vault` name both resolve → both pass.
     for module in ["vault", "acme-secret-vault"] {
@@ -1788,8 +1788,8 @@ fn secret_ref_plugin_backed_module_passes_when_plugin_present() {
 /// (`env`/`file`) nor a loaded plugin — must still FAIL, so the deferral does not weaken the check.
 #[test]
 fn secret_ref_typo_module_still_fails_at_preflight() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
-    crate::test_support::register_neutral_test_plane();
+    // The provider dialects a lane may name are DECLARED by a plane of the table the config is lent
+    // (`cfg_with_provider_api_key` lends `test_support::neutral_test_doors`; ruling 2026-10-16 D).
     let (dir, reg) = secret_registry("secretref-typo");
     let cfg = cfg_with_provider_api_key(crate::config::SecretRef {
         module: "vaultt".to_string(), // typo of the `vault` alias — no such plugin
@@ -1874,8 +1874,8 @@ fn secret_ref_wrong_kind_plugin_fails_at_preflight() {
 /// 1.5.4.
 #[test]
 fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
-    crate::test_support::register_neutral_test_plane();
+    // The provider dialects a lane may name are DECLARED by a plane of the table the config is lent
+    // (`cfg_with_provider_api_key` lends `test_support::neutral_test_doors`; ruling 2026-10-16 D).
     crate::snapshot::init();
     let cfg = || {
         cfg_with_provider_api_key(crate::config::SecretRef::env(
@@ -2234,6 +2234,7 @@ fn load_config_from_disk_refuses_a_real_legacy_config_file_loudly() {
         Some(&providers_path),
         false,
         crate::config::EnvSubst::Strict,
+        crate::test_support::neutral_test_doors(),
     );
 
     let err = match result {
@@ -2261,7 +2262,6 @@ fn load_config_from_disk_refuses_a_real_legacy_config_file_loudly() {
 /// fails typed parsing for some other reason.
 #[test]
 fn migrate_config_then_load_config_from_disk_boots_the_real_migrated_file() {
-    crate::test_support::register_neutral_test_plane();
     let (dir, legacy_config_path, providers_path) =
         boot_config_dir("migrate", BOOT_LEGACY_14X_CONFIG);
 
@@ -2278,6 +2278,7 @@ fn migrate_config_then_load_config_from_disk_boots_the_real_migrated_file() {
         Some(&providers_path),
         false,
         crate::config::EnvSubst::Strict,
+        crate::test_support::neutral_test_doors(),
     )
     .unwrap_or_else(|e| {
         panic!("the migrated config must boot cleanly through the real boot path: {e}")
@@ -2387,8 +2388,14 @@ fn boot_default_config_resolves_a_durable_overlay_next_to_config() {
     // Guarded so any ambient value is restored on drop (incl. panic).
     let _guard = EnvVarGuard::capture("BUSBAR_CONFIG_OVERLAY");
     std::env::remove_var("BUSBAR_CONFIG_OVERLAY");
-    let loaded = load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
-        .expect("a mutable default config must boot");
+    let loaded = load_config_from_disk(
+        &config_path,
+        None,
+        false,
+        crate::config::EnvSubst::Strict,
+        crate::test_support::neutral_test_doors(),
+    )
+    .expect("a mutable default config must boot");
     assert!(!loaded.config_locked, "default config is mutable");
     assert_eq!(
         loaded.overlay_path.as_deref(),
@@ -2405,9 +2412,13 @@ fn boot_default_config_resolves_a_durable_overlay_next_to_config() {
 fn boot_mutable_with_overlay_disabled_refuses_to_boot() {
     let cfg = "providers: {}\nmodels: {}\nconfig:\n  locked: false\n  overlay: false\n";
     let (dir, config_path, _p) = boot_config_dir("no-backend", cfg);
-    let Err(err) =
-        load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
-    else {
+    let Err(err) = load_config_from_disk(
+        &config_path,
+        None,
+        false,
+        crate::config::EnvSubst::Strict,
+        crate::test_support::neutral_test_doors(),
+    ) else {
         panic!("mutable + overlay disabled must refuse to boot");
     };
     // Pin the SPECIFIC resolve_backend Err arm for `overlay: false` on a mutable config — not an OR of
@@ -2427,8 +2438,14 @@ fn boot_mutable_with_overlay_disabled_refuses_to_boot() {
 fn boot_locked_config_has_no_overlay() {
     let cfg = "providers: {}\nmodels: {}\nconfig:\n  locked: true\n";
     let (dir, config_path, _p) = boot_config_dir("locked", cfg);
-    let loaded = load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
-        .expect("a locked config boots");
+    let loaded = load_config_from_disk(
+        &config_path,
+        None,
+        false,
+        crate::config::EnvSubst::Strict,
+        crate::test_support::neutral_test_doors(),
+    )
+    .expect("a locked config boots");
     assert!(loaded.config_locked);
     assert!(loaded.overlay_path.is_none(), "locked ⇒ no overlay backend");
     let _ = std::fs::remove_dir_all(&dir);
@@ -2458,8 +2475,14 @@ fn boot_providers_file_pointer_is_honored_and_override_wins() {
     .unwrap();
 
     // No override → the `providers_file:` pointer is used.
-    let loaded = load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
-        .expect("providers_file pointer resolves");
+    let loaded = load_config_from_disk(
+        &config_path,
+        None,
+        false,
+        crate::config::EnvSubst::Strict,
+        crate::test_support::neutral_test_doors(),
+    )
+    .expect("providers_file pointer resolves");
     assert_eq!(
         loaded.providers_path, catalog,
         "the providers_file pointer must be honored"
@@ -2473,6 +2496,7 @@ fn boot_providers_file_pointer_is_honored_and_override_wins() {
         Some(&other),
         false,
         crate::config::EnvSubst::Strict,
+        crate::test_support::neutral_test_doors(),
     )
     .expect("override resolves");
     assert_eq!(
@@ -2539,8 +2563,8 @@ fn auth_scope_caps_are_keyed_by_provider_name_not_module() {
 /// went live through an apply.
 #[test]
 fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
-    crate::test_support::register_neutral_test_plane();
+    // The provider dialects a lane may name are DECLARED by a plane of the table the config is lent
+    // (`cfg_with_provider_api_key` lends `test_support::neutral_test_doors`; ruling 2026-10-16 D).
     const REFUSED: &str = "https://refused.root-rules.test";
     struct Refusing;
     impl crate::appbuild::RootRules for Refusing {
@@ -2592,14 +2616,16 @@ fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
 #[test]
 fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart() {
     const SECTION: &str = "pending-red";
-    static PENDING: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
-        declaration: crate::plane::registry::PlaneDeclaration {
+    static PENDING: crate::plane_driver::row::PlaneDecl = crate::plane_driver::row::PlaneDecl {
+        declaration: crate::plane_driver::row::PlaneDeclaration {
             key: "pending-red-plane",
             fallback: false,
             config_section: SECTION,
             ..crate::test_support::NEUTRAL_FALLBACK.declaration
         },
-        build: |_| Some(std::sync::Arc::new(()) as std::sync::Arc<dyn std::any::Any + Send + Sync>),
+        build: |_, _| {
+            Some(std::sync::Arc::new(()) as std::sync::Arc<dyn std::any::Any + Send + Sync>)
+        },
         ..crate::test_support::NEUTRAL_FALLBACK
     };
     struct Unopened;
@@ -2615,7 +2641,7 @@ fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart
             }
         }
     }
-    let _registry = crate::plane::registry::TestRegistryIsolation::seeded(&[
+    let doors = crate::plane_driver::doors::Doors::for_test(&[
         crate::test_support::neutral_fallback_plane(),
         &PENDING,
     ]);
@@ -2624,6 +2650,7 @@ fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart
         let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(
             "BUSBAR_TEST_NO_SUCH_KEY_PENDING_PLANE",
         ));
+        cfg.doors = doors;
         if writes {
             cfg.plane_sections.insert(SECTION);
         }
@@ -2689,8 +2716,8 @@ fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart
 /// (learned reliability survives every apply).
 #[test]
 fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
-    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
-    crate::test_support::register_neutral_test_plane();
+    // The provider dialects a lane may name are DECLARED by a plane of the table the config is lent
+    // (`cfg_with_provider_api_key` lends `test_support::neutral_test_doors`; ruling 2026-10-16 D).
     crate::snapshot::init();
     let planeless = || {
         cfg_with_provider_api_key(crate::config::SecretRef::env(
@@ -3033,14 +3060,13 @@ pub(crate) fn frozen_str(key: &str) -> String {
 }
 
 /// F25 row 634: rehomed from the retired engine crate's src/engine/tests/wire_tests.rs::unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect.
-/// Pins: an ingress name that resolves to no protocol is answered in the kernel's OWN envelope —
+/// Pins: the kernel's own error answer is its OWN envelope —
 /// the status as given (503), `application/json`, the agnostic `kind` stated VERBATIM
 /// (`overloaded`, never rewritten onto a dialect's vocabulary), the message verbatim — and with no
 /// dialect's error headers (the content type is the only header).
 #[tokio::test]
 async fn unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect() {
     let resp = crate::proxy::ingress_error(
-        "no-such-protocol",
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
         crate::proxy::KIND_OVERLOADED,
         "everything is on fire",
@@ -3123,7 +3149,17 @@ async fn a_kernel_refusal_is_rendered_by_the_door_that_owns_its_path() {
     let unbound = crate::state::AppHandle::new(crate::test_support::TestApp::new().build());
     let r = answer(&unbound, "/door/x");
     assert_eq!(r.status(), axum::http::StatusCode::METHOD_NOT_ALLOWED);
-    assert_ne!(body(r).await, b"door", "no door bound: the kernel answers");
+    // The kernel's own answer words no dialect: the neutral envelope, whatever dialects the
+    // registry holds (RED: a dialect's writer shaping it).
+    let own: serde_json::Value = serde_json::from_slice(&body(r).await).expect("JSON");
+    assert_eq!(
+        own,
+        serde_json::json!({"error": {
+            "message": "method not allowed for this resource",
+            "type": crate::taxonomy::ERR_TYPE_INVALID_REQUEST,
+        }}),
+        "no door bound: the kernel answers its own neutral envelope"
+    );
     let bound = crate::state::AppHandle::new(crate::test_support::TestApp::new().build());
     bound.bind_door_refuser(refuser);
     let r = answer(&bound, "/door/x");
@@ -3153,5 +3189,75 @@ async fn a_kernel_refusal_is_rendered_by_the_door_that_owns_its_path() {
         seen.lock().unwrap().len(),
         asked,
         "the native-API root asks no door"
+    );
+}
+
+/// A KERNEL-SHAPED REFUSAL UNDER A MOUNTED PLANE keeps that plane's wire format: the door renderer
+/// is told the path is mounted (so the fallback plane's path rule never takes it), and a refusal no
+/// line of the plane renders is answered in JSON-RPC 2.0, the mounted plane's own format, beneath
+/// the mount at a segment boundary as at the mount itself. A residual path is told it is not
+/// mounted and keeps the kernel's neutral envelope. RED: the mounted path answered in the neutral
+/// envelope (its JSON-RPC client decodes nothing else), or the renderer not told it is mounted.
+#[tokio::test]
+async fn a_kernel_refusal_under_a_mounted_plane_keeps_the_planes_wire_format() {
+    use busbar_contract::caps::ReasonCode;
+    use busbar_kernel::plane_routes::{KernelRefusal, PlaneRefuseByPathFn};
+    use http_body_util::BodyExt as _;
+    use std::sync::{Arc, Mutex};
+    let seen: Arc<Mutex<Vec<(String, bool)>>> = Arc::default();
+    let refuser: PlaneRefuseByPathFn = {
+        let seen = Arc::clone(&seen);
+        Arc::new(move |r: &KernelRefusal<'_>| {
+            seen.lock().unwrap().push((r.path.to_string(), r.mounted));
+            None
+        })
+    };
+    let planes = crate::plane_driver::claims::PlaneDispatch::default().mount(
+        crate::test_support::neutral_test_doors(),
+        "refusal-under-a-mount",
+        "/front-door",
+        crate::plane_driver::claims::WIRE_JSONRPC,
+    );
+    let handle = crate::state::AppHandle::new(crate::test_support::TestApp::new().build());
+    handle.bind_door_refuser(refuser);
+    let answer = |path: &str| {
+        crate::router::kernel_refusal_response(
+            &handle,
+            &planes,
+            ReasonCode::BodyTooLarge,
+            path,
+            path,
+            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+            crate::proxy::KIND_REQUEST_TOO_LARGE,
+            "request body exceeds the maximum allowed size",
+        )
+    };
+    let json = |r: axum::response::Response| async move {
+        let bytes = r.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice::<serde_json::Value>(&bytes).expect("JSON")
+    };
+    for path in ["/front-door", "/front-door/anything"] {
+        let v = json(answer(path)).await;
+        assert_eq!(v["jsonrpc"], "2.0", "{path}: {v}");
+        assert!(
+            v.pointer("/error/code")
+                .is_some_and(serde_json::Value::is_i64),
+            "{path}: {v}"
+        );
+        assert!(v.pointer("/error/type").is_none(), "{path}: {v}");
+    }
+    let v = json(answer("/front-doorx")).await;
+    assert!(
+        v.get("jsonrpc").is_none(),
+        "a sibling is not under the mount: {v}"
+    );
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![
+            ("/front-door".to_string(), true),
+            ("/front-door/anything".to_string(), true),
+            ("/front-doorx".to_string(), false),
+        ],
+        "the renderer is told which paths lie under a mounted plane"
     );
 }

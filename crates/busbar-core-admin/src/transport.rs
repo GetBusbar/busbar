@@ -44,8 +44,9 @@ pub(crate) trait AdminTransport {
     fn area(&self) -> &'static str;
 
     /// Build the router exposing this transport's endpoints (RELATIVE paths — `/info`, `/hooks`, …)
-    /// over the `Arc<AppHandle>` state. `mount` nests it under `/api/<version>/<area>`.
-    fn router(&self) -> Router<Arc<AppHandle>>;
+    /// over the `Arc<AppHandle>` state, its plane routes mounted from `doors`, the door table the
+    /// composition lent. `mount` nests it under `/api/<version>/<area>`.
+    fn router(&self, doors: busbar_kernel::plane_driver::doors::Doors) -> Router<Arc<AppHandle>>;
 }
 
 /// Mount a native-API transport onto `router` at its computed `/api/<version>/<area>` prefix. Called
@@ -54,6 +55,7 @@ pub(crate) trait AdminTransport {
 pub(crate) fn mount<T: AdminTransport>(
     router: Router<Arc<AppHandle>>,
     transport: &T,
+    doors: busbar_kernel::plane_driver::doors::Doors,
 ) -> Router<Arc<AppHandle>> {
     let prefix = format!(
         "{}/{}/{}",
@@ -66,7 +68,7 @@ pub(crate) fn mount<T: AdminTransport>(
         prefix = %prefix,
         "native API surface mounted"
     );
-    router.nest(&prefix, transport.router())
+    router.nest(&prefix, transport.router(doors))
 }
 
 #[cfg(test)]

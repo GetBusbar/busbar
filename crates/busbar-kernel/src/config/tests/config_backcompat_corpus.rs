@@ -193,8 +193,11 @@ fn render_limit(l: &super::LimitCfg) -> String {
 fn snapshot_for(config_path: &Path) -> String {
     let yaml = std::fs::read_to_string(config_path)
         .unwrap_or_else(|e| panic!("read corpus config {}: {e}", config_path.display()));
-    let deploy: DeployCfg = serde_yaml::from_str(&yaml)
-        .unwrap_or_else(|e| panic!("parse corpus config {}: {e}", config_path.display()));
+    let deploy: DeployCfg = crate::config::prepass::frozen_from_yaml_str(
+        &yaml,
+        crate::test_support::neutral_test_doors(),
+    )
+    .unwrap_or_else(|e| panic!("parse corpus config {}: {e}", config_path.display()));
     let defs = defs_for(&deploy);
     let cfg = resolve(&deploy, &defs).unwrap_or_else(|errs| {
         panic!(

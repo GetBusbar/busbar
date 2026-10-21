@@ -39,7 +39,7 @@ async fn an_unmounted_plane_claims_no_path_by_url_shape() {
     for decl in mounting {
         let path = format!("/{}", decl.key);
         // No section of this plane is configured: `TestApp::new()` carries none.
-        let app = TestApp::new().build();
+        let app = TestApp::new().doors(linked::table()).build();
 
         let v = oversized_413_body(app, &path).await;
 
@@ -54,4 +54,41 @@ async fn an_unmounted_plane_claims_no_path_by_url_shape() {
             "the residual plane answers the widely-understood envelope on `{path}`; got {v}"
         );
     }
+}
+
+/// THE KERNEL WORDS NO DIALECT ON A PATH NO PLANE TAKES (status row 82, D2; spec Part 1, Law 5:
+/// dialects are internal to their plane; Part 3 section 12: a plane renders its own refusals
+/// through its door). With the linked planes installed and none of them serving the configuration,
+/// a refusal on a dialect-shaped path is the kernel's own envelope — `error.message` and
+/// `error.type`, nothing a dialect's writer adds — because the kernel holds no protocol set to read
+/// a dialect off the path with. A configuration 1.5.5 accepted opens the fallback plane's door,
+/// whose claims take every such path and render its refusals, so no 1.5.5 answer moves.
+///
+/// RED before the drain: the kernel's residual arm read the linked dialect rows and answered the
+/// path in the residual dialect's envelope (its `param` and `code` fields).
+#[tokio::test]
+async fn a_path_no_plane_serves_is_answered_in_the_kernels_own_envelope() {
+    busbar_kernel::snapshot::init();
+    linked::install();
+    // No section of any plane is configured: `TestApp::new()` carries none.
+    let app = TestApp::new().doors(linked::table()).build();
+
+    let v = oversized_413_body(app, "/v1/chat/completions").await;
+
+    let error = v
+        .get("error")
+        .and_then(serde_json::Value::as_object)
+        .unwrap_or_else(|| panic!("the kernel's envelope carries an `error` object; got {v}"));
+    let mut keys: Vec<&str> = error.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        ["message", "type"],
+        "the kernel's own envelope, with no field a dialect's writer adds; got {v}"
+    );
+    assert_eq!(
+        v.as_object().map(serde_json::Map::len),
+        Some(1),
+        "nothing beside the `error` object; got {v}"
+    );
 }

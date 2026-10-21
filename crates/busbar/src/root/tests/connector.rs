@@ -90,7 +90,11 @@ fn deployment(providers: &[(&str, &str, &[&str])], security: &str) -> RootCfg {
         ));
     }
     yaml.push_str(security);
-    let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        &yaml,
+        busbar_kernel::test_support::neutral_test_doors(),
+    )
+    .expect("parses");
     busbar_kernel::config::resolve(&deploy, &defs).expect("resolves")
 }
 
@@ -188,11 +192,10 @@ fn operator_infrastructure_refuses_metadata_even_when_carved_out() {
 /// refused.
 #[test]
 fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
-    // Every app build reads the plane registry, so holding it isolated keeps every other test's
-    // commit out of this one's window.
-    let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
-        busbar_kernel::test_support::neutral_fallback_plane(),
-    ]);
+    // Every config commit in this binary (`test_support::build_once`) holds the limits slot's lock
+    // across its build and its commit, so holding that lock here keeps every other test's commit
+    // out of this one's window. The deployments are lent the neutral test table (`deployment`).
+    let _commits = busbar_kernel::config::limits::LIMITS_TEST_LOCK.blocking_lock();
     // The loopback every fixture in this binary binds is listed, as an operator lists a loopback
     // upstream: the guard installed here is process-wide (first install wins), and every other
     // test's mock upstream is dialled through it by its loopback literal.
@@ -210,7 +213,23 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
         None,
         "the boot config carves it out"
     );
-    busbar_kernel::test_support::build_once(deployment(&[], ""), None).expect("the reload builds");
+    // The reload: `test_support::build_once`'s build and commit, run under the lock this test holds.
+    let (_app, rotate, limits) = busbar_kernel::build_app_from_config(
+        deployment(&[], ""),
+        busbar_kernel::config::PluginsCfg::default(),
+        None,
+        std::collections::HashSet::new(),
+        std::collections::HashSet::new(),
+        (None, None),
+        None,
+        &(std::sync::Arc::new(busbar_kernel::appbuild::AcceptAll)
+            as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>),
+    )
+    .expect("the reload builds");
+    limits.keep();
+    if let Some(rotate) = rotate {
+        rotate();
+    }
     assert_eq!(
         metadata_verdict(judge.as_ref(), "imds-proxy.test", EGRESS_PROVIDER),
         Some(DEST_METADATA),

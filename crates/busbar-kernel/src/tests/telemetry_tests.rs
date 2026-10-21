@@ -15,31 +15,23 @@ use crate::test_support::{metric_sum, LaneSpec, TestApp};
 /// The plane every emission in this module drives: the FALLBACK (model) plane, whose
 /// `busbar_requests_total` / `busbar_request_duration_seconds` families carry NO `plane` label
 /// (v1.5.4-identical) and are the only ones the bank's fast path serves — `request_finished`
-/// branches on `crate::plane::is_fallback(plane)`, so the key handed in must be WHATEVER key is
-/// currently registered fallback, never a hard-coded literal. Registers
-/// [`crate::test_support::register_neutral_test_plane`]'s all-stub fixture (idempotent) and reads
-/// its key back off the registry — this module asserts core's OWN bank/macro-fallback routing, not
-/// anything about the real LLM dialect, so it needs a plane to exist as fallback, never the real
-/// the retired engine crate plane (which this crate's own `#[cfg(test)]` binary cannot reach; see that fn's doc).
-/// Mounted planes emit the separate `busbar_plane_*` families and are exercised in
-/// `plane::metrics_tests` / `a2a::relay_tests`.
+/// branches on the lent table's `Doors::is_fallback(plane)`, so the key handed in must be WHATEVER
+/// key that table names fallback, never a hard-coded literal. Read off the neutral test table
+/// ([`crate::test_support::neutral_test_doors`]), the table every `TestApp` here is lent — this
+/// module asserts core's OWN bank/macro-fallback routing, not anything about the real LLM dialect,
+/// so it needs a plane to exist as fallback, never the real LLM plane (which this crate's own
+/// `#[cfg(test)]` binary cannot reach). Mounted planes emit the separate `busbar_plane_*` families
+/// and are exercised in `plane::metrics_tests` / `a2a::relay_tests`.
 fn model_plane_key() -> &'static str {
-    crate::test_support::register_neutral_test_plane();
-    crate::plane::fallback_key()
+    crate::test_support::neutral_test_doors().fallback_key()
 }
 
-/// Two DISTINCT shipped protocol names, read off the protocol registry's own codec list (the same
-/// list `known_protocols()` answers, which the bank sizes its request families and its translation
-/// table over), so this module names no dialect: what it asserts is the bank's routing over WHATEVER
-/// the registry ships, never anything about one dialect. `.0` is the lane's egress protocol, `.1` a
-/// different ingress. Read through `registry()`, which seeds this test binary's built-in set first:
-/// `known_protocols()` seeds nothing, and these tests ask before any request path has seeded it.
+/// Two DISTINCT provider dialects the neutral fallback plane declares
+/// ([`crate::test_support::NEUTRAL_DIALECTS`]), so this module names no dialect: what it asserts is
+/// the bank's routing over WHATEVER a plane declares, never anything about one dialect. `.0` is the
+/// lane's egress protocol, `.1` a different ingress.
 fn shipped_protocols() -> (&'static str, &'static str) {
-    let known = crate::proto::registry::registry().codec_protocols();
-    assert!(
-        known.len() >= 2,
-        "the test binary's protocol registry must ship at least two codecs; got {known:?}"
-    );
+    let known = crate::test_support::NEUTRAL_DIALECTS;
     (known[0], known[1])
 }
 
@@ -354,9 +346,11 @@ fn test_histogram_bank_drains_all_thread_samples() {
 fn test_translation_bank_counts_known_protocol_pair() {
     crate::snapshot::init();
     let (from, to) = shipped_protocols();
+    // The slots are the generation's: built over the door table its `App` was lent.
+    let app = TestApp::new().build();
     let labels = [("from", from), ("to", to)];
     let before = metric_sum(crate::snapshot::TRANSLATIONS_TOTAL, &labels);
-    translation(from, to);
+    translation(&app, from, to);
     let after = metric_sum(crate::snapshot::TRANSLATIONS_TOTAL, &labels);
     assert_eq!(
         (after - before).round() as u64,
@@ -367,7 +361,7 @@ fn test_translation_bank_counts_known_protocol_pair() {
     // Unknown (plugin) protocol names fall back to the macro and are still counted.
     let fb_labels = [("from", "tel-custom-proto"), ("to", to)];
     let fb_before = metric_sum(crate::snapshot::TRANSLATIONS_TOTAL, &fb_labels);
-    translation("tel-custom-proto", to);
+    translation(&app, "tel-custom-proto", to);
     let fb_after = metric_sum(crate::snapshot::TRANSLATIONS_TOTAL, &fb_labels);
     assert_eq!((fb_after - fb_before).round() as u64, 1);
 }
@@ -738,7 +732,6 @@ fn an_exited_threads_bank_is_released_and_its_counts_survive() {
 #[test]
 fn test_finish_outcome_mapping_503_is_exhausted() {
     crate::snapshot::init();
-    model_plane_key();
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "tel-f25-503-model",

@@ -271,13 +271,15 @@ fn an_absent_block_resolves_to_no_authorization_server() {
     // document before the frozen structs parse, so a bare `from_value` never sees it.
     // `resolve` hands the opaque block to its owner through the seam, so the seam is installed.
     crate::testkit::install_test_seam();
-    let deploy: busbar_kernel::config::DeployCfg =
-        busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+    let deploy: busbar_kernel::config::DeployCfg = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
             "providers": {},
             "models": {},
             "oauth_as": { "issuer": ISSUER },
-        }))
-        .expect("a deploy config carrying `oauth_as:` parses");
+        }),
+        busbar_kernel::plane_driver::doors::Doors::NONE,
+    )
+    .expect("a deploy config carrying `oauth_as:` parses");
     let resolved = busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
         .expect("a config carrying a well-formed `oauth_as:` resolves");
     let checked = resolved

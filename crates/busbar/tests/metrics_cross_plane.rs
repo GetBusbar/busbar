@@ -28,7 +28,6 @@ use busbar_kernel::governance::{
     GovState, MemoryStore, MeteringDelta, MeteringRow, RecordStore, RecordStoreError,
     RecordStoreResult,
 };
-use busbar_kernel::proto::PROTO_OPENAI;
 use busbar_kernel::snapshot::{
     init, refresh_scrape_gauges, render, LANE_AVAILABLE, LANE_AVAILABLE_PERMITS, LANE_INFLIGHT,
     LANE_RECOVERY_HINT_MS, LANE_STATE, POOL_QUEUED,
@@ -81,7 +80,12 @@ fn test_scrape_gauges_lane_state_no_governance() {
     init();
 
     let app = TestApp::new()
-        .lane(LaneSpec::new("model-x", PROTO_OPENAI, "http://x"))
+        .doors(linked::table())
+        .lane(LaneSpec::new(
+            "model-x",
+            linked::residual_default_dialect(),
+            "http://x",
+        ))
         .pool("pool-x", &[(0, 1)])
         .build();
 
@@ -110,8 +114,9 @@ fn test_scrape_gauges_lane_available_flips_on_saturation() {
 
     let sem = Arc::new(tokio::sync::Semaphore::new(1));
     let app = TestApp::new()
+        .doors(linked::table())
         .lane(
-            LaneSpec::new("cap-model", PROTO_OPENAI, "http://c")
+            LaneSpec::new("cap-model", linked::residual_default_dialect(), "http://c")
                 .max(1)
                 .sem(sem.clone()),
         )
@@ -188,8 +193,9 @@ fn test_scrape_gauges_unbounded_lane_omits_available_permits() {
 
     // `max >= Semaphore::MAX_PERMITS` is the store's unbounded sentinel (no `max_concurrent`).
     let app = TestApp::new()
+        .doors(linked::table())
         .lane(
-            LaneSpec::new("unb-model", PROTO_OPENAI, "http://u")
+            LaneSpec::new("unb-model", linked::residual_default_dialect(), "http://u")
                 .max(tokio::sync::Semaphore::MAX_PERMITS),
         )
         .pool("unb-pool", &[(0, 1)])
@@ -221,7 +227,12 @@ fn test_scrape_gauges_breaker_open_lane_unavailable() {
     init();
 
     let app = TestApp::new()
-        .lane(LaneSpec::new("brk-model", PROTO_OPENAI, "http://b"))
+        .doors(linked::table())
+        .lane(LaneSpec::new(
+            "brk-model",
+            linked::residual_default_dialect(),
+            "http://b",
+        ))
         .pool("brk-pool", &[(0, 1)])
         .build();
 
@@ -257,7 +268,12 @@ fn test_scrape_gauges_pool_queued_defined_reads_zero() {
     register_planes();
     init();
     let app = TestApp::new()
-        .lane(LaneSpec::new("q-model", PROTO_OPENAI, "http://q"))
+        .doors(linked::table())
+        .lane(LaneSpec::new(
+            "q-model",
+            linked::residual_default_dialect(),
+            "http://q",
+        ))
         .pool("q-pool", &[(0, 1)])
         .build();
     refresh_scrape_gauges(&app);
@@ -339,7 +355,12 @@ fn test_scrape_gauges_lane_state_survives_governance_all_keys_failure() {
     let gov = Arc::new(GovState::new(store, None).unwrap());
 
     let app = TestApp::new()
-        .lane(LaneSpec::new("model-broken", PROTO_OPENAI, "http://broken"))
+        .doors(linked::table())
+        .lane(LaneSpec::new(
+            "model-broken",
+            linked::residual_default_dialect(),
+            "http://broken",
+        ))
         .pool("pool-broken", &[(0, 1)])
         .governance(gov)
         .build();
@@ -373,7 +394,12 @@ fn test_lane_state_healthy_is_zero() {
     init();
 
     let app = TestApp::new()
-        .lane(LaneSpec::new("model-h", PROTO_OPENAI, "http://h"))
+        .doors(linked::table())
+        .lane(LaneSpec::new(
+            "model-h",
+            linked::residual_default_dialect(),
+            "http://h",
+        ))
         .pool("pool-h", &[(0, 1)])
         .build();
 
@@ -412,7 +438,12 @@ fn test_lane_state_tripped_pool_reads_two_despite_healthy_sibling_pool() {
     init();
 
     let (app, store) = TestApp::new()
-        .lane(LaneSpec::new("model-ho", PROTO_OPENAI, "http://ho"))
+        .doors(linked::table())
+        .lane(LaneSpec::new(
+            "model-ho",
+            linked::residual_default_dialect(),
+            "http://ho",
+        ))
         .pool("pool-tripped", &[(0, 1)])
         .pool("pool-sibling", &[(0, 1)])
         .build_with_store();
@@ -453,7 +484,12 @@ fn test_lane_state_by_model_tripped_default_cell_reads_two_despite_healthy_pool_
     init();
 
     let (app, store) = TestApp::new()
-        .lane(LaneSpec::new("model-by", PROTO_OPENAI, "http://by"))
+        .doors(linked::table())
+        .lane(LaneSpec::new(
+            "model-by",
+            linked::residual_default_dialect(),
+            "http://by",
+        ))
         .pool("some-pool", &[(0, 1)])
         .build_with_store();
 
@@ -486,7 +522,12 @@ fn test_lane_state_half_open_probe_on_own_cell_reads_one() {
     init();
 
     let (app, store) = TestApp::new()
-        .lane(LaneSpec::new("model-probe", PROTO_OPENAI, "http://probe"))
+        .doors(linked::table())
+        .lane(LaneSpec::new(
+            "model-probe",
+            linked::residual_default_dialect(),
+            "http://probe",
+        ))
         .pool("pool-probe", &[(0, 1)])
         .pool("pool-probe-sib", &[(0, 1)])
         .build_with_store();
@@ -537,7 +578,12 @@ fn test_lane_state_emitted_for_plane_neutral_breaker_cells() {
     init();
 
     let app = TestApp::new()
-        .lane(LaneSpec::new("model-pn", PROTO_OPENAI, "http://pn"))
+        .doors(linked::table())
+        .lane(LaneSpec::new(
+            "model-pn",
+            linked::residual_default_dialect(),
+            "http://pn",
+        ))
         .pool("pool-pn", &[(0, 1)])
         .build();
 
@@ -586,7 +632,12 @@ fn test_lane_state_by_model_default_cell_untouched_zero_cooldown_reports_healthy
     init();
 
     let (app, store) = TestApp::new()
-        .lane(LaneSpec::new("model-zero", PROTO_OPENAI, "http://zero"))
+        .doors(linked::table())
+        .lane(LaneSpec::new(
+            "model-zero",
+            linked::residual_default_dialect(),
+            "http://zero",
+        ))
         .pool("poolX", &[(0, 1)])
         .pool("poolY", &[(0, 1)])
         .build_with_store();
@@ -638,16 +689,10 @@ fn the_scrapes_pool_queued_gauge_reads_the_live_depth() {
     init();
     // Unique labels: the recorder and the park table are process-global.
     let pool = "q-live-pool";
-    // The linked plane's own default dialect, read off the registry (this cell names none).
-    let dialect = busbar_kernel::proto::residual_default_dialect()
-        .or_else(|| {
-            busbar_kernel::proto::detect_protocol(
-                "/v1/chat/completions",
-                &axum::http::HeaderMap::new(),
-            )
-        })
-        .expect("a linked plane states a dialect");
+    // The linked plane's own default dialect, read off its declarations (this cell names none).
+    let dialect = linked::residual_default_dialect();
     let app = TestApp::new()
+        .doors(linked::table())
         .lane(LaneSpec::new("q-live-model", dialect, "http://q"))
         .pool(pool, &[(0, 1)])
         .build();

@@ -370,7 +370,10 @@ fn for_verb_agrees_with_the_kernel_path_classifier_for_every_legacy_mutating_ver
         }
         let rel = row.path.strip_prefix("/api/v1/admin").unwrap_or(row.path);
         let admin_class = MutationClass::for_verb(row.verb, CONFIG_CLASS_RULES);
-        let kernel_class = busbar_kernel::ratelimit::classify_mutation(rel);
+        let kernel_class = busbar_kernel::ratelimit::classify_mutation(
+            busbar_kernel::plane_driver::doors::Doors::NONE,
+            rel,
+        );
         assert_eq!(
             admin_class.label(),
             kernel_class.label(),

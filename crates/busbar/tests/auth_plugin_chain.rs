@@ -515,12 +515,12 @@ fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login(
         ),
     )
     .unwrap();
-    busbar_kernel::test_support::register_neutral_test_plane();
     let loaded = busbar_kernel::load_config_from_disk(
         &config,
         Some(&dir2.join("providers.yaml")),
         false,
         busbar_kernel::config::EnvSubst::Strict,
+        busbar_kernel::test_support::neutral_test_doors(),
     )
     .expect("the configuration reads");
     let cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)

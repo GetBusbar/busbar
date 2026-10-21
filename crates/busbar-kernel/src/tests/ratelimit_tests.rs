@@ -112,7 +112,10 @@ fn only_the_first_denial_in_a_window_is_audited() {
 #[test]
 fn plugin_inspect_is_classified_into_its_own_dedicated_bucket() {
     use crate::admin::gate::PATH_PLUGINS_INSPECT;
-    let class = classify_mutation(PATH_PLUGINS_INSPECT);
+    let class = classify_mutation(
+        crate::test_support::neutral_test_doors(),
+        PATH_PLUGINS_INSPECT,
+    );
     assert!(matches!(class, MutationClass::PluginInspect));
     assert_ne!(class.label(), MutationClass::Crud.label());
     assert_ne!(class.label(), MutationClass::Config.label());
@@ -144,11 +147,17 @@ fn plugin_inspect_is_classified_into_its_own_dedicated_bucket() {
 fn config_validate_and_plugin_inspect_do_not_share_a_bucket() {
     use crate::admin::gate::{PATH_CONFIG_VALIDATE, PATH_PLUGINS_INSPECT};
     assert!(matches!(
-        classify_mutation(PATH_CONFIG_VALIDATE),
+        classify_mutation(
+            crate::test_support::neutral_test_doors(),
+            PATH_CONFIG_VALIDATE
+        ),
         MutationClass::Crud
     ));
     assert!(matches!(
-        classify_mutation(PATH_PLUGINS_INSPECT),
+        classify_mutation(
+            crate::test_support::neutral_test_doors(),
+            PATH_PLUGINS_INSPECT
+        ),
         MutationClass::PluginInspect
     ));
 }
@@ -172,21 +181,32 @@ fn the_config_table_is_not_the_whole_decision_and_its_doc_names_what_else_decide
     // The validate carve-out: the table's `/config/` prefix says CONFIG, the classifier says CRUD.
     assert!(table_alone(PATH_CONFIG_VALIDATE));
     assert!(matches!(
-        classify_mutation(PATH_CONFIG_VALIDATE),
+        classify_mutation(
+            crate::test_support::neutral_test_doors(),
+            PATH_CONFIG_VALIDATE
+        ),
         MutationClass::Crud
     ));
     // The inspect carve-out: absent from the table, its own class.
     assert!(!table_alone(PATH_PLUGINS_INSPECT));
     assert!(matches!(
-        classify_mutation(PATH_PLUGINS_INSPECT),
+        classify_mutation(
+            crate::test_support::neutral_test_doors(),
+            PATH_PLUGINS_INSPECT
+        ),
         MutationClass::PluginInspect
     ));
     // The registry-derived named-map roots: absent from the table, CONFIG.
-    for section in crate::config::named_map::NamedMapSection::sections() {
+    for section in crate::config::named_map::NamedMapSection::sections(
+        crate::test_support::neutral_test_doors(),
+    ) {
         let rel = format!("{}/some-name", section.path_root());
         assert!(!table_alone(&rel), "{rel} is not a table row");
         assert!(
-            matches!(classify_mutation(&rel), MutationClass::Config),
+            matches!(
+                classify_mutation(crate::test_support::neutral_test_doors(), &rel),
+                MutationClass::Config
+            ),
             "{rel} is CONFIG by the named-map scan"
         );
     }
@@ -215,7 +235,9 @@ fn the_config_table_is_not_the_whole_decision_and_its_doc_names_what_else_decide
 /// its first six characters and is not — a prefix match put it on the 10/min budget.
 #[test]
 fn a_named_map_root_matches_on_a_segment_boundary_only() {
-    for section in crate::config::named_map::NamedMapSection::sections() {
+    for section in crate::config::named_map::NamedMapSection::sections(
+        crate::test_support::neutral_test_doors(),
+    ) {
         let root = section.path_root();
         for inside in [
             root.to_string(),
@@ -223,13 +245,19 @@ fn a_named_map_root_matches_on_a_segment_boundary_only() {
             format!("{root}/n/settings"),
         ] {
             assert!(
-                matches!(classify_mutation(&inside), MutationClass::Config),
+                matches!(
+                    classify_mutation(crate::test_support::neutral_test_doors(), &inside),
+                    MutationClass::Config
+                ),
                 "{inside} is the section's own path"
             );
         }
         let neighbour = format!("{root}-keyset");
         assert!(
-            matches!(classify_mutation(&neighbour), MutationClass::Crud),
+            matches!(
+                classify_mutation(crate::test_support::neutral_test_doors(), &neighbour),
+                MutationClass::Crud
+            ),
             "{neighbour} only shares the root's leading characters"
         );
     }

@@ -100,12 +100,6 @@ use crate::exchange::{handler_of, probe, project, refuse};
 use crate::meta::PROVIDER_KEYS;
 use crate::LlmPlane;
 
-/// THE PROTOCOL AXIS of the door's linked row: the plane's own six dialect declarations, in the
-/// order an operator sees, as contract data (`busbar_contract::protocol::ProtocolDecl`). A
-/// composition root that links this door seeds the kernel's protocol registry from them, so the
-/// kernel names no dialect (ARCHITECT 2026-10-16 ruling 3).
-pub use crate::codec::DECLS as PROTOCOLS;
-
 // ── the Statement ────────────────────────────────────────────────────────────────────────────────
 
 /// The version the Statement names: the crate's (a test pins the two equal).
@@ -1700,6 +1694,8 @@ slot!(
         let given = input.get();
         let held = guard(&door.units).take(given.unit);
         let host = door.host();
+        // The status the rendering states where it is not the kernel's (`0` = the kernel's).
+        let mut restated = 0u32;
         let rendered = match &held {
             Some(UnitState {
                 declined: Some(d), ..
@@ -1730,6 +1726,18 @@ slot!(
                     _ => String::from_utf8_lossy(input.field(|i| &i.text).bytes()).into_owned(),
                 };
                 let status = u16::try_from(given.status).unwrap_or(500);
+                // Before `arrive` the target's path rule names the dialect, and its status too.
+                let status = match arrived {
+                    None if given.cause != REFUSAL_GATE => {
+                        let path_status =
+                            refuse::status_before_arrive(envelope, given.reason, status);
+                        if path_status != status {
+                            restated = u32::from(path_status);
+                        }
+                        path_status
+                    }
+                    _ => status,
+                };
                 if given.cause == REFUSAL_GATE {
                     refuse::gate_refusal(&host, envelope, status, &text)
                 } else {
@@ -1763,6 +1771,7 @@ slot!(
         out.set(|o| &o.fields_needed, fnd as u32);
         out.set(|o| &o.arena_written, aw as u64);
         out.set(|o| &o.arena_needed, and as u64);
+        out.set(|o| &o.status, restated);
         if short {
             // The driver re-calls once with the buffers this named: the unit stays for it.
             if let Some(unit) = held {

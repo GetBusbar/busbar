@@ -834,7 +834,7 @@ impl<'s> DoorSteps<'s> {
                     // previous release's words (`busbar_kernel::ingress::limit_refusal`).
                     if self.facts.plane.is_empty() {
                         self.lock().refused.1 =
-                            Some(busbar_kernel::ingress::limit_refusal("", &blocked).2);
+                            Some(busbar_kernel::ingress::limit_refusal(&blocked).2);
                     }
                     return Err(refusal_for(&blocked));
                 }
@@ -939,7 +939,7 @@ impl DriverSteps for DoorSteps<'_> {
         let (names, providers) = &self.facts.translations;
         if let (Some(from), Some(to)) = (names.get(dialect as usize), providers.get(provider)) {
             if from != to {
-                busbar_kernel::telemetry::translation(from, to);
+                busbar_kernel::telemetry::translation(&self.app, from, to);
             }
         }
     }
@@ -1828,7 +1828,8 @@ pub fn kernel_sections(
     // previous release accepted `models: {}` and answered from its catch-all (v1.5.5
     // crates/busbar/src/config/mod.rs:2626-2632; ingress/dispatch.rs:292-319).
     let required = |key: &'static str| {
-        busbar_kernel::plane::registry::plane_decls()
+        cfg.doors
+            .decls()
             .iter()
             .any(|d| d.required_config_sections.contains(&key))
     };
@@ -2025,6 +2026,9 @@ pub struct OutboundAuths {
     linked: Vec<busbar_kernel::preflight::LinkedAuth>,
     dropped: Option<&'static crate::root::loader::PluginRegistry>,
     conns: crate::root::loader::dispatch::ConnTable,
+    /// The catalogue the root folded, lent: a declared diagnostic's code is looked up in it when the
+    /// main log writes the line ([`MainLogSink`]).
+    catalogue: busbar_kernel::diagnostics::Catalogue,
     /// Every auth row's outbound facts, read once at the first serving (each row bound once to
     /// read them), so a serving binds only the row it opens.
     facts: std::sync::OnceLock<Vec<AuthRowFacts>>,
@@ -2068,19 +2072,22 @@ impl OutboundAuths {
     /// The auth rows `linked` (the build's) and `dropped` (the plugins directory's), loaded on
     /// `dispatcher`, their needs declared on `conns`: `ConnTable::Host`, the process's connector;
     /// or, stated by the caller, `ConnTable::NoNeeds`: no need is granted, a row that declares one
-    /// will not load and is passed over, and a style that mints mints nothing.
+    /// will not load and is passed over, and a style that mints mints nothing. A declared
+    /// diagnostic's code is looked up in `catalogue`, the one the root folded.
     #[must_use]
     pub fn new(
         dispatcher: Arc<crate::root::loader::dispatch::Dispatcher>,
         linked: &[busbar_kernel::preflight::LinkedAuth],
         dropped: Option<&'static crate::root::loader::PluginRegistry>,
         conns: crate::root::loader::dispatch::ConnTable,
+        catalogue: busbar_kernel::diagnostics::Catalogue,
     ) -> Self {
         Self {
             dispatcher,
             linked: linked.to_vec(),
             dropped,
             conns,
+            catalogue,
             facts: std::sync::OnceLock::new(),
             opened: crate::root::loader::open_once::OpenOnce::new(),
         }
@@ -2107,7 +2114,7 @@ impl OutboundAuths {
                 |_| Arc::new(NoSink) as Arc<dyn EnvelopeSink>,
                 |s| Arc::new(s) as Arc<dyn EnvelopeSink>,
             );
-        let sink: Arc<dyn EnvelopeSink> = Arc::new(MainLogSink(sink));
+        let sink: Arc<dyn EnvelopeSink> = Arc::new(MainLogSink(sink, self.catalogue));
         crate::root::loader::dispatch::Bind {
             instance: Arc::from(name),
             max_inflight_cap: 64,
@@ -2636,7 +2643,11 @@ impl OutboundAuths {
 /// the plugin's own severity.
 ///
 /// [`DIAG_LOG`]: busbar_contract::abi::mechanism::call::DIAG_LOG
-pub(crate) struct MainLogSink(pub(crate) Arc<dyn crate::root::loader::dispatch::EnvelopeSink>);
+pub(crate) struct MainLogSink(
+    pub(crate) Arc<dyn crate::root::loader::dispatch::EnvelopeSink>,
+    /// The catalogue the root folded, lent: the one a declared id's code is looked up in.
+    pub(crate) busbar_kernel::diagnostics::Catalogue,
+);
 
 impl MainLogSink {
     /// `text` split into its message and the named values 1.5.5's line carried.
@@ -2657,7 +2668,7 @@ impl MainLogSink {
     }
 
     /// Write one declared diagnostic to the main log.
-    fn write(d: &crate::root::loader::dispatch::Diagnostic<'_>) {
+    fn write(&self, d: &crate::root::loader::dispatch::Diagnostic<'_>) {
         use busbar_contract::diagnostic::Severity;
         use tracing::Level;
         let text = String::from_utf8_lossy(d.text);
@@ -2666,7 +2677,7 @@ impl MainLogSink {
             .ok()
             .and_then(|n| n.strip_prefix("BUSBAR-"))
             .and_then(|n| n.parse::<u16>().ok())
-            .and_then(busbar_kernel::diagnostics::by_code);
+            .and_then(|n| self.1.by_code(n));
         let level = match (code.map(|c| c.severity), d.severity) {
             (Some(Severity::BenignRecurring), _) => Level::DEBUG,
             (Some(Severity::Fatal), _) | (_, 2..) => Level::ERROR,
@@ -2697,7 +2708,7 @@ impl crate::root::loader::dispatch::EnvelopeSink for MainLogSink {
     fn diag(&self, d: crate::root::loader::dispatch::Diagnostic<'_>) {
         use busbar_contract::abi::mechanism::call::{DIAG_LOG, DIAG_LOG_DROPPED};
         if d.id != DIAG_LOG && d.id != DIAG_LOG_DROPPED {
-            Self::write(&d);
+            self.write(&d);
         }
         self.0.diag(d);
     }
@@ -2723,6 +2734,7 @@ pub fn process_auths() -> Arc<OutboundAuths> {
                 Arc::clone(crate::root::connector::the())
                     as Arc<dyn busbar_contract::conn::DeclaredConns>,
             ),
+            crate::root::linked::catalogue(),
         ))
     }))
 }

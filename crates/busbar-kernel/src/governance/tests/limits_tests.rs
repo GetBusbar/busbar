@@ -1206,66 +1206,68 @@ fn an_open_class_the_present_card_does_not_price_refuses_and_absent_reads_zero()
 }
 
 /// A plane declaring token-family classes beside a duration class — the streaming plane's shape.
-static TOKEN_FAMILY_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
-    declaration: crate::plane::registry::PlaneDeclaration {
-        key: "token-family-plane",
-        fallback: false,
-        config_section: "streams",
-        scope_kinds: &[],
-        subject_noun: "stream",
-        admin_noun: "stream",
-        audit_kind: "stream",
-        card_signing_domain: None,
-        card_kid_prefix: None,
-        owned_config_sections: &[],
-        billable_classes: &[
-            crate::plane::registry::BillableClass {
-                class: "audio_tokens_in",
-                family: crate::plane::registry::TOKEN_FAMILY,
-            },
-            crate::plane::registry::BillableClass {
-                class: "audio_tokens_out",
-                family: crate::plane::registry::TOKEN_FAMILY,
-            },
-            crate::plane::registry::BillableClass {
-                class: "audio_seconds_in",
-                family: "duration",
-            },
-        ],
-        fee_units: &[],
-        metric_families: &[],
-        record_kinds: &[],
-        required_config_sections: &[],
-        trust_keys: &[],
-        served_op_classes: &[],
-        caller_credential_refusal: None,
-    },
-    wire_format_names: || &[],
-    provider_dialects: || &[],
-    claims: |_| Vec::new(),
-    admission: |_| None,
-    build: |_| None,
-    routes: None,
-    admin_routes: None,
-    openapi: None,
-    hydrate: None,
-    start: None,
-    config_validate: None,
-    named_def_list: None,
-    named_def_get: None,
-    registry_contains: None,
-    reresolve_gates: None,
-    openapi_schemas: None,
-    on_swap: None,
-    parse_section: None,
-    parse_endpoint: None,
-    lower_endpoint: None,
-    build_runtime: None,
-    viewer: None,
-    retain_verify_gates: None,
-    default_section: None,
-    resolve_provider: None,
-};
+static TOKEN_FAMILY_PLANE: crate::plane_driver::row::PlaneDecl =
+    crate::plane_driver::row::PlaneDecl {
+        declaration: crate::plane_driver::row::PlaneDeclaration {
+            key: "token-family-plane",
+            fallback: false,
+            config_section: "streams",
+            scope_kinds: &[],
+            subject_noun: "stream",
+            admin_noun: "stream",
+            audit_kind: "stream",
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[
+                crate::plane_driver::row::BillableClass {
+                    class: "audio_tokens_in",
+                    family: crate::plane_driver::row::TOKEN_FAMILY,
+                },
+                crate::plane_driver::row::BillableClass {
+                    class: "audio_tokens_out",
+                    family: crate::plane_driver::row::TOKEN_FAMILY,
+                },
+                crate::plane_driver::row::BillableClass {
+                    class: "audio_seconds_in",
+                    family: "duration",
+                },
+            ],
+            fee_units: &[],
+            metric_families: &[],
+            record_kinds: &[],
+            required_config_sections: &[],
+            trust_keys: &[],
+            served_op_classes: &[],
+            caller_credential_refusal: None,
+        },
+        wire_format_names: |_| &[],
+        provider_dialects: |_| &[],
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        build: |_, _| None,
+        routes: None,
+        admin_routes: None,
+        openapi: None,
+        hydrate: None,
+        start: None,
+        config_validate: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        openapi_schemas: None,
+        on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        viewer: None,
+        retain_verify_gates: None,
+        default_section: None,
+        resolve_provider: None,
+        door: None,
+    };
 
 /// A `tokens:` cap counts EVERY class a plane declares in the token family, not only the reserved
 /// four: 60 audio tokens in + 40 out reach a 100-token cap and block the next admission, and the
@@ -1273,9 +1275,8 @@ static TOKEN_FAMILY_PLANE: crate::plane::registry::PlaneDecl = crate::plane::reg
 /// seconds) is priced elsewhere and never counts as a token.
 #[test]
 fn tokens_cap_counts_every_token_family_class_a_plane_declares() {
-    let _iso =
-        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&TOKEN_FAMILY_PLANE]);
-    let g = gov();
+    let doors = crate::plane_driver::doors::Doors::for_test(&[&TOKEN_FAMILY_PLANE]);
+    let g = gov().with_doors(doors);
     let cm = model(&[(
         "g",
         group_cfg(

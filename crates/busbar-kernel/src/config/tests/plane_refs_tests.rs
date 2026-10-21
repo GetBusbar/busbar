@@ -6,12 +6,14 @@
 //!
 //! The fixture below uses three purely synthetic plane keys (`"alpha"`/`"beta"`/`"gamma"`) rather
 //! than the real `"llm"`/`"mcp"`/`"a2a"`: this is a generic multi-tenant CONTAINER's own test, and it
-//! asserts nothing about what any real plane IS or DOES — see
-//! [`crate::plane::isolated_three_plane_test_registry`]'s doc. The one test here that DID need a real
-//! plane's own section-name prose (`the_refusal_message_is_actionable`) moved to
+//! asserts nothing about what any real plane IS or DOES — see [`three_plane_test_doors`]'s doc:
+//! every container here is lent that table, so its sibling walk runs over exactly those three keys.
+//! The one test here that DID need a real plane's own section-name prose
+//! (`the_refusal_message_is_actionable`) moved to
 //! `crates/busbar/tests/plane_config_cross_plane.rs`, where naming the real planes is licensed.
 
 use super::*;
+use crate::plane_driver::doors::three_plane_test_doors;
 
 /// Two entry types, so the container is exercised as the generic it claims to be rather than as a
 /// thing that happens to hold one shape. The same discipline the trust lifecycle is held to.
@@ -21,22 +23,22 @@ struct Entry(&'static str);
 struct OtherEntry(u32);
 
 fn sections() -> PlaneSections<Entry> {
-    let mut s = PlaneSections::default();
+    let mut s = PlaneSections::new(three_plane_test_doors());
     s.insert("alpha", "fast", Entry("a pool"));
     s.insert("beta", "filesystem", Entry("a tool server"));
     s.insert("gamma", "planner", Entry("an agent"));
     s
 }
 
-/// EVERY plane behaves identically. Looping over the plane registry keys rather than writing three
+/// EVERY plane behaves identically. Looping over the lent table's plane keys rather than writing three
 /// copies is what stops one plane quietly acquiring a special case.
 #[test]
 fn every_plane_stores_and_reads_back_the_same_way() {
-    let mut s: PlaneSections<OtherEntry> = PlaneSections::default();
-    for (i, plane) in crate::plane::plane_keys().enumerate() {
+    let mut s: PlaneSections<OtherEntry> = PlaneSections::new(three_plane_test_doors());
+    for (i, plane) in three_plane_test_doors().plane_keys().enumerate() {
         s.insert(plane, "shared-name", OtherEntry(i as u32));
     }
-    for (i, plane) in crate::plane::plane_keys().enumerate() {
+    for (i, plane) in three_plane_test_doors().plane_keys().enumerate() {
         assert_eq!(
             s.get(plane, "shared-name"),
             Some(&OtherEntry(i as u32)),
@@ -50,7 +52,7 @@ fn every_plane_stores_and_reads_back_the_same_way() {
 /// not be treated as if it were.
 #[test]
 fn one_name_may_exist_independently_in_every_plane() {
-    let mut s = PlaneSections::default();
+    let mut s = PlaneSections::new(three_plane_test_doors());
     s.insert("alpha", "shared", Entry("alpha"));
     s.insert("beta", "shared", Entry("beta"));
     s.insert("gamma", "shared", Entry("gamma"));
@@ -90,7 +92,6 @@ fn a_name_from_another_plane_never_resolves() {
 /// there.
 #[test]
 fn a_cross_plane_reference_names_the_plane_the_entry_lives_on() {
-    let _iso = super::isolated_three_plane_test_registry();
     let s = sections();
     assert_eq!(
         s.resolve("beta", "planner"),
@@ -135,7 +136,6 @@ fn a_section_read_is_scoped_to_its_own_plane() {
 /// never validated.
 #[test]
 fn iteration_covers_every_plane_and_attributes_each_entry() {
-    let _iso = super::isolated_three_plane_test_registry();
     let s = sections();
     let mut seen: Vec<(&'static str, &str)> = s.iter().map(|(p, n, _)| (p, n)).collect();
     seen.sort();
@@ -154,7 +154,7 @@ fn iteration_covers_every_plane_and_attributes_each_entry() {
     let planes: std::collections::BTreeSet<&'static str> = s.iter().map(|(p, _, _)| p).collect();
     assert_eq!(
         planes.len(),
-        crate::plane::plane_keys().count(),
+        three_plane_test_doors().plane_keys().count(),
         "every plane is represented"
     );
 }
@@ -163,8 +163,8 @@ fn iteration_covers_every_plane_and_attributes_each_entry() {
 /// fail-closed floor: nothing resolves until something is declared.
 #[test]
 fn an_empty_container_resolves_nothing() {
-    let s: PlaneSections<Entry> = PlaneSections::default();
-    for plane in crate::plane::plane_keys() {
+    let s: PlaneSections<Entry> = PlaneSections::new(three_plane_test_doors());
+    for plane in three_plane_test_doors().plane_keys() {
         assert!(matches!(
             s.resolve(plane, "anything"),
             Err(RefError::Unknown { .. })
@@ -179,8 +179,7 @@ fn an_empty_container_resolves_nothing() {
 /// makes a boot failure unreproducible.
 #[test]
 fn a_name_defined_on_several_other_planes_diagnoses_deterministically() {
-    let _iso = super::isolated_three_plane_test_registry();
-    let mut s = PlaneSections::default();
+    let mut s = PlaneSections::new(three_plane_test_doors());
     s.insert("alpha", "shared", Entry("alpha"));
     s.insert("gamma", "shared", Entry("gamma"));
     for _ in 0..8 {

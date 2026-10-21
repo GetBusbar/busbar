@@ -129,9 +129,8 @@ pub fn agent_key(agent: &str) -> String {
     format!("agent:{agent}")
 }
 
-/// Get current time in seconds since epoch — THE host wall clock (the kernel hands it to every codec
-/// it drives as `proto::CodecHostServices`; a plane reads time through the host it is handed, never
-/// here).
+/// Get current time in seconds since epoch — THE host wall clock. A plane reads time through the
+/// `CodecHost` its door is handed (`wall_clock_now`), never here.
 pub fn now() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()

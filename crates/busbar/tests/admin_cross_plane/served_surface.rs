@@ -125,7 +125,7 @@ fn served_admin_operations() -> BTreeMap<Op, Source> {
         };
         out.insert(op, source);
     }
-    for section in NamedMapSection::sections() {
+    for section in NamedMapSection::sections(crate::linked::table()) {
         let source = match section {
             NamedMapSection::Plane(key) => Source::Plane(key),
             _ => Source::Router,
@@ -143,11 +143,11 @@ fn served_admin_operations() -> BTreeMap<Op, Source> {
                 .or_insert_with(|| source.clone());
         }
     }
-    for decl in busbar_kernel::plane::registry::plane_decls() {
+    for decl in crate::linked::planes() {
         let Some(admin_routes) = decl.admin_routes else {
             continue;
         };
-        for spec in admin_routes(&() as &dyn std::any::Any) {
+        for spec in admin_routes(decl, &() as &dyn std::any::Any) {
             let method = serde_json::to_value(spec.method)
                 .ok()
                 .and_then(|m| m.as_str().map(str::to_string))

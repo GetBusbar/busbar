@@ -27,7 +27,7 @@ fn the_tools_section_enumerates_every_secret_reference_its_plane_declares() {
         child:\n    transport: stdio\n    command: \"/usr/bin/true\"\n    \
         pin: { mechanism: unpinned }\n    \
         env:\n      API_KEY: { env: BUSBAR_TEST_CHILD_KEY }\n      MODE: \"plain\"\n";
-    let deploy = config::deploy_from_yaml_str(text)
+    let deploy = config::deploy_from_yaml_str(text, linked::table())
         .unwrap_or_else(|e| panic!("the section parses: {e}\n{text}"));
     let mut found: Vec<String> = deploy
         .plane_section("tools")
@@ -63,7 +63,7 @@ fn the_agents_section_enumerates_every_secret_reference_its_plane_declares() {
         client_identity:\n      cert: { env: BUSBAR_TEST_AGENT_CERT }\n      \
         key: { env: BUSBAR_TEST_AGENT_KEY }\n  \
         plain:\n    url: \"https://c.example/rpc\"\n    pin: { mechanism: unpinned }\n";
-    let deploy = config::deploy_from_yaml_str(text)
+    let deploy = config::deploy_from_yaml_str(text, linked::table())
         .unwrap_or_else(|e| panic!("the section parses: {e}\n{text}"));
     let mut found: Vec<String> = deploy
         .plane_section("agents")
@@ -141,7 +141,7 @@ fn a_plane_card_silent_about_a_declared_class_refuses_at_boot() {
             )
         };
         let validated = |text: String| {
-            let deploy = config::deploy_from_yaml_str(&text)
+            let deploy = config::deploy_from_yaml_str(&text, linked::table())
                 .unwrap_or_else(|e| panic!("{}: the document parses: {e}\n{text}", d.key));
             let cfg = config::resolve(&deploy, &HashMap::new())
                 .unwrap_or_else(|e| panic!("{}: the document resolves: {e:?}\n{text}", d.key));

@@ -70,6 +70,7 @@ fn retired_word_meets_its_1_5_5_bytes(n: usize) {
         None,
         false,
         busbar_kernel::config::EnvSubst::Strict,
+        busbar_kernel::plane_driver::doors::Doors::NONE,
     )
     .err()
     .expect("a retired spelling refuses boot");
@@ -177,6 +178,7 @@ fn the_observability_lift_out_meets_its_1_5_5_bytes() {
         None,
         false,
         busbar_kernel::config::EnvSubst::Strict,
+        busbar_kernel::plane_driver::doors::Doors::NONE,
     )
     .err()
     .expect("a 1.x config refuses boot");
