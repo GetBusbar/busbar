@@ -10,15 +10,6 @@
 //! rates the operator has already replaced: the projection and the holder would be two numbers for
 //! one request, and only one of them would be the configuration.
 //!
-//! The holder is HANDED IN, never installed: the composition root's [`crate::appbuild::RootRules`]
-//! name it ([`RootRules::rate_apply`], [`RootRules::rate_epoch`]), each build raises the apply half
-//! on the rules it was handed, and the date half rides the governance the build constructs
-//! ([`crate::governance::GovState::effective_from_at`], [`crate::governance::GovState::dated_history`]).
-//! No process-wide seam is installed into the kernel by name (THE DESIGN §10 R6, l.1474-1477).
-//!
-//! [`RootRules::rate_apply`]: crate::appbuild::RootRules::rate_apply
-//! [`RootRules::rate_epoch`]: crate::appbuild::RootRules::rate_epoch
-//!
 //! So the resolution raises this seam and the holder swaps. The seam carries the NEUTRAL raw view of
 //! the figures ([`RawRates`]) and nothing else — no card, no currency, no ledger — because the shape
 //! of a card is the holder's business and the shape of a config is the engine's, and this is the one
@@ -114,6 +105,73 @@ pub trait RateEpoch: Send + Sync {
     fn history(&self) -> Option<std::sync::Arc<busbar_kernel_ledger::cost::History>> {
         None
     }
+}
+
+/// THE RATE HOLDER this process answers to: the one the composition root hands in on its install
+/// record ([`crate::preflight::RootInstall::rate_apply`]), never a static of this module. A test
+/// binary's own holder (`test_support::rate_holders::install_rate_apply`) stands in front
+/// of the record's. `None`: the build installed no holder.
+fn holder() -> Option<&'static dyn RateApply> {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        if let Some(holder) = crate::test_support::rate_holders::apply() {
+            return Some(holder);
+        }
+    }
+    crate::preflight::root_rows().rate_apply
+}
+
+/// THE RATE DATER this process answers to: the one on the composition root's install record
+/// ([`crate::preflight::RootInstall::rate_epoch`]), beside [`holder`]. A test binary's own dater
+/// (`test_support::rate_holders::install_rate_epoch`) stands in front of the record's.
+/// `None`: the build installed no dater.
+fn dater() -> Option<&'static dyn RateEpoch> {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        if let Some(dater) = crate::test_support::rate_holders::epoch() {
+            return Some(dater);
+        }
+    }
+    crate::preflight::root_rows().rate_epoch
+}
+
+/// The `effective_from` of the entry in force at `at_ms`.
+///
+/// `0` in a build that installed no holder — the honest answer for a binary with no root ledger in
+/// it, and the same value the opening entry carries, so a cell dated by it resolves to the card the
+/// deployment opened with rather than to whatever is newest.
+#[must_use]
+pub fn effective_from_at(at_ms: u64) -> u64 {
+    dater().map_or(0, |h| h.effective_from_at(at_ms))
+}
+
+/// The installed holder's dated history, if it holds one — see [`RateEpoch::history`].
+#[must_use]
+pub fn dated_history() -> Option<std::sync::Arc<busbar_kernel_ledger::cost::History>> {
+    dater().and_then(|holder| holder.history())
+}
+
+/// Stage the rates a config change is about to commit — see [`RateApply::rates_staged`]. `Ok` in
+/// a build that installed no holder: there is no journal to refuse.
+///
+/// # Errors
+///
+/// The installed holder could not make the rates durable; the config change must be refused.
+pub fn rates_staged(rates: &RawRates<'_>) -> Result<(), String> {
+    holder().map_or(Ok(()), |h| h.rates_staged(rates))
+}
+
+/// The staged rates' config change did not commit — see [`RateApply::rates_withdrawn`].
+pub fn rates_withdrawn() {
+    holder().into_iter().for_each(|h| h.rates_withdrawn());
+}
+
+/// Raise the seam: the configured rates are now `rates`.
+///
+/// A no-op in a build that installed no holder, which is the honest answer for a binary with no root
+/// ledger in it — not a swap quietly dropped.
+pub fn rates_applied(rates: &RawRates<'_>) {
+    holder().into_iter().for_each(|h| h.rates_applied(rates));
 }
 
 #[cfg(test)]

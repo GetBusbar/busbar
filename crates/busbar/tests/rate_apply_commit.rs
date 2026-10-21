@@ -9,8 +9,7 @@
 //! during the build, the rates of that rejected apply had already entered the history and the
 //! journal. So the seam rides the same commit the process-wide limits do: `InstalledLimits::keep`.
 //!
-//! The holder rides the root's rules handed to each build (`RootRules::rate_apply`), as the
-//! composition root's do; the file keeps the one holder it hands them.
+//! A test BINARY of its own, because the rate holder this file hands in is process-wide.
 //!
 //! MOVED HERE from `crates/busbar-kernel/tests/`, assertions unchanged (kind-isolation, ARCHITECT:
 //! core names zero plane types, its tests included; Q128 audit HIGH on the kernel's test-linked
@@ -22,21 +21,7 @@ mod linked;
 use std::sync::Mutex;
 
 use busbar_kernel::rate_apply::{RateApply, RawRates};
-
-/// The holder this file's builds are handed.
-static HOLDER: std::sync::OnceLock<&'static dyn RateApply> = std::sync::OnceLock::new();
-
-/// The root's rules as this file states them: everything passes, and the rates go to [`HOLDER`].
-struct HeldRules;
-
-impl busbar_kernel::appbuild::RootRules for HeldRules {
-    fn check(&self, _cfg: &busbar_kernel::config::RootCfg) -> Result<(), String> {
-        Ok(())
-    }
-    fn rate_apply(&self) -> Option<&'static dyn RateApply> {
-        HOLDER.get().copied()
-    }
-}
+use busbar_kernel::test_support::rate_holders::install_rate_apply;
 
 /// The holder, writing down the flat figure of every apply it hears — the only writer of the dated
 /// history and of the journal, so what it never hears neither of them holds.
@@ -67,7 +52,8 @@ fn build(
         std::collections::HashSet::new(),
         (None, None),
         None,
-        &(std::sync::Arc::new(HeldRules) as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>),
+        &(std::sync::Arc::new(busbar_kernel::appbuild::AcceptAll)
+            as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>),
     )
     .expect("the app builds")
 }
@@ -80,7 +66,7 @@ fn an_apply_that_never_commits_raises_no_rates_and_one_that_commits_raises_them_
     busbar_kernel::snapshot::init();
     linked::install();
     let recorder: &'static Recorder = Box::leak(Box::new(Recorder(Mutex::new(Vec::new()))));
-    let _ = HOLDER.set(recorder);
+    install_rate_apply(recorder);
 
     // THE PERSIST FAILED: the transaction never reaches its commit and the handle falls out of scope.
     let (_app, _rotate, limits) = build(424_242);

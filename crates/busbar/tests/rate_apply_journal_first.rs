@@ -11,8 +11,7 @@
 //! nothing persisted, nothing swapped — and a change that stages and then never commits withdraws
 //! what it staged.
 //!
-//! The holder rides the root's rules handed to each build (`RootRules::rate_apply`), as the
-//! composition root's do; the file keeps the one holder it hands them.
+//! A test BINARY of its own, because the rate holder this file hands in is process-wide.
 //!
 //! MOVED HERE from `crates/busbar-kernel/tests/`, assertions unchanged (kind-isolation, ARCHITECT:
 //! core names zero plane types, its tests included; Q128 audit HIGH on the kernel's test-linked
@@ -26,21 +25,7 @@ use std::sync::{Arc, Mutex};
 
 use busbar_kernel::config::transaction::{config_transaction, Outcome, TxnError};
 use busbar_kernel::rate_apply::{RateApply, RawRates};
-
-/// The holder this file's builds are handed.
-static HOLDER: std::sync::OnceLock<&'static dyn RateApply> = std::sync::OnceLock::new();
-
-/// The root's rules as this file states them: everything passes, and the rates go to [`HOLDER`].
-struct HeldRules;
-
-impl busbar_kernel::appbuild::RootRules for HeldRules {
-    fn check(&self, _cfg: &busbar_kernel::config::RootCfg) -> Result<(), String> {
-        Ok(())
-    }
-    fn rate_apply(&self) -> Option<&'static dyn RateApply> {
-        HOLDER.get().copied()
-    }
-}
+use busbar_kernel::test_support::rate_holders::install_rate_apply;
 
 /// The flat figure whose card the holder's journal refuses.
 const REFUSED: i64 = 666_001;
@@ -103,7 +88,8 @@ fn build(
         std::collections::HashSet::new(),
         (None, None),
         None,
-        &(std::sync::Arc::new(HeldRules) as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>),
+        &(std::sync::Arc::new(busbar_kernel::appbuild::AcceptAll)
+            as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>),
     )
 }
 
@@ -148,7 +134,7 @@ async fn a_config_change_whose_card_the_journal_refuses_leaves_the_config_unchan
     busbar_kernel::snapshot::init();
     linked::install();
     let journal: &'static Journal = Box::leak(Box::new(Journal(Mutex::new(Vec::new()))));
-    let _ = HOLDER.set(journal);
+    install_rate_apply(journal);
 
     let (first, _rotate, limits) = build(1).expect("the boot config builds");
     limits.keep();

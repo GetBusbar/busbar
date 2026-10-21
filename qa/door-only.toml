@@ -25,7 +25,3 @@ file = "crates/busbar-kernel/src/egress/trust/mod.rs"
 item = "EGRESS_TRUST"
 count = 1
 
-# `crates/busbar-kernel/src/rate_apply.rs` APPLY and EPOCH STRUCK (Q128 arch u37 #25,
-# GetBusbar/busbar#1259): the rate holder and dater are handed in with the root's rules, and both
-# OnceLock seams are deleted.
-

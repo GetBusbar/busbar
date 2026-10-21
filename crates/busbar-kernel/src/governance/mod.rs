@@ -78,15 +78,6 @@ pub const SELF_KEY_BINDING_MODE: &str = "user-bound";
 /// spelling (`"time-bound"`). Named `_APP` to contrast the self-serve personal `user-bound` key.
 pub const SELF_KEY_BINDING_MODE_APP: &str = "time-bound";
 
-/// The reserved [`busbar_contract::records::VirtualKey::labels`] entry a SELF-SERVE binding records
-/// its minting identity provider under: the `identity-providers:` instance name that asserted the
-/// subject. The self group and the derived id are keyed by subject alone, and two providers backed by
-/// one module can both assert `oidc:alice`, so the binding remembers which one minted it and the
-/// self-serve mint refuses any other. A row without it (minted before the label existed) adopts the
-/// first provider that logs in. Kept off the key metric series (`snapshot::money`), so recording it
-/// changes no scrape.
-pub const SELF_KEY_PROVIDER_LABEL: &str = "busbar_self_provider";
-
 /// The `generation_hash` marker for a signed-token binding at a given rotation generation.
 pub fn binding_marker(id: &str, generation: &str) -> String {
     format!("{BINDING_MARKER_PREFIX}{id}:{generation}")
@@ -286,17 +277,17 @@ impl BudgetCell {
 
     /// THE CELL, PRICED, each era at the card in force when it was earned: every (model, era)
     /// segment and — with `include_fee` — the fee base per era, each at the card its era resolves to
-    /// in the governance's dated history (`history`; none: the live card), through the one function. A present
+    /// in the installed dated history (none: the live card), through the one function. A present
     /// card silent about a held class, or an overflow, REFUSES — never a silent 0.
     fn spend(
         &self,
         cost: &crate::cost::CostModel,
         include_fee: bool,
-        history: Option<&busbar_kernel_ledger::cost::History>,
     ) -> Result<busbar_kernel_ledger::cost::Money, busbar_kernel_ledger::cost::MoneyError> {
         use busbar_kernel_ledger::usage::{price_dated, DatedHistory};
+        let history = crate::rate_apply::dated_history();
         let now_ms = crate::store::now_ms();
-        let dated = history.map(|h| DatedHistory::of(h, now_ms));
+        let dated = history.as_deref().map(|h| DatedHistory::of(h, now_ms));
         let fees = (self.fee_eras.split(self.billable_requests)).filter(|_| include_fee);
         let rows = self.models.iter().map(|m| (&*m.model, m.era, &m.cur));
         let start_ms = self.window_start.saturating_mul(1_000);
@@ -795,15 +786,13 @@ pub struct GovState {
     /// is recovered with `into_inner()`. (The deterministic id already makes two concurrent *issues*
     /// idempotent by id; this closes the issue/refresh interleaving and non-idempotent stores.)
     self_mint_lock: std::sync::Mutex<()>,
+    /// Whether the self-serve mint holds an admin's state and the minting provider
+    /// ([`SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE`]); set from that const at construction.
+    self_mint_holds: std::sync::atomic::AtomicBool,
     /// The configured store's store v3 slots (its typed records among them), when it was opened
     /// through a door ([`busbar_contract::store_calls::OpenedStore::calls`]): what the kernel's host
     /// services serve plane records over ([`Self::attach_store_calls`]).
     store_calls: std::sync::OnceLock<Arc<dyn busbar_contract::store_calls::StoreCalls>>,
-    /// The deployment's rate dater ([`crate::rate_apply::RateEpoch`]), handed to this governance by
-    /// the build that constructs it from its root's rules ([`Self::set_rate_epoch`]): what dates
-    /// every accrual ([`Self::effective_from_at`]) and prices every read ([`Self::dated_history`]).
-    /// Unset: every era is `0` and every read prices at the live card.
-    rate_epoch: std::sync::OnceLock<&'static dyn crate::rate_apply::RateEpoch>,
     /// THE CALLER-REFERENCE KEY a verified principal's units are lent their reference under, live
     /// ([`crate::plane_driver::CallerRefs`]): derived from the signing material when the node has
     /// one, else from the deployment keyset the book binds (row 159 H2), so every verified principal
@@ -869,6 +858,16 @@ pub enum SelfMintOp {
     Refresh,
 }
 
+/// Whether the self-serve mint holds an admin's state and the minting provider across a login (K3
+/// #17, #21): a subject whose binding an admin disabled, or that another identity provider minted,
+/// is refused (403), and the epoch probe treats ANY existing row as occupied, so a login never
+/// writes over a disabled, rotated or moved row. `false` is 1.5.5's behaviour, which this build keeps
+/// until the owner signs the change (Q128 u31): no refusal, and the probe skips only tombstoned rows,
+/// so a login re-enables an admin-disabled binding at its derived id (v1.5.5
+/// crates/busbar/src/governance/state.rs:431 skips only tombstones; :560 mints). The owner's
+/// signature flips this one line.
+pub const SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE: bool = false;
+
 /// Why the self-serve mint refused to issue. Each one is an admin's or another provider's hold on the
 /// subject, never a store failure; the token exchange maps every one to `Unbound` (403).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -877,7 +876,7 @@ pub enum SelfMintRefusal {
     /// login or refresh must not re-enable it or route around it with a fresh key.
     Disabled,
     /// The subject's binding was minted through a different identity provider
-    /// ([`SELF_KEY_PROVIDER_LABEL`]).
+    /// ([`busbar_contract::records::VirtualKey::idp_provider`]).
     OtherProvider,
 }
 

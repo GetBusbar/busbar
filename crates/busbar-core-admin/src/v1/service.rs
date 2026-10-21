@@ -159,7 +159,7 @@ fn metered_row<'a>(
 
 /// **WHETHER A METERING ROW'S USAGE VIEW CARRIES `classes`.** Only a row a non-pools plane metered
 /// (its `provider` column is that plane's registry key, as [`row_lane`] reads it): the classes that
-/// plane declares are new 1.6.0 surface (the FLIP-A2A ruling). A pools-plane row keeps 1.5.5's
+/// plane declares are new 1.6.0 surface (the PLANE-FLIP ruling). A pools-plane row keeps 1.5.5's
 /// usage shape, the token split alone, though the budget book holds an open class for it (a
 /// rerank's `search_units`, a provider-stated total's `unitemized_tokens`, LEDGER-100): that count
 /// stays ledgered and priced into the row's `spend_micros`, and the read does not itemize it. The
@@ -230,13 +230,12 @@ pub(crate) fn usage_refusal(
 /// rate-card history, PINNED for the length of one read: a card appended while the read is in
 /// flight must not price half of one response's rows against one history and half against another.
 ///
-/// The history is the governance's rate dater's ([`busbar_kernel::governance::GovState::dated_history`])
-/// — the one the composition root's rules hand the boot build and the budget ledger's reads price
-/// by — so this crate holds no seam of its own (R6). `None` for a build whose rules name no dater,
-/// or a node that has resolved no configuration yet: the read then derives exactly as the previous
-/// release did.
-fn dated_rate_history(app: &App) -> Option<Arc<busbar_kernel::cost::History>> {
-    app.governance.as_ref().and_then(|gov| gov.dated_history())
+/// The history is the kernel's rate dater's ([`busbar_kernel::rate_apply::dated_history`]) — the
+/// one the composition root installs at boot and the budget ledger's reads price by — so this crate
+/// holds no seam of its own (R6). `None` for a build that installed no dater, or a node that has
+/// resolved no configuration yet: the read then derives exactly as the previous release did.
+fn dated_rate_history() -> Option<Arc<busbar_kernel::cost::History>> {
+    busbar_kernel::rate_apply::dated_history()
 }
 
 /// **THE INSTANT A METERING ROW RESOLVES AT**: its own FIRST instant — the later of the bucket's

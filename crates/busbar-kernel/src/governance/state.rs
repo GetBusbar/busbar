@@ -140,37 +140,11 @@ impl GovState {
             denylist,
             refresh_lock: std::sync::Mutex::new(()),
             self_mint_lock: std::sync::Mutex::new(()),
+            self_mint_holds: std::sync::atomic::AtomicBool::new(
+                SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE,
+            ),
             store_calls: std::sync::OnceLock::new(),
-            rate_epoch: std::sync::OnceLock::new(),
         })
-    }
-
-    /// Hand this governance the deployment's rate dater, once (the build that constructs it, from
-    /// its root's rules: `appbuild::RootRules::rate_epoch`). `None`, or a second hand-over, changes
-    /// nothing.
-    pub fn set_rate_epoch(&self, dater: Option<&'static dyn crate::rate_apply::RateEpoch>) {
-        if let Some(dater) = dater {
-            let _ = self.rate_epoch.set(dater);
-        }
-    }
-
-    /// The `effective_from` of the dated rate-card entry in force at `at_ms`
-    /// ([`crate::rate_apply::RateEpoch::effective_from_at`]); `0` with no dater, the opening
-    /// entry's own `effective_from`, so a cell dated by it resolves to the card the deployment
-    /// opened with.
-    #[must_use]
-    pub fn effective_from_at(&self, at_ms: u64) -> u64 {
-        self.rate_epoch
-            .get()
-            .map_or(0, |dater| dater.effective_from_at(at_ms))
-    }
-
-    /// The deployment's dated rate-card history, if its dater holds one
-    /// ([`crate::rate_apply::RateEpoch::history`]): what every read of this book and the admin usage
-    /// read price through.
-    #[must_use]
-    pub fn dated_history(&self) -> Option<Arc<busbar_kernel_ledger::cost::History>> {
-        self.rate_epoch.get().and_then(|dater| dater.history())
     }
 
     /// Keep the configured store's store v3 slots beside its 1.5.5 op set, once (boot opens the
@@ -603,7 +577,7 @@ impl GovState {
         }
         // THE CARD ERA (Q14, #79), read as the metering row beside this accrual reads it: the
         // tokens are dated when they land, on the history's own millisecond clock.
-        let era = self.effective_from_at(crate::store::now_ms());
+        let era = crate::rate_apply::effective_from_at(crate::store::now_ms());
         // THE METERING SERIES CARRIES WHAT THIS BOOK HOLDS: the same counts, keyed by the same era,
         // mirrored onto the key's metering row by THIS accrual — the one place every ledgered class
         // lands — so the admin usage read prices exactly the counts this book prices.
@@ -786,14 +760,14 @@ impl GovState {
             add,
             now,
             &crate::store::now_ms,
-            &|at_ms| self.effective_from_at(at_ms),
+            &crate::rate_apply::effective_from_at,
         );
     }
 
     /// [`Self::record_metered_request`] with the price-instant clock and the rate dater passed in,
     /// so a test drives the dating behaviourally against a dater double rather than the
-    /// governance's own dater. The production path passes the wall clock in milliseconds and
-    /// [`Self::effective_from_at`] (the dater the root's rules handed this governance).
+    /// process-wide `OnceLock` holder. The production path passes the wall clock in milliseconds
+    /// and the installed holder.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn record_metered_request_dated(
         &self,
@@ -1579,13 +1553,7 @@ impl GovState {
     ) -> RecordStoreResult<DerivedUsage> {
         let window = budget_window(budget_period, now);
         let cell = self.bucket_cell(bucket_id, window)?;
-        let inputs = money_view::Inputs::of(
-            cost,
-            budget_period,
-            include_request_fee,
-            &cell,
-            self.dated_history(),
-        );
+        let inputs = money_view::Inputs::of(cost, budget_period, include_request_fee, &cell);
         let priced = match self.money_view.fresh(bucket_id, &inputs) {
             Some(priced) => priced,
             None => {
@@ -1643,8 +1611,7 @@ impl GovState {
         // from the BILLABLE (2xx-only) count; `requests` reports the admission count (the
         // requests-limit truth).
         let fixed = self.corrected(cost, (bucket_id, budget_period, window), &mut cell.models)?;
-        let spend = fixed
-            .and_then(|()| cell.spend(cost, include_request_fee, self.dated_history().as_deref()));
+        let spend = fixed.and_then(|()| cell.spend(cost, include_request_fee));
         Ok(spend
             .and_then(Money::minor_i64)
             .map(|spend_cents| DerivedUsage {
@@ -1669,9 +1636,7 @@ impl GovState {
     ) -> RecordStoreResult<Result<(), busbar_kernel_ledger::cost::MoneyError>> {
         let corrections = crate::audit::amend::node_corrections();
         let landing = self.landing_corrections(cost, bucket, &corrections)?;
-        Ok(fold_corrections(segments, &landing, |at| {
-            self.effective_from_at(at)
-        }))
+        Ok(fold_corrections(segments, &landing))
     }
 
     /// The corrections among `corrections` that land on one bucket's window: its principal's own
@@ -1780,10 +1745,9 @@ impl GovState {
                 Some(mut cell) => {
                     let key = (bucket.bucket_id, bucket.window, window);
                     match self.corrected(cost, key, &mut cell.models) {
-                        Ok(Ok(())) => (cell
-                            .spend(cost, true, self.dated_history().as_deref())
-                            .and_then(Money::micros_i64))
-                        .map_err(|_| ()),
+                        Ok(Ok(())) => {
+                            (cell.spend(cost, true).and_then(Money::micros_i64)).map_err(|_| ())
+                        }
                         Ok(Err(_)) | Err(_) => Err(()),
                     }
                 }
@@ -2132,7 +2096,7 @@ impl GovState {
                 Some(l) => {
                     let mut cell = live.cloned().unwrap_or_else(|| BudgetCell::fresh(window));
                     Some(
-                        fold_corrections(&mut cell.models, l, |at| self.effective_from_at(at))
+                        fold_corrections(&mut cell.models, l)
                             .map(|()| cell)
                             .map_err(|_| ()),
                     )
@@ -2149,8 +2113,7 @@ impl GovState {
                     cell.requests,
                     bucket.tokens_cap.map_or(0, |_| cell.total_tokens()),
                     bucket.budget_cap.map_or(Ok(0), |_| {
-                        (cell.spend(cost, true, self.dated_history().as_deref()))
-                            .and_then(Money::minor_i64)
+                        (cell.spend(cost, true)).and_then(Money::minor_i64)
                     }),
                 ),
                 None => (0, 0, Ok(0)),
@@ -2217,7 +2180,7 @@ impl GovState {
 
         // The arrival's card era: each bucket's fee base records the request under the card in
         // force at admission, so a card edit reprices only what follows it.
-        let era = self.effective_from_at(wall_ms());
+        let era = crate::rate_apply::effective_from_at(wall_ms());
         // Another plane's request is one fee unit on ITS fee lane (#47), not the flat fee base.
         let one = || BTreeMap::from([(PER_REQUEST.to_string(), 1)]);
         let plane_fee = (!plane.is_empty()).then(|| (plane_fee_lane(plane), one()));
@@ -2717,7 +2680,6 @@ fn money_refusal(bucket_id: &str, e: &busbar_kernel_ledger::cost::MoneyError) ->
 fn fold_corrections(
     segments: &mut Vec<ModelCell>,
     landing: &[&crate::audit::amend::Adjust],
-    effective_from_at: impl Fn(u64) -> u64,
 ) -> Result<(), busbar_kernel_ledger::cost::MoneyError> {
     for adj in landing {
         let at = adj.card_epoch_ms;
@@ -2728,7 +2690,7 @@ fn fold_corrections(
         let i = seg.unwrap_or_else(|| {
             segments.push(ModelCell {
                 model: std::sync::Arc::from(adj.lane.as_str()),
-                era: effective_from_at(at),
+                era: crate::rate_apply::effective_from_at(at),
                 cur: BTreeMap::new(),
                 flushed: BTreeMap::new(),
             });

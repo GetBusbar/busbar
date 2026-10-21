@@ -618,7 +618,7 @@ fn the_holder_hands_a_reader_the_whole_history_and_an_unresolved_node_none() {
 }
 
 /// The read the usage view asks through answers with the PROCESS history and nothing of its own:
-/// the date half's `history` (what `GovState::dated_history` hands the admin
+/// the date half's `history` (what `busbar_kernel::rate_apply::dated_history` hands the admin
 /// usage read and the budget book) is the holder's.
 ///
 /// A delegation is the whole implementation, so the assertion is that the two readings agree —
@@ -639,39 +639,54 @@ fn the_usage_read_answers_with_the_process_history() {
     );
 }
 
-/// **THE WIRING WITNESS.** The root's rules hand every build BOTH halves of the rate seam, the
-/// boot arms the holder, and the binary calls the arming.
+/// **THE WIRING WITNESS.** The root's install record carries BOTH halves of the rate seam, the
+/// binary installs that record, and the boot arms the repricer's journal.
 ///
 /// The apply half without the read half is precisely the defect this seam rules out: a node that dates its
 /// prices and then reports them off the newest card anyway. The date half without the other two
-/// stamps an instant nothing reads. Both halves reach the kernel through the root's rules
-/// (`RootRules::rate_apply`, `RootRules::rate_epoch`), never a kernel `OnceLock` (Q128 arch u37
-/// #25; THE DESIGN §10 R6), and the boot arming must still be called: the root unit, `main.rs` and
-/// the manifest's root-unit table are read for the call.
+/// stamps an instant nothing reads. And any of them without a caller is dead code that looks live.
+/// So the root's install record is read for both halves, `main.rs` for its install, the body of
+/// `install_card_repricer` for the journal it arms, and the root unit, `main.rs` and the manifest's
+/// root-unit table for the call — facts that have to hold together for the seam to be reachable in
+/// the shipped binary, and no one of which implies the others.
 #[test]
 fn the_boot_install_raises_both_halves_of_the_rate_seam_and_main_calls_it() {
-    use busbar_kernel::appbuild::RootRules as _;
+    let linked = include_str!("../linked.rs");
+    let record = linked
+        .split("pub fn register_stores(linked: &Linked) {")
+        .nth(1)
+        .expect("register_stores is declared")
+        .split("\n}")
+        .next()
+        .expect("its body closes");
+    assert!(
+        record.contains("rate_apply: Some(&crate::root::kernel::CardRepricer)"),
+        "the root's install record stopped carrying the APPLY half: {record}"
+    );
+    assert!(
+        record.contains("rate_epoch: Some(&crate::root::kernel::CardRepricer)"),
+        "the root's install record stopped carrying the DATE half — a metering cell would carry no \
+         instant finer than its UTC day and a mid-day card edit would reprice the whole day (#79): \
+         {record}"
+    );
+    assert!(
+        include_str!("../../main.rs").contains("root::linked::register_stores(&LINKED);"),
+        "main.rs no longer installs the root's install record, so neither half is ever raised"
+    );
     let kernel = include_str!("../kernel.rs");
-    let rules = crate::root::door_steps::Rules::default();
+    let body = kernel
+        .split("pub fn install_card_repricer() {")
+        .nth(1)
+        .expect("install_card_repricer is declared")
+        .split("\n}")
+        .next()
+        .expect("its body closes");
     assert!(
-        rules.rate_apply().is_some(),
-        "the root's rules stopped handing the APPLY half to the build"
-    );
-    assert!(
-        rules.rate_epoch().is_some(),
-        "the root's rules stopped handing the DATE half — a metering cell would carry no instant \
-         finer than its UTC day and a mid-day card edit would reprice the whole day (#79)"
-    );
-    let door_steps = include_str!("../door_steps.rs");
-    assert_eq!(
-        door_steps
-            .matches("Some(&crate::root::kernel::CardRepricer)")
-            .count(),
-        2,
-        "both halves the rules hand over are the root's card repricer"
+        body.contains("ROOT_CARD.arm_journal()"),
+        "the boot step stopped arming the repricer's journal before the boot resolution: {body}"
     );
     // The READ half rides the date half: the dater's `history` is what the usage read and the
-    // budget book price through (`GovState::dated_history`).
+    // budget book price through (`rate_apply::dated_history`).
     let dater = kernel
         .split("impl busbar_kernel::rate_apply::RateEpoch for CardRepricer {")
         .nth(1)
@@ -691,8 +706,8 @@ fn the_boot_install_raises_both_halves_of_the_rate_seam_and_main_calls_it() {
     let main = include_str!("../../main.rs");
     assert!(
         main.contains("ROOT_UNITS.iter().filter_map(|u| u.on_config)"),
-        "main.rs no longer runs the root units' configuration steps, so the boot install is never \
-         called"
+        "main.rs no longer runs the root units' configuration steps, so the repricer's journal is \
+         never armed"
     );
     let manifest = include_str!("../../../Cargo.toml");
     let callers: Vec<String> = root_unit_modules(manifest)
@@ -706,9 +721,9 @@ fn the_boot_install_raises_both_halves_of_the_rate_seam_and_main_calls_it() {
         .collect();
     assert!(
         !callers.is_empty(),
-        "no root unit the manifest lists has a configuration step that calls the boot install, so \
-         neither half is ever raised (or the unit that does is not a root unit the manifest lists, \
-         so no build's table carries it)"
+        "no root unit the manifest lists has a configuration step that arms the repricer, so the \
+         boot resolution's opening entry is never held for the book (or the unit that does is not \
+         a root unit the manifest lists, so no build's table carries it)"
     );
 }
 

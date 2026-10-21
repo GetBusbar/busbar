@@ -50,7 +50,7 @@ use busbar_contract::caps::{
     VerifiedDestination, Verify,
 };
 use busbar_contract::{LaneId, UnitKey};
-use busbar_kernel::plane_host::PlaneAnswer;
+use busbar_kernel::plane_driver::PlaneAnswer;
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{
     AccrualMeter, Ended, Evidence, RouteAwait, RouteLeg, Screen, UnitCtx, Units,
@@ -401,6 +401,19 @@ impl Node {
             let _ = self.lane.set(lane);
         }
         let _ = self.book.set(book);
+    }
+
+    /// The lane to the configured store the book bound to this node keeps ([`Node::bind_book`]):
+    /// the lane the boot's lease on the host name is held on. `None` before a book is bound, or on
+    /// a book over no store.
+    #[must_use]
+    pub fn book_lane(&self) -> Option<crate::root::durability::JournalLane> {
+        self.book.get().and_then(|book| {
+            book.lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .lane()
+                .cloned()
+        })
     }
 
     /// WHY THIS NODE REFUSES A NEW MONEY-BEARING UNIT NOW, or `None` — one atomic read while the
@@ -1417,13 +1430,6 @@ fn priced_posting(
     // history resolves which entry was in force then; a later apply is not in this view at all, so
     // there is no arm here that could read one.
     let priced = busbar_kernel_ledger::cost::price_fail_closed(&history.view(), &posting);
-    // THE CACHE IS WRITTEN AND IS NEVER READ BACK. It rides the posting so a reader has a figure to
-    // compare a re-derivation against and so a totals read need not re-price a day of postings on
-    // every request — but the figure this function RETURNS is the lookup's, taken off `priced`
-    // directly. There is no arm below that consults `posting.cached`, which is the invariant stated
-    // as code rather than as a comment: corrupt the cache and this expression answers exactly what
-    // the quantities and the history say.
-    posting.cached = priced.as_ref().ok().map(|p| p.as_cache(history.seq()));
     (posting, priced)
 }
 
@@ -2723,7 +2729,7 @@ impl Sealing {
 }
 
 /// How the plane classed the finish, in the record's own words.
-fn audit_finish(finish: busbar_contract::FinishClass) -> RecordFinish {
+pub(crate) fn audit_finish(finish: busbar_contract::FinishClass) -> RecordFinish {
     match finish {
         busbar_contract::FinishClass::Complete => RecordFinish::Complete,
         busbar_contract::FinishClass::TurnComplete => RecordFinish::TurnComplete,
@@ -2862,7 +2868,10 @@ fn settling_at<'a>(
 /// The same `card_at` the admin read resolves through (`busbar-core-admin/src/v1/service.rs`). TWO
 /// COPIES OF ONE RULING ARE TWO CHANCES TO GET IT WRONG — this one is written to match rather than to
 /// differ, and #43's end state is the one kernel-side implementation that retires both.
-fn card_in_force(card: Option<&crate::root::kernel::PinnedHistory>, arrived_ms: u64) -> u64 {
+pub(crate) fn card_in_force(
+    card: Option<&crate::root::kernel::PinnedHistory>,
+    arrived_ms: u64,
+) -> u64 {
     card.and_then(|pinned| pinned.view().card_at(arrived_ms).map(|(seq, _)| seq.get()))
         .unwrap_or_else(|| busbar_kernel_ledger::cost::HistorySeq::OPENING.get())
 }
@@ -2914,7 +2923,7 @@ pub fn bind_book(book: Arc<Mutex<crate::root::durability::Durability>>) {
 ///
 /// * the node itself ([`drive`]) is handed to every entry on the linked table's `node` axis, whose
 ///   arrivals hand it their units;
-/// * the card repricer is armed once the limits resolve and BEFORE the first app build, so the
+/// * the card repricer is installed once the limits resolve and BEFORE the first app build, so the
 ///   boot's own rate resolution is the history's opening entry (see
 ///   [`crate::root::kernel::install_card_repricer`]);
 /// * the node's book is opened for it, and its exit arm is bound to that book ([`bind_book`]) before
