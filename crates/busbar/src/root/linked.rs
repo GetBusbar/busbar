@@ -998,6 +998,14 @@ mod tests;
 #[path = "tests/linked_secret_sources.rs"]
 mod secret_source_tests;
 
+// THE OPERATOR CREDENTIAL'S LINKED ROW, judged where it is linked. These cases were gated on a
+// `body-ingress` axis no linked row ever carried, so they never ran; the axis is deleted (status row
+// 82, D2) and they run wherever the operator row is linked, as the design bindings and the shadow
+// oracle's accepted differences that cite them require (Law 10).
+#[cfg(all(test, linked_operator_auth))]
+#[path = "tests/linked_auth.rs"]
+mod auth_tests;
+
 #[cfg(test)]
 #[path = "tests/linked_canonical.rs"]
 mod linked_canonical;
