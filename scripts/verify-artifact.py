@@ -825,6 +825,33 @@ def _assert_contract_is_whole(contract: dict) -> list:
     return rows
 
 
+def _assert_pgo_floor(targets: dict) -> int:
+    """THE TRAINED-BUILD FLOOR: `pgo_floor` in release-targets.json, read and held.
+
+    `pgo_applied` applies only where a target declares `pgo: true`, so flipping `pgo` to false on a
+    published binary switches that row off for it in the green direction. The count of published
+    binary targets that train a profile must not fall below `pgo_floor`; the floor is a positive
+    int, and a `pgo` that is not a bool is a broken declaration, never an exemption. Returns the
+    count it measured."""
+    floor = targets.get("pgo_floor")
+    if type(floor) is not int or floor <= 0:
+        raise SystemExit("targets: pgo_floor must be a positive int; got %r" % (floor,))
+    trained = 0
+    for t in targets.get("targets") or []:
+        if t.get("kind") != "binary" or t.get("published") is not True:
+            continue
+        if type(t.get("pgo")) is not bool:
+            raise SystemExit("targets: %r declares pgo=%r; pgo is a bool" % (t.get("target"), t.get("pgo")))
+        trained += t["pgo"]
+    if trained < floor:
+        raise SystemExit(
+            "targets: %d published binary target(s) train a PGO profile, under pgo_floor %d. A target "
+            "that stops declaring `pgo` switches `pgo_applied` off for itself; the floor is what "
+            "refuses that." % (trained, floor)
+        )
+    return trained
+
+
 def row_coverage(rows: list, targets: dict) -> dict:
     """Which declared rows does anything actually EXECUTE, and against which targets?
 
@@ -1067,6 +1094,34 @@ def selftest(contract_path: str = DEFAULT_CONTRACT, targets_path: str = DEFAULT_
             print("  [FAILED] %-38s -> %s" % (label, why))
             failures += 1
 
+    # ── THE TRAINED-BUILD FLOOR, BOTH WAYS ─────────────────────────────────────────────────────
+    def pgo_refused(doc):
+        try:
+            _assert_pgo_floor(doc)
+            return False
+        except SystemExit:
+            return True
+
+    floor_targets = json.load(open(targets_path, encoding="utf-8"))
+    check("the real targets meet pgo_floor",
+          not pgo_refused(floor_targets),
+          "GREEN twin: the declared trained set clears its own floor")
+    flipped = json.loads(json.dumps(floor_targets))
+    for t in flipped["targets"]:
+        if t.get("kind") == "binary" and t.get("published") is True and t.get("pgo") is True:
+            t["pgo"] = False
+            break
+    check("one trained target flipped to pgo:false is refused",
+          pgo_refused(flipped),
+          "RED: a published binary that stops training drops pgo_applied for itself")
+    check("pgo_floor absent is refused",
+          pgo_refused({k: v for k, v in floor_targets.items() if k != "pgo_floor"}),
+          "a floor nobody declares is no floor")
+    check("pgo as a string is refused",
+          pgo_refused(dict(floor_targets, targets=[dict(t, pgo="true") if t.get("kind") == "binary"
+                                                   else t for t in floor_targets["targets"]])),
+          "a bool that became a string switches pgo_applied off silently")
+
     # ── THE PLUGIN PROBE'S VERDICT, BOTH STATES, BOTH WAYS ───────────────────────────────────────
     # The row itself needs a real artifact; its JUDGE does not. A `refused` probe must accept the
     # named refusal and refuse a binary that loads the 1.5.x plugin (the legacy-loading RED arm), a
@@ -1244,6 +1299,7 @@ def coverage_main(argv) -> int:
     contract = json.load(open(a.contract, encoding="utf-8"))
     targets = json.load(open(a.targets, encoding="utf-8"))
     rows = _assert_contract_is_whole(contract)
+    _assert_pgo_floor(targets)
     cov = row_coverage(rows, targets)
     print("=== artifact-contract coverage ===")
     print("verified targets (published:true): %s\n" % ", ".join(cov["verified_targets"]))
@@ -1300,6 +1356,7 @@ def main(argv=None) -> int:
     contract = json.load(open(a.contract, encoding="utf-8"))
     targets = json.load(open(a.targets, encoding="utf-8"))
     rows = _assert_contract_is_whole(contract)
+    _assert_pgo_floor(targets)
 
     specs = {t["target"]: t for t in targets["targets"]}
     if a.target not in specs:
