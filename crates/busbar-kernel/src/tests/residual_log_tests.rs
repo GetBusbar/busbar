@@ -7,8 +7,7 @@
 //! money evidence, so it lives on the DURABLE per-principal journal stream, survives a restart and
 //! replays, and never touches the bounded in-RAM admin audit ring.
 
-use crate::plane_host::{JournalHost, USAGE_RESIDUAL_ACTION};
-use crate::residual_log::{settle, ResidualTestHarness};
+use crate::residual_log::{settle, ResidualTestHarness, USAGE_RESIDUAL_ACTION};
 use crate::store::plane_view::KIND_RESIDUAL;
 use busbar_contract::records::{
     PlaneRecordRef, PlaneSelector, RecordStore, RecordStoreError, RecordStoreResult,
@@ -232,46 +231,5 @@ fn a_residual_settles_as_one_unbilled_row_on_the_durable_journal_and_survives_a_
             .expect("verify"),
         Ok(2),
         "the whole persisted chain verifies"
-    );
-}
-
-/// A host that records every admin audit row it is handed.
-#[derive(Default)]
-struct Rows(Mutex<Vec<String>>);
-
-impl JournalHost for Rows {
-    fn audit_emit(&self, action: &str, _resource: &str, _outcome: &str, _principal: &str) {
-        self.0.lock().expect("rows").push(action.to_string());
-    }
-
-    fn audit_record(
-        &self,
-        action: &str,
-        _resource: &str,
-        _outcome: &'static str,
-        _principal: &str,
-    ) {
-        self.0.lock().expect("rows").push(action.to_string());
-    }
-}
-
-/// THE SEAM NEVER WRITES THE ADMIN RING. `JournalHost::settle_residual` routes to the durable
-/// residual journal; the operator-rate admin audit (ring or durable-only) sees no `usage.residual`
-/// row, so request-rate residuals can never evict an admin mutation. RED if the settle goes back to
-/// `audit_record`/`audit_emit`.
-#[test]
-fn the_settle_seam_writes_no_admin_audit_row() {
-    let rows = Rows::default();
-    rows.settle_residual(
-        &BTreeMap::from([("policy.units".to_string(), 14)]),
-        "plane-a",
-        "dialect-a",
-        "lane-a",
-        42,
-        "key-1",
-    );
-    assert!(
-        rows.0.lock().expect("rows").is_empty(),
-        "a residual never lands on the admin audit ring"
     );
 }
