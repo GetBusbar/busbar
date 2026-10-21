@@ -874,7 +874,6 @@ fn dropped_doors() -> &'static [DroppedDoor] {
         let (door, wire) = crate::root::doors::served(
             plugin,
             &busbar_contract::transport::TransportSettings::default(),
-            Some(crate::root::connector::address_carrier()),
         )
         .expect("the door serves");
         vec![DroppedDoor {

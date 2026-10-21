@@ -36,10 +36,9 @@
 //
 // and this turns the rows whose feature is ENABLED into `extern crate <crate> as _;` lines, one table
 // per registration axis over each entry module's item for that axis (the `LINKED` value), the cfgs
-// of the root-bound seams some enabled entry drives, and the `ROOT_UNITS` table. It is the same shape
-// as the test-seam table `busbar-core-admin`'s build script emits (`metadata_list` + `linked_table`
-// there); a build script may not read another crate's source (kind-isolation `build-script-reach`),
-// so the two are written in each crate rather than shared by a path that climbs out of one of them.
+// of the root-bound seams some enabled entry drives, and the `ROOT_UNITS` table. The composition root
+// is the one crate that generates a linked table: no cleanliness crate has a build script that names
+// a plugin, and their tests link the kernel's kind-neutral doubles instead.
 
 /// THE NODE'S OWN ROOT-UNIT ROW (ARCHITECT Q1): keyed to the node itself rather than to a plane
 /// feature, because the node compiles in every build and every door plane — compiled in or dropped
@@ -63,18 +62,6 @@ pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("hooks", "hook_doors", "door"),
     // The node axis: a plane whose units a composition root's node drives is handed that node.
     ("node", "node", "install_node"),
-    // The unified kernel loop (#28): the key a plane is flipped onto its one-shot or session runner
-    // under — its declaration's key, so these two rows ride on `plane` (refused without it).
-    (
-        "gauntlet-one-shot",
-        "gauntlet_one_shot",
-        "PLANE_DECLARATION.key",
-    ),
-    (
-        "gauntlet-session",
-        "gauntlet_session",
-        "PLANE_DECLARATION.key",
-    ),
 ];
 
 /// The transport axis (#3, #30): each row's entry exports its memory-ABI `door`, and the root reads
@@ -365,11 +352,6 @@ pub(crate) fn linked_source(
                 "Cargo.toml: `{krate}` names an unknown linked axis `{axis}`"
             );
         }
-        let gauntlet = list.iter().filter(|a| a.starts_with("gauntlet-")).count();
-        assert!(
-            gauntlet == 0 || (gauntlet == 1 && list.iter().any(|a| a == "plane")),
-            "Cargo.toml: `{krate}` rides the kernel loop on one gauntlet axis, beside `plane`"
-        );
         assert!(
             !list.iter().any(|a| a == CLAIMS_AXIS) || list.iter().any(|a| a == "plane"),
             "Cargo.toml: `{krate}` declares claims only beside `plane`"
@@ -518,7 +500,7 @@ pub(crate) fn linked_source(
              fn __door_build_{n}(\n    \
              settings: &busbar_contract::transport::TransportSettings,\n\
              ) -> std::sync::Arc<busbar_core_connector::wire::HostWire> {{\n    \
-             crate::root::doors::build(__door_key_{n}(), {e}::door, settings, Some(crate::root::connector::address_carrier()))\n}}\n\
+             crate::root::doors::build(__door_key_{n}(), {e}::door, settings)\n}}\n\
              fn __door_claims_{n}() -> Vec<&'static str> {{\n    \
              crate::root::doors::claims_of({e}::door)\n}}\n\
              fn __door_upgrades_{n}() -> Vec<&'static str> {{\n    \
@@ -662,25 +644,6 @@ pub(crate) fn linked_source(
         }
     }
     out.push_str("];\n");
-    // Test builds only: each gauntlet row's declaration key beside the key its plane's gauntlet asks
-    // the host-selection seam for (`<crate>::PLANE_KEY`), so the flip is proven to land where the
-    // plane looks. NO STATEMENT HOME for either key: no Statement field states a plane's
-    // declaration key or the key its gauntlet asks under.
-    out.push_str(
-        "/// Each kernel-loop row's (declaration key, key its gauntlet asks its runner under).\n\
-         #[cfg(test)]\n\
-         static LINKED_GAUNTLET_ASKS: &[(&str, &str)] = &[\n",
-    );
-    for ((entry, list), (_, krate)) in linked.iter().zip(&on) {
-        if list.iter().any(|a| a.starts_with("gauntlet-")) {
-            out.push_str(&format!(
-                "    ({entry}::PLANE_DECLARATION.key, {}::PLANE_KEY),\n",
-                ident(krate)
-            ));
-        }
-    }
-    out.push_str("];\n");
-
     out.push_str(
         "/// Every enabled root unit, in manifest order.\n\
          static ROOT_UNITS: &[&crate::root::linked::RootUnit] = &[\n",
