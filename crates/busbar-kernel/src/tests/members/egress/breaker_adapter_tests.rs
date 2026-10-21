@@ -180,8 +180,8 @@ impl Breaker for BreakerAdapter {
         );
     }
 
-    fn release_probe(&self, pool: &str, destination: DestinationId, epoch: u64, now: u64) {
-        self.0.release_probe(pool, destination, epoch, now);
+    fn release_probe(&self, pool: &str, destination: DestinationId, epoch: u64, _now: u64) {
+        self.0.release_probe(pool, destination, epoch);
     }
 
     fn spend_budget(&self, destination: DestinationId) -> bool {
@@ -408,5 +408,5 @@ fn probe_release_crosses_the_seam() {
         .probe_epoch
         .expect("an expired cooldown re-admits via a probe");
     // Released without ever completing the dispatch: does not panic, does not wedge the cell.
-    breaker.release_probe("pool", DestinationId::new(5), epoch, 100_000);
+    breaker.release_probe("pool", DestinationId::new(5), epoch);
 }

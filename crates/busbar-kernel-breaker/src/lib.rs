@@ -12,11 +12,15 @@
 //! pool — the same destination can be Open in one pool and Closed in another. Only the lifetime
 //! request budget and a hard-down trip are lane-global (they trip every pool's cell at once).
 //!
-//! This is a MOVE, not a rewrite: the state machine in [`cell`] (trip condition, escalating
-//! cooldown with jitter, the requested-wait floor, half-open recovery) is byte-identical to 1.5.5's
-//! `busbar-core::store::in_memory::breaker`. See each module's doc comment for the handful of
-//! call-site adaptations required by depending on no workspace crate but `busbar-contract` (no
-//! logging, no SWRR/pool-selection state, which belongs to the egress unit).
+//! The state machine in [`cell`] (trip condition, escalating cooldown with jitter, the
+//! requested-wait floor, half-open recovery) is ported from 1.5.5's
+//! `crates/busbar/src/store/in_memory/breaker.rs`, and [`cfg`] from the `BreakerCfg`, `TripConfig`
+//! and `TripMode` of 1.5.5's `crates/busbar/src/store/in_memory/mod.rs`. The port keeps the arithmetic
+//! and the transitions, and differs from the source where each module's doc comment says so: no
+//! logging, no SWRR/pool-selection state (the egress unit's), the jitter seeded from the caller's
+//! `now` rather than a wall clock, the jitter floor capped at the ceiling, a lock-free success path
+//! for a Closed cell with no streak, and the single-member cell that is not benched below the trip
+//! threshold ([`cfg::BreakerCfg::bench_below_trip_threshold`]).
 //!
 //! The classifier in [`classify`] is NOT a move: 1.5.5's read an upstream's numeric status against
 //! bands. This unit reads facts only — the transport's fault reading of an answer, the wait the
@@ -26,9 +30,6 @@
 //!
 //! ## What's new here, not ported
 //!
-//! - [`journal`]: a `JournalSink` trait for probe lifecycle events. 1.5.5 had no probe journal;
-//!   the architecture's ledger requires one, so this crate defines the seam without owning
-//!   the actual journal writer.
 //! - The sealed [`Breaker`] trait itself (`observe`/`state`, in the unit-trait shape). 1.5.5
 //!   exposed the FSM through a much larger `LaneRuntime` trait (concurrency, SWRR, `/stats`, health
 //!   snapshots — all egress/observability concerns); this crate exposes only the breaker's own two
@@ -40,7 +41,6 @@ pub mod budget;
 pub mod cell;
 pub mod cfg;
 pub mod classify;
-pub mod journal;
 pub mod port;
 
 use std::collections::HashMap;
@@ -50,22 +50,10 @@ use budget::LifetimeBudget;
 use busbar_contract::caps::{Pass, Route};
 use cell::{BreakerCell, BreakerState as CellState, BreakerVerdict, DeniedBy, ProbeAdmit};
 use cfg::BreakerCfg;
-use journal::{JournalSink, NoopJournal, ProbeEvent};
 
 /// The pool-member locator, as the contract crate defines it. The egress unit names the same one,
 /// which is what makes `(transport, destination)` and `(pool, destination)` the same key.
 pub use busbar_contract::DestinationId;
-
-/// The at-capacity requested-wait floor in whole seconds — the answer when no admissible pool member
-/// reports a genuine cooldown to wait out. Pinned to the 1.5.5 constant
-/// (`AT_CAPACITY_RETRY_AFTER_SECS = AT_CAPACITY_RECOVERY_FLOOR_MS / 1000 = 2`).
-///
-/// The egress unit mirrors this value in its own crate rather than importing it, because unit
-/// crates do not depend on one another — the breaker reaches that unit through its `ports::Breaker`
-/// seam alone, and the composition root binds the two. The mirror is deliberate, not an oversight;
-/// what keeps the two honest is an assertion in the egress unit's own tests, where the breaker is a
-/// dev-dependency, that the two constants are still the same number.
-pub const AT_CAPACITY_RETRY_AFTER_SECS: u64 = 2;
 
 /// The default sticky cooldown applied by a hard-down trip (1.5.5's `DEFAULT_HARD_DOWN_COOLDOWN_SECS`).
 pub const DEFAULT_HARD_DOWN_COOLDOWN_SECS: u64 = 1800;
@@ -149,11 +137,10 @@ mod sealed {
 /// reference, never stored, so this trait cannot be driven outside the step it was lent for.
 pub trait Breaker: sealed::Sealed {
     /// Record one classified [`Outcome`] against `(pool, destination)`, applying the state
-    /// machine's trip/cooldown/recovery rules and (for a probe outcome) journaling it. Returns
-    /// `true` IFF this observation drove a fresh, logical Closed→Open trip (a success, a
-    /// `HardDown` fan-out counts only the DEFAULT cell's freshness, and a sub-threshold or
-    /// already-Open failure all return `false`) — the one signal a trip-count metric should
-    /// increment on.
+    /// machine's trip/cooldown/recovery rules. Returns `true` IFF this observation drove a fresh,
+    /// logical Closed→Open trip (a success, a `HardDown` fan-out counts only the DEFAULT cell's
+    /// freshness, and a sub-threshold or already-Open failure all return `false`) — the one signal
+    /// a trip-count metric should increment on.
     fn observe(
         &self,
         pool: &str,
@@ -164,9 +151,16 @@ pub trait Breaker: sealed::Sealed {
         token: &Pass<Route>,
     ) -> bool;
 
-    /// Side-effect-free: this `(pool, destination)` cell's current [`LaneState`], folding in the
-    /// destination's lifetime budget (`BudgetExhausted` takes precedence — an exhausted destination
-    /// is excluded regardless of what its breaker cell reads).
+    /// This `(pool, destination)` cell's current [`LaneState`], folding in the destination's
+    /// lifetime budget (`BudgetExhausted` takes precedence — an exhausted destination is excluded
+    /// regardless of what its breaker cell reads).
+    ///
+    /// Changes no cell's state, but it is not free of effects: the first read of a
+    /// `(pool, destination)` creates its cell Closed and registers the pool for the destination, as
+    /// [`BreakerUnit::cell`] does. That registration is what lets a hard-down fan-out
+    /// ([`BreakerUnit::hard_down_all`]) reach every pool a walk has considered the destination in,
+    /// not only the pools that have admitted through it. Every read after the first takes only the
+    /// cell map's read lock.
     fn state(
         &self,
         pool: &str,
@@ -190,14 +184,10 @@ type CellMap = HashMap<String, HashMap<DestinationId, Arc<BreakerCell>>>;
 /// budget, behind one lock each. Cells are created lazily on first touch (a cell not yet created
 /// inherits Closed-and-unspent, matching 1.5.5's lazy per-pool cell creation).
 ///
-/// Generic over its [`JournalSink`] (`J`), which defaults to a noop so `BreakerUnit::new()` keeps
-/// 1.5.5's silent behavior; a caller wires a real sink through [`Self::with_journal`] without this
-/// unit taking a logging dependency of its own.
-///
 /// The unit classifies nothing. Reading an upstream's error body against an operator's `error_map`
 /// is the plane's work, done once by the plane's own classifier; the unit is told the verdict as an
 /// [`Outcome`] and acts on it.
-pub struct BreakerUnit<J: JournalSink = NoopJournal> {
+pub struct BreakerUnit {
     cells: RwLock<CellMap>,
     /// Which pools exist for a given destination, so a hard-down fan-out can reach every one of
     /// them without scanning the whole cell map. Populated the first time a pool cell for that
@@ -206,32 +196,23 @@ pub struct BreakerUnit<J: JournalSink = NoopJournal> {
     budgets: RwLock<HashMap<DestinationId, Arc<LifetimeBudget>>>,
     hard_down_cooldown_secs: u64,
     max_honored_retry_after_secs: u64,
-    journal: J,
 }
 
-impl BreakerUnit<NoopJournal> {
-    /// A breaker unit with the ADR-0002 defaults and no journal (events discarded).
-    pub fn new() -> Self {
-        Self::with_journal(NoopJournal)
-    }
-}
-
-impl Default for BreakerUnit<NoopJournal> {
+impl Default for BreakerUnit {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<J: JournalSink> BreakerUnit<J> {
-    /// A breaker unit with the ADR-0002 defaults, journaling probe lifecycle events to `journal`.
-    pub fn with_journal(journal: J) -> Self {
+impl BreakerUnit {
+    /// A breaker unit with the ADR-0002 defaults.
+    pub fn new() -> Self {
         Self {
             cells: RwLock::new(HashMap::new()),
             pools_by_destination: RwLock::new(HashMap::new()),
             budgets: RwLock::new(HashMap::new()),
             hard_down_cooldown_secs: DEFAULT_HARD_DOWN_COOLDOWN_SECS,
             max_honored_retry_after_secs: DEFAULT_MAX_HONORED_RETRY_AFTER_SECS,
-            journal,
         }
     }
 
@@ -248,14 +229,10 @@ impl<J: JournalSink> BreakerUnit<J> {
     }
 
     /// Declare a destination's lifetime request budget. `max_requests < 0` means unlimited
-    /// (1.5.5's default). Calling this again for the same destination replaces its budget counter
-    /// (a config-apply rebuild, not a per-request operation).
+    /// (1.5.5's default; see [`LifetimeBudget::limited`]). Calling this again for the same
+    /// destination replaces its budget counter (a config-apply rebuild, not a per-request operation).
     pub fn set_budget(&self, destination: DestinationId, max_requests: i64) {
-        let budget = if max_requests < 0 {
-            LifetimeBudget::unlimited()
-        } else {
-            LifetimeBudget::limited(max_requests)
-        };
+        let budget = LifetimeBudget::limited(max_requests);
         self.budgets
             .write()
             .unwrap_or_else(|e| e.into_inner())
@@ -293,8 +270,10 @@ impl<J: JournalSink> BreakerUnit<J> {
             .and_then(|b| b.remaining())
     }
 
+    /// Whether the destination has nothing left to spend: the same test [`LifetimeBudget::spend`]
+    /// refuses on, so a destination this reports admissible is one a spend would charge.
     fn budget_exhausted(&self, destination: DestinationId) -> bool {
-        matches!(self.budget_remaining(destination), Some(0))
+        matches!(self.budget_remaining(destination), Some(remaining) if remaining <= 0)
     }
 
     /// Spend one unit of `destination`'s lifetime budget. `true` if spent (or the destination is
@@ -487,7 +466,6 @@ impl<J: JournalSink> BreakerUnit<J> {
     /// Mutating admission attempt: wins-or-loses the single-flight probe, checking the destination's
     /// lifetime budget first (an exhausted destination is excluded before the breaker is even
     /// consulted, matching 1.5.5's `classify` reading `dead`/budget separately from the breaker).
-    /// On success, journals a won probe.
     pub fn try_admit(
         &self,
         pool: &str,
@@ -504,38 +482,17 @@ impl<J: JournalSink> BreakerUnit<J> {
             ProbeAdmit::Denied(DeniedBy::Cooling { until }) => Err(LaneState::Suppressed { until }),
             ProbeAdmit::Denied(DeniedBy::ProbeInFlight) => Err(LaneState::ProbeInFlight),
             ProbeAdmit::ReadyNoProbe => Ok(Admit { probe_epoch: None }),
-            ProbeAdmit::ProbeWon(epoch) => {
-                self.journal.record(ProbeEvent::Won {
-                    pool: pool.to_string(),
-                    destination,
-                    epoch,
-                    now,
-                });
-                Ok(Admit {
-                    probe_epoch: Some(epoch),
-                })
-            }
+            ProbeAdmit::ProbeWon(epoch) => Ok(Admit {
+                probe_epoch: Some(epoch),
+            }),
         }
     }
 
     /// Release a probe won by [`Self::try_admit`] but never dispatched (owner-checked: a stale,
-    /// late release cannot revert a newer probe a different caller has since won). Journals the
-    /// release.
-    pub fn release_probe(
-        &self,
-        pool: &str,
-        destination: DestinationId,
-        owned_epoch: u64,
-        now: u64,
-    ) {
-        let cell = self.cell(pool, destination);
-        cell.release_probe_owned(owned_epoch);
-        self.journal.record(ProbeEvent::Released {
-            pool: pool.to_string(),
-            destination,
-            epoch: owned_epoch,
-            now,
-        });
+    /// late release cannot revert a newer probe a different caller has since won).
+    pub fn release_probe(&self, pool: &str, destination: DestinationId, owned_epoch: u64) {
+        self.cell(pool, destination)
+            .release_probe_owned(owned_epoch);
     }
 }
 
@@ -547,9 +504,9 @@ fn suppressed(cell: &BreakerCell, now: u64) -> Option<u64> {
     (!matches!(cell.state(), CellState::Closed) || cooldown > now).then_some(cooldown)
 }
 
-impl<J: JournalSink> sealed::Sealed for BreakerUnit<J> {}
+impl sealed::Sealed for BreakerUnit {}
 
-impl<J: JournalSink> Breaker for BreakerUnit<J> {
+impl Breaker for BreakerUnit {
     fn observe(
         &self,
         pool: &str,
@@ -563,45 +520,16 @@ impl<J: JournalSink> Breaker for BreakerUnit<J> {
             Outcome::RecordNothing => false,
             Outcome::HardDown => self.hard_down_all(destination, now),
             Outcome::Success => {
-                let cell = self.cell(pool, destination);
-                // Gated on what the call REPORTS, exactly as the Transient arm below is. The
-                // recovery CAS can only succeed from HalfOpen, so `closed` IS the proof that this
-                // call closed a probing cell. Reading the state beforehand instead lost the other
-                // direction of the same race: a peer winning the probe between the read and the
-                // CAS left this call closing a HalfOpen cell while believing it had been Closed,
-                // and the won probe got no terminal record at all.
-                let closed = cell.record_success(now);
-                if closed {
-                    self.journal.record(ProbeEvent::Succeeded {
-                        pool: pool.to_string(),
-                        destination,
-                        now,
-                    });
-                }
+                let _ = self.cell(pool, destination).record_success(now);
                 false
             }
-            Outcome::Transient { retry_after } => {
-                let cell = self.cell(pool, destination);
-                // Gated on what the call REPORTS, not on a state read before it — the same way the
-                // Success arm gates on record_success's own answer. A state read here can be stale
-                // by the time record_failure takes the transition lock, and the journal would then
-                // name a probe failure for a fresh trip, or miss one for a reopen.
-                let effect =
-                    cell.record_failure(now, cfg, retry_after, self.max_honored_retry_after_secs);
-                if effect.reopened() {
-                    let cooldown_until = match cell.state() {
-                        CellState::Open { until } => until,
-                        _ => now,
-                    };
-                    self.journal.record(ProbeEvent::Failed {
-                        pool: pool.to_string(),
-                        destination,
-                        cooldown_until,
-                        now,
-                    });
-                }
-                effect.tripped()
-            }
+            // The trip signal is what the call REPORTS, decided under the cell's transition lock,
+            // never a state read before it: a read here can be stale by the time `record_failure`
+            // takes the lock, and would count a probe's reopen as a fresh trip.
+            Outcome::Transient { retry_after } => self
+                .cell(pool, destination)
+                .record_failure(now, cfg, retry_after, self.max_honored_retry_after_secs)
+                .tripped(),
         }
     }
 

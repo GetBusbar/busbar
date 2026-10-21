@@ -924,16 +924,6 @@ why     = "busbar-plugin-loader names busbar-contract: declared shipped, 1 decla
 drain   = "none: BUSBAR-1.6.0.md grants this class (Part 2 #33: the loader atop the one contract crate). Draining it would be an architecture change and not a landing; the row holds the NUMBER, so a NEW plugin-tooling -> contract declaration is visible on the landing that adds it."
 
 [[dep]]
-from    = "busbar-kernel-egress"
-to      = "busbar-kernel-breaker"
-half    = "test"
-count   = "1"
-verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md — kernel workflow crates form the loop; #36 group structure permits intra-tier edges (ARCHITECTURE_ALLOWED kernel -> kernel). The breaker seam is bound by a trait in library code and reached directly only in this crate's tests."
-why     = "busbar-kernel-egress names busbar-kernel-breaker: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "none: BUSBAR-1.6.0.md grants the kernel -> kernel class. What this row holds is the NUMBER."
-
-[[dep]]
 from    = "busbar"
 to      = "busbar-hook-ranking"
 half    = "shipped"
