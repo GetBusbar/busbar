@@ -246,8 +246,14 @@ impl Subject {
         Self::new(door, cdylib_crate, inputs)
     }
 
-    /// [`Subject::new`] over a door the loader may enter: a restated one (the suite's RED arms).
-    pub(crate) fn of_loaded(door: LoadedDoor, cdylib_crate: &'static str, inputs: &str) -> Self {
+    /// [`Subject::new`] over a [`LoadedDoor`]: a `MacroDoor`'s, or a door a crate that exports its
+    /// `door` function alone restates (`unsafe { LoadedDoor::from_raw(plugin::door) }`), as the
+    /// suite's `loaded:` arm and its RED arms name one (status rows 159 and 194).
+    ///
+    /// # Panics
+    /// As [`Subject::new`].
+    #[must_use]
+    pub fn of_loaded(door: LoadedDoor, cdylib_crate: &'static str, inputs: &str) -> Self {
         let inputs: serde_json::Value = serde_json::from_str(inputs)
             .unwrap_or_else(|e| panic!("conformance.json is not JSON: {e}"));
         assert!(inputs.is_object(), "conformance.json is not a JSON object");
@@ -2036,7 +2042,30 @@ macro_rules! conformance_suite {
             $(s = s.with_namespace($create, $drop);)?
             s
         }
-
+        $crate::conformance_suite!(@tests);
+    };
+    // A door named by a `LoadedDoor` (a crate that exports its `door` function alone restates it:
+    // `loaded: unsafe { LoadedDoor::from_raw(plugin::door) }`), the name #1469 keeps.
+    (
+        loaded: $loaded:expr,
+        cdylib: $cdylib:expr,
+        inputs: $inputs:expr
+        $(, host: $host:path)?
+        $(, tls: $tls:expr)?
+        $(, namespace: ($create:path, $drop:path))?
+        $(,)?
+    ) => {
+        fn __busbar_conformance_subject() -> $crate::conformance::Subject {
+            #[allow(unused_mut)]
+            let mut s = $crate::conformance::Subject::of_loaded($loaded, $cdylib, $inputs);
+            $(s = s.with_host($host);)?
+            $(s = s.with_anchors($tls);)?
+            $(s = s.with_namespace($create, $drop);)?
+            s
+        }
+        $crate::conformance_suite!(@tests);
+    };
+    (@tests) => {
         /// THE BOTH-WAYS ARM: linked vs dropped in, exact crossings, equal folds.
         #[test]
         fn the_linked_and_the_dropped_in_door_are_one_plugin() {

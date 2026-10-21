@@ -561,9 +561,40 @@ pub fn open_failed<T: AbiOut>(
 /// The accessors of each `in`, one per pointer field and named after it, stated once. Each is `unsafe` inside only
 /// because the kind's ABI, cited beside it, is what makes the pointer valid for the call.
 macro_rules! lend {
-    ($($ty:ty { $($how:ident($p:ident $(, $n:ident)?) $(-> $el:ty)?;)+ })+) => {$(
-        impl<'a> Lent<'a, $ty> { $( lend!(@one $p $how($p $(, $n)?) $(-> $el)?); )+ }
-    )+};
+    (fn $reg:ident; $($ty:ty { $($how:ident($p:ident $(, $n:ident)?) $(-> $el:ty)?;)+ })+) => {
+        $(
+            impl<'a> Lent<'a, $ty> { $( lend!(@one $p $how($p $(, $n)?) $(-> $el)?); )+ }
+        )+
+        /// THE POINTER AND LENGTH PAIRS of each struct this block lends (status row 194): for each
+        /// list, buffer or loose bytes, the pointer's offset, its length's (or capacity's) offset
+        /// and that field's width, which the test support holds a hand-built `in` to.
+        fn $reg(t: std::any::TypeId) -> Option<Vec<(usize, usize, usize)>> {
+            $(
+                if t == std::any::TypeId::of::<$ty>() {
+                    return Some(
+                        [$( lend!(@pair $ty, $how $p $(, $n)?) ),+]
+                            .into_iter()
+                            .flatten()
+                            .collect::<Vec<(usize, usize, usize)>>(),
+                    );
+                }
+            )+
+            None
+        }
+    };
+    (@pair $ty:ty, one $p:ident) => { None };
+    (@pair $ty:ty, tables $p:ident) => { None };
+    (@pair $ty:ty, $how:ident $p:ident, $n:ident) => {
+        Some((
+            std::mem::offset_of!($ty, $p),
+            std::mem::offset_of!($ty, $n),
+            {
+                let blank = std::mem::MaybeUninit::<$ty>::uninit();
+                // SAFETY: a place projection of an uninitialised value, never read: its address.
+                crate::abi::pointee_size(unsafe { std::ptr::addr_of!((*blank.as_ptr()).$n) })
+            },
+        ))
+    };
     (@one $name:ident bytes($p:ident, $n:ident)) => {
         #[doc = concat!("The bytes `", stringify!($p), "`/`", stringify!($n), "` lend the call.")]
         #[must_use]
@@ -636,6 +667,7 @@ use crate::abi::transport::{
 };
 
 lend! {
+    fn lend_pairs_kinds;
     // THE LIFECYCLE (`abi::mechanism::lifecycle`).
     OpenIn {
         list(secrets, secrets_len) -> Blob;
@@ -794,6 +826,7 @@ use crate::abi::store::{
 };
 
 lend! {
+    fn lend_pairs_store;
     AddUsageBatchIn { list(cells, cells_len) -> UsageCell; }
     OpBlobsIn { list(records, records_len) -> Blob; }
     AppendBatchIn { list(records, records_len) -> Blob; }
@@ -820,6 +853,7 @@ use crate::abi::export::{
 };
 
 lend! {
+    fn lend_pairs_export;
     ScrapeIn {
         list(families, families_len) -> ScrapeFamily;
         buf(buf, cap) -> u8;
@@ -831,10 +865,12 @@ lend! {
 }
 
 /// THE FIELD ACCESSORS of every struct a call lends (status row 194), one per field and named after
-/// it, so a sealed [`Lent`] reads all of its struct and hands out nothing by value that names lent
-/// memory: a number or a pointer-free struct (`val`) is copied; a string (`str`), a payload
-/// (`blob`) or an embedded struct (`sub`) stays a `Lent` of the same call. A pointer field is read
-/// through its [`lend!`] accessor above (a list, a buffer, loose bytes or one struct).
+/// it, so a sealed [`Lent`] reads all of its struct, through no `Deref`. A number or a
+/// pointer-free struct (`val`) is copied; a string (`str`), a payload (`blob`) or an embedded
+/// struct (`sub`) stays a `Lent` of the same call. One `val` is not pointer-free: a signal entry's
+/// `value`, a union whose string arm is an `AbiStr`, is copied whole; its tag says which arm is
+/// live, and the SDK reads a string arm only inside the call. A pointer field is read through its
+/// [`lend!`] accessor above (a list, a buffer, loose bytes or one struct).
 macro_rules! lent_fields {
     ($($ty:ty { $($how:ident $name:ident $(: $t:ty)?;)+ })+) => {$(
         // A field named `len` reads the field the host stated; its struct has no emptiness.
@@ -871,850 +907,925 @@ macro_rules! lent_fields {
     };
 }
 
-lent_fields! {
-    crate::abi::auth::BeginLoginIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        str redirect_uri;
-        str state;
-        str nonce;
-        str code_challenge;
-        val scopes_len: usize;
-    }
-    crate::abi::auth::CompleteLoginIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        blob code;
-        str state;
-        str redirect_uri;
-        blob code_verifier;
-        val submitted_len: usize;
-        sub out_buf: crate::abi::auth::IdentityBuf;
-        str nonce;
-    }
-    crate::abi::auth::IdentityBuf {
-        val buf_cap: usize;
-        val groups_cap: u32;
-    }
-    crate::abi::auth::NamedValue {
-        str name;
-        blob value;
-    }
-    crate::abi::auth::RequestFacts {
-        str method;
-        str authority;
-        str canonical_path;
-        str query;
-        val timestamp: u64;
-    }
-    crate::abi::auth::StripName {
-        val name: crate::abi::mechanism::call::Span;
-        val place: u32;
-    }
-    crate::abi::auth::VerifyIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        blob credential;
-        val lines_len: usize;
-        sub request: crate::abi::auth::RequestFacts;
-        sub out_buf: crate::abi::auth::IdentityBuf;
-        val point: u32;
-        val conn: u64;
-        val unit: u64;
-        blob peer;
-        blob body;
-        val strip_cap: u32;
-    }
-    crate::abi::auth::FieldSpan {
-        val name: crate::abi::mechanism::call::Span;
-        val value: crate::abi::mechanism::call::Span;
-        val flags: u32;
-    }
-    crate::abi::auth::FieldsIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val handle: u64;
-        val mode: u32;
-        val point: u32;
-        sub request: crate::abi::auth::RequestFacts;
-        blob caller_credential;
-        val field_buf_cap: usize;
-        val fields_cap: u32;
-        val headers_len: usize;
-        val conn: u64;
-        val unit: u64;
-        blob body;
-    }
-    crate::abi::auth::OpenOutboundIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        str style;
-        blob credential;
-        blob settings;
-    }
-    crate::abi::auth::OutboundReadyIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val handle: u64;
-    }
-    crate::abi::auth::TargetIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        str style;
-        blob credential;
-        blob settings;
-        val buf_cap: usize;
-    }
-    crate::abi::export::CheckIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val phase: u32;
-        val instances_len: usize;
-    }
-    crate::abi::export::CheckInstance {
-        str name;
-        blob settings;
-    }
-    crate::abi::export::DeliverIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val op_id: [u8; 16];
-        val stream: u8;
-        blob batch;
-    }
-    crate::abi::export::ScrapeFamily {
-        str name;
-        str help;
-        str unit;
-        val kind: u8;
-        val samples_len: usize;
-    }
-    crate::abi::export::ScrapeIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val families_len: usize;
-        val cap: usize;
-    }
-    crate::abi::export::ScrapeLabel {
-        str key;
-        str value;
-    }
-    crate::abi::export::ScrapeSample {
-        str name;
-        val labels_len: usize;
-        str value;
-    }
-    crate::abi::export::ServeIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        str method;
-        str path;
-        str query;
-        val headers_len: usize;
-        blob body;
-    }
-    crate::abi::hook::BudgetBucketState {
-        str bucket_id;
-        str budget_group;
-        str pool;
-        val spend_micros_at_current_rate: i64;
-        val remaining_micros: i64;
-        val window_start: u64;
-        str budget_period;
-        val present: u32;
-    }
-    crate::abi::hook::CandidateDynamic {
-        val latency_ms: f64;
-        val available_concurrency: u64;
-        val budget_remaining: i64;
-        val rate_headroom: f64;
-        val signals_len: usize;
-        val present: u32;
-    }
-    crate::abi::hook::CandidateStatic {
-        val idx: u32;
-        str model;
-        str provider;
-        val weight: u32;
-        val context_max: u64;
-        str tier;
-        val cost_per_mtok: f64;
-        val tags_len: usize;
-        val present: u32;
-    }
-    crate::abi::hook::ConfigureIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val version: u64;
-        blob settings;
-        str name;
-    }
-    crate::abi::hook::DecideIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        sub request: crate::abi::hook::RequestView;
-        val candidates_len: usize;
-        sub prompt: crate::abi::hook::PromptView;
-        sub user: crate::abi::hook::UserView;
-        val budget_remaining: i64;
-        val budget_len: usize;
-        val present: u32;
-        val order_cap: usize;
-        val reject_message_cap: usize;
-        val restrict_tags_cap: usize;
-        val rewrite_cap: usize;
-    }
-    crate::abi::hook::MessageView {
-        str role;
-        str text;
-    }
-    crate::abi::hook::NotifyIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        sub stage: crate::abi::hook::StageView;
-        val signals_len: usize;
-        sub prompt: crate::abi::hook::PromptView;
-        val present: u32;
-    }
-    crate::abi::hook::PromptView {
-        str system;
-        val message_count: u64;
-        blob body;
-        val messages_len: usize;
-    }
-    crate::abi::hook::RequestView {
-        val request_id: u64;
-        str pool;
-        str ingress_dialect;
-        val message_count: u64;
-        val total_chars: u64;
-        val max_tokens: u32;
-        val flags: u32;
-        val signals_len: usize;
-        blob session;
-    }
-    crate::abi::hook::ServeIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        str method;
-        str path;
-        str query;
-        val headers_len: usize;
-        blob body;
-    }
-    crate::abi::hook::SignalEntry {
-        val id: u32;
-        val tag: u32;
-        val value: crate::abi::hook::SignalValue;
-    }
-    crate::abi::hook::StageView {
-        val request_id: u64;
-        str pool;
-        str ingress_dialect;
-        val message_count: u64;
-        val total_chars: u64;
-        val remaining_candidates: u64;
-        str model;
-        str previous_failure;
-        str outcome;
-        val max_tokens: u32;
-        val flags: u32;
-        val at: u32;
-        val attempt_number: u32;
-        val status: u16;
-        val stage_present: u32;
-    }
-    crate::abi::hook::UserView {
-        str key_id;
-        str key_name;
-        str user;
-    }
-    crate::abi::mechanism::call::Field {
-        str name;
-        str value;
-    }
-    crate::abi::mechanism::call::InHead {
-        val size: u32;
-        val op: u32;
-        val flags: u32;
-        val deadline_class: u8;
-        val host: crate::abi::mechanism::ticket::HostCtx;
-        val ticket: crate::abi::mechanism::ticket::Ticket;
-        val deadline_ns: u64;
-        val trace_id: [u8; 16];
-        val parent_span_id: u64;
-        blob extensions;
-    }
-    crate::abi::mechanism::call::Span {
-        val offset: u32;
-        val len: u32;
-    }
-    crate::abi::mechanism::lifecycle::CancelIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val ticket: crate::abi::mechanism::ticket::Ticket;
-    }
-    crate::abi::mechanism::lifecycle::DriveIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val driver: crate::abi::mechanism::ticket::Ticket;
-    }
-    crate::abi::mechanism::lifecycle::GenIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val generation: u64;
-    }
-    crate::abi::mechanism::lifecycle::OpenIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        blob settings;
-        val secrets_len: usize;
-        val generation: u64;
-        val err_cap: usize;
-    }
-    crate::abi::mechanism::lifecycle::ReadyIn {
-        sub head: crate::abi::mechanism::call::InHead;
-    }
-    crate::abi::mechanism::lifecycle::RefreshIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val generation: u64;
-        blob settings;
-        val secrets_len: usize;
-    }
-    crate::abi::mechanism::lifecycle::ReleaseIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val lease: u64;
-    }
-    crate::abi::mechanism::lifecycle::TickIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val now_ns: u64;
-    }
-    crate::abi::mechanism::lifecycle::ValidateIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        blob settings;
-        val err_cap: usize;
-    }
-    crate::abi::mechanism::ticket::HostCtx {
-        val handle: u64;
-    }
-    crate::abi::mechanism::ticket::Ticket {
-        val slot: u32;
-        val generation: u32;
-    }
-    crate::abi::plane::ArriveIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val unit: u64;
-        val claim: u32;
-        str target;
-        val fields_len: usize;
-        blob body;
-        val units_cap: usize;
-        str method;
-    }
-    crate::abi::plane::CatalogIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        str method;
-        str target;
-        val fields_len: usize;
-        val names_len: usize;
-        val reply_cap: usize;
-        val fields_cap: usize;
-        val arena_cap: usize;
-    }
-    crate::abi::plane::OnPieceIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val unit: u64;
-        val from: u32;
-        val flags: u32;
-        val stream: u64;
-        blob bytes;
-        val status_code: u32;
-        val status_class: u32;
-        val reply_cap: usize;
-        val units_cap: usize;
-        val records_cap: usize;
-        val fields_cap: usize;
-        val arena_cap: usize;
-        str member;
-        val attempt_no: u32;
-        str pool;
-        str caller_ref;
-        val claim: u32;
-        val dialect: u32;
-        val head_fields_len: usize;
-        val passthrough: u32;
-        val reason: u32;
-    }
-    crate::abi::plane::OutField {
-        val name: crate::abi::mechanism::call::Span;
-        val value: crate::abi::mechanism::call::Span;
-    }
-    crate::abi::plane::PlaneCancelIn {
-        sub cancel: crate::abi::mechanism::lifecycle::CancelIn;
-        val records_cap: usize;
-        val arena_cap: usize;
-        val unit: u64;
-    }
-    crate::abi::plane::PlaneDriveIn {
-        sub drive: crate::abi::mechanism::lifecycle::DriveIn;
-        val sessions_cap: usize;
-    }
-    crate::abi::plane::PlaneOpenIn {
-        sub open: crate::abi::mechanism::lifecycle::OpenIn;
-        str public_url;
-        blob owned;
-        val providers_len: usize;
-    }
-    crate::abi::plane::ProjectIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val claim: u32;
-        str target;
-        val fields_len: usize;
-        blob body;
-        val signals_cap: usize;
-        val arena_cap: usize;
-        blob rewrite;
-        val messages_cap: usize;
-        val unit: u64;
-    }
-    crate::abi::plane::ProviderFacts {
-        str name;
-        str protocol;
-        blob error_map;
-    }
-    crate::abi::plane::RecordWrite {
-        val kind: u32;
-        val op: u32;
-        val key: crate::abi::mechanism::call::Span;
-        val value: crate::abi::mechanism::call::Span;
-    }
-    crate::abi::plane::RefusalIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val cause: u32;
-        val status: u32;
-        val dialect: u32;
-        val reason: u32;
-        str text;
-        val reply_cap: usize;
-        val fields_cap: usize;
-        val arena_cap: usize;
-        val unit: u64;
-        val plane_code: u32;
-        val retry_after_s: u32;
-        str target;
-        val records_cap: usize;
-        str hook;
-        val trust: u32;
-        val _trust_reserved: u32;
-    }
-    crate::abi::plane::ServeIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val route: u32;
-        str target;
-        val fields_len: usize;
-        blob body;
-        val reply_cap: usize;
-        val fields_cap: usize;
-        val arena_cap: usize;
-        val records_cap: usize;
-    }
-    crate::abi::plane::UnitCount {
-        val class: u32;
-        val source: u32;
-        val amount: u64;
-    }
-    crate::abi::secret::CheckIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        blob settings;
-        val err_cap: usize;
-    }
-    crate::abi::secret::ResolveIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        blob settings;
-    }
-    crate::abi::store::ledger::AppendBatchIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val op_id: crate::abi::store::OpId;
-        str stream;
-        val records_len: usize;
-    }
-    crate::abi::store::ledger::HostRecords {
-        val items_cap: usize;
-        sub bytes: crate::abi::store::HostBuf;
-    }
-    crate::abi::store::ledger::HostSessions {
-        val items_cap: usize;
-        sub bytes: crate::abi::store::HostBuf;
-    }
-    crate::abi::store::ledger::RecordEntry {
-        blob key;
-        blob value;
-    }
-    crate::abi::store::ledger::RecordGetIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        str schema;
-        blob key;
-        sub value: crate::abi::store::HostBuf;
-    }
-    crate::abi::store::ledger::RecordPutIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        str schema;
-        blob key;
-        blob value;
-    }
-    crate::abi::store::ledger::RecordScanIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        str schema;
-        blob prefix;
-        val limit: u32;
-        sub out: crate::abi::store::ledger::HostRecords;
-    }
-    crate::abi::store::ledger::SessionPutIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val session: u64;
-        str node;
-        str principal;
-    }
-    crate::abi::store::ledger::SessionRow {
-        val session: u64;
-        str node;
-    }
-    crate::abi::store::ledger::SessionsForIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        str principal;
-        sub out: crate::abi::store::ledger::HostSessions;
-    }
-    crate::abi::store::HostBlobs {
-        val items_cap: usize;
-        sub bytes: crate::abi::store::HostBuf;
-    }
-    crate::abi::store::HostBuf {
-        val cap: usize;
-    }
-    crate::abi::store::money::AddUsageBatchIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val op_id: crate::abi::store::OpId;
-        val cells_len: usize;
-    }
-    crate::abi::store::money::CellGrant {
-        val slice_id: u64;
-        val granted: u64;
-        val valid_until_ms: u64;
-    }
-    crate::abi::store::money::OpBlobsIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val op_id: crate::abi::store::OpId;
-        val records_len: usize;
-    }
-    crate::abi::store::money::ReleaseItem {
-        val slice_id: u64;
-        val unspent: u64;
-    }
-    crate::abi::store::money::ReserveIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val op_id: crate::abi::store::OpId;
-        val epoch: u64;
-        val cells_len: usize;
-        val grants_cap: usize;
-    }
-    crate::abi::store::money::SliceReleaseIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val op_id: crate::abi::store::OpId;
-        val epoch: u64;
-        val items_len: usize;
-        val released_cap: usize;
-    }
-    crate::abi::store::money::UnitCell {
-        str bucket;
-        str pool;
-        val dimension: u32;
-        val _r: u32;
-        str class_key;
-        val amount: u64;
-        val window_start: u64;
-    }
-    crate::abi::store::money::UsageCell {
-        str bucket;
-        val window_start: u64;
-        blob delta;
-    }
-    crate::abi::store::money::WindowCap {
-        str bucket;
-        str pool;
-        val dimension: u32;
-        val _r: u32;
-        str class_key;
-        val window_start: u64;
-        val cap: u64;
-        val config_gen: u64;
-    }
-    crate::abi::store::money::WindowCapsIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val op_id: crate::abi::store::OpId;
-        val caps_len: usize;
-    }
-    crate::abi::store::plane::AppendPlaneRecordIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val op_id: crate::abi::store::OpId;
-        sub record: crate::abi::store::plane::PlaneRecordRow;
-    }
-    crate::abi::store::plane::GetPlaneRecordIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        str kind;
-        str id;
-        sub body: crate::abi::store::HostBuf;
-    }
-    crate::abi::store::plane::KindBeforeIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        str kind;
-        val before: u64;
-    }
-    crate::abi::store::plane::ListPlaneRecordsIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        str kind;
-        val selector: u32;
-        str parent;
-        sub out: crate::abi::store::HostBlobs;
-    }
-    crate::abi::store::plane::PlaneRecordRow {
-        str kind;
-        str id;
-        str parent;
-        val seq: u64;
-        val ts: u64;
-        val disposition: u32;
-        blob body;
-    }
-    crate::abi::store::plane::TokenIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        str kind;
-        str token;
-        val expires_at: u64;
-        val now: u64;
-    }
-    crate::abi::store::plane::UpsertPlaneRecordIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        sub record: crate::abi::store::plane::PlaneRecordRow;
-    }
-    crate::abi::store::records::AddUsageIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val op_id: crate::abi::store::OpId;
-        sub cell: crate::abi::store::money::UsageCell;
-    }
-    crate::abi::store::records::BlobIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        blob record;
-    }
-    crate::abi::store::records::IdIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        str id;
-    }
-    crate::abi::store::records::IdReasonIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        str id;
-        str reason;
-    }
-    crate::abi::store::records::KeyWithCredentialIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        blob key;
-        blob credential;
-    }
-    crate::abi::store::records::KindIdIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        str kind;
-        str id;
-    }
-    crate::abi::store::records::OpBlobIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val op_id: crate::abi::store::OpId;
-        blob record;
-    }
-    crate::abi::store::records::PutUsageIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        str bucket;
-        val window_start: u64;
-        blob ledger;
-    }
-    crate::abi::store::records::U64In {
-        sub head: crate::abi::mechanism::call::InHead;
-        val value: u64;
-    }
-    crate::abi::store::records::WindowIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        str bucket;
-        val window_start: u64;
-    }
-    crate::abi::transport::datagram::DatagramLane {
-        val size: u32;
-        val lane: u32;
-        val path: u32;
-        val bound: u32;
-        str path_addr;
-        str local_addr;
-        val verified: u32;
-        val routes_cap: usize;
-        val paths_len: usize;
-    }
-    crate::abi::transport::datagram::DatagramPath {
-        val path: u32;
-        str addr;
-    }
-    crate::abi::transport::datagram::DatagramRoute {
-        val offset: u64;
-        val len: u64;
-        val path: u32;
-        val lane: u32;
-    }
-    crate::abi::transport::datagram::KeyingMaterial {
-        val size: u32;
-        val profile: u32;
-        val len: usize;
-    }
-    crate::abi::transport::AcceptIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val listener: u64;
-        val peer_cap: usize;
-    }
-    crate::abi::transport::AdoptIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val side: u32;
-        val leftover_len: usize;
-        sub sink: crate::abi::transport::FramerSink;
-    }
-    crate::abi::transport::ArrivalIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val conn: u64;
-        val peer_cap: usize;
-    }
-    crate::abi::transport::BeginIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val side: u32;
-        str target;
-        sub sink: crate::abi::transport::FramerSink;
-        val fields_len: usize;
-    }
-    crate::abi::transport::ConnFacts {
-        val size: u32;
-        str offered_name;
-        str agreed_protocol;
-        str peer_subject;
-        str peer_issuer;
-        str peer_fingerprint;
-        str claim;
-        str local_certificate;
-    }
-    crate::abi::transport::ConnIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val conn: u64;
-    }
-    crate::abi::transport::Destination {
-        val kind: u32;
-        str authority;
-        str program;
-        val args_len: usize;
-        val env_len: usize;
-    }
-    crate::abi::transport::DialIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val supervision_key: u64;
-    }
-    crate::abi::transport::EmitIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val framing: u64;
-        val stream: u64;
-        val len: usize;
-        val end_of_frame: u32;
-        val flags: u32;
-        sub sink: crate::abi::transport::FramerSink;
-        val deadline_ns: u64;
-        val status: u32;
-        val _status_reserved: u32;
-    }
-    crate::abi::transport::EncodeIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val fields_len: usize;
-        val body_len: usize;
-        sub sink: crate::abi::transport::FramerSink;
-        str method;
-        str target;
-    }
-    crate::abi::transport::FinishIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val framing: u64;
-        val reason: u32;
-        sub sink: crate::abi::transport::FramerSink;
-        val final_status: u32;
-        val _final_reserved: u32;
-        val final_message: crate::abi::mechanism::call::Span;
-        val final_details: crate::abi::mechanism::call::Span;
-        val final_bytes_len: usize;
-    }
-    crate::abi::transport::FramePiece {
-        val stream: u64;
-        val offset: u64;
-        val len: u64;
-        val code: u32;
-        val status_class: u8;
-        val fault: u8;
-        val flags: u16;
-        val retry_after_secs: u64;
-        val declared_len: u64;
-    }
-    crate::abi::transport::FrameSpan {
-        val offset: u64;
-        val len: u64;
-    }
-    crate::abi::transport::FramerSink {
-        val wire_cap: usize;
-        val frame_cap: usize;
-        val pieces_cap: usize;
-        val now_monotonic_ns: u64;
-        val now_unix_ns: u64;
-        val heads_cap: usize;
-    }
-    crate::abi::transport::FramingIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val framing: u64;
-        sub sink: crate::abi::transport::FramerSink;
-    }
-    crate::abi::transport::HeadSlots {
-        val stream: u64;
-        val method: crate::abi::transport::FrameSpan;
-        val target: crate::abi::transport::FrameSpan;
-        val authority: crate::abi::transport::FrameSpan;
-        val reason: crate::abi::transport::FrameSpan;
-    }
-    crate::abi::transport::IngestIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val framing: u64;
-        val len: usize;
-        val end: u32;
-        sub sink: crate::abi::transport::FramerSink;
-    }
-    crate::abi::transport::ListenIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        str bind;
-        val addr_cap: usize;
-    }
-    crate::abi::transport::LocateIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        str target;
-        val authority_cap: usize;
-        val name_cap: usize;
-        val alpn_cap: usize;
-        val accept: u32;
-        val _accept_reserved: u32;
-        val defaults_cap: usize;
-    }
-    crate::abi::transport::ReadIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val conn: u64;
-        val cap: usize;
-    }
-    crate::abi::transport::RefuseIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val framing: u64;
-        val stream: u64;
-        val has_stream: u32;
-        val len: usize;
-        sub sink: crate::abi::transport::FramerSink;
-        val status: u32;
-        val head_sent: u32;
-    }
-    crate::abi::transport::ShutIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val conn: u64;
-        val reason: u32;
-    }
-    crate::abi::transport::WriteIn {
-        sub head: crate::abi::mechanism::call::InHead;
-        val conn: u64;
-        val len: usize;
-        val flags: u32;
-    }
+/// THE LIST the field accessors are stated from, once: [`lent_fields!`] states them, and the tests
+/// hold each one to the field it reads.
+macro_rules! lent_field_list {
+    ($then:ident) => {
+        $then! {
+            crate::abi::auth::BeginLoginIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                str redirect_uri;
+                str state;
+                str nonce;
+                str code_challenge;
+                val scopes_len: usize;
+            }
+            crate::abi::auth::CompleteLoginIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                blob code;
+                str state;
+                str redirect_uri;
+                blob code_verifier;
+                val submitted_len: usize;
+                sub out_buf: crate::abi::auth::IdentityBuf;
+                str nonce;
+            }
+            crate::abi::auth::IdentityBuf {
+                val buf_cap: usize;
+                val groups_cap: u32;
+            }
+            crate::abi::auth::NamedValue {
+                str name;
+                blob value;
+            }
+            crate::abi::auth::RequestFacts {
+                str method;
+                str authority;
+                str canonical_path;
+                str query;
+                val timestamp: u64;
+            }
+            crate::abi::auth::StripName {
+                val name: crate::abi::mechanism::call::Span;
+                val place: u32;
+            }
+            crate::abi::auth::VerifyIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                blob credential;
+                val lines_len: usize;
+                sub request: crate::abi::auth::RequestFacts;
+                sub out_buf: crate::abi::auth::IdentityBuf;
+                val point: u32;
+                val conn: u64;
+                val unit: u64;
+                blob peer;
+                blob body;
+                val strip_cap: u32;
+            }
+            crate::abi::auth::FieldSpan {
+                val name: crate::abi::mechanism::call::Span;
+                val value: crate::abi::mechanism::call::Span;
+                val flags: u32;
+            }
+            crate::abi::auth::FieldsIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val handle: u64;
+                val mode: u32;
+                val point: u32;
+                sub request: crate::abi::auth::RequestFacts;
+                blob caller_credential;
+                val field_buf_cap: usize;
+                val fields_cap: u32;
+                val headers_len: usize;
+                val conn: u64;
+                val unit: u64;
+                blob body;
+            }
+            crate::abi::auth::OpenOutboundIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                str style;
+                blob credential;
+                blob settings;
+            }
+            crate::abi::auth::OutboundReadyIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val handle: u64;
+            }
+            crate::abi::auth::TargetIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                str style;
+                blob credential;
+                blob settings;
+                val buf_cap: usize;
+            }
+            crate::abi::export::CheckIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val phase: u32;
+                val instances_len: usize;
+            }
+            crate::abi::export::CheckInstance {
+                str name;
+                blob settings;
+            }
+            crate::abi::export::DeliverIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val op_id: [u8; 16];
+                val stream: u8;
+                blob batch;
+            }
+            crate::abi::export::ScrapeFamily {
+                str name;
+                str help;
+                str unit;
+                val kind: u8;
+                val samples_len: usize;
+            }
+            crate::abi::export::ScrapeIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val families_len: usize;
+                val cap: usize;
+            }
+            crate::abi::export::ScrapeLabel {
+                str key;
+                str value;
+            }
+            crate::abi::export::ScrapeSample {
+                str name;
+                val labels_len: usize;
+                str value;
+            }
+            crate::abi::export::ServeIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                str method;
+                str path;
+                str query;
+                val headers_len: usize;
+                blob body;
+            }
+            crate::abi::hook::BudgetBucketState {
+                str bucket_id;
+                str budget_group;
+                str pool;
+                val spend_micros_at_current_rate: i64;
+                val remaining_micros: i64;
+                val window_start: u64;
+                str budget_period;
+                val present: u32;
+            }
+            crate::abi::hook::CandidateDynamic {
+                val latency_ms: f64;
+                val available_concurrency: u64;
+                val budget_remaining: i64;
+                val rate_headroom: f64;
+                val signals_len: usize;
+                val present: u32;
+            }
+            crate::abi::hook::CandidateStatic {
+                val idx: u32;
+                str model;
+                str provider;
+                val weight: u32;
+                val context_max: u64;
+                str tier;
+                val cost_per_mtok: f64;
+                val tags_len: usize;
+                val present: u32;
+            }
+            crate::abi::hook::ConfigureIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val version: u64;
+                blob settings;
+                str name;
+            }
+            crate::abi::hook::DecideIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                sub request: crate::abi::hook::RequestView;
+                val candidates_len: usize;
+                sub prompt: crate::abi::hook::PromptView;
+                sub user: crate::abi::hook::UserView;
+                val budget_remaining: i64;
+                val budget_len: usize;
+                val present: u32;
+                val order_cap: usize;
+                val reject_message_cap: usize;
+                val restrict_tags_cap: usize;
+                val rewrite_cap: usize;
+            }
+            crate::abi::hook::MessageView {
+                str role;
+                str text;
+            }
+            crate::abi::hook::NotifyIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                sub stage: crate::abi::hook::StageView;
+                val signals_len: usize;
+                sub prompt: crate::abi::hook::PromptView;
+                val present: u32;
+            }
+            crate::abi::hook::PromptView {
+                str system;
+                val message_count: u64;
+                blob body;
+                val messages_len: usize;
+            }
+            crate::abi::hook::RequestView {
+                val request_id: u64;
+                str pool;
+                str ingress_dialect;
+                val message_count: u64;
+                val total_chars: u64;
+                val max_tokens: u32;
+                val flags: u32;
+                val signals_len: usize;
+                blob session;
+            }
+            crate::abi::hook::ServeIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                str method;
+                str path;
+                str query;
+                val headers_len: usize;
+                blob body;
+            }
+            crate::abi::hook::SignalEntry {
+                val id: u32;
+                val tag: u32;
+                val value: crate::abi::hook::SignalValue;
+            }
+            crate::abi::hook::StageView {
+                val request_id: u64;
+                str pool;
+                str ingress_dialect;
+                val message_count: u64;
+                val total_chars: u64;
+                val remaining_candidates: u64;
+                str model;
+                str previous_failure;
+                str outcome;
+                val max_tokens: u32;
+                val flags: u32;
+                val at: u32;
+                val attempt_number: u32;
+                val status: u16;
+                val stage_present: u32;
+            }
+            crate::abi::hook::UserView {
+                str key_id;
+                str key_name;
+                str user;
+            }
+            crate::abi::mechanism::call::Field {
+                str name;
+                str value;
+            }
+            crate::abi::mechanism::call::InHead {
+                val size: u32;
+                val op: u32;
+                val flags: u32;
+                val deadline_class: u8;
+                val host: crate::abi::mechanism::ticket::HostCtx;
+                val ticket: crate::abi::mechanism::ticket::Ticket;
+                val deadline_ns: u64;
+                val trace_id: [u8; 16];
+                val parent_span_id: u64;
+                blob extensions;
+            }
+            crate::abi::mechanism::call::Span {
+                val offset: u32;
+                val len: u32;
+            }
+            crate::abi::mechanism::lifecycle::CancelIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val ticket: crate::abi::mechanism::ticket::Ticket;
+            }
+            crate::abi::mechanism::lifecycle::DriveIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val driver: crate::abi::mechanism::ticket::Ticket;
+            }
+            crate::abi::mechanism::lifecycle::GenIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val generation: u64;
+            }
+            crate::abi::mechanism::lifecycle::OpenIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                blob settings;
+                val secrets_len: usize;
+                val generation: u64;
+                val err_cap: usize;
+            }
+            crate::abi::mechanism::lifecycle::ReadyIn {
+                sub head: crate::abi::mechanism::call::InHead;
+            }
+            crate::abi::mechanism::lifecycle::RefreshIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val generation: u64;
+                blob settings;
+                val secrets_len: usize;
+            }
+            crate::abi::mechanism::lifecycle::ReleaseIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val lease: u64;
+            }
+            crate::abi::mechanism::lifecycle::TickIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val now_ns: u64;
+            }
+            crate::abi::mechanism::lifecycle::ValidateIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                blob settings;
+                val err_cap: usize;
+            }
+            crate::abi::mechanism::ticket::HostCtx {
+                val handle: u64;
+            }
+            crate::abi::mechanism::ticket::Ticket {
+                val slot: u32;
+                val generation: u32;
+            }
+            crate::abi::plane::ArriveIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val unit: u64;
+                val claim: u32;
+                str target;
+                val fields_len: usize;
+                blob body;
+                val units_cap: usize;
+                str method;
+            }
+            crate::abi::plane::CatalogIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                str method;
+                str target;
+                val fields_len: usize;
+                val names_len: usize;
+                val reply_cap: usize;
+                val fields_cap: usize;
+                val arena_cap: usize;
+            }
+            crate::abi::plane::OnPieceIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val unit: u64;
+                val from: u32;
+                val flags: u32;
+                val stream: u64;
+                blob bytes;
+                val status_code: u32;
+                val status_class: u32;
+                val reply_cap: usize;
+                val units_cap: usize;
+                val records_cap: usize;
+                val fields_cap: usize;
+                val arena_cap: usize;
+                str member;
+                val attempt_no: u32;
+                str pool;
+                str caller_ref;
+                val claim: u32;
+                val dialect: u32;
+                val head_fields_len: usize;
+                val passthrough: u32;
+                val reason: u32;
+            }
+            crate::abi::plane::OutField {
+                val name: crate::abi::mechanism::call::Span;
+                val value: crate::abi::mechanism::call::Span;
+            }
+            crate::abi::plane::PlaneCancelIn {
+                sub cancel: crate::abi::mechanism::lifecycle::CancelIn;
+                val records_cap: usize;
+                val arena_cap: usize;
+                val unit: u64;
+            }
+            crate::abi::plane::PlaneDriveIn {
+                sub drive: crate::abi::mechanism::lifecycle::DriveIn;
+                val sessions_cap: usize;
+            }
+            crate::abi::plane::PlaneOpenIn {
+                sub open: crate::abi::mechanism::lifecycle::OpenIn;
+                str public_url;
+                blob owned;
+                val providers_len: usize;
+            }
+            crate::abi::plane::ProjectIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val claim: u32;
+                str target;
+                val fields_len: usize;
+                blob body;
+                val signals_cap: usize;
+                val arena_cap: usize;
+                blob rewrite;
+                val messages_cap: usize;
+                val unit: u64;
+            }
+            crate::abi::plane::ProviderFacts {
+                str name;
+                str protocol;
+                blob error_map;
+            }
+            crate::abi::plane::RecordWrite {
+                val kind: u32;
+                val op: u32;
+                val key: crate::abi::mechanism::call::Span;
+                val value: crate::abi::mechanism::call::Span;
+            }
+            crate::abi::plane::RefusalIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val cause: u32;
+                val status: u32;
+                val dialect: u32;
+                val reason: u32;
+                str text;
+                val reply_cap: usize;
+                val fields_cap: usize;
+                val arena_cap: usize;
+                val unit: u64;
+                val plane_code: u32;
+                val retry_after_s: u32;
+                str target;
+                val records_cap: usize;
+                str hook;
+                val trust: u32;
+                val _trust_reserved: u32;
+            }
+            crate::abi::plane::ServeIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val route: u32;
+                str target;
+                val fields_len: usize;
+                blob body;
+                val reply_cap: usize;
+                val fields_cap: usize;
+                val arena_cap: usize;
+                val records_cap: usize;
+            }
+            crate::abi::plane::UnitCount {
+                val class: u32;
+                val source: u32;
+                val amount: u64;
+            }
+            crate::abi::secret::CheckIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                blob settings;
+                val err_cap: usize;
+            }
+            crate::abi::secret::ResolveIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                blob settings;
+            }
+            crate::abi::store::ledger::AppendBatchIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val op_id: crate::abi::store::OpId;
+                str stream;
+                val records_len: usize;
+            }
+            crate::abi::store::ledger::HostRecords {
+                val items_cap: usize;
+                sub bytes: crate::abi::store::HostBuf;
+            }
+            crate::abi::store::ledger::HostSessions {
+                val items_cap: usize;
+                sub bytes: crate::abi::store::HostBuf;
+            }
+            crate::abi::store::ledger::RecordEntry {
+                blob key;
+                blob value;
+            }
+            crate::abi::store::ledger::RecordGetIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                str schema;
+                blob key;
+                sub value: crate::abi::store::HostBuf;
+            }
+            crate::abi::store::ledger::RecordPutIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                str schema;
+                blob key;
+                blob value;
+            }
+            crate::abi::store::ledger::RecordScanIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                str schema;
+                blob prefix;
+                val limit: u32;
+                sub out: crate::abi::store::ledger::HostRecords;
+            }
+            crate::abi::store::ledger::SessionPutIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val session: u64;
+                str node;
+                str principal;
+            }
+            crate::abi::store::ledger::SessionRow {
+                val session: u64;
+                str node;
+            }
+            crate::abi::store::ledger::SessionsForIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                str principal;
+                sub out: crate::abi::store::ledger::HostSessions;
+            }
+            crate::abi::store::HostBlobs {
+                val items_cap: usize;
+                sub bytes: crate::abi::store::HostBuf;
+            }
+            crate::abi::store::HostBuf {
+                val cap: usize;
+            }
+            crate::abi::store::money::AddUsageBatchIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val op_id: crate::abi::store::OpId;
+                val cells_len: usize;
+            }
+            crate::abi::store::money::CellGrant {
+                val slice_id: u64;
+                val granted: u64;
+                val valid_until_ms: u64;
+            }
+            crate::abi::store::money::OpBlobsIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val op_id: crate::abi::store::OpId;
+                val records_len: usize;
+            }
+            crate::abi::store::money::ReleaseItem {
+                val slice_id: u64;
+                val unspent: u64;
+            }
+            crate::abi::store::money::ReserveIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val op_id: crate::abi::store::OpId;
+                val epoch: u64;
+                val cells_len: usize;
+                val grants_cap: usize;
+            }
+            crate::abi::store::money::SliceReleaseIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val op_id: crate::abi::store::OpId;
+                val epoch: u64;
+                val items_len: usize;
+                val released_cap: usize;
+            }
+            crate::abi::store::money::UnitCell {
+                str bucket;
+                str pool;
+                val dimension: u32;
+                val _r: u32;
+                str class_key;
+                val amount: u64;
+                val window_start: u64;
+            }
+            crate::abi::store::money::UsageCell {
+                str bucket;
+                val window_start: u64;
+                blob delta;
+            }
+            crate::abi::store::money::WindowCap {
+                str bucket;
+                str pool;
+                val dimension: u32;
+                val _r: u32;
+                str class_key;
+                val window_start: u64;
+                val cap: u64;
+                val config_gen: u64;
+            }
+            crate::abi::store::money::WindowCapsIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val op_id: crate::abi::store::OpId;
+                val caps_len: usize;
+            }
+            crate::abi::store::plane::AppendPlaneRecordIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val op_id: crate::abi::store::OpId;
+                sub record: crate::abi::store::plane::PlaneRecordRow;
+            }
+            crate::abi::store::plane::GetPlaneRecordIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                str kind;
+                str id;
+                sub body: crate::abi::store::HostBuf;
+            }
+            crate::abi::store::plane::KindBeforeIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                str kind;
+                val before: u64;
+            }
+            crate::abi::store::plane::ListPlaneRecordsIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                str kind;
+                val selector: u32;
+                str parent;
+                sub out: crate::abi::store::HostBlobs;
+            }
+            crate::abi::store::plane::PlaneRecordRow {
+                str kind;
+                str id;
+                str parent;
+                val seq: u64;
+                val ts: u64;
+                val disposition: u32;
+                blob body;
+            }
+            crate::abi::store::plane::TokenIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                str kind;
+                str token;
+                val expires_at: u64;
+                val now: u64;
+            }
+            crate::abi::store::plane::UpsertPlaneRecordIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                sub record: crate::abi::store::plane::PlaneRecordRow;
+            }
+            crate::abi::store::records::AddUsageIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val op_id: crate::abi::store::OpId;
+                sub cell: crate::abi::store::money::UsageCell;
+            }
+            crate::abi::store::records::BlobIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                blob record;
+            }
+            crate::abi::store::records::IdIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                str id;
+            }
+            crate::abi::store::records::IdReasonIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                str id;
+                str reason;
+            }
+            crate::abi::store::records::KeyWithCredentialIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                blob key;
+                blob credential;
+            }
+            crate::abi::store::records::KindIdIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                str kind;
+                str id;
+            }
+            crate::abi::store::records::OpBlobIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val op_id: crate::abi::store::OpId;
+                blob record;
+            }
+            crate::abi::store::records::PutUsageIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                str bucket;
+                val window_start: u64;
+                blob ledger;
+            }
+            crate::abi::store::records::U64In {
+                sub head: crate::abi::mechanism::call::InHead;
+                val value: u64;
+            }
+            crate::abi::store::records::WindowIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                str bucket;
+                val window_start: u64;
+            }
+            crate::abi::transport::datagram::DatagramLane {
+                val size: u32;
+                val lane: u32;
+                val path: u32;
+                val bound: u32;
+                str path_addr;
+                str local_addr;
+                val verified: u32;
+                val routes_cap: usize;
+                val paths_len: usize;
+            }
+            crate::abi::transport::datagram::DatagramPath {
+                val path: u32;
+                str addr;
+            }
+            crate::abi::transport::datagram::DatagramRoute {
+                val offset: u64;
+                val len: u64;
+                val path: u32;
+                val lane: u32;
+            }
+            crate::abi::transport::datagram::KeyingMaterial {
+                val size: u32;
+                val profile: u32;
+                val len: usize;
+            }
+            crate::abi::transport::AcceptIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val listener: u64;
+                val peer_cap: usize;
+            }
+            crate::abi::transport::AdoptIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val side: u32;
+                val leftover_len: usize;
+                sub sink: crate::abi::transport::FramerSink;
+            }
+            crate::abi::transport::ArrivalIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val conn: u64;
+                val peer_cap: usize;
+            }
+            crate::abi::transport::BeginIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val side: u32;
+                str target;
+                sub sink: crate::abi::transport::FramerSink;
+                val fields_len: usize;
+            }
+            crate::abi::transport::ConnFacts {
+                val size: u32;
+                str offered_name;
+                str agreed_protocol;
+                str peer_subject;
+                str peer_issuer;
+                str peer_fingerprint;
+                str claim;
+                str local_certificate;
+            }
+            crate::abi::transport::ConnIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val conn: u64;
+            }
+            crate::abi::transport::Destination {
+                val kind: u32;
+                str authority;
+                str program;
+                val args_len: usize;
+                val env_len: usize;
+            }
+            crate::abi::transport::DialIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val supervision_key: u64;
+            }
+            crate::abi::transport::EmitIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val framing: u64;
+                val stream: u64;
+                val len: usize;
+                val end_of_frame: u32;
+                val flags: u32;
+                sub sink: crate::abi::transport::FramerSink;
+                val deadline_ns: u64;
+                val status: u32;
+                val _status_reserved: u32;
+            }
+            crate::abi::transport::EncodeIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val fields_len: usize;
+                val body_len: usize;
+                sub sink: crate::abi::transport::FramerSink;
+                str method;
+                str target;
+            }
+            crate::abi::transport::FinishIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val framing: u64;
+                val reason: u32;
+                sub sink: crate::abi::transport::FramerSink;
+                val final_status: u32;
+                val _final_reserved: u32;
+                val final_message: crate::abi::mechanism::call::Span;
+                val final_details: crate::abi::mechanism::call::Span;
+                val final_bytes_len: usize;
+            }
+            crate::abi::transport::FramePiece {
+                val stream: u64;
+                val offset: u64;
+                val len: u64;
+                val code: u32;
+                val status_class: u8;
+                val fault: u8;
+                val flags: u16;
+                val retry_after_secs: u64;
+                val declared_len: u64;
+            }
+            crate::abi::transport::FrameSpan {
+                val offset: u64;
+                val len: u64;
+            }
+            crate::abi::transport::FramerSink {
+                val wire_cap: usize;
+                val frame_cap: usize;
+                val pieces_cap: usize;
+                val now_monotonic_ns: u64;
+                val now_unix_ns: u64;
+                val heads_cap: usize;
+            }
+            crate::abi::transport::FramingIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val framing: u64;
+                sub sink: crate::abi::transport::FramerSink;
+            }
+            crate::abi::transport::HeadSlots {
+                val stream: u64;
+                val method: crate::abi::transport::FrameSpan;
+                val target: crate::abi::transport::FrameSpan;
+                val authority: crate::abi::transport::FrameSpan;
+                val reason: crate::abi::transport::FrameSpan;
+            }
+            crate::abi::transport::IngestIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val framing: u64;
+                val len: usize;
+                val end: u32;
+                sub sink: crate::abi::transport::FramerSink;
+            }
+            crate::abi::transport::ListenIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                str bind;
+                val addr_cap: usize;
+            }
+            crate::abi::transport::LocateIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                str target;
+                val authority_cap: usize;
+                val name_cap: usize;
+                val alpn_cap: usize;
+                val accept: u32;
+                val _accept_reserved: u32;
+                val defaults_cap: usize;
+            }
+            crate::abi::transport::ReadIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val conn: u64;
+                val cap: usize;
+            }
+            crate::abi::transport::RefuseIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val framing: u64;
+                val stream: u64;
+                val has_stream: u32;
+                val len: usize;
+                sub sink: crate::abi::transport::FramerSink;
+                val status: u32;
+                val head_sent: u32;
+            }
+            crate::abi::transport::ShutIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val conn: u64;
+                val reason: u32;
+            }
+            crate::abi::transport::WriteIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val conn: u64;
+                val len: usize;
+                val flags: u32;
+            }
+        }
+    };
+}
+
+lent_field_list!(lent_fields);
+
+/// The fields each lent struct embeds: a nested struct (`sub`), a string or a payload, by offset
+/// and type, from the one list the field accessors are stated from.
+macro_rules! lent_embeds {
+    ($($ty:ty { $($how:ident $name:ident $(: $t:ty)?;)+ })+) => {
+        fn lent_embeds(t: std::any::TypeId) -> Vec<(usize, std::any::TypeId)> {
+            $(
+                if t == std::any::TypeId::of::<$ty>() {
+                    #[allow(unused_mut)]
+                    let mut v = Vec::new();
+                    $( lent_embeds!(@one v, $ty, $how $name $(: $t)?); )+
+                    return v;
+                }
+            )+
+            Vec::new()
+        }
+    };
+    (@one $v:ident, $ty:ty, sub $name:ident: $t:ty) => {
+        $v.push((std::mem::offset_of!($ty, $name), std::any::TypeId::of::<$t>()));
+    };
+    (@one $v:ident, $ty:ty, str $name:ident) => {
+        $v.push((std::mem::offset_of!($ty, $name), std::any::TypeId::of::<AbiStr>()));
+    };
+    (@one $v:ident, $ty:ty, blob $name:ident) => {
+        $v.push((std::mem::offset_of!($ty, $name), std::any::TypeId::of::<Blob>()));
+    };
+    (@one $v:ident, $ty:ty, val $name:ident: $t:ty) => {};
+}
+
+lent_field_list!(lent_embeds);
+
+/// EVERY POINTER AND LENGTH PAIR an `in` of type `t` carries, its embedded structs', strings' and
+/// payloads' included, at their offsets in it: `(pointer, length, length's width)` (status row
+/// 194). What the test support's builders may set together, and nothing else.
+pub(crate) fn lent_pairs(t: std::any::TypeId) -> Vec<(usize, usize, usize)> {
+    let word = std::mem::size_of::<usize>();
+    let mut out = if t == std::any::TypeId::of::<AbiStr>() {
+        vec![(
+            std::mem::offset_of!(AbiStr, ptr),
+            std::mem::offset_of!(AbiStr, len),
+            word,
+        )]
+    } else if t == std::any::TypeId::of::<Blob>() {
+        vec![(
+            std::mem::offset_of!(Blob, ptr),
+            std::mem::offset_of!(Blob, len),
+            word,
+        )]
+    } else {
+        lend_pairs_kinds(t)
+            .or_else(|| lend_pairs_store(t))
+            .or_else(|| lend_pairs_export(t))
+            .unwrap_or_default()
+    };
+    for (at, inner) in lent_embeds(t) {
+        out.extend(
+            lent_pairs(inner)
+                .into_iter()
+                .map(|(p, n, w)| (at + p, at + n, w)),
+        );
+    }
+    out
 }
 
 #[cfg(test)]
 #[path = "tests/lent_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/expand_tests.rs"]
+mod expand_tests;

@@ -602,6 +602,14 @@ pub fn linked_probe(door: busbar_contract::abi::sdk::door::MacroDoor, instance: 
     })
 }
 
+/// [`linked_probe`], by the name the expand step published (status rows 159 and 194).
+pub fn linked_probe_macro(
+    door: busbar_contract::abi::sdk::door::MacroDoor,
+    instance: &str,
+) -> ProbeBind {
+    linked_probe(door, instance)
+}
+
 /// THE COMMAND-LINE HELP A LINKED PLANE DOOR STATES: its tail's `cli_help`, read off its `'static`
 /// Statement without binding it (no `validate` or `open` runs), so `busbar --help` can render it
 /// before any configuration is read. `None` when the tail states none.

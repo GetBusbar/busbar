@@ -1556,3 +1556,58 @@ mod hook_far_ends {
             .is_err());
     }
 }
+
+#[test]
+fn a_subject_and_a_linked_row_name_their_door_by_macro_door_or_loaded_door_alike() {
+    // The names a plugin's own tests move to (status rows 159 and 194): `of_macro` over the
+    // `MACRO_DOOR`, `of_loaded` over a `LoadedDoor` (a `MacroDoor`'s, or a door restated through
+    // the `unsafe` `LoadedDoor::from_raw`), all one door.
+    use crate::dispatch::{
+        rendering_of, rendering_of_loaded, rendering_of_macro, LinkedRow, LoadedDoor,
+    };
+    let door = crate::plane_door_plugin::door;
+    let macro_door = crate::plane_door_plugin::MACRO_DOOR;
+    let by_new = super::Subject::new(macro_door, "plane_door_plugin", "{}");
+    let by_macro = super::Subject::of_macro(macro_door, "plane_door_plugin", "{}");
+    // SAFETY: `door` is the door `plugin_door!` laid out: a `'static`, fully initialised door.
+    let restated = unsafe { LoadedDoor::from_raw(door) };
+    let by_loaded = super::Subject::of_loaded(restated, "plane_door_plugin", "{}");
+    assert_eq!(by_new.door.door as usize, by_macro.door.door as usize);
+    assert_eq!(by_new.door.door as usize, by_loaded.door.door as usize);
+    assert_eq!(by_new.door.door as usize, door as usize);
+
+    let row = LinkedRow::of(macro_door).expect("the door states its Statement");
+    let row_macro = LinkedRow::of_macro(macro_door).expect("the door states its Statement");
+    let row_loaded = LinkedRow::of_loaded(restated).expect("the door states its Statement");
+    let row_from = LinkedRow::of_loaded(LoadedDoor::from(macro_door)).expect("states");
+    assert_eq!(row.statement, row_macro.statement);
+    assert_eq!(row.statement, row_loaded.statement);
+    assert_eq!(row.statement, row_from.statement);
+    assert_eq!(row.door.door as usize, row_loaded.door.door as usize);
+    let rendered = rendering_of(macro_door).expect("renders");
+    assert_eq!(rendered, rendering_of_macro(macro_door).expect("renders"));
+    assert_eq!(rendered, rendering_of_loaded(restated).expect("renders"));
+}
+
+#[test]
+fn a_linked_plugin_names_its_door_by_macro_door_or_loaded_door_alike() {
+    let door = crate::plane_door_plugin::door;
+    let macro_door = crate::plane_door_plugin::MACRO_DOOR;
+    let manifest = || crate::sign::Manifest {
+        name: "plane-door-plugin".to_string(),
+        ..crate::sign::Manifest::default()
+    };
+    let linked = crate::LinkedPlugin::door(manifest(), macro_door);
+    let linked_macro = crate::LinkedPlugin::of_macro(manifest(), macro_door);
+    // SAFETY: `door` is the door `plugin_door!` laid out: a `'static`, fully initialised door.
+    let restated = unsafe { crate::dispatch::LoadedDoor::from_raw(door) };
+    let linked_loaded = crate::LinkedPlugin::of_loaded(manifest(), restated);
+    let door_of = |p: &crate::LinkedPlugin| match p.entry {
+        crate::registry::LinkedEntry::Door(d) => d.door_fn() as usize,
+        crate::registry::LinkedEntry::Restated(d) => d.door as usize,
+        crate::registry::LinkedEntry::Store { .. } => panic!("not a store row"),
+    };
+    assert_eq!(door_of(&linked), door_of(&linked_macro));
+    assert_eq!(door_of(&linked), door_of(&linked_loaded));
+    assert_eq!(door_of(&linked), door as usize);
+}

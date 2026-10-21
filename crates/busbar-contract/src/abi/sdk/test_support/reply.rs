@@ -207,6 +207,8 @@ pub fn call_in<I: AbiIn, O: Reply>(
     input: &TestIn<'_, I>,
     out: O,
 ) -> Called<'static, O> {
+    input.check();
+    op.check_in::<I>();
     let at = on(op, instance);
     // SAFETY: `on` held the slot to its door and the instance to that door's READY `open`; every
     // pointer in the `TestIn` borrows memory that outlives this call. An instance this opens was
@@ -227,6 +229,7 @@ pub fn call_hosted_in<'h, I: AbiIn, O: Reply>(
     input: &super::fake::LentIn<'h, I>,
     out: O,
 ) -> Called<'h, O> {
+    op.check_in::<I>();
     let at = on(op, instance);
     // SAFETY: as `call`; the fake host the `in` was lent by, and every byte it names, live for
     // `'h`, past this call and past every instance it answers.
@@ -244,6 +247,8 @@ pub fn close_in<'h, I: AbiIn, O: Reply>(
     input: &TestIn<'h, I>,
     out: O,
 ) -> Called<'h, O> {
+    input.check();
+    op.check_in::<I>();
     let (_, door, index) = op.parts();
     assert_eq!(
         index,

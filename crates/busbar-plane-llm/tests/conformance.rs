@@ -31,8 +31,8 @@ use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
 use busbar_plane_llm::plane_door;
 use busbar_plugin_loader::dispatch::kinds::plane::Plane;
 use busbar_plugin_loader::dispatch::{
-    in_head, load_dropped, load_linked, out_head, rendering_of, Bind, DispatchConfig, Dispatcher,
-    Frame, LinkedRow, NoSink, Plugin,
+    in_head, load_dropped, load_linked, out_head, rendering_of_macro, Bind, DispatchConfig,
+    Dispatcher, Frame, LinkedRow, NoSink, Plugin,
 };
 
 fn z<T>() -> T {
@@ -463,7 +463,8 @@ fn assert_the_planes_answers(t: &[String]) {
 }
 
 fn linked(d: &Dispatcher) -> Plugin<Plane> {
-    let row = LinkedRow::of(plane_door::MACRO_DOOR).expect("the linked door states its Statement");
+    let row =
+        LinkedRow::of_macro(plane_door::MACRO_DOOR).expect("the linked door states its Statement");
     load_linked(&row, bind(d)).expect("the linked door loads")
 }
 
@@ -481,7 +482,8 @@ fn dropped(d: &Dispatcher) -> Plugin<Plane> {
         .into_iter()
         .find(|p| p.exists())
         .unwrap_or_else(|| panic!("the llm_door example ({file}) is not built"));
-    let stated = rendering_of(plane_door::MACRO_DOOR).expect("the door renders its Statement");
+    let stated =
+        rendering_of_macro(plane_door::MACRO_DOOR).expect("the door renders its Statement");
     load_dropped(&path, &stated, bind(d)).expect("the dropped door loads")
 }
 
@@ -695,14 +697,15 @@ mod provider_keys_through_the_loader {
     use busbar_contract::provider_keys::{decode, EXT_PROVIDER_KEYS};
     use busbar_plane_llm::meta::PROVIDER_KEYS;
     use busbar_plane_llm::plane_door;
-    use busbar_plugin_loader::dispatch::kinds::plane::{linked_probe, registration};
-    use busbar_plugin_loader::dispatch::rendering_of;
+    use busbar_plugin_loader::dispatch::kinds::plane::{linked_probe_macro, registration};
+    use busbar_plugin_loader::dispatch::rendering_of_macro;
 
     /// The door's signed Statement rendering carries the descriptor under the one extensions key, as
     /// octets, byte for byte the declared text.
     #[test]
     fn the_door_states_its_provider_keys_in_its_statement_extensions() {
-        let stated = rendering_of(plane_door::MACRO_DOOR).expect("the door renders its Statement");
+        let stated =
+            rendering_of_macro(plane_door::MACRO_DOOR).expect("the door renders its Statement");
         let read = rendering::read(&stated).expect("the rendering reads back");
         assert_eq!(
             read.extensions.fmt,
@@ -718,8 +721,11 @@ mod provider_keys_through_the_loader {
     /// and equal to the declared one.
     #[test]
     fn the_loader_hands_the_provider_keys_on_in_the_registration() {
-        let reg = registration(linked_probe(plane_door::MACRO_DOOR, "provider-keys-probe"))
-            .expect("the linked door binds");
+        let reg = registration(linked_probe_macro(
+            plane_door::MACRO_DOOR,
+            "provider-keys-probe",
+        ))
+        .expect("the linked door binds");
         assert_eq!(
             reg.provider_keys,
             Some(
@@ -809,8 +815,8 @@ mod door_units {
 
     fn door() -> (Dispatcher, Plugin<Plane>) {
         let d = Dispatcher::new(DispatchConfig::default());
-        let row =
-            LinkedRow::of(plane_door::MACRO_DOOR).expect("the linked door states its Statement");
+        let row = LinkedRow::of_macro(plane_door::MACRO_DOOR)
+            .expect("the linked door states its Statement");
         let p = load_linked(
             &row,
             Bind {

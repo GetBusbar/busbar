@@ -136,7 +136,6 @@ impl LoadablePlugin {
     pub(crate) fn loaded_door(&self) -> Option<crate::dispatch::LoadedDoor> {
         match self.entry {
             Some(LinkedEntry::Door(door)) | Some(LinkedEntry::Store { door }) => Some(door.into()),
-            #[cfg(test)]
             Some(LinkedEntry::Restated(door)) => Some(door),
             None => None,
         }
@@ -206,9 +205,9 @@ pub enum LinkedEntry {
     /// the same door a dropped-in build exports as `busbar_plugin_door` (THE DESIGN: compiled-in =
     /// dropped-in). Loaded through [`crate::dispatch::load_linked`].
     Door(busbar_contract::abi::sdk::door::MacroDoor),
-    /// TEST ONLY: a linked row over a test's restated door (a NULL door, a door that states
-    /// nothing): a shipped row's door is a `MacroDoor`, which always states itself.
-    #[cfg(test)]
+    /// A linked row over a [`LoadedDoor`](crate::dispatch::LoadedDoor) ([`LinkedPlugin::of_loaded`]):
+    /// a `MacroDoor`'s, or a door a crate that exports its `door` function alone, or a test, restates
+    /// through the `unsafe` [`LoadedDoor::from_raw`](crate::dispatch::LoadedDoor::from_raw).
     Restated(crate::dispatch::LoadedDoor),
 }
 
@@ -234,6 +233,26 @@ impl LinkedPlugin {
         LinkedPlugin {
             manifest,
             entry: LinkedEntry::Door(door),
+            ephemeral: false,
+            keyed_by_alias: false,
+        }
+    }
+
+    /// [`LinkedPlugin::door`], by the name the expand step published (status rows 159 and 194).
+    #[must_use]
+    pub fn of_macro(manifest: Manifest, door: busbar_contract::abi::sdk::door::MacroDoor) -> Self {
+        Self::door(manifest, door)
+    }
+
+    /// A linked MEMORY-ABI plugin over a [`LoadedDoor`](crate::dispatch::LoadedDoor) (status rows
+    /// 159 and 194): a `MacroDoor`'s, or a door restated through the `unsafe`
+    /// [`LoadedDoor::from_raw`](crate::dispatch::LoadedDoor::from_raw). Loaded as
+    /// [`LinkedPlugin::door`]'s row is.
+    #[must_use]
+    pub fn of_loaded(manifest: Manifest, door: crate::dispatch::LoadedDoor) -> Self {
+        LinkedPlugin {
+            manifest,
+            entry: LinkedEntry::Restated(door),
             ephemeral: false,
             keyed_by_alias: false,
         }
@@ -634,7 +653,6 @@ impl PluginRegistry {
             return match entry {
                 LinkedEntry::Store { door } => Ok(StoreDoor::Linked(door)),
                 LinkedEntry::Door(_) => Err(no_door()),
-                #[cfg(test)]
                 LinkedEntry::Restated(_) => Err(no_door()),
             };
         }

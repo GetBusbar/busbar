@@ -52,6 +52,24 @@ pub type LinkedStore = (
     busbar_contract::abi::sdk::door::MacroDoor,
     &'static str,
 );
+
+/// A linked STORE's entry as a store crate states it with its `MACRO_DOOR` (status rows 159 and
+/// 194): the name the expand step gave this shape, which is now [`LinkedStore`] itself.
+pub type LinkedStoreDoor = LinkedStore;
+
+/// ONE STORE-AXIS ROW as the store crate states it (status rows 159 and 194): the expand step's
+/// wrapper, kept so a `STORE` it wrapped still reads; every row is a [`LinkedStore`] now.
+#[derive(Debug, Clone, Copy)]
+pub struct StoreRow<T>(pub T);
+
+impl StoreRow<LinkedStore> {
+    /// The row itself.
+    #[must_use]
+    pub const fn linked(self) -> LinkedStore {
+        self.0
+    }
+}
+
 /// The root's store axis (WIRE-STORE Q8/Q9): every store boot opens is loaded through the root's
 /// one dispatcher and opened through the store v3 table.
 pub type StoreAxisOf = fn() -> std::sync::Arc<dyn busbar_contract::store_calls::StoreAxis>;
@@ -1358,3 +1376,7 @@ mod opened_secrets_tests;
 #[cfg(test)]
 #[path = "tests/root_install_seams_tests.rs"]
 mod root_install_seams_tests;
+
+#[cfg(test)]
+#[path = "tests/store_row_tests.rs"]
+mod store_row_tests;

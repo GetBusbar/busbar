@@ -78,6 +78,7 @@ use busbar_contract::abi::sdk::life::Refusal;
 use busbar_contract::abi::sdk::publish::{ClaimSpec, SnapshotSpec};
 use busbar_contract::abi::sdk::{
     open_failed, Generations, HostBuf, Instance, Lent, Out, Safe, SafeSlot, Services,
+    StaticServices,
 };
 use busbar_contract::abi::transport::{FAULT_CALLER, FAULT_HARD, FAULT_NONE, FAULT_TRANSIENT};
 use busbar_contract::ids::{MeterClassDecl, OpClassId};
@@ -623,7 +624,7 @@ pub struct LlmDoor {
     generations: Generations<PlaneSnapshot>,
     shapings: Mutex<BTreeMap<u64, Arc<Shaping>>>,
     units: Mutex<UnitBook<UnitState>>,
-    services: Option<Services<'static>>,
+    services: Option<StaticServices>,
     /// The receivers the `webhooks:` section switched on at open.
     webhooks: Webhooks,
 }
@@ -665,7 +666,7 @@ const UNTICKETED: CompletionHandle = CompletionHandle {
 /// several) and the host's wall clock (`clock.now`, whole seconds). A host that serves neither
 /// answers each one's failure path: no entropy, no clock.
 #[derive(Clone, Copy)]
-struct DoorHost(Option<Services<'static>>);
+struct DoorHost(Option<StaticServices>);
 
 impl busbar_contract::codec::CodecHost for DoorHost {
     fn fill_entropy(&self, out: &mut [u8]) -> bool {

@@ -355,6 +355,9 @@ pub struct ViewOp {
     op: Op,
     door: &'static Door,
     index: u32,
+    /// The type of the slot's own `in`, from its kind's slot table (`None` for a table no kind
+    /// states: a host's own test double).
+    takes: Option<core::any::TypeId>,
 }
 
 impl ViewOp {
@@ -367,6 +370,23 @@ impl ViewOp {
     /// The slot and the door it is a slot of, for [`reply`] alone.
     pub(crate) fn parts(self) -> (Op, &'static Door, u32) {
         (self.op, self.door, self.index)
+    }
+
+    /// The slot is entered over its own `in` type, `I`, and no other (status row 194): an `in` of
+    /// another slot would hand it fields read as pointers it never was lent.
+    ///
+    /// # Panics
+    ///
+    /// `I` is not the slot's `in`.
+    pub(crate) fn check_in<I: 'static>(self) {
+        if let Some(takes) = self.takes {
+            assert!(
+                takes == core::any::TypeId::of::<I>(),
+                "reply::call_in: the `in` is not slot {}'s own `in` ({})",
+                self.index,
+                core::any::type_name::<I>()
+            );
+        }
     }
 }
 
@@ -514,10 +534,12 @@ impl DoorView {
                 && (at - first).is_multiple_of(size_of::<Option<Op>>()),
             "DoorView::op: the picked reference is not a slot of the door's table"
         );
+        let index = crate::abi::sdk::door::slot_at(at - base);
         (*slot).map(|op| ViewOp {
             op,
             door: self.door,
-            index: crate::abi::sdk::door::slot_at(at - base),
+            index,
+            takes: crate::abi::sdk::door::slot_in::<T>(index),
         })
     }
 

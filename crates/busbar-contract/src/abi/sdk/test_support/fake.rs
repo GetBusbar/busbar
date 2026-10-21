@@ -871,6 +871,7 @@ impl FakeHost {
         &'h self,
         mut input: TestIn<'h, I>,
     ) -> LentIn<'h, I> {
+        input.check();
         *input.input.host_field(sealed::HostToken(())) = ptr::from_ref(&*self.tables);
         LentIn {
             input,
