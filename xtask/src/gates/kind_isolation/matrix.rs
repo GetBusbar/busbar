@@ -4316,18 +4316,35 @@ fn fixture_files(files: &[(&str, &str)]) -> crate::ctx::Overlay {
 /// else is. A spelling that is counted still adds a finding the bare fixture does not have
 /// (`unlisted-cell <fixture> × <kind>`), and that finding is still RED. Only GREEN cases use this
 /// subject; every red case over the fixture is judged by the subject it always was.
+///
+/// EVERY FIXTURE CRATE THE BATTERY PLANTS, not only this one: a case that plants another new
+/// core-neutral crate (`busbar-planted-clean`, the cleanliness crate of the universal-needs case)
+/// names its own bare crate through [`OverFixture::leak_over`], the same rule over its own control.
 pub(super) struct OverFixture<'a> {
     inner: &'a dyn crate::gates::Gate,
     cx: &'a Ctx,
+    bare: crate::ctx::Overlay,
     debt: std::sync::OnceLock<super::debt_free::Debt>,
 }
 
 impl<'a> OverFixture<'a> {
     /// Leaked for the battery's lifetime, as the battery's own context is: the cases borrow it.
     pub(super) fn leak(cx: &'a Ctx, inner: &'a dyn crate::gates::Gate) -> &'a OverFixture<'a> {
+        Self::leak_over(cx, inner, instances::fixture_crate())
+    }
+
+    /// The same subject over ANOTHER bare fixture: `bare` is the planted crate with nothing in it
+    /// but what makes it a crate of the census (its manifest, its registration), and its findings
+    /// are the only ones taken out of view.
+    pub(super) fn leak_over(
+        cx: &'a Ctx,
+        inner: &'a dyn crate::gates::Gate,
+        bare: crate::ctx::Overlay,
+    ) -> &'a OverFixture<'a> {
         Box::leak(Box::new(OverFixture {
             inner,
             cx,
+            bare,
             debt: std::sync::OnceLock::new(),
         }))
     }
@@ -4335,7 +4352,7 @@ impl<'a> OverFixture<'a> {
     /// The bare fixture's findings, measured once, on the first case that asks.
     fn debt(&self) -> &super::debt_free::Debt {
         self.debt.get_or_init(|| {
-            let bare = self.cx.with_overlay(instances::fixture_crate());
+            let bare = self.cx.with_overlay(self.bare.clone());
             super::debt_free::debt_of(&self.inner.run(&bare))
         })
     }
