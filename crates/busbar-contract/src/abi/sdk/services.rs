@@ -21,8 +21,6 @@ use std::ffi::c_void;
 use std::mem::size_of;
 use std::task::Poll;
 
-use zeroize::Zeroizing;
-
 use crate::abi::auth::{FieldSpan, FIELD_QUERY, FIELD_SENSITIVE};
 use crate::abi::hook::{MessageView, PromptView};
 use crate::abi::host::conn::connector::WITHIN_SEPARATOR;
