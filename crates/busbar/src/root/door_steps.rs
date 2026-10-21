@@ -2030,6 +2030,10 @@ pub struct OutboundAuths {
         String,
         crate::root::loader::dispatch::auth_outbound::OutboundInstance,
     >,
+    /// TEST PROBE: every row [`Self::load_with`] was asked to bind, by name, in order (Law 7: an
+    /// auth row no configured style selects is never bound).
+    #[cfg(test)]
+    bound: Mutex<Vec<String>>,
 }
 
 /// One auth row's outbound facts: where its door is, the styles its Statement states, and whether
@@ -2079,6 +2083,8 @@ impl OutboundAuths {
             conns,
             facts: std::sync::OnceLock::new(),
             opened: crate::root::loader::open_once::OpenOnce::new(),
+            #[cfg(test)]
+            bound: Mutex::default(),
         }
     }
 
@@ -2137,6 +2143,11 @@ impl OutboundAuths {
     > {
         use crate::root::loader::dispatch::kinds::auth::Auth;
         use crate::root::loader::dispatch::{load_dropped_bytes, load_linked, LinkedRow};
+        #[cfg(test)]
+        self.bound
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(name.to_string());
         match door {
             AuthRowDoor::Linked(i) => {
                 let (_, _, door) = self.linked.get(i)?;

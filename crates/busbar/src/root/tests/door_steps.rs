@@ -8533,3 +8533,41 @@ fn asking_whether_a_name_is_configured_allocates_nothing() {
         "a membership probe on the request path allocates nothing"
     );
 }
+
+/// LAW 7 (BUSBAR-1.6.0.md Part 1: a plugin loads iff config uses it; ARCHITECT ruling 2026-10-20
+/// on root#7 / loader#9): serving one configured outbound style binds the one linked auth row that
+/// states it, and no other. Which row states a style is read off each row's static Statement
+/// (reading, not loading), never by binding every row to ask.
+#[test]
+fn serving_a_style_binds_only_the_linked_row_that_states_it() {
+    let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
+        crate::root::loader::dispatch::DispatchConfig::default(),
+    ));
+    let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
+    let linked = crate::LINKED.auths;
+    assert!(
+        linked.len() > 1,
+        "the default build links more than one auth row: {}",
+        linked.len()
+    );
+    let auths = super::OutboundAuths::new(
+        dispatcher,
+        linked,
+        None,
+        crate::root::loader::dispatch::ConnTable::NoNeeds,
+    );
+    let served = auths
+        .serving("bearer", &serde_json::json!({}))
+        .expect("the serving row opens");
+    assert!(served.is_some(), "a linked row states `bearer`");
+    let bound = auths
+        .bound
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert_eq!(
+        bound.len(),
+        1,
+        "only the row serving the style is bound, once: {bound:?}"
+    );
+}

@@ -57,6 +57,10 @@ pub struct AuthRows {
     held: Option<Arc<dyn DeclaredConns>>,
     /// Where each instance opened to serve writes its plugin log (THE DESIGN §11.2).
     logs: Option<fn() -> crate::dispatch::PluginLogConfig>,
+    /// TEST PROBE: every row [`Self::load`] was asked to bind, by key, in order (Law 7: a row the
+    /// configuration does not use is never bound).
+    #[cfg(test)]
+    bound: std::sync::Mutex<Vec<String>>,
 }
 
 impl std::fmt::Debug for AuthRows {
@@ -75,6 +79,8 @@ impl AuthRows {
             conns: None,
             held: None,
             logs: None,
+            #[cfg(test)]
+            bound: std::sync::Mutex::default(),
         }
     }
 
@@ -127,6 +133,11 @@ impl AuthRows {
     /// only read for its facts binds with no table.
     fn load(&self, row: &LoadablePlugin, label: &str, serving: bool) -> Result<Door, String> {
         let name = row.key();
+        #[cfg(test)]
+        self.bound
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(name.to_string());
         let refused = |e: String| format!("auth plugin '{name}': {e}");
         let sink = AuthSink::new(name);
         // Opened to serve: its own plugin log file (THE DESIGN §11.2). A fact read binds no file.
