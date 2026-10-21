@@ -2071,17 +2071,24 @@ fn reject_cidr_metadata_entries(key: &str, entries: &[String], errors: &mut Vec<
     }
 }
 
-/// Push an error for every entry in a metadata host-list config key that maps to no host. An entry
-/// is read as a destination's host is read (`busbar_kernel_egress::trust::net::list_entry_host`: a
-/// non-ASCII entry mapped by UTS #46 to the ASCII name or address a URL client dials), so a
-/// full-width `１６９.２５４.１６９.２５４` names `169.254.169.254`; an entry UTS #46 refuses names
-/// nothing and would silently match no destination, so it is refused at load, naming the key, the
-/// entry and the reason. An ASCII entry is never refused here.
+/// Push an error for every entry in a metadata host-list config key that names no host the
+/// destination guard can judge. An entry is read as a destination's host is read
+/// (`busbar_kernel_egress::trust::net::list_entry_host`: a non-ASCII entry mapped by UTS #46 to the
+/// ASCII name or address a URL client dials), so a full-width `１６９.２５４.１６９.２５４` names
+/// `169.254.169.254`; and it must then be a host the guard judges
+/// (`busbar_contract::net::judged_host`, the guard's one reading of every target and entry). An
+/// entry UTS #46 refuses, one holding a `%` outside an IPv6 zone id, or one ending in a number that
+/// is no IPv4 address a URL client reads (`1.2.3.4.5`, `１.２.３.４.５`) matches no destination: the
+/// guard drops it, so it is refused here at load, naming the key, the entry and the reason, and the
+/// guard and this validation agree on every entry that boots.
 fn reject_unmappable_metadata_entries(key: &str, entries: &[String], errors: &mut Vec<String>) {
     for entry in entries {
-        if busbar_kernel_egress::trust::net::list_entry_host(entry).is_err() {
+        let judged = busbar_kernel_egress::trust::net::list_entry_host(entry)
+            .ok()
+            .and_then(|_| busbar_contract::net::judged_host(entry.trim()).ok());
+        if judged.is_none() {
             errors.push(format!(
-                "{key} entry '{entry}' maps to no host: UTS #46 refuses it, so it names no host a destination could match and would silently match nothing. Write the host in ASCII (an internationalized name as its punycode 'xn--' form) or remove it"
+                "{key} entry '{entry}' maps to no host: it is no name or address a URL client would dial (UTS #46 refuses it, it holds a '%' outside an IPv6 zone id, or it ends in a number that is no IPv4 address), so it would silently match nothing. Write the host in ASCII (an internationalized name as its punycode 'xn--' form, an address as a dotted quad) or remove it"
             ));
         }
     }

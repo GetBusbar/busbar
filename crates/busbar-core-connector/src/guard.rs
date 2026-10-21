@@ -281,8 +281,9 @@ fn full(ip: IpAddr) -> u8 {
 /// A 1.5.5 list entry (`allow_metadata_hosts`, `blocked_metadata_hosts`), read as 1.5.5 read it:
 /// an address in any literal spelling, else a name, mapped as a target is ([`norm`]) so the two are
 /// compared in one form. Never refused here: their validation runs at configuration time, which
-/// refuses a non-ASCII entry that maps to nothing, naming it; an entry that maps to nothing names
-/// no target the guard admits to judgement, so one that reaches here is dropped.
+/// refuses, naming it, every entry this mapping reads as nothing (UTS #46 refuses it, it holds a
+/// `%` outside an IPv6 zone id, or it ends in a number that is no IPv4 address); one that reaches
+/// here anyway names no target the guard admits to judgement, so it is dropped.
 fn legacy(entry: &str) -> Option<Entry> {
     let e = norm(entry.trim())?;
     if e.is_empty() {

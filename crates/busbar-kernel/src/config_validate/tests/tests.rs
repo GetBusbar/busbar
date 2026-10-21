@@ -2587,9 +2587,10 @@ fn test_reject_cidr_metadata_entries() {
 
 /// RED (HIGH, the list entry read as written while every target is mapped): a metadata host-list
 /// entry is read as a target's host is read, through UTS #46. A full-width blocked entry blocks the
-/// ASCII target it maps to (it matched nothing, and the target was dialled); a non-ASCII entry
-/// UTS #46 refuses names no host at all, so the configuration is refused at load, naming the key,
-/// the entry and the reason, in each of the three lists. ASCII entries are read as before.
+/// ASCII target it maps to (it matched nothing, and the target was dialled); an entry UTS #46
+/// refuses, or one the guard cannot judge once mapped (a `%` outside a zone id, a number that is no
+/// IPv4 address), names no host at all, so the configuration is refused at load, naming the key,
+/// the entry and the reason, in each of the three lists.
 #[test]
 fn test_metadata_list_entries_are_mapped_and_an_unmappable_one_is_refused() {
     // `１０.９９.９９.９９` and `ｍｅｔａ.example`.
@@ -2612,10 +2613,11 @@ fn test_metadata_list_entries_are_mapped_and_an_unmappable_one_is_refused() {
         );
     }
     let unmappable = "b\u{fc}cher\u{ff1c}.example";
-    let refused = |errs: &[String], key: &str| {
+    let refused_entry = |errs: &[String], key: &str, entry: &str| {
         errs.iter()
-            .any(|e| e.starts_with(&format!("{key} entry '{unmappable}' maps to no host")))
+            .any(|e| e.starts_with(&format!("{key} entry '{entry}' maps to no host")))
     };
+    let refused = |errs: &[String], key: &str| refused_entry(errs, key, unmappable);
     let one = || {
         let mut providers = HashMap::new();
         providers.insert(
@@ -2645,12 +2647,37 @@ fn test_metadata_list_entries_are_mapped_and_an_unmappable_one_is_refused() {
         refused(&errs, "provider 'prov' allow_metadata_hosts"),
         "{errs:?}"
     );
-    // Mappable and ASCII entries are never refused as unmappable.
+    // An entry UTS #46 maps that the guard still cannot judge (it would drop it, matching nothing)
+    // is refused at load too: a `%` outside a zone id, a number that is no IPv4 address, written
+    // in ASCII or full width.
+    for entry in [
+        "%6c%6fcalhost",
+        "1.2.3.4.5",
+        "\u{ff11}.\u{ff12}.\u{ff13}.\u{ff14}.\u{ff15}",
+        "0x",
+    ] {
+        let cfg = make_root_cfg_with_blocked(one(), vec![entry.to_string()]);
+        let errs = validate(&cfg).expect_err("an unjudgeable blocked entry refuses the config");
+        assert!(
+            refused_entry(&errs, "security.blocked_metadata_hosts", entry),
+            "{entry}: {errs:?}"
+        );
+        let mut cfg = make_root_cfg(one(), HashMap::new(), HashMap::new());
+        cfg.allow_metadata_hosts = vec![entry.to_string()];
+        let errs = validate(&cfg).expect_err("an unjudgeable allow entry refuses the config");
+        assert!(
+            refused_entry(&errs, "security.allow_metadata_hosts", entry),
+            "{entry}: {errs:?}"
+        );
+    }
+    // Mappable and judgeable entries are never refused as unmappable.
     let mut cfg = make_root_cfg(one(), HashMap::new(), HashMap::new());
     cfg.blocked_metadata_hosts = vec![
         full_width_ip.to_string(),
         "169.254.169.254".to_string(),
-        "%6c%6fcalhost".to_string(),
+        "2852039166".to_string(),
+        "fd00:ec2::254".to_string(),
+        "metadata.google.internal.".to_string(),
     ];
     cfg.allow_metadata_hosts = vec![
         full_width_name.to_string(),
