@@ -8713,9 +8713,32 @@ impl Gate for KindIsolationGate {
                 }
                 ov
             };
+            // THE CONTROL IS THE BARE PLANTED CRATE: `busbar-planted-clean` is a new core-neutral
+            // crate, and one that measures 0 on every Law 0 axis is `law0-unarmed` on the matrix
+            // row with or without the dev-edge. That finding is about the crate existing, so the green
+            // claim is judged over the crate with its manifest and registration and nothing else
+            // (`matrix::OverFixture`); the two red cases below keep `subject`.
+            let bare_clean = {
+                let mut ov = Overlay::new();
+                ov.set(
+                    "crates/busbar-planted-clean/Cargo.toml",
+                    "[package]\nname = \"busbar-planted-clean\"\nversion = \"0.0.0\"\n".to_string(),
+                );
+                ov.set(
+                    REGISTRY_FILE,
+                    manifest_plus(
+                        cx,
+                        REGISTRY_FILE,
+                        "[[registered]]\ncrate = \"busbar-planted-clean\"\nkind = \"cleanliness\"\n\
+                         reason = \"planted\"\n",
+                    ),
+                );
+                ov
+            };
+            let over_clean: &'a dyn Gate = matrix::OverFixture::leak_over(cx, subject, bare_clean);
             report.push(prove_rows_green(
                 cx,
-                subject,
+                over_clean,
                 "a cleanliness crate's dev-edge to the loader, used only by its own \
                  `tests/universal_needs.rs`, is its universal-needs witness: no edge, closure reach \
                  or cell",

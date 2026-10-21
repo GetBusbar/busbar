@@ -318,6 +318,30 @@ pub struct Declares {
     /// false, so every manifest packed before the field existed keeps its canonical bytes.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub disk: bool,
+    /// THE HOOK FACTS a `kind: hook` plugin states about itself (ARCHITECT ruling, status row 194,
+    /// BUSBAR-1.6.0.md l.246: `declares` carries structured answers): see [`HookDecl`]. Absent, the
+    /// hook is judged and served as every hook before the field existed (it may order); left off
+    /// the wire when absent, so every manifest packed before the field existed keeps its canonical
+    /// bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hook: Option<HookDecl>,
+}
+
+/// A hook's declared FACTS (`declares.hook`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HookDecl {
+    /// Whether the hook's `decide` ever answers an order (PREFER). `false`: it always abstains, the
+    /// conformance suite judges it on abstain-only and fails it if it orders, and the loader refuses
+    /// an order it answers at run. Absent, `true`.
+    #[serde(default = "HookDecl::orders_by_default")]
+    pub orders: bool,
+}
+
+impl HookDecl {
+    const fn orders_by_default() -> bool {
+        true
+    }
 }
 
 /// A plane's declared BREAKER FACTS (`declares.breaker`, ARCHITECT Q4): per-plane facts about the
@@ -421,6 +445,13 @@ impl Declares {
             && self.egress.is_default()
             && self.breaker.is_none()
             && !self.disk
+            && self.hook.is_none()
+    }
+
+    /// Whether the hook may answer an order: `declares.hook.orders`, `true` when not stated.
+    #[must_use]
+    pub fn hook_orders(&self) -> bool {
+        self.hook.is_none_or(|h| h.orders)
     }
 }
 
