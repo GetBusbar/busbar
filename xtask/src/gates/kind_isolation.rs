@@ -13682,3 +13682,160 @@ mod door_root_tests {
         assert!(door_root_table("[dependencies]\nx = \"1\"\n").is_empty());
     }
 }
+
+/// THE DOOR-ROOT GRANT IS NARROW, HELD ON THE REAL TREE (status row 195). GREEN: the loader's
+/// optional, table-named edge to its door-root crate is scored by neither `:deps` (ship twin) nor
+/// `:transport-registration`. RED, each asserting the gate's own refusal text: (a) the same edge made
+/// non-optional; (b) an optional loader edge to a plugin crate the door-root table does not name;
+/// (c) the same optional, table-named edge from another plugin-tooling crate; (d) the
+/// transport-registration refusal of (b)'s wire.
+#[cfg(test)]
+mod door_root_grant_tests {
+    use super::*;
+    use crate::ledger::Status;
+
+    const LOADER: &str = "crates/plugin-loader/Cargo.toml";
+    const EDGE: &str = "busbar-transport-grpc = { workspace = true, optional = true }";
+
+    fn ws() -> Ctx {
+        pinned::with_pinned(&Ctx::workspace().expect("the workspace opens"))
+    }
+
+    fn planted(ov: Overlay) -> Ctx {
+        pinned::with_pinned(
+            &Ctx::workspace()
+                .expect("the workspace opens")
+                .with_overlay(ov),
+        )
+    }
+
+    fn crates_of(cx: &Ctx) -> Vec<CrateInfo> {
+        let mut crates = census(cx).expect("the census reads");
+        let (planes, ports) = vocabularies(&crates);
+        assign_instances(&mut crates, &planes, &ports);
+        crates
+    }
+
+    /// The ship twin's `:deps` row and the `:transport-registration` row over `cx`.
+    fn rows(cx: &Ctx) -> (Row, Row) {
+        let crates = crates_of(cx);
+        let reg = load_registry(cx).expect("the registry reads");
+        (
+            rule_deps(cx, &crates, &reg, Half::Shipped, true),
+            rule_wires(cx, &crates),
+        )
+    }
+
+    fn assert_names(row: &Row, needle: &str) {
+        assert_ne!(
+            row.status,
+            Status::Pass,
+            "{} stayed green: {}",
+            row.id,
+            row.detail
+        );
+        assert!(
+            row.detail.contains(needle),
+            "{} went red without `{needle}`: {}",
+            row.id,
+            row.detail
+        );
+    }
+
+    #[test]
+    fn the_loaders_table_named_optional_edge_is_granted() {
+        let cx = ws();
+        let manifest = cx.read(LOADER).expect("read the loader's manifest");
+        assert!(
+            manifest.contains(EDGE),
+            "the loader holds the door-root edge"
+        );
+        let (deps, wires) = rows(&cx);
+        assert!(
+            !deps
+                .detail
+                .contains("busbar-plugin-loader -> busbar-transport-grpc is `not-allowed`"),
+            "{}",
+            deps.detail
+        );
+        assert!(
+            !wires
+                .detail
+                .contains("busbar-plugin-loader is kind `plugin-tooling` and depends on the wire crate busbar-transport-grpc"),
+            "{}",
+            wires.detail
+        );
+    }
+
+    /// RED (a): the same edge, NOT optional.
+    #[test]
+    fn a_non_optional_loader_edge_is_refused() {
+        let cx = ws();
+        let manifest = cx.read(LOADER).expect("read the loader's manifest");
+        let mut ov = Overlay::new();
+        ov.set(
+            LOADER,
+            manifest.replace(EDGE, "busbar-transport-grpc = { workspace = true }"),
+        );
+        let (deps, wires) = rows(&planted(ov));
+        assert_names(
+            &deps,
+            "busbar-plugin-loader -> busbar-transport-grpc is `not-allowed`",
+        );
+        assert_names(
+            &wires,
+            "busbar-plugin-loader is kind `plugin-tooling` and depends on the wire crate busbar-transport-grpc",
+        );
+    }
+
+    /// RED (b) and (d): an optional loader edge to a wire the door-root table does not name.
+    #[test]
+    fn an_optional_loader_edge_the_table_does_not_name_is_refused() {
+        let cx = ws();
+        let manifest = cx.read(LOADER).expect("read the loader's manifest");
+        let mut ov = Overlay::new();
+        ov.set(
+            LOADER,
+            manifest.replace(
+                EDGE,
+                &format!("{EDGE}\nbusbar-transport-tcp = {{ workspace = true, optional = true }}"),
+            ),
+        );
+        let (deps, wires) = rows(&planted(ov));
+        assert_names(
+            &deps,
+            "busbar-plugin-loader -> busbar-transport-tcp is `not-allowed`",
+        );
+        assert_names(
+            &wires,
+            "busbar-plugin-loader is kind `plugin-tooling` and depends on the wire crate busbar-transport-tcp",
+        );
+    }
+
+    /// RED (c): the same optional, table-named edge from ANOTHER plugin-tooling crate.
+    #[test]
+    fn the_same_edge_from_another_tooling_crate_is_refused() {
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/plugin-planted/Cargo.toml",
+            format!(
+                "[package]\nname = \"busbar-plugin-planted\"\nversion = \"0.0.0\"\n\n\
+                 [dependencies]\n{EDGE}\n\n[package.metadata.busbar.door-root]\n\
+                 busbar-transport-grpc = \"busbar_transport_grpc::door\"\n"
+            ),
+        );
+        ov.set(
+            "crates/plugin-planted/src/lib.rs",
+            "//! A planted tooling crate.\n",
+        );
+        let (deps, wires) = rows(&planted(ov));
+        assert_names(
+            &deps,
+            "busbar-plugin-planted -> busbar-transport-grpc is `not-allowed`",
+        );
+        assert_names(
+            &wires,
+            "busbar-plugin-planted is kind `plugin-tooling` and depends on the wire crate busbar-transport-grpc",
+        );
+    }
+}
