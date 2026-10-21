@@ -4333,11 +4333,15 @@ fn present_tools_section() -> Box<dyn busbar_kernel::config::plane_sections::Pla
     let written: serde_yaml::Value =
         serde_yaml::from_str("a-tool-server:\n  url: \"https://tools.example.com/rpc\"\n")
             .expect("yaml");
-    let section = crate::config::plane_sections::DeclaredSections::parse(key, written)
-        .expect("a one-registration tools section must parse")
-        .0
-        .remove(key)
-        .expect("the section is carried");
+    let section = crate::config::plane_sections::DeclaredSections::parse(
+        crate::test_support::neutral_test_doors(),
+        key,
+        written,
+    )
+    .expect("a one-registration tools section must parse")
+    .0
+    .remove(key)
+    .expect("the section is carried");
     assert!(
         section.is_present(),
         "the fixture must be a section the operator wrote content for"
