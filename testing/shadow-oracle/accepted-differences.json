@@ -2570,6 +2570,31 @@
       }
     },
     {
+      "id": "DF-REASONING a reasoning ask crosses Cohere both ways and a reasoning-off ask reaches Anthropic",
+      "kind": "improvement",
+      "changelog": "A reasoning ask now crosses to and from Cohere, and a reasoning-off ask now reaches an Anthropic upstream: on a model with `reasoning: true`, a Cohere caller's `thinking` reaches a foreign backend, a foreign caller's ask reaches a Cohere backend as `thinking`, and an OpenAI `none`, Gemini `thinkingBudget: 0` or Anthropic `thinking: {type: disabled}` reaches an Anthropic upstream as `thinking: {type: disabled}`, where 1.5.5 dropped each of them.",
+      "by": "owner (Matthew Jackson), STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z): across dialects, translate what maps; byte moves vs 1.5.5 that follow from it are pre-approved, each with a register entry citing it (docs/design/BUSBAR-1.6.0.md, OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE)",
+      "cells": "^llm\\.reasoning-carry\\|(anthropic|openai|responses|gemini|bedrock|cohere)\\|(cohere|anthropic)$",
+      "expected_cells": 0,
+      "classes": [
+        "body"
+      ],
+      "rationale": "Q128 row 159, audit round 2 of crates/busbar-plane-llm/src (opus-r159c-plane-llm-parts), HIGH: reasoning asks 1.5.5 never translated now cross Cohere both ways and Anthropic outward, with no register entry. 1.5.5 (v1.5.5 crates/busbar/src/proto/cohere/reader.rs read_request: `reasoning: None`; proto/cohere/writer.rs: \"dropping cross-protocol reasoning/thinking ask: no Cohere mapping in this release\") neither read Cohere v2's `thinking` request param nor wrote one, and its IR had no reasoning-off ask (v1.5.5 crates/busbar/src/ir/mod.rs IrReasoningAsk: Effort, Budget, Dynamic), so an OpenAI `reasoning_effort: none`, a Gemini `thinkingBudget: 0` or an Anthropic `thinking: {type: disabled}` never reached an Anthropic upstream (a zero budget fell under the 1024-token minimum and was dropped with a warn). 1.6.0 maps Cohere v2's `thinking` (`{type: enabled, token_budget}`) to the IR ask both ways (COH-05, COH-06: crates/busbar-plane-llm/src/codec/cohere/reader.rs read_cohere_reasoning, codec/cohere/writer.rs write_cohere_reasoning) and carries the reasoning-off ask (IR-09, ANT-09: codec/anthropic/writer.rs writes `{type: disabled}`, omitted on a `thinking_always_on` model). Both are the fidelity rule's 'translate what maps': each dialect has the control, so the ask crosses instead of being dropped. Billing does not move: no usage member is read or written differently. The operator gate 1.5.5 had is unchanged: an ask reaches a lane only when the model (or pool member) sets `reasoning: true` (codec/chat_handle.rs, the reasoning gate), else it is dropped, warned and audited as in 1.5.5; a word-form ask on an Anthropic lane without `anthropic_adaptive_thinking` is still the 1.5.5 `budget_tokens` projection. Tests: codec/cohere/tests/ir_mapping_tests.rs coh05_cohere_thinking_budget_reaches_a_foreign_reasoning_backend, coh06_foreign_reasoning_ask_reaches_a_cohere_backend, ir09_reasoning_off_maps_both_ways; codec/anthropic/tests/ir_slot_wiring_tests.rs ant09_thinking_disabled_reads_as_off_and_writes_disabled; codec/anthropic/tests/ir_round3_tests.rs item12_off_omits_thinking_on_an_always_on_lane. No oracle cell sends a reasoning ask across these pairs on a `reasoning: true` model: the cells are OWED, `cells` names them and expected_cells is 0, the way DF-SITES is written.",
+      "premise": {
+        "cell": "llm|cohere|anthropic|request|ok",
+        "status": 200
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-01",
+        "ruling": "LLM DIALECT FIDELITY (OWNER STANDING RULE 2026-10-01T23:45Z, escalate.q:114)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
       "id": "PLANELOG the llm plane's warnings are written to its own plugin log file",
       "kind": "improvement",
       "changelog": "1.6.0 Changed: a plugin's log lines, the LLM plane's included (it is a plugin in 1.6.0), are written to that plugin's own log file under `plugins.logs.dir` (for example `logs/plugins/llm.log`), not to the Busbar log.",
