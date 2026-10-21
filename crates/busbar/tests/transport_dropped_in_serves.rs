@@ -28,7 +28,8 @@
 // owns provider lanes — linked; read off the linked set, as thread_per_core_serves.rs gates. A
 // single-plane build without that door has no wire codec and refuses the provider at boot
 // (BUSBAR-9007), which is correct product behaviour, not what this test measures. The dropped-in
-// wire itself is proven in every build that links that door, including the no-tcp feature row.
+// wire itself is proven in every build that links that door, including the feature row that links
+// no stream wire.
 #![cfg(linked_section_pools)]
 
 mod common;
