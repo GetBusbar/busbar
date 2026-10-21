@@ -222,6 +222,19 @@ impl Rows {
     }
 }
 
+impl std::fmt::Debug for Rows {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names = |entries: &[Entry]| -> Vec<String> {
+            entries.iter().map(|e| e.row.name.clone()).collect()
+        };
+        f.debug_struct("Rows")
+            .field("linked", &names(&self.linked))
+            .field("dropped", &names(&self.dropped))
+            .field("skipped", &self.skipped)
+            .finish()
+    }
+}
+
 impl PluginRows for Rows {
     fn resolve(&self, name_or_alias: &str) -> Option<Row> {
         self.entry(name_or_alias).map(|e| e.row.clone())

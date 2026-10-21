@@ -114,7 +114,7 @@ pub struct Skipped {
 }
 
 /// One build's plugin rows (see the module doc).
-pub trait PluginRows: Send + Sync {
+pub trait PluginRows: Send + Sync + std::fmt::Debug {
     /// The admitted row `name_or_alias` resolves to (canonical name first, then alias).
     fn resolve(&self, name_or_alias: &str) -> Option<Row>;
 

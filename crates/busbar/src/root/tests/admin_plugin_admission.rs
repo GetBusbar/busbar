@@ -269,7 +269,7 @@ fn file_of(row: &serde_json::Value) -> Option<String> {
 
 /// The key of the first store this build links: the store catalog's compiled-in head, read off the
 /// installed root rows (the root's table, or a test build's stand-in), never spelled here.
-fn linked_store() -> &'static str {
+fn linked_store_key() -> &'static str {
     busbar_kernel::preflight::root_rows()
         .stores
         .first()
@@ -991,7 +991,7 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
         .await
         .unwrap();
     let items = list["items"].as_array().unwrap();
-    assert_eq!(items[0]["name"], linked_store());
+    assert_eq!(items[0]["name"], linked_store_key());
     let dyn_row = items
         .iter()
         .find(|p| p["loader"] == "dynamic-library")
@@ -1133,7 +1133,7 @@ async fn test_admin_v1_plugins_type_secret_lists_secret_kind_only() {
         .map(|p| p["name"].as_str().unwrap())
         .collect();
     assert!(
-        store_names.contains(&linked_store()) && store_names.contains(&"acme-store-junk"),
+        store_names.contains(&linked_store_key()) && store_names.contains(&"acme-store-junk"),
         "type=store still lists the compiled-in default + the store plugin: {store_list}"
     );
     assert!(
@@ -1219,7 +1219,7 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|p| p["name"] == linked_store())
+        .find(|p| p["name"] == linked_store_key())
         .expect("compiled-in memory row present");
     assert_eq!(memory_row["schema_url"], serde_json::Value::Null);
 
@@ -1352,7 +1352,7 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
 
     let memory_row = items
         .iter()
-        .find(|p| p["name"] == linked_store())
+        .find(|p| p["name"] == linked_store_key())
         .expect("compiled-in memory row present");
     assert_eq!(
         file_of(memory_row),

@@ -69,6 +69,7 @@ fn the_root_gets_its_registry_back() {
     let owned = crate::rows::registry_arc(rows).expect("owned, too");
     assert!(owned.resolve("the-store").is_some());
 
+    #[derive(Debug)]
     struct NotARegistry;
     impl PluginRows for NotARegistry {
         fn resolve(&self, _: &str) -> Option<busbar_contract::plugin_rows::Row> {
