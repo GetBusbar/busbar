@@ -100,10 +100,6 @@ pub struct Linked {
     /// The operator credential's provider word: the key the manifest's operator row states
     /// (`[package.metadata.busbar.operator-auth]`), linked in this build or not.
     pub operator_auth: &'static str,
-    /// The kernel-loop axes (#28): the declaration key of each plane `gauntlet_install::install()`
-    /// flips onto the unified loop's ONE-SHOT runner, and of each it flips onto the SESSION runner.
-    pub gauntlet_one_shot: &'static [&'static str],
-    pub gauntlet_session: &'static [&'static str],
     /// The transport axis (#3, #30): each linked wire's key, declared layers and build, in manifest
     /// order — the boot seal folds them bottom-up (see `crate::root::registry`).
     pub transports: &'static [LinkedTransport],

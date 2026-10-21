@@ -1,116 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `plane_host` — the HOST side of a plane's calls into the kernel: the [`EngineHost`] seam, its
-//! capability bodies and the per-dispatch lifecycle arena.
+//! `plane_host` — the HOST side of a plane's calls into the kernel: the [`EngineHost`] seam and its
+//! capability bodies.
 //!
 //! A plane reaches the kernel through the [`EngineHost`] supertraits; the kernel answers by calling
 //! its own functions directly over plain Rust types. No plugin is on the other side of this seam, so
 //! it carries no C-layout shape (BUSBAR-1.6.0.md THE DESIGN §11.5 l.1338-1349); the old HOT lane's
 //! `PlaneHostVtable` and its PODs are retired (§11.11 l.1444-1446).
 //!
-//! ## The pieces
-//!
-//! * [`HostState`] — the live `App`, the active [`DispatchScope`] and the caller a host call runs
-//!   for, built on the calling frame for exactly that call.
-//! * [`scope`] — the [`DispatchScope`] arena (the leak keystone) plus the [`SessionScope`] /
-//!   [`DurableScope`] scopes and the settle vocabulary.
-//! * [`breaker`] and `govern` — the breaker and governance bodies the host methods call.
-
-pub mod breaker;
-mod govern;
-pub mod scope;
-
-pub use scope::{AdmissionId, DispatchScope, DurableScope, SessionScope, Settle, Settled};
+//! The per-dispatch arena (`scope`), the plane-side breaker admission (`breaker`) and the
+//! arena-billed governance charge (`govern`) are gone with the plane-side failover walk and the
+//! gauntlet riders they served: a door plane's admission, breaker and money run on the kernel's
+//! plane driver (`crate::plane_driver`) over the kernel's own breaker store and governance book.
 
 use crate::state::App;
 use std::sync::Arc;
-
-/// Core's own state for one host call: the live [`App`] (the config generation the dispatch was
-/// admitted on), the per-invocation [`DispatchScope`] arena and the caller the call runs for.
-/// Borrowed, not owned: a `HostState` lives on the stack of the core frame that makes the call and
-/// outlives it.
-pub struct HostState<'a> {
-    /// The live engine snapshot backing the host calls (governance, metrics, … primitives).
-    pub app: &'a App,
-    /// The per-dispatch-invocation arena; every acquired host handle registers here and is reclaimed
-    /// when this `HostState`'s owning scope drops.
-    pub scope: &'a DispatchScope,
-    /// WHOSE request this dispatch runs for (DEC-SERVE G1/G1b, DECISIONS #65/#40): the caller the auth
-    /// middleware resolved, stamped from that context — never a word the plane wrote. THE ONE
-    /// ATTRIBUTION RULE: the admission admits, and `meter_charge` bills, THIS caller. `None` (an
-    /// open route, or a call with no request behind it) admits and bills the named synthetic keys
-    /// (`govern::SYNTH_TENANT_KEY`, `govern::SYNTH_ADMISSION_KEY`).
-    caller: Option<HostCaller>,
-}
-
-/// The middleware-resolved caller behind a plane mint (DEC-SERVE G1): an OPAQUE, kernel-only handle.
-/// It has no public constructor — the only way one comes to exist is the host lifting it off the auth
-/// context the middleware attached — so neither a plane nor a crate outside the kernel
-/// can hand the host a caller of its choosing (#65).
-pub(crate) struct HostCaller(Arc<busbar_contract::records::VirtualKey>);
-
-impl HostCaller {
-    /// Lift the caller off the middleware-resolved request context (`None`: no key resolved).
-    fn of(ctx: Option<&busbar_contract::records::PlaneRequestCtx>) -> Option<Self> {
-        ctx.and_then(|g| g.key.clone()).map(HostCaller)
-    }
-
-    /// The resolved key this dispatch is admitted and billed as.
-    pub(crate) fn key(&self) -> &busbar_contract::records::VirtualKey {
-        &self.0
-    }
-}
-
-/// Run `f` over a [`HostState`] of `app` + `scope` for `caller`, built on this frame for exactly
-/// the duration of `f`. Every host call that needs a `HostState` is this function.
-fn with_state<R>(
-    caller: Option<HostCaller>,
-    app: &App,
-    scope: &DispatchScope,
-    f: impl FnOnce(&HostState) -> R,
-) -> R {
-    let state = HostState { app, scope, caller };
-    f(&state)
-}
-
-/// The most reason bytes a refused admission carries back (the reason is cut there, then read as
-/// UTF-8 with any cut character replaced).
-const GOV_REASON_CAP: usize = 512;
-
-/// Admit one unit of work, REGISTERING the RAII grant in `scope`'s arena on success and returning the
-/// RENDERED refusal reason on a blocked limit. The admission runs for `caller` — the
-/// middleware-resolved request context (DEC-SERVE G1b) — and admits THAT key's chain, identical to
-/// the in-place `try_admit(cost, key, pool)`. A panic inside the admission refuses, with no reason
-/// and no recovery floor.
-#[must_use]
-pub fn govern_admit_reason_over(
-    app: &App,
-    scope: &DispatchScope,
-    caller: &busbar_contract::records::PlaneRequestCtx,
-    pool: &[u8],
-) -> GovAdmit {
-    let admitted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        with_state(HostCaller::of(Some(caller)), app, scope, |state| {
-            govern::admit_reason(state, pool)
-        })
-    }));
-    match admitted {
-        Ok(Ok(())) => GovAdmit::Admitted,
-        Ok(Err(blocked)) => {
-            let bytes = blocked.reason.as_bytes();
-            GovAdmit::Blocked {
-                reason: String::from_utf8_lossy(&bytes[..bytes.len().min(GOV_REASON_CAP)])
-                    .into_owned(),
-                retry_after_secs: blocked.retry_after_secs,
-            }
-        }
-        Err(_) => GovAdmit::Blocked {
-            reason: String::new(),
-            retry_after_secs: 0,
-        },
-    }
-}
 
 /// The host wall clock in Unix NANOSECONDS: `busbar_kernel::store::now_ms` scaled up, so a plane
 /// reads the kernel's one clock and no ambient one. `0` if the read panics, never a wild value.
@@ -165,32 +70,6 @@ impl EngineHostImpl {
     #[must_use]
     pub fn from_handle(handle: Arc<crate::state::AppHandle>) -> Self {
         EngineHostImpl { app: handle.load() }
-    }
-}
-
-// AUDIT-D BRAKE: the BREAKER family, split off `EngineHost` into its `BreakerHost` supertrait. The
-// bodies are relocated byte-for-byte — same-dispatch reaches, same arenas — so the split is purely
-// structural. `EngineHost: BreakerHost` (in substrate) makes these visible on every `dyn EngineHost`.
-impl busbar_kernel::plane_host::BreakerHost for EngineHostImpl {
-    fn breaker_store(&self) -> &Arc<busbar_kernel::store::PlaneBreakers> {
-        // The bound snapshot's ONE breaker store (process-lifetime across applies).
-        &self.app.plane_breakers
-    }
-
-    fn breaker_settle(
-        &self,
-        scope: &DispatchScope,
-        admission: AdmissionId,
-        signal: &Settle,
-    ) -> Settled {
-        // Look the admission up in the caller's arena and fold the leg into its cell; a missing
-        // admission is stale, and a panic inside the record is the distinct fault answer.
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            scope
-                .settle_admission(admission, signal)
-                .unwrap_or(Settled::Gone)
-        }))
-        .unwrap_or(Settled::Fault)
     }
 }
 
@@ -457,22 +336,6 @@ impl busbar_kernel::plane_host::BudgetHost for EngineHostImpl {
         self.app.governance.is_some()
     }
 
-    fn meter_charge(
-        &self,
-        scope: &DispatchScope,
-        caller: &busbar_contract::records::PlaneRequestCtx,
-        usage: &busbar_kernel::plane_host::MeterUsage<'_>,
-    ) {
-        // Charge for the middleware-resolved `caller` (DEC-SERVE G1b — the host bills that key,
-        // never a word the plane wrote). Fire-and-forget: a panic inside the charge is swallowed.
-        let caller = HostCaller::of(Some(caller));
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            with_state(caller, &self.app, scope, |state| {
-                govern::charge(state, usage)
-            });
-        }));
-    }
-
     fn rate_headroom(
         &self,
         pin: &busbar_kernel::plane_host::MeterPin,
@@ -596,15 +459,6 @@ impl busbar_kernel::plane_host::IdentityHost for EngineHostImpl {
 }
 
 impl busbar_kernel::plane_host::AdmissionHost for EngineHostImpl {
-    fn govern_admit_reason(
-        &self,
-        scope: &DispatchScope,
-        caller: &busbar_contract::records::PlaneRequestCtx,
-        pool: &[u8],
-    ) -> busbar_kernel::plane_host::GovAdmit {
-        govern_admit_reason_over(&self.app, scope, caller, pool)
-    }
-
     fn destination_guard(
         &self,
         gov: &busbar_contract::records::PlaneRequestCtx,
@@ -831,374 +685,6 @@ fn standing_in(
     }
 }
 
-/// Whether the deployment attached any REQUEST-ADMISSION hook gate to `container` on the plane filed
-/// under the registry key `plane_key` — the presence pre-filter a plane reads before it serializes
-/// anything or takes the blocking [`admission_gates_decide`] hop. A FREE FUNCTION over the hooks seam
-/// every plane already holds ([`HookConfigHost::plane_gates_of`], the per-entry gate set the kernel
-/// plane driver screens a door plane's units with), so the universal [`EngineHost`] carries no
-/// per-plane gate method. The resolved map never files an empty set, so presence is a non-empty set.
-#[must_use]
-pub fn admission_gates_attached<H: HookConfigHost + ?Sized>(
-    host: &H,
-    plane_key: &str,
-    container: &str,
-) -> bool {
-    !host.plane_gates_of(plane_key, container).is_empty()
-}
-
-/// Fire the REQUEST-ADMISSION hook gates the deployment attached to `container` on the plane filed
-/// under `plane_key`, over the `{tool, arguments}` projection of one request (`method` + the caller's
-/// `args_json`), and answer the [`GateOutcome`]. The plane supplies only the facts it alone knows;
-/// the gate set ([`HookConfigHost::plane_gates_of`]) and the incremental-scan substrate
-/// ([`HookConfigHost::gate_scan`]) are read off the host, and the decision is the kernel's one gate
-/// (`hooks::gate::decide`), so the plane names no gate engine and holds no resolved policy.
-///
-/// The subject is the one the request-gate host slot built: the `InvokeReq` facts (the arguments
-/// round-trip losslessly because `serde_json`'s `preserve_order` is OFF), the `ingress_protocol` label
-/// is the plane's registry key, the caller key carries only `id`/`name` (all the gate reads), and the
-/// session is shown to the hooks when non-empty. The incremental scan runs under the operator's
-/// opt-in and a non-empty session, its clearance bound to the caller principal and the hook-config
-/// generation (`IncrementalScan::derive_session_key`).
-///
-/// Drives the ASYNC gate on a fresh current-thread runtime, so it MUST be called from a BLOCKING
-/// thread (`spawn_blocking`): `block_on` on a runtime worker would panic. FAIL-CLOSED: a runtime that
-/// will not start, or a panic anywhere in the decision, answers a `403` reject with an empty message
-/// and hook — a gate that could not run refuses.
-#[allow(clippy::too_many_arguments)]
-#[must_use]
-pub fn admission_gates_decide<H: HookConfigHost + ?Sized>(
-    host: &H,
-    plane_key: &str,
-    container: &str,
-    request_id: u64,
-    method: &str,
-    args_json: &[u8],
-    key: Option<(&str, &str)>,
-    session_id: Option<&str>,
-) -> GateOutcome {
-    use crate::hooks::gate::{decide, GateSubject, GateVerdict, IncrementalScan};
-    let fired = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let gates = host.plane_gates_of(plane_key, container);
-        let arguments: serde_json::Value =
-            serde_json::from_slice(args_json).unwrap_or(serde_json::Value::Null);
-        let facts = busbar_contract::ir::invoke::InvokeReq {
-            tool: method.to_string(),
-            arguments,
-            extra: Default::default(),
-        };
-        let key = key.map(|(id, name)| busbar_contract::records::VirtualKey {
-            id: id.to_string(),
-            name: name.to_string(),
-            ..Default::default()
-        });
-        let sid = session_id.unwrap_or("");
-        let principal_id = key.as_ref().map(|k| k.id.as_str()).unwrap_or("");
-        let scan = host.gate_scan();
-        let incremental = scan
-            .as_ref()
-            .filter(|_| !sid.is_empty())
-            .map(|(store, generation)| IncrementalScan {
-                store: store.as_ref(),
-                session: IncrementalScan::derive_session_key(sid, principal_id, *generation),
-                now_ms: crate::store::now_ms(),
-            });
-        let subject = GateSubject {
-            facts: &facts,
-            container,
-            ingress_protocol: plane_key,
-            request_id,
-            key: key.as_ref(),
-            incremental,
-            session: (!sid.is_empty()).then_some(sid.as_bytes()),
-        };
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .ok()?;
-        Some(rt.block_on(decide(&gates, &subject)))
-    }));
-    match fired {
-        Ok(Some(GateVerdict::Proceed)) => GateOutcome::Proceed,
-        Ok(Some(GateVerdict::Reject {
-            status,
-            message,
-            hook,
-        })) => GateOutcome::Reject {
-            status,
-            message,
-            hook: hook.to_string(),
-        },
-        Ok(None) | Err(_) => GateOutcome::Reject {
-            status: 403,
-            message: String::new(),
-            hook: String::new(),
-        },
-    }
-}
-
-/// Whether the deployment attached any REQUEST-ADMISSION TRANSFORM (`prompt: rw` rewrite) hook to
-/// `container` on the plane filed under the registry key `plane_key` — the presence pre-filter a plane
-/// reads before it serializes anything or takes the blocking [`admission_transform`] hop, the tap twin
-/// of [`admission_gates_attached`]. A FREE FUNCTION over the hooks seam every plane already holds
-/// ([`HookConfigHost::plane_rewrites_of`]), so the universal [`EngineHost`] carries no per-plane tap
-/// method. The resolved map never files an empty chain, so presence is a non-empty chain.
-///
-/// The presence check is the whole zero-cost guarantee: absent a rewrite hook a plane never
-/// serializes the payload, never spawns the blocking hop, and never touches its own bytes.
-#[must_use]
-pub fn admission_tap_attached<H: HookConfigHost + ?Sized>(
-    host: &H,
-    plane_key: &str,
-    container: &str,
-) -> bool {
-    !host.plane_rewrites_of(plane_key, container).is_empty()
-}
-
-/// Fire the REQUEST-ADMISSION TRANSFORM (`<section>.hooks:` `prompt: rw`) chain the deployment attached
-/// to `container` on the plane filed under `plane_key`, over the `{tool, arguments}` projection of one
-/// request (`method` + the caller's `args_json`), and answer the [`TransformVerdict`] — the
-/// TAP/observe-transform twin of [`admission_gates_decide`]. The chain is read off the host
-/// ([`HookConfigHost::plane_rewrites_of`]) and run by the kernel ([`transform_chain`]), so the plane
-/// names no core hook symbol and holds no resolved `Arc<dyn RoutingPolicy>` set (the Seam-B inversion).
-///
-/// Drives the ASYNC hooks on a fresh current-thread runtime, so it MUST be called from a BLOCKING
-/// thread (`spawn_blocking`) — `block_on` on a runtime worker would panic — exactly like
-/// [`admission_gates_decide`].
-#[must_use]
-pub fn admission_transform<H: HookConfigHost + ?Sized>(
-    host: &H,
-    plane_key: &str,
-    container: &str,
-    request_id: u64,
-    method: &str,
-    args_json: &[u8],
-) -> TransformVerdict {
-    let chain = host.plane_rewrites_of(plane_key, container);
-    transform_chain(&chain, plane_key, request_id, method, args_json)
-}
-
-/// [`admission_transform`] over a live [`App`]'s own resolved rewrite map: the same chain, the same
-/// run. The kernel's own tests drive it over a built `App`.
-#[allow(dead_code)]
-#[must_use]
-pub fn transform_over_over(
-    app: &App,
-    plane_key: &str,
-    container: &str,
-    request_id: u64,
-    tool: &str,
-    args_json: &[u8],
-) -> busbar_kernel::plane_host::TransformVerdict {
-    let chain: &[(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)] = app
-        .plane_rewrites(plane_key)
-        .and_then(|m| m.get(container))
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
-    transform_chain(chain, plane_key, request_id, tool, args_json)
-}
-
-/// Run one resolved REQUEST-ADMISSION TRANSFORM chain over the `InvokeReq` projection of a request.
-///
-/// The projection is the SAME `InvokeReq` the gate builds from `(tool, arguments)` — rebuilt from the
-/// CURRENT arguments on every iteration so a later hook sees the earlier rewrite (a true transform
-/// chain, mirroring the LLM `apply_global_rewrites` seam). Precedence on the transform path is the
-/// canonical **reject > rewrite > abstain**. The `ingress_protocol` label is the plane's registry key.
-///
-/// FAIL-SAFE, not fail-closed: a rewrite is an OBSERVE/transform pass (the admission GATE already ran
-/// and screened the request), so a hook that errors, times out or abstains — or a runtime that will
-/// not start — proceeds with the ORIGINAL payload, byte-for-byte. Only an explicit `reject` stops the
-/// request, and only a committed `rewrite` changes a byte.
-fn transform_chain(
-    chain: &[(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)],
-    plane_key: &str,
-    request_id: u64,
-    tool: &str,
-    args_json: &[u8],
-) -> TransformVerdict {
-    // Empty ⇒ nothing attached ⇒ byte-identical no-op. A caller normally guards on
-    // `admission_tap_attached`; the re-check keeps the run correct if invoked directly.
-    if chain.is_empty() {
-        return TransformVerdict::Proceed {
-            applied: false,
-            args_json: args_json.to_vec(),
-        };
-    }
-    // Rebuild the caller's arguments `Value`. Byte-safe because `serde_json`'s `preserve_order` is OFF
-    // (a `Value` object is a sorted-stable `BTreeMap`), so `to_vec`→`from_slice` round-trips to the
-    // identical `Value` — the same guarantee the gate seam relies on.
-    let mut arguments: serde_json::Value =
-        serde_json::from_slice(args_json).unwrap_or(serde_json::Value::Null);
-    // The `ingress_protocol` label IS the plane's stable decl key (the gate seam's convention).
-    let ingress = plane_key;
-    // Drive the async chain on a fresh current-thread runtime (the gate precedent). A runtime that will
-    // not start is FAIL-SAFE here (proceed with the original body) because the admission gate already
-    // ran — a transform is not an admission point.
-    let rt = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(rt) => rt,
-        Err(_) => {
-            return TransformVerdict::Proceed {
-                applied: false,
-                args_json: args_json.to_vec(),
-            }
-        }
-    };
-    let mut applied = false;
-    for (timeout, hook) in chain {
-        // Re-read the InvokeReq facts from the CURRENT arguments so a later hook sees the earlier
-        // rewrite — a true transform chain.
-        let facts = busbar_contract::ir::invoke::InvokeReq {
-            tool: tool.to_string(),
-            arguments: arguments.clone(),
-            extra: Default::default(),
-        };
-        let req = build_invoke_rewrite_request(&facts, ingress, request_id);
-        crate::audit::amend::hook_read(hook.name(), None, ingress, false);
-        let outcome = rt.block_on(hook.transform(&req, *timeout));
-        drop(req); // end the immutable borrow of `facts` before the next iteration reuses `arguments`
-        match outcome {
-            busbar_contract::hooks::TransformOutcome::Rewrite(rw) => {
-                applied |= apply_rewrite_to_invoke_args(&mut arguments, &rw);
-            }
-            busbar_contract::hooks::TransformOutcome::Reject { status, message } => {
-                // Already status-clamped + message-sanitized at the wire seam.
-                return TransformVerdict::Reject {
-                    status,
-                    message,
-                    hook: hook.name().to_string(),
-                };
-            }
-            busbar_contract::hooks::TransformOutcome::Abstain => {}
-            // The hook could not answer, and its disposition says to carry on — a load-bearing
-            // hook's failed call arrived as `Reject` above, applied by the resolver's decorator
-            // before it reached this (or any other) firing site. Logged, never silent.
-            busbar_contract::hooks::TransformOutcome::Failed { message } => {
-                tracing::warn!(
-                    hook = hook.name(),
-                    error = %message,
-                    "invoke rewrite hook could not answer; proceeding with the original arguments"
-                );
-            }
-        }
-    }
-    // Re-serialize ONLY when a rewrite actually landed; otherwise hand back the caller's ORIGINAL bytes
-    // untouched, so a chain of purely-abstaining hooks is byte-identical to no chain at all.
-    let out = if applied {
-        serde_json::to_vec(&arguments).unwrap_or_else(|_| args_json.to_vec())
-    } else {
-        args_json.to_vec()
-    };
-    TransformVerdict::Proceed {
-        applied,
-        args_json: out,
-    }
-}
-
-/// Build the rewrite (`prompt: rw`) request projection over the NEUTRAL [`IrFacts`] content walk — the
-/// core-side, chat-type-free twin of the LLM plane's `build_rewrite_request`. A rewrite hook is a
-/// content hook, so the prompt is ALWAYS sent (a `prompt: rw` grant is the resolution ticket); identity
-/// is omitted (rewrite operates on content, not caller identity). For the invoke family this projects
-/// ONE `("user", <arguments json>)` message — the arguments are the untrusted content a screening
-/// rewrite hook acts on. The content ceiling is enforced on serialized bytes exactly as the LLM seam
-/// enforces it.
-///
-/// [`IrFacts`]: busbar_contract::ir::facts::IrFacts
-fn build_invoke_rewrite_request<'a>(
-    facts: &'a dyn busbar_contract::ir::facts::IrFacts,
-    ingress_protocol: &'a str,
-    request_id: u64,
-) -> busbar_contract::hooks::RoutingRequest<'a> {
-    use busbar_contract::ir::facts::Slot;
-    use std::borrow::Cow;
-    let shape = facts.shape();
-    let mut system_pieces: Vec<String> = Vec::new();
-    let mut messages: Vec<(Cow<'a, str>, Cow<'a, str>)> = Vec::new();
-    for item in facts.content() {
-        let text = item.screenable_text().into_owned();
-        if matches!(item.slot(), Slot::System) {
-            system_pieces.push(text);
-        } else {
-            messages.push((Cow::Borrowed(item.author()), Cow::Owned(text)));
-        }
-    }
-    let system = if system_pieces.is_empty() {
-        None
-    } else {
-        Some(Cow::Owned(system_pieces.join("\n")))
-    };
-    let prompt =
-        crate::hooks::content_capped(busbar_contract::hooks::PromptProjection { system, messages });
-    busbar_contract::hooks::RoutingRequest {
-        request_id,
-        // A rewrite over a plane payload has no LLM routing pool; the wire omits it for the rewrite
-        // projection (RESERVED field, no reader), so the empty label is neutral.
-        pool: "",
-        ingress_protocol,
-        requested_model: None,
-        message_count: shape.turn_count,
-        tool_count: shape.tool_count,
-        has_tools: shape.has_tools,
-        total_chars: shape.text_chars,
-        system_chars: shape.system_chars,
-        max_tokens: shape.max_tokens,
-        stream: facts.wants_stream(),
-        prompt: Some(prompt),
-        identity: None,
-        signals: Default::default(),
-        session: None,
-    }
-}
-
-/// Apply a hook's `rewrite` reply to an INVOKE payload's `arguments` — the invoke-family twin of the
-/// LLM plane's `apply_rewrite_to_body`. This seam names no dialect: an invocation has no conversation
-/// container to reframe, it has one untrusted content member (the `arguments` object), and the rewrite
-/// REPLACES it.
-///
-/// # The invoke rewrite contract
-///
-/// A `prompt: rw` hook rewrites a tool call by returning a replacement arguments OBJECT, carried as a
-/// rewrite `messages` entry — either the message's `content` (an object verbatim, or a JSON string
-/// that parses to an object) or, for a bare message with no `role`, the message value itself. The LAST
-/// message that yields a usable object wins (a true chain: a later hook overrides an earlier one).
-///
-/// FAIL-CLOSED end to end: a reply with no usable object (empty messages, plain-text content, a
-/// non-object) leaves `arguments` UNTOUCHED and returns `false` — never a corrupted call.
-fn apply_rewrite_to_invoke_args(
-    args: &mut serde_json::Value,
-    rw: &busbar_contract::hooks::RewriteReply,
-) -> bool {
-    let mut new_args: Option<serde_json::Value> = None;
-    for msg in &rw.messages {
-        // Prefer an explicit `content`; fall back to the message value itself only when it carries no
-        // `role` (a bare args object), so a `{role, content:"text"}` message never leaks its role key
-        // into the arguments.
-        let candidate = match msg.get("content") {
-            Some(c) => c,
-            None if msg.get("role").is_none() => msg,
-            None => continue,
-        };
-        let resolved = match candidate {
-            serde_json::Value::Object(_) => Some(candidate.clone()),
-            serde_json::Value::String(s) => serde_json::from_str::<serde_json::Value>(s)
-                .ok()
-                .filter(serde_json::Value::is_object),
-            _ => None,
-        };
-        if resolved.is_some() {
-            new_args = resolved;
-        }
-    }
-    match new_args {
-        Some(v) => {
-            *args = v;
-            true
-        }
-        None => false,
-    }
-}
-
 #[cfg(test)]
 #[path = "tests/mod_tests.rs"]
 mod tests;
@@ -1230,71 +716,6 @@ pub use crate::plane_host::build_input::{
 };
 use busbar_contract::records::PlaneRequestCtx;
 
-/// The outcome of a refusal-fidelity admit driven over the host `govern_admit_reason` seam.
-#[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
-pub enum GovAdmit {
-    /// Admitted — the RAII grant is registered in the arena the caller passed.
-    Admitted,
-    /// A limit blocked — the RENDERED reason (byte-identical to the plane's own
-    /// `format!("{blocked:?}")`) and the block's recovery floor in whole seconds.
-    Blocked {
-        /// The rendered reason bytes the host copied out (the exact `{blocked:?}` the plane surfaces).
-        reason: String,
-        /// The recovery floor in whole seconds (`0` when the block does not self-recover / never rolls).
-        retry_after_secs: u64,
-    },
-}
-
-/// The verdict of the request-admission gates fired by [`admission_gates_decide`].
-#[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
-pub enum GateOutcome {
-    /// No gate objected (or none is attached) — the request proceeds.
-    Proceed,
-    /// A gate refused the request: the kernel gate's `GateVerdict::Reject`, or the fail-closed refusal
-    /// of a gate that could not run.
-    Reject {
-        /// The hook's refusal status, already clamped to the 4xx band by the gate.
-        status: u16,
-        /// The hook's own refusal message (empty on a fail-closed refusal).
-        message: String,
-        /// The transport/policy name, for the audit row and the log line (empty on a fail-closed refusal).
-        hook: String,
-    },
-}
-
-/// The verdict of a request-admission TRANSFORM (`prompt: rw` rewrite) chain fired by
-/// [`admission_transform`] — the TAP/observe-transform half of the hook surface, the twin of
-/// [`GateOutcome`] for the rewrite pass. When no rewrite hook is attached the plane never calls it
-/// (it guards on [`admission_tap_attached`]), so the request/response path is BYTE-IDENTICAL
-/// to a deployment with the seam absent: the tap is a no-op absent hooks.
-#[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
-pub enum TransformVerdict {
-    /// The transform chain ran. `args_json` is the (possibly rewritten) payload the plane should send
-    /// upstream; `applied` is `true` IFF a hook actually committed a rewrite (so the plane can keep
-    /// its original bytes untouched — and therefore byte-identical — when no rewrite landed, even
-    /// though a chain of purely-abstaining hooks fired). Reconstructed byte-for-byte from the same
-    /// serde_json round-trip the gate seam uses (`preserve_order` OFF ⇒ a `Value` object is a
-    /// sorted-stable `BTreeMap`).
-    Proceed {
-        /// Whether ANY hook in the chain committed a rewrite to the payload.
-        applied: bool,
-        /// The payload bytes to send upstream — the rewritten `arguments`/`params` when `applied`, or
-        /// a faithful re-serialization of the original otherwise (the plane uses its own bytes then).
-        args_json: Vec<u8>,
-    },
-    /// A `prompt: rw` gate REJECTED the request on the transform path (reject > rewrite > abstain).
-    /// Same clamped/sanitized semantics as a decide-path reject, reconstructed identically to
-    /// [`GateOutcome::Reject`].
-    Reject {
-        /// The hook's refusal status, already clamped to the 4xx band.
-        status: u16,
-        /// The hook's own refusal message (empty on a fail-closed refusal).
-        message: String,
-        /// The transport/policy name, for the audit row and the log line (empty on a fail-closed refusal).
-        hook: String,
-    },
-}
-
 /// What could be established about a presented bearer's RFC 8707 audience binding — the outcome of
 /// the audience pre-filter (`crate::auth::audience::inspect_bearer`), for credentials busbar did
 /// not mint. Core re-exports this at `crate::auth::audience::Binding`, so its own callers and the
@@ -1313,39 +734,6 @@ pub enum AudienceBinding {
     Opaque,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// THE GAUNTLET SEAM — one shared request sequence every protocol plane rides.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
-/// The neutral per-request facts of ONE gauntlet traversal that the SHARED sequence
-/// ([`run_gauntlet`]) reads and threads — the resolved identity, the destination the pre-admission
-/// verify judges, and the correlation/timing a plane's stage-6 record joins on. Everything protocol-
-/// or dialect-specific (the parsed body, the dialect handler, the wire framing, the plane's engine)
-/// lives in the plane's own [`GauntletPlane`] value, NEVER here — so this names no plane type.
-pub struct GauntletRequest<'a> {
-    /// Stage 1 — the resolved caller identity/scope, threaded from the auth layer that ran upstream.
-    pub gov: &'a busbar_contract::records::PlaneRequestCtx,
-    /// The destination key the pre-admission `verify_destination` judges — a model for the LLM plane,
-    /// a tool/server for the MCP plane. Opaque to the shared sequence; each plane spells its meaning.
-    pub destination: &'a str,
-    /// The per-request correlation id the plane's stage-6 audit record joins on (single-accounting).
-    pub correlation_id: u64,
-    /// The header-arrival epoch (whole seconds) the request was admitted at — the metering window base.
-    pub charged_at: u64,
-    /// The monotonic start instant for the request-duration metric.
-    pub started: std::time::Instant,
-}
-
-/// The outcome of the pre-admission destination verification (stage 2).
-pub enum VerifyOutcome {
-    /// The destination is permitted; the sequence proceeds to the plane's `drive`.
-    Proceed,
-    /// The destination is refused. The plane returns its OWN already-finished, protocol-native
-    /// response (metrics/webhook already emitted plane-side); [`run_gauntlet`] returns it verbatim,
-    /// so refusal shaping stays byte-identical to the plane's in-place rejection.
-    Refuse(axum::response::Response),
-}
-
 /// THE LOOP'S ANSWER SHAPE at the unified boundary (DECISIONS #28), plane-neutral.
 ///
 /// When a rider runs on the kernel Teller loop (`busbar_kernel::teller::run_unit`), the loop returns
@@ -1362,8 +750,7 @@ pub enum VerifyOutcome {
 ///
 /// NEUTRAL BY CONSTRUCTION: nothing here names a plane, a dialect or a verb, and it lives in the
 /// neutral substrate tier — NOT in `busbar-kernel`, which keeps naming zero planes and zero answer
-/// shapes. It coexists with the shipped [`crate::plane_host`] `PlaneDispatch`-role carriers (#28): a
-/// plane's arena (`DispatchScope`) rides its own loop value, so nothing in this shape carries it.
+/// shapes.
 pub enum PlaneAnswer {
     /// Buffered: status, headers, body bytes. Settles at Encode on the final byte count.
     Unary(
@@ -1389,261 +776,6 @@ impl PlaneAnswer {
             }
             PlaneAnswer::Live(resp) => resp,
         }
-    }
-}
-
-/// THE PLANE-NEUTRAL IN-FLIGHT ANSWER TABLE (DECISIONS #28), keyed by the unit's `ctx.key`.
-///
-/// The kernel Teller loop (`busbar_kernel::teller::run_unit`) returns only the money/lifecycle
-/// `Ended`; a rider stashes its [`PlaneAnswer`] here at the step that produced it (Route, or a
-/// pre-charge refusal) and the outer async handler reads it back by key AFTER the loop returns —
-/// mirroring `AdminUnitTable` (the admin template, `admin_mount.rs`). NEUTRAL BY CONSTRUCTION: the
-/// key is a bare `u64` (the raw `ctx.key`), so this names no plane, no dialect and no verb, and it
-/// lives in the neutral substrate tier — every rider (mcp first, then a2a/voice/llm) reuses this ONE
-/// table with zero new seam code.
-#[derive(Default)]
-pub struct PlaneInFlight {
-    slots: std::sync::Mutex<std::collections::BTreeMap<u64, Option<PlaneAnswer>>>,
-}
-
-impl PlaneInFlight {
-    /// An empty table.
-    #[must_use]
-    pub fn new() -> Self {
-        PlaneInFlight::default()
-    }
-
-    /// Open a slot for a unit about to run. Idempotent; a re-open clears any prior answer.
-    pub fn open(&self, key: u64) {
-        self.slots
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(key, None);
-    }
-
-    /// Record the unit's answer, at the step that produced it.
-    pub fn store(&self, key: u64, answer: PlaneAnswer) {
-        self.slots
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(key, Some(answer));
-    }
-
-    /// Take the unit's answer out and forget the slot, after the loop returned. `None` if the unit
-    /// produced no answer (a path that never reached the step that stores one).
-    #[must_use]
-    pub fn take(&self, key: u64) -> Option<PlaneAnswer> {
-        self.slots
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&key)
-            .flatten()
-    }
-}
-
-/// A protocol plane's contribution to the shared gauntlet: the pre-admission destination check
-/// (stage 2, sync) and the byte-identical engine that admits, routes, meters and finishes the
-/// request (stages 4+5, async). The SHARED sequence ([`run_gauntlet`]) owns only stage 1 (identity,
-/// already resolved and threaded via `req.gov`) and the stage-2→drive ORDER — verify strictly before
-/// any charge, so nothing can reject an already-charged request. The sequence pulls NOTHING out of
-/// `drive`: the plane's admission/route/metering/finish stay inside it, byte-identical. Names are
-/// neutral; a plane implements this in its own crate (`busbar-mcp` and agent-engine) or in core (the LLM
-/// native plane) identically — they are siblings on this one seam.
-#[async_trait::async_trait]
-pub trait GauntletPlane: Send + Sync {
-    /// STAGE 2 — pre-admission destination verification. Sync; runs BEFORE `drive`. `Proceed` clears
-    /// the request to admission; `Refuse` carries the plane's OWN finished, protocol-native rejection.
-    fn verify_destination(&self, req: &GauntletRequest<'_>) -> VerifyOutcome;
-
-    /// STAGES 4+5 — the plane's OWN engine: budget-admission, route/failover, egress, and the plane's
-    /// own metering, returning the (possibly streaming) response. Byte-identical to the plane's
-    /// in-place dispatch. Takes `self: Box<Self>` so the plane moves its owned per-request payload
-    /// (body/parsed form/grant) into the engine; object-safe, so `run_gauntlet` drives it as `dyn`.
-    async fn drive(self: Box<Self>, req: GauntletRequest<'_>) -> axum::response::Response;
-
-    /// THIS PLANE'S CAPABILITY KEY, for the composition-tier host-selection seam
-    /// ([`register_gauntlet_runner`]). `None` (the DEFAULT) means "run me on the substrate loop,
-    /// exactly as today" — so with nothing overridden and nothing registered, every path is
-    /// byte-identical to the shipped release. A plane opts onto the unified kernel loop by returning
-    /// its key AND the composition root registering a runner under it (an oracle-gated flip, #29).
-    /// NEUTRAL: the trait names no plane; each plane spells its own key, and the seam only ever
-    /// compares strings.
-    fn capability_key(&self) -> Option<&str> {
-        None
-    }
-}
-
-/// The successful OPEN-PASS ADMISSION result of the session gate in [`run_gauntlet_session`] — the request cleared the verify-before-
-/// charge gate. Carries the per-request `correlation_id` so a SESSION opener ([`run_gauntlet_session`])
-/// can join its own later durable/audit rows on it. A one-shot [`run_gauntlet`] discards it and proceeds
-/// straight to `drive`; a session opener returns it to the plane, which then reserves/binds/opens its
-/// live carrier AFTER (nothing charged before the gate cleared).
-#[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Admitted {
-    /// The per-request correlation id the caller threads into its stage-6 / durable-session record.
-    pub correlation_id: u64,
-}
-
-// THE SUBSTRATE TELLER LOOP IS GONE (W2.b, DECISIONS #28). The gauntlet's old seat on that loop — the
-// `GauntletAdapter` (a pass-through `TellerPlane`), `gauntlet_unit`, and the `admit_open` open-pass gate —
-// was deleted with `busbar-substrate/src/teller/`. Every shipped plane now rides the UNIFIED
-// `busbar_kernel::teller` loop via a registered runner on the host-selection seam below; the fallback for
-// an unregistered/test plane is the inline verify-then-drive in `run_gauntlet[_session]`, byte-identical
-// to what that adapter loop produced (it wrapped nothing).
-
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// THE COMPOSITION-TIER HOST-SELECTION SEAM (loop unification, DECISIONS #28).
-//
-// A per-capability-keyed registry of KERNEL-LOOP runners the composition root installs at boot
-// (mirrors the admin-mount-seam, busbar-core/src/admin/seam.rs). The kernel loop lives in
-// `busbar-kernel`, which this tier does not depend on, so the runners are FN-POINTERS root injects.
-// The gauntlet free fns below consult the registry by the request's plane capability key: if a
-// runner is registered, route to it; UNSET (the default) runs today's substrate loop, byte-identical.
-// NEUTRAL: the seam names no plane — it is a `&str`-keyed table, exactly as `AdminUnitTable` is
-// `ctx.key`-keyed. Per-plane flip = registering that one plane's runner, oracle-gated (#29).
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
-/// A kernel-loop one-shot runner, as the composition root injects it: the kernel-loop twin of
-/// [`run_gauntlet`], erased to a fn-pointer so this tier need not name `busbar-kernel`.
-pub type GauntletRunner = for<'a> fn(
-    GauntletRequest<'a>,
-    Box<dyn GauntletPlane + 'a>,
-) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = axum::response::Response> + Send + 'a>,
->;
-
-/// A kernel-loop session runner, the kernel-loop twin of [`run_gauntlet_session`].
-pub type SessionRunner = for<'a> fn(
-    GauntletRequest<'a>,
-    Box<dyn GauntletPlane + 'a>,
-) -> Result<Admitted, axum::response::Response>;
-
-static ONE_SHOT_RUNNERS: std::sync::RwLock<
-    std::collections::BTreeMap<&'static str, GauntletRunner>,
-> = std::sync::RwLock::new(std::collections::BTreeMap::new());
-
-static SESSION_RUNNERS: std::sync::RwLock<std::collections::BTreeMap<&'static str, SessionRunner>> =
-    std::sync::RwLock::new(std::collections::BTreeMap::new());
-
-/// Register a kernel-loop one-shot runner for a plane capability key. Composition root only, at boot.
-/// Last-write-wins and idempotent. Registering a key is the per-plane FLIP onto the unified loop.
-pub fn register_gauntlet_runner(key: &'static str, runner: GauntletRunner) {
-    ONE_SHOT_RUNNERS
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(key, runner);
-}
-
-/// Register a kernel-loop session runner for a plane capability key. Composition root only, at boot.
-pub fn register_session_runner(key: &'static str, runner: SessionRunner) {
-    SESSION_RUNNERS
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(key, runner);
-}
-
-/// Whether a one-shot kernel-loop runner is registered for this capability key — i.e. whether that
-/// plane has been FLIPPED onto the unified kernel loop. The read-side twin of
-/// [`register_gauntlet_runner`], for a composition-root boot assertion or a per-plane cutover
-/// regression test. NEUTRAL: a bare `&str` lookup that names no plane.
-#[must_use]
-pub fn gauntlet_runner_registered(key: &str) -> bool {
-    one_shot_runner(key).is_some()
-}
-
-/// Whether a SESSION kernel-loop runner is registered for this capability key — i.e. whether that
-/// session plane (voice/streaming) has been FLIPPED onto the unified kernel loop's session admit. The
-/// read-side twin of [`register_session_runner`], for a composition-root boot assertion or a per-plane
-/// cutover regression test. NEUTRAL: a bare `&str` lookup that names no plane.
-#[must_use]
-pub fn session_runner_registered(key: &str) -> bool {
-    session_runner(key).is_some()
-}
-
-fn one_shot_runner(key: &str) -> Option<GauntletRunner> {
-    ONE_SHOT_RUNNERS
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(key)
-        .copied()
-}
-
-fn session_runner(key: &str) -> Option<SessionRunner> {
-    SESSION_RUNNERS
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(key)
-        .copied()
-}
-
-/// THE SHARED GAUNTLET SEQUENCE — the ONE request path every protocol plane rides. It consults the
-/// host-selection seam first: a plane whose capability key has a kernel-loop runner registered rides
-/// the UNIFIED `busbar_kernel::teller` loop; every other plane (a not-yet-flipped or test plane) runs
-/// the inline verify-then-`drive` fallback below, byte-identical to the deleted substrate Teller loop
-/// this seam used to ride (that loop wrapped nothing — see the fallback comment).
-/// Stage 1 identity is already resolved (threaded via `req.gov`); the path runs the plane's
-/// `verify_destination` at Verify, in the correct PRE-ADMISSION position, and only if it proceeds the
-/// plane's `drive` at Route (its own byte-identical engine + metering). Returns the plane's (possibly
-/// streaming) response verbatim. The plane owns admission/route/metering/finish; the loop owns solely
-/// the order (nothing may reject after a charge) — so all planes enforce that invariant in ONE place.
-pub async fn run_gauntlet(
-    req: GauntletRequest<'_>,
-    plane: Box<dyn GauntletPlane + '_>,
-) -> axum::response::Response {
-    let selected = plane.capability_key().and_then(one_shot_runner);
-    if let Some(runner) = selected {
-        return runner(req, plane).await;
-    }
-    // NO kernel-loop runner registered for this key. With W2.b every shipped plane is flipped onto the
-    // unified kernel loop, so this arm is the DEFAULT only for a plane not (yet) flipped or a test
-    // plane. It runs the plane's OWN two-stage sequence inline — verify STRICTLY before drive — which
-    // is BYTE-IDENTICAL to the (now-deleted) substrate Teller loop the gauntlet used to ride: that loop
-    // proceeded every step, opened an empty hold, settled nothing, and returned the plane's `drive`
-    // response (or its own pre-charge refusal) verbatim. The loop wrapped nothing, so inlining it
-    // removes only the redundant loop, not any behaviour (the kernel-vs-substrate shadow-compare proved
-    // the two produced identical bytes before the substrate loop was removed).
-    match plane.verify_destination(&req) {
-        VerifyOutcome::Refuse(resp) => resp,
-        VerifyOutcome::Proceed => plane.drive(req).await,
-    }
-}
-
-/// THE SESSION SIBLING of [`run_gauntlet`] — the OPEN-PASS admission for a live, session-oriented plane
-/// (voice/duplex) that has no one-shot `drive`-shaped Response to return. It runs the SAME
-/// verify-STRICTLY-before-charge gate (a registered kernel-loop session runner, else the inline
-/// fallback) and returns the [`Admitted`] result instead of
-/// driving a request: the plane's own reserve/bind/open + socket bind proceed only on `Ok`, so a `Refuse`
-/// costs ZERO bytes and ZERO charge (nothing opened before the gate cleared). Distinct from
-/// [`run_gauntlet`] (one Response) but a TRUE sibling — they share the one verify-before-charge gate, so
-/// a refactor can neither inline nor foreclose this opener, and both enforce that one order.
-///
-/// Synchronous: the admission gate is `verify_destination` (sync), so a session opener (a sync
-/// `begin_session`) calls this directly — there is no async `drive` leg on the session path.
-///
-/// (`result_large_err`: the `Err` is the plane's OWN finished refusal `Response`, carried BY VALUE so
-/// refusal shaping stays byte-identical to [`run_gauntlet`]'s verbatim return — boxing it would diverge
-/// the two siblings on the type they carry a refusal in.)
-#[allow(clippy::result_large_err)]
-pub fn run_gauntlet_session(
-    req: GauntletRequest<'_>,
-    plane: Box<dyn GauntletPlane + '_>,
-) -> Result<Admitted, axum::response::Response> {
-    let selected = plane.capability_key().and_then(session_runner);
-    if let Some(runner) = selected {
-        return runner(req, plane);
-    }
-    // NO kernel-loop session runner registered for this key — the inline open-pass admit, BYTE-IDENTICAL
-    // to the (now-deleted) substrate `admit_open`: it ran the SAME verify-STRICTLY-before-charge gate
-    // through the substrate Teller's `open_unit` over a pass-through adapter that opened an empty hold
-    // and settled nothing, returning `Admitted` (the request's own correlation) on a pass or the plane's
-    // OWN finished refusal verbatim. Inlining removes only the redundant loop: on `Refuse` NOTHING is
-    // opened (zero bytes, zero charge); on `Proceed` the caller opens its own carrier next.
-    match plane.verify_destination(&req) {
-        VerifyOutcome::Refuse(resp) => Err(resp),
-        VerifyOutcome::Proceed => Ok(Admitted {
-            correlation_id: req.correlation_id,
-        }),
     }
 }
 
@@ -1738,32 +870,6 @@ impl MeterPin {
 /// the gauges — byte-identical to the sink's current `Option<Arc<busbar_kernel::governance::AdmitGrant>>`.
 #[derive(Clone)]
 pub struct AdmitHandle(pub Arc<dyn std::any::Any + Send + Sync>);
-
-/// BRAKE (audit D): the BREAKER-family slice of the host seam, split off `EngineHost` as a supertrait
-/// so the circuit-breaker admission/settle/record cluster stays a cohesive, bounded ABI rather than
-/// dissolving into the ~30-method god-trait. A plane's dispatch/failover legs win a probe, record a
-/// leg in place and read a cooldown through the kernel's breaker functions ([`breaker::admit`],
-/// [`breaker::record_success`], [`breaker::record_signal`], [`breaker::retry_after_secs`]), which
-/// reach the shared breaker through [`breaker_store`](Self::breaker_store): the breaker is a core
-/// capability every plane gets, not a per-plane host method. A leg's outcome folds through
-/// [`breaker_settle`](Self::breaker_settle).
-pub trait BreakerHost: Send + Sync {
-    /// The kernel's breaker cell store: the one `(pool, lane)` breaker every plane's targets share.
-    /// Only the kernel's breaker functions ([`breaker::admit`] and its siblings) read it; a plane
-    /// reaches the breaker through those, never through this.
-    fn breaker_store(&self) -> &Arc<crate::store::PlaneBreakers>;
-
-    /// Fold a leg's outcome into the breaker admission `admission` (looked up in `scope`'s arena).
-    /// [`Settled::Ok`] means the live admission was found and settled; [`Settled::Gone`] means it was
-    /// already settled — the caller falls back to an in-place record; [`Settled::Fault`] means the
-    /// record panicked. Byte-identical disposition to the plane's own `record_signal`/`record_success`.
-    fn breaker_settle(
-        &self,
-        scope: &DispatchScope,
-        admission: AdmissionId,
-        signal: &Settle,
-    ) -> Settled;
-}
 
 /// BRAKE (audit D): the LANE/POOL-family slice of the host seam, split off `EngineHost` as a
 /// supertrait so the lane-runtime + pool-membership + probe-default cluster stays a cohesive,
@@ -2125,45 +1231,6 @@ pub trait HookConfigHost: Send + Sync {
     fn requested_signals(&self) -> &crate::hooks::RequestedSignals;
 }
 
-/// What a metered usage counts in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UsageComponent {
-    /// Units of inference.
-    Tokens,
-    /// Raw bytes (a metered byte channel).
-    Bytes,
-    /// Discrete framed messages.
-    Frames,
-    /// Discrete backend queries.
-    Queries,
-}
-
-/// The `(model, provider)` words a metered usage is recorded under.
-#[derive(Debug, Clone, Copy)]
-pub struct MeterAttribution<'a> {
-    /// The model word.
-    pub model: &'a str,
-    /// The provider word.
-    pub provider: &'a str,
-}
-
-/// ONE metered usage a plane hands [`BudgetHost::meter_charge`]: counts and the words to record them
-/// under, never a key and never a price (#43/#71). The key billed is the caller the host resolved.
-#[derive(Debug, Clone, Copy)]
-pub struct MeterUsage<'a> {
-    /// What `amount` counts.
-    pub component: UsageComponent,
-    /// How many of `component`.
-    pub amount: u64,
-    /// The breaker/failover admission this usage settles under; names the synthetic billing key
-    /// when the call has no caller.
-    pub admission: AdmissionId,
-    /// The `(model, provider)` words; `None` records the row unattributed.
-    pub attribution: Option<MeterAttribution<'a>>,
-    /// Every class the plane counted, keyed by class name, for the enforcement ledger (#71).
-    pub units: &'a std::collections::BTreeMap<String, u64>,
-}
-
 /// The BUDGET/METERING slice: the money-path seams a plane drives — COUNTS in, VERDICTS out. The
 /// governance handle and [`MeterPin`] mints, the record-usage / record-metering accruals, the
 /// reserve-then-charge meter, and the pure headroom/budget projections. No method names a cost or
@@ -2174,12 +1241,6 @@ pub trait BudgetHost: Send + Sync {
     /// Whether governance is configured for this deployment. Identical to
     /// `busbar_kernel::state::App::governance.is_some()`.
     fn governance_enabled(&self) -> bool;
-
-    /// Record ONE metered, attributed event over `scope`'s arena, billed to `caller` — the request's
-    /// middleware-resolved context (DEC-SERVE G1b); `usage` supplies the counts and the
-    /// `(model, provider)` words, never the key. Fire-and-forget: a store miss is not surfaced,
-    /// exactly as the in-place `record_metering` was.
-    fn meter_charge(&self, scope: &DispatchScope, caller: &PlaneRequestCtx, usage: &MeterUsage<'_>);
 
     /// The per-caller RATE HEADROOM (min fraction of remaining request/token budget across the key's
     /// chain, `None` when unconstrained) — the host-driven form of
@@ -2288,20 +1349,9 @@ pub trait IdentityHost: Send + Sync {
     }
 }
 
-/// The ADMISSION slice: the request-admission gauntlet seams — the governance admit-reason, the destination guard, the budget-admission door, the audience-bound
+/// The ADMISSION slice: the request-admission seams — the destination guard, the budget-admission door, the audience-bound
 /// mount read, and the post-admission/not-charged finishes. Split off `EngineHost` as a supertrait.
 pub trait AdmissionHost: Send + Sync {
-    /// Admit one unit of work for `caller` (the request's middleware-resolved context, DEC-SERVE G1b)
-    /// over the host `govern_admit_reason` seam, REGISTERING the RAII grant in `scope`'s arena on
-    /// success and returning the RENDERED refusal reason on a blocked limit.
-    /// Identical to `busbar_kernel::plane_host::govern_admit_reason_over`.
-    fn govern_admit_reason(
-        &self,
-        scope: &DispatchScope,
-        caller: &PlaneRequestCtx,
-        pool: &[u8],
-    ) -> GovAdmit;
-
     /// STAGE 2 pre-admission DESTINATION guard through the host: the pool ACL, the fallback-pool ACL,
     /// and the all-or-nothing unpriced-model gate. `Ok(())` admits; `Err` is the already-finished,
     /// protocol-native rejection response (finished via the not-charged terminal). Identical to
@@ -2410,16 +1460,15 @@ pub trait AdmissionHost: Send + Sync {
 ///
 /// The residual flat method set has been cut into cohesive capability SUPERTRAITS ([`ClockHost`],
 /// [`TelemetryHost`], [`JournalHost`], [`MountHost`], [`RegistryHost`], [`HookConfigHost`],
-/// [`BudgetHost`], [`IdentityHost`], [`AdmissionHost`]), alongside the earlier braking slices
-/// ([`BreakerHost`], [`LanePoolHost`]). Every slice is PLANE-FACING and pricing-blind; the kernel's
+/// [`BudgetHost`], [`IdentityHost`], [`AdmissionHost`]), alongside the earlier braking slice
+/// ([`LanePoolHost`]). Every slice is PLANE-FACING and pricing-blind; the kernel's
 /// pricing ([`MeteringHost`]) is deliberately NOT one of them, so a plane-side host implements the
 /// whole sum without naming a cost or price type (#43). `EngineHost` declares NO methods of its own
 /// — it is the SUM (a supertrait bound of every slice). An existing `Arc<dyn EngineHost>` caller is
 /// unaffected (it still reaches every method through the inherited bound); a plane that needs a
 /// narrower capability takes `&dyn SliceX` and depends only on what it uses.
 pub trait EngineHost:
-    BreakerHost
-    + LanePoolHost
+    LanePoolHost
     + ClockHost
     + TelemetryHost
     + JournalHost
@@ -2444,7 +1493,6 @@ pub trait EngineHost:
 /// cannot re-dissolve back into the flat god-trait).
 const _: () = {
     fn _assert_engine_host_is_sum_of_slices<T: EngineHost + ?Sized>() {
-        fn _needs_breaker<U: BreakerHost + ?Sized>() {}
         fn _needs_lane_pool<U: LanePoolHost + ?Sized>() {}
         fn _needs_clock<U: ClockHost + ?Sized>() {}
         fn _needs_telemetry<U: TelemetryHost + ?Sized>() {}
@@ -2455,7 +1503,6 @@ const _: () = {
         fn _needs_budget<U: BudgetHost + ?Sized>() {}
         fn _needs_identity<U: IdentityHost + ?Sized>() {}
         fn _needs_admission<U: AdmissionHost + ?Sized>() {}
-        _needs_breaker::<T>();
         _needs_lane_pool::<T>();
         _needs_clock::<T>();
         _needs_telemetry::<T>();
@@ -2468,14 +1515,6 @@ const _: () = {
         _needs_admission::<T>();
     }
 };
-
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// D3 WITNESS — the gauntlet siblings COEXIST and share ONE `admit_open` gate. (That a session
-// open actually CALLS `run_gauntlet_session` at its call site is the serving door's to pin.)
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-#[cfg(test)]
-#[path = "tests/gauntlet_session_tests.rs"]
-mod gauntlet_session_tests;
 
 #[cfg(test)]
 #[path = "tests/plane_answer_tests.rs"]

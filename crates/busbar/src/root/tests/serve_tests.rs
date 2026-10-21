@@ -2875,6 +2875,81 @@ mod tools_door {
         }
     }
 
+    /// DECODE: a body the door cannot read as a JSON-RPC envelope is refused at its decode and never
+    /// becomes a call on the wire — the caller hears a refusal (a client-error status, or the
+    /// envelope's own error answer) and the tool server hears nothing — while the well-formed
+    /// `tools/call` beside it on the same door is served and goes out exactly once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_body_that_is_not_an_envelope_is_refused_at_decode_and_never_sent() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-decode";
+        let _published = Published(instance);
+        let (port, mut heard) = tool_server().await;
+        let rig = rig_tools(instance, port, registration("decoded", port, ""), &|app| {
+            app
+        });
+        let calls = |heard: &mut Heard| drain(heard).iter().filter(|w| **w == "call").count();
+
+        let (status, body) = send_as(
+            &rig.router,
+            Some(&rig.token),
+            "{\"jsonrpc\": \"2.0\", \"id\": 41, \"method\": ",
+            "tools/call",
+            Some("decoded_read_file"),
+        )
+        .await;
+        let answer = serde_json::from_slice::<serde_json::Value>(&body)
+            .unwrap_or_else(|_| serde_json::json!({ "raw": String::from_utf8_lossy(&body) }));
+        assert!(
+            status.is_client_error() || answer.get("error").is_some(),
+            "an unreadable body is refused at its decode: {status} {answer}"
+        );
+        assert_ne!(status, StatusCode::OK, "never served: {answer}");
+        assert_eq!(calls(&mut heard), 0, "the unreadable call never went out");
+
+        let (status, answer) =
+            call(&rig, &rig.token, "decoded_read_file", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+        assert_eq!(calls(&mut heard), 1, "the well-formed call went out once");
+    }
+
+    /// AUTHENTICATE: behind the deployment's closed key chain, a call carrying no credential and a
+    /// call carrying a bearer this deployment never minted are both refused `401` before the door —
+    /// the tool server hears neither — and the key the deployment minted is carried through the
+    /// door to the server exactly once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn only_a_caller_the_chain_authenticates_reaches_the_tool_server() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-authenticate";
+        let _published = Published(instance);
+        let (port, mut heard) = tool_server().await;
+        let rig = rig_tools(instance, port, registration("authed", port, ""), &|app| app);
+        let calls = |heard: &mut Heard| drain(heard).iter().filter(|w| **w == "call").count();
+
+        for token in [None, Some("bb_a_bearer_this_deployment_never_minted")] {
+            let (status, body) = send_as(
+                &rig.router,
+                token,
+                &call_of("authed_read_file", serde_json::json!({})),
+                "tools/call",
+                Some("authed_read_file"),
+            )
+            .await;
+            assert_eq!(
+                status,
+                StatusCode::UNAUTHORIZED,
+                "{token:?} is refused before the door: {}",
+                String::from_utf8_lossy(&body)
+            );
+            assert_eq!(calls(&mut heard), 0, "{token:?} never reached the server");
+        }
+
+        let (status, answer) =
+            call(&rig, &rig.token, "authed_read_file", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+        assert_eq!(calls(&mut heard), 1, "the minted key's call went out once");
+    }
+
     /// A key minted on `rig`'s book under `spec`, its grants exactly `scopes` (`(grant kind row,
     /// value)`, `None` = every scope): its bearer token.
     fn key_on(
