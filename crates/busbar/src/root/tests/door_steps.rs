@@ -259,30 +259,36 @@ fn a_member_granted_pool_route_is_judged_on_the_member_it_is_addressed_to() {
 }
 
 /// THE MEMBER'S TIER (the core-owned per-member `tier`, `BUSBAR-1.6.0.md` l.4196 (b), R2-G
-/// l.4285): read off a member written `{name, tier}`, and `0` for a bare name, which is an
-/// operator-written member and states no tier; a pool's entries are its members' names either way.
+/// l.4285): read off a member written `{name, tier}`, and `0` for a member that writes no tier, a
+/// bare name or a `{name}` object alike (the reserved `tier` sub-key is optional, l.552-554); a
+/// pool's entries are its members' names either way.
 #[test]
 fn a_pool_members_tier_is_read_off_its_member() {
     let p = pools(
-        "a: {}\nb: {}\nc: {}\npools:\n  t:\n    members: [{name: b, tier: 2}, a, {name: c, tier: 1}]",
+        "a: {}\nb: {}\nc: {}\nd: {}\npools:\n  t:\n    \
+         members: [{name: b, tier: 2}, a, {name: c, tier: 1}, {name: d}]",
     );
     assert_eq!(
         routed(&p, ROUTE_POOL, Some("t")),
-        owned("t", &["b", "a", "c"])
+        owned("t", &["b", "a", "c", "d"])
     );
-    assert_eq!((p.tier("t", 0), p.tier("t", 1), p.tier("t", 2)), (2, 0, 1));
+    assert_eq!(
+        (p.tier("t", 0), p.tier("t", 1), p.tier("t", 2), p.tier("t", 3)),
+        (2, 0, 1, 0)
+    );
     assert_eq!(p.tier("absent", 0), 0);
 }
 
 /// A BAD CORE-OWNED TIER IS REFUSED, NEVER READ AS `0` (no-float-money count-read finding on
-/// `members`, coordinator ruling): the tier is written by `pools_into` as the member's declared
-/// index, so a member written `{name, tier}` whose tier is missing, no integer, negative or wider
-/// than `u32` is a core bug, and the section build refuses it at config time rather than routing
-/// the member at the top tier. RED before the refusal: each of these built, at tier `0`.
+/// `members`, coordinator ruling): a member that writes a `tier` whose value is no integer,
+/// negative or wider than `u32` is refused by the section build at config time rather than routed
+/// at the top tier. A member that writes NO tier states none and builds at tier `0`
+/// (`a_pool_members_tier_is_read_off_its_member`): `{name: b}` is the member spelling the route
+/// tests' `SECTION` writes, and refusing it would refuse a section the build has always taken. RED
+/// before the refusal: each of these built, at tier `0`.
 #[test]
-fn a_member_with_a_missing_or_bad_tier_is_refused_at_the_section_build() {
+fn a_member_with_a_bad_tier_is_refused_at_the_section_build() {
     for (what, member) in [
-        ("no tier", "{name: a}"),
         ("a word", "{name: a, tier: minus}"),
         ("a negative", "{name: a, tier: -1}"),
         ("a float", "{name: a, tier: 1.5}"),

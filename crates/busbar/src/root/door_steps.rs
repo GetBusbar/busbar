@@ -76,7 +76,8 @@ pub type Routed = (String, Vec<String>);
 
 impl DoorPools {
     /// The pools `section` states. REFUSED where a member written `{name, tier}` carries a tier
-    /// that is missing or no unsigned integer that fits `u32`: the tier is core-owned
+    /// that is no unsigned integer that fits `u32` (a member that writes no tier states none, tier
+    /// `0`): the tier is core-owned
     /// ([`crate::root::serve::pools_into`] writes each member's declared index), so a bad one is a
     /// core bug, and defaulting it to `0` would route that member at the top tier in silence.
     pub fn of(section: &serde_yaml::Value) -> Result<Self, String> {
@@ -332,10 +333,12 @@ impl DoorPools {
 }
 
 /// A pool's member entries: its `members` list, each an entry name or a member naming one, with the
-/// member's tier. A BARE NAME is an operator-written member and states no tier (tier `0`, the
-/// unordered pool). A member written `{name, tier}` is the core-owned form
-/// ([`crate::root::serve::pools_into`]), and its tier must be there and be an unsigned integer that
-/// fits `u32`: anything else is refused, never read as `0`.
+/// member's tier. A member that WRITES NO TIER, a bare name or an object naming its entry
+/// (`{name}`, `busbar_contract::section::POOL_MEMBER_NAME_KEY`), states none: tier `0`, the
+/// unordered pool, as the section read it before the refusal (the reserved `tier` sub-key is
+/// optional, `BUSBAR-1.6.0.md` l.552-554). A member that WRITES a `tier`, as
+/// [`crate::root::serve::pools_into`] does for every member it lays, must write an unsigned integer
+/// that fits `u32`: anything else is refused, never read as `0`.
 fn members(pool: &serde_yaml::Value) -> Result<Vec<(String, u32)>, String> {
     let Some(list) = pool
         .get(POOL_MEMBERS_KEY)
@@ -355,9 +358,10 @@ fn members(pool: &serde_yaml::Value) -> Result<Vec<(String, u32)>, String> {
         else {
             continue;
         };
-        let written = m
-            .get(POOL_MEMBER_TIER_KEY)
-            .ok_or_else(|| format!("member '{name}' is written `{{name, tier}}` with no tier"))?;
+        let Some(written) = m.get(POOL_MEMBER_TIER_KEY) else {
+            out.push((name.to_owned(), 0));
+            continue;
+        };
         let tier = written
             .as_u64()
             .and_then(|t| u32::try_from(t).ok())
