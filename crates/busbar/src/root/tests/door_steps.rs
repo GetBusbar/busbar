@@ -3415,10 +3415,21 @@ pub(crate) mod tool_door {
         let (port, mut heard) = tool_server().await;
         let rig = Rig::new(instance, port, None);
 
+        // The unkeyed refusal is the reference: a forged credential is refused in the same words.
+        let (_, unkeyed_body) = send(&rig.router, None, CALL).await;
+        // Alter a MIDDLE character of the signature segment (a full six-bit position, so the
+        // token still base64-decodes and only the signature check can refuse it), to a different
+        // valid base64url character, never the same one.
         let forged = {
-            let mut t = rig.token.clone();
-            let last = t.pop().expect("a token is not empty");
-            t.push(if last == 'A' { 'B' } else { 'A' });
+            let dot = rig
+                .token
+                .rfind('.')
+                .expect("a token has a signature segment");
+            let at = dot + 1 + (rig.token.len() - dot - 1) / 2;
+            let mut bytes = rig.token.clone().into_bytes();
+            bytes[at] = if bytes[at] == b'A' { b'B' } else { b'A' };
+            let t = String::from_utf8(bytes).expect("ASCII");
+            assert_ne!(t, rig.token, "the forged token differs from the real one");
             t
         };
         let (status, body) = send(&rig.router, Some(&forged), CALL).await;
@@ -3428,6 +3439,11 @@ pub(crate) mod tool_door {
             refused,
             "{}",
             String::from_utf8_lossy(&body)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&body),
+            String::from_utf8_lossy(&unkeyed_body),
+            "a forged bearer is refused in the same words as no credential"
         );
         assert_eq!(rig.admitted(), 0, "nothing charged");
         assert!(heard.try_recv().is_err(), "nothing dialled");
@@ -3513,6 +3529,9 @@ pub(crate) mod tool_door {
         // THE RED ARM: the same two calls against the planted fault, an admission that reads no
         // group limit (the same rig with its key minted into no group), are both sent and served.
         // So the refusal above is the group's limit, and an admission that ignored it fails here.
+        // The first door is withdrawn before the second is built: two doors cannot hold the
+        // same admin routes at once.
+        busbar_kernel::plane_driver::serve::withdraw(instance);
         let red_instance = "serve-door-tools-over-limit-red";
         let _red_published = Published(red_instance);
         let (red_port, mut red_heard) = tool_server().await;
