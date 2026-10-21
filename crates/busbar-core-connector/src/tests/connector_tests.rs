@@ -2417,7 +2417,7 @@ mod transport_pin {
     /// alias; a pin of another key is refused in either spelling, after the handshake and before
     /// any request byte reaches the far end. Compared as written, the documented spelling never
     /// matched the observed key (plain base64), so every documented pin refused its own far end.
-    /// The facts report the observed key in the spelling the pin was written in.
+    /// The facts report the observed key in the canonical spelling either way.
     #[test]
     fn a_pin_in_either_spelling_reaches_its_key_and_refuses_another_before_any_request_byte() {
         worker().block_on(async {
@@ -2443,7 +2443,11 @@ mod transport_pin {
                 let (id, got) = exchange_awaited(&c, &far).await;
                 assert_eq!(got.as_deref(), Ok(&b"answer"[..]), "{written}");
                 let facts = c.facts(OWNER, id).expect("facts");
-                assert_eq!(facts.peer_key_pin.as_deref(), Some(written.as_str()));
+                assert_eq!(
+                    facts.peer_key_pin.as_deref(),
+                    Some(served.pin.as_str()),
+                    "the facts report the observed key canonically, whatever the pin's spelling"
+                );
                 c.close(OWNER, id).expect("closed");
                 assert_eq!(far_read(&mut rx).await, b"first", "{written}");
             }

@@ -289,10 +289,6 @@ pub struct Sealed {
     /// The far end's key pin, read to its canonical spelling
     /// (`busbar_contract::transport::trust::canonical_key_pin`): what the observed key is held to.
     pub key_pin: Option<String>,
-    /// The pin as the operator wrote it (trimmed), either accepted spelling: a connection held to it
-    /// reports the key it observed in this spelling, so a plane comparing the observation with the
-    /// pin it read off the same registration compares like with like.
-    pub key_pin_written: Option<String>,
     /// The client identity to present when the far end asks for one.
     pub identity: Option<Arc<rustls::sign::CertifiedKey>>,
 }
@@ -331,12 +327,11 @@ pub fn seal(
     base: Option<&rustls::ClientConfig>,
     anchors: &busbar_contract::transport::trust::Anchors,
 ) -> Result<Sealed, BadAnchors> {
-    let written = anchors
+    let key_pin = anchors
         .key_pin
         .as_deref()
         .map(str::trim)
-        .filter(|k| !k.is_empty());
-    let key_pin = written
+        .filter(|k| !k.is_empty())
         .map(busbar_contract::transport::trust::canonical_key_pin)
         .transpose()
         .map_err(BadAnchors::KeyPin)?;
@@ -368,11 +363,7 @@ pub fn seal(
             Some(Arc::new(certified))
         }
     };
-    Ok(Sealed {
-        key_pin,
-        key_pin_written: written.map(str::to_owned),
-        identity,
-    })
+    Ok(Sealed { key_pin, identity })
 }
 
 /// The client-certificate resolver of one dial under sealed anchors: it presents the identity when

@@ -125,7 +125,8 @@ impl std::fmt::Display for BadKeyPin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "the key pin is not a SHA-256 SubjectPublicKeyInfo digest: {}",
+            "the key pin is not `sha256/<base64>` of a 32-byte SHA-256 SubjectPublicKeyInfo digest \
+             (nor its plain base64 alias): {}",
             self.0
         )
     }

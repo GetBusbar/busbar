@@ -222,8 +222,8 @@ pub struct Connection {
     /// The framer's own error, when it is what failed the open connection.
     framer_error: Option<String>,
     /// The far end's key the handshake is held to (the dial's sealed anchors), in its canonical
-    /// spelling, and the spelling the operator wrote it in; `None` = no pin.
-    key_pin: Option<(String, String)>,
+    /// spelling; `None` = no pin.
+    key_pin: Option<String>,
     /// Raised when the handshake presented busbar's client identity.
     presented: Arc<std::sync::atomic::AtomicBool>,
     /// Connection security's own error, when it is what failed the connection.
@@ -699,10 +699,7 @@ impl Connection {
                 .map(|c| (*c).to_owned()),
             ..Established::default()
         };
-        let key_pin = dial.anchors.as_ref().and_then(|a| {
-            let written = a.key_pin_written.clone().or_else(|| a.key_pin.clone());
-            Some((a.key_pin.clone()?, written?))
-        });
+        let key_pin = dial.anchors.as_ref().and_then(|a| a.key_pin.clone());
         Ok(Self {
             door,
             carried,
@@ -1678,17 +1675,12 @@ impl Connection {
             .and_then(|leaf| crate::tls::client::peer_key_pin(leaf.as_ref()));
         self.established.client_identity = self.presented.load(std::sync::atomic::Ordering::SeqCst);
         // Both sides are the canonical spelling (`trust::key_pin`, `trust::canonical_key_pin`), so
-        // they compare as the digest they spell. A key held to its pin is reported in the spelling
-        // the operator wrote the pin in (the alias is the same digest).
+        // they compare as the digest they spell, and the facts report the canonical one.
         match &self.key_pin {
-            Some((pin, _)) if self.established.peer_key_pin.as_deref() != Some(pin.as_str()) => {
+            Some(pin) if self.established.peer_key_pin.as_deref() != Some(pin.as_str()) => {
                 Err(Failure::Refused(PIN_REFUSED.into()))
             }
-            Some((_, written)) => {
-                self.established.peer_key_pin = Some(written.clone());
-                Ok(())
-            }
-            None => Ok(()),
+            _ => Ok(()),
         }
     }
 
