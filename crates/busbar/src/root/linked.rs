@@ -345,7 +345,9 @@ pub fn linked_stores(rows: &[LinkedStoreDoor]) -> Result<Vec<LinkedStore>, Strin
         .map(|row| {
             let read = stated(row.door)
                 .map_err(|e| format!("a linked store plugin does not state itself: {e}"))?;
-            let key: &'static str = Box::leak(read.name.into_boxed_str());
+            // Interned once per distinct name for the life of the process (the loader's one
+            // interner), as every name a plugin states that a `'static` row carries.
+            let key = crate::root::loader::intern_name(&read.name);
             let ephemeral = read.marks & busbar_contract::abi::mechanism::door::MARK_EPHEMERAL != 0;
             Ok((key, ephemeral, row.door, row.canonical.unwrap_or(key)))
         })
@@ -482,7 +484,7 @@ pub fn register_stores(linked: &Linked) {
     });
     match rows {
         Ok((stores, secrets)) => busbar_kernel::preflight::install_linked_rows(RootInstall {
-            stores: stores.leak(),
+            stores: LINKED_STORES.get_or_init(|| stores),
             registry_build: Some(crate::root::boot::registry),
             plugins_fetch: Some(crate::root::boot::plugins_fetch),
             hook_axis: Some(crate::root::hooks::axis),
@@ -506,6 +508,9 @@ pub fn register_stores(linked: &Linked) {
         busbar_kernel::config::secret::resolve_linked_string_at_config,
     );
 }
+
+/// The linked store rows [`register_stores`] installs, read off their doors once.
+static LINKED_STORES: std::sync::OnceLock<Vec<LinkedStore>> = std::sync::OnceLock::new();
 
 /// THE STORE AXIS the kernel opens its governance store through (WIRE-STORE Q8/Q9): the loader's
 /// axis over the process's ONE dispatcher (`root::dispatch`, built at boot before the configuration
