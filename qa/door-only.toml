@@ -4,30 +4,10 @@
 # is one the tree carries today. Strike a row in the commit that drains it; never
 # add one. Regenerate with `cargo xtask gate door-only --write`.
 
-# THE SEAMS BEHIND AN ALIAS. The static-seam rule read only the words on a static's own line, so a
-# function pointer or trait object named through a type alias passed it. The scan now resolves
-# aliases. Four rows below were in the tree, unseen, before the scan could see them:
-# SPAWN_SECRETS, CONFIG_PROJECTION, AUTH_AXIS and HELD. They are drain-only architecture debt at
-# today's measured count (honest measurement of debt already there, not a narrowing; Law
-# 9: the ceiling only falls); each names its drain PR.
-# drain PR: #1426 (at e9565f359d)
-[[finding]]
-rule = "door-only:static-seam"
-file = "crates/busbar-core-connector/src/spawn_env.rs"
-item = "SPAWN_SECRETS"
-count = 1
-
 [[finding]]
 rule = "door-only:static-seam"
 file = "crates/busbar-kernel-audit/src/amend.rs"
 item = "SINK"
-count = 1
-
-# drain PR: #1425
-[[finding]]
-rule = "door-only:static-seam"
-file = "crates/busbar-kernel/src/appbuild.rs"
-item = "CONFIG_PROJECTION"
 count = 1
 
 [[finding]]
@@ -45,28 +25,29 @@ file = "crates/busbar-kernel/src/egress/trust/mod.rs"
 item = "EGRESS_TRUST"
 count = 1
 
-# drain PR: #1425
+
+# THE SEAMS BEHIND AN ALIAS. The static-seam rule read only the words on a static's own line, so a
+# function pointer or trait object named through a type alias passed it. The scan now resolves
+# aliases, and three seams were in the tree, unseen, before it could see them. They are drain-only
+# architecture debt at today's measured count (honest measurement of debt already there, not a
+# narrowing; Law 9: the ceiling only falls). Each names its drain PR.
+# drain PR: #1408 (strikes them when it next merges dev)
 [[finding]]
 rule = "door-only:static-seam"
-file = "crates/busbar-kernel/src/preflight.rs"
-item = "AUTH_AXIS"
+file = "crates/busbar-kernel/src/ingress/arrival.rs"
+item = "INSTALLED_BODY_INGRESS"
 count = 1
 
+# drain PR: #1408
 [[finding]]
 rule = "door-only:static-seam"
-file = "crates/busbar-kernel/src/rate_apply.rs"
-item = "APPLY"
+file = "crates/busbar-kernel/src/plane_host/mod.rs"
+item = "ONE_SHOT_RUNNERS"
 count = 1
 
+# drain PR: #1408
 [[finding]]
 rule = "door-only:static-seam"
-file = "crates/busbar-kernel/src/rate_apply.rs"
-item = "EPOCH"
-count = 1
-
-# drain PR: #1426 (at e9565f359d)
-[[finding]]
-rule = "door-only:static-seam"
-file = "crates/busbar/src/root/durability/store_identity.rs"
-item = "HELD"
+file = "crates/busbar-kernel/src/plane_host/mod.rs"
+item = "SESSION_RUNNERS"
 count = 1

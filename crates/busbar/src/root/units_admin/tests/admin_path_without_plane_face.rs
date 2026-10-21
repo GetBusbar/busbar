@@ -630,12 +630,13 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
 /// ROW 113 (ruling (B)): A BOOTED NODE'S RECOVERY VERBS REACH ITS CONFIGURED STORE.
 ///
 /// The book is the one `root::boot::book` opens over a real App with a governance store, and the
-/// units are the ones `main` composes over it (`ProductionUnits::admin_over_book`). Each of the
-/// three verbs answers `204` and lands on that store. RED (the defect this
+/// units are the ones `main` composes over it (`ProductionUnits::admin_over_book`). The chain break
+/// and the reseal answer `204` and land on the book's journal and that store; the restore is
+/// refused `503` — the store has no restore operation (row 187). RED (the defect this
 /// replaced): the composition held a refusing stand-in, so each answered the store failure on a
 /// node whose store was right there; drop the book's store, or the units' binding of it, and this
-/// goes red. Then restore -> reseal -> replay over the SAME store: a replay slot committed before
-/// the restore survives it and the reseal, and answers its first bytes.
+/// goes red. Then break -> restore -> reseal -> replay over the SAME store: a replay slot committed
+/// before them survives all three, and answers its first bytes.
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_book() {
@@ -698,23 +699,26 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
         },
     );
 
-    for (path, body, verb) in [
-        ("/api/v1/admin/chain-break", "{}", "chain_break"),
+    for (path, body, verb, answered) in [
+        ("/api/v1/admin/chain-break", "{}", "chain_break", 204),
         (
             "/api/v1/admin/store-restore",
             r#"{"backup_ref":"nightly"}"#,
             "store_restore",
+            503,
         ),
         (
             "/api/v1/admin/reseal-epoch-floor",
             "{}",
             "reseal_epoch_floor",
+            204,
         ),
     ] {
         let (status, _, _) = over(&mounted, "POST", path, body.as_bytes().to_vec()).await;
         assert_eq!(
-            status, 204,
-            "{verb} reached the configured store and applied"
+            status, answered,
+            "{verb} reached the configured store: applied, or refused where the store has no such \
+             operation"
         );
     }
 
@@ -722,7 +726,7 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
     assert_eq!(
         store.replay_new_verb(&key).expect("the slot reads"),
         Some(b"first answer".to_vec()),
-        "a committed replay slot survives restore -> reseal"
+        "a committed replay slot survives break -> restore -> reseal"
     );
 }
 
