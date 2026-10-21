@@ -32,17 +32,16 @@ wraps prints `grpc: 0/72 (72 skipped)` with a tick next to it. The refusals, and
     the runner and scenario-agent/serve.sh     runner_selftest_plants_every_refusal
 
 `runner_selftest_plants_every_refusal` runs `run-tck.sh selftest`, which plants EVERY refusal
-`run-tck.sh` and `scenario-agent/serve.sh` can make against the real functions with stand-ins:
-work directories that cannot be created, a crashed run beside the previous run's good report, a
-report it cannot remove or cannot copy, a harness pin file or line that is missing or disagrees, a
-`go install` that fails, a control binary of another `go version -m` version or one that does not
-run, a fetch that fails, a checkout that is not the pin or has no commit, a suite install that
-fails, imports that fail, a cryptography install that fails, peers that never serve, serve.sh with
-no port, no pin file or line, no work directory, a failed a2a-sdk install, an a2a-sdk of another
-version or of no readable version, a subject with no endpoint, and an unknown verb. Each has a
-green twin except two whose green side needs the network: the checkout pin (run by every control
-leg the conformance recorder runs) and the subject endpoint (run by `boot.sh --tck`). It prints
-its own leg list.
+`run-tck.sh` and `scenario-agent/serve.sh` can make against the real functions, with stand-ins for
+the suite, the control binary, `go`, `git`, `python3`, `rm`, the harness pin file and the scenario
+agent. Every step either script runs that can fail is guarded; the only unguarded steps are the
+ones that cannot fail on a checkout (`cd` into the script's own directory, `mkdir -p` of the
+tracked `baselines/` directory, and serve.sh's final `exec` of the interpreter it has just run).
+A leg passes only with its wanted text on the command's LAST line, so each refusal is also shown
+to stop the run; legs about a half-made checkout or virtualenv also check the disk afterwards.
+Each refusal has a green twin except two whose green side needs the network: the checkout pin
+(run by every control leg the conformance recorder runs) and the subject endpoint (run by
+`boot.sh --tck`). It prints its own leg list.
 
 The one that had to be found the expensive way has its own case: `NOT TESTED` is the TCK's status
 for a requirement nothing ran, and counting it as executed made a 73-requirement run look like a
@@ -284,7 +283,7 @@ def main():
     #     (see the docstring); the leg count is pinned so a deleted leg is not a quiet pass.
     p = subprocess.run(["bash", RUNNER, "selftest"], capture_output=True, text=True)
     judge("runner_selftest_plants_every_refusal", p.returncode, p.stdout + p.stderr, 0,
-          "runner selftest: 38 legs, all green")
+          "runner selftest: 48 legs, all green")
 
     for name in PASSES:
         print("  ok   %s" % name)

@@ -41,8 +41,8 @@
 #   run-tck.sh prepare               fetch + install the pinned suite only, and print the paths another
 #                                    instrument can borrow (used by testing/a2a-supplement)
 #   run-tck.sh record-baselines      re-record both control baselines (deliberate act, read the diff)
-#   run-tck.sh selftest              the runner's own report handling, with the suite replaced by a
-#                                    stand-in that crashes or reports (no network, no control)
+#   run-tck.sh selftest              every refusal this runner and scenario-agent/serve.sh make,
+#                                    planted with stand-ins (no network, no control)
 set -euo pipefail
 
 TCK_REF="5996b79f9cefa6fc390980e383e358a66fb9e49e"   # a2aproject/a2a-tck, 2026-06-29
@@ -62,6 +62,35 @@ mkdir -p "$WORK" "$BIN_DIR" "$OUT" 2>/dev/null || {
 
 say () { printf '\n=== %s ===\n' "$*"; }
 
+# discard <dir> <what>: remove a half-made <what> so the next run builds it again instead of
+# trusting it, and say whether it is gone (a refusal names both outcomes; it never assumes one).
+discard () {
+  if [ ! -e "$1" ]; then
+    echo "nothing was left at $1"
+    return 0
+  fi
+  rm -rf "$1" 2>/dev/null || true
+  if [ -e "$1" ]; then
+    echo "the half-made $2 at $1 could not be removed; remove it by hand"
+  else
+    echo "the half-made $2 at $1 was removed"
+  fi
+}
+
+# read_pin <file> <NAME> -> prints the value of the first NAME="..." line. Refuses (exit 2) when
+# the file is not there or cannot be read; prints nothing when it holds no such line. One sed pass
+# that quits on the first match, so no pipe can fail under pipefail.
+read_pin () {
+  local file="$1" name="$2" text=""
+  if [ ! -e "$file" ]; then
+    echo "the pin file $file is not there -- refusing to run" >&2
+    exit 2
+  fi
+  text="$(cat "$file" 2>/dev/null)" \
+    || { echo "the pin file $file cannot be read -- refusing to run" >&2; exit 2; }
+  sed -n "/^$name=\"/{s/^$name=\"\([^\"]*\)\".*/\1/p;q;}" <<< "$text"
+}
+
 fetch_tck () {
   if [ ! -d "$TCK_DIR/.git" ]; then
     say "fetching a2a-tck at pinned ${TCK_REF}"
@@ -71,8 +100,8 @@ fetch_tck () {
       && git -C "$TCK_DIR" fetch -q --depth 1 origin "$TCK_REF" \
       && git -C "$TCK_DIR" checkout -q FETCH_HEAD \
       || {
-        rm -rf "$TCK_DIR"
-        echo "could not fetch a2a-tck at $TCK_REF into $TCK_DIR -- refusing to run" >&2
+        note="$(discard "$TCK_DIR" checkout)"
+        echo "could not fetch a2a-tck at $TCK_REF into $TCK_DIR; $note -- refusing to run" >&2
         exit 2
       }
   fi
@@ -92,7 +121,11 @@ install_tck () {
     python3 -m venv "$VENV" \
       && "$VENV/bin/pip" -q install --upgrade pip \
       && ( cd "$TCK_DIR" && "$VENV/bin/pip" -q install -e . ) \
-      || { echo "could not install a2a-tck into $VENV -- refusing to run" >&2; exit 2; }
+      || {
+        note="$(discard "$VENV" virtualenv)"
+        echo "could not install a2a-tck into $VENV; $note -- refusing to run" >&2
+        exit 2
+      }
   fi
   "$VENV/bin/python" -c 'import pytest, grpc, jsonschema' \
     || { echo "a2a-tck dependencies did not import" >&2; exit 2; }
@@ -103,11 +136,9 @@ install_control () {
   # spelled here and there that has drifted is two instruments describing different peers, so the
   # disagreement -- or a harness file that no longer states its pin -- refuses the run.
   local harness_pin_file="$HERE/../a2a-harness/scripts/install-control.sh" harness_pin=""
-  if [ -f "$harness_pin_file" ]; then
-    harness_pin="$(sed -n 's/^CONTROL_GO_VERSION="\([^"]*\)".*/\1/p' "$harness_pin_file" | head -1)"
-  fi
+  harness_pin="$(read_pin "$harness_pin_file" CONTROL_GO_VERSION)" || exit 2
   if [ -z "$harness_pin" ]; then
-    echo "no CONTROL_GO_VERSION pin readable in $harness_pin_file -- refusing to run" >&2
+    echo "no CONTROL_GO_VERSION pin in $harness_pin_file -- refusing to run" >&2
     exit 2
   fi
   if [ "$harness_pin" != "$CONTROL_GO_VERSION" ]; then
@@ -140,7 +171,13 @@ $CONTROL_GO_VERSION -- refusing to run" >&2
 # run_tck <base-url> <report-name>  -> sets RUN_STARTED
 run_tck () {
   local url="$1" name="$2" rc=0
-  rm -rf "$TCK_DIR/reports"
+  # The suite's own report directory from an earlier run goes first, for the same reason as the
+  # copied report below: what is found there afterwards must be this run's.
+  rm -rf "$TCK_DIR/reports" 2>/dev/null || true
+  if [ -e "$TCK_DIR/reports" ]; then
+    echo "could not remove the suite's previous reports directory $TCK_DIR/reports -- refusing to run" >&2
+    exit 2
+  fi
   # A REPORT AN EARLIER RUN COPIED HERE IS NOT THIS RUN'S EVIDENCE. OUT sits under WORK, which the
   # wired recorder keeps in a persistent cache; left in place, the last good run's report would be
   # read as the report of a run that crashed before writing one, and it would match its baseline.
@@ -198,9 +235,9 @@ await_card () {
     kill -0 "$CONTROL_PID" 2>/dev/null || break
     sleep "$interval"
   done
-  echo "$what did not come up on port $port" >&2
   cat "$log" >&2 || true
   stop_control
+  echo "$what did not come up on port $port -- refusing to run" >&2
   exit 2
 }
 
@@ -213,10 +250,16 @@ serve_control () {
   await_card "$port" 50 0.2 control "$OUT/control-$transport.log"
 }
 
-# stop_control: kill the peer AND wait for it, so its port is free when this returns.
+# stop_control: kill the peer AND wait for it, so its port is free when this returns. A peer that
+# ignores the polite signal for five seconds gets SIGKILL, so the wait is bounded.
 stop_control () {
   if [ -n "${CONTROL_PID:-}" ]; then
     kill "$CONTROL_PID" 2>/dev/null || true
+    for _ in $(seq 1 50); do
+      kill -0 "$CONTROL_PID" 2>/dev/null || break
+      sleep 0.1
+    done
+    kill -9 "$CONTROL_PID" 2>/dev/null || true
     wait "$CONTROL_PID" 2>/dev/null || true
   fi
 }
@@ -325,13 +368,20 @@ case "${1:-}" in
     ;;
 
   # THE RUNNER'S OWN SELFTEST, run by `check-baseline-selftest.py`. EVERY REFUSAL THIS RUNNER AND
-  # `scenario-agent/serve.sh` CAN MAKE IS PLANTED HERE and must fire with its own message (or, for
-  # the two `${1:?}`-style usage refusals, the shell's exit 1 with the usage text), against the
-  # real functions, in a scratch directory, with the suite, the control binary, `go`, `git`,
-  # `python3`, the harness pin file and the scenario agent replaced by stand-ins: no network, no
-  # pinned checkout, no control. Every step either script runs that can fail is one of those
-  # refusals; the only unguarded steps are `cd` into the script's own directory and `mkdir -p` of
-  # the tracked `baselines/` directory, which cannot fail on a checkout.
+  # `scenario-agent/serve.sh` CAN MAKE IS PLANTED HERE, against the real functions, in a scratch
+  # directory, with the suite, the control binary, `go`, `git`, `python3`, `rm`, the harness pin
+  # file and the scenario agent replaced by stand-ins: no network, no pinned checkout, no control.
+  # A leg passes only when its wanted text is on the LAST line the command printed (blank lines and
+  # `====` rules aside), so a refusal must also STOP the run: one that printed its message and
+  # carried on into a further stage fails its leg. Legs about a half-made checkout or virtualenv also
+  # look at the disk afterwards.
+  #
+  # WHAT COUNTS AS EVERY REFUSAL. Every step either script runs that can fail is guarded and
+  # refuses with its own message; the comparator's own refusals, which `compare_control` and
+  # `require_ceiling_report` pass through, are planted by `check-baseline-selftest.py` itself.
+  # The only unguarded steps are the ones that cannot fail on a checkout: `cd` into the script's
+  # own directory, `mkdir -p` of the tracked `baselines/` directory, and serve.sh's final `exec` of
+  # the interpreter it has just run.
   #
   # Every refusal has a green twin -- the same stand-ins minus the planted defect -- with TWO
   # exceptions, both because their green side needs the network: `fetch_tck`'s pin refusal (a
@@ -342,7 +392,7 @@ case "${1:-}" in
   # The report legs plant the previous run's GOOD report where the runner writes its own -- the
   # state the persistent cache leaves -- and have the stand-in suite crash without writing one; the
   # leg must end in the missing-report refusal, never in a match. Each peer leg gets its own port,
-  # and `stop_control` waits for the peer it kills, so no leg inherits another's listener.
+  # and `stop_control` waits (boundedly) for the peer it kills, so no leg inherits another's listener.
   selftest)
     st="$(mktemp -d "${TMPDIR:-/tmp}/a2a-tck-selftest.XXXXXX")"
     trap 'rm -rf "$st"' EXIT
@@ -395,6 +445,9 @@ json.dump({"summary": {}, "per_requirement":
     pins () { printf 'CONTROL_GO_VERSION="%s"\nCONTROL_PY_VERSION="%s"\n' "$1" "$2"; }
     harness_tree "$st/h-nofile" -none-
     harness_tree "$st/h-noline" '# a harness file that no longer states its pins'
+    # A pin file that is there and cannot be read (a directory: unreadable as a file even to root).
+    harness_tree "$st/h-unreadable" -none-
+    mkdir -p "$st/h-unreadable/a2a-harness/scripts/install-control.sh"
     harness_tree "$st/h-disagrees" "$(pins v0.0.1 0.0.1)"
     harness_tree "$st/h-agrees" "$(pins "$CONTROL_GO_VERSION" 9.9.9)"
     harness_tree "$st/h-sdk-other" "$(pins "$CONTROL_GO_VERSION" 7.7.7)"
@@ -409,6 +462,19 @@ json.dump({"summary": {}, "per_requirement":
     standin "$st/go-installs/go" "if [ \"\$1\" = install ]; then mkdir -p \"\$GOBIN\"; printf '#!/bin/sh\\nexit 0\\n' > \"\$GOBIN/a2a\"; chmod +x \"\$GOBIN/a2a\"; else exec \"$st/go-$CONTROL_GO_VERSION/go\" \"\$@\"; fi"
     standin "$st/git-fails/git" 'echo "git stand-in: failing" >&2; exit 1'
     standin "$st/python3-fails/python3" 'echo "python3 stand-in: failing" >&2; exit 1'
+    # Stand-ins that leave something half-made: a `git` whose `init` is the real one and whose
+    # every step after it fails; a `python3 -m venv` that makes a virtualenv whose `pip` fails. Each
+    # also comes paired with an `rm` that cannot remove anything.
+    real_git="$(command -v git)"
+    for d in half half+rm-fails; do
+      standin "$st/git-$d/git" "if [ \"\$1\" = init ]; then exec \"$real_git\" \"\$@\"; fi; echo 'git stand-in: fetch fails' >&2; exit 1"
+      standin "$st/python3-$d/python3" "if [ \"\$1\" = -m ] && [ \"\$2\" = venv ]; then mkdir -p \"\$3/bin\"; printf '#!/bin/sh\\nexit 0\\n' > \"\$3/bin/python\"; printf '#!/bin/sh\\necho pip stand-in: failing >&2; exit 1\\n' > \"\$3/bin/pip\"; chmod +x \"\$3/bin/python\" \"\$3/bin/pip\"; exit 0; fi; exit 1"
+    done
+    for d in rm-fails git-half+rm-fails python3-half+rm-fails; do
+      standin "$st/$d/rm" 'echo "rm stand-in: cannot remove" >&2; exit 1'
+    done
+    # A peer that ignores SIGTERM, and leaves by itself after 30 seconds.
+    standin "$st/stubborn-peer" "trap '' TERM; i=0; while [ \$i -lt 30 ]; do sleep 1; i=\$((i + 1)); done"
     standin "$st/bin/a2a" 'exit 0'                       # a cached binary that answers --help
     standin "$st/bin-broken/a2a" 'echo "a2a stand-in: broken" >&2; exit 1'
     mkdir -p "$st/bin-serving"; ln -s "$st/serving-peer" "$st/bin-serving/a2a"
@@ -440,11 +506,13 @@ json.dump({"summary": {}, "per_requirement":
       shift 3
       legs=$((legs + 1))
       ( "$@" ) > "$st/$name.log" 2>&1 || rc=$?
-      if [ "$rc" = "$want" ] && grep -qF -- "$text" "$st/$name.log"; then
+      local last
+      last="$(grep -v '^[[:space:]]*$' "$st/$name.log" | grep -v '^=*$' | tail -n 1)" || last=""
+      if [ "$rc" = "$want" ] && printf '%s\n' "$last" | grep -qF -- "$text"; then
         echo "  ok   $name"
       else
         fails=$((fails + 1))
-        echo "  FAIL $name -- exit $rc, wanted $want with '$text'"
+        echo "  FAIL $name -- exit $rc, wanted $want with '$text' on the last line"
         sed 's/^/       /' "$st/$name.log"
       fi
     }
@@ -459,6 +527,20 @@ json.dump({"summary": {}, "per_requirement":
       expect "$name" "$want" "$text" run_then_judge "$report" "$@"
     }
     run_then_judge () { local report="$1"; shift; run_tck "http://127.0.0.1:9" "$report" && "$@"; }
+    # disk_after <dir> <refusal-text> <command...>: run the command, then say what is at <dir> and
+    # whether the command's own last line was the refusal (so it stopped there). The command's
+    # exit status is kept, so the leg still judges the refusal's exit too.
+    disk_after () {
+      local dir="$1" text="$2" rc=0 out="" last="" stopped=no state=gone
+      shift 2
+      out="$( ( "$@" ) 2>&1 )" || rc=$?
+      printf '%s\n' "$out"
+      last="$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -n 1)" || last=""
+      case "$last" in *"$text"*) stopped=yes ;; esac
+      [ -e "$dir" ] && state=left
+      echo "on disk afterwards: $dir is $state; stopped on the refusal: $stopped"
+      return "$rc"
+    }
 
     # -- the work directories
     expect the_runner_refuses_work_directories_it_cannot_create 2 "could not create the work directories" \
@@ -466,13 +548,13 @@ json.dump({"summary": {}, "per_requirement":
       bash "$REAL_HERE/run-tck.sh" no-such-verb
 
     # -- the report a run leaves, and the previous run's report it must not be judged by
-    report_leg crashed_control_run_is_red crashes 2 "does not exist" control-a2a-go-jsonrpc \
+    report_leg crashed_control_run_is_red crashes 2 "Nothing was compared" control-a2a-go-jsonrpc \
       compare_control jsonrpc control-a2a-go-jsonrpc
-    report_leg reporting_control_run_matches reports 0 "BASELINE MATCHED" control-a2a-go-jsonrpc \
+    report_leg reporting_control_run_matches reports 0 "every status identical to the pin" control-a2a-go-jsonrpc \
       compare_control jsonrpc control-a2a-go-jsonrpc
-    report_leg crashed_ceiling_run_is_red crashes 2 "does not exist" control-scenario-agent \
+    report_leg crashed_ceiling_run_is_red crashes 2 "Nothing was compared" control-scenario-agent \
       require_ceiling_report
-    report_leg reporting_ceiling_run_is_reported reports 0 "REPORT PRESENT" control-scenario-agent \
+    report_leg reporting_ceiling_run_is_reported reports 0 "reported, not compared" control-scenario-agent \
       require_ceiling_report
     # The previous report cannot be removed (it is a directory with something in it).
     cp "$st/crashes.py" "$TCK_DIR/run_tck.py"
@@ -480,8 +562,11 @@ json.dump({"summary": {}, "per_requirement":
     expect run_tck_refuses_a_report_it_cannot_remove 2 "could not remove the previous run's report" \
       run_tck "http://127.0.0.1:9" undeletable
     rm -rf "$OUT/undeletable.json"
-    expect run_tck_removes_a_report_it_can_remove 0 "a2a-tck exit 1" \
-      run_tck "http://127.0.0.1:9" removable
+    # The suite's previous reports directory cannot be removed; and the twin, where it can be.
+    rt () { PATH="$1:$PATH"; mkdir -p "$TCK_DIR/reports"; run_tck "http://127.0.0.1:9" removable; }
+    expect run_tck_refuses_a_reports_directory_it_cannot_remove 2 \
+      "could not remove the suite's previous reports directory" rt "$st/rm-fails"
+    expect run_tck_removes_what_an_earlier_run_left 0 "a2a-tck exit 1" rt "$st/no-stand-in"
     # The suite's report cannot be copied into place.
     cp "$st/blocks-the-copy.py" "$TCK_DIR/run_tck.py"
     copy_blocked () { export A2A_TCK_SELFTEST_BLOCK="$OUT/blocked.json"; run_tck "http://127.0.0.1:9" blocked; }
@@ -489,9 +574,11 @@ json.dump({"summary": {}, "per_requirement":
 
     # -- the control binary and its pin
     ic () { HERE="$1"; BIN_DIR="$2"; PATH="$3:$PATH"; install_control && echo "control binary verified"; }
-    expect install_control_refuses_a_missing_harness_pin_file 2 "no CONTROL_GO_VERSION pin readable" \
+    expect install_control_refuses_a_missing_harness_pin_file 2 "is not there" \
       ic "$st/h-nofile/a2a-tck" "$st/bin" "$st/go-$CONTROL_GO_VERSION"
-    expect install_control_refuses_an_unreadable_harness_pin 2 "no CONTROL_GO_VERSION pin readable" \
+    expect install_control_refuses_an_unreadable_harness_pin_file 2 "cannot be read" \
+      ic "$st/h-unreadable/a2a-tck" "$st/bin" "$st/go-$CONTROL_GO_VERSION"
+    expect install_control_refuses_a_harness_file_without_a_pin 2 "no CONTROL_GO_VERSION pin in" \
       ic "$st/h-noline/a2a-tck" "$st/bin" "$st/go-$CONTROL_GO_VERSION"
     expect install_control_refuses_a_harness_pin_disagreement 2 "a2a-go pin disagreement" \
       ic "$st/h-disagrees/a2a-tck" "$st/bin" "$st/go-$CONTROL_GO_VERSION"
@@ -508,15 +595,23 @@ json.dump({"summary": {}, "per_requirement":
 
     # -- the suite checkout and its virtualenv
     ft () { TCK_DIR="$1"; PATH="$2:$PATH"; fetch_tck; }
-    expect fetch_tck_refuses_a_failed_fetch 2 "could not fetch a2a-tck" \
+    expect fetch_tck_refuses_a_failed_fetch 2 "nothing was left at $st/tck-unfetched -- refusing to run" \
       ft "$st/tck-unfetched" "$st/git-fails"
+    expect fetch_tck_removes_a_half_made_checkout 2 "$st/tck-half is gone; stopped on the refusal: yes" \
+      disk_after "$st/tck-half" "was removed -- refusing to run" ft "$st/tck-half" "$st/git-half"
+    expect fetch_tck_says_when_a_half_made_checkout_remains 2 "$st/tck-half2 is left; stopped on the refusal: yes" \
+      disk_after "$st/tck-half2" "could not be removed; remove it by hand -- refusing to run" ft "$st/tck-half2" "$st/git-half+rm-fails"
     expect fetch_tck_refuses_a_checkout_that_is_not_the_pin 2 "refusing to run" \
       ft "$st/tck-wrong" "$st/no-stand-in"
     expect fetch_tck_refuses_a_checkout_with_no_commit 2 "a2a-tck checkout is no commit" \
       ft "$st/tck-empty" "$st/no-stand-in"
     it () { VENV="$1"; PATH="$2:$PATH"; install_tck && echo "suite dependencies import"; }
-    expect install_tck_refuses_a_failed_install 2 "could not install a2a-tck" \
+    expect install_tck_refuses_a_failed_install 2 "nothing was left at $st/venv-none -- refusing to run" \
       it "$st/venv-none" "$st/python3-fails"
+    expect install_tck_removes_a_half_made_virtualenv 2 "$st/venv-half is gone; stopped on the refusal: yes" \
+      disk_after "$st/venv-half" "was removed -- refusing to run" it "$st/venv-half" "$st/python3-half"
+    expect install_tck_says_when_a_half_made_virtualenv_remains 2 "$st/venv-half2 is left; stopped on the refusal: yes" \
+      disk_after "$st/venv-half2" "could not be removed; remove it by hand -- refusing to run" it "$st/venv-half2" "$st/python3-half+rm-fails"
     expect install_tck_refuses_dependencies_that_do_not_import 2 "did not import" \
       it "$st/venv-broken" "$st/no-stand-in"
     expect install_tck_accepts_dependencies_that_import 0 "suite dependencies import" \
@@ -536,6 +631,18 @@ json.dump({"summary": {}, "per_requirement":
     expect serve_scenario_agent_waits_for_an_agent_that_serves 0 "scenario agent came up" \
       ssa "$st/agent-serves"
 
+    # A peer that ignores SIGTERM is still gone within the bound, not after its own 30 seconds.
+    stc () {
+      "$st/stubborn-peer" & CONTROL_PID=$!
+      sleep 0.3
+      local t0=$SECONDS took
+      stop_control
+      took=$((SECONDS - t0))
+      if kill -0 "$CONTROL_PID" 2>/dev/null; then echo "peer still running"; return 1; fi
+      if [ "$took" -le 10 ]; then echo "peer stopped in ${took}s, within the bound"; else echo "peer stopped in ${took}s, past the bound"; fi
+    }
+    expect stop_control_stops_a_peer_that_ignores_term 0 "within the bound" stc
+
     # -- scenario-agent/serve.sh and the a2a-sdk pin it reads
     # sv <tree> [work-dir] [stand-in PATH dir] [-no-port-]
     sv () {
@@ -548,11 +655,17 @@ json.dump({"summary": {}, "per_requirement":
     }
     expect serve_sh_refuses_without_a_port 1 "usage: serve.sh" sv "$st/h-agrees" "" "" -no-port-
     expect serve_sh_refuses_a_missing_pin_file 2 "file is not there" sv "$st/h-nofile"
+    expect serve_sh_refuses_an_unreadable_pin_file 2 "is there but is not readable as a file" sv "$st/h-unreadable"
     expect serve_sh_refuses_a_missing_pin_line 2 "states no CONTROL_PY_VERSION" sv "$st/h-noline"
     expect serve_sh_refuses_a_work_directory_it_cannot_create 2 "could not create the scenario agent's work directory" \
       sv "$st/h-agrees" /dev/null/selftest
-    expect serve_sh_refuses_a_failed_install 2 "could not install a2a-sdk 5.5.5" \
+    expect serve_sh_refuses_a_failed_install 2 "nothing was left at $st/agent-work/venv-5.5.5 -- refusing to serve" \
       sv "$st/h-sdk-uninstallable" "" "$st/python3-fails"
+    expect serve_sh_removes_a_half_made_virtualenv 2 "$st/agent-work/venv-5.5.5 is gone; stopped on the refusal: yes" \
+      disk_after "$st/agent-work/venv-5.5.5" "was removed -- refusing to serve" sv "$st/h-sdk-uninstallable" "" "$st/python3-half"
+    expect serve_sh_says_when_a_half_made_virtualenv_remains 2 "$st/agent-work/venv-5.5.5 is left; stopped on the refusal: yes" \
+      disk_after "$st/agent-work/venv-5.5.5" "could not be removed; remove it by hand -- refusing to serve" sv "$st/h-sdk-uninstallable" "" "$st/python3-half+rm-fails"
+    rm -rf "$st/agent-work/venv-5.5.5"
     expect serve_sh_refuses_an_a2a_sdk_of_another_version 2 "is 1.1.2, pin is 7.7.7" \
       sv "$st/h-sdk-other"
     expect serve_sh_refuses_an_a2a_sdk_that_cannot_say_its_version 2 "is unreadable, pin is 6.6.6" \
@@ -562,7 +675,7 @@ json.dump({"summary": {}, "per_requirement":
     # -- the verbs
     expect subject_refuses_without_an_endpoint 1 "needs BUSBAR_A2A_ENDPOINT" \
       env -u BUSBAR_A2A_ENDPOINT bash "$REAL_HERE/run-tck.sh" subject
-    expect an_unknown_verb_prints_usage_and_refuses 2 "run-tck.sh selftest" \
+    expect an_unknown_verb_prints_usage_and_refuses 2 "planted with stand-ins (no network, no control)" \
       bash "$REAL_HERE/run-tck.sh" no-such-verb
 
     if [ "$fails" -ne 0 ]; then
@@ -572,5 +685,5 @@ json.dump({"summary": {}, "per_requirement":
     echo "runner selftest: $legs legs, all green"
     ;;
 
-  *) sed -n '/^# USAGE/,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  *) sed -n '/^# USAGE/,/^set -euo/{/^set -euo/!p;}' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

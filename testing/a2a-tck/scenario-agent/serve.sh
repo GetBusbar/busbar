@@ -19,15 +19,21 @@ cd "$(dirname "$0")"
 PORT="${1:?usage: serve.sh <port> [--public-url URL]}"; shift || true
 
 harness_pin_file="../../a2a-harness/scripts/install-control.sh"
-if [ ! -f "$harness_pin_file" ]; then
+if [ ! -e "$harness_pin_file" ]; then
   echo "the a2a-sdk pin is read from testing/a2a-harness/scripts/install-control.sh, and that \
 file is not there -- refusing to serve" >&2
   exit 2
 fi
-CONTROL_PY_VERSION="$(sed -n 's/^CONTROL_PY_VERSION="\([^"]*\)".*/\1/p' "$harness_pin_file" | head -1)"
+harness_text="$(cat "$harness_pin_file" 2>/dev/null)" || {
+  echo "testing/a2a-harness/scripts/install-control.sh is there but is not readable as a file -- \
+refusing to serve" >&2
+  exit 2
+}
+# One sed pass that quits on the first match, so no pipe can fail under pipefail.
+CONTROL_PY_VERSION="$(sed -n '/^CONTROL_PY_VERSION="/{s/^CONTROL_PY_VERSION="\([^"]*\)".*/\1/p;q;}' <<< "$harness_text")"
 if [ -z "$CONTROL_PY_VERSION" ]; then
-  echo "testing/a2a-harness/scripts/install-control.sh states no CONTROL_PY_VERSION=\"...\" line; \
-the a2a-sdk pin cannot be read -- refusing to serve" >&2
+  echo "testing/a2a-harness/scripts/install-control.sh states no CONTROL_PY_VERSION=\"...\" line, \
+so there is no a2a-sdk pin -- refusing to serve" >&2
   exit 2
 fi
 
@@ -38,13 +44,29 @@ mkdir -p "$WORK" 2>/dev/null || {
   exit 2
 }
 
+# discard <dir> <what>: remove a half-made <what> so the next run builds it again instead of
+# trusting it, and say whether it is gone (a refusal names both outcomes; it never assumes one).
+discard () {
+  if [ ! -e "$1" ]; then
+    echo "nothing was left at $1"
+    return 0
+  fi
+  rm -rf "$1" 2>/dev/null || true
+  if [ -e "$1" ]; then
+    echo "the half-made $2 at $1 could not be removed; remove it by hand"
+  else
+    echo "the half-made $2 at $1 was removed"
+  fi
+}
+
 if [ ! -x "$VENV/bin/python" ]; then
   echo "installing a2a-sdk ${CONTROL_PY_VERSION} into $VENV" >&2
   python3 -m venv "$VENV" \
     && "$VENV/bin/pip" -q install --upgrade pip \
     && "$VENV/bin/pip" -q install "a2a-sdk[http-server]==${CONTROL_PY_VERSION}" uvicorn starlette \
     || {
-      echo "could not install a2a-sdk ${CONTROL_PY_VERSION} into $VENV -- refusing to serve" >&2
+      note="$(discard "$VENV" virtualenv)"
+      echo "could not install a2a-sdk ${CONTROL_PY_VERSION} into $VENV; $note -- refusing to serve" >&2
       exit 2
     }
 fi
