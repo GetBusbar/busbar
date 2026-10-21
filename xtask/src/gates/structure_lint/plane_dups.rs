@@ -138,14 +138,11 @@ pub fn ledger() -> Vec<LedgerRow> {
         s("usage.rs", &["llm", "streaming"], "Unrelated: llm's engine file bills a non-streaming token response to a key's budget (record_resp_usage); streaming's codec file is the Realtime and Gemini duplex usage IR and its float-tolerant count reader."),
         s("Answer", &["mcp", "streaming"], "Unrelated: mcp's Answer is the reply to one MCP arrival (here with a status and body, or far); streaming's is a RequestUnit's per-piece answer (nothing, attempt, to the far end, to the caller, refused)."),
         s("Arrival", &["mcp", "streaming"], "Unrelated: mcp's Arrival is one carrier line read (a LineUnit and an optional dispatch body); streaming's is its arrive slot's answer (door, op class, dialect)."),
-        s("CredentialPlacement", &["a2a", "streaming"], "Unrelated: a2a's places a leased credential in an HTTP header (Authorization Bearer or a named header); streaming's places a provider key on a WebSocket dial per dialect (a query parameter or a prefixed header)."),
         s("Dialect", &["a2a", "streaming"], "Unrelated: a2a's Dialect is the push-config verb spelling (V03 or V10); streaming's is its voice dialect roster (OpenAI Realtime, Gemini Live, Twilio Media Streams, one-shot transcribe and tts)."),
         s("Held", &["mcp", "streaming"], "Unrelated: mcp's Held is one generation's catalogue, tools section and pools; streaming's is a one-request door unit's state (its RequestUnit, what it owes, a short answer)."),
         s("Reply", &["mcp", "streaming"], "Unrelated: mcp's Reply is a caller's answer to one of busbar's own asks (answered or failed); streaming's is the caller's HTTP answer (status, fields, body, the rtc call id)."),
-        s("Session", &["mcp", "streaming"], "Unrelated: mcp's Session is the carrier session's state (streams, buffered events, revision, owner); streaming's is the Realtime or Gemini enum over a codec's SessionUnit."),
         s("Unit", &["decisions", "streaming"], "Unrelated: decisions' Unit is one unit's attempt, reading and owed bytes in its plane door; streaming's is the Realtime or Gemini codec enum its session door dispatches over."),
         s("arrive", &["mcp", "decisions", "streaming"], "Each plane's body for the arrive slot: mcp reads a carrier line, decisions classifies verb and target through its ops table, streaming maps a claim index to a door. The slot is the ABI's; what an arrival means is the plane's."),
-        s("open", &["mcp", "streaming"], "Unrelated: mcp's door_listen open starts a subscriptions/listen subscription and its tool_claims open builds a claim with no credential scheme; streaming's constructs a live Session for a door."),
         s("outbound", &["mcp", "streaming"], "Unrelated: mcp's builds the OutboundCall request (POST, path, body) for one tool-call round; streaming's is a const naming a connection need on the provider egress class."),
         s("parse", &["a2a", "streaming"], "Unrelated: a2a's reads an agent card value into an AgentCard; streaming's reads wire bytes into a JSON value in its codec."),
         s("read_settings", &["decisions", "streaming"], "Each plane judges its own settings blob by its own grammar and answers its own section for an empty one: DecisionsSection for decisions, StreamsCfg for streaming. The grammar is the plane's."),
@@ -458,7 +455,27 @@ pub fn scan(cx: &Ctx, a: &Addresses, corpus: Option<&Corpus>, t: &Tables, f: &mu
 /// MANDATORY DRAIN (owner: lane a29e9b3, busbar-llm retirement): the busbar-plane-llm extraction
 /// (status row 106, the #1072 recipe) re-lowers UNLEDGERED_ARMED to the measure after extraction in
 /// the SAME PR, and the plugin repo's own plane-dup run carries these names from then on.
-pub const UNLEDGERED_ARMED: usize = 97;
+///
+/// LOWERED 97 -> 94 with the streaming plane's door-root (GetBusbar/busbar-plane-streaming #36,
+/// BUSBAR-1.6.0.md l.3567: the logic crate's only public item is `door()`), Law 9, measured with
+/// this scan over the shipped code at that head beside the a2a, decisions and mcp planes at their
+/// pins and busbar-plane-llm in tree. The streaming crate no longer declares `Upstream`,
+/// `dialect_for`, `matches_selector`, `CredentialPlacement`, `Session` or `open`. Net -3, name by
+/// name:
+///
+/// * 3 DRAINED from the count (each paired llm and streaming): `dialect_for`, `matches_selector`,
+///   `Upstream`;
+/// * 3 ledger rows STRUCK. `CredentialPlacement` (a2a+streaming) and `Session` (mcp+streaming) are
+///   duplicated nowhere any more. `open` was signed for mcp+streaming and is now declared in a2a
+///   and mcp only: nobody argued that pair, so the row's claim is false. `open` stays one finding
+///   in this count, as it was when the row signed for a plane set the scan no longer reads.
+///
+/// THE LOCKSTEP: this count is the measure at streaming #36's head, so it is RED on a tree that
+/// still pins streaming at 253b5b2791 (99 there: the 97 plus the two struck rows' names now
+/// unsigned). It lands with the repin to streaming's dev merge of #36. Each further door-root
+/// plane lowers it again in the commit that repins it (a2a #41 alone: 87; a2a #41 with streaming
+/// #36: 82).
+pub const UNLEDGERED_ARMED: usize = 94;
 
 /// [`ROW_UNLEDGERED`], judged against [`UNLEDGERED_ARMED`]. A tree with none is clean.
 fn unledgered_row(unledgered: &[String]) -> Row {
