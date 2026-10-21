@@ -29,7 +29,8 @@
 //! the first `/`, `?` or `#`, and a `\` inside it is refused rather than guessed at. Both families
 //! take the host through the same normalization ([`normalize_host`]): percent-decoded and one
 //! trailing FQDN-root dot removed, because the name resolver ignores that dot and an exact compare
-//! does not.
+//! does not. [`parse_url`] then reads a non-ASCII host as its punycode (ACE) name by UTS #46, the
+//! mapping busbar 1.5.5's `url` 2.5.8 applied before it dialled ([`url_host_to_ascii`]).
 //!
 //! ## The address predicates
 //!
@@ -564,7 +565,9 @@ pub struct UrlParts {
     /// The authority carried a userinfo (`…@`). The userinfo itself is never kept: a caller that
     /// must refuse one refuses on this, and nothing here can repeat a password.
     pub userinfo: bool,
-    /// The host, unbracketed, through [`normalize_host`]. Case as written.
+    /// The host, unbracketed, through [`normalize_host`]. An ASCII host keeps its case as written; a
+    /// non-ASCII one is its UTS #46 punycode name ([`url_host_to_ascii`]), which is lower-case. The
+    /// host is always ASCII, and it is the name the dialling stack dials and the `Host` it sends.
     pub host: String,
     /// The port the authority spelled, if it spelled one (an empty `:` is none, as WHATWG reads it).
     pub port: Option<u16>,
@@ -581,7 +584,7 @@ pub enum UrlRefusal {
     NoScheme,
     /// A [`UrlFamily::Generic`] URL whose scheme is not followed by `//`.
     NoAuthority,
-    /// The host is empty, or holds a byte no host may hold.
+    /// The host is empty, holds a byte no host may hold, or is a non-ASCII name UTS #46 refuses.
     NoHost,
     /// A `\` inside a [`UrlFamily::Generic`] authority, which RFC 3986 does not admit and which a
     /// WHATWG reader would read as a boundary.
@@ -617,12 +620,36 @@ fn forbidden_in_host(c: char) -> bool {
         )
 }
 
+/// A decoded host read as the ASCII name a dialling stack dials: an ASCII host as it is, a non-ASCII
+/// one through UTS #46 domain-to-ASCII (mapped, normalised, lower-cased, each non-ASCII label
+/// punycoded), the WHATWG forbidden domain code points refused in what the mapping produced.
+///
+/// This is `url` 2.5.8's host parser's own call, `idna::domain_to_ascii_from_cow` with
+/// [`idna::AsciiDenyList::URL`] (hyphens allowed, DNS length not checked): the reading busbar 1.5.5
+/// dialled an IDN by and sent as its `Host`. `bücher.example` reads `xn--bcher-kva.example`; a
+/// full-width `１２７.０.０.１` reads `127.0.0.1`, so the address predicates judge the address it
+/// dials. An ASCII host is handed back borrowed, its case kept: callers compare names case-blind.
+///
+/// # Errors
+///
+/// [`UrlRefusal::NoHost`] when UTS #46 refuses the name (a disallowed code point, a bad punycode
+/// label, a bidi rule broken) or the mapping produced a forbidden domain code point (`ｂ＜.example`
+/// maps to `b<.example`).
+pub fn url_host_to_ascii(host: &str) -> Result<Cow<'_, str>, UrlRefusal> {
+    if host.is_ascii() {
+        return Ok(Cow::Borrowed(host));
+    }
+    idna::domain_to_ascii_from_cow(Cow::Borrowed(host.as_bytes()), idna::AsciiDenyList::URL)
+        .map_err(|_| UrlRefusal::NoHost)
+}
+
 /// READ A URL OF ANY SCHEME, by its family's rules (see [`UrlFamily`]).
 ///
 /// The authority ends at the first `/`, `?` or `#` (and, for [`UrlFamily::Web`], `\`), so
 /// `https://127.0.0.1?x`, `https://localhost#a` and `https://10.0.0.5\x/` read the host the
 /// dialling stack reads, and `ldap://evil.example#@127.0.0.1` reads `evil.example`. A userinfo is
-/// split at the LAST `@` of the authority and reported, never kept.
+/// split at the LAST `@` of the authority and reported, never kept. A non-ASCII host reads as its
+/// punycode name ([`url_host_to_ascii`]), so the host judged is the host dialled.
 ///
 /// # Errors
 ///
@@ -680,11 +707,15 @@ pub fn parse_url(url: &str) -> Result<UrlParts, UrlRefusal> {
             Some((h, p)) => (h, Some(p)),
             None => (host_port, None),
         };
-        let host = normalize_host(raw);
+        // Decoded first, then mapped, then the one trailing root dot dropped: a mapping can make
+        // that dot (a full-width `．` reads `.`), and `url` maps the decoded host the same way.
+        let decoded = percent_decode_host(raw);
+        let host = url_host_to_ascii(decoded.as_ref())?;
+        let host = host.strip_suffix('.').unwrap_or(host.as_ref());
         if host.is_empty() || host.contains(forbidden_in_host) {
             return Err(UrlRefusal::NoHost);
         }
-        (host, port)
+        (host.to_string(), port)
     };
     let port = match port {
         None | Some("") => None,

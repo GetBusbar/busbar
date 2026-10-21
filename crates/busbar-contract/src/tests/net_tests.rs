@@ -398,3 +398,111 @@ fn the_contract_address_values_are_the_std_types() {
     assert!(ip.is_loopback());
     let _: Option<super::SocketAddrV4> = None;
 }
+
+/// An IDN host reads as its UTS #46 punycode name, the name busbar 1.5.5 dialled and sent as its
+/// `Host` (its `url` 2.5.8 mapped the host before the dial): written in Unicode, percent-encoded,
+/// with a port, under a generic scheme, or ending in a full-width root dot.
+#[test]
+fn an_idn_host_reads_as_its_punycode_name() {
+    for (input, host, port) in [
+        (
+            "https://b\u{fc}cher.example/",
+            "xn--bcher-kva.example",
+            None,
+        ),
+        (
+            "https://b%C3%BCcher.example:8443/x",
+            "xn--bcher-kva.example",
+            Some(8443),
+        ),
+        (
+            "wss://m\u{fc}nchen.example/",
+            "xn--mnchen-3ya.example",
+            None,
+        ),
+        (
+            "ldaps://b\u{fc}cher.example:636",
+            "xn--bcher-kva.example",
+            Some(636),
+        ),
+        (
+            "https://b\u{fc}cher.example\u{ff0e}/",
+            "xn--bcher-kva.example",
+            None,
+        ),
+        (
+            "https://user@b\u{fc}cher.example/",
+            "xn--bcher-kva.example",
+            None,
+        ),
+    ] {
+        let got = parse_url(input).unwrap_or_else(|e| panic!("{input:?}: {e}"));
+        assert_eq!((got.host.as_str(), got.port), (host, port), "{input:?}");
+        assert_eq!(url_host(input).as_deref(), Some(host), "{input:?}");
+        assert_eq!(target_host(input).as_deref(), Some(host), "{input:?}");
+    }
+    assert_eq!(
+        url_host_to_ascii("b\u{fc}cher.example").as_deref(),
+        Ok("xn--bcher-kva.example")
+    );
+}
+
+/// A mixed-case IDN normalises the way `url` normalises it: UTS #46 lower-cases the whole name,
+/// its ASCII labels too, and a full-width spelling of an address reads as the address, so the
+/// predicates judge what the dial reaches.
+#[test]
+fn a_mixed_case_idn_normalises_the_way_url_does() {
+    for (input, host) in [
+        ("https://B\u{dc}CHER.Example/", "xn--bcher-kva.example"),
+        ("https://b\u{fc}cher.EXAMPLE/", "xn--bcher-kva.example"),
+        ("https://M\u{dc}nchen.De/", "xn--mnchen-3ya.de"),
+        (
+            "https://\u{ff11}\u{ff12}\u{ff17}.\u{ff10}.\u{ff10}.\u{ff11}/",
+            "127.0.0.1",
+        ),
+    ] {
+        assert_eq!(url_host(input).as_deref(), Some(host), "{input:?}");
+    }
+    let loopback = url_host("https://\u{ff11}\u{ff12}\u{ff17}\u{ff0e}0.0.1/").expect("a host");
+    assert_eq!(loopback, "127.0.0.1");
+    assert!(host_is_private_or_loopback(&loopback));
+}
+
+/// A WHATWG-forbidden host is refused, written as itself or produced by the UTS #46 mapping, and
+/// so is a code point UTS #46 disallows.
+#[test]
+fn a_whatwg_forbidden_host_is_refused() {
+    for input in [
+        "https://exa<mple.com/",
+        "https://exa^mple.com/",
+        "https://exa|mple.com/",
+        "https://b\u{fc}cher\u{ff1c}.example/",
+        "https://b\u{fc}cher.\u{2100}.example/",
+        "https://b\u{fc}cher\u{fffd}.example/",
+        "https://\u{ad}/",
+    ] {
+        assert_eq!(parse_url(input), Err(UrlRefusal::NoHost), "{input:?}");
+        assert_eq!(url_host(input), None, "{input:?}");
+    }
+    assert_eq!(
+        url_host_to_ascii("b\u{fc}cher\u{ff1c}.example"),
+        Err(UrlRefusal::NoHost)
+    );
+}
+
+/// An ASCII host is read as it was before: its case as written, an ACE label untouched.
+#[test]
+fn an_ascii_host_is_unchanged() {
+    for (input, host) in [
+        ("https://Api.Example.COM/v1", "Api.Example.COM"),
+        ("https://xn--bcher-kva.example/", "xn--bcher-kva.example"),
+        ("ldap://Dir.Example:389", "Dir.Example"),
+        ("https://127.0.0.1./", "127.0.0.1"),
+    ] {
+        assert_eq!(url_host(input).as_deref(), Some(host), "{input:?}");
+    }
+    assert!(matches!(
+        url_host_to_ascii("Api.Example.COM"),
+        Ok(std::borrow::Cow::Borrowed("Api.Example.COM"))
+    ));
+}
