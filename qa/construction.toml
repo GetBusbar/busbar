@@ -761,8 +761,10 @@ busbar-transport-webrtc = ["str0m", "ring", "aes", "zeroize"]
 # The pinned http transport (rev in the root Cargo.toml): hyper for HTTP/1.1 and 2, its tokio-based
 # util and body helpers, tokio and tokio-util for the framer's I/O adapters, futures and memchr.
 busbar-transport-http = ["futures", "http", "http-body-util", "hyper", "hyper-util", "memchr", "tokio", "tokio-util"]
-# The pinned grpc framer: hyper's http and http-body types for the gRPC framing over HTTP/2.
-busbar-transport-grpc = ["http", "http-body", "hyper"]
+# The pinned grpc framer: hyper's http and http-body types for the gRPC framing over HTTP/2, and h2's
+# own error codes (a far end's RST_STREAM code read off the error hyper hands up, mapped to its gRPC
+# status; the same h2 hyper runs on), named by its manifest at the pinned dev head 2531ef131e.
+busbar-transport-grpc = ["h2", "http", "http-body", "hyper"]
 # The pinned ws framer: tungstenite's frame codec and handshake machines, driven over the host's
 # bytes with no runtime (handshake feature only; ws #21 dropped the tokio wrapper).
 busbar-transport-ws = ["tungstenite"]
