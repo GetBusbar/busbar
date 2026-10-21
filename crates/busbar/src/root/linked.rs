@@ -93,8 +93,9 @@ pub struct Linked {
     /// [`LinkedDoorExport`]).
     pub export_doors: &'static [LinkedDoorExport],
     /// The store axis: each linked store's door (and the canonical name its packaging states), its
-    /// key and `ephemeral` read off the door's Statement ([`linked_stores`]).
-    pub stores: &'static [LinkedStoreDoor],
+    /// key and `ephemeral` read off the door's Statement once ([`LinkedStores`]); it reads as the
+    /// kernel's `(key, ephemeral, door, canonical)` rows.
+    pub stores: &'static LinkedStores,
     /// The hook axis: each linked `kind: hook` row's door, bound through the one loader path by the
     /// root's hook axis (`crate::root::hooks`).
     pub hook_doors: &'static [busbar_contract::abi::mechanism::door::DoorFn],
@@ -333,6 +334,60 @@ pub struct LinkedStoreDoor {
     pub canonical: Option<&'static str>,
 }
 
+/// THE STORE AXIS'S LINKED ROWS: each linked store's door, and the kernel's
+/// `(key, ephemeral, door, canonical)` row read off it once ([`linked_stores`]), when first asked.
+/// It reads as those rows (`Deref`), the shape every root table and door cell holds a store row
+/// in.
+pub struct LinkedStores {
+    /// The doors, in manifest order.
+    doors: &'static [LinkedStoreDoor],
+    /// Their rows, read once.
+    rows: std::sync::OnceLock<Result<Vec<LinkedStore>, String>>,
+}
+
+impl LinkedStores {
+    /// The store axis over `doors`; nothing is read until a row is asked for.
+    #[must_use]
+    pub const fn new(doors: &'static [LinkedStoreDoor]) -> Self {
+        Self {
+            doors,
+            rows: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// The doors, in manifest order.
+    #[must_use]
+    pub fn doors(&self) -> &[LinkedStoreDoor] {
+        self.doors
+    }
+
+    /// The rows, read off the doors once.
+    ///
+    /// # Errors
+    ///
+    /// A linked store door that does not state itself, naming why (the same refusal every time).
+    pub fn rows(&self) -> Result<&[LinkedStore], String> {
+        self.rows
+            .get_or_init(|| linked_stores(self.doors))
+            .as_deref()
+            .map_err(Clone::clone)
+    }
+}
+
+impl std::ops::Deref for LinkedStores {
+    type Target = [LinkedStore];
+
+    /// The rows. Boot reads them first ([`register_stores`]) and refuses (exit 2) a door that does
+    /// not state itself, so a reader past boot always finds them.
+    ///
+    /// # Panics
+    ///
+    /// A linked store door that does not state itself.
+    fn deref(&self) -> &[LinkedStore] {
+        self.rows().unwrap_or_else(|refusal| panic!("{refusal}"))
+    }
+}
+
 /// THE LINKED STORE ROWS the kernel's cold-kind axis registers: each linked store's key (its door's
 /// Statement `name`, the word `store.module` selects it by), whether what it holds is lost on
 /// restart (the Statement's `MARK_EPHEMERAL`), its door and its canonical name, in manifest order.
@@ -479,12 +534,12 @@ pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
 /// names (Q-STORE = (B)). A linked store or secret door that does not state itself refuses the boot
 /// (exit 2) before anything resolves a store or a secret.
 pub fn register_stores(linked: &Linked) {
-    let rows = linked_stores(linked.stores).and_then(|stores| {
+    let rows = linked.stores.rows().and_then(|stores| {
         link_secrets(linked.secrets, linked.secret_declares).map(|secrets| (stores, secrets))
     });
     match rows {
         Ok((stores, secrets)) => busbar_kernel::preflight::install_linked_rows(RootInstall {
-            stores: LINKED_STORES.get_or_init(|| stores),
+            stores,
             registry_build: Some(crate::root::boot::registry),
             plugins_fetch: Some(crate::root::boot::plugins_fetch),
             hook_axis: Some(crate::root::hooks::axis),
@@ -508,9 +563,6 @@ pub fn register_stores(linked: &Linked) {
         busbar_kernel::config::secret::resolve_linked_string_at_config,
     );
 }
-
-/// The linked store rows [`register_stores`] installs, read off their doors once.
-static LINKED_STORES: std::sync::OnceLock<Vec<LinkedStore>> = std::sync::OnceLock::new();
 
 /// THE STORE AXIS the kernel opens its governance store through (WIRE-STORE Q8/Q9): the loader's
 /// axis over the process's ONE dispatcher (`root::dispatch`, built at boot before the configuration

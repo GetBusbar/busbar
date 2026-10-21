@@ -276,11 +276,10 @@ fn a_first_party_plugins_declared_codes_join_the_catalogue_and_nothing_else_does
 /// the tables carry no store (and no ranking row) to hand the kernel.
 #[test]
 fn the_linked_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
-    let stores = super::linked_stores(crate::LINKED.stores).expect("the linked store states");
-    let ephemeral: Vec<_> = stores.iter().map(|s| s.1).collect();
-    assert_eq!(ephemeral, [true], "one linked store: ephemeral");
+    let stores: Vec<_> = crate::LINKED.stores.iter().map(|s| s.1).collect();
+    assert_eq!(stores, [true], "one linked store: ephemeral");
     assert!(
-        !(stores[0].2)().is_null(),
+        !(crate::LINKED.stores[0].2)().is_null(),
         "the linked store states its door"
     );
     let strategies = [

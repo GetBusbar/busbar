@@ -103,13 +103,8 @@ fn drift(rows: &[Row], entries: &[Entry]) -> (Vec<String>, Vec<String>, Vec<Stri
 /// of the axes it does not hold yet, each with the reason.
 fn linked_rows() -> (Vec<Row>, Vec<String>) {
     let mut rows: Vec<Row> = Vec::new();
-    let stores =
-        crate::root::linked::linked_stores(crate::LINKED.stores).expect("the linked stores state");
-    rows.extend(
-        stores
-            .iter()
-            .map(|s| Row::of(&busbar_kernel::preflight::linked_store_row(s))),
-    );
+    let stores = crate::LINKED.stores.iter();
+    rows.extend(stores.map(|s| Row::of(&busbar_kernel::preflight::linked_store_row(s))));
     let auths = crate::LINKED.auths.iter();
     rows.extend(auths.map(|a| Row::of(&busbar_kernel::preflight::linked_auth_row(a))));
     let exports = linked_exports(crate::LINKED.export_doors).expect("the export rows state");
@@ -190,9 +185,10 @@ fn every_linked_row_is_registered_under_its_plugins_yaml_manifest_name() {
 #[test]
 fn a_row_registered_under_its_alias_is_drift() {
     let entries = entries(REGISTRY);
-    let stores =
-        crate::root::linked::linked_stores(crate::LINKED.stores).expect("the linked stores state");
-    let &(key, ephemeral, door, canonical) = stores.first().expect("the build links a store");
+    let &(key, ephemeral, door, canonical) = crate::LINKED
+        .stores
+        .first()
+        .expect("the build links a store");
     let old = Row::of(&LinkedPlugin::store(key, door, ephemeral));
     let (_, mismatches, _) = drift(&[old], &entries);
     assert_eq!(mismatches.len(), 1, "the alias-named row is drift");

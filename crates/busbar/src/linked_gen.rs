@@ -591,8 +591,13 @@ pub(crate) fn linked_source(
     }
     out.push_str("],\n");
     // THE STORE AXIS: each row names its `door`; its key and `ephemeral` are read off the door's
-    // Statement (`crate::root::linked::linked_stores`), its canonical name is packaging data.
-    out.push_str("    stores: &[");
+    // Statement once (`crate::root::linked::LinkedStores`), its canonical name is packaging data.
+    // The doors are their own static (`LINKED_STORE_DOORS`, below), which `stores` points at.
+    out.push_str("    stores: &LINKED_STORE_DOORS,\n");
+    let mut store_doors = String::from(
+        "/// The store axis's linked doors, in manifest order.\n\
+         const LINKED_STORE_DOOR_ROWS: &[crate::root::linked::LinkedStoreDoor] = &[",
+    );
     for ((entry, list), (feature, _)) in linked.iter().zip(&on) {
         if list.iter().any(|a| a == STORE_AXIS) {
             let canonical = metadata_value(
@@ -601,13 +606,18 @@ pub(crate) fn linked_source(
                 feature,
             )
             .map_or_else(|| "None".to_string(), |name| format!("Some({name:?})"));
-            out.push_str(&format!(
+            store_doors.push_str(&format!(
                 "crate::root::linked::LinkedStoreDoor {{ door: {entry}::door, canonical: \
                  {canonical} }}, "
             ));
         }
     }
-    out.push_str("],\n");
+    store_doors.push_str(
+        "];\n\
+         /// The store axis: each linked door's row, read off its Statement once.\n\
+         static LINKED_STORE_DOORS: crate::root::linked::LinkedStores =\n    \
+         crate::root::linked::LinkedStores::new(LINKED_STORE_DOOR_ROWS);\n",
+    );
     // NO STATEMENT HOME: a `claims` row's `PLANE` (the pure plane the seal registers, a Rust
     // value) and `CLAIMS` (its grammar claims); the Statement's `claims` are a transport's URL
     // schemes and no field states a plane's grammar claims, so they are still read off the entry.
@@ -631,6 +641,7 @@ pub(crate) fn linked_source(
         out.push_str("],\n");
     }
     out.push_str("};\n");
+    out.push_str(&store_doors);
     out.push_str(&door_builds);
     // THE CONNECTOR'S VIEW of the same door rows: each memory-ABI transport door, which the root's
     // one Connector opens as a framer entry (`crate::root::connector`); it states its own name.

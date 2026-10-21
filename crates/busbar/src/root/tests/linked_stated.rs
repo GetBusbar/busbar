@@ -89,9 +89,20 @@ fn a_plane_door_stating_its_declares_is_read_off_its_statement() {
 /// its canonical name.
 #[test]
 fn the_linked_store_row_is_read_off_its_door() {
-    let rows = linked_stores(crate::LINKED.stores).expect("the linked stores state");
-    assert_eq!(rows.len(), crate::LINKED.stores.len(), "one row per door");
-    for (row, linked) in rows.iter().zip(crate::LINKED.stores) {
+    let doors = crate::LINKED.stores.doors();
+    let rows = linked_stores(doors).expect("the linked stores state");
+    assert_eq!(rows.len(), doors.len(), "one row per door");
+    let named = |rows: &[busbar_kernel::preflight::LinkedStore]| -> Vec<(String, bool, String)> {
+        let row =
+            |r: &busbar_kernel::preflight::LinkedStore| (r.0.to_string(), r.1, r.3.to_string());
+        rows.iter().map(row).collect()
+    };
+    assert_eq!(
+        named(&crate::LINKED.stores[..]),
+        named(&rows),
+        "the axis reads its rows the same way"
+    );
+    for (row, linked) in rows.iter().zip(doors) {
         let read = stated(linked.door).expect("a linked store states itself");
         assert_eq!(row.0, read.name, "its key is its Statement name");
         assert_eq!(

@@ -551,11 +551,13 @@ node = "plane_node"
     );
     assert!(
         out.contains(
-            "    stores: &[crate::root::linked::LinkedStoreDoor { door: busbar_keep::door, \
-             canonical: Some(\"busbar-keep\") }, ],\n"
+            "const LINKED_STORE_DOOR_ROWS: &[crate::root::linked::LinkedStoreDoor] = \
+             &[crate::root::linked::LinkedStoreDoor { door: busbar_keep::door, canonical: \
+             Some(\"busbar-keep\") }, ];\n"
         ),
         "a store row names its door and its canonical name: {out}"
     );
+    assert!(out.contains("    stores: &LINKED_STORE_DOORS,\n"), "{out}");
     assert!(
         out.contains("    auths: &[(\"pass\", \"pass\", busbar_pass::door), ],\n"),
         "an auth row names its entry's door: {out}"

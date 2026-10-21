@@ -25,13 +25,11 @@ fn read(door: DoorFn) -> rendering::Read {
 
 /// The root's linked store row the double stands in for: the one under the double's key.
 fn real_row() -> &'static busbar_kernel::preflight::LinkedStore {
-    let rows =
-        crate::root::linked::linked_stores(crate::LINKED.stores).expect("the linked stores state");
-    let row = rows
-        .into_iter()
+    crate::LINKED
+        .stores
+        .iter()
         .find(|s| s.0 == store_double::STORE.0)
-        .expect("the root links a store under the key the double answers");
-    Box::leak(Box::new(row))
+        .expect("the root links a store under the key the double answers")
 }
 
 /// `door`, opened through the store axis on a dispatcher of its own, as boot opens a store.
