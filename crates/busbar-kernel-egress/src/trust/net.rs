@@ -607,6 +607,10 @@ pub fn resolve_and_pin(
     resolver: &dyn Resolver,
     policy: GuardPolicy,
 ) -> Result<PinnedTarget, AddressRefusal> {
+    // The name judged, resolved and pinned is the one a URL client dials: a non-ASCII host is its
+    // UTS #46 punycode name ([`url_host_to_ascii`]); an ASCII host is as written.
+    let mapped = url_host_to_ascii(host).map_err(|_| AddressRefusal::NoHost(host.to_string()))?;
+    let host = mapped.as_ref();
     judge_host_name(host, policy)?;
     if let Ok(addr) = host.parse::<IpAddr>() {
         return pin_answer(host, port, https, &[addr], policy);
@@ -682,12 +686,40 @@ struct HostSet {
     v6: Vec<std::net::Ipv6Addr>,
 }
 
+/// AN OPERATOR'S LIST ENTRY (`security.blocked_metadata_hosts`, `security.allow_metadata_hosts`, a
+/// provider's `allow_metadata_hosts`) READ AS A TARGET'S HOST IS READ: trimmed, then mapped to the
+/// ASCII name or address a URL client dials ([`url_host_to_ascii`], the mapping
+/// [`extract_normalized_host`] reads every target through), so an entry written `ｍｅｔａｄａｔａ.ｉｎｔｅｒｎａｌ`
+/// or `１６９.２５４.１６９.２５４` names the target it reads as. An ASCII entry is handed back trimmed,
+/// as written. The list judgement drops trailing root dots and compares case-blind after this.
+///
+/// # Errors
+///
+/// [`UrlRefusal::NoHost`] when a non-ASCII entry maps to nothing (UTS #46 refuses it, or it maps to
+/// only root dots): it would match no target at all, so configuration load refuses it, naming it.
+pub fn list_entry_host(entry: &str) -> Result<std::borrow::Cow<'_, str>, UrlRefusal> {
+    let entry = entry.trim();
+    if entry.is_ascii() {
+        return Ok(std::borrow::Cow::Borrowed(entry));
+    }
+    let mapped = url_host_to_ascii(entry)?;
+    if mapped.trim_end_matches('.').is_empty() {
+        return Err(UrlRefusal::NoHost);
+    }
+    Ok(mapped)
+}
+
 impl HostSet {
-    /// Canonicalize a list of operator-written entries.
+    /// Canonicalize a list of operator-written entries, each read as a target's host is
+    /// ([`list_entry_host`]). An entry that maps to nothing is refused at configuration load; one
+    /// that reaches here anyway names nothing and is not kept.
     fn parse(entries: &[String]) -> Self {
         let mut set = HostSet::default();
         for entry in entries {
-            let norm = entry.trim().trim_end_matches('.');
+            let Ok(mapped) = list_entry_host(entry) else {
+                continue;
+            };
+            let norm = mapped.trim_end_matches('.');
             if norm.is_empty() {
                 continue;
             }
@@ -1285,21 +1317,25 @@ fn join_path(base: &str, path: &str) -> String {
 /// A bracketed IPv6 literal comes back unbracketed, so it reads the same here as it does to
 /// [`judge_host_name`] and to `IpAddr::from_str`. A missing port defaults to the secure one,
 /// because an authority with no scheme said nothing about plaintext and fail-closed is the reading
-/// to take.
+/// to take. The host is read as [`split_url`] reads a URL's: a non-ASCII name is its UTS #46
+/// punycode name ([`url_host_to_ascii`]), the name judged and the name resolved, and `None` when
+/// UTS #46 refuses it; an ASCII host comes back as written.
 fn split_authority(authority: &str) -> Option<(String, u16)> {
     if authority.is_empty() || authority.contains('@') {
         return None;
     }
-    if let Some(inner) = authority.strip_prefix('[') {
+    let (host, port) = if let Some(inner) = authority.strip_prefix('[') {
         let (host, tail) = inner.split_once(']')?;
         let port = match tail.strip_prefix(':') {
             Some(p) => p.parse().ok()?,
             None => 443,
         };
-        return Some((host.to_string(), port));
-    }
-    match authority.rsplit_once(':') {
-        Some((host, port)) if !host.contains(':') => Some((host.to_string(), port.parse().ok()?)),
-        _ => Some((authority.to_string(), 443)),
-    }
+        (host, port)
+    } else {
+        match authority.rsplit_once(':') {
+            Some((host, port)) if !host.contains(':') => (host, port.parse().ok()?),
+            _ => (authority, 443),
+        }
+    };
+    Some((url_host_to_ascii(host).ok()?.into_owned(), port))
 }

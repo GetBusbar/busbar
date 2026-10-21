@@ -1330,3 +1330,164 @@ fn nat64_dns64_synthesis_of_imds_is_refused_even_under_allow_private() {
         "must be refused AS METADATA, not merely pinned as an ordinary public address: {err:?}"
     );
 }
+
+// ── THE MAPPED HOST, IN EVERY ARM: a list entry, a bare authority and a resolved name are read as
+// a URL's host is read (UTS #46), so each is judged and resolved as the name a URL client dials. ──
+
+/// RED (HIGH): an operator's list entry is read as a target's host is read. A full-width blocked
+/// entry blocks the ASCII target it maps to, in each spelling a target may take, and a full-width
+/// allow entry lifts the metadata name it maps to; the entries were kept as written, so the blocked
+/// one matched nothing and the target was dialled. An ASCII entry is read as before, and an entry
+/// UTS #46 refuses names nothing (configuration load refuses it, naming it).
+#[test]
+fn a_list_entry_is_read_as_a_targets_host_is_read() {
+    // `１０.９９.９９.９９` and `ｍｅｔａ.example`.
+    let full_width_ip = "\u{ff11}\u{ff10}.\u{ff19}\u{ff19}.\u{ff19}\u{ff19}.\u{ff19}\u{ff19}";
+    let full_width_name = "\u{ff4d}\u{ff45}\u{ff54}\u{ff41}.example";
+    for (entry, target) in [
+        (full_width_ip, "https://10.99.99.99/"),
+        (full_width_ip, "https://[::ffff:10.99.99.99]/"),
+        (full_width_ip, "10.99.99.99:443"),
+        (full_width_name, "https://meta.example/"),
+        (full_width_name, "https://META.example./"),
+        (full_width_name, "meta.example:443"),
+    ] {
+        let blocked = [entry.to_string()];
+        assert!(
+            ssrf_blocked_host(target, &[], false, &blocked).is_some(),
+            "`{entry}` blocks `{target}`"
+        );
+        let lists = Denylist::new(&blocked, &[], false);
+        assert!(
+            matches!(
+                check_structure(target, &[], private_ok(), &lists),
+                Err(NetworkRefusal::MetadataDenied(_))
+            ),
+            "`{entry}` blocks `{target}` in the structural check"
+        );
+    }
+    // `ｍｅｔａｄａｔａ.ｇｏｏｇｌｅ.ｉｎｔｅｒｎａｌ`, an allow entry, lifts the metadata name.
+    let full_width_meta = "\u{ff4d}\u{ff45}\u{ff54}\u{ff41}\u{ff44}\u{ff41}\u{ff54}\u{ff41}.\
+                           \u{ff47}\u{ff4f}\u{ff4f}\u{ff47}\u{ff4c}\u{ff45}.\
+                           \u{ff49}\u{ff4e}\u{ff54}\u{ff45}\u{ff52}\u{ff4e}\u{ff41}\u{ff4c}";
+    let url = "https://metadata.google.internal/";
+    assert!(ssrf_blocked_host(url, &[], false, &[]).is_some());
+    assert_eq!(
+        ssrf_blocked_host(url, &[full_width_meta.to_string()], false, &[]),
+        None
+    );
+    // The entry reader: ASCII as written (trimmed), non-ASCII mapped, unmappable refused.
+    assert_eq!(
+        list_entry_host("  META.example. ").as_deref(),
+        Ok("META.example.")
+    );
+    assert_eq!(
+        list_entry_host("%6c%6fcalhost").as_deref(),
+        Ok("%6c%6fcalhost")
+    );
+    assert_eq!(list_entry_host(full_width_ip).as_deref(), Ok("10.99.99.99"));
+    assert_eq!(
+        list_entry_host(full_width_name).as_deref(),
+        Ok("meta.example")
+    );
+    for unmappable in ["b\u{fc}cher\u{ff1c}.example", "\u{3002}"] {
+        assert_eq!(
+            list_entry_host(unmappable),
+            Err(UrlRefusal::NoHost),
+            "{unmappable:?}"
+        );
+        assert!(
+            ssrf_blocked_host(
+                "https://example.com/",
+                &[],
+                false,
+                &[unmappable.to_string()]
+            )
+            .is_none(),
+            "an unmappable entry names nothing"
+        );
+    }
+}
+
+/// RED (HIGH): a bare `host:port` authority's host is read as a URL's is, through UTS #46, so the
+/// structural check judges the name a dial reaches: a full-width `ｌｏｃａｌｈｏｓｔ` is the loopback
+/// name, an IDN name is handed to the resolution as its punycode name, and a name UTS #46 refuses
+/// names no host. The URL arm already read its host so; an ASCII bare host is as before.
+#[test]
+fn a_bare_authoritys_host_is_mapped_as_a_urls_is() {
+    let full_width_localhost =
+        "\u{ff4c}\u{ff4f}\u{ff43}\u{ff41}\u{ff4c}\u{ff48}\u{ff4f}\u{ff53}\u{ff54}";
+    for dest in [
+        format!("{full_width_localhost}:8080"),
+        format!("https://{full_width_localhost}:8080/"),
+    ] {
+        assert!(
+            matches!(
+                check_structure(&dest, &[], strict(), &Denylist::default()),
+                Err(NetworkRefusal::Guard(AddressRefusal::LoopbackName(_)))
+            ),
+            "{dest}"
+        );
+    }
+    for (dest, host, port) in [
+        ("b\u{fc}cher.example:8443", "xn--bcher-kva.example", 8443),
+        ("[b\u{fc}cher.example]:8443", "xn--bcher-kva.example", 8443),
+        (
+            "https://b\u{fc}cher.example:8443/",
+            "xn--bcher-kva.example",
+            8443,
+        ),
+        ("Api.Example.COM:443", "Api.Example.COM", 443),
+        ("Api.Example.COM", "Api.Example.COM", 443),
+    ] {
+        assert_eq!(
+            check_structure(dest, &[], strict(), &Denylist::default()),
+            Ok(Structure::Name {
+                host: host.to_string(),
+                port,
+                https: true,
+            }),
+            "{dest}"
+        );
+    }
+    assert!(
+        matches!(
+            check_structure(
+                "b\u{fc}cher\u{ff1c}.example:443",
+                &[],
+                strict(),
+                &Denylist::default()
+            ),
+            Err(NetworkRefusal::Guard(AddressRefusal::NoHost(_)))
+        ),
+        "a name UTS #46 refuses names no host"
+    );
+}
+
+/// RED (P0, an IDN 1.5.5 dialled): resolve-then-pin asks the resolver for the name a URL client
+/// resolves, the UTS #46 punycode name, and pins what it answered under that name; an ASCII name is
+/// asked as written. Asked for the name as written, a resolver answers `NXDOMAIN` and the dial is
+/// refused.
+#[test]
+fn resolve_and_pin_resolves_the_punycode_name() {
+    for (host, asked) in [
+        ("b\u{fc}cher.example", "xn--bcher-kva.example"),
+        ("Api.Example.COM", "Api.Example.COM"),
+    ] {
+        let r = ScriptedResolver::new(vec![Ok(vec![ip(PUBLIC)])]);
+        let pinned = resolve_and_pin(host, 443, true, &r, strict()).expect("pinned");
+        assert_eq!(*r.asked.borrow(), vec![asked.to_string()], "{host}");
+        assert_eq!(pinned.host(), asked, "{host}");
+        assert_eq!(pinned.addr(), ip(PUBLIC), "{host}");
+    }
+    assert!(matches!(
+        resolve_and_pin(
+            "b\u{fc}cher\u{ff1c}.example",
+            443,
+            true,
+            &NeverAsked,
+            strict()
+        ),
+        Err(AddressRefusal::NoHost(_))
+    ));
+}

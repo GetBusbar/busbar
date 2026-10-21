@@ -719,9 +719,18 @@ pub fn url_host_ipv4(host: &str) -> Result<Option<Ipv4Addr>, UrlRefusal> {
 ///
 /// [`UrlRefusal::NoHost`], the host unjudgeable: UTS #46 refuses it, or it ends in a number and
 /// `url` reads an address [`host_ip`] does not (`0x` is `0.0.0.0` to `url` and a name to a reader
-/// that stops there) or refuses it as no address at all (`1.2.3.4.5`).
+/// that stops there) or refuses it as no address at all (`1.2.3.4.5`), or it holds a `%` outside an
+/// IPv6 literal's zone id. A host reaches a judge decoded (every URL reader here decodes it), so a
+/// `%` left in one is an escape this reading does not decode: `%6c%6fcalhost` is `localhost` to a
+/// client that decodes it and an unknown name here, so it is judged as neither.
 pub fn judged_host(host: &str) -> Result<String, UrlRefusal> {
     let h = host.trim_start_matches('[').trim_end_matches(']');
+    if let Some(at) = h.find('%') {
+        // Only an IPv6 literal carries a `%`, opening its zone id (`fe80::1%eth0`, `fe80::1%25eth0`).
+        if h[..at].parse::<Ipv6Addr>().is_err() {
+            return Err(UrlRefusal::NoHost);
+        }
+    }
     let fold = |s: &str| s.strip_suffix('.').unwrap_or(s).to_ascii_lowercase();
     if h.contains(':') && (h.is_ascii() || host_ip(h).is_some()) {
         return Ok(fold(h));

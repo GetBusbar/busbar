@@ -17,6 +17,7 @@ use busbar_contract::abi::host::conn::connector::{EGRESS_LOOPBACK_ALLOWED, EGRES
 use busbar_contract::abi::host::service::{
     DEST_INTERNAL, DEST_NO_HOST, DEST_PLAINTEXT, DEST_SCHEME, DEST_UNRESOLVABLE,
 };
+use busbar_contract::net::url_host_to_ascii;
 use busbar_contract::transport::trust::EgressTrust;
 use busbar_kernel::config::Destinations;
 use busbar_kernel::host_services::{Admitted, DestJudge, DestRefusal, Refused};
@@ -95,7 +96,10 @@ impl GuardJudge {
     }
 
     /// The name and scheme arms: the host, port and scheme to dial, and the literal when the host
-    /// is one.
+    /// is one. The host handed back is the one a URL client dials, the name the guard judged
+    /// ([`url_host_to_ascii`]: a non-ASCII name its UTS #46 punycode, `bücher.example` read as
+    /// `xn--bcher-kva.example`), so a resolution asks for the name judged and the name 1.5.5's
+    /// client resolved, never the spelling as written. An ASCII host is handed back as written.
     fn named(
         &self,
         dest: &str,
@@ -118,6 +122,11 @@ impl GuardJudge {
         if literal.is_some() {
             plaintext_to_loopback(class, https, &host)?;
         }
+        // The guard admitted the host, so it maps; a host that did not would be unjudgeable.
+        let host = match url_host_to_ascii(&host) {
+            Ok(dialled) => dialled.into_owned(),
+            Err(_) => return Err(DEST_NO_HOST),
+        };
         Ok((host, port, https, literal))
     }
 }
@@ -238,6 +247,7 @@ impl GuardJudge {
             return Some(Ok((SocketAddr::new(ip, port), vec![ip])));
         }
         let guard = self.guard.clone();
+        // The mapped name ([`GuardJudge::named`]): the one judged, and the one a URL client resolves.
         let name = host.clone();
         self.resolver.resolve(
             &name,

@@ -97,6 +97,16 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         &cfg.allow_metadata_hosts,
         &mut errors,
     );
+    reject_unmappable_metadata_entries(
+        "security.blocked_metadata_hosts",
+        &cfg.blocked_metadata_hosts,
+        &mut errors,
+    );
+    reject_unmappable_metadata_entries(
+        "security.allow_metadata_hosts",
+        &cfg.allow_metadata_hosts,
+        &mut errors,
+    );
 
     // The reasoning effort table drives word<->number projection at the egress seam (the
     // cross-protocol thinking carry). A zero entry would project thinking budgets below the floor
@@ -2061,6 +2071,22 @@ fn reject_cidr_metadata_entries(key: &str, entries: &[String], errors: &mut Vec<
     }
 }
 
+/// Push an error for every entry in a metadata host-list config key that maps to no host. An entry
+/// is read as a destination's host is read (`busbar_kernel_egress::trust::net::list_entry_host`: a
+/// non-ASCII entry mapped by UTS #46 to the ASCII name or address a URL client dials), so a
+/// full-width `１６９.２５４.１６９.２５４` names `169.254.169.254`; an entry UTS #46 refuses names
+/// nothing and would silently match no destination, so it is refused at load, naming the key, the
+/// entry and the reason. An ASCII entry is never refused here.
+fn reject_unmappable_metadata_entries(key: &str, entries: &[String], errors: &mut Vec<String>) {
+    for entry in entries {
+        if busbar_kernel_egress::trust::net::list_entry_host(entry).is_err() {
+            errors.push(format!(
+                "{key} entry '{entry}' maps to no host: UTS #46 refuses it, so it names no host a destination could match and would silently match nothing. Write the host in ASCII (an internationalized name as its punycode 'xn--' form) or remove it"
+            ));
+        }
+    }
+}
+
 /// The hardcoded cloud-metadata denylist entries, as human-readable strings — the single source of
 /// truth `ssrf_blocked_host` enforces, surfaced for the `--print-metadata-blocklist` CLI flag and the
 /// startup count so `main.rs` does NOT duplicate the list. The CIDR / individual literals are spelled
@@ -2198,6 +2224,11 @@ fn validate_providers_with(
         // in this union (or `allow_all_metadata` is set). Built once and passed to both the base_url
         // and the path-override SSRF checks below so the two reason over the identical carve-out set.
         reject_cidr_metadata_entries(
+            &format!("provider '{provider_name}' allow_metadata_hosts"),
+            &provider_cfg.allow_metadata_hosts,
+            errors,
+        );
+        reject_unmappable_metadata_entries(
             &format!("provider '{provider_name}' allow_metadata_hosts"),
             &provider_cfg.allow_metadata_hosts,
             errors,

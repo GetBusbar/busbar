@@ -751,3 +751,54 @@ fn bracketed_zoned_and_ascii_hosts_are_judged_as_before() {
         assert_eq!(judged(g.judge_name(host, C)), want, "{host}");
     }
 }
+
+/// RED (HIGH, the percent-escape the guard did not decode): a host holding a `%` outside an IPv6
+/// zone id is unjudgeable (`DEST_NO_HOST`), naming it, in every class, whatever the allowlist says:
+/// `%6c%6fcalhost` is `localhost` to a client that decodes it, and the guard read it as an unknown
+/// name and admitted it unresolved. A zone id's `%` is the literal's, judged as before.
+#[test]
+fn a_percent_escape_outside_a_zone_id_is_refused_as_unjudgeable() {
+    let g = guard(true, &["*.example", "127.0.0.0/8"]);
+    for host in [
+        "%6c%6fcalhost",
+        "%6C%6FCALHOST.",
+        "%31%32%37.0.0.1",
+        "%31%36%39.254.169.254",
+        "api%2eexample",
+        "a%2e.example",
+    ] {
+        for class in [
+            EGRESS_DEFAULT,
+            EGRESS_OPERATOR_INFRASTRUCTURE,
+            EGRESS_PROVIDER,
+        ] {
+            let refusal = g.judge_name(host, class).expect_err(host);
+            assert_eq!(
+                (refusal.verdict, refusal.addr),
+                (DEST_NO_HOST, None),
+                "{host}"
+            );
+            assert_eq!(refusal.host, host);
+            assert!(
+                refusal
+                    .to_string()
+                    .starts_with(&format!("host `{host}` cannot be judged")),
+                "{refusal}"
+            );
+        }
+        assert_eq!(
+            verdict(g.judge_answer(host, &[ip("93.184.216.34")], C)),
+            Some(DEST_NO_HOST),
+            "{host}"
+        );
+        assert!(!names_loopback(host), "{host}");
+    }
+    // A zone id's `%` is the IPv6 literal's: judged as the address, as before.
+    for zoned in ["[fe80::1%25eth0]", "fe80::1%eth0"] {
+        assert_eq!(
+            judged(g.judge_name(zoned, C)),
+            Err((DEST_INTERNAL, Some(ip("fe80::1")))),
+            "{zoned}"
+        );
+    }
+}

@@ -659,3 +659,30 @@ fn dest_judge_answers_an_odd_spelling_as_the_ascii_host_it_maps_to() {
     }
     assert_eq!(r.asked.load(Ordering::SeqCst), 0, "nothing resolved");
 }
+
+/// RED (HIGH, the percent-escape the guard did not decode): `dest.judge` asked about a bare host
+/// holding a `%` escape, without `DEST_RESOLVE` (the argument guard's own question), answers
+/// `DEST_NO_HOST`, at once, nothing resolved. `%6c%6fcalhost` was `DEST_ALLOWED`: the guard read
+/// it as an unknown name, and a client that decodes it dials `localhost`. The `://` spelling, which
+/// the one URL reader decodes, is judged as the host it decodes to, as before.
+#[test]
+fn dest_judge_refuses_a_bare_host_holding_a_percent_escape() {
+    let r = Arc::new(HandResolver::default());
+    let s = services(Arc::clone(&r), Destinations::default());
+    for dest in [
+        "%6c%6fcalhost",
+        "%6c%6fcalhost:8080",
+        "%31%32%37.0.0.1:443",
+        "%31%36%39.254.169.254",
+        "api%2eexample.com",
+    ] {
+        for flags in [0, svc::DEST_REFUSE_PRIVATE, svc::DEST_RESOLVE] {
+            let got = verdict_now(s.dest_judge(dest, 0, flags, None));
+            assert_eq!(got.outcome, Stored::ready(0).outcome, "{dest}");
+            assert_eq!(got.value, svc::DEST_NO_HOST, "{dest} under {flags}");
+        }
+    }
+    let got = verdict_now(s.dest_judge("https://%6c%6fcalhost/", 0, 0, None));
+    assert_eq!(got.value, svc::DEST_INTERNAL, "the URL's host decodes");
+    assert_eq!(r.asked.load(Ordering::SeqCst), 0, "nothing resolved");
+}

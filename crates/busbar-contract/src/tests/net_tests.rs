@@ -840,3 +840,30 @@ fn judged_host_maps_to_what_a_url_client_dials() {
         );
     }
 }
+
+/// RED (HIGH, the percent-escape the judge did not decode): a host reaches the judge decoded, so a
+/// `%` left in one is an escape a decoding client reads and this reading does not. `%6c%6fcalhost`
+/// was judged as an unknown name (and admitted unresolved) while a decoding client dials
+/// `localhost`; every such host is unjudgeable now. A `%` opening an IPv6 literal's zone id is that
+/// literal, as before.
+#[test]
+fn judged_host_refuses_a_percent_outside_an_ipv6_zone_id() {
+    for escaped in [
+        "%6c%6fcalhost",
+        "%6C%6FCALHOST.",
+        "127.0.0.1%2e",
+        "%31%32%37.0.0.1",
+        "api.example.com%",
+        "[%6c%6fcalhost]",
+        "a:b%c",
+    ] {
+        assert_eq!(judged_host(escaped), Err(UrlRefusal::NoHost), "{escaped:?}");
+    }
+    for (zoned, judged) in [
+        ("[fe80::1%25eth0]", "fe80::1%25eth0"),
+        ("fe80::1%eth0", "fe80::1%eth0"),
+        ("[FE80::1%25ETH0]", "fe80::1%25eth0"),
+    ] {
+        assert_eq!(judged_host(zoned).as_deref(), Ok(judged), "{zoned:?}");
+    }
+}

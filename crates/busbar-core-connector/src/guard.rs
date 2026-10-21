@@ -8,7 +8,9 @@
 //! * Every name is compared in ONE form (`norm`, `busbar_contract::net::judged_host`): the ASCII
 //!   name or address a URL client dials, UTS #46 to-ASCII and `url`'s IPv4 reading, so
 //!   `ｌｏｃａｌｈｏｓｔ` is `localhost` and `①⑥⑨.②⑤④.①⑥⑨.②⑤④` is `169.254.169.254`. A host that maps
-//!   to nothing is refused as unjudgeable ([`DEST_NO_HOST`]) before any other rule is asked.
+//!   to nothing, or holds a `%` escape outside an IPv6 zone id (`%6c%6fcalhost`, which a decoding
+//!   client dials as `localhost`), is refused as unjudgeable ([`DEST_NO_HOST`]) before any other
+//!   rule is asked.
 //! * [`Guard::judge_name`] runs BEFORE resolution: a cloud-metadata name, an alternate IPv4
 //!   spelling, a `localhost` name and an IP literal (judged as its own answer) are decided here,
 //!   at once, so a hostile name never reaches a resolver.
@@ -181,8 +183,9 @@ impl std::fmt::Display for Refusal {
             (DEST_NO_HOST, _) => write!(
                 f,
                 "host `{h}` cannot be judged: it maps to no name or address a URL client would \
-                 dial (UTS #46 refuses it, or it ends in a number the guard does not read as the \
-                 IPv4 address a URL client dials), so it is refused"
+                 dial (UTS #46 refuses it, it holds a `%` escape outside an IPv6 zone id, or it \
+                 ends in a number the guard does not read as the IPv4 address a URL client \
+                 dials), so it is refused"
             ),
             (DEST_OBFUSCATED, _) => write!(
                 f,
@@ -277,8 +280,9 @@ fn full(ip: IpAddr) -> u8 {
 
 /// A 1.5.5 list entry (`allow_metadata_hosts`, `blocked_metadata_hosts`), read as 1.5.5 read it:
 /// an address in any literal spelling, else a name, mapped as a target is ([`norm`]) so the two are
-/// compared in one form. Never refused (their 1.5.5 validation runs at configuration time); an
-/// entry that maps to nothing names no target the guard admits to judgement, so it is dropped.
+/// compared in one form. Never refused here: their validation runs at configuration time, which
+/// refuses a non-ASCII entry that maps to nothing, naming it; an entry that maps to nothing names
+/// no target the guard admits to judgement, so one that reaches here is dropped.
 fn legacy(entry: &str) -> Option<Entry> {
     let e = norm(entry.trim())?;
     if e.is_empty() {

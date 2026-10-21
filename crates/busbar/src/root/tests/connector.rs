@@ -261,6 +261,98 @@ fn a_provider_without_an_allowlist_entry_is_refused_a_private_address() {
     );
 }
 
+/// ROOT CELL (P0, an IDN destination 1.5.5 dialled): a deployment whose allowlist names an IDN
+/// host by its punycode name (`advanced.allow_destinations: [xn--bcher-kva.example]`) dials the
+/// destination written `bücher.example:<port>` through the dial judge the process's connector holds
+/// (its guard built from the deployment, as the boot builds it): the name the guard judged, the
+/// UTS #46 punycode name, is the one the resolver is asked for (1.5.5's client resolved that name),
+/// the pin is the address it answered, and the loopback server at the pin serves the exchange the
+/// connector dials there. The judge asked the resolver for the name as written, which no resolver
+/// knows (`NXDOMAIN` here, as from `getaddrinfo`), and refused the dial as unresolvable.
+#[test]
+fn an_idn_destination_resolves_as_its_punycode_name_and_is_served() {
+    use std::io::{Read, Write};
+    use std::sync::Mutex;
+
+    use busbar_core_connector::guard::{Guard, Resolve, Resolved};
+    use busbar_core_connector::DialJudge;
+
+    /// The names asked, answered from a table: the punycode name is the loopback server.
+    #[derive(Default)]
+    struct Names(Mutex<Vec<String>>);
+    impl Resolve for Names {
+        fn resolve(&self, host: &str, done: Resolved) {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(host.to_owned());
+            done(if host == "xn--bcher-kva.example" {
+                Ok(vec![std::net::Ipv4Addr::LOCALHOST.into()])
+            } else {
+                Err("NXDOMAIN".into())
+            });
+        }
+    }
+
+    let server = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+    let port = server.local_addr().expect("its address").port();
+    let served = std::thread::spawn(move || {
+        let (mut s, _) = server.accept().expect("the dial arrives");
+        let mut asked = [0_u8; 4];
+        s.read_exact(&mut asked).expect("the request");
+        s.write_all(b"pong").expect("the answer");
+        asked
+    });
+
+    let cfg = deployment(
+        &[],
+        "advanced:\n  allow_destinations: [xn--bcher-kva.example]\n",
+    );
+    let guard = Guard::from_config(&cfg.destinations()).expect("the deployment's guard");
+    let names = Arc::new(Names::default());
+    let dial = process::judge(
+        Arc::new(process::GuardJudge::new(
+            guard,
+            Arc::clone(&names) as Arc<dyn Resolve>,
+        )),
+        &[],
+    );
+    let (tx, rx) = std::sync::mpsc::channel();
+    let dest = format!("b\u{fc}cher.example:{port}");
+    let at_once = dial.judge_dial(
+        &dest,
+        EGRESS_PROVIDER,
+        Box::new(move |v| {
+            let _ = tx.send(v);
+        }),
+    );
+    let judged = at_once.unwrap_or_else(|| {
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the judgement answers")
+    });
+    let pinned = judged.expect("the allowlisted IDN destination is admitted");
+    assert_eq!(
+        pinned,
+        std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port))
+    );
+    assert_eq!(
+        *names
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        vec!["xn--bcher-kva.example".to_owned()],
+        "the resolver is asked for the punycode name, once"
+    );
+
+    // The connector dials exactly the pin: the server there serves the exchange.
+    let mut conn = std::net::TcpStream::connect(pinned).expect("the pin connects");
+    conn.write_all(b"ping").expect("the request leaves");
+    let mut answer = [0_u8; 4];
+    conn.read_exact(&mut answer).expect("the answer arrives");
+    assert_eq!(&answer, b"pong");
+    assert_eq!(&served.join().expect("the server"), b"ping");
+}
+
 /// RED against the pinned mint plugin's revisions b7d15c7137 and 2a776bd, which declared
 /// EGRESS_LOOPBACK_ALLOWED for its two mint needs (lib.rs:137): every outbound need a linked auth
 /// plugin's Statement declares is operator infrastructure (BUSBAR-1.6.0.md l.609, ARCHITECT D1 MINT

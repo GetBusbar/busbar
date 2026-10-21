@@ -2585,6 +2585,85 @@ fn test_reject_cidr_metadata_entries() {
     }
 }
 
+/// RED (HIGH, the list entry read as written while every target is mapped): a metadata host-list
+/// entry is read as a target's host is read, through UTS #46. A full-width blocked entry blocks the
+/// ASCII target it maps to (it matched nothing, and the target was dialled); a non-ASCII entry
+/// UTS #46 refuses names no host at all, so the configuration is refused at load, naming the key,
+/// the entry and the reason, in each of the three lists. ASCII entries are read as before.
+#[test]
+fn test_metadata_list_entries_are_mapped_and_an_unmappable_one_is_refused() {
+    // `１０.９９.９９.９９` and `ｍｅｔａ.example`.
+    let full_width_ip = "\u{ff11}\u{ff10}.\u{ff19}\u{ff19}.\u{ff19}\u{ff19}.\u{ff19}\u{ff19}";
+    let full_width_name = "\u{ff4d}\u{ff45}\u{ff54}\u{ff41}.example";
+    for (entry, target) in [
+        (full_width_ip, "https://10.99.99.99/v1"),
+        (full_width_ip, "https://[::ffff:10.99.99.99]/v1"),
+        (full_width_name, "https://meta.example/v1"),
+        (full_width_name, "meta.example:443"),
+    ] {
+        assert!(
+            ssrf_blocked_host(target, &[], false, &[entry.to_string()]).is_some(),
+            "the entry `{entry}` must block `{target}`"
+        );
+        // And an allow entry written the same way lifts it.
+        assert!(
+            ssrf_blocked_host(target, &[entry.to_string()], false, &[entry.to_string()]).is_none(),
+            "the allow entry `{entry}` must lift `{target}`"
+        );
+    }
+    let unmappable = "b\u{fc}cher\u{ff1c}.example";
+    let refused = |errs: &[String], key: &str| {
+        errs.iter()
+            .any(|e| e.starts_with(&format!("{key} entry '{unmappable}' maps to no host")))
+    };
+    let one = || {
+        let mut providers = HashMap::new();
+        providers.insert(
+            "p".to_string(),
+            make_provider(proto_b(), "https://api.vendor-a.example.com", "API_KEY"),
+        );
+        providers
+    };
+    let cfg = make_root_cfg_with_blocked(one(), vec![unmappable.to_string()]);
+    let errs = validate(&cfg).expect_err("an unmappable blocked entry refuses the config");
+    assert!(
+        refused(&errs, "security.blocked_metadata_hosts"),
+        "{errs:?}"
+    );
+    let mut cfg = make_root_cfg(one(), HashMap::new(), HashMap::new());
+    cfg.allow_metadata_hosts = vec![unmappable.to_string()];
+    let errs = validate(&cfg).expect_err("an unmappable allow entry refuses the config");
+    assert!(refused(&errs, "security.allow_metadata_hosts"), "{errs:?}");
+    let mut providers = HashMap::new();
+    providers.insert(
+        "prov".to_string(),
+        make_provider_allow_hosts("https://api.vendor-a.example.com", &[unmappable]),
+    );
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    let errs = validate(&cfg).expect_err("an unmappable provider allow entry refuses the config");
+    assert!(
+        refused(&errs, "provider 'prov' allow_metadata_hosts"),
+        "{errs:?}"
+    );
+    // Mappable and ASCII entries are never refused as unmappable.
+    let mut cfg = make_root_cfg(one(), HashMap::new(), HashMap::new());
+    cfg.blocked_metadata_hosts = vec![
+        full_width_ip.to_string(),
+        "169.254.169.254".to_string(),
+        "%6c%6fcalhost".to_string(),
+    ];
+    cfg.allow_metadata_hosts = vec![
+        full_width_name.to_string(),
+        "metadata.example.com".to_string(),
+    ];
+    if let Err(errs) = validate(&cfg) {
+        assert!(
+            !errs.iter().any(|e| e.contains("maps to no host")),
+            "a mappable or ASCII entry must not be refused as unmappable; got: {errs:?}"
+        );
+    }
+}
+
 #[test]
 fn test_global_allow_overrides_blocked_metadata_hosts() {
     // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
