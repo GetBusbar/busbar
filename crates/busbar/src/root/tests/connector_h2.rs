@@ -1056,7 +1056,6 @@ async fn a_request_whose_opening_left_before_the_line_failed_is_not_redialled() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn an_idn_destination_resolves_as_its_punycode_name_and_is_served() {
     use busbar_core_connector::guard::{Guard, Resolve, Resolved};
-    use busbar_core_connector::DialJudge;
 
     const PUNYCODE: &str = "xn--bcher-kva.example";
 
@@ -1083,7 +1082,7 @@ async fn an_idn_destination_resolves_as_its_punycode_name_and_is_served() {
     })
     .expect("the deployment's guard");
     let names = Arc::new(Names::default());
-    let resolver: Arc<dyn Resolve> = Arc::clone(&names);
+    let resolver = Arc::clone(&names) as Arc<dyn Resolve>;
     let dest = Arc::new(process::GuardJudge::new(guard, resolver));
 
     // The destination as written: judged, resolved as its punycode name, pinned to the far end.
