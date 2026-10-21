@@ -130,7 +130,7 @@ pub fn route_policy_headers_enabled() -> bool {
 }
 
 /// The DEFAULT ceiling, in bytes, on the content a hook is shown in one projection. `0` = UNLIMITED
-/// (the default): the LLM prompt projection is sent UNCAPPED. A non-zero ceiling is an OPT-IN an
+/// (the default): the prompt projection is sent UNCAPPED. A non-zero ceiling is an OPT-IN an
 /// operator sets via `limits.hook_content_max_bytes`. Lives HERE so the plane's hook-projection
 /// enforcer names the ceiling without reaching into `busbar-core`; core's `proxy` re-exports it.
 pub const DEFAULT_HOOK_CONTENT_MAX_BYTES: usize = 0;
@@ -155,7 +155,7 @@ pub fn hook_content_max_bytes() -> usize {
 
 /// THE NEUTRAL ERROR ENVELOPE — the body for an ingress name that resolves to no protocol. The
 /// plainest `{"error": {"message", "type"}}` object, stated ONCE here so the spellings cannot drift,
-/// and neutral so it survives every LLM dialect being dropped from the build.
+/// and neutral so it survives every provider dialect being dropped from the build.
 pub fn agnostic_error_envelope(kind: &str, msg: &str) -> serde_json::Value {
     serde_json::json!({ "error": { "message": msg, "type": kind } })
 }
