@@ -65,8 +65,9 @@ use busbar_kernel::REQUEST_ACTIVITY_TICKS;
 ///
 /// This is the piece that would have PREVENTED the ~20% "regression" incident: a non-PGO or
 /// non-release build self-reports `pgo=false` / `profile=debug` instead of masquerading as a code
-/// regression. CI asserts these values (the build-provenance gate), so a mis-built binary can neither
-/// be misdiagnosed nor shipped green. Format is `key=value` space-separated, stable for grep/awk.
+/// regression. The optimized release build (`scripts/pgo-build.sh`) asserts these values through
+/// `scripts/build-provenance-gate.sh`; no CI check runs that gate. Format is `key=value`
+/// space-separated, stable for grep/awk.
 pub(crate) fn build_info_line() -> String {
     format!(
         "profile={profile} opt-level={opt} lto={lto} debug-assertions={da} pgo={pgo} \
@@ -370,12 +371,6 @@ fn main() {
     // list through `config::plane_sections::config_sections()`, so the plane axis must be installed before
     // any reader — including the CLI flags — can run.
     register_planes();
-    // HOST-SELECTION SEAM INSTALL (loop unification, DECISIONS #28), after the planes are registered
-    // and mirroring `busbar_admin::install()`: inject the kernel-loop runners into the neutral
-    // per-capability-keyed seam. LIVE — it flips every plane in the build onto the unified kernel
-    // loop, whose runner opens a zero hold and reports no evidence, so
-    // each plane's own metering inside `drive` stays what settles (item 125, measured money-neutral).
-    root::gauntlet_install::install();
     // DIAGNOSTICS REGISTRATION, same slot and the same reason: a rendered catalog or a `by_code`
     // lookup must see every linked plane's owned codes, so the diagnostics axis is installed before
     // any reader. Each linked entry contributes its owned diagnostics; a no-planes build installs
@@ -955,7 +950,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
                 std::sync::Arc::clone(&app),
             );
             std::sync::Arc::new(move || {
-                busbar_kernel::plane_host::engine_host(
+                busbar_kernel::plane_driver::engine_host(
                     &live
                         .get()
                         .map_or_else(|| std::sync::Arc::clone(&boot), |h| h.load()),
@@ -1008,7 +1003,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // unit (`root::serve`'s probe target over the plane's sealed egress), so no linked row carries
     // the `on-host` axis for it: one prober per lane, as 1.5.5 ran.
     let on_host = LINKED.on_host;
-    let boot_host = (!on_host.is_empty()).then(|| busbar_kernel::plane_host::engine_host(&app));
+    let boot_host = (!on_host.is_empty()).then(|| busbar_kernel::plane_driver::engine_host(&app));
     if let Some(host) = &boot_host {
         for spawn in on_host {
             spawn(host);
@@ -1167,8 +1162,9 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // A door unit's entitlement is judged against its principal AS IT STANDS (re-resolved over the
     // live snapshot per ask): a long-lived response re-asks per frame.
     if let Some(kernel) = late_services.kernel() {
-        let _attached =
-            kernel.attach_standing(busbar_kernel::plane_host::live_standing(app_handle.clone()));
+        let _attached = kernel.attach_standing(busbar_kernel::plane_driver::live_standing(
+            app_handle.clone(),
+        ));
     }
     // THE ROOT-DRIVEN ADMIN SURFACE (composition-root switch-over S1), default-ON. The router that
     // answers the admin operations is unchanged; what the wrap adds is the path a request takes to

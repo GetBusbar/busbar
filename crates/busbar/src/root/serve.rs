@@ -569,6 +569,10 @@ pub struct DoorApply {
     probe_schedule: Arc<busbar_kernel::probe::ProbeSchedule>,
     /// The scope kinds its Statement declares.
     scope_kinds: Vec<&'static str>,
+    /// THE WALK'S CLOCK the plane was composed on ([`compose_planes_over`]): every generation's
+    /// egress, boot's and each apply's re-seal alike, is sealed on it, so a node's walks read one
+    /// clock for its life.
+    clock: Arc<dyn busbar_kernel_egress::ports::Clock>,
 }
 
 impl DoorApply {
@@ -687,6 +691,7 @@ impl DoorApply {
                     Arc::clone(&r.conns),
                     &routes,
                     Arc::clone(&r.journal),
+                    Arc::clone(&self.clock),
                     r.stream_ceiling_secs,
                 )?))
             }
@@ -807,6 +812,7 @@ impl DoorAppliers {
                 &p.scope_kinds,
                 &walked,
                 Some(egress),
+                &p.clock,
                 next,
                 p.facts.bench_below_trip_threshold,
                 &scope,
@@ -1156,7 +1162,7 @@ pub struct HookStage {
 /// budget chain (the generation's card, through its meter pin); a hook handed the prompt leaves its
 /// access amendment through the engine host.
 struct GovCaller {
-    host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    host: Arc<dyn busbar_kernel::plane_driver::EngineHost>,
     gov: Arc<busbar_kernel::governance::GovState>,
 }
 
@@ -1443,14 +1449,25 @@ pub fn pools_into(
             POOL_MEMBER_GRANTED_KEY.into(),
             serde_yaml::Value::Bool(true),
         );
+        // The pool's `breaker:` block, where it states one: core-owned, read by the door's egress
+        // (`DoorPools::breaker`) and struck before the plane is handed its section
+        // ([`plane_settings`]). A pool with none writes nothing here.
+        if let Some(block) = pool
+            .breaker
+            .as_ref()
+            .and_then(|b| serde_yaml::to_value(b).ok())
+        {
+            entry.insert(crate::root::door_steps::POOL_BREAKER_KEY.into(), block);
+        }
         map.insert(name.as_str().into(), serde_yaml::Value::Mapping(entry));
     }
     section.insert(RESERVED_POOLS_KEY.into(), serde_yaml::Value::Mapping(map));
 }
 
 /// THE SETTINGS A DOOR PLANE IS HANDED for `section`: the section with each pool member written
-/// `{name, tier}` handed as its bare name (the tier is core-owned, [`pools_into`]); every other key
-/// as written.
+/// `{name, tier}` handed as its bare name (the tier is core-owned, [`pools_into`]) and each pool's
+/// core-owned `breaker:` block struck (the breaker is the host's valve, THE DESIGN §5); every other
+/// key as written.
 #[must_use]
 pub fn plane_settings(section: &serde_yaml::Value) -> serde_yaml::Value {
     use busbar_contract::section::{POOL_MEMBERS_KEY, POOL_MEMBER_NAME_KEY, RESERVED_POOLS_KEY};
@@ -1460,6 +1477,9 @@ pub fn plane_settings(section: &serde_yaml::Value) -> serde_yaml::Value {
         .and_then(|m| m.get_mut(RESERVED_POOLS_KEY))
         .and_then(serde_yaml::Value::as_mapping_mut);
     for (_, pool) in pools.into_iter().flat_map(|p| p.iter_mut()) {
+        if let Some(pool) = pool.as_mapping_mut() {
+            pool.remove(crate::root::door_steps::POOL_BREAKER_KEY);
+        }
         let members = pool
             .as_mapping_mut()
             .and_then(|p| p.get_mut(POOL_MEMBERS_KEY))
@@ -1518,6 +1538,10 @@ pub fn compose_planes(
     // BOOT IS CONFIG TIME (BUSBAR-1.6.0.md l.1468, R4): the proof is minted here, once, and handed
     // down to every member credential the planes' egress resolves.
     let scope = busbar_contract::config_time::ConfigScope::config_time();
+    // THE NODE'S CLOCK (BUSBAR-1.6.0.md l.161, "one clock"; ARCHITECT Q-SW8: the walk's ports carry
+    // the production clock): the walks of every plane composed here read it.
+    let clock: Arc<dyn busbar_kernel_egress::ports::Clock> =
+        Arc::new(crate::root::egress_ports::NodeClock::new());
     compose_planes_over(
         &crate::LINKED,
         doors,
@@ -1528,12 +1552,17 @@ pub fn compose_planes(
         money,
         egress,
         hooks,
+        &clock,
         &scope,
     )
 }
 
 /// [`compose_planes`] over `linked`, the linked table each door plane's declared facts are read
-/// from beside the dropped-in manifests (its breaker fact, [`crate::root::linked::door_breaker`]).
+/// from beside the dropped-in manifests (its breaker fact, [`crate::root::linked::door_breaker`]),
+/// and `clock`, THE WALK'S CLOCK: every reading a plane's walk takes (an admission, the cooldown a
+/// failure records, the wait a shed advertises) is its, for every generation the plane serves
+/// ([`DoorApply`] keeps it for each apply's re-seal). [`compose_planes`] hands the node's
+/// ([`crate::root::egress_ports::NodeClock`]); a test hands its own.
 ///
 /// # Errors
 ///
@@ -1549,6 +1578,7 @@ pub(crate) fn compose_planes_over(
     money: &dyn Fn() -> Arc<PlaneMoney>,
     egress: Option<&DoorEgress<'_>>,
     hooks: Option<&HookStage>,
+    clock: &Arc<dyn busbar_kernel_egress::ports::Clock>,
     scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<Served, String> {
     let mut served = Served::default();
@@ -1718,6 +1748,7 @@ pub(crate) fn compose_planes_over(
             &declared.scope_kinds,
             section,
             egress,
+            clock,
             1,
             bench,
             scope,
@@ -1771,6 +1802,7 @@ pub(crate) fn compose_planes_over(
             driver: Arc::clone(&driver),
             probe_schedule,
             scope_kinds: declared.scope_kinds.clone(),
+            clock: Arc::clone(clock),
         });
         served.planes.push(ServedPlane {
             instance: instance.clone(),
@@ -1847,7 +1879,7 @@ fn routes_of(
 /// section's pools and, with `egress`, each member's route resolved and its credential bound by the
 /// auth plugin serving its style over the connector its needs were declared on (THE DESIGN §6 steps
 /// 2-3), the plane serving the `pools` map walking its pools with the previous release's semantics
-/// on the kernel's own breaker cells ([`crate::root::model_egress`]).
+/// on the kernel's own breaker cells ([`crate::root::model_egress`]), every walk on `clock`.
 ///
 /// # Errors
 ///
@@ -1860,6 +1892,7 @@ fn seal_live(
     scope_kinds: &[&str],
     section: &serde_yaml::Value,
     egress: Option<&DoorEgress<'_>>,
+    clock: &Arc<dyn busbar_kernel_egress::ports::Clock>,
     generation: u64,
     bench_below_trip_threshold: Option<bool>,
     scope: &busbar_contract::config_time::ConfigScope,
@@ -1931,6 +1964,7 @@ fn seal_live(
                     Arc::clone(&egress.reach.conns),
                     &routes,
                     Arc::clone(&egress.journal),
+                    Arc::clone(clock),
                     egress.reach.stream_ceiling_secs,
                 )
                 .map(|(e, shown)| (e, Some(shown))),
@@ -1941,6 +1975,7 @@ fn seal_live(
                     Arc::clone(&egress.reach.conns),
                     &routes,
                     Arc::clone(&egress.journal),
+                    Arc::clone(clock),
                     egress.reach.stream_ceiling_secs,
                 )
                 .map(|e| (e, None)),

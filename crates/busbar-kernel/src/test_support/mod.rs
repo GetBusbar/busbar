@@ -685,14 +685,14 @@ impl LaneSpec {
     /// reconstructs a `Lane` from (money-path Phase 3-4 C). The fixture hands `PlaneBuildInput` to the
     /// registered `build_runtime` fn-pointer exactly as production `appbuild` does, so core's test
     /// fixture names no `Lane`/`NativeRuntime` — plane-agnostic, like the MCP/A2A test-kits.
-    fn to_lane_input(&self) -> busbar_kernel::plane_host::LaneInput {
+    fn to_lane_input(&self) -> busbar_kernel::plane_driver::route_input::LaneInput {
         let auth_style = match self.auth.as_deref() {
-            None => busbar_kernel::plane_host::AuthStyleInput::Default,
-            Some("api-key") => busbar_kernel::plane_host::AuthStyleInput::ApiKey,
-            Some("bearer") => busbar_kernel::plane_host::AuthStyleInput::Bearer,
+            None => busbar_kernel::plane_driver::route_input::AuthStyleInput::Default,
+            Some("api-key") => busbar_kernel::plane_driver::route_input::AuthStyleInput::ApiKey,
+            Some("bearer") => busbar_kernel::plane_driver::route_input::AuthStyleInput::Bearer,
             Some(other) => panic!("unexpected test auth style in LaneSpec: {other}"),
         };
-        busbar_kernel::plane_host::LaneInput {
+        busbar_kernel::plane_driver::route_input::LaneInput {
             model: self.model.clone(),
             provider: self.provider.clone(),
             protocol: self.protocol.to_string(),
@@ -715,24 +715,23 @@ impl LaneSpec {
             token_userinfo: None,
             subject: None,
             error_map: self.error_map.clone(),
-            health: self
-                .health
-                .as_ref()
-                .map(|h| busbar_kernel::plane_host::HealthInput {
+            health: self.health.as_ref().map(|h| {
+                busbar_kernel::plane_driver::route_input::HealthInput {
                     mode: match h.mode {
                         crate::config::HealthMode::None => {
-                            busbar_kernel::plane_host::HealthModeInput::None
+                            busbar_kernel::plane_driver::route_input::HealthModeInput::None
                         }
                         crate::config::HealthMode::Dead => {
-                            busbar_kernel::plane_host::HealthModeInput::Dead
+                            busbar_kernel::plane_driver::route_input::HealthModeInput::Dead
                         }
                         crate::config::HealthMode::Active => {
-                            busbar_kernel::plane_host::HealthModeInput::Active
+                            busbar_kernel::plane_driver::route_input::HealthModeInput::Active
                         }
                     },
                     interval_secs: h.interval_secs,
                     timeout_secs: h.timeout_secs,
-                }),
+                }
+            }),
             allow_metadata_hosts: Vec::new(),
             context_max: self.context_max,
             lane_default_max_tokens: self.default_max_tokens,
@@ -847,7 +846,6 @@ pub struct TestApp {
     mint_policy: Option<crate::governance::mint_policy::MintPolicy>,
     governance: Option<std::sync::Arc<crate::governance::GovState>>,
     cost: Option<std::sync::Arc<crate::cost::CostModel>>,
-    failover_cfg: Option<crate::config::FailoverCfg>,
     /// Per-pool NEUTRAL overrides the `PoolInput` carrier fields the fixture assembles: the pool's
     /// own `failover:` / `affinity:` / resolved `breaker:` / `upstream_credentials:` override, plus its
     /// per-member `(tier, cost_per_mtok, tags)` routing metadata. Keyed by pool name; absent ⇒ the
@@ -855,7 +853,8 @@ pub struct TestApp {
     /// (which named the plane's `PoolRuntime`) is replaced by the granular setters that fill these.
     pool_failover: std::collections::HashMap<String, crate::config::FailoverCfg>,
     pool_affinity: std::collections::HashMap<String, crate::config::AffinityCfg>,
-    pool_breaker: std::collections::HashMap<String, busbar_kernel::plane_host::BreakerInput>,
+    pool_breaker:
+        std::collections::HashMap<String, busbar_kernel::plane_driver::route_input::BreakerInput>,
     pool_upstream_creds: std::collections::HashMap<String, crate::auth::UpstreamCreds>,
     #[allow(clippy::type_complexity)]
     pool_member_meta: std::collections::HashMap<
@@ -879,11 +878,6 @@ pub struct TestApp {
     >,
     /// The ALL-POOLS `upstream_credentials:` default installed onto the built `App`.
     upstream_credentials: crate::auth::UpstreamCreds,
-    /// The operator's `limits.upstream_request_timeout_secs`, as the built plane's client settings
-    /// carry it. Zero is the historical stamp and means "leave it to the send site's floor"; a test
-    /// that wants the deadline to fire at a NAMED second sets it with
-    /// [`TestApp::upstream_request_timeout_secs`].
-    upstream_request_timeout_secs: u64,
     fallback_pools: std::collections::HashMap<String, Vec<(usize, u32)>>,
     on_exhausted_cfgs: std::collections::HashMap<String, crate::config::OnExhausted>,
     hook_registry: std::collections::HashMap<String, crate::config::HookCfg>,
@@ -978,7 +972,6 @@ impl TestApp {
         Self {
             plane_durable_store: None,
             upstream_credentials: crate::auth::UpstreamCreds::Own,
-            upstream_request_timeout_secs: 0,
             lanes: Vec::new(),
             pools: std::collections::HashMap::new(),
             auth: None,
@@ -992,7 +985,6 @@ impl TestApp {
             mint_policy: None,
             governance: None,
             cost: None,
-            failover_cfg: None,
             pool_failover: std::collections::HashMap::new(),
             pool_affinity: std::collections::HashMap::new(),
             pool_breaker: std::collections::HashMap::new(),
@@ -1197,6 +1189,7 @@ impl TestApp {
                 crate::config::pools::CandidatePoolCfg {
                     members: members.iter().map(|m| (*m).to_string()).collect(),
                     repeatable: repeatable.iter().map(|o| (*o).to_string()).collect(),
+                    breaker: None,
                 },
             );
         self
@@ -1212,6 +1205,7 @@ impl TestApp {
                 crate::config::pools::CandidatePoolCfg {
                     members: members.iter().map(|m| (*m).to_string()).collect(),
                     repeatable: Vec::new(),
+                    breaker: None,
                 },
             );
         self
@@ -1260,16 +1254,6 @@ impl TestApp {
     /// overrides go on the pool's own `PoolRuntime` (see `.pool_runtime(...)`).
     pub fn upstream_creds(mut self, uc: crate::auth::UpstreamCreds) -> Self {
         self.upstream_credentials = uc;
-        self
-    }
-    /// Set the operator's `limits.upstream_request_timeout_secs` on the built plane.
-    ///
-    /// The fixture's historical stamp is 0, which the send site raises to its one-second floor, so a
-    /// deadline that fired at the FLOOR and a deadline that read the operator's number were
-    /// indistinguishable on this harness. A test that means to prove the deadline fires at the
-    /// CONFIGURED second names one here.
-    pub fn upstream_request_timeout_secs(mut self, secs: u64) -> Self {
-        self.upstream_request_timeout_secs = secs;
         self
     }
     /// Override the ADMIN auth chain. `vec![]` is the explicit OPEN admin posture — the only way
@@ -1466,10 +1450,6 @@ impl TestApp {
         g: std::sync::Arc<dyn busbar_kernel::test_support::engine_kit::GovKit>,
     ) -> Self {
         self.governance(engine_kit::gov_state(g))
-    }
-    pub fn failover(mut self, f: crate::config::FailoverCfg) -> Self {
-        self.failover_cfg = Some(f);
-        self
     }
     /// Set a pool's own `failover:` override (deadline / exclusions / hop cap) — the granular successor
     /// to the former `.pool_runtime(PoolRuntime{ failover: … })` (the fixture is plane-agnostic now, so
@@ -1678,14 +1658,12 @@ impl TestApp {
         // (a door plane), and reads the empty default when no fallback plane is registered.
         let mut config_tables =
             std::sync::Arc::<busbar_kernel::plane_driver::route_tables::ConfigTables>::default();
-        if let Some(decl) = fallback {
-            // Assemble the NEUTRAL `PlaneBuildInput` (money-path Phase 3-4 C) exactly as production
-            // `appbuild` does, then hand it to the fallback (LLM) plane's REGISTERED `build_runtime`
-            // fn-pointer — so the fixture names no `Lane`/`NativeRuntime` and exercises the SAME in-plane
-            // lowering production runs (egress targets, credentials, upstream client, probe schedule).
+        if fallback.is_some() {
+            // Assemble the neutral lane and pool rows exactly as production `appbuild` does, and build
+            // the kernel's own route tables over them.
             let member_input = |pool: &str, idx: usize, weight: u32| {
                 let meta = self.pool_member_meta.get(pool).and_then(|m| m.get(&idx));
-                busbar_kernel::plane_host::PoolMemberInput {
+                busbar_kernel::plane_driver::route_input::PoolMemberInput {
                     model: lane_inputs
                         .get(idx)
                         .map(|l| l.model.clone())
@@ -1706,36 +1684,36 @@ impl TestApp {
             for (name, members) in self.fallback_pools.iter().chain(self.pools.iter()) {
                 pool_map.insert(name.clone(), members.clone());
             }
-            let pool_inputs: Vec<busbar_kernel::plane_host::PoolInput> = pool_map
+            let pool_inputs: Vec<busbar_kernel::plane_driver::route_input::PoolInput> = pool_map
                 .into_iter()
-                .map(|(name, members)| busbar_kernel::plane_host::PoolInput {
+                .map(|(name, members)| busbar_kernel::plane_driver::route_input::PoolInput {
                     members: members
                         .iter()
                         .map(|(idx, w)| member_input(&name, *idx, *w))
                         .collect(),
                     failover: self.pool_failover.get(&name).map(|f| {
-                        busbar_kernel::plane_host::FailoverInput {
+                        busbar_kernel::plane_driver::route_input::FailoverInput {
                             timeout_secs: f.timeout_secs,
                             exclusions: f.exclusions.clone(),
                             max_hops: f.max_hops,
                         }
                     }),
                     affinity: self.pool_affinity.get(&name).map(|a| {
-                        busbar_kernel::plane_host::AffinityInput {
+                        busbar_kernel::plane_driver::route_input::AffinityInput {
                             header_name: a.header_name.clone(),
                         }
                     }),
                     on_exhausted: match self.on_exhausted_cfgs.get(&name) {
                         Some(crate::config::OnExhausted::FallbackPool(p)) => {
-                            busbar_kernel::plane_host::OnExhaustedInput::FallbackPool(p.clone())
+                            busbar_kernel::plane_driver::route_input::OnExhaustedInput::FallbackPool(p.clone())
                         }
                         Some(crate::config::OnExhausted::LeastBad) => {
-                            busbar_kernel::plane_host::OnExhaustedInput::LeastBad
+                            busbar_kernel::plane_driver::route_input::OnExhaustedInput::LeastBad
                         }
                         Some(crate::config::OnExhausted::Queue { max_ms }) => {
-                            busbar_kernel::plane_host::OnExhaustedInput::Queue { max_ms: *max_ms }
+                            busbar_kernel::plane_driver::route_input::OnExhaustedInput::Queue { max_ms: *max_ms }
                         }
-                        _ => busbar_kernel::plane_host::OnExhaustedInput::Status503,
+                        _ => busbar_kernel::plane_driver::route_input::OnExhaustedInput::Status503,
                     },
                     upstream_credentials: self.pool_upstream_creds.get(&name).copied(),
                     breaker: self.pool_breaker.get(&name).cloned(),
@@ -1749,51 +1727,6 @@ impl TestApp {
                     &by_model,
                     self.upstream_credentials,
                 ));
-            let default_failover = self
-                .failover_cfg
-                .as_ref()
-                .map(|f| busbar_kernel::plane_host::FailoverInput {
-                    timeout_secs: f.timeout_secs,
-                    exclusions: f.exclusions.clone(),
-                    max_hops: f.max_hops,
-                })
-                .unwrap_or(busbar_kernel::plane_host::FailoverInput {
-                    timeout_secs: crate::config::DEFAULT_FAILOVER_DEADLINE_SECS,
-                    exclusions: None,
-                    max_hops: crate::config::DEFAULT_FAILOVER_CAP,
-                });
-            let build_input = busbar_kernel::plane_host::PlaneBuildInput {
-                lanes: lane_inputs,
-                pools: pool_inputs,
-                upstream_credentials: self.upstream_credentials,
-                allow_metadata_hosts: Vec::new(),
-                allow_all_metadata: false,
-                blocked_metadata_hosts: Vec::new(),
-                client_settings: busbar_kernel::plane_host::ClientSettingsInput {
-                    upstream_request_timeout_secs: self.upstream_request_timeout_secs,
-                    pool_max_idle_per_host: 4,
-                    pool_idle_timeout_secs: 300,
-                    http1_only: false,
-                    h2_prior_knowledge: false,
-                },
-                // Byte-identical to the prior `TestApp` stamp of `App::default_max_tokens` /
-                // `App::reasoning_effort_budgets` (the LLM plane now carries these in its runtime).
-                global_default_max_tokens: crate::config::DEFAULT_DEFAULT_MAX_TOKENS,
-                reasoning_budgets: [1024, 4096, 8192, 16384],
-                default_failover: Some(default_failover),
-                // The test build's auth axis: the kind-neutral outbound double
-                // (`test_support::outbound_auth`), so a lane's credential binds without naming a
-                // plugin.
-                auths: Some(busbar_kernel::plane_host::AuthReach(
-                    crate::test_support::outbound_auth::axis(),
-                )),
-            };
-            // A fallback plane that contributes no runtime of its own (a door plane) is read through
-            // the kernel's own tables above.
-            if let Some(build_runtime) = decl.build_runtime {
-                let slot = build_runtime(&build_input as &dyn std::any::Any, None);
-                plane_slots.insert(fallback_runtime_key, slot);
-            }
         }
         let requested_signals = crate::hooks::requested_signals(&self.hook_registry);
         let any_content_hook = crate::hooks::any_content_hook(&self.hook_registry);
@@ -1900,6 +1833,8 @@ impl TestApp {
             config_projection: None,
             store: store.clone(),
             plane_breakers: std::sync::Arc::new(crate::store::PlaneBreakers::new()),
+            // A hand-built generation publishes no limits: a test's own posture stays in force.
+            limits: None,
             session_store: std::sync::Arc::new(crate::session::SessionStore::new(1024, None)),
             incremental_scan: false,
             // Each plane's pools under its decl key — resolved from the registry, never spelled as a

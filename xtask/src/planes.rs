@@ -223,8 +223,9 @@ pub fn missing_plane_key_roots(cx: &crate::ctx::Ctx) -> Vec<String> {
 /// * `crates/busbar` — the composition root constructs planes BY NAME (`root/plane_decisions.rs`),
 ///   which is the one place in the tree where naming one is the job.
 ///
-/// STILL AN EXPLICIT LIST FOR `plane-purity`, `plane-purity-strict` and the vendor matrix; DERIVED
-/// FOR `plane-transport-neutrality`. Deriving by exclusion from the directories on disk closes the
+/// STILL AN EXPLICIT LIST FOR the vendor matrix; DERIVED FOR `plane-transport-neutrality` and,
+/// since Q128, for `plane-purity` and `plane-purity-strict` (the census's neutral crates of the
+/// kinds `plane_purity::NEUTRAL_KINDS` names). Deriving by exclusion from the directories on disk closes the
 /// enrolment hole — a new neutral crate is in the gate on the day it is created rather than on the
 /// day somebody remembers this function. [`crate::gates::plane_transport_neutrality`] no longer
 /// reads this list: it scans [`crate::gates::kind_isolation::neutral_census`], kind-isolation's
