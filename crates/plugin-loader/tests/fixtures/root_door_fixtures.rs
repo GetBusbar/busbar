@@ -35,60 +35,40 @@ pub mod held_down {
     /// The value its `refresh` refuses.
     pub const REFUSED_TIMEOUT_SECS: u64 = 1;
 
-    const NONE: AbiStr = AbiStr {
-        ptr: std::ptr::null(),
-        len: 0,
-    };
+    const NONE: AbiStr = AbiStr::ZERO;
 
     const CLAIM_NAMES: &[AbiStr] = &[abi_str(KEY)];
 
     const CLAIMS: &[Claim] = &[Claim {
         selector_forms: abi_str(""),
         egress_selector_forms: abi_str(""),
-        facts: std::ptr::null(),
-        facts_len: 0,
         status_namespace: NONE,
         session: 1,
         session_bound: 1,
         unit0_trigger: UNIT0_FIRST_LINE,
-        status_at: 0,
-        _reserved: 0,
+        ..Claim::ZERO
     }];
 
     const SETTINGS: &[SettingDecl] = &[SettingDecl {
         path: abi_str(TIMEOUT),
         kind: SETTING_COUNT,
-        _reserved: 0,
         default: abi_str("600"),
+        ..SettingDecl::ZERO
     }];
 
     const TAIL: TransportTail = TransportTail {
         head: KindTailHead {
             size: std::mem::size_of::<TransportTail>() as u32,
-            _reserved: 0,
+            ..KindTailHead::ZERO
         },
         role: ROLE_CARRIER,
         framing: FRAMING_STREAM,
-        facts: 0,
-        handshake_max_steps: 0,
-        composes_over: std::ptr::null(),
-        composes_over_len: 0,
         claim_rows: CLAIMS.as_ptr(),
         claim_rows_len: CLAIMS.len(),
-        upgrades_to: std::ptr::null(),
-        upgrades_to_len: 0,
-        handoff_from: NONE,
-        handoff_to: NONE,
-        handoff_binding_fact: NONE,
-        handshake_frame_kind: NONE,
-        status_rows: std::ptr::null(),
-        status_rows_len: 0,
         settings: SETTINGS.as_ptr(),
         settings_len: SETTINGS.len(),
-        fault_rows: std::ptr::null(),
-        fault_rows_len: 0,
         frame_piece_size: FRAME_PIECE_SIZE,
-        _reserved: 0,
+        ..TransportTail::ZERO
     };
 
     const STATEMENT: Statement = Statement {
@@ -258,14 +238,11 @@ macro_rules! door_root {
                     ConnOut, DialIn, EmitIn, EncodeIn, FinishIn, FramerOut, FramingIn, IngestIn,
                     IoOut, ListenIn, ListenOut, LocateIn, LocateOut, Ops, ReadIn, RefuseIn, ShutIn,
                     TransportTail, WriteIn, CANCEL_NOTHING_MOVED, FRAME_PIECE_SIZE, FRAMING_STREAM,
-                    ROLE_CARRIER, UNIT0_FIRST_BYTES,
+                    ROLE_CARRIER, ROLE_FRAMER, UNIT0_FIRST_BYTES,
                 };
                 use busbar_contract::abi::mechanism::call::OutHead;
 
-                const NONE: AbiStr = AbiStr {
-                    ptr: std::ptr::null(),
-                    len: 0,
-                };
+                const NONE: AbiStr = AbiStr::ZERO;
 
                 const CLAIM_NAMES: &[AbiStr] = &[abi_str($claim)];
 
@@ -274,43 +251,32 @@ macro_rules! door_root {
                 const CLAIMS: &[Claim] = &[Claim {
                     selector_forms: abi_str(""),
                     egress_selector_forms: abi_str(""),
-                    facts: std::ptr::null(),
-                    facts_len: 0,
                     status_namespace: NONE,
                     session: $session,
                     session_bound: 0,
                     unit0_trigger: UNIT0_FIRST_BYTES,
-                    status_at: 0,
-                    _reserved: 0,
+                    ..Claim::ZERO
                 }];
 
                 const TAIL: TransportTail = TransportTail {
                     head: KindTailHead {
                         size: std::mem::size_of::<TransportTail>() as u32,
-                        _reserved: 0,
+                        ..KindTailHead::ZERO
                     },
-                    role: ROLE_CARRIER,
+                    // A carrier composes over nothing (`check_tail`): a fixture that names a layer is a
+                    // framer.
+                    role: if LAYERS.is_empty() {
+                        ROLE_CARRIER
+                    } else {
+                        ROLE_FRAMER
+                    },
                     framing: FRAMING_STREAM,
-                    facts: 0,
-                    handshake_max_steps: 0,
                     composes_over: LAYERS.as_ptr(),
                     composes_over_len: LAYERS.len(),
                     claim_rows: CLAIMS.as_ptr(),
                     claim_rows_len: CLAIMS.len(),
-                    upgrades_to: std::ptr::null(),
-                    upgrades_to_len: 0,
-                    handoff_from: NONE,
-                    handoff_to: NONE,
-                    handoff_binding_fact: NONE,
-                    handshake_frame_kind: NONE,
-                    status_rows: std::ptr::null(),
-                    status_rows_len: 0,
-                    settings: std::ptr::null(),
-                    settings_len: 0,
-                    fault_rows: std::ptr::null(),
-                    fault_rows_len: 0,
                     frame_piece_size: FRAME_PIECE_SIZE,
-                    _reserved: 0,
+                    ..TransportTail::ZERO
                 };
 
                 const STATEMENT: Statement = Statement {
