@@ -592,7 +592,10 @@ fn is_test_attr(body: &TokenStream) -> bool {
         _ => false,
     });
     if idents_only {
-        return matches!(toks.last(), Some(TokenTree::Ident(i)) if i == "test");
+        // Exactly `test` or `tokio::test`: an attribute whose LAST segment is `test` (`foo::test`)
+        // is some other crate's macro, and the item under it is production (#1128).
+        let spelled: Vec<String> = toks.iter().map(ToString::to_string).collect();
+        return spelled == ["test"] || spelled == ["tokio", ":", ":", "test"];
     }
     let [TokenTree::Ident(cfg), TokenTree::Group(g)] = toks.as_slice() else {
         return false;
@@ -612,8 +615,10 @@ fn is_test_attr(body: &TokenStream) -> bool {
 }
 
 /// The token stream with every test-marked item removed: the attribute, the attributes after it,
-/// and the item up to its first top-level `;` or `{ .. }` body. An inner `#![cfg(test)]` empties
-/// the scope it opens.
+/// and the item up to its first top-level `;`, `,` or `{ .. }` body. The `,` ends a marked element
+/// of a group (a struct field, an enum variant, a match arm, a fn parameter), so the element after
+/// it is read (#1128); a `,` inside an item's generics ends the skip early, which reads more, never
+/// less. An inner `#![cfg(test)]` empties the scope it opens.
 fn strip_tests(stream: TokenStream) -> TokenStream {
     let toks: Vec<TokenTree> = stream.into_iter().collect();
     let attr_at = |i: usize| -> Option<(usize, bool)> {
@@ -641,10 +646,11 @@ fn strip_tests(stream: TokenStream) -> TokenStream {
                 return TokenStream::new();
             }
             i += len;
-            // Skip the item: further attributes, then up to its body or its `;`.
+            // Skip the item: further attributes, then up to its body, its `;`, or the `,` that
+            // ends it as one element of a group.
             while i < toks.len() {
                 match &toks[i] {
-                    TokenTree::Punct(p) if p.as_char() == ';' => {
+                    TokenTree::Punct(p) if p.as_char() == ';' || p.as_char() == ',' => {
                         i += 1;
                         break;
                     }
