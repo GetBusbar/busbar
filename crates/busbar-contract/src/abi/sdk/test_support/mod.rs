@@ -27,8 +27,9 @@
 
 use core::mem::size_of;
 
-use crate::abi::mechanism::call::AbiStr;
+use crate::abi::mechanism::call::{AbiStr, Op};
 use crate::abi::mechanism::door::{Door, Statement};
+use crate::abi::mechanism::lifecycle::OpsHead;
 use crate::abi::mechanism::{KindCode, DOOR_MAGIC};
 use crate::abi::sdk::door::{AbiIn, AbiOut, KindOps, MacroDoor};
 
@@ -46,6 +47,7 @@ mod sealed {
 
 pub mod fake;
 pub mod reply;
+pub mod test_in;
 
 // ── THE ALL-ZERO VALUE ──────────────────────────────────────────────────────────────────────────
 
@@ -340,6 +342,49 @@ pub struct DoorView {
     statement: &'static Statement,
 }
 
+/// ONE SLOT OF A DOOR THE CONTRACT'S MACRO BUILT (status row 159): what [`DoorView::op`] answers
+/// and [`reply::call_in`] enters. It names the door it is a slot of and which slot, and is made
+/// nowhere else, so a test enters only a slot a door states, never a raw `Op`.
+#[derive(Debug, Clone, Copy)]
+pub struct ViewOp {
+    op: Op,
+    door: &'static Door,
+    index: u32,
+    /// The type of the slot's own `in`, from its kind's slot table (`None` for a table no kind
+    /// states: a host's own test double).
+    takes: Option<core::any::TypeId>,
+}
+
+impl ViewOp {
+    /// The slot's index in its kind's table (the mechanism's SLOT LAYOUT).
+    #[must_use]
+    pub fn index(&self) -> u32 {
+        self.index
+    }
+
+    /// The slot and the door it is a slot of, for [`reply`] alone.
+    pub(crate) fn parts(self) -> (Op, &'static Door, u32) {
+        (self.op, self.door, self.index)
+    }
+
+    /// The slot is entered over its own `in` type, `I`, and no other (status row 194): an `in` of
+    /// another slot would hand it fields read as pointers it never was lent.
+    ///
+    /// # Panics
+    ///
+    /// `I` is not the slot's `in`.
+    pub(crate) fn check_in<I: 'static>(self) {
+        if let Some(takes) = self.takes {
+            assert!(
+                takes == core::any::TypeId::of::<I>(),
+                "reply::call_in: the `in` is not slot {}'s own `in` ({})",
+                self.index,
+                core::any::type_name::<I>()
+            );
+        }
+    }
+}
+
 // THE ONE WAY IN, pinned at compile time on every build of this module (this crate's own tests
 // included, with or without the feature): `DoorView::of` takes a `MacroDoor` and nothing else. A
 // change of its parameter to any door function breaks this line before any test runs.
@@ -460,6 +505,39 @@ impl DoorView {
         // SAFETY: the door is of `T`'s kind, so its tail is the `#[repr(C)]` `T` that kind states
         // (the sealed `KindTail` list), and its head says the plugin wrote all of it.
         unsafe { &*tail }
+    }
+
+    /// ONE SLOT of the door's table, as [`reply::call_in`] enters it: `pick` names the slot
+    /// (`|t| &t.head.open`, `|t| &t.resolve`), and the handle remembers which door and which slot
+    /// it is. `None` when the door leaves the slot absent. A [`ViewOp`] is made here and nowhere
+    /// else (status row 159).
+    ///
+    /// # Panics
+    ///
+    /// As [`DoorView::ops`], or `pick` answers a reference that is not a slot of the table.
+    #[must_use]
+    pub fn op<T: KindOps>(
+        &self,
+        pick: impl FnOnce(&'static T) -> &'static Option<Op>,
+    ) -> Option<ViewOp> {
+        let table = self.ops::<T>();
+        let slot = pick(table);
+        let base = core::ptr::from_ref(table) as usize;
+        let at = core::ptr::from_ref(slot) as usize;
+        let first = base + core::mem::offset_of!(OpsHead, validate);
+        assert!(
+            at >= first
+                && at + size_of::<Option<Op>>() <= base + size_of::<T>()
+                && (at - first).is_multiple_of(size_of::<Option<Op>>()),
+            "DoorView::op: the picked reference is not a slot of the door's table"
+        );
+        let index = crate::abi::sdk::door::slot_at(at - base);
+        (*slot).map(|op| ViewOp {
+            op,
+            door: self.door,
+            index,
+            takes: crate::abi::sdk::door::slot_in::<T>(index),
+        })
     }
 
     /// The door's ops table, as the kind's `T`.
