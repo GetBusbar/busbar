@@ -662,15 +662,19 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
     }
 }
 
-/// ROW 113 (ruling (B)): A BOOTED NODE'S RECOVERY VERBS REACH ITS CONFIGURED STORE.
+/// ROW 113 (ruling (B)): A BOOTED NODE'S RECOVERY VERBS REACH ITS CONFIGURED STORE, AND THE STORE
+/// REFUSES THEM (audit PL2 HIGH 4, ARCHITECT ruling).
 ///
 /// The book is the one `root::boot::book` opens over a real App with a governance store, and the
-/// units are the ones `main` composes over it (`ProductionUnits::admin_over_book`). Each of the
-/// three verbs answers `204` and lands on that store. RED (the defect this
-/// replaced): the composition held a refusing stand-in, so each answered the store failure on a
-/// node whose store was right there; drop the book's store, or the units' binding of it, and this
-/// goes red. Then restore -> reseal -> replay over the SAME store: a replay slot committed before
-/// the restore survives it and the reseal, and answers its first bytes.
+/// units are the ones `main` composes over it (`ProductionUnits::admin_over_book`). The book must
+/// carry that store. Each of the three verbs is handed to it, and no store operation carries any of
+/// them (the store v3 table has no restore, no chain break and no epoch floor), so each answers the
+/// store's refusal (`503`), never a `204` acknowledged from the adapter's memory: this cell
+/// asserted `204` while the adapter counted a chain break, kept a backup's name and an in-memory
+/// floor and touched neither the store nor the journal, which is the defect PL2 HIGH 4 names. The
+/// adapter's refusal itself is pinned in `crates/busbar/tests/store_adapter_verb_seam.rs`. Then
+/// restore -> reseal over the SAME store: a replay slot committed before the refused restore
+/// survives it and the refused reseal, and answers its first bytes.
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_book() {
@@ -748,16 +752,16 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
     ] {
         let (status, _, _) = over(&mounted, "POST", path, body.as_bytes().to_vec()).await;
         assert_eq!(
-            status, 204,
-            "{verb} reached the configured store and applied"
+            status, 503,
+            "{verb} reached the configured store, which refuses it: never acknowledged from memory"
         );
     }
 
-    // The slot survived the restore and the reseal, and replays the first answer's bytes.
+    // The slot survived the refused restore and reseal, and replays the first answer's bytes.
     assert_eq!(
         store.replay_new_verb(&key).expect("the slot reads"),
         Some(b"first answer".to_vec()),
-        "a committed replay slot survives restore -> reseal"
+        "a committed replay slot survives a refused restore -> reseal"
     );
 }
 
