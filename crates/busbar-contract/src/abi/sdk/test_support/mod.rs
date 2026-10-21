@@ -764,5 +764,5 @@ fn text(s: AbiStr, field: &str) -> &'static str {
 }
 
 #[cfg(test)]
-#[path = "tests/test_support_tests.rs"]
+#[path = "../tests/test_support_tests.rs"]
 mod tests;
