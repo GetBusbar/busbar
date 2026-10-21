@@ -1,7 +1,9 @@
 //! `cargo xtask gate script-allowlist` — NO NEW PYTHON OR SHELL WITHOUT A WRITTEN REASON.
 //!
 //! OWNER 2026-10-02: "drop as much python ... as possible to rust" and "minimal to no .sh". A
-//! product check or gate is `cargo xtask`; release tooling is busbar-release. Every `.py`, `.sh` and
+//! product check or gate is `cargo xtask`; a release step is a check of ModernCI's branch files,
+//! `.ci/dev.yaml` and `.ci/qa.yaml` (THE DESIGN Part 6, "BUSBAR-RELEASE RETIRED FROM BUSBAR",
+//! l.3115-3132). Every `.py`, `.sh` and
 //! `.bash` file still tracked here is listed in `qa/scripts-allowlist.toml` with a class (`port`,
 //! `keep`, `external`, `retire`, `oracle-driver`) and a reason, and the list only shrinks: a port or a deletion
 //! strikes its entry in the same commit.
@@ -13,7 +15,10 @@
 //! * `script-allowlist:entries-live` — every entry names a tracked file. A stale entry is RED, so a
 //!   deleted or ported script cannot leave its permission behind for a namesake.
 //! * `script-allowlist:reasons` — every entry has a known class and a reason of at least
-//!   [`MIN_REASON`] characters, and no path is listed twice.
+//!   [`MIN_REASON`] characters, no path is listed twice, and no reason sends a script to a
+//!   busbar-release home other than the parts THE DESIGN keeps there ([`KEPT_RELEASE_PARTS`]): the
+//!   turnstile, the train, the ladder and the release half of its command line are retired (Part 6,
+//!   l.3134-3146), so a port planned into them has nowhere to land.
 //! * `script-allowlist:listing-floor` — the tracked listing holds the root `Cargo.toml`. A failed
 //!   or empty `git ls-files` has no unlisted scripts in it, and "nothing to object to" must never
 //!   read as "the rule holds".
@@ -40,6 +45,30 @@ const CLASSES: [&str; 5] = ["port", "keep", "external", "retire", "oracle-driver
 
 /// The shortest reason that is a reason rather than a shrug.
 pub const MIN_REASON: usize = 30;
+
+/// What busbar-release still is to busbar (THE DESIGN Part 6, l.3134-3142, "busbar-release stays, as
+/// the tools repo"): the oracle and its fetch and golden-scope crates, the soak, the plugin fleet
+/// generator and the GitHub door they call through. A reason may name these; any other
+/// `busbar-release` home it names is a retired one.
+pub const KEPT_RELEASE_PARTS: [&str; 7] = [
+    "busbar-release-oracle",
+    "busbar-release-fetch",
+    "busbar-release-golden-scope",
+    "busbar-release-soak",
+    "busbar-release-plugin",
+    "busbar-release plugin",
+    "busbar-release-github",
+];
+
+/// Whether `reason` sends its script to a busbar-release home THE DESIGN retired: it names
+/// `busbar-release` somewhere that is not one of [`KEPT_RELEASE_PARTS`].
+pub fn names_retired_release_home(reason: &str) -> bool {
+    let mut rest = reason.to_string();
+    for kept in KEPT_RELEASE_PARTS {
+        rest = rest.replace(kept, "");
+    }
+    rest.contains("busbar-release")
+}
 
 /// A file the listing must hold, or it is the listing that came back empty, not the tree.
 const FLOOR_FILE: &str = "Cargo.toml";
@@ -169,9 +198,10 @@ impl Gate for ScriptAllowlistGate {
                 ROW_LISTED,
                 "a tracked script is not on the allowlist",
                 format!(
-                    "{} unlisted: {} — product checks and gates are `cargo xtask`, release tooling \
-                     is busbar-release (OWNER 2026-10-02). A script that must stay needs an entry in \
-                     {ALLOWLIST} with its class and reason.",
+                    "{} unlisted: {} — product checks and gates are `cargo xtask` (OWNER \
+                     2026-10-02), release steps are checks of `.ci/dev.yaml` and `.ci/qa.yaml` \
+                     (THE DESIGN Part 6). A script that must stay needs an entry in {ALLOWLIST} \
+                     with its class and reason.",
                     unlisted.len(),
                     unlisted.join(" | ")
                 ),
@@ -234,6 +264,16 @@ impl Gate for ScriptAllowlistGate {
                     e.reason.trim()
                 ));
             }
+            if names_retired_release_home(&e.reason) {
+                bad.push(format!(
+                    "{}: reason `{}` sends it to a retired busbar-release home; busbar-release keeps \
+                     only {} (THE DESIGN Part 6), and a release step is a check of .ci/dev.yaml or \
+                     .ci/qa.yaml",
+                    e.path,
+                    e.reason.trim(),
+                    KEPT_RELEASE_PARTS.join(", ")
+                ));
+            }
         }
         let reasons_row = if bad.is_empty() {
             Row::pass(
@@ -252,7 +292,8 @@ impl Gate for ScriptAllowlistGate {
         } else {
             Row::fail(
                 ROW_REASONS,
-                "an allowlist entry has no class, an unknown class, a short reason or a duplicate",
+                "an allowlist entry has no class, an unknown class, a short reason, a retired \
+                 busbar-release home or a duplicate",
                 format!("{} problem(s): {}", bad.len(), bad.join(" | ")),
             )
         };
@@ -348,6 +389,35 @@ impl Gate for ScriptAllowlistGate {
         ));
 
         let mut ov = Overlay::new();
+        ov.set(
+            ALLOWLIST,
+            "[[script]]\npath = \"scripts/kept.sh\"\nclass = \"port\"\n\
+             reason = \"post-publish channel checks: become a busbar-release subcommand\"\n",
+        );
+        report.push(prove_red(
+            base,
+            self,
+            "a reason that ports a script into a retired busbar-release home is RED (row 163)",
+            &[ROW_REASONS],
+            on_base(ov),
+            &["retired busbar-release home"],
+        ));
+
+        let mut ov = Overlay::new();
+        ov.set(
+            ALLOWLIST,
+            "[[script]]\npath = \"scripts/kept.sh\"\nclass = \"oracle-driver\"\n\
+             reason = \"an oracle cell driver: moves into busbar-release-oracle with a re-stamp\"\n",
+        );
+        let kept_cx = cx.with_overlay(on_base(ov));
+        report.push(prove_green(
+            &kept_cx,
+            self,
+            "a reason that names a part busbar-release keeps (the oracle) is green",
+            &[ROW_REASONS],
+        ));
+
+        let mut ov = Overlay::new();
         ov.set_command(LISTING_KEY, "");
         report.push(prove_red(
             base,
@@ -364,7 +434,7 @@ impl Gate for ScriptAllowlistGate {
 
 #[cfg(test)]
 mod tests {
-    use super::is_script;
+    use super::{is_script, names_retired_release_home};
 
     #[test]
     fn the_suffixes_are_exact() {
@@ -373,6 +443,27 @@ mod tests {
         }
         for p in ["a.pyc", "b.shtml", "c.rs", "d.mjs", "sh", "e.py.txt"] {
             assert!(!is_script(p), "{p}");
+        }
+    }
+
+    #[test]
+    fn a_reason_names_a_retired_release_home_only_outside_the_kept_parts() {
+        // RED: the homes Part 6 retired.
+        for r in [
+            "post-publish channel checks: become a busbar-release subcommand",
+            "becomes the ladder's release-binaries build in busbar-release",
+            "the done verifier (busbar-release status reads its groups)",
+            "moves into busbar-release-oracle and busbar-release ci",
+        ] {
+            assert!(names_retired_release_home(r), "{r}");
+        }
+        // GREEN: the parts busbar-release keeps, and a reason that names none.
+        for r in [
+            "moves into busbar-release-oracle, identical verdicts proven first",
+            "folds into busbar-release plugin (the registry tool)",
+            "becomes the release-binaries check of the dev -> qa move in .ci/dev.yaml",
+        ] {
+            assert!(!names_retired_release_home(r), "{r}");
         }
     }
 }
