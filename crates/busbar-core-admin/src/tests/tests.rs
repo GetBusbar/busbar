@@ -1,4 +1,5 @@
 use busbar_kernel::audit_ring;
+use busbar_kernel::config::MIGRATED_STORE_MODULE;
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
 use busbar_kernel::test_support::warn_capture::WarnCapture;
 use std::sync::Arc;
@@ -475,8 +476,9 @@ async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
     // A RANGE, not an equality, and the reason is a real failure: this asserted exactly 300 and
     // went red in CI. The test seeds the cell with `now + 300` from one `now()`, and the handler
     // computes the remainder from a SECOND `now()` taken when the request arrives. Between them sit
-    // a router build, a TCP bind, a task spawn and a real HTTP round trip — so on a loaded runner
-    // the wall clock ticks and the answer is 299, which is correct behaviour reported as a failure.
+    // a router build, a socket bind, a task spawn and a real request round trip — so on a loaded
+    // runner the wall clock ticks and the answer is 299, which is correct behaviour reported as a
+    // failure.
     //
     // The property worth asserting is that the cell reports ITS OWN cooldown rather than a
     // neighbour's or a default, and a couple of seconds of slack proves that just as well while
@@ -959,7 +961,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         },
         "config": {
             "listen": "127.0.0.1:0",
-            "store": {"module": "memory"},
+            "store": {"module": MIGRATED_STORE_MODULE},
             "providers": {"test-provider": {"api_key": "none"}},
             "models": {
                 "m0": {"provider": "test-provider", "max_concurrent": 4},
@@ -994,7 +996,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         .header("if-match", "\"0\"")
         .body(
             serde_json::json!({
-                "config": {"listen": "127.0.0.1:0", "store": {"module": "memory"}, "providers": {}, "models": {}, "pools": {}},
+                "config": {"listen": "127.0.0.1:0", "store": {"module": MIGRATED_STORE_MODULE}, "providers": {}, "models": {}, "pools": {}},
             })
             .to_string(),
         )
@@ -1007,7 +1009,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         .header("if-match", "\"not-a-version\"")
         .body(
             serde_json::json!({
-                "config": {"listen": "127.0.0.1:0", "store": {"module": "memory"}, "providers": {}, "models": {}, "pools": {}},
+                "config": {"listen": "127.0.0.1:0", "store": {"module": MIGRATED_STORE_MODULE}, "providers": {}, "models": {}, "pools": {}},
             })
             .to_string(),
         )
@@ -1805,14 +1807,13 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
     handle.abort();
 }
 
-/// AF1 (security-visibility): `PUT /api/v1/admin/admin-auth` must REFUSE an EMPTY admin_auth chain.
-/// An empty chain is the anonymous, full-authority OPEN dev posture; letting the live admin API
-/// apply it would swing the door open to the whole network on one call. Before the fix the handler
-/// warned-and-applied (and the dry-run lock-out guard was fooled because an empty chain reported
-/// Full for the caller); now it is a `400` and nothing changes — the open posture is a config.yaml +
-/// restart opt-in only.
+/// `PUT /api/v1/admin/admin-auth` with an EMPTY chain is APPLIED, as 1.5.5 applied it (Q128 core-admin
+/// u19 BLOCK: the refusal was an unsigned customer-visible change; v1.5.5
+/// crates/busbar/src/admin/v1/json/handlers.rs:2108-2113 warned and fell through, and its dry-run read the
+/// open chain as full scope, so the call answered 200 `applied`). The fail-closed refusal waits for the
+/// owner's signature behind `EMPTY_CHAIN_REFUSED_LIVE`. RED before the restore: 400.
 #[tokio::test]
-async fn test_admin_v1_put_auth_refuses_empty_chain() {
+async fn test_admin_v1_put_auth_applies_an_empty_chain_as_1_5_5_did() {
     busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
@@ -1820,7 +1821,6 @@ async fn test_admin_v1_put_auth_refuses_empty_chain() {
     let router = crate::build_router(app);
     let (addr, handle, client) = spin_up(router).await;
 
-    // An operator credential that DOES authenticate today asks to blank the chain: refused 400.
     let r = client
         .put(format!("http://{addr}/api/v1/admin/admin-auth"))
         .header("x-admin-token", "admintok")
@@ -1831,20 +1831,19 @@ async fn test_admin_v1_put_auth_refuses_empty_chain() {
         .unwrap();
     assert_eq!(
         r.status().as_u16(),
-        400,
-        "an empty admin_auth chain (the open dev posture) cannot be applied through the live API"
+        200,
+        "1.5.5 applied an empty admin_auth chain live"
     );
     let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "invalid_request");
+    assert_eq!(body["applied"], true, "{body}");
 
-    // Nothing changed: the operator credential still authenticates.
+    // The open posture is now live: the admin API answers with no credential.
     let r = client
         .get(format!("http://{addr}/api/v1/admin/info"))
-        .header("x-admin-token", "admintok")
         .send()
         .await
         .unwrap();
-    assert_eq!(r.status().as_u16(), 200, "the refused PUT changed nothing");
+    assert_eq!(r.status().as_u16(), 200, "the open posture is in force");
 
     handle.abort();
 }
@@ -1922,7 +1921,7 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
         },
         "config": {
             "listen": "127.0.0.1:0",
-            "store": {"module": "memory"},
+            "store": {"module": MIGRATED_STORE_MODULE},
             "providers": {"test-provider": {"api_key": "none"}},
             "models": {"m0": {"provider": "test-provider", "max_concurrent": 4}},
             "pools": {"p": {"members": [{"model": "m0"}]}}
@@ -3694,7 +3693,7 @@ async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
         .post(format!("http://{addr}/api/v1/admin/config/apply"))
         .header("x-admin-token", "admintok")
         .header("content-type", "application/json")
-        .body(serde_json::json!({"config": {"providers": {}, "models": {}, "store": {"module": "memory"}}}).to_string())
+        .body(serde_json::json!({"config": {"providers": {}, "models": {}, "store": {"module": MIGRATED_STORE_MODULE}}}).to_string())
         .send()
         .await
         .unwrap();
@@ -4303,7 +4302,7 @@ async fn test_admin_v1_config_validate_dry_run() {
     let proposed = serde_json::json!({
         "config": {
             "providers": { "acme": { "api_key": { "env": "ACME_KEY" } } },
-            "store": {"module": "memory"},
+            "store": {"module": MIGRATED_STORE_MODULE},
             "models": {}
         },
         "providers": {}
@@ -4338,7 +4337,7 @@ async fn test_admin_v1_config_validate_dry_run() {
         "config": {
             "secrets": { "acme-vault": { "settings": {} } },
             "providers": {},
-            "store": {"module": "memory"},
+            "store": {"module": MIGRATED_STORE_MODULE},
             "models": {}
         },
         "providers": {}
@@ -4391,7 +4390,7 @@ async fn test_admin_v1_config_validate_accepts_1_6_0_additive_top_level_keys() {
         "config": {
             "oauth_as": null,
             "providers": {},
-            "store": {"module": "memory"},
+            "store": {"module": MIGRATED_STORE_MODULE},
             "models": {}
         },
         "providers": {}
@@ -4418,7 +4417,7 @@ async fn test_admin_v1_config_validate_accepts_1_6_0_additive_top_level_keys() {
     handle.abort();
 }
 
-/// `POST /api/v1/admin/config/apply` accepts EXACTLY the boot config shape (ARCHITECT, FLIP-A2A;
+/// `POST /api/v1/admin/config/apply` accepts EXACTLY the boot config shape (ARCHITECT, PLANE-FLIP;
 /// DECISIONS #52, admin API and config file are ONE schema): a 1.6.0-additive top-level key the boot
 /// pre-pass lifts (`oauth_as:`, as a plane's section is) applies 200, where the plain-derived
 /// `DeployCfg` body refused it "unknown field". THE RED ARM: a key the boot loader does not know is
@@ -4444,7 +4443,7 @@ async fn test_admin_v1_config_apply_accepts_the_boot_shape_and_refuses_an_unknow
     let lifted = apply(serde_json::json!({
         "oauth_as": null,
         "providers": {},
-        "store": {"module": "memory"},
+        "store": {"module": MIGRATED_STORE_MODULE},
         "models": {}
     }))
     .await
@@ -4456,7 +4455,7 @@ async fn test_admin_v1_config_apply_accepts_the_boot_shape_and_refuses_an_unknow
     let unknown = apply(serde_json::json!({
         "not_a_config_key": true,
         "providers": {},
-        "store": {"module": "memory"},
+        "store": {"module": MIGRATED_STORE_MODULE},
         "models": {}
     }))
     .await
@@ -8997,8 +8996,8 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
         .body(
             serde_json::json!({
                 "listen": "127.0.0.1:0",
-                "store": {"module": "memory"},
-                "store": { "module": "memory" },
+                "store": {"module": MIGRATED_STORE_MODULE},
+                "store": { "module": MIGRATED_STORE_MODULE },
                 "per_request_fee": 3
             })
             .to_string(),
@@ -9203,7 +9202,7 @@ async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejec
         .header("content-type", "application/json")
         .body(
             serde_json::json!({
-                "store": { "module": "memory", "settings": { "licenseKey": { "env": var } } }
+                "store": { "module": MIGRATED_STORE_MODULE, "settings": { "licenseKey": { "env": var } } }
             })
             .to_string(),
         )
@@ -10254,7 +10253,7 @@ async fn test_admin_v1_named_map_reads_project_settings_keys_never_values() {
         .identity_provider(
             "corp-oidc",
             serde_json::from_value(serde_json::json!({
-                "module": "oidc",
+                "module": "acme-idp",
                 "settings": {
                     "issuer": "https://idp.example.com",
                     "client_secret": "hunter2-idp"
@@ -10340,7 +10339,7 @@ async fn test_admin_v1_named_map_rejects_an_under_scoped_caller() {
         .export_def(
             "base-metrics",
             serde_json::from_value(serde_json::json!({
-                "module": "prometheus", "settings": {"buffer_seconds": 60}
+                "module": "acme-metrics", "settings": {"buffer_seconds": 60}
             }))
             .unwrap(),
         )
@@ -10494,7 +10493,7 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
         .body(
             serde_json::json!({
                 "store": {
-                    "module": "memory",
+                    "module": MIGRATED_STORE_MODULE,
                     "settings": { "url": "rediss://:hunter2-store@ledger.internal:6379" }
                 }
             })
@@ -10519,7 +10518,7 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
     let json: serde_json::Value = serde_json::from_str(&body).unwrap();
     let store = &json["settings"]["store"];
     assert_eq!(
-        store["module"], "memory",
+        store["module"], MIGRATED_STORE_MODULE,
         "the non-secret shape still introspects: {json}"
     );
     assert_eq!(

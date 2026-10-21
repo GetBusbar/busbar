@@ -2224,6 +2224,8 @@ pub mod tokens;
 pub mod export_axis;
 /// The kind-neutral outbound auth double a test build binds lane credentials on.
 pub mod outbound_auth;
+/// The rate holder and dater a test binary hands in, in place of the root's install record's.
+pub mod rate_holders;
 
 /// THE ISSUED-CREDENTIAL DOUBLE: the kind and shape a test binary's governance issues a key's
 /// second credential under, standing for the linked signed-request verifier's Statement marks (a
@@ -2344,10 +2346,10 @@ pub fn install_test_root(rows: crate::preflight::RootInstall) {
     let _ = crate::preflight::TEST_ROOT.set(rows);
 }
 
-/// Install `open` as this test binary's auth axis opener, read ahead of the stand-in. The first
-/// install stands.
+/// Install `open` as this test binary's auth axis opener, read ahead of the stand-in: the same
+/// hand-in as [`install_root_auth_axis`], which the install record reports. The first install stands.
 pub fn install_test_auth_axis(open: crate::preflight::AuthAxisOpener) {
-    let _ = crate::preflight::TEST_AUTH_AXIS.set(open);
+    install_root_auth_axis(open);
 }
 
 /// THE ROOT'S HOOK NAMES in a test binary of the composition root: `names` is the root's own
@@ -2358,6 +2360,13 @@ pub fn install_test_auth_axis(open: crate::preflight::AuthAxisOpener) {
 /// and lists none. The first hand-in stands.
 pub fn install_root_hook_names(names: &'static [&'static str]) {
     let _ = crate::preflight::TEST_ROOT_HOOK_NAMES.set(names);
+}
+
+/// THE ROOT'S AUTH-AXIS OPENER in a test binary of the composition root, which the install record
+/// ([`crate::preflight::root_rows`]) then reports as a shipped root's install record
+/// (`RootInstall::auth_axis`) does, in place of the stand-in's. The first hand-in stands.
+pub fn install_root_auth_axis(open: crate::preflight::AuthAxisOpener) {
+    let _ = crate::preflight::TEST_ROOT_AUTH_AXIS.set(open);
 }
 
 /// THE CLOSED ADMIN VERB TABLE, as a kind-neutral double: three operations of the admin surface,

@@ -33,12 +33,6 @@
 //! certificate several encodings. A pin computed over a re-encodable document is a pin an upstream can
 //! change without changing the key, so every one of those forms is refused rather than tolerated.
 
-use base64::Engine as _;
-
-/// Standard base64 (padded), matching the rendering of every other digest on this plane.
-const B64: base64::engine::general_purpose::GeneralPurpose =
-    base64::engine::general_purpose::STANDARD;
-
 /// How many `TBSCertificate` members sit between the optional version and the SPKI:
 /// `serialNumber`, `signature`, `issuer`, `validity`, `subject`. RFC 5280 section 4.1.
 const MEMBERS_BEFORE_KEY_INFO: usize = 5;
@@ -182,11 +176,11 @@ pub fn subject_public_key_info(cert_der: &[u8]) -> Result<&[u8], SpkiError> {
 /// THE PIN: `sha256/<base64>` over the peer certificate's whole SubjectPublicKeyInfo.
 ///
 /// The one canonical spelling for the whole tree: the same rendering the a2a card layer's digests use,
-/// and the spelling `openssl x509 -pubkey | openssl pkey -pubin -outform der | openssl dgst -sha256
-/// -binary | base64` produces — so a host-computed pin and a plane-computed pin over the same
-/// certificate are the SAME string, which is the whole reason the walk lives in one place.
+/// rendered by the contract's one renderer (`busbar_contract::transport::trust::key_pin`, the
+/// spelling the connector reports and every written pin is read to): the spelling `openssl x509 -pubkey | openssl pkey -pubin -outform der |
+/// openssl dgst -sha256 -binary | base64` produces after `sha256/`, so a host-computed pin and a
+/// plane-computed pin over the same certificate are the SAME string.
 pub fn pin(cert_der: &[u8]) -> Result<String, SpkiError> {
     let key_info = subject_public_key_info(cert_der)?;
-    let digest = ring::digest::digest(&ring::digest::SHA256, key_info);
-    Ok(format!("sha256/{}", B64.encode(digest.as_ref())))
+    Ok(busbar_contract::transport::trust::key_pin(key_info))
 }

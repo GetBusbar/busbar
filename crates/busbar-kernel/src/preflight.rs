@@ -177,6 +177,14 @@ pub struct RootInstall {
     /// The root's secret axis: every secret plugin it admitted, linked or dropped in, over the
     /// process's one dispatcher (`None`: only a cold-lane plugin resolves).
     pub secret_axis: Option<&'static dyn busbar_contract::secret::SecretAxis>,
+    /// The root's rate holder ([`crate::rate_apply::RateApply`]): what every rate resolution, at
+    /// boot and on each apply/reload, is staged with and raised to. `None` = no holder hears an
+    /// apply (a build with no root ledger).
+    pub rate_apply: Option<&'static dyn crate::rate_apply::RateApply>,
+    /// The root's rate dater ([`crate::rate_apply::RateEpoch`]), beside its holder: what a
+    /// metering accrual is dated by and the dated history the ledger reads price through. `None` =
+    /// every instant dates to the opening entry (`0`) and no era has a history.
+    pub rate_epoch: Option<&'static dyn crate::rate_apply::RateEpoch>,
     /// The export axis: every `kind: export` row, opened on the export kind's ABI by the root over
     /// the process's one dispatcher (ARCHITECT ruling 2026-09-29, the opener seam). `None` = no
     /// export module resolves.
@@ -202,6 +210,13 @@ pub struct RootInstall {
     /// Whether the process's off-crossing latch has tripped (the plugin dispatch is halted).
     /// `None` = it never trips.
     pub dispatch_latched: Option<fn() -> bool>,
+    /// The root's auth-axis opener ([`AuthAxisOpener`]): every build's auth rows, opened on the
+    /// process's one dispatcher. `None` = no auth row answers anything.
+    pub auth_axis: Option<AuthAxisOpener>,
+    /// What the root keeps of each resolved configuration beside the generation built from it
+    /// ([`crate::appbuild::ConfigProjection`]), taken by every build. `None` = a generation keeps
+    /// no projection.
+    pub config_projection: Option<crate::appbuild::ConfigProjection>,
 }
 
 /// THE ROOT'S `plugins.logs` CHECK ([`RootInstall::plugin_logs`]).
@@ -240,6 +255,10 @@ const STAND_IN: RootInstall = RootInstall {
     hook_names: &[],
     store_axis: Some(crate::test_support::store_axis_stand_in),
     secret_axis: Some(&crate::test_support::SecretsStandIn),
+    // A test build has no root ledger: no holder hears an apply and no dater dates an accrual,
+    // unless a test binary hands its own in (`test_support::rate_holders`).
+    rate_apply: None,
+    rate_epoch: None,
     export_axis: Some(&crate::test_support::export_axis::STAND_IN),
     admission: Some(&crate::test_support::AdmissionStandIn),
     durable: Some(&crate::test_support::DurableStandIn),
@@ -247,6 +266,11 @@ const STAND_IN: RootInstall = RootInstall {
     hook_answers: None,
     auth_chain_module: Some(crate::test_support::auth_chain_module_stand_in),
     dispatch_latched: None,
+    // The in-process stand-in (no loader): the build's linked auth rows answered in process, a
+    // dropped-in auth row refused at its open, the double for every outbound style.
+    auth_axis: Some(crate::test_support::outbound_auth::stand_in),
+    // A test build has no root to project a configuration for its door planes.
+    config_projection: None,
 };
 
 /// The composition root's linked store and hook entries (the build's in-process stores and, when
@@ -265,7 +289,7 @@ pub fn install_linked_rows(rows: RootInstall) {
 /// `stores`, the stores this build links.
 pub fn root_rows() -> RootInstall {
     #[cfg(any(test, feature = "test-support"))]
-    let base = match TEST_ROOT.get().copied() {
+    let mut rows = match TEST_ROOT.get().copied() {
         Some(rows) => rows,
         None => {
             let _ = ROOT_ROWS.set(STAND_IN);
@@ -273,12 +297,17 @@ pub fn root_rows() -> RootInstall {
         }
     };
     #[cfg(not(any(test, feature = "test-support")))]
-    let base = ROOT_ROWS.get().copied().unwrap_or_default();
+    let rows = ROOT_ROWS.get().copied().unwrap_or_default();
     #[cfg(any(test, feature = "test-support"))]
-    if let Some(hook_names) = TEST_ROOT_HOOK_NAMES.get().copied() {
-        return RootInstall { hook_names, ..base };
+    {
+        if let Some(hook_names) = TEST_ROOT_HOOK_NAMES.get().copied() {
+            rows.hook_names = hook_names;
+        }
+        if let Some(open) = TEST_ROOT_AUTH_AXIS.get().copied() {
+            rows.auth_axis = Some(open);
+        }
     }
-    base
+    rows
 }
 
 /// A TEST BINARY'S OWN ROOT, over the stand-in: what a test of the composition root's package
@@ -287,11 +316,6 @@ pub fn root_rows() -> RootInstall {
 /// first; the first install stands.
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) static TEST_ROOT: std::sync::OnceLock<RootInstall> = std::sync::OnceLock::new();
-
-/// A TEST BINARY'S OWN AUTH AXIS OPENER, read ahead of the stand-in (the [`TEST_ROOT`] rule); filled by
-/// [`crate::test_support::install_test_auth_axis`].
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) static TEST_AUTH_AXIS: std::sync::OnceLock<AuthAxisOpener> = std::sync::OnceLock::new();
 
 /// The hook names the composition root's OWN test binary hands in, in the root's words (its
 /// generated linked-hook list): a test build's install record reports them in place of the
@@ -329,27 +353,30 @@ pub fn inbound_auth_names(rows: &[LinkedAuth]) -> Vec<&'static str> {
 /// dispatcher nor the rows it opens (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1).
 pub type AuthAxisOpener = fn(Arc<dyn PluginRows>) -> Arc<dyn busbar_contract::auth_calls::AuthAxis>;
 
-static AUTH_AXIS: std::sync::OnceLock<AuthAxisOpener> = std::sync::OnceLock::new();
+/// The auth-axis opener the composition root's OWN test binary hands in
+/// ([`crate::test_support::install_root_auth_axis`]): a test build's install record reports it in
+/// place of the stand-in's, whichever read came first. The first hand-in stands.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) static TEST_ROOT_AUTH_AXIS: std::sync::OnceLock<AuthAxisOpener> =
+    std::sync::OnceLock::new();
 
-/// THE ROOT'S DOOR onto the auth axis's opener (the first install stands).
+// FINAL-REPIN: delete when the pinned door root cells move to test_support::install_root_auth_axis
+/// THE PINNED DOOR ROOT CELLS' NAME for the root test binary's auth-axis hand-in, kept until their
+/// pin moves: it hands `open` in through [`crate::test_support::install_root_auth_axis`], so the
+/// install record reports it as it reports that hand-in. Never in a shipped build (`test-support`).
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
 pub fn install_auth_axis(open: AuthAxisOpener) {
-    let _ = AUTH_AXIS.set(open);
+    crate::test_support::install_root_auth_axis(open);
 }
 
-/// This build's auth axis over `registry`; `None` (no opener installed, no stand-in): no auth row
-/// answers anything. A test build has no root: the loader's test stand-in opens the build's rows on a
-/// dispatcher of its own.
+/// This build's auth axis over `registry`, through the opener on the root's install record
+/// ([`RootInstall::auth_axis`]); `None` (no opener installed): no auth row answers anything. A
+/// test build has no root: the in-process stand-in answers its linked rows.
 pub(crate) fn auth_axis(
     registry: Arc<dyn PluginRows>,
 ) -> Option<Arc<dyn busbar_contract::auth_calls::AuthAxis>> {
-    #[cfg(any(test, feature = "test-support"))]
-    {
-        if let Some(open) = TEST_AUTH_AXIS.get() {
-            return Some(open(registry));
-        }
-        let _ = AUTH_AXIS.set(crate::test_support::outbound_auth::stand_in);
-    }
-    AUTH_AXIS.get().map(|open| open(registry))
+    root_rows().auth_axis.map(|open| open(registry))
 }
 
 /// This build's auth axis over its LINKED rows alone (no plugins directory): what `--validate`
@@ -1378,3 +1405,7 @@ pub fn plugin_fetch_status_refusal(url: &str, code: u32) -> Option<String> {
 #[cfg(test)]
 #[path = "tests/opened_secrets_tests.rs"]
 mod opened_secrets_tests;
+
+#[cfg(test)]
+#[path = "tests/root_install_seams_tests.rs"]
+mod root_install_seams_tests;
