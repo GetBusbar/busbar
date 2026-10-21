@@ -1417,13 +1417,6 @@ fn priced_posting(
     // history resolves which entry was in force then; a later apply is not in this view at all, so
     // there is no arm here that could read one.
     let priced = busbar_kernel_ledger::cost::price_fail_closed(&history.view(), &posting);
-    // THE CACHE IS WRITTEN AND IS NEVER READ BACK. It rides the posting so a reader has a figure to
-    // compare a re-derivation against and so a totals read need not re-price a day of postings on
-    // every request — but the figure this function RETURNS is the lookup's, taken off `priced`
-    // directly. There is no arm below that consults `posting.cached`, which is the invariant stated
-    // as code rather than as a comment: corrupt the cache and this expression answers exactly what
-    // the quantities and the history say.
-    posting.cached = priced.as_ref().ok().map(|p| p.as_cache(history.seq()));
     (posting, priced)
 }
 

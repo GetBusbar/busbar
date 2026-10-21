@@ -239,6 +239,19 @@ pub struct Durability {
     /// record of every seal; the audit chain's head history (#82(d)) is kept forever on its own.
     /// The checkpoints read serves this ring.
     pub checkpoints: Vec<CheckpointHead>,
+    /// THE NEWEST SEAL THIS NODE KEPT, WITH ITS BALANCES: the one sealed snapshot the A1 bound
+    /// allows. The book's retirement measures against it (row 159: a window past 1.5.5's 31-day
+    /// horizon goes only once a kept seal holds it at the book's own figures,
+    /// `Ledger::retirable`), so it is replaced by every seal and never accumulates. `None` until
+    /// this process has sealed once: a restarted node retires nothing before its first seal.
+    last_sealed: Option<Checkpoint>,
+    /// THE WINDOWS EACH SEAL OF THIS PROCESS LEFT OUT AND THE BOOK THEN LET GO, by the sequence
+    /// number of the seal that left them out. A held checkpoint is re-derived from the whole chain,
+    /// which still carries every retired window; the book a seal was taken from did not, so the
+    /// walk drops every window retired at or before that seal ([`Durability::retired_through`]).
+    /// One entry per seal that retired something, holding window instants only, never balances.
+    /// In memory only, as the book's retirement is: a restarted node rebuilds every window.
+    retired_at: std::collections::BTreeMap<u64, std::collections::BTreeSet<WindowStart>>,
     /// THE NEWEST SEALED AUDIT RECORDS, oldest first, at most [`AUDIT_RING`]: a cache over the
     /// journal, which keeps every record this chain ever sealed. Rebuilt from the journal at boot.
     pub audit_records: Vec<AuditRecord>,
@@ -296,9 +309,9 @@ pub struct Durability {
     /// and answers the same set either side of a restart.
     ///
     /// THE BOUND IS THE BOOK'S: a line is held for exactly as long as the book holds its window.
-    /// The book retires no window today — `Book::retain_from` has no production caller, and the
-    /// boot rebuilds every window the chain carries — so neither does this; the lines grow with the
-    /// counted units this node's chain holds, as the chain itself does.
+    /// Each seal retires the windows the last kept checkpoint holds once 1.5.5's thirty-one-day
+    /// horizon has passed them, and their lines with them (`seal.rs`); the boot rebuilds every
+    /// window the chain carries, and the first seals after it bound them again.
     counted: Vec<CountedLine>,
     /// THE BALANCES A FIGURE MOVED WITH NO COUNTS BEHIND IT: a settlement whose writer knew no
     /// counts and posted a figure anyway, or a record of the era that carried figures. Such a
@@ -541,6 +554,7 @@ impl Durability {
             .next_checkpoint_seq
             .max(checkpoint.checkpoint_seq.saturating_add(1));
         self.checkpoints.push(checkpoint.head());
+        self.last_sealed = Some(checkpoint.clone());
         // The ring: the oldest seal goes once the latest CHECKPOINT_RING are held.
         let over = self.checkpoints.len().saturating_sub(CHECKPOINT_RING);
         self.checkpoints.drain(..over);
@@ -549,12 +563,40 @@ impl Durability {
 
     /// HOW MANY SEALED BALANCES THIS NODE HOLDS IN MEMORY beside its live book: every balance of
     /// every checkpoint it keeps. The measure of the bound the Q128 kernel-ledger ruling sets (A1):
-    /// one live book, the unsealed deltas, and at most one sealed snapshot in flight.
-    /// A [`CheckpointHead`] carries no balances, so the ring holds none: the only sealed snapshot
-    /// is the one a seal or a read has in flight.
+    /// one live book, the unsealed deltas, and at most one sealed snapshot. A [`CheckpointHead`]
+    /// carries no balances, so the ring holds none; the one sealed snapshot is the newest kept seal
+    /// the retirement measures against.
     #[cfg(test)]
     pub(crate) fn sealed_balances_held(&self) -> usize {
-        0
+        self.last_sealed
+            .as_ref()
+            .map_or(0, |sealed| sealed.totals.len())
+    }
+
+    /// Note that the seal `checkpoint_seq` left `windows` out and the book let them go.
+    pub(super) fn note_retired(
+        &mut self,
+        checkpoint_seq: u64,
+        windows: &std::collections::BTreeSet<WindowStart>,
+    ) {
+        if !windows.is_empty() {
+            self.retired_at
+                .entry(checkpoint_seq)
+                .or_default()
+                .extend(windows.iter().copied());
+        }
+    }
+
+    /// Every window this process retired at or before the seal `checkpoint_seq`: the windows the
+    /// book that seal was taken from no longer held, though the chain still carries them.
+    pub(super) fn retired_through(
+        &self,
+        checkpoint_seq: u64,
+    ) -> std::collections::BTreeSet<WindowStart> {
+        self.retired_at
+            .range(..=checkpoint_seq)
+            .flat_map(|(_, windows)| windows.iter().copied())
+            .collect()
     }
 
     /// The newest migration marker on the chain, if this deployment has migrated.
@@ -1531,8 +1573,9 @@ pub struct CountedLine {
 impl CountedLine {
     /// The line as the ledger's booked line, written by `node`. `None` for a line no booked line
     /// can carry: a class nobody declared, or one this image's vocabulary does not hold. The tier
-    /// is the standard one and the origin a client, which is what every counted posting is priced
-    /// at when it settles ([`price_counts`]), so the read prices the same quantities the same way.
+    /// is the standard one and the fee count the line's own, which is what every counted posting is
+    /// priced at when it settles ([`price_counts`]), so the read prices the same quantities the
+    /// same way.
     #[must_use]
     pub fn booked(&self, node: u64) -> Option<busbar_kernel_ledger::Posting> {
         if self.undeclared {
@@ -1559,7 +1602,6 @@ impl CountedLine {
             fee_count: self.counts.fee_count,
             tier_bp: busbar_kernel_ledger::cost::STANDARD_TIER_BP,
             arrived_ms: self.arrived_ms,
-            origin: busbar_kernel_ledger::PostingOrigin::Client,
         })
     }
 }
@@ -2796,6 +2838,8 @@ fn build_inner(
             busbar_kernel::door::node()
         }),
         checkpoints: Vec::new(),
+        last_sealed: None,
+        retired_at: std::collections::BTreeMap::new(),
         audit_records: Vec::new(),
         audit_findings: Vec::new(),
         audit_signed_from: None,
