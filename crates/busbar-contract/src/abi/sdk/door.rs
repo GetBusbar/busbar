@@ -630,14 +630,25 @@ pub const fn door<T: KindOps>(
 
 /// A door the contract's own door macro built ([`plugin_door!`](crate::plugin_door), and every
 /// kind macro over it), as the `MACRO_DOOR` it expands beside `door` states it. Its one field is
-/// private and its constructor is the macro's plumbing, so safe code holds one only for a door the
-/// contract laid out, never for an arbitrary `fn() -> *const Door`:
+/// private and its one constructor is `unsafe`, called only in the macro's expansion, so safe code
+/// holds one only for a door the contract laid out, never for an arbitrary `fn() -> *const Door`.
+///
+/// A literal is refused (the field is private):
 ///
 /// ```compile_fail,E0451
 /// extern "C" fn forged() -> *const busbar_contract::abi::mechanism::door::Door {
 ///     core::ptr::null()
 /// }
 /// let _ = busbar_contract::abi::sdk::door::MacroDoor { door: forged };
+/// ```
+///
+/// And safe code cannot call the constructor (it is `unsafe`):
+///
+/// ```compile_fail,E0133
+/// extern "C" fn forged() -> *const busbar_contract::abi::mechanism::door::Door {
+///     core::ptr::null()
+/// }
+/// let _ = busbar_contract::abi::sdk::door::MacroDoor::__from_door_macro(forged);
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct MacroDoor {
@@ -646,9 +657,15 @@ pub struct MacroDoor {
 
 impl MacroDoor {
     /// The door macro's plumbing: the one constructor, named only in its expansion.
+    ///
+    /// # Safety
+    ///
+    /// `door` answers a pointer to a `'static`, fully initialised `Door` the SDK built (the `const`
+    /// items [`plugin_door!`](crate::plugin_door) lays out), whose Statement lists point at their
+    /// stated counts of live `'static` entries.
     #[doc(hidden)]
     #[must_use]
-    pub const fn __from_door_macro(door: DoorFn) -> Self {
+    pub const unsafe fn __from_door_macro(door: DoorFn) -> Self {
         Self { door }
     }
 
@@ -849,7 +866,9 @@ macro_rules! plugin_door {
         /// support (`abi::sdk::test_support::DoorView`) reads a door through.
         #[allow(dead_code)]
         pub const MACRO_DOOR: $crate::abi::sdk::door::MacroDoor =
-            $crate::abi::sdk::door::MacroDoor::__from_door_macro(door);
+            // SAFETY: `door` is the function this macro expanded just above: it answers the
+            // `'static`, fully initialised `Door` the SDK laid out as `const` items.
+            unsafe { $crate::abi::sdk::door::MacroDoor::__from_door_macro(door) };
     };
 }
 

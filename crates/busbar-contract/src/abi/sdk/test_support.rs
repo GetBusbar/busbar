@@ -339,6 +339,11 @@ pub struct DoorView {
     statement: &'static Statement,
 }
 
+// THE ONE WAY IN, pinned at compile time on every build of this module (this crate's own tests
+// included, with or without the feature): `DoorView::of` takes a `MacroDoor` and nothing else. A
+// change of its parameter to any door function breaks this line before any test runs.
+const _: fn(MacroDoor) -> DoorView = DoorView::of;
+
 impl DoorView {
     /// The door the macro built.
     ///

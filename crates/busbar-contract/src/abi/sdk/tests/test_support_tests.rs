@@ -318,9 +318,10 @@ extern "C" fn plane_door() -> *const crate::abi::mechanism::door::Door {
 fn a_plane_tails_texts_words_and_rows_read_back() {
     // The contract states no plane door macro, so this door is laid out as `plugin_door!` lays one
     // and handed in through the macro's own plumbing: only this crate's test names it.
-    let v = DoorView::of(crate::abi::sdk::door::MacroDoor::__from_door_macro(
-        plane_door,
-    ));
+    // SAFETY: `plane_door` answers `PLANE_DOOR`, a `'static` `Door` laid out by the SDK's own
+    // `door`, `stamp` and `absent_table` const fns, over this file's `'static` Statement and tail.
+    let door = unsafe { crate::abi::sdk::door::MacroDoor::__from_door_macro(plane_door) };
+    let v = DoorView::of(door);
     assert_eq!(v.kind(), Some(KindCode::Plane));
     assert_eq!(v.plane_text(PlaneText::Scope), "probe-scope");
     assert_eq!(v.plane_text(PlaneText::AuditKind), "probe_audit");
@@ -1047,4 +1048,61 @@ fn a_double_reading_a_write_region_or_writing_through_no_region_answers_fault() 
     let get = host.slots_for_tests().0.records_get.expect("served");
     assert_eq!(served_by(get, ptr::from_ref(&input).cast()), Outcome::Fault);
     assert_eq!(bytes, [9; 4], "nothing was written");
+}
+
+// ── no table and no `ServiceFn` reaches safe code ───────────────────────────────────────────────
+
+/// Every `pub fn` of `src` (outside a `#[cfg(test)]` item) whose signature names a host table or a
+/// raw service function: each one is a way for safe code to reach a `ServiceFn`.
+fn table_leaks(src: &str) -> Vec<String> {
+    const TABLE_TYPES: [&str; 5] = [
+        "ServiceFn",
+        "HostSlots",
+        "IoSlots",
+        "ConnectorSlots",
+        "HostTables",
+    ];
+    let lines: Vec<&str> = src.lines().map(str::trim).collect();
+    let mut out = Vec::new();
+    for (n, line) in lines.iter().enumerate() {
+        if !line.starts_with("pub fn ") {
+            continue;
+        }
+        let gated = lines[..n]
+            .iter()
+            .rev()
+            .take_while(|l| l.starts_with("#[") || l.starts_with("///"))
+            .any(|l| *l == "#[cfg(test)]");
+        if gated {
+            continue;
+        }
+        let signature: String = lines[n..]
+            .iter()
+            .take_while(|l| !l.ends_with('{'))
+            .chain(lines[n..].iter().find(|l| l.ends_with('{')))
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if TABLE_TYPES.iter().any(|t| signature.contains(t)) {
+            out.push(format!("line {}: {signature}", n + 1));
+        }
+    }
+    out
+}
+
+#[test]
+fn the_fake_host_hands_safe_code_no_table_and_no_service_fn() {
+    let found = table_leaks(include_str!("../test_support/fake.rs"));
+    assert!(found.is_empty(), "{found:?}");
+    // RED: the accessors this module once had are each found.
+    for planted in [
+        "pub fn services(&self) -> &HostSlots {",
+        "pub fn tables(&self) -> *const HostTables {",
+        "pub fn lend<R>(&self, f: impl FnOnce(&HostTables) -> R) -> R {",
+        "pub fn raw(\n    &self,\n) -> Option<ServiceFn> {",
+    ] {
+        assert_eq!(table_leaks(planted).len(), 1, "{planted}");
+    }
+    // A crate-private accessor behind `#[cfg(test)]` is not safe code's to call.
+    assert!(table_leaks("#[cfg(test)]\npub fn slots(&self) -> &HostSlots {").is_empty());
 }
