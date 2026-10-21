@@ -241,9 +241,9 @@ pub fn builtin_plane_decls() -> &'static [&'static PlaneDecl] {
 /// back when the MCP plane was an automatic built-in there (see [`BUILTIN_PLANE_DECLS`]). With no
 /// plane auto-registered under `cfg(test)` any more, [`plane_decl_for_config_section`] finds no
 /// `tools:`-owning plane and this is never actually reached — kept only so the (now dead-at-runtime)
-/// call chain in `test_support::TestApp::build` still compiles; a test that wants the real MCP
-/// runtime seeded registers the plane itself (`busbar_mcp::testkit::install_test_seams()`) and drives
-/// its own fixture, exactly as an external `test-support` consumer already did.
+/// call chain in `test_support::TestApp::build` still compiles; a test that wants a plane's real
+/// runtime seeded registers that plane itself and installs its runtime
+/// (`TestApp::install_plane_runtime`), exactly as an external `test-support` consumer already did.
 #[cfg(test)]
 pub fn default_section_plane_test_runtime() -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
     std::sync::Arc::new(())

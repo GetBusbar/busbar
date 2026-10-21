@@ -377,3 +377,24 @@ fn the_authority_ends_where_the_dialling_stack_ends_it() {
         );
     }
 }
+
+/// The address value types a plugin names through the contract ARE `std::net`'s: a plugin that
+/// switches its `std::net::SocketAddr` to `busbar_contract::net::SocketAddr` reads the same value.
+#[test]
+fn the_contract_address_values_are_the_std_types() {
+    let v4: Result<super::Ipv4Addr, super::AddrParseError> = "127.0.0.1".parse();
+    assert_eq!(v4, Ok(std::net::Ipv4Addr::LOCALHOST));
+    let sock: Result<super::SocketAddr, super::AddrParseError> = "[::1]:443".parse();
+    assert_eq!(
+        sock,
+        Ok(std::net::SocketAddr::from((
+            std::net::Ipv6Addr::LOCALHOST,
+            443
+        )))
+    );
+    assert!("example.com:443".parse::<super::SocketAddr>().is_err());
+    let v6: super::SocketAddrV6 = super::SocketAddrV6::new(super::Ipv6Addr::LOCALHOST, 1, 0, 0);
+    let ip: super::IpAddr = (*v6.ip()).into();
+    assert!(ip.is_loopback());
+    let _: Option<super::SocketAddrV4> = None;
+}
