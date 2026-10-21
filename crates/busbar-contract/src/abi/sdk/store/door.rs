@@ -30,10 +30,9 @@
 //! fixed buffer; a store's failure text is moved into the ring, never copied; and the ring is
 //! sized once, at `open`.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use serde::de::DeserializeOwned;
@@ -146,7 +145,7 @@ impl Drop for Leased {
     fn drop(&mut self) {
         if self.secret {
             for b in &mut self.bytes {
-                b.iter_mut().for_each(|x| *x = 0);
+                zeroize::Zeroize::zeroize(&mut **b);
             }
         }
     }
@@ -222,8 +221,9 @@ pub struct Served<B> {
     store: B,
     /// The host tables `open` was handed: each op's connector.
     host: Option<Host>,
-    leases: Mutex<HashMap<u64, Leased>>,
-    next_lease: AtomicU64,
+    /// The answers it handed the host, each under its lease until `release`: the SDK's one lease
+    /// table (THE DESIGN, KIND-SHARE: "the one lease and error helper").
+    leases: crate::abi::sdk::life::Leases,
     texts: Mutex<VecDeque<Text>>,
     /// The read buffers this instance's wire ops reuse.
     reads: super::wire::ReadBufs,
@@ -240,8 +240,7 @@ impl<B: StoreSlots> Served<B> {
         Self {
             store,
             host,
-            leases: Mutex::new(HashMap::new()),
-            next_lease: AtomicU64::new(0),
+            leases: crate::abi::sdk::life::Leases::default(),
             // Sized here, once: keeping a text never grows the ring.
             texts: Mutex::new(VecDeque::with_capacity(TEXT_RING)),
             reads: super::wire::ReadBufs::default(),
@@ -255,7 +254,7 @@ impl<B: StoreSlots> Served<B> {
 
     /// How many leases are held (for tests: a released lease is gone).
     pub fn leases_held(&self) -> usize {
-        self.leases.lock().unwrap_or_else(|p| p.into_inner()).len()
+        self.leases.held()
     }
 
     /// Keep `text` alive in the ring (a fixed text needs no keeping), cut to [`MAX_TEXT`] on a
@@ -288,12 +287,7 @@ impl<B: StoreSlots> Served<B> {
     }
 
     fn lease(&self, held: Leased) -> u64 {
-        let id = self.next_lease.fetch_add(1, Ordering::Relaxed) + 1;
-        self.leases
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(id, held);
-        id
+        self.leases.keep_new(held)
     }
 }
 
@@ -907,18 +901,7 @@ slot!(
     /// `release`: the host is done with a lease. READY when the door held it; REFUSED when it did
     /// not (never handed out, or already released): a host bug, named rather than accepted (THE
     /// DESIGN, the one kind-neutral SDK lifecycle: "releasing an unknown lease is REFUSED").
-    Release(ReleaseIn, OutHead) |s, i, o, cx| {
-        let held = s
-            .leases
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&i.lease);
-        if held.is_some() {
-            Outcome::Ready
-        } else {
-            Outcome::Refused
-        }
-    }
+    Release(ReleaseIn, OutHead) |s, i, o, cx| { s.leases.release(i.lease) }
 );
 slot!(
     /// `close`: the SDK drops the instance when this answers READY.
