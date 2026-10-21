@@ -4,7 +4,7 @@
 //! **THE `traces` STREAM TO A COLLECTOR, AND WHICH DOORS MAY CARRY IT** — K9a S7 (BUSBAR-1.6.0
 //! 18b(d)) and K9e-2 end to end through the shipped binary: the kernel's traces producer turns
 //! closed request-path spans into `traces` records, and the OTLP sink (`module: otlp`,
-//! GetBusbar/busbar-export-otlp at the root's pinned rev), LINKED on the export kind's memory ABI,
+//! the sink's own repo at the root's pinned rev), LINKED on the export kind's memory ABI,
 //! posts them through the host's one connector to a collector as OTLP/HTTP protobuf requests. Every
 //! request body must be an OTLP `ExportTraceServiceRequest` by the OpenTelemetry project's own
 //! generated types, re-encoding to the very same bytes.
@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 
 include!(concat!(env!("OUT_DIR"), "/linked_transports.rs"));
 
-/// The dropped-in door's library: the export-otlp repo's cdylib crate, snake-cased.
+/// The dropped-in door's library: the sink repo's cdylib crate, snake-cased.
 const CDYLIB: &str = "busbar_export_otlp_plugin";
 
 /// The name the dropped-in tarball's manifest states.
@@ -135,7 +135,7 @@ fn a_closed_span_reaches_an_otlp_collector_and_a_third_party_collector_is_refuse
     std::fs::create_dir_all(dir.join("plugins")).unwrap();
     let tarball = common::plugins::pack_stated("export", DROPPED, &lib, "acme");
     std::fs::write(dir.join("plugins").join("otlp.tar.gz"), tarball).unwrap();
-    // THE WIRE UNDER THE DOOR. A build that does not link the tcp row boots only with it dropped
+    // THE WIRE UNDER THE DOOR. A build that does not link the wire's row boots only with it dropped
     // in; one that links it would refuse the tarball as a second row on the same key.
     if !LINKED_TRANSPORTS.iter().any(|w| w.key == WIRE) {
         let (lib, _) = common::plugins::transport_cdylib_under(&[WIRE]).unwrap_or_else(|| {
