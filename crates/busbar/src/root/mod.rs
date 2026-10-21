@@ -37,8 +37,6 @@
 //! - the node — the root's half of a unit a plane's arrival hands it: the kernel, the in-flight
 //!   table, the one Route seam its leg is driven through and the book its money settles onto. The
 //!   unit itself is the plane's; the module is the one the manifest's `root-units` table names.
-//! - [`gauntlet_install`] and [`gauntlet_kernel`] — the kernel-loop runner every plane's gauntlet
-//!   rides (DECISIONS #28), and its install under each linked plane's capability key.
 //! - [`auth_bindings`], [`ledger_identity`], [`migration`], [`otlp`] — the authenticate unit's three
 //!   handed-in seams, the reconciliation identity against the previous release's rows, the first
 //!   boot after an upgrade, and the span exporter.
@@ -76,8 +74,6 @@ pub mod doors;
 pub mod durability;
 pub mod egress_ports;
 pub mod exports;
-pub mod gauntlet_install;
-pub mod gauntlet_kernel;
 #[cfg(any(test, feature = "test-harness"))]
 pub mod harness;
 pub mod hooks;
@@ -107,13 +103,6 @@ pub mod transports;
 #[cfg(feature = "root-admin")]
 pub mod units_admin;
 pub mod userinfo;
-
-// The per-call metering shadow on the plane-neutral kernel bridge: a plane whose one flat charge
-// fires inside `drive` rides `gauntlet_kernel::run_gauntlet_via_kernel` byte- and money-identically
-// to the substrate gauntlet.
-#[cfg(test)]
-#[path = "tests/percall_meter_shadow.rs"]
-mod percall_meter_shadow;
 
 /// THE PROCESS-WIDE ADMIN SURFACES' ONE TEST LOCK: the admin route table and the operator audit
 /// ring are the process's one each, so a test that publishes a plane's admin routes, or that

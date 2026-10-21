@@ -413,7 +413,7 @@ impl FramerDoor for Dispatched {
     }
 
     fn cross_on(&self, side: &dyn Side, resume: bool, call: Call<'_>) -> Crossed {
-        let (p, t) = (&self.plugin, side.ticket());
+        let (p, t) = (&self.live.plugin, side.ticket());
         match call {
             Call::Begin(i, o) => go_inline(p, t, resume, slot::BEGIN, i, o),
             Call::Ingest(i, o) => go_inline(p, t, resume, slot::INGEST, i, o),

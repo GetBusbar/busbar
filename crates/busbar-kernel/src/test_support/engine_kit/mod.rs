@@ -34,7 +34,7 @@ use crate::governance::signing::TokenSigner;
 use crate::governance::{DerivedUsage, NewKeySpec};
 use crate::plane::PlaneAdmission;
 use crate::plane_driver::slots::PlaneSlots;
-use crate::plane_host::{EngineHost, LiveHostFactory};
+use crate::plane_driver::{EngineHost, LiveHostFactory};
 use crate::store::BreakerState;
 use crate::trust::validate::GovResolve;
 use busbar_contract::records::{AuditRecord, MeteringRow, RecordStore, VirtualKey};

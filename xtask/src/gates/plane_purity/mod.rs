@@ -16,7 +16,7 @@
 //! | [`ROW_TYPE`] | a plane record type, or any plane-/dialect-prefixed type name |
 //! | [`ROW_KEY`] | a concrete plane key as a bare token |
 //! | [`ROW_DIALECT`] | one of the six dialect names as a bare token |
-//! | [`ROW_BACKWARDS`] | a plane crate reaching BACK into `busbar_core::` implementation |
+//! | [`ROW_BACKWARDS`] | a plane crate reaching BACK past the contract — the kernel, its workflow crates, any crate [`crate::gates::kind_isolation::plane_wall_crates`] derives |
 //! | [`ROW_FREEZE`] | core still naming a concrete LLM-family IR type (the G6 freeze witness) |
 //! | [`ROW_SEGMENT_DEBT`] | a dialect written as an identifier segment (`PROTO_GEMINI`) that `qa/segment-debt.toml` does not list, or a listed row that matches no live hit |
 //!
@@ -39,6 +39,8 @@
 
 pub mod claims;
 pub mod freeze;
+#[cfg(test)]
+mod q128_tests;
 pub mod scanner;
 pub mod segment_debt;
 pub mod strict;
@@ -54,7 +56,6 @@ use crate::gates::{
     prove_green, prove_red, prove_rows_green, Case, Expect, Gate, LegacyRun, Report,
 };
 use crate::ledger::{Row, Verdict};
-use crate::planes;
 
 use scanner::{Hit, Mode};
 use vocab::Vocab;
@@ -76,9 +77,21 @@ pub fn strict_category_row(category: &str) -> String {
     format!("plane-purity-strict:category:{category}")
 }
 
-/// The row id for one plane crate's test-reach, e.g. `plane-purity-strict:test-reach:llm`.
-pub fn strict_reach_row(key: &str) -> String {
-    format!("plane-purity-strict:test-reach:{key}")
+/// THE TEST-REACH ROW: every plane crate's own test code reaching past the contract, each against
+/// its `[test-reach]` ceiling. ONE row over the DERIVED plane population
+/// ([`crate::gates::kind_isolation::plane_kind_src_roots`]), because the owed set is static and the
+/// population is not: it held one row per legacy-engine key (`planes::PLANE_KEYS`, today `llm`
+/// alone), so `busbar-plane-llm` and every pinned plane had no row at all. The detail names every
+/// crate, its key and its count.
+pub const ROW_STRICT_REACH: &str = "plane-purity-strict:test-reach";
+
+/// A plane crate's `[test-reach]` key: its directory with the `busbar-` prefix off
+/// (`crates/busbar-llm/src` -> `llm`, `crates/busbar-plane-mcp/src` -> `plane-mcp`), so the legacy
+/// engine keeps the key it always had.
+pub fn reach_key(root: &str) -> String {
+    let dir = root.strip_suffix("/src").unwrap_or(root);
+    let dir = dir.rsplit('/').next().unwrap_or(dir);
+    dir.strip_prefix("busbar-").unwrap_or(dir).to_string()
 }
 
 /// Where a caller OUTSIDE this process asks for the hit artefact to be written.
@@ -90,16 +103,93 @@ pub fn strict_reach_row(key: &str) -> String {
 /// from the same derivation, which is what keeps them from drifting if one appears.
 pub const HITS_OUT_ENV: &str = "PLANE_PURITY_HITS_OUT";
 
-/// The core walk's own denominator floor. The two big walks carry theirs in [`ROW_DENOMINATOR`]
-/// instead of in the [`WalkSpec`], so the floor is a ROW a selftest can plant against rather than
-/// an error the run reports once and the ledger never names.
-const CORE_FLOOR: usize = 1;
+/// THE NEUTRAL WALK'S FLOOR: the `.rs` files the derived neutral population held on dev, measured
+/// (1134 on f49c8bf98c; Law 8 shape 2: "a denominator with no floor is a denominator that can be reduced to one without
+/// anybody noticing"; Law 9: a census floor pins at today's measured value). The freeze walk reads
+/// the same population and is held to the same floor. It was `== 0` here and `1` on the freeze
+/// walk, so a neutral scan that fell to one file passed every ban. Raised as the neutral crates
+/// grow; lowered only in a reviewed diff that names the files that legitimately left.
+///
+/// RE-PINNED 1134 -> 1109 at the merge of dev 6d6bd2b0b0, today's measured value (Law 9). The walk
+/// did not shrink; the population did, by deletion on dev (34 files gone, 9 added; renames net to
+/// zero), each in a reviewed commit:
+/// * `busbar-contract/src/abi/hot/{host,mod,pod}.rs`, `abi/hot/tests/{host,pod}_tests.rs` —
+///   299e7688ad (abi/hot deleted, status row 84);
+/// * `busbar-core-admin/src/{posture.rs,tests/posture_tests.rs}` — cf163d3ef3 (#77(9)), and
+///   `admin_codec/meta.rs` — a70a10b242 (admin surface on the claim table);
+/// * `busbar-kernel/src/plane/approvals.rs`, `plane/tests/approvals_tests.rs` — 99f0713a4a;
+/// * `busbar-kernel/src/plane_host/{creds,dispatch,egress,egress_tests,identity_admit,journal,
+///   pipe,pipe_tests,session_meter,slots_through,vtable}.rs` and `plane_host/tests/{creds,dispatch,
+///   identity_admit,journal,session_meter}_tests.rs` — e6fc4808fb, e71b06180e, f63d116d01,
+///   2156f67b9a, 299e7688ad (status rows 82, 84);
+/// * `busbar-kernel/src/trust/{declared,verify}.rs` and `trust/tests/{declared,genericity,
+///   lifecycle,verify_edge,verify}_tests.rs`, `trust/tests/reverify.rs` — 941d19f67f (Q128 p8).
+///
+/// Added: `contract/src/abi/sdk/{hmac.rs,tests/hmac_tests.rs}`, `core-admin/src/v1/json/tests/
+/// named_map_tests.rs`, `kernel-wal/src/tests/quarantine_numbering.rs`, `kernel/src/auth/{admit.rs,
+/// tests/admit_tests.rs}`, `kernel/src/plane_driver/slots.rs`, `kernel/src/tests/clock_tests.rs`,
+/// `kernel/src/tests/members/wal/store_debt_tests.rs`. 1134 - 34 + 9 = 1109.
+///
+/// HELD at 1109: the walk's measure of this branch merged with dev ed49b64120 (ModernCI gates on
+/// 8729b322bf/b68455c852, `neutral_files=1109`). A floor of 1110 over that tree reds every row the
+/// floor guards; the floor pins at today's measure (Law 9) and rises with it.
+///
+/// RE-PINNED 1109 -> 1108 at the merge of dev 13c06298f5, today's measured value (ModernCI gates on
+/// this branch merged with dev e76e736ce8: `neutral_files=1108`; `git ls-tree` of the neutral
+/// kinds' `src/*.rs` counts 1109 on dev b9c4eda7dc and 1108 on 13c06298f5). The walk did not
+/// shrink; the population did, by deletion on dev (3 files gone, 2 added since b9c4eda7dc), each
+/// in a reviewed commit:
+/// * `busbar-contract/src/transport/driver.rs` — 0b74624007 (the second inbound seam deleted,
+///   Q128 contract, #1201);
+/// * `busbar-kernel/src/failover/{mod.rs,tests/failover_tests.rs}` — efa6e2478d (D2, the kernel's
+///   failover module deleted with its last rider, status row 82, #1299).
+///
+/// Added: `kernel/src/test_support/operator_double.rs` (3c6eca3201, #1327) and
+/// `kernel/src/test_support/tests/ranking_double_tests.rs` (9fa1dacdf8, #1237).
+/// 1109 - 3 + 2 = 1108.
+pub const NEUTRAL_FLOOR: usize = 1108;
+
+/// THE PLANE WALK'S FLOOR: the `.rs` files the plane population (in-tree and pinned planes) held on
+/// dev, measured (606 on f49c8bf98c, the RED branch's `plane_files`). Same rule as
+/// [`NEUTRAL_FLOOR`].
+///
+/// RE-PINNED 606 -> 488 at the merge of dev 1ed9f8995d (#1161), today's measured value (Law 9; lowered,
+/// never raised). The walk did not shrink; the population did, by deletion of the retired engine
+/// crate in a reviewed commit (#1161). 606 was 247 (`busbar-plane-llm`) + 85 (`busbar-plane-mcp`) +
+/// 22 (`busbar-plane-decisions`) + 83 (`busbar-plane-a2a`) + 50 (`busbar-plane-streaming`) + 119
+/// (`busbar-llm`); 488 is the same five planes with `busbar-plane-llm` at 248 (+1,
+/// `exchange/catalog.rs` added). The 119 files that legitimately left, all `.rs` under `crates/busbar-llm/src`:
+/// * `busbar-llm/src/{arrival.rs, lib.rs, native_ingress.rs, openai_responses_webhook.rs}`;
+/// * `busbar-llm/src/engine/attempt/{assemble.rs, buffered.rs, classify.rs, mod.rs, respond.rs, send.rs}`;
+/// * `busbar-llm/src/engine/attempt/tests/{assemble.rs, failed_generation.rs}`;
+/// * `busbar-llm/src/engine/{build_runtime.rs, credential.rs, egress.rs, health.rs, hooks.rs, lazy_body.rs, mod.rs, pipeline.rs, response_body.rs, select.rs, tables.rs, usage.rs, wire.rs}`;
+/// * `busbar-llm/src/engine/engine_tests/{crossproto_delivery_billing_tests.rs, future_size_probe.rs, inject_include_usage_tests.rs, nonstream_drop_billing_tests.rs, send_envelope_tests.rs, stream_deadline_tests.rs}`;
+/// * `busbar-llm/src/engine/exhaustion/{fallback.rs, least_bad.rs, mod.rs, queue.rs}`;
+/// * `busbar-llm/src/engine/tests/{alloc_gate_tests.rs, attempt_identity_tests.rs, attempt_timeout_precedence_tests.rs, auth_dispatch_tests.rs, auth_native_envelope_tests.rs, auth_style_tests.rs, client_header_forwarding_tests.rs, dial_refusal_failover_tests.rs, dialect_registry_facts_tests.rs, egress_differential_tests.rs, egress_dropped_controls_audit_tests.rs, egress_target_tests.rs, engine_identity_witness_tests.rs, forward_once_pool_cell_tests.rs, forward_pool_integration_tests.rs, gate_policy_503_literals_tests.rs, health_tests.rs, hook_access_tests.rs, hook_non_chat_projection_tests.rs, hook_opt_in_projection_tests.rs, hook_seam_tests.rs, hook_seat_order_tests.rs, hook_system_turn_tests.rs, ingress_indistinguishability_tests.rs, ingress_integration_tests.rs, ingress_reject_response_tests.rs, lane_availability_proptest_tests.rs, lane_caps_config_tests.rs, lazy_body_tests.rs, ledger_100_tests.rs, legacy_forward_once.rs, mid_stream_error_tests.rs, multi_candidate_degrade_tests.rs, on_exhausted_tests.rs, ordered_walk_tests.rs, plane_attempt_parity_tests.rs, plane_reply_parity_tests.rs, pool_upstream_creds_tests.rs, probe_guard_tests.rs, probe_release_owner_tests.rs, provider_keys_drift_tests.rs, request_short_circuit_tests.rs, rerank_search_units_tests.rs, reroute_pool_tests.rs, responses_ingress_stream_tests.rs, route_deadline_tests.rs, runtime_carry_tests.rs, scrape_queued_depth_tests.rs, signal_catalog_tests.rs, stop_sequence_cap_degrade_tests.rs, stream_no_usage_bills_zero_tests.rs, translate_offload_tests.rs, unreadable_usage_floor_tests.rs, usage_tap_tests.rs, view_parity_tests.rs, wire_tests.rs}`;
+/// * `busbar-llm/src/testkit/{mod.rs, shell.rs}`;
+/// * `busbar-llm/src/tests/{arrival_tests.rs, plane_decl_identity_tests.rs, webhook_tests.rs}`;
+/// * `busbar-llm/src/unit/{admit.rs, approve.rs, arrival.rs, audit.rs, authenticate.rs, chain.rs, decode.rs, meter.rs, mod.rs, node.rs, route.rs, verify.rs, walk.rs}`;
+/// * `busbar-llm/src/unit/tests/{admit.rs, approve.rs, arrival.rs, audit.rs, authenticate.rs, chain.rs, decode.rs, meter.rs, route.rs, verify.rs}`;
+pub const PLANE_FLOOR: usize = 488;
+
+/// THE KINDS THAT MAKE UP THE PLANE ABI'S NEUTRAL SIDE. The population is the census's
+/// (`kind_isolation::neutral_census`), read off the kind table, so a crate seated under one of these
+/// kinds is scanned the day it lands; this is kind vocabulary (Law 1: core hard-codes the kinds),
+/// not a roster of crates. The neutral-family kinds NOT here are excluded for the reason
+/// `planes::neutral_src_roots` gave by hand: `root` constructs planes by name (THE DESIGN §1, "the
+/// only place that names which crates exist and wires them at boot"; its source is held to zero by
+/// `kind-isolation:law0`), and `store`/`secret`/`auth`/`hooks`/`export` are plugin instances, which
+/// name their own protocol by definition (Law 5).
+pub const NEUTRAL_KINDS: &[&str] = &["kernel", "contract", "plugin-tooling", "cleanliness"];
 
 /// The measurement both the `--check` gate and the `--strict` ratchet are built from: one walk,
 /// one scanner, four passes, and the accounting the zero-file guard reports.
 pub struct Measurement {
     pub neutral_roots: Vec<String>,
     pub plane_roots: Vec<String>,
+    /// `(crates/<dir>, why)` for every crate the census cannot classify: in no population, so in no
+    /// scan, and RED on [`ROW_ROOTS`].
+    pub unclassified: Vec<(String, String)>,
     pub neutral_files: usize,
     pub plane_files: usize,
     /// Forward hits in PRODUCTION scope — the scan `--check` judges.
@@ -112,6 +202,10 @@ pub struct Measurement {
     pub pragmas: Vec<claims::Pragma>,
     /// The instance vocabulary the forward scan used, DERIVED from this tree (see [`vocab`]).
     pub vocab: Vocab,
+    /// The freeze witness's needles, derived from the LLM plane's IR declarations
+    /// ([`freeze::derive_types`]), and how many declarations the derivation read.
+    pub ir_types: Vec<String>,
+    pub ir_declared: usize,
     /// The segment-debt rows (`qa/segment-debt.toml`) and, per row, whether a live hit of THIS
     /// scan matched it. The listed segment-only hits are already gone from the forward lists above.
     pub segment_debt: Vec<segment_debt::Debt>,
@@ -176,11 +270,46 @@ pub fn check_hits_artefact(cx: &Ctx) -> Result<String, String> {
 /// the set by being DELETED from [`crate::planes`] in a reviewed diff, never by its directory
 /// quietly ceasing to exist under a stale entry.
 fn missing_roots(cx: &Ctx, roots: &[String]) -> Vec<String> {
-    roots.iter().filter(|r| !cx.exists(r)).cloned().collect()
+    roots
+        .iter()
+        .filter(|r| !root_present(cx, r))
+        .cloned()
+        .collect()
+}
+
+/// A source root is PRESENT when it is on disk (or laid by the base layer), or when the context's
+/// overlay plants a file under it — a crate a selftest or a test lands is a crate of the tree for
+/// every rule, and [`Ctx::exists`] answers only for paths the overlay names exactly.
+fn root_present(cx: &Ctx, root: &str) -> bool {
+    let removed = cx.overlay().is_some_and(|ov| {
+        ov.changes()
+            .any(|(p, c)| matches!(c, crate::ctx::Change::Absent) && p.as_path() == Path::new(root))
+    });
+    !removed
+        && (cx.exists(root)
+            || cx.overlay().is_some_and(|ov| {
+                ov.changes().any(|(p, c)| {
+                    matches!(c, crate::ctx::Change::Content(_)) && p.starts_with(root)
+                })
+            }))
 }
 
 fn measure(cx: &Ctx) -> Result<Measurement, String> {
-    let neutral_roots = planes::neutral_src_roots();
+    // THE NEUTRAL POPULATION COMES FROM THE KIND TABLE TOO (Law 8: "a roster maintained by hand is
+    // a defect with a date on it"). It was `planes::neutral_src_roots`, a thirteen-entry list a new
+    // kernel crate joined only when somebody remembered it.
+    let census = crate::gates::kind_isolation::neutral_census(cx)?;
+    let neutral_roots: Vec<String> = census
+        .neutral
+        .iter()
+        .filter(|r| {
+            census
+                .kind_of
+                .get(r.as_str())
+                .is_some_and(|k| NEUTRAL_KINDS.contains(k))
+        })
+        .cloned()
+        .collect();
     // THE PLANE POPULATION COMES FROM THE KIND TABLE, not from a list in `planes`: see
     // `kind_isolation::plane_kind_src_roots`. `busbar-plane-*` was plane-kind and in no scan, and
     // after the dialect split every `busbar-plane-<p>-<d>` crate would have had to be added by hand
@@ -188,7 +317,7 @@ fn measure(cx: &Ctx) -> Result<Measurement, String> {
     let plane_roots = crate::gates::kind_isolation::plane_kind_src_roots(cx)?;
     let present: Vec<String> = neutral_roots
         .iter()
-        .filter(|r| cx.exists(r))
+        .filter(|r| root_present(cx, r))
         .cloned()
         .collect();
     // `allow_empty`, because THIS GATE REFUSES THE EMPTY SCAN ITSELF, by name, in
@@ -199,7 +328,7 @@ fn measure(cx: &Ctx) -> Result<Measurement, String> {
         .map_err(|e| e.to_string())?;
     let present: Vec<String> = plane_roots
         .iter()
-        .filter(|r| cx.exists(r))
+        .filter(|r| root_present(cx, r))
         .cloned()
         .collect();
     let plane: Vec<SourceFile> = cx
@@ -207,7 +336,13 @@ fn measure(cx: &Ctx) -> Result<Measurement, String> {
         .map_err(|e| e.to_string())?;
     // THE WORDS COME FROM THE TREE BEING SCANNED. Derived after the plane walk because the planes
     // declare their own keys and dialects in the files that walk just read.
-    let vocab = vocab::derive(cx, &plane_roots, &plane);
+    let mut vocab = vocab::derive(cx, &plane_roots, &plane);
+    // THE REVERSE NEEDLES COME FROM THE TREE: every crate past the plane's wall, by its identifier.
+    // An empty answer is refused on the denominator row, beside the other empty classes.
+    vocab.wall_idents = crate::gates::kind_isolation::plane_wall_crates(cx)
+        .map(|names| names.iter().map(|n| n.replace('-', "_")).collect())
+        .unwrap_or_default();
+    let (ir_types, ir_declared) = freeze::derive_types(&plane);
     let (prod_forward, test_forward) = scanner::scan(&neutral, Mode::Forward, &vocab);
     let (prod_reverse, test_reverse) = scanner::scan(&plane, Mode::Reverse, &vocab);
     // LISTED SEGMENT DEBT IS NOT COUNTED; UNLISTED SEGMENT HITS ARE. Every count downstream (the
@@ -230,8 +365,11 @@ fn measure(cx: &Ctx) -> Result<Measurement, String> {
         test_reverse,
         neutral_roots,
         plane_roots,
+        unclassified: census.unclassified,
         pragmas: claims::collect(&neutral),
         vocab,
+        ir_types,
+        ir_declared,
         segment_debt,
         segment_debt_matched,
         segment_debt_minted,
@@ -277,12 +415,32 @@ fn category_title(category: &str) -> &'static str {
         "TYPE" => "no neutral crate names a plane or dialect type",
         "KEY" => "no neutral crate names a concrete plane key",
         "DIALECT" => "no neutral crate names a dialect",
-        _ => "no plane crate reaches back into busbar_core:: implementation",
+        _ => "no plane crate reaches past the contract into the kernel or another neutral crate",
     }
 }
 
-fn roots_row(neutral_roots: usize, plane_roots: usize, missing: &[String]) -> Row {
+fn roots_row(
+    neutral_roots: usize,
+    plane_roots: usize,
+    missing: &[String],
+    unclassified: &[(String, String)],
+) -> Row {
     let detail = format!("neutral_roots={neutral_roots} plane_roots={plane_roots}");
+    if !unclassified.is_empty() {
+        return Row::fail(
+            ROW_ROOTS,
+            "a crate the census cannot classify is in no scan",
+            format!(
+                "{detail} — unclassified: {}. A crate in no population is a crate in no gate; seat \
+                 it in the kind table.",
+                unclassified
+                    .iter()
+                    .map(|(d, why)| format!("{d} ({why})"))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        );
+    }
     if missing.is_empty() {
         Row::pass(
             ROW_ROOTS,
@@ -313,13 +471,14 @@ fn denominator_row(neutral_files: usize, plane_files: usize, vocab: Option<&Voca
     if let Some(v) = vocab {
         detail.push_str(&format!(" vocabulary: {}", v.summary()));
     }
-    if neutral_files == 0 || plane_files == 0 {
+    if neutral_files < NEUTRAL_FLOOR || plane_files < PLANE_FLOOR {
         Row::fail(
             ROW_DENOMINATOR,
             "the scan opened files to answer with",
             format!(
-                "{detail} — a scan of zero files reports zero violations, which is \
-                 indistinguishable from a clean tree"
+                "{detail} — below its floor (neutral {NEUTRAL_FLOOR}, plane {PLANE_FLOOR}): a \
+                 shrunken scan reports fewer violations, which is indistinguishable from a cleaner \
+                 tree"
             ),
         )
     } else if !empty.is_empty() {
@@ -469,7 +628,12 @@ impl Gate for PlanePurityGate {
         let denominator = denominator_row(m.neutral_files, m.plane_files, Some(&m.vocab));
         let scanned_nothing = denominator.status != crate::ledger::Status::Pass;
         let mut rows = vec![
-            roots_row(m.neutral_roots.len(), m.plane_roots.len(), &missing),
+            roots_row(
+                m.neutral_roots.len(),
+                m.plane_roots.len(),
+                &missing,
+                &m.unclassified,
+            ),
             denominator,
         ];
         let hits = m.check_hits();
@@ -512,7 +676,7 @@ impl Gate for PlanePurityGate {
             ));
         } else {
             rows.extend(category_rows(&hits));
-            rows.push(claims::row(cx, ROW_FROZEN_WIRE_CLAIM, &m.pragmas));
+            rows.push(claims::row(cx, ROW_FROZEN_WIRE_CLAIM, &m.pragmas, &m.vocab));
             rows.push(segment_debt_row(&m));
         }
 
@@ -524,12 +688,51 @@ impl Gate for PlanePurityGate {
 
         // Every PRESENT neutral root: a missing one is `ROW_ROOTS`'s finding, and handing it to
         // the walk would turn this row into "could not be scanned" instead of the count it owns.
-        let freeze_roots: Vec<String> = freeze::roots()
-            .into_iter()
-            .filter(|r| cx.exists(r))
+        // THE FREEZE WALKS THE SAME DERIVED POPULATION AND IS HELD TO THE SAME FLOOR. It was `1`.
+        let freeze_roots: Vec<String> = m
+            .neutral_roots
+            .iter()
+            .filter(|r| root_present(cx, r))
+            .cloned()
             .collect();
-        match cx.walk(&WalkSpec::new(freeze_roots).ext("rs").min_files(CORE_FLOOR)) {
-            Ok(core) => rows.push(freeze_row(&freeze::measure(&core))),
+        match cx.walk(&WalkSpec::new(freeze_roots).ext("rs").allow_empty()) {
+            _ if m.ir_declared < freeze::DECLARED_FLOOR => rows.push(Row::fail(
+                ROW_FREEZE,
+                "the LLM IR family could not be derived",
+                format!(
+                    "declared={} — below its floor {}: the LLM plane's codec/ir/ module yielded \
+                     fewer type declarations than it held, so the needle set is short and a zero \
+                     over it is not a freeze met",
+                    m.ir_declared,
+                    freeze::DECLARED_FLOOR
+                ),
+            )),
+            Ok(core) if core.len() < NEUTRAL_FLOOR => rows.push(Row::fail(
+                ROW_FREEZE,
+                "core could not be scanned for concrete LLM-family types",
+                format!(
+                    "files={} — below its floor {NEUTRAL_FLOOR}: a count of zero over a shrunken \
+                     walk is not a freeze met",
+                    core.len()
+                ),
+            )),
+            Ok(core) => {
+                let homonyms = freeze::neutral_homonyms(&core, &m.neutral_roots, &m.ir_types);
+                let needles: Vec<String> = m
+                    .ir_types
+                    .iter()
+                    .filter(|t| !homonyms.contains(t))
+                    .cloned()
+                    .collect();
+                let mut row = freeze_row(&freeze::measure(&core, &m.neutral_roots, &needles));
+                if !homonyms.is_empty() {
+                    row.detail.push_str(&format!(
+                        " homonyms={} (bound by the neutral set itself, not counted)",
+                        homonyms.join(",")
+                    ));
+                }
+                rows.push(row);
+            }
             Err(e) => rows.push(Row::fail(
                 ROW_FREEZE,
                 "core could not be scanned for concrete LLM-family types",
@@ -570,9 +773,34 @@ impl Gate for PlanePurityGate {
 
         // Every RED case plants into the FIRST neutral root, so the plant is inside the walk the
         // gate actually performs rather than beside it.
-        let neutral = planes::neutral_src_roots();
+        // The populations are the gate's own derivation, read off the same measurement.
+        let (neutral, plane_roots): (Vec<String>, Vec<String>) = match measure(cx) {
+            Ok(m) => (
+                m.neutral_roots
+                    .into_iter()
+                    .filter(|r| root_present(cx, r))
+                    .collect(),
+                m.plane_roots
+                    .into_iter()
+                    .filter(|r| root_present(cx, r))
+                    .collect(),
+            ),
+            Err(e) => {
+                report.note_infra_failure(format!(
+                    "plane-purity: the tree could not be measured: {e}"
+                ));
+                return report;
+            }
+        };
+        if neutral.is_empty() || plane_roots.is_empty() {
+            report.note_infra_failure(
+                "plane-purity: the derived neutral or plane population is empty on disk"
+                    .to_string(),
+            );
+            return report;
+        }
         let plant_at = format!("{}/planted_plane_purity.rs", neutral[0]);
-        let plane_at = format!("{}/planted_plane_purity.rs", planes::plane_src_roots()[0]);
+        let plane_at = format!("{}/planted_plane_purity.rs", plane_roots[0]);
 
         report.push(create(
             cx,
@@ -742,11 +970,94 @@ impl Gate for PlanePurityGate {
         report.push(create(
             cx,
             self,
-            "a plane crate reaching back into busbar_core:: implementation",
+            "a plane crate reaching past the contract into the kernel, under all three spellings",
             &[ROW_BACKWARDS],
             &plane_at,
-            "use busbar_core::internal::foo;\nextern crate busbar_core;\nuse busbar_core as c;\n",
-            &[ROW_BACKWARDS, "planted_plane_purity.rs:3"],
+            "use busbar_kernel::plane_host::EngineHost;\nextern crate busbar_kernel_ledger;\nuse busbar_core_admin as c;\n",
+            &[
+                ROW_BACKWARDS,
+                "planted_plane_purity.rs:1",
+                "planted_plane_purity.rs:2",
+                "planted_plane_purity.rs:3",
+            ],
+        ));
+
+        // A STRING IS NOT A REACH, AND A STRING THAT ENDS DOES NOT HIDE THE CODE AFTER IT. The
+        // continuation lines of a multi-line `"…"` and of a raw `r#"…"#` are literal text, so the
+        // crate words in their prose bind nothing; the `use … as` on the line after each closes is
+        // code and is still the reach it always was. Lines 5 and 9 must be named; the green control
+        // below plants the strings alone and must name nothing.
+        report.push(create(
+            cx,
+            self,
+            "a backwards reach on the line after a multi-line string and a raw string closes",
+            &[ROW_BACKWARDS],
+            &plane_at,
+            "pub const H: &str =\n    \"serve on stdin\n        busbar as a child process\n        busbar_kernel::teller as t\";\nuse busbar_kernel as k;\npub const R: &str = r#\"a \" quote\n        busbar as a child process\n        busbar_kernel::teller::run_unit\"#;\nuse busbar_kernel_ledger as l;\n",
+            &[
+                ROW_BACKWARDS,
+                "planted_plane_purity.rs:5",
+                "planted_plane_purity.rs:9",
+            ],
+        ));
+
+        // ITS CONTROL: the same strings with no code after them are no reach at all.
+        report.push(green_with(
+            cx,
+            self,
+            "crate words inside a multi-line string and a raw string are not a backwards reach",
+            &[ROW_BACKWARDS],
+            &plane_at,
+            "pub const H: &str =\n    \"serve on stdin\n        busbar as a child process\n        busbar_kernel::teller as t\";\npub const R: &str = r#\"a \" quote\n        busbar as a child process\n        busbar_kernel::teller::run_unit\"#;\n",
+        ));
+
+        // THE CONTROL: the contract is the one crate a plane may name. A rule that fired on every
+        // `busbar_*` path would pass every case above and forbid the ABI itself.
+        report.push(green_with(
+            cx,
+            self,
+            "a plane crate naming the contract is not a backwards reach",
+            &[ROW_BACKWARDS],
+            &plane_at,
+            "use busbar_contract::abi::plane::PlaneDecl;\n",
+        ));
+
+        // THE WALL IS THE KIND TABLE'S. A kernel crate seated tomorrow is past the wall tomorrow:
+        // no word of this plant is in this gate's source.
+        report.push(create_many(
+            cx,
+            self,
+            "a NEW kernel crate is past the wall: a plane naming it is a backwards reach",
+            &[ROW_BACKWARDS],
+            &[
+                (
+                    "crates/busbar-kernel-quux/Cargo.toml",
+                    "[package]\nname = \"busbar-kernel-quux\"\nversion = \"0.0.0\"\n",
+                ),
+                ("crates/busbar-kernel-quux/src/lib.rs", "pub struct Q;\n"),
+                (&plane_at, "use busbar_kernel_quux::Q;\n"),
+            ],
+            &[ROW_BACKWARDS, "planted_plane_purity.rs:1"],
+        ));
+
+        // AND THE NEUTRAL SIDE IS THE KIND TABLE'S. The same new kernel crate is in the forward
+        // scan the day it lands.
+        report.push(create_many(
+            cx,
+            self,
+            "a NEW kernel crate is in the neutral scan: a plane symbol in it is a SYMBOL hit",
+            &[ROW_SYMBOL],
+            &[
+                (
+                    "crates/busbar-kernel-quux/Cargo.toml",
+                    "[package]\nname = \"busbar-kernel-quux\"\nversion = \"0.0.0\"\n",
+                ),
+                (
+                    "crates/busbar-kernel-quux/src/lib.rs",
+                    "use busbar_plane_a2a::TaskThing;\n",
+                ),
+            ],
+            &[ROW_SYMBOL, "busbar-kernel-quux/src/lib.rs:1"],
         ));
 
         // THE POPULATION IS THE KIND TABLE'S, AND THIS IS THE CRATE THAT PROVES IT. `busbar-plane-*`
@@ -762,7 +1073,7 @@ impl Gate for PlanePurityGate {
             "a backwards reach in a busbar-plane-* crate, which no literal root list scanned",
             &[ROW_BACKWARDS],
             "crates/busbar-plane-mcp/src/planted_plane_kind.rs",
-            "use busbar_core::internal::foo;\n",
+            "use busbar_kernel::teller::run_unit;\n",
             &[ROW_BACKWARDS, "planted_plane_kind.rs:1"],
         ));
 
@@ -782,7 +1093,7 @@ impl Gate for PlanePurityGate {
         ));
 
         let mut ov = layered(cx);
-        for root in neutral.iter().chain(planes::plane_src_roots().iter()) {
+        for root in neutral.iter().chain(plane_roots.iter()) {
             for f in cx
                 .walk(&WalkSpec::new([root.clone()]).ext("rs"))
                 .unwrap_or_default()
@@ -797,6 +1108,91 @@ impl Gate for PlanePurityGate {
             &[ROW_DENOMINATOR],
             ov,
             &[ROW_DENOMINATOR, "neutral_files=0"],
+        ));
+
+        // ONE UNDER EACH FLOOR (Law 8 shape 2). Zero is not the only shrunken scan: each walk is
+        // cut to one file below its floor, and the row that owns it must refuse. The freeze walk
+        // reads the neutral population and is held to the same floor, so it is its own case.
+        let shrunk = |roots: &[String], floor: usize| {
+            let mut ov = layered(cx);
+            let files = cx
+                .walk(&WalkSpec::new(roots.to_vec()).ext("rs").allow_empty())
+                .unwrap_or_default();
+            let cut = (files.len() + 1).saturating_sub(floor);
+            for f in files.iter().rev().take(cut) {
+                ov.remove(&f.rel);
+            }
+            ov
+        };
+        report.push(prove_red(
+            cx,
+            self,
+            "a neutral scan one file under its floor",
+            &[ROW_DENOMINATOR],
+            shrunk(&neutral, NEUTRAL_FLOOR),
+            &[ROW_DENOMINATOR, "below its floor"],
+        ));
+        report.push(prove_red(
+            cx,
+            self,
+            "a freeze walk one file under its floor",
+            &[ROW_FREEZE],
+            shrunk(&neutral, NEUTRAL_FLOOR),
+            &[ROW_FREEZE, "below its floor"],
+        ));
+        report.push(prove_red(
+            cx,
+            self,
+            "a plane scan one file under its floor",
+            &[ROW_DENOMINATOR],
+            shrunk(&plane_roots, PLANE_FLOOR),
+            &[ROW_DENOMINATOR, "below its floor"],
+        ));
+
+        // THE FREEZE'S WORDS ARE THE LLM PLANE'S DECLARATIONS. An IR type the hand list never held
+        // is counted, and so is one the plane declares tomorrow.
+        report.push(create(
+            cx,
+            self,
+            "an LLM IR type off the hand list, named in core",
+            &[ROW_FREEZE],
+            &format!("{}/planted_freeze_witness.rs", neutral[0]),
+            "pub fn f(_: IrWebSearch) {}\n",
+            &[ROW_FREEZE, "count=1"],
+        ));
+        report.push(create_many(
+            cx,
+            self,
+            "a NEW IR type the LLM plane declares, named in core",
+            &[ROW_FREEZE],
+            &[
+                (
+                    "crates/busbar-plane-llm/src/codec/ir/planted_ir.rs",
+                    "pub struct IrZephyrine;\n",
+                ),
+                (
+                    &format!("{}/planted_freeze_witness.rs", neutral[0]),
+                    "pub fn f(_: IrZephyrine) {}\n",
+                ),
+            ],
+            &[ROW_FREEZE, "count=1"],
+        ));
+
+        // THE CLAIM COVERS WHAT THE LINE CARRIES (Law 10). `providers:` is a real 1.5.5 key; the
+        // type on the line is not it.
+        report.push(create(
+            cx,
+            self,
+            "a frozen-wire claim naming a real key does not cover a type it never names",
+            &[ROW_FROZEN_WIRE_CLAIM],
+            &plant_at,
+            "pub struct S { pub mcp_v2: McpV2Cfg, } // plane-purity: frozen-wire the `providers:` \
+             key (frozen since 1.5.5)\n",
+            &[
+                ROW_FROZEN_WIRE_CLAIM,
+                "planted_plane_purity.rs:1",
+                "McpV2Cfg",
+            ],
         ));
 
         // Core still naming a concrete LLM-family IR type.
@@ -1123,7 +1519,7 @@ fn legacy_check_rows(runs: &[LegacyRun]) -> Result<Vec<Row>, String> {
     // The legacy script ABORTS before writing the artefact when a root is missing, so an artefact
     // that exists at all is a run whose roots were all present. The rows say so explicitly rather
     // than leaving the reader to infer it.
-    let mut rows = vec![roots_row(nr, pr, &[]), denominator_row(nf, pf, None)];
+    let mut rows = vec![roots_row(nr, pr, &[], &[]), denominator_row(nf, pf, None)];
     rows.extend(category_rows(&hits.iter().collect::<Vec<_>>()));
     rows.push(freeze_row(&parse_freeze_witness(witness)?));
     Ok(rows)
@@ -1188,13 +1584,9 @@ impl PlanePurityStrictGate {
     }
 
     /// The two measured tables: the six categories over production+test scope combined, and the
-    /// BACKWARDS class broken out per plane crate over test scope only.
-    ///
-    /// A [`planes::PLANE_KEYS`] key whose crate is not on disk (`missing`, from
-    /// [`planes::missing_plane_key_roots`]) gets NO reach measurement, so its row reads "no
-    /// measurement" and is RED: a key pointing at a deleted directory would otherwise measure zero
-    /// hits and pass by judging nothing (row 115).
-    fn counts(m: &Measurement, missing: &[String]) -> StrictTables {
+    /// BACKWARDS class broken out per plane crate over test scope only — one entry per crate of the
+    /// DERIVED plane population, keyed by [`reach_key`].
+    fn counts(m: &Measurement) -> StrictTables {
         let mut cats: BTreeMap<String, u64> = BTreeMap::new();
         for c in scanner::CATEGORIES {
             let n = if c == "BACKWARDS" {
@@ -1206,27 +1598,75 @@ impl PlanePurityStrictGate {
             cats.insert(c.to_string(), n);
         }
         let mut reach: BTreeMap<String, u64> = BTreeMap::new();
-        for k in planes::PLANE_KEYS {
-            if missing.contains(&planes::plane_key_src(k)) {
-                continue;
-            }
-            let prefix = format!("crates/{}/", planes::plane_key_crate(k));
-            reach.insert(
-                k.to_string(),
-                m.test_reverse
-                    .iter()
-                    .filter(|h| h.file.starts_with(&prefix))
-                    .count() as u64,
-            );
+        for root in &m.plane_roots {
+            let prefix = format!("{}/", root.strip_suffix("/src").unwrap_or(root));
+            *reach.entry(reach_key(root)).or_default() += m
+                .test_reverse
+                .iter()
+                .filter(|h| h.file.starts_with(&prefix))
+                .count() as u64;
         }
         (cats, reach)
     }
+}
+
+/// The base comparison as the rows read it: `Ok((base, raises))`, or why no base could be read.
+type BaseCheck = Result<(String, Vec<strict::Raise>), String>;
+
+/// A row's verdict: its measured decisions, then the base. A raise over the base on any key the row
+/// owns is RED whatever the measurement says, and a base that could not be read is RED.
+fn strict_row(
+    id: String,
+    title: String,
+    decided: Vec<String>,
+    red: bool,
+    keys: &dyn Fn(&str) -> bool,
+    base: &BaseCheck,
+) -> Row {
+    let mut detail = decided.join("; ");
+    let mut red = red;
+    match base {
+        Ok((sha, raises)) => {
+            let mine: Vec<String> = raises
+                .iter()
+                .filter(|r| keys(&r.key))
+                .map(|r| {
+                    format!(
+                        "{} = {} raised over the base {sha}'s {}",
+                        r.key, r.now, r.was
+                    )
+                })
+                .collect();
+            if !mine.is_empty() {
+                red = true;
+                detail.push_str(&format!(
+                    " — ceiling raised in this change (Law 9: a ceiling refuses every rise): {}",
+                    mine.join("; ")
+                ));
+            }
+        }
+        Err(e) => {
+            red = true;
+            detail.push_str(&format!(" — {e}"));
+        }
+    }
+    Row::new(
+        if red {
+            crate::ledger::Status::Fail
+        } else {
+            crate::ledger::Status::Pass
+        },
+        id,
+        title,
+        detail,
+    )
 }
 
 fn strict_rows(
     ceilings: &BTreeMap<String, strict::Ceiling>,
     cats: &BTreeMap<String, u64>,
     reach: &BTreeMap<String, u64>,
+    base: &BaseCheck,
 ) -> Vec<Row> {
     let mut rows = Vec::new();
     for c in scanner::CATEGORIES {
@@ -1243,46 +1683,41 @@ fn strict_rows(
             continue;
         };
         let d = strict::decide(ceilings, c, *measured);
-        rows.push(Row::new(
-            if d.red() {
-                crate::ledger::Status::Fail
-            } else {
-                crate::ledger::Status::Pass
-            },
+        rows.push(strict_row(
             id,
             format!("{c} is within its ceiling"),
-            d.detail(),
+            vec![d.detail()],
+            d.red(),
+            &|k| k == c,
+            base,
         ));
     }
-    for k in planes::PLANE_KEYS {
-        let id = strict_reach_row(k);
-        let Some(measured) = reach.get(k) else {
-            rows.push(Row::fail(
-                id,
-                format!("{}'s test-reach was measured", planes::plane_key_crate(k)),
-                format!(
-                    "no measurement for this plane crate ({} is not on disk, or was not read) — \
-                     an uncompared row reads as a ceiling met",
-                    planes::plane_key_src(k)
-                ),
-            ));
-            continue;
-        };
+    // ONE ROW OVER EVERY PLANE CRATE. An empty table is a population that measured nothing, and is
+    // refused rather than read as every crate within its ceiling.
+    if reach.is_empty() {
+        rows.push(Row::fail(
+            ROW_STRICT_REACH,
+            "every plane crate's test-reach was measured",
+            "no plane crate was measured — an uncompared row reads as a ceiling met".to_string(),
+        ));
+        return rows;
+    }
+    let mut decided = Vec::new();
+    let mut red = false;
+    for (k, measured) in reach {
         let d = strict::decide(ceilings, k, *measured);
-        rows.push(Row::new(
-            if d.red() {
-                crate::ledger::Status::Fail
-            } else {
-                crate::ledger::Status::Pass
-            },
-            id,
-            format!(
-                "{}'s own test code reaches busbar_core:: within its ceiling",
-                planes::plane_key_crate(k)
-            ),
-            d.detail(),
-        ));
+        red |= d.red();
+        decided.push(format!("{k}: {}", d.detail()));
     }
+    rows.push(strict_row(
+        ROW_STRICT_REACH.to_string(),
+        "every plane crate's own test code reaches past the contract within its ceiling"
+            .to_string(),
+        decided,
+        red,
+        &|k| !scanner::CATEGORIES.contains(&k),
+        base,
+    ));
     rows
 }
 
@@ -1295,13 +1730,13 @@ impl Gate for PlanePurityStrictGate {
         scanner::CATEGORIES
             .iter()
             .map(|c| strict_category_row(c))
-            .chain(planes::PLANE_KEYS.iter().map(|k| strict_reach_row(k)))
+            .chain([ROW_STRICT_REACH.to_string()])
             .collect()
     }
 
     fn run(&self, cx: &Ctx) -> Verdict {
-        let ceilings = match Self::ceilings(cx) {
-            Ok(c) => c,
+        let text = match cx.read(strict::STRICT_TOML) {
+            Ok(t) => t,
             Err(e) => {
                 return Verdict::of(unscannable(
                     &self.owed(),
@@ -1309,47 +1744,55 @@ impl Gate for PlanePurityStrictGate {
                 ))
             }
         };
+        let ceilings = strict::parse_ceilings(&text);
         let m = match measure(cx) {
             Ok(m) => m,
             Err(e) => return Verdict::of(unscannable(&self.owed(), &e)),
         };
-        let (cats, reach) = Self::counts(&m, &planes::missing_plane_key_roots(cx));
-        Verdict::of(strict_rows(&ceilings, &cats, &reach))
+        let (cats, reach) = Self::counts(&m);
+        let base = strict::against_base(cx, &text);
+        Verdict::of(strict_rows(&ceilings, &cats, &reach, &base))
     }
 
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let mut report = Report::new();
         let owed = self.owed();
-        let base = cx.read(strict::STRICT_TOML).unwrap_or_default();
+        let committed = cx.read(strict::STRICT_TOML).unwrap_or_default();
 
-        // THE GREEN ARM IS A CEILING FIXTURE, NOT THE COMMITTED FILE. A ratchet is green when the
+        // THE BASELINE IS A CEILING FIXTURE, NOT THE COMMITTED FILE. A ratchet is green when the
         // measurement is AT its ceiling, and proving that against whatever the committed ceilings
-        // happen to be today would make this case report on the tree's debt rather than on the
-        // ratchet — so it would go red for a reason that says nothing about the gate. The ceilings
-        // are set to the measured counts and the SAME counts are then pushed under them below.
-        let measured = measure(cx).map(|m| Self::counts(&m, &planes::missing_plane_key_roots(cx)));
-        match &measured {
-            Ok((cats, reach)) => {
-                let mut at = Overlay::new();
-                at.set(strict::STRICT_TOML, ceilings_at(&base, cats, reach));
-                report.push(prove_green(
-                    &cx.with_overlay(at),
-                    self,
-                    "a measurement AT its ceiling is green — the ratchet is not a fixed gate",
-                    &owed.iter().map(String::as_str).collect::<Vec<_>>(),
+        // happen to be today would make every case report on the tree's debt rather than on the
+        // ratchet — a row already over its committed ceiling cannot be proven red-able by any
+        // plant. So every case is asked over a context whose ceilings are the measured counts AND
+        // whose base is a SYNTHETIC one carrying the same file, so the base comparison is about the
+        // case, never about this checkout's history.
+        let measured = match measure(cx) {
+            Ok(m) => (Self::counts(&m), m.plane_roots),
+            Err(e) => {
+                report.note_infra_failure(format!(
+                    "plane-purity-strict: the tree could not be measured: {e}"
                 ));
+                return report;
             }
-            Err(e) => report.note_infra_failure(format!(
-                "plane-purity-strict: the tree could not be measured: {e}"
-            )),
-        }
+        };
+        let ((cats, reach), plane_roots) = &measured;
+        let fixture = ceilings_at(&committed, cats, reach);
+        let based = cx.with_overlay(at_base(&fixture));
+        let cx: &Ctx = &based;
+
+        report.push(prove_green(
+            cx,
+            self,
+            "a measurement AT its ceiling is green — the ratchet is not a fixed gate",
+            &owed.iter().map(String::as_str).collect::<Vec<_>>(),
+        ));
 
         // A QUOTED CEILING. TOML accepts `SYMBOL = "5"`; the shell's `[ n -gt '"5"' ]` was an
         // ERROR that `if` read as "not over the ceiling", so the row stopped enforcing in silence.
-        let mut ov = Overlay::new();
+        let mut ov = layered(cx);
         ov.set(
             strict::STRICT_TOML,
-            base.replace("SYMBOL = ", "SYMBOL = \"") + "\n",
+            fixture.replace("SYMBOL = ", "SYMBOL = \"") + "\n",
         );
         report.push(prove_red(
             cx,
@@ -1360,62 +1803,57 @@ impl Gate for PlanePurityStrictGate {
             &["not a bare integer"],
         ));
 
-        // A PLANE KEY WHOSE CRATE IS NOT ON DISK IS REFUSED, NOT MEASURED AS ZERO (row 115; the
-        // coordinator's ruling on the llm key, 2026-10-18). The key's root is planted absent over a
-        // fixture that holds every ceiling at its measure, so the only red is the unmeasured key.
-        if let Ok((cats, reach)) = &measured {
-            for key in planes::PLANE_KEYS {
-                let mut ov = Overlay::new();
-                ov.set(strict::STRICT_TOML, ceilings_at(&base, cats, reach));
-                ov.remove(planes::plane_key_src(key));
-                report.push(prove_red(
-                    cx,
-                    self,
-                    format!("{key}: a plane key whose crate is not on disk is refused"),
-                    &[&strict_reach_row(key)],
-                    ov,
-                    &[&planes::plane_key_src(key), "not on disk"],
-                ));
-            }
+        // A CEILING RAISED IN THE SAME CHANGE (Law 9). The measurement sits at its fixture ceiling,
+        // so only the base comparison can turn the row: the base's copy is the fixture, and the
+        // tree raises DIALECT by one over it.
+        if let Some(n) = cats.get("DIALECT") {
+            let mut ov = layered(cx);
+            ov.set(
+                strict::STRICT_TOML,
+                fixture.replace(
+                    &format!("DIALECT = {n}\n"),
+                    &format!("DIALECT = {}\n", n + 1),
+                ),
+            );
+            report.push(prove_red(
+                cx,
+                self,
+                "a ceiling raised over the base's copy is refused",
+                &[&strict_category_row("DIALECT")],
+                ov,
+                &["DIALECT", "raised over the base"],
+            ));
         }
 
-        // ONE MORE HIT THAN THE CEILING ALLOWS is the ratchet doing its job, and it is planted as
-        // a real violation in test scope rather than as a lowered number — a case that only edits
-        // the ceilings file proves the comparison, never the scan that feeds it. Each row gets its
-        // OWN fixture: floors exercised only together can have all but one deleted with the
-        // selftest still green, which is exactly how three of the shell self-tests went blind.
-        if let Ok((cats, reach)) = &measured {
-            for (name, plant_in, content) in strict_plants() {
-                let id = if scanner::CATEGORIES.contains(&name) {
-                    strict_category_row(name)
-                } else {
-                    strict_reach_row(name)
-                };
-                let mut ov = Overlay::new();
-                ov.set(strict::STRICT_TOML, ceilings_at(&base, cats, reach));
-                if Edit::Create(content.to_string())
-                    .apply(cx, plant_in, &mut ov)
-                    .is_err()
-                {
-                    report.push(Case {
-                        name: format!("{name}: one hit more than its ceiling allows"),
-                        covers: vec![id],
-                        expected: Expect::Red {
-                            naming: vec![name.to_string()],
-                        },
-                        got: Expect::Skipped,
-                    });
-                    continue;
-                }
-                report.push(prove_red(
-                    cx,
-                    self,
-                    format!("{name}: one hit more than its ceiling allows"),
-                    &[&id],
-                    ov,
-                    &[&id, "> ceiling"],
-                ));
+        // ONE MORE HIT THAN THE CEILING ALLOWS is the ratchet doing its job, and it is planted as a
+        // real violation in test scope rather than as a lowered number — a case that only edits the
+        // ceilings file proves the comparison, never the scan that feeds it. Each row gets its OWN
+        // fixture: floors exercised only together can have all but one deleted with the selftest
+        // still green, which is exactly how three of the shell self-tests went blind.
+        for (name, id, naming, plant_in, content) in strict_plants(cx, plane_roots) {
+            let mut ov = layered(cx);
+            if Edit::Create(content.to_string())
+                .apply(cx, &plant_in, &mut ov)
+                .is_err()
+            {
+                report.push(Case {
+                    name: format!("{name}: one hit more than its ceiling allows"),
+                    covers: vec![id],
+                    expected: Expect::Red {
+                        naming: vec![naming],
+                    },
+                    got: Expect::Skipped,
+                });
+                continue;
             }
+            report.push(prove_red(
+                cx,
+                self,
+                format!("{name}: one hit more than its ceiling allows"),
+                &[&id],
+                ov,
+                &[&naming, "> ceiling"],
+            ));
         }
         report
     }
@@ -1427,6 +1865,21 @@ impl Gate for PlanePurityStrictGate {
     fn legacy_rows(&self, cx: &Ctx, runs: &[LegacyRun]) -> Option<Result<Vec<Row>, String>> {
         Some(legacy_strict_rows(cx, runs))
     }
+}
+
+/// `ceilings` laid as the tree's file AND as the copy a synthetic base carries: the base
+/// comparison sees no raise, so every other case is about the measurement alone.
+fn at_base(ceilings: &str) -> Overlay {
+    const SHA: &str = "zz-plane-purity-strict-base";
+    let mut ov = Overlay::new();
+    ov.set(strict::STRICT_TOML, ceilings.to_string());
+    ov.set_command(crate::gates::construction::ceilings::BASE_PIN_KEY, SHA);
+    ov.set_command(format!("git-ref:{SHA}"), "1");
+    ov.set_command(
+        format!("git-show:{SHA}:{}", strict::STRICT_TOML),
+        ceilings.to_string(),
+    );
+    ov
 }
 
 /// Rewrite every ceiling to the count measured beside it. A key the file does not carry is
@@ -1453,54 +1906,63 @@ fn ceilings_at(base: &str, cats: &BTreeMap<String, u64>, reach: &BTreeMap<String
     out
 }
 
-/// One plant per strict row: the row's name, the TEST-SCOPE file to create, and the single line
-/// that adds exactly one hit to that row's class. The paths all sit under a `/tests/` segment,
-/// which is what puts them in the scope `--strict` adds and `--check` deliberately does not see.
-fn strict_plants() -> Vec<(&'static str, String, &'static str)> {
+/// One plant per strict row: the case's name, the row, the string the red row must carry (the
+/// category's row id, or ` <key>: ` in the reach row's per-crate detail), the TEST-SCOPE file to
+/// create, and the single line that adds exactly one hit to that row's class. The paths all sit
+/// under a `/tests/` segment, which is what puts them in the scope `--strict` adds and `--check`
+/// deliberately does not see. The reach plant goes into EVERY plane crate on disk, each its own
+/// case, so a crate the population drops is a case that stops going red.
+type StrictPlant = (String, String, String, String, &'static str);
+
+fn strict_plants(cx: &Ctx, plane_roots: &[String]) -> Vec<StrictPlant> {
     let neutral_test = |leaf: &str| format!("crates/busbar-kernel/src/tests/{leaf}");
-    let plane_test = |key: &str| {
-        format!(
-            "{}/tests/planted_strict_reach.rs",
-            planes::plane_key_src(key)
-        )
-    };
-    let mut out: Vec<(&'static str, String, &'static str)> = vec![
+    let cat = |c: &str| (c.to_string(), strict_category_row(c));
+    let mut out: Vec<StrictPlant> = Vec::new();
+    for (c, leaf, content) in [
         (
             "PATH-INCLUDE",
-            neutral_test("planted_strict_path.rs"),
+            "planted_strict_path.rs",
             "#[path = \"../../../busbar-plane-mcp/src/witness.rs\"]\nmod w;\n",
         ),
         (
             "SYMBOL",
-            neutral_test("planted_strict_symbol.rs"),
+            "planted_strict_symbol.rs",
             "use busbar_plane_a2a::TaskThing;\n",
         ),
-        (
-            "TYPE",
-            neutral_test("planted_strict_type.rs"),
-            "pub struct McpFoo;\n",
-        ),
+        ("TYPE", "planted_strict_type.rs", "pub struct McpFoo;\n"),
         (
             "KEY",
-            neutral_test("planted_strict_key.rs"),
+            "planted_strict_key.rs",
             "fn k() { let _ = \"mcp\"; }\n",
         ),
         (
             "DIALECT",
-            neutral_test("planted_strict_dialect.rs"),
+            "planted_strict_dialect.rs",
             "fn d() { let _ = \"anthropic\"; }\n",
         ),
-        (
-            "BACKWARDS",
-            plane_test("llm"),
-            "fn b() { let _ = busbar_core::internal::foo(); }\n",
-        ),
-    ];
-    for key in planes::PLANE_KEYS {
+    ] {
+        let (name, id) = cat(c);
+        out.push((name, id.clone(), id, neutral_test(leaf), content));
+    }
+    let on_disk: Vec<&String> = plane_roots.iter().filter(|r| root_present(cx, r)).collect();
+    if let Some(first) = on_disk.first() {
+        let (name, id) = cat("BACKWARDS");
         out.push((
-            key,
-            plane_test(key),
-            "fn r() { let _ = busbar_core::internal::foo(); }\n",
+            name,
+            id.clone(),
+            id,
+            format!("{first}/tests/planted_strict_backwards.rs"),
+            "fn b() { let _ = busbar_kernel::teller::run_unit; }\n",
+        ));
+    }
+    for root in on_disk {
+        let key = reach_key(root);
+        out.push((
+            format!("test-reach {key}"),
+            ROW_STRICT_REACH.to_string(),
+            format!(" {key}: "),
+            format!("{root}/tests/planted_strict_reach.rs"),
+            "fn r() { let _ = busbar_kernel::teller::run_unit; }\n",
         ));
     }
     out
@@ -1517,15 +1979,27 @@ fn legacy_strict_rows(cx: &Ctx, runs: &[LegacyRun]) -> Result<Vec<Row>, String> 
         ));
     };
     let ceilings = PlanePurityStrictGate::ceilings(cx)?;
-    let (cats, reach) = parse_strict_tables(run)?;
-    Ok(strict_rows(&ceilings, &cats, &reach))
+    let text = cx.read(strict::STRICT_TOML)?;
+    let plane_keys: Vec<String> = crate::gates::kind_isolation::plane_kind_src_roots(cx)?
+        .iter()
+        .map(|root| reach_key(root))
+        .collect();
+    let (cats, reach) = parse_strict_tables(run, &plane_keys)?;
+    Ok(strict_rows(
+        &ceilings,
+        &cats,
+        &reach,
+        &strict::against_base(cx, &text),
+    ))
 }
 
 /// Scrape the two fixed-format `  <NAME>   <n>` tables the strict report prints. The category
-/// names and the plane keys are disjoint, so one pass over the lines fills both without needing to
-/// know which header it is under — and a name that appears twice is a refusal, because the second
-/// table's `TOTAL` row is the only repeat the format allows.
-fn parse_strict_tables(run: &LegacyRun) -> Result<StrictTables, String> {
+/// names are fixed; the test-reach rows are the DERIVED plane population's (`plane_keys`, one
+/// [`reach_key`] per crate of `plane_kind_src_roots`), and the table must carry EXACTLY those: one
+/// row per key, no key missing. A short table compared against ceilings reads as every ceiling met,
+/// so "not empty" is no floor; the count is the population's. A name that appears twice is a
+/// refusal.
+fn parse_strict_tables(run: &LegacyRun, plane_keys: &[String]) -> Result<StrictTables, String> {
     let mut cats: BTreeMap<String, u64> = BTreeMap::new();
     let mut reach: BTreeMap<String, u64> = BTreeMap::new();
     for line in run.stdout.lines() {
@@ -1542,22 +2016,26 @@ fn parse_strict_tables(run: &LegacyRun) -> Result<StrictTables, String> {
                     "parity: the strict report named category {name} twice"
                 ));
             }
-        } else if planes::PLANE_KEYS.contains(&name) && reach.insert(name.to_string(), n).is_some()
+        } else if plane_keys.iter().any(|k| k == name)
+            && reach.insert(name.to_string(), n).is_some()
         {
             return Err(format!(
                 "parity: the strict report named plane {name} twice"
             ));
         }
     }
-    if cats.len() != scanner::CATEGORIES.len() || reach.len() != planes::PLANE_KEYS.len() {
+    if cats.len() != scanner::CATEGORIES.len()
+        || plane_keys.is_empty()
+        || reach.len() != plane_keys.len()
+    {
         return Err(format!(
-            "parity: the strict report carried {} of {} categories and {} of {} plane keys \
+            "parity: the strict report carried {} of {} categories and {} of {} plane crate(s) \
              (exit {:?}). A short table compared against ceilings reads as every ceiling met. \
              stderr: {}",
             cats.len(),
             scanner::CATEGORIES.len(),
             reach.len(),
-            planes::PLANE_KEYS.len(),
+            plane_keys.len(),
             run.code,
             run.stderr.trim()
         ));
