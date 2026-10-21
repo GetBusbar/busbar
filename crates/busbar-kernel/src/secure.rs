@@ -8,10 +8,10 @@
 //! engine's https arm, the duplex dial's `wss` arm and the client-identity PEM parse each ask this
 //! seam, and `busbar-core-connector` (which depends on this crate, never the other way) answers it.
 //!
-//! The answer arrives through the egress-trust capability the composition root already installs
-//! once, at boot, before anything dials ([`crate::egress::trust::EgressTrustHost::secure_layer`]):
-//! the outbound trust a dial is secured with is that capability's business, so no second
-//! process-wide seam is opened for it.
+//! The answer arrives on the client's own spec (`EngineSpec::tls`), or, in a test binary, through
+//! the egress-trust capability the test hands in
+//! ([`crate::egress::trust::EgressTrustHost::secure_layer`]). No process-wide seam holds a wrap in
+//! a shipped build.
 //!
 //! What crosses is the posture a client is built for (trust anchors, a client identity, the ALPN
 //! offer — plain DER and bytes) and, per dial, a connected TCP stream going in and a secured stream
@@ -108,15 +108,15 @@ pub trait SecureLayer: Send + Sync {
     fn duplex_client(&self) -> Result<Arc<dyn ClientTls>, String>;
 }
 
-/// The connector's wrap: the root-installed egress-trust capability's. A test hands an engine
-/// client a TLS double of its own (`EngineSpec::tls`), or, in a test binary no composition root
-/// boots, installs a capability carrying one ([`install_test_tls`]).
+/// The wrap a client whose spec carries none falls back to: the egress-trust capability a test
+/// binary handed in, carrying one ([`install_test_tls`]); `None` in a shipped build. A test hands
+/// an engine client a TLS double of its own on `EngineSpec::tls`.
 pub fn layer() -> Option<Arc<dyn SecureLayer>> {
     crate::egress::trust::egress_trust_host().and_then(|host| host.secure_layer())
 }
 
-/// TEST SEAM: carry `layer` in the egress-trust capability of a test binary no composition root
-/// boots (`egress::fixtures::install_test_tls`; first install wins).
+/// TEST SEAM: carry `layer` in the egress-trust capability a test binary hands in
+/// (`egress::fixtures::install_test_tls`; the first hand-in stands).
 #[cfg(any(test, feature = "test-support"))]
 pub use crate::egress::fixtures::install_test_tls;
 

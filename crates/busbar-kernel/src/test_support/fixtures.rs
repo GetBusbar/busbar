@@ -185,6 +185,21 @@ pub fn build_once(
     cfg: crate::config::RootCfg,
     prior: Option<&crate::state::App>,
 ) -> Result<crate::state::App, String> {
+    build_once_under(
+        cfg,
+        prior,
+        &(std::sync::Arc::new(crate::appbuild::AcceptAll)
+            as std::sync::Arc<dyn crate::appbuild::RootRules>),
+    )
+}
+
+/// [`build_once`] judged by `rules` (a composition root's, or a test's double), which the kept
+/// build's commit is raised to as a shipped build's is.
+pub fn build_once_under(
+    cfg: crate::config::RootCfg,
+    prior: Option<&crate::state::App>,
+    rules: &std::sync::Arc<dyn crate::appbuild::RootRules>,
+) -> Result<crate::state::App, String> {
     // The build installs `cfg.limits` process-wide and KEEPS them (below), so it is a writer of the
     // slot `LIMITS_TEST_LOCK` serializes: without the lock, a build in a sibling test lands mid-way
     // through a test that holds it (e.g. the root listener's total-deadline test, which installs a
@@ -207,8 +222,7 @@ pub fn build_once(
         std::collections::HashSet::new(),
         (None, None),
         prior,
-        &(std::sync::Arc::new(crate::appbuild::AcceptAll)
-            as std::sync::Arc<dyn crate::appbuild::RootRules>),
+        rules,
     )?;
     // Same reasoning for the limits: no persist step follows, so this build IS the live generation
     // and its limits stay installed — the behaviour every caller of this helper has always had.

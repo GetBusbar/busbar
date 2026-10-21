@@ -957,14 +957,12 @@ impl Default for TestApp {
     }
 }
 
-/// THE ROOT'S `register_seams`, IN A TEST BINARY: the parse-time section list (the test fold,
-/// [`crate::config::plane_sections::default_plane_sections`]), first-wins. A plane's test-kit calls this where
-/// the composition root would have bound it, so a plane test that drives a wire leg without building
-/// a [`TestApp`] runs on the same binding a shipped binary does.
-pub fn install_root_seams() {
-    crate::config::plane_sections::install_plane_sections(
-        crate::config::plane_sections::default_plane_sections,
-    );
+/// THE EGRESS-TRUST CAPABILITY OF A TEST BINARY: the TLS wrap, the name lookup and the
+/// destination judgement the kernel's own egress engine falls back to when a client's spec hands it
+/// none ([`crate::egress::trust::egress_trust_host`]). A shipped build has no such fallback: the
+/// static this fills exists only in a test build. The first hand-in stands.
+pub fn install_egress_trust(host: std::sync::Arc<dyn crate::egress::trust::EgressTrustHost>) {
+    let _ = crate::egress::trust::TEST_EGRESS_TRUST.set(host);
 }
 
 impl TestApp {

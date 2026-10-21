@@ -145,9 +145,9 @@ pub trait DestJudge: Send + Sync {
     }
     /// A config commit: the deployment's destinations are now `d`. A judge that re-reads its
     /// metadata lists at every commit (as 1.5.5 did) takes them from here; the default keeps what
-    /// it was built with. Raised through the egress-trust capability the root installs the
-    /// deployment's one guard behind (`egress::trust::destinations_applied`), no static
-    /// of its own (door-only:static-seam).
+    /// it was built with. Raised by the root's rules at each kept build
+    /// (`appbuild::RootRules::destinations_applied`), which hold the deployment's one guard: no
+    /// static of its own (door-only:static-seam).
     fn destinations_applied(&self, d: &crate::config::Destinations) {
         let _ = d;
     }

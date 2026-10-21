@@ -91,20 +91,19 @@ fn peer_leaf_pin_seam_is_byte_for_byte_the_free_walk() {
 }
 
 #[test]
-fn the_composition_root_install_hands_the_installed_capability_back() {
-    // Dormant by default: nothing installs the seam on the shipped path. This test installs its
-    // own and reads it back, exercising the OnceLock accessor the composition root uses.
-    // The capability installed is the pass-through primitives with the test binary's name arm (the
-    // fixtures' loopback listed), so the process-wide install does not fail closed every other
-    // test's loopback dial (first install wins).
+fn a_test_binarys_hand_in_is_the_capability_read_back() {
+    // A shipped build holds no egress-trust capability; a test binary hands its own in through the
+    // test kit and its engine clients read it back. The capability handed in is the pass-through
+    // primitives with the test binary's name arm (the fixtures' loopback listed), so the hand-in
+    // does not fail closed every other test's loopback dial (the first hand-in stands).
     struct PassThroughListingLoopback;
     impl EgressTrustHost for PassThroughListingLoopback {
         fn judge_name(&self, host: &str, _: u32) -> Result<(), crate::host_services::DestRefusal> {
             crate::egress::fixtures::loopback_literal_listed(host)
         }
     }
-    install_egress_trust_host(std::sync::Arc::new(PassThroughListingLoopback));
-    let installed = egress_trust_host().expect("the just-installed capability reads back");
+    crate::test_support::install_egress_trust(std::sync::Arc::new(PassThroughListingLoopback));
+    let installed = egress_trust_host().expect("a capability was handed in");
     let der = a_root();
     assert_eq!(
         installed.peer_leaf_pin(der.as_ref()),
@@ -114,8 +113,7 @@ fn the_composition_root_install_hands_the_installed_capability_back() {
 }
 
 /// THE DESTINATION JUDGEMENT ON THE SEAM (ARCHITECT ruling (C)): the pass-through has no guard
-/// behind it and refuses every answer (fail closed); the root's capability hands answers to the
-/// connector's guard (`busbar` root `connector::GuardedEgressTrust`).
+/// behind it and refuses every answer (fail closed).
 #[test]
 fn the_pass_through_seam_fails_closed() {
     let public: std::net::IpAddr = "93.184.216.34".parse().unwrap();
@@ -125,54 +123,5 @@ fn the_pass_through_seam_fails_closed() {
     assert_eq!(
         refused.verdict,
         busbar_contract::abi::host::service::DEST_NO_HOST
-    );
-}
-
-/// The root's capability hands every answer to the guard behind it, deciding nothing itself.
-#[test]
-fn the_guarded_seam_judges_by_the_guard_behind_it() {
-    let judged = GuardedEgressTrust(
-        crate::egress::fixtures::private_refusing(&[]),
-        crate::egress::fixtures::TlsDouble::default().layer(),
-        std::sync::Arc::new(Answers(Vec::new())),
-    );
-    let private: std::net::IpAddr = "10.0.0.5".parse().unwrap();
-    let public: std::net::IpAddr = "93.184.216.34".parse().unwrap();
-    assert!(judged.judge_answer("db.test", &[private], 0).is_err());
-    assert_eq!(judged.judge_answer("api.test", &[public], 0), Ok(()));
-}
-
-/// A resolver that answers every name with the same addresses, and an empty list as a failure.
-struct Answers(Vec<std::net::IpAddr>);
-
-impl busbar_kernel_egress::trust::net::Resolver for Answers {
-    fn resolve(&self, host: &str) -> Result<Vec<std::net::IpAddr>, String> {
-        if self.0.is_empty() {
-            return Err(format!("{host}: no answer"));
-        }
-        Ok(self.0.clone())
-    }
-}
-
-/// Row 130 E2: the root's capability resolves every name through the resolver behind it (the
-/// connector's), answering exactly what it answered, and its failure as a failure; the kernel
-/// resolves nothing itself.
-#[test]
-fn the_guarded_seam_resolves_by_the_resolver_behind_it() {
-    let public: std::net::IpAddr = "93.184.216.34".parse().unwrap();
-    let guarded = |answers: Vec<std::net::IpAddr>| {
-        GuardedEgressTrust(
-            crate::egress::fixtures::private_refusing(&[]),
-            crate::egress::fixtures::TlsDouble::default().layer(),
-            std::sync::Arc::new(Answers(answers)),
-        )
-    };
-    assert_eq!(
-        guarded(vec![public]).resolve_names("api.test"),
-        Ok(vec![public])
-    );
-    assert_eq!(
-        guarded(Vec::new()).resolve_names("api.test"),
-        Err("api.test: no answer".to_owned())
     );
 }

@@ -4,8 +4,8 @@
 //! THE KERNEL'S TLS, served from here. The kernel names no TLS library (THE DESIGN: TLS stays in
 //! the connector; 1.6.0-TODO P2 "drop rustls from the kernel"): its outbound engine's https arm, its
 //! duplex dial's `wss` arm and its client-identity PEM parse ask `busbar_kernel::secure`, and
-//! [`Layer`] answers that seam — the composition root hands it to the kernel inside the egress-trust
-//! capability it installs once, at boot (`GuardedEgressTrust`).
+//! [`Layer`] answers that seam — handed to an engine client on its spec (`EngineSpec::tls`), or, in
+//! a test binary, inside the egress-trust capability the test hands in (`install`).
 //!
 //! Everything here is the code that used to sit on the kernel side of that seam, moved verbatim:
 //! the client config the kernel's engine built (`rustls_client_config`: the shared webpki store, the
@@ -27,7 +27,7 @@ use tokio::net::TcpStream;
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// TEST SEAM: install this module as the TLS wrap every client of THIS crate's test binary's kernel
-/// is built over, where no composition root installs the egress-trust capability. Idempotent.
+/// is built over, in the egress-trust capability the test binary hands in. Idempotent.
 #[cfg(test)]
 pub fn install() {
     busbar_kernel::secure::install_test_tls(Arc::new(Layer));

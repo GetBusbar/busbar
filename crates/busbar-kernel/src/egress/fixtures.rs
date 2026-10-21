@@ -944,17 +944,17 @@ pub fn loopback_literal_listed(host: &str) -> Result<(), crate::host_services::D
 }
 
 /// TEST SEAM: carry `layer` as the wrap every client in this test binary is built over, in the
-/// egress-trust capability the composition root installs at boot in a shipped process (first
-/// install wins).
+/// egress-trust capability the test binary hands in (`test_support::install_egress_trust`; the
+/// first hand-in stands).
 pub fn install_test_tls(layer: Arc<dyn crate::secure::SecureLayer>) {
-    crate::egress::trust::install_egress_trust_host(Arc::new(TlsEgressTrust(layer)));
+    crate::test_support::install_egress_trust(Arc::new(TlsEgressTrust(layer)));
 }
 
 /// THE SYSTEM LOOKUP a test build's kernel resolve-then-pin answers with when no guarded egress-trust
 /// capability is installed (`egress::trust::EgressTrustHost::resolve_names`): every
 /// address `host` answers with, de-duplicated but otherwise untouched and unsorted. Test machinery
-/// only: a production kernel resolves nothing itself, the connector's resolver
-/// (`busbar_core_connector::hostio::SystemNames`, the same body) is installed behind the capability.
+/// only: a production kernel resolves nothing itself (the connector's resolver,
+/// `busbar_core_connector::hostio::SystemNames`, has the same body).
 ///
 /// # Errors
 ///

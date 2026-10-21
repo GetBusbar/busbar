@@ -18,8 +18,9 @@
 //!
 //! The pooled posture's arm is [`EgressResolver::Judged`]: the name is resolved once per new
 //! connection and EVERY address it answered with is judged by the deployment's one destination
-//! guard (OWNER ruling DESTINATION GUARD: the connector's, installed by the root and asked through
-//! `egress::trust::egress_trust_host`, the root-installed egress-trust seam) before `HttpConnector` sees any of them. A refused answer is a resolver error, so the dial fails as a connect failure and nothing
+//! guard (OWNER ruling DESTINATION GUARD: the connector's, handed in on the client's spec, or in a
+//! test binary the guard of the egress-trust capability the test handed in,
+//! `egress::trust::egress_trust_host`) before `HttpConnector` sees any of them. A refused answer is a resolver error, so the dial fails as a connect failure and nothing
 //! is connected; an admitted answer is handed on whole, and the `Uri` keeps the name for SNI, the
 //! certificate check and `Host`. A pooled connection was therefore dialled to an address this arm
 //! judged, which is what makes reusing it safe.
@@ -39,9 +40,9 @@ use crate::host_services::DestJudge;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-/// Judge one resolution's answer, refusing it whole, by `judge` (a test's own) or the
-/// deployment's destination guard behind the root-installed egress-trust seam. The engine never
-/// decides: with no seam installed the answer is refused (fail closed). The refusal is the
+/// Judge one resolution's answer, refusing it whole, by `judge` (the spec's) or the guard behind
+/// the egress-trust capability a test binary handed in. The engine never decides: with neither the
+/// answer is refused (fail closed). The refusal is the
 /// resolver's error, so `HttpConnector` reports the dial as a connect failure caused by it: not a
 /// timeout, so a plane fails it over as it does a refused connection.
 fn judged(
