@@ -243,8 +243,8 @@ fn connector(pki: &Pki, served: &ServedFacts, need: NeedId) -> Connector {
     c
 }
 
-/// A secret file of this test's own holding `value`: its path.
-fn secret_file(name: &str, value: &str) -> PathBuf {
+/// A PEM file of this test's own holding `value`: its path.
+fn pem_on_disk(name: &str, value: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
         "busbar-registration-pin-{name}-{}",
         std::process::id()
@@ -436,8 +436,8 @@ async fn an_mtls_registration_presents_its_client_identity_and_one_with_none_is_
     let origin = format!("https://127.0.0.1:{port}");
     let url = format!("{origin}/agent");
     let c = connector(&pki, &served, need);
-    let cert = secret_file("client-cert", &client.pem);
-    let key = secret_file("client-key", &client.key_pem);
+    let cert = pem_on_disk("client-cert", &client.pem);
+    let key = pem_on_disk("client-key", &client.key_pem);
 
     let mutual = registration(
         &served,
