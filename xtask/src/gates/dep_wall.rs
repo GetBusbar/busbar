@@ -6,7 +6,12 @@
 //! `tokio-rustls` and `socket2` by name, `tokio` asked for its `net` feature, `redis` asked for its
 //! async connection (`aio`), and `std::net` / `tokio::net` written in a plugin's own source. The
 //! exceptions are the connector (a cleanliness crate, never in scope) and the transport CARRIERS,
-//! whose whole job is the socket.
+//! whose whole job is the socket. The carriers are NAMED, never inferred: [`CARRIERS`] is the spec's
+//! list (`busbar-transport-tcp`, `busbar-transport-stdio`; docs/design/BUSBAR-1.6.0.md: "carriers
+//! (`tcp`, `stdio`) dial, accept, read and write; framers (`http`, `ws`) are sans-IO state
+//! machines"), and a carrier is exempt only while the MERGE-BASE's ledger carries its
+//! `carrier<TAB>crate` line (Law 9: a change never exempts itself). No kind, glob or name prefix
+//! exempts anything: a framer (http, ws, grpc, the webrtc framer) stays on the wall.
 //!
 //! The tree does not meet the wall yet, and pretending otherwise is not an option (Law 9: a ratchet
 //! armed at today's number). `qa/dep-wall.ledger` pins every offender measured when this gate was
@@ -30,13 +35,14 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::str::FromStr;
+use std::sync::{Arc, OnceLock};
 
 use proc_macro2::{Delimiter, Group, Spacing, TokenStream, TokenTree};
 
 use serde_json::Value;
 
 use crate::ctx::{Ctx, Overlay, WalkSpec};
-use crate::gates::{prove_green, prove_red, prove_rows_green, Gate, Report};
+use crate::gates::{prove_green, prove_red, Gate, Report};
 use crate::ledger::{Row, Verdict};
 
 pub const ROW_SCOPE: &str = "dep-wall:scope";
@@ -103,6 +109,14 @@ const VALUE_PATHS: &[&str] = &[
 /// llm plane is its door crate `busbar-plane-llm`, a `gate.plugin_kinds.plane` row. No legacy engine
 /// crate is left for this list to name.
 const LEGACY: &[&str] = &[];
+
+/// THE CARRIERS, the only transports the wall may exempt (ARCHITECT ruling on #1254/#1261;
+/// docs/design/BUSBAR-1.6.0.md: "Transport plugins have two roles: carriers (`tcp`, `stdio`) dial,
+/// accept, read and write; framers (`http`, `ws`) are sans-IO state machines", and the connector
+/// builds "carrier → [TLS] → framer"). Listing a crate here exempts nothing by itself: the
+/// exemption is the base ledger's `carrier<TAB>crate` line, and this list is what such a line may
+/// name. A `carrier` line on any other crate is refused, whatever the crate is called.
+pub const CARRIERS: &[&str] = &["busbar-transport-tcp", "busbar-transport-stdio"];
 
 /// The external source a plugin repository resolves from.
 const EXTERNAL_SOURCE: &str = "git+https://github.com/GetBusbar/";
@@ -188,19 +202,6 @@ fn base_ledger(cx: &Ctx) -> Result<(String, Ledger), String> {
         ));
     }
     Ok((base.short().to_string(), held))
-}
-
-/// The `[gate.plugin_kinds] transport` directory globs: a carrier is a crate of the transport kind,
-/// by the kind table, never by a substring of its name. Empty when the table does not read, which
-/// admits no carrier.
-fn transport_globs(cx: &Ctx) -> Vec<String> {
-    cx.read(CONFIG)
-        .map(|t| {
-            crate::toml_lite::parse_text(&t)
-                .table("gate.plugin_kinds")
-                .get_list("transport")
-        })
-        .unwrap_or_default()
 }
 
 /// A single-`*` glob, the shape `[gate.plugin_kinds]` uses.
@@ -469,12 +470,7 @@ pub fn measure(cx: &Ctx, carriers: &BTreeSet<String>) -> Result<Measured, String
                 }
             }
         }
-        // A TRANSPORT IS A CARRIER (#40(a): "the carrier plugins are the one named exception", THE
-        // DESIGN §5), so the source rule skips it, keyed on the plugin's declared kind
-        // ([`crate::gates::kind_isolation::plugin_kind`]) and on no crate name.
-        let carrier_kind =
-            crate::gates::kind_isolation::plugin_kind(&root_name) == Some("transport");
-        if let Some(dir) = dir.as_ref().filter(|_| !carrier_kind) {
+        if let Some(dir) = dir {
             let files = own_source(cx, dir, &pkgs[root_id]);
             if files.is_empty() && pkgs[root_id].source.is_some() {
                 unread.push(root_name.clone());
@@ -938,6 +934,89 @@ impl PathScan {
     }
 }
 
+/// THE WORKSPACE WITH ONE MORE PINNED PLUGIN, as `cargo metadata` would answer for it: the real
+/// answer `real`, plus a package `name` resolved from its own `GetBusbar` repository whose normal
+/// edges are `deps` (each a package the real answer resolves). Cargo reads the manifests on disk,
+/// so a crate a self-test invents reaches the gate only as a planted answer. An answer that does
+/// not read plants an empty one, and the case fails naming the parse, never green.
+fn with_crate(real: &str, root: &str, name: &str, deps: &[&str]) -> String {
+    let Ok(mut json) = serde_json::from_str::<Value>(real) else {
+        return String::new();
+    };
+    let source = format!("{EXTERNAL_SOURCE}{name}?rev=0000000000#0000000000");
+    let id = format!("{source}@0.0.0");
+    let edges: Vec<Value> = deps
+        .iter()
+        .filter_map(|d| {
+            let pkg = json["packages"]
+                .as_array()?
+                .iter()
+                .find(|p| p["name"].as_str() == Some(*d))?;
+            Some(serde_json::json!({
+                "name": d.replace('-', "_"),
+                "pkg": pkg["id"].clone(),
+                "dep_kinds": [{ "kind": null, "target": null }],
+            }))
+        })
+        .collect();
+    let declared: Vec<Value> = deps
+        .iter()
+        .map(|d| {
+            serde_json::json!({
+                "name": d, "rename": null, "features": [], "optional": false, "kind": null,
+            })
+        })
+        .collect();
+    if let Some(pkgs) = json["packages"].as_array_mut() {
+        pkgs.push(serde_json::json!({
+            "name": name,
+            "id": id,
+            "source": source,
+            "manifest_path": format!("{root}/target/zz-dep-wall-plant/{name}/Cargo.toml"),
+            "dependencies": declared,
+            "features": {},
+        }));
+    }
+    if let Some(nodes) = json["resolve"]["nodes"].as_array_mut() {
+        nodes.push(serde_json::json!({ "id": id, "deps": edges, "features": [] }));
+    }
+    json.to_string()
+}
+
+/// A PLANT OF ONE INVENTED PINNED PLUGIN, built on the worker: [`with_crate`] over the real
+/// `cargo metadata` answer (taken once for every such case), the plugin's `src/lib.rs`, and, when
+/// `carried`, a `carrier<TAB>name` line in the ledger AND in the base's ledger, so the case asks
+/// what the explicit list admits rather than what Law 9 refuses.
+fn crate_plant(
+    cx: &Ctx,
+    real: &Arc<OnceLock<String>>,
+    name: &'static str,
+    deps: &'static [&'static str],
+    lib: &'static str,
+    carried: bool,
+) -> impl FnOnce() -> Overlay + Send + 'static {
+    let (cx, real) = (cx.clone(), real.clone());
+    move || {
+        let text = real.get_or_init(|| cx.cargo_metadata("Cargo.toml").unwrap_or_default());
+        let mut ov = Overlay::new();
+        ov.set_command(
+            "cargo-metadata:Cargo.toml",
+            with_crate(text, &cx.root().to_string_lossy(), name, deps),
+        );
+        ov.set(format!("crates/{name}/src/lib.rs"), lib);
+        if carried {
+            let ledger = format!(
+                "{}\ncarrier\t{name}\n",
+                cx.read(LEDGER).unwrap_or_default().trim_end()
+            );
+            ov.set_command(crate::gates::construction::ceilings::BASE_PIN_KEY, SYN_BASE);
+            ov.set_command(format!("git-show:{SYN_BASE}:{LEDGER}"), ledger.clone());
+            ov.set(LEDGER, ledger);
+        }
+        ov
+    }
+}
+
 pub struct DepWallGate;
 
 impl Gate for DepWallGate {
@@ -951,7 +1030,20 @@ impl Gate for DepWallGate {
 
     fn run(&self, cx: &Ctx) -> Verdict {
         let ledger = read_ledger(&cx.read(LEDGER).unwrap_or_default());
-        let (measured, roots, names, unread) = match measure(cx, &ledger.carriers) {
+        let base = base_ledger(cx);
+        // THE EXEMPTION IS READ FROM THE BASE (Law 9): a carrier line this ledger keeps, the
+        // merge-base's ledger already carried, and [`CARRIERS`] names. A line only the head writes,
+        // or one on a framer, exempts nothing, and the crate is measured like any plugin.
+        let exempt: BTreeSet<String> = match &base {
+            Ok((_, held)) => ledger
+                .carriers
+                .intersection(&held.carriers)
+                .filter(|c| CARRIERS.contains(&c.as_str()))
+                .cloned()
+                .collect(),
+            Err(_) => BTreeSet::new(),
+        };
+        let (measured, roots, names, unread) = match measure(cx, &exempt) {
             Ok(m) => m,
             Err(e) => {
                 let why = format!("the wall could not be measured: {e}");
@@ -980,8 +1072,6 @@ impl Gate for DepWallGate {
                  own source proves nothing about it"
             ));
         }
-        let transports = transport_globs(cx);
-        let base = base_ledger(cx);
         let mut new: Vec<String> = Vec::new();
         match &base {
             Ok((sha, held)) => {
@@ -1010,10 +1100,13 @@ impl Gate for DepWallGate {
             }
         }
         for c in &ledger.carriers {
-            if !transports.iter().any(|g| glob(g, &format!("crates/{c}"))) {
+            if !CARRIERS.contains(&c.as_str()) {
                 scope.push(format!(
-                    "`{c}` is exempted as a carrier and is not a transport crate: no \
-                     `[gate.plugin_kinds] transport` glob of {CONFIG} names `crates/{c}`"
+                    "`{c}` is exempted as a carrier and is no carrier: only {} dial, accept, read \
+                     and write (docs/design/BUSBAR-1.6.0.md); a framer (http, ws, grpc, webrtc) is \
+                     a sans-IO state machine and stays on the wall, and no name or kind exempts a \
+                     crate",
+                    CARRIERS.join(" and ")
                 ));
             } else if !names.contains(c) {
                 scope.push(format!(
@@ -1028,7 +1121,7 @@ impl Gate for DepWallGate {
                 "the dependency wall is measured",
                 format!(
                     "{roots} crate(s) in scope, {} carrier(s) exempt",
-                    ledger.carriers.len()
+                    exempt.len()
                 ),
             )
         } else {
@@ -1125,19 +1218,84 @@ impl Gate for DepWallGate {
             ov,
             &["new-offender", "busbar-secret-env", "std::net"],
         ));
-        // A PINNED TRANSPORT IS A CARRIER, by its declared kind: the same socket path in its
-        // source moves no row.
+        // A FRAMER IS ON THE WALL (ARCHITECT ruling on #1254/#1261): ws is a sans-IO state
+        // machine, so a socket path in its source is a new offender like any plugin's.
         let mut ov = Overlay::new();
         ov.set(
             "crates/busbar-transport-ws/src/planted_socket.rs",
             "pub fn dial() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
         );
-        report.push(prove_rows_green(
+        report.push(prove_red(
             cx,
             self,
-            "a pinned transport that names a socket path is a carrier, not an offender",
+            "a framer that names a socket path is a new offender, not a carrier",
             &[ROW_NEW],
             ov,
+            &["new-offender", "busbar-transport-ws", "std::net"],
+        ));
+        // NO NAME EXEMPTS A CRATE. Two invented pinned plugins whose names say `busbar-transport-`
+        // and that are no carrier: one names a socket in its source, one depends on socket2. Each is
+        // RED with no ledger line, and RED again with a `carrier` line the base ledger already
+        // carries (the explicit list admits the spec's carriers only).
+        let real: Arc<OnceLock<String>> = Arc::default();
+        for (name, deps, lib, offence) in [
+            (
+                "busbar-transport-evilsrc",
+                &[] as &[&str],
+                "pub fn dial() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
+                "std::net",
+            ),
+            (
+                "busbar-transport-evildep",
+                &["socket2"] as &[&str],
+                "pub fn frame() {}\n",
+                "socket2",
+            ),
+        ] {
+            report.push(prove_red(
+                cx,
+                self,
+                format!("`{name}`, named like a transport, is a new offender reaching `{offence}`"),
+                &[ROW_NEW],
+                crate_plant(cx, &real, name, deps, lib, false),
+                &["new-offender", name, offence],
+            ));
+            report.push(prove_red(
+                cx,
+                self,
+                format!(
+                    "a base-carried `carrier` line does not exempt `{name}`, which is no carrier"
+                ),
+                &[ROW_SCOPE, ROW_NEW],
+                crate_plant(cx, &real, name, deps, lib, true),
+                &["new-offender", name, offence, "is no carrier"],
+            ));
+        }
+        // NOR DOES A BASE-CARRIED LINE EXEMPT A REAL FRAMER: ws stays on the wall.
+        let carried_ws = format!(
+            "{}\ncarrier\tbusbar-transport-ws\n",
+            cx.read(LEDGER).unwrap_or_default().trim_end()
+        );
+        let mut ov = Overlay::new();
+        ov.set_command(crate::gates::construction::ceilings::BASE_PIN_KEY, SYN_BASE);
+        ov.set_command(format!("git-show:{SYN_BASE}:{LEDGER}"), carried_ws.clone());
+        ov.set(LEDGER, carried_ws);
+        ov.set(
+            "crates/busbar-transport-ws/src/planted_socket.rs",
+            "pub fn dial() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a framer's carrier line, carried by the base, is refused and exempts nothing",
+            &[ROW_SCOPE, ROW_NEW],
+            ov,
+            &[
+                "busbar-transport-ws",
+                "is no carrier",
+                "new-offender",
+                "std::net",
+            ],
         ));
         // A GROUPED IMPORT: `std::{io, net::TcpStream}` names `std::net` as a path, not as text.
         let mut ov = Overlay::new();
@@ -1331,11 +1489,12 @@ impl Gate for DepWallGate {
             ov,
             &["minted", "busbar-plane-llm", "std::net"],
         ));
-        // A CARRIER MINTED IN THIS CHANGE, on a real transport crate the workspace resolves.
+        // A CARRIER MINTED IN THIS CHANGE, on a spec carrier the workspace resolves: Law 9 alone
+        // refuses it.
         let mut ov = based();
         ov.set(
             LEDGER,
-            format!("{}\ncarrier\tbusbar-transport-ws\n", held.trim_end()),
+            format!("{}\ncarrier\tbusbar-transport-tcp\n", held.trim_end()),
         );
         report.push(prove_red(
             cx,
@@ -1343,7 +1502,7 @@ impl Gate for DepWallGate {
             "a carrier exemption the base ledger does not carry is refused",
             &[ROW_SCOPE],
             ov,
-            &["busbar-transport-ws", "carries no such line"],
+            &["busbar-transport-tcp", "carries no such line"],
         ));
         // A DRAINED PIN: a pin for an offence the tree does not have must be struck.
         let mut ov = Overlay::new();
@@ -1362,7 +1521,7 @@ impl Gate for DepWallGate {
             ov,
             &["drained", "busbar-plane-decisions", "reqwest"],
         ));
-        // A CARRIER EXEMPTION ON A CRATE THAT IS NOT A TRANSPORT is refused.
+        // A CARRIER EXEMPTION ON A CRATE THAT IS NO CARRIER is refused.
         let mut ov = Overlay::new();
         ov.set(
             LEDGER,
@@ -1374,10 +1533,10 @@ impl Gate for DepWallGate {
         report.push(prove_red(
             cx,
             self,
-            "only a transport crate may be exempted as a carrier",
+            "only a carrier the spec names may be exempted as one",
             &[ROW_SCOPE],
             ov,
-            &["busbar-plane-decisions", "not a transport crate"],
+            &["busbar-plane-decisions", "is no carrier"],
         ));
         report
     }
