@@ -475,7 +475,11 @@ impl RateCard {
     /// **THE OPEN CLASSES a deployment configured** (item 123): each `(lane, class)` cell set to an
     /// integer nano-unit rate that was parsed EXACTLY at the config boundary, so no decimal and no
     /// second quantisation enters here. The reserved four keep arriving through [`Self::from_config`]
-    /// byte-identically; this only ADDS cells beside them, on the lanes the card already names.
+    /// byte-identically; this sets the open classes' cells beside them. A cell on a lane
+    /// the card did not name yet NAMES that lane: the card then holds that open class's rate on it
+    /// and no rate for any other class there, so a hit on another class refuses as an unpriced
+    /// class (#42) where it refused as an unpriced lane before — a refusal either way, and no
+    /// figure moves.
     ///
     /// ABSENT STAYS ABSENT. An absent card is billing off (#42): every class prices at nothing, so
     /// open rates configured nowhere have nowhere to land and are ignored rather than switching

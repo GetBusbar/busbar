@@ -2104,7 +2104,7 @@ pub(crate) fn unauthorized_with_completion_taps(
         // `spawn_bounded_tap` are retired with this move so the cap is never split into two gates. The
         // host is minted over `app` (an alloc-free `engine_host_value`); the group-scope walk folds
         // `&app.groups_registry` in host-side, byte-identical to the former raw-tree walk.
-        let host = crate::plane_host::engine_host_value(app);
+        let host = crate::plane_driver::engine_host_value(app);
         busbar_kernel::proxy::proxy_vocab::fire_stage_taps(
             &app.tap_hooks_response,
             &shape,
