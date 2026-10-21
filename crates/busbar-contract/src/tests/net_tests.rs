@@ -22,8 +22,8 @@ fn every_bypass_spelling_reads_the_host_the_dialler_reads() {
     let rows: &[Row] = &[
         // The authority ends at `#` under RFC 3986, so the `@` after it is not a userinfo marker.
         (
-            "ldap://evil.example#@127.0.0.1",
-            ("ldap", false, "evil.example", None, "#@127.0.0.1"),
+            "ldaps://evil.example#@127.0.0.1",
+            ("ldaps", false, "evil.example", None, "#@127.0.0.1"),
             false,
             false,
         ),
@@ -85,8 +85,8 @@ fn every_bypass_spelling_reads_the_host_the_dialler_reads() {
             false,
         ),
         (
-            "ldap://u@db.internal:389/x",
-            ("ldap", true, "db.internal", Some(389), "/x"),
+            "ldaps://u@db.internal:389/x",
+            ("ldaps", true, "db.internal", Some(389), "/x"),
             false,
             false,
         ),
@@ -104,8 +104,8 @@ fn every_bypass_spelling_reads_the_host_the_dialler_reads() {
             false,
         ),
         (
-            "ldap://[::1]",
-            ("ldap", false, "::1", None, ""),
+            "ldaps://[::1]",
+            ("ldaps", false, "::1", None, ""),
             true,
             false,
         ),

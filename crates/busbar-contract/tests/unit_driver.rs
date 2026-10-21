@@ -23,7 +23,7 @@ const OP: Operation = Operation {
 const SURFACE: WireSurface = WireSurface {
     bindings: &[BindingDecl {
         name: "b",
-        transport: "http",
+        transport: "carrier",
         mounts: &[],
     }],
     operations: &[OP],
@@ -33,8 +33,8 @@ fn arrival<'a>(facts: &'a [(&'a str, &'a str)]) -> Arrival<'a> {
     Arrival {
         facts,
         body: b"{}",
-        transport: "http",
-        chain: &["tcp", "http"],
+        transport: "carrier",
+        chain: &["link", "carrier"],
         operation: Some(&OP),
         bar: Bar::Open,
     }
