@@ -19,7 +19,7 @@
 //! `linked-axes` row carries (build.rs emits only declared axes, but a cfg it does not declare is an
 //! `unexpected_cfgs` error under CI's `-D warnings`, so no compiled code can name one);
 //! `linked_section_<section>`; `linked_driver_proofs`; `linked_every_plane`;
-//! `linked_every_plane_door`; `linked_operator_auth`. Anything else (`unix`, `miri`,
+//! `linked_every_plane_door`; `linked_every_auth`; `linked_operator_auth`. Anything else (`unix`, `miri`,
 //! `target_os = ..`, a `linked_*` family not listed here) is UNKNOWN, and an unknown cfg on a cited
 //! cell's way is a refusal naming it: a cell CI is not shown to run is not evidence. The fix for a
 //! refusal that should pass is to teach this module the cfg, never to drop the check.
@@ -39,6 +39,7 @@ const DERIVED_FLAGS: &[&str] = &[
     "linked_driver_proofs",
     "linked_every_plane",
     "linked_every_plane_door",
+    "linked_every_auth",
     "linked_operator_auth",
 ];
 
@@ -125,6 +126,10 @@ impl CiBuild {
         }
         if every("plane-door") {
             cfgs.insert("linked_every_plane_door".to_string());
+        }
+        // build.rs `AUTH_AXIS`: every linked row on the `auths` axis is enabled.
+        if every("auths") {
+            cfgs.insert("linked_every_auth".to_string());
         }
         if doc
             .table("package.metadata.busbar.operator-auth")

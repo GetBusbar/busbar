@@ -84,6 +84,22 @@ fn the_ci_build_is_the_default_rows_closure_and_the_cfgs_its_rows_emit() {
     assert_eq!(b.eval("all(test"), Tri::Unknown, "unbalanced");
 }
 
+/// `linked_every_auth` (build.rs `AUTH_AXIS`, `auths`): on only while every row on that axis is
+/// enabled. A cell under it once read UNKNOWN, refusing a cited test CI's build does run.
+#[test]
+fn every_auth_is_on_only_while_every_auths_row_is_enabled() {
+    let manifest = |default: &str| {
+        format!(
+            "[features]\ndefault = [{default}]\nauth-a = []\nauth-b = []\n\n\
+             [package.metadata.busbar.linked-axes]\nauth-a = \"auths\"\nauth-b = \"auths\"\n"
+        )
+    };
+    let all = CiBuild::of_manifest(&manifest("\"auth-a\", \"auth-b\"")).expect("a default row");
+    assert_eq!(all.eval("all(test,linked_every_auth)"), Tri::Yes);
+    let one = CiBuild::of_manifest(&manifest("\"auth-a\"")).expect("a default row");
+    assert_eq!(one.eval("linked_every_auth"), Tri::No, "auth-b is off");
+}
+
 #[test]
 fn a_manifest_with_no_default_row_is_refused() {
     assert!(CiBuild::of_manifest("[features]\nx = []\n").is_err());

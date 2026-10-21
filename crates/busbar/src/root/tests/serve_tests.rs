@@ -4653,7 +4653,7 @@ async fn the_pools_door_seals_one_audit_record_per_unit() {
     assert_eq!(rig.audit_records(), 1, "one record for the one unit");
 }
 
-/// AUDIT-CHAIN, ON ONE TAMPER-EVIDENT CHAIN (Law 10, status row 178): every unit the llm door
+/// AUDIT-CHAIN, ON ONE TAMPER-EVIDENT CHAIN (Law 10, status row 178): every unit the pools door
 /// answers, served (a dispatched completion) or refused inside the loop (a key whose budget the
 /// first unit spent), seals ONE record on the node's audit chain, the second the first's
 /// successor; the chain walks clean, and a record altered after its seal (the served unit re-told
@@ -4665,7 +4665,7 @@ async fn the_pools_door_seals_one_audit_record_per_unit() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_seals_every_unit_served_or_refused_on_one_tamper_evident_chain() {
     let _one = ONE_PUBLISHER.lock().await;
-    let instance = "serve-door-llm-audit-chain";
+    let instance = "serve-door-pools-audit-chain";
     let _published = Withdrawn(instance);
     let far = seat_far_end(200, SERVED_BY_TWIN).await;
     let rig = rig(
