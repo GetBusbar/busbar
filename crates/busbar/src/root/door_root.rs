@@ -8,7 +8,7 @@
 //!
 //! A DOOR-ROOT crate is the one the loader's `[package.metadata.busbar.door-root]` table names: its
 //! edge is the loader's, which admits its door through `open_linked` (the `dlopen` path's own
-//! checks) and hands this root only the admitted door (`busbar_plugin_loader::linked`). The root
+//! checks) and hands this root only the admitted door (`crate::root::loader::linked`). The root
 //! names nothing of the crate: the generated tables hold a forwarder of the admitted door
 //! (`src/linked_gen.rs`), and every fact a row's axis needs is read here, off that door's Statement
 //! (A.2, l.3564-3577), through the loader's validation ([`LinkedRow::of`]) and the one rendering
@@ -16,7 +16,7 @@
 //!
 //! * every row: its kind, which must be its axis's kind;
 //! * a transport row: its key, layers and session (`crate::root::doors::row_facts`);
-//! * an auth row: its Statement name, which must be the canonical name its row states;
+//! * an auth row: its Statement name, which must be the registry key its row states (`linked-name`);
 //! * a store row: its key (its Statement name, which must be the `linked-name` its row states, if
 //!   any) and whether it is ephemeral (`MARK_EPHEMERAL`); its canonical name is its row's
 //!   (`linked-canonical`, else its crate's package name: the Statement has no home for it);
@@ -132,7 +132,7 @@ pub fn stated_or_refused(cell: &'static OnceLock<Stated>, door: DoorFn) -> &'sta
 
 /// ONE DOOR-ROOT ROW, as the generated table states it: the crate, the axis it registers on, the
 /// forwarder of its admitted door, its cell, and the name its row states where its axis names one
-/// (an auth row's canonical name, a store's `linked-name`), which its Statement must state.
+/// (an auth row's or a store's `linked-name`), which its Statement must state.
 #[derive(Debug, Clone, Copy)]
 pub struct DoorRoot {
     /// The crate (as the loader's table and every refusal name it).
@@ -174,13 +174,14 @@ fn kind_of(axis: &str) -> Option<KindCode> {
         "auths" => KindCode::Auth,
         "export-doors" => KindCode::Export,
         "stores" => KindCode::Store,
-        "hooks" => KindCode::Hook,
+        // The hook axis is spelled as the hook kind's root key, read off the one list.
+        _ if axis == busbar_contract::plugin::Kind::Hook.root() => KindCode::Hook,
         _ => return None,
     })
 }
 
 /// THE BOOT'S CHECK OF EVERY DOOR-ROOT ROW (`main.rs` runs it before anything registers): its
-/// crate's door admitted by the loader (`busbar_plugin_loader::linked::door`: `open_linked`, the
+/// crate's door admitted by the loader (`crate::root::loader::linked::door`: `open_linked`, the
 /// `dlopen` path's checks, and the same refusal word for word), then [`check_statements`].
 ///
 /// # Errors

@@ -393,7 +393,7 @@ fn test_linked_source(manifest: &str) -> String {
     for id in &doors {
         // A door-root crate's door is the loader's admitted one, through a forwarder (status row 195).
         if let Some((krate, _)) = door_roots.iter().find(|(k, _)| ident(k.as_str()) == *id) {
-            forwarders.push_str(&door_root_forwarder(krate));
+            forwarders.push_str(&door_root_forwarder(krate, "::busbar_plugin_loader"));
             out.push_str(&format!("    ({id:?}, {}),\n", door_root_fn(krate)));
             continue;
         }
@@ -851,7 +851,7 @@ fn linked_plane_doors_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> 
             // defines; a transitional one its entry's.
             let (door, root) = door_of(manifest, &krate, &entry);
             if root {
-                forwarders.push_str(&door_root_forwarder(&krate));
+                forwarders.push_str(&door_root_forwarder(&krate, "::busbar_plugin_loader"));
                 out.push_str(&format!("    {door},\n"));
             } else {
                 out.push_str(&format!("    ::{door},\n"));
@@ -899,7 +899,7 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
         // file defines, else its entry's (status row 195).
         let (door_fn, root) = door_of(manifest, &krate, &entry);
         let door_fn = if root {
-            door_builds.push_str(&door_root_forwarder(&krate));
+            door_builds.push_str(&door_root_forwarder(&krate, "::busbar_plugin_loader"));
             door_fn
         } else {
             format!("::{door_fn}")

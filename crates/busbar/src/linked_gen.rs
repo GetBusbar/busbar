@@ -164,7 +164,7 @@ fn metadata_value(manifest: &str, table: &str, key: &str) -> Option<String> {
 /// the crate's implicit feature; `build.rs` appends the table, handed over by the loader's build
 /// script as cargo metadata, to the manifest it hands this generator). A crate
 /// named there is DOOR-ROOT: the root names nothing of it, and each of its rows reads the door the
-/// loader admitted (`busbar_plugin_loader::linked::door`, through a generated forwarder, see
+/// loader admitted (`crate::root::loader::linked::door`, through a generated forwarder, see
 /// [`door_root_forwarder`]) and every fact its axis needs off that door's Statement
 /// (`crate::root::door_root`). A crate not named there is TRANSITIONAL and keeps its entry's reads
 /// (`linked-entry`, else `<crate>::linked`), so a fleet that has not converged still links; the
@@ -214,16 +214,16 @@ pub(crate) fn door_root_fn(krate: &str) -> String {
 }
 
 /// A DOOR-ROOT CRATE'S DOOR, as the generated tables hold it: a door function of the root's own that
-/// answers the door the loader admitted (`busbar_plugin_loader::linked::door`: the crate's `door`
+/// answers the door the loader admitted (`<loader>::linked::door`: the crate's `door`
 /// through `open_linked`, sharing the `dlopen` path's checks) and NULL where the loader refused it
 /// (the boot refuses that row first, with the loader's words: `crate::root::door_root::check`).
 /// Calling a door function is safe; so is this one, and the root names nothing of the crate.
-pub(crate) fn door_root_forwarder(krate: &str) -> String {
+pub(crate) fn door_root_forwarder(krate: &str, loader: &str) -> String {
     format!(
         "/// The door of door-root crate `{krate}`, as the loader admitted it.\n\
          #[allow(dead_code)]\n\
          extern \"C\" fn {name}() -> *const ::busbar_contract::abi::mechanism::door::Door {{\n    \
-         ::busbar_plugin_loader::linked::door({krate:?})\n        \
+         {loader}::linked::door({krate:?})\n        \
          .map_or(::std::ptr::null(), |door| (door.door_fn())())\n\
          }}\n",
         name = door_root_fn(krate)
@@ -244,8 +244,16 @@ pub(crate) const DOOR_ROOT_AXES: &[&str] = &[
     AUTH_AXIS,
     EXPORT_DOOR_AXIS,
     "stores",
-    "hooks",
 ];
+
+/// Whether `axis` is one a door-root row may name: [`DOOR_ROOT_AXES`], or the hook axis (read off
+/// [`AXES`] by the field it fills, so its root key is spelled once).
+pub(crate) fn is_door_root_axis(axis: &str) -> bool {
+    DOOR_ROOT_AXES.contains(&axis)
+        || AXES
+            .iter()
+            .any(|(a, field, _)| *field == "hook_doors" && *a == axis)
+}
 
 /// The `key = "value"` rows of the `[table]` header, or none when the manifest has no such table:
 /// the optional twin of [`metadata_map`], for a table only some builds carry.
@@ -310,7 +318,7 @@ pub(crate) fn door_root_cell(krate: &str) -> String {
 pub(crate) fn check_door_root(manifest: &str, feature: &str, krate: &str, axes: &[String]) {
     for axis in axes {
         assert!(
-            DOOR_ROOT_AXES.contains(&axis.as_str()),
+            is_door_root_axis(axis),
             "Cargo.toml: `{krate}` is door-root (`[{DOOR_ROOT}]`): its rows read its `door` and \
              nothing else, but `{feature}` names the `{axis}` axis, which reads a kernel-typed item \
              of the crate's; a plugin talks to the host only over its door"
@@ -549,7 +557,7 @@ pub(crate) fn linked_source(
                  #[allow(dead_code)]\n\
                  static {}: ::std::sync::OnceLock<crate::root::door_root::Stated> =\n    \
                  ::std::sync::OnceLock::new();\n",
-                door_root_forwarder(krate),
+                door_root_forwarder(krate, "crate::root::loader"),
                 door_root_cell(krate)
             );
             if !externs.contains(&line) {
@@ -624,9 +632,12 @@ pub(crate) fn linked_source(
             continue;
         }
         if *root {
-            let canonical =
-                metadata_value(manifest, "package.metadata.busbar.linked-canonical", feature)
-                    .unwrap_or_else(|| krate.clone());
+            let canonical = metadata_value(
+                manifest,
+                "package.metadata.busbar.linked-canonical",
+                feature,
+            )
+            .unwrap_or_else(|| krate.clone());
             out.push_str(&format!(
                 "crate::root::door_root::store_row(&crate::{}, {door}, {canonical:?}), ",
                 door_root_cell(krate)
@@ -808,14 +819,12 @@ pub(crate) fn linked_source(
             continue;
         }
         for axis in list {
+            // The name its Statement must state: an auth row's registry key (`linked-name`, the
+            // name config and every surface use, which its door states), a store's `linked-name`.
             let name = match axis.as_str() {
-                AUTH_AXIS => metadata_value(
-                    manifest,
-                    "package.metadata.busbar.linked-canonical",
-                    feature,
-                )
-                .or_else(|| metadata_value(manifest, "package.metadata.busbar.linked-name", feature)),
-                "stores" => metadata_value(manifest, "package.metadata.busbar.linked-name", feature),
+                AUTH_AXIS | "stores" => {
+                    metadata_value(manifest, "package.metadata.busbar.linked-name", feature)
+                }
                 _ => None,
             };
             out.push_str(&format!(

@@ -457,7 +457,7 @@ busbar-hook-x = "busbar_hook_x::door"
         ),
         ("hook_doors: &[crate::__door_root_busbar_hook_x, ],", "the hook row"),
         (
-            "extern \"C\" fn __door_root_busbar_wire() -> *const ::busbar_contract::abi::mechanism::door::Door {\n    ::busbar_plugin_loader::linked::door(\"busbar-wire\")",
+            "extern \"C\" fn __door_root_busbar_wire() -> *const ::busbar_contract::abi::mechanism::door::Door {\n    crate::root::loader::linked::door(\"busbar-wire\")",
             "the transport row's forwarder",
         ),
     ] {
@@ -481,7 +481,7 @@ busbar-hook-x = "busbar_hook_x::door"
     // Every door-root row is listed for the boot's check, with the name its row states where its
     // axis names one.
     for want in [
-        "row: \"busbar-auth-x\", axis: \"auths\", door: crate::__door_root_busbar_auth_x, facts: &crate::__DOOR_ROOT_FACTS_BUSBAR_AUTH_X, name: Some(\"busbar-auth-x\")",
+        "row: \"busbar-auth-x\", axis: \"auths\", door: crate::__door_root_busbar_auth_x, facts: &crate::__DOOR_ROOT_FACTS_BUSBAR_AUTH_X, name: Some(\"x-key\")",
         "row: \"busbar-store-x\", axis: \"stores\", door: crate::__door_root_busbar_store_x, facts: &crate::__DOOR_ROOT_FACTS_BUSBAR_STORE_X, name: None",
         "row: \"busbar-plane-x\", axis: \"plane-door\", door: crate::__door_root_busbar_plane_x, facts: &crate::__DOOR_ROOT_FACTS_BUSBAR_PLANE_X, name: None",
     ] {

@@ -116,8 +116,8 @@ fn a_door_root_transport_row_boots_off_its_door() {
     assert_eq!(read(door).expect("it states itself").name, key);
 }
 
-/// GREEN: A DOOR-ROOT AUTH ROW: its door states the auth kind and is named as its row's canonical
-/// name (`linked-canonical`, else its key), the name its signed tarball's manifest states.
+/// GREEN: A DOOR-ROOT AUTH ROW: its door states the auth kind and is named as its row's registry key
+/// (`linked-name`, the name config and every surface use).
 #[cfg(linked_axis_auths)]
 #[test]
 fn a_door_root_auth_row_is_named_its_canonical_name() {
@@ -125,7 +125,7 @@ fn a_door_root_auth_row_is_named_its_canonical_name() {
         .auths
         .iter()
         .enumerate()
-        .map(|(n, (_, canonical, door))| row(8 + n, "auths", *door, Some(*canonical)))
+        .map(|(n, (key, _, door))| row(8 + n, "auths", *door, Some(*key)))
         .collect();
     assert!(!rows.is_empty(), "the auth axis is linked");
     assert!(rows.len() <= 8, "the auth rows fit their cells");
@@ -133,18 +133,27 @@ fn a_door_root_auth_row_is_named_its_canonical_name() {
 }
 
 /// GREEN: A DOOR-ROOT EXPORT ROW states what its crate's `NAME`, `ALIAS` and `DECLARES` state: its
-/// Statement's name, its ONE `REWRITE_ALIAS`, and, where it states a `declares` document, the same
-/// JSON as the constant.
+/// Statement's name always; its `REWRITE_ALIAS`, wherever it states one, is exactly the one `ALIAS`;
+/// and its `declares`, wherever it states one, is the same JSON as the constant. A transitional
+/// crate that states no alias yet (its constant is read) cannot go door-root until it does:
+/// `check_statements` refuses an export row stating other than one alias.
 #[cfg(linked_axis_export_doors)]
 #[test]
 fn a_door_root_export_row_states_what_its_constants_state() {
     for linked in crate::LINKED.export_doors.iter() {
         let stated = read(linked.door).expect("it states itself");
         assert_eq!(
-            (stated.name.as_str(), stated.aliases.as_slice()),
-            (linked.name, [linked.alias.to_owned()].as_slice()),
-            "the Statement states the name and the one alias the crate's constants state"
+            stated.name, linked.name,
+            "the Statement states the crate's NAME"
         );
+        if !stated.aliases.is_empty() {
+            assert_eq!(
+                stated.aliases,
+                [linked.alias.to_owned()],
+                "`{}`: the Statement states exactly the crate's one ALIAS",
+                linked.name
+            );
+        }
         if let Some(document) = &stated.declares {
             assert_eq!(json(document), json(linked.declares), "`{}`", linked.name);
         }
