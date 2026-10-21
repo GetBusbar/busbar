@@ -4084,6 +4084,11 @@ impl FarEnd for DoorFar<'_, '_> {
         self.far().and_then(|far| far.failure(token))
     }
 
+    /// Why nothing left, when no attempt of the walk sent its request, read off the walk.
+    fn unsent(&self, token: &Pass<Route>) -> Option<busbar_contract::abi::plane::RefusalCode> {
+        self.far().and_then(|far| far.unsent(token))
+    }
+
     fn candidates(&self, token: &Pass<Route>) -> Option<busbar_kernel::plane_driver::Candidates> {
         self.far().and_then(|far| far.candidates(token))
     }
