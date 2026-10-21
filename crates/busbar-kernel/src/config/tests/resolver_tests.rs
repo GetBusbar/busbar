@@ -21,12 +21,12 @@ fn resolver_builtins_resolve_without_plugin() {
 fn resolver_unknown_module_without_plugin_fails_closed() {
     let r = SecretResolver::builtins_only();
     let s = SecretRef {
-        module: "vault".to_string(),
+        module: "alpha-module".to_string(),
         settings: serde_json::Map::new(),
     };
     let err = r.resolve(&s).unwrap_err();
     assert!(
-        err.contains("vault") && err.contains("fail-closed"),
+        err.contains("alpha-module") && err.contains("fail-closed"),
         "unknown module with no plugin refuses: {err}"
     );
 }
@@ -35,9 +35,9 @@ fn resolver_unknown_module_without_plugin_fails_closed() {
 /// are both fail-closed.
 #[test]
 fn resolver_delegates_to_plugin_and_fails_closed_on_empty_or_error() {
-    // Plugin that returns bytes for `vault` and errors for anything else.
+    // Plugin that returns bytes for `alpha-module` and errors for anything else.
     let r = SecretResolver::with_plugin(Box::new(|module: &str, settings: &str| {
-        if module == "vault" {
+        if module == "alpha-module" {
             let v: serde_json::Value = serde_json::from_str(settings).unwrap();
             match v.get("path").and_then(|p| p.as_str()) {
                 Some("kv/ok") => Ok(b"plugin-secret".to_vec()),
@@ -55,7 +55,7 @@ fn resolver_delegates_to_plugin_and_fails_closed_on_empty_or_error() {
             serde_json::Value::String(path.to_string()),
         );
         SecretRef {
-            module: "vault".to_string(),
+            module: "alpha-module".to_string(),
             settings,
         }
     };

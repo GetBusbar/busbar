@@ -5,7 +5,7 @@
 //! plane, and a resolver that REFUSES a cross-plane reference by name.
 //!
 //! The fixture below uses three purely synthetic plane keys (`"alpha"`/`"beta"`/`"gamma"`) rather
-//! than the real `"llm"`/`"mcp"`/`"a2a"`: this is a generic multi-tenant CONTAINER's own test, and it
+//! than any real plane key: this is a generic multi-tenant CONTAINER's own test, and it
 //! asserts nothing about what any real plane IS or DOES — see
 //! [`crate::plane::isolated_three_plane_test_registry`]'s doc. The one test here that DID need a real
 //! plane's own section-name prose (`the_refusal_message_is_actionable`) moved to

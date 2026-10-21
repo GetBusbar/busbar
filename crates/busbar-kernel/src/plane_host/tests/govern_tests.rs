@@ -218,7 +218,7 @@ fn the_real_callers_chain_decides_the_admission() {
 
 /// THE GOVERN-REFUSAL FAITHFULNESS PROOF: for every blocked-limit shape, the host admission yields a
 /// refusal with the SAME rendered reason bytes as the direct `try_admit(...)`→`format!("{blocked:?}")`
-/// the mcp `charge_round` returns today. Covers `MissingGroup`, `Disabled`, and an exhausted
+/// a door plane's `charge_round` returns today. Covers `MissingGroup`, `Disabled`, and an exhausted
 /// `Limit{..}`.
 #[test]
 fn govern_admit_reason_reason_bytes_match_direct_try_admit() {
@@ -238,7 +238,7 @@ fn govern_admit_reason_reason_bytes_match_direct_try_admit() {
         for _ in 0..drain {
             let _ = gov.try_admit(&cost, &key, pool, now);
         }
-        // DIRECT: the exact `LimitBlocked` the mcp `charge_round` renders today.
+        // DIRECT: the exact `LimitBlocked` a door plane's `charge_round` renders today.
         let blocked = gov
             .try_admit(&cost, &key, pool, now)
             .expect_err("this shape must block");

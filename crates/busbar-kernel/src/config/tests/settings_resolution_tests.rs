@@ -89,7 +89,7 @@ fn unknown_secret_module_in_setting_fails_closed() {
     let settings = obj(&[(
         "licenseKey",
         // settings-leak-lint: allow — test fixture: a `kind: secret` module reference, not a response body.
-        serde_json::json!({ "module": "vault", "settings": { "path": "kv/license" } }),
+        serde_json::json!({ "module": "alpha-module", "settings": { "path": "kv/license" } }),
     )]);
     let err = resolve_settings(
         &settings,

@@ -12,8 +12,8 @@
 //!
 //! `zeta` is a JSON-RPC protocol with:
 //!
-//! * a **flat error envelope** — `{"zeta": 1, "fault": {...}}` — which is neither MCP's JSON-RPC
-//!   error object nor A2A's ProtoJSON `details` array. If any refusal shape were still core's, one
+//! * a **flat error envelope** — `{"zeta": 1, "fault": {...}}` — which is neither a JSON-RPC
+//!   error object nor a ProtoJSON `details` array. If any refusal shape were still core's, one
 //!   of these assertions would come back carrying a `jsonrpc` member.
 //! * **`409` for a malformed envelope** where both real planes answer `400`, and **`418` for a
 //!   method it does not serve** where both answer `404`. A status core decided rather than the
@@ -21,7 +21,7 @@
 //! * a **two-verb vocabulary** (`zeta.ping`, `zeta.echo`) with no `_meta`, no mirrored headers and
 //!   no media-type gate.
 //! * an RFC 9728 document with **scopes and no authorization servers**, which is a third
-//!   combination — MCP publishes servers, A2A publishes neither.
+//!   combination — one real plane publishes servers, another publishes neither.
 //!
 //! ## What `zeta` costs, counted
 //!
@@ -313,7 +313,7 @@ fn a_declared_route_inherits_the_bar_beside_its_mount() {
 
 /// LOOPBACK IS ADMITTED UNCONDITIONALLY, AND `null` IS NOT LOOPBACK.
 ///
-/// The rule that moved out of `mcp/ingress.rs` when A2A turned out never to have had one. `null` is
+/// The rule that moved out of a plane's ingress module when a second plane turned out never to have had one. `null` is
 /// what a sandboxed iframe and a `file://` document send, and reading it as local would admit
 /// exactly the contexts that deliberately have no origin.
 #[test]

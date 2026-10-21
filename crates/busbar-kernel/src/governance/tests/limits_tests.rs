@@ -1205,12 +1205,12 @@ fn an_open_class_the_present_card_does_not_price_refuses_and_absent_reads_zero()
     );
 }
 
-/// A plane declaring token-family classes beside a duration class — the streaming plane's shape.
+/// A plane declaring token-family classes beside a duration class — a token-and-duration plane's shape.
 static TOKEN_FAMILY_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
     declaration: crate::plane::registry::PlaneDeclaration {
         key: "token-family-plane",
         fallback: false,
-        config_section: "streams",
+        config_section: "family-section",
         scope_kinds: &[],
         subject_noun: "stream",
         admin_noun: "stream",

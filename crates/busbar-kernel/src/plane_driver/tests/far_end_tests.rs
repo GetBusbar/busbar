@@ -2498,7 +2498,7 @@ fn head_then_body_502() -> Rig {
     )
 }
 
-/// RED (row 68, the a2a lane's measurement): the head piece read with NO reading keeps the hold;
+/// RED (row 68, the door lane's measurement): the head piece read with NO reading keeps the hold;
 /// the body piece the plane reads as HEALTHY takes it and records a SUCCESS.
 #[tokio::test]
 async fn a_502_head_with_no_reading_then_a_healthy_body_records_success() {

@@ -98,7 +98,7 @@ fn a_plugin_sink_sheds_deliveries_beyond_its_inflight_cap() {
         "a released slot admits again"
     );
 
-    let stated = Admission::of("k9-tail", Some((true, 3, "webhook".into())));
+    let stated = Admission::of("k9-tail", Some((true, 3, "sink-gate-a".into())));
     let held = fill(&stated, 3);
     assert!(
         stated.gate.try_enter().is_none(),
@@ -115,11 +115,11 @@ fn a_plugin_sink_sheds_deliveries_beyond_its_inflight_cap() {
 }
 
 /// Each configured instance holds its OWN admission gate: one saturated instance never consumes a
-/// sibling's budget (the per-instance posture the request-log webhook always had).
+/// sibling's budget (the per-instance posture the first request-log sink always had).
 #[test]
 fn each_plugin_sink_instance_gets_its_own_admission_gate() {
-    let a = Admission::of("request-log-webhook", Some((true, 1, "webhook".into())));
-    let b = Admission::of("request-log-webhook", Some((true, 1, "webhook".into())));
+    let a = Admission::of("sink-module-a", Some((true, 1, "sink-gate-a".into())));
+    let b = Admission::of("sink-module-a", Some((true, 1, "sink-gate-a".into())));
     let _held = a.gate.try_enter().expect("a admits one");
     assert!(a.gate.try_enter().is_none(), "a is saturated");
     assert!(

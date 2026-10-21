@@ -97,8 +97,8 @@ fn red_a_member_whose_auth_matches_no_need_refuses_the_load() {
 #[test]
 fn a_member_binds_every_need_its_auth_names_one_per_transport() {
     let needs = [
-        need_over(DIRECTION_INBOUND, "ws", "key-a"),
-        need_over(DIRECTION_OUTBOUND, "ws", "key-a"),
+        need_over(DIRECTION_INBOUND, "carrier-a", "key-a"),
+        need_over(DIRECTION_OUTBOUND, "carrier-a", "key-a"),
         need_over(DIRECTION_OUTBOUND, "http", "key-a"),
         need_over(DIRECTION_OUTBOUND, "http", "key-b"),
     ];

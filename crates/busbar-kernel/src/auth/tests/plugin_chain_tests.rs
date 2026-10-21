@@ -14,7 +14,7 @@
 //! The kernel's tests name no auth plugin (R-FIX3): a chain position here is an in-process test
 //! module (`auth::stand_in`), and an auth row that must not load is a structurally valid tarball whose
 //! library bytes are not a library. The FULL-CHAIN proofs over the REAL token-verifying module
-//! (GetBusbar/busbar-auth-oidc, R-FIX2: a signed JWT through the dropped-in door, a secret-ref setting
+//! (the token-verifying auth plugin's own repo, R-FIX2: a signed JWT through the dropped-in door, a secret-ref setting
 //! delivered to it, the admin chain rebuilt on reload, the login-capability gate) live with the
 //! composition root, which links it: `crates/busbar/tests/auth_plugin_chain.rs`.
 //!

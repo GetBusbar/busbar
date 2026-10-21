@@ -217,7 +217,7 @@ fn signer_debug_redacts_key() {
 /// pinned here.
 ///
 /// These vectors were captured from the implementation as it stood BEFORE the function moved out of
-/// the A2A plane into governance, and independently reproduced as
+/// a door plane into governance, and independently reproduced as
 /// `SHA-256("busbar/subkey/v1" ‖ secret ‖ domain)` outside this codebase — so they pin the
 /// construction, not merely whatever the current code happens to emit. The two vectors over
 /// `example-plane/artifact-signing/v1` stand in the neutral kernel for a plane's own domain; they
@@ -275,7 +275,7 @@ fn subkey_seed_derives_the_exact_pinned_bytes() {
     );
 }
 
-/// The method on the signer is the free function over the signer's own secret — the seam the A2A
+/// The method on the signer is the free function over the signer's own secret — the seam a door
 /// plane's `CardSigner` actually calls. Pinned end-to-end so the move cannot have changed what a
 /// caller holding a TokenSigner gets, only where the code lives.
 #[test]

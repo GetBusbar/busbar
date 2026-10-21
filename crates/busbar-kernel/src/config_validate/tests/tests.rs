@@ -989,7 +989,7 @@ fn test_validate_rejects_oversized_max_concurrent() {
 /// The exact same `Semaphore::new` panic precondition, on the two sibling
 /// operator-config values that feed a `Semaphore::new` with no bound of their own —
 /// `limits.max_inbound_concurrent` (tower's `GlobalConcurrencyLimitLayer`, main.rs). (The webhook
-/// sink's `max_inflight_deliveries` is the sink's own check now — `busbar-export-webhook`'s
+/// sink's `max_inflight_deliveries` is the sink's own check now — that sink's own test
 /// `the_validation_phase_checks_are_the_compiled_in_sinks_lines`, same boundary.) This test exists
 /// so the class stays closed if the call site changes independently of `models.<m>.max_concurrent`.
 #[test]
@@ -1778,7 +1778,7 @@ fn validate_admin_scope_mint_now_errors() {
 
 /// 1.5.2: a NON-BUILTIN module name in `admin_auth` (an external `kind: auth` plugin backing the
 /// privileged mint path) is no longer statically rejected by config_validate — it resolves at LOAD,
-/// exactly as a module name in `auth.chain` does. So `admin_auth: [oidc-admin]` must NOT produce an
+/// exactly as a module name in `auth.chain` does. So `admin_auth: [session-admin]` must NOT produce an
 /// "unknown module" error here.
 #[test]
 fn validate_admin_auth_plugin_name_no_longer_rejected() {
@@ -1786,7 +1786,7 @@ fn validate_admin_auth_plugin_name_no_longer_rejected() {
     let mut cfg = make_root_cfg(providers, models, pools);
     cfg.admin_auth = vec![
         crate::config::operator_provider().to_string(),
-        "oidc-admin".to_string(),
+        "session-admin".to_string(),
     ];
     let res = validate(&cfg);
     if let Err(errs) = res {
@@ -1943,7 +1943,7 @@ fn test_validate_chain_unknown_module_rejected_keys_accepted() {
     // (`auth.chain module '{name}' does not match any plugin in ...`), run right after this one. A
     // plugin-shaped name (like `okta`, standing in for any real IdP plugin alias) must therefore NOT
     // be rejected at THIS layer -- an earlier version of this rule hard-rejected every non-`keys`
-    // name right here, which meant NO `kind: auth` plugin (including the real `auth-oidc` plugin)
+    // name right here, which meant NO `kind: auth` plugin (including every real token-verifying plugin)
     // could ever pass config_validate, since this always-first check always lost before the
     // plugin-aware one got a chance to run. See `crates/busbar/tests/cli_validate.rs`'s
     // `validate_fails_on_unresolvable_auth_chain_plugin` for the regression test proving the LATER
@@ -3925,7 +3925,7 @@ fn make_provider_allow_hosts(base_url: &str, hosts: &[&str]) -> config::Provider
 fn test_local_upstreams_allowed_by_default_no_flag() {
     // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
-    // The core use case: an operator fronts a local Ollama / vLLM / LM Studio. Under the
+    // The core use case: an operator fronts a local model server. Under the
     // metadata-denylist model this validates with NO flag — plain http:// is allowed because the
     // host is private/loopback, and the SSRF guard allows everything that is not metadata.
     for base in [
@@ -5229,14 +5229,14 @@ fn test_validate_secret_module_resolvability() {
     // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     // A NON-built-in module (a `kind: secret` PLUGIN reference such
-    // as `vault`) is the marquee 1.5.0 "secrets are plugins" feature. `validate` runs BEFORE the
-    // plugin registry exists, so it CANNOT tell an installed vault plugin from a typo — the
+    // as `alpha-module`) is the marquee 1.5.0 "secrets are plugins" feature. `validate` runs BEFORE the
+    // plugin registry exists, so it CANNOT tell an installed secret plugin from a typo — the
     // module-EXISTENCE check is DEFERRED to `main::validate_secret_refs` at plugin pre-flight (see the
     // `secret_ref_*` tests in the main tests module). Therefore `validate` must NOT reject a
     // plugin-backed module here; it must ONLY enforce the built-in `env`/`file` STRUCTURAL shape.
     let (mut providers, models, pools) = valid_maps();
     providers.get_mut("myprovider").unwrap().api_key = config::SecretRef {
-        module: "vault".to_string(),
+        module: "alpha-module".to_string(),
         settings: serde_json::Map::new(),
     };
     let cfg = make_root_cfg(providers, models, pools);
@@ -5253,7 +5253,7 @@ fn test_validate_secret_module_resolvability() {
     let mut cfg = make_root_cfg(providers, models, pools);
     cfg.tls = Some(config::TlsCfg {
         cert: config::SecretRef {
-            module: "vault".to_string(),
+            module: "alpha-module".to_string(),
             settings: serde_json::Map::new(),
         },
         key: config::SecretRef {
@@ -5301,7 +5301,7 @@ fn test_validate_secret_module_resolvability() {
     let mut cfg = make_root_cfg(providers, models, pools);
     let mut auth = config::AuthCfg::default_none();
     auth.signing_key = Some(config::SecretRef {
-        module: "vault".to_string(),
+        module: "alpha-module".to_string(),
         settings: serde_json::Map::new(),
     });
     cfg.auth = Some(auth);
@@ -5565,7 +5565,7 @@ fn test_validate_limits_boundary_fields_reject_zero_accept_one() {
         "request_body_read_timeout_secs"
     );
     // The webhook sink's `delivery_timeout_secs` / `max_inflight_deliveries` floors are the sink's
-    // own checks (`busbar-export-webhook`), not `LimitsResolved` fields.
+    // own checks, not `LimitsResolved` fields.
     check_floor_one!(max_honored_retry_after_secs, "max_honored_retry_after_secs");
     check_floor_one!(hard_down_cooldown_secs, "hard_down_cooldown_secs");
     check_floor_one!(
@@ -6053,7 +6053,7 @@ fn the_empty_set_the_validator_refuses_is_the_one_an_empty_registry_produces() {
 // ══ 1.6.0 UNIFIED `pools:` — GLOBAL-NAME VALIDATOR ═══════════════════════════════════════════════
 //
 // The three cross-plane collision tests MOVED to `crates/busbar/tests/config_validate_cross_plane.rs` — each
-// builds a REAL `busbar_mcp::mcp::config::ToolsCfg`, which only type-checks against core's own
+// builds a REAL plane-owned config section type, which only type-checks against core's own
 // `RootCfg`/`validate_unified_pool_names` (widened to `pub` for the move) with ONE `busbar_kernel`
 // in the graph. See that file's header for the full rationale.
 
@@ -6299,7 +6299,7 @@ fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
 /// under the egress pool mutex, killing the shard's egress until restart. Every duration on the
 /// settings surface is now refused above the 30-year runtime horizon, by name; the boundary value
 /// itself stays clean. (The webhook sink's per-instance `delivery_timeout_secs` is refused the same
-/// way by the sink's own check — `busbar-export-webhook`.)
+/// way by the sink's own check.)
 #[test]
 fn test_validate_refuses_every_duration_past_the_runtime_horizon() {
     let over_s = MAX_DURATION_SECS + 1;
@@ -6703,7 +6703,7 @@ fn a_fee_the_plane_does_not_count_fails_naming_it_and_the_counted_list() {
         Box::leak(Box::new(crate::plane::registry::PlaneDecl {
             declaration: crate::plane::registry::PlaneDeclaration {
                 key: "session-plane",
-                config_section: "streams",
+                config_section: "session-section",
                 fee_units: &[PER_SESSION],
                 ..CLASS_PLANE.declaration
             },
@@ -6721,7 +6721,8 @@ fn a_fee_the_plane_does_not_count_fails_naming_it_and_the_counted_list() {
     let mut cfg = cost_cfg(&["m"]);
     cfg.plane_fees = fees("session-plane", 2, 40);
     let errs = validate(&cfg).expect_err("the session plane counts no request");
-    let want = "streams.fees.per_request is not counted by this plane (counted: per_session); \
+    let want =
+        "session-section.fees.per_request is not counted by this plane (counted: per_session); \
                 remove it";
     assert_eq!(errs, vec![want.to_string()]);
 

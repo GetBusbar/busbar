@@ -47,7 +47,7 @@ fn a_prefix_slice_of_an_interned_name_resolves_its_own_declaration() {
 /// THE USAGE-TAP COUNT, KERNEL STEP (#83a SD-3, architect ruling R-USAGE; row 155): every usage-tap
 /// fault a plane's answer carries is counted by the kernel as ONE increment of
 /// `busbar_billing_tap_decode_fail_total{protocol,reason}`, and warned once per `(protocol, reason)`.
-/// The LLM plane's suite pins which fault each tap path returns; this pins what one fault counts.
+/// The model-calling plane's suite pins which fault each tap path returns; this pins what one fault counts.
 #[test]
 fn a_usage_tap_fault_counts_one_increment_under_its_reason() {
     use metrics::{

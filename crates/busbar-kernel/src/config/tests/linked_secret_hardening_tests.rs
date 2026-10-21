@@ -147,11 +147,11 @@ fn resolve_linked_file_blank_path_is_also_malformed() {
 #[test]
 fn resolve_linked_unknown_module_is_fail_closed_and_names_the_module() {
     let vault_ref = SecretRef {
-        module: "vault".to_string(),
+        module: "alpha-module".to_string(),
         settings: serde_json::Map::new(),
     };
     let err = resolve_linked(&vault_ref).unwrap_err();
-    assert!(err.contains("vault"), "{err}");
+    assert!(err.contains("alpha-module"), "{err}");
     assert!(err.contains("not a built-in"), "{err}");
 }
 

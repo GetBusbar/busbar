@@ -16,12 +16,12 @@ fn named_fields_land_and_unnamed_fields_survive() {
         "transport": "http",
         "pin": { "mechanism": "cert_spki", "key": "sha256/PIN==" }
     });
-    merge_entry(&mut target, &json!({ "transport": "stdio" }));
+    merge_entry(&mut target, &json!({ "transport": "alpha-wire" }));
     assert_eq!(
         target,
         json!({
             "url": "https://tools.internal/fs",
-            "transport": "stdio",
+            "transport": "alpha-wire",
             "pin": { "mechanism": "cert_spki", "key": "sha256/PIN==" }
         })
     );

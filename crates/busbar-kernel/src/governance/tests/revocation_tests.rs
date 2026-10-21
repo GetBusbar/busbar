@@ -14,7 +14,7 @@ use std::time::Duration;
 
 /// A `Store` whose `list_denylist` behaves as the operator's worst day does: it announces that
 /// it has been entered and then NEVER RETURNS. That is not a contrived shape — `store-postgres`
-/// has no reconnect and no statement timeout by design, so a black-holed TCP connection is
+/// has no reconnect and no statement timeout by design, so a black-holed network connection is
 /// exactly this. Every other method delegates to a real `MemoryStore`.
 struct HungDenylistStore {
     inner: MemoryStore,

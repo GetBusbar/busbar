@@ -96,7 +96,7 @@ fn metrics_route_declared_only_when_configured() {
         .routes()
         .iter()
         .map(|route| crate::plugin_routes::RouteDecl {
-            owner: "prometheus".into(),
+            owner: "scrape-sink-a".into(),
             kind: crate::plugin_routes::RouteKind::Export,
             route: route.clone(),
             scrape: true,

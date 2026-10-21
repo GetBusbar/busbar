@@ -116,17 +116,17 @@ fn both_abi_lanes_ask_the_same_metric_name_question() {
 /// are asserted here rather than read off the source by a plane's own test:
 ///
 /// 1. It admits ANY JSON object as the replacement. It does not know, and cannot check, the TYPE the
-///    receiving plane will decode into. For MCP and A2A the target is `serde_json::Value`, so bytes
+///    receiving plane will decode into. For a JSON-RPC door plane the target is `serde_json::Value`, so bytes
 ///    core commits always parse and their "output I cannot read back" arms are unreachable through
 ///    this host. For a session plane the target is a typed session configuration, which rejects
-///    `{"voice": 7}` as a type mismatch — so THAT plane's arm is genuinely reachable through
+///    `{"field": 7}` as a type mismatch — so THAT plane's arm is genuinely reachable through
 ///    core's real host, and its refusal (its door's `committed_session_config`) is a live fix,
 ///    not a dormant one.
 /// 2. The commit is a WHOLESALE REPLACEMENT, not a merge. A hook that names one field produces
 ///    `arguments` carrying ONLY that field — every other key the caller (or the plane's own lock)
 ///    had is gone from the committed bytes. A plane whose target type defaults its absent fields
 ///    therefore silently blanks its own locked values unless it merges, which is the second half of
-///    the voice rule.
+///    the whole-replacement rule.
 #[test]
 fn a_committed_invoke_rewrite_installs_any_json_object_verbatim() {
     // The arguments as the plane handed them to the seam: a locked field the hook never names, plus
@@ -219,7 +219,7 @@ impl crate::hooks::RoutingPolicy for AbstainingRewrite {
     }
 }
 
-/// THE REWRITE LEG EVERY NON-LLM PLANE FIRES (`plane_host::admission_transform`, reached by the tool, agent and
+/// THE REWRITE LEG EVERY PLANE BUT THE MODEL-CALLING ONE FIRES (`plane_host::admission_transform`, reached by the tool, agent and
 /// session planes alike) hands the hook the call's arguments, and leaves exactly one access
 /// amendment naming the hook — the same record the gate seam leaves.
 #[test]

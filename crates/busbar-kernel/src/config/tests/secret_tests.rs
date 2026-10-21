@@ -107,12 +107,12 @@ fn none_reference_has_no_value_to_resolve() {
 #[test]
 fn unknown_module_fails_closed() {
     let r = SecretRef {
-        module: "vault".to_string(),
+        module: "alpha-module".to_string(),
         settings: serde_json::Map::new(),
     };
     let err = SecretResolver::builtins_only().resolve(&r).unwrap_err();
     assert!(
-        err.contains("fail-closed") && err.contains("vault"),
+        err.contains("fail-closed") && err.contains("alpha-module"),
         "unknown module refuses: {err}"
     );
 }
@@ -150,8 +150,8 @@ fn deserialize_accepts_canonical_and_sugar_rejects_malformed() {
     assert_eq!(r, SecretRef::file("/run/secrets/x"));
     assert_eq!(r.file_path(), Some("/run/secrets/x"));
     let r: SecretRef =
-        serde_yaml::from_str("{ module: vault, settings: { path: kv/data/x } }").unwrap();
-    assert_eq!(r.module, "vault");
+        serde_yaml::from_str("{ module: alpha-module, settings: { path: kv/data/x } }").unwrap();
+    assert_eq!(r.module, "alpha-module");
     assert_eq!(
         r.settings.get("path").and_then(|v| v.as_str()),
         Some("kv/data/x")
@@ -159,7 +159,7 @@ fn deserialize_accepts_canonical_and_sugar_rejects_malformed() {
 
     for bad in [
         "{ env: A, file: B }",
-        "{ module: vault, env: A }",
+        "{ module: alpha-module, env: A }",
         "{ env: A, settings: {} }",
         "{ unknown_key: A }",
         "{}",

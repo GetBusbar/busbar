@@ -329,9 +329,9 @@ fn test_removed_key_aliases_are_rejected() {
 /// 1.5.3: the `observability:` BLOCK IS DELETED and its last field (`otlp_url`, and before it the
 /// 1.4.x `otlp_endpoint`) is now the `settings.url` of an `export:` instance with `module: otlp`.
 /// The new spelling resolves — through the export axis since K9e-2, where the `otlp` sink is an
-/// export plugin (`busbar-export-otlp`) — and the instance keeps its settings bag exactly as
+/// export plugin — and the instance keeps its settings bag exactly as
 /// written. (The 1.4.x key inside the bag is the SINK's refusal now: the binary-level
-/// `crates/busbar/tests/export_otlp_refuses_as_1_5_5_did.rs` pins its words.)
+/// the binary-level 1.5.5 refusal test pins its words.)
 ///
 /// Before 1.5.3 `otlp_url` was an `ObservabilityCfg` field and there was no
 /// `otlp` export module at all, so this did not compile.
@@ -1819,7 +1819,7 @@ models:
         crate::config::limits::DEFAULT_MAX_TOKENS
     );
     // The webhook sink's in-flight bound and delivery deadline are its own settings, checked by the
-    // sink (`busbar-export-webhook`), never projected onto `LimitsResolved`.
+    // sink, never projected onto `LimitsResolved`.
     assert_eq!(l.key_gauge_limit, DEFAULT_KEY_GAUGE_LIMIT);
     assert_eq!(l.rate_sweep_interval, DEFAULT_RATE_SWEEP_INTERVAL);
     assert_eq!(l.usage_flush_interval_ms, DEFAULT_USAGE_FLUSH_INTERVAL_MS);
@@ -1967,17 +1967,19 @@ fn test_secret_ref_sugar_desugars_to_builtin_modules() {
 /// settings passed through opaquely; a missing `settings:` defaults to empty.
 #[test]
 fn test_secret_ref_canonical_form_parses() {
-    let v: SecretRef = serde_yaml::from_str("module: vault\nsettings:\n  path: kv/prod/api\n")
-        .expect("canonical form parses");
-    assert_eq!(v.module, "vault");
+    let v: SecretRef =
+        serde_yaml::from_str("module: alpha-module\nsettings:\n  path: kv/prod/api\n")
+            .expect("canonical form parses");
+    assert_eq!(v.module, "alpha-module");
     assert_eq!(
         v.settings.get("path").and_then(|p| p.as_str()),
         Some("kv/prod/api")
     );
     assert_eq!(v.env_var(), None, "a non-env module has no env_var");
-    assert_eq!(v.describe(), "secret module 'vault'");
+    assert_eq!(v.describe(), "secret module 'alpha-module'");
 
-    let bare: SecretRef = serde_yaml::from_str("module: vault").expect("settings default empty");
+    let bare: SecretRef =
+        serde_yaml::from_str("module: alpha-module").expect("settings default empty");
     assert!(bare.settings.is_empty());
 }
 
@@ -2028,30 +2030,30 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
     use crate::config::secret::{resolve_linked_string, SecretResolver};
 
     // env: set, non-empty.
-    std::env::set_var("BUSBAR_T_SECRET_ENV_OK", "s3cr3t-value");
+    std::env::set_var("BUSBAR_T_SECRET_VAR_OK", "s3cr3t-value");
     assert_eq!(
         SecretResolver::builtins_only()
-            .resolve(&SecretRef::env("BUSBAR_T_SECRET_ENV_OK"))
+            .resolve(&SecretRef::env("BUSBAR_T_SECRET_VAR_OK"))
             .unwrap(),
         b"s3cr3t-value".to_vec()
     );
-    std::env::remove_var("BUSBAR_T_SECRET_ENV_OK");
+    std::env::remove_var("BUSBAR_T_SECRET_VAR_OK");
 
     // env: unset -> error naming the variable.
     let err = SecretResolver::builtins_only()
-        .resolve(&SecretRef::env("BUSBAR_T_SECRET_ENV_UNSET"))
+        .resolve(&SecretRef::env("BUSBAR_T_SECRET_VAR_UNSET"))
         .unwrap_err();
     assert!(
-        err.contains("BUSBAR_T_SECRET_ENV_UNSET") && err.contains("unset"),
+        err.contains("BUSBAR_T_SECRET_VAR_UNSET") && err.contains("unset"),
         "{err}"
     );
 
     // env: set but EMPTY -> fail-closed error, never an empty secret.
-    std::env::set_var("BUSBAR_T_SECRET_ENV_EMPTY", "");
+    std::env::set_var("BUSBAR_T_SECRET_VAR_EMPTY", "");
     let err = SecretResolver::builtins_only()
-        .resolve(&SecretRef::env("BUSBAR_T_SECRET_ENV_EMPTY"))
+        .resolve(&SecretRef::env("BUSBAR_T_SECRET_VAR_EMPTY"))
         .unwrap_err();
-    std::env::remove_var("BUSBAR_T_SECRET_ENV_EMPTY");
+    std::env::remove_var("BUSBAR_T_SECRET_VAR_EMPTY");
     assert!(err.contains("EMPTY"), "{err}");
 
     // file: existing file resolves; the string form trims the trailing newline.
@@ -2074,14 +2076,14 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
     let mut settings = serde_json::Map::new();
     settings.insert("path".to_string(), serde_json::Value::String("x".into()));
     let unknown = SecretRef {
-        module: "vault".to_string(),
+        module: "alpha-module".to_string(),
         settings,
     };
     let err = SecretResolver::builtins_only()
         .resolve(&unknown)
         .unwrap_err();
     assert!(
-        err.contains("vault") && err.contains("fail-closed"),
+        err.contains("alpha-module") && err.contains("fail-closed"),
         "{err}"
     );
 }
@@ -2564,7 +2566,7 @@ fn test_removed_top_level_blocks_rejected() {
             "hooks",
         ),
         ("group_map:\n  eng:\n    group: eng\n", "group_map"),
-        ("admin_auth: [admin-tokens]\n", "admin_auth"),
+        ("admin_auth: [alpha-guard]\n", "admin_auth"),
     ] {
         let yaml = format!("providers: {{}}\nmodels: {{}}\n{block}");
         let err = serde_yaml::from_str::<DeployCfg>(&yaml)
@@ -3437,13 +3439,13 @@ fn pools_upstream_credentials_is_a_scalar_override() {
 fn secrets_block_stays_module_keyed_by_design() {
     crate::test_support::register_neutral_test_plane();
     let deploy: DeployCfg = serde_yaml::from_str(
-        "secrets:\n  vault:\n    settings: { address: \"https://vault.internal\" }\n\
+        "secrets:\n  alpha-module:\n    settings: { address: \"https://vault.internal\" }\n\
          providers: {}\nmodels: {}\npools: {}\n",
     )
     .expect("the module-keyed `secrets:` block parses");
     let vault = deploy
         .secrets
-        .get("vault")
+        .get("alpha-module")
         .expect("keyed by the MODULE name, not an instance name");
     assert_eq!(
         vault.settings.get("address").and_then(|v| v.as_str()),
@@ -3453,7 +3455,7 @@ fn secrets_block_stays_module_keyed_by_design() {
     // because the KEY already is the module. If someone adds one, this fails and they read the
     // struct doc explaining the exemption.
     let err = serde_yaml::from_str::<DeployCfg>(
-        "secrets:\n  my-vault:\n    module: vault\n    settings: {}\n\
+        "secrets:\n  my-vault:\n    module: alpha-module\n    settings: {}\n\
          providers: {}\nmodels: {}\npools: {}\n",
     )
     .expect_err("`secrets:` entries take no `module:` — the key IS the module");
@@ -3589,7 +3591,7 @@ fn root_settings_doc_lists_only_fields_that_exist() {
 
 // THE PUBLISHED-NAME COLLISION IS A `resolve` ERROR MOVED to
 // `crates/busbar/tests/config_cross_plane.rs::resolve_refuses_a_publish_as_collision_so_validate_and_boot_agree`
-// — it constructs a REAL `busbar_mcp::mcp::config::ToolsCfg` and hands it to core's `resolve`,
+// — it constructs a REAL plane-owned config section type and hands it to core's `resolve`,
 // which only type-checks with ONE `busbar_kernel` in the graph. See that file's header.
 
 // ══ THE FAILOVER POOLS' CROSS-REFERENCES ═════════════════════════════════════════════════════════
@@ -3611,10 +3613,10 @@ fn failover_pools_are_absent_by_default() {
 
 // A member naming nothing... MOVED to
 // `crates/busbar/tests/config_cross_plane.rs::a_tool_pool_member_that_names_no_server_is_refused` (needs a
-// real `busbar_mcp::mcp::config::ToolsCfg`). See that file's header.
+// real plane-owned config section type). See that file's header.
 
 // KIND IS INFERRED... MOVED to `crates/busbar/tests/config_cross_plane.rs::a_pool_may_not_straddle_two_planes`
-// (needs real `busbar_mcp` and agent-engine config types). See that file's header.
+// (needs real plane-owned config types). See that file's header.
 
 // A one-member pool changes nothing... MOVED to
 // `crates/busbar/tests/config_cross_plane.rs::a_failover_pool_needs_two_members` (needs a real
@@ -4022,7 +4024,7 @@ fn a_declared_section_no_carrier_holds_is_lifted_raw_for_its_plane() {
 /// refused any key it did not know. The kernel cannot say more: naming the plane that would own it
 /// means spelling a plane section it does not have (#49).
 ///
-/// This test binary IS that build: `busbar-kernel` may not name `busbar-plane-decisions`, and the
+/// This test binary IS that build: `busbar-kernel` may not name a plane crate, and the
 /// registry is seeded with the neutral fallback plane alone, so nothing declares `decisions`.
 #[test]
 fn a_decisions_section_with_no_owning_plane_is_refused_as_an_unknown_key() {
