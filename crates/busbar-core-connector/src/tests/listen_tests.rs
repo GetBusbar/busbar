@@ -387,9 +387,9 @@ fn a_listener_offers_the_entrys_accept_offer_not_its_dial_offer() {
 /// RED (INBOUND-LISTEN, `BUSBAR-1.6.0.md` l.477-478): AN ENTRY THAT STATES NO ACCEPT OFFER
 /// LISTENS WITH THE TRANSPORT'S REGISTERED PROTOCOL LIST (the registry's `Entry::alpn`, the
 /// operator's settings dealt at boot), as a dial whose `locate` answers no offer dials with it
-/// (`compose`, "the registration's stands only for an entry that answers none"). A TLS gRPC
-/// listener whose entry answers no accepting offer still agrees `h2` off its registration: gRPC
-/// clients refuse a TLS connection on which no protocol was negotiated. RED before the fix: the
+/// (`compose`, "the registration's stands only for an entry that answers none"). A TLS listener
+/// whose entry answers no accepting offer still agrees a protocol off its registration: a client
+/// that needs one negotiated refuses a connection that agreed none. RED before the fix: the
 /// bind took the entry's accept offer alone (`accept_offer(..).unwrap_or_default()`), so the
 /// listener offered nothing and the handshake agreed no protocol.
 #[test]
