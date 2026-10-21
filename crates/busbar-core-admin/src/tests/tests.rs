@@ -1805,14 +1805,13 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
     handle.abort();
 }
 
-/// AF1 (security-visibility): `PUT /api/v1/admin/admin-auth` must REFUSE an EMPTY admin_auth chain.
-/// An empty chain is the anonymous, full-authority OPEN dev posture; letting the live admin API
-/// apply it would swing the door open to the whole network on one call. Before the fix the handler
-/// warned-and-applied (and the dry-run lock-out guard was fooled because an empty chain reported
-/// Full for the caller); now it is a `400` and nothing changes — the open posture is a config.yaml +
-/// restart opt-in only.
+/// `PUT /api/v1/admin/admin-auth` with an EMPTY chain is APPLIED, as 1.5.5 applied it (Q128 core-admin
+/// u19 BLOCK: the refusal was an unsigned customer-visible change; v1.5.5
+/// crates/busbar/src/admin/v1/json/handlers.rs:2108-2113 warned and fell through, and its dry-run read the
+/// open chain as full scope, so the call answered 200 `applied`). The fail-closed refusal waits for the
+/// owner's signature behind `EMPTY_CHAIN_REFUSED_LIVE`. RED before the restore: 400.
 #[tokio::test]
-async fn test_admin_v1_put_auth_refuses_empty_chain() {
+async fn test_admin_v1_put_auth_applies_an_empty_chain_as_1_5_5_did() {
     busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
@@ -1820,7 +1819,6 @@ async fn test_admin_v1_put_auth_refuses_empty_chain() {
     let router = crate::build_router(app);
     let (addr, handle, client) = spin_up(router).await;
 
-    // An operator credential that DOES authenticate today asks to blank the chain: refused 400.
     let r = client
         .put(format!("http://{addr}/api/v1/admin/admin-auth"))
         .header("x-admin-token", "admintok")
@@ -1831,20 +1829,19 @@ async fn test_admin_v1_put_auth_refuses_empty_chain() {
         .unwrap();
     assert_eq!(
         r.status().as_u16(),
-        400,
-        "an empty admin_auth chain (the open dev posture) cannot be applied through the live API"
+        200,
+        "1.5.5 applied an empty admin_auth chain live"
     );
     let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "invalid_request");
+    assert_eq!(body["applied"], true, "{body}");
 
-    // Nothing changed: the operator credential still authenticates.
+    // The open posture is now live: the admin API answers with no credential.
     let r = client
         .get(format!("http://{addr}/api/v1/admin/info"))
-        .header("x-admin-token", "admintok")
         .send()
         .await
         .unwrap();
-    assert_eq!(r.status().as_u16(), 200, "the refused PUT changed nothing");
+    assert_eq!(r.status().as_u16(), 200, "the open posture is in force");
 
     handle.abort();
 }

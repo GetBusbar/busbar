@@ -196,8 +196,8 @@ fn package_name(text: &str) -> Option<String> {
     let mut in_package = false;
     for line in text.lines() {
         let t = line.trim();
-        if t.starts_with('[') {
-            in_package = t == "[package]";
+        if let Some(is_package) = crate::manifest::package_header(t) {
+            in_package = is_package;
             continue;
         }
         if !in_package {
@@ -366,24 +366,56 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
 /// set once per self-test plant, and `cargo metadata` is a subprocess. The key is the text cargo
 /// resolves from, read through the overlay, so a plant that changes the pin is never answered
 /// from another tree's resolution.
+///
+/// THE METADATA ITSELF IS TAKEN ONCE PER THAT SAME KEY, NOT ONCE PER PACKAGE. The tracked set names
+/// three pinned plugins, and each used to run its own `cargo metadata` over the same manifest and
+/// lockfile — three subprocesses resolving one workspace, for one answer.
+/// The parsed answer (or the failure, worded per package exactly as before) is shared by every
+/// package asked of it; a planted `cargo metadata` answer is part of the key, so a plant that cans
+/// one is never answered from the real resolution.
 pub fn pinned_plugin_source(cx: &Ctx, package: &str, rel: &str) -> Result<String, String> {
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::{Arc, Mutex, OnceLock};
     static RESOLVED: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
-    let key = format!(
-        "{}\0{package}\0{rel}\0{}\0{}",
+    static METADATA: OnceLock<Mutex<BTreeMap<String, Arc<OnceLock<Metadata>>>>> = OnceLock::new();
+    let tree = format!(
+        "{}\0{}\0{}\0{}",
         cx.root().display(),
         cx.read("Cargo.toml").unwrap_or_default(),
-        cx.read("Cargo.lock").unwrap_or_default()
+        cx.read("Cargo.lock").unwrap_or_default(),
+        cx.overlay_command("cargo-metadata:Cargo.toml")
+            .unwrap_or_default()
     );
+    let key = format!("{tree}\0{package}\0{rel}");
     let cache = RESOLVED.get_or_init(|| Mutex::new(BTreeMap::new()));
     if let Some(hit) = cache.lock().ok().and_then(|c| c.get(&key).cloned()) {
         return Ok(hit);
     }
-    let meta = cx
-        .cargo_metadata("Cargo.toml")
-        .map_err(|e| format!("config-schema: cargo metadata for the pinned '{package}': {e}"))?;
-    let meta: Value = serde_json::from_str(&meta)
-        .map_err(|e| format!("config-schema: cargo metadata is not JSON: {e}"))?;
+    // The cell is handed out under the lock and FILLED OUTSIDE it, so the cases that arrive at once
+    // take one `cargo metadata` between them instead of one each.
+    let cell = METADATA
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(tree)
+        .or_default()
+        .clone();
+    let meta = match cell.get_or_init(|| match cx.cargo_metadata("Cargo.toml") {
+        Err(e) => Metadata::Unrun(e),
+        Ok(text) => match serde_json::from_str::<Value>(&text) {
+            Ok(v) => Metadata::Read(Arc::new(v)),
+            Err(e) => Metadata::NotJson(e.to_string()),
+        },
+    }) {
+        Metadata::Read(v) => Arc::clone(v),
+        Metadata::Unrun(e) => {
+            return Err(format!(
+                "config-schema: cargo metadata for the pinned '{package}': {e}"
+            ))
+        }
+        Metadata::NotJson(e) => {
+            return Err(format!("config-schema: cargo metadata is not JSON: {e}"))
+        }
+    };
     let pkg = meta["packages"]
         .as_array()
         .into_iter()
@@ -413,6 +445,16 @@ pub fn pinned_plugin_source(cx: &Ctx, package: &str, rel: &str) -> Result<String
         c.insert(key, path.clone());
     }
     Ok(path)
+}
+
+/// One workspace's `cargo metadata`, as [`pinned_plugin_source`] memoises it.
+enum Metadata {
+    /// Parsed.
+    Read(std::sync::Arc<Value>),
+    /// `cargo metadata` did not answer.
+    Unrun(String),
+    /// It answered, and the answer is not JSON.
+    NotJson(String),
 }
 
 /// Expand the tracked source set to a deduplicated, sorted list of `.rs` files.
@@ -1448,8 +1490,177 @@ pub fn render(cx: &Ctx) -> Result<String, String> {
         let text = cx.read(&path)?;
         read.push((path, text));
     }
-    Ok(canonical(&extract_with(
-        &read,
-        &super::declared::read(cx)?,
-    )?))
+    let declared = super::declared::read(cx)?;
+    match &reading(&read, &declared).extracted {
+        Ok(doc) => Ok(canonical(doc)),
+        Err(why) => Err(why.clone()),
+    }
+}
+
+/// THE FRESH SIDE'S READINGS OF ONE SOURCE SET: the fingerprint [`extract_with`] makes of it, and
+/// the two see-through readings ([`forwards`], [`effective_refusals`]) the classifier takes of the
+/// same files. Each is a pure function of the files' paths and bytes (and the fingerprint of the
+/// plane declarations too), so one [`reading`] serves every run over the same inputs.
+pub struct Reading {
+    /// [`extract_with`]'s answer, error and all.
+    pub extracted: Result<Value, String>,
+    forwards: std::sync::OnceLock<BTreeMap<String, BTreeSet<String>>>,
+    refusals: std::sync::OnceLock<BTreeMap<String, Option<BTreeSet<String>>>>,
+}
+
+impl Reading {
+    /// [`forwards`] over `files` — the files this reading was taken of.
+    pub fn forwards(&self, files: &[(String, String)]) -> &BTreeMap<String, BTreeSet<String>> {
+        self.forwards.get_or_init(|| forwards(files))
+    }
+
+    /// [`effective_refusals`] over `files` — the files this reading was taken of.
+    pub fn refusals(
+        &self,
+        files: &[(String, String)],
+    ) -> &BTreeMap<String, Option<BTreeSet<String>>> {
+        self.refusals.get_or_init(|| effective_refusals(files))
+    }
+}
+
+/// [`Reading`] of `files` under `declared`, MEMOISED ON EVERYTHING IT READS: every file's path and
+/// bytes, and the declarations.
+///
+/// The gate extracted the whole tracked source set (some 1.8 MB of Rust, character by character)
+/// on every run, and the self-test renders it again for every baseline it plants. A self-test case
+/// is a run over a tree one plant away from the last — and most of this battery's plants move only
+/// the BASELINE, never a tracked source — so the battery paid the same extraction a couple of
+/// hundred times and went over its work-unit budget (16 062 of 10 542 on ModernCI, 2026-10-18)
+/// doing it. A plant that edits a tracked source, or a plane declaration, is a different key and is
+/// read fresh; the classification against the baseline is still taken on every run.
+pub fn reading(
+    files: &[(String, String)],
+    declared: &super::declared::Declarations,
+) -> std::sync::Arc<Reading> {
+    use std::hash::{Hash, Hasher};
+    use std::sync::{Arc, Mutex, OnceLock};
+    type Cell = Arc<OnceLock<Arc<Reading>>>;
+    type Memo = Mutex<BTreeMap<(usize, u64, u64), Cell>>;
+    static MEMO: OnceLock<Memo> = OnceLock::new();
+    let declared_text = format!("{declared:?}");
+    let len: usize = files.iter().map(|(p, t)| p.len() + t.len()).sum();
+    let mut a = std::collections::hash_map::DefaultHasher::new();
+    (files, &declared_text).hash(&mut a);
+    let mut b = std::collections::hash_map::DefaultHasher::new();
+    (len, &declared_text, files).hash(&mut b);
+    0xc5_u32.hash(&mut b);
+    let key = (len, a.finish(), b.finish());
+    // The cell is handed out under the lock and FILLED OUTSIDE it, so concurrent cases that read
+    // the same sources take one extraction between them instead of one each.
+    let cell = MEMO
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(key)
+        .or_default()
+        .clone();
+    cell.get_or_init(|| {
+        Arc::new(Reading {
+            extracted: extract_with(files, declared),
+            forwards: OnceLock::new(),
+            refusals: OnceLock::new(),
+        })
+    })
+    .clone()
+}
+
+#[cfg(test)]
+mod reading_memo_tests {
+    use super::*;
+    use crate::ctx::Overlay;
+
+    /// The tracked source set as `cx` reads it, and its plane declarations — the gate's own inputs.
+    fn inputs(cx: &Ctx) -> (Vec<(String, String)>, super::super::declared::Declarations) {
+        let files = resolve_sources(cx, &sources(cx).expect("the source set resolves"))
+            .expect("the source files resolve");
+        let read = files
+            .into_iter()
+            .map(|p| {
+                let t = cx.read(&p).expect("a tracked source reads");
+                (p, t)
+            })
+            .collect();
+        let declared = super::super::declared::read(cx).expect("the declarations read");
+        (read, declared)
+    }
+
+    /// THE MEMOISED READING IS THE FULL EXTRACTION'S, on the real tree and on planted ones: a
+    /// tracked source edited in place (a new derived type in the kernel's grammar directory), a
+    /// new tracked file whose bare name collides (an extraction ERROR, which must be memoised as
+    /// the error), and a plane declaration planted (the declarations move, the files do not) —
+    /// each taken cold and warm, after the real tree has filled the memo.
+    #[test]
+    fn the_memoised_reading_is_the_full_extraction_on_planted_trees() {
+        let base = Ctx::workspace().expect("the workspace opens");
+        let mut edited = Overlay::new();
+        let home = "crates/busbar-kernel/src/config/pools.rs";
+        edited.set(
+            home,
+            format!(
+                "{}\n#[derive(serde::Deserialize)]\npub struct ZzPlantedCfg {{\n    pub zz: Option<u32>,\n}}\n",
+                base.read(home).expect("the pools grammar reads")
+            ),
+        );
+        let mut collision = Overlay::new();
+        collision.set(
+            "crates/busbar-kernel/src/config/zz_collision_fixture.rs",
+            "#[derive(serde::Deserialize)]\npub struct DeployCfg {\n    pub other: String,\n}\n",
+        );
+        let mut declared = Overlay::new();
+        declared.set(
+            "crates/zz-plane-fixture/src/lib.rs",
+            "pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =\n    \
+             busbar_contract::plane::PlaneDeclaration {\n        key: \"zz\",\n        \
+             config_section: \"zz_section\",\n        owned_config_sections: &[],\n    };\n",
+        );
+        for (i, ov) in [Overlay::new(), edited, collision, declared]
+            .into_iter()
+            .enumerate()
+        {
+            let cx = base.with_overlay(ov);
+            let (read, decls) = inputs(&cx);
+            let full = extract_with(&read, &decls);
+            match i {
+                0 => assert!(full.is_ok(), "the real tree extracts: {full:?}"),
+                2 => assert!(full.is_err(), "the collision plant is an extraction error"),
+                _ => {}
+            }
+            for warmth in ["cold", "warm"] {
+                let memo = reading(&read, &decls);
+                assert_eq!(
+                    memo.extracted, full,
+                    "plant {i} ({warmth}): the fingerprint"
+                );
+                assert_eq!(
+                    memo.forwards(&read),
+                    &forwards(&read),
+                    "plant {i} ({warmth}): the forwards"
+                );
+                assert_eq!(
+                    memo.refusals(&read),
+                    &effective_refusals(&read),
+                    "plant {i} ({warmth}): the refusals"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod package_header_tests {
+    /// `[ package ]` IS `[package]`: a header spelled with spaces names its crate. RED before the
+    /// shared header reading: the crate had no name and its grammar root was never read.
+    #[test]
+    fn a_spaced_package_header_names_its_crate() {
+        assert_eq!(
+            super::package_name("[ package ]\nname = \"busbar-core-spaced\"\n").as_deref(),
+            Some("busbar-core-spaced")
+        );
+        assert_eq!(super::package_name("[[bin]]\nname = \"tool\"\n"), None);
+    }
 }
