@@ -11,10 +11,12 @@
 //!   then writes, reads, waits and closes it. Ownership is the shared book
 //!   ([`busbar_contract::conn::ConnSlab`]): a connection another instance owns, a closed one and a
 //!   need nobody declared are refused.
-//! * [`endpoint`] is the pure check an open's target passes before any dial: a cloud metadata host,
-//!   in any spelling, is refused by name.
-//! * [`guard`] is THE DESTINATION GUARD, the one check deciding which addresses any outbound
-//!   connection may be dialled at (private refused unless allowlisted, metadata always).
+//! * [`endpoint`] is the pure check an open's target passes before any dial: it names a host. A
+//!   dial no judge judges also refuses a cloud metadata or link-local host there, by name.
+//! * [`guard`] is THE DESTINATION GUARD, the one check deciding which addresses any judged
+//!   outbound connection may be dialled at (private refused unless allowlisted; cloud metadata and
+//!   link-local refused unless an IP or CIDR allowlist entry, or a provider's 1.5.5 carve-out,
+//!   names them).
 //! * [`tls`] is connection security — core-only, never a plugin, never crossing the ABI.
 //! * [`dtls`] is its datagram sibling — the DTLS engine a media association runs on (the RFC 7983
 //!   demux, the ICE-gated bind, the SRTP exporter), on ring like [`tls`].
@@ -34,8 +36,8 @@
 //!   connection as carrier -> \[TLS\] -> framer; [`pool`] keeps a dialled connection whose exchange
 //!   finished whole for the next open to the same place; [`listen`] has the carrier listen for each
 //!   inbound need and composes each accepted connection the same way, begun on the accept side;
-//!   [`registry`] is the view of which entry serves which scheme; [`wire`] presents an entry over
-//!   carried connections to the kernel's transport seam.
+//!   [`registry`] is the view of which entry serves which scheme; [`wire`] is the boot fold's
+//!   admission of an entry (its key, and no layer it composes over).
 //! * [`process`] builds the process's one connector for the root: the deployment's one destination
 //!   guard behind the one dial judge, the default outbound trust, and the proxy environment.
 //! * [`fetch`] is the `plugins.fetch` download over the connection table, the root's own need.
@@ -627,6 +629,11 @@ pub struct Connector {
     /// ([`Connector::pair`]): what an open serving that unit (`OpenDesc::unit`) over a datagram
     /// framer's need bridges with.
     pairs: Mutex<HashMap<u64, Arc<datagram::Pairing>>>,
+    /// HOW A PROGRAM'S ENVIRONMENT REFERENCES RESOLVE ([`spawn_env`]): the resolver the composition
+    /// root handed this connector ([`Connector::resolving_spawn_secrets`]), handed on to every
+    /// environment a declaration loads. `None` = no reference resolves, and a program that states
+    /// one is not spawned (fail-closed).
+    spawn_secrets: Option<spawn_env::SpawnSecretFn>,
 }
 
 impl std::fmt::Debug for Connector {
@@ -656,6 +663,7 @@ impl Default for Connector {
             io: hostio::process(),
             proxy: None,
             pairs: Mutex::new(HashMap::new()),
+            spawn_secrets: None,
         }
     }
 }
@@ -726,6 +734,15 @@ impl Connector {
     #[must_use]
     pub fn with_io(mut self, io: Arc<HostIo>) -> Self {
         self.io = io;
+        self
+    }
+
+    /// The same connector resolving its programs' environment references through `secrets`, at
+    /// config time: the need's declaration and the refresher's lease, never a spawn
+    /// ([`spawn_env`]).
+    #[must_use]
+    pub fn resolving_spawn_secrets(mut self, secrets: spawn_env::SpawnSecretFn) -> Self {
+        self.spawn_secrets = Some(secrets);
         self
     }
 
@@ -998,9 +1015,9 @@ impl Connector {
             .get(&(owner, need))
             .map(|n| Arc::clone(&n.door))
             .ok_or(ConnError::Refused)?;
-        endpoint::check(target).map_err(|_| ConnError::Refused)?;
+        endpoint::named(target).map_err(|_| ConnError::Refused)?;
         let located = framer::locate(door.as_ref(), target).map_err(|_| ConnError::Refused)?;
-        endpoint::check(&located.authority).map_err(|_| ConnError::Refused)?;
+        endpoint::named(&located.authority).map_err(|_| ConnError::Refused)?;
         if !scheme_admits(egress_class, located.secure) {
             return Err(ConnError::Refused);
         }
@@ -1112,7 +1129,7 @@ impl Connector {
                 let member = kept.unwrap_or_else(|| {
                     Arc::new(program::Member::new(
                         p.clone(),
-                        spawn_env::HeldEnv::load(&p.env_refs, scope),
+                        spawn_env::HeldEnv::load(&p.env_refs, self.spawn_secrets, scope),
                         Via {
                             door: Arc::clone(&door),
                             io: Arc::clone(&self.io),
@@ -1182,7 +1199,7 @@ impl Connector {
                 tls: None,
                 program: Some((
                     program.clone(),
-                    spawn_env::HeldEnv::load(&program.env_refs, scope),
+                    spawn_env::HeldEnv::load(&program.env_refs, self.spawn_secrets, scope),
                 )),
                 members: None,
             }),
@@ -1221,11 +1238,22 @@ impl Connector {
         // the transport's registered list stands only for an entry that states none (it answers
         // no offer, or refuses the question), as it stands for a dial whose `locate` answers none
         // (`compose`). A TLS listener never goes out with no protocol to agree where its
-        // transport registered one.
-        let alpn = framer::accept_offer(door.as_ref())
-            .ok()
-            .filter(|offer| !offer.is_empty())
-            .unwrap_or(registered);
+        // transport registered one. An entry that refuses the question is logged: its listener
+        // binds without an offer of its own.
+        let alpn = match framer::accept_offer(door.as_ref()) {
+            Ok(offer) if !offer.is_empty() => offer,
+            Ok(_) => registered,
+            Err(refused) => {
+                tracing::warn!(
+                    owner = owner.0,
+                    need = need.0,
+                    error = %refused,
+                    "inbound listener: the entry's locate refused the accepting-side protocol \
+                     offer; the listener binds with the transport's registered protocol list"
+                );
+                registered
+            }
+        };
         let mut listeners = self.listeners.lock().expect("listeners");
         if listeners.contains_key(&(owner, need)) {
             return Err(ConnError::Refused);
@@ -2167,7 +2195,7 @@ impl Connector {
         ),
         poolable: bool,
     ) -> Result<Held, ConnError> {
-        endpoint::check(target).map_err(|_| ConnError::Refused)?;
+        endpoint::named(target).map_err(|_| ConnError::Refused)?;
         let dial = Dial {
             target: target.to_owned(),
             tls: tls.or_else(|| self.tls.clone()),

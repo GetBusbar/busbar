@@ -1,7 +1,8 @@
 //! `teller-steps` — THE TELLER STEP MATRIX: one cell per Teller step per plane, and a second,
 //! independent verdict per cell taken over the composition root's own legs.
 //!
-//! Ported from `scripts/teller-steps-check.py`. Five rules, five owed rows, and the shape of each
+//! Ported from `scripts/teller-steps-check.py`. Five rules, five owed rows (a sixth, the run rule
+//! over the capability-equality ledger, has no Python ancestor), and the shape of each
 //! is the shape the Python enforced — including the three floors that are the whole reason the
 //! check is not a formality:
 //!
@@ -12,6 +13,11 @@
 //! * **a claim may not outlive its evidence.** A named rig cell must be owned by something in the
 //!   tree, and a named loop cell must exist as an `fn` in the leg's own file — the two ways a
 //!   renamed test leaves a green row pointing at nothing.
+//! * **a proof must RUN** (Law 10). A named loop cell — this matrix's, and the capability-equality
+//!   ledger's root column ([`ROW_EQUALITY_CELLS`]) — must be a test CI's build compiles and runs:
+//!   every cfg on its module's way enabled in the `test` check's build, a test attribute, no
+//!   `#[ignore]` ([`crate::ci_cfg`]). A fn that exists under a cfg no build enables is a proof that
+//!   never runs, which fourteen root-llm cells were once no linked row carried the `node` axis.
 //! * **the roster is the tree's, not the file's** ([`check_roster`]). "Every plane carries every
 //!   declared step" is true of whatever lists the file wrote, so both lists are DERIVED: the steps
 //!   from the kernel's own `StepName::ALL` (set and order), the rows from the `PlaneMeta` KEY every
@@ -119,6 +125,14 @@ pub const ROW_RIG: &str = "teller-steps:rig-cells";
 pub const ROW_ROOT_COLUMN: &str = "teller-steps:root-column";
 pub const ROW_ROOT_LEGS: &str = "teller-steps:root-legs";
 pub const ROW_GATING: &str = "teller-steps:gating-gaps";
+/// The capability-equality ledger's root column, judged by the same run rule as this matrix's
+/// (Law 10, status row 178): its enforcing cargo test (`crates/busbar/tests/capability_equality.rs`)
+/// reads only the source, so whether CI's build compiles a cited cell is asked here, where the
+/// module tree is read.
+pub const ROW_EQUALITY_CELLS: &str = "teller-steps:equality-root-cells";
+
+/// The capability-equality ledger whose root column [`ROW_EQUALITY_CELLS`] judges.
+pub const EQUALITY_REL: &str = "qa/capability-equality.json";
 
 // -------------------------------------------------------------------------------------------
 // The matrix
@@ -459,50 +473,117 @@ const SOURCE_DIRS: [(&str, &str); 2] = [
 /// Which file in the tree OWNS a named rig cell, or `None` — the "nothing owns this any more"
 /// answer that makes the claim red.
 pub fn resolve_cell(cx: &Ctx, cell_id: &str) -> Option<String> {
-    if oracle_cell_ids(cx).contains(cell_id) {
-        return Some("testing/shadow-oracle/cells.json".to_string());
-    }
-    let (namespace, rest) = cell_id.split_once('|')?;
-    if rest.is_empty() {
-        return None;
-    }
+    CellOwners::new(cx).resolve(cell_id)
+}
 
-    // THE H2 ARM RETURNS EARLY WHETHER OR NOT IT RESOLVES. A `mcp.rig|h2-…` id whose subject
-    // script vanished must not fall through into the later arms and be adopted by a substring
-    // match somewhere else — that is exactly how a deleted script keeps a green row.
-    if let Some((_, dir)) = H2_DIRS.iter().find(|(ns, _)| *ns == namespace) {
-        if rest.starts_with("h2-") {
-            let path = format!("{dir}/{rest}.sh");
-            return cx.exists(&path).then_some(path);
+/// THE RIG COLUMN'S EVIDENCE, READ ONCE PER RUN AND NOT ONCE PER CELL.
+///
+/// [`resolve_cell`] used to re-read its evidence for every cell it was asked about: it parsed
+/// `testing/shadow-oracle/cells.json` (1.4 MB) and `rigs-baseline.json` afresh, and re-listed each
+/// suite directory with `read_dir`, sixty times per gate run — once per cell of the matrix. A
+/// self-test case is a gate run over a tree one plant away from the last, so the `teller-steps`
+/// battery parsed the oracle's cell list some 1 400 times and went over its work-unit budget
+/// (25 754 of 25 237 on ModernCI, 2026-10-18) doing it. Nothing a run reads changes between two
+/// cells of the same run, so the owners are read here once and every cell is put to the same
+/// answer, in the same arm order, as before. The oracle's id set is a pure function of the file's
+/// bytes, so it is also memoised on them ([`oracle_ids_of`]): a plant that edits `cells.json` is
+/// read fresh, and every other case re-uses the reading.
+struct CellOwners<'c> {
+    cx: &'c Ctx,
+    /// The oracle's cell ids ([`oracle_cell_ids`]), read on first use.
+    oracle: std::cell::OnceCell<std::sync::Arc<BTreeSet<String>>>,
+    /// `rigs-baseline.json`'s row keys ([`rig_baseline_ids`]), read on first use.
+    baseline: std::cell::OnceCell<BTreeSet<String>>,
+    /// Each [`SOURCE_DIRS`] base's sorted file list ([`collect_paths`]), listed on first use.
+    listed: std::cell::RefCell<BTreeMap<&'static str, std::rc::Rc<Vec<String>>>>,
+}
+
+impl<'c> CellOwners<'c> {
+    fn new(cx: &'c Ctx) -> CellOwners<'c> {
+        CellOwners {
+            cx,
+            oracle: std::cell::OnceCell::new(),
+            baseline: std::cell::OnceCell::new(),
+            listed: std::cell::RefCell::new(BTreeMap::new()),
         }
     }
 
-    // THE FILE ARM RETURNS EARLY TOO, for the H2 arm's reason: a check renamed out of its rig's
-    // file must not be adopted by another arm's search somewhere else.
-    if let Some((_, file)) = FILE_RIGS.iter().find(|(ns, _)| *ns == namespace) {
-        return cx
-            .read(file)
-            .is_ok_and(|t| declares_id(&t, rest))
-            .then(|| (*file).to_string());
-    }
-
-    if namespace == "voice.rig" {
-        let path = format!("testing/voice-conformance/legs/{rest}.sh");
-        if cx.exists(&path) {
-            return Some(path);
+    /// Which file in the tree OWNS `cell_id` — [`resolve_cell`]'s answer, arm for arm.
+    fn resolve(&self, cell_id: &str) -> Option<String> {
+        let cx = self.cx;
+        if self
+            .oracle
+            .get_or_init(|| oracle_cell_ids(cx))
+            .contains(cell_id)
+        {
+            return Some(ORACLE_CELLS_REL.to_string());
         }
-    }
-
-    if let Some((_, base)) = SOURCE_DIRS.iter().find(|(ns, _)| *ns == namespace) {
-        if let Some(owner) = declared_in_source(cx, base, rest) {
-            return Some(owner);
+        let (namespace, rest) = cell_id.split_once('|')?;
+        if rest.is_empty() {
+            return None;
         }
+
+        // THE H2 ARM RETURNS EARLY WHETHER OR NOT IT RESOLVES. A `mcp.rig|h2-…` id whose subject
+        // script vanished must not fall through into the arms below and be adopted by a substring
+        // match somewhere else — that is exactly how a deleted script keeps a green row.
+        if let Some((_, dir)) = H2_DIRS.iter().find(|(ns, _)| *ns == namespace) {
+            if rest.starts_with("h2-") {
+                let path = format!("{dir}/{rest}.sh");
+                return cx.exists(&path).then_some(path);
+            }
+        }
+
+        // THE FILE ARM RETURNS EARLY TOO, for the H2 arm's reason: a check renamed out of its rig's
+        // file must not be adopted by another arm's search somewhere else.
+        if let Some((_, file)) = FILE_RIGS.iter().find(|(ns, _)| *ns == namespace) {
+            return cx
+                .read(file)
+                .is_ok_and(|t| declares_id(&t, rest))
+                .then(|| (*file).to_string());
+        }
+
+        if namespace == "voice.rig" {
+            let path = format!("testing/voice-conformance/legs/{rest}.sh");
+            if cx.exists(&path) {
+                return Some(path);
+            }
+        }
+
+        if let Some((_, base)) = SOURCE_DIRS.iter().find(|(ns, _)| *ns == namespace) {
+            if let Some(owner) = self.declared_in_source(base, rest) {
+                return Some(owner);
+            }
+        }
+
+        if self
+            .baseline
+            .get_or_init(|| rig_baseline_ids(cx))
+            .contains(cell_id)
+        {
+            return Some("testing/shadow-oracle/rigs-baseline.json".to_string());
+        }
+        None
     }
 
-    if rig_baseline_ids(cx).contains(cell_id) {
-        return Some("testing/shadow-oracle/rigs-baseline.json".to_string());
+    /// The first file under `base`, in sorted path order, that DECLARES `needle` as a whole token.
+    /// The listing is taken once per base per run; each file is still read through the context, so
+    /// a plant's bytes are the ones searched.
+    fn declared_in_source(&self, base: &'static str, needle: &str) -> Option<String> {
+        let paths = std::rc::Rc::clone(
+            self.listed
+                .borrow_mut()
+                .entry(base)
+                .or_insert_with(|| std::rc::Rc::new(source_paths(self.cx, base))),
+        );
+        paths
+            .iter()
+            .find(|rel| {
+                self.cx
+                    .read(rel.as_str())
+                    .is_ok_and(|t| declares_id(&t, needle))
+            })
+            .cloned()
     }
-    None
 }
 
 /// The characters a scenario id is made of. Anything else is a boundary, and a match that is not
@@ -550,14 +631,12 @@ fn declares_id(text: &str, needle: &str) -> bool {
     false
 }
 
-/// The first file under `base`, in sorted path order, that DECLARES `needle` as a whole token.
-fn declared_in_source(cx: &Ctx, base: &str, needle: &str) -> Option<String> {
+/// Every file under `base`, in sorted path order — the candidates [`CellOwners`] searches.
+fn source_paths(cx: &Ctx, base: &str) -> Vec<String> {
     let mut paths: Vec<String> = Vec::new();
     collect_paths(&cx.abs(base), cx.root(), &mut paths);
     paths.sort();
     paths
-        .into_iter()
-        .find(|rel| cx.read(rel).is_ok_and(|t| declares_id(&t, needle)))
 }
 
 /// Path components that are BUILD OUTPUT, never a declaration site. A `__pycache__/*.pyc` carries
@@ -587,13 +666,12 @@ fn collect_paths(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<St
     }
 }
 
-/// Ids read out of a JSON list-of-objects keyed by `id`. An unreadable file yields an EMPTY set,
-/// matching the Python — and the emptiness is never itself a pass, because a cell that resolves
-/// nowhere is red.
-fn json_ids(cx: &Ctx, rel: &str, list_key: &str) -> BTreeSet<String> {
-    cx.read(rel)
+/// Ids read out of a JSON document's list-of-objects keyed by `id`. An unreadable or unparseable
+/// file yields an EMPTY set, matching the Python — and the emptiness is never itself a pass,
+/// because a cell that resolves nowhere is red.
+fn ids_in(text: &str, list_key: &str) -> BTreeSet<String> {
+    json_lite::parse(text)
         .ok()
-        .and_then(|t| json_lite::parse(&t).ok())
         .and_then(|d| d.get(list_key).as_array().map(<[Json]>::to_vec))
         .map(|cells| {
             cells
@@ -604,8 +682,40 @@ fn json_ids(cx: &Ctx, rel: &str, list_key: &str) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
-fn oracle_cell_ids(cx: &Ctx) -> BTreeSet<String> {
-    json_ids(cx, "testing/shadow-oracle/cells.json", "cells")
+const ORACLE_CELLS_REL: &str = "testing/shadow-oracle/cells.json";
+
+fn oracle_cell_ids(cx: &Ctx) -> std::sync::Arc<BTreeSet<String>> {
+    match cx.read(ORACLE_CELLS_REL) {
+        Ok(text) => oracle_ids_of(&text),
+        Err(_) => std::sync::Arc::new(BTreeSet::new()),
+    }
+}
+
+/// The oracle's cell ids read out of `text` — [`ids_in`] over `cells.json`'s bytes — MEMOISED ON
+/// THOSE BYTES. The reading is a pure function of them, so a case that plants a different
+/// `cells.json` is read fresh and every case that does not shares one parse.
+fn oracle_ids_of(text: &str) -> std::sync::Arc<BTreeSet<String>> {
+    use std::hash::{Hash, Hasher};
+    use std::sync::{Arc, Mutex, OnceLock};
+    type Cell = Arc<OnceLock<Arc<BTreeSet<String>>>>;
+    type Memo = Mutex<BTreeMap<(usize, u64, u64), Cell>>;
+    static MEMO: OnceLock<Memo> = OnceLock::new();
+    let mut a = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut a);
+    let mut b = std::collections::hash_map::DefaultHasher::new();
+    (text.len(), text).hash(&mut b);
+    0x7e1_u32.hash(&mut b);
+    let key = (text.len(), a.finish(), b.finish());
+    // The cell is handed out under the lock and FILLED OUTSIDE it, so concurrent cases that need the
+    // same bytes take one parse between them instead of one each.
+    let cell = MEMO
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(key)
+        .or_default()
+        .clone();
+    cell.get_or_init(|| Arc::new(ids_in(text, "cells"))).clone()
 }
 
 fn rig_baseline_ids(cx: &Ctx) -> BTreeSet<String> {
@@ -619,6 +729,7 @@ fn rig_baseline_ids(cx: &Ctx) -> BTreeSet<String> {
 
 pub fn check_rig_column(cx: &Ctx, m: &Matrix) -> Vec<String> {
     let mut out = Vec::new();
+    let owners = CellOwners::new(cx);
     for plane in m.planes() {
         for step in m.step_order() {
             let cell = m.cell(&plane, &step);
@@ -626,7 +737,7 @@ pub fn check_rig_column(cx: &Ctx, m: &Matrix) -> Vec<String> {
             if cell_id == "none" {
                 continue;
             }
-            if resolve_cell(cx, &cell_id).is_none() {
+            if owners.resolve(&cell_id).is_none() {
                 out.push(format!(
                     "{LEDGER_REL}: matrix.{plane}.{step} names rig cell {}, which NOTHING in the \
                      tree owns -- no oracle cell of that id, no h2 subject script, no voice leg, \
@@ -657,6 +768,38 @@ pub struct RootProblems {
 }
 
 pub fn check_root_column(cx: &Ctx, m: &Matrix) -> RootProblems {
+    check_root_column_in(cx, m, &CiView::of(cx))
+}
+
+/// WHAT RUNS IN CI: the composition root's module tree, read off the source with every cfg on the
+/// way to each file, and the build CI's `test` check compiles it in ([`crate::ci_cfg`]). Read once
+/// per gate run and handed to both root columns.
+pub struct CiView {
+    tree: crate::libtest_path::ModuleTree,
+    ci: Result<crate::ci_cfg::CiBuild, String>,
+}
+
+impl CiView {
+    pub fn of(cx: &Ctx) -> CiView {
+        CiView {
+            tree: crate::libtest_path::module_tree(&|rel: &str| cx.read(rel).ok(), BUSBAR_MAIN),
+            ci: cx
+                .read(MANIFEST_REL)
+                .and_then(|t| crate::ci_cfg::CiBuild::of_manifest(&t))
+                .map_err(|e| format!("{MANIFEST_REL}: {e}")),
+        }
+    }
+
+    /// `Ok` when `file::func` is a test CI's build compiles and runs; else why not.
+    fn runs(&self, file: &str, func: &str) -> Result<(), String> {
+        let ci = self.ci.as_ref().map_err(|e| {
+            format!("CI's test build could not be derived, so no cell is shown to run ({e})")
+        })?;
+        crate::libtest_path::resolve_cell(&self.tree, file, func).and_then(|c| ci.runs(&c))
+    }
+}
+
+fn check_root_column_in(cx: &Ctx, m: &Matrix, view: &CiView) -> RootProblems {
     let mut p = RootProblems::default();
     let legs = m.root_legs();
     let Some(legs_obj) = legs.as_object().filter(|o| !o.is_empty()) else {
@@ -809,6 +952,16 @@ pub fn check_root_column(cx: &Ctx, m: &Matrix) -> RootProblems {
                 ));
                 continue;
             }
+            // THE NAMED CELL MUST RUN (Law 10). A fn that exists in a module no CI build compiles,
+            // or that the harness skips, is a proof that never runs: the same green as one that
+            // passed, which is what fourteen root-llm cells were once their node-axis row went.
+            if let Err(why) = view.runs(file, func) {
+                p.column.push(format!(
+                    "{LEDGER_REL}: matrix.{plane}.{step}.root is proven by {test}, which no CI step \
+                     runs: {why}. A proof may not point at a test that never runs"
+                ));
+                continue;
+            }
             *proven_per_leg.entry(leg.clone()).or_default() += 1;
         }
     }
@@ -828,6 +981,54 @@ pub fn check_root_column(cx: &Ctx, m: &Matrix) -> RootProblems {
         ));
     }
     p
+}
+
+/// THE CAPABILITY-EQUALITY LEDGER'S ROOT COLUMN, BY THE SAME RUN RULE: every `proven` root cell of
+/// [`EQUALITY_REL`] names a test CI's build compiles and runs. Its shape, ownership and existence
+/// are the cargo gate's (`crates/busbar/tests/capability_equality.rs`); what this adds is the
+/// question a source read there cannot answer, whether the cited fn is in the build that runs.
+pub fn check_equality_cells(cx: &Ctx, view: &CiView) -> Vec<String> {
+    let doc = match cx.read(EQUALITY_REL).and_then(|t| json_lite::parse(&t)) {
+        Ok(d) => d,
+        Err(e) => return vec![format!("{EQUALITY_REL}: {e}")],
+    };
+    let mut out = Vec::new();
+    let mut proven = 0usize;
+    for cell in doc.get("cells").as_array().unwrap_or(&[]) {
+        let r = cell.get("root");
+        if r.str_or("state", "") != "proven" {
+            continue;
+        }
+        proven += 1;
+        let id = format!(
+            "{}x{}",
+            cell.str_or("capability", "?"),
+            cell.str_or("plane", "?")
+        );
+        let test = r.str_or("test", "");
+        let Some((file, func)) = test.split_once("::") else {
+            out.push(format!(
+                "{EQUALITY_REL}: cell {id} is proven over the loop by {}, which names no \
+                 `<file>::<fn>`",
+                json_lite::py_repr(&test)
+            ));
+            continue;
+        };
+        if let Err(why) = view.runs(file, func) {
+            out.push(format!(
+                "{EQUALITY_REL}: cell {id} is proven over the loop by {test}, which no CI step \
+                 runs: {why}. A proof may not point at a test that never runs"
+            ));
+        }
+    }
+    // Zero findings over zero cells is no verdict.
+    if proven == 0 {
+        out.push(format!(
+            "{EQUALITY_REL}: no root cell is proven, so there is nothing to show runs -- an empty \
+             column is not a column that passed"
+        ));
+    }
+    out
 }
 
 // -------------------------------------------------------------------------------------------
@@ -1453,6 +1654,8 @@ pub struct Findings {
     pub gating: Vec<String>,
     /// The gating gaps owed by name (`plane.step (owner)`), carried in the gating row's detail.
     pub owed: Vec<String>,
+    /// [`EQUALITY_REL`]'s root cells that no CI step runs.
+    pub equality_cells: Vec<String>,
 }
 
 /// THE MATRIX DID NOT PARSE, so no rule below it ran. Every rule carries the refusal — the one
@@ -1477,6 +1680,7 @@ pub fn did_not_load(detail: &str) -> Findings {
         root_legs: pick(ROW_ROOT_LEGS),
         gating: pick(ROW_GATING),
         owed: Vec::new(),
+        equality_cells: pick(ROW_EQUALITY_CELLS),
     }
 }
 
@@ -1517,8 +1721,9 @@ pub fn rows_from(f: &Findings) -> Vec<Row> {
         one_row(
             &f.root_column,
             ROW_ROOT_COLUMN,
-            "every cell carries a root verdict whose named loop cell still exists",
-            "a root verdict is absent, mis-attributed, unargued, or names a loop cell that is gone",
+            "every cell carries a root verdict whose named loop cell exists and runs in CI",
+            "a root verdict is absent, mis-attributed, unargued, or names a loop cell that is gone \
+             or that no CI step runs",
             format!("{cells} verdict(s) read"),
         ),
         one_row(
@@ -1543,6 +1748,14 @@ pub fn rows_from(f: &Findings) -> Vec<Row> {
                 )
             },
         ),
+        one_row(
+            &f.equality_cells,
+            ROW_EQUALITY_CELLS,
+            "every proven root cell of the capability-equality ledger is a test CI's build compiles \
+             and runs",
+            "a proven root cell of the capability-equality ledger names a test no CI step runs",
+            format!("{EQUALITY_REL} root column read"),
+        ),
     ]
 }
 
@@ -1558,6 +1771,7 @@ impl Gate for TellerStepsGate {
             ROW_ROOT_COLUMN.to_string(),
             ROW_ROOT_LEGS.to_string(),
             ROW_GATING.to_string(),
+            ROW_EQUALITY_CELLS.to_string(),
         ]
     }
 
@@ -1567,7 +1781,8 @@ impl Gate for TellerStepsGate {
             Err(e) => return Verdict::of(rows_from(&did_not_load(&e))),
         };
 
-        let root = check_root_column(cx, &m);
+        let view = CiView::of(cx);
+        let root = check_root_column_in(cx, &m, &view);
         let gating = check_gating(&m);
         Verdict::of(rows_from(&Findings {
             cells: m.planes().len() * m.step_order().len(),
@@ -1578,6 +1793,7 @@ impl Gate for TellerStepsGate {
             root_legs: root.legs,
             gating: gating.problems,
             owed: gating.owed,
+            equality_cells: check_equality_cells(cx, &view),
         }))
     }
 
@@ -1609,6 +1825,7 @@ impl Gate for TellerStepsGate {
                 ROW_ROOT_COLUMN,
                 ROW_ROOT_LEGS,
                 ROW_GATING,
+                ROW_EQUALITY_CELLS,
             ],
         ));
 
@@ -1640,6 +1857,14 @@ impl Gate for TellerStepsGate {
                     .find_map(|(_, cell)| cell.get("root").get("note").as_str().map(str::to_string))
             })
             .unwrap_or_default();
+
+        // The llm leg's own file, as the committed matrix names it: the root-column plants cite
+        // cells there, so a plant is about the rule it names and not about which file the leg is.
+        let llm_leg_file = doc
+            .get("root_legs")
+            .get("root-llm")
+            .str_or("file", &format!("{ROOT_DIR}tests/serve_tests.rs"));
+        let renamed_away = format!("{llm_leg_file}::a_fn_that_was_renamed_away");
 
         // Every plant is a MUTATION OF THE REAL COMMITTED MATRIX, not a synthetic fixture, so a
         // rule that stopped covering the real file's shape cannot pass its own selftest.
@@ -1701,15 +1926,8 @@ impl Gate for TellerStepsGate {
                 "a root proof whose named loop cell was renamed away",
                 ROW_ROOT_COLUMN,
                 "no `fn a_fn_that_was_renamed_away(` exists there",
-                Box::new(|p: &mut Plant| {
-                    p.set_root_field(
-                        "llm",
-                        "meter",
-                        "test",
-                        Json::Str(format!(
-                            "{ROOT_DIR}tests/plane_node.rs::a_fn_that_was_renamed_away"
-                        )),
-                    );
+                Box::new(move |p: &mut Plant| {
+                    p.set_root_field("llm", "meter", "test", Json::Str(renamed_away.clone()));
                 }),
             ),
             (
@@ -1871,6 +2089,109 @@ impl Gate for TellerStepsGate {
                 base.layered(&ov),
                 &[naming],
             ));
+        }
+
+        // ── THE CELL MUST RUN (Law 10, status row 178). The `fn <name>(` match accepted any fn
+        // that EXISTS; each plant below is a fn that exists in the llm leg's own file and that no
+        // CI step runs, cited by a cell. The first two are the shape fourteen root-llm cells had
+        // once no linked row carried the `node` axis: a cfg no CI build enables. ──
+        let leg_body = base_cx.read(&llm_leg_file).unwrap_or_default();
+        let run_plants: [(&str, &str, &str, &str); 4] = [
+            (
+                "a root cell under a cfg no CI build enables",
+                "\n#[cfg(linked_axis_node)]\n#[tokio::test]\nasync fn a_cell_no_ci_build_compiles() {}\n",
+                "a_cell_no_ci_build_compiles",
+                "linked_axis_node",
+            ),
+            (
+                "a root cell in a module no CI build carries",
+                "\n#[cfg(all(test, linked_axis_node))]\nmod gone_with_its_axis {\n    \
+                 #[tokio::test]\n    async fn a_cell_in_a_module_no_build_carries() {}\n}\n",
+                "a_cell_in_a_module_no_build_carries",
+                "linked_axis_node",
+            ),
+            (
+                "a root cell CI's test run skips",
+                "\n#[tokio::test]\n#[ignore]\nasync fn a_cell_the_run_skips() {}\n",
+                "a_cell_the_run_skips",
+                "ignore",
+            ),
+            (
+                "a root cell that is a helper the harness never runs",
+                "\nfn a_helper_no_harness_runs() {}\n",
+                "a_helper_no_harness_runs",
+                "no test attribute",
+            ),
+        ];
+        for (label, cell, func, naming) in run_plants {
+            let mut plant = Plant { doc: doc.clone() };
+            plant.set_root_field(
+                "llm",
+                "meter",
+                "test",
+                Json::Str(format!("{llm_leg_file}::{func}")),
+            );
+            let mut ov = Overlay::new();
+            ov.set(&llm_leg_file, format!("{leg_body}{cell}"));
+            let text = format!("{}\n", json_lite::dump_python(&plant.doc));
+            if let Err(e) = Edit::Replace(text).apply(cx, LEDGER_REL, &mut ov) {
+                report.note_infra_failure(format!("{label}: {e}"));
+                continue;
+            }
+            report.push(prove_red(
+                &base_cx,
+                self,
+                label,
+                &[ROW_ROOT_COLUMN],
+                base.layered(&ov),
+                &[naming],
+            ));
+        }
+
+        // THE SAME RULE OVER THE CAPABILITY-EQUALITY LEDGER: one of its proven root cells pointed
+        // at a cell under a cfg no CI build enables.
+        match base_cx
+            .read(EQUALITY_REL)
+            .and_then(|t| json_lite::parse(&t))
+        {
+            Ok(mut eq) => {
+                let cited = format!("{llm_leg_file}::a_cell_no_ci_build_compiles");
+                let mut planted = false;
+                if let Some(Json::Array(cells)) =
+                    eq.as_object_mut().and_then(|d| d.get_mut("cells"))
+                {
+                    for c in cells.iter_mut() {
+                        if c.get("root").str_or("state", "") != "proven" {
+                            continue;
+                        }
+                        if let Some(Json::Object(r)) =
+                            c.as_object_mut().and_then(|o| o.get_mut("root"))
+                        {
+                            r.insert("test", Json::Str(cited.clone()));
+                            planted = true;
+                            break;
+                        }
+                    }
+                }
+                if planted {
+                    let mut ov = Overlay::new();
+                    ov.set(&llm_leg_file, format!("{leg_body}{}", run_plants[0].1));
+                    ov.set(EQUALITY_REL, format!("{}\n", json_lite::dump_python(&eq)));
+                    report.push(prove_red(
+                        &base_cx,
+                        self,
+                        "a capability-equality root cell under a cfg no CI build enables",
+                        &[ROW_EQUALITY_CELLS],
+                        base.layered(&ov),
+                        &["linked_axis_node"],
+                    ));
+                } else {
+                    report.note_infra_failure(format!(
+                        "{EQUALITY_REL}: no proven root cell to plant the run rule's RED on"
+                    ));
+                }
+            }
+            Err(e) => report.note_infra_failure(format!("{EQUALITY_REL}: {e}")),
         }
 
         // THE TREE'S SIDE OF THE ROSTER: plants in the declarations the roster is derived from,
@@ -2232,5 +2553,126 @@ mod root_gating_tests {
         let (lines, rc) = root_legs_gating_verdict(&matrix(), &legs(&["root-x"]));
         assert_eq!(rc, 0, "{lines:?}");
         assert!(lines.iter().any(|l| l.starts_with("GREEN: ")), "{lines:?}");
+    }
+}
+
+#[cfg(test)]
+mod cell_owner_tests {
+    use super::*;
+
+    /// THE REFERENCE: [`resolve_cell`] as it was before [`CellOwners`], re-reading every piece of
+    /// evidence for every cell it is asked about. Kept here, and only here, so the memoised reading
+    /// has something to be held to.
+    fn resolve_cell_rereading(cx: &Ctx, cell_id: &str) -> Option<String> {
+        if ids_in(&cx.read(ORACLE_CELLS_REL).unwrap_or_default(), "cells").contains(cell_id) {
+            return Some(ORACLE_CELLS_REL.to_string());
+        }
+        let (namespace, rest) = cell_id.split_once('|')?;
+        if rest.is_empty() {
+            return None;
+        }
+        if let Some((_, dir)) = H2_DIRS.iter().find(|(ns, _)| *ns == namespace) {
+            if rest.starts_with("h2-") {
+                let path = format!("{dir}/{rest}.sh");
+                return cx.exists(&path).then_some(path);
+            }
+        }
+        if let Some((_, file)) = FILE_RIGS.iter().find(|(ns, _)| *ns == namespace) {
+            return cx
+                .read(file)
+                .is_ok_and(|t| declares_id(&t, rest))
+                .then(|| (*file).to_string());
+        }
+        if namespace == "voice.rig" {
+            let path = format!("testing/voice-conformance/legs/{rest}.sh");
+            if cx.exists(&path) {
+                return Some(path);
+            }
+        }
+        if let Some((_, base)) = SOURCE_DIRS.iter().find(|(ns, _)| *ns == namespace) {
+            let mut paths: Vec<String> = Vec::new();
+            collect_paths(&cx.abs(base), cx.root(), &mut paths);
+            paths.sort();
+            if let Some(owner) = paths
+                .into_iter()
+                .find(|rel| cx.read(rel).is_ok_and(|t| declares_id(&t, rest)))
+            {
+                return Some(owner);
+            }
+        }
+        if rig_baseline_ids(cx).contains(cell_id) {
+            return Some("testing/shadow-oracle/rigs-baseline.json".to_string());
+        }
+        None
+    }
+
+    /// THE MEMOISED OWNERS ARE THE PER-CELL RE-READ'S, on the real tree and on planted ones: every
+    /// cell the committed matrix names plus the ids the self-test plants, asked of one
+    /// [`CellOwners`] per tree (so every answer after the first is served warm) and of the
+    /// reference that re-reads per cell. The `cells.json` plant is asked AFTER the real tree filled
+    /// the oracle memo, so a memo that answered from the wrong bytes would show here.
+    #[test]
+    fn the_memoised_cell_owners_are_the_per_cell_reread_on_planted_trees() {
+        let base = Ctx::workspace().expect("the workspace opens");
+        let m = load(&base).expect("the committed matrix loads");
+        let mut ids: Vec<String> = Vec::new();
+        for plane in m.planes() {
+            for step in m.step_order() {
+                ids.push(m.cell(&plane, &step).str_or("cell", ""));
+            }
+        }
+        ids.extend(
+            [
+                "teller|a-scenario-that-was-renamed-away",
+                "mcp.rig|h2-a-step-with-no-script",
+                "jev.rig|h2-a-check-that-was-renamed-away",
+                "mcp.battery|ADV.MALFORMED",
+                "a2a.supplement|SERVER-002",
+                "teller|planted-oracle-cell",
+                "voice.rig|a-leg-with-no-script",
+                "no-namespace",
+                "mcp.battery|",
+            ]
+            .map(str::to_string),
+        );
+        let planted_oracle = {
+            let mut ov = Overlay::new();
+            ov.set(
+                ORACLE_CELLS_REL,
+                "{\"cells\": [{\"id\": \"teller|planted-oracle-cell\"}]}\n",
+            );
+            ov
+        };
+        let no_jev = {
+            let mut ov = Overlay::new();
+            ov.set(FILE_RIGS[0].1, String::new());
+            ov
+        };
+        for (i, ov) in [Overlay::new(), planted_oracle, no_jev]
+            .into_iter()
+            .enumerate()
+        {
+            let cx = base.with_overlay(ov);
+            let owners = CellOwners::new(&cx);
+            let mut resolved = 0usize;
+            for id in &ids {
+                let want = resolve_cell_rereading(&cx, id);
+                assert_eq!(
+                    owners.resolve(id),
+                    want,
+                    "plant {i}: the memoised owner of {id:?} is not the re-read's"
+                );
+                assert_eq!(
+                    resolve_cell(&cx, id),
+                    want,
+                    "plant {i}: resolve_cell's owner of {id:?} is not the re-read's"
+                );
+                resolved += usize::from(want.is_some());
+            }
+            assert!(
+                resolved > 0,
+                "plant {i}: no id resolved, so nothing was compared"
+            );
+        }
     }
 }
