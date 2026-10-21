@@ -1590,4 +1590,13 @@ fn a_loaded_door_and_a_linked_plugin_name_their_door_by_macro_door_alike() {
         linked_macro.linked()[0].door().map(|d| d as usize)
     );
     assert!(linked_macro.linked()[0].door().is_some());
+    // SAFETY: `door` is the door `plugin_door!` laid out: a `'static`, fully initialised door.
+    let restated = unsafe { LoadedDoor::from_raw(door) };
+    let linked_loaded = crate::PluginRegistry::empty()
+        .link(vec![crate::LinkedPlugin::of_loaded(manifest(), restated)])
+        .expect("the restated door links");
+    assert_eq!(
+        linked_loaded.linked()[0].door().map(|d| d as usize),
+        linked_macro.linked()[0].door().map(|d| d as usize)
+    );
 }

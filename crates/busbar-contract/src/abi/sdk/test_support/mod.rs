@@ -46,6 +46,7 @@ mod sealed {
 }
 
 pub mod fake;
+mod pairs;
 pub mod reply;
 pub mod test_in;
 
@@ -355,31 +356,84 @@ pub struct ViewOp {
     takes: Option<core::any::TypeId>,
 }
 
+/// THE `in` OF ONE SLOT, read off the kinds' own slot table (the `KindSlot` impls each kind's
+/// `slot_structs!` states, status row 194): `Probe<C, N>` answers `C`'s slot-`N` `in` where `C`
+/// states one (`Has`), and nothing where it does not (`Lacks`, reached only through one more
+/// autoderef). Each table is named concretely below, so the choice is made per table and slot.
+struct Probe<C, const N: u32>(core::marker::PhantomData<C>);
+
+trait Has {
+    fn in_type(&self) -> Option<core::any::TypeId>;
+}
+
+impl<C: crate::abi::sdk::door::KindSlot<N>, const N: u32> Has for &Probe<C, N> {
+    fn in_type(&self) -> Option<core::any::TypeId> {
+        Some(core::any::TypeId::of::<
+            <C as crate::abi::sdk::door::KindSlot<N>>::In,
+        >())
+    }
+}
+
+trait Lacks {
+    fn in_type(&self) -> Option<core::any::TypeId>;
+}
+
+impl<C, const N: u32> Lacks for Probe<C, N> {
+    fn in_type(&self) -> Option<core::any::TypeId> {
+        None
+    }
+}
+
+/// Slot `index`'s `in` in the table `$c` names (slots 0 to 95; no kind states more).
+macro_rules! slot_in_of {
+    ($c:ty, $index:expr; $($n:literal),+) => {
+        'slot: {
+            $(
+                if $index == $n {
+                    break 'slot (&&Probe::<$c, $n>(core::marker::PhantomData)).in_type();
+                }
+            )+
+            None
+        }
+    };
+}
+
+/// The `in` of slot `index` in table `C`, as `C`'s own slot table states it. (`&&Probe` is
+/// the probe: the borrow is how the slot table is consulted.)
+#[allow(clippy::needless_borrow)]
+fn table_in<C: 'static>(index: u32) -> Option<core::any::TypeId> {
+    use core::any::TypeId;
+    macro_rules! tables {
+        ($($t:ty),+) => {
+            $(
+                if TypeId::of::<C>() == TypeId::of::<$t>() {
+                    return slot_in_of!($t, index; 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95);
+                }
+            )+
+        };
+    }
+    tables!(
+        crate::abi::sdk::door::Lifecycle,
+        crate::abi::plane::PlaneLifecycle,
+        crate::abi::store::Ops,
+        crate::abi::secret::Ops,
+        crate::abi::auth::Ops,
+        crate::abi::hook::Ops,
+        crate::abi::export::Ops,
+        crate::abi::plane::Ops,
+        crate::abi::transport::Ops
+    );
+    None
+}
+
 /// The `in` type of slot `index` of a `T` door: its lifecycle's for a lifecycle slot, its kind's
 /// own otherwise; `None` for a table no kind states (a host's own test double).
 fn slot_in_type<T: KindOps>(index: u32) -> Option<core::any::TypeId> {
-    use core::any::TypeId;
-    fn of<S: crate::abi::sdk::door::SlotIns + 'static>(
-        table: TypeId,
-        index: u32,
-    ) -> Option<Option<TypeId>> {
-        (table == TypeId::of::<S>()).then(|| S::slot_in(index))
-    }
-    let table = if index < crate::abi::mechanism::lifecycle::LIFECYCLE_SLOTS {
-        TypeId::of::<T::Lifecycle>()
+    if index < crate::abi::mechanism::lifecycle::LIFECYCLE_SLOTS {
+        table_in::<T::Lifecycle>(index)
     } else {
-        TypeId::of::<T>()
-    };
-    of::<crate::abi::sdk::door::Lifecycle>(table, index)
-        .or_else(|| of::<crate::abi::plane::PlaneLifecycle>(table, index))
-        .or_else(|| of::<crate::abi::store::Ops>(table, index))
-        .or_else(|| of::<crate::abi::secret::Ops>(table, index))
-        .or_else(|| of::<crate::abi::auth::Ops>(table, index))
-        .or_else(|| of::<crate::abi::hook::Ops>(table, index))
-        .or_else(|| of::<crate::abi::export::Ops>(table, index))
-        .or_else(|| of::<crate::abi::plane::Ops>(table, index))
-        .or_else(|| of::<crate::abi::transport::Ops>(table, index))
-        .flatten()
+        table_in::<T>(index)
+    }
 }
 
 impl ViewOp {

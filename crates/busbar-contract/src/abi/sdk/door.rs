@@ -146,36 +146,15 @@ macro_rules! slot_structs {
         impl $t {}
         $crate::abi::sdk::door::slot_structs!($t { $($rows)* });
     };
-    ($t:ty { $($index:expr => $in:ty, $out:ty;)* }) => {
-        $(
-            // SAFETY: the structs the kind's ABI states for this slot.
-            unsafe impl $crate::abi::sdk::door::KindSlot<{ $index }> for $t {
-                type In = $in;
-                type Out = $out;
-            }
-        )*
-        impl $crate::abi::sdk::door::SlotIns for $t {
-            fn slot_in(index: u32) -> Option<core::any::TypeId> {
-                $(
-                    if index == $index {
-                        return Some(core::any::TypeId::of::<$in>());
-                    }
-                )*
-                None
-            }
+    ($t:ty { $($index:expr => $in:ty, $out:ty;)* }) => {$(
+        // SAFETY: the structs the kind's ABI states for this slot.
+        unsafe impl $crate::abi::sdk::door::KindSlot<{ $index }> for $t {
+            type In = $in;
+            type Out = $out;
         }
-    };
+    )*};
 }
 pub(crate) use slot_structs;
-
-/// The `in` type of each slot a table states, by index (status row 194): what the test support
-/// (`test_support::DoorView::op`) holds an `in` it enters a slot over to. Every kind's table
-/// implements it through `slot_structs!`; it is no API of its own.
-#[doc(hidden)]
-pub trait SlotIns {
-    /// The `in` type of slot `index`; `None` when this table states no such slot.
-    fn slot_in(index: u32) -> Option<core::any::TypeId>;
-}
 
 slot_structs!(Lifecycle {
     lc::slot::VALIDATE => ValidateIn, OutHead;

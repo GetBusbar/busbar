@@ -231,6 +231,14 @@ impl LinkedPlugin {
         Self::door(manifest, door.door_fn())
     }
 
+    /// [`LinkedPlugin::door`] over a [`LoadedDoor`](crate::dispatch::LoadedDoor) (status rows 159
+    /// and 194): a `MacroDoor`'s, or the door a crate that exports its `door` function alone
+    /// restates (`unsafe { LoadedDoor::from_raw(plugin::door) }`). #1469 keeps this name and
+    /// signature.
+    pub fn of_loaded(manifest: Manifest, door: crate::dispatch::LoadedDoor) -> Self {
+        Self::door(manifest, door.door)
+    }
+
     /// The build's in-process STORE named `name` (its own alias), at the store kind's one version:
     /// its store v3 `door`, and whether what it holds is lost on restart.
     pub fn store(
