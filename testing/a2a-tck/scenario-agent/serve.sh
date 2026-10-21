@@ -37,6 +37,17 @@ so there is no a2a-sdk pin -- refusing to serve" >&2
   exit 2
 fi
 
+# THE PIN IS A PATH COMPONENT BELOW, and `discard` may `rm -rf` that path, so it is checked BEFORE any
+# path is built from it. A version is letters, digits, dots, plus and hyphen and nothing else: a
+# pin carrying a slash (`../`, an absolute path) could point `venv-$CONTROL_PY_VERSION` -- and the
+# `rm -rf` after a failed install -- at a directory outside the work directory.
+pin_re='^[0-9A-Za-z.+-]+$'
+if ! LC_ALL=C bash -c '[[ $1 =~ $2 ]]' _ "$CONTROL_PY_VERSION" "$pin_re"; then
+  echo "the CONTROL_PY_VERSION in testing/a2a-harness/scripts/install-control.sh is not a version \
+(it must match $pin_re) -- refusing to serve" >&2
+  exit 2
+fi
+
 WORK="${A2A_SCENARIO_AGENT_WORK:-${TMPDIR:-/tmp}/a2a-scenario-agent}"
 VENV="$WORK/venv-$CONTROL_PY_VERSION"
 mkdir -p "$WORK" 2>/dev/null || {

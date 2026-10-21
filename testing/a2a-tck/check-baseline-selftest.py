@@ -283,7 +283,7 @@ def main():
     #     (see the docstring); the leg count is pinned so a deleted leg is not a quiet pass.
     p = subprocess.run(["bash", RUNNER, "selftest"], capture_output=True, text=True)
     judge("runner_selftest_plants_every_refusal", p.returncode, p.stdout + p.stderr, 0,
-          "runner selftest: 48 legs, all green")
+          "runner selftest: 57 legs, all green")
 
     for name in PASSES:
         print("  ok   %s" % name)

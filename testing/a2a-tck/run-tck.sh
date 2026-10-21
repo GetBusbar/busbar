@@ -91,7 +91,18 @@ read_pin () {
   sed -n "/^$name=\"/{s/^$name=\"\([^\"]*\)\".*/\1/p;q;}" <<< "$text"
 }
 
+# require_safe_pin <what> <value>: a pin is a version or a commit -- letters, digits, dots, plus and
+# hyphen -- and nothing else. Anything with a slash or a space is refused (exit 2) BEFORE it is used
+# as, or inside, a path or an argument, because `discard` removes paths with `rm -rf`.
+require_safe_pin () {
+  if ! LC_ALL=C bash -c '[[ $1 =~ ^[0-9A-Za-z.+-]+$ ]]' _ "$2"; then
+    echo "the $1 pin '$2' is not a version (it must match ^[0-9A-Za-z.+-]+\$) -- refusing to run" >&2
+    exit 2
+  fi
+}
+
 fetch_tck () {
+  require_safe_pin "a2a-tck commit (TCK_REF)" "$TCK_REF"
   if [ ! -d "$TCK_DIR/.git" ]; then
     say "fetching a2a-tck at pinned ${TCK_REF}"
     # A half-made checkout is removed, so the next run fetches again instead of trusting it.
@@ -141,6 +152,8 @@ install_control () {
     echo "no CONTROL_GO_VERSION pin in $harness_pin_file -- refusing to run" >&2
     exit 2
   fi
+  require_safe_pin "a2a-go version (CONTROL_GO_VERSION)" "$CONTROL_GO_VERSION"
+  require_safe_pin "testing/a2a-harness a2a-go version (CONTROL_GO_VERSION)" "$harness_pin"
   if [ "$harness_pin" != "$CONTROL_GO_VERSION" ]; then
     echo "a2a-go pin disagreement: run-tck.sh pins $CONTROL_GO_VERSION, testing/a2a-harness pins \
 $harness_pin -- reconcile them before running" >&2
@@ -259,7 +272,9 @@ stop_control () {
       kill -0 "$CONTROL_PID" 2>/dev/null || break
       sleep 0.1
     done
-    kill -9 "$CONTROL_PID" 2>/dev/null || true
+    # Only a peer that is still there gets SIGKILL: a pid that has gone may already belong to
+    # something else.
+    kill -0 "$CONTROL_PID" 2>/dev/null && kill -9 "$CONTROL_PID" 2>/dev/null || true
     wait "$CONTROL_PID" 2>/dev/null || true
   fi
 }
@@ -383,11 +398,19 @@ case "${1:-}" in
   # own directory, `mkdir -p` of the tracked `baselines/` directory, and serve.sh's final `exec` of
   # the interpreter it has just run.
   #
-  # Every refusal has a green twin -- the same stand-ins minus the planted defect -- with TWO
-  # exceptions, both because their green side needs the network: `fetch_tck`'s pin refusal (a
-  # checkout AT the pin can only be fetched), exercised by every control leg the conformance
-  # recorder runs; and the subject verb's endpoint refusal (a subject run fetches the suite and
-  # needs a live endpoint), exercised by `scripts/a2a-subject/boot.sh --tck`.
+  # Every refusal has a green twin -- the same stand-ins minus the planted defect -- with NO
+  # exceptions, and none of them needs the network. The failed fetch, the failed suite install and
+  # the failed SDK install each have a twin whose stand-in `git` or `pip` SUCCEEDS and whose run
+  # then reaches the next stage; each stand-in step leaves a mark the next one needs, so a runner
+  # that skipped a step cannot pass. The pin refusal's twin is a checkout at the pin. The subject
+  # verb's endpoint refusal's twin runs the real verb as a subprocess against a prepared work
+  # directory, stand-in `git` and a crashing stand-in suite.
+  #
+  # THE PINS ARE VALIDATED BEFORE ANY PATH OR COMMAND IS BUILT FROM THEM: `serve.sh` builds
+  # `venv-$CONTROL_PY_VERSION`, which `discard` may `rm -rf`, so a pin that is not
+  # ^[0-9A-Za-z.+-]+$ is refused first. Its RED leg plants a `../`-style pin and a sentinel
+  # directory outside the work directory, and wants both the refusal as the last line and the
+  # sentinel untouched.
   #
   # The report legs plant the previous run's GOOD report where the runner writes its own -- the
   # state the persistent cache leaves -- and have the stand-in suite crash without writing one; the
@@ -453,6 +476,12 @@ json.dump({"summary": {}, "per_requirement":
     harness_tree "$st/h-sdk-other" "$(pins "$CONTROL_GO_VERSION" 7.7.7)"
     harness_tree "$st/h-sdk-unreadable" "$(pins "$CONTROL_GO_VERSION" 6.6.6)"
     harness_tree "$st/h-sdk-uninstallable" "$(pins "$CONTROL_GO_VERSION" 5.5.5)"
+    harness_tree "$st/h-sdk-installable" "$(pins "$CONTROL_GO_VERSION" 4.4.4+local-1)"
+    # Pins that are not versions: one that climbs out of the work directory (the `venv-` before it
+    # is a directory the failed install makes, so `venv-/../../outside-sentinel` is a sibling of
+    # the work directory), and a go pin that is a path.
+    harness_tree "$st/h-sdk-traversal" "$(pins "$CONTROL_GO_VERSION" /../../outside-sentinel)"
+    harness_tree "$st/h-go-traversal" "$(pins ../escape 9.9.9)"
     # `go` stand-ins: `go version -m` reporting the pinned module version or another one; a `go`
     # whose every command fails; and one whose `go install` installs a working binary.
     for v in "$CONTROL_GO_VERSION" v2.3.0; do
@@ -470,6 +499,33 @@ json.dump({"summary": {}, "per_requirement":
       standin "$st/git-$d/git" "if [ \"\$1\" = init ]; then exec \"$real_git\" \"\$@\"; fi; echo 'git stand-in: fetch fails' >&2; exit 1"
       standin "$st/python3-$d/python3" "if [ \"\$1\" = -m ] && [ \"\$2\" = venv ]; then mkdir -p \"\$3/bin\"; printf '#!/bin/sh\\nexit 0\\n' > \"\$3/bin/python\"; printf '#!/bin/sh\\necho pip stand-in: failing >&2; exit 1\\n' > \"\$3/bin/pip\"; chmod +x \"\$3/bin/python\" \"\$3/bin/pip\"; exit 0; fi; exit 1"
     done
+    # Stand-ins whose fetch and install SUCCEED, each step leaving a mark the next one needs, so a
+    # runner that skipped a step cannot reach the end: a `git` whose init, remote add, fetch and
+    # checkout all work (HEAD is the pin only once the checkout ran); a `git` that finds the
+    # cached checkout at the pin; and a `python3 -m venv` whose virtualenv's `pip` installs (the
+    # suite, or the pinned SDK) and whose `python` imports and reports only after it has.
+    standin "$st/git-fetches/git" "case \"\$1\" in
+  init) mkdir -p \"\$3/.git\" ;;
+  -C) d=\"\$2\"; shift 2
+      case \"\$1\" in
+        remote) touch \"\$d/.git/remote\" ;;
+        fetch) [ -e \"\$d/.git/remote\" ] && [ \"\$*\" = \"fetch -q --depth 1 origin $TCK_REF\" ] && touch \"\$d/.git/fetched\" ;;
+        checkout) [ -e \"\$d/.git/fetched\" ] && touch \"\$d/.git/checked-out\" ;;
+        rev-parse) [ -e \"\$d/.git/checked-out\" ] && echo $TCK_REF ;;
+      esac ;;
+esac"
+    standin "$st/git-at-pin/git" "if [ \"\$3\" = rev-parse ]; then echo $TCK_REF; fi"
+    printf '%s\n' 'd="$(dirname "$0")"' 'case "$1" in' \
+      '  -c) case "$2" in' \
+      '        *importlib.metadata*) [ -e "$d/sdk-installed" ] && cat "$d/sdk-installed" ;;' \
+      '        *) [ -e "$d/suite-installed" ] ;;' \
+      '      esac ;;' \
+      '  *) echo "scenario agent would serve with a2a-sdk $(cat "$d/sdk-installed"): $*" ;;' \
+      'esac' > "$st/venv-python.sh"
+    printf '%s\n' 'd="$(dirname "$0")"' 'for a in "$@"; do' \
+      '  case "$a" in a2a-sdk*==*) echo "${a#*==}" > "$d/sdk-installed" ;; esac' 'done' \
+      'case "$*" in *"install -e ."*) touch "$d/suite-installed" ;; esac' 'exit 0' > "$st/venv-pip.sh"
+    standin "$st/python3-installs/python3" "if [ \"\$1\" = -m ] && [ \"\$2\" = venv ]; then mkdir -p \"\$3/bin\"; cp \"$st/venv-python.sh\" \"\$3/bin/python\"; cp \"$st/venv-pip.sh\" \"\$3/bin/pip\"; chmod +x \"\$3/bin/python\" \"\$3/bin/pip\"; exit 0; fi; exit 1"
     for d in rm-fails git-half+rm-fails python3-half+rm-fails; do
       standin "$st/$d/rm" 'echo "rm stand-in: cannot remove" >&2; exit 1'
     done
@@ -580,6 +636,8 @@ json.dump({"summary": {}, "per_requirement":
       ic "$st/h-unreadable/a2a-tck" "$st/bin" "$st/go-$CONTROL_GO_VERSION"
     expect install_control_refuses_a_harness_file_without_a_pin 2 "no CONTROL_GO_VERSION pin in" \
       ic "$st/h-noline/a2a-tck" "$st/bin" "$st/go-$CONTROL_GO_VERSION"
+    expect install_control_refuses_a_harness_pin_that_is_not_a_version 2 "is not a version" \
+      ic "$st/h-go-traversal/a2a-tck" "$st/bin" "$st/go-$CONTROL_GO_VERSION"
     expect install_control_refuses_a_harness_pin_disagreement 2 "a2a-go pin disagreement" \
       ic "$st/h-disagrees/a2a-tck" "$st/bin" "$st/go-$CONTROL_GO_VERSION"
     expect install_control_refuses_a_failed_install 2 "could not install control a2a-go" \
@@ -601,8 +659,16 @@ json.dump({"summary": {}, "per_requirement":
       disk_after "$st/tck-half" "was removed -- refusing to run" ft "$st/tck-half" "$st/git-half"
     expect fetch_tck_says_when_a_half_made_checkout_remains 2 "$st/tck-half2 is left; stopped on the refusal: yes" \
       disk_after "$st/tck-half2" "could not be removed; remove it by hand -- refusing to run" ft "$st/tck-half2" "$st/git-half+rm-fails"
-    expect fetch_tck_refuses_a_checkout_that_is_not_the_pin 2 "refusing to run" \
+    expect fetch_tck_refuses_a_checkout_that_is_not_the_pin 2 "pin is $TCK_REF -- refusing to run" \
       ft "$st/tck-wrong" "$st/no-stand-in"
+    ftr () { TCK_REF="$3"; ft "$1" "$2"; }
+    expect fetch_tck_refuses_a_pin_that_is_not_a_version 2 "is not a version" \
+      ftr "$st/tck-badpin" "$st/git-fails" "../escape"
+    expect fetch_tck_fetches_a_missing_checkout 0 "a2a-tck @ $TCK_REF" \
+      ft "$st/tck-fetched" "$st/git-fetches"
+    mkdir -p "$st/tck-at-pin/.git"
+    expect fetch_tck_accepts_a_checkout_at_the_pin 0 "a2a-tck @ $TCK_REF" \
+      ft "$st/tck-at-pin" "$st/git-at-pin"
     expect fetch_tck_refuses_a_checkout_with_no_commit 2 "a2a-tck checkout is no commit" \
       ft "$st/tck-empty" "$st/no-stand-in"
     it () { VENV="$1"; PATH="$2:$PATH"; install_tck && echo "suite dependencies import"; }
@@ -612,6 +678,8 @@ json.dump({"summary": {}, "per_requirement":
       disk_after "$st/venv-half" "was removed -- refusing to run" it "$st/venv-half" "$st/python3-half"
     expect install_tck_says_when_a_half_made_virtualenv_remains 2 "$st/venv-half2 is left; stopped on the refusal: yes" \
       disk_after "$st/venv-half2" "could not be removed; remove it by hand -- refusing to run" it "$st/venv-half2" "$st/python3-half+rm-fails"
+    expect install_tck_installs_a_missing_virtualenv 0 "suite dependencies import" \
+      it "$st/venv-new" "$st/python3-installs"
     expect install_tck_refuses_dependencies_that_do_not_import 2 "did not import" \
       it "$st/venv-broken" "$st/no-stand-in"
     expect install_tck_accepts_dependencies_that_import 0 "suite dependencies import" \
@@ -666,6 +734,34 @@ json.dump({"summary": {}, "per_requirement":
     expect serve_sh_says_when_a_half_made_virtualenv_remains 2 "$st/agent-work/venv-5.5.5 is left; stopped on the refusal: yes" \
       disk_after "$st/agent-work/venv-5.5.5" "could not be removed; remove it by hand -- refusing to serve" sv "$st/h-sdk-uninstallable" "" "$st/python3-half+rm-fails"
     rm -rf "$st/agent-work/venv-5.5.5"
+    rm -rf "$st/agent-work/venv-5.5.5"
+    # The pin is validated before any path is built from it. The sentinel is a directory OUTSIDE
+    # the work directory that the pin points at; the leg wants the refusal as the last line, the
+    # work directory never made, and the sentinel and its one file still there. A twin with a
+    # valid pin and the same failing install wants the same sentinel untouched after `discard`.
+    sentinel="$st/outside-sentinel"
+    mkdir -p "$sentinel"; touch "$sentinel/keep"
+    outside_after () {     # outside_after <work-dir> <present|absent> <command...>
+      local work="$1" want="$2" rc=0 out=""
+      shift 2
+      out="$( ( "$@" ) 2>&1 )" || rc=$?
+      printf '%s\n' "$out"
+      if [ ! -f "$sentinel/keep" ] || [ "$(ls -A "$sentinel" | wc -l | tr -d ' ')" != 1 ]; then
+        echo "OUTSIDE DIRECTORY TOUCHED: $sentinel"
+      fi
+      if { [ -e "$work" ] && [ "$want" = absent ]; } || { [ ! -e "$work" ] && [ "$want" = present ]; }; then
+        echo "WORK DIRECTORY NOT AS EXPECTED ($want): $work"
+      fi
+      return "$rc"
+    }
+    expect serve_sh_refuses_a_pin_that_is_not_a_version 2 "is not a version" \
+      outside_after "$st/agent-work-traversal" absent \
+      sv "$st/h-sdk-traversal" "$st/agent-work-traversal" "$st/python3-half"
+    expect serve_sh_discard_stays_inside_the_work_directory 2 "was removed -- refusing to serve" \
+      outside_after "$st/agent-work-twin" present \
+      sv "$st/h-sdk-uninstallable" "$st/agent-work-twin" "$st/python3-half"
+    expect serve_sh_installs_the_pinned_sdk_and_goes_on_to_serve 0 "would serve with a2a-sdk 4.4.4+local-1" \
+      sv "$st/h-sdk-installable" "$st/agent-work-installs" "$st/python3-installs"
     expect serve_sh_refuses_an_a2a_sdk_of_another_version 2 "is 1.1.2, pin is 7.7.7" \
       sv "$st/h-sdk-other"
     expect serve_sh_refuses_an_a2a_sdk_that_cannot_say_its_version 2 "is unreadable, pin is 6.6.6" \
@@ -675,6 +771,15 @@ json.dump({"summary": {}, "per_requirement":
     # -- the verbs
     expect subject_refuses_without_an_endpoint 1 "needs BUSBAR_A2A_ENDPOINT" \
       env -u BUSBAR_A2A_ENDPOINT bash "$REAL_HERE/run-tck.sh" subject
+    # The subject verb with its endpoint set: the cached checkout is at the pin (stand-in `git`),
+    # the virtualenv imports, the stand-in suite crashes; the run reaches the suite and ends there.
+    sw="$st/subject-work"
+    mkdir -p "$sw/a2a-tck/.git"
+    cp "$st/crashes.py" "$sw/a2a-tck/run_tck.py"
+    standin "$sw/venv/bin/python" 'case "$1" in -c) exit 0 ;; *) exec python3 "$@" ;; esac'
+    expect subject_runs_the_suite_against_its_endpoint 0 "(a2a-tck exit 1; verdict comes from the baseline comparison)" \
+      env -u A2AHT_CONTROL_BIN -u A2A_TCK_OUT A2A_TCK_WORK="$sw" BUSBAR_A2A_ENDPOINT=http://127.0.0.1:9 \
+      PATH="$st/git-at-pin:$PATH" bash "$REAL_HERE/run-tck.sh" subject
     expect an_unknown_verb_prints_usage_and_refuses 2 "planted with stand-ins (no network, no control)" \
       bash "$REAL_HERE/run-tck.sh" no-such-verb
 
