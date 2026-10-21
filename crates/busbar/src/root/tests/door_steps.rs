@@ -2504,7 +2504,7 @@ pub(crate) mod tool_door {
             // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
             let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
             // Its connection reads through a ticket (the door's `exchange`) wake on the dispatcher.
-            let connector = busbar_core_connector::process::build(
+            let connector = busbar_core_connector::process::build_with_secrets(
                 || {
                     crate::root::connector::entries(
                         crate::LINKED_TRANSPORT_DOORS,
@@ -2515,6 +2515,7 @@ pub(crate) mod tool_door {
                 &[],
                 dispatcher.conn_waker(),
                 busbar_core_connector::pool::PoolPosture::NONE,
+                busbar_kernel::config::secret::resolve_linked_string_at_config,
             )
             .expect("the connector builds");
             let plane = bound(

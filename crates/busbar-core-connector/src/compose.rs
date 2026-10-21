@@ -747,8 +747,9 @@ impl Connection {
 }
 
 /// How a program's environment references resolve: at config time, held for its spawns
-/// ([`crate::spawn_env`]).
-pub use crate::spawn_env::{install_spawn_secrets, SpawnSecretFn};
+/// ([`crate::spawn_env`]); the root hands it to the connector it builds
+/// ([`crate::Connector::resolving_spawn_secrets`]).
+pub use crate::spawn_env::SpawnSecretFn;
 
 impl Connection {
     /// SPAWN `program` through the carrier `via` (the host spawns it: no shell, its absolute path

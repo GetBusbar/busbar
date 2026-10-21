@@ -179,6 +179,14 @@ pub fn pool_posture(settings: &TransportSettings) -> PoolPosture {
     }
 }
 
+/// THE CONNECTOR'S SECRET RESOLVER, the one the boot hands `process::build_with_secrets`: a member
+/// program's `env` secret references resolve through the linked secret plugins at config time and
+/// are held for the spawns. A door's root cells build their connector with this same resolver.
+#[must_use]
+pub fn spawn_secret_resolver() -> busbar_core_connector::spawn_env::SpawnSecretFn {
+    busbar_kernel::config::secret::resolve_linked_string_at_config
+}
+
 /// THE BOOT PATH'S STEP: build the one Connector over every linked transport door, each opened
 /// with the deployment's `settings`, its dials judged by `dest` (the deployment's one guard) with
 /// the node's own ports read off its `listens`, its dialled connections pooled per worker under
@@ -201,7 +209,7 @@ pub fn boot(
     // here and never taken from a submitter: the first submit is made on the control runtime,
     // whose thread then waits synchronously on worker ops (the boot's `ready`).
     crate::root::dispatch::dispatcher().install_runtime(io_reactor());
-    let built = process::build(
+    let built = process::build_with_secrets(
         || {
             declared(
                 entries(doors, settings)?,
@@ -216,6 +224,12 @@ pub fn boot(
         // opened on.
         crate::root::dispatch::dispatcher().conn_waker(),
         pool_posture(settings),
+        // A member program's `env` secret references resolve through the linked secret plugins
+        // (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)), at CONFIG TIME — the need's declaration at
+        // a plane's load or a config apply, and the connector's refresher — and are held for the
+        // spawns, which resolve nothing (ARCHITECT ruling 2026-10-13, row 166: a spawn serves a
+        // request).
+        spawn_secret_resolver(),
     );
     let connector = built.unwrap_or_else(|refusal| {
         eprintln!("busbar: the connector did not build: {refusal}");
