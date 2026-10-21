@@ -1778,14 +1778,20 @@ mod tests {
     fn a_header_inside_what_reads_as_a_multiline_string_is_still_checked() {
         let text = "description = \"\"\"\nopen\n[patch.crates-io]\nx = 1\n\"\"\"\n";
         let found = super::redirect_entries(text);
-        assert!(found.iter().any(|(_, e)| e == "patch.crates-io"), "{found:?}");
+        assert!(
+            found.iter().any(|(_, e)| e == "patch.crates-io"),
+            "{found:?}"
+        );
     }
 
     #[test]
     fn the_multiline_state_closes_on_its_own_delimiter_only() {
         use super::multiline_after;
         assert_eq!(multiline_after("a = \"\"\"", None), Some("\"\"\""));
-        assert_eq!(multiline_after("end ''' here", Some("\"\"\"")), Some("\"\"\""));
+        assert_eq!(
+            multiline_after("end ''' here", Some("\"\"\"")),
+            Some("\"\"\"")
+        );
         assert_eq!(multiline_after("end \"\"\"\"\" # x", Some("\"\"\"")), None);
         assert_eq!(multiline_after("k = '''raw'''", None), None);
         assert_eq!(multiline_after("# '''", None), None);
