@@ -47,7 +47,10 @@ fn the_gates_bind_over_the_recorded_entry_and_a_projection_naming_another_is_ref
         bound_entry(Some(b"files"), ROUTE_DIRECT, &files, holds).ok(),
         Some(Some("files"))
     );
-    assert_eq!(bound_entry(None, ROUTE_LOCAL, &none, holds).ok(), Some(Some("")));
+    assert_eq!(
+        bound_entry(None, ROUTE_LOCAL, &none, holds).ok(),
+        Some(Some(""))
+    );
     assert!(
         bound_entry(Some(b"files"), ROUTE_DIRECT, &shell, holds).is_err(),
         "a projection naming another entry bound that entry's gates"
@@ -66,7 +69,13 @@ fn the_gates_bind_over_the_recorded_entry_and_a_projection_naming_another_is_ref
         "a pool's unit binds the member its projection names"
     );
     assert_eq!(
-        bound_entry(Some(b"files"), ROUTE_DIRECT, &super::Projection::default(), holds).ok(),
+        bound_entry(
+            Some(b"files"),
+            ROUTE_DIRECT,
+            &super::Projection::default(),
+            holds
+        )
+        .ok(),
         Some(None),
         "a projection with no entry and no body has nothing to screen"
     );
@@ -142,5 +151,9 @@ fn the_gate_first_binder_names_the_dialect_a_unit_arrived_in() {
     };
     assert_eq!(binder.dialect(1), "dialect-1");
     assert_eq!(binder.dialect(0), "dialect-0");
-    assert_eq!(binder.dialect(9), "", "an index past the plane's dialects names none");
+    assert_eq!(
+        binder.dialect(9),
+        "",
+        "an index past the plane's dialects names none"
+    );
 }
