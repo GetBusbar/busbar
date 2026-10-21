@@ -58,6 +58,9 @@ impl GovState {
     ///   ([`VirtualKey::idp_provider`]) other than `provider`. The subject alone keys the binding,
     ///   so a second provider asserting the same subject would otherwise be handed this key.
     fn self_mint_refusal(&self, user_sub: &str, provider: &str) -> Option<SelfMintRefusal> {
+        if !self.self_mint_holds() {
+            return None;
+        }
         let group = format!("{SELF_KEY_GROUP_PREFIX}{user_sub}");
         let caches = self.caches_read();
         let rows = caches.by_id.values().filter(|k| {
@@ -77,7 +80,24 @@ impl GovState {
         refusal
     }
 
-    /// The first epoch at or after `from` whose derived id has NO row at all, with that id. See
+    /// Whether this governance holds an admin's state and the minting provider across a self-serve
+    /// login ([`SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE`]).
+    fn self_mint_holds(&self) -> bool {
+        self.self_mint_holds
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// TEST-ONLY: hold an admin's state and the minting provider across a self-serve login, as the
+    /// signed rule would ([`SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE`]), so the rule stays tested
+    /// while it waits behind its const.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn hold_self_mint_state(&self) {
+        self.self_mint_holds
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The first epoch at or after `from` whose derived id is free (no row at all when held; no
+    /// tombstone when unheld, as 1.5.5 probed), with that id. See
     /// [`GovState::write_self_binding`] for why an existing row, live, disabled or tombstoned, must
     /// be skipped rather than written over.
     ///
@@ -111,7 +131,13 @@ impl GovState {
         for _ in 0..MAX_PROBES {
             let epoch = from.saturating_add(stride);
             let id = Self::derive_self_subject(seed, user_sub, epoch);
-            if self.store.get_key(&id)?.is_none() {
+            // Held: any existing row is occupied. Unheld (1.5.5): only a tombstone is.
+            let holds = self.self_mint_holds();
+            let occupied = self
+                .store
+                .get_key(&id)?
+                .is_some_and(|k| holds || k.deleted_at.is_some());
+            if !occupied {
                 return Ok((id, epoch));
             }
             stride = if stride == 0 {

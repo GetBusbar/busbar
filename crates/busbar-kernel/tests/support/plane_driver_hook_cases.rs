@@ -144,6 +144,32 @@ impl RoutingPolicy for Rewriter {
     }
 }
 
+/// A rewrite hook declared load-bearing whose call failed: what the resolver's `on_error: reject`
+/// decorator hands every firing site (the shared refusal, minted as a transform reject).
+struct LoadBearingDown;
+
+#[async_trait::async_trait]
+impl RoutingPolicy for LoadBearingDown {
+    async fn decide(
+        &self,
+        _: &RoutingRequest<'_>,
+        _: &[Candidate<'_>],
+        _: &RoutingContext<'_>,
+        _: Duration,
+    ) -> PolicyResult {
+        Ok(RoutingDecision::Abstain)
+    }
+    fn name(&self) -> &'static str {
+        "load-bearing-down"
+    }
+    async fn transform(&self, _: &RoutingRequest<'_>, _: Duration) -> TransformOutcome {
+        TransformOutcome::Reject {
+            status: busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
+            message: busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE.to_string(),
+        }
+    }
+}
+
 #[tokio::test]
 async fn no_hook_bound_projects_nothing() {
     let r = rig_with_hooks(Way::Double, BufferCaps::default(), Book::default(), None);
@@ -283,4 +309,47 @@ async fn a_request_the_plane_cannot_project_is_refused_before_any_attempt() {
         .take_rendered()
         .expect("the plane rendered the refusal");
     assert_eq!(rendered.status, 400);
+}
+
+/// RED (THE DESIGN §11.7, HOOK Q1, owner-signed 2026-10-02): a load-bearing rewrite that could not
+/// answer refuses the routed request with the shared retryable 503 and its words, the refusal the
+/// gate-first stage and every gate seat answer, never clamped to a 403.
+#[tokio::test]
+async fn a_load_bearing_rewrite_that_cannot_answer_refuses_with_the_shared_503() {
+    let r = rig_with_hooks(
+        Way::Double,
+        BufferCaps::default(),
+        Book::default(),
+        Some(bound(
+            vec![(Duration::from_millis(500), Arc::new(LoadBearingDown))],
+            Vec::new(),
+        )),
+    );
+    let (steps, far, caller) = (
+        TestUnits::passing(),
+        Far::new(&["ok"], &[b"done"]),
+        Caller::default(),
+    );
+    let units = r
+        .driver
+        .unit(&steps, &far, &caller, arrival("/call", b"user:hello"), 0);
+    let outcome = drive(&units).await;
+    assert!(
+        matches!(outcome, Outcome::Failed(_, ReasonCode::HookVeto)),
+        "{outcome:?}"
+    );
+    let rendered = units.take_rendered().expect("the plane rendered the veto");
+    assert_eq!(
+        rendered.status,
+        u32::from(busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS)
+    );
+    assert_eq!(
+        rendered.body,
+        format!(
+            "refused:503:{}",
+            busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE
+        )
+        .into_bytes(),
+    );
+    assert!(far.sent().is_empty(), "no attempt was made");
 }

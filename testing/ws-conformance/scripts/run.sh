@@ -15,7 +15,9 @@
 # MODES
 #   --selftest            prove the parser + arm-state logic bite (no Docker, runs anywhere)
 #   --subject-arm          build the ws-conformance-subject bin and report whether it is ARMED
-#   --control               run Autobahn against the pinned reference echo server (Docker)
+#   --control               run Autobahn against the known peer: ws-conformance-reference, a strict
+#                           RFC 6455 echo server on the Rust standard library alone, independent of
+#                           busbar's framer (Docker)
 #   --negative-control      run Autobahn against the deliberately broken echo server (Docker); MUST be RED
 #   --subject                run Autobahn against the busbar ws-conformance-subject (Docker); ARMED OR RED
 #
@@ -118,13 +120,19 @@ case "$mode" in
   --selftest) selftest ;;
   --subject-arm) subject_arm ;;
   --control)
-    echo "$mode: Docker-live mode; runs in CI (crossbario/autobahn-testsuite vs the reference echo peer)." >&2
-    log="$(mktemp)"; node "$ROOT/reference/echo-server.mjs" >"$log" 2>&1 & pid=$!
+    echo "$mode: Docker-live mode; runs in CI (crossbario/autobahn-testsuite vs the ws-conformance-reference echo peer)." >&2
+    # THE KNOWN PEER: ws-conformance-reference (subject/src/reference.rs), a strict RFC 6455 echo
+    # server on the standard library alone: no busbar crate and no WebSocket library, so it shares
+    # nothing with the framer the subject leg grades. Release, as the subject is built.
+    cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml" -p ws-conformance-subject --bin ws-conformance-reference
+    log="$(mktemp)"; "$REPO_ROOT/target/release/ws-conformance-reference" >"$log" 2>&1 & pid=$!
     port=""
-    for _ in $(seq 1 50); do port="$(sed -n 's/^REFERENCE_PORT=//p' "$log")"; [ -n "$port" ] && break; sleep 0.1; done
-    [ -n "$port" ] || { echo "reference echo server never printed REFERENCE_PORT" >&2; kill "$pid" 2>/dev/null; exit 1; }
+    for _ in $(seq 1 100); do port="$(sed -n 's/^REFERENCE_PORT=//p' "$log")"; [ -n "$port" ] && break; sleep 0.1; done
+    [ -n "$port" ] || { echo "reference echo server never printed REFERENCE_PORT" >&2; cat "$log" >&2; kill "$pid" 2>/dev/null; exit 1; }
     rc=0; run_autobahn reference "$port" control || rc=$?
     kill "$pid" 2>/dev/null || true
+    echo "== reference echo server log ==" >&2
+    cat "$log" >&2 || true
     [ "$rc" -eq 3 ] && exit 3
     [ "$rc" -eq 0 ] || exit "$rc"
     node "$PARSER" --report "$REPORTS_DIR/control/index.json" --armed true --commit "${GITHUB_SHA:-local}" --out "$REPORTS_DIR/control/verdict.json"

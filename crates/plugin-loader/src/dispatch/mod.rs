@@ -48,6 +48,7 @@ pub mod auth_outbound;
 pub mod auth_ticks;
 pub mod conn_services;
 pub mod handle;
+pub(crate) mod held;
 pub mod inline;
 pub mod io_slots;
 pub mod kinds;
@@ -114,7 +115,9 @@ pub trait Kind: Send + Sync + 'static {
     }
 
     /// Whether `slot` is a kind op this kind states OPTIONAL: a door may leave it NULL (absent),
-    /// and the host reads an absent one as a pass. Every other slot NULL refuses the load.
+    /// and the host reads an absent one as a pass (the plane's `catalog`, ARCHITECT ruling
+    /// 2026-10-16, 3b C, a door that states no catalog claim is never asked it; the secret `check`;
+    /// the auth `target`). Every other slot NULL refuses the load.
     fn optional_slot(slot: u32) -> bool {
         let _ = slot;
         false

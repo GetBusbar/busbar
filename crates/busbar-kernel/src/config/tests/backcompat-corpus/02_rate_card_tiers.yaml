@@ -2,7 +2,7 @@
 # prices all four tiers (input/output/cache_read/cache_write), a model that omits the cache tiers
 # (they resolve to 0), a fractional rate, and a flat per_request_fee. rate_card is carried through
 # `resolve` VERBATIM, so this snapshot is exactly what the cost model reads. M3 moving the parse to
-# busbar-llm must leave these numbers byte-identical.
+# the retired engine crate must leave these numbers byte-identical.
 listen: "0.0.0.0:8080"
 per_request_fee: 5
 providers:

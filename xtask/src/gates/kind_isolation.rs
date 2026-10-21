@@ -99,33 +99,19 @@
 //! plane's DECLARED key, which `:registry` reads off the plane's own source — and holds each on a
 //! ratchet: an alias is RED once the crate that spells it is gone.
 //!
-//! ## THE LEGACY CRATES ARE EXEMPT UNTIL THEY ARE DELETED, AND THE EXEMPTION RATCHETS
+//! ## THE LEGACY DRAIN IS FINISHED, AND IT CANNOT REOPEN
 //!
-//! `busbar-core`, `busbar-llm`, `busbar-mcp`, `busbar-a2a` and `busbar-voice` are the retiring
-//! 1.5.x crates. They are their own kind (`legacy`), exempt as a dependency SOURCE and from the
-//! vocabulary rule, because they predate the split and reporting them would only restate that the
-//! retirement is in flight. The exemption cannot outlive them: a name on [`LEGACY_CRATES`] that is
-//! no longer in the tree is RED, so the last delete forces the row to be struck rather than left
-//! standing as a permanent hole. Nothing new may join that list without an owner edit, and no
-//! non-legacy crate may grow an edge INTO one — that edge class is not in the measured graph.
+//! `busbar-core`, `busbar-llm`, `busbar-mcp`, `busbar-a2a` and `busbar-voice` were the retiring
+//! 1.5.x crates, their own kind (`legacy`), and the edges they drained into the plugin kinds were
+//! named edge by edge in [`REGISTRY_FILE`]'s `[[transitional]]` table ("while busbar-core drains, it
+//! MAY depend on unit crates … the row must be a NAMED TRANSITIONAL EXEMPTION that is empty on the
+//! ship sha." — owner, 2026-09-08). The last of them, `busbar-llm`, is deleted (DEV-GREEN row 83,
+//! coordinator ruling 2026-10-18), and the kind, its exemption and its table went with it.
 //!
-//! ## THE DRAIN IS NOT COVERED BY THAT EXEMPTION — IT IS NAMED, EDGE BY EDGE, IN `qa/`
-//!
-//! > "while busbar-core drains, it MAY depend on unit crates … the row must be a NAMED TRANSITIONAL
-//! > EXEMPTION that is empty on the ship sha." — owner, 2026-09-08
-//!
-//! The blanket `legacy`-as-source exemption is about the edges the 1.5.x crates ALREADY had. The
-//! drain creates new ones, pointing the other way: `busbar-core -> busbar-unit-audit` is the
-//! retirement in progress, and `busbar-core -> busbar-transport-ws` would be the fusion. Nothing in
-//! "legacy is unscored" can tell those apart, so the edges INTO the kinds the drain targets
-//! ([`DRAIN_TARGET_KINDS`]) leave the blanket exemption and are read off [`REGISTRY_FILE`]'s
-//! `[[transitional]]` table instead: an edge a row names is accepted, an edge no row names is RED.
-//!
-//! The table is DATA, in `qa/`, because it is a statement about this week and not a rule; a row
-//! naming a non-legacy source crate is REFUSED AT LOAD, because a table that could exempt anything
-//! is not an exemption. And its expiry is not "the edge went away" — the drain lands edge by edge
-//! across branches — but the SHIP SHA: the `kind-isolation-ship` twin is RED for any row whose
-//! `from` crate still exists, so the table is empty at the tag or the tag does not happen.
+//! Removing that machinery leaves no hole (Law 9): a crate under any retired engine's name is
+//! refused by name ([`RETIRED_LEGACY_CRATES`], `legacy-resurrected`), the kind table has no `legacy`
+//! kind for such a crate to resolve to, and a `[[transitional]]` row is refused at load whatever it
+//! says (`transitional-retired`).
 //!
 //! ## A CRATE THAT IS LANDING IS ANNOUNCED, NOT DISCOVERED
 //!
@@ -181,9 +167,6 @@ pub const ROW_TESTKIT: &str = "kind-isolation:testkit";
 /// NO CRATE IMPLEMENTS ANOTHER KIND'S ENTRY FACE. Per-push, because a wire that implements `Plane`
 /// is a wire that IS a plane at the type level, whatever its manifest says.
 pub const ROW_FACES: &str = "kind-isolation:faces";
-/// THE LEGACY DRAIN'S EXPIRY. Ship-only: a `[[transitional]]` row exists because a 1.5.x crate is
-/// retiring, and the tag is where "it retired" is checked.
-pub const ROW_DRAIN: &str = "kind-isolation:legacy-drain";
 /// Every data plane runs its steps of the strict list, and none of the kernel's (Approve, Admit).
 pub const ROW_STEPS: &str = "kind-isolation:plane-steps";
 /// One wire, one registration.
@@ -194,8 +177,8 @@ pub const ROW_CONTROL: &str = "kind-isolation:control-path";
 /// THE OWNER'S OWN INSTRUCTION, quoted verbatim wherever a crate does not resolve to a kind.
 const MAKE_A_NEW_KIND: &str = "make a new plugin kind, do not fuse two";
 
-/// THE GATE'S OWN DATA FILE: the `[[transitional]]` drain exemptions and the `[[announced]]`
-/// landings. Read through [`Ctx::read`] like every other input, so a selftest can plant it.
+/// THE GATE'S OWN DATA FILE: the `[[announced]]` landings, the `[[registered]]` kinds and the
+/// `[[dep]]` and `[[law0]]` ledgers (a `[[transitional]]` row is refused there, the drain finished). Read through [`Ctx::read`] like every other input, so a selftest can plant it.
 pub const REGISTRY_FILE: &str = "qa/kind-isolation.toml";
 
 /// The floor under the source walk the vocabulary rule reads: a scan of no files names no leak.
@@ -363,14 +346,10 @@ static KINDS: &[KindDef] = &[
     },
     // `=busbar-mcp` STRUCK (P3 DEL-MCP, ARCHITECT 2026-10-05): the engine is deleted; the mcp plane
     // is `busbar-plane-mcp`, a `plane` crate (`legacy-retired` asked for exactly this strike).
-    KindDef {
-        kind: "legacy",
-        family: Family::Plane,
-        // `=busbar-a2a` STRUCK (FLIP-A2A) and `=busbar-voice` STRUCK (FLIP-STREAMING): the engines
-        // are deleted; each plane is its `busbar-plane-*` crate, a `plane` crate (`legacy-retired`
-        // asks for exactly this strike).
-        matchers: &["=busbar-llm"],
-    },
+    // THE `legacy` KIND IS STRUCK (DEV-GREEN row 83, coordinator ruling 2026-10-18): `busbar-llm`, the last 1.5.x engine, is deleted, so
+    // no crate is legacy. It is not merely absent: a crate that comes back under a retired engine's
+    // name is refused outright (`legacy-resurrected`, [`RETIRED_LEGACY_CRATES`]), and so is any
+    // `[[transitional]]` row (`transitional-retired`). The drain is finished and cannot reopen.
 ];
 
 /// The naming scheme is `busbar-<kind>-<name>`, four segments only for a dialect. A fifth segment
@@ -430,11 +409,19 @@ const PENDING_EDGES: &[(&str, &str)] = &[
     // class the design grants ahead of the tree lands here.
 ];
 
-/// The retiring 1.5.x crates, named so the ratchet can check they still exist. `busbar-mcp` retired
-/// at P3 DEL-MCP (ARCHITECT 2026-10-05), `busbar-a2a` at FLIP-A2A and `busbar-voice` at
-/// FLIP-STREAMING (the streaming plane door serves every route); all are struck, as
-/// `legacy-retired` requires.
-const LEGACY_CRATES: &[&str] = &["busbar-llm"];
+/// THE RETIRED 1.5.x ENGINE CRATES, refused for good. Each was a `legacy` crate the drain moved
+/// out into the plugin kinds and then deleted: `busbar-core` (absorbed into the kernel and its
+/// cleanliness tier), `busbar-mcp` (P3 DEL-MCP, ARCHITECT 2026-10-05), `busbar-a2a` (FLIP-A2A),
+/// `busbar-voice` (FLIP-STREAMING) and `busbar-llm` (DEV-GREEN row 83, coordinator ruling 2026-10-18). The `legacy` kind went with the last
+/// of them, so a crate under one of these names is no crate of any kind: it is the retirement being
+/// undone, and `kind-isolation:registry` refuses it by name (`legacy-resurrected`).
+const RETIRED_LEGACY_CRATES: &[&str] = &[
+    "busbar-core",
+    "busbar-mcp",
+    "busbar-a2a",
+    "busbar-voice",
+    "busbar-llm",
+];
 
 /// THE MANIFESTS IN THIS REPOSITORY THAT ARE NOT CRATES OF THE TREE, each with the sentence that
 /// says why, and each on the expiry ratchet every allowance in this file lives under: an entry that
@@ -593,7 +580,6 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("kernel", "kernel"),
     // A kernel crate may name the author-side plugin machinery face (the dep-wall admits plugin-tooling).
     ("kernel", "plugin-tooling"),
-    ("legacy", "contract"),
     // No `(plane, codec)` grant. It granted `busbar-plane-<x> -> busbar-<x>-codec`, and R7 ("Codec
     // crates fold into their planes") made that edge a module path inside one crate. A grant naming
     // a kind the table no longer has is a `dead-grant`.
@@ -620,7 +606,6 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("root", "export"),
     ("root", "hooks"),
     ("root", "kernel"),
-    ("root", "legacy"),
     ("root", "plane"),
     ("root", "plugin-tooling"),
     ("root", "secret"),
@@ -787,18 +772,6 @@ const TEST_LINKED_DOOR_VERDICT: &str = "test-linked-door";
 /// The two halves of the build graph a `[[dep]]` or `[[question]]` row can be about.
 const DEP_HALVES: &[&str] = &["shipped", "test"];
 
-/// THE KINDS THE LEGACY DRAIN TARGETS — the ones a 1.5.x crate reaches only because its contents
-/// are being moved OUT into them.
-///
-/// An edge from a legacy crate into one of these leaves the blanket `legacy`-as-source exemption
-/// and must be named by a `[[transitional]]` row. Everything else a legacy crate names (the
-/// contract, the api, the substrate, the plugin tooling) is a 1.5.x edge that
-/// predates the split and dies with the crate; reporting those would restate the retirement rather
-/// than gate it. These four are different: `busbar-core -> busbar-unit-audit` is the drain in
-/// flight and `busbar-core -> busbar-transport-ws` is the fusion, and nothing about "legacy is
-/// unscored" can tell them apart. A NAME can.
-const DRAIN_TARGET_KINDS: &[&str] = &["plane", "transport", CLEANLINESS];
-
 /// THE KIND THE CONTROL-PATH RULES READ. `control` is not a kind (DECISIONS #5); admin and oauth2
 /// resolve as `cleanliness`, and every rule that asks about a served control surface asks about
 /// this word. One spelling, so a rule cannot go on filtering for the retired one after the rest of
@@ -941,32 +914,6 @@ const TOKIO_NET: &str = "tokio::net";
 // ------------------------------------------------------------------------------------------------
 // the registry file — the two tables that are true of this week and false of the ship sha
 // ------------------------------------------------------------------------------------------------
-
-/// One `[[transitional]]` row: a NAMED edge the legacy drain is allowed to carry.
-#[derive(Debug, Clone)]
-struct Transitional {
-    from: String,
-    to: String,
-    reason: String,
-}
-
-impl Transitional {
-    /// Does this row name the edge `from -> dep`?
-    ///
-    /// `to` is an exact crate name or a `prefix*` glob. The glob is what lets ONE reviewed row cover
-    /// `busbar-unit-*`: the drain lands audit, then scope, then auth, then cost, each on its own
-    /// branch, and a table that had to be edited on every one of those branches would be edited
-    /// without being read.
-    fn covers(&self, from: &str, dep: &str) -> bool {
-        if self.from != from {
-            return false;
-        }
-        match self.to.strip_suffix('*') {
-            Some(prefix) => dep.starts_with(prefix),
-            None => self.to == dep,
-        }
-    }
-}
 
 /// One `[[announced]]` row: a crate that is being created right now.
 #[derive(Debug, Clone)]
@@ -1116,7 +1063,6 @@ struct FaceDebt {
 /// [`REGISTRY_FILE`], read.
 #[derive(Debug, Default)]
 struct KindRegistry {
-    transitional: Vec<Transitional>,
     announced: Vec<Announced>,
     registered: Vec<Registered>,
     /// The `:deps` and `:test-deps` rows' two tables — one row per edge instance, one question per
@@ -1228,37 +1174,6 @@ fn take_row(
 }
 
 /// Validate one accumulated row into the registry.
-/// Why a `[[transitional]] to = "…*"` glob is not one kind's prefix, or `None` when it is.
-///
-/// The kind word is resolved through [`kind_head_words`], which is derived from the kind table's
-/// own matchers — so a kind added tomorrow is a legal prefix tomorrow, and a word that is no kind
-/// at all is refused today.
-fn bad_transitional_prefix(to: &str) -> Option<String> {
-    let prefix = to.strip_suffix('*').unwrap_or(to);
-    if prefix.is_empty() {
-        return Some(
-            "covers EVERY crate in the tree — `dep.starts_with(\"\")` is true of all of them"
-                .to_string(),
-        );
-    }
-    let segs: Vec<&str> = prefix.split('-').collect();
-    if segs.len() != 3 || segs[0] != "busbar" || !segs[2].is_empty() {
-        return Some(format!(
-            "is not of the form `busbar-<kind>-*` (it reads as {} segment(s) before the star)",
-            segs.len()
-        ));
-    }
-    let heads = kind_head_words();
-    if !heads.contains_key(segs[1]) {
-        return Some(format!(
-            "names `{}`, which is no kind in the table ({})",
-            segs[1],
-            heads.keys().cloned().collect::<Vec<_>>().join(", ")
-        ));
-    }
-    None
-}
-
 /// ONE NAMED ALLOWANCE for a `[patch]`, `[replace]` or `[source]` redirect: the exact file, the
 /// exact entry, and the sentence that says why the tree compiles something other than what its
 /// manifests declare.
@@ -1272,58 +1187,15 @@ pub struct PatchAllow {
 fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at: usize) {
     match table {
         "transitional" => {
-            let Some(v) = take_row(fields, &["from", "to", "reason"], table, at, &mut reg.errors)
-            else {
-                return;
-            };
-            let (from, to, reason) = (v[0].clone(), v[1].clone(), v[2].clone());
-            // REFUSED AT LOAD. This table is the LEGACY DRAIN's exemption; a row naming any other
-            // source would let a live, non-retiring crate reach a unit or a plane through a
-            // ratchet built for crates that are on their way out. That is the ruling being edited
-            // rather than applied, so the row does not load at all.
-            if !LEGACY_CRATES.contains(&from.as_str()) {
-                reg.errors.push(format!(
-                    "not-legacy\t{REGISTRY_FILE}:{at}\t`[[transitional]] from = \"{from}\"` is not \
-                     a legacy crate ({}). This table exempts the DRAIN and nothing else; a \
-                     non-legacy source reaching a unit or a plane through it is the fusion wearing \
-                     the drain's name — {MAKE_A_NEW_KIND}",
-                    LEGACY_CRATES.join(", ")
-                ));
-                return;
-            }
-            if let Some(i) = to.find('*') {
-                if i + 1 != to.len() {
-                    reg.errors.push(format!(
-                        "bad-glob\t{REGISTRY_FILE}:{at}\t`to = \"{to}\"` — the only glob a row may \
-                         carry is a trailing `*`, so what a row covers can be read off it"
-                    ));
-                    return;
-                }
-                // A TRAILING `*` IS NOT ENOUGH: WHAT IT COVERS MUST BE ONE KIND'S PREFIX.
-                //
-                // `to = "*"` passes the test above — the star IS trailing — and `covers` then does
-                // `dep.starts_with("")`, which is true of every crate in the tree. One character
-                // turns the drain's exemption into a blanket amnesty for every legacy -> unit,
-                // legacy -> plane, legacy -> dialect and legacy -> transport edge there will ever
-                // be, and nothing downstream says a word, because the row that granted it is a row
-                // the reader accepted. `busbar-*` is the same hole one character longer.
-                //
-                // So the prefix must be `busbar-<kind>-`: the crate scheme's own first two
-                // segments, with the kind word read off the KIND TABLE rather than a list beside
-                // it. That is a glob a reader can price — every crate it covers is one kind — and
-                // it is the only glob the real file uses.
-                if let Some(reason) = bad_transitional_prefix(&to) {
-                    reg.errors.push(format!(
-                        "bad-glob\t{REGISTRY_FILE}:{at}\t`to = \"{to}\"` {reason}. A \
-                         `[[transitional]]` glob must be `busbar-<kind>-*` — one kind's prefix, so \
-                         a reader can price what the exemption covers by reading it. An exemption \
-                         that spans more than one kind is the ruling being deleted rather than \
-                         drained; {MAKE_A_NEW_KIND}"
-                    ));
-                    return;
-                }
-            }
-            reg.transitional.push(Transitional { from, to, reason });
+            // REFUSED, WHATEVER IT SAYS (DEV-GREEN row 83, coordinator ruling 2026-10-18). This table was the legacy drain's exemption, and
+            // the drain is finished: the `legacy` kind is struck with its last crate. A row here is
+            // an exemption for an edge no crate may take, so it does not load at all.
+            let _ = fields;
+            reg.errors.push(format!(
+                "transitional-retired\t{REGISTRY_FILE}:{at}\ta `[[transitional]]` row is refused: \
+                 the legacy drain is finished and the `legacy` kind is struck, so there is no \
+                 retiring crate left for an exemption to name. Strike the row — {MAKE_A_NEW_KIND}"
+            ));
         }
         "announced" => {
             let Some(v) = take_row(
@@ -2713,53 +2585,8 @@ fn dep_row_scaffold(half: Half, e: &DepInstance) -> String {
     )
 }
 
-/// THE DRAIN'S OWN EXPIRY, on its own row and owed by the ship twin alone.
-///
-/// It sat inside `:deps`, and that stopped being readable the day `:deps` began owing the
-/// ARCHITECTURE'S graph on the ship sha: the row is red there for every edge the design does not
-/// grant, so "the drain finished" and "the graph is the architecture's" became one verdict and
-/// neither could be proven without the other. They are two claims.
-///
-/// This one is: every `[[transitional]]` exemption is for a crate that is RETIRING, and the expiry
-/// is deliberately NOT "the edge went away" — the drain lands edge by edge, branch after branch,
-/// and a row scored dead in the week between two branches would teach everyone to delete the
-/// ratchet instead of the debt. The expiry is the CRATE. If it still exists on the ship sha the
-/// retirement did not happen, and this is where the tag is refused, by name.
-fn rule_drain(crates: &[CrateInfo], reg: &KindRegistry) -> Row {
-    let present: BTreeSet<&str> = crates.iter().map(|c| c.name.as_str()).collect();
-    let mut offenders: Vec<String> = Vec::new();
-    for t in &reg.transitional {
-        if present.contains(t.from.as_str()) {
-            offenders.push(format!(
-                "transitional-live\t{REGISTRY_FILE}\t`{} -> {}` ({}) is a TRANSITIONAL exemption \
-                 for the legacy drain and `{}` still exists at ship time. The exemption's expiry \
-                 rule is that the crate must not exist on the ship sha: finish the drain and \
-                 delete the crate, or the table is a permanent hole under a temporary name",
-                t.from, t.to, t.reason, t.from
-            ));
-        }
-    }
-    offenders.sort();
-    if offenders.is_empty() {
-        return Row::pass(
-            ROW_DRAIN,
-            "the legacy drain is finished: no transitional exemption outlives its crate",
-            format!(
-                "{} transitional row(s) in {REGISTRY_FILE}, 0 whose crate is still in the tree",
-                reg.transitional.len()
-            ),
-        );
-    }
-    Row::fail(
-        ROW_DRAIN,
-        "a transitional exemption's crate is still in the tree at ship time",
-        format!("{} finding(s): {}", offenders.len(), offenders.join(" | ")),
-    )
-}
-
 fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, ship: bool) -> Row {
     let by_name: BTreeMap<&str, &CrateInfo> = crates.iter().map(|c| (c.name.as_str(), c)).collect();
-    let drain_targets: BTreeSet<&str> = DRAIN_TARGET_KINDS.iter().copied().collect();
     let granted = match half {
         Half::Test => {
             let mut g = conformance_witness_edges(cx, crates);
@@ -2813,13 +2640,17 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
     // THE STRUCTURAL REFUSALS, which no ledger row can waive: they are not about how MANY
     // declarations a pair has, they are about the pair existing at all.
     for c in crates {
-        let Some(from) = c.kind else { continue };
+        if c.kind.is_none() {
+            continue;
+        }
         for decl in half.decls(c) {
             let dep = decl.cite();
             let Some(target) = by_name.get(decl.pkg.as_str()) else {
                 continue;
             };
-            let Some(to) = target.kind else { continue };
+            if target.kind.is_none() {
+                continue;
+            }
 
             // THE PLANE FAMILY IS INSTANCE-SEALED. A plane's codec is a module of the plane crate
             // itself; any other instance is one plane reaching into another's vocabulary.
@@ -2841,28 +2672,6 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
             // `cleanliness` crates whose one-way deps (core, substrate, api, the plugin-loader TCB)
             // are recorded in the measured graph like every other Neutral kind's, not held to a
             // closed sink set.
-
-            // THE DRAIN, EDGE BY EDGE. A `legacy` source is no longer unscored — its edges are rows
-            // like everything else — and this is the refusal that survives that: an edge into a
-            // kind the drain TARGETS is accepted only if a `[[transitional]]` row names it, so
-            // `busbar-core -> busbar-unit-audit` reads as the drain and
-            // `busbar-core -> busbar-transport-ws` reads as the fusion.
-            if from == "legacy"
-                && drain_targets.contains(to)
-                && !reg
-                    .transitional
-                    .iter()
-                    .any(|t| t.covers(&c.name, decl.pkg.as_str()))
-            {
-                offenders.push(format!(
-                    "unlisted-transitional\t{}\t{} depends on {dep}, a `{to}` crate. While the \
-                     1.5.x crates drain they MAY name the kinds they are draining into — but only \
-                     through a row in {REGISTRY_FILE} that names the edge and says why. An \
-                     UNLISTED legacy -> {to} edge is indistinguishable from the fusion; \
-                     {MAKE_A_NEW_KIND}",
-                    c.dir, c.name
-                ));
-            }
         }
     }
 
@@ -2987,28 +2796,6 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
                 }
                 // A TEST-LINKED DOOR is excused on the test half only (`doors` is empty shipped).
                 if is_door(&e.from, &e.to) {
-                    continue;
-                }
-                // THE DRAIN IS THE ONE EDGE THAT IS SUPPOSED TO BE NEW.
-                //
-                // A `[[transitional]]` row is not a `[[dep]]` row wearing a different hat, and the
-                // difference is the whole reason the two tables exist. `[[dep]]` describes what the
-                // graph HAS; `[[transitional]]` describes a RETIREMENT IN PROGRESS, and a
-                // retirement lands edge by edge, branch after branch — `busbar-core` reaching one
-                // more unit is the 1.5.x crates draining into the kinds that replace them, which is
-                // the movement this gate was built to permit while refusing the fusion beside it.
-                //
-                // It is safe to exempt because the transitional table is the most refused table in
-                // the file: `from` must be a LEGACY crate or the row does not load at all
-                // (`not-legacy`), `to` must be one kind's prefix (`bad-glob`), the edge is scored
-                // against a count like every other, and the ship twin reds every transitional row
-                // whose crate still exists (`transitional-live`). The exemption cannot outlive the
-                // drain, because the tag refuses it.
-                if reg
-                    .transitional
-                    .iter()
-                    .any(|t| t.covers(&e.from, e.to.as_str()))
-                {
                     continue;
                 }
                 offenders.push(format!(
@@ -4060,38 +3847,16 @@ fn rule_registry(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, ship: bool)
         }
     }
 
-    // A TRANSITIONAL EXEMPTION FOR AN EDGE THAT CANNOT BE TAKEN IS NOT AN EXEMPTION.
-    //
-    // The drain's expiry rule keys on the `from` crate and runs at the SHIP sha (`rule_drain`), so
-    // a row whose `to` crate was absorbed rather than renamed reds at the tag FOR THE WRONG
-    // REASON — "the legacy crate still exists" — and until then exempts an edge to a crate that is
-    // not there. `busbar-a2a -> busbar-admin` and `busbar-mcp -> busbar-admin` are both: `busbar-
-    // admin` folded into `busbar-core-admin` under #37. The `to` may be a `busbar-<kind>-*` GLOB,
-    // which is a claim about a kind rather than a crate and is checked at load (`bad-glob`); only
-    // an exact name is asked for here.
-    for t in &reg.transitional {
-        let dead_from = !present.contains(t.from.as_str());
-        let dead_to = !t.to.ends_with('*') && !present.contains(t.to.as_str());
-        if dead_from || dead_to {
-            let which = match (dead_from, dead_to) {
-                (true, true) => "neither crate is".to_string(),
-                (true, false) => format!("`{}` is not", t.from),
-                _ => format!("`{}` is not", t.to),
-            };
+    // THE RETIREMENT CANNOT BE UNDONE (DEV-GREEN row 83, coordinator ruling 2026-10-18). Every 1.5.x engine is deleted and the `legacy` kind
+    // with them, so a crate under a retired engine's name is no crate of any kind: it is the fusion
+    // coming back under the name the drain removed, and it is refused by name.
+    for name in RETIRED_LEGACY_CRATES {
+        if present.contains(name) {
             offenders.push(format!(
-                "dead-transitional	{REGISTRY_FILE}	`[[transitional]] {} -> {}` ({}) exempts an                  edge that cannot be taken: {which} in the tree. The drain's own expiry runs on                  the `from` crate at the ship sha, so a row whose subject was ABSORBED rather than                  renamed reds at the tag for the wrong reason and exempts nothing until then.                  Strike it.",
-                t.from, t.to, t.reason
-            ));
-        }
-    }
-
-    // THE LEGACY RATCHET. The exemption expires with the crate it excuses.
-    for name in LEGACY_CRATES {
-        if !present.contains(name) {
-            offenders.push(format!(
-                "legacy-retired\t{name}\tthe legacy exemption for `{name}` outlived the crate. \
-                 Strike it from LEGACY_CRATES and from the kind table's `legacy` matchers — an \
-                 exemption for a crate that no longer exists is a hole with no floor under it."
+                "legacy-resurrected\t{name}\t`{name}` is a retired 1.5.x engine crate and it is in \
+                 the tree again. The legacy drain is finished and the `legacy` kind is struck: no \
+                 crate may come back under a retired engine's name, and no row can admit one. \
+                 Delete the crate — {MAKE_A_NEW_KIND}"
             ));
         }
     }
@@ -6217,6 +5982,10 @@ fn rule_testkit(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
 const STEP_TABLE_FILE: &str = "crates/busbar-contract/src/caps/step.rs";
 const PLANE_TRAIT_FILE: &str = "crates/busbar-contract/src/plane.rs";
 
+/// The plane the strict-step self-test cases plant into: the canonical plane, laid from its pinned
+/// checkout.
+const STEP_SUBJECT_PLANE: &str = "crates/busbar-plane-a2a";
+
 /// A tree with fewer than this many plane-owned steps has not been read; the loop is ten steps long
 /// and the planes own seven of them.
 const MIN_PLANE_STEPS: usize = 5;
@@ -7676,7 +7445,6 @@ impl Gate for KindIsolationGate {
             matrix::ROW_LAW0_BASE.to_string(),
         ];
         if self.ship {
-            owed.push(ROW_DRAIN.to_string());
             owed.push(ROW_SHAPE.to_string());
             owed.push(ROW_TESTKIT.to_string());
             owed.push(ROW_CONTROL.to_string());
@@ -7803,7 +7571,7 @@ impl Gate for KindIsolationGate {
             },
             &|| {
                 if ship {
-                    vec![rule_drain(crates, reg), rule_control(cx, crates)]
+                    vec![rule_control(cx, crates)]
                 } else {
                     Vec::new()
                 }
@@ -8869,26 +8637,8 @@ impl Gate for KindIsolationGate {
                 subject,
                 "a `count` field on a `[[cell]]` row is refused at load — the row is presence only",
                 &[ROW_DEPS],
-                matrix::cell_subst(cx, "busbar-llm", "contract", "count = \"1\""),
+                matrix::cell_subst(cx, "busbar-plane-llm", "plane", "count = \"1\""),
                 &["unknown-field", "`[[cell]]` declares `count`"],
-            ));
-
-            // `to = "*"` IS A LEGAL TRAILING GLOB AND A BLANKET AMNESTY. `covers` does
-            // `dep.starts_with("")`, which is true of every crate in the tree: one character turns
-            // the drain's exemption into permission for every legacy -> unit, legacy -> plane,
-            // legacy -> dialect and legacy -> transport edge there will ever be.
-            report.push(plant_registry(
-                cx,
-                subject,
-                "a `[[transitional]]` glob that covers more than one kind's prefix is refused",
-                &[ROW_DEPS],
-                transitional_anchor(cx)
-                    .map(|(from, to)| (format!("{from}\n{to}"), format!("{from}\nto = \"*\""))),
-                &[
-                    "bad-glob",
-                    "covers EVERY crate in the tree",
-                    "busbar-<kind>-*",
-                ],
             ));
 
             // A ROW THAT LEFT SLACK. The other half of the ratchet, and the one a class table could
@@ -10647,87 +10397,62 @@ impl Gate for KindIsolationGate {
             &["dead-off-tree", "examples/smart-router/rust-hook"],
         ));
 
-        // THE LEGACY RATCHET, proven by retiring one.
-        let mut ov = Overlay::new();
-        ov.remove("crates/busbar-llm/Cargo.toml");
+        // THE RETIREMENT CANNOT BE UNDONE (DEV-GREEN row 83, coordinator ruling 2026-10-18): `busbar-llm`, the last retired engine, comes
+        // back as a crate, and the registry refuses it by name. The struck `legacy` kind and the
+        // refused `[[transitional]]` table are only a finished drain if a resurrected engine
+        // fails the gate.
         report.push(prove_rows_red(
             cx,
             subject,
-            "a legacy exemption that outlived its crate is refused",
+            "a retired 1.5.x engine crate back in the tree is refused by name",
             &[ROW_REGISTRY],
-            ov,
-            &["legacy-retired", "busbar-llm"],
+            manifest_plant("crates/busbar-llm", "busbar-llm", &[]),
+            &["legacy-resurrected", "busbar-llm"],
         ));
 
         // THE THREE TRUTHS, each planted in the file that carries it.
         truths::selftest(cx, subject, &mut report);
 
-        // ── THE LEGACY DRAIN, NAMED ──────────────────────────────────────────────────────────────
+        // ── THE FINISHED DRAIN'S TABLE ───────────────────────────────────────────────────────────
 
-        // AN UNLISTED DRAIN EDGE IS RED. `busbar-llm` is a legacy crate and [`PLANTED_DRAIN_TARGET`]
-        // is a crate of a drain-target kind, so this is exactly the shape the owner's ruling
-        // permits — and no row names it. (It was a unit; that kind retired, fold F14 2/2.)
-        // Before the transitional table this edge was invisible: `legacy` was an unscored source,
-        // so every legacy edge into every kind was allowed by silence.
-        //
-        // THE TARGET IS A CRATE THE TREE HAS. It was `busbar-unit-audit`, folded into
-        // `busbar-kernel-audit`: the refusal and `measure_edges` both skip a declaration whose
-        // package is not in the census, so the edge was never scored and the case could not bite.
+        // A `[[transitional]]` ROW IS REFUSED AT LOAD, WHATEVER IT SAYS (DEV-GREEN row 83, coordinator ruling 2026-10-18): the drain's
+        // exemption table names a retiring crate, and none is left to name — not even the one the
+        // table used to carry.
         report.push(prove_rows_red(
             cx,
             subject,
-            "a legacy crate reaching a drain target with no transitional row naming the edge",
-            &[ROW_DEPS],
-            manifest_plant("crates/busbar-llm", "busbar-llm", &[PLANTED_DRAIN_TARGET]),
-            &["unlisted-transitional", "busbar-llm", PLANTED_DRAIN_TARGET],
-        ));
-
-        // THE TABLE CANNOT EXEMPT A CRATE THAT IS NOT RETIRING. A row whose source is a live,
-        // non-legacy crate is REFUSED AT LOAD — not skipped, not tolerated — because a table that
-        // can name any source is not the drain's exemption, it is a hole with a reason field.
-        let ov = registry_plant(
-            "[[transitional]]\nfrom = \"busbar-unit-audit\"\nto = \"busbar-plane-admin\"\nreason = \
-             \"planted\"\n",
-        );
-        report.push(prove_rows_red(
-            cx,
-            subject,
-            "a transitional row naming a non-legacy source crate is refused at load",
-            &[ROW_DEPS],
-            ov,
-            &["not-legacy", "busbar-unit-audit"],
+            "a [[transitional]] row is refused at load now the legacy drain is finished",
+            &[ROW_REGISTRY],
+            registry_plant(
+                "[[transitional]]\nfrom = \"busbar-llm\"\nto = \"busbar-plane-llm\"\nreason = \
+                 \"planted\"\n",
+            ),
+            &["transitional-retired"],
         ));
 
         // ── THE READER'S OWN REFUSALS, EACH WITH A CASE ──────────────────────────────────────────
         //
         // A MUTATION CAMPAIGN STUBBED EVERY REFUSAL IN THIS PARSER AND THE BATTERY STAYED GREEN for
         // nine of the ten: `errors.push(format!(…))` became `drop(format!(…))`, the row loaded
-        // anyway, and 107 cases said nothing. `not-legacy` above was the only one anybody had
-        // written a fixture for. A refusal nothing proves is a refusal the next edit deletes by
+        // anyway, and 107 cases said nothing. One refusal had a fixture of its own. A refusal nothing proves is a refusal the next edit deletes by
         // accident, so each of them gets the smallest plant that reaches it — one `registry_plant`
         // per case, so what a case proves is what its own row said.
         for (name, rows, needles) in [
             (
-                "a [[transitional]] row with an empty field is refused at load",
-                "[[transitional]]\nfrom = \"\"\nto = \"busbar-unit-*\"\nreason = \"planted\"\n",
-                &["empty-field", "transitional", "from"][..],
+                "an [[announced]] row with an empty field is refused at load",
+                "[[announced]]\ncrate = \"\"\nkind = \"plane\"\nreason = \"planted\"\n",
+                &["empty-field", "announced", "crate"][..],
             ),
             (
-                "a [[transitional]] row missing a field is refused at load",
-                "[[transitional]]\nfrom = \"busbar-core\"\nto = \"busbar-unit-*\"\n",
-                &["missing-field", "transitional", "reason"][..],
+                "an [[announced]] row missing a field is refused at load",
+                "[[announced]]\ncrate = \"busbar-plane-x\"\nkind = \"plane\"\n",
+                &["missing-field", "announced", "reason"][..],
             ),
             (
                 "a row declaring a field this gate does not read is refused, not ignored",
-                "[[transitional]]\nfrom = \"busbar-core\"\nto = \"busbar-unit-*\"\nreason = \
+                "[[announced]]\ncrate = \"busbar-plane-x\"\nkind = \"plane\"\nreason = \
                  \"planted\"\nowner = \"someone\"\n",
-                &["unknown-field", "transitional", "owner"][..],
-            ),
-            (
-                "a [[transitional]] glob that is not a trailing `*` is refused",
-                "[[transitional]]\nfrom = \"busbar-llm\"\nto = \"busbar-unit-*-x\"\nreason = \
-                 \"planted\"\n",
-                &["bad-glob", "busbar-unit-*-x"][..],
+                &["unknown-field", "announced", "owner"][..],
             ),
             (
                 "an [[announced]] row naming a kind the table does not have is refused",
@@ -10865,21 +10590,31 @@ impl Gate for KindIsolationGate {
 
         // ── THE STRICT STEP LIST, AND THE WIRE REGISTRY ──────────────────────────────────────────
 
-        // A PLANE THAT DOES NOT RUN A STEP. The plant removes one step's implementation from a data
-        // plane by replacing the file that holds it; the step list is read off the kernel's own
-        // table, so the finding names the step the loop expected. The subject is a plane with the
-        // legacy face only: a plane that also serves through its door (the flipped ones) is judged
-        // by its door's slots instead, so removing its legacy file leaves the door face standing.
-        // The a2a plane is the one left with the legacy face only (FLIP-STREAMING deleted the
-        // streaming plane's `plane.rs`; it serves through its door alone).
-        let mut ov = Overlay::new();
-        ov.remove("crates/busbar-plane-a2a/src/plane.rs");
+        // A PLANE THAT DOES NOT RUN A STEP. A plane with neither face (no `impl … Plane for` and no
+        // door over `abi::plane::Ops`) owes the strict step list itself; the step list is read off
+        // the kernel's own table, so the finding names the step the loop expected. The a2a plane
+        // is a door plane with no legacy face (FLIP-A2A deleted its `plane.rs`, and since the
+        // extraction its source is the pinned checkout's), so the plant takes its door away: every
+        // shipped file that builds the door over `abi::plane::Ops`, found in the tree rather than
+        // named, leaves a plane with no face that implements none of the steps.
+        let door_files = move || {
+            let mut ov = Overlay::new();
+            if let Ok(files) = cx.walk(&WalkSpec::new([STEP_SUBJECT_PLANE]).ext("rs")) {
+                for f in files {
+                    let rel = f.rel_str();
+                    if is_shipped_source(&rel) && f.text.contains("abi::plane::Ops") {
+                        ov.remove(rel);
+                    }
+                }
+            }
+            ov
+        };
         report.push(prove_rows_red(
             cx,
             subject,
             "a data plane that implements none of the strict step list",
             &[ROW_STEPS],
-            ov,
+            door_files,
             &["missing-step", "busbar-plane-a2a"],
         ));
 
@@ -10946,13 +10681,23 @@ impl Gate for KindIsolationGate {
         ));
 
         // A STEP THAT IS DECLARED AND NOT RUN. The compiler is satisfied and the loop stops there,
-        // which is the case the presence check alone cannot see. Planted in a plane that still has
-        // a legacy face (the mcp plane is a door plane only: its unserved `Plane` impl is deleted).
+        // which is the case the presence check alone cannot see. Only a plane with a legacy face is
+        // judged step by step, and no plane in the tree keeps one any more (every plane serves
+        // through its door), so the plant BRINGS the face: an `impl Plane for` in the a2a plane
+        // that implements every step of the strict list, read off the same table the rule reads,
+        // with the first one's body `todo!()`. Every other step runs, so the one finding is the
+        // short circuit.
+        let planted_steps = plane_owned_steps(cx).unwrap_or_default();
+        let mut plant = String::from("pub struct Planted;\nimpl Plane for Planted {\n");
+        for (i, step) in planted_steps.iter().enumerate() {
+            let body = if i == 0 { "todo!()" } else { "()" };
+            plant.push_str(&format!(
+                "    fn {step}(&self) {{\n        {body}\n    }}\n"
+            ));
+        }
+        plant.push_str("}\n");
         let mut ov = Overlay::new();
-        ov.set(
-            "crates/busbar-plane-a2a/src/planted_step.rs",
-            "impl Foo {\n    fn route(&self) -> RoutePlan {\n        todo!()\n    }\n}\n",
-        );
+        ov.set(format!("{STEP_SUBJECT_PLANE}/src/planted_step.rs"), plant);
         report.push(prove_rows_red(
             cx,
             subject,
@@ -11169,50 +10914,6 @@ impl Gate for KindIsolationGate {
         matrix::selftest(cx, subject, self, self.ship, &mut report);
 
         if !self.ship {
-            // A LISTED DRAIN EDGE IS GREEN. The owner's ruling, as the per-push gate reads it:
-            // while a legacy crate drains it MAY name a unit, because a `[[transitional]]` row
-            // names the edge.
-            //
-            // IT OWES ITS `[[dep]]` ROW TOO, and both halves of that are the point. The
-            // transitional row says the EDGE CLASS is the drain rather than the fusion; the `[[dep]]`
-            // row says how many declarations there are, exactly, so the drain cannot quietly grow a
-            // second one. The plant APPENDS to the real manifest rather than rewriting it, because
-            // a rewrite would strike busbar-llm's real edges and the dead-row findings that
-            // produced are the ones a reader would mistake for this case's own. The transitional row
-            // itself is planted alongside it, on `busbar-llm` — still a live LEGACY_CRATES member —
-            // rather than on the now-retired `busbar-core`.
-            let mut ov = Overlay::new();
-            ov.set(
-                "crates/busbar-llm/Cargo.toml",
-                manifest_plus(
-                    cx,
-                    "crates/busbar-llm/Cargo.toml",
-                    &format!("\n[dependencies]\n{PLANTED_DRAIN_TARGET} = {{ workspace = true }}\n"),
-                ),
-            );
-            ov.set(
-                REGISTRY_FILE,
-                format!(
-                    "{}\n\n[[transitional]]\nfrom = \"busbar-llm\"\nto = \"{PLANTED_DRAIN_TARGET}\"\n\
-                     reason = \"planted\"\n\n[[dep]]\nfrom    = \"busbar-llm\"\n\
-                     to      = \"{PLANTED_DRAIN_TARGET}\"\nhalf    = \"shipped\"\ncount   = \"1\"\n\
-                     verdict = \"not-allowed\"\ncite    = \"the legacy drain: BUSBAR-1.6.0.md THE DESIGN, §1 \
-                     grants a legacy crate no cleanliness edge, and the [[transitional]] row above names \
-                     this one as the retirement in flight.\"\nwhy     = \"planted: proves the drain \
-                     row and its own dep count both being present is green.\"\ndrain   = \"planted \
-                     fixture; strike when the real drain lands.\"\n",
-                    cx.read(REGISTRY_FILE).unwrap_or_default().trim_end()
-                ),
-            );
-            report.push(prove_rows_green(
-                cx,
-                subject,
-                "a legacy crate reaching a drain target through a named transitional row and its own \
-                 count",
-                &[ROW_DEPS],
-                ov,
-            ));
-
             // AN ANNOUNCED CRATE LANDING IS GREEN — no unknown kind, no dead kind, no new edge
             // class. This is the case the announcement exists to make true: the agent who lands it
             // reds nothing. Planted, not borrowed, for the reason on the edge-class case above.
@@ -11299,45 +11000,6 @@ impl Gate for KindIsolationGate {
             &[matrix::ROW_MATRIX],
             ov,
             &["law0-neutral-instance", "busbar-core-admin \u{d7} plane"],
-        ));
-
-        // A TRANSITIONAL ROW WHOSE CRATE IS STILL HERE AT SHIP TIME IS RED. The exemption's expiry
-        // rule is the crate, not the edge.
-        //
-        // PROVEN AS A TRANSITION, FROM A SCRATCH TREE WHERE THE ROW IS GREEN. The real tree cannot
-        // be the baseline: every legacy crate is still in it, so `:legacy-drain` is red there BY
-        // DESIGN and no plant against it can be told apart from that standing red. This case used
-        // to plant an EMPTY overlay — which the harness refuses before the gate runs — and assert
-        // `busbar-core`, a crate absorbed into `busbar-kernel` that is the `from` of no row. So the
-        // baseline is a table with no rows (green: nothing to expire), and the plant is ONE row for
-        // a legacy crate that really is on disk. The row goes red and names that crate.
-        //
-        // THE SHIPPED GATE, NOT THE DEBT-FREE SUBJECT: this case already brings its own green base
-        // (the empty table), and the subject's debt — measured over the REAL table, whose
-        // `busbar-llm` row would be exactly this plant's row — would take the planted finding out of
-        // view as if it were the tree's. The pair below is the same transition read the other way.
-        report.push(prove_rows_red(
-            &cx.with_overlay(registry_plant("")),
-            self,
-            "a transitional row is red at ship time while its legacy crate still exists",
-            &[ROW_DRAIN],
-            drain_row_plant(),
-            &["transitional-live", DRAIN_PLANT_FROM, "ship"],
-        ));
-
-        // …AND GREEN WHEN THE DRAIN IS ACTUALLY DONE: the SAME row, over a tree whose crate is
-        // gone. The pair differs in exactly one thing — whether the row's `from` crate exists — so
-        // together they prove the expiry is the crate. Without this case the row above would
-        // equally be produced by a ratchet that is simply red for ever. Every path this removes is
-        // one the tree has (the removal of the absorbed `busbar-core` was a no-op).
-        let mut ov = drain_row_plant();
-        ov.remove(format!("crates/{DRAIN_PLANT_FROM}/Cargo.toml"));
-        report.push(prove_rows_green(
-            cx,
-            self,
-            "a transitional row whose legacy crate is gone is not held against the ship",
-            &[ROW_DRAIN],
-            ov,
         ));
 
         // AN ANNOUNCEMENT DOES NOT SURVIVE ITS LANDING PAST A RELEASE. Landing an announced crate
@@ -11894,15 +11556,35 @@ impl Gate for KindIsolationGate {
 
         // THE EXEMPLAR ITSELF IS NOT IN THE TREE. `busbar-plane-a2a` is the canonical plane; without
         // it the `plane` skeleton is derived from an empty file list and every plane in the tree
-        // passes a comparison against nothing.
-        let mut ov = Overlay::new();
-        ov.remove("crates/busbar-plane-a2a/Cargo.toml");
+        // passes a comparison against nothing. Since the extraction the exemplar is not a crate of
+        // this repo at all: it is the pinned checkout `cargo metadata` resolves, which both the
+        // mount and the exemplar resolver read. So "not in the tree" is both: its manifest gone
+        // from the tree the census reads (the pinned base layer lays it whatever the resolver
+        // says), AND the resolver's answer with the exemplar (and its `-plugin` twin) gone from
+        // it. Either alone leaves the exemplar read back in, by the census or by the resolver.
+        let exemplar_gone = move || {
+            let mut ov = Overlay::new();
+            ov.remove("crates/busbar-plane-a2a/Cargo.toml");
+            let meta = cx
+                .cargo_metadata_all_features("Cargo.toml")
+                .ok()
+                .and_then(|m| serde_json::from_str::<serde_json::Value>(&m).ok());
+            let mut meta = meta.unwrap_or_else(|| serde_json::json!({ "packages": [] }));
+            if let Some(packages) = meta["packages"].as_array_mut() {
+                packages.retain(|p| {
+                    let name = p["name"].as_str().unwrap_or("");
+                    name != "busbar-plane-a2a" && name != "busbar-plane-a2a-plugin"
+                });
+            }
+            ov.set_command(pinned::METADATA_KEY, meta.to_string());
+            ov
+        };
         report.push(prove_rows_red(
             cx,
             subject,
             "a kind whose canonical exemplar is not in the tree derives its skeleton from nothing",
             &[ROW_SHAPE],
-            ov,
+            exemplar_gone,
             &["no-exemplar", "busbar-plane-a2a"],
         ));
 
@@ -11934,7 +11616,9 @@ impl Gate for KindIsolationGate {
         //
         // EVERY plane's battery file, read off the tree (item 89): the case named two, and two more
         // planes (`decision`, `streaming`) have run it since — so removing two left a battery the
-        // kind still had, and the row said `not-run` instead of `no-battery`.
+        // kind still had, and the row said `not-run` instead of `no-battery`. A pinned plane runs
+        // its battery in its `-plugin` twin (spec §9), which the mount lays under the twin root, not
+        // under `crates/`: those are every plane's battery too, so they go with the rest.
         let ov = move || {
             let mut ov = Overlay::new();
             if let Ok(rels) = cx.list(&WalkSpec::new(["crates"]).ext("rs")) {
@@ -11944,6 +11628,17 @@ impl Gate for KindIsolationGate {
                         && rel.ends_with("/tests/conformance.rs")
                     {
                         ov.remove(rel);
+                    }
+                }
+            }
+            for (dir, sub, _) in pinned::twin_files(cx) {
+                if let Some(name) = dir.strip_prefix("crates/") {
+                    if name.starts_with("busbar-plane-")
+                        && sub.starts_with("tests/")
+                        && sub.contains(CONFORMANCE_MARKER)
+                        && sub.ends_with(".rs")
+                    {
+                        ov.remove(format!("{}/{sub}", pinned::twin_dir(name)));
                     }
                 }
             }
@@ -12079,20 +11774,6 @@ fn announced_reaching_drain_target(cx: &Ctx) -> Overlay {
         ),
     );
     ov
-}
-
-/// THE LEGACY CRATE THE DRAIN PAIR IS ABOUT. It must be a `legacy` crate that is really on disk,
-/// or the red case plants a row for nothing and the green case removes a manifest that is not there.
-/// FLIP-A2A and FLIP-STREAMING deleted the other two, so it is `busbar-llm`, the one left.
-const DRAIN_PLANT_FROM: &str = "busbar-llm";
-
-/// ONE `[[transitional]]` row for [`DRAIN_PLANT_FROM`], and no other row — the red case's plant
-/// and, with the crate removed, the green case's.
-fn drain_row_plant() -> Overlay {
-    registry_plant(&format!(
-        "[[transitional]]\nfrom = \"{DRAIN_PLANT_FROM}\"\nto = \"busbar-plane-llm\"\nreason = \
-         \"legacy drain\"\n"
-    ))
 }
 
 /// The transport crate [`cleanliness_reaches_wire`] lands beside the tree's own.
@@ -12479,35 +12160,6 @@ fn pending_subst(cx: &Ctx, from: &str, to: &str) -> Result<(String, String), Str
     ))
 }
 
-/// THE `from`/`to` PAIR OF THE FIRST `[[transitional]]` ROW, exactly as the ledger spells it.
-///
-/// Two lines rather than one because `to = "…"` is not unique in a file that also carries an
-/// `[[edge]]` table, and derived rather than written out because this table IS THE DRAIN: every row
-/// in it is there to be deleted, so a fixture that names one names a row whose whole purpose is to
-/// stop existing. The case that used to name `to = "busbar-unit-*"` outlived the last glob in the
-/// table by however long it has been since one was written.
-fn transitional_anchor(cx: &Ctx) -> Result<(String, String), String> {
-    let text = cx.read(REGISTRY_FILE)?;
-    let at = text
-        .find("\n[[transitional]]\n")
-        .ok_or_else(|| format!("no `[[transitional]]` row in {REGISTRY_FILE} to plant over"))?;
-    let mut from = None;
-    for line in text[at + 1..].lines().skip(1) {
-        if line.trim().is_empty() {
-            break;
-        }
-        if line.starts_with("from = \"") {
-            from = Some(line.to_string());
-        }
-        if let (Some(from), true) = (&from, line.starts_with("to = \"")) {
-            return Ok((from.clone(), line.to_string()));
-        }
-    }
-    Err(format!(
-        "the first `[[transitional]]` row in {REGISTRY_FILE} has no `from`/`to` pair to plant over"
-    ))
-}
-
 /// The real `Cargo.lock` with one workspace-internal name added to a package's dependency list —
 /// the edge that lives in the lock and in no manifest.
 fn lock_plus(cx: &Ctx, package: &str, dep: &str) -> Overlay {
@@ -12869,38 +12521,28 @@ mod plant_tests {
         );
     }
 
-    // ── items 173 / 233: the legacy-drain pair ──────────────────────────────────────────────────
+    // ── the finished legacy drain (DEV-GREEN row 83, coordinator ruling 2026-10-18) ────────────
 
     #[test]
-    fn the_drain_pair_turns_on_whether_the_rows_crate_exists() {
-        let cx = ws();
-        let (crates, _) = crates_of(&cx);
+    fn a_retired_engine_crate_stays_refused_and_no_legacy_kind_returns() {
         assert!(
-            crates
-                .iter()
-                .any(|c| c.name == DRAIN_PLANT_FROM && c.kind == Some("legacy")),
-            "{DRAIN_PLANT_FROM} must be a legacy crate the census has"
+            KINDS.iter().all(|d| d.kind != "legacy"),
+            "the `legacy` kind is struck for good: no crate may resolve to it"
         );
-
-        // The red case's baseline: a table with no rows, green.
-        let base = cx.with_overlay(registry_plant(""));
-        assert_green(&rule_drain(&crates_of(&base).0, &reg_of(&base)));
-
-        // The red case's plant bites against that baseline and names the live crate.
-        let plant = drain_row_plant();
-        assert_bites(&base, &plant);
+        let cx = ws();
+        // The real tree carries no retired engine, so the registry names none.
+        let (crates, _) = crates_of(&cx);
+        let row = rule_registry(&cx, &crates, &reg_of(&cx), false);
+        assert!(!row.detail.contains("legacy-resurrected"), "{}", row.detail);
+        // `busbar-llm` back as a crate is refused by name.
+        let plant = manifest_plant("crates/busbar-llm", "busbar-llm", &[]);
+        assert_bites(&cx, &plant);
         let red = cx.with_overlay(plant);
+        let (crates, _) = crates_of(&red);
         assert_red_naming(
-            &rule_drain(&crates_of(&red).0, &reg_of(&red)),
-            &["transitional-live", DRAIN_PLANT_FROM, "ship"],
+            &rule_registry(&red, &crates, &reg_of(&red), false),
+            &["legacy-resurrected", "busbar-llm"],
         );
-
-        // The green case: the same row, its crate gone — every removal a path the tree has.
-        let mut ov = drain_row_plant();
-        ov.remove(format!("crates/{DRAIN_PLANT_FROM}/Cargo.toml"));
-        assert_bites(&cx, &ov);
-        let done = cx.with_overlay(ov);
-        assert_green(&rule_drain(&crates_of(&done).0, &reg_of(&done)));
     }
 
     // ── item 174: the control-path starvation floor ─────────────────────────────────────────────
@@ -13325,14 +12967,6 @@ mod plant_tests {
                 .iter()
                 .any(|c| c.name == name && c.kind == Some(kind)),
             "{name} is not a `{kind}` crate of the census, so an edge onto it is never measured"
-        );
-        assert_red_naming(
-            &deps_over(manifest_plant(
-                "crates/busbar-llm",
-                "busbar-llm",
-                &[PLANTED_DRAIN_TARGET],
-            )),
-            &["unlisted-transitional", "busbar-llm", PLANTED_DRAIN_TARGET],
         );
         assert_red_naming(
             &deps_over(announced_reaching_drain_target(&ws())),
@@ -13952,7 +13586,7 @@ mod spec_allowed_tests {
 // THE NEUTRAL CENSUS lives in its own file and is declared down here so that no line above moves:
 // the kind table and its rules are cited by line number across the ledgers.
 mod neutral;
-pub use neutral::{neutral_census, neutral_kind_src_roots, NeutralCensus};
+pub use neutral::{neutral_census, neutral_kind_src_roots, plane_wall_crates, NeutralCensus};
 
 // The census and face readings over the real tree, one plant each (row 159, audit XC1).
 #[cfg(test)]

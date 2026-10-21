@@ -786,6 +786,9 @@ pub struct GovState {
     /// is recovered with `into_inner()`. (The deterministic id already makes two concurrent *issues*
     /// idempotent by id; this closes the issue/refresh interleaving and non-idempotent stores.)
     self_mint_lock: std::sync::Mutex<()>,
+    /// Whether the self-serve mint holds an admin's state and the minting provider
+    /// ([`SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE`]); set from that const at construction.
+    self_mint_holds: std::sync::atomic::AtomicBool,
     /// The configured store's store v3 slots (its typed records among them), when it was opened
     /// through a door ([`busbar_contract::store_calls::OpenedStore::calls`]): what the kernel's host
     /// services serve plane records over ([`Self::attach_store_calls`]).
@@ -854,6 +857,16 @@ pub enum SelfMintOp {
     Issue,
     Refresh,
 }
+
+/// Whether the self-serve mint holds an admin's state and the minting provider across a login (K3
+/// #17, #21): a subject whose binding an admin disabled, or that another identity provider minted,
+/// is refused (403), and the epoch probe treats ANY existing row as occupied, so a login never
+/// writes over a disabled, rotated or moved row. `false` is 1.5.5's behaviour, which this build keeps
+/// until the owner signs the change (Q128 u31): no refusal, and the probe skips only tombstoned rows,
+/// so a login re-enables an admin-disabled binding at its derived id (v1.5.5
+/// crates/busbar/src/governance/state.rs:431 skips only tombstones; :560 mints). The owner's
+/// signature flips this one line.
+pub const SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE: bool = false;
 
 /// Why the self-serve mint refused to issue. Each one is an admin's or another provider's hold on the
 /// subject, never a store failure; the token exchange maps every one to `Unbound` (403).

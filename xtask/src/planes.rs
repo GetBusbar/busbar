@@ -150,10 +150,39 @@ pub fn plane_keys_protocol() -> Vec<&'static str> {
 /// VOICE HAS NO `-codec` ROOT ANY MORE EITHER, same ruling: `busbar-voice-codec` dissolved into
 /// `busbar-plane-streaming`'s own `codec` module. `crates/busbar-plane-streaming/src` is NOT listed
 /// here for the same reason — the PLANE-KIND regime already walks it whole.
+///
+/// LLM'S ROOT IS ITS DOOR CRATE since the retired engine crate was deleted (DEV-GREEN row 83,
+/// coordinator ruling 2026-10-18): [`plane_key_crate`] maps the key to `busbar-plane-llm`, the home
+/// structure-lint's plane roster already resolves for it. A key left pointing at a deleted directory
+/// is a gate judging nothing (row 115); every gate keyed on these roots refuses a missing one
+/// ([`missing_plane_key_roots`]). At the extraction (row 106) `llm` moves to
+/// [`PLANE_KEYS_KIND_ONLY`] as mcp, a2a and streaming did.
 pub fn plane_src_roots() -> Vec<String> {
-    PLANE_KEYS
-        .iter()
-        .map(|k| format!("crates/busbar-{k}/src"))
+    PLANE_KEYS.iter().map(|k| plane_key_src(k)).collect()
+}
+
+/// The crate a [`PLANE_KEYS`] key's sources live in TODAY. Twin of `scripts/plane-keys.sh`'s
+/// `plane_ondisk_key`: `llm` is its door crate `busbar-plane-llm` (DEV-GREEN row 83); any other
+/// key is the legacy engine `busbar-<key>`.
+pub fn plane_key_crate(key: &str) -> String {
+    match key {
+        "llm" => "busbar-plane-llm".to_string(),
+        other => format!("busbar-{other}"),
+    }
+}
+
+/// `crates/<plane_key_crate(key)>/src`.
+pub fn plane_key_src(key: &str) -> String {
+    format!("crates/{}/src", plane_key_crate(key))
+}
+
+/// Every [`plane_src_roots`] entry the context does not hold. A gate keyed on [`PLANE_KEYS`] refuses
+/// these by name: a root that is not on disk scans zero files, and zero is the passing answer to
+/// every ban.
+pub fn missing_plane_key_roots(cx: &crate::ctx::Ctx) -> Vec<String> {
+    plane_src_roots()
+        .into_iter()
+        .filter(|r| !cx.exists(r))
         .collect()
 }
 
@@ -194,8 +223,9 @@ pub fn plane_src_roots() -> Vec<String> {
 /// * `crates/busbar` — the composition root constructs planes BY NAME (`root/plane_decisions.rs`),
 ///   which is the one place in the tree where naming one is the job.
 ///
-/// STILL AN EXPLICIT LIST FOR `plane-purity`, `plane-purity-strict` and the vendor matrix; DERIVED
-/// FOR `plane-transport-neutrality`. Deriving by exclusion from the directories on disk closes the
+/// STILL AN EXPLICIT LIST FOR the vendor matrix; DERIVED FOR `plane-transport-neutrality` and,
+/// since Q128, for `plane-purity` and `plane-purity-strict` (the census's neutral crates of the
+/// kinds `plane_purity::NEUTRAL_KINDS` names). Deriving by exclusion from the directories on disk closes the
 /// enrolment hole — a new neutral crate is in the gate on the day it is created rather than on the
 /// day somebody remembers this function. [`crate::gates::plane_transport_neutrality`] no longer
 /// reads this list: it scans [`crate::gates::kind_isolation::neutral_census`], kind-isolation's
