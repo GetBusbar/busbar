@@ -1415,6 +1415,8 @@ fn unauthorized_response(
         text: AUTH_REFUSED,
         path,
         target: path,
+        // A mounted plane's path answered above.
+        mounted: false,
     };
     core_routes.kernel_refusal(&refusal).unwrap_or_else(|| {
         crate::ingress::native::kernel_refusal(
