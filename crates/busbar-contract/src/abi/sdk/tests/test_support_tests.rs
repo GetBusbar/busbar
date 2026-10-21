@@ -1118,10 +1118,13 @@ fn a_door_opens_over_the_tables_a_fake_host_lent_while_the_host_lives() {
     let host = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
     let mut input: OpenIn = zeroed();
     input.head = in_head::<OpenIn>(slot::OPEN);
-    let lent = host.lend_to(input);
-    let opened = super::reply::call_hosted(open, ptr::null_mut(), &lent, zeroed::<OpenOut>());
+    // The lent `in` lives only in this block: it borrows the host, and its borrow ends here.
+    let opened = {
+        let lent = host.lend_to(input);
+        super::reply::call_hosted(open, ptr::null_mut(), &lent, zeroed::<OpenOut>())
+    };
+    // Nothing the host lent is left, so the host may go.
+    drop(host);
     assert_eq!(opened.outcome, Outcome::Ready);
     assert!(!opened.out.instance.is_null());
-    drop(lent);
-    drop(host);
 }
