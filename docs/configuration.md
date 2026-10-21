@@ -697,7 +697,8 @@ internal`; no figure moves, only the status and code the caller sees change.
 > `search_units`, `classifications`, `web_fetch_requests`, `unitemized_tokens`, `images`, `audio_ms`, `guardrail_automated_reasoning_policies`, `guardrail_automated_reasoning_policy_units`, `guardrail_content_policy_image_units`, `guardrail_content_policy_units`, `guardrail_contextual_grounding_policy_units`, `guardrail_sensitive_information_policy_free_units`, `guardrail_sensitive_information_policy_units`, `guardrail_topic_policy_units`, `guardrail_word_policy_units`; `tools`
 > (MCP) = `tool_calls`, `bytes`; `agents` (A2A) = `bytes`; `decisions` = `decision`; `streams`
 > (voice) = `audio_tokens_in`, `audio_tokens_out`, `text_tokens_in`, `text_tokens_out`,
-> `audio_seconds_in`, `tool_calls`. (`cached_tokens` is reported by both duplex dialects but is
+> `audio_seconds_in`, `tool_calls`, `image_tokens_in`, `video_tokens_in` (image and video input
+> are priced apart from text by the providers; price them `0` to make them free). (`cached_tokens` is reported by both duplex dialects but is
 > a SUBSET of the input token classes above, not a class beside them — pricing it too would
 > double-bill the same cached input, so it is not a declared billable class; it is carried,
 > unbilled, as attribution only.) A plane with no `rate_card` of its own is unaffected (absent =
