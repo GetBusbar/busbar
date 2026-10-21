@@ -1328,9 +1328,26 @@ fn scan_walked(
     f: &crate::ctx::SourceFile,
     walk: Walk,
     exempt: &IntakeSpans,
-    decls: &FloatDecls,
+    decls: &Decls,
     offenders: &mut Vec<String>,
 ) {
+    push_float_findings(
+        &f.rel_str(),
+        &walked_float_lines(cx, f, walk, decls),
+        exempt,
+        offenders,
+    );
+}
+
+/// Every float one walked file's code names under `decls` (what `float_lines` reads), both halves
+/// memoised unless `walk` says the full walk: [`float_hits`] on the file ([`scan::file_reading`]),
+/// and [`declared_hits`] on the file AND the interned declarations ([`declared_reading`]).
+fn walked_float_lines(
+    cx: &Ctx,
+    f: &crate::ctx::SourceFile,
+    walk: Walk,
+    decls: &Decls,
+) -> Vec<(usize, String)> {
     static MEMO: scan::FileReadingMemo<Vec<(usize, String)>> = std::sync::OnceLock::new();
     let hits = if walk.memoised {
         scan::file_reading(&MEMO, cx, f, float_hits)
@@ -1338,8 +1355,69 @@ fn scan_walked(
         std::sync::Arc::new(float_hits(&f.text))
     };
     let mut all: Vec<(usize, String)> = hits.to_vec();
-    all.extend(declared_hits(&f.text, decls));
-    push_float_findings(&f.rel_str(), &all, exempt, offenders);
+    all.extend(declared_reading(cx, f, walk, decls).iter().cloned());
+    all
+}
+
+/// A per-file reading memoised on the file's ABSOLUTE PATH and a `salt` — both compared whole, no
+/// hash — for a file the overlay does not touch, single-flight per key; a planted file, or any file
+/// when `walk` says the full walk, is read afresh and nothing is remembered. An unplanted file is
+/// read from disk (or the base layer), so its absolute path is a promise that its bytes are the
+/// same for the life of the process — the promise [`scan::file_reading`] and
+/// [`scan::cfg_test_module_files`] key their stable readings on.
+type StableMemo<T> = std::sync::OnceLock<
+    std::sync::Mutex<
+        std::collections::HashMap<
+            (usize, std::path::PathBuf),
+            std::sync::Arc<std::sync::OnceLock<std::sync::Arc<T>>>,
+        >,
+    >,
+>;
+
+fn stable_reading<T: Send + Sync + 'static>(
+    memo: &'static StableMemo<T>,
+    cx: &Ctx,
+    f: &crate::ctx::SourceFile,
+    walk: Walk,
+    salt: usize,
+    read: impl FnOnce(&str) -> T,
+) -> std::sync::Arc<T> {
+    let planted = cx
+        .overlay()
+        .is_some_and(|ov| ov.paths().any(|p| *p == f.rel));
+    if !walk.memoised || planted {
+        return std::sync::Arc::new(read(&f.text));
+    }
+    let cell = memo
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry((salt, f.abs.clone()))
+        .or_default()
+        .clone();
+    cell.get_or_init(|| std::sync::Arc::new(read(&f.text)))
+        .clone()
+}
+
+/// [`declared_hits`] of one walked file under `decls`, memoised on the file AND the interned
+/// declarations ([`stable_reading`], salted with the [`Decls`] id).
+///
+/// THE DEAREST HALF OF A GATE RUN. Every scanned money file is lexed again and every line searched
+/// for every derived carrier and float-field name, and the derived set is a pure function of the
+/// crate sources — which a self-test case leaves as they were in all but the one or two files it
+/// plants. Read afresh on every case, it made the battery's serial re-take 19 108 units against a
+/// budget of 9 000. A plant that changes what the tree declares interns a new [`Decls`], so every
+/// file is read again under it; the memo can never answer one set's reading for another.
+fn declared_reading(
+    cx: &Ctx,
+    f: &crate::ctx::SourceFile,
+    walk: Walk,
+    decls: &Decls,
+) -> std::sync::Arc<Vec<(usize, String)>> {
+    static MEMO: StableMemo<Vec<(usize, String)>> = std::sync::OnceLock::new();
+    stable_reading(&MEMO, cx, f, walk, decls.id, |text| {
+        declared_hits(text, &decls.decls)
+    })
 }
 
 /// Every float on every line of `text`, as `(1-based line, token)`, in the order a line's findings
@@ -1375,6 +1453,7 @@ fn float_hits(text: &str) -> Vec<(usize, String)> {
 /// Every float a file's code names, as `(1-based line, token)`: [`float_hits`], and — through
 /// `decls` — a call of an item the tree declares as returning a float, or a read of a field it
 /// declares as one ([`declared_hits`]).
+#[cfg(test)]
 fn float_lines(text: &str, decls: &FloatDecls) -> Vec<(usize, String)> {
     let mut out = float_hits(text);
     out.extend(declared_hits(text, decls));
@@ -1400,7 +1479,7 @@ fn declared_hits(text: &str, decls: &FloatDecls) -> Vec<(usize, String)> {
 /// (`cost_per_mtok: f64`). A float reaches a money line through either with no float on the line
 /// itself; a name some declaration gives a non-float type is no evidence and is left out, so
 /// `get` and `input` are not carriers because one of their declarations is.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 struct FloatDecls {
     carriers: std::collections::BTreeSet<String>,
     fields: std::collections::BTreeSet<String>,
@@ -1409,12 +1488,13 @@ struct FloatDecls {
 /// One file's declarations, as `(fn name, returns a float)` and `(field name, is a float)`.
 type FileDecls = (Vec<(String, bool)>, Vec<(String, bool)>);
 
-/// Derive [`FloatDecls`] over `files` (production files, test scope already removed).
-fn float_decls(files: &[crate::ctx::SourceFile]) -> FloatDecls {
+/// Derive [`FloatDecls`] over `files` (production files, test scope already removed), each file's
+/// declarations memoised unless `walk` says the full walk ([`file_decls`]).
+fn float_decls(cx: &Ctx, files: &[crate::ctx::SourceFile], walk: Walk) -> FloatDecls {
     let mut fns: std::collections::BTreeMap<String, bool> = std::collections::BTreeMap::new();
     let mut fields: std::collections::BTreeMap<String, bool> = std::collections::BTreeMap::new();
     for f in files {
-        let decls = file_decls(&f.text);
+        let decls = file_decls(cx, f, walk);
         for (name, float) in &decls.0 {
             let all = fns.entry(name.clone()).or_insert(true);
             *all = *all && *float;
@@ -1438,25 +1518,44 @@ fn float_decls(files: &[crate::ctx::SourceFile]) -> FloatDecls {
     }
 }
 
-/// One file's fn and field declarations — MEMOISED on its bytes, because every gate run (and every
-/// self-test case is one) reads the whole crate-source population.
-fn file_decls(text: &str) -> std::sync::Arc<FileDecls> {
-    use std::hash::{Hash, Hasher};
-    static MEMO: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::BTreeMap<u64, std::sync::Arc<FileDecls>>>,
-    > = std::sync::OnceLock::new();
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    text.hash(&mut h);
-    let key = h.finish();
-    let memo = MEMO.get_or_init(Default::default);
-    if let Some(found) = memo.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
-        return std::sync::Arc::clone(found);
+/// One file's fn and field declarations — MEMOISED on the file ([`stable_reading`]), because every
+/// gate run (and every self-test case is one) reads the whole crate-source population. It was keyed
+/// on a 64-bit hash of the bytes, which hashed the whole population again on every case and could
+/// answer one file's declarations for another's on a collision; the path is compared whole.
+fn file_decls(cx: &Ctx, f: &crate::ctx::SourceFile, walk: Walk) -> std::sync::Arc<FileDecls> {
+    static MEMO: StableMemo<FileDecls> = std::sync::OnceLock::new();
+    stable_reading(&MEMO, cx, f, walk, 0, read_file_decls)
+}
+
+/// THE DERIVED DECLARATIONS, INTERNED: equal [`FloatDecls`] get the same `id` for the life of the
+/// process (compared whole, never hashed), so a reading taken under one set ([`declared_reading`])
+/// is keyed on exactly that set.
+#[derive(Debug)]
+struct Decls {
+    id: usize,
+    decls: std::sync::Arc<FloatDecls>,
+}
+
+impl Decls {
+    fn interned(decls: FloatDecls) -> Decls {
+        static TABLE: std::sync::OnceLock<std::sync::Mutex<Vec<std::sync::Arc<FloatDecls>>>> =
+            std::sync::OnceLock::new();
+        let mut table = TABLE
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let id = match table.iter().position(|held| **held == decls) {
+            Some(id) => id,
+            None => {
+                table.push(std::sync::Arc::new(decls));
+                table.len() - 1
+            }
+        };
+        Decls {
+            id,
+            decls: std::sync::Arc::clone(&table[id]),
+        }
     }
-    let found = std::sync::Arc::new(read_file_decls(text));
-    memo.lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(key, std::sync::Arc::clone(&found));
-    found
 }
 
 /// The reading [`file_decls`] remembers: every `fn <name>` with its declared return type judged,
@@ -2610,7 +2709,7 @@ impl NoFloatMoneyGate {
         let crate_src = production_only(cx, crate_src);
         let money_typed = money_typed_files(cx, &crate_src, walk);
         // WHAT THE TREE DECLARES AS A FLOAT, over the same population (audit XE HIGH 1).
-        let decls = float_decls(&crate_src);
+        let decls = Decls::interned(float_decls(cx, &crate_src, walk));
         if money_typed.len() < MONEY_TYPED_FLOOR {
             float_scan_problems.push(format!(
                 "the derived money population holds {} production file(s) naming a money type, \
@@ -2700,7 +2799,12 @@ impl NoFloatMoneyGate {
             // THE ROW'S PREMISE IS EVALUATED (audit XE HIGH 4, Law 10): an intake is where a
             // configured decimal is converted, so its span holds a float. A span that holds none
             // converts nothing, and exempting it only hides the float somebody plants there next.
-            let holds_float = float_lines(&text, &decls)
+            let intake_file = crate::ctx::SourceFile {
+                rel: std::path::PathBuf::from(intake.file),
+                abs: cx.abs(intake.file),
+                text,
+            };
+            let holds_float = walked_float_lines(cx, &intake_file, walk, &decls)
                 .iter()
                 .any(|(line, _)| spans.iter().any(|(a, z)| line >= a && line <= z));
             if !holds_float {
@@ -2717,7 +2821,7 @@ impl NoFloatMoneyGate {
                 .or_default()
                 .extend(spans);
             if !intake_texts.iter().any(|(f, _)| *f == intake.file) {
-                intake_texts.push((intake.file, text));
+                intake_texts.push((intake.file, intake_file.text));
             }
         }
 
@@ -4333,6 +4437,79 @@ mod tests {
         }
     }
 
+    /// THE MEMOISED DECLARATION READINGS ARE THE FRESH ONES. The derived declarations taken through
+    /// the per-file memo equal the ones read afresh and intern to the same set; every scanned money
+    /// file's declared hits, asked cold and again warm, equal [`declared_hits`] read afresh; and the
+    /// declarations are an input of the memo, not a constant of it: the same unplanted file read
+    /// under a wider set (every fn and field the file itself declares, called a float) is a
+    /// different reading, and equals the fresh one under that set too.
+    #[test]
+    fn the_memoised_declaration_readings_are_the_fresh_readings() {
+        let cx = cx();
+        let (files, problems) = crate_src_files(&cx);
+        assert!(problems.is_empty(), "{problems:?}");
+        let files = production_only(&cx, files);
+        let fresh = float_decls(&cx, &files, Walk::FULL);
+        let memoised = float_decls(&cx, &files, Walk::MEMOISED);
+        let warm = float_decls(&cx, &files, Walk::MEMOISED);
+        assert_eq!(
+            memoised, fresh,
+            "the memoised declarations are not the fresh ones"
+        );
+        assert_eq!(warm, fresh, "the warm declarations are not the fresh ones");
+        assert!(
+            !fresh.carriers.is_empty() && !fresh.fields.is_empty(),
+            "the derived declarations read empty: {fresh:?}"
+        );
+        let real = Decls::interned(memoised);
+        let again = Decls::interned(fresh);
+        assert_eq!(real.id, again.id, "equal declarations intern to one set");
+
+        let scanned: Vec<&crate::ctx::SourceFile> = files
+            .iter()
+            .filter(|f| money_reading(&cx, f, Walk::MEMOISED).names)
+            .collect();
+        assert!(
+            scanned.len() >= MONEY_TYPED_FLOOR,
+            "{} files",
+            scanned.len()
+        );
+        for f in &scanned {
+            let cold = declared_reading(&cx, f, Walk::MEMOISED, &real);
+            let warm = declared_reading(&cx, f, Walk::MEMOISED, &real);
+            assert!(
+                std::sync::Arc::ptr_eq(&cold, &warm),
+                "{}: not memoised",
+                f.rel_str()
+            );
+            assert_eq!(
+                *cold,
+                declared_hits(&f.text, &real.decls),
+                "{}: the memoised declared hits are not the fresh ones",
+                f.rel_str()
+            );
+        }
+
+        let card = files
+            .iter()
+            .find(|f| f.rel_str() == CARD_BUILD_FILE)
+            .expect("the card-build file is a production crate source");
+        let (fns, fields) = &*read_file_decls(&card.text);
+        let wide = Decls::interned(FloatDecls {
+            carriers: fns.iter().map(|(n, _)| n.clone()).collect(),
+            fields: fields.iter().map(|(n, _)| n.clone()).collect(),
+        });
+        assert_ne!(wide.id, real.id, "a different set interns apart");
+        let under_real = declared_reading(&cx, card, Walk::MEMOISED, &real);
+        let under_wide = declared_reading(&cx, card, Walk::MEMOISED, &wide);
+        assert_eq!(*under_wide, declared_hits(&card.text, &wide.decls));
+        assert_eq!(*under_real, declared_hits(&card.text, &real.decls));
+        assert_ne!(
+            under_wide, under_real,
+            "the wider set reads more of the card-build file, so the set is an input of the memo"
+        );
+    }
+
     use super::*;
 
     fn cx() -> Ctx {
@@ -4461,13 +4638,17 @@ mod tests {
             abs: "/m.rs".into(),
             text: text.to_string(),
         };
-        let decls = float_decls(&[
-            file(
-                "fn ratio(&self) -> Option<f64> { None }\nfn get(&self) -> f64 { 0.0 }\n\
+        let decls = float_decls(
+            &cx(),
+            &[
+                file(
+                    "fn ratio(&self) -> Option<f64> { None }\nfn get(&self) -> f64 { 0.0 }\n\
                   struct A { pub cost_per_mtok: f64, pub input: f64 }\n",
-            ),
-            file("fn get(&self) -> u64 { 0 }\nstruct B { input: Option<u64> }\n"),
-        ]);
+                ),
+                file("fn get(&self) -> u64 { 0 }\nstruct B { input: Option<u64> }\n"),
+            ],
+            Walk::FULL,
+        );
         assert!(decls.carriers.contains("ratio"), "{decls:?}");
         assert!(!decls.carriers.contains("get"), "{decls:?}");
         assert!(decls.fields.contains("cost_per_mtok"), "{decls:?}");
