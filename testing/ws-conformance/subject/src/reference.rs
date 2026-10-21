@@ -42,7 +42,7 @@ fn main() {
     // The accept computation is proven on RFC 6455's own sample before any socket is opened.
     assert_eq!(
         accept_key("dGhlIHNhbXBsZSBub25jZQ=="),
-        "s3pPLMBiTxaQ9kYGd0zrO6Ii+Bg=",
+        "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=",
         "ws-conformance-reference: the accept key does not match RFC 6455's sample"
     );
     let listener = TcpListener::bind("127.0.0.1:0").expect("ws-conformance-reference: bind failed");
@@ -533,7 +533,7 @@ mod tests {
         assert_eq!(hex, "da39a3ee5e6b4b0d3255bfef95601890afd80709");
         assert_eq!(
             accept_key("dGhlIHNhbXBsZSBub25jZQ=="),
-            "s3pPLMBiTxaQ9kYGd0zrO6Ii+Bg="
+            "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
         );
         assert_eq!(base64(b"f"), "Zg==");
         assert_eq!(base64(b"fo"), "Zm8=");
