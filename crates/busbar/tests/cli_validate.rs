@@ -1960,17 +1960,13 @@ models:
     );
 }
 
-/// One provider `lane` whose credential is `api_key`, presented under the style `style`, with
+/// One provider `mock` whose credential is `api_key`, presented under the style `style`, with
 /// `extra` (config-side lines, indented under the provider): `--validate`'s exit code and its whole
 /// output. `run_busbar` sets `MOCK_KEY` to `test-key-value`.
 #[cfg(all(linked_section_pools, linked_every_auth))]
 fn validate_lane(tag: &str, api_key: &str, style: &str, extra: &str) -> (i32, String) {
     let dir = fixture_dir(tag);
-    std::fs::write(
-        dir.join("providers.yaml"),
-        "lane:\n  protocol: openai\n  base_url: \"https://res.example.com\"\n  api_key_env: MOCK_KEY\n",
-    )
-    .unwrap();
+    write_configs(&dir, "");
     let api_key = api_key.replace("{dir}", &dir.display().to_string());
     std::fs::write(
         dir.join("sa.json"),
@@ -1980,9 +1976,9 @@ fn validate_lane(tag: &str, api_key: &str, style: &str, extra: &str) -> (i32, St
     std::fs::write(
         dir.join("config.yaml"),
         format!(
-            "listen: \"127.0.0.1:0\"\nstore: {{module: memory}}\nproviders:\n  lane:\n    \
+            "listen: \"127.0.0.1:0\"\nstore: {{module: memory}}\nproviders:\n  mock:\n    \
              api_key: {api_key}\n    auth: {style}\n{extra}models:\n  test-model:\n    \
-             provider: lane\n"
+             provider: mock\n"
         ),
     )
     .unwrap();
