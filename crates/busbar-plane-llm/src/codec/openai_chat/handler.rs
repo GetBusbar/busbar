@@ -304,11 +304,11 @@ fn part_carries_delimiter(part: &[u8], boundary: &str) -> bool {
 /// option-a). OpenAI-as-egress rebuilds the multipart form around [`TRANSCRIPTION_BOUNDARY`]; not on
 /// the harness path (openai is always ingress there), kept for cross-protocol symmetry.
 ///
-/// Returns an EMPTY body if any part carries the delimiter. The seam types this write as infallible
-/// (`-> Bytes`), so there is no error to return; an empty body is the fail-closed answer — the
-/// upstream rejects it as a malformed form, which is exactly the outcome a smuggling attempt
-/// deserves. It is never truncated or silently sanitized: a request that tried to inject parts does
-/// not go upstream at all.
+/// Returns an EMPTY body if any part carries the delimiter. The leaf writer is typed infallible
+/// (`-> Bytes`), so the empty write is its refusal: the transcription handle and the translate seam
+/// turn it into `EgressWire::Unrepresentable` / an unrepresentable refusal, so the request is
+/// refused 4xx at the seam and never dispatched. It is never truncated or silently sanitized: a
+/// request that tried to inject parts does not go upstream at all.
 pub fn write_transcription_request(r: &TranscriptionReq) -> Bytes {
     let boundary = transcription_boundary();
     let mut out: Vec<u8> = Vec::new();

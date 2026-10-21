@@ -3053,7 +3053,14 @@ mod tools_door {
                 name: "granted-only".to_string(),
                 ..Default::default()
             },
-            Some(&[("scope_server", "granted")]),
+            // Both grants pass for every capability (docs/mcp.md, "Both must pass"): the key holds
+            // the server grant for `granted` alone, and the tool grant for a tool on EACH server,
+            // so the one thing `fenced_read_file` lacks is its server's grant.
+            Some(&[
+                ("scope_server", "granted"),
+                ("scope_tool", "granted_read_file"),
+                ("scope_tool", "fenced_read_file"),
+            ]),
         );
 
         let (status, answer) = call(&rig, &token, "fenced_read_file", serde_json::json!({})).await;
@@ -8468,18 +8475,14 @@ mod pools_door_money {
         );
     }
 
-    /// A STREAM ITS FAR END CUT BILLS NO TOKENS AND KEEPS ITS FEE (F25 row 720; legacy
-    /// `meter::a_stream_that_died_bills_the_tokens_it_streamed_and_keeps_the_fee_it_earned`,
-    /// corrected to BUSBAR-1.6.0.md, Budgets, l.1014-1019, status row 183): a streamed answer whose
-    /// far end reports its usage (11 in, 7 out) and then cuts the stream before its end bills NO
-    /// tokens, as 1.5.5 billed none (v1.5.5 `crates/busbar/src/proxy/response_body.rs`: the
-    /// transport error sets `stream_failed` (:283) and the drop-time gate bills no tokens (:642);
-    /// oracle cell `route.failover|fo|primary-cut-stream`, golden usage `{"requests":1}`, tokens
-    /// 0). It keeps its one request and its one fee (billable 1: the 200 that went out is not
-    /// reversed, v1.5.5 `crates/busbar/src/ingress/mod.rs:574-575`), and its sealed record is
-    /// Partial with no token line. A stream the CALLER left is the other case: it bills what the far
-    /// end had reported (`:633-660`). RED: the cut stream's reported tokens billed, or the fee
-    /// reversed.
+    /// A STREAM THAT DIED BILLS WHAT IT STREAMED AND KEEPS ITS FEE (F25 row 720; legacy
+    /// `meter::a_stream_that_died_bills_the_tokens_it_streamed_and_keeps_the_fee_it_earned`; owner
+    /// ruling 2026-10-20: "spend is what it is. if spend occurred it occurred. null is not a fix."):
+    /// a streamed answer whose far end reports its usage (11 in, 7 out) and is then cut before its
+    /// end bills those 18 tokens, as its plane ledgered them; it keeps its one request and its one
+    /// fee (billable 1, the 200 that went out is not reversed), and its sealed record reports one
+    /// line per streamed tier: input 11, output 7. RED: the streamed tokens dropped, the fee
+    /// reversed, or the tiers merged.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_bills_a_dead_stream_tokens_and_keeps_its_fee() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8510,17 +8513,22 @@ mod pools_door_money {
         let (requests, _, _, billable) = rig.ledger_after(1).await;
         assert_eq!(requests, 1, "the request unit still counts");
         assert_eq!(billable, 1, "the fee it earned is kept");
-        let record = sealed_as(&rig, busbar_kernel_audit::FinishClass::Partial).await;
         assert_eq!(
             rig.tokens_after().await,
-            0,
-            "a stream its far end cut bills no tokens"
+            18,
+            "the streamed tokens are the charge"
         );
+        let record = sealed_as(&rig, busbar_kernel_audit::FinishClass::Partial).await;
+        let mut lines = token_lines(&record);
+        lines.retain(|(_, quantity)| *quantity > 0);
+        lines.sort();
         assert_eq!(
-            reported(&record),
-            0,
-            "its record reports no token either: {:?}",
-            token_lines(&record)
+            lines,
+            vec![
+                (busbar_contract::records::UNIT_INPUT.to_string(), 11),
+                (busbar_contract::records::UNIT_OUTPUT.to_string(), 7)
+            ],
+            "one line per streamed tier"
         );
     }
 
