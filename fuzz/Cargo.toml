@@ -22,7 +22,8 @@ libfuzzer-sys = "0.4"
 # the concrete per-dialect readers. `embeddings_read_request` dispatches straight into the
 # production `read_embeddings_request` reader for each dialect — so fuzzing this entry point fuzzes
 # the real JSON/wire decode of an untrusted request body. The plane lives in its own repo (rows
-# 106/107): this is the rev the root `Cargo.toml` pins, and the contract it names is this tree's.
+# 106/107): this is the rev the root `Cargo.toml` pins, built with the busbar-contract that rev pins
+# (the harness names no contract of its own, so no `[patch]` redirects one).
 busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "0d27f7d51c401781bee77a94f7cd353470516ad1", features = ["test-support"] }
 
 # Fuzz harnesses are not doctested/benchmarked and must not be picked up as workspace tests.
@@ -36,8 +37,3 @@ bench = false
 # Make this its own workspace so the root workspace does not try to build the fuzz crate (and its
 # sanitizer flags) during ordinary builds.
 [workspace]
-
-# The pinned plane names busbar-contract at its own busbar pin; the harness builds it against this
-# tree's contract, as the root workspace does.
-[patch.'https://github.com/GetBusbar/busbar']
-busbar-contract = { path = "../crates/busbar-contract" }

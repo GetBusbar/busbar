@@ -34,12 +34,25 @@ pub mod verify;
 
 use std::path::Path;
 
-use crate::ctx::Ctx;
+use crate::ctx::{Change, Ctx};
 use crate::gates::{Gate, Report};
 use crate::ledger::{Row, Status, Verdict};
 
 use build::{ARCH_REL, CELLS_REL, GOLDEN_LEDGER_REL, OUT_JSON_REL, OUT_MD_REL};
 use json::J;
+
+/// The files the context's BASE layer lays (the pinned planes, at `crates/<package>`), as
+/// `(rel, text)`: what [`verify::Ctx::add_laid`] indexes beside the disk walk.
+pub fn laid_files(cx: &Ctx) -> Vec<(String, String)> {
+    cx.base()
+        .into_iter()
+        .flat_map(|b| b.changes())
+        .filter_map(|(rel, change)| match change {
+            Change::Content(text) => Some((rel.to_string_lossy().replace('\\', "/"), text.clone())),
+            _ => None,
+        })
+        .collect()
+}
 
 pub struct DesignBindingsGate;
 
@@ -67,6 +80,7 @@ impl DesignBindingsGate {
             cx.root(),
             &cx.abs(GOLDEN_LEDGER_REL),
         )?;
+        ctx.add_laid(&laid_files(cx))?;
         if let Some(planted) = cx.overlay_command(NOTE_TABLE_KEY) {
             let table: Vec<(String, String)> = planted
                 .split('\n')

@@ -809,6 +809,35 @@ fn instrument_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
 mod tests {
     use super::*;
 
+    /// ROW 106 (A): a test the pinned plane declares is cited where the plane lived
+    /// (`crates/<package>/...`), and the plane is laid there by the context's BASE layer, not on
+    /// disk. The index must read the laid file as it reads a file on disk (GREEN), and the same
+    /// context without the layer must not invent it (RED), so the citation is settled by the
+    /// pinned bytes and by nothing else.
+    #[test]
+    fn a_test_the_pinned_plane_declares_is_indexed_from_the_base_layer() {
+        const REL: &str = "crates/busbar-plane-zz/tests/laid.rs";
+        const NAME: &str = "a_laid_plane_test_resolves_from_the_base_layer";
+        let cx = Ctx::workspace().expect("workspace context");
+        let mut base = crate::ctx::Overlay::new();
+        base.set(REL, format!("#[test]\nfn {NAME}() {{}}\n"));
+        let laid =
+            DesignBindingsGate::inputs(&cx.with_base(base)).expect("inputs over the laid plane");
+        assert!(
+            laid.ctx.idx.get(NAME).is_some_and(|f| f.contains(REL)),
+            "the laid file's test fn is not indexed under {REL}"
+        );
+        assert!(
+            laid.ctx.symbols.contains(NAME),
+            "the laid fn is not a witness symbol"
+        );
+        let bare = DesignBindingsGate::inputs(&cx.without_base()).expect("inputs with no base");
+        assert!(
+            !bare.ctx.idx.contains_key(NAME),
+            "a test fn nobody lays was indexed: the index reads something other than the tree"
+        );
+    }
+
     const NOTE_CASE: &str =
         "a binding the ledger's own note calls UNPROVEN is refused, resolving citation and all";
 

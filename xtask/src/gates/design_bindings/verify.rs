@@ -124,6 +124,28 @@ impl Ctx {
         })
     }
 
+    /// THE PINNED PLANES' FILES, INDEXED AS THE DISK'S ARE (row 106 (A)). A plane that left this
+    /// tree for its own repo is laid back at `crates/<package>` by the context's BASE layer
+    /// ([`crate::ctx::Ctx::workspace`]), not on disk, so the disk walk above never sees it. Each
+    /// `(rel, text)` here is one laid file: a `.rs` under `crates/` has its test fns indexed under
+    /// `rel` and its `fn` names and stem joined to the witness symbols, exactly as a file on disk
+    /// would. A citation of a test the pinned plane declares then resolves as it did when the
+    /// plane lived here, and one it does not declare is refused as before.
+    pub fn add_laid(&mut self, laid: &[(String, String)]) -> Result<(), String> {
+        let (attr, func) = test_patterns()?;
+        for (rel, text) in laid {
+            if !rel.starts_with("crates/") || !rel.ends_with(".rs") || rel.contains("/target/") {
+                continue;
+            }
+            index_tests(rel, text, &attr, &func, &mut self.idx);
+            if let Some(stem) = Path::new(rel).file_stem().and_then(|s| s.to_str()) {
+                self.symbols.insert(stem.to_string());
+            }
+            index_symbols(text, &mut self.symbols);
+        }
+        Ok(())
+    }
+
     fn note_reason(&self, pb: &str) -> Option<&str> {
         self.unproven_by_note
             .iter()
@@ -139,6 +161,14 @@ impl Ctx {
     }
 }
 
+/// The two patterns the arming scan reads: a test attribute, and the `fn` it arms.
+fn test_patterns() -> Result<(Regex, Regex), String> {
+    Ok((
+        Regex::new(r"^\s*#\[\s*(tokio::test|test|async_std::test|rstest|test_case)")?,
+        Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z0-9_]+)")?,
+    ))
+}
+
 /// fn name -> the files declaring it under a test attribute. The attribute may sit a few lines
 /// above the `fn`, so the arming counter walks down through further attribute and blank lines and
 /// gives up on anything else.
@@ -146,8 +176,7 @@ pub fn test_index(
     crates: &Path,
     root: &Path,
 ) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
-    let attr = Regex::new(r"^\s*#\[\s*(tokio::test|test|async_std::test|rstest|test_case)")?;
-    let func = Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z0-9_]+)")?;
+    let (attr, func) = test_patterns()?;
     let mut idx: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut files = Vec::new();
     collect_rs(crates, &mut files);
@@ -164,27 +193,38 @@ pub fn test_index(
         let Ok(text) = std::fs::read_to_string(&f) else {
             continue;
         };
-        let mut armed = 0i32;
-        for l in text.split('\n') {
-            if attr.match_at(l.as_bytes(), 0).is_some() {
-                armed = 8;
-                continue;
-            }
-            if armed > 0 {
-                if let Some(m) = func.match_at(l.as_bytes(), 0) {
-                    if let Some(name) = m.str_of(l.as_bytes(), 1) {
-                        idx.entry(name).or_default().insert(rel.clone());
-                    }
-                    armed = 0;
-                } else if l.trim().starts_with("#[") || l.trim().is_empty() {
-                    armed -= 1;
-                } else {
-                    armed = 0;
+        index_tests(&rel, &text, &attr, &func, &mut idx);
+    }
+    Ok(idx)
+}
+
+/// One file's test fns, by the arming scan, into `idx` under `rel`.
+fn index_tests(
+    rel: &str,
+    text: &str,
+    attr: &Regex,
+    func: &Regex,
+    idx: &mut BTreeMap<String, BTreeSet<String>>,
+) {
+    let mut armed = 0i32;
+    for l in text.split('\n') {
+        if attr.match_at(l.as_bytes(), 0).is_some() {
+            armed = 8;
+            continue;
+        }
+        if armed > 0 {
+            if let Some(m) = func.match_at(l.as_bytes(), 0) {
+                if let Some(name) = m.str_of(l.as_bytes(), 1) {
+                    idx.entry(name).or_default().insert(rel.to_string());
                 }
+                armed = 0;
+            } else if l.trim().starts_with("#[") || l.trim().is_empty() {
+                armed -= 1;
+            } else {
+                armed = 0;
             }
         }
     }
-    Ok(idx)
 }
 
 fn collect_rs(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -584,26 +624,31 @@ pub fn symbol_index(crates: &Path, xtask: &Path) -> BTreeSet<String> {
         let Ok(text) = std::fs::read_to_string(&f) else {
             continue;
         };
-        for (i, _) in text.match_indices("fn ") {
-            // `fn` must be its own token: the preceding byte cannot continue an identifier, which
-            // is what keeps `fn` inside a longer word from opening a declaration that is not one.
-            if i > 0 {
-                let p = text.as_bytes()[i - 1];
-                if p.is_ascii_alphanumeric() || p == b'_' {
-                    continue;
-                }
-            }
-            let rest = &text[i + 3..];
-            let name: String = rest
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                .collect();
-            if !name.is_empty() {
-                out.insert(name);
-            }
-        }
+        index_symbols(&text, &mut out);
     }
     out
+}
+
+/// Every `fn` name one file's text declares, into `out`.
+fn index_symbols(text: &str, out: &mut BTreeSet<String>) {
+    for (i, _) in text.match_indices("fn ") {
+        // `fn` must be its own token: the preceding byte cannot continue an identifier, which
+        // is what keeps `fn` inside a longer word from opening a declaration that is not one.
+        if i > 0 {
+            let p = text.as_bytes()[i - 1];
+            if p.is_ascii_alphanumeric() || p == b'_' {
+                continue;
+            }
+        }
+        let rest = &text[i + 3..];
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if !name.is_empty() {
+            out.insert(name);
+        }
+    }
 }
 
 /// Whether a token in a note is shaped unmistakably like a Rust test-function name, and therefore
