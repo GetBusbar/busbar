@@ -1078,3 +1078,87 @@ fn every_data_router_route_has_a_guest_line() {
         }
     }
 }
+
+/// A 1.5.5 golden cell (`testing/shadow-oracle/golden/1.5.5/cells`, read only).
+fn golden_cell(name: &str) -> serde_json::Value {
+    let path = format!(
+        "{}/../../testing/shadow-oracle/golden/1.5.5/cells/{name}.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    serde_json::from_str(&text).expect("a golden cell is JSON")
+}
+
+/// A DATA-PORT `/api` REQUEST ANSWERS 1.5.5's ADMIN REFUSAL (row 192 C; v1.5.5
+/// `config/mod.rs:2432-2439`, the admin API always on its own listener; `auth/mod.rs:32-38, :1250`,
+/// the `/api` root classified admin, fail-closed). The data listener's guest list carries no admin
+/// line: `/api` and `/api/...` match the residual line, and the kernel's router answers them, with
+/// no credential, byte for byte as the golden cells `http.crosscut|api|data` and
+/// `http.crosscut|api-prefix|data` pin: status, content-type, content-length and body.
+#[tokio::test]
+async fn a_data_port_api_request_answers_the_1_5_5_admin_refusal() {
+    use busbar_kernel::guest::{Claimant, Matched};
+    use tower::ServiceExt as _;
+    let app = busbar_kernel::test_support::TestApp::new().build();
+    let DataLines { guests, .. } = lines_for(&app);
+    for line in guests.lines() {
+        if let Claimant::Clean(key) = &line.claimant {
+            assert_eq!(
+                key, CORE_CLAIMANT,
+                "a cleanliness line on the data list: {line:?}"
+            );
+        }
+        let admin_root = busbar_kernel::auth::ADMIN_PATH;
+        assert!(
+            line.route.path != admin_root
+                && !line.route.path.starts_with(&format!("{admin_root}/")),
+            "an admin line on the data list: {line:?}"
+        );
+    }
+    let (router, _admin, _handle) = busbar_kernel::build_split_routers_serving_doors(
+        Arc::clone(&app),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        1 << 20,
+        0,
+        false,
+    );
+    for (path, cell) in [
+        ("/api", "http.crosscut__api__data"),
+        ("/api/v1/admin/keys", "http.crosscut__api-prefix__data"),
+    ] {
+        match guests.matched("GET", path, &[]) {
+            Matched::Line(line) if is_residual(line) => {}
+            other => panic!("GET {path} matched {other:?}, not the residual line"),
+        }
+        let golden = golden_cell(cell);
+        let request = axum::http::Request::builder()
+            .method("GET")
+            .uri(path)
+            .body(axum::body::Body::empty())
+            .expect("a request");
+        let response = router.clone().oneshot(request).await.expect("an answer");
+        assert_eq!(
+            Some(u64::from(response.status().as_u16())),
+            golden["status"].as_u64(),
+            "GET {path}: the status"
+        );
+        for name in ["content-type", "content-length"] {
+            assert_eq!(
+                response.headers().get(name).and_then(|v| v.to_str().ok()),
+                golden["headers"][name].as_str(),
+                "GET {path}: {name}"
+            );
+        }
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .expect("the body");
+        let expected = serde_json::to_vec(&golden["body"]["json"]).expect("the golden body");
+        assert_eq!(
+            String::from_utf8_lossy(&body),
+            String::from_utf8_lossy(&expected),
+            "GET {path}: the body, byte for byte"
+        );
+    }
+}
