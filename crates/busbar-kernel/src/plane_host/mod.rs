@@ -1997,7 +1997,7 @@ pub trait RegistryHost: Send + Sync {
     fn secret_resolver(&self) -> Arc<dyn busbar_contract::secret::SecretResolve>;
 }
 
-/// The HOOK/CONFIG-FACADE slice (App-retype WEDGE 2d): the residual `busbar-llm` request-path reads off
+/// The HOOK/CONFIG-FACADE slice (App-retype WEDGE 2d): the residual the retired engine crate request-path reads off
 /// the resolved hook/config facades — the rewrite/tap/gate chains, the routing policy, the requested-
 /// signal bitmask and the group-membership walk. Each is a pure borrow of the bound snapshot tied to
 /// `&self`, no `HostCtx`. Split off `EngineHost` as a supertrait; every borrow is byte-identical to the
@@ -2435,7 +2435,7 @@ pub trait EngineHost:
     // The cross-protocol translation seam's global-fallback max-output-tokens and effort→budget-table
     // reads are GONE from this neutral host trait: they are LLM-plane vocabulary, so the engine now
     // reads them off the LLM plane's own per-generation runtime (`NativeRuntime`) rather than through a
-    // neutral `PlaneHost` method over `App`. See busbar-llm `engine/wire.rs`.
+    // neutral `PlaneHost` method over `App`. See the retired engine crate `engine/wire.rs`.
 }
 
 /// Compile-time witness for the M4 god-trait split: any `EngineHost` implementor IS every capability
