@@ -1190,7 +1190,9 @@ pub(crate) struct TokenEndpoint {
 
 impl TokenEndpoint {
     /// Until the plugin has closed `n` exchanges with this endpoint: the `n`th mint has read its
-    /// token, which the plugin stores in the same crossing.
+    /// token, which the plugin stores in the same crossing, AFTER the close. So a read made on the
+    /// waiter's own thread (`fields_now`) can still see the cell before the store; a `fields` ask,
+    /// which crosses on the instance's dispatcher worker behind that crossing, cannot.
     async fn closed(&self, n: usize) {
         loop {
             let notified = self.closing.notified();
@@ -1884,16 +1886,28 @@ async fn a_token_url_stripped_before_the_plane_still_presents_its_basic_on_the_m
     .await
     .expect("the first ask answers");
     // With the host's clock served (row 176), the first ask can answer before the mint it set off
-    // has landed. The mint is then waited on at the endpoint's close of its exchange (the plugin
-    // stores the token in that same crossing), never on the wall clock (Law 8), as
-    // `a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer` waits on it.
+    // has landed. The mint is then waited on at the endpoint's close of its exchange, never on the
+    // wall clock (Law 8). The plugin closes the exchange BEFORE it stores the token, inside the
+    // same `tick` crossing (busbar-auth-oauth `mint/mod.rs`, `Minted::tick`: `wire.close(conn)`,
+    // then the parse and the store), so the close wakes this task while that crossing still runs
+    // on the instance's dispatcher worker. The second ask therefore goes THROUGH that worker
+    // (`fields`, submitted on the instance's own worker, where its tick and drive cross), which
+    // starts it only once the tick crossing has returned, the token stored. `fields_now` crosses
+    // on this task's own thread, beside the tick, and read the cell before the store: the flake.
     let first = if presented(Some(&first)).is_some() {
         Some(first)
     } else {
         tokio::time::timeout(std::time::Duration::from_secs(120), table.closed(1))
             .await
             .expect("the first mint lands");
-        auth.fields_now(handle, &FieldsRequest::default())
+        Some(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                auth.fields(handle, FieldsRequest::default(), 0),
+            )
+            .await
+            .expect("the ask after the mint answers"),
+        )
     };
     assert_eq!(
         presented(first.as_ref()).as_deref(),
