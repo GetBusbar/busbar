@@ -555,6 +555,36 @@ impl<'a, T: AbiOut> Out<'a, T> {
         self.out
     }
 
+    /// Read the pointer-free field `pick` names (a [`Scalar`]), as written so far (status row
+    /// 194). `pick` is handed a ZEROED `T`, never the `out` itself: it learns where the field is
+    /// and reads nothing the call wrote, so a string or payload an SDK writer named is never copied
+    /// out. #1471 keeps this name beside its own `get(pick)`; `out.pick(|o| &o.f)` compiles before
+    /// and after.
+    ///
+    /// # Panics
+    /// When `pick` answers a reference that is not a field of the `out` (the door answers FAULT).
+    #[must_use]
+    pub fn pick<F: Scalar>(&self, pick: impl FnOnce(&T) -> &F) -> F {
+        // SAFETY: `T: AbiOut`, whose contract is that every initialized bit pattern, all-zero
+        // included, is a valid `T`.
+        let blank: T = unsafe { std::mem::zeroed() };
+        let base = ptr::from_ref::<T>(&blank) as usize;
+        let at = ptr::from_ref(pick(&blank)) as usize;
+        assert!(
+            at >= base && at.saturating_add(size_of::<F>()) <= base + size_of::<T>(),
+            "Out: the picked reference is not a field of the out"
+        );
+        // SAFETY: `at - base` is the offset of a field of type `F` inside a `T` (checked above),
+        // and `self.out` is a live `T`; `read_unaligned` needs no alignment and `F` is `Copy`.
+        unsafe {
+            ptr::from_ref::<T>(self.out)
+                .cast::<u8>()
+                .add(at - base)
+                .cast::<F>()
+                .read_unaligned()
+        }
+    }
+
     /// The address of the field `pick` names, checked to lie inside the `out`.
     fn at<F>(&mut self, pick: impl FnOnce(&T) -> &F) -> *mut F {
         let base = ptr::from_ref::<T>(self.out) as usize;

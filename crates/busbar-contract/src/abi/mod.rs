@@ -82,11 +82,10 @@ macro_rules! slot_table {
 /// * `with_name(&'static [T])` — the safe setter, `const`: the pointer and the length together;
 /// * `with_raw_name(ptr, len)` — `unsafe`: a list stated unchecked, as a host's own test states
 ///   what a foreign plugin could, for the host's checks to judge;
+/// * `name()` — the items, `unsafe` while the fields are pub (safe code could state any pointer by
+///   hand); #1471 makes the fields private and this reader safe;
 /// * `name_ptr()` / `name_len()` — the raw pointer and length, which a host reads a foreign
 ///   struct by, under its own checks.
-///
-/// #1471 adds the safe slice reader `name()` when it makes the fields private: while they are pub,
-/// safe code could state any pointer by hand, and a safe reader of it would not be sound.
 macro_rules! abi_lists {
     ($($list:ident, $len:ident: $t:ty => $ptr:ident, $with:ident, $raw:ident;)+) => {$(
         #[doc = concat!(
@@ -117,6 +116,27 @@ macro_rules! abi_lists {
             self.$list = ptr;
             self.$len = len;
             self
+        }
+
+        #[doc = concat!(
+            "The `", stringify!($list), "` items: a list set by [`Self::", stringify!($with),
+            "`] lives for the program."
+        )]
+        ///
+        /// # Safety
+        ///
+        #[doc = concat!(
+            "The list's pointer and length name `len` initialised items, alive and unwritten for ",
+            "the borrow of `self`: true of a list set by [`Self::", stringify!($with), "`] (items ",
+            "that live for the program) and not since written through the pub pointer and length ",
+            "fields, which this tree's code honours. #1471 makes those fields private and this ",
+            "reader safe; a plugin calls it as `unsafe { x.", stringify!($list), "() }` under ",
+            "`#[allow(unused_unsafe)]`, and the same line compiles before and after."
+        )]
+        #[must_use]
+        pub unsafe fn $list(&self) -> &[$t] {
+            // SAFETY: the caller's contract.
+            unsafe { crate::abi::abi_slice(self.$list, self.$len) }
         }
 
         #[doc = concat!("The raw pointer of `", stringify!($list), "` (NULL = none).")]

@@ -1128,3 +1128,125 @@ fn a_door_opens_over_the_tables_a_fake_host_lent_while_the_host_lives() {
     assert_eq!(opened.outcome, Outcome::Ready);
     assert!(!opened.out.instance.is_null());
 }
+
+// ── the slot handles #1471 keeps under these names (status rows 159 and 194, expand) ─────────────
+
+#[test]
+fn a_door_views_slot_is_its_tables_slot_at_its_index() {
+    let v = view();
+    let table = v.ops::<crate::abi::transport::Ops>();
+    let open = v
+        .op::<crate::abi::transport::Ops>(|t| &t.head.open)
+        .expect("the door states open");
+    let close = v
+        .op::<crate::abi::transport::Ops>(|t| &t.head.close)
+        .expect("the door states close");
+    assert_eq!((open.index(), close.index()), (slot::OPEN, slot::CLOSE));
+    let (raw, door, _) = open.parts();
+    assert_eq!(raw as usize, table.head.open.unwrap() as usize);
+    assert!(ptr::eq(door, v.door()));
+}
+
+#[test]
+#[should_panic(expected = "DoorView::op: the picked reference is not a slot of the door's table")]
+fn red_a_door_views_slot_is_never_a_reference_outside_its_table() {
+    static ELSEWHERE: Option<crate::abi::mechanism::call::Op> = None;
+    let _ = view().op::<crate::abi::transport::Ops>(|_| &ELSEWHERE);
+}
+
+#[test]
+fn call_in_opens_and_close_in_closes_as_call_does_over_the_raw_slot() {
+    let v = view();
+    let open = v
+        .op::<crate::abi::transport::Ops>(|t| &t.head.open)
+        .unwrap();
+    let close = v
+        .op::<crate::abi::transport::Ops>(|t| &t.head.close)
+        .unwrap();
+
+    // The old path: the raw slot, a zeroed `in`.
+    let mut input: OpenIn = zeroed();
+    input.head = in_head::<OpenIn>(slot::OPEN);
+    let by_raw = call(open.parts().0, ptr::null_mut(), &input, zeroed::<OpenOut>());
+
+    // The new path: the door's slot and a `TestIn`; the instance comes back sealed.
+    let built = super::test_in::TestIn::<OpenIn>::new().set(|i| &i.head.op, slot::OPEN);
+    let mut by_view = super::reply::call_in(open, None, &built, zeroed::<OpenOut>());
+    assert_eq!(by_view.outcome, by_raw.outcome);
+    assert_eq!(by_view.error, by_raw.error);
+    let instance = by_view
+        .take_instance()
+        .expect("open answered READY with an instance");
+    assert!(
+        by_view.take_instance().is_none(),
+        "the instance is taken once"
+    );
+
+    let closed = super::reply::close_in(
+        close,
+        instance,
+        &super::test_in::TestIn::<InHead>::new().set(|i| &i.op, slot::CLOSE),
+        out_head::<OutHead>(),
+    );
+    assert_eq!(closed.outcome, Outcome::Ready);
+    // The raw path's instance is closed the raw way.
+    let _ = call(
+        close.parts().0,
+        by_raw.out.instance,
+        &in_head::<InHead>(slot::CLOSE),
+        out_head::<OutHead>(),
+    );
+}
+
+#[test]
+#[should_panic(expected = "reply::call_in: `validate` and `open` run on no instance")]
+fn red_call_in_refuses_an_instance_for_open() {
+    let v = view();
+    let open = v
+        .op::<crate::abi::transport::Ops>(|t| &t.head.open)
+        .unwrap();
+    let built = super::test_in::TestIn::<OpenIn>::new().set(|i| &i.head.op, slot::OPEN);
+    let mut opened = super::reply::call_in(open, None, &built, zeroed::<OpenOut>());
+    let instance = opened.take_instance().unwrap();
+    let _ = super::reply::call_in(open, Some(&instance), &built, zeroed::<OpenOut>());
+}
+
+#[test]
+#[should_panic(expected = "reply::close_in: the op is not its door's close")]
+fn red_close_in_enters_close_alone() {
+    let v = view();
+    let open = v
+        .op::<crate::abi::transport::Ops>(|t| &t.head.open)
+        .unwrap();
+    let built = super::test_in::TestIn::<OpenIn>::new().set(|i| &i.head.op, slot::OPEN);
+    let mut opened = super::reply::call_in(open, None, &built, zeroed::<OpenOut>());
+    let instance = opened.take_instance().unwrap();
+    let _ = super::reply::close_in(open, instance, &built, zeroed::<OpenOut>());
+}
+
+#[test]
+fn call_hosted_in_opens_over_the_fake_hosts_tables_as_call_hosted_does() {
+    let open = view()
+        .op::<crate::abi::transport::Ops>(|t| &t.head.open)
+        .unwrap();
+    let host = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
+    let mut input: OpenIn = zeroed();
+    input.head = in_head::<OpenIn>(slot::OPEN);
+    let by_raw = {
+        let lent = host.lend_to(input);
+        super::reply::call_hosted(open.parts().0, ptr::null_mut(), &lent, zeroed::<OpenOut>())
+    };
+    let mut by_view = {
+        let lent =
+            host.lend_in(super::test_in::TestIn::<OpenIn>::new().set(|i| &i.head.op, slot::OPEN));
+        assert!(!lent.input.host.is_null(), "the host's tables are lent");
+        super::reply::call_hosted_in(open, None, &lent, zeroed::<OpenOut>())
+    };
+    assert_eq!(by_view.outcome, by_raw.outcome);
+    let instance = by_view
+        .take_instance()
+        .expect("open answered READY with an instance");
+    // The instance goes before the host, as #1471 holds it to.
+    drop(instance);
+    drop(host);
+}

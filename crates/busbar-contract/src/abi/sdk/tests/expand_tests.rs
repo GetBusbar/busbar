@@ -466,7 +466,8 @@ fn a_fake_host_lends_its_own_tables() {
     use crate::abi::sdk::services::{Services, Wake};
     use crate::abi::sdk::test_support::fake::FakeHost;
     let fake = FakeHost::new();
-    let tables = fake.lent();
+    // SAFETY: the tables go to the `of` readers alone (and to a pointer comparison).
+    let tables = unsafe { fake.lent() };
     assert!(ptr::eq(tables.lent, fake.tables_for_tests()));
     // The spelling a plugin moves to compiles before and after #1469: `of(&tables)`.
     let host = Host::of(&tables);
@@ -500,7 +501,8 @@ fn a_kept_handle_is_named_by_its_static_alias() {
         wake: Option<StaticWake>,
     }
     let fake = FakeHost::new();
-    let tables = fake.lent();
+    // SAFETY: the tables go to the `of` readers alone (and to a pointer comparison).
+    let tables = unsafe { fake.lent() };
     let kept = Kept {
         host: Host::of(&tables),
         services: Host::of(&tables).services(),
@@ -514,7 +516,47 @@ fn a_kept_handle_is_named_by_its_static_alias() {
         kept.services.is_some(),
         Host::of(&tables).services().is_some()
     );
-    assert_eq!(kept.wake.is_some(), tables.wake.is_some());
+    assert_eq!(kept.wake.is_some(), fake.tables_for_tests().wake.is_some());
     let op: StaticVerifyOp = VerifyOp::new(kept.services, Ticket::NONE);
     assert_eq!(op.services().is_some(), kept.services.is_some());
+}
+
+#[test]
+fn pick_reads_the_scalar_get_reads() {
+    let mut o: TickOut = crate::abi::sdk::test_support::zeroed();
+    let mut out = Out::new(&mut o);
+    out.set(|o| &o.next_tick_ns, 42);
+    out.wake_at(7);
+    assert_eq!(out.pick(|o| &o.next_tick_ns), out.get().next_tick_ns);
+    assert_eq!(out.pick(|o| &o.head.wake_at_ns), out.get().head.wake_at_ns);
+    assert_eq!(out.pick(|o| &o.next_tick_ns), 42);
+}
+
+#[test]
+#[should_panic(expected = "Out: the picked reference is not a field of the out")]
+fn red_pick_reads_a_field_of_the_out_alone() {
+    static ELSEWHERE: u64 = 9;
+    let mut o: TickOut = crate::abi::sdk::test_support::zeroed();
+    let out = Out::new(&mut o);
+    let _ = out.pick(|_| &ELSEWHERE);
+}
+
+#[test]
+fn a_list_reader_reads_the_items_its_setter_named() {
+    let keys = keys();
+    let s = crate::abi::sdk::door::statement("echo", "1.0.0", 8)
+        .with_diag_ids(keys)
+        .with_claims(&keys[..1]);
+    // SAFETY: each list was set by its setter, over items that live for the program.
+    let (diag_ids, claims, needs) = unsafe { (s.diag_ids(), s.claims(), s.needs()) };
+    assert!(ptr::eq(diag_ids, &keys[..]));
+    assert_eq!((claims.as_ptr(), claims.len()), (s.claims, s.claims_len));
+    assert!(needs.is_empty(), "an unset list reads empty");
+    let tail = PlaneTail::EMPTY.with_dialects(keys);
+    // SAFETY: as above.
+    assert_eq!(unsafe { tail.dialects() }.len(), 2);
+    let family =
+        MetricFamily::new(AbiStr::ABSENT, AbiStr::ABSENT, AbiStr::ABSENT, 0).with_label_keys(keys);
+    // SAFETY: as above.
+    assert!(ptr::eq(unsafe { family.label_keys() }, &keys[..]));
 }

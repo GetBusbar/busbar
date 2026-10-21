@@ -124,7 +124,7 @@ pub struct TestIn<'a, I> {
     pub(crate) input: I,
     /// Lists the builders made (strings, payloads, fields over borrowed bytes), each on the heap
     /// and never moved, freed with the `TestIn`.
-    held: Vec<Box<dyn Any>>,
+    pub(crate) held: Vec<Box<dyn Any>>,
     _lent: PhantomData<&'a ()>,
 }
 
