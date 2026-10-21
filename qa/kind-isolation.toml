@@ -1319,8 +1319,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-contract"
 axis  = "auth"
-count = "6"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 4 -> 6 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 6 there; the 4 was f830faa691's, nine hours older than the arming, so the row armed red. 6 is predev 9c0a394771's measure, at or under the arming value"
+count = "1"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 4 -> 6 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 6 there; the 4 was f830faa691's, nine hours older than the arming, so the row armed red. 6 is predev 9c0a394771's measure, at or under the arming value; LOWERED 6 -> 1: the contract's header-helper, detection-rung and redaction-test prose names no auth plugin (law0 P08, measured; law0-slack)"
 
 [[law0]]
 crate = "busbar-contract"
@@ -1331,38 +1331,38 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-contract"
 axis  = "instance:auth"
-count = "3"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "0"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 3 -> 0: the URL reader's generic-scheme rows read a non-instance scheme (law0 P08, measured; law0-slack)"
 
 [[law0]]
 crate = "busbar-contract"
 axis  = "instance:export"
-count = "15"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 14 -> 15 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 15 there; the 14 was f830faa691's, nine hours older than the arming, so the row armed red. 15 is predev 9c0a394771's measure, at or under the arming value"
+count = "13"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 14 -> 15 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 15 there; the 14 was f830faa691's, nine hours older than the arming, so the row armed red. 15 is predev 9c0a394771's measure, at or under the arming value; LOWERED 15 -> 13: the route-name example and the disk-sink double's key name no export instance (law0 P08, measured; law0-slack)"
 
 [[law0]]
 crate = "busbar-contract"
 axis  = "instance:secret"
-count = "45"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 128 -> 133 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 133 there; the 128 was f830faa691's, nine hours older than the arming, so the row armed red. 133 is predev 9c0a394771's measure, at or under the arming value; LOWERED 133 -> 131 by GetBusbar/busbar#904 (row 84): the cold lane's SDK side and its suites are deleted, and two secret-instance hits went with them (the gate's measure on #904: 131) (Law 9: the ceiling ratchets down); LOWERED 131 -> 43 (-88, GetBusbar/busbar#940): plugins.yaml's secret alias `c` (busbar-secret-c, no 1.5.5 spelling) is `secret-c`, so a one-letter literal no longer reads as that plugin (measured 133 -> 45 on #940; both deltas applied); #787's 133 -> 64 (the scanner no longer counts extern ABI strings, an `extern C` ABI string read as the `c` secret plugin) removes hits the 131 -> 43 above already stopped counting (the one-letter `c` alias retired above): no further delta in the merge with FLIP-A2A; SETTLED 43 -> 45 at lane-integration-w1b (564506190a, the integration of predev 44b9451c5c with 102 PRs): the measure of the union, at or under the merge-base's own row (Law 9: the merged drains and moves, each PR's figure taken on its own tree)"
+count = "44"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 128 -> 133 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 133 there; the 128 was f830faa691's, nine hours older than the arming, so the row armed red. 133 is predev 9c0a394771's measure, at or under the arming value; LOWERED 133 -> 131 by GetBusbar/busbar#904 (row 84): the cold lane's SDK side and its suites are deleted, and two secret-instance hits went with them (the gate's measure on #904: 131) (Law 9: the ceiling ratchets down); LOWERED 131 -> 43 (-88, GetBusbar/busbar#940): plugins.yaml's secret alias `c` (busbar-secret-c, no 1.5.5 spelling) is `secret-c`, so a one-letter literal no longer reads as that plugin (measured 133 -> 45 on #940; both deltas applied); #787's 133 -> 64 (the scanner no longer counts extern ABI strings, an `extern C` ABI string read as the `c` secret plugin) removes hits the 131 -> 43 above already stopped counting (the one-letter `c` alias retired above): no further delta in the merge with FLIP-A2A; SETTLED 43 -> 45 at lane-integration-w1b (564506190a, the integration of predev 44b9451c5c with 102 PRs): the measure of the union, at or under the merge-base's own row (Law 9: the merged drains and moves, each PR's figure taken on its own tree); LOWERED 45 -> 44: the disk-sink double's key names no secret instance (law0 P08, measured; law0-slack)"
 
 [[law0]]
 crate = "busbar-contract"
 axis  = "plane"
-count = "146"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 210 -> 146: the contract transport axis names channels only: the plane bindings (JsonRpc, HttpJson, Grpc), the MCP client wire hand-off (UpstreamWireKind) and their plane-naming prose are deleted, and the kernel and root readers with them (row 159, audit C3 HIGH 3; law0-slack)"
+count = "82"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 210 -> 146: the contract transport axis names channels only: the plane bindings (JsonRpc, HttpJson, Grpc), the MCP client wire hand-off (UpstreamWireKind) and their plane-naming prose are deleted, and the kernel and root readers with them (row 159, audit C3 HIGH 3; law0-slack); LOWERED 146 -> 82: the operation, records, vocab, civil, duration, config and IR prose names a plane kind, never an instance (law0 P08, measured; law0-slack)"
 
 [[law0]]
 crate = "busbar-contract"
 axis  = "secret"
-count = "8"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "6"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 8 -> 6: the secret module header names no secret plugin package (law0 P08, measured; law0-slack)"
 
 [[law0]]
 crate = "busbar-contract"
 axis  = "transport"
-count = "183"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 226 -> 225 at lane-integration-w2: the gate's measure of the merged tree (80d5f031e4) (law0-slack); LOWERED 225 -> 184: the contract transport axis names channels only: the plane bindings (JsonRpc, HttpJson, Grpc), the MCP client wire hand-off (UpstreamWireKind) and their plane-naming prose are deleted, and the kernel and root readers with them (row 159, audit C3 HIGH 3; law0-slack); LOWERED 184 -> 183: WireStatus::http and WireStatus::grpc are deleted, a status is read in the numbering its transport declares (Q128 contract part 13 finding 1; law0-slack)"
+count = "153"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 226 -> 225 at lane-integration-w2: the gate's measure of the merged tree (80d5f031e4) (law0-slack); LOWERED 225 -> 184: the contract transport axis names channels only: the plane bindings (JsonRpc, HttpJson, Grpc), the MCP client wire hand-off (UpstreamWireKind) and their plane-naming prose are deleted, and the kernel and root readers with them (row 159, audit C3 HIGH 3; law0-slack); LOWERED 184 -> 183: WireStatus::http and WireStatus::grpc are deleted, a status is read in the numbering its transport declares (Q128 contract part 13 finding 1; law0-slack); LOWERED 183 -> 149: the event-stream prose, the ruling cites and the driver, claim, member-program and secret-carrier test doubles name no transport instance (law0 P08, measured; law0-slack); RAISED 149 -> 153 to the measured count, still under dev's 183: the 149 summed P08's drain of the four instance words in tests/unit_driver.rs (183 -> 149) with dev's own deletion of that file (Q128 contract part 13, second inbound seam), so the same four hits were taken out twice; they are gone from the merged tree and there is no line left to rename)"
 
 [[law0]]
 crate = "busbar-core-admin"
