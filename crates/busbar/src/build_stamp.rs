@@ -33,10 +33,15 @@ pub(crate) fn pgo_from_flags(flags: &[&str]) -> bool {
 
 /// The value of a `-C<name>=<value>` rustc flag, or `None` when no element carries it. Used for
 /// `target-cpu`, `target-feature` and `lto`, each of which cargo exposes only through the flag list.
+/// The option is matched by its EXACT name (`-Clto=` is not `-Clinker-plugin-lto=`), in either shape
+/// cargo hands it over (`-C<name>=…` as one element, or `-C` then `<name>=…`), and when it is passed
+/// more than once the LAST wins, as it does for rustc.
 pub(crate) fn flag_value(flags: &[&str], name: &str) -> Option<String> {
-    let needle = format!("{name}=");
-    flags
-        .iter()
-        .find_map(|f| f.split(&needle).nth(1))
-        .map(|s| s.to_string())
+    flags.iter().rev().find_map(|f| {
+        let option = f.strip_prefix("-C").unwrap_or(f);
+        option
+            .strip_prefix(name)?
+            .strip_prefix('=')
+            .map(str::to_string)
+    })
 }

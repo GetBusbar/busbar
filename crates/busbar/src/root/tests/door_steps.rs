@@ -2584,6 +2584,10 @@ pub(crate) mod tool_door {
                     wall: Arc::clone(&wall),
                 }),
             ));
+            // The transport doors bind on this dispatcher and reach its host services (the clock
+            // the program carrier supervises a member's program by), as main.rs hands the process's
+            // one dispatcher to `root::doors` before any door binds.
+            crate::root::doors::install_dispatcher(Arc::clone(&dispatcher));
             crate::root::connector::install_io(&dispatcher);
             // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
             let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
@@ -6730,12 +6734,17 @@ pub(crate) mod program_member {
 
     /// The section: one registration that is the program above, its one tool approved.
     fn section() -> serde_yaml::Value {
+        section_running(script())
+    }
+
+    /// The section: one registration whose program is `/bin/sh -c <script>`, its one tool approved.
+    pub(crate) fn section_running(script: String) -> serde_yaml::Value {
         let mut fs = serde_yaml::Mapping::new();
         fs.insert("transport".into(), "stdio".into());
         fs.insert("command".into(), "/bin/sh".into());
         fs.insert(
             "args".into(),
-            serde_yaml::Value::Sequence(vec!["-c".into(), script().into()]),
+            serde_yaml::Value::Sequence(vec!["-c".into(), script.into()]),
         );
         fs.insert(
             "pin".into(),
@@ -6812,6 +6821,52 @@ pub(crate) mod program_member {
             fact(&second, "pongs"),
             "1",
             "the child's own request was answered once: {second}"
+        );
+    }
+}
+
+/// THE PROGRAM'S SUPERVISOR, END TO END (THE DESIGN §2, l.388: the program's supervisor is its
+/// carrier transport's; 1.5.5's crash-loop policy): a registration whose program ends at once,
+/// called over and over through the composed door and the real connector for longer than the whole
+/// backoff (100 + 200 + 400 + 800 ms), is spawned exactly five times: the fifth end inside a minute
+/// stops its restarts and every later call is refused without a spawn. The policy lives in the
+/// program's carrier, keyed by the member's supervision key the connector hands each spawn. RED
+/// with the connector's own supervisor deleted and the carrier's absent: every call spawns the
+/// program anew.
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
+mod program_member_supervised {
+    use super::program_member::section_running;
+    use super::tool_door::{rig_tools, send, CALL};
+    use crate::root::serve::planes_tests::{Published, PUBLISHING};
+
+    /// The section: one registration whose program appends a line to `spawns` and ends.
+    fn section(spawns: &std::path::Path) -> serde_yaml::Value {
+        section_running(format!("echo spawned >> '{}'; exit 1", spawns.display()))
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_program_that_keeps_ending_is_spawned_five_times_then_refused() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "door-program-supervised";
+        let _published = Published(instance);
+        let spawns =
+            std::env::temp_dir().join(format!("busbar-{instance}-{}-spawns", std::process::id()));
+        let _ = std::fs::remove_file(&spawns);
+        let rig = rig_tools(instance, 0, section(&spawns), &|app| app);
+
+        // Called every 150 ms for 3.6 s: well past the four backoffs (1.5 s), well inside a minute.
+        for _ in 0..24 {
+            let _ = send(&rig.router, Some(&rig.token), CALL).await;
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+        let spawned = std::fs::read_to_string(&spawns)
+            .unwrap_or_default()
+            .lines()
+            .count();
+        let _ = std::fs::remove_file(&spawns);
+        assert_eq!(
+            spawned, 5,
+            "five ends inside a minute stop the restarts: spawned {spawned} times"
         );
     }
 }
@@ -8737,4 +8792,85 @@ fn serving_a_style_binds_only_the_linked_row_that_states_it() {
         1,
         "only the row serving the style is bound, once: {bound:?}"
     );
+}
+
+/// RED BEFORE THE TAIL WAS RENDERED WHOLE (ARCHITECT ruling 2026-10-20 on root#7 / loader#9: the
+/// canonical rendering carries the whole kind tail, and the signed manifest is the no-dlopen
+/// source): a dropped-in auth row's outbound styles are read from its SIGNED MANIFEST's rendering,
+/// with no `dlopen` and no bind. Here its library is not a library at all. Before, the rendering
+/// stated the tail's size alone, so the row was loaded to learn which style it states, and a row
+/// that would not load stated none.
+#[test]
+fn a_dropped_rows_styles_are_read_from_its_signed_manifest_with_no_library_load() {
+    use crate::root::loader::dispatch::kinds::auth::stated_facts;
+    use crate::root::loader::sign::{
+        sign, Manifest, SigningKey, TrustPolicy, FIRST_PARTY_PUBLISHER,
+    };
+    // A linked auth row's door stating an outbound style: its rendering is what its pack signs.
+    let (style, door) = crate::LINKED
+        .auths
+        .iter()
+        .find_map(|&(_, _, door)| {
+            let facts = stated_facts(door).ok()?;
+            facts.styles.first().map(|s| (s.name.clone(), door))
+        })
+        .expect("the default build links an auth row stating an outbound style");
+    let stated = crate::root::loader::dispatch::rendering_of(door).expect("the door states itself");
+    let key = SigningKey::from_bytes(&[0x4d; 32]);
+    let lib: &[u8] = b"not a library: a style read never opens it";
+    let m = sign(
+        &key,
+        Manifest {
+            name: "busbar-auth-dropped-styles".into(),
+            alias: "dropped-styles".into(),
+            kind: "auth".into(),
+            version: "1.0.0".into(),
+            publisher: FIRST_PARTY_PUBLISHER.into(),
+            abi_version: crate::root::loader::supported_abi("auth")[0],
+            statement: Some(hex::encode(stated)),
+            ..Default::default()
+        },
+        lib,
+    );
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-root-dropped-styles-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos())
+    ));
+    std::fs::create_dir_all(&dir).expect("a scratch plugins directory");
+    std::fs::write(
+        dir.join("dropped-styles.tar.gz"),
+        crate::root::loader::tarball::package(&m, "lib.so", lib).expect("it packs"),
+    )
+    .expect("the tarball is written");
+    let policy = TrustPolicy {
+        first_party_key: Some(key.verifying_key()),
+        ..Default::default()
+    };
+    let registry = crate::root::loader::scan_and_validate(&dir, &policy).expect("the row scans");
+    let _ = std::fs::remove_dir_all(&dir);
+    let registry: &'static crate::root::loader::PluginRegistry = Box::leak(Box::new(registry));
+    let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
+        crate::root::loader::dispatch::DispatchConfig::default(),
+    ));
+    let auths = super::OutboundAuths::new(
+        dispatcher,
+        &[],
+        Some(registry),
+        crate::root::loader::dispatch::ConnTable::NoNeeds,
+    );
+    let stating: Vec<String> = auths.stating(&style).map(|r| r.name.clone()).collect();
+    assert_eq!(
+        stating,
+        vec!["busbar-auth-dropped-styles".to_string()],
+        "the dropped-in row states `{style}` by its signed manifest"
+    );
+    let bound = auths
+        .bound
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert_eq!(bound, Vec::<String>::new(), "a style read binds no row");
 }
