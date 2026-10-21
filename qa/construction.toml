@@ -1273,7 +1273,7 @@ known_sites = [
   "crates/busbar-contract/src/abi/transport/route.rs::intern",
   # was crates/busbar-core/src/plane_host/ (a whole directory) — the eight files of it that carry a
   # reviewed escape, so the seven substrate-origin files the merge added stay uncovered.
-  # `plane_host/breaker.rs` STRUCK (status row 82, D2): the file is deleted with the plane-side breaker.
+  # The plane host's breaker file STRUCK (status row 82, D2): deleted with the plane-side breaker.
   # `plane_host/vtable.rs` STRUCK (status row 84): the file is deleted with the HOT lane.
   # was crates/busbar-core/src/plane/registry.rs (R099)
   "crates/busbar-kernel/src/plane/registry.rs",
@@ -1286,7 +1286,7 @@ known_sites = [
   # was crates/busbar-substrate/src/plane_host/mod.rs — MERGED into the core-descended kernel file
   # of the same name by 5fa320208 (+1775 lines). The one escape there (:2433) is substrate's.
   "crates/busbar-kernel/src/plane_host/mod.rs",
-  # `plane_host/scope.rs::reclaim_all` STRUCK (status row 82, D2): the arena is deleted with its last rider.
+  # The plane host's arena `reclaim_all` STRUCK (status row 82, D2): deleted with its last rider.
   # was crates/busbar-substrate-values/src/proto.rs — the protocol registry moved to the kernel
   # verbatim (#83a SD-8).
   "crates/busbar-kernel/src/proto/installed.rs",
