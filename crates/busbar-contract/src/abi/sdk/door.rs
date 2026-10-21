@@ -874,7 +874,9 @@ impl MacroDoor {
     ///
     /// `door` answers a pointer to a `'static`, fully initialised `Door` the SDK built (the `const`
     /// items [`plugin_door!`](crate::plugin_door) lays out), whose Statement lists point at their
-    /// stated counts of live `'static` entries.
+    /// stated counts of live `'static` entries. That last part is the content of the Statement the
+    /// macro's caller wrote as its own `const` data; the ABI does not yet enforce it, and the root
+    /// unsafe-ABI change on branch `lane-row159-abi-unsafe-fn` closes it.
     #[doc(hidden)]
     #[must_use]
     pub const unsafe fn __from_door_macro(door: DoorFn) -> Self {
@@ -1085,7 +1087,10 @@ macro_rules! plugin_door {
         #[allow(dead_code)]
         pub const MACRO_DOOR: $crate::abi::sdk::door::MacroDoor =
             // SAFETY: `door` is the function this macro expanded just above: it answers the
-            // `'static`, fully initialised `Door` the SDK laid out as `const` items.
+            // `'static`, fully initialised `Door` the SDK laid out as `const` items. The Statement's
+            // content (its lists, strings, blobs and kind tail) is the caller's own `const` data;
+            // that its counts match its storage is closed by the root unsafe-ABI change on branch
+            // `lane-row159-abi-unsafe-fn`.
             unsafe { $crate::abi::sdk::door::MacroDoor::__from_door_macro(door) };
     };
 }
