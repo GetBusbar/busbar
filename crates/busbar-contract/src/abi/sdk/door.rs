@@ -169,34 +169,12 @@ macro_rules! slot_structs {
 pub(crate) use slot_structs;
 
 /// The `in` type of each slot a table states, by index (status row 194): what the test support
-/// holds an `in` it enters a slot over to.
-pub(crate) trait SlotIns {
+/// (`test_support::DoorView::op`) holds an `in` it enters a slot over to. Every kind's table
+/// implements it through `slot_structs!`; it is no API of its own.
+#[doc(hidden)]
+pub trait SlotIns {
     /// The `in` type of slot `index`; `None` when this table states no such slot.
     fn slot_in(index: u32) -> Option<core::any::TypeId>;
-}
-
-/// The `in` type of slot `index` of a `T` door: its lifecycle's for a lifecycle slot, its kind's
-/// own otherwise; `None` for a table no kind states (a host's own test double).
-pub(crate) fn slot_in<T: KindOps>(index: u32) -> Option<core::any::TypeId> {
-    use core::any::TypeId;
-    fn of<S: SlotIns + 'static>(table: TypeId, index: u32) -> Option<Option<TypeId>> {
-        (table == TypeId::of::<S>()).then(|| S::slot_in(index))
-    }
-    let table = if index < crate::abi::mechanism::lifecycle::LIFECYCLE_SLOTS {
-        TypeId::of::<T::Lifecycle>()
-    } else {
-        TypeId::of::<T>()
-    };
-    of::<Lifecycle>(table, index)
-        .or_else(|| of::<crate::abi::plane::PlaneLifecycle>(table, index))
-        .or_else(|| of::<crate::abi::store::Ops>(table, index))
-        .or_else(|| of::<crate::abi::secret::Ops>(table, index))
-        .or_else(|| of::<crate::abi::auth::Ops>(table, index))
-        .or_else(|| of::<crate::abi::hook::Ops>(table, index))
-        .or_else(|| of::<crate::abi::export::Ops>(table, index))
-        .or_else(|| of::<crate::abi::plane::Ops>(table, index))
-        .or_else(|| of::<crate::abi::transport::Ops>(table, index))
-        .flatten()
 }
 
 slot_structs!(Lifecycle {

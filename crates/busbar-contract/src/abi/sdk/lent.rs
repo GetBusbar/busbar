@@ -496,8 +496,10 @@ macro_rules! lend {
         )+
         /// THE POINTER AND LENGTH PAIRS of each struct this block lends (status row 194): for each
         /// list, buffer or loose bytes, the pointer's offset, its length's (or capacity's) offset
-        /// and that field's width, which the test support holds a hand-built `in` to.
-        fn $reg(t: std::any::TypeId) -> Option<Vec<(usize, usize, usize)>> {
+        /// and that field's width, which the test support holds a hand-built `in` to. No API of
+        /// its own.
+        #[doc(hidden)]
+        pub fn $reg(t: std::any::TypeId) -> Option<Vec<(usize, usize, usize)>> {
             $(
                 if t == std::any::TypeId::of::<$ty>() {
                     return Some(
@@ -1678,7 +1680,10 @@ lent_field_list!(lent_fields);
 /// and type, from the one list the field accessors are stated from.
 macro_rules! lent_embeds {
     ($($ty:ty { $($how:ident $name:ident $(: $t:ty)?;)+ })+) => {
-        fn lent_embeds(t: std::any::TypeId) -> Vec<(usize, std::any::TypeId)> {
+        /// The embedded fields of each lent struct, by offset and type ([`lent_pairs`]). No API
+        /// of its own.
+        #[doc(hidden)]
+        pub fn lent_embeds(t: std::any::TypeId) -> Vec<(usize, std::any::TypeId)> {
             $(
                 if t == std::any::TypeId::of::<$ty>() {
                     #[allow(unused_mut)]
@@ -1706,8 +1711,10 @@ lent_field_list!(lent_embeds);
 
 /// EVERY POINTER AND LENGTH PAIR an `in` of type `t` carries, its embedded structs', strings' and
 /// payloads' included, at their offsets in it: `(pointer, length, length's width)` (status row
-/// 194). What the test support's builders may set together, and nothing else.
-pub(crate) fn lent_pairs(t: std::any::TypeId) -> Vec<(usize, usize, usize)> {
+/// 194). What the test support's builders may set together, and nothing else. No API of its own.
+#[doc(hidden)]
+#[must_use]
+pub fn lent_pairs(t: std::any::TypeId) -> Vec<(usize, usize, usize)> {
     let word = std::mem::size_of::<usize>();
     let mut out = if t == std::any::TypeId::of::<AbiStr>() {
         vec![(

@@ -355,6 +355,33 @@ pub struct ViewOp {
     takes: Option<core::any::TypeId>,
 }
 
+/// The `in` type of slot `index` of a `T` door: its lifecycle's for a lifecycle slot, its kind's
+/// own otherwise; `None` for a table no kind states (a host's own test double).
+fn slot_in_type<T: KindOps>(index: u32) -> Option<core::any::TypeId> {
+    use core::any::TypeId;
+    fn of<S: crate::abi::sdk::door::SlotIns + 'static>(
+        table: TypeId,
+        index: u32,
+    ) -> Option<Option<TypeId>> {
+        (table == TypeId::of::<S>()).then(|| S::slot_in(index))
+    }
+    let table = if index < crate::abi::mechanism::lifecycle::LIFECYCLE_SLOTS {
+        TypeId::of::<T::Lifecycle>()
+    } else {
+        TypeId::of::<T>()
+    };
+    of::<crate::abi::sdk::door::Lifecycle>(table, index)
+        .or_else(|| of::<crate::abi::plane::PlaneLifecycle>(table, index))
+        .or_else(|| of::<crate::abi::store::Ops>(table, index))
+        .or_else(|| of::<crate::abi::secret::Ops>(table, index))
+        .or_else(|| of::<crate::abi::auth::Ops>(table, index))
+        .or_else(|| of::<crate::abi::hook::Ops>(table, index))
+        .or_else(|| of::<crate::abi::export::Ops>(table, index))
+        .or_else(|| of::<crate::abi::plane::Ops>(table, index))
+        .or_else(|| of::<crate::abi::transport::Ops>(table, index))
+        .flatten()
+}
+
 impl ViewOp {
     /// The slot's index in its kind's table (the mechanism's SLOT LAYOUT).
     #[must_use]
@@ -536,7 +563,7 @@ impl DoorView {
             op,
             door: self.door,
             index,
-            takes: crate::abi::sdk::door::slot_in::<T>(index),
+            takes: slot_in_type::<T>(index),
         })
     }
 

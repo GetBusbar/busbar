@@ -1575,14 +1575,19 @@ fn a_loaded_door_and_a_linked_plugin_name_their_door_by_macro_door_alike() {
         rendering_of_loaded(restated).expect("renders"),
         rendering_of(door).expect("renders")
     );
-    let manifest = || crate::sign::Manifest {
-        name: "plane-door-plugin".to_string(),
-        ..crate::sign::Manifest::default()
-    };
-    let linked = crate::LinkedPlugin::door(manifest(), door);
-    let linked_macro = crate::LinkedPlugin::of_macro(manifest(), macro_door);
+    // A row's door is carried as given; `link` reads only its manifest (a kind the registry
+    // links), so any door the test holds stands in for the comparison.
+    let abi = busbar_contract::abi::secret::ABI_VERSION;
+    let manifest = || crate::both_ways::statement("secret", "row-door", "row-door", abi);
+    let linked = crate::PluginRegistry::empty()
+        .link(vec![crate::LinkedPlugin::door(manifest(), door)])
+        .expect("the door links");
+    let linked_macro = crate::PluginRegistry::empty()
+        .link(vec![crate::LinkedPlugin::of_macro(manifest(), macro_door)])
+        .expect("the macro door links");
     assert_eq!(
-        linked.door().map(|d| d as usize),
-        linked_macro.door().map(|d| d as usize)
+        linked.linked()[0].door().map(|d| d as usize),
+        linked_macro.linked()[0].door().map(|d| d as usize)
     );
+    assert!(linked_macro.linked()[0].door().is_some());
 }
