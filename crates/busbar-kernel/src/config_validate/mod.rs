@@ -2083,15 +2083,44 @@ fn reject_cidr_metadata_entries(key: &str, entries: &[String], errors: &mut Vec<
 /// guard and this validation agree on every entry that boots.
 fn reject_unmappable_metadata_entries(key: &str, entries: &[String], errors: &mut Vec<String>) {
     for entry in entries {
-        let judged = busbar_kernel_egress::trust::net::list_entry_host(entry)
-            .ok()
-            .and_then(|_| busbar_contract::net::judged_host(entry.trim()).ok());
-        if judged.is_none() {
+        if let Some((why, fix)) = unmappable_metadata_entry(entry) {
             errors.push(format!(
-                "{key} entry '{entry}' maps to no host: it is no name or address a URL client would dial (UTS #46 refuses it, it holds a '%' outside an IPv6 zone id, or it ends in a number that is no IPv4 address), so it would silently match nothing. Write the host in ASCII (an internationalized name as its punycode 'xn--' form, an address as a dotted quad) or remove it"
+                "{key} entry '{entry}' maps to no host: {why}, so it would silently match \
+                 nothing. {fix}"
             ));
         }
     }
+}
+
+/// Why a metadata host-list entry names no host the guard judges, and how to write it instead;
+/// `None` when it names one ([`reject_unmappable_metadata_entries`]).
+fn unmappable_metadata_entry(entry: &str) -> Option<(&'static str, &'static str)> {
+    let trimmed = entry.trim();
+    if busbar_kernel_egress::trust::net::list_entry_host(trimmed).is_err() {
+        return Some((
+            "UTS #46 refuses it, so it is no name a URL client would dial",
+            "Write the host in ASCII (an internationalized name as its punycode 'xn--' form), or \
+             remove it",
+        ));
+    }
+    busbar_contract::net::judged_host(trimmed).err()?;
+    let bare = trimmed.trim_start_matches('[');
+    let zone = bare
+        .find('%')
+        .is_some_and(|at| bare[..at].parse::<std::net::Ipv6Addr>().is_ok());
+    Some(if trimmed.contains('%') && !zone {
+        (
+            "it holds a '%' escape outside an IPv6 zone id, which a URL client decodes before it \
+             dials",
+            "Write the host decoded (the name or address it spells), or remove it",
+        )
+    } else {
+        (
+            "its last label reads as a number but it is no IPv4 address a URL client reads",
+            "Write an address as a dotted quad, or a name whose last label is not a number, or \
+             remove it",
+        )
+    })
 }
 
 /// The hardcoded cloud-metadata denylist entries, as human-readable strings — the single source of

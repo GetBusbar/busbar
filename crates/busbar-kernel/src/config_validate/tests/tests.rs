@@ -2670,6 +2670,24 @@ fn test_metadata_list_entries_are_mapped_and_an_unmappable_one_is_refused() {
             "{entry}: {errs:?}"
         );
     }
+    // The refusal names the key, the entry and why, and how to write it, so one edit fixes it.
+    let cfg = make_root_cfg_with_blocked(
+        one(),
+        vec!["db.1".to_string(), "%6c%6fcalhost".to_string()],
+    );
+    let errs = validate(&cfg).expect_err("unjudgeable entries refuse the config");
+    for said in [
+        "security.blocked_metadata_hosts entry 'db.1' maps to no host: its last label reads as a \
+         number but it is no IPv4 address a URL client reads, so it would silently match nothing. \
+         Write an address as a dotted quad, or a name whose last label is not a number, or remove \
+         it",
+        "security.blocked_metadata_hosts entry '%6c%6fcalhost' maps to no host: it holds a '%' \
+         escape outside an IPv6 zone id, which a URL client decodes before it dials, so it would \
+         silently match nothing. Write the host decoded (the name or address it spells), or \
+         remove it",
+    ] {
+        assert!(errs.iter().any(|e| e == said), "{said}: {errs:?}");
+    }
     // Mappable and judgeable entries are never refused as unmappable.
     let mut cfg = make_root_cfg(one(), HashMap::new(), HashMap::new());
     cfg.blocked_metadata_hosts = vec![
