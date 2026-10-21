@@ -314,9 +314,43 @@ fn forwards(pkg: &Pkg) -> Vec<String> {
 /// every pinned plugin whose own source read no file (a scan that read nothing proved nothing).
 pub type Measured = (Offenders, usize, BTreeSet<String>, Vec<String>);
 
-/// THE MEASUREMENT: every in-scope crate and what its closure reaches past the wall.
-pub fn measure(cx: &Ctx, carriers: &BTreeSet<String>) -> Result<Measured, String> {
-    let json: Value = serde_json::from_str(&cx.cargo_metadata("Cargo.toml")?)
+/// The workspace as `cargo metadata` resolves it: every package by id, and every resolve node.
+struct Workspace {
+    pkgs: BTreeMap<String, Pkg>,
+    nodes: BTreeMap<String, Node>,
+}
+
+/// THE WORKSPACE [`measure`] walks, READ ONCE PER CHECKOUT AND PROCESS.
+///
+/// Cargo reads the manifests ON DISK, never the overlay, so its answer cannot change while one gate
+/// process runs; only a planted answer (the overlay's `cargo-metadata:Cargo.toml` command) can, and
+/// that one is read as planted every time. Every self-test case used to pay a whole `cargo metadata`
+/// and its parse of its own (the cost the `one-memory-abi` battery shed the same way). The cell is
+/// handed out under the lock and filled outside it, so concurrent cases share one `cargo metadata`.
+fn workspace(cx: &Ctx) -> Result<std::sync::Arc<Workspace>, String> {
+    use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+    if let Some(planted) = cx.overlay_command("cargo-metadata:Cargo.toml") {
+        return read_workspace(&planted).map(Arc::new);
+    }
+    type Cell = Arc<OnceLock<Result<Arc<Workspace>, String>>>;
+    static MEMO: OnceLock<Mutex<BTreeMap<std::path::PathBuf, Cell>>> = OnceLock::new();
+    let cell = MEMO
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .entry(cx.root().to_path_buf())
+        .or_default()
+        .clone();
+    cell.get_or_init(|| {
+        cx.cargo_metadata("Cargo.toml")
+            .and_then(|out| read_workspace(&out).map(Arc::new))
+    })
+    .clone()
+}
+
+/// [`workspace`]'s reading of one `cargo metadata` answer, taken fresh.
+fn read_workspace(metadata: &str) -> Result<Workspace, String> {
+    let json: Value = serde_json::from_str(metadata)
         .map_err(|e| format!("`cargo metadata` output did not parse: {e}"))?;
     let mut pkgs: BTreeMap<String, Pkg> = BTreeMap::new();
     for p in json["packages"].as_array().cloned().unwrap_or_default() {
@@ -422,12 +456,19 @@ pub fn measure(cx: &Ctx, carriers: &BTreeSet<String>) -> Result<Measured, String
             (deps, features),
         );
     }
+    Ok(Workspace { pkgs, nodes })
+}
+
+/// THE MEASUREMENT: every in-scope crate and what its closure reaches past the wall.
+pub fn measure(cx: &Ctx, carriers: &BTreeSet<String>) -> Result<Measured, String> {
+    let ws = workspace(cx)?;
+    let (pkgs, nodes) = (&ws.pkgs, &ws.nodes);
 
     // THE ROOTS: in-tree plugin-kind and legacy crates, and every external plugin.
     let globs = kind_globs(cx)?;
     let root = cx.root().to_string_lossy().to_string();
     let mut roots: Vec<(String, Option<String>)> = Vec::new(); // (id, in-tree dir)
-    for (id, p) in &pkgs {
+    for (id, p) in pkgs {
         if carriers.contains(&p.name) {
             continue;
         }
@@ -479,7 +520,12 @@ pub fn measure(cx: &Ctx, carriers: &BTreeSet<String>) -> Result<Measured, String
                 if rel.contains("/tests/") || rel.ends_with("_tests.rs") {
                     continue;
                 }
-                hits.extend(banned_paths(&f.text).into_iter().map(str::to_string));
+                hits.extend(
+                    banned_paths_memo(&f.text)
+                        .iter()
+                        .copied()
+                        .map(str::to_string),
+                );
             }
         }
         if !hits.is_empty() {
@@ -511,8 +557,44 @@ fn own_source(cx: &Ctx, dir: &str, pkg: &Pkg) -> Vec<crate::ctx::SourceFile> {
         .parent()
         .map(|d| d.join("src"))
         .unwrap_or_default();
+    let mut files = checkout_source_memo(&checkout, &src).as_ref().clone();
+    for f in walked {
+        files.insert(f.rel_str(), f);
+    }
+    files.into_values().collect()
+}
+
+/// A pinned plugin's cargo checkout's `src/**/*.rs`, keyed `{src}/<sub>`, READ ONCE PER CHECKOUT
+/// AND PROCESS. Cargo checks a pinned rev out into a directory named for that rev and never writes
+/// it again, so the reading is a pure function of the two inputs it is keyed on; every self-test
+/// case used to walk and read every such checkout afresh. A plant is laid over this by
+/// [`own_source`] on every run.
+fn checkout_source_memo(
+    checkout: &std::path::Path,
+    src: &str,
+) -> std::sync::Arc<BTreeMap<String, crate::ctx::SourceFile>> {
+    use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+    type Files = Arc<BTreeMap<String, crate::ctx::SourceFile>>;
+    type Memo = Mutex<BTreeMap<(std::path::PathBuf, String), Arc<OnceLock<Files>>>>;
+    static MEMO: OnceLock<Memo> = OnceLock::new();
+    let cell = MEMO
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .entry((checkout.to_path_buf(), src.to_string()))
+        .or_default()
+        .clone();
+    cell.get_or_init(|| Arc::new(checkout_source(checkout, src)))
+        .clone()
+}
+
+/// [`checkout_source_memo`]'s reading, taken fresh.
+fn checkout_source(
+    checkout: &std::path::Path,
+    src: &str,
+) -> BTreeMap<String, crate::ctx::SourceFile> {
     let mut files: BTreeMap<String, crate::ctx::SourceFile> = BTreeMap::new();
-    let mut stack = vec![checkout.clone()];
+    let mut stack = vec![checkout.to_path_buf()];
     while let Some(d) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&d) else {
             continue;
@@ -526,7 +608,7 @@ fn own_source(cx: &Ctx, dir: &str, pkg: &Pkg) -> Vec<crate::ctx::SourceFile> {
             if abs.extension().is_none_or(|x| x != "rs") {
                 continue;
             }
-            let (Ok(sub), Ok(text)) = (abs.strip_prefix(&checkout), std::fs::read_to_string(&abs))
+            let (Ok(sub), Ok(text)) = (abs.strip_prefix(checkout), std::fs::read_to_string(&abs))
             else {
                 continue;
             };
@@ -541,10 +623,7 @@ fn own_source(cx: &Ctx, dir: &str, pkg: &Pkg) -> Vec<crate::ctx::SourceFile> {
             );
         }
     }
-    for f in walked {
-        files.insert(f.rel_str(), f);
-    }
-    files.into_values().collect()
+    files
 }
 
 /// THE BANNED PATHS ONE SOURCE FILE NAMES, read as PATHS, not as text.
@@ -577,6 +656,30 @@ pub fn banned_paths(text: &str) -> BTreeSet<&'static str> {
     };
     second.walk(&tokens, None);
     second.hits
+}
+
+/// [`banned_paths`] of one file's text, LEXED ONCE PER DISTINCT TEXT AND PROCESS.
+///
+/// The reading is a pure function of the text, and the memo is keyed on the WHOLE text, compared
+/// byte for byte (no hash stands in for it). Every self-test case sees the tree one planted file
+/// away from the last, and each used to lex and strip every in-scope crate's every file again; now
+/// every case after the first lexes only what it planted. The cell is handed out under the lock and
+/// filled outside it, so concurrent cases that need the same file take one lex between them.
+fn banned_paths_memo(text: &str) -> std::sync::Arc<BTreeSet<&'static str>> {
+    use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+    type Cell = Arc<OnceLock<Arc<BTreeSet<&'static str>>>>;
+    static MEMO: OnceLock<Mutex<BTreeMap<String, Cell>>> = OnceLock::new();
+    let cell = {
+        let mut memo = MEMO
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        match memo.get(text) {
+            Some(cell) => cell.clone(),
+            None => memo.entry(text.to_string()).or_default().clone(),
+        }
+    };
+    cell.get_or_init(|| Arc::new(banned_paths(text))).clone()
 }
 
 fn segments(path: &str) -> Vec<&str> {

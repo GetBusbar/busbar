@@ -184,3 +184,93 @@ fn only_the_named_test_marks_are_test_code() {
         paths("#[tokio::test] async fn f() { std::net::TcpStream::connect(\"a\"); }").is_empty()
     );
 }
+
+/// THE MEMOISED READINGS EQUAL THE FRESH ONES. [`banned_paths_memo`], [`checkout_source_memo`] and
+/// [`workspace`] answer each self-test case from what an earlier case read; each answer must be
+/// exactly the one a fresh reading of the same input gives, a second call must be the memo's own
+/// answer, and a planted `cargo metadata` must be read as planted, never answered from the memo.
+#[test]
+fn the_memoised_readings_equal_the_fresh_readings() {
+    let cx = Ctx::workspace().expect("workspace context");
+    let dir = "crates/busbar-plane-decisions/src";
+    let files = cx
+        .walk(&WalkSpec::new([dir]).ext("rs"))
+        .expect("the decisions plane's own source walks");
+    assert!(!files.is_empty(), "{dir} read no file");
+    let planted = [
+        "pub fn dial() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
+        "use std::{io, net::TcpStream};\n",
+        "#[cfg(test)] fn f() { std::net::TcpStream::connect(\"a\"); }",
+        "fn f() { std::net::TcpStream::connect(\"a\"); ",
+        "use std::net::Ipv4Addr;\n",
+    ];
+    let texts = files
+        .iter()
+        .map(|f| f.text.as_str())
+        .chain(planted)
+        .collect::<Vec<_>>();
+    for text in &texts {
+        let memo = banned_paths_memo(text);
+        assert_eq!(*memo, banned_paths(text), "{text}");
+        assert!(
+            std::sync::Arc::ptr_eq(&memo, &banned_paths_memo(text)),
+            "a second reading of the same text was lexed again"
+        );
+    }
+    assert_ne!(
+        *banned_paths_memo(planted[0]),
+        *banned_paths_memo(planted[4])
+    );
+
+    let checkout = cx.abs(dir);
+    let src = "crates/zz-pinned/src";
+    let memo = checkout_source_memo(&checkout, src);
+    let fresh = checkout_source(&checkout, src);
+    assert!(!fresh.is_empty(), "the checkout read no file");
+    assert_eq!(
+        memo.iter()
+            .map(|(k, f)| (k.clone(), f.rel_str(), f.abs.clone(), f.text.clone()))
+            .collect::<Vec<_>>(),
+        fresh
+            .iter()
+            .map(|(k, f)| (k.clone(), f.rel_str(), f.abs.clone(), f.text.clone()))
+            .collect::<Vec<_>>()
+    );
+    assert!(std::sync::Arc::ptr_eq(
+        &memo,
+        &checkout_source_memo(&checkout, src)
+    ));
+
+    let flat = |w: &Workspace| {
+        let pkgs = w
+            .pkgs
+            .iter()
+            .map(|(id, p)| {
+                format!(
+                    "{id} {} {:?} {} {:?} {:?} {:?}",
+                    p.name, p.source, p.manifest_path, p.deps, p.features, p.packages
+                )
+            })
+            .collect::<Vec<_>>();
+        (pkgs, w.nodes.clone())
+    };
+    let memo = workspace(&cx).expect("the workspace resolves");
+    let fresh = read_workspace(
+        &cx.cargo_metadata("Cargo.toml")
+            .expect("cargo metadata runs"),
+    )
+    .expect("the workspace resolves");
+    assert!(!fresh.pkgs.is_empty() && !fresh.nodes.is_empty());
+    assert_eq!(flat(&memo), flat(&fresh));
+    assert!(std::sync::Arc::ptr_eq(
+        &memo,
+        &workspace(&cx).expect("the workspace resolves")
+    ));
+    let mut ov = Overlay::new();
+    ov.set_command(
+        "cargo-metadata:Cargo.toml",
+        "{\"packages\": [], \"resolve\": {\"nodes\": []}}",
+    );
+    let planted = workspace(&cx.with_overlay(ov)).expect("the planted answer reads");
+    assert!(planted.pkgs.is_empty() && planted.nodes.is_empty());
+}
