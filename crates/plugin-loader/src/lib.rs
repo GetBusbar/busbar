@@ -116,7 +116,7 @@ impl LinkedPlugin {
         kind: &str,
         name: &str,
         alias: &str,
-        door: busbar_contract::abi::mechanism::door::DoorFn,
+        door: busbar_contract::abi::sdk::door::MacroDoor,
     ) -> Self {
         let mut row = LinkedPlugin::door_of_kind(kind, name, door);
         row.manifest.alias = alias.into();

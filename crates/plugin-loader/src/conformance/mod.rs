@@ -93,7 +93,10 @@ use std::time::Duration;
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, InHead, OutHead, Outcome, RawOutcome, BLOB_JSON,
 };
-use busbar_contract::abi::mechanism::door::{Door, DoorFn};
+use busbar_contract::abi::mechanism::door::Door;
+use busbar_contract::abi::sdk::door::MacroDoor;
+
+use crate::dispatch::load::{rendering_of_loaded, LoadedDoor};
 use busbar_contract::abi::mechanism::lifecycle::{
     slot as life, OpenIn, OpenOut, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
@@ -108,7 +111,7 @@ use crate::dispatch::kinds::{
 use busbar_contract::conn::DeclaredConns;
 
 use crate::dispatch::{
-    in_head, load_dropped, load_linked, out_head, rendering_of, rendering_of_library, Bind, Called,
+    in_head, load_dropped, load_linked, out_head, rendering_of_library, Bind, Called,
     ConnTable, DispatchConfig, Dispatcher, Done, Frame, InFrame, Kind, Lent, LinkedRow, LoadError,
     NoSink, OutFrame, Plugin,
 };
@@ -143,8 +146,9 @@ pub const EXPECT_RELEASE_ENV: &str = "BUSBAR_EXPECT_RELEASE";
 /// The plugin under test: its linked door, the crate whose cdylib is its dropped-in door, and the
 /// inputs its kind's script drives.
 pub struct Subject {
-    /// The LINKED door: the plugin's logic crate's door function, compiled into the test binary.
-    pub door: DoorFn,
+    /// The LINKED door: the plugin's logic crate's door (its `plugin_door!`'s `MACRO_DOOR`),
+    /// compiled into the test binary.
+    pub(crate) door: LoadedDoor,
     /// The DROPPED door: the built cdylib of this crate (snake case), found in the test's target.
     pub cdylib_crate: &'static str,
     /// The plugin's `conformance.json`.
@@ -229,7 +233,12 @@ impl Subject {
     /// # Panics
     /// When `inputs` is not a JSON object.
     #[must_use]
-    pub fn new(door: DoorFn, cdylib_crate: &'static str, inputs: &str) -> Self {
+    pub fn new(door: MacroDoor, cdylib_crate: &'static str, inputs: &str) -> Self {
+        Self::of_loaded(door.into(), cdylib_crate, inputs)
+    }
+
+    /// [`Subject::new`] over a door the loader may enter: a restated one (the suite's RED arms).
+    pub(crate) fn of_loaded(door: LoadedDoor, cdylib_crate: &'static str, inputs: &str) -> Self {
         let inputs: serde_json::Value = serde_json::from_str(inputs)
             .unwrap_or_else(|e| panic!("conformance.json is not JSON: {e}"));
         assert!(inputs.is_object(), "conformance.json is not a JSON object");
@@ -420,7 +429,8 @@ impl Subject {
     #[must_use]
     pub fn needs(&self) -> Vec<rendering::ReadNeed> {
         let row =
-            LinkedRow::of(self.door).unwrap_or_else(|e| panic!("the linked door is refused: {e}"));
+            LinkedRow::of_loaded(self.door)
+                .unwrap_or_else(|e| panic!("the linked door is refused: {e}"));
         rendering::read(&row.statement)
             .unwrap_or_else(|e| panic!("the door's Statement does not read back: {e:?}"))
             .needs
@@ -654,13 +664,11 @@ pub fn distinct_images(s: &Subject) {
 ///
 /// # Errors
 /// The library does not load, exports no door, or answers the linked door or its ops table.
-pub(crate) fn distinct(door: DoorFn, path: &Path) -> Result<(), String> {
+pub(crate) fn distinct(door: LoadedDoor, path: &Path) -> Result<(), String> {
     let (dropped, ops) = crate::dispatch::load::door_addresses_of_library(path)
         .map_err(|e| format!("the dropped image {path:?} does not load: {e}"))?
         .ok_or_else(|| format!("the dropped image {path:?} exports no door"))?;
-    // SAFETY: `door` is the subject's linked door item, loaded for the process's life; a door takes
-    // no argument.
-    let linked = unsafe { door() };
+    let linked = crate::dispatch::load::enter_door(door);
     if linked.is_null() {
         return Err("the door function answered NULL".into());
     }
@@ -755,7 +763,8 @@ pub fn dispatcher_serving(
     d
 }
 
-/// A test's restated door, written in plain Rust; [`test_door`] is its [`DoorFn`].
+/// A test's restated door, written in plain Rust; [`test_door`] is its
+/// [`DoorFn`](busbar_contract::abi::mechanism::door::DoorFn).
 #[cfg(test)]
 pub(crate) trait TestDoor {
     fn door() -> *const Door;
@@ -861,7 +870,7 @@ pub fn bind_far(d: &Dispatcher, instance: &str, s: &Subject) -> Bind {
 /// The loader's refusal.
 pub fn load<K: Kind>(s: &Subject, leg: Leg, b: Bind) -> Result<Plugin<K>, LoadError> {
     match leg {
-        Leg::Linked => load_linked::<K>(&LinkedRow::of(s.door)?, b),
+        Leg::Linked => load_linked::<K>(&LinkedRow::of_loaded(s.door)?, b),
         Leg::Dropped => load_dropped::<K>(&s.cdylib(), &s.stated(), b),
     }
 }
@@ -1408,7 +1417,7 @@ fn kind_fold(s: &Subject, leg: Leg) -> Fold {
 pub fn both_ways(s: &Subject) {
     s.apply_env();
     assert_eq!(
-        LinkedRow::of(s.door)
+        LinkedRow::of_loaded(s.door)
             .unwrap_or_else(|e| panic!("the linked door is refused: {e}"))
             .statement,
         s.stated(),
@@ -1561,6 +1570,20 @@ extern "C" fn ready_fails_door() -> *const Door {
     READY_FAILS.get()
 }
 
+// SAFETY (each of the four below): a restated door answers NULL or the `'static` door the suite laid
+// out over the subject's real one (`Restated`), loaded for the process's life.
+/// [`abi_up_door`], as a door the loader may enter.
+const ABI_UP_DOOR: LoadedDoor = unsafe { LoadedDoor::from_raw(abi_up_door) };
+/// [`abi_down_door`], as a door the loader may enter.
+const ABI_DOWN_DOOR: LoadedDoor = unsafe { LoadedDoor::from_raw(abi_down_door) };
+/// [`ready_fails_door`], as a door the loader may enter.
+const READY_FAILS_DOOR: LoadedDoor = unsafe { LoadedDoor::from_raw(ready_fails_door) };
+/// `restated_door::<I>`, as a door the loader may enter.
+pub(crate) const fn restated<const I: usize>() -> LoadedDoor {
+    // SAFETY: as above.
+    unsafe { LoadedDoor::from_raw(restated_door::<I>) }
+}
+
 /// The text the RED `ready` fails with.
 pub const READY_FAILURE: &str = "conformance: discovery refused";
 
@@ -1585,9 +1608,7 @@ extern "C" fn ready_fails(
 
 /// The subject's door, read.
 fn real_door(s: &Subject) -> Door {
-    // SAFETY: the subject's door is a linked door item, loaded for the process's life; a door takes
-    // no argument.
-    let p = unsafe { (s.door)() };
+    let p = crate::dispatch::load::enter_door(s.door);
     assert!(!p.is_null(), "the door function answered NULL");
     // SAFETY: a door function answers a `'static` door at least its stated size; the whole
     // struct is read only when its size covers it (a door ending before `ready` reads `None`).
@@ -1690,10 +1711,10 @@ pub fn red_kind_abi(s: &Subject) {
         load::<K>(s, Leg::Linked, s.bind(&d, "honest-linked")).expect("the honest door loads linked");
         load::<K>(s, Leg::Dropped, s.bind(&d, "honest-dropped"))
             .expect("the honest library loads dropped in");
-        for (door, abi) in [(abi_up_door as DoorFn, host + 1), (abi_down_door, host.wrapping_sub(1))] {
+        for (door, abi) in [(ABI_UP_DOOR, host + 1), (ABI_DOWN_DOOR, host.wrapping_sub(1))] {
             let want = LoadError::KindAbi { kind, door: abi, host };
-            assert_eq!(rendering_of(door).err(), Some(want.clone()), "the pack tool signs no ABI {abi} door");
-            let refused = LinkedRow::of(door)
+            assert_eq!(rendering_of_loaded(door).err(), Some(want.clone()), "the pack tool signs no ABI {abi} door");
+            let refused = LinkedRow::of_loaded(door)
                 .and_then(|row| load_linked::<K>(&row, s.bind(&d, "red-linked")).map(|_| ()))
                 .expect_err("a linked door at another kind ABI is refused");
             assert_eq!(refused, want);
@@ -1727,7 +1748,7 @@ pub fn red_ready(s: &Subject) {
     let settings = s.fold_settings("red");
     if s.kind() == KindCode::Store {
         let d = dispatcher();
-        let row = LinkedRow::of(ready_fails_door).expect("the restated door states its Statement");
+        let row = LinkedRow::of_loaded(READY_FAILS_DOOR).expect("the restated door states its Statement");
         let p =
             load_linked::<Store>(&row, s.bind(&d, "red-ready")).expect("the restated door loads");
         assert!(p.has_ready());
@@ -1752,7 +1773,7 @@ pub fn red_ready(s: &Subject) {
     }
     by_kind!(s.kind(), K => {
         let d = dispatcher();
-        let row = LinkedRow::of(ready_fails_door).expect("the restated door states its Statement");
+        let row = LinkedRow::of_loaded(READY_FAILS_DOOR).expect("the restated door states its Statement");
         let p = load_linked::<K>(&row, s.bind(&d, "red-ready")).expect("the restated door loads");
         assert!(p.has_ready());
         let o = open_resumed(&p, &d, &settings);
@@ -1820,9 +1841,9 @@ fn with_an_outbound_need(real: Door) -> Door {
 /// arm runs) and its address.
 fn connection_fixture(
     s: &Subject,
-    door: DoorFn,
+    door: LoadedDoor,
 ) -> (Arc<dyn DeclaredConns>, Box<dyn std::any::Any>, String) {
-    let table = Subject::new(door, s.cdylib_crate, "{}")
+    let table = Subject::of_loaded(door, s.cdylib_crate, "{}")
         .conns(&dispatcher())
         .expect("the suite's test table serves the restated need");
     let listening = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback listener");
@@ -1846,13 +1867,13 @@ pub fn red_no_table(s: &Subject) {
         let d = dispatcher();
         load::<K>(s, Leg::Linked, s.bind(&d, "honest")).expect("the honest door binds over the suite's table");
         let restated = needs == 0;
-        let (door, needs): (DoorFn, usize) = if restated {
+        let (door, needs): (LoadedDoor, usize) = if restated {
             NETWORKED.set(with_an_outbound_need(real));
-            (restated_door::<0>, 1)
+            (self::restated::<0>(), 1)
         } else {
             (s.door, needs)
         };
-        let row = LinkedRow::of(door).expect("the door states its Statement");
+        let row = LinkedRow::of_loaded(door).expect("the door states its Statement");
         let plugin = rendering::read(&row.statement).expect("its Statement reads back").name;
         let want = LoadError::NoConnectionTable { plugin: plugin.clone(), needs };
         let refused = load_linked::<K>(&row, bind(&d, "red-no-table"))
@@ -2012,7 +2033,7 @@ pub fn profile(debug: bool) {
 #[macro_export]
 macro_rules! conformance_suite {
     (
-        door: $door:path,
+        door: $door:expr,
         cdylib: $cdylib:expr,
         inputs: $inputs:expr
         $(, host: $host:path)?

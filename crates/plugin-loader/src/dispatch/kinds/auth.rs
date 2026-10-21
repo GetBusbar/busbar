@@ -111,8 +111,8 @@ pub struct OutboundStyle {
 /// upstream credential) states no inbound capability. A door whose Statement does not read as an
 /// auth Statement is none: `false`. Reads the door's `'static` Statement only; nothing is opened.
 #[must_use]
-pub fn declares_chain_module(door: busbar_contract::abi::mechanism::door::DoorFn) -> bool {
-    crate::dispatch::load::validate::<Auth>(door)
+pub fn declares_chain_module(door: busbar_contract::abi::sdk::door::MacroDoor) -> bool {
+    crate::dispatch::load::validate::<Auth>(door.into())
         .ok()
         .and_then(|v| facts(&v.statement).ok())
         .is_some_and(|f| {
@@ -125,8 +125,8 @@ pub fn declares_chain_module(door: busbar_contract::abi::mechanism::door::DoorFn
 /// Statement does not read as an auth Statement. Reads the door's `'static` Statement only; nothing
 /// is opened.
 #[must_use]
-pub fn operator_principal(door: busbar_contract::abi::mechanism::door::DoorFn) -> Option<String> {
-    crate::dispatch::load::validate::<Auth>(door)
+pub fn operator_principal(door: busbar_contract::abi::sdk::door::MacroDoor) -> Option<String> {
+    crate::dispatch::load::validate::<Auth>(door.into())
         .ok()
         .and_then(|v| facts(&v.statement).ok())
         .and_then(|f| f.operator_principal)

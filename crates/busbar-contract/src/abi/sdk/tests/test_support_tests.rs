@@ -181,16 +181,20 @@ fn a_real_doors_slots_run_over_zeroed_ins_and_outs() {
 
     let mut input: OpenIn = zeroed();
     input.head = in_head::<OpenIn>(slot::OPEN);
-    let opened = call(open, ptr::null_mut(), &input, zeroed::<OpenOut>());
+    // SAFETY: the door's own `open`, entered before any instance.
+    let opened = unsafe { call(open, ptr::null_mut(), &input, zeroed::<OpenOut>()) };
     assert_eq!(opened.outcome, Outcome::Ready);
     assert!(!opened.out.instance.is_null(), "open answered an instance");
 
-    let closed = call(
-        close,
-        opened.out.instance,
-        &in_head::<InHead>(slot::CLOSE),
-        out_head::<OutHead>(),
-    );
+    // SAFETY: the door's own `close`, on the instance its `open` answered.
+    let closed = unsafe {
+        call(
+            close,
+            opened.out.instance,
+            &in_head::<InHead>(slot::CLOSE),
+            out_head::<OutHead>(),
+        )
+    };
     assert_eq!(closed.outcome, Outcome::Ready);
 }
 
@@ -374,7 +378,8 @@ fn a_failed_opens_reason_reads_back_from_the_lent_buffer() {
     };
     input.err_buf = reason.as_mut_ptr();
     input.err_cap = reason.len();
-    let got = call(open, ptr::null_mut(), &input, zeroed::<OpenOut>());
+    // SAFETY: the door's own `open`, entered before any instance.
+    let got = unsafe { call(open, ptr::null_mut(), &input, zeroed::<OpenOut>()) };
     assert_eq!(got.outcome, Outcome::Failed);
     assert_eq!(got.error.as_deref(), Some("probe open failed: x"));
     assert_eq!(
@@ -488,7 +493,9 @@ fn a_fake_service_answers_the_sdks_own_calls_as_the_host_does() {
         .serve(fake::host::RECORDS_GET, Records);
     // The SDK's own wrapper, over the tables an `open` would be lent: it stamps every head and
     // judges every answer by the host's checks.
-    let services = Services::of(host.tables_for_tests()).expect("the host offers services");
+    // SAFETY: the fake host's own tables, alive (borrowed from `host`) for every use below.
+    let services =
+        unsafe { Services::from_raw(host.tables_for_tests()) }.expect("the host offers services");
     let handle = CompletionHandle {
         ticket: Ticket::NONE,
         seq: 0,
@@ -594,12 +601,16 @@ extern "C" fn answer<O: Reply>(
 
 /// `answer::<O>` called over `template`.
 fn answered<O: Reply>(template: &mut O) -> super::reply::Called<O> {
-    call(
-        answer::<O>,
-        ptr::from_mut(template).cast(),
-        &in_head::<InHead>(0),
-        *template,
-    )
+    // SAFETY: `answer::<O>` reads its instance as the `O` template it is handed here, live for
+    // the call.
+    unsafe {
+        call(
+            answer::<O>,
+            ptr::from_mut(template).cast(),
+            &in_head::<InHead>(0),
+            *template,
+        )
+    }
 }
 
 fn bytes_of(b: &[u8]) -> Blob {
@@ -919,12 +930,16 @@ fn the_heads_a_slot_reads_state_the_structs_call_passed() {
     // Heads that claim the larger `open` structs, over a bare `InHead` and `OutHead`.
     let lying_in = in_head::<OpenIn>(slot::OPEN);
     let lying_out = out_head::<OpenOut>();
-    let got = call(
-        heads_seen,
-        ptr::from_mut(&mut seen).cast(),
-        &lying_in,
-        lying_out,
-    );
+    // SAFETY: `heads_seen` reads its instance as the `[u32; 2]` it is handed here, live for the
+    // call.
+    let got = unsafe {
+        call(
+            heads_seen,
+            ptr::from_mut(&mut seen).cast(),
+            &lying_in,
+            lying_out,
+        )
+    };
     assert_eq!(got.outcome, Outcome::Ready);
     assert_eq!(
         seen,
@@ -1115,7 +1130,9 @@ fn a_door_opens_over_the_tables_a_fake_host_lent_while_the_host_lives() {
     let mut input: OpenIn = zeroed();
     input.head = in_head::<OpenIn>(slot::OPEN);
     let lent = host.lend_to(input);
-    let opened = super::reply::call_hosted(open, ptr::null_mut(), &lent, zeroed::<OpenOut>());
+    // SAFETY: the door's own `open`, entered before any instance.
+    let opened =
+        unsafe { super::reply::call_hosted(open, ptr::null_mut(), &lent, zeroed::<OpenOut>()) };
     assert_eq!(opened.outcome, Outcome::Ready);
     assert!(!opened.out.instance.is_null());
     drop(lent);

@@ -10,7 +10,8 @@
 //! ```ignore
 //! use busbar_contract::abi::sdk::test_support::reply::call;
 //!
-//! let resolved = call(table.resolve.unwrap(), instance, &input, out);
+//! // SAFETY: `resolve` is the door's own slot and `instance` what its `open` answered.
+//! let resolved = unsafe { call(table.resolve.unwrap(), instance, &input, out) };
 //! assert_eq!(resolved.owned.material(), b"s3cret");
 //! release(instance, resolved.out.head.lease); // the copy is already taken
 //! ```
@@ -87,8 +88,20 @@ pub struct Called<O: Reply> {
 ///
 /// The `out` breaks its kind's answer validator, or a reviewed field is NULL with a count,
 /// misaligned, over its bound, or (for text) not UTF-8; the message names the field.
-pub fn call<I: AbiIn, O: Reply>(op: Op, instance: *mut c_void, input: &I, out: O) -> Called<O> {
-    run(op, instance, *input, out)
+///
+/// # Safety
+///
+/// [`Op`]'s contract for `op` and `instance` (status row 159): `op` is a slot of a loaded door
+/// (read through [`DoorView::ops`](super::DoorView::ops)) taking `I` and `O`, and `instance` is
+/// what that door's `open` answered (NULL before one). `call` itself lends the `in` and `out`.
+pub unsafe fn call<I: AbiIn, O: Reply>(
+    op: Op,
+    instance: *mut c_void,
+    input: &I,
+    out: O,
+) -> Called<O> {
+    // SAFETY: the caller's contract.
+    unsafe { run(op, instance, *input, out) }
 }
 
 /// [`call`] over an `open` `in` a [`FakeHost`](super::fake::FakeHost) lent its tables to: the
@@ -97,27 +110,45 @@ pub fn call<I: AbiIn, O: Reply>(op: Op, instance: *mut c_void, input: &I, out: O
 /// # Panics
 ///
 /// As [`call`].
-pub fn call_hosted<I: AbiIn, O: Reply>(
+///
+/// # Safety
+///
+/// As [`call`].
+pub unsafe fn call_hosted<I: AbiIn, O: Reply>(
     op: Op,
     instance: *mut c_void,
     input: &super::fake::LentIn<'_, I>,
     out: O,
 ) -> Called<O> {
-    run(op, instance, input.input, out)
+    // SAFETY: the caller's contract; the fake host the `in` was lent by outlives the call.
+    unsafe { run(op, instance, input.input, out) }
 }
 
 /// [`call`]'s body, over the caller's `in`, copied.
-fn run<I: AbiIn, O: Reply>(op: Op, instance: *mut c_void, mut input: I, mut out: O) -> Called<O> {
+///
+/// # Safety
+///
+/// As [`call`].
+unsafe fn run<I: AbiIn, O: Reply>(
+    op: Op,
+    instance: *mut c_void,
+    mut input: I,
+    mut out: O,
+) -> Called<O> {
     out.clear(Token(()));
     out.head().size = size_of::<O>() as u32;
     // SAFETY: `I: AbiIn` is `#[repr(C)]` and leads with an `InHead` (its unsafe contract), so the
     // first bytes of this private copy are an `InHead`.
     unsafe { (*ptr::addr_of_mut!(input).cast::<InHead>()).size = size_of::<I>() as u32 };
-    let raw = op(
-        instance,
-        ptr::from_ref(&input).cast(),
-        ptr::from_mut(&mut out).cast(),
-    );
+    // SAFETY: the caller vouches for `op` and `instance`; the `in` and `out` are this frame's own
+    // copies, their heads stating exactly their sizes.
+    let raw = unsafe {
+        op(
+            instance,
+            ptr::from_ref(&input).cast(),
+            ptr::from_mut(&mut out).cast(),
+        )
+    };
     let outcome = raw.outcome();
     let error = optional_text(out.head().error, "head.error");
     let owned = out.take(outcome, Token(()));

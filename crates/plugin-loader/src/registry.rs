@@ -124,7 +124,7 @@ impl LoadablePlugin {
     }
 
     /// A compiled-in memory-ABI row's door; `None` for any other row.
-    pub fn door(&self) -> Option<busbar_contract::abi::mechanism::door::DoorFn> {
+    pub fn door(&self) -> Option<busbar_contract::abi::sdk::door::MacroDoor> {
         match self.entry {
             Some(LinkedEntry::Door(door)) | Some(LinkedEntry::Store { door }) => Some(door),
             _ => None,
@@ -189,12 +189,12 @@ pub enum LinkedEntry {
     /// ([`LoadablePlugin::in_process`]).
     Store {
         /// The row's store v3 door.
-        door: busbar_contract::abi::mechanism::door::DoorFn,
+        door: busbar_contract::abi::sdk::door::MacroDoor,
     },
     /// A compiled-in plugin on its kind's memory ABI: the logic crate's `plugin_door!` door function,
     /// the same door a dropped-in build exports as `busbar_plugin_door` (THE DESIGN: compiled-in =
     /// dropped-in). Loaded through [`crate::dispatch::load_linked`].
-    Door(busbar_contract::abi::mechanism::door::DoorFn),
+    Door(busbar_contract::abi::sdk::door::MacroDoor),
 }
 
 impl LinkedPlugin {
@@ -215,7 +215,7 @@ impl LinkedPlugin {
 
     /// A linked MEMORY-ABI plugin: `manifest` and its door (THE DESIGN: compiled-in = dropped-in,
     /// the same door the dropped-in build exports).
-    pub fn door(manifest: Manifest, door: busbar_contract::abi::mechanism::door::DoorFn) -> Self {
+    pub fn door(manifest: Manifest, door: busbar_contract::abi::sdk::door::MacroDoor) -> Self {
         LinkedPlugin {
             manifest,
             entry: LinkedEntry::Door(door),
@@ -228,7 +228,7 @@ impl LinkedPlugin {
     /// its store v3 `door`, and whether what it holds is lost on restart.
     pub fn store(
         name: &str,
-        door: busbar_contract::abi::mechanism::door::DoorFn,
+        door: busbar_contract::abi::sdk::door::MacroDoor,
         ephemeral: bool,
     ) -> Self {
         Self::store_named(name, name, door, ephemeral)
@@ -240,7 +240,7 @@ impl LinkedPlugin {
     pub fn store_named(
         name: &str,
         alias: &str,
-        door: busbar_contract::abi::mechanism::door::DoorFn,
+        door: busbar_contract::abi::sdk::door::MacroDoor,
         ephemeral: bool,
     ) -> Self {
         let abi = busbar_contract::abi::store::ABI_VERSION;
@@ -250,7 +250,7 @@ impl LinkedPlugin {
 
     /// A linked AUTH plugin named `name` (its own alias) on the auth kind's MEMORY ABI: the logic
     /// crate's `plugin_door!` door, the same door its dropped-in build exports.
-    pub fn auth_door(name: &str, door: busbar_contract::abi::mechanism::door::DoorFn) -> Self {
+    pub fn auth_door(name: &str, door: busbar_contract::abi::sdk::door::MacroDoor) -> Self {
         Self::auth_door_named(name, name, door)
     }
 
@@ -259,7 +259,7 @@ impl LinkedPlugin {
     pub fn auth_door_named(
         name: &str,
         alias: &str,
-        door: busbar_contract::abi::mechanism::door::DoorFn,
+        door: busbar_contract::abi::sdk::door::MacroDoor,
     ) -> Self {
         let abi = supported_abi(kind::AUTH)
             .first()
@@ -279,7 +279,7 @@ impl LinkedPlugin {
     pub fn door_of_kind(
         kind: &str,
         name: &str,
-        door: busbar_contract::abi::mechanism::door::DoorFn,
+        door: busbar_contract::abi::sdk::door::MacroDoor,
     ) -> Self {
         let abi = supported_abi(kind).first().copied().unwrap_or_default();
         Self::built_in(name, &[], kind, abi, LinkedEntry::Door(door), false)
@@ -715,7 +715,7 @@ impl PluginRegistry {
     /// admitted is not skipped.
     pub fn open_planes(
         &self,
-        linked: &[busbar_contract::abi::mechanism::door::DoorFn],
+        linked: &[busbar_contract::abi::sdk::door::MacroDoor],
     ) -> Result<crate::boot::PlaneSet, String> {
         let mut set = crate::boot::PlaneSet::default();
         for door in linked {

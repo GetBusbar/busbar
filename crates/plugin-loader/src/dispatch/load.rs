@@ -26,6 +26,7 @@ use busbar_contract::abi::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 use busbar_contract::abi::mechanism::rendering::{render, RENDERING_MAGIC};
 use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, DOOR_SYMBOL, MECHANISM_VERSION};
 use busbar_contract::abi::plane::{PlaneTail, ANSWER_LAYOUT};
+use busbar_contract::abi::sdk::door::MacroDoor;
 use busbar_contract::abi::transport::check::check_claim_rows;
 use busbar_contract::abi::transport::{FramePiece, TransportTail};
 use libloading::Library;
@@ -78,6 +79,81 @@ impl ManifestFacts {
     }
 }
 
+/// A DOOR THE LOADER MAY ENTER (status row 159): one the contract's door macro built (a
+/// [`MacroDoor`], every compiled-in row's), or one the loader read from [`DOOR_SYMBOL`] of a
+/// library it holds open. Its field is private and its only constructors are `From<MacroDoor>`
+/// and the loader's own `unsafe` [`LoadedDoor::from_raw`], so [`enter_door`]'s SAFETY holds by
+/// construction: no safe caller can hand the loader an arbitrary `fn() -> *const Door`. One entry
+/// path for compiled-in and dropped-in doors (Part 2 #2).
+///
+/// A safe `extern "C" fn` is no door the loader takes:
+///
+/// ```compile_fail
+/// extern "C" fn forged() -> *const busbar_contract::abi::mechanism::door::Door {
+///     core::ptr::null()
+/// }
+/// let _ = busbar_plugin_loader::dispatch::rendering_of(forged);
+/// ```
+///
+/// The contract's door macro's own door is:
+///
+/// ```
+/// # use busbar_contract::abi::sdk::life::{Life, Refreshed, Refusal};
+/// # struct P;
+/// # impl Life for P {
+/// #     const CANCEL: u32 = 0;
+/// #     fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+/// #         Ok(P)
+/// #     }
+/// #     fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+/// #         Ok(Refreshed::default())
+/// #     }
+/// # }
+/// mod plugin {
+///     busbar_contract::plugin_door! {
+///         ops: busbar_contract::abi::secret::Ops,
+///         statement: busbar_contract::abi::sdk::door::statement("p", "0", 1),
+///         lifecycle: life(super::P),
+///     }
+/// }
+/// let _ = busbar_plugin_loader::dispatch::rendering_of(plugin::MACRO_DOOR);
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct LoadedDoor {
+    door: DoorFn,
+}
+
+impl From<MacroDoor> for LoadedDoor {
+    fn from(door: MacroDoor) -> Self {
+        Self {
+            door: door.door_fn(),
+        }
+    }
+}
+
+impl LoadedDoor {
+    /// A door the loader read itself, or a test's or harness's restated door: the one way to a
+    /// `LoadedDoor` other than a [`MacroDoor`], and `unsafe`.
+    ///
+    /// # Safety
+    ///
+    /// `door` is a busbar door ([`DoorFn`]'s contract): read from [`DOOR_SYMBOL`] of a library
+    /// held open for every use of the value, or a function answering NULL or a `'static`, fully
+    /// initialised [`Door`] whose Statement lists point at their stated counts of `'static`
+    /// entries.
+    #[must_use]
+    pub const unsafe fn from_raw(door: DoorFn) -> Self {
+        Self { door }
+    }
+
+    /// The door function's address, for the published suite's proof that a dropped image is an
+    /// image of its own.
+    #[cfg(any(test, feature = "conformance"))]
+    pub(crate) fn address(self) -> usize {
+        self.door as usize
+    }
+}
+
 /// A COMPILED-IN ROW (the design's One row: `LinkedRow{statement, door}`): the Statement rendering
 /// the row states and its door. Linked and dropped-in rows cross the same boundary: at load the
 /// door's own Statement is rendered and must equal [`LinkedRow::statement`] byte for byte, as a
@@ -87,7 +163,7 @@ pub struct LinkedRow {
     /// The Statement rendering the row states.
     pub statement: Vec<u8>,
     /// The door.
-    pub door: DoorFn,
+    pub door: LoadedDoor,
 }
 
 impl LinkedRow {
@@ -97,9 +173,19 @@ impl LinkedRow {
     /// # Errors
     ///
     /// Whatever [`rendering_of`] refuses.
-    pub fn of(door: DoorFn) -> Result<Self, LoadError> {
+    pub fn of(door: MacroDoor) -> Result<Self, LoadError> {
+        Self::of_loaded(door.into())
+    }
+
+    /// [`LinkedRow::of`] over a door the loader may enter: a test's or the published suite's
+    /// restated door.
+    ///
+    /// # Errors
+    ///
+    /// As [`LinkedRow::of`].
+    pub fn of_loaded(door: LoadedDoor) -> Result<Self, LoadError> {
         Ok(Self {
-            statement: rendering_of(door)?,
+            statement: rendering_of_loaded(door)?,
             door,
         })
     }
@@ -111,10 +197,10 @@ impl LinkedRow {
 /// # Errors
 ///
 /// The refusal the door or its Statement earns.
-pub(crate) fn statement_of(door_fn: DoorFn) -> Result<Statement, LoadError> {
-    // SAFETY: a compiled-in door item (the transport kind's linked rows), loaded for the process's
-    // life; a door takes no argument.
-    let (door, _) = read_door(unsafe { door_fn() }, None)?;
+pub(crate) fn statement_of(door: MacroDoor) -> Result<Statement, LoadError> {
+    // SAFETY: a `MacroDoor` is a door the contract's macro built, a compiled-in item loaded for the
+    // process's life (`MacroDoor::__from_door_macro`'s contract); a door takes no argument.
+    let (door, _) = read_door(unsafe { door.door_fn()() }, None)?;
     statement(&door)
 }
 
@@ -126,8 +212,17 @@ pub(crate) fn statement_of(door_fn: DoorFn) -> Result<Statement, LoadError> {
 /// # Errors
 ///
 /// The refusal the door or its Statement earns.
-pub fn rendering_of(door_fn: DoorFn) -> Result<Vec<u8>, LoadError> {
-    let (door, _) = read_door(enter_door(door_fn), None)?;
+pub fn rendering_of(door: MacroDoor) -> Result<Vec<u8>, LoadError> {
+    rendering_of_loaded(door.into())
+}
+
+/// [`rendering_of`] over a door the loader may enter.
+///
+/// # Errors
+///
+/// As [`rendering_of`].
+pub fn rendering_of_loaded(door: LoadedDoor) -> Result<Vec<u8>, LoadError> {
+    let (door, _) = read_door(enter_door(door), None)?;
     let st = statement(&door)?;
     // SAFETY: `statement` ran `check_statement`: every list is its stated count of `'static`
     // entries.
@@ -138,14 +233,14 @@ pub fn rendering_of(door_fn: DoorFn) -> Result<Vec<u8>, LoadError> {
 /// both origins. The door function is plugin code like any slot, so it runs where every other
 /// per-load crossing runs; a call already on a worker stays there. A door function that panicked
 /// answers NULL ([`LoadError::NullDoor`]).
-pub(crate) fn enter_door(door_fn: DoorFn) -> *const Door {
+pub(crate) fn enter_door(door: LoadedDoor) -> *const Door {
     let call = || {
         crate::ffi_thread::debug_assert_permanent("the door function");
-        // SAFETY: THE ONE DOOR CALL (status row 159). A door takes no argument; `DoorFn`'s
-        // contract is that its image is loaded and it is a busbar door. Every `DoorFn` the loader
-        // holds is a linked row's door item (loaded for the process's life) or read from
-        // `DOOR_SYMBOL` of a library the caller keeps open across this call and its reads.
-        unsafe { door_fn() }
+        // SAFETY: THE ONE DOOR CALL (status row 159), true by construction: a `LoadedDoor` is a
+        // `MacroDoor` (a compiled-in door the contract's macro built, loaded for the process's
+        // life) or `LoadedDoor::from_raw`'s (read from `DOOR_SYMBOL` of a library its caller
+        // keeps open across this call and its reads). A door takes no argument.
+        unsafe { (door.door)() }
     };
     if crate::ffi_thread::on_permanent_worker() {
         return call();
@@ -165,10 +260,11 @@ pub fn rendering_of_library(path: &Path) -> Result<Option<Vec<u8>>, LoadError> {
     let lib = crate::dlopen_on_worker(path.as_os_str()).map_err(LoadError::Open)?;
     // SAFETY: `DOOR_SYMBOL` is typed `DoorFn` by the mechanism; `lib` outlives every use of it.
     let door = match unsafe { lib.get::<DoorFn>(DOOR_SYMBOL).map(|s| *s) } {
-        Ok(door) => door,
+        // SAFETY: read from `DOOR_SYMBOL` of `lib`, open until the drop below.
+        Ok(door) => unsafe { LoadedDoor::from_raw(door) },
         Err(_) => return Ok(None),
     };
-    let rendering = rendering_of(door);
+    let rendering = rendering_of_loaded(door);
     drop(Lib(Some(lib), None));
     rendering.map(Some)
 }
@@ -186,11 +282,11 @@ pub(crate) fn door_addresses_of_library(path: &Path) -> Result<Option<(usize, us
     let lib = crate::dlopen_on_worker(path.as_os_str()).map_err(LoadError::Open)?;
     // SAFETY: `DOOR_SYMBOL` is typed `DoorFn` by the mechanism; `lib` outlives every use of it.
     let door = match unsafe { lib.get::<DoorFn>(DOOR_SYMBOL).map(|s| *s) } {
-        Ok(door) => door,
+        // SAFETY: read from `DOOR_SYMBOL` of `lib`, open until the drop below.
+        Ok(door) => unsafe { LoadedDoor::from_raw(door) },
         Err(_) => return Ok(None),
     };
-    // SAFETY: `door` was read from `DOOR_SYMBOL` of `lib`, open until the drop below.
-    let at = unsafe { door() };
+    let at = enter_door(door);
     let ops = if at.is_null() {
         0
     } else {
@@ -604,6 +700,8 @@ fn bind_library<K: Kind>(lib: Lib, stated: &[u8], bind: Bind) -> Result<Plugin<K
         unsafe { l.get::<DoorFn>(DOOR_SYMBOL).map(|s| *s) }
     };
     let door = door.map_err(|e| LoadError::NoDoor(e.to_string()))?;
+    // SAFETY: read from `DOOR_SYMBOL` of the library `lib` keeps open for the instance's life.
+    let door = unsafe { LoadedDoor::from_raw(door) };
     Plugin::bind(admitted::<K>(door, stated)?, Some(lib), bind)
 }
 
@@ -658,6 +756,8 @@ pub(crate) fn load_staged<K: Kind>(
         return Ok(Staging::NotADoor);
     };
     let stated = stated.ok_or(LoadError::StatementMismatch)?;
+    // SAFETY: read from `DOOR_SYMBOL` of the library `Lib` keeps open for the instance's life.
+    let door = unsafe { LoadedDoor::from_raw(door) };
     let lib = Lib(Some(lib), Some(staged));
     Ok(Staging::Door(Plugin::bind(
         admitted::<K>(door, stated)?,
@@ -666,14 +766,14 @@ pub(crate) fn load_staged<K: Kind>(
     )?))
 }
 
-/// THE LINKED DOOR: a compiled-in row's [`DoorFn`], through the same [`validate`] and the same
+/// THE LINKED DOOR: a compiled-in row's door, through the same [`validate`] and the same
 /// comparison of the door's Statement with the one the row states.
 pub fn load_linked<K: Kind>(row: &LinkedRow, bind: Bind) -> Result<Plugin<K>, LoadError> {
     Plugin::bind(admitted::<K>(row.door, &row.statement)?, None, bind)
 }
 
 /// [`validate`], then the door's Statement rendered and compared with the `stated` rendering.
-fn admitted<K: Kind>(door: DoorFn, stated: &[u8]) -> Result<Validated, LoadError> {
+fn admitted<K: Kind>(door: LoadedDoor, stated: &[u8]) -> Result<Validated, LoadError> {
     let v = validate::<K>(door)?;
     // SAFETY: `validate` ran `check_statement` on this Statement.
     let own = unsafe { render(&v.statement) }
@@ -685,8 +785,8 @@ fn admitted<K: Kind>(door: DoorFn, stated: &[u8]) -> Result<Validated, LoadError
 }
 
 /// The door checks, in the order the mechanism states them. Shared by both origins.
-pub(crate) fn validate<K: Kind>(door_fn: DoorFn) -> Result<Validated, LoadError> {
-    validate_door::<K>(enter_door(door_fn))
+pub(crate) fn validate<K: Kind>(door: LoadedDoor) -> Result<Validated, LoadError> {
+    validate_door::<K>(enter_door(door))
 }
 
 /// Where the door's append-only `ready` tail starts: the least size a door states.

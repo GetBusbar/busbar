@@ -448,7 +448,10 @@ fn a_descriptor_without_the_head_words_states_none() {
     };
     let mut conn = 0_u64;
     // SAFETY: the host's own slot over the context `host` keeps alive; `d` and `conn` are locals.
-    assert_eq!(unsafe { open(host.ctx(), 0, &d, &mut conn) }.result(), Ok(()));
+    assert_eq!(
+        unsafe { open(host.ctx(), 0, &d, &mut conn) }.result(),
+        Ok(())
+    );
     // SAFETY: the host's own table over the context `host` keeps alive.
     let pa = unsafe { HostConns::new(slots, host.ctx()) };
     let mut buf = [0_u8; 16];
