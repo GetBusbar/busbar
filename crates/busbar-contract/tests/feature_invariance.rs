@@ -706,6 +706,65 @@ fn a_multi_line_unsafe_code_attribute_is_red() {
     assert_eq!(over.len(), 2, "{over:?}");
 }
 
+/// RED: every lint level that RELAXES `unsafe_code` is a site, not `allow` alone, and an
+/// attribute is an attribute however it is spaced. Under the crate's `deny(unsafe_code)` each of
+/// these compiles over a `#[no_mangle]` export (a6's review of #1399): `expect(` and `warn(`, on
+/// one line and split across lines; whitespace between `#` and `[`, on one line and with the `#`
+/// alone on its line; and the crate-level `#!` forms. The total-sites check counts them too.
+#[test]
+fn every_relaxing_spelling_of_unsafe_code_is_red() {
+    let plant = |rel: &str, text: &str| unsafe_findings(&[(rel.to_string(), text.to_string())]);
+    let export = "#[no_mangle]\npub extern \"C\" fn exported() {}\n";
+    for attr in [
+        "#[expect(unsafe_code)]\n",
+        "#[expect(\n    unsafe_code\n)]\n",
+        "#[warn(unsafe_code)]\n",
+        "#[warn(\n    unsafe_code,\n)]\n",
+        "# [allow(unsafe_code)]\n",
+        "#  [\n    allow(unsafe_code)\n]\n",
+        "#\n[allow(unsafe_code)]\n",
+        "# [expect(unsafe_code)]\n",
+        "#[cfg_attr(test, expect(unsafe_code))]\n",
+    ] {
+        let found = plant("dest.rs", &format!("{attr}{export}"));
+        assert_eq!(
+            found.len(),
+            1,
+            "not refused exactly once:\n{attr}{export}{found:?}"
+        );
+        assert!(found[0].contains("pub extern"), "{found:?}");
+    }
+    for inner in [
+        "#![expect(unsafe_code)]\n",
+        "#![warn(unsafe_code)]\n",
+        "#! [allow(unsafe_code)]\n",
+        "#!\n[allow(unsafe_code)]\n",
+        "#![expect(\n    unsafe_code\n)]\n",
+    ] {
+        assert_eq!(plant("lib.rs", inner).len(), 1, "not refused:\n{inner}");
+    }
+    // Spaced, a deny or forbid is still green.
+    assert!(plant("lib.rs", "# ! [deny(unsafe_code)]\n").is_empty());
+    assert!(plant("dest.rs", &format!("# [deny(unsafe_code)]\n{export}")).is_empty());
+    // The total: a third site spelled `expect`, beside the two sanctioned allows, is red per site
+    // and on the total.
+    let three = unsafe_findings(&[
+        (
+            "lib.rs".to_string(),
+            "#[allow(unsafe_code)]\npub mod abi;\n".to_string(),
+        ),
+        (
+            "alloc_counter.rs".to_string(),
+            "#[allow(unsafe_code)]\nunsafe impl GlobalAlloc for Counting {\n}\n".to_string(),
+        ),
+        (
+            "dest.rs".to_string(),
+            format!("# [expect(\n    unsafe_code\n)]\n{export}"),
+        ),
+    ]);
+    assert_eq!(three.len(), 2, "{three:?}");
+}
+
 /// The counting allocator's unsafe exemption is the impl block and nothing wider. GREEN: the one
 /// allow over the impl, with `unsafe` inside the block. RED: the allow lifted to the module
 /// declaration or over another item, `unsafe` in the same file outside the block, the impl in
