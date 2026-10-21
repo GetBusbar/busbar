@@ -586,9 +586,6 @@ impl Durability {
         // carried past its horizon goes with it.
         let over = self.checkpoints.len().saturating_sub(CHECKPOINT_RING);
         self.checkpoints.drain(..over);
-        if let Some(oldest) = self.checkpoints.first().map(|head| head.checkpoint_seq) {
-            self.seal_horizons.retain(|seq, _| *seq >= oldest);
-        }
         Ok(ack)
     }
 
