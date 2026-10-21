@@ -42,8 +42,8 @@ ROOT_STATES = {"proven", "none", "not-applicable"}
 # The six legs the composition root carries, and the one cargo invocation that turns them all on:
 # the admin leg's own feature, for the mcp, a2a and voice legs (the kernel-loop rider those planes are
 # served through) and the decisions leg (its door, served end to end) the feature that links the
-# plane, and for the llm leg the feature that links the plane riding the `node` axis, which compiles
-# the root's node (`root/plane_node.rs`).
+# plane, and for the llm leg the feature that links the llm plane's door (its cells are the
+# pools-door cells of `root/tests/serve_tests.rs`).
 ROOT_FEATURES = "root-admin,plane-mcp,plane-a2a,plane-streaming,plane-decisions,plane-llm"
 
 
@@ -302,8 +302,9 @@ def _tokens(src):
 
 # The name a file's door-cells include stands under in its decls: the composition root's
 # `include!(concat!(env!("OUT_DIR"), "/door_cells.rs"))`, which its build script writes as one
-# `#[path]` module per `[package.metadata.busbar.door-cells]` row (each a door plane's own root cells,
-# at its crate's `tests/root/mod.rs`). Not an identifier, so no real module is mistaken for it.
+# `#[path]` module per `plane-door` row of `[package.metadata.busbar.linked]` (each a door plane's own
+# root cells, at its crate's `tests/root/mod.rs`). Not an identifier, so no real module is mistaken
+# for it. The same reading as xtask/src/libtest_path.rs::door_cells.
 DOOR_CELLS = "<door-cells>"
 DOOR_CELLS_FILE = "/door_cells.rs"
 
@@ -322,27 +323,39 @@ def _manifest_rows(manifest, table):
     return rows
 
 
+# The `linked-axes` word of a plane's memory-ABI door row (the build script's `PLANE_DOOR_AXIS`).
+PLANE_DOOR_AXIS = "plane-door"
+
+
 def _door_cells(read, root_file):
-    """(module name, repo-relative `tests/root/mod.rs`) for every door-cells row of the manifest of
-    the crate whose root file is `root_file`: the module the build script names for the feature, at
-    the crate its `[dependencies]` row's `path` names."""
+    """(module name, repo-relative `tests/root/mod.rs`) for every `[package.metadata.busbar.linked]`
+    row of the manifest of the crate whose root file is `root_file` whose `linked-axes` value names
+    the `plane-door` axis (the rows its build script mounts cells for): the module the build script
+    names for the feature, at the crate its `[dependencies]` row's `path` names for a path
+    dependency, and at the crate's census mount (`crates/<crate>`, a sibling of the root's own
+    directory) for a PINNED one, whose files `_read_repo` reads out of the pinned checkout. The root's
+    build script compiles both alike (`DEP_BUSBAR_DOOR_CELLS_<CRATE>_CELLS`), so a plane door that
+    left for its own repo keeps its root cells: they are read from the pin, never skipped."""
     norm = lambda p: os.path.normpath(p).replace(os.sep, "/")
     crate_dir = os.path.dirname(os.path.dirname(root_file))
     manifest = read(norm(os.path.join(crate_dir, "Cargo.toml")))
     if manifest is None:
         return []
     deps = dict(_manifest_rows(manifest, "dependencies"))
+    axes = _manifest_rows(manifest, "package.metadata.busbar.linked-axes")
     out = []
-    for feature, krate in _manifest_rows(manifest, "package.metadata.busbar.door-cells"):
+    for feature, krate in _manifest_rows(manifest, "package.metadata.busbar.linked"):
+        if not any(f == feature and PLANE_DOOR_AXIS in a.split() for f, a in axes):
+            continue
         dep = deps.get(krate)
-        if dep is None or "path" not in dep:
+        if dep is None:
             continue
-        parts = dep.split("path", 1)[1].split('"')
-        if len(parts) < 2:
-            continue
-        out.append(
-            (feature.replace("-", "_"), norm(os.path.join(crate_dir, parts[1], "tests/root/mod.rs")))
-        )
+        parts = dep.split("path", 1)[1].split('"') if "path" in dep else []
+        if len(parts) >= 2:
+            at = os.path.join(crate_dir, parts[1])
+        else:
+            at = os.path.join(os.path.dirname(crate_dir), krate)
+        out.append((feature.replace("-", "_"), norm(os.path.join(at, "tests/root/mod.rs"))))
     return out
 
 
@@ -468,12 +481,67 @@ def resolve(tree, file, fn):
     return "::".join([m for m in [reached[0]] if m] + list(nests[0]) + [fn]), None
 
 
-def _read_repo(path):
+_PINNED = None
+
+
+def _pinned_dirs():
+    """{package name: its directory in the checkout cargo resolved} for every `git+` package of
+    `cargo metadata` over the root manifest at the revs `Cargo.lock` pins: the pinned plane crates
+    whose root cells the composition root compiles from the pin. Read once; {} when cargo does not
+    answer (the caller then finds the census mount absent and refuses the cell, naming it)."""
+    global _PINNED
+    if _PINNED is None:
+        _PINNED = {}
+        try:
+            run = subprocess.run(
+                ["cargo", "metadata", "--format-version", "1", "--locked"],
+                capture_output=True,
+                text=True,
+            )
+            if run.returncode == 0:
+                _PINNED = _pinned_from_metadata(json.loads(run.stdout))
+        except (OSError, ValueError):
+            pass
+    return _PINNED
+
+
+def _pinned_from_metadata(meta):
+    """{name: crate directory} of the `git+` packages of one `cargo metadata` answer."""
+    return {
+        p["name"]: os.path.dirname(p["manifest_path"])
+        for p in meta.get("packages") or []
+        if str(p.get("source") or "").startswith("git+")
+    }
+
+
+def _census_path(path, pinned):
+    """A repo-relative `crates/<package>/<rest>` read at the pinned checkout of `<package>` (its
+    census mount, where xtask's base layer lays it), or None when `<package>` is no pinned crate."""
+    parts = path.split("/", 2)
+    if len(parts) < 3 or parts[0] != "crates" or parts[1] not in pinned:
+        return None
+    return os.path.join(pinned[parts[1]], parts[2])
+
+
+def _read_file(path):
     try:
         with open(path, encoding="utf-8") as f:
             return f.read()
     except OSError:
         return None
+
+
+def _read_repo(path):
+    """A repo-relative file's text: the tree's own, else, for a pinned crate's census mount
+    (`crates/<package>/..` with no such crate on disk), the pinned checkout's."""
+    text = _read_file(path)
+    parts = path.split("/", 2)
+    if text is not None or len(parts) < 3 or parts[0] != "crates":
+        return text
+    if os.path.isdir(os.path.join(parts[0], parts[1])):
+        return None
+    at = _census_path(path, _pinned_dirs())
+    return _read_file(at) if at else None
 
 
 _TREE = None
@@ -777,34 +845,74 @@ def selftest():
         "an unreached file resolved",
     )
 
-    # A door plane's own root cells: the serve module's door-cells include reaches each manifest
-    # row's plane crate `tests/root/mod.rs` under `root::serve::<feature>`; with no row, nothing.
-    def cells_tree(manifest):
+    # A door plane's own root cells: the serve module's door-cells include reaches each `plane-door`
+    # row of the manifest's linked table, its plane crate's `tests/root/mod.rs` under
+    # `root::serve::<feature>`; a row on another axis, or no row, reaches nothing. A PINNED door (a
+    # dependency naming no `path`) is read at its census mount, `crates/<crate>` beside the root.
+    cell = "mod inner {\n    #[test]\n    fn a_plane_cell() {}\n}\n"
+
+    def cells_tree(manifest, at="q/tests/root/mod.rs"):
         files = {
             "c/src/main.rs": "mod root;\nfn main() {}\n",
             "c/src/root/mod.rs": "pub mod serve;\n",
             "c/src/root/serve.rs": 'pub fn serve() {}\n#[cfg(test)]\n'
             'include!(concat!(env!("OUT_DIR"), "/door_cells.rs"));\n',
             "c/Cargo.toml": manifest,
-            "q/tests/root/mod.rs": "mod inner {\n    #[test]\n    fn a_plane_cell() {}\n}\n",
+            at: cell,
         }
         return module_tree(lambda p: files.get(p), "c/src/main.rs")
 
     dep = '[dependencies]\nplane-q = { path = "../q", optional = true }\n'
-    got, why = resolve(
-        cells_tree(dep + '\n[package.metadata.busbar.door-cells]\nplane-q-door = "plane-q"\n'),
-        "q/tests/root/mod.rs",
-        "a_plane_cell",
-    )
+    row = '\n[package.metadata.busbar.linked]\nplane-q-door = "plane-q"\n'
+    door_axis = '\n[package.metadata.busbar.linked-axes]\nplane-q-door = "plane-door protocols"\n'
+    other_axis = '\n[package.metadata.busbar.linked-axes]\nplane-q-door = "claims"\n'
+    got, why = resolve(cells_tree(dep + row + door_axis), "q/tests/root/mod.rs", "a_plane_cell")
     case(
-        "a door-cells row reaches its plane crate's root cells",
+        "a plane-door linked row reaches its plane crate's root cells",
         got == "root::serve::plane_q_door::inner::a_plane_cell",
         f"{got} {why}",
     )
     case(
-        "with no door-cells row the plane crate's cells are reached by nothing",
-        resolve(cells_tree(dep), "q/tests/root/mod.rs", "a_plane_cell")[0] is None,
+        "with no linked row the plane crate's cells are reached by nothing",
+        resolve(cells_tree(dep + door_axis), "q/tests/root/mod.rs", "a_plane_cell")[0] is None,
         "a cell resolved with no row",
+    )
+    case(
+        "a linked row on no plane-door axis reaches no cells",
+        resolve(cells_tree(dep + row + other_axis), "q/tests/root/mod.rs", "a_plane_cell")[0]
+        is None,
+        "a cell resolved through a row the build script mounts nothing for",
+    )
+    pinned_dep = '[dependencies]\nplane-q = { workspace = true, optional = true }\n'
+    got, why = resolve(
+        cells_tree(pinned_dep + row + door_axis, at="plane-q/tests/root/mod.rs"),
+        "plane-q/tests/root/mod.rs",
+        "a_plane_cell",
+    )
+    case(
+        "a pinned door's cells are reached at its census mount beside the root",
+        got == "root::serve::plane_q_door::inner::a_plane_cell",
+        f"{got} {why}",
+    )
+    # The census mount reads the pinned checkout cargo resolved, and only for a `git+` package.
+    pinned = _pinned_from_metadata(
+        {
+            "packages": [
+                {
+                    "name": "plane-q",
+                    "source": "git+https://x/plane-q?rev=1#1",
+                    "manifest_path": "/ck/plane-q/Cargo.toml",
+                },
+                {"name": "busbar", "source": None, "manifest_path": "/r/crates/busbar/Cargo.toml"},
+            ]
+        }
+    )
+    case(
+        "a census-mount path reads the pinned checkout, and a tree crate is never remapped",
+        _census_path("crates/plane-q/tests/root/mod.rs", pinned) == "/ck/plane-q/tests/root/mod.rs"
+        and _census_path("crates/busbar/src/main.rs", pinned) is None
+        and _census_path("scripts/x.py", pinned) is None,
+        str(pinned),
     )
 
     # (5) The real ledger is accepted and yields a count -- the printer reaches its subject.

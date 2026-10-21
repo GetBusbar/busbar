@@ -1080,8 +1080,8 @@ pub fn root_line(m: &Matrix) -> String {
 /// with: the admin leg's own feature, for the mcp, a2a and streaming legs (the kernel-loop rider those
 /// planes are served through) the feature that links the plane, for the decision leg the feature that
 /// links its door (`plane-decisions`; its cells are `root/serve.rs`'s `door_tests`), and for the llm
-/// leg the feature that links the plane riding the `node` axis, which compiles the root's node
-/// (`root/plane_node.rs`).
+/// leg the feature that links the llm plane's door (`plane-llm`; its cells are the pools-door cells
+/// of the same `door_tests`).
 const ROOT_FEATURES: &str =
     "root-admin,plane-mcp,plane-a2a,plane-streaming,plane-decisions,plane-llm";
 
@@ -1340,7 +1340,7 @@ fn run_root_legs(cx: &Ctx) -> i32 {
         .filter_map(|l| l.strip_suffix(": test"))
         .collect();
 
-    // `crates/busbar/src/root/plane_node.rs::the_fn` is the ledger's spelling; libtest's is the
+    // `crates/busbar/src/root/tests/serve_tests.rs::the_fn` is the ledger's spelling; libtest's is the
     // module path the crate builds for it. That path is READ OFF THE SOURCE
     // ([`crate::libtest_path`]): the module tree from `src/main.rs` through every `mod` declaration
     // and `#[path]` attribute, then the inline modules the fn sits in. It used to be guessed from the
@@ -1707,7 +1707,7 @@ impl Gate for TellerStepsGate {
                         "meter",
                         "test",
                         Json::Str(format!(
-                            "{ROOT_DIR}tests/plane_node.rs::a_fn_that_was_renamed_away"
+                            "{ROOT_DIR}tests/serve_tests.rs::a_fn_that_was_renamed_away"
                         )),
                     );
                 }),

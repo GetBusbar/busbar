@@ -10,8 +10,8 @@
 //! What it states is the plane's answer to the capability-equality ledger: its column, and the
 //! root-leg cells the ledger marks not applicable on it, reason for reason, which the composition
 //! root holds equal to the ledger's (`root/tests/door_cells.rs`). The leg's proven cells are where
-//! the ledger's `root_legs` row `root-llm` names them
-//! (`crates/busbar/src/root/tests/plane_node.rs`); the door's secret-source driver is the
+//! the ledger's `root_legs` row `root-llm` names them (the pools-door cells of
+//! `crates/busbar/src/root/tests/serve_tests.rs`); the door's secret-source driver is the
 //! composition root's own (`root/tests/secret_source.rs`, the pools door of its driver proofs).
 
 /// THIS PLANE'S CAPABILITY-EQUALITY COLUMNS (`qa/capability-equality.json`): the cells its root leg
